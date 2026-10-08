@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams } from 'react-router';
 import { AppProvider, useApp } from './app-context.js';
+import { BatchUploadProvider } from './batch-store.js';
 import { AddScreen, ConfirmScreen } from './screens/AddConfirm.js';
 import {
   AddManyScreen,
@@ -120,110 +121,113 @@ function Moved({ to }: { to: string }) {
 export function App() {
   return (
     <AppProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/setup" element={<SetupGate />} />
-          <Route
-            path="/welcome"
-            element={
-              <Gate need="signed-out">
-                <WelcomeScreen />
-              </Gate>
-            }
-          />
-          {/* An invitation is followed while signed out, but signing in
+      {/* Beside it, the upload of many documents (I1): it outlives the page that started it. */}
+      <BatchUploadProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/setup" element={<SetupGate />} />
+            <Route
+              path="/welcome"
+              element={
+                <Gate need="signed-out">
+                  <WelcomeScreen />
+                </Gate>
+              }
+            />
+            {/* An invitation is followed while signed out, but signing in
               first should not throw the link away either, so this is
               outside both gates. Its token is not in the address: it was
               after the # (or, in a link made before 0.5.17, in the path),
               and was taken out before the router saw it (link-token.ts). */}
-          <Route path="/join" element={<JoinScreen />} />
-          {/* Both outside the gates: somebody who cannot sign in is
+            <Route path="/join" element={<JoinScreen />} />
+            {/* Both outside the gates: somebody who cannot sign in is
               exactly who these are for. */}
-          <Route
-            path="/forgot-password"
-            element={
-              <Gate need="signed-out">
-                <ForgotPasswordScreen />
-              </Gate>
-            }
-          />
-          {/* The same for a reset link: /reset#<token>, or /reset/<token>
+            <Route
+              path="/forgot-password"
+              element={
+                <Gate need="signed-out">
+                  <ForgotPasswordScreen />
+                </Gate>
+              }
+            />
+            {/* The same for a reset link: /reset#<token>, or /reset/<token>
               before 0.5.17, is /reset by now. */}
-          <Route path="/reset" element={<ResetPasswordScreen />} />
-          {/* Outside the gates entirely: whoever opens this has no
+            <Route path="/reset" element={<ResetPasswordScreen />} />
+            {/* Outside the gates entirely: whoever opens this has no
               account and is not going to make one. */}
-          <Route path="/shared/:token" element={<SharedScreen />} />
-          <Route
-            path="/sign-in"
-            element={
-              <Gate need="signed-out">
-                <SignInScreen />
-              </Gate>
-            }
-          />
-          {/* Every signed-in screen, inside the shell (Phase 6, R1). */}
-          <Route
-            element={
-              <Gate need="signed-in">
-                <AppShell />
-              </Gate>
-            }
-          >
-            <Route path="/" element={<HomeScreen />} />
-            <Route path="/add" element={<AddScreen />} />
-            <Route path="/add/many" element={<AddManyScreen />} />
-            {/* Documents (R2): the table from 768 px, today's rows on a phone. */}
-            <Route path="/documents" element={<DocumentsScreen />} />
-            <Route path="/documents/:id" element={<DocumentScreen />} />
-            <Route path="/documents/:id/read" element={<ReaderScreen />} />
-            <Route path="/documents/:id/confirm" element={<ConfirmScreen />} />
-            <Route path="/search" element={<SearchScreen />} />
-            <Route path="/reminders" element={<RemindersScreen />} />
-            {/* The household's questions on their own, from Reminders (5.35). */}
-            <Route path="/household-questions" element={<HouseholdQuestionsScreen />} />
-            <Route path="/people" element={<PeopleScreen />} />
-            {/* Beside the family, for owners (5.34; under People since R1). */}
-            <Route path="/people/outside" element={<GuestsScreen />} />
-            {/* A person's profile, from People (and old bookmarks); their
+            <Route path="/shared/:token" element={<SharedScreen />} />
+            <Route
+              path="/sign-in"
+              element={
+                <Gate need="signed-out">
+                  <SignInScreen />
+                </Gate>
+              }
+            />
+            {/* Every signed-in screen, inside the shell (Phase 6, R1). */}
+            <Route
+              element={
+                <Gate need="signed-in">
+                  <AppShell />
+                </Gate>
+              }
+            >
+              <Route path="/" element={<HomeScreen />} />
+              <Route path="/add" element={<AddScreen />} />
+              <Route path="/add/many" element={<AddManyScreen />} />
+              {/* Documents (R2): the table from 768 px, today's rows on a phone. */}
+              <Route path="/documents" element={<DocumentsScreen />} />
+              <Route path="/documents/:id" element={<DocumentScreen />} />
+              <Route path="/documents/:id/read" element={<ReaderScreen />} />
+              <Route path="/documents/:id/confirm" element={<ConfirmScreen />} />
+              <Route path="/search" element={<SearchScreen />} />
+              <Route path="/reminders" element={<RemindersScreen />} />
+              {/* The household's questions on their own, from Reminders (5.35). */}
+              <Route path="/household-questions" element={<HouseholdQuestionsScreen />} />
+              <Route path="/people" element={<PeopleScreen />} />
+              {/* Beside the family, for owners (5.34; under People since R1). */}
+              <Route path="/people/outside" element={<GuestsScreen />} />
+              {/* A person's profile, from People (and old bookmarks); their
                 documents, from Home (A64). */}
-            <Route path="/people/:id" element={<ProfileScreen />} />
-            <Route path="/people/:id/documents" element={<PersonDocumentsScreen />} />
-            <Route path="/collections" element={<CollectionsScreen />} />
-            <Route path="/collections/:id" element={<CollectionScreen />} />
-            {/* What was sent through a request, looked at before it is filed
+              <Route path="/people/:id" element={<ProfileScreen />} />
+              <Route path="/people/:id/documents" element={<PersonDocumentsScreen />} />
+              <Route path="/collections" element={<CollectionsScreen />} />
+              <Route path="/collections/:id" element={<CollectionScreen />} />
+              {/* What was sent through a request, looked at before it is filed
                 (5.23): the Inbox since R1. */}
-            <Route path="/inbox" element={<InboxScreen />} />
-            {/* Phase 6, I1: the files sent to you beside your uploads, a
+              <Route path="/inbox" element={<InboxScreen />} />
+              {/* Phase 6, I1: the files sent to you beside your uploads, a
                 batch, and one of its files' card. */}
-            <Route path="/inbox/sent" element={<SentScreen />} />
-            <Route path="/inbox/batches/:id" element={<BatchScreen />} />
-            <Route path="/inbox/batches/:id/items/:itemId" element={<BatchItemScreen />} />
-            <Route path="/inbox/:id" element={<IncomingFileScreen />} />
-            <Route path="/sharing" element={<SharingScreen />} />
-            {/* Ask for documents (5.22): from Sharing, and from a person's
+              <Route path="/inbox/sent" element={<SentScreen />} />
+              <Route path="/inbox/batches/:id" element={<BatchScreen />} />
+              <Route path="/inbox/batches/:id/items/:itemId" element={<BatchItemScreen />} />
+              <Route path="/inbox/:id" element={<IncomingFileScreen />} />
+              <Route path="/sharing" element={<SharingScreen />} />
+              {/* Ask for documents (5.22): from Sharing, and from a person's
                 page (?person=<their id>, a hint for whoever reviews). */}
-            <Route path="/sharing/ask" element={<AskForDocumentsScreen />} />
-            <Route path="/activity" element={<ActivityScreen />} />
-            <Route path="/trash" element={<TrashScreen />} />
-            {/* From Home's banner, while a restore has paused something. */}
-            <Route path="/after-restore" element={<AfterRestoreScreen />} />
-            {/* Settings holds settings only (R1). */}
-            <Route path="/settings" element={<SettingsScreen />} />
-            <Route path="/settings/notifications" element={<NotificationsScreen />} />
-            <Route path="/settings/email" element={<EmailScreen />} />
-            <Route path="/settings/storage" element={<StorageScreen />} />
-            <Route path="/settings/household" element={<HouseholdScreen />} />
-            <Route path="/settings/family" element={<FamilyScreen />} />
-            <Route path="/settings/kinds" element={<KindsScreen />} />
-            <Route path="/settings/kinds/new" element={<KindScreen />} />
-            <Route path="/settings/kinds/:key" element={<KindScreen />} />
-          </Route>
-          {MOVED.map(([from, to]) => (
-            <Route key={from} path={from} element={<Moved to={to} />} />
-          ))}
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </BrowserRouter>
+              <Route path="/sharing/ask" element={<AskForDocumentsScreen />} />
+              <Route path="/activity" element={<ActivityScreen />} />
+              <Route path="/trash" element={<TrashScreen />} />
+              {/* From Home's banner, while a restore has paused something. */}
+              <Route path="/after-restore" element={<AfterRestoreScreen />} />
+              {/* Settings holds settings only (R1). */}
+              <Route path="/settings" element={<SettingsScreen />} />
+              <Route path="/settings/notifications" element={<NotificationsScreen />} />
+              <Route path="/settings/email" element={<EmailScreen />} />
+              <Route path="/settings/storage" element={<StorageScreen />} />
+              <Route path="/settings/household" element={<HouseholdScreen />} />
+              <Route path="/settings/family" element={<FamilyScreen />} />
+              <Route path="/settings/kinds" element={<KindsScreen />} />
+              <Route path="/settings/kinds/new" element={<KindScreen />} />
+              <Route path="/settings/kinds/:key" element={<KindScreen />} />
+            </Route>
+            {MOVED.map(([from, to]) => (
+              <Route key={from} path={from} element={<Moved to={to} />} />
+            ))}
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </BrowserRouter>
+      </BatchUploadProvider>
     </AppProvider>
   );
 }

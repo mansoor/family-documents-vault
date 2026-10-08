@@ -105,8 +105,12 @@ export interface BatchItemView {
   state: BatchItemState;
   /** Read for its details (I2 fills this); `waiting` in I1. */
   reading: BatchReadState;
-  /** Its pages, drawn by the worker one at a time a household: served at …/pages/{n}. */
-  preview_state: IncomingPreviewState;
+  /**
+   * Its pages, drawn by the worker one at a time a household: served at
+   * …/pages/{n} while it waits. `none` once it is accepted: its pages went
+   * with its bytes, so there is nothing to ask for (the I1 review).
+   */
+  preview_state: IncomingPreviewState | 'none';
   preview_pages: number | null;
   duplicate: BatchDuplicate | null;
   /** Accepted: the document it became, while the uploader can still see it. */
@@ -145,6 +149,11 @@ const NARROW: Record<Visibility, number> = { private: 0, adults: 1, household: 2
  * documents alone, and never Adults only for a teen. With no choice for the
  * batch ("As each kind says"), the kind's default; a kind kept Only me by
  * default, for somebody else's document or nobody's, the narrowest left.
+ *
+ * A batch made Only me is its uploader's own documents (the I1 review):
+ * Only me, always — never widened by a guess. Whose they are is the
+ * uploader, filled where nobody is chosen (the vault stores it so); a card
+ * that names somebody else must choose who can see it, as a single add must.
  */
 export function batchVisibility(opts: {
   chosen: BatchVisibility;
@@ -154,6 +163,7 @@ export function batchVisibility(opts: {
   owner: string | null;
   me: string | null | undefined;
 }): Visibility {
+  if (opts.chosen === 'private') return 'private';
   const mine = opts.owner !== null && opts.owner !== '' && opts.owner === opts.me;
   const adults = can(opts.role, 'document.see_adults');
   const kind = effectiveVisibility({}, opts.type, opts.role);

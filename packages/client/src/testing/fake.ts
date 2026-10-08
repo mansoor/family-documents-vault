@@ -412,6 +412,8 @@ export interface FakeBatchItem {
   arrived_at: string;
   state: 'waiting' | 'accepted' | 'removed';
   document_id: string | null;
+  /** The uploader's Idempotency-Key for it, when sent (the I1 review). */
+  key?: string;
 }
 
 /** A collection of documents, as the fake keeps one (0.5.12). */
@@ -3193,7 +3195,8 @@ export function createFakeVault(): {
         arrived_at: it.arrived_at,
         state: it.state === 'accepted' ? 'accepted' : 'waiting',
         reading: 'waiting',
-        preview_state: 'unsupported',
+        // Accepted, its pages went with its bytes (the I1 review).
+        preview_state: it.state === 'accepted' ? 'none' : 'unsupported',
         preview_pages: null,
         duplicate: duplicateOf(b, it),
         document_id: it.state === 'accepted' ? it.document_id : null,
@@ -3248,12 +3251,12 @@ export function createFakeVault(): {
         if (sent.visibility === 'adults' && !can(who.role, 'document.see_adults')) {
           return fail(403, 'forbidden', 'Only an adult can make a document adults-only.');
         }
-        if (
-          d.visibility === 'private' &&
-          d.owner_member_id !== null &&
-          d.owner_member_id !== who.memberId
-        ) {
-          return fail(422, 'validation_failed', 'Only me is for your own documents.', 'visibility');
+        // A batch made Only me is the uploader's own (the I1 review).
+        if (d.visibility === 'private') {
+          if (d.owner_member_id !== null && d.owner_member_id !== who.memberId) {
+            return fail(422, 'validation_failed', PRIVATE_TO_THEM, 'visibility');
+          }
+          d.owner_member_id = who.memberId;
         }
         if (sent.collection_id) {
           const c = state.collections.find((x) => x.id === sent.collection_id && !x.deleted);
@@ -3322,6 +3325,16 @@ export function createFakeVault(): {
         }
       }
       if (items && !itemId && init.method === 'POST') {
+        // Sent again with the key of one that arrived: that item, a replay.
+        const key = init.headers['idempotency-key'];
+        if (key !== undefined && !UUID.test(key)) {
+          return fail(422, 'validation_failed', 'Idempotency-Key must be a UUID.');
+        }
+        const before = key ? b.items.find((x) => x.key === key) : undefined;
+        if (before?.state === 'removed') {
+          return fail(409, 'already_decided', 'This file has been accepted or removed already.');
+        }
+        if (before) return ok(itemView(b, before), 201);
         const taken = b.items.filter((x) => x.state !== 'removed').length;
         if (taken >= BATCH_MAX_FILES) {
           return fail(422, 'batch_full', `A batch holds ${BATCH_MAX_FILES} files at most.`);
@@ -3345,6 +3358,7 @@ export function createFakeVault(): {
           arrived_at: new Date().toISOString(),
           state: 'waiting',
           document_id: null,
+          ...(key ? { key } : {}),
         };
         b.items.push(it);
         return ok(itemView(b, it), 201);
@@ -3375,6 +3389,8 @@ export function createFakeVault(): {
         const d = b.defaults;
         if (metadata.owner_member_id === undefined && d.owner_member_id !== null)
           metadata.owner_member_id = d.owner_member_id;
+        if (metadata.owner_member_id === undefined && d.visibility === 'private')
+          metadata.owner_member_id = who.memberId;
         if (metadata.type_key === undefined && d.type_key !== null) metadata.type_key = d.type_key;
         if (metadata.physical_location === undefined && d.physical_location !== null)
           metadata.physical_location = d.physical_location;

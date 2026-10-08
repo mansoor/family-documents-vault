@@ -20,12 +20,15 @@ export function sendBatchItem(
   batchId: string,
   file: File,
   progress: (sent: number, total: number) => void,
+  /** Kept for the file until it arrives: sent again, the vault answers the item it made (the I1 review). */
+  idempotencyKey?: string,
 ): BatchSending {
   const xhr = new XMLHttpRequest();
   const done = new Promise<BatchItemView>((resolve, reject) => {
     xhr.open('POST', api.batchItemsUrl(batchId));
     xhr.setRequestHeader('accept', 'application/json');
     xhr.setRequestHeader('authorization', `Bearer ${token}`);
+    if (idempotencyKey) xhr.setRequestHeader('idempotency-key', idempotencyKey);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) progress(e.loaded, e.total);
     };

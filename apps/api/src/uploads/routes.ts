@@ -365,10 +365,20 @@ export function registerBatches(app: FastifyInstance, batches: BatchService) {
    * One file, multipart, as `file`, and nothing else: the size limit is a
    * single add's (413), and so are the kinds it takes (415). Refused before
    * a byte is stored when the batch is not the caller's, has ended, or is
-   * full.
+   * full. An Idempotency-Key, optional, makes a file sent again after its
+   * answer was lost the item it made already, answered as a replay.
    */
   app.post<{ Params: { id: string } }>('/api/v1/batches/:id/items', auth, async (req, reply) => {
     const { id } = parse(idParam, req.params);
+    const sentKey = req.headers['idempotency-key'];
+    const idempotencyKey = typeof sentKey === 'string' && sentKey !== '' ? sentKey : undefined;
+    if (idempotencyKey !== undefined && !z.string().uuid().safeParse(idempotencyKey).success) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'Idempotency-Key must be a UUID, written like 123e4567-e89b-42d3-a456-426614174000.',
+      );
+    }
     // Room for one file more than is taken, as a capture's (documents/
     // routes.ts): at its limit the parser destroys the stream it is
     // reading, which, were it the file, would fail it as if storage had. A
@@ -399,11 +409,12 @@ export function registerBatches(app: FastifyInstance, batches: BatchService) {
       throw limitRefusal(err, order);
     }
     const theFile = file;
-    const item = await batches
+    const { item, replayed } = await batches
       .addItem(
         principal(req),
         id,
         {
+          ...(idempotencyKey ? { idempotencyKey } : {}),
           filename: theFile.filename,
           mime: theFile.mimetype,
           stream: theFile.file,
@@ -427,6 +438,12 @@ export function registerBatches(app: FastifyInstance, batches: BatchService) {
         if (refusal instanceof ApiError && refusal.status === 413) cutOff(req, reply);
         throw refusal;
       });
+    if (replayed) {
+      // What the first try made: these bytes are not needed, so they are drained.
+      theFile.file.resume();
+      void drainRest();
+      void reply.header('idempotent-replayed', 'true');
+    }
     return reply.status(201).send(item);
   });
 

@@ -3389,6 +3389,23 @@ a.menu-item {
   font-weight: 400;
 }
 
+/* Many documents on their way, away from their page (the I1 review): how
+   far, and a way back to it, above every page until it ends. */
+.upload-strip {
+  padding: 8px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.upload-strip a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .shell-wide .page.addmany-page,
 .shell-mid .page.addmany-page {
   max-width: 1120px;

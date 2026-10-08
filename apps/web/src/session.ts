@@ -7,6 +7,7 @@ import {
 } from '@fdv/client';
 import { api, type Tokens } from './api.js';
 import { forgetDrafts } from './note-drafts.js';
+import { forgetAllPages } from './batch-pages.js';
 import { clearPhotos } from './photos.js';
 import { disable as disablePush } from './push.js';
 
@@ -101,9 +102,10 @@ export class Session {
 
   clear() {
     // People's photos are held in memory for the sign-in that fetched them
-    // (5.17c): the next person at this browser is not shown them. Nor the
-    // notes they had not saved (5.35, A32).
+    // (5.17c), and a batch's first pages (I1): the next person at this
+    // browser is not shown them. Nor the notes they had not saved (5.35, A32).
     clearPhotos();
+    forgetAllPages();
     forgetDrafts();
     void this.core.clear();
   }
@@ -127,6 +129,7 @@ export class Session {
     ) {
       forgetDrafts();
       clearPhotos();
+      forgetAllPages();
     }
     return r;
   }

@@ -16,6 +16,7 @@ import {
 import { Link, Outlet, useLocation, useNavigate } from 'react-router';
 import { api, type Member } from './api.js';
 import { useApp, useLoad } from './app-context.js';
+import { progressOf, running, useUploads } from './batch-store.js';
 import { collectionsOffered } from './collections.js';
 import { beside } from './DocActions.js';
 import { PersonAvatar } from './person-avatar.js';
@@ -367,19 +368,34 @@ export function AppShell() {
     },
     [authVersion],
   );
-  // What waits in the Inbox, asked again on every move: filing or refusing
-  // one is a move back to the Inbox. Not asked at all of anybody else. The
-  // files sent to them, and their own uploads not yet decided (I1).
-  const { data: waiting } = useLoad(
-    async (t) => {
-      const [sent, mine] = await Promise.all([
-        mayReview ? api.incoming(t).then((r) => r.items.length) : 0,
-        many ? api.batches(t).then((r) => r.items.reduce((n, b) => n + b.counts.waiting, 0)) : 0,
-      ]);
-      return sent + mine;
-    },
-    [authVersion, mayReview, many, pathname],
+  // What waits in the Inbox. The files sent to them, asked again on every
+  // move: filing or refusing one is a move back to the Inbox. Their own
+  // uploads not yet decided (I1), asked when something changes them — an
+  // accept, a removal, files arriving — and when the window is come back
+  // to, never on every move (the I1 review). Not asked at all of anybody else.
+  const [upload] = useUploads();
+  const [lookedBack, setLookedBack] = useState(0);
+  useEffect(() => {
+    const back = () => {
+      if (document.visibilityState !== 'hidden') setLookedBack((n) => n + 1);
+    };
+    window.addEventListener('focus', back);
+    document.addEventListener('visibilitychange', back);
+    return () => {
+      window.removeEventListener('focus', back);
+      document.removeEventListener('visibilitychange', back);
+    };
+  }, []);
+  const { data: sentWaiting } = useLoad(
+    async (t) => (mayReview ? (await api.incoming(t)).items.length : 0),
+    [authVersion, mayReview, pathname],
   );
+  const { data: mineWaiting } = useLoad(
+    async (t) =>
+      many ? (await api.batches(t)).items.reduce((n, b) => n + b.counts.waiting, 0) : 0,
+    [authVersion, many, upload.changed, lookedBack],
+  );
+  const waiting = sentWaiting === null || mineWaiting === null ? null : sentWaiting + mineWaiting;
   // A viewer's collections are only those given to them (5.33).
   const { data: given } = useLoad(
     async (t) => (givenOnly ? (await api.collections(t)).items.length > 0 : false),
@@ -499,6 +515,31 @@ export function AppShell() {
   );
   const phone = mode === 'phone';
 
+  // Many documents on their way, away from their page (the I1 review): how
+  // far, with a way back to it — said politely as it goes on and as it ends,
+  // not for every file.
+  const onItsPage = pathname === '/add/many';
+  const going = running(upload);
+  const ended = (upload.phase === 'done' || upload.phase === 'stopped') && !upload.seen;
+  const far = progressOf(upload);
+  const files = (n: number) => `${n} ${n === 1 ? 'file' : 'files'}`;
+  const strip =
+    onItsPage || !upload.batch
+      ? null
+      : going
+        ? `Uploading ${Math.min(far.arrived + 1, far.total)} of ${far.total}`
+        : ended
+          ? `Upload finished: ${files(far.arrived)} arrived`
+          : null;
+  const stripSaid =
+    onItsPage || !upload.batch
+      ? ''
+      : going
+        ? 'Your upload carries on. Follow it from Uploading, at the top of the page.'
+        : ended
+          ? `Your upload has finished: ${files(far.arrived)} arrived in “${upload.batch.label}”.`
+          : '';
+
   // One tree at every width, the page always in the same place in it: a
   // window turned or resized across 768 px keeps what is on the page (a
   // half-filled form) rather than drawing it again from nothing.
@@ -542,6 +583,18 @@ export function AppShell() {
             {canAdd && <AddControl link={add} keysOn={keysOn} many={many} />}
             {account}
           </header>
+        )}
+        {upload.batch && (
+          <p className="visually-hidden" role="status">
+            {stripSaid}
+          </p>
+        )}
+        {strip && upload.batch && (
+          <aside className="upload-strip" aria-label="Your upload">
+            <Link to="/add/many">
+              {strip} · “{upload.batch.label}”
+            </Link>
+          </aside>
         )}
         <div id="main-content" className="shell-content" ref={content}>
           <Outlet />
@@ -705,7 +758,8 @@ function SearchBox({
  * document" (today's add) or "Many documents" (files or a folder, checked
  * in the Inbox). A vault from before batches goes straight to Add, as R1
  * did. `n` puts focus on it. On a phone there is no bar on top: the bottom
- * bar's + is today's add, and many documents are added from a computer.
+ * bar's + is today's add (the owner's choice), and many documents are added
+ * from the Inbox's Add many documents, there at every width (the I1 review).
  */
 function AddControl({
   link,

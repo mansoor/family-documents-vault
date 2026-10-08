@@ -15,6 +15,7 @@ import {
   reminderSentence,
   visibilityChoices,
   type CaptureMetadata,
+  type CollectionView,
   type CoreField,
   type DateOrder,
   type DocumentTypeView,
@@ -48,6 +49,7 @@ import {
   useDetailSuggestions,
   useSuggestionsOffered,
 } from '../suggestions.js';
+import { CollectionSelect } from '../collections.js';
 import { Button, ErrorNote, Field, Select, Switch, TextArea, TopBar } from '../ui.js';
 import { LinksChoiceDialog, linksAsk, type LinksAsk } from './Visibility.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
@@ -626,7 +628,7 @@ export function ConfirmForm(props: {
    */
   extras?: {
     /** The collections the person may put documents in. */
-    collections: ReadonlyArray<{ id: string; name: string }>;
+    collections: ReadonlyArray<Pick<CollectionView, 'id' | 'name' | 'shared_outside'>>;
     collectionId: string;
     /** As typed: a comma between tags. */
     tags: string;
@@ -1294,15 +1296,12 @@ export function ConfirmForm(props: {
         {props.extras && (
           <>
             {props.extras.collections.length > 0 && (
-              <Select
+              <CollectionSelect
                 id="f-collection"
-                label="Collection"
+                collections={props.extras.collections}
                 value={collectionId}
                 onChange={setCollectionId}
-                options={[
-                  { value: '', label: 'None' },
-                  ...props.extras.collections.map((c) => ({ value: c.id, label: c.name })),
-                ]}
+                role={myRole}
               />
             )}
             <Field

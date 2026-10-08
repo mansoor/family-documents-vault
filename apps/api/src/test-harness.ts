@@ -52,7 +52,7 @@ import {
 } from './uploads/requests.js';
 import { PurgeService } from './documents/purge.js';
 import { IncomingService, type IncomingOptions } from './uploads/incoming.js';
-import { BatchService } from './uploads/batches.js';
+import { BatchService, type BatchOptions } from './uploads/batches.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
@@ -158,6 +158,8 @@ export interface HarnessOptions {
   incomingMaxBytes?: number;
   /** A decision on a file sent in, held before it commits (5.23): for the races. */
   incomingBeforeCommit?: IncomingOptions['beforeCommit'];
+  /** A batch's removal, held once fenced and before its rows go (the I1 review): for the races. */
+  batchBetweenRemoval?: BatchOptions['betweenRemoval'];
   /** FDV_TRUST_PROXY (5.30): whose X-Forwarded-For is believed; `network` otherwise. */
   trustProxy?: 'network' | 'private' | 'all' | 'none';
   /** Where pages are proposed for (5.37): the process's proposal thread, unless a test stands in. */
@@ -339,7 +341,16 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       enqueue,
       ...(opts.incomingBeforeCommit ? { beforeCommit: opts.incomingBeforeCommit } : {}),
     }),
-    batches: new BatchService(db, keys, vaults, documents, collections, 5 * 1024 * 1024, enqueue),
+    batches: new BatchService(
+      db,
+      keys,
+      vaults,
+      documents,
+      collections,
+      5 * 1024 * 1024,
+      enqueue,
+      opts.batchBetweenRemoval ? { betweenRemoval: opts.batchBetweenRemoval } : {},
+    ),
     audit: new AuditService(db),
     reminders,
     notifications: new NotificationService(

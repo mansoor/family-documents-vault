@@ -91,23 +91,29 @@ create policy intake_batch_actor_insert on intake_batch as restrictive for inser
                 else false
               end);
 
--- What its uploader may change: its name and its defaults. Who made it,
--- when, and its end are fixed. A rule cannot say which columns change, so
--- a trigger does; it compares every column but those, so a column added
+-- What its uploader may change: its name and its defaults; and its end,
+-- brought to now as they remove it, so nothing more can be sent to it
+-- while what is in it is removed (the I1 review) — never later. Who made
+-- it, and when, are fixed. A rule cannot say which columns change, so a
+-- trigger does; it compares every column but those, so a column added
 -- later is fixed too.
 create function intake_batch_account_writes() returns trigger
   language plpgsql set search_path = pg_catalog, public, pg_temp as $$
 begin
   if app_actor() = 'account'
-     and (to_jsonb(new) - array['name', 'default_owner_member_id', 'default_type_key',
-                                'default_visibility', 'default_physical_location',
-                                'default_collection_id', 'default_tags', 'default_essential'])
-         is distinct from
-         (to_jsonb(old) - array['name', 'default_owner_member_id', 'default_type_key',
-                                'default_visibility', 'default_physical_location',
-                                'default_collection_id', 'default_tags', 'default_essential'])
+     and ((to_jsonb(new) - array['name', 'default_owner_member_id', 'default_type_key',
+                                 'default_visibility', 'default_physical_location',
+                                 'default_collection_id', 'default_tags', 'default_essential',
+                                 'ends_at'])
+          is distinct from
+          (to_jsonb(old) - array['name', 'default_owner_member_id', 'default_type_key',
+                                 'default_visibility', 'default_physical_location',
+                                 'default_collection_id', 'default_tags', 'default_essential',
+                                 'ends_at'])
+          or (new.ends_at is distinct from old.ends_at
+              and new.ends_at is distinct from least(old.ends_at, now())))
   then
-    raise exception 'an uploader may change only a batch''s name and defaults'
+    raise exception 'an uploader may change only a batch''s name and defaults, or end it now'
       using errcode = 'insufficient_privilege';
   end if;
   return new;
@@ -127,6 +133,10 @@ alter table incoming_file
   -- What I2 proposes from its pages, sealed under the item's own key: a
   -- passport number is a proposal. Gone once it is decided.
   add column proposals_sealed bytea,
+  -- The uploader's Idempotency-Key for the file (the I1 review): a file sent
+  -- again after its answer was lost is answered with the item it made, not
+  -- made twice. A random key the browser chose: it says nothing of the file.
+  add column idempotency_key uuid,
   -- Through a request, or in a batch: one, never both.
   add constraint incoming_file_one_way check ((request_id is null) <> (batch_id is null)),
   -- An item is its uploader's alone, under their own key, and carries
@@ -137,10 +147,14 @@ alter table incoming_file
                and item_id is null and session_id is null and sender_note is null)),
   add constraint incoming_file_read_batch check ((batch_id is null) = (read_state is null)),
   add constraint incoming_file_proposals_batch check (proposals_sealed is null or batch_id is not null),
+  add constraint incoming_file_key_batch check (idempotency_key is null or batch_id is not null),
   add constraint incoming_file_batch_fkey
     foreign key (batch_id, household_id, requester_member_id)
     references intake_batch (id, household_id, member_id) on delete cascade;
 create index incoming_file_batch_idx on incoming_file (batch_id) where batch_id is not null;
+-- One item a key, in a batch.
+create unique index incoming_file_batch_key_idx on incoming_file (batch_id, idempotency_key)
+  where idempotency_key is not null;
 -- Duplicates by SHA-256 (I1): among an uploader's items, and the documents' versions.
 create index incoming_file_batch_sha_idx on incoming_file (requester_member_id, sha256)
   where batch_id is not null;
@@ -269,6 +283,29 @@ begin
   end if;
   raise exception 'a reviewer may only file or refuse a file waiting for review'
     using errcode = 'insufficient_privilege';
+end $$;
+
+-- 0047's: a decided file's row going while its bytes are not known to be
+-- gone leaves them, and every page drawn of it, to purge_leftover. And a
+-- batch's item gone undecided — on its way or waiting — the same (the I1
+-- review): an uploader's removal, or its batch's, never leaves bytes with
+-- nothing to remove them, whatever happens to the removal after it commits.
+-- Not the vault's own sweeps: they remove an item's bytes before its row.
+create or replace function incoming_file_leaves_bytes() returns trigger
+  language plpgsql security definer set search_path = pg_catalog, public, pg_temp as $$
+begin
+  if old.object_removed_at is null
+     and (old.state in ('accepted', 'rejected')
+          or (old.batch_id is not null and old.state in ('uploading', 'received')
+              and app_actor() is distinct from 'system')) then
+    insert into purge_leftover (household_id, vault_id, object_key, removed_document)
+    select old.household_id, old.vault_id, k.key, coalesce(old.document_id, old.id)
+      from (select old.storage_key as key
+            union all
+            select old.storage_key || '.p' || n || '.enc' from generate_series(1, 30) n) k
+    on conflict (vault_id, object_key) do nothing;
+  end if;
+  return old;
 end $$;
 
 -- 0044's room, counting files sent through a request alone: a batch's

@@ -1223,13 +1223,17 @@ export function createApi(http: Http) {
      * One file into a batch, multipart as `file` (`422 batch_full` past
      * BATCH_MAX_FILES, `413 too_large`, `415 unsupported_type`, `409
      * batch_ended`). A browser that shows progress sends it itself, with
-     * XMLHttpRequest, to `batchItemsUrl`.
+     * XMLHttpRequest, to `batchItemsUrl`. With an Idempotency-Key, kept for
+     * the file until it arrives, a file sent again after its answer was lost
+     * is answered with the item it made (`idempotent-replayed`), never a
+     * second; `409 upload_in_progress` while the first try is on its way.
      */
-    addBatchItem: (token: string, batchId: string, file: CaptureFile) =>
+    addBatchItem: (token: string, batchId: string, file: CaptureFile, idempotencyKey?: string) =>
       request<BatchItemView>(`/api/v1/batches/${enc(batchId)}/items`, {
         method: 'POST',
         upload: batchItemUpload(file),
         token,
+        ...(idempotencyKey ? { headers: { 'idempotency-key': idempotencyKey } } : {}),
       }),
     batchItemsUrl: (batchId: string) => http.url(`/api/v1/batches/${enc(batchId)}/items`),
     /** Removed, as a refused file is: its bytes and pages go. `409 already_decided` once decided. */

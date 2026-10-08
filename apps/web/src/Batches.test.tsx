@@ -2,8 +2,9 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import type { BatchItemView } from '@fdv/shared';
 import axe from 'axe-core';
 import { createHash } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
+import { batchPolling } from './screens/Batches.js';
 import {
   AISHA,
   fresh,
@@ -28,8 +29,11 @@ const PHONE = 375;
 const WIDE = 1280;
 
 let width = WIDE;
-function atWidth(px: number) {
+let height = 900;
+/** A window this wide, and this tall: a computer zoomed to 200% is 960 × 480 (the I1 review). */
+function atWidth(px: number, tall = 900) {
   width = px;
+  height = tall;
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
     writable: true,
@@ -39,7 +43,7 @@ function atWidth(px: number) {
       return {
         matches:
           (!minWidth || width >= Number(minWidth[1])) &&
-          (!minHeight || 900 >= Number(minHeight[1])) &&
+          (!minHeight || height >= Number(minHeight[1])) &&
           Boolean(minWidth || minHeight),
         media: query,
         onchange: null,
@@ -140,8 +144,9 @@ function at(
   px: number = WIDE,
   /** False: a vault from before batches. */
   batches = true,
+  tall = 900,
 ): FakeState {
-  atWidth(px);
+  atWidth(px, tall);
   const state = fresh({
     members: [{ ...ME, role }, AISHA],
     ...(batches ? { batches: [] } : {}),
@@ -163,7 +168,7 @@ const appBar = async () => {
 const posts = (state: FakeState, pattern: RegExp) =>
   state.calls.filter((c) => c.method === 'POST' && pattern.test(c.url));
 
-/** Files chosen with the page's own "Choose files". */
+/** Files chosen with the page's own "Choose files": once its lists have loaded (Aisha is there). */
 function choose(files: File[]) {
   const input = screen.getByLabelText('Choose files');
   fireEvent.change(input, { target: { files } });
@@ -227,11 +232,13 @@ describe('Add is a menu (I1)', () => {
     expect(within(await appBar()).queryByRole('link', { name: 'Add' })).toBeNull();
   });
 
-  it('at phone width, adding many says it is for a computer', async () => {
-    at('/add/many', {}, 'owner', PHONE);
-    expect(await screen.findByText('Adding many documents is for a computer.')).toBeVisible();
-    expect(screen.getByRole('link', { name: 'Add one document' })).toHaveAttribute('href', '/add');
-    expect(screen.queryByLabelText('Choose files')).toBeNull();
+  it('at 320 px, adding many says a computer is quicker, and still works', async () => {
+    at('/add/many', {}, 'owner', 320);
+    expect(
+      await screen.findByText('Adding many documents is quicker on a computer.'),
+    ).toBeVisible();
+    expect(screen.getByLabelText('Choose files')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Choose files' })).toBeVisible();
     await expectAccessible();
   });
 });
@@ -321,6 +328,7 @@ describe('Add many documents (I1)', () => {
           : undefined,
     });
     await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
     choose([
       pdf('a.pdf'),
       pdf('huge.pdf', 'huge', 8000),
@@ -367,6 +375,7 @@ describe('Add many documents (I1)', () => {
           : undefined,
     });
     await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
     choose([pdf('one.pdf'), pdf('two.pdf'), pdf('three.pdf')]);
     fireEvent.click(screen.getByRole('button', { name: 'Start: upload 3 files' }));
     const stop = await screen.findByRole('button', { name: 'Stop after this file' });
@@ -391,6 +400,7 @@ describe('Add many documents (I1)', () => {
   it('a file the connection dropped is not lost: it waits, said so, and is sent again', async () => {
     const state = at('/add/many', { dropConnectionLost: true });
     await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
     choose([pdf('one.pdf'), pdf('two.pdf')]);
     fireEvent.click(screen.getByRole('button', { name: 'Start: upload 2 files' }));
     expect(
@@ -650,12 +660,498 @@ describe('a batch’s page (I1)', () => {
     ]);
   });
 
-  it('at phone width, its files are rows, each with its Accept and Remove', async () => {
+  it('at phone width, its files are rows, each with its Accept and Remove; carrying on is still there', async () => {
     at('/inbox/batches/batch-1', { batches: [OLD_PAPERS()] }, 'owner', PHONE);
     const list = await screen.findByRole('list', { name: 'Files in Old papers' });
     expect(within(list).getAllByRole('listitem')).toHaveLength(3);
     expect(within(list).getByRole('link', { name: 'Accept scan-001.pdf' })).toBeVisible();
-    expect(screen.queryByRole('link', { name: 'Carry on uploading' })).toBeNull();
+    expect(screen.getByRole('link', { name: 'Carry on uploading' })).toBeVisible();
     await expectAccessible();
+  });
+});
+
+describe('many documents at once, the review (I1)', () => {
+  const aBatch = (items: BatchItemView[], defaults: Partial<FakeBatch['defaults']> = {}) => ({
+    ...OLD_PAPERS(),
+    defaults: { ...OLD_PAPERS().defaults, ...defaults },
+    items,
+  });
+  const held = () => {
+    const at = { release: null as (() => void) | null };
+    return {
+      at,
+      hold: (method: string, path: string) =>
+        method === 'POST' && /items$/.test(path) && !at.release
+          ? new Promise<void>((r) => (at.release = r))
+          : undefined,
+    };
+  };
+
+  it('Only me makes them yours: whose they are becomes you, never different people; the card starts there', async () => {
+    const state = at('/add/many');
+    await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
+    const vis = () => screen.getByRole('group', { name: 'Who can see them' });
+    fireEvent.click(within(vis()).getByRole('button', { name: 'Only me' }));
+    await waitFor(() => expect(screen.getByLabelText('Whose documents')).toHaveValue('me'));
+    // Different people again: Only me goes with it.
+    fireEvent.change(screen.getByLabelText('Whose documents'), { target: { value: '' } });
+    await waitFor(() =>
+      expect(within(vis()).getByRole('button', { name: 'As each kind says' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      ),
+    );
+    fireEvent.click(within(vis()).getByRole('button', { name: 'Only me' }));
+    choose([pdf('mine.pdf')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Start: upload 1 file' }));
+    await screen.findByRole('link', { name: 'Open the batch' });
+    expect(posts(state, /\/api\/v1\/batches$/)[0]?.body).toEqual({
+      defaults: { owner_member_id: 'me', visibility: 'private' },
+    });
+    // A batch kept Only me with nobody chosen: its card starts as the uploader's own, Only me.
+    document.body.innerHTML = '';
+    at('/inbox/batches/batch-1/items/item-1', {
+      batches: [
+        aBatch([item({ id: 'item-1', name: 'clinic.pdf' })], {
+          owner_member_id: null,
+          type_key: null,
+          visibility: 'private',
+        }),
+      ],
+    });
+    await screen.findByRole('option', { name: 'Aisha' });
+    await waitFor(() => expect(screen.getByLabelText('Whose it is')).toHaveValue('me'));
+    expect(
+      within(screen.getByRole('group', { name: 'Who can see this' })).getByRole('button', {
+        name: 'Only me',
+      }),
+    ).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('a batch removed while its files go stops the upload: said once, and the rest are not offered again', async () => {
+    let n = 0;
+    const state = at('/add/many', {
+      refuseWith: (method, path) =>
+        method === 'POST' && /\/items$/.test(path) && ++n >= 2
+          ? { status: 404, code: 'not_found', message: 'That batch is not here.' }
+          : undefined,
+    });
+    await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
+    choose([pdf('a.pdf'), pdf('b.pdf'), pdf('c.pdf')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Start: upload 3 files' }));
+    await screen.findByRole('link', { name: 'Open the batch' });
+    expect(posts(state, /\/items$/)).toHaveLength(2);
+    expect(screen.getAllByText(/This batch is not there any more/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Send the rest' })).toBeNull();
+    expect(screen.getByText(/1 file arrived in/)).toHaveTextContent('2 files not sent');
+  });
+
+  it('the vault busy (429): the file waits to be sent again, the rest stop, and Send the rest says when', async () => {
+    let n = 0;
+    const state = at('/add/many', {
+      refuseWith: (method, path) =>
+        method === 'POST' && /\/items$/.test(path) && ++n === 2
+          ? {
+              status: 429,
+              code: 'rate_limited',
+              message: 'Too many requests at once.',
+              retryAfter: 30,
+            }
+          : undefined,
+    });
+    await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
+    choose([pdf('a.pdf'), pdf('b.pdf'), pdf('c.pdf'), pdf('d.pdf')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Start: upload 4 files' }));
+    await screen.findByRole('button', { name: 'Send the rest' });
+    expect(posts(state, /\/items$/)).toHaveLength(2);
+    expect(
+      screen.getByText('Too many requests at once. Send the rest in about 30 seconds.'),
+    ).toBeVisible();
+    expect(screen.getByText(/The vault was busy: it can be sent again/)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Send the rest' }));
+    await waitFor(() =>
+      expect(screen.getAllByText('Arrived · waiting to be read')).toHaveLength(4),
+    );
+    expect(posts(state, /\/items$/)).toHaveLength(5);
+    // One batch, and nothing in it twice.
+    expect(state.batches?.[0]?.items).toHaveLength(4);
+  });
+
+  it('Start pressed twice makes one batch, and sends each file once', async () => {
+    let release: (() => void) | null = null;
+    const state = at('/add/many', {
+      hold: (method, path) =>
+        method === 'POST' && path === '/api/v1/batches' && !release
+          ? new Promise<void>((r) => (release = r))
+          : undefined,
+    });
+    await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
+    choose([pdf('one.pdf'), pdf('two.pdf')]);
+    const start = screen.getByRole('button', { name: 'Start: upload 2 files' });
+    fireEvent.click(start);
+    fireEvent.click(start);
+    expect(await screen.findByRole('button', { name: 'Making the batch…' })).toBeDisabled();
+    await waitFor(() => expect(release).not.toBeNull());
+    act(() => (release as () => void)());
+    await screen.findByRole('link', { name: 'Open the batch' });
+    expect(posts(state, /\/api\/v1\/batches$/)).toHaveLength(1);
+    expect(posts(state, /\/items$/)).toHaveLength(2);
+  });
+
+  it('a file sent again carries its Idempotency-Key: the vault answers with the item it made', async () => {
+    const state = at('/add/many', { dropAnswerLost: true });
+    await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
+    choose([pdf('one.pdf'), pdf('two.pdf')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Start: upload 2 files' }));
+    await screen.findByRole('button', { name: 'Send the rest' });
+    // The batch cannot be asked just then: the key alone keeps it one item.
+    state.dropAnswerLost = false;
+    state.refuseWith = (method, path) =>
+      method === 'GET' && path === '/api/v1/batches/batch-1'
+        ? { status: 503, code: 'unavailable', message: 'The vault is busy.' }
+        : undefined;
+    fireEvent.click(screen.getByRole('button', { name: 'Send the rest' }));
+    await waitFor(() =>
+      expect(screen.getAllByText('Arrived · waiting to be read')).toHaveLength(2),
+    );
+    const tries = posts(state, /\/items$/).filter(
+      (c) => (c.body as { file: string }).file === 'one.pdf',
+    );
+    expect(tries).toHaveLength(2);
+    const keys = tries.map((c) => (c.headers ?? {})['idempotency-key']);
+    expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(keys[1]).toBe(keys[0]);
+    expect(state.batches?.[0]?.items).toHaveLength(2);
+  });
+
+  it('Send the rest asks the batch first: a file whose answer was lost is not sent again', async () => {
+    const state = at('/add/many', { dropAnswerLost: true });
+    await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
+    choose([pdf('one.pdf'), pdf('two.pdf')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Start: upload 2 files' }));
+    await screen.findByRole('button', { name: 'Send the rest' });
+    state.dropAnswerLost = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Send the rest' }));
+    await screen.findByText('Already in this batch.');
+    await waitFor(() => expect(screen.getByText('Arrived · waiting to be read')).toBeVisible());
+    expect(posts(state, /\/items$/).map((c) => (c.body as { file: string }).file)).toEqual([
+      'one.pdf',
+      'two.pdf',
+    ]);
+  });
+
+  it('carrying on matches by SHA-256 against every item, never by a name the vault tidied', async () => {
+    const words = 'a résumé scan';
+    const nfd = 'Résumé.pdf';
+    const resume = pdf(nfd, words);
+    const twinA = pdf('scan.pdf', 'twin bytes AAAA');
+    const batch = aBatch([
+      item({
+        id: 'item-1',
+        name: nfd.normalize('NFC'),
+        byte_size: resume.size,
+        sha256: shaOf(words),
+      }),
+      // The same name and size, other bytes: listed first.
+      item({
+        id: 'item-2',
+        name: 'scan.pdf',
+        byte_size: twinA.size,
+        sha256: shaOf('twin bytes BBBB'),
+      }),
+      item({
+        id: 'item-3',
+        name: 'scan.pdf',
+        byte_size: twinA.size,
+        sha256: shaOf('twin bytes AAAA'),
+      }),
+    ]);
+    const state = at('/add/many?batch=batch-1', { batches: [batch] });
+    await screen.findByRole('heading', { name: 'Carry on: Old papers' });
+    // Said before anything is chosen: a removed file is sent again.
+    expect(
+      screen.getByText(/A file you removed from this batch is sent again if you choose it\./),
+    ).toBeVisible();
+    choose([resume, twinA]);
+    fireEvent.click(screen.getByRole('button', { name: 'Send 2 files' }));
+    await screen.findByRole('link', { name: 'Open the batch' });
+    expect(posts(state, /\/items$/)).toHaveLength(0);
+    expect(screen.getAllByText('Already in this batch.')).toHaveLength(2);
+  });
+
+  it('a batch of 200: one accept, there and back, asks for a few first pages, and none again', async () => {
+    const items = Array.from({ length: 200 }, (_, i) =>
+      item({ id: `item-${i + 1}`, name: `scan-${i + 1}.pdf` }),
+    );
+    // Accepted already, as a vault from before the review said: ready, and no page to ask for.
+    items[0] = { ...(items[0] as BatchItemView), state: 'accepted', document_id: 'doc-x' };
+    const state = at('/inbox/batches/batch-1', { batches: [aBatch(items)] });
+    await screen.findByRole('heading', { name: 'Old papers' });
+    const pages = () => state.calls.filter((c) => /\/pages\/1$/.test(c.url));
+    // No IntersectionObserver here: the first few rows draw theirs.
+    await waitFor(() => expect(pages()).toHaveLength(7));
+    expect(pages().some((c) => c.url.includes('/items/item-1/'))).toBe(false);
+    fireEvent.click(screen.getByRole('link', { name: 'Accept scan-2.pdf' }));
+    await screen.findByRole('heading', { name: 'Is this right?' });
+    expect(await screen.findByRole('img', { name: 'First page of scan-2.pdf' })).toBeVisible();
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept as a document' }));
+    await screen.findByText(/“scan-2.pdf” is a document now/);
+    expect(await screen.findByRole('img', { name: 'First page of scan-3.pdf' })).toBeVisible();
+    await new Promise((r) => setTimeout(r, 100));
+    // Nothing asked again, coming back; far under the vault's 300 a minute in all.
+    expect(pages()).toHaveLength(7);
+    expect(state.calls.length).toBeLessThan(40);
+  });
+
+  it('first pages in view are asked for four at a time', async () => {
+    const open = { now: false, waiting: [] as Array<() => void> };
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        constructor(private readonly seen: (entries: Array<{ isIntersecting: boolean }>) => void) {}
+        observe() {
+          queueMicrotask(() => this.seen([{ isIntersecting: true }]));
+        }
+        disconnect() {}
+        unobserve() {}
+      },
+    );
+    try {
+      const items = Array.from({ length: 20 }, (_, i) =>
+        item({ id: `item-${i + 1}`, name: `scan-${i + 1}.pdf` }),
+      );
+      const state = at('/inbox/batches/batch-1', {
+        batches: [aBatch(items)],
+        hold: (method, path) =>
+          method === 'GET' && /\/pages\/1$/.test(path) && !open.now
+            ? new Promise<void>((r) => open.waiting.push(r))
+            : undefined,
+      });
+      await screen.findByRole('heading', { name: 'Old papers' });
+      const pages = () => state.calls.filter((c) => /\/pages\/1$/.test(c.url));
+      await waitFor(() => expect(pages()).toHaveLength(4));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(pages()).toHaveLength(4);
+      act(() => {
+        open.now = true;
+        for (const go of open.waiting) go();
+      });
+      await waitFor(() => expect(pages()).toHaveLength(20));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('the sidebar counts your uploads again after a change, not on every move', async () => {
+    const state = at('/inbox/batches/batch-1', {
+      batches: [
+        aBatch([item({ id: 'item-1', name: 'a.pdf' }), item({ id: 'item-2', name: 'b.pdf' })]),
+      ],
+    });
+    const side = () => screen.getByRole('navigation', { name: 'Sections' });
+    await screen.findByRole('navigation', { name: 'Sections' });
+    expect(await within(side()).findByRole('link', { name: 'Inbox, 2 waiting' })).toBeVisible();
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove a.pdf' }));
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Remove it' }),
+    );
+    await waitFor(() =>
+      expect(within(side()).getByRole('link', { name: 'Inbox, 1 waiting' })).toBeVisible(),
+    );
+    const listed = () =>
+      state.calls.filter((c) => c.method === 'GET' && c.url === '/api/v1/batches').length;
+    const before = listed();
+    fireEvent.click(within(side()).getByRole('link', { name: /^Home/ }));
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+    fireEvent.click(within(side()).getByRole('link', { name: /^Documents/ }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents'));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(listed()).toBe(before);
+  });
+
+  it('the upload goes on when its page is left: the shell says how far, with a way back, and the page shows it again', async () => {
+    const h = held();
+    const state = at('/add/many', { hold: h.hold });
+    await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
+    choose([pdf('one.pdf'), pdf('two.pdf'), pdf('three.pdf')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Start: upload 3 files' }));
+    await screen.findByRole('button', { name: 'Stop after this file' });
+    // The page says it may be left; closing the tab asks first.
+    expect(screen.getByText(/You can leave this page/)).toBeVisible();
+    const closing = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(closing);
+    expect(closing.defaultPrevented).toBe(true);
+    fireEvent.click(
+      within(screen.getByRole('navigation', { name: 'Sections' })).getByRole('link', {
+        name: /^Home/,
+      }),
+    );
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+    const strip = await screen.findByRole('link', { name: /^Uploading 1 of 3/ });
+    expect(strip).toHaveAttribute('href', '/add/many');
+    expect(
+      screen.getByText('Your upload carries on. Follow it from Uploading, at the top of the page.'),
+    ).toBeInTheDocument();
+    fireEvent.click(strip);
+    // Back on its page: the same upload, with its progress and Stop.
+    expect(await screen.findByRole('button', { name: 'Stop after this file' })).toBeVisible();
+    expect(screen.getByRole('progressbar', { name: 'one.pdf, sending' })).toBeVisible();
+    await waitFor(() => expect(h.at.release).not.toBeNull());
+    act(() => (h.at.release as () => void)());
+    await screen.findByText(/3 files arrived in/);
+    expect(posts(state, /\/items$/)).toHaveLength(3);
+    const after = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(after);
+    expect(after.defaultPrevented).toBe(false);
+  });
+
+  it('signing out stops the upload at once: the file going is stopped, and nothing more is sent', async () => {
+    const h = held();
+    const state = at('/add/many', { hold: h.hold });
+    await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
+    choose([pdf('one.pdf'), pdf('two.pdf')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Start: upload 2 files' }));
+    await screen.findByRole('button', { name: 'Stop after this file' });
+    await waitFor(() => expect(h.at.release).not.toBeNull());
+    fireEvent.click(await screen.findByRole('button', { name: 'Your account: Mansoor Seikh' }));
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Sign out' }));
+    });
+    await waitFor(() => expect(window.location.pathname).toBe('/sign-in'));
+    expect(state.xhrStopped).toBe(1);
+    act(() => (h.at.release as () => void)());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(posts(state, /\/items$/)).toHaveLength(1);
+  });
+
+  it('with the batch on the screen, a reload that fails says so beside it, keeps a dialog open, and asks again later', async () => {
+    const was = { ...batchPolling };
+    batchPolling.every = 30;
+    try {
+      let fail = false;
+      const state = at('/inbox/batches/batch-1', {
+        batches: [OLD_PAPERS()],
+        refuseWith: (method, path) =>
+          fail && method === 'GET' && path === '/api/v1/batches/batch-1'
+            ? { status: 503, code: 'unavailable', message: 'The vault is busy.' }
+            : undefined,
+      });
+      await screen.findByRole('heading', { name: 'Old papers' });
+      fireEvent.click(await screen.findByRole('button', { name: 'Remove scan-001.pdf' }));
+      await screen.findByRole('alertdialog');
+      await waitFor(() =>
+        expect(screen.getByRole('alertdialog').contains(document.activeElement)).toBe(true),
+      );
+      fail = true;
+      expect(await screen.findByText('The vault is busy.')).toBeVisible();
+      expect(screen.getByRole('table', { name: 'Files in Old papers' })).toBeVisible();
+      expect(screen.getByRole('alertdialog').contains(document.activeElement)).toBe(true);
+      // Asked again, more slowly: the vault back, the note goes.
+      const asked = state.calls.length;
+      fail = false;
+      await waitFor(() => expect(screen.queryByText('The vault is busy.')).toBeNull());
+      expect(state.calls.length).toBeGreaterThan(asked);
+    } finally {
+      Object.assign(batchPolling, was);
+    }
+  });
+
+  it('nothing is taken away by the layout: a computer zoomed to 960 × 480 adds many, carries on, and is not told it is a phone', async () => {
+    at('/add/many', { batches: [OLD_PAPERS()] }, 'owner', 960, true, 480);
+    expect(await screen.findByRole('heading', { name: 'Add many documents' })).toBeVisible();
+    expect(screen.getByLabelText('Choose files')).toBeInTheDocument();
+    expect(screen.queryByText(/quicker on a computer/)).toBeNull();
+    act(() => {
+      window.history.pushState({}, '', '/inbox');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    expect(await screen.findByRole('link', { name: 'Add many documents' })).toHaveAttribute(
+      'href',
+      '/add/many',
+    );
+    act(() => {
+      window.history.pushState({}, '', '/inbox/batches/batch-1');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    expect(await screen.findByRole('link', { name: 'Carry on uploading' })).toHaveAttribute(
+      'href',
+      '/add/many?batch=batch-1',
+    );
+    await expectAccessible();
+  });
+
+  it('accepting into a collection says who else will now see it; choosing one shared outside says so first', async () => {
+    const shared = { ...HOUSE, shared_outside: { with: ['Jane Smith'], following: true } };
+    at('/inbox/batches/batch-1/items/item-1', {
+      batches: [OLD_PAPERS()],
+      collections: [shared],
+      collectionWarnings: ['Jane (viewer) will be able to see this.'],
+    });
+    await screen.findByLabelText('What it is');
+    await screen.findByRole('option', { name: 'Aisha' });
+    await waitFor(() =>
+      expect(screen.getByLabelText('Collection')).toHaveAccessibleDescription(
+        /This collection is shared with Jane Smith/,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Accept as a document' }));
+    expect(
+      await screen.findByText(
+        "“scan-001.pdf” is a document now: Aisha's birth certificate. Jane (viewer) will be able to see this.",
+      ),
+    ).toBeVisible();
+    // And the batch's own choice, before anything is sent.
+    document.body.innerHTML = '';
+    at('/add/many', { collections: [shared] });
+    fireEvent.change(await screen.findByLabelText('Collection'), {
+      target: { value: 'collection-h' },
+    });
+    await waitFor(() =>
+      expect(screen.getByLabelText('Collection')).toHaveAccessibleDescription(
+        /This collection is shared with Jane Smith/,
+      ),
+    );
+  });
+
+  it('after a finished upload, Add → Many documents starts a new one, and so does Add another batch', async () => {
+    at('/add/many');
+    await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
+    choose([pdf('one.pdf')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Start: upload 1 file' }));
+    await screen.findByRole('link', { name: 'Open the batch' });
+    fireEvent.click(within(await appBar()).getByRole('button', { name: 'Add' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Many documents/ }));
+    await waitFor(() => expect(screen.getByLabelText('Choose files')).toBeInTheDocument());
+    expect(screen.queryByRole('link', { name: 'Open the batch' })).toBeNull();
+    choose([pdf('two.pdf')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Start: upload 1 file' }));
+    await screen.findByRole('link', { name: 'Open the batch' });
+    fireEvent.click(screen.getByRole('button', { name: 'Add another batch' }));
+    await waitFor(() => expect(screen.getByLabelText('Choose files')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Choose some files first' })).toBeDisabled();
+  });
+
+  it('whose documents: everybody of the family, those who have died after the living', async () => {
+    const gran = { ...AISHA, id: 'm-9', display_name: 'Gran', is_deceased: true };
+    at('/add/many', { members: [{ ...ME, role: 'owner' }, gran, AISHA] });
+    await screen.findByRole('option', { name: 'Aisha' });
+    const options = within(screen.getByLabelText('Whose documents'))
+      .getAllByRole('option')
+      .map((o) => o.textContent);
+    expect(options).toEqual([
+      'Different people, or not sure',
+      'Mansoor Seikh',
+      'Aisha',
+      'Gran (passed away)',
+    ]);
   });
 });

@@ -3998,8 +3998,19 @@ version_id, warnings? }`; `409 already_decided` once decided. Somebody
     `duplicateWords`. `@fdv/client`: `createBatch`, `batches`, `batch`,
     `updateBatch`, `removeBatch`, `addBatchItem`, `batchItemsUrl`,
     `removeBatchItem`, `acceptBatchItem`, `batchItemPage`. The client fake
-    answers the same. **Unchanged:** `GET /api/v1/incoming` lists files sent
-    through a request alone, and a batch's item is never decided there.
+    answers the same. A batch made Only me (`visibility: 'private'`) is its
+    uploader's own: `owner_member_id` is the uploader where none is sent,
+    somebody else is `422` (as a capture's), and an accept naming somebody
+    else without a `visibility` is refused, never widened. `DELETE
+/api/v1/batches/{id}` ends the batch first, so a file sent while it is
+    removed is `409 batch_ended`. `POST …/items` takes an optional
+    `Idempotency-Key` (a UUID): a file sent again with the key of one that
+    arrived is answered `201` with that item and `idempotent-replayed:
+true`; one still on its way is `409 upload_in_progress`; one removed
+    since, `409 already_decided` (`addBatchItem`'s fourth argument). An
+    accepted item's `preview_state` is `none`: its pages went with its
+    bytes. **Unchanged:** `GET /api/v1/incoming` lists files sent through a
+    request alone, and a batch's item is never decided there.
 
 ## Deprecations in effect
 

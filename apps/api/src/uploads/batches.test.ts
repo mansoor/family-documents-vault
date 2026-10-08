@@ -1,10 +1,11 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createPool } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   BATCH_MAX_FILES,
+  PRIVATE_TO_THEM,
   type ActivityLine,
   type BatchAccepted,
   type BatchDetail,
@@ -856,6 +857,328 @@ describe.skipIf(!testAdminUrl())('many documents at once: batches', () => {
     expect(await ask()).toBe(true);
   });
 
+  // ---------------------------------------------------------- the I1 review
+
+  /** As somebody signed in, or as the vault itself, one statement, committed. */
+  const committed = async (
+    as: { who: Tokens; role: string } | 'system',
+    text: string,
+    params: unknown[] = [],
+  ) => {
+    const client = await app.connect();
+    try {
+      await client.query('begin');
+      if (as === 'system') {
+        await client.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', 'system', true)`,
+          [hh],
+        );
+      } else {
+        await client.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                  set_config('app.member_id', $2, true), set_config('app.role', $3, true)`,
+          [hh, as.who.member_id, as.role],
+        );
+      }
+      await client.query(text, params);
+      await client.query('commit');
+    } catch (err) {
+      await client.query('rollback').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  };
+  /** What purge_leftover is owed of an object: itself, and every page there could be of it. */
+  const owedFor = async (key: string) =>
+    (
+      await admin.query<{ object_key: string }>(
+        'select object_key from purge_leftover where object_key = $1 or object_key like $2',
+        [key, `${key}.p%`],
+      )
+    ).rows
+      .map((r) => r.object_key)
+      .sort();
+  const pagesOf = (key: string) => Array.from({ length: 30 }, (_, i) => `${key}.p${i + 1}.enc`);
+  /** A row and its bytes, as a file whose sending died part way leaves them. */
+  const deadUpload = async (
+    who: Tokens,
+    batchId: string,
+    like: string,
+    opts: { key?: string; ago?: string } = {},
+  ) => {
+    const r = (
+      await admin.query<{ vault_id: string; file_key_wrapped: Buffer; wrapped_by_scope: string }>(
+        'select vault_id, file_key_wrapped, wrapped_by_scope from incoming_file where id = $1',
+        [like],
+      )
+    ).rows[0] as { vault_id: string; file_key_wrapped: Buffer; wrapped_by_scope: string };
+    const key = `${hh}/batches/${batchId}/${randomUUID().replace(/-/g, '')}.enc`;
+    await mkdir(path.dirname(path.join(h.vaultDir, key)), { recursive: true });
+    await writeFile(path.join(h.vaultDir, key), randomBytes(4096));
+    await admin.query(
+      `insert into incoming_file (household_id, batch_id, review_by, requester_member_id, state,
+          original_name, storage_key, vault_id, file_key_wrapped, wrapped_by_scope, scope,
+          scan_state, read_state, idempotency_key, created_at)
+       values ($1, $2, 'me', $3, 'uploading', 'half.pdf', $4, $5, $6, $7, 'member', 'unscanned',
+               'waiting', $8, now() - $9::interval)`,
+      [
+        hh,
+        batchId,
+        who.member_id,
+        key,
+        r.vault_id,
+        r.file_key_wrapped,
+        r.wrapped_by_scope,
+        opts.key ?? null,
+        opts.ago ?? '1 hour',
+      ],
+    );
+    return key;
+  };
+
+  it('a batch made Only me is its uploader’s own: filed Only me under their key, never widened, and nobody else is given it', async () => {
+    const rafi = await h.join(owner, {
+      name: 'Rafi',
+      email: 'rafi.letters@example.test',
+      role: 'adult',
+    });
+    const b = await made(adult, { name: 'Medical letters', defaults: { visibility: 'private' } });
+    // Whose they are is the uploader: Only me is for one’s own documents.
+    expect(b.defaults).toMatchObject({ visibility: 'private', owner_member_id: adult.member_id });
+    const item = await sent(adult, b.id, 'clinic.pdf', PDF('a clinic letter'));
+    const res = await accept(adult, b.id, item.id, {});
+    expect(res.statusCode, res.body).toBe(201);
+    const filedAs = res.json<BatchAccepted>();
+    expect(await doc(adult, filedAs.document_id)).toMatchObject({
+      visibility: 'private',
+      owner_member_id: adult.member_id,
+    });
+    const wrapped = await admin.query<{ kind: string; member_id: string }>(
+      `select k.kind, k.member_id from document_version v join scope_key k on k.id = v.wrapped_by_scope
+        where v.id = $1`,
+      [filedAs.version_id],
+    );
+    expect(wrapped.rows[0]).toEqual({ kind: 'member', member_id: adult.member_id });
+    for (const other of [rafi, owner]) {
+      const theirs = await h.app.inject({
+        url: `/api/v1/documents/${filedAs.document_id}`,
+        headers: h.as(other),
+      });
+      expect(theirs.statusCode).toBe(404);
+    }
+    // Somebody else’s, with nobody saying who can see it: refused as a single add is, never widened.
+    const theirsToo = await sent(adult, b.id, 'their.pdf', PDF('somebody else’s letter'));
+    const widened = await accept(adult, b.id, theirsToo.id, { owner_member_id: owner.member_id });
+    expect(widened.statusCode, widened.body).toBe(422);
+    expect(widened.json<{ error: { message: string } }>().error.message).toBe(PRIVATE_TO_THEM);
+    // Made Only me for somebody else, or changed to be theirs: refused.
+    const forThem = await make(adult, {
+      defaults: { visibility: 'private', owner_member_id: rafi.member_id },
+    });
+    expect(forThem.statusCode).toBe(422);
+    expect(forThem.json<{ error: { message: string } }>().error.message).toBe(PRIVATE_TO_THEM);
+    const moved = await h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/batches/${b.id}`,
+      headers: h.as(adult),
+      payload: { defaults: { owner_member_id: rafi.member_id } },
+    });
+    expect(moved.statusCode).toBe(422);
+    // A batch kept Only me with nobody chosen (as one was before the review): the uploader’s own.
+    await admin.query('update intake_batch set default_owner_member_id = null where id = $1', [
+      b.id,
+    ]);
+    const older = await accept(adult, b.id, theirsToo.id, { title: 'Mine after all' });
+    expect(older.statusCode, older.body).toBe(201);
+    expect(await doc(adult, older.json<BatchAccepted>().document_id)).toMatchObject({
+      visibility: 'private',
+      owner_member_id: adult.member_id,
+    });
+  });
+
+  it('removing a batch takes a dead upload’s bytes with it, and the waiting ones’: nothing is left on disk with nothing to remove it', async () => {
+    const b = await made(adult, { name: 'Broken upload' });
+    const waiting = await sent(adult, b.id, 'waiting.pdf', PDF('waiting to be removed'));
+    const waitingKey = await keyOf(waiting.id);
+    const dead = await deadUpload(adult, b.id, waiting.id);
+    expect(await onDisk(dead)).toBe(true);
+    const gone = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/batches/${b.id}`,
+      headers: h.as(adult),
+    });
+    expect(gone.statusCode, gone.body).toBe(204);
+    expect(await onDisk(dead)).toBe(false);
+    expect(await onDisk(waitingKey)).toBe(false);
+    const rows = await admin.query<{ n: number }>(
+      'select count(*)::int as n from incoming_file where batch_id = $1',
+      [b.id],
+    );
+    expect(rows.rows[0]?.n).toBe(0);
+  });
+
+  it('an item gone undecided owes its bytes and pages to purge_leftover — not when the vault’s own sweep removed them first', async () => {
+    const b = await made(adult, { name: 'Net' });
+    const item = await sent(adult, b.id, 'net.pdf', PDF('caught by the net'));
+    const key = await keyOf(item.id);
+    // The batch's row going as a removal's last step does, its item still waiting.
+    await committed({ who: adult, role: 'adult' }, 'delete from intake_batch where id = $1', [
+      b.id,
+    ]);
+    expect(await owedFor(key)).toEqual([key, ...pagesOf(key)].sort());
+    // A file on its way, its row removed by its uploader: owed the same.
+    const b2 = await made(adult, { name: 'Net, on its way' });
+    const seed = await sent(adult, b2.id, 'seed.pdf', PDF('seed for the net'));
+    const dead = await deadUpload(adult, b2.id, seed.id);
+    await committed(
+      { who: adult, role: 'adult' },
+      "delete from incoming_file where storage_key = $1 and state = 'uploading'",
+      [dead],
+    );
+    expect(await owedFor(dead)).toEqual([dead, ...pagesOf(dead)].sort());
+    // The vault's sweeps remove an item's bytes before its row: nothing is owed.
+    const swept = await sent(adult, b2.id, 'swept.pdf', PDF('swept by the vault'));
+    const sweptKey = await keyOf(swept.id);
+    await committed('system', 'delete from incoming_file where id = $1', [swept.id]);
+    expect(await owedFor(sweptKey)).toEqual([]);
+  });
+
+  it('a file sent again with its Idempotency-Key is answered with the item it made, never a second', async () => {
+    const b = await made(adult, { name: 'Sent twice' });
+    const keyed = (name: string, bytes: Buffer, key: string) => {
+      const form = new FormData();
+      form.append('file', bytes, { filename: name, contentType: 'application/pdf' });
+      return h.app.inject({
+        method: 'POST',
+        url: `/api/v1/batches/${b.id}/items`,
+        headers: { ...h.as(adult), ...form.getHeaders(), 'idempotency-key': key },
+        payload: form.getBuffer(),
+      });
+    };
+    const key = randomUUID();
+    const first = await keyed('scan.pdf', PDF('sent once'), key);
+    expect(first.statusCode, first.body).toBe(201);
+    const firstId = first.json<BatchItemView>().id;
+    // Its answer lost, sent again: the same item, said to be a replay.
+    const again = await keyed('scan.pdf', PDF('sent once'), key);
+    expect(again.statusCode, again.body).toBe(201);
+    expect(again.headers['idempotent-replayed']).toBe('true');
+    expect(again.json<BatchItemView>().id).toBe(firstId);
+    expect((await detail(adult, b.id)).json<BatchDetail>().items).toHaveLength(1);
+    // A key is a UUID.
+    expect((await keyed('x.pdf', PDF('a bad key'), 'not-a-key')).statusCode).toBe(422);
+    // Still on its way: asked to wait.
+    const busyKey = randomUUID();
+    await deadUpload(adult, b.id, firstId, { key: busyKey, ago: '1 second' });
+    const busy = await keyed('busy.pdf', PDF('on its way'), busyKey);
+    expect(busy.statusCode).toBe(409);
+    expect(busy.json<{ error: { code: string } }>().error.code).toBe('upload_in_progress');
+    // Died on its way an hour ago: this try takes its place, and its bytes go.
+    const deadKey = randomUUID();
+    const deadBytes = await deadUpload(adult, b.id, firstId, { key: deadKey });
+    const retried = await keyed('dead.pdf', PDF('sent after it died'), deadKey);
+    expect(retried.statusCode, retried.body).toBe(201);
+    expect(await onDisk(deadBytes)).toBe(false);
+    // Removed since: decided, not made again.
+    const removed = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/batches/${b.id}/items/${firstId}`,
+      headers: h.as(adult),
+    });
+    expect(removed.statusCode).toBe(204);
+    const afterRemoval = await keyed('scan.pdf', PDF('sent once'), key);
+    expect(afterRemoval.statusCode).toBe(409);
+    expect(afterRemoval.json<{ error: { code: string } }>().error.code).toBe('already_decided');
+  });
+
+  it('an accepted item has no pages to ask for: its preview is none', async () => {
+    const b = await made(adult, { name: 'Drawn' });
+    const one = await sent(adult, b.id, 'drawn.pdf', PDF('drawn, then accepted'));
+    const two = await sent(adult, b.id, 'still.pdf', PDF('drawn, still waiting'));
+    await admin.query(
+      "update incoming_file set preview_state = 'ready', preview_pages = 2 where id = any($1::uuid[])",
+      [[one.id, two.id]],
+    );
+    const res = await accept(adult, b.id, one.id, { visibility: 'household' });
+    expect(res.statusCode, res.body).toBe(201);
+    const items = (await detail(adult, b.id)).json<BatchDetail>().items;
+    expect(items.find((i) => i.id === one.id)).toMatchObject({
+      state: 'accepted',
+      preview_state: 'none',
+      preview_pages: null,
+    });
+    expect(items.find((i) => i.id === two.id)).toMatchObject({
+      state: 'waiting',
+      preview_state: 'ready',
+      preview_pages: 2,
+    });
+  });
+
+  it('batches are counted by the database, and a batch’s duplicates found in one pass: 12,000 items of one person', async () => {
+    const pat = await h.join(owner, { name: 'Pat', email: 'pat@example.test', role: 'adult' });
+    const seedBatch = await made(pat, { name: 'Seed' });
+    const seed = await sent(pat, seedBatch.id, 'seed.pdf', PDF('the seed'));
+    const r = (
+      await admin.query<{ vault_id: string; file_key_wrapped: Buffer; wrapped_by_scope: string }>(
+        'select vault_id, file_key_wrapped, wrapped_by_scope from incoming_file where id = $1',
+        [seed.id],
+      )
+    ).rows[0] as { vault_id: string; file_key_wrapped: Buffer; wrapped_by_scope: string };
+    // Sixty boxes of 200, every file the same scan: each a duplicate of one before it.
+    const ids: string[] = [];
+    for (let n = 0; n < 60; n++) {
+      const b = await made(pat, { name: `Box ${n + 1}` });
+      ids.push(b.id);
+      await admin.query(
+        `insert into incoming_file (household_id, batch_id, review_by, requester_member_id, state,
+            original_name, mime, byte_size, sha256, cipher_bytes, cipher_sha256, storage_key, vault_id,
+            file_key_wrapped, wrapped_by_scope, scope, scan_state, read_state, received_at,
+            submitted_at, preview_state)
+         select $1, $2::uuid, 'me', $3, 'received', 'scan.pdf', 'application/pdf', 1,
+                decode(repeat('ab', 32), 'hex'), 1, decode(repeat('cd', 32), 'hex'),
+                $4::text || '/' || g::text || '.enc', $5, $6, $7, 'member', 'unscanned', 'waiting',
+                timestamptz '2026-10-01 00:00:00+00' + make_interval(secs => $8::int * 200 + g),
+                now(), 'unsupported'
+           from generate_series(1, 200) g`,
+        [
+          hh,
+          b.id,
+          pat.member_id,
+          `${hh}/batches/${b.id}`,
+          r.vault_id,
+          r.file_key_wrapped,
+          r.wrapped_by_scope,
+          n,
+        ],
+      );
+    }
+    let t = performance.now();
+    const listed = await list(pat);
+    const listMs = performance.now() - t;
+    expect(listed.statusCode).toBe(200);
+    const views = listed.json<{ items: BatchView[] }>().items;
+    const box = (n: number) => views.find((v) => v.id === ids[n]) as BatchView;
+    expect(box(0).counts).toEqual({ items: 200, waiting: 200, accepted: 0, duplicates: 199 });
+    expect(box(59).counts).toEqual({ items: 200, waiting: 200, accepted: 0, duplicates: 200 });
+    t = performance.now();
+    const last = await detail(pat, ids[59] as string);
+    const detailMs = performance.now() - t;
+    const items = last.json<BatchDetail>().items;
+    expect(items).toHaveLength(200);
+    // The first in its box is a duplicate of the first of all; the rest, of the first in theirs.
+    expect(items[0]?.duplicate).toMatchObject({ of: 'item', batch_id: ids[0], same_batch: false });
+    expect(
+      items
+        .slice(1)
+        .every((i) => i.duplicate?.of === 'item' && i.duplicate.item_id === items[0]?.id),
+    ).toBe(true);
+    expect(last.json<BatchDetail>().counts.duplicates).toBe(200);
+    // Far quicker than item against item, which took seconds here.
+    expect(listMs).toBeLessThan(1000);
+    expect(detailMs).toBeLessThan(1000);
+  }, 180_000);
+
   it('the database holds a batch and its items to their uploader, whatever the API asks', async () => {
     const b = await made(adult, { name: 'Held' });
     const item = await sent(adult, b.id, 'held.pdf', PDF('held by the database'));
@@ -1009,3 +1332,148 @@ describe.skipIf(!testAdminUrl())('a batch and the room for files sent in', () =>
     expect(sentIn.statusCode, sentIn.body).toBe(201);
   });
 });
+
+describe.skipIf(!testAdminUrl())(
+  'removing a batch while files still arrive (the I1 review)',
+  () => {
+    let h: Harness;
+    let owner: Tokens;
+    let hh: string;
+    let admin: ReturnType<typeof createPool>;
+    // What happens while a removal is held, between its fence and its end.
+    let during: (batchId: string) => Promise<void> = async () => undefined;
+    // Every query the API runs while a test listens.
+    let heard: string[] | null = null;
+
+    beforeAll(async () => {
+      h = await createHarness({
+        rateLimitPerMinute: 100_000,
+        batchBetweenRemoval: (id) => during(id),
+        log: (e) => {
+          if (e.level === 'query') heard?.push(e.query.sql);
+        },
+      });
+      owner = await h.setup();
+      hh = owner.household_id;
+      admin = createPool(h.adminUrl, 1);
+    }, 90_000);
+    afterAll(async () => {
+      await admin?.end();
+      await h?.close();
+    });
+
+    const made = async (name: string) => {
+      const res = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/batches',
+        headers: h.as(owner),
+        payload: { name },
+      });
+      expect(res.statusCode, res.body).toBe(201);
+      return res.json<BatchDetail>();
+    };
+    const send = (batchId: string, name: string, bytes: Buffer) => {
+      const form = new FormData();
+      form.append('file', bytes, { filename: name, contentType: 'application/pdf' });
+      return h.app.inject({
+        method: 'POST',
+        url: `/api/v1/batches/${batchId}/items`,
+        headers: { ...h.as(owner), ...form.getHeaders() },
+        payload: form.getBuffer(),
+      });
+    };
+    const remove = (batchId: string) =>
+      h.app.inject({ method: 'DELETE', url: `/api/v1/batches/${batchId}`, headers: h.as(owner) });
+    const left = (batchId: string) =>
+      readdir(path.join(h.vaultDir, hh, 'batches', batchId)).catch(() => [] as string[]);
+
+    it('the list of batches is counted by the database: no item is read to count it', async () => {
+      const b = await made('Counted');
+      for (const n of [1, 2]) {
+        expect((await send(b.id, `same-${n}.pdf`, PDF('the same scan'))).statusCode).toBe(201);
+      }
+      heard = [];
+      const listed = await h.app.inject({ url: '/api/v1/batches', headers: h.as(owner) });
+      const asked = heard;
+      heard = null;
+      // An item's name is read to show the item, never to count it.
+      expect(asked.length).toBeGreaterThan(0);
+      expect(asked.some((q) => q.includes('original_name'))).toBe(false);
+      const view = listed.json<{ items: BatchView[] }>().items.find((v) => v.id === b.id);
+      expect(view?.counts).toEqual({ items: 2, waiting: 2, accepted: 0, duplicates: 1 });
+    });
+
+    it('a removal fences its batch first: a file sent while what is in it is removed is refused, and nothing is left on disk', async () => {
+      const b = await made('Removed as it fills');
+      for (const n of [1, 2, 3]) {
+        expect((await send(b.id, `seed-${n}.pdf`, PDF(`seed ${n}`))).statusCode).toBe(201);
+      }
+      let late: { status: number; code: string | undefined } | null = null;
+      during = async (id) => {
+        const res = await send(id, 'late.pdf', PDF('sent during the removal'));
+        late = {
+          status: res.statusCode,
+          code: res.json<{ error?: { code: string } }>().error?.code,
+        };
+      };
+      try {
+        expect((await remove(b.id)).statusCode).toBe(204);
+      } finally {
+        during = async () => undefined;
+      }
+      expect(late).toEqual({ status: 409, code: 'batch_ended' });
+      expect(await left(b.id)).toEqual([]);
+    });
+
+    it('held again before it goes, a removal takes whatever got in after all, its bytes first', async () => {
+      const b = await made('Slipped in');
+      const seed = await send(b.id, 'seed.pdf', PDF('the seed'));
+      expect(seed.statusCode).toBe(201);
+      const r = (
+        await admin.query<{
+          vault_id: string;
+          file_key_wrapped: Buffer;
+          wrapped_by_scope: string;
+          requester_member_id: string;
+        }>(
+          `select vault_id, file_key_wrapped, wrapped_by_scope, requester_member_id
+           from incoming_file where id = $1`,
+          [seed.json<BatchItemView>().id],
+        )
+      ).rows[0] as {
+        vault_id: string;
+        file_key_wrapped: Buffer;
+        wrapped_by_scope: string;
+        requester_member_id: string;
+      };
+      const slipped = `${hh}/batches/${b.id}/slipped.enc`;
+      during = async (id) => {
+        await writeFile(path.join(h.vaultDir, slipped), randomBytes(2048));
+        await admin.query(
+          `insert into incoming_file (household_id, batch_id, review_by, requester_member_id, state,
+            original_name, mime, byte_size, sha256, cipher_bytes, cipher_sha256, storage_key,
+            vault_id, file_key_wrapped, wrapped_by_scope, scope, scan_state, read_state,
+            received_at, submitted_at, preview_state)
+         values ($1, $2, 'me', $3, 'received', 'slipped.pdf', 'application/pdf', 2048,
+                 decode(repeat('ef', 32), 'hex'), 2048, decode(repeat('01', 32), 'hex'), $4, $5,
+                 $6, $7, 'member', 'unscanned', 'waiting', now(), now(), 'unsupported')`,
+          [
+            hh,
+            id,
+            r.requester_member_id,
+            slipped,
+            r.vault_id,
+            r.file_key_wrapped,
+            r.wrapped_by_scope,
+          ],
+        );
+      };
+      try {
+        expect((await remove(b.id)).statusCode).toBe(204);
+      } finally {
+        during = async () => undefined;
+      }
+      expect(await left(b.id)).toEqual([]);
+    });
+  },
+);

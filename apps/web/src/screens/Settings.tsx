@@ -211,7 +211,8 @@ function ElsewhereNote() {
   const lines = [
     inbox && (
       <li key="inbox">
-        <Link to="/inbox">Files sent to you</Link> are in the Inbox
+        {/* Their own tab since I1: the Inbox opens on your uploads. */}
+        <Link to="/inbox/sent">Files sent to you</Link> are in the Inbox
       </li>
     ),
     sharing && (

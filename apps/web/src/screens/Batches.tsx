@@ -15,12 +15,23 @@ import {
   type Role,
   type Visibility,
 } from '@fdv/shared';
-import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type DragEvent,
+  type ReactNode,
+} from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
-import { api, ApiRequestError, NetworkError, type Member } from '../api.js';
+import { api, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
-import { BATCH_ACCEPT, sendBatchItem, sha256Of, takenKind } from '../batch-upload.js';
-import { mayChangeCollection } from '../collections.js';
+import { askPage, forgetPages, heldPage } from '../batch-pages.js';
+import { labelOfDay, progressOf, useUploads } from '../batch-store.js';
+import { BATCH_ACCEPT } from '../batch-upload.js';
+import { CollectionSelect, mayChangeCollection } from '../collections.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { Button, ConfirmDialog, ErrorNote, Field, Select, Switch, TopBar } from '../ui.js';
@@ -50,7 +61,7 @@ const longDay = (iso: string) =>
 
 /** A batch as it is called: its name, or the day it was made. */
 export function batchLabel(b: { name: string | null; created_at: string }): string {
-  return b.name ?? `Upload of ${shortDay(b.created_at)}`;
+  return b.name ?? labelOfDay(b.created_at);
 }
 
 /** What an item duplicates, in words, with an unnamed batch called by its day. */
@@ -81,20 +92,6 @@ function OnlyYou({ children }: { children?: ReactNode }) {
 }
 
 // ------------------------------------------------------------ add many
-
-/** One file chosen, and what became of it. */
-interface Chosen {
-  key: string;
-  file: File;
-  state: 'ready' | 'refused' | 'sending' | 'sent' | 'skipped' | 'failed';
-  /** Why it was not sent, in the vault's words or the page's. */
-  reason?: string;
-  /** How much of it has gone. */
-  sent: number;
-}
-
-const fileKey = (f: File) =>
-  `${(f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name}:${f.size}:${f.lastModified}`;
 
 /** Every file under what was dropped: a folder's own, and its folders' (Chrome, Edge, Safari, Firefox). */
 async function droppedFiles(e: DragEvent<HTMLElement>): Promise<File[]> {
@@ -130,6 +127,17 @@ async function droppedFiles(e: DragEvent<HTMLElement>): Promise<File[]> {
 const foldersChosen = () =>
   typeof HTMLInputElement !== 'undefined' && 'webkitdirectory' in HTMLInputElement.prototype;
 
+/** As wide as a tablet, at least: by the width alone, never the height (WCAG 1.4.4, the I1 review). */
+const TABLET = '(min-width: 768px)';
+const watchTablet = (changed: () => void) => {
+  if (typeof window.matchMedia !== 'function') return () => undefined;
+  const list = window.matchMedia(TABLET);
+  list.addEventListener?.('change', changed);
+  return () => list.removeEventListener?.('change', changed);
+};
+const narrowNow = () =>
+  typeof window.matchMedia === 'function' && !window.matchMedia(TABLET).matches;
+
 /**
  * Add → Many documents (/add/many): files or a folder, what is chosen for
  * all of them, then the upload, one file after another, each file's
@@ -137,36 +145,26 @@ const foldersChosen = () =>
  * vault would refuse — too big, a kind it does not take — is listed as not
  * sent, with why, and the rest carry on. Stop stops after the file being
  * sent. With `?batch=`, it carries on a batch already made: what arrived
- * already (its name, size and SHA-256) is not sent again.
+ * already (by SHA-256) is not sent again.
+ *
+ * The upload is the app's, not the page's (the I1 review): the page may be
+ * left while files go, and shows them again on return. Every visit is a new
+ * location, so Add → Many documents after a finished upload starts a new
+ * one. On a narrow screen it says a computer is quicker, and still works:
+ * nothing is taken away by the layout.
  */
 export function AddManyScreen() {
-  const mode = useShellMode();
-  if (mode === 'phone') {
-    return (
-      <main className="page page-top has-nav">
-        <TopBar title="Add many documents" back="/" />
-        <div className="notice-box">
-          <strong>Adding many documents is for a computer.</strong>
-          <span className="muted">
-            On a phone, add one at a time with + below. Checking a batch of files is a task for a
-            wide screen, and far quicker there.
-          </span>
-        </div>
-        <p>
-          <Link to="/add" className="btn btn-primary">
-            Add one document
-          </Link>
-        </p>
-      </main>
-    );
-  }
-  return <AddMany />;
+  const { key } = useLocation();
+  return <AddMany key={key} visit={key} />;
 }
 
-function AddMany() {
+function AddMany({ visit }: { visit: string }) {
   const { caps, withToken } = useApp();
   const { mayBatch, role } = useMayBatch();
+  const narrow = useSyncExternalStore(watchTablet, narrowNow);
   const [params] = useSearchParams();
+  const [upload, uploads] = useUploads();
+  useLayoutEffect(() => uploads.opened(visit), [uploads, visit]);
   const resuming = params.get('batch');
   const limit = caps?.limits.max_upload_bytes ?? Number.POSITIVE_INFINITY;
   const { data, error: loadError } = useLoad(
@@ -185,7 +183,6 @@ function AddMany() {
   );
   const me = data?.members.find((m) => m.is_me);
   const teen = role === 'teen';
-  const [chosen, setChosen] = useState<Chosen[]>([]);
   const [name, setName] = useState('');
   const [owner, setOwner] = useState('');
   const [typeKey, setTypeKey] = useState('');
@@ -194,17 +191,13 @@ function AddMany() {
   const [collectionId, setCollectionId] = useState('');
   const [tags, setTags] = useState('');
   const [essential, setEssential] = useState(false);
-  const [phase, setPhase] = useState<'choosing' | 'sending' | 'stopped' | 'done'>('choosing');
-  const [batch, setBatch] = useState<{ id: string; label: string } | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-  const [said, setSaid] = useState('');
   const [over, setOver] = useState(false);
-  const stopAsked = useRef(false);
   const filesInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
   const stopButton = useRef<HTMLButtonElement>(null);
   const outcome = useRef<HTMLParagraphElement>(null);
-  const resumed = data?.batch ?? null;
+  const { chosen, phase, batch } = upload;
+  const resumed = phase === 'choosing' ? (data?.batch ?? null) : null;
   const already = resumed?.items.length ?? 0;
 
   // The button that started it goes as it starts, and Stop as it ends: the
@@ -214,37 +207,7 @@ function AddMany() {
     if (phase === 'done' || phase === 'stopped') outcome.current?.focus();
   }, [phase]);
 
-  /** What is chosen, checked as the vault would check it: refused here, with why, or ready. */
-  const add = (files: File[]) => {
-    setChosen((was) => {
-      const keys = new Set(was.map((c) => c.key));
-      const next = [...was];
-      for (const file of files) {
-        const key = fileKey(file);
-        if (keys.has(key)) continue;
-        keys.add(key);
-        const room = BATCH_MAX_FILES - already - next.filter((c) => c.state !== 'refused').length;
-        const reason = !takenKind(file)
-          ? 'Not a kind the vault takes: PDFs, photos and scans, Word and Excel files.'
-          : file.size > limit
-            ? `Too big: over ${sizeWords(limit)}, the most this vault takes for one file.`
-            : room <= 0
-              ? `A batch holds ${BATCH_MAX_FILES} files: start another batch for this one.`
-              : null;
-        next.push({
-          key,
-          file,
-          state: reason ? 'refused' : 'ready',
-          sent: 0,
-          ...(reason ? { reason } : {}),
-        });
-      }
-      return next;
-    });
-  };
-
-  const update = (key: string, change: Partial<Chosen>) =>
-    setChosen((was) => was.map((c) => (c.key === key ? { ...c, ...change } : c)));
+  const add = (files: File[]) => uploads.choose(files, { limit, already });
 
   /** The defaults, as the batch is made with them: only what was chosen. */
   const defaultsChosen = (): Partial<BatchDefaults> => {
@@ -263,96 +226,31 @@ function AddMany() {
     return d;
   };
 
-  /**
-   * Sends what is ready (and, again, what failed): one file after another,
-   * into the batch — made first, or the one carried on. A file already in
-   * a batch carried on (its name, its size and its SHA-256) is not sent
-   * again. Stop is heard after the file being sent.
-   */
-  const send = async () => {
-    setProblem(null);
-    stopAsked.current = false;
-    let target = batch;
-    if (!target) {
-      if (resumed) {
-        target = { id: resumed.id, label: batchLabel(resumed) };
-      } else {
-        try {
-          const made = await withToken((t) =>
-            api.createBatch(t, {
-              ...(name.trim() ? { name: name.trim() } : {}),
-              defaults: defaultsChosen(),
-            }),
-          );
-          if (!made) return;
-          target = { id: made.id, label: batchLabel(made) };
-        } catch (err) {
-          setProblem(describeError(err));
-          return;
-        }
-      }
-      setBatch(target);
+  /** Start: into the batch carried on, or a new one made with what was chosen. Pressed twice, once. */
+  const start = () => {
+    if (resumed) {
+      void uploads.start(withToken, { carry: resumed, label: batchLabel(resumed) });
+      return;
     }
-    const todo = chosen.filter((c) => c.state === 'ready' || c.state === 'failed');
-    setPhase('sending');
-    setSaid(`Sending ${plural(todo.length, 'file')}.`);
-    let done = 0;
-    let stoppedBy: string | null = null;
-    for (const c of todo) {
-      if (stopAsked.current) break;
-      const there = resumed?.items.find(
-        (i) => i.name === c.file.name && i.byte_size === c.file.size,
-      );
-      if (there) {
-        const hash = await sha256Of(c.file).catch(() => null);
-        if (hash === there.sha256) {
-          update(c.key, { state: 'skipped', reason: 'Already in this batch.' });
-          done++;
-          continue;
-        }
-      }
-      update(c.key, { state: 'sending', sent: 0 });
-      try {
-        const item = await withToken(
-          (t) =>
-            sendBatchItem(t, (target as { id: string }).id, c.file, (sent) =>
-              update(c.key, { sent }),
-            ).done,
-        );
-        if (!item) return;
-        update(c.key, { state: 'sent', sent: c.file.size });
-        done++;
-        setSaid(`${done} of ${todo.length} sent.`);
-      } catch (err) {
-        if (err instanceof NetworkError || !(err instanceof ApiRequestError)) {
-          // The connection: this one, and the rest, wait to be sent again.
-          update(c.key, {
-            state: 'failed',
-            reason: 'The connection dropped: it can be sent again.',
-          });
-          stoppedBy = 'The connection to the vault dropped. Send the rest again when it is back.';
-          break;
-        }
-        update(c.key, { state: 'refused', reason: err.message });
-        // A batch that takes no more: none of the rest would go in it.
-        if (err.code === 'batch_full' || err.code === 'batch_ended') {
-          stoppedBy = err.message;
-          break;
-        }
-      }
-    }
-    if (stoppedBy) setProblem(stoppedBy);
-    setPhase(stopAsked.current || stoppedBy ? 'stopped' : 'done');
-    setSaid(stopAsked.current ? 'Stopped. What arrived is in your Inbox.' : '');
+    const d = defaultsChosen();
+    void uploads.start(withToken, {
+      make: { name: name.trim() || null, defaults: d },
+      shown: { ...NO_DEFAULTS, ...d },
+    });
   };
 
-  const counts = {
-    total: chosen.length,
-    sent: chosen.filter((c) => c.state === 'sent').length,
-    skipped: chosen.filter((c) => c.state === 'skipped').length,
-    refused: chosen.filter((c) => c.state === 'refused').length,
-    waiting: chosen.filter((c) => c.state === 'ready' || c.state === 'failed').length,
+  /** Only me is the uploader's own (the I1 review): choosing it makes them whose these are. */
+  const chooseVisibility = (v: Visibility | '') => {
+    setVisibility(v);
+    if (v === 'private' && me) setOwner(me.id);
   };
+  const chooseOwner = (v: string) => {
+    setOwner(v);
+    // Only me never goes with somebody else, or with different people.
+    if (visibility === 'private' && v !== me?.id) setVisibility('');
+  };
+
+  const counts = progressOf(upload);
   const toSend = chosen.filter((c) => c.state !== 'refused');
   const bytes = toSend.reduce((n, c) => n + c.file.size, 0);
   const sentBytes = toSend.reduce(
@@ -367,9 +265,18 @@ function AddMany() {
   );
   const started = phase !== 'choosing' || resumed !== null;
   const locked = phase !== 'choosing';
-  const people = (data?.members ?? []).filter((m) => (teen ? m.is_me : !m.is_deceased));
+  // Everybody of the family, as a file's card offers them: those who have
+  // died after the living, and said so (the I1 review). A teen's are their own.
+  const people = teen
+    ? (data?.members ?? []).filter((m) => m.is_me)
+    : [
+        ...(data?.members ?? []).filter((m) => !m.is_deceased),
+        ...(data?.members ?? []).filter((m) => m.is_deceased),
+      ];
   const collections = data ? addable(data.collections, role) : [];
   const shownTypes = (data?.types ?? []).filter((t) => !t.hidden || t.key === typeKey);
+  const carrying = locked ? upload.carryOn : resumed !== null;
+  const label = locked && batch ? batch.label : resumed ? batchLabel(resumed) : null;
 
   if (!mayBatch) {
     return (
@@ -388,17 +295,26 @@ function AddMany() {
     <main className="page page-top page-wide has-nav addmany-page">
       <nav className="crumbs" aria-label="Breadcrumb">
         <Link to="/inbox">Inbox</Link> <span aria-hidden="true">›</span>{' '}
-        <span>{resumed ? batchLabel(resumed) : 'Add many documents'}</span>
+        <span>{carrying && label ? label : 'Add many documents'}</span>
       </nav>
-      <h1>{resumed ? `Carry on: ${batchLabel(resumed)}` : 'Add many documents'}</h1>
+      <h1>{carrying && label ? `Carry on: ${label}` : 'Add many documents'}</h1>
       <p className="lede">
-        {resumed
-          ? `Choose the same files or folder again: what is already in it (${plural(already, 'file')}) is not sent twice.`
+        {carrying && !locked
+          ? `Choose the same files or folder again: what is already in it (${plural(already, 'file')}) is not sent twice. A file you removed from this batch is sent again if you choose it.`
           : 'Each file waits in your Inbox, and becomes a document when you accept it. Nothing is a document, and nobody else sees it, until then.'}
       </p>
+      {narrow && (
+        <div className="notice-box">
+          <strong>Adding many documents is quicker on a computer.</strong>
+          <span className="muted">
+            Checking a batch of files is easier on a wide screen. You can still choose and send them
+            here.
+          </span>
+        </div>
+      )}
       <ErrorNote message={loadError} />
       <p className="visually-hidden" role="status" aria-live="polite">
-        {said}
+        {upload.said}
       </p>
       <div className="addmany">
         <div className="stack">
@@ -463,19 +379,19 @@ function AddMany() {
             <section className="card stack" aria-labelledby="chosen-h">
               <div className="card-head">
                 <h2 id="chosen-h" className="section-h">
-                  {phase === 'choosing'
+                  {phase === 'choosing' || phase === 'making'
                     ? `${plural(toSend.length, 'file')} · ${sizeWords(bytes)}`
                     : phase === 'sending'
-                      ? `Sending ${Math.min(counts.sent + counts.skipped + 1, toSend.length)} of ${toSend.length}…`
-                      : `${plural(counts.sent + counts.skipped, 'file')} arrived`}
+                      ? `Sending ${Math.min(counts.arrived + 1, toSend.length)} of ${toSend.length}…`
+                      : `${plural(counts.arrived, 'file')} arrived`}
                 </h2>
                 {phase === 'choosing' && (
-                  <Button kind="link" onClick={() => setChosen([])}>
+                  <Button kind="link" onClick={() => uploads.takeAllOff()}>
                     Remove all
                   </Button>
                 )}
               </div>
-              {phase !== 'choosing' && (
+              {phase !== 'choosing' && phase !== 'making' && (
                 <div className="stack">
                   <progress
                     className="upload-bar"
@@ -512,7 +428,7 @@ function AddMany() {
                       ) : c.state === 'skipped' ? (
                         c.reason
                       ) : c.state === 'ready' ? (
-                        phase === 'choosing' ? (
+                        phase === 'choosing' || phase === 'making' ? (
                           'Ready'
                         ) : (
                           'Not sent yet'
@@ -529,7 +445,7 @@ function AddMany() {
                         type="button"
                         className="btn btn-link"
                         aria-label={`Take ${c.file.name} off the list`}
-                        onClick={() => setChosen((was) => was.filter((x) => x.key !== c.key))}
+                        onClick={() => uploads.takeOff(c.key)}
                       >
                         ×
                       </button>
@@ -537,26 +453,27 @@ function AddMany() {
                   </li>
                 ))}
               </ul>
-              <ErrorNote message={problem} />
+              <ErrorNote message={upload.problem} />
               {phase === 'sending' && (
                 <div className="row">
                   <Button
                     ref={stopButton}
                     kind="quiet"
-                    onClick={() => {
-                      stopAsked.current = true;
-                      setSaid('Stopping after this file.');
-                    }}
+                    disabled={upload.stopping}
+                    onClick={() => uploads.stop()}
                   >
                     Stop after this file
                   </Button>
-                  <span className="muted">You can carry on later from the batch.</span>
+                  <span className="muted">
+                    You can leave this page: the files carry on going while the vault is open in
+                    this tab.
+                  </span>
                 </div>
               )}
               {(phase === 'done' || phase === 'stopped') && batch && (
                 <div className="stack">
                   <p role="status" ref={outcome} tabIndex={-1}>
-                    {plural(counts.sent + counts.skipped, 'file')} arrived in “{batch.label}”
+                    {plural(counts.arrived, 'file')} arrived in “{batch.label}”
                     {counts.refused ? `; ${plural(counts.refused, 'file')} not sent` : ''}
                     {counts.waiting ? `; ${counts.waiting} still to send` : ''}.
                   </p>
@@ -565,10 +482,13 @@ function AddMany() {
                       Open the batch
                     </Link>
                     {counts.waiting > 0 && (
-                      <Button kind="quiet" onClick={() => void send()}>
+                      <Button kind="quiet" onClick={() => void uploads.sendRest(withToken)}>
                         Send the rest
                       </Button>
                     )}
+                    <Button kind="quiet" onClick={() => uploads.reset()}>
+                      Add another batch
+                    </Button>
                   </div>
                 </div>
               )}
@@ -581,7 +501,7 @@ function AddMany() {
               For all of them
             </h2>
             <p className="muted">
-              {resumed
+              {carrying
                 ? 'Chosen when the batch was made. Each card starts from these.'
                 : 'All optional. Each fills only what is blank on a file’s card, which you check before it becomes a document.'}
             </p>
@@ -589,7 +509,10 @@ function AddMany() {
           {resumed || locked ? (
             // Chosen once: what the batch was made with, said, not asked again.
             <DefaultsWords
-              defaults={resumed?.defaults ?? { ...NO_DEFAULTS, ...defaultsChosen() }}
+              defaults={
+                (locked ? upload.defaults : null) ??
+                resumed?.defaults ?? { ...NO_DEFAULTS, ...defaultsChosen() }
+              }
               types={data?.types ?? []}
               members={data?.members ?? []}
               collections={data?.collections ?? []}
@@ -610,13 +533,13 @@ function AddMany() {
                 id="b-owner"
                 label="Whose documents"
                 value={owner}
-                onChange={(v) => {
-                  setOwner(v);
-                  if (visibility === 'private' && v && v !== me?.id) setVisibility('');
-                }}
+                onChange={chooseOwner}
                 options={[
                   { value: '', label: teen ? 'Mine' : 'Different people, or not sure' },
-                  ...people.map((m) => ({ value: m.id, label: m.display_name })),
+                  ...people.map((m) => ({
+                    value: m.id,
+                    label: m.is_deceased ? `${m.display_name} (passed away)` : m.display_name,
+                  })),
                 ]}
               />
               <Select
@@ -651,14 +574,16 @@ function AddMany() {
                         (v === 'adults' && !can(role, 'document.see_adults')) ||
                         (v === 'private' && owner !== '' && owner !== me?.id)
                       }
-                      onClick={() => setVisibility(v)}
+                      onClick={() => chooseVisibility(v)}
                     >
                       {label}
                     </button>
                   ))}
                 </div>
                 <span className="muted">
-                  Never wider than you choose: a kind usually for the adults stays for the adults.
+                  {visibility === 'private'
+                    ? 'Only me is for your own documents: they are yours, and only you see them.'
+                    : 'Never wider than you choose: a kind usually for the adults stays for the adults.'}
                 </span>
               </div>
               {seesLocation(role) && (
@@ -672,15 +597,12 @@ function AddMany() {
                 />
               )}
               {collections.length > 0 && (
-                <Select
+                <CollectionSelect
                   id="b-collection"
-                  label="Collection"
+                  collections={collections}
                   value={collectionId}
                   onChange={setCollectionId}
-                  options={[
-                    { value: '', label: 'None' },
-                    ...collections.map((c) => ({ value: c.id, label: c.name })),
-                  ]}
+                  role={role}
                 />
               )}
               <Field
@@ -700,11 +622,13 @@ function AddMany() {
               />
             </fieldset>
           )}
-          {phase === 'choosing' && (
-            <Button disabled={!data || counts.waiting === 0} onClick={() => void send()}>
-              {counts.waiting === 0
-                ? 'Choose some files first'
-                : `${started ? 'Send' : 'Start: upload'} ${plural(counts.waiting, 'file')}`}
+          {(phase === 'choosing' || phase === 'making') && (
+            <Button disabled={!data || counts.waiting === 0 || phase === 'making'} onClick={start}>
+              {phase === 'making'
+                ? 'Making the batch…'
+                : counts.waiting === 0
+                  ? 'Choose some files first'
+                  : `${started ? 'Send' : 'Start: upload'} ${plural(counts.waiting, 'file')}`}
             </Button>
           )}
           <OnlyYou>Only you see them until you accept them.</OnlyYou>
@@ -826,7 +750,6 @@ export function InboxScreen() {
   const location = useLocation();
   const said = (location.state as { said?: string } | null)?.said ?? null;
   const status = useRef<HTMLParagraphElement>(null);
-  const mode = useShellMode();
   const { data, error } = useLoad(
     async (t) => {
       const [batches, sent] = await Promise.all([
@@ -849,11 +772,10 @@ export function InboxScreen() {
       uploads={waiting}
       sent={data?.sent ?? null}
       action={
-        mode !== 'phone' ? (
-          <Link className="btn btn-primary" to="/add/many">
-            Add many documents
-          </Link>
-        ) : undefined
+        // At every width: a narrow window is told a computer is quicker, not refused.
+        <Link className="btn btn-primary" to="/add/many">
+          Add many documents
+        </Link>
       }
     >
       <p role="status" ref={status} tabIndex={-1} className="status-line">
@@ -869,7 +791,7 @@ export function InboxScreen() {
         <div className="notice-box">
           <strong>Nothing you uploaded is waiting.</strong>
           <span className="muted">
-            Add many documents at once from a computer, and they wait here for you to check.
+            Add many documents at once, and they wait here for you to check.
           </span>
         </div>
       )}
@@ -926,32 +848,73 @@ export function SentScreen() {
 
 // --------------------------------------------------------------- batch
 
-/** An item's first page, drawn by the worker: a picture when there is one, a blank until then. */
-function FirstPage(props: { batchId: string; item: BatchItemView; large?: boolean }) {
+/** How many rows draw their first page at once where the browser cannot say which are in view. */
+const FIRST_FEW = 8;
+
+/**
+ * An item's first page, drawn by the worker: a picture when there is one, a
+ * blank until then. Only for a file still waiting (an accepted one's pages
+ * went with its bytes); asked for as its row comes near the screen, a few at
+ * a time (batch-pages.ts), and kept, so coming back asks for nothing. A
+ * browser that cannot say what is in view draws the first few (`eager`).
+ */
+function FirstPage(props: {
+  batchId: string;
+  item: BatchItemView;
+  large?: boolean;
+  eager: boolean;
+}) {
   const { withToken } = useApp();
   const [url, setUrl] = useState<string | null>(null);
-  const ready = props.item.preview_state === 'ready' && (props.item.preview_pages ?? 0) > 0;
+  const box = useRef<HTMLSpanElement>(null);
+  const { batchId, eager } = props;
+  const itemId = props.item.id;
+  const ready =
+    props.item.state === 'waiting' &&
+    props.item.preview_state === 'ready' &&
+    (props.item.preview_pages ?? 0) > 0;
+  const shown = ready ? (heldPage(itemId) ?? url) : null;
   useEffect(() => {
-    if (!ready) return;
-    let cancelled = false;
-    let made: string | null = null;
-    withToken((t) => api.batchItemPage(t, props.batchId, props.item.id, 1))
-      .then((blob) => {
-        if (cancelled || !blob) return;
-        made = URL.createObjectURL(blob);
-        setUrl(made);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-      if (made) URL.revokeObjectURL(made);
+    if (!ready || heldPage(itemId)) return;
+    let gone = false;
+    let asked: { cancel: () => void } | null = null;
+    const ask = () => {
+      const page = askPage(itemId, () =>
+        withToken((t) => api.batchItemPage(t, batchId, itemId, 1)),
+      );
+      asked = page;
+      void page.done.then((made) => {
+        if (!gone && made) setUrl(made);
+      });
     };
-  }, [ready, props.batchId, props.item.id, withToken]);
+    if (typeof IntersectionObserver === 'undefined') {
+      if (eager) ask();
+    } else {
+      const seen = new IntersectionObserver(
+        (entries) => {
+          if (!entries.some((e) => e.isIntersecting)) return;
+          seen.disconnect();
+          ask();
+        },
+        { rootMargin: '200px' },
+      );
+      if (box.current) seen.observe(box.current);
+      return () => {
+        gone = true;
+        seen.disconnect();
+        asked?.cancel();
+      };
+    }
+    return () => {
+      gone = true;
+      asked?.cancel();
+    };
+  }, [ready, batchId, itemId, eager, withToken]);
   const cls = props.large ? 'firstpage firstpage-large' : 'firstpage';
-  if (url) return <img className={cls} src={url} alt={`First page of ${props.item.name}`} />;
+  if (shown) return <img className={cls} src={shown} alt={`First page of ${props.item.name}`} />;
   return (
-    <span className={`${cls} firstpage-none`} aria-hidden="true">
-      {props.item.preview_state === 'pending'
+    <span ref={box} className={`${cls} firstpage-none`} aria-hidden="true">
+      {props.item.state === 'waiting' && props.item.preview_state === 'pending'
         ? '…'
         : props.item.content_type === 'application/pdf'
           ? 'PDF'
@@ -992,14 +955,25 @@ function ItemState({ item }: { item: BatchItemView }) {
 }
 
 /**
+ * While the worker draws: asked again every 4 seconds, twice as long after
+ * each failure up to a minute, and not for ever. Changed only by the tests.
+ */
+export const batchPolling = { every: 4000, most: 60_000, times: 30 };
+
+/**
  * A batch (/inbox/batches/:id): its files, each with its first page when
  * drawn, its name, size and pages, and what it is now — waiting to be read,
  * a duplicate, accepted. Accept opens its card; Remove asks first; Remove
  * the batch removes what is undecided; Carry on sends more of it.
+ *
+ * A reload that fails with the batch on the screen keeps it there — the
+ * table, a dialog open, the focus — and says so beside it; the asking goes
+ * on, more slowly (the I1 review).
  */
 export function BatchScreen() {
   const { id } = useParams<{ id: string }>();
   const { withToken, caps } = useApp();
+  const [, uploads] = useUploads();
   const role = storedRole();
   const navigate = useNavigate();
   const mode = useShellMode();
@@ -1008,7 +982,7 @@ export function BatchScreen() {
   const [message, setMessage] = useState<string | null>(said);
   const status = useRef<HTMLParagraphElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  const { data, error, reload } = useLoad(
+  const { data, error, loading, reload } = useLoad(
     async (t) => {
       const [batch, members, types, collections] = await Promise.all([
         api.batch(t, id as string),
@@ -1039,19 +1013,31 @@ export function BatchScreen() {
     if (said && drawn) status.current?.focus();
   }, [said, drawn]);
 
-  // While the worker draws their pages, asked again now and then.
+  // A file decided, here or elsewhere: its first page let go.
+  useEffect(() => {
+    if (data) forgetPages(data.batch.items.filter((i) => i.state !== 'waiting').map((i) => i.id));
+  }, [data]);
+
+  // While the worker draws their pages, asked again now and then: after a
+  // failure, twice as long each time, up to a minute; and not for ever.
   const drawing = data?.batch.items.some(
     (i) => i.state === 'waiting' && i.preview_state === 'pending',
   );
   const tries = useRef(0);
+  const failures = useRef(0);
   useEffect(() => {
-    if (!drawing || tries.current >= 30) return;
+    if (loading) return;
+    failures.current = error ? failures.current + 1 : 0;
+  }, [loading, error]);
+  useEffect(() => {
+    if (!drawing || loading || tries.current >= batchPolling.times) return;
+    const wait = Math.min(batchPolling.every * 2 ** failures.current, batchPolling.most);
     const timer = setTimeout(() => {
       tries.current += 1;
       void reload();
-    }, 4000);
+    }, wait);
     return () => clearTimeout(timer);
-  }, [drawing, data, reload]);
+  }, [drawing, loading, data, error, reload]);
 
   // After a removal: the next file's Accept, or the one before it, or the status.
   useEffect(() => {
@@ -1071,6 +1057,8 @@ export function BatchScreen() {
     const next = waiting[at + 1] ?? waiting[at - 1] ?? null;
     try {
       await withToken((t) => api.removeBatchItem(t, data.batch.id, item.id));
+      forgetPages([item.id]);
+      uploads.changed();
       setAsking(null);
       setMessage(`“${item.name}” was removed: its file and its pages are gone from the vault.`);
       focusNext.current = next ? next.id : 'status';
@@ -1088,6 +1076,8 @@ export function BatchScreen() {
     setBusy(true);
     try {
       await withToken((t) => api.removeBatch(t, data.batch.id));
+      forgetPages(data.batch.items.map((i) => i.id));
+      uploads.changed();
       void navigate('/inbox', {
         state: {
           said: `“${batchLabel(data.batch)}” was removed, with what was not accepted in it.`,
@@ -1101,7 +1091,7 @@ export function BatchScreen() {
     }
   };
 
-  if (error || !data) {
+  if (!data) {
     return (
       <main className="page page-top has-nav">
         <TopBar title="A batch" back="/inbox" />
@@ -1171,11 +1161,9 @@ export function BatchScreen() {
         <div className="stack batch-actions">
           <OnlyYou />
           <div className="row">
-            {mode !== 'phone' && (
-              <Link className="btn btn-quiet" to={`/add/many?batch=${b.id}`}>
-                Carry on uploading
-              </Link>
-            )}
+            <Link className="btn btn-quiet" to={`/add/many?batch=${b.id}`}>
+              Carry on uploading
+            </Link>
             <button
               ref={removeBatchButton}
               type="button"
@@ -1190,15 +1178,11 @@ export function BatchScreen() {
       <p role="status" ref={status} tabIndex={-1} className="status-line">
         {message}
       </p>
-      <ErrorNote message={problem} />
+      <ErrorNote message={problem ?? error} />
       {b.items.length === 0 ? (
         <div className="notice-box">
           <strong>Nothing is in this batch yet.</strong>
-          <span className="muted">
-            {mode === 'phone'
-              ? 'Send files to it from a computer.'
-              : 'Carry on uploading to send files to it.'}
-          </span>
+          <span className="muted">Carry on uploading to send files to it.</span>
         </div>
       ) : waiting.length === 0 ? (
         <div className="notice-box">
@@ -1213,11 +1197,11 @@ export function BatchScreen() {
       {b.items.length > 0 &&
         (mode === 'phone' ? (
           <ul className="list batch-items" aria-label={`Files in ${label}`}>
-            {b.items.map((item) => {
+            {b.items.map((item, i) => {
               const r = row(item);
               return (
                 <li key={item.id} className="batch-item">
-                  <FirstPage batchId={b.id} item={item} />
+                  <FirstPage batchId={b.id} item={item} eager={i < FIRST_FEW} />
                   <span className="stack batch-item-words">
                     <span className="doc-title clip">{item.name}</span>
                     <span className="muted">{r.about}</span>
@@ -1253,12 +1237,12 @@ export function BatchScreen() {
                 </tr>
               </thead>
               <tbody>
-                {b.items.map((item) => {
+                {b.items.map((item, i) => {
                   const r = row(item);
                   return (
                     <tr key={item.id}>
                       <td>
-                        <FirstPage batchId={b.id} item={item} />
+                        <FirstPage batchId={b.id} item={item} eager={i < FIRST_FEW} />
                       </td>
                       <td>
                         <span className="cell-title clip" title={item.name}>
@@ -1325,11 +1309,13 @@ export function BatchScreen() {
  * One file's card (/inbox/batches/:id/items/:itemId): the single add's "Is
  * this right?", with a collection, tags and Essential too, each detail
  * starting from what the batch chose — where it chose anything; the rest
- * blank. Accepting files it as a document, and goes back to the batch.
+ * blank. Accepting files it as a document, and goes back to the batch,
+ * saying who else will now see it where a collection says so (5.33).
  */
 export function BatchItemScreen() {
   const { id, itemId } = useParams<{ id: string; itemId: string }>();
   const { withToken, caps } = useApp();
+  const [, uploads] = useUploads();
   const navigate = useNavigate();
   const role = storedRole();
   const { data, error } = useLoad(
@@ -1362,13 +1348,17 @@ export function BatchItemScreen() {
         }),
       );
       if (!sent) return;
+      forgetPages([item.id]);
+      uploads.changed();
       const title = details.title ? `: ${details.title}` : '';
+      // And who else will now see it, as the collection it went in says (5.33).
+      const also = (sent.warnings ?? []).join(' ');
       void navigate(`/inbox/batches/${batch.id}`, {
         replace: true,
-        state: { said: `“${item.name}” is a document now${title}.` },
+        state: { said: `“${item.name}” is a document now${title}.${also ? ` ${also}` : ''}` },
       });
     },
-    [withToken, navigate],
+    [withToken, navigate, uploads],
   );
   if (error || !data) {
     return (
@@ -1394,10 +1384,20 @@ export function BatchItemScreen() {
   const d = batch.defaults;
   const me = members.find((m) => m.is_me);
   const type = types.find((t) => t.key === d.type_key);
-  const owner = role === 'teen' ? (me?.id ?? '') : (d.owner_member_id ?? '');
+  // A batch made Only me is the uploader's own: whose these are is them.
+  const owner =
+    role === 'teen'
+      ? (me?.id ?? '')
+      : (d.owner_member_id ?? (d.visibility === 'private' ? (me?.id ?? '') : ''));
   const person = members.find((m) => m.id === owner);
-  const startVisibility = (t: DocumentTypeView | undefined, o: string) =>
-    batchVisibility({ chosen: d.visibility, type: t ?? null, role, owner: o, me: me?.id });
+  const startVisibility = (t: DocumentTypeView | undefined, o: string) => {
+    // Somebody else's, chosen on the card, from a batch made Only me: Only
+    // me is not for them, so the narrowest left, shown before accepting.
+    if (d.visibility === 'private' && (o === '' || o !== me?.id)) {
+      return can(role, 'document.see_adults') ? 'adults' : 'household';
+    }
+    return batchVisibility({ chosen: d.visibility, type: t ?? null, role, owner: o, me: me?.id });
+  };
   const dup = dupWords(item);
   return (
     <ConfirmForm
@@ -1407,7 +1407,7 @@ export function BatchItemScreen() {
       fileName={item.name}
       aside={
         <div className="stack batch-card-aside">
-          <FirstPage batchId={batch.id} item={item} large />
+          <FirstPage batchId={batch.id} item={item} large eager />
           {dup && <p className="status status-warn">{dup}</p>}
         </div>
       }

@@ -635,6 +635,8 @@ export interface Schema {
     read_state: 'waiting' | 'reading' | 'read' | 'failed' | null;
     /** What I2 proposes from its pages, sealed under the item's own key; gone once it is decided. */
     proposals_sealed: Buffer | null;
+    /** A batch's item: the uploader's Idempotency-Key for it, so a re-send is answered, not made twice. */
+    idempotency_key: string | null;
     review_by: 'me' | 'adults';
     requester_member_id: string;
     item_id: string | null;

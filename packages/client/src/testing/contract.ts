@@ -2478,6 +2478,43 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'many documents at once, the review: a batch made Only me is its uploader’s own; a file sent again with its Idempotency-Key is the item it made; accepted, an item has no pages (I1)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      const me = await api.me(token);
+      const mine = await api.createBatch(token, {
+        name: 'Only mine',
+        defaults: { visibility: 'private' },
+      });
+      // Only me is for one’s own documents: whose they are is the uploader.
+      expect(mine.defaults).toMatchObject({ visibility: 'private', owner_member_id: me.member_id });
+      const file = {
+        kind: 'bytes' as const,
+        filename: 'letter.pdf',
+        contentType: 'application/pdf',
+        bytes: new TextEncoder().encode('%PDF-1.4\n% the contract review letter\n%%EOF\n'),
+      };
+      const key = '6f1f7c1e-3a8b-4c2d-9e0f-1a2b3c4d5e6f';
+      const first = await api.addBatchItem(token, mine.id, file, key);
+      // Its answer lost, sent again with its key: the item it made, not a second.
+      const again = await api.addBatchItem(token, mine.id, file, key);
+      expect(again.id).toBe(first.id);
+      expect((await api.batch(token, mine.id)).items.map((i) => i.id)).toEqual([first.id]);
+      // Accepted with nothing said: Only me, theirs, never wider.
+      const done = await api.acceptBatchItem(token, mine.id, first.id, {});
+      expect(await api.document(token, done.document_id)).toMatchObject({
+        visibility: 'private',
+        owner_member_id: me.member_id,
+      });
+      expect((await api.batch(token, mine.id)).items[0]).toMatchObject({
+        state: 'accepted',
+        preview_state: 'none',
+        preview_pages: null,
+      });
+      await api.removeBatch(token, mine.id);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

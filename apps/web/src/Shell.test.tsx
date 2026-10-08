@@ -828,7 +828,7 @@ describe('Settings holds settings only', () => {
     expect(main).toHaveTextContent('Settings holds settings only.');
     expect(within(main).getByRole('link', { name: 'Files sent to you' })).toHaveAttribute(
       'href',
-      '/inbox',
+      '/inbox/sent',
     );
     expect(within(main).getByRole('link', { name: 'People outside the family' })).toHaveAttribute(
       'href',

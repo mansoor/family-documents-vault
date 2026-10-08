@@ -21,10 +21,12 @@ import {
   incomingFileName,
   lockInEffect,
   PREVIEW_MAX_PAGES,
+  PRIVATE_TO_THEM,
   refusalFor,
   seesLocation,
   type BatchAccepted,
   type BatchAcceptInput,
+  type BatchCounts,
   type BatchDefaults,
   type BatchDetail,
   type BatchDuplicate,
@@ -121,6 +123,12 @@ export const batchBody = z
 
 export interface BatchUpload {
   filename: string;
+  /**
+   * The uploader's Idempotency-Key for this file, when they sent one: a
+   * file sent again after its answer was lost is answered with the item it
+   * made, not made twice (the I1 review).
+   */
+  idempotencyKey?: string;
   /** What the browser said it is: only Word and Excel are taken at its word, as a single add's. */
   mime: string;
   stream: Readable;
@@ -135,6 +143,16 @@ const noItem = () => new ApiError(404, 'not_found', 'That file is not waiting in
 const decidedAlready = () =>
   new ApiError(409, 'already_decided', 'This file has been accepted or removed already.');
 const refused = () => new ApiError(403, 'forbidden', refusalFor('document.add'));
+const inProgress = () =>
+  new ApiError(
+    409,
+    'upload_in_progress',
+    'This file is already on its way. Trying again in a moment.',
+    {
+      retriable: true,
+      retryAfter: 5,
+    },
+  );
 const busy = () =>
   new ApiError(503, 'busy', 'The vault was busy just then. Try again.', {
     retriable: true,
@@ -172,6 +190,8 @@ interface BatchRow {
 interface ItemRow {
   id: string;
   batch_id: string | null;
+  batch_name: string | null;
+  batch_created_at: Date;
   original_name: string | null;
   mime: string | null;
   byte_size: string | number | null;
@@ -199,6 +219,11 @@ const BATCH_COLUMNS = [
   'b.default_essential',
 ] as const;
 
+export interface BatchOptions {
+  /** A batch's removal, held once it is fenced and before its rows go (the I1 review): for the races. */
+  betweenRemoval?: (batchId: string) => Promise<void>;
+}
+
 export class BatchService {
   constructor(
     private readonly db: Db,
@@ -208,6 +233,7 @@ export class BatchService {
     private readonly collections: CollectionService,
     private readonly maxUploadBytes: number,
     private readonly enqueue: Enqueue = async () => undefined,
+    private readonly opts: BatchOptions = {},
   ) {}
 
   /** The most one file may be: a single add's limit (FDV_MAX_UPLOAD_BYTES). */
@@ -266,7 +292,13 @@ export class BatchService {
     return this.get(p, id);
   }
 
-  /** GET /batches: the caller's own batches, newest first. Nobody else's, ever. */
+  /**
+   * GET /batches: the caller's own batches, newest first. Nobody else's,
+   * ever. Their counts are counted by the database (the I1 review): a
+   * duplicate, as an item's page says one — of a document the caller can
+   * see out of the Trash, or of one of their own items waiting, sent before
+   * it — found once an item, never item against item.
+   */
   async list(p: Principal): Promise<BatchView[]> {
     this.mayAdd(p);
     return withPrincipal(this.db, p, async (trx) => {
@@ -277,18 +309,49 @@ export class BatchService {
         .orderBy('b.id')
         .execute();
       if (batches.length === 0) return [];
-      const items = await this.itemsOf(
-        trx,
-        p,
-        batches.map((b) => b.id),
-      );
-      return batches.map((b) =>
-        this.view(
-          p,
-          b,
-          items.filter((i) => i.batch_id === b.id),
-        ),
-      );
+      const ids = batches.map((b) => b.id);
+      // Every batch of theirs is here, so their waiting items are too: an
+      // item sent after another with the same bytes is ranked after it.
+      const counted = await sql<{
+        batch_id: string;
+        items: string;
+        waiting: string;
+        accepted: string;
+        duplicates: string;
+      }>`
+        select w.batch_id,
+               count(*) as items,
+               count(*) filter (where w.state = 'received') as waiting,
+               count(*) filter (where w.state = 'accepted') as accepted,
+               count(*) filter (
+                 where w.state = 'received' and w.sha256 is not null
+                   and (w.nth > 1
+                        or exists (select 1
+                                     from document_version v
+                                     join document d on d.id = v.document_id
+                                    where v.household_id = ${p.householdId}::uuid
+                                      and v.sha256 = w.sha256
+                                      and d.deleted_at is null
+                                      and ${seenDocument(p)}))
+               ) as duplicates
+          from (select f.batch_id, f.state, f.sha256,
+                       row_number() over (partition by f.state, f.sha256
+                                          order by f.received_at, f.id) as nth
+                  from incoming_file f
+                 where f.batch_id = any(${ids}::uuid[])
+                   and f.requester_member_id = ${p.memberId}::uuid
+                   and f.state in ('received', 'accepted')) w
+         group by w.batch_id`.execute(trx);
+      const by = new Map(counted.rows.map((c) => [c.batch_id, c]));
+      return batches.map((b) => {
+        const c = by.get(b.id);
+        return this.view(p, b, {
+          items: Number(c?.items ?? 0),
+          waiting: Number(c?.waiting ?? 0),
+          accepted: Number(c?.accepted ?? 0),
+          duplicates: Number(c?.duplicates ?? 0),
+        });
+      });
     });
   }
 
@@ -298,7 +361,7 @@ export class BatchService {
     return withPrincipal(this.db, p, async (trx) => {
       const b = await this.batch(trx, id);
       const items = await this.itemsOf(trx, p, [b.id]);
-      return { ...this.view(p, b, items), items };
+      return { ...this.view(p, b, countsOf(items)), items };
     });
   }
 
@@ -323,40 +386,43 @@ export class BatchService {
   /**
    * DELETE /batches/{id}: what is undecided in it removed, its bytes and
    * pages as a refused file's are; and the batch with it. What was accepted
-   * is a document already, and stays one. A file still on its way is
-   * stopped: its sending fails, and takes its bytes with it.
+   * is a document already, and stays one.
+   *
+   * Fenced first (the I1 review): its end is brought to now, so nothing
+   * more is let in — by this API (`batch_ended`) or by the database's own
+   * rule — while what is in it is removed. A file on its way is stopped:
+   * its row goes now, and its bytes after (its own sending, finding no row,
+   * removes them too). Then, held again, anything still undecided is taken
+   * with it before the batch goes; and a row that goes before its bytes are
+   * known to be gone leaves them to purge_leftover (0047, 0062).
    */
   async remove(p: Principal, id: string, _meta: RequestMeta): Promise<void> {
     this.mayAdd(p);
-    const undecided = await withPrincipal(this.db, p, async (trx) => {
+    const first = await withPrincipal(this.db, p, async (trx) => {
       await this.stillAdds(trx, p);
       const b = await this.batch(trx, id, true);
       await trx
-        .deleteFrom('incoming_file')
-        .where('batch_id', '=', b.id)
-        .where('state', '=', 'uploading')
+        .updateTable('intake_batch')
+        .set({ ends_at: sql<Date>`least(ends_at, now())` })
+        .where('id', '=', b.id)
         .execute();
-      return trx
-        .updateTable('incoming_file')
-        .set({
-          state: 'rejected',
-          decided_by: p.accountId,
-          decided_at: new Date(),
-          original_name: null,
-          sender_note: null,
-          sha256: null,
-          proposals_sealed: null,
-        })
-        .where('batch_id', '=', b.id)
-        .where('state', '=', 'received')
-        .returning(['id', 'storage_key', 'vault_id'])
-        .execute();
+      return this.undecidedOut(trx, p, b.id);
     });
-    for (const f of undecided) await this.removeObjects(p, f);
-    // The batch, and the rows of what was decided in it: an item whose bytes
-    // could not be removed leaves them to be removed with the rest of a
-    // removal's leftovers (0047's incoming_file_leaves_bytes), now.
-    const leftBehind = await withPrincipal(this.db, p, async (trx) => {
+    await this.removeAll(p, first);
+    await this.opts.betweenRemoval?.(id);
+    const last = await withPrincipal(this.db, p, async (trx) => {
+      // Held again: whatever got in after all is taken with it.
+      const held = await trx
+        .selectFrom('intake_batch')
+        .select('id')
+        .where('id', '=', id)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!held) return { out: { rejected: [], stopped: [] }, owed: 0 };
+      const out = await this.undecidedOut(trx, p, id);
+      // The rows of what was decided in it: an item whose bytes could not
+      // be removed leaves them to be removed with the rest of a removal's
+      // leftovers (0047's incoming_file_leaves_bytes), now.
       const left = await trx
         .selectFrom('incoming_file')
         .select((eb) => eb.fn.countAll<string>().as('n'))
@@ -365,14 +431,66 @@ export class BatchService {
         .where('object_removed_at', 'is', null)
         .executeTakeFirstOrThrow();
       await trx.deleteFrom('intake_batch').where('id', '=', id).execute();
-      return Number(left.n);
+      return { out, owed: Number(left.n) + out.stopped.length };
     });
-    if (leftBehind > 0) {
+    await this.removeAll(p, last.out);
+    if (last.owed > 0 || first.stopped.length > 0) {
       await this.enqueue(
         PURGE_LEFTOVERS_JOB,
         { household_id: p.householdId },
         { singletonKey: `purge.leftovers:${p.householdId}` },
       ).catch(() => undefined);
+    }
+  }
+
+  /**
+   * What is undecided in a held batch, taken out of it: a file on its way,
+   * its row gone (its bytes owed to purge_leftover until they are removed);
+   * a file waiting, removed as a refused file is — its name and hash gone.
+   */
+  private async undecidedOut(trx: Db, p: Principal, batchId: string) {
+    const stopped = await trx
+      .deleteFrom('incoming_file')
+      .where('batch_id', '=', batchId)
+      .where('state', '=', 'uploading')
+      .returning(['id', 'storage_key', 'vault_id'])
+      .execute();
+    const rejected = await trx
+      .updateTable('incoming_file')
+      .set({
+        state: 'rejected',
+        decided_by: p.accountId,
+        decided_at: new Date(),
+        original_name: null,
+        sender_note: null,
+        sha256: null,
+        proposals_sealed: null,
+      })
+      .where('batch_id', '=', batchId)
+      .where('state', '=', 'received')
+      .returning(['id', 'storage_key', 'vault_id'])
+      .execute();
+    return { stopped, rejected };
+  }
+
+  /** Their bytes and pages, once what took them out has committed. */
+  private async removeAll(
+    p: Principal,
+    out: {
+      stopped: Array<{ id: string; storage_key: string; vault_id: string }>;
+      rejected: Array<{ id: string; storage_key: string; vault_id: string }>;
+    },
+  ): Promise<void> {
+    for (const f of out.rejected) await this.removeObjects(p, f);
+    for (const f of out.stopped) {
+      try {
+        const adapter = await withPrincipal(this.db, p, (trx) =>
+          this.vaults.adapterById(trx, f.vault_id),
+        );
+        await adapter.delete(f.storage_key);
+      } catch {
+        // Owed to purge_leftover already (0062): removed with the rest.
+      }
     }
   }
 
@@ -388,18 +506,45 @@ export class BatchService {
    * uploader's own member key straight to its object; then it is finished
    * and the worker asked to draw its pages. Refused anywhere, its object
    * and its row go.
+   *
+   * With an Idempotency-Key (the I1 review): a file sent again with the key
+   * of one that arrived is answered with the item it made, `replayed`, and
+   * nothing more is kept; one still on its way is `409 upload_in_progress`;
+   * one removed since, `409 already_decided`.
    */
   async addItem(
     p: Principal,
     batchId: string,
     upload: BatchUpload,
     _meta: RequestMeta,
-  ): Promise<BatchItemView> {
+  ): Promise<{ item: BatchItemView; replayed: boolean }> {
     this.mayAdd(p);
+    const dead: Array<{ id: string; storage_key: string; vault_id: string }> = [];
     const ctx = await withPrincipal(this.db, p, async (trx) => {
       await this.stillAdds(trx, p);
       // Held: what is counted against the limit cannot change under it.
       const b = await this.batch(trx, batchId, true);
+      const key = upload.idempotencyKey ?? null;
+      if (key) {
+        const prior = await trx
+          .selectFrom('incoming_file')
+          .select(['id', 'state', 'created_at', 'storage_key', 'vault_id'])
+          .where('batch_id', '=', b.id)
+          .where('idempotency_key', '=', key)
+          .executeTakeFirst();
+        if (prior?.state === 'received' || prior?.state === 'accepted') {
+          const [item] = (await this.itemsOf(trx, p, [b.id])).filter((i) => i.id === prior.id);
+          if (!item) throw notHere();
+          return { replay: item } as const;
+        }
+        if (prior?.state === 'rejected') throw decidedAlready();
+        if (prior?.state === 'uploading') {
+          if (prior.created_at.getTime() > Date.now() - UPLOAD_FRESH_MS) throw inProgress();
+          // A try that died on its way: gone, and this one in its place.
+          await trx.deleteFrom('incoming_file').where('id', '=', prior.id).execute();
+          dead.push(prior);
+        }
+      }
       if (b.ends_at.getTime() <= Date.now()) {
         throw new ApiError(
           409,
@@ -456,11 +601,14 @@ export class BatchService {
           // The family's own file: this vault scans nothing (A42).
           scan_state: 'unscanned',
           read_state: 'waiting',
+          idempotency_key: key,
         })
         .returning(['id', 'storage_key'])
         .executeTakeFirstOrThrow();
       return { fileId: row.id, key: row.storage_key, adapter: active.adapter, fileKey };
     });
+    if (dead.length > 0) await this.removeAll(p, { stopped: dead, rejected: [] });
+    if ('replay' in ctx) return { item: ctx.replay, replayed: true };
 
     const discard = async () => {
       await ctx.adapter.delete(ctx.key).catch(() => undefined);
@@ -540,7 +688,7 @@ export class BatchService {
       { household_id: p.householdId },
       { singletonKey: batchPreviewsKey(p.householdId) },
     ).catch(() => undefined);
-    return view;
+    return { item: view, replayed: false };
   }
 
   /**
@@ -811,17 +959,18 @@ export class BatchService {
       }
       out.default_visibility = d.visibility;
     }
-    // Only me is for one's own documents: a batch of somebody else's is not.
+    // Only me is for one's own documents (the I1 review): a batch made Only
+    // me is its uploader's own, so whose they are is the uploader where
+    // nobody is chosen — never a guess that widens it later. A batch of
+    // somebody else's documents is not Only me, as a single add's is not.
     const owner =
       d.owner_member_id !== undefined
         ? d.owner_member_id
         : (current?.default_owner_member_id ?? null);
     const vis = d.visibility !== undefined ? d.visibility : (current?.default_visibility ?? null);
-    if (vis === 'private' && owner !== null && owner !== p.memberId) {
-      throw invalid(
-        'Only me is for your own documents: choose yourself as whose they are, or who else can see them.',
-        'visibility',
-      );
+    if (vis === 'private') {
+      if (owner !== null && owner !== p.memberId) throw invalid(PRIVATE_TO_THEM, 'visibility');
+      if (owner === null) out.default_owner_member_id = p.memberId;
     }
     if (d.physical_location !== undefined) {
       if (!seesLocation(p.role)) {
@@ -855,7 +1004,10 @@ export class BatchService {
    * batch's default (Q4) — a person, a kind, where the paper copies are,
    * tags, Essential; and who can see it, as `batchVisibility` says for the
    * kind and the person filed, never wider than the batch's choice. A
-   * teen's are their own.
+   * teen's are their own. A batch made Only me files Only me, the
+   * uploader's own where nobody is sent: one sent as somebody else's, with
+   * nobody saying who can see it, is refused as a single add's is
+   * (PRIVATE_TO_THEM), never widened (the I1 review).
    */
   private async filled(
     trx: Db,
@@ -864,8 +1016,9 @@ export class BatchService {
     b: BatchRow,
   ): Promise<CaptureMetadata> {
     const out: CaptureMetadata = { ...sent };
-    if (out.owner_member_id === undefined && b.default_owner_member_id !== null) {
-      out.owner_member_id = b.default_owner_member_id;
+    if (out.owner_member_id === undefined) {
+      if (b.default_owner_member_id !== null) out.owner_member_id = b.default_owner_member_id;
+      else if (b.default_visibility === 'private') out.owner_member_id = p.memberId;
     }
     if (out.type_key === undefined && b.default_type_key !== null) {
       out.type_key = b.default_type_key;
@@ -907,14 +1060,19 @@ export class BatchService {
    * duplicates: a document the caller can see out of the Trash, or else an
    * item of theirs waiting, sent before it — in this batch first. Asked
    * now, under the caller's own rules, so nothing they cannot see is named.
+   * Found in one pass (the I1 review): the first of each hash of theirs is
+   * asked of the database, the first in each batch read from its own rows.
    */
   private async itemsOf(trx: Db, p: Principal, batchIds: string[]): Promise<BatchItemView[]> {
     const rows = (await trx
       .selectFrom('incoming_file as f')
+      .innerJoin('intake_batch as ib', 'ib.id', 'f.batch_id')
       .leftJoin('document as d', (j) => j.onRef('d.id', '=', 'f.document_id').on(seenDocument(p)))
       .select([
         'f.id',
         'f.batch_id',
+        'ib.name as batch_name',
+        'ib.created_at as batch_created_at',
         'f.original_name',
         'f.mime',
         'f.byte_size',
@@ -935,14 +1093,16 @@ export class BatchService {
     const waiting = rows.filter((r) => r.state === 'received' && r.sha256);
     const hashes = [...new Set(waiting.map((r) => (r.sha256 as Buffer).toString('hex')))];
     const docs = new Map<string, { id: string; title: string | null }>();
-    const others: Array<{
+    interface Other {
       id: string;
       batch_id: string;
       name: string | null;
       created_at: Date;
       sha: string;
       received_at: Date;
-    }> = [];
+    }
+    // The first of each hash among all their items waiting, whichever batch.
+    const firstOf = new Map<string, Other>();
     if (hashes.length > 0) {
       const bytes = sql`(select decode(h, 'hex') from unnest(${hashes}::text[]) as h)`;
       const found = await sql<{ sha: string; id: string; title: string | null }>`
@@ -955,26 +1115,38 @@ export class BatchService {
            and ${seenDocument(p)}
          order by v.sha256, d.created_at, d.id`.execute(trx);
       for (const r of found.rows) docs.set(r.sha, { id: r.id, title: r.title });
-      const items = await sql<{
-        id: string;
-        batch_id: string;
-        name: string | null;
-        created_at: Date;
-        sha: string;
-        received_at: Date;
-      }>`
-        select o.id, o.batch_id, b.name, b.created_at, encode(o.sha256, 'hex') as sha, o.received_at
-          from incoming_file o
-          join intake_batch b on b.id = o.batch_id
-         where o.batch_id is not null
-           and o.state = 'received'
-           and o.requester_member_id = ${p.memberId}::uuid
-           and o.sha256 in ${bytes}`.execute(trx);
-      others.push(...items.rows);
+      // The batch each first is in, named once it is found: one a hash.
+      const firsts = await sql<Other>`
+        select f.id, f.batch_id, b.name, b.created_at, f.sha, f.received_at
+          from (select distinct on (o.sha256)
+                       o.id, o.batch_id, encode(o.sha256, 'hex') as sha, o.received_at
+                  from incoming_file o
+                 where o.batch_id is not null
+                   and o.state = 'received'
+                   and o.requester_member_id = ${p.memberId}::uuid
+                   and o.sha256 in ${bytes}
+                 order by o.sha256, o.received_at, o.id) f
+          join intake_batch b on b.id = f.batch_id`.execute(trx);
+      for (const o of firsts.rows) firstOf.set(o.sha, o);
     }
     const before = (a: { received_at: Date; id: string }, b: { received_at: Date; id: string }) =>
       a.received_at.getTime() < b.received_at.getTime() ||
       (a.received_at.getTime() === b.received_at.getTime() && a.id < b.id);
+    // And the first of each hash in each of these batches: their own rows, oldest first.
+    const firstIn = new Map<string, Other>();
+    for (const r of waiting) {
+      const sha = (r.sha256 as Buffer).toString('hex');
+      const inBatch = `${sha}:${r.batch_id}`;
+      if (firstIn.has(inBatch)) continue;
+      firstIn.set(inBatch, {
+        id: r.id,
+        batch_id: r.batch_id as string,
+        name: r.batch_name,
+        created_at: r.batch_created_at,
+        sha,
+        received_at: r.received_at as Date,
+      });
+    }
     return rows.map((r) => {
       const sha = r.sha256 ? r.sha256.toString('hex') : '';
       let duplicate: BatchDuplicate | null = null;
@@ -983,19 +1155,16 @@ export class BatchService {
         if (doc) {
           duplicate = { of: 'document', document_id: doc.id, title: doc.title };
         } else {
+          // Sent before it: in this batch first, then in any of theirs.
           const me = { id: r.id, received_at: r.received_at as Date };
-          const earlier = others
-            .filter((o) => o.sha === sha && o.id !== r.id && before(o, me))
-            .sort((a, b) =>
-              a.batch_id === r.batch_id && b.batch_id !== r.batch_id
-                ? -1
-                : b.batch_id === r.batch_id && a.batch_id !== r.batch_id
-                  ? 1
-                  : before(a, b)
-                    ? -1
-                    : 1,
-            );
-          const first = earlier[0];
+          const same = firstIn.get(`${sha}:${r.batch_id}`);
+          const any = firstOf.get(sha);
+          const first =
+            same && same.id !== r.id && before(same, me)
+              ? same
+              : any && any.id !== r.id && before(any, me)
+                ? any
+                : null;
           if (first) {
             duplicate = {
               of: 'item',
@@ -1008,6 +1177,8 @@ export class BatchService {
           }
         }
       }
+      // A decided item's pages went with its bytes: none to ask for (the I1 review).
+      const decided = r.state !== 'received';
       return {
         id: r.id,
         batch_id: r.batch_id as string,
@@ -1018,15 +1189,15 @@ export class BatchService {
         arrived_at: (r.received_at as Date).toISOString(),
         state: r.state === 'accepted' ? 'accepted' : 'waiting',
         reading: (r.read_state ?? 'waiting') as BatchReadState,
-        preview_state: previewState(r.preview_state),
-        preview_pages: r.preview_state === 'ready' ? r.preview_pages : null,
+        preview_state: decided ? 'none' : previewState(r.preview_state),
+        preview_pages: !decided && r.preview_state === 'ready' ? r.preview_pages : null,
         duplicate,
         document_id: r.state === 'accepted' && r.document_seen ? r.document_id : null,
       };
     });
   }
 
-  private view(p: Principal, b: BatchRow, items: BatchItemView[]): BatchView {
+  private view(p: Principal, b: BatchRow, counts: BatchCounts): BatchView {
     return {
       id: b.id,
       name: b.name,
@@ -1042,12 +1213,7 @@ export class BatchService {
         tags: b.default_tags,
         is_essential: b.default_essential,
       },
-      counts: {
-        items: items.length,
-        waiting: items.filter((i) => i.state === 'waiting').length,
-        accepted: items.filter((i) => i.state === 'accepted').length,
-        duplicates: items.filter((i) => i.state === 'waiting' && i.duplicate !== null).length,
-      },
+      counts,
     };
   }
 
@@ -1110,6 +1276,16 @@ export class BatchService {
       await (await this.vaults.adapterById(trx, at.vaultId)).delete(at.key);
     }).catch(() => undefined);
   }
+}
+
+/** A batch's counts, from its items as its page gives them. */
+function countsOf(items: BatchItemView[]): BatchCounts {
+  return {
+    items: items.length,
+    waiting: items.filter((i) => i.state === 'waiting').length,
+    accepted: items.filter((i) => i.state === 'accepted').length,
+    duplicates: items.filter((i) => i.state === 'waiting' && i.duplicate !== null).length,
+  };
 }
 
 /** A name as typed, spaces tidied; blank is none. */

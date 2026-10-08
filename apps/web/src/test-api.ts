@@ -300,7 +300,7 @@ export interface FakeState {
   refuseWith?: (
     method: string,
     path: string,
-  ) => { status: number; code: string; message: string } | undefined;
+  ) => { status: number; code: string; message: string; retryAfter?: number } | undefined;
   types: Array<Record<string, unknown>>;
   /** GET /document-attributes: the library a type's fields come from (0.5.6). */
   attributes?: Array<Record<string, unknown>>;
@@ -559,6 +559,8 @@ export interface FakeState {
   batchRefuse?: Record<string, { status: number; code: string; message: string }>;
   /** The vault's most for one file (`limits.max_upload_bytes`). */
   maxUploadBytes?: number;
+  /** How many files sent by XMLHttpRequest were stopped part way (I1 review: a sign-out stops one). */
+  xhrStopped?: number;
 }
 
 /** A batch as the fake keeps it (I1): its items, removed ones marked so. */
@@ -568,7 +570,7 @@ export interface FakeBatch {
   created_at: string;
   ends_at: string;
   defaults: BatchDefaults;
-  items: Array<BatchItemView & { removed?: boolean }>;
+  items: Array<BatchItemView & { removed?: boolean; key?: string }>;
 }
 
 /** What has to be said the first time a document is Only me (SEC-19), as the vault says it. */
@@ -867,7 +869,25 @@ export function installFakeApi(state: FakeState) {
       return Promise.reject(new TypeError('Failed to fetch'));
     }
     const refused = state.refuseWith?.(method, path);
-    if (refused) return refuse(refused.status, refused.code, refused.message);
+    if (refused) {
+      // Asked to wait (a 429, a 503): how long, as the vault says it.
+      if (refused.retryAfter !== undefined) {
+        return Promise.resolve(
+          Response.json(
+            {
+              error: {
+                code: refused.code,
+                message: refused.message,
+                retriable: true,
+                request_id: 'r',
+              },
+            },
+            { status: refused.status, headers: { 'retry-after': String(refused.retryAfter) } },
+          ),
+        );
+      }
+      return refuse(refused.status, refused.code, refused.message);
+    }
     if (path === '/api/v1/capabilities') {
       return json({
         product: 'family-document-vault',
@@ -2121,7 +2141,7 @@ export function installFakeApi(state: FakeState) {
       };
       const detail = (b: FakeBatch) => ({
         ...view(b),
-        items: kept(b).map(({ removed: _removed, ...i }) => i),
+        items: kept(b).map(({ removed: _removed, key: _key, ...i }) => i),
       });
       if (!id && method === 'GET') return json({ items: state.batches.map(view) });
       if (!id && method === 'POST') {
@@ -2158,6 +2178,17 @@ export function installFakeApi(state: FakeState) {
       if (!itemId && method === 'POST') {
         const file = (init?.body as FormData | undefined)?.get('file') as File | null;
         if (!file) return refuse(422, 'validation_failed', 'Choose a file to send.');
+        // Sent again with the key of one that arrived: that item (the I1 review).
+        const key = (init?.headers as Record<string, string> | undefined)?.['idempotency-key'];
+        const before = key ? b.items.find((i) => i.key === key) : undefined;
+        if (before?.removed) {
+          return refuse(409, 'already_decided', 'This file has been accepted or removed already.');
+        }
+        if (before)
+          return json(
+            detail(b).items.find((i) => i.id === before.id),
+            201,
+          );
         const refused = state.batchRefuse?.[file.name];
         if (refused) return refuse(refused.status, refused.code, refused.message);
         return sha256Of(file).then((sha) => {
@@ -2186,7 +2217,7 @@ export function installFakeApi(state: FakeState) {
               : null,
             document_id: null,
           };
-          b.items.push(item);
+          b.items.push({ ...item, ...(key ? { key } : {}) });
           return json(item, 201);
         });
       }
@@ -2225,7 +2256,22 @@ export function installFakeApi(state: FakeState) {
         state.documents.push(made);
         item.state = 'accepted';
         item.document_id = made.id;
-        return json({ document_id: made.id, version_id: 'v-batch' }, 201);
+        // Its pages went with its bytes (the I1 review).
+        item.preview_state = 'none';
+        item.preview_pages = null;
+        // Put in a collection: who else will now see it, as the collection says (5.33).
+        const into =
+          sent.collection_id !== undefined ? sent.collection_id : b.defaults.collection_id;
+        return json(
+          {
+            document_id: made.id,
+            version_id: 'v-batch',
+            ...(into && state.collectionWarnings?.length
+              ? { warnings: state.collectionWarnings }
+              : {}),
+          },
+          201,
+        );
       }
     }
     // What came in through a request, looked at before it is filed (5.23).
@@ -3749,6 +3795,7 @@ export function installFakeApi(state: FakeState) {
     abort() {
       if (this.stopped) return;
       this.stopped = true;
+      state.xhrStopped = (state.xhrStopped ?? 0) + 1;
       this.onabort?.();
     }
     send(form: FormData) {
