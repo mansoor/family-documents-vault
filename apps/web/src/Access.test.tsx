@@ -471,7 +471,9 @@ describe('what a viewer can see (5.33)', () => {
     cleanup();
     // A viewer with nothing given: no invitation to file.
     at('/', { members: [{ ...ME, role: 'viewer' }], documents: [] }, 'viewer');
-    expect(await screen.findByText('Nothing here for you yet.')).toBeInTheDocument();
+    // Asked for afresh while waiting: on a loaded machine the paragraph first
+    // found may be drawn again before it is looked at.
+    await waitFor(() => expect(screen.getByText('Nothing here for you yet.')).toBeInTheDocument());
     expect(screen.queryByText(/Add your first document/)).toBeNull();
   });
 });

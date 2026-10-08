@@ -504,11 +504,16 @@ describe('the bar on top', () => {
 
   it('turned off in Settings, on this device, neither key does anything (WCAG 2.1.4)', async () => {
     at('/settings', EVERYTHING);
-    const box = await screen.findByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' });
-    expect(box).toBeChecked();
-    expect(box).toHaveAccessibleDescription(/\/ goes to the search box and n to Add/);
-    fireEvent.click(box);
-    expect(box).not.toBeChecked();
+    // Asked for afresh each time, and waited for: a page drawn after the
+    // vault answered may not yet be listening to the choice when it is
+    // clicked (useSyncExternalStore subscribes in an effect), and catches
+    // up a moment later — on a loaded machine, after the click.
+    const box = () => screen.getByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' });
+    await screen.findByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' });
+    expect(box()).toBeChecked();
+    expect(box()).toHaveAccessibleDescription(/\/ goes to the search box and n to Add/);
+    fireEvent.click(box());
+    await waitFor(() => expect(box()).not.toBeChecked());
     expect(localStorage.getItem('fdv.shortcuts')).toBe('off');
     // Nor said to be there.
     const field = screen.getByRole('searchbox', { name: 'Search the vault' });
@@ -530,9 +535,9 @@ describe('the bar on top', () => {
     // And on again.
     cleanup();
     at('/settings', EVERYTHING);
-    fireEvent.click(
-      await screen.findByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' }),
-    );
+    await screen.findByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' });
+    fireEvent.click(box());
+    await waitFor(() => expect(box()).toBeChecked());
     expect(localStorage.getItem('fdv.shortcuts')).toBeNull();
     fireEvent.keyDown(document.body, { key: '/' });
     await waitFor(() =>
@@ -542,18 +547,20 @@ describe('the bar on top', () => {
 
   it('a browser that keeps nothing (a private window) still turns them off, for now', async () => {
     at('/settings', EVERYTHING);
-    const box = await screen.findByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' });
+    // Asked for afresh and waited for, as above.
+    const box = () => screen.getByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' });
+    await screen.findByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' });
     // From here on this browser keeps nothing it is given.
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new Error('blocked');
     });
     try {
-      fireEvent.click(box);
-      expect(box).not.toBeChecked();
+      fireEvent.click(box());
+      await waitFor(() => expect(box()).not.toBeChecked());
       fireEvent.keyDown(document.body, { key: '/' });
       expect(screen.getByRole('searchbox', { name: 'Search the vault' })).not.toHaveFocus();
-      fireEvent.click(box);
-      expect(box).toBeChecked();
+      fireEvent.click(box());
+      await waitFor(() => expect(box()).toBeChecked());
     } finally {
       setItem.mockRestore();
     }
