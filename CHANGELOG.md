@@ -6,6 +6,39 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-dev.3] - 2026-10-08 — Phase 6, I1: many documents at once
+
+### Added
+
+- **Add → Many documents** on a computer. Choose files or a folder, or drop them, up to 200 at a time.
+  - **Defaults for the whole batch (optional):** whose documents they are, the kind, who can see them, where the paper copies are kept, a collection, tags, and Essential.
+  - **Sending:** files go up one after another. Progress is shown for each file and for the batch. You can stop after the current file, and send the rest later.
+  - **Refused files:** a file the vault refuses is listed with the reason, and the rest carry on.
+  - **Leaving the page:** the upload carries on while the vault is open in the tab, and a strip at the top shows how far it has got.
+  - **Carrying on:** a batch can be carried on later. Files already in it are skipped.
+- **Your uploads, in the Inbox.** It sits beside Files sent to you, and lists your batches with how many files wait in each and when the batch ends.
+  - **A batch's page** lists its files with their first page, size and any duplicate: a document already in the vault, or a file already in your uploads.
+  - **Accept** opens the "Is this right?" card, filled from the batch's defaults where a detail is blank, and files the document with every detail: kind, title, person, dates, number, who can see it, where it is kept, collection, tags and Essential.
+  - **Remove** takes a file away, and **Remove the batch** takes away everything not yet accepted.
+- **Only you see your uploads until you accept them.** No other member sees them, an owner included: not their names, their number, or a line in the activity log. Files nobody accepts are removed 30 days after the batch was made.
+- **Teens get an Inbox** for their own uploads.
+
+### Changed
+
+- **API:**
+  - `POST /api/v1/batches`, `GET /api/v1/batches`, and `GET`, `PATCH` and `DELETE /api/v1/batches/{id}`;
+  - `POST /api/v1/batches/{id}/items`: one file per request, with an `Idempotency-Key`;
+  - `DELETE …/items/{itemId}`, `POST …/items/{itemId}/accept` and `GET …/items/{itemId}/pages/{n}`;
+  - the feature flag `features.batches`.
+
+  Everything older clients send is unchanged.
+
+- `/incoming` now opens Inbox → Files sent to you.
+
+### Database
+
+- Migration **0062** adds `intake_batch`, which only its uploader can read, and lets `incoming_file` hold batch items. Restore brings batches back, dropping any waiting file whose bytes have gone. Backups include batches; exports leave out files not yet accepted.
+
 ## [0.7.0-dev.2] - 2026-10-07 — Phase 6, R2: documents as a table
 
 ### Added
