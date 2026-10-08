@@ -4022,7 +4022,7 @@ true`; one still on its way is `409 upload_in_progress`; one removed
     `duplicate_document`, `duplicate_in_batch`, `duplicate_item`, `unread`,
     `not_read`, `clash_kind`, `clash_person`, `kind_unsure`,
     `person_unsure`, `expiry_unsure`, `missing`, `person_missing`,
-    `narrowed`); `proposals` (what the card starts from: `type_key`,
+    `not_theirs` (a teen's pages naming someone else), `narrowed`); `proposals` (what the card starts from: `type_key`,
     `owner_member_id`, `issued`, `expires`, `identifier`, `issued_by`, each
     `{ value, from: 'pages' | 'batch' | 'both', confidence, cue }`, and
     `visibility: { value, from: 'batch' | 'kind' | 'narrowed' }`; null once
