@@ -1,4 +1,5 @@
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import { sql } from 'kysely';
 import {
   adapterFromRow,
   LocalAdapter,
@@ -207,6 +208,21 @@ export class VaultService {
           409,
           'vault_in_use',
           'This is where your files are kept right now. Choose another place first.',
+        );
+      }
+      // Files still kept there — a version's, a file sent in, an export —
+      // are said so, never a foreign key's error (the I3 check, N3).
+      const holds = await sql<{ held: boolean }>`
+        select exists (select 1 from document_version where vault_id = ${vaultId}::uuid)
+            or exists (select 1 from incoming_file where vault_id = ${vaultId}::uuid)
+            or exists (select 1 from export where vault_id = ${vaultId}::uuid) as held`.execute(
+        trx,
+      );
+      if (holds.rows[0]?.held) {
+        throw new ApiError(
+          409,
+          'vault_has_files',
+          'Files are still kept in this place, so it cannot be removed. Move them to another place first.',
         );
       }
       const r = await trx.deleteFrom('vault').where('id', '=', vaultId).executeTakeFirst();

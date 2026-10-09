@@ -4063,14 +4063,18 @@ failed: [{ item_id, code, message }], undo_until, more }` (`more`: more
     the Trash meanwhile is `changed`, and kept; so is one a collection's
     link ticked or followed, one any link drew pages of, one with a line in
     the log by anybody else or from outside, and one somebody else put in a
-    collection, set a reminder for or linked to). A kind hidden, of no
+    collection, set a reminder for, snoozed or acknowledged one of its
+    reminders, or linked to, and one an export by somebody else, begun since
+    it was filed, may hold). A kind hidden, of no
     document the caller can see, is no kind in an item's levelling. `GET
 /api/v1/batches?with=levels` gives each batch `levels` (`{ ready, check,
 unrecognised, problem, unread }`); `counts.removed` on every batch.
     **Changed:** `POST /api/v1/documents/{id}/share` holds the document
-    until the link is made: one removed meanwhile is `404`; any other write
-    whose document (or other row it names) went while it waited is `409
-gone_meanwhile`, never a `500`. `@fdv/shared`:
+    until the link is made: one removed meanwhile is `404`, and so is a page
+    looked at, a file downloaded or a copy kept on a phone; any other write
+    naming a row that went while it waited is `409 gone_meanwhile`, never a
+    `500`. `DELETE /api/v1/vaults/{id}` of a place that still keeps files
+    is `409 vault_has_files`. `@fdv/shared`:
     `ACCEPT_READY_MAX`, `ACCEPT_UNDO_MINUTES`, `untouchedAccept`,
     `BatchAcceptReadyInput`, `BatchAcceptReadyResult`, `AcceptReadySkip`,
     `BatchUndoInput`, `BatchUndoResult`, `UndoKept`, `BatchLevelCounts`.

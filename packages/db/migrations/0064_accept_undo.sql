@@ -188,12 +188,20 @@ create constraint trigger incoming_file_undone_document_gone
 
 -- Whether a document Accept all Ready filed has reached anybody but its
 -- uploader: for the uploader alone, about an item of theirs still to be
--- taken back (null to anybody else, or about anything else).
+-- taken back (null to anybody else, or about anything else). Asked with the
+-- document held FOR UPDATE by the caller; this then holds, in one order,
+-- every row that goes with it — what a writer of one of them holds before
+-- the log, as a snooze holds its reminder — and only then the household's
+-- log (appendAudit's lock): nothing that names the document, and no line
+-- about it, comes in before the caller commits, and no writer is left
+-- holding one of them while it waits for the log the caller holds (the I3
+-- check, N2).
 create function incoming_file_document_reached(p_document uuid) returns boolean
-  language plpgsql stable security definer set search_path = pg_catalog, public, pg_temp as $$
+  language plpgsql volatile security definer set search_path = pg_catalog, public, pg_temp as $$
 declare
   hh constant uuid := app_household();
   acct constant uuid := app_account();
+  born timestamptz;
 begin
   if app_actor() is distinct from 'account'
      or not exists (select 1 from incoming_file f
@@ -206,6 +214,31 @@ begin
                        and f.requester_member_id = app_member()) then
     return null;
   end if;
+  select d.created_at into born from document d where d.id = p_document;
+  -- Every row its removal would take, held first, each table in its key's order.
+  perform 1 from document_version where document_id = p_document order by id for update;
+  perform 1 from reminder where document_id = p_document order by id for update;
+  perform 1 from doc_collection_item where document_id = p_document
+   order by collection_id for update;
+  perform 1 from share_link_item where document_id = p_document order by share_id for update;
+  perform 1 from share_page where document_id = p_document
+   order by share_id, version_id, n for update;
+  perform 1 from share_page_failure where document_id = p_document
+   order by share_id, version_id for update;
+  perform 1 from share_session_use where document_id = p_document
+   order by session_id, kind for update;
+  perform 1 from document_link where a = p_document or b = p_document order by a, b for update;
+  perform 1 from private_notice where document_id = p_document order by member_id for update;
+  perform 1 from document_text where document_id = p_document order by version_id for update;
+  perform 1 from document_text_sealed where document_id = p_document
+   order by version_id for update;
+  perform 1 from offline_fill o
+   where o.version_id in (select v.id from document_version v where v.document_id = p_document)
+   order by o.session_id, o.version_id for update;
+  perform 1 from upload_idempotency where document_id = p_document
+   order by idempotency_key for update;
+  -- Then the log, as appendAudit takes it.
+  perform pg_advisory_xact_lock(hashtext('audit:' || hh::text));
   return exists (select 1 from share_link l where l.document_id = p_document)
       or exists (select 1 from share_link_item t
                   where t.document_id = p_document and t.kind <> 'left_out')
@@ -215,14 +248,30 @@ begin
                   where e.household_id = hh
                     and e.object_type = 'document' and e.object_id = p_document
                     and (e.actor_account_id is distinct from acct or e.actor_label is not null))
+      -- Its reminders snoozed or acknowledged by somebody else (N2).
+      or exists (select 1 from audit_event e
+                  where e.household_id = hh
+                    and e.object_type = 'reminder'
+                    and e.object_id in (select m.id from reminder m
+                                         where m.document_id = p_document)
+                    and (e.actor_account_id is distinct from acct or e.actor_label is not null))
       or exists (select 1 from doc_collection_item i
                   where i.document_id = p_document and i.added_by is distinct from acct)
       or exists (select 1 from reminder m
                   where m.document_id = p_document and m.created_by is not null
                     and m.created_by <> acct)
-      or exists (select 1 from document_link k where k.a = p_document or k.b = p_document);
+      or exists (select 1 from document_link k where k.a = p_document or k.b = p_document)
+      -- An export of the vault by somebody else, begun since it was filed:
+      -- it may hold the document (the I3 check, N8).
+      or exists (select 1 from export x
+                  where x.household_id = hh
+                    and x.requested_by is distinct from acct
+                    and x.created_at >= born);
 end $$;
 
+-- Its uploader's Undo asks it, through the application role alone: never
+-- anybody else (the I3 check, N5).
+revoke execute on function incoming_file_document_reached(uuid) from public;
 grant execute on function incoming_file_document_reached(uuid) to fdv_app;
 
 -- 0045's: what is left of a removal, written down and cleared by an owner

@@ -1250,7 +1250,7 @@ export class BatchService {
           doc.updated_by !== p.accountId ||
           versions.length !== 1 ||
           versions[0]?.id !== held.version_id ||
-          (await this.reachedOthers(trx, p, docId))
+          (await this.reachedOthers(trx, docId))
         ) {
           return 'changed';
         }
@@ -1334,23 +1334,23 @@ export class BatchService {
    * uploader (the I3 review, P-I3-1, P-I3-2): then it is kept, and the
    * record of it with it — a document gone outside the family, or somebody
    * else's work on it, is never taken back, and its lines never made
-   * nobody's. Asked with the document held, and the activity log held too
-   * (the advisory lock appendAudit takes, after the document's rows, as
-   * every writer takes it): what names the document, or a line about it,
-   * cannot come in between this and the commit — a row naming it waits on
-   * the document, and then finds it gone.
+   * nobody's. Asked with the document held; the database's function then
+   * holds every row that goes with it, in one order, and only then the
+   * activity log (the advisory lock appendAudit takes, after the rows, as
+   * every writer takes it — the I3 check, N2): what names the document, or
+   * a line about it, cannot come in between this and the commit — a row
+   * naming it waits on the document, and then finds it gone; a reader that
+   * would log a look at it holds it first, and finds it gone (N1).
    *
    * - a link of its own, or a collection's link that ticked or followed it
    *   (anything but left out), or a page any link drew of it, or tried to;
    * - a line in the log about it by anybody else, or from outside (a link's
    *   download, an upload link: `actor_label`);
    * - a collection somebody else put it in, a reminder somebody else made
-   *   for it, a document it was linked to.
+   *   for it, or snoozed or acknowledged, a document it was linked to;
+   * - an export of the vault by somebody else since it was filed (N8).
    */
-  private async reachedOthers(trx: Db, p: Principal, docId: string): Promise<boolean> {
-    await sql`select pg_advisory_xact_lock(hashtext('audit:' || ${p.householdId}::uuid::text))`.execute(
-      trx,
-    );
+  private async reachedOthers(trx: Db, docId: string): Promise<boolean> {
     // Asked of the database with its owner's rights (0064): a teen, say, is
     // given no link's rows, and what they are not given must still count.
     const r = await sql<{ reached: boolean | null }>`
@@ -1825,14 +1825,14 @@ export class BatchService {
       .select(BATCH_COLUMNS)
       .where('b.id', 'in', batchIds)
       .execute();
-    // The kinds as the uploader's card is given them (GET /document-types,
-    // types()): not deleted, and a hidden one only where they can see a
-    // document of it — otherwise none, and an item of it Not recognised, so
-    // the card and Accept all Ready never disagree (the I3 review, W-I3-10).
+    // The kinds exactly as the uploader's card is given them (GET
+    // /document-types, types()): one deleted or hidden only where they can
+    // see a document of it — otherwise none, and an item of it Not
+    // recognised, so the card and Accept all Ready never disagree (the I3
+    // review, W-I3-10; the check, N7).
     const kinds = await trx
       .selectFrom('effective_document_type as t')
       .selectAll('t')
-      .where('t.deleted_at', 'is', null)
       .where(kindGiven(p, sql<boolean>`t.builtin`))
       .where((eb) => eb.or([eb('t.hidden', '=', false), kindSeen(p, true)]))
       .execute();

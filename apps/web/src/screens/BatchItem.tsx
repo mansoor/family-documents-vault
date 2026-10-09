@@ -166,17 +166,35 @@ export function BatchItemScreen() {
     item.level !== undefined &&
     (item.reading === 'waiting' || item.reading === 'reading');
   const polls = useRef(0);
+  const failures = useRef(0);
+  // Each ask, answered or not, arms the next (the I3 check, N6): a failure
+  // waits twice as long each time, up to batchPolling.most.
+  const [asks, setAsks] = useState(0);
   useEffect(() => {
     if (!unreadShown) return;
-    const wait = polls.current >= batchPolling.times ? batchPolling.after : batchPolling.every;
+    const wait =
+      failures.current > 0
+        ? Math.min(batchPolling.every * 2 ** failures.current, batchPolling.most)
+        : polls.current >= batchPolling.times
+          ? batchPolling.after
+          : batchPolling.every;
     const timer = setTimeout(() => {
       polls.current += 1;
-      void fresh().catch(() => null);
+      void fresh()
+        .then(
+          () => {
+            failures.current = 0;
+          },
+          () => {
+            failures.current += 1;
+          },
+        )
+        .finally(() => setAsks((n) => n + 1));
     }, wait);
     return () => clearTimeout(timer);
-    // Asked again after each answer: the batch as it came back.
+    // Asked again after each answer: the batch as it came back, or not.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unreadShown, data]);
+  }, [unreadShown, asks]);
 
   const accept = async (
     b: BatchDetail,
@@ -314,6 +332,13 @@ export function BatchItemScreen() {
           aria-labelledby="item-h"
           onChangeCapture={touch}
           onClickCapture={touch}
+          // Anything but its first field in focus — Skip, Remove, a box —
+          // holds the card as it is: one read meanwhile never moves the focus
+          // off it, nor turns an Enter meant for Skip into Accept (the I3
+          // check, N4).
+          onFocusCapture={(e) => {
+            if (e.target.id !== 'f-type') touch();
+          }}
         >
           <div className="stack item-head">
             <h1 id="item-h" tabIndex={-1} className="clip-2">

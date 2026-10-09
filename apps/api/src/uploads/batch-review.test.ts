@@ -28,6 +28,7 @@ import {
 } from '@fdv/shared';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { wroteWhatWent } from '../app.js';
 import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
 
 /**
@@ -1020,6 +1021,28 @@ describe.skipIf(!testAdminUrl())('the review queue: Accept all Ready and Undo (I
     await keptAs(three.b, three.it, three.docId);
   });
 
+  it('the rows alone count, whatever the log says: changed by somebody else, or a reminder of theirs (P-I3-2)', async () => {
+    const ownerAccount = (
+      await admin.query<{ account_id: string }>(
+        'select account_id from account_household where member_id = $1',
+        [owner.member_id],
+      )
+    ).rows[0]?.account_id as string;
+    const edited = await acceptedOne({ visibility: 'household' });
+    await admin.query('update document set updated_by = $2 where id = $1', [
+      edited.docId,
+      ownerAccount,
+    ]);
+    await keptAs(edited.b, edited.it, edited.docId);
+    const reminded = await acceptedOne({ visibility: 'household' });
+    await admin.query(
+      `insert into reminder (household_id, document_id, kind, fire_at, note, created_by)
+       values ($1, $2, 'manual', '2030-01-01', 'Renew it', $3)`,
+      [hh, reminded.docId, ownerAccount],
+    );
+    await keptAs(reminded.b, reminded.it, reminded.docId);
+  });
+
   it('a reminder asked for while Undo holds the document waits, then finds it gone: 409, never 500 (P-I3-2)', async () => {
     const { b, it, docId } = await acceptedOne({ visibility: 'household' });
     let release: () => void = () => undefined;
@@ -1110,6 +1133,211 @@ describe.skipIf(!testAdminUrl())('the review queue: Accept all Ready and Undo (I
       expect(out.skipped).toEqual([{ item_id: it.id, reason: 'not_ready', level: 'unrecognised' }]);
     } finally {
       await call(owner, 'PATCH', '/api/v1/document-types/vehicle_registration', { hidden: false });
+    }
+  });
+
+  /** Undo held where it waits for the household's log: the log held here, by another connection. */
+  const withLogHeld = async <T>(run: () => Promise<T>): Promise<T> => {
+    const locker = createPool(h.adminUrl, 1);
+    const c = await locker.connect();
+    await c.query(`select pg_advisory_lock(hashtext('audit:' || $1::uuid::text))`, [hh]);
+    try {
+      return await run();
+    } finally {
+      await c.query(`select pg_advisory_unlock(hashtext('audit:' || $1::uuid::text))`, [hh]);
+      c.release();
+      await locker.end();
+    }
+  };
+  /** Until somebody waits for the household's log (Undo, holding the document and what goes with it). */
+  const logWaited = async () => {
+    for (let i = 0; i < 200; i++) {
+      const n = await admin.query<{ n: number }>(
+        `select count(*)::int as n from pg_locks
+          where locktype = 'advisory' and not granted
+            and database = (select oid from pg_database where datname = current_database())`,
+      );
+      if ((n.rows[0]?.n ?? 0) >= 1) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error('Undo never waited for the log');
+  };
+  type Answer = Awaited<ReturnType<typeof call>>;
+  /** Undo started and waiting for the log, then the other asked for; both answered. */
+  const raced = async (first: () => Promise<Answer>, second: () => Promise<Answer>) => {
+    let a: Promise<Answer> = Promise.reject(new Error('not started'));
+    let b: Promise<Answer> = Promise.reject(new Error('not started'));
+    a.catch(() => undefined);
+    b.catch(() => undefined);
+    await withLogHeld(async () => {
+      a = first();
+      await logWaited();
+      b = second();
+      await new Promise((r) => setTimeout(r, 300));
+    });
+    return Promise.all([a, b]);
+  };
+  const versionOf = async (docId: string) =>
+    (
+      await admin.query<{ id: string }>('select id from document_version where document_id = $1', [
+        docId,
+      ])
+    ).rows[0]?.id as string;
+
+  it('a download asked for while Undo holds the document waits for it, and finds it gone: 404, and no line about it (N1)', async () => {
+    const { b, it, docId } = await acceptedOne({ visibility: 'household' });
+    const v = await versionOf(docId);
+    const [u, d] = await raced(
+      () => undo(adult, b.id, [it.id]),
+      () => call(owner, 'GET', `/api/v1/versions/${v}/content`),
+    );
+    expect(u.json<BatchUndoResult>().restored).toEqual([it.id]);
+    expect(d.statusCode).toBe(404);
+    const lines = await admin.query<{ action: string }>(
+      `select action from audit_event where object_id = $1 and action = 'document.downloaded'`,
+      [docId],
+    );
+    expect(lines.rows).toEqual([]);
+  });
+
+  it('a page looked at while Undo holds the document waits for it, and finds it gone: 404, and no line about it (N1)', async () => {
+    const { b, it, docId } = await acceptedOne({ visibility: 'household' });
+    const v = await versionOf(docId);
+    // Its pages drawn, as the worker leaves them.
+    await admin.query(
+      "update document_version set preview_state = 'ready', preview_pages = 1 where id = $1",
+      [v],
+    );
+    const [u, l] = await raced(
+      () => undo(adult, b.id, [it.id]),
+      () => call(owner, 'GET', `/api/v1/versions/${v}/pages/1`),
+    );
+    expect(u.json<BatchUndoResult>().restored).toEqual([it.id]);
+    expect(l.statusCode).toBe(404);
+    const lines = await admin.query(
+      "select 1 from audit_event where object_id = $1 and action = 'document.viewed'",
+      [docId],
+    );
+    expect(lines.rowCount).toBe(0);
+  });
+
+  it('a reminder of it snoozed while Undo holds it waits, never a deadlock; snoozed first by somebody else, it is kept (N2)', async () => {
+    const one = await acceptedOne({ visibility: 'household' });
+    const rem = (
+      await admin.query<{ id: string }>('select id from reminder where document_id = $1', [
+        one.docId,
+      ])
+    ).rows[0]?.id as string;
+    expect(rem).toBeTruthy();
+    const [u, z] = await raced(
+      () => undo(adult, one.b.id, [one.it.id]),
+      () => call(owner, 'POST', `/api/v1/reminders/${rem}/snooze`, { until: '2030-01-01' }),
+    );
+    expect(u.json<BatchUndoResult>().restored).toEqual([one.it.id]);
+    expect(z.statusCode, z.body).toBe(404);
+
+    const two = await acceptedOne({ visibility: 'household' });
+    const rem2 = (
+      await admin.query<{ id: string }>('select id from reminder where document_id = $1', [
+        two.docId,
+      ])
+    ).rows[0]?.id as string;
+    const snoozed = await call(owner, 'POST', `/api/v1/reminders/${rem2}/snooze`, {
+      until: '2030-01-01',
+    });
+    expect(snoozed.statusCode, snoozed.body).toBe(200);
+    await keptAs(two.b, two.it, two.docId);
+  });
+
+  it('only a row written naming one that went is 409; a removal still referenced is the server’s fault; a place that keeps files says so (N3)', async () => {
+    expect(
+      wroteWhatWent({
+        code: '23503',
+        detail: 'Key (document_id)=(x) is not present in table "document".',
+      }),
+    ).toBe(true);
+    expect(
+      wroteWhatWent({
+        code: '23503',
+        detail: 'Key (id)=(x) is still referenced from table "document_version".',
+      }),
+    ).toBe(false);
+    const made = await call(owner, 'POST', '/api/v1/vaults', {
+      provider: 'other',
+      endpoint: 'http://127.0.0.1:1',
+      bucket: 'nowhere',
+      access_key_id: 'a',
+      secret_access_key: 'b',
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    const vaults = (await call(owner, 'GET', '/api/v1/vaults')).json<{
+      items: Array<{ id: string; kind: string }>;
+    }>().items;
+    const local = vaults.find((x) => x.kind === 'local') as { id: string };
+    const other = vaults.find((x) => x.id !== local.id) as { id: string };
+    await admin.query('update household set active_vault_id = $1 where id = $2', [other.id, hh]);
+    try {
+      const del = await call(owner, 'DELETE', `/api/v1/vaults/${local.id}`);
+      expect(del.statusCode, del.body).toBe(409);
+      expect(del.json<{ error: { code: string } }>().error.code).toBe('vault_has_files');
+    } finally {
+      await admin.query('update household set active_vault_id = $1 where id = $2', [local.id, hh]);
+    }
+  });
+
+  it('what tells Undo it has reached others is the application role’s alone: nobody else may call it (N5)', async () => {
+    const acl = await admin.query<{ acl: string }>(
+      `select proacl::text as acl from pg_proc where proname = 'incoming_file_document_reached'`,
+    );
+    expect(acl.rows[0]?.acl).toMatch(/fdv_app=X/);
+    expect(acl.rows[0]?.acl).not.toMatch(/(^|[{,])=X/);
+  });
+
+  it('a household kind deleted, of a document the uploader can see: levelled as their card is given it (N7)', async () => {
+    const kind = await call(owner, 'POST', '/api/v1/document-types', {
+      label: `Boat licence ${randomUUID().slice(0, 4)}`,
+      category: 'other',
+    });
+    expect(kind.statusCode, kind.body).toBe(201);
+    const key = kind.json<DocumentTypeView>().key;
+    const theirs = await call(adult, 'POST', '/api/v1/documents', {
+      title: 'The boat',
+      type_key: key,
+      // Their own, Only me: the owner who deletes the kind sees none of its documents.
+      visibility: 'private',
+      owner_member_id: adult.member_id,
+    });
+    expect(theirs.statusCode, theirs.body).toBe(201);
+    const gone = await call(owner, 'DELETE', `/api/v1/document-types/${key}`);
+    expect(gone.statusCode, gone.body).toBeLessThan(300);
+    const given = await types(adult);
+    expect(given.some((t) => t.key === key)).toBe(true);
+    const b = await made(adult, { name: 'Deleted kind' });
+    const it = await readyItem(adult, b.id, {
+      type_key: { value: key, confidence: 0.97, cue: 'kind_words' },
+      owner_member_id: { value: adult.member_id, confidence: 0.9, cue: 'name_labelled' },
+    });
+    const got = await itemOf(adult, b.id, it.id);
+    expect(got.level).not.toBe('unrecognised');
+    expect(got.proposals?.type_key?.value).toBe(key);
+  });
+
+  it('an export of the vault begun by somebody else since it was filed may hold it: kept (N8)', async () => {
+    const { b, it, docId } = await acceptedOne({ visibility: 'household' });
+    const ownerAccount = (
+      await admin.query<{ account_id: string }>(
+        'select account_id from account_household where member_id = $1',
+        [owner.member_id],
+      )
+    ).rows[0]?.account_id as string;
+    const x = await admin.query<{ id: string }>(
+      `insert into export (household_id, requested_by, state) values ($1, $2, 'running') returning id`,
+      [hh, ownerAccount],
+    );
+    try {
+      await keptAs(b, it, docId);
+    } finally {
+      await admin.query('delete from export where id = $1', [x.rows[0]?.id]);
     }
   });
 

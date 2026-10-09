@@ -191,6 +191,7 @@ begin
   -- Whether a document Accept all Ready filed has reached anybody else
   -- (0064, the I3 review): asked by its uploader's Undo.
   if to_regprocedure('public.incoming_file_document_reached(uuid)') is not null then
+    revoke execute on function public.incoming_file_document_reached(uuid) from public;
     grant execute on function public.incoming_file_document_reached(uuid) to fdv_app;
   end if;
 end $$;

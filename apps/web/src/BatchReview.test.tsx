@@ -855,3 +855,71 @@ describe('the review round (I3)', () => {
     expect(shown).toHaveTextContent('10 more files were not sent');
   });
 });
+
+describe('the check’s findings (I3)', () => {
+  const pair = (types: DocumentTypeView[]) => [
+    item('item-1', 'a.pdf', { proposal: PASSPORT('me') }, types),
+    item('item-2', 'b.pdf', { reading: 'reading' }, types),
+  ];
+
+  it('read while Skip has the focus: the card stays as it is, and Skip keeps the focus (N4)', async () => {
+    const was = { ...batchPolling };
+    batchPolling.every = 20;
+    try {
+      const state = at('/inbox/batches/batch-1/items/item-2', pair, { removed: 0 });
+      await screen.findByText('b.pdf', { selector: 'h1' });
+      const skip = screen.getByRole('button', { name: 'Skip' });
+      skip.focus();
+      fireEvent.focus(skip);
+      const types = state.types as unknown as DocumentTypeView[];
+      Object.assign(
+        state.batches?.[0]?.items[1] as object,
+        item('item-2', 'b.pdf', { proposal: PASSPORT('m-0') }, types),
+      );
+      // Asked again: the file is read now…
+      await screen.findByRole('heading', { level: 1, name: "Aisha's passport" });
+      await new Promise((r) => setTimeout(r, 100));
+      // …and the card is as the person left it, with the focus where it was.
+      expect(screen.getByRole('button', { name: 'Skip' })).toHaveFocus();
+      expect(screen.getByLabelText(/What it is/)).toHaveValue('');
+    } finally {
+      Object.assign(batchPolling, was);
+    }
+  });
+
+  it('a refresh that fails does not stop the asking: the next one finds the file read (N6)', async () => {
+    const was = { ...batchPolling };
+    batchPolling.every = 20;
+    batchPolling.most = 40;
+    const real = window.fetch.bind(window);
+    try {
+      const state = at('/inbox/batches/batch-1/items/item-2', pair, { removed: 0 });
+      await screen.findByText('b.pdf', { selector: 'h1' });
+      let failed = 0;
+      window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          input instanceof Request ? input.url : input instanceof URL ? input.href : input;
+        if (/\/batches\/batch-1$/.test(url) && failed < 2) {
+          failed += 1;
+          return Response.json(
+            { error: { code: 'internal', message: 'Something went wrong.', request_id: 'r' } },
+            { status: 500 },
+          );
+        }
+        return real(input, init);
+      };
+      await waitFor(() => expect(failed).toBe(2));
+      const types = state.types as unknown as DocumentTypeView[];
+      Object.assign(
+        state.batches?.[0]?.items[1] as object,
+        item('item-2', 'b.pdf', { proposal: PASSPORT('m-0') }, types),
+      );
+      expect(
+        await screen.findByRole('heading', { level: 1, name: "Aisha's passport" }),
+      ).toBeVisible();
+    } finally {
+      window.fetch = real;
+      Object.assign(batchPolling, was);
+    }
+  });
+});
