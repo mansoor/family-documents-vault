@@ -4264,3 +4264,266 @@ html:has(.shell-phone):has(.has-toast) {
 .viewer-note p {
   margin: 0;
 }
+
+/* ---- Phase 6, R4: Home, People, Collections, Activity and Trash ----
+   Home from 768 px is a dashboard: what needs doing, what came, and the
+   kinds of thing on the left; your uploads, the people and the collections
+   beside them. The lists are tables as long as their rows, the page
+   scrolling; the Trash's is R2's grid, with its box and bar. */
+.shell-wide .page.page-dash,
+.shell-mid .page.page-dash {
+  max-width: 1280px;
+}
+
+.dash {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+/* 768–1023 px: two columns of the same width. */
+.shell-mid .dash {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.dash-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.dash-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px 18px;
+  border-radius: var(--radius-l);
+}
+
+.dash-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.dash-h {
+  font-size: 19px;
+}
+
+.dash-all {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 15px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.dash-all:focus-visible,
+.line-link:focus-visible,
+.person-cell:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Inside a card, what was a section on a phone needs no frame of its own. */
+.dash-card .attention,
+.dash-card .tiles,
+.dash-card .list {
+  margin: 0;
+}
+
+/* As many tiles across as the card has room for. */
+.dash-card .tiles {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+
+.dash-big {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.dash-uploads p {
+  margin: 0;
+}
+
+.dash-action {
+  align-self: flex-start;
+}
+
+.dash-card .people-row {
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+
+/* A table as long as its rows, the page scrolling: no box of its own to scroll down. */
+.tbl-wrap.tbl-static {
+  flex: none;
+  min-height: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-l);
+}
+
+.tbl-plain tbody tr,
+.trash-tbl tbody tr {
+  cursor: default;
+}
+
+.tbl-plain tbody tr:hover td {
+  background: var(--surface);
+}
+
+.tbl-plain tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.person-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--tap);
+  max-width: 100%;
+  color: var(--ink);
+}
+
+.person-cell .cell-title {
+  overflow-wrap: anywhere;
+}
+
+.line-link {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--border-input);
+  text-underline-offset: 3px;
+}
+
+.line-link:hover {
+  text-decoration-color: currentColor;
+}
+
+.activity-tbl tr.notable td:last-child {
+  font-weight: 700;
+}
+
+.activity-tbl td {
+  vertical-align: top;
+}
+
+.filter-day {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.filter-day input {
+  font: inherit;
+  font-size: 14px;
+  min-height: var(--tap);
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-input);
+  background: var(--surface);
+  color: var(--ink-soft);
+  max-width: 100%;
+}
+
+.filter-day input.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.filter-day input:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.activity-filters .table-count {
+  margin: 0 0 0 auto;
+}
+
+/* Collections from 768 px: a card each, the whole card the way in; making
+   one is a button of its own size, not a bar across the page. */
+.shell-wide .coll-make,
+.shell-mid .coll-make,
+.shell-wide .people-page > .btn-primary,
+.shell-mid .people-page > .btn-primary {
+  align-self: flex-start;
+}
+
+.coll-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.coll-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  min-height: 112px;
+  color: var(--ink);
+  border-radius: var(--radius-l);
+}
+
+.coll-card:hover {
+  border-color: var(--border-input);
+}
+
+.coll-card:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.coll-name {
+  font-weight: 700;
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.coll-for {
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+.coll-shared {
+  font-size: 14px;
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
+/* The Trash: its box and the bar under it, joined, as the Documents table's. */
+.trash-wrap.tbl-static {
+  border-bottom: 0;
+  border-radius: var(--radius-l) var(--radius-l) 0 0;
+}
+
+.trash-wrap + .visually-hidden + .bulkbar,
+.trash-wrap + .visually-hidden + .tablefoot {
+  margin-top: -18px;
+}
+
+.trash-tbl .trash-asked {
+  font-size: 14px;
+}
+
+/* A title in the Trash is read whole: there is no page to open for the rest. */
+.trash-title {
+  overflow-wrap: anywhere;
+}

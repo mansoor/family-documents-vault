@@ -23,6 +23,7 @@ import {
   VIEWERS_NEED_A_GRANT,
 } from '../collections.js';
 import { storedRole } from '../session.js';
+import { useShellMode } from '../shell.js';
 import { Button, ConfirmDialog, ErrorNote, Sheet, TopBar, TrashIcon } from '../ui.js';
 import { DocRow } from './Home.js';
 import { collectionShareOffered, ShareCollectionPanel } from './ShareCollection.js';
@@ -88,6 +89,8 @@ export function CollectionsScreen() {
     [authVersion],
   );
   const { notice, statusRef } = useArrivedNotice();
+  // From 768 px a grid of cards (R4); on a phone, today's rows.
+  const wide = useShellMode() !== 'phone';
   const [making, setMaking] = useState(false);
   const makeButton = useRef<HTMLButtonElement>(null);
 
@@ -128,30 +131,63 @@ export function CollectionsScreen() {
           <button
             ref={makeButton}
             type="button"
-            className="btn btn-primary"
+            className="btn btn-primary coll-make"
             onClick={() => setMaking(true)}
           >
             Make a collection
           </button>
         ))}
-      <ul className="list" aria-label="Collections">
-        {(data?.collections ?? []).map((l) => (
-          <li key={l.id}>
-            <Link to={`/collections/${l.id}`} className="rowbtn">
-              <span className="doc-title">{l.name}</span>
-              <span className="muted">
-                {documentsWord(l.item_count)} · {audienceLabel(l.audience)}
-                {whose(l, data?.members ?? [])}
-              </span>
-            </Link>
-          </li>
-        ))}
-        {data !== null && data.collections.length === 0 && (
-          <li className="muted">{offered ? 'No collections yet.' : VIEWERS_NEED_A_GRANT}</li>
-        )}
-      </ul>
+      {wide ? (
+        // From 768 px a grid of cards (R4): each a link, as each row is.
+        <ul className="coll-grid" aria-label="Collections">
+          {(data?.collections ?? []).map((l) => (
+            <li key={l.id}>
+              <Link to={`/collections/${l.id}`} className="card coll-card">
+                <span className="coll-name">{l.name}</span>
+                <span className="muted">
+                  {documentsWord(l.item_count)}
+                  {whose(l, data?.members ?? [])}
+                </span>
+                <span className="coll-for">{audienceLabel(l.audience)}</span>
+                {/* Whom its links go to, as the vault gives them to this reader (5.19). */}
+                {l.shared_outside && (
+                  <span className="coll-shared">{sharedWith(l.shared_outside.with)}</span>
+                )}
+              </Link>
+            </li>
+          ))}
+          {data !== null && data.collections.length === 0 && (
+            <li className="muted">{offered ? 'No collections yet.' : VIEWERS_NEED_A_GRANT}</li>
+          )}
+        </ul>
+      ) : (
+        <ul className="list" aria-label="Collections">
+          {(data?.collections ?? []).map((l) => (
+            <li key={l.id}>
+              <Link to={`/collections/${l.id}`} className="rowbtn">
+                <span className="doc-title">{l.name}</span>
+                <span className="muted">
+                  {documentsWord(l.item_count)} · {audienceLabel(l.audience)}
+                  {whose(l, data?.members ?? [])}
+                </span>
+              </Link>
+            </li>
+          ))}
+          {data !== null && data.collections.length === 0 && (
+            <li className="muted">{offered ? 'No collections yet.' : VIEWERS_NEED_A_GRANT}</li>
+          )}
+        </ul>
+      )}
     </main>
   );
+}
+
+/** "Shared with Jane Smith", "Shared outside the family": whom a collection's links are for. */
+function sharedWith(names: string[]): string {
+  const named = names.filter((n) => n.trim() !== '');
+  if (named.length === 0) return 'Shared outside the family';
+  if (named.length === 1) return `Shared with ${named[0]}`;
+  return `Shared with ${named.slice(0, -1).join(', ')} and ${named[named.length - 1]}`;
 }
 
 /** " · Yours", or who made it, when the reader is told who is in the family. */

@@ -2095,6 +2095,8 @@ describe('the quick fixes (5.1)', () => {
           document_id: null,
         },
       ],
+      // Exactly when, on the household's clock (R4).
+      timezone: 'Asia/Tokyo',
     });
     installFakeApi(state);
     signedIn();
@@ -2109,7 +2111,9 @@ describe('the quick fixes (5.1)', () => {
     expect(
       await within(table).findByText('Mansoor moved “Water bill” to the Trash'),
     ).toBeInTheDocument();
-    expect(within(table).getByText(whenExactly('2026-09-25T14:05:00Z'))).toBeInTheDocument();
+    expect(
+      await within(table).findByText(whenExactly('2026-09-25T14:05:00Z', 'Asia/Tokyo')),
+    ).toBeInTheDocument();
     await expectAccessible();
   });
 

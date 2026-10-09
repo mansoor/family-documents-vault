@@ -8,6 +8,7 @@ import {
   canSeeCollection,
   canSeeIdentity,
   CATEGORY_LABELS,
+  describeEvents,
   checkCaptureMetadata,
   checkExtra,
   COLLECTION_AUDIENCES,
@@ -66,6 +67,7 @@ import {
   TYPE_LABEL_MAX,
   UNSEEN_DOCUMENTS,
   type AccessGrant,
+  type ActivityEvent,
   type AccessPreview,
   type BatchDefaults,
   type BatchDuplicate,
@@ -349,6 +351,12 @@ export interface FakeVaultState {
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
   offline: boolean;
+  /**
+   * The activity log, as far as the fake keeps one (R4): each document
+   * created, oldest first. GET /audit says it in the real vault's words,
+   * with who did it and what sort of thing.
+   */
+  activity?: ActivityEvent[];
 }
 
 /** A viewer's limits, as the fake keeps them (5.33): the flags always said. */
@@ -1926,6 +1934,19 @@ export function createFakeVault(): {
         };
         stampNotes(doc, null, whoOf(s).memberId);
         state.documents.push(doc);
+        const actor = state.members.find((m) => m.id === whoOf(s).memberId);
+        (state.activity ??= []).push({
+          id: (state.activity?.length ?? 0) + 1,
+          at: new Date().toISOString(),
+          action: 'document.created',
+          actor: actor?.display_name ?? null,
+          actor_member_id: actor?.id ?? null,
+          actor_label: null,
+          object_type: 'document',
+          object_id: doc.id,
+          object_title: doc.title ?? null,
+          detail: {},
+        });
         return ok(viewOf(doc), 201);
       }
       // Sorted by a column (R2): the Documents table, as the real vault pages it.
@@ -3764,6 +3785,25 @@ export function createFakeVault(): {
         Object.assign(r, { state: 'active', paused_reason: null });
         return ok(r);
       }
+    }
+    // The activity log (R4): what the fake keeps of it, newest first, each
+    // line about a document only to whoever may see the document.
+    if (path === '/api/v1/audit' && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!can(who.role, 'audit.read')) return fail(403, 'forbidden', refusalFor('audit.read'));
+      const events = [...(state.activity ?? [])].reverse().filter((e) => {
+        const doc = state.documents.find((d) => d.id === e.object_id);
+        return (
+          doc !== undefined &&
+          canSee(who, {
+            visibility: doc.visibility ?? 'household',
+            owner_member_id: doc.owner_member_id ?? null,
+          })
+        );
+      });
+      return ok({ items: describeEvents(events), next: null });
     }
     if (path === '/api/v1/members' && init.method === 'GET') {
       const s = session();

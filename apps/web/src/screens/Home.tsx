@@ -2,6 +2,7 @@ import {
   can,
   documentLine,
   initialsFor,
+  levelSummary,
   shortName,
   type DateValue,
   type DocumentTypeView,
@@ -19,8 +20,10 @@ import { accessEndWords } from '../guests.js';
 import { IdentityNotice } from '../identity.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
+import { useShellMode } from '../shell.js';
 import { Button, categoryLabel, CollapsibleSection, ErrorNote, StatusBadge } from '../ui.js';
 import { AfterRestoreBanner } from './AfterRestore.js';
+import { OnlyYou, useMayBatch } from './Batches.js';
 import { mayBringBack, purgeAskedWords } from './Trash.js';
 
 /**
@@ -98,8 +101,142 @@ export function HomeScreen() {
     .filter((c) => c.category)
     .sort((a, b) => b.count - a.count);
 
+  // From 768 px a dashboard of cards (R4); on a phone, today's Home.
+  const dash = useShellMode() !== 'phone';
+  const role = storedRole();
+  /** A section of Home: on a wide screen a card, its heading beside the way to its screen. */
+  const part = (props: {
+    id: string;
+    title: string;
+    to?: { href: string; label: string } | null;
+    className?: string;
+    children: ReactNode;
+  }) =>
+    dash ? (
+      <section
+        className={`card dash-card ${props.className ?? ''}`.trim()}
+        aria-labelledby={props.id}
+      >
+        <div className="dash-head">
+          <h2 id={props.id} className="dash-h">
+            {props.title}
+          </h2>
+          {props.to && (
+            <Link to={props.to.href} className="dash-all">
+              {props.to.label}
+            </Link>
+          )}
+        </div>
+        {props.children}
+      </section>
+    ) : (
+      <section aria-labelledby={props.id}>
+        <h2 id={props.id} className="section-h">
+          {props.title}
+        </h2>
+        {props.children}
+      </section>
+    );
+
+  const people = part({
+    id: 'people-h',
+    title: 'People',
+    // Their screen, for whom it is (the shell's People): never a viewer's.
+    to: can(role, 'family.details') ? { href: '/people', label: 'All people' } : null,
+    children: (
+      <div className="people-row">
+        {/* A name here opens that person's documents; their profile is
+            People's (A64). Back from there comes back here. */}
+        {(data?.members ?? []).map((m: Member) => (
+          <Link
+            key={m.id}
+            to={`/people/${m.id}/documents`}
+            state={{ from: '/' }}
+            className="person-chip"
+            aria-label={`${m.display_name}’s documents`}
+          >
+            <PersonAvatar person={m} initials={letters.get(m.id)} size={52} />
+            <span>{names.get(m.id) ?? m.display_name}</span>
+          </Link>
+        ))}
+        {can(role, 'member.add') && (
+          <Link to="/people" className="person-chip person-add" aria-label="Add a person">
+            <span className="avatar avatar-add" aria-hidden="true">
+              +
+            </span>
+            <span>Add</span>
+          </Link>
+        )}
+      </div>
+    ),
+  });
+
+  const cats = part({
+    id: 'cats-h',
+    title: 'Categories',
+    children:
+      categories.length === 0 ? (
+        <p className="muted">
+          {/* Somebody who files nothing is not asked to (the 5.33 review). */}
+          {can(role, 'document.add')
+            ? 'Nothing filed yet. Add your first document and it will appear here.'
+            : 'Nothing here for you yet.'}
+        </p>
+      ) : (
+        <div className="tiles">
+          {categories.map((c) => (
+            <Link key={c.category} to={`/search?category=${c.category}`} className="tile">
+              <span className="tile-title">{categoryLabel(c.category)}</span>
+              <span className="muted">
+                {c.count} item{c.count === 1 ? '' : 's'}
+              </span>
+            </Link>
+          ))}
+        </div>
+      ),
+  });
+
+  /* The way to the family's collections (5.15): only where the vault has
+     them, and for those who make them. A viewer is given only those
+     granted to them, and any they made before they were a viewer (5.33,
+     U515-11): shown when there are some. */
+  const collections = collectionsOffered(caps, role) ? (
+    <CollectionsOnHome version={changes} quiet={error !== null} card={dash} />
+  ) : (
+    caps?.features.collections === true && (
+      <CollectionsOnHome version={changes} quiet={error !== null} onlyGiven card={dash} />
+    )
+  );
+
+  const recent = part({
+    id: 'recent-h',
+    title: 'Recently added',
+    to: { href: '/documents', label: 'All documents' },
+    className: 'dash-recent',
+    children: (
+      <ul className="list">
+        {(data?.recent ?? []).map((d) => (
+          <DocRow
+            key={d.id}
+            doc={d}
+            types={data?.types}
+            onOpen={() => void navigate(`/documents/${d.id}`)}
+            onChanged={changed}
+          />
+        ))}
+      </ul>
+    ),
+  });
+
+  const attention = (
+    <>
+      <AttentionStrip items={data?.attention ?? []} />
+      <MissingStrip items={data?.suggestions ?? []} />
+    </>
+  );
+
   return (
-    <main className="page page-top has-nav">
+    <main className={`page page-top has-nav${dash ? ' page-dash' : ''}`}>
       {/* Settings is in the shell's navigation since R1, not here; on a
           phone the shell's own bar says the household's name above this. */}
       <header className="topbar home-head">
@@ -142,93 +279,103 @@ export function HomeScreen() {
       {caps?.features.access_restrictions === true && (
         <UnlimitedViewers members={data?.members ?? []} />
       )}
-      <AttentionStrip items={data?.attention ?? []} />
-      <MissingStrip items={data?.suggestions ?? []} />
-
-      <section aria-labelledby="people-h">
-        <h2 id="people-h" className="section-h">
-          People
-        </h2>
-        <div className="people-row">
-          {/* A name here opens that person's documents; their profile is
-              People's (A64). Back from there comes back here. */}
-          {(data?.members ?? []).map((m: Member) => (
-            <Link
-              key={m.id}
-              to={`/people/${m.id}/documents`}
-              state={{ from: '/' }}
-              className="person-chip"
-              aria-label={`${m.display_name}’s documents`}
-            >
-              <PersonAvatar person={m} initials={letters.get(m.id)} size={52} />
-              <span>{names.get(m.id) ?? m.display_name}</span>
-            </Link>
-          ))}
-          {can(storedRole(), 'member.add') && (
-            <Link to="/people" className="person-chip person-add" aria-label="Add a person">
-              <span className="avatar avatar-add" aria-hidden="true">
-                +
-              </span>
-              <span>Add</span>
-            </Link>
-          )}
-        </div>
-      </section>
-
-      <section aria-labelledby="cats-h">
-        <h2 id="cats-h" className="section-h">
-          Categories
-        </h2>
-        {categories.length === 0 ? (
-          <p className="muted">
-            {/* Somebody who files nothing is not asked to (the 5.33 review). */}
-            {can(storedRole(), 'document.add')
-              ? 'Nothing filed yet. Add your first document and it will appear here.'
-              : 'Nothing here for you yet.'}
-          </p>
-        ) : (
-          <div className="tiles">
-            {categories.map((c) => (
-              <Link key={c.category} to={`/search?category=${c.category}`} className="tile">
-                <span className="tile-title">{categoryLabel(c.category)}</span>
-                <span className="muted">
-                  {c.count} item{c.count === 1 ? '' : 's'}
-                </span>
-              </Link>
-            ))}
+      {dash ? (
+        <div className="dash">
+          <div className="dash-col dash-main">
+            {part({
+              id: 'attention-h',
+              title: 'Needs attention',
+              // Its screen, for whom the shell offers it.
+              to: can(role, 'reminder.manage') ? { href: '/reminders', label: 'See all' } : null,
+              className: 'dash-attention',
+              children: attention,
+            })}
+            {recent}
+            {cats}
           </div>
-        )}
-      </section>
-
-      {/* The way to the family's collections (5.15): only where the vault has
-          them, and for those who make them. A viewer is given only those
-          granted to them, and any they made before they were a viewer
-          (5.33, U515-11): shown when there are some. */}
-      {collectionsOffered(caps, storedRole()) ? (
-        <CollectionsOnHome version={changes} quiet={error !== null} />
+          <div className="dash-col dash-side">
+            <UploadsWaiting />
+            {people}
+            {collections}
+          </div>
+        </div>
       ) : (
-        caps?.features.collections === true && (
-          <CollectionsOnHome version={changes} quiet={error !== null} onlyGiven />
-        )
+        <>
+          {attention}
+          {people}
+          {cats}
+          {collections}
+          {recent}
+        </>
       )}
-
-      <section aria-labelledby="recent-h">
-        <h2 id="recent-h" className="section-h">
-          Recently added
-        </h2>
-        <ul className="list">
-          {(data?.recent ?? []).map((d) => (
-            <DocRow
-              key={d.id}
-              doc={d}
-              types={data?.types}
-              onOpen={() => void navigate(`/documents/${d.id}`)}
-              onChanged={changed}
-            />
-          ))}
-        </ul>
-      </section>
     </main>
+  );
+}
+
+/**
+ * What you uploaded many at once that waits for you (I1–I3), as the Inbox
+ * counts it: on a wide Home, for whoever adds many documents, and only for
+ * them — nobody else is given another person's uploads.
+ */
+function UploadsWaiting() {
+  const { mayBatch } = useMayBatch();
+  const { caps, authVersion } = useApp();
+  const levels = caps?.features.batch_review === true;
+  const { data, error } = useLoad(
+    async (t) => (mayBatch ? (await api.batches(t, levels ? { levels } : {})).items : []),
+    [authVersion, mayBatch, levels],
+  );
+  if (!mayBatch) return null;
+  const waiting = (data ?? []).reduce((n, b) => n + b.counts.waiting, 0);
+  const sum = (data ?? []).reduce(
+    (l, b) =>
+      b.levels
+        ? {
+            ready: l.ready + b.levels.ready,
+            check: l.check + b.levels.check,
+            unrecognised: l.unrecognised + b.levels.unrecognised,
+            problem: l.problem + b.levels.problem,
+            unread: l.unread + b.levels.unread,
+          }
+        : l,
+    { ready: 0, check: 0, unrecognised: 0, problem: 0, unread: 0 },
+  );
+  const told = levels && waiting > 0 ? levelSummary(sum) : '';
+  return (
+    <section className="card dash-card dash-uploads" aria-labelledby="uploads-h">
+      <div className="dash-head">
+        <h2 id="uploads-h" className="dash-h">
+          Your uploads waiting
+        </h2>
+        <Link to="/inbox" className="dash-all">
+          Open your Inbox
+        </Link>
+      </div>
+      {/* Quietly: Home says it once already when the vault cannot be reached,
+          and the Inbox, linked above, is where they are. */}
+      {data === null && error !== null ? (
+        <p className="muted">Couldn’t load your uploads. They are in your Inbox.</p>
+      ) : data === null ? (
+        <p className="muted">Loading your uploads…</p>
+      ) : waiting === 0 ? (
+        <p className="muted">Nothing you uploaded is waiting.</p>
+      ) : (
+        <>
+          <p className="dash-big">{waiting} waiting for you</p>
+          {(told || sum.unread > 0) && (
+            <p className="muted">
+              {told}
+              {told && sum.unread > 0 ? ' · ' : ''}
+              {sum.unread > 0 ? `${sum.unread} still to read` : ''}
+            </p>
+          )}
+        </>
+      )}
+      <OnlyYou />
+      <Link to="/add/many" className="btn btn-quiet btn-small dash-action">
+        Add many documents
+      </Link>
+    </section>
   );
 }
 

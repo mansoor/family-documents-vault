@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ACTIVITY_KINDS,
+  activityKind,
   describeEvent,
   describeEvents,
   whenExactly,
@@ -632,5 +634,98 @@ describe('collections of documents (0.5.12)', () => {
       expect(line?.text, action).toMatch(/a collection$/);
       expect(line?.text, action).not.toContain('collection-1');
     }
+  });
+});
+
+describe('who did it, and what sort of thing, for the Activity table (R4)', () => {
+  const by = (over: Partial<ActivityEvent>) =>
+    describeEvent(ev({ actor_member_id: 'm-sarah', ...over }));
+
+  it('gives the member id only where the words name them', () => {
+    expect(by({})).toMatchObject({ actor_member_id: 'm-sarah', kind: 'opened' });
+    // Named in the possessive, and after a colon.
+    expect(by({ action: 'document.cached_offline' })?.actor_member_id).toBe('m-sarah');
+    const ended = by({ action: 'share.revoked', detail: { why: 'collection_deleted' } });
+    expect(ended?.text).toContain(': Sarah deleted');
+    expect(ended?.actor_member_id).toBe('m-sarah');
+  });
+
+  it('never gives it where the words hide who: somebody, a link, a code, an email', () => {
+    // No name to give: "Somebody", or a link's label.
+    expect(by({ actor: null })).toMatchObject({
+      text: 'Somebody downloaded “Home insurance policy”',
+      actor_member_id: null,
+    });
+    expect(by({ actor: null, actor_label: 'shared link (the letting agent)' })).toMatchObject({
+      text: 'Shared link (the letting agent) downloaded “Home insurance policy”',
+      actor_member_id: null,
+    });
+    // Lines that say nothing of who, though the vault knows: even when the
+    // name would happen to begin them.
+    for (const [action, detail] of [
+      ['invitation.accepted', { email: 'sarah@example.test' }],
+      ['share.locked', {}],
+      ['share.code_sent', { to: 's***@example.test' }],
+      ['upload_request.code_sent', {}],
+      ['upload_request.locked', {}],
+      ['upload_request.closed', {}],
+      ['incoming.purged', { files: 1 }],
+      ['incoming.moved', { files: 1 }],
+    ] as const) {
+      expect(by({ action, detail })?.actor_member_id, action).toBeNull();
+      expect(by({ action, detail, actor: 'A' })?.actor_member_id, action).toBeNull();
+    }
+    // A name that merely begins the words, for a line that names nobody.
+    expect(by({ action: 'share.locked', actor: 'A link' })?.actor_member_id).toBeNull();
+    // No member behind the name: nothing to give.
+    expect(by({ actor_member_id: null })?.actor_member_id).toBeNull();
+  });
+
+  it('a kind from the action alone, never finer than the words', () => {
+    expect(activityKind('document.created')).toBe('added');
+    expect(activityKind('document.version_added')).toBe('added');
+    expect(activityKind('document.updated')).toBe('changed');
+    expect(activityKind('collection.item_added')).toBe('changed');
+    expect(activityKind('document.viewed')).toBe('opened');
+    expect(activityKind('document.downloaded')).toBe('opened');
+    expect(activityKind('share.created')).toBe('shared');
+    expect(activityKind('upload_request.submitted')).toBe('shared');
+    expect(activityKind('member.locked')).toBe('people');
+    expect(activityKind('identity.revealed')).toBe('people');
+    expect(activityKind('access.restricted')).toBe('people');
+    expect(activityKind('auth.signed_in')).toBe('sign_in');
+    expect(activityKind('credential.passkey_added')).toBe('sign_in');
+    expect(activityKind('document.deleted')).toBe('trash');
+    expect(activityKind('document.purged')).toBe('trash');
+    expect(activityKind('vault.added')).toBe('vault');
+    expect(activityKind('export.requested')).toBe('vault');
+    expect(activityKind('something.new')).toBe('vault');
+    // Every kind has its words.
+    for (const k of ['added', 'changed', 'opened', 'shared', 'people', 'sign_in', 'trash']) {
+      expect(
+        ACTIVITY_KINDS.some((x) => x.value === k),
+        k,
+      ).toBe(true);
+    }
+  });
+
+  it('says when on the household’s clock and calendar, given its time zone (the review)', () => {
+    const at = '2026-09-30T22:12:00Z';
+    // 23:12 on the 30th in London; 12:12 on 1 October in Kiritimati.
+    expect(whenWords(at, new Date('2026-10-08T12:00:00Z'), 'Europe/London')).toBe(
+      '30 September, 11:12pm',
+    );
+    expect(whenWords(at, new Date('2026-10-08T12:00:00Z'), 'Pacific/Kiritimati')).toBe(
+      '1 October, 12:12pm',
+    );
+    expect(whenWords(at, new Date('2026-10-01T09:00:00Z'), 'Europe/London')).toBe(
+      'yesterday, 11:12pm',
+    );
+    expect(whenWords(at, new Date('2026-10-01T09:00:00Z'), 'Pacific/Kiritimati')).toBe(
+      'today, 12:12pm',
+    );
+    expect(whenWords(at, new Date('2026-10-02T10:00:00Z'), 'Europe/London')).toMatch(
+      /^Wednesday, 11:12pm$/,
+    );
   });
 });

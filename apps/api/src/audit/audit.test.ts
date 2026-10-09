@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { appendAudit, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
-import { describeEvent, type ActivityLine, type DocumentView } from '@fdv/shared';
+import {
+  describeEvent,
+  eventWords,
+  type ActivityEvent,
+  type ActivityLine,
+  type DocumentView,
+} from '@fdv/shared';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
@@ -150,6 +156,61 @@ describe.skipIf(!testAdminUrl())('the activity log', () => {
     expect(lines).toContain('Owner made a link to “Home insurance policy” for the letting agent');
   });
 
+  it('each line says who did it by id only where its words name them, and its kind, to every reader (R4)', async () => {
+    // Somebody the vault cannot name, written as the system would.
+    await withSystem(h.db, owner.household_id, async (trx) => {
+      await appendAudit(trx, {
+        householdId: owner.household_id,
+        action: 'member.added',
+        objectType: 'member',
+        objectId: randomUUID(),
+        detail: { display_name: 'Pickle' },
+      });
+    });
+    const names = new Map(
+      json<{ items: Array<{ id: string; display_name: string }> }>(
+        await h.app.inject({ url: '/api/v1/members', headers: h.as(owner) }),
+      ).items.map((m) => [m.id, m.display_name]),
+    );
+    for (const reader of [owner, sam, teen]) {
+      const lines = (await activity(reader)).items;
+      const line = (text: string) => {
+        const found = lines.find((l) => l.text === text);
+        expect(found, text).toBeDefined();
+        return found as ActivityLine;
+      };
+      expect(line('Owner added “Home insurance policy”')).toMatchObject({
+        actor_member_id: owner.member_id,
+        kind: 'added',
+      });
+      expect(line('Sam downloaded “Home insurance policy”')).toMatchObject({
+        actor_member_id: sam.member_id,
+        kind: 'opened',
+      });
+      // A link, nobody, an invitation accepted by its email: never an id.
+      expect(
+        line('Shared link (the letting agent) opened “Home insurance policy”').actor_member_id,
+      ).toBeNull();
+      expect(line('Somebody added Pickle to the family').actor_member_id).toBeNull();
+      const accepted = lines.filter((l) =>
+        l.text.endsWith('accepted their invitation and can now sign in'),
+      );
+      expect(accepted.length).toBeGreaterThan(0);
+      for (const l of accepted) expect(l.actor_member_id, l.text).toBeNull();
+      // Every line has its kind; no id is given that its words do not name.
+      for (const l of lines) {
+        expect(l.kind, l.text).toBeTruthy();
+        if (l.actor_member_id !== null) {
+          const name = names.get(l.actor_member_id as string);
+          expect(name, l.text).toBeDefined();
+          expect(l.text.startsWith(name as string) || l.text.includes(`: ${name} `), l.text).toBe(
+            true,
+          );
+        }
+      }
+    }
+  });
+
   it('a line about an unknown object type is shown to nobody', async () => {
     // The same action with a sentence, once about a member and once about
     // a kind of thing nobody has said the audience of.
@@ -219,6 +280,80 @@ describe('who reads each line', () => {
     return [...source.matchAll(/case '([a-z_]+\.[a-z_]+)':/g)].map((m) => m[1] as string);
   };
   const withoutRule = (actions: string[]) => actions.filter((a) => !hasRule(a));
+
+  it('every template says whether it names who did it, and says it truly (the review)', async () => {
+    // Every action with a sentence, read from the source.
+    const actions = await said();
+    expect(actions.length).toBeGreaterThan(80);
+    // Each branch a template has: by what its detail and object say.
+    const details: Array<Record<string, unknown>> = [
+      {},
+      { change: 'added' },
+      { change: 'removed' },
+      { why: 'collection_deleted' },
+      { why: 'collection_only_me' },
+      { kind: 'guest', display_name: 'Pip', email: 'pip@example.test' },
+      { replaced: true },
+      { path: 'mail', stop_now: true },
+      { path: 'handover' },
+      { reason: 'restored' },
+      { deceased: true },
+      { to: 'private', from: 'family' },
+      { to: 'owners_and_self', notice_until: '2026-10-10T00:00:00Z' },
+      { to: 'family', from: 'family', withdrawn: 'adults' },
+      { mode: 'show', online: true },
+      { files: 1, from: 'Jane' },
+      { files: 3 },
+      { cancelled_purge: true },
+      { builtin: true, label: 'Pets' },
+      { default_visibility: 'adults', widened: true },
+      { reconfirmed: true },
+      { only_me_shareable: true },
+      { recipient_label: 'the agent', follow_collection: true, permission: 'view' },
+    ];
+    const objects: Array<Partial<ActivityEvent>> = [
+      { object_type: 'document', object_id: 'doc-1', object_title: 'Home insurance policy' },
+      { object_type: 'collection', object_id: 'c-1', object_title: null, collection_name: 'Trip' },
+      { object_type: 'member', object_id: 'm-other', object_title: 'Robin' },
+      // About themselves: "their photo".
+      { object_type: 'member', object_id: 'm-zara', object_title: 'Zara Quill' },
+    ];
+    let seen = 0;
+    for (const action of actions) {
+      for (const detail of details) {
+        for (const object of objects) {
+          const line = eventWords({
+            id: 1,
+            at: '2026-09-22T16:12:00.000Z',
+            action,
+            actor: 'Zara Quill',
+            actor_member_id: 'm-zara',
+            actor_label: null,
+            object_type: null,
+            object_id: null,
+            object_title: null,
+            detail,
+            ...object,
+          });
+          if (!line) continue;
+          seen += 1;
+          // Its word, and its words, agree: named exactly where it says who did it.
+          const words = line.text.replace(/Zara Quill’s photo|of Zara Quill|Zara Quill’s/g, '');
+          const inWords =
+            line.text.startsWith('Zara Quill ') ||
+            line.text.startsWith('Zara Quill’s ') ||
+            line.text.includes(': Zara Quill ');
+          expect(line.named, `${action} ${JSON.stringify(detail)}: ${line.text}`).toBe(inWords);
+          expect(line.actor_member_id, line.text).toBe(line.named ? 'm-zara' : null);
+          // Unnamed, the words never say them: but as what the line is about.
+          if (!line.named && object.object_title !== 'Zara Quill') {
+            expect(words, line.text).not.toContain('Zara Quill');
+          }
+        }
+      }
+    }
+    expect(seen).toBeGreaterThan(actions.length);
+  });
 
   it('an action with a sentence but no rule fails the test', async () => {
     const actions = await said();
