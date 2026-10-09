@@ -230,6 +230,14 @@ export interface CapabilityFeatures {
    * its uploader alone. Absent from older vaults, whose items have none.
    */
   batch_proposals?: boolean;
+  /**
+   * The review queue (Phase 6, I3): POST /batches/{id}/accept-ready files
+   * every item Ready now, each as its untouched card would, and POST
+   * …/accept-ready/undo takes them back into the queue for
+   * ACCEPT_UNDO_MINUTES; GET /batches?with=levels counts each batch's
+   * levels, and `counts.removed`. Absent from older vaults: accept each.
+   */
+  batch_review?: boolean;
 }
 
 export interface CapabilityLimits {

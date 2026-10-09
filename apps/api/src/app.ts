@@ -161,6 +161,21 @@ function loggerOptions(config: ApiConfig, given: AppDeps['logger']): boolean | o
   };
 }
 
+/**
+ * A foreign key's refusal of a row written naming one that is not there
+ * (23503, "is not present in table"): what it named went while it waited
+ * (the I3 check, N3). Not a removal still referenced, which is the
+ * server's own fault and stays a 500.
+ */
+export function wroteWhatWent(err: unknown): boolean {
+  const e = err as { code?: unknown; detail?: unknown } | null;
+  return (
+    e?.code === '23503' &&
+    typeof e.detail === 'string' &&
+    e.detail.includes('is not present in table')
+  );
+}
+
 export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({
     logger: loggerOptions(config, deps.logger),
@@ -218,6 +233,26 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       });
       void reply.header('retry-after', '1');
       void reply.status(503).send(busy.toBody(req.id));
+      return;
+    }
+    // What a write named went while it waited for it (a foreign key's
+    // 23503): a document taken back into a batch's queue as somebody put it
+    // in a collection or set a reminder for it (the I3 review, P-I3-2).
+    // Nothing was done; it is the caller's to look again, not the server's.
+    // Only a row written naming one that is not there ("is not present"):
+    // a removal still referenced stays the server's fault it is, and every
+    // one answered so is written down by its constraint (the I3 check, N3).
+    if (wroteWhatWent(err)) {
+      req.log.warn(
+        { constraint: (err as { constraint?: unknown }).constraint },
+        'a write named a row that went while it waited',
+      );
+      const gone = new ApiError(
+        409,
+        'gone_meanwhile',
+        'What this was about was removed just then, so nothing was changed. Look again.',
+      );
+      void reply.status(409).send(gone.toBody(req.id));
       return;
     }
     // A write that waited for a reset or a lock to end the session asking

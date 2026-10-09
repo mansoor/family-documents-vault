@@ -29,7 +29,14 @@ import {
   type Role,
   type Visibility,
 } from '@fdv/shared';
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, ApiRequestError, type DocumentInput, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -679,6 +686,18 @@ export function ConfirmForm(props: {
    * batch's on the card, and the pages' one press away.
    */
   clashes?: readonly BatchClash[];
+  /**
+   * The review queue's item (I3): the card as the left pane of two — no page
+   * of its own (no top bar, no lede), Enter accepting from any field where
+   * Enter means nothing else (not a text area, not a button), the hint
+   * beside the button, and the queue's own actions (Skip, Remove) beside it.
+   */
+  pane?: {
+    /** What Enter does, said on the button: "Enter". */
+    hint: string;
+    /** Skip and Remove: after the submit button, in its row. */
+    actions: ReactNode;
+  };
   /** Throws to keep the card open with the vault's words. */
   onSubmit: (details: DocumentInput, extra?: { collection_id: string | null }) => Promise<void>;
   /** Save without details: offered for a new document only. */
@@ -734,6 +753,7 @@ export function ConfirmForm(props: {
   const [error, setError] = useState<string | null>(null);
   // Save, for the focus to come back to.
   const ownSave = useRef<HTMLButtonElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
   const saveButton = props.submitButton ?? ownSave;
   // A question over the card put away while the card was still saving —
   // the links question (5.41) — leaves the focus nowhere: in a browser it
@@ -1069,7 +1089,7 @@ export function ConfirmForm(props: {
         `Still needed: ${andList(missing.map((m) => m.label))}. ${
           props.onSkip
             ? `Fill ${them} in, or skip for now.`
-            : `Fill ${them} in, or save without ${them}.`
+            : `Fill ${them} in, or ${props.pane ? 'accept' : 'save'} without ${them}.`
         }`,
         first.id,
       );
@@ -1171,29 +1191,43 @@ export function ConfirmForm(props: {
     ) : undefined;
   };
 
-  return (
-    <main className="page page-top">
-      <TopBar title={props.title} back={props.back} />
-      <p className="lede">{props.lede}</p>
-      {props.fileName ? (
-        <p className="muted card-file">
-          {props.fileName}
-          {props.onChooseAgain ? (
-            <>
-              {' · '}
-              <Button kind="link" onClick={props.onChooseAgain} disabled={busy}>
-                Choose another file
-              </Button>
-            </>
-          ) : null}
-        </p>
-      ) : null}
-      {props.aside}
+  /**
+   * Enter accepts from any field (I3): a box, a list, a switch — not a text
+   * area, where it starts a line, nor a button or a link, which it presses.
+   * A list that is open has the key itself; one that says it is open
+   * (`aria-expanded`) is left alone too. Never while a key is held with it,
+   * nor while a word is being composed.
+   */
+  const enterAccepts = (e: ReactKeyboardEvent<HTMLFormElement>) => {
+    if (e.key !== 'Enter' || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.nativeEvent.isComposing) return;
+    const at = e.target as HTMLElement;
+    // Held down, Enter repeats: it accepts once, never the next card it
+    // opens, and the one after (the I3 review, W-I3-1). Only a press made on
+    // this card — a fresh keydown, not a repeat of one before it — accepts.
+    if (e.repeat) {
+      if (at instanceof HTMLInputElement || at instanceof HTMLSelectElement) e.preventDefault();
+      return;
+    }
+    // A box or a list only: a text area starts a line, a button or a link is pressed.
+    if (!(at instanceof HTMLInputElement || at instanceof HTMLSelectElement)) return;
+    if (at instanceof HTMLInputElement && ['button', 'submit', 'reset', 'file'].includes(at.type)) {
+      return;
+    }
+    if (at.getAttribute('aria-expanded') === 'true') return;
+    e.preventDefault();
+    if (!busy) formRef.current?.requestSubmit();
+  };
+
+  const form = (
+    <>
       <form
+        ref={formRef}
         onSubmit={(e) => {
           e.preventDefault();
           void submit(false);
         }}
+        onKeyDown={props.pane ? enterAccepts : undefined}
         className="stack"
         noValidate
       >
@@ -1483,9 +1517,27 @@ export function ConfirmForm(props: {
           )}
         </div>
         <ErrorNote message={error} />
-        <Button ref={saveButton} type="submit" disabled={busy}>
-          {busy ? 'Saving…' : props.submitLabel}
-        </Button>
+        {props.pane ? (
+          <div className="row review-actions">
+            <button
+              ref={saveButton}
+              type="submit"
+              className="btn btn-primary"
+              disabled={busy}
+              aria-keyshortcuts="Enter"
+            >
+              {busy ? 'Saving…' : props.submitLabel}
+              <kbd className="key-hint" aria-hidden="true">
+                {props.pane.hint}
+              </kbd>
+            </button>
+            {props.pane.actions}
+          </div>
+        ) : (
+          <Button ref={saveButton} type="submit" disabled={busy}>
+            {busy ? 'Saving…' : props.submitLabel}
+          </Button>
+        )}
         {props.onSkip ? (
           <Button
             kind="quiet"
@@ -1501,11 +1553,40 @@ export function ConfirmForm(props: {
           waited &&
           missing.length > 0 && (
             <Button kind="quiet" disabled={busy} onClick={() => void submit(true)}>
-              {missing.length === 1 ? 'Save without it' : 'Save without them'}
+              {props.pane
+                ? missing.length === 1
+                  ? 'Accept without it'
+                  : 'Accept without them'
+                : missing.length === 1
+                  ? 'Save without it'
+                  : 'Save without them'}
             </Button>
           )
         )}
       </form>
+    </>
+  );
+  // The review queue's item: the card is the left pane, its page the queue's (I3).
+  if (props.pane) return form;
+  return (
+    <main className="page page-top">
+      <TopBar title={props.title} back={props.back} />
+      <p className="lede">{props.lede}</p>
+      {props.fileName ? (
+        <p className="muted card-file">
+          {props.fileName}
+          {props.onChooseAgain ? (
+            <>
+              {' · '}
+              <Button kind="link" onClick={props.onChooseAgain} disabled={busy}>
+                Choose another file
+              </Button>
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      {props.aside}
+      {form}
     </main>
   );
 }

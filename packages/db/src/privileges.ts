@@ -188,6 +188,12 @@ begin
   if to_regprocedure('public.app_only_me_shareable()') is not null then
     grant execute on function public.app_only_me_shareable() to fdv_app;
   end if;
+  -- Whether a document Accept all Ready filed has reached anybody else
+  -- (0064, the I3 review): asked by its uploader's Undo.
+  if to_regprocedure('public.incoming_file_document_reached(uuid)') is not null then
+    revoke execute on function public.incoming_file_document_reached(uuid) from public;
+    grant execute on function public.incoming_file_document_reached(uuid) to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

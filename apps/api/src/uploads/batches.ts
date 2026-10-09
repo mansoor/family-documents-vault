@@ -12,8 +12,19 @@ import {
   wrapKey,
   type ScopeKeys,
 } from '@fdv/crypto';
-import { withPrincipal, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
+  ACCEPT_READY_MAX,
+  ACCEPT_UNDO_MINUTES,
+  untouchedAccept,
+  type AcceptReadySkip,
+  type BatchAcceptReadyInput,
+  type BatchAcceptReadyResult,
+  type BatchLevel,
+  type BatchLevelCounts,
+  type BatchUndoInput,
+  type BatchUndoResult,
+  type UndoKept,
   BATCH_MAX_FILES,
   BATCH_NAME_MAX,
   batchVisibility,
@@ -45,18 +56,21 @@ import {
   type LevelKind,
   type Visibility,
 } from '@fdv/shared';
-import { deleteAll, readAll, type StorageAdapter } from '@fdv/storage';
+import { deleteAll, readAll, StorageError, type StorageAdapter } from '@fdv/storage';
 import { sql } from 'kysely';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import type { CollectionService } from '../collections/service.js';
 import {
+  kindGiven,
+  kindSeen,
   seenDocument,
   sniffStream,
   typeView,
   type DocumentService,
   type Enqueue,
 } from '../documents/service.js';
+import { holdDocumentRows, ownedObjects } from '../documents/purge.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import { incomingPreviewKey } from './incoming.js';
@@ -186,6 +200,16 @@ const storageUnreachable = (detail: string) =>
 const invalid = (message: string, detail: string) =>
   new ApiError(422, 'validation_failed', message, { detail });
 
+/** Why a document Accept all Ready filed is kept, in words (I3). */
+const UNDO_KEPT: Readonly<Record<UndoKept, string>> = {
+  too_late: `More than ${ACCEPT_UNDO_MINUTES} minutes have passed, so it stays a document. Move it to the Trash from Documents if it should not be there.`,
+  not_undoable: 'It was not filed by Accept all Ready, or it has been taken back already.',
+  changed:
+    'It stays a document: since it was filed, somebody changed it, made a link to it, added a copy or moved it to the Trash.',
+  not_found: 'That file is not in this batch.',
+  failed: 'It could not be taken back just then, so it is still a document. Try again.',
+};
+
 /** Every page there could be of an item: PREVIEW_MAX_PAGES of them, drawn or not. */
 const pageKeys = (storageKey: string) =>
   Array.from({ length: PREVIEW_MAX_PAGES }, (_, i) => incomingPreviewKey(storageKey, i + 1));
@@ -226,6 +250,40 @@ interface ItemRow {
   document_seen: boolean | null;
 }
 
+/** An item waiting, as a decision reads it. */
+interface WaitingRow {
+  id: string;
+  state: string;
+  original_name: string | null;
+  mime: string | null;
+  byte_size: string | number | null;
+  sha256: Buffer | null;
+  cipher_bytes: string | number | null;
+  cipher_sha256: Buffer | null;
+  storage_key: string;
+  vault_id: string;
+  file_key_wrapped: Buffer;
+  wrapped_by_scope: string;
+  preview_state: string;
+  preview_pages: number | null;
+}
+
+/** Where a filing put its copy of the file: removed if its transaction fails. */
+interface Placed {
+  key: string | null;
+  vaultId: string | null;
+}
+
+/** What one item filed became. */
+interface Filed {
+  file: { id: string; storage_key: string; vault_id: string };
+  documentId: string;
+  versionId: string;
+  warnings: string[];
+  /** Filed by Accept all Ready: until when it may be taken back. */
+  undoUntil: Date | null;
+}
+
 const BATCH_COLUMNS = [
   'b.id',
   'b.name',
@@ -245,6 +303,8 @@ export interface BatchOptions {
   betweenRemoval?: (batchId: string) => Promise<void>;
   /** Told of each item whose sealed proposal is opened (the I2 review): for the tests. */
   opened?: (itemId: string) => void;
+  /** An Undo, held once it holds the item and the document, before it changes them (I3): for the races. */
+  undoHeld?: (itemId: string) => Promise<void>;
 }
 
 export class BatchService {
@@ -322,7 +382,7 @@ export class BatchService {
    * see out of the Trash, or of one of their own items waiting, sent before
    * it — found once an item, never item against item.
    */
-  async list(p: Principal): Promise<BatchView[]> {
+  async list(p: Principal, opts: { levels?: boolean } = {}): Promise<BatchView[]> {
     this.mayAdd(p);
     return withPrincipal(this.db, p, async (trx) => {
       const batches = await trx
@@ -340,12 +400,14 @@ export class BatchService {
         items: string;
         waiting: string;
         accepted: string;
+        removed: string;
         duplicates: string;
       }>`
         select w.batch_id,
-               count(*) as items,
+               count(*) filter (where w.state <> 'rejected') as items,
                count(*) filter (where w.state = 'received') as waiting,
                count(*) filter (where w.state = 'accepted') as accepted,
+               count(*) filter (where w.state = 'rejected') as removed,
                count(*) filter (
                  where w.state = 'received' and w.sha256 is not null
                    and (w.nth > 1
@@ -363,17 +425,22 @@ export class BatchService {
                   from incoming_file f
                  where f.batch_id = any(${ids}::uuid[])
                    and f.requester_member_id = ${p.memberId}::uuid
-                   and f.state in ('received', 'accepted')) w
+                   and f.state in ('received', 'accepted', 'rejected')) w
          group by w.batch_id`.execute(trx);
       const by = new Map(counted.rows.map((c) => [c.batch_id, c]));
+      // Each batch's levels, asked for (I3): what each waiting item's pages
+      // proposed is opened to level it, as the batch's own page does.
+      const levels = opts.levels ? levelsOf(await this.itemsOf(trx, p, ids)) : null;
       return batches.map((b) => {
         const c = by.get(b.id);
-        return this.view(p, b, {
+        const view = this.view(p, b, {
           items: Number(c?.items ?? 0),
           waiting: Number(c?.waiting ?? 0),
           accepted: Number(c?.accepted ?? 0),
+          removed: Number(c?.removed ?? 0),
           duplicates: Number(c?.duplicates ?? 0),
         });
+        return levels ? { ...view, levels: levels.get(b.id) ?? noLevels() } : view;
       });
     });
   }
@@ -384,7 +451,14 @@ export class BatchService {
     return withPrincipal(this.db, p, async (trx) => {
       const b = await this.batch(trx, id);
       const items = await this.itemsOf(trx, p, [b.id]);
-      return { ...this.view(p, b, countsOf(items)), items };
+      // And how many were removed: the queue's Done says so (I3).
+      const removed = await trx
+        .selectFrom('incoming_file')
+        .select((eb) => eb.fn.countAll<string>().as('n'))
+        .where('batch_id', '=', b.id)
+        .where('state', '=', 'rejected')
+        .executeTakeFirstOrThrow();
+      return { ...this.view(p, b, { ...countsOf(items), removed: Number(removed.n) }), items };
     });
   }
 
@@ -771,85 +845,542 @@ export class BatchService {
     meta: RequestMeta,
   ): Promise<BatchAccepted> {
     this.mayAdd(p);
-    const placed: { key: string | null; vaultId: string | null } = { key: null, vaultId: null };
-    let out: {
-      file: { id: string; storage_key: string; vault_id: string };
-      documentId: string;
-      versionId: string;
-      warnings: string[];
-    };
+    const placed: Placed = { key: null, vaultId: null };
+    let out: Filed;
     try {
       out = await withPrincipal(this.db, p, async (trx) => {
         await this.stillAdds(trx, p);
         const b = await this.batch(trx, batchId);
         const f = await this.waiting(trx, batchId, itemId, true);
-        const { collection_id: sentCollection, ...sent } = input;
-        const metadata = await this.filled(trx, p, sent, b);
-        const collectionId =
-          sentCollection !== undefined ? sentCollection : b.default_collection_id;
-        placed.vaultId = f.vault_id;
-        const scopeKey = await this.keys.unwrapById(trx, f.wrapped_by_scope);
-        const fileKey = unwrapKey(f.file_key_wrapped, scopeKey, `incoming:${f.id}`);
-        const mime = f.mime ?? 'application/octet-stream';
-        const version = await this.documents.fileIncoming(
-          trx,
-          p,
-          {
-            target: { kind: 'capture', metadata },
-            file: {
-              filename: incomingFileName(f.original_name ?? 'file', mime),
-              mime,
-              bytes: Number(f.byte_size ?? 0),
-              sha256: f.sha256 as Buffer,
-              cipherBytes: Number(f.cipher_bytes ?? 0),
-              cipherSha256: f.cipher_sha256 as Buffer,
-              storageKey: f.storage_key,
-              vaultId: f.vault_id,
-              fileKey,
-            },
-            placed,
-          },
-          meta,
-        );
-        const warnings = collectionId
-          ? await this.collections.addWithin(trx, p, collectionId, [version.document_id], meta)
-          : [];
-        const decided = await trx
-          .updateTable('incoming_file')
-          .set({
-            state: 'accepted',
-            decided_by: p.accountId,
-            decided_at: new Date(),
-            document_id: version.document_id,
-            version_id: version.id,
-            proposals_sealed: null,
-            text_sealed: null,
-          })
-          .where('id', '=', f.id)
-          .where('state', '=', 'received')
-          .executeTakeFirst();
-        // Held since it was read: anything else is a rule that said no.
-        if (Number(decided.numUpdatedRows) !== 1) throw decidedAlready();
-        return { file: f, documentId: version.document_id, versionId: version.id, warnings };
+        return this.file(trx, p, b, f, input, meta, placed, false);
       });
     } catch (err) {
-      if (placed.key && placed.vaultId) {
-        await this.dropCopy(p, { fileId: itemId, vaultId: placed.vaultId, key: placed.key });
-      }
+      await this.dropPlaced(p, itemId, placed);
       throw err;
     }
-    await this.removeObjects(p, out.file);
-    // The version's page count, thumbnail and OCR — sealed if it is Only
-    // me — only now it is filed, as a single add's.
-    await this.enqueue(VERSION_PROCESS_JOB, {
-      household_id: p.householdId,
-      version_id: out.versionId,
-    }).catch(() => undefined);
+    await this.filedAfter(p, out);
     return {
       document_id: out.documentId,
       version_id: out.versionId,
       ...(out.warnings.length > 0 ? { warnings: out.warnings } : {}),
     };
+  }
+
+  /**
+   * One held item filed (accept, and each of Accept all Ready's): its
+   * details filled from the batch's defaults where not sent, its key
+   * unwrapped from the uploader's and wrapped for the document, its bytes
+   * copied to where versions are kept, put in the collection named, and the
+   * item decided — its words and proposals let go. Filed by Accept all
+   * Ready (`undoable`), until when it may be taken back (I3, 0064).
+   */
+  private async file(
+    trx: Db,
+    p: Principal,
+    b: BatchRow,
+    f: WaitingRow,
+    input: BatchAcceptInput,
+    meta: RequestMeta,
+    placed: Placed,
+    undoable: boolean,
+  ): Promise<Filed> {
+    const { collection_id: sentCollection, ...sent } = input;
+    const metadata = await this.filled(trx, p, sent, b);
+    const collectionId = sentCollection !== undefined ? sentCollection : b.default_collection_id;
+    placed.vaultId = f.vault_id;
+    const scopeKey = await this.keys.unwrapById(trx, f.wrapped_by_scope);
+    const fileKey = unwrapKey(f.file_key_wrapped, scopeKey, `incoming:${f.id}`);
+    const mime = f.mime ?? 'application/octet-stream';
+    const version = await this.documents.fileIncoming(
+      trx,
+      p,
+      {
+        target: { kind: 'capture', metadata },
+        file: {
+          filename: incomingFileName(f.original_name ?? 'file', mime),
+          mime,
+          bytes: Number(f.byte_size ?? 0),
+          sha256: f.sha256 as Buffer,
+          cipherBytes: Number(f.cipher_bytes ?? 0),
+          cipherSha256: f.cipher_sha256 as Buffer,
+          storageKey: f.storage_key,
+          vaultId: f.vault_id,
+          fileKey,
+        },
+        placed,
+      },
+      meta,
+    );
+    const warnings = collectionId
+      ? await this.collections.addWithin(trx, p, collectionId, [version.document_id], meta)
+      : [];
+    const decided = await trx
+      .updateTable('incoming_file')
+      .set({
+        state: 'accepted',
+        decided_by: p.accountId,
+        decided_at: new Date(),
+        document_id: version.document_id,
+        version_id: version.id,
+        proposals_sealed: null,
+        text_sealed: null,
+        // On the database's clock, as the rule that holds it (0064).
+        ...(undoable
+          ? { undo_until: sql<Date>`now() + make_interval(mins => ${ACCEPT_UNDO_MINUTES})` }
+          : {}),
+      })
+      .where('id', '=', f.id)
+      .where('state', '=', 'received')
+      .returning('undo_until')
+      .executeTakeFirst();
+    // Held since it was read: anything else is a rule that said no.
+    if (!decided) throw decidedAlready();
+    return {
+      file: f,
+      documentId: version.document_id,
+      versionId: version.id,
+      warnings,
+      undoUntil: decided.undo_until,
+    };
+  }
+
+  /** A filing's copy, when its transaction failed: only when it certainly did not happen. */
+  private async dropPlaced(p: Principal, itemId: string, placed: Placed): Promise<void> {
+    if (placed.key && placed.vaultId) {
+      await this.dropCopy(p, { fileId: itemId, vaultId: placed.vaultId, key: placed.key });
+    }
+  }
+
+  /**
+   * Once filed and committed: the item's object and pages removed, and the
+   * version's page count, thumbnail and OCR asked for — sealed if it is
+   * Only me — only now it is filed, as a single add's.
+   */
+  private async filedAfter(p: Principal, out: Filed): Promise<void> {
+    await this.removeObjects(p, out.file);
+    await this.enqueue(VERSION_PROCESS_JOB, {
+      household_id: p.householdId,
+      version_id: out.versionId,
+    }).catch(() => undefined);
+  }
+
+  // ------------------------------------------------ the review queue (I3)
+
+  /**
+   * POST /batches/{id}/accept-ready: every item Ready now filed, each as its
+   * card would file it untouched (`untouchedAccept`) — the merged proposal,
+   * who can see it as the batch and its kind say, the batch's collection,
+   * tags and Essential. Ready is the vault's own word, worked out again for
+   * each item inside its own transaction, with the batch held for share so
+   * its defaults cannot change under it: never a client's list taken on
+   * trust. Named items (`item_ids`) are those the client showed Ready; one
+   * not Ready now is skipped, and said so.
+   *
+   * Each item is its own transaction, as a single accept is: one refused is
+   * named with why, and kept waiting; the rest are filed. At most
+   * ACCEPT_READY_MAX a request. Each filed so may be taken back for
+   * ACCEPT_UNDO_MINUTES (`undo`).
+   */
+  async acceptReady(
+    p: Principal,
+    batchId: string,
+    input: BatchAcceptReadyInput,
+    meta: RequestMeta,
+  ): Promise<BatchAcceptReadyResult> {
+    this.mayAdd(p);
+    const named = input.item_ids ? [...new Set(input.item_ids)] : null;
+    if (named && named.length > ACCEPT_READY_MAX) {
+      throw invalid(`Accept ${ACCEPT_READY_MAX} at most at a time.`, 'item_ids');
+    }
+    const asked = await withPrincipal(this.db, p, async (trx) => {
+      await this.stillAdds(trx, p);
+      const b = await this.batch(trx, batchId);
+      if (named) return { ids: named, more: false };
+      const items = await this.itemsOf(trx, p, [b.id]);
+      const ready = items.filter((i) => i.state === 'waiting' && i.level === 'ready');
+      return {
+        ids: ready.slice(0, ACCEPT_READY_MAX).map((i) => i.id),
+        more: ready.length > ACCEPT_READY_MAX,
+      };
+    });
+    const out: BatchAcceptReadyResult = {
+      accepted: [],
+      skipped: [],
+      failed: [],
+      undo_until: null,
+      more: asked.more,
+    };
+    let until: Date | null = null;
+    for (const itemId of asked.ids) {
+      const placed: Placed = { key: null, vaultId: null };
+      let done: Filed | { skip: AcceptReadySkip; level?: BatchLevel | null };
+      try {
+        done = await withPrincipal(this.db, p, async (trx) => {
+          await this.stillAdds(trx, p);
+          const b = await this.batch(trx, batchId, 'share');
+          let f: WaitingRow;
+          try {
+            f = await this.waiting(trx, b.id, itemId, true);
+          } catch (err) {
+            if (err instanceof ApiError && err.code === 'already_decided') {
+              return { skip: 'decided' as const };
+            }
+            if (err instanceof ApiError && err.status === 404)
+              return { skip: 'not_found' as const };
+            throw err;
+          }
+          // Its level now, as the vault works it out: the batch's defaults
+          // and the kinds as they are in this transaction.
+          const [item] = (await this.itemsOf(trx, p, [b.id], f.id)).filter((i) => i.id === f.id);
+          if (!item || item.level !== 'ready' || !item.proposals) {
+            return { skip: 'not_ready' as const, level: item?.level ?? null };
+          }
+          const levelling = await this.levelling(trx, p, [b.id]);
+          const body = untouchedAccept({
+            proposals: item.proposals,
+            defaults: levelling.defaults(b.id),
+            types: levelling.views,
+            people: levelling.people.map((m) => ({ id: m.id, display_name: m.name })),
+            role: p.role,
+            me: p.memberId,
+          });
+          return this.file(trx, p, b, f, body, meta, placed, true);
+        });
+      } catch (err) {
+        await this.dropPlaced(p, itemId, placed);
+        // Named with why, as its own accept would say it; storage out of
+        // reach as a single add says it.
+        const said =
+          err instanceof ApiError
+            ? err
+            : err instanceof StorageError
+              ? storageUnreachable(err.message)
+              : null;
+        out.failed.push(
+          said
+            ? { item_id: itemId, code: said.code, message: said.message }
+            : {
+                item_id: itemId,
+                code: 'not_accepted',
+                message: 'It could not be accepted just then: it is still waiting. Try it again.',
+              },
+        );
+        continue;
+      }
+      if ('skip' in done) {
+        out.skipped.push({
+          item_id: itemId,
+          reason: done.skip,
+          ...(done.skip === 'not_ready' ? { level: done.level ?? null } : {}),
+        });
+        continue;
+      }
+      await this.filedAfter(p, done);
+      out.accepted.push({
+        item_id: itemId,
+        document_id: done.documentId,
+        version_id: done.versionId,
+        ...(done.warnings.length > 0 ? { warnings: done.warnings } : {}),
+      });
+      // The soonest any of them stops being taken back.
+      if (done.undoUntil && (!until || done.undoUntil < until)) until = done.undoUntil;
+    }
+    out.undo_until = until ? until.toISOString() : null;
+    return out;
+  }
+
+  /**
+   * POST /batches/{id}/accept-ready/undo: documents Accept all Ready filed,
+   * taken back into the queue while the uploader still may (`undo_until`,
+   * ACCEPT_UNDO_MINUTES): each removed for good, and its file waiting again
+   * as its item, to be drawn and read again. Nothing of it is left that
+   * anybody else is shown: its rows go, every object it owns is written down
+   * to be deleted (purge_leftover), and no tombstone is left, so its lines
+   * in the activity log are nobody's (0045, 0064). Each item is its own
+   * transaction. Kept, and said so: one past its time, one not filed by
+   * Accept all Ready, and one somebody has changed, made a link to, added a
+   * copy to or moved to the Trash since.
+   */
+  async undo(
+    p: Principal,
+    batchId: string,
+    input: BatchUndoInput,
+    meta: RequestMeta,
+  ): Promise<BatchUndoResult> {
+    this.mayAdd(p);
+    const ids = [...new Set(input.item_ids)];
+    if (ids.length > BATCH_MAX_FILES) {
+      throw invalid(`A batch holds ${BATCH_MAX_FILES} files at most.`, 'item_ids');
+    }
+    // Asked first: somebody else's batch is not here, for any of them.
+    await withPrincipal(this.db, p, async (trx) => {
+      await this.stillAdds(trx, p);
+      await this.batch(trx, batchId);
+    });
+    const out: BatchUndoResult = { restored: [], kept: [] };
+    let restored = false;
+    for (const itemId of ids) {
+      const kept = await this.undoOne(p, batchId, itemId, meta).catch(() => 'failed' as const);
+      if (kept) out.kept.push({ item_id: itemId, reason: kept, message: UNDO_KEPT[kept] });
+      else {
+        out.restored.push(itemId);
+        restored = true;
+      }
+    }
+    if (restored) {
+      // Drawn and read again, one at a time a household; the document's
+      // objects deleted by the worker, as a removal's leftovers are.
+      await this.enqueue(
+        BATCH_PREVIEWS_JOB,
+        { household_id: p.householdId },
+        { singletonKey: batchPreviewsKey(p.householdId) },
+      ).catch(() => undefined);
+      await this.enqueue(
+        PURGE_LEFTOVERS_JOB,
+        { household_id: p.householdId },
+        { singletonKey: `purge.leftovers:${p.householdId}` },
+      ).catch(() => undefined);
+    }
+    return out;
+  }
+
+  /** One item taken back, or why it is kept. */
+  private async undoOne(
+    p: Principal,
+    batchId: string,
+    itemId: string,
+    meta: RequestMeta,
+  ): Promise<UndoKept | null> {
+    // Where its file is now: the version's own copy, the same encrypted bytes.
+    const found = await withPrincipal(this.db, p, async (trx) => {
+      await this.stillAdds(trx, p);
+      const f = await trx
+        .selectFrom('incoming_file as f')
+        .leftJoin('document_version as v', 'v.id', 'f.version_id')
+        .select([
+          'f.id',
+          'f.state',
+          'f.decided_by',
+          'f.document_id',
+          'f.version_id',
+          'f.vault_id',
+          'f.cipher_sha256',
+          'v.storage_key as version_key',
+          'v.vault_id as version_vault',
+          sql<boolean>`f.undo_until > now()`.as('in_time'),
+        ])
+        .where('f.id', '=', itemId)
+        .where('f.batch_id', '=', batchId)
+        .executeTakeFirst();
+      if (!f || f.state === 'uploading') return { kept: 'not_found' as const };
+      if (f.state !== 'accepted' || f.in_time === null || f.decided_by !== p.accountId) {
+        return { kept: 'not_undoable' as const };
+      }
+      // Its time is asked once it is held, below: the database's clock, then.
+      if (!f.version_key || !f.version_vault || !f.document_id) return { kept: 'changed' as const };
+      return {
+        f,
+        from: await this.vaults.adapterById(trx, f.version_vault),
+        to: await this.vaults.adapterById(trx, f.vault_id),
+      };
+    });
+    if ('kept' in found) return found.kept;
+    const { f } = found;
+    // Copied back first, out of the transaction, to an object of its own:
+    // checked against what was stored, or nothing is taken back.
+    const key = `${p.householdId}/batches/${batchId}/${randomBytes(16).toString('hex')}.enc`;
+    try {
+      const put = await found.to.put(key, await found.from.get(f.version_key as string));
+      if (put.sha256 !== (f.cipher_sha256 as Buffer).toString('hex')) {
+        throw storageUnreachable('the copy of a filed file taken back did not match');
+      }
+    } catch (err) {
+      await found.to.delete(key).catch(() => undefined);
+      throw err;
+    }
+    let kept: UndoKept | null;
+    try {
+      kept = await withPrincipal(this.db, p, async (trx) => {
+        await this.stillAdds(trx, p);
+        const b = await this.batch(trx, batchId);
+        const held = await trx
+          .selectFrom('incoming_file')
+          .select([
+            'id',
+            'state',
+            'decided_by',
+            'document_id',
+            'version_id',
+            'storage_key',
+            'vault_id',
+            'object_removed_at',
+            sql<boolean>`undo_until > now()`.as('in_time'),
+          ])
+          .where('id', '=', itemId)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!held || held.state !== 'accepted' || held.decided_by !== p.accountId) {
+          return 'not_undoable';
+        }
+        if (!held.in_time || b.ends_at.getTime() <= Date.now()) return 'too_late';
+        const docId = held.document_id;
+        if (!docId || docId !== f.document_id) return 'changed';
+        // Held as a removal for good holds them (purge.ts): its links'
+        // sessions, its links, the pages links drew; the document; its versions.
+        await holdDocumentRows(trx, docId);
+        const doc = await trx
+          .selectFrom('document as d')
+          .select(['d.id', 'd.deleted_at', 'd.updated_by'])
+          .where('d.id', '=', docId)
+          .where(seenDocument(p))
+          .forUpdate()
+          .executeTakeFirst();
+        if (!doc) return 'changed';
+        await this.opts.undoHeld?.(itemId);
+        const versions = await trx
+          .selectFrom('document_version')
+          .select(['id', 'storage_key', 'thumbnail_key', 'vault_id'])
+          .where('document_id', '=', docId)
+          .orderBy('id')
+          .forUpdate()
+          .execute();
+        // Somebody's since: changed, a copy added, a link made, the Trash.
+        if (
+          doc.deleted_at !== null ||
+          doc.updated_by !== p.accountId ||
+          versions.length !== 1 ||
+          versions[0]?.id !== held.version_id ||
+          (await this.reachedOthers(trx, docId))
+        ) {
+          return 'changed';
+        }
+        // Every object it owns written down to be deleted, as a removal
+        // for good writes them — and the item's own old object, should its
+        // removal after the accept have failed.
+        const byVault = await ownedObjects(trx, docId, versions);
+        if (!held.object_removed_at) {
+          const keys = byVault.get(held.vault_id) ?? new Set<string>();
+          for (const k of [held.storage_key, ...pageKeys(held.storage_key)]) keys.add(k);
+          byVault.set(held.vault_id, keys);
+        }
+        const leftovers = [...byVault].flatMap(([vaultId, keys]) =>
+          [...keys].map((k) => ({
+            household_id: p.householdId,
+            vault_id: vaultId,
+            object_key: k,
+            removed_document: docId,
+          })),
+        );
+        for (let at = 0; at < leftovers.length; at += 2000) {
+          await trx
+            .insertInto('purge_leftover')
+            .values(leftovers.slice(at, at + 2000))
+            .onConflict((oc) => oc.columns(['vault_id', 'object_key']).doNothing())
+            .execute();
+        }
+        // Waiting again, at its new object: drawn and read again by the
+        // worker. It lets go of the document before the document goes (its
+        // removal would take the row with it, 0047).
+        await trx
+          .updateTable('incoming_file')
+          .set({
+            state: 'received',
+            decided_by: null,
+            decided_at: null,
+            document_id: null,
+            version_id: null,
+            undo_until: null,
+            object_removed_at: null,
+            storage_key: key,
+            preview_state: 'none',
+            preview_requested_at: null,
+            preview_pages: null,
+            read_state: 'waiting',
+            read_failure: null,
+            read_started_at: null,
+            read_attempts: 0,
+            read_not_before: null,
+            // Its waits on the vault, from an earlier read, go too: counted from
+            // nought, it is not given up as not reachable early (I2's rules).
+            read_waits: 0,
+            read_waited_since: null,
+          })
+          .where('id', '=', held.id)
+          .execute();
+        const gone = await trx.deleteFrom('document').where('id', '=', docId).executeTakeFirst();
+        if (Number(gone.numDeletedRows) !== 1) throw new Error('a held document was not removed');
+        // Its lines, this one too, have no tombstone to be shown by: nobody's (0064).
+        await appendAudit(trx, {
+          householdId: p.householdId,
+          actorAccountId: p.accountId,
+          action: 'batch.accept_undone',
+          objectType: 'document',
+          objectId: docId,
+          detail: { batch_id: batchId },
+          ip: meta.ip,
+        });
+        return null;
+      });
+    } catch (err) {
+      await this.dropUndoCopy(p, itemId, key, found.to);
+      throw err;
+    }
+    if (kept) await found.to.delete(key).catch(() => undefined);
+    return kept;
+  }
+
+  /**
+   * Whether a document Accept all Ready filed has reached anybody but its
+   * uploader (the I3 review, P-I3-1, P-I3-2): then it is kept, and the
+   * record of it with it — a document gone outside the family, or somebody
+   * else's work on it, is never taken back, and its lines never made
+   * nobody's. Asked with the document held; the database's function then
+   * holds every row that goes with it, in one order, and only then the
+   * activity log (the advisory lock appendAudit takes, after the rows, as
+   * every writer takes it — the I3 check, N2): what names the document, or
+   * a line about it, cannot come in between this and the commit — a row
+   * naming it waits on the document, and then finds it gone; a reader that
+   * would log a look at it holds it first, and finds it gone (N1).
+   *
+   * - a link of its own, or a collection's link that ticked or followed it
+   *   (anything but left out), or a page any link drew of it, or tried to;
+   * - a line in the log about it by anybody else, or from outside (a link's
+   *   download, an upload link: `actor_label`);
+   * - a collection somebody else put it in, a reminder somebody else made
+   *   for it, or snoozed or acknowledged, a document it was linked to;
+   * - an export of the vault by somebody else since it was filed (N8).
+   */
+  private async reachedOthers(trx: Db, docId: string): Promise<boolean> {
+    // Asked of the database with its owner's rights (0064): a teen, say, is
+    // given no link's rows, and what they are not given must still count.
+    const r = await sql<{ reached: boolean | null }>`
+      select incoming_file_document_reached(${docId}::uuid) as reached`.execute(trx);
+    // Not to be asked (no item of theirs to take back names it): kept.
+    return r.rows[0]?.reached !== false;
+  }
+
+  /**
+   * A copy taken back, when its transaction failed: only when it certainly
+   * did not take — the item's row held first, which a commit whose answer
+   * was lost holds until it ends, then read as it is (as dropCopy).
+   */
+  private async dropUndoCopy(
+    p: Principal,
+    itemId: string,
+    key: string,
+    adapter: StorageAdapter,
+  ): Promise<void> {
+    await withPrincipal(this.db, p, async (trx) => {
+      await sql`set local lock_timeout = '30s'`.execute(trx);
+      const f = await trx
+        .selectFrom('incoming_file')
+        .select('storage_key')
+        .where('id', '=', itemId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (f?.storage_key === key) return;
+      await adapter.delete(key);
+    }).catch(() => undefined);
   }
 
   /**
@@ -899,17 +1430,27 @@ export class BatchService {
 
   // ----------------------------------------------------------- internals
 
-  /** One of the caller's batches (the database gives no other), or not here. Held, with `hold`. */
-  private async batch(trx: Db, id: string, hold = false): Promise<BatchRow> {
+  /**
+   * One of the caller's batches (the database gives no other), or not here.
+   * Held, with `hold`; held for share, with 'share': its defaults cannot
+   * change until this transaction ends (Accept all Ready, I3).
+   */
+  private async batch(trx: Db, id: string, hold: boolean | 'share' = false): Promise<BatchRow> {
     let q = trx.selectFrom('intake_batch as b').select(BATCH_COLUMNS).where('b.id', '=', id);
-    if (hold) q = q.forUpdate();
+    if (hold === 'share') q = q.forShare();
+    else if (hold) q = q.forUpdate();
     const b = await q.executeTakeFirst();
     if (!b) throw notHere();
     return b;
   }
 
   /** An item of this batch, waiting; held for a decision with `lock`. */
-  private async waiting(trx: Db, batchId: string, itemId: string, lock = false) {
+  private async waiting(
+    trx: Db,
+    batchId: string,
+    itemId: string,
+    lock = false,
+  ): Promise<WaitingRow> {
     let q = trx
       .selectFrom('incoming_file as f')
       .select([
@@ -1193,7 +1734,7 @@ export class BatchService {
         received_at: r.received_at as Date,
       });
     }
-    const levelling = await this.levelling(trx, batchIds);
+    const levelling = await this.levelling(trx, p, batchIds);
     const proposed = new Map<string, DetailProposal | null>();
     for (const r of rows) {
       if (r.state === 'received' && r.read_state === 'read' && (!only || r.id === only)) {
@@ -1278,16 +1819,22 @@ export class BatchService {
    * worker sealed under each item's own key, each scope key unwrapped once.
    * A blob that does not open is nothing proposed, never an error.
    */
-  private async levelling(trx: Db, batchIds: string[]) {
+  private async levelling(trx: Db, p: Principal, batchIds: string[]) {
     const batches = await trx
       .selectFrom('intake_batch as b')
       .select(BATCH_COLUMNS)
       .where('b.id', 'in', batchIds)
       .execute();
+    // The kinds exactly as the uploader's card is given them (GET
+    // /document-types, types()): one deleted or hidden only where they can
+    // see a document of it — otherwise none, and an item of it Not
+    // recognised, so the card and Accept all Ready never disagree (the I3
+    // review, W-I3-10; the check, N7).
     const kinds = await trx
-      .selectFrom('effective_document_type')
-      .selectAll()
-      .where('deleted_at', 'is', null)
+      .selectFrom('effective_document_type as t')
+      .selectAll('t')
+      .where(kindGiven(p, sql<boolean>`t.builtin`))
+      .where((eb) => eb.or([eb('t.hidden', '=', false), kindSeen(p, true)]))
       .execute();
     const family = await trx
       .selectFrom('member')
@@ -1306,6 +1853,8 @@ export class BatchService {
     };
     return {
       types: kinds.map(typeView) as LevelKind[],
+      /** The kinds as GET /document-types gives them: what a card starts from (I3). */
+      views: kinds.map(typeView),
       people: family.map((m) => ({ id: m.id, name: m.display_name })),
       defaults: (batchId: string): BatchDefaults => {
         const b = byBatch.get(batchId);
@@ -1426,6 +1975,27 @@ function countsOf(items: BatchItemView[]): BatchCounts {
     accepted: items.filter((i) => i.state === 'accepted').length,
     duplicates: items.filter((i) => i.state === 'waiting' && i.duplicate !== null).length,
   };
+}
+
+/** No waiting item at any level. */
+const noLevels = (): BatchLevelCounts => ({
+  ready: 0,
+  check: 0,
+  unrecognised: 0,
+  problem: 0,
+  unread: 0,
+});
+
+/** Each batch's waiting items, counted by level (I3); one not levelled yet is still to be read. */
+function levelsOf(items: BatchItemView[]): Map<string, BatchLevelCounts> {
+  const out = new Map<string, BatchLevelCounts>();
+  for (const i of items) {
+    if (i.state !== 'waiting') continue;
+    const c = out.get(i.batch_id) ?? noLevels();
+    c[i.level ?? 'unread'] += 1;
+    out.set(i.batch_id, c);
+  }
+  return out;
 }
 
 /** A name as typed, spaces tidied; blank is none. */

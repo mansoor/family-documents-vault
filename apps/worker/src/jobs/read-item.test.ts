@@ -32,7 +32,13 @@ import { FIXTURE_ISSUERS, HELD_OUT, TUNED, type ProposalFixture } from '@fdv/sha
 import { LocalAdapter } from '@fdv/storage';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { resumeBatchItems, sweepBatches } from './batches.js';
+import {
+  batchWorkLeft,
+  drawNextBatchItem,
+  resumeBatchItems,
+  sweepBatches,
+  type DrawItem,
+} from './batches.js';
 import { extractText as realExtract, type extractText } from './extract-text.js';
 import type { IncomingDeps } from './incoming.js';
 import { processVersion } from './process-version.js';
@@ -541,6 +547,73 @@ describe.skipIf(!testAdminUrl())('an item read, in the worker (I2)', () => {
       read_state: 'failed',
       read_failure: 'not_reachable',
     });
+  }, 60_000);
+
+  it('an item taken back into the queue (I3) is drawn and read again as any other, its takings and waits counted from nought', async () => {
+    await clear();
+    const i = await item(await batch(), pdf(['x']));
+    // Read once, after waiting on the vault for a day and taken twice; then
+    // accepted by Accept all Ready — and taken back, as the API leaves it
+    // (batch-review.test.ts holds the API to exactly these).
+    await admin.query(
+      `update incoming_file set read_state = 'read', read_attempts = 2, read_waits = 4,
+              read_waited_since = now() - interval '25 hours' where id = $1`,
+      [i.id],
+    );
+    await admin.query(
+      `update incoming_file set state = 'accepted', decided_at = now(), decided_by = $2,
+              undo_until = now() + interval '5 minutes' where id = $1`,
+      [i.id, acct.Ahmed],
+    );
+    await admin.query(
+      `update incoming_file set state = 'received', decided_at = null, decided_by = null,
+              undo_until = null, preview_state = 'none', preview_pages = null,
+              preview_requested_at = null, read_state = 'waiting', read_failure = null,
+              read_started_at = null, read_attempts = 0, read_not_before = null,
+              read_waits = 0, read_waited_since = null
+        where id = $1`,
+      [i.id],
+    );
+    // Work for the household now, with no special case: drawn first…
+    expect(await batchWorkLeft(deps, hh)).toEqual({ now: true, at: null });
+    const draw: DrawItem = async (d, h, f) => {
+      await withSystem(d.db, h, (trx) =>
+        trx
+          .updateTable('incoming_file')
+          .set({ preview_state: 'ready', preview_pages: 1 })
+          .where('id', '=', f.id)
+          .execute(),
+      );
+    };
+    expect((await drawNextBatchItem(deps, { household_id: hh }, draw)).drawn).toBe(i.id);
+    // …then read. The vault out of reach on its first read again: one wait,
+    // counted from nought — never given up for the day it waited before.
+    const scope = (
+      await admin.query<{ wrapped_by_scope: string }>(
+        'select wrapped_by_scope from incoming_file where id = $1',
+        [i.id],
+      )
+    ).rows[0]?.wrapped_by_scope as string;
+    await admin.query(
+      `update incoming_file set wrapped_by_scope = (select id from scope_key where household_id = $2
+         and kind = 'household' limit 1) where id = $1`,
+      [i.id, hh],
+    );
+    await readNext({ extract: says(PASSPORT) });
+    expect(await rowOf(i.id)).toMatchObject({
+      read_state: 'waiting',
+      read_failure: null,
+      read_attempts: 0,
+      read_waits: 1,
+    });
+    // Its key to be had again, and its wait over: read, its first taking.
+    await admin.query(
+      'update incoming_file set wrapped_by_scope = $2, read_not_before = now() where id = $1',
+      [i.id, scope],
+    );
+    await readNext({ extract: says(PASSPORT) });
+    expect(await rowOf(i.id)).toMatchObject({ read_state: 'read', read_attempts: 1 });
+    expect((await opened(i)).proposal.type_key?.value).toBe('passport');
   }, 60_000);
 
   it('taken too often — workers stopping under it — it is not read; at the column’s bound it is still taken, and failed (the I2 check)', async () => {

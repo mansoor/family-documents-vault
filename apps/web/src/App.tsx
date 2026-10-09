@@ -3,13 +3,8 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams } from '
 import { AppProvider, useApp } from './app-context.js';
 import { BatchUploadProvider } from './batch-store.js';
 import { AddScreen, ConfirmScreen } from './screens/AddConfirm.js';
-import {
-  AddManyScreen,
-  BatchItemScreen,
-  BatchScreen,
-  InboxScreen,
-  SentScreen,
-} from './screens/Batches.js';
+import { AddManyScreen, BatchScreen, InboxScreen, SentScreen } from './screens/Batches.js';
+import { BatchItemScreen } from './screens/BatchItem.js';
 import { DocumentScreen } from './screens/Document.js';
 import { DocumentsScreen } from './screens/Documents.js';
 import { ReaderScreen } from './screens/Reader.js';

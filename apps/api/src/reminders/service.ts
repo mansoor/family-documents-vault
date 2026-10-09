@@ -307,6 +307,10 @@ export class ReminderService {
         .select(['document.title', 'document.type_key'])
         .where('reminder.id', '=', id)
         .where(visibleTo(p))
+        // Held before the log, as its document's removal holds it: one taken
+        // back into a batch's queue meanwhile is waited for, and then not
+        // there (the I3 check, N2) — never a deadlock, never a 500.
+        .forUpdate('reminder')
         .executeTakeFirst();
       if (!r) throw new ApiError(404, 'not_found', 'That reminder does not exist.');
       const today = await this.today(trx, p.householdId);

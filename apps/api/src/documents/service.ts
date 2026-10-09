@@ -519,6 +519,25 @@ export function kindGiven(p: Principal, builtin: RawBuilder<boolean>): RawBuilde
     : sql<boolean>`(${live} and (${builtin} or ${kindSeen(p, true)}))`;
 }
 
+/**
+ * A document held for a reader that logs a look at it — a page viewed, a
+ * file downloaded, a copy kept on a phone — before the log is (the I3
+ * check, N1): the document first, then the log, as every writer takes them.
+ * A document taken back into a batch's queue meanwhile (its Undo holds it
+ * to delete it) is waited for, and then not there: nothing is given, and no
+ * line is written about a document that has gone. Held so, the reader's
+ * line is in the log before an Undo asks it, which then keeps the document.
+ */
+export async function holdForReading(trx: Db, documentId: string): Promise<void> {
+  const held = await trx
+    .selectFrom('document')
+    .select('id')
+    .where('id', '=', documentId)
+    .forKeyShare()
+    .executeTakeFirst();
+  if (!held) throw notFound();
+}
+
 /** A version as a document's view counts them: newest first. */
 interface VersionBrief {
   id: string;
@@ -2899,7 +2918,8 @@ export class DocumentService {
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
       const adapter = await this.vaults.adapterById(trx, v.vault_id);
-      if (opts.audit !== false)
+      if (opts.audit !== false) {
+        await holdForReading(trx, v.document_id);
         await appendAudit(trx, {
           householdId: p.householdId,
           actorAccountId: p.accountId,
@@ -2909,6 +2929,7 @@ export class DocumentService {
           detail: { version_id: v.id, page },
           ip: meta.ip,
         });
+      }
       return { kind: 'ready', key: `${v.storage_key}.p${page}.enc`, fileKey, adapter } as const;
     });
     if (outcome.kind === 'pending') {
@@ -2989,6 +3010,7 @@ export class DocumentService {
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
       const adapter = await this.vaults.adapterById(trx, v.vault_id);
+      await holdForReading(trx, v.document_id);
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,

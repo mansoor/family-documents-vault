@@ -8,7 +8,7 @@ import {
   type OfflineSet,
 } from '@fdv/shared';
 import type { Principal, RequestMeta } from '../auth/service.js';
-import type { DocumentService } from '../documents/service.js';
+import { holdForReading, type DocumentService } from '../documents/service.js';
 import { ApiError } from '../errors.js';
 
 /**
@@ -216,6 +216,8 @@ export class OfflineService {
     if (!grant) throw grantRequired();
     const bytes = await this.docs.page(p, versionId, n, meta, { audit: false });
     await withPrincipal(this.db, p, async (trx) => {
+      // Held before the log, and gone if it was taken back meanwhile (the I3 check, N1).
+      await holdForReading(trx, documentId);
       const first = await trx
         .insertInto('offline_fill')
         .values({ household_id: p.householdId, session_id: p.sessionId, version_id: versionId })
@@ -253,6 +255,8 @@ export class OfflineService {
           .innerJoin('document', 'document.id', 'document_version.document_id')
           .select(['document.id', 'document.visibility', 'document.owner_member_id'])
           .where('document_version.id', '=', e.version_id)
+          // Held before the log, as every reader that logs one holds it (N1).
+          .forKeyShare('document')
           .executeTakeFirst();
         // Nothing is written about a document the person cannot see: not
         // a line in anybody's log, not a receipt that says it exists.

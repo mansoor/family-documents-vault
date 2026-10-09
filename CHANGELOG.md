@@ -6,6 +6,32 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-dev.5] - 2026-10-09 — Phase 6, I3: the review queue
+
+### Added
+
+- **The batch's page is a review queue.**
+  - **Filters:** Ready, Check, Not recognised, Problems and Done, each with a count. The address keeps the filter.
+  - **Accept all Ready** asks first, then files every file that is Ready at that moment. A toast with **Undo** stays until you close it, and Undo works for 5 minutes. Undo takes the files back into the queue, unless someone else has already done something with the document: opened, downloaded or shared it, added it to a collection, set a reminder, exported it, or changed it.
+- **Each file opens in two panes:** the details on the left, already filled from what the pages say, and the pages on the right, with keyboard paging.
+  - **Accept and next** (Enter) files it and opens the next one.
+  - **Skip** moves on without deciding.
+  - **Not a document, remove it** asks first.
+  - A duplicate's button reads "Accept anyway".
+  - At the end, the queue says what was done.
+- **Your uploads in the Inbox** gains "Accept all Ready (n)" and "Review n" for each batch.
+
+### Changed
+
+- **API:** `POST /api/v1/batches/{id}/accept-ready` and `…/accept-ready/undo`, `GET /api/v1/batches?with=levels`, and the feature flag `features.batch_review`.
+- **Opening or downloading a document waits for an Undo of it** that is under way, and answers "not found" if the Undo removed it.
+- A write that races the removal of what it refers to now answers 409 `gone_meanwhile` instead of failing.
+- Removing a storage place that still holds files is refused with 409 `vault_has_files`.
+
+### Database
+
+- **Migration 0064** adds the Undo window for files accepted together, and the database rules that let only their uploader take them back, within it, and only while nobody else has touched the document.
+
 ## [0.7.0-dev.4] - 2026-10-08 — Phase 6, I2: the vault reads each upload and suggests
 
 ### Added

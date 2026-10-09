@@ -1,16 +1,13 @@
 import {
-  autoTitle,
   BATCH_MAX_FILES,
   BATCH_NAME_MAX,
-  batchVisibility,
   can,
   duplicateWords,
-  formatDate,
   LEVEL_WORDS,
   levelSummary,
   seesLocation,
+  untouchedAccept,
   type BatchDefaults,
-  type BatchDetail,
   type BatchItemView,
   type BatchLevel,
   type BatchView,
@@ -20,13 +17,14 @@ import {
   type Visibility,
 } from '@fdv/shared';
 import {
-  useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
@@ -34,12 +32,13 @@ import { api, ApiRequestError, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { askPage, forgetPages, heldPage } from '../batch-pages.js';
 import { labelOfDay, progressOf, useUploads } from '../batch-store.js';
+import { newRun, useAcceptReady } from '../batch-review.js';
 import { BATCH_ACCEPT } from '../batch-upload.js';
 import { CollectionSelect, mayChangeCollection } from '../collections.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
+import { useShortcutsOn } from '../shortcuts.js';
 import { Button, ConfirmDialog, ErrorNote, Field, Select, Switch, TopBar } from '../ui.js';
-import { captureDetails, ConfirmForm } from './AddConfirm.js';
 import { SuggestedMark } from '../suggestions.js';
 import { IncomingList, sizeWords } from './Incoming.js';
 
@@ -73,7 +72,7 @@ export function batchLabel(b: { name: string | null; created_at: string }): stri
 }
 
 /** What an item duplicates, in words, with an unnamed batch called by its day. */
-const dupWords = (item: BatchItemView) =>
+export const dupWords = (item: BatchItemView) =>
   item.duplicate ? duplicateWords(item.duplicate, batchLabel) : null;
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -87,19 +86,83 @@ const levelCounts = (items: readonly BatchItemView[]) => {
   return out;
 };
 
+/** What the queue shows (I3): every file, a level's, or what is done. */
+export type QueueFilter = '' | BatchLevel | 'done';
+
+/** The queue's filters, in order, with their words. */
+export const QUEUE_FILTERS: ReadonlyArray<readonly [QueueFilter, string]> = [
+  ['', 'All'],
+  ['ready', 'Ready'],
+  ['check', 'Check'],
+  ['unrecognised', 'Not recognised'],
+  ['problem', 'Problems'],
+  ['done', 'Done'],
+];
+
+/** The filter the address names, or every file. */
+export const queueFilter = (v: string | null): QueueFilter =>
+  QUEUE_FILTERS.some(([f]) => f === v) ? (v as QueueFilter) : '';
+
+/** Whether an item is in the queue as filtered: at that level and waiting, or accepted for Done. */
+export const inQueue = (filter: QueueFilter) => (i: BatchItemView) =>
+  filter === ''
+    ? true
+    : filter === 'done'
+      ? i.state === 'accepted'
+      : i.state === 'waiting' && i.level === filter;
+
+/** The name its card would start with (I3): what it would be filed as, untouched. */
+export function proposedTitle(
+  item: BatchItemView,
+  defaults: BatchDefaults,
+  types: DocumentTypeView[],
+  members: Member[],
+  role: Role,
+): string | null {
+  const me = members.find((m) => m.is_me)?.id;
+  if (item.state !== 'waiting' || !item.proposals?.type_key || !me) return null;
+  return (
+    untouchedAccept({
+      proposals: item.proposals,
+      defaults,
+      types,
+      people: members,
+      role,
+      me,
+    }).title ?? null
+  );
+}
+
+/** Whose it is, as its card starts — or both, where the pages and the batch disagree. */
+function ItemPerson({ item, members }: { item: BatchItemView; members: Member[] }) {
+  const nameOf = (id: string) => members.find((m) => m.id === id)?.display_name ?? 'Somebody';
+  if (item.state !== 'waiting') return <span className="muted">—</span>;
+  const clash = item.clashes?.find((c) => c.field === 'owner_member_id');
+  if (clash) {
+    return (
+      <span className="status status-warn">
+        {nameOf(clash.pages.value)} or {nameOf(clash.batch)}?
+      </span>
+    );
+  }
+  const who = item.proposals?.owner_member_id;
+  if (!who) return <span className="muted">—</span>;
+  return <span className="clip">{nameOf(who.value)}</span>;
+}
+
 /** Whether somebody may make batches: the vault has them, and they add documents. */
-function useMayBatch(): { mayBatch: boolean; role: Role } {
+export function useMayBatch(): { mayBatch: boolean; role: Role } {
   const { caps, session } = useApp();
   const role: Role = session.info?.role ?? storedRole();
   return { mayBatch: caps?.features.batches === true && can(role, 'document.add'), role };
 }
 
 /** The collections somebody may put documents in: their own, in an audience they are in. */
-const addable = (collections: CollectionView[], role: Role) =>
+export const addable = (collections: CollectionView[], role: Role) =>
   collections.filter((c) => mayChangeCollection(role, c));
 
 /** What only the uploader sees, said where it matters. */
-function OnlyYou({ children }: { children?: ReactNode }) {
+export function OnlyYou({ children }: { children?: ReactNode }) {
   return (
     <p className="private-note">
       <span aria-hidden="true">🔒︎</span>{' '}
@@ -741,10 +804,12 @@ function InboxPage(props: {
   uploads: number | null;
   sent: number | null;
   action?: ReactNode;
+  /** A toast is shown (I3): room is left under the page for it. */
+  toast?: boolean;
   children: ReactNode;
 }) {
   return (
-    <main className="page page-top page-wide has-nav">
+    <main className={`page page-top page-wide has-nav${props.toast ? ' has-toast' : ''}`}>
       <TopBar title="Inbox" action={props.action} />
       <p className="lede">What is waiting for you before it becomes a document.</p>
       {props.both && (
@@ -763,22 +828,61 @@ function InboxPage(props: {
  */
 export function InboxScreen() {
   const { mayBatch } = useMayBatch();
-  const { caps, authVersion } = useApp();
+  const { caps, authVersion, withToken } = useApp();
   const role = storedRole();
   const mayReview = caps?.features.upload_requests === true && can(role, 'upload_request.create');
   const location = useLocation();
   const said = (location.state as { said?: string } | null)?.said ?? null;
   const status = useRef<HTMLParagraphElement>(null);
-  const { data, error } = useLoad(
+  // The review queue (I3): each batch's levels, for Accept all Ready and Review.
+  const levels = caps?.features.batch_review === true;
+  const { data, error, reload } = useLoad(
     async (t) => {
       const [batches, sent] = await Promise.all([
-        mayBatch ? api.batches(t).then((r) => r.items) : Promise.resolve([] as BatchView[]),
+        mayBatch
+          ? api.batches(t, levels ? { levels } : {}).then((r) => r.items)
+          : Promise.resolve([] as BatchView[]),
         mayReview ? api.incoming(t).then((r) => r.items.length) : Promise.resolve(null),
       ]);
       return { batches, sent };
     },
-    [authVersion, mayBatch, mayReview],
+    [authVersion, mayBatch, mayReview, levels],
   );
+  const ready = useAcceptReady({
+    changed: reload,
+    // The toast put away: back to the batch's own row (the I3 review, W-I3-4).
+    fallback: (id) =>
+      document.querySelector<HTMLElement>(`a.batch-row[href="/inbox/batches/${id}"]`),
+  });
+  const [asked, setAsked] = useState<string | null>(null);
+  /**
+   * From the Inbox, the batch read first, and its Ready files asked about
+   * by id, as the queue asks: the question's count is what is sent (the I3
+   * review, W-I3-3).
+   */
+  const askReady = async (b: BatchView, from: HTMLElement) => {
+    setAsked(null);
+    try {
+      const now = await withToken((t) => api.batch(t, b.id));
+      if (!now) return;
+      const ids = now.items.filter((i) => i.state === 'waiting' && i.level === 'ready');
+      if (ids.length === 0) {
+        setAsked(`Nothing in “${batchLabel(b)}” is Ready now.`);
+        await reload();
+        return;
+      }
+      ready.open(
+        {
+          batchId: b.id,
+          itemIds: ids.map((i) => i.id),
+          names: new Map(now.items.map((i) => [i.id, i.name])),
+        },
+        from,
+      );
+    } catch (err) {
+      setAsked(describeError(err));
+    }
+  };
   useEffect(() => {
     if (said) status.current?.focus();
   }, [said]);
@@ -790,6 +894,7 @@ export function InboxScreen() {
       both={mayReview}
       uploads={waiting}
       sent={data?.sent ?? null}
+      toast={ready.toastShown}
       action={
         // At every width: a narrow window is told a computer is quicker, not refused.
         <Link className="btn btn-primary" to="/add/many">
@@ -801,6 +906,10 @@ export function InboxScreen() {
         {said}
       </p>
       <ErrorNote message={error} />
+      <p className="status-line" role="status">
+        {asked}
+      </p>
+      {ready.element}
       <OnlyYou>
         Only you can see these until you accept them. Anything not decided within 30 days is
         removed.
@@ -816,25 +925,61 @@ export function InboxScreen() {
       )}
       {data && data.batches.length > 0 && (
         <ul className="list batch-list" aria-label="Your uploads">
-          {data.batches.map((b) => (
-            <li key={b.id}>
-              <Link to={`/inbox/batches/${b.id}`} className="rowbtn batch-row">
-                <span className="doc-title">{batchLabel(b)}</span>
-                <span className="muted">
-                  {plural(b.counts.items, 'file')} ·{' '}
-                  {b.counts.waiting > 0
-                    ? `${b.counts.waiting} waiting`
-                    : b.counts.items > 0
-                      ? 'nothing left to check'
-                      : 'nothing in it yet'}
-                  {b.counts.duplicates > 0 ? ` · ${plural(b.counts.duplicates, 'duplicate')}` : ''}
-                </span>
-                <span className="muted">
-                  Made {shortDay(b.created_at)} · removed on {longDay(b.ends_at)} unless accepted
-                </span>
-              </Link>
-            </li>
-          ))}
+          {data.batches.map((b) => {
+            const l = b.levels;
+            // Read and waiting: what there is to review now (I3).
+            const toReview = l ? l.ready + l.check + l.unrecognised + l.problem : 0;
+            return (
+              <li key={b.id} className={l ? 'batch-li' : undefined}>
+                <Link to={`/inbox/batches/${b.id}`} className="rowbtn batch-row">
+                  <span className="doc-title">{batchLabel(b)}</span>
+                  <span className="muted">
+                    {plural(b.counts.items, 'file')} ·{' '}
+                    {b.counts.waiting > 0
+                      ? `${b.counts.waiting} waiting`
+                      : b.counts.items > 0
+                        ? 'nothing left to check'
+                        : 'nothing in it yet'}
+                    {b.counts.duplicates > 0
+                      ? ` · ${plural(b.counts.duplicates, 'duplicate')}`
+                      : ''}
+                  </span>
+                  {l && b.counts.waiting > 0 && (
+                    <span className="muted">
+                      {levelSummary(l) || 'None read yet'}
+                      {l.unread > 0 ? ` · ${l.unread} still to read` : ''}
+                    </span>
+                  )}
+                  <span className="muted">
+                    Made {shortDay(b.created_at)} · removed on {longDay(b.ends_at)} unless accepted
+                  </span>
+                </Link>
+                {l && (l.ready > 0 || toReview > 0) && (
+                  <span className="row batch-li-actions">
+                    {l.ready > 0 && (
+                      <button
+                        type="button"
+                        className="btn btn-quiet btn-small"
+                        aria-label={`Accept all Ready in ${batchLabel(b)} (${l.ready})`}
+                        onClick={(e) => void askReady(b, e.currentTarget)}
+                      >
+                        Accept all Ready ({l.ready})
+                      </button>
+                    )}
+                    {toReview > 0 && (
+                      <Link
+                        className="btn btn-primary btn-small"
+                        to={`/inbox/batches/${b.id}`}
+                        aria-label={`Review ${toReview} in ${batchLabel(b)}`}
+                      >
+                        Review {toReview}
+                      </Link>
+                    )}
+                  </span>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
     </InboxPage>
@@ -877,7 +1022,7 @@ const FIRST_FEW = 8;
  * a time (batch-pages.ts), and kept, so coming back asks for nothing. A
  * browser that cannot say what is in view draws the first few (`eager`).
  */
-function FirstPage(props: {
+export function FirstPage(props: {
   batchId: string;
   item: BatchItemView;
   large?: boolean;
@@ -943,7 +1088,7 @@ function FirstPage(props: {
 }
 
 /** Each level's mark: an icon beside its words, never its colour alone (I2). */
-function LevelIcon({ level }: { level: BatchLevel }) {
+export function LevelIcon({ level }: { level: BatchLevel }) {
   const path =
     level === 'ready'
       ? 'M3.5 8.5l3 3 6-7'
@@ -963,7 +1108,7 @@ function LevelIcon({ level }: { level: BatchLevel }) {
 }
 
 /** An item's level, in words with its icon: what a screen reader hears too. */
-function LevelBadge({ level }: { level: BatchLevel }) {
+export function LevelBadge({ level }: { level: BatchLevel }) {
   return (
     <span className={`level level-${level}`}>
       <LevelIcon level={level} />
@@ -977,7 +1122,16 @@ function LevelBadge({ level }: { level: BatchLevel }) {
  * an unnamed batch called by its day, a document it duplicates one press
  * away.
  */
-function ItemTags({ item, full = false }: { item: BatchItemView; full?: boolean }) {
+export function ItemTags({
+  item,
+  full = false,
+  stop,
+}: {
+  item: BatchItemView;
+  full?: boolean;
+  /** In the queue (I3): the row's stop, so Tab passes the rows the keys move between. */
+  stop?: number;
+}) {
   const tags = item.tags ?? [];
   if (tags.length === 0) return null;
   return (
@@ -985,7 +1139,9 @@ function ItemTags({ item, full = false }: { item: BatchItemView; full?: boolean 
       {tags.map((t) => (
         <li key={`${t.code}:${t.field ?? ''}`} className={`item-tag item-tag-${t.kind}`}>
           {t.code === 'duplicate_document' && item.duplicate?.of === 'document' ? (
-            <Link to={`/documents/${item.duplicate.document_id}`}>{dupWords(item)}</Link>
+            <Link to={`/documents/${item.duplicate.document_id}`} tabIndex={stop}>
+              {dupWords(item)}
+            </Link>
           ) : t.code.startsWith('duplicate_') ? (
             dupWords(item)
           ) : (
@@ -1003,15 +1159,28 @@ function ItemTags({ item, full = false }: { item: BatchItemView; full?: boolean 
  * and why — or accepted. A vault from before I2 says nothing of levels: an
  * item then is "waiting to be read", with its duplicate, as I1 said it.
  */
-function ItemState({ item }: { item: BatchItemView }) {
+function ItemState({ item, stop }: { item: BatchItemView; stop?: number }) {
   if (item.state === 'accepted') {
     return (
       <span className="item-state">
         <span className="status status-ok">Accepted</span>
-        {item.document_id && (
-          <Link to={`/documents/${item.document_id}`} className="quiet-link">
+        {item.document_id ? (
+          <Link
+            to={`/documents/${item.document_id}`}
+            className="quiet-link"
+            // The queue's Done (I3): the row's own stop for its keys.
+            {...(stop !== undefined ? { tabIndex: stop, 'data-row-target': '' } : {})}
+          >
             Open the document
           </Link>
+        ) : (
+          stop !== undefined && (
+            // A document they can no longer see: the row still has its stop,
+            // so Tab and the keys reach the rows after it (the I3 review, W-I3-5).
+            <span className="muted" tabIndex={stop} data-row-target="">
+              You can no longer see the document
+            </span>
+          )
         )}
       </span>
     );
@@ -1042,7 +1211,7 @@ function ItemState({ item }: { item: BatchItemView }) {
           {item.reading === 'reading' ? 'Reading…' : 'Waiting to be read'}
         </span>
       )}
-      <ItemTags item={item} />
+      <ItemTags item={item} {...(stop !== undefined ? { stop } : {})} />
     </span>
   );
 }
@@ -1137,6 +1306,32 @@ export function BatchScreen() {
   const removeBatchButton = useRef<HTMLButtonElement>(null);
   // The Remove that asked: where the focus goes back to should it be cancelled.
   const removeAsked = useRef<HTMLButtonElement | null>(null);
+  // The review queue (I3): which files are shown, kept in the address; the
+  // row the keys move from; Accept all Ready, asked and then its toast.
+  const [params, setParams] = useSearchParams();
+  const filter = queueFilter(params.get('level'));
+  const shortcuts = useShortcutsOn();
+  const [active, setActive] = useState<string | null>(null);
+  const names = useMemo(
+    () => new Map((data?.batch.items ?? []).map((i) => [i.id, i.name])),
+    [data],
+  );
+  const ready = useAcceptReady({
+    changed: reload,
+    names,
+    // The toast put away, its button gone: the status line, or the heading (W-I3-4).
+    fallback: () => status.current ?? heading.current,
+  });
+  const choose = (v: QueueFilter) =>
+    setParams(
+      (was) => {
+        const next = new URLSearchParams(was);
+        if (v) next.set('level', v);
+        else next.delete('level');
+        return next;
+      },
+      { replace: true },
+    );
 
   // What happened, said where the focus is once the batch is drawn: a file
   // accepted on its card, and come back here.
@@ -1304,15 +1499,59 @@ export function BatchScreen() {
       : idle < WAITING_ITS_TURN
         ? `Reading ${b.items.length - unread + 1} of ${b.items.length}…`
         : `Waiting its turn to be read: ${plural(unread, 'file')} to read`;
+  // The queue (I3): the files at the level chosen, in the batch's order;
+  // Done is what was accepted (and how many were removed).
+  const counted = levelCounts(b.items);
+  const readyIds = waiting.filter((i) => i.level === 'ready').map((i) => i.id);
+  const removedCount = b.counts.removed ?? 0;
+  const shown = b.items.filter(inQueue(filter));
+  const reviewing = caps?.features.batch_review === true;
+  // One stop for Tab in the list: the row last moved to, or the first.
+  const activeId = shown.some((i) => i.id === active) ? active : (shown[0]?.id ?? null);
+  const stop = (item: BatchItemView) => (item.id === activeId ? 0 : -1);
+  // Opened from the queue: the files to go through, as they stand now.
+  const run = newRun(
+    shown.filter((i) => i.state === 'waiting').map((i) => i.id),
+    filter,
+  );
+  const itemPath = (item: BatchItemView) => ({
+    pathname: `/inbox/batches/${b.id}/items/${item.id}`,
+    search: filter && filter !== 'done' ? `?level=${filter}` : '',
+  });
+  /** ↑ ↓ (and j k, while single keys are on), Home and End: from row to row. */
+  const rowKeys = (e: ReactKeyboardEvent<HTMLElement>) => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const down = e.key === 'ArrowDown' || (shortcuts && e.key === 'j');
+    const up = e.key === 'ArrowUp' || (shortcuts && e.key === 'k');
+    if (!down && !up && e.key !== 'Home' && e.key !== 'End') return;
+    const rows = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-row]')];
+    const at = rows.findIndex((r) => r.contains(e.target as Node));
+    if (at < 0) return;
+    e.preventDefault();
+    // The next row with somewhere to go, that way; never a row without (W-I3-5).
+    const targets = rows.map((r) => r.querySelector<HTMLElement>('[data-row-target]'));
+    const order =
+      e.key === 'Home'
+        ? targets
+        : e.key === 'End'
+          ? [...targets].reverse()
+          : down
+            ? targets.slice(at + 1)
+            : targets.slice(0, at).reverse();
+    order.find((t) => t !== null)?.focus();
+  };
   const row = (item: BatchItemView) => {
     const actions =
       item.state === 'waiting' ? (
         <span className="row item-actions">
           <Link
             id={`accept-${item.id}`}
-            to={`/inbox/batches/${b.id}/items/${item.id}`}
+            to={itemPath(item)}
+            state={{ run }}
             className="btn btn-primary btn-small"
             aria-label={`Accept ${item.name}`}
+            data-row-target=""
+            tabIndex={stop(item)}
           >
             Accept
           </Link>
@@ -1320,6 +1559,7 @@ export function BatchScreen() {
             type="button"
             className="btn btn-quiet btn-small"
             aria-label={`Remove ${item.name}`}
+            tabIndex={stop(item)}
             onClick={(e) => {
               removeAsked.current = e.currentTarget;
               setAsking(item);
@@ -1334,7 +1574,9 @@ export function BatchScreen() {
   };
 
   return (
-    <main className="page page-top page-wide has-nav batch-page">
+    <main
+      className={`page page-top page-wide has-nav batch-page${ready.toastShown ? ' has-toast' : ''}`}
+    >
       <nav className="crumbs" aria-label="Breadcrumb">
         <Link to="/inbox">Inbox</Link> <span aria-hidden="true">›</span> <span>Your uploads</span>
       </nav>
@@ -1400,13 +1642,65 @@ export function BatchScreen() {
           </span>
         </div>
       ) : null}
-      {b.items.length > 0 &&
+      {b.items.length > 0 && (
+        // The queue's levels (I3): each with how many, kept in the address.
+        <div className="levelfilters" role="group" aria-label="Show">
+          {QUEUE_FILTERS.map(([v, words]) => {
+            const n =
+              v === ''
+                ? b.items.length
+                : v === 'done'
+                  ? b.counts.accepted + removedCount
+                  : (counted[v] ?? 0);
+            return (
+              <button
+                key={v || 'all'}
+                type="button"
+                className="lf"
+                aria-pressed={filter === v}
+                onClick={() => choose(v)}
+              >
+                {v !== '' && v !== 'done' && <LevelIcon level={v} />}
+                {words}
+                <span className="lf-n">{n}</span>
+              </button>
+            );
+          })}
+          {reviewing && readyIds.length > 0 && (
+            <button
+              type="button"
+              className="btn btn-primary queue-accept"
+              onClick={(e) => ready.open({ batchId: b.id, itemIds: readyIds }, e.currentTarget)}
+            >
+              Accept all Ready ({readyIds.length})
+            </button>
+          )}
+        </div>
+      )}
+      {/* The toast, under the levels: on a short screen it stays here, in the
+          page, never over what has the focus (the I3 review, W-I3-6). */}
+      {ready.element}
+      {b.items.length > 0 && shown.length === 0 && (
+        <p className="muted queue-none">
+          {filter === 'done'
+            ? removedCount > 0
+              ? `None accepted yet; ${plural(removedCount, 'file')} removed.`
+              : 'Nothing decided yet.'
+            : 'None at this level.'}
+        </p>
+      )}
+      {shown.length > 0 &&
         (mode === 'phone' ? (
-          <ul className="list batch-items" aria-label={`Files in ${label}`}>
-            {b.items.map((item, i) => {
+          <ul className="list batch-items" aria-label={`Files in ${label}`} onKeyDown={rowKeys}>
+            {shown.map((item, i) => {
               const r = row(item);
               return (
-                <li key={item.id} className="batch-item">
+                <li
+                  key={item.id}
+                  className="batch-item"
+                  data-row=""
+                  onFocus={() => setActive(item.id)}
+                >
                   <FirstPage batchId={b.id} item={item} eager={i < FIRST_FEW} />
                   <span className="stack batch-item-words">
                     <span className="doc-title clip">{item.name}</span>
@@ -1414,7 +1708,7 @@ export function BatchScreen() {
                     {item.state === 'waiting' && item.proposals?.type_key && (
                       <ItemKind item={item} types={data.types} />
                     )}
-                    <ItemState item={item} />
+                    <ItemState item={item} stop={stop(item)} />
                     {r.actions}
                   </span>
                 </li>
@@ -1424,11 +1718,15 @@ export function BatchScreen() {
         ) : (
           <div className="tbl-wrap batch-wrap">
             <table className="tbl batch-tbl">
-              <caption className="visually-hidden">Files in {label}</caption>
+              <caption className="visually-hidden">
+                Files in {label}
+                {filter ? `: ${QUEUE_FILTERS.find(([v]) => v === filter)?.[1] ?? ''}` : ''}
+              </caption>
               <colgroup>
                 <col style={{ width: 64 }} />
                 <col />
                 <col className="batch-col-kind" />
+                <col className="batch-col-person" />
                 <col className="batch-col-level" />
                 <col style={{ width: 190 }} />
               </colgroup>
@@ -1439,31 +1737,39 @@ export function BatchScreen() {
                   </th>
                   <th scope="col">File</th>
                   <th scope="col">Kind</th>
+                  <th scope="col">Whose</th>
                   <th scope="col">Level</th>
                   <th scope="col">
                     <span className="visually-hidden">Actions</span>
                   </th>
                 </tr>
               </thead>
-              <tbody>
-                {b.items.map((item, i) => {
+              <tbody onKeyDown={rowKeys}>
+                {shown.map((item, i) => {
                   const r = row(item);
+                  const title = proposedTitle(item, b.defaults, data.types, data.members, role);
                   return (
-                    <tr key={item.id}>
+                    <tr key={item.id} data-row="" onFocus={() => setActive(item.id)}>
                       <td>
                         <FirstPage batchId={b.id} item={item} eager={i < FIRST_FEW} />
                       </td>
                       <td>
-                        <span className="cell-title clip" title={item.name}>
-                          {item.name}
+                        <span className="cell-title clip" title={title ?? item.name}>
+                          {title ?? item.name}
                         </span>
-                        <span className="muted">{r.about}</span>
+                        <span className="muted clip" title={item.name}>
+                          {title ? `${item.name} · ` : ''}
+                          {r.about}
+                        </span>
                       </td>
                       <td>
                         <ItemKind item={item} types={data.types} />
                       </td>
                       <td>
-                        <ItemState item={item} />
+                        <ItemPerson item={item} members={data.members} />
+                      </td>
+                      <td>
+                        <ItemState item={item} stop={stop(item)} />
                       </td>
                       <td>{r.actions}</td>
                     </tr>
@@ -1473,6 +1779,17 @@ export function BatchScreen() {
             </table>
           </div>
         ))}
+      {filter === 'done' && shown.length > 0 && removedCount > 0 && (
+        <p className="muted">And {plural(removedCount, 'file')} removed: not documents.</p>
+      )}
+      {shown.some((i) => i.state === 'waiting') && (
+        <p className="muted queue-hint">
+          Open a file to check it: Enter accepts it and opens the next.{' '}
+          {shortcuts
+            ? 'Up and down arrows, or j and k, move between the files.'
+            : 'Up and down arrows move between the files.'}
+        </p>
+      )}
       {asking && asking !== 'batch' && (
         <ConfirmDialog
           title={`Remove “${asking.name}”?`}
@@ -1512,188 +1829,5 @@ export function BatchScreen() {
         </ConfirmDialog>
       )}
     </main>
-  );
-}
-
-// ------------------------------------------------------------ the card
-
-/**
- * One file's card (/inbox/batches/:id/items/:itemId): the single add's "Is
- * this right?", with a collection, tags and Essential too, each detail
- * starting from what the batch chose — where it chose anything; the rest
- * blank. Accepting files it as a document, and goes back to the batch,
- * saying who else will now see it where a collection says so (5.33).
- */
-export function BatchItemScreen() {
-  const { id, itemId } = useParams<{ id: string; itemId: string }>();
-  const { withToken, caps } = useApp();
-  const [, uploads] = useUploads();
-  const navigate = useNavigate();
-  const role = storedRole();
-  const { data, error } = useLoad(
-    async (t) => {
-      const [batch, types, members, collections] = await Promise.all([
-        api.batch(t, id as string),
-        api.documentTypes(t),
-        api.members(t),
-        caps?.features.collections && can(role, 'collection.manage')
-          ? api.collections(t).then((r) => r.items)
-          : Promise.resolve([] as CollectionView[]),
-      ]);
-      return { batch, types: types.items, members: members.items, collections };
-    },
-    [id, itemId],
-  );
-  const accept = useCallback(
-    async (
-      batch: BatchDetail,
-      item: BatchItemView,
-      details: Parameters<typeof captureDetails>[0],
-      extra?: { collection_id: string | null },
-    ) => {
-      const sent = await withToken((t) =>
-        api.acceptBatchItem(t, batch.id, item.id, {
-          ...captureDetails(details),
-          ...(details.tags !== undefined ? { tags: details.tags } : {}),
-          ...(details.is_essential !== undefined ? { is_essential: details.is_essential } : {}),
-          collection_id: extra?.collection_id ?? null,
-        }),
-      );
-      if (!sent) return;
-      forgetPages([item.id]);
-      uploads.changed();
-      const title = details.title ? `: ${details.title}` : '';
-      // And who else will now see it, as the collection it went in says (5.33).
-      const also = (sent.warnings ?? []).join(' ');
-      void navigate(`/inbox/batches/${batch.id}`, {
-        replace: true,
-        state: { said: `“${item.name}” is a document now${title}.${also ? ` ${also}` : ''}` },
-      });
-    },
-    [withToken, navigate, uploads],
-  );
-  if (error || !data) {
-    return (
-      <main className="page page-top">
-        <TopBar title="Is this right?" back={`/inbox/batches/${id ?? ''}`} />
-        {error ? <ErrorNote message={error} /> : <p className="muted">Loading…</p>}
-      </main>
-    );
-  }
-  const { batch, types, members } = data;
-  const item = batch.items.find((i) => i.id === itemId && i.state === 'waiting');
-  if (!item) {
-    return (
-      <main className="page page-top">
-        <TopBar title="Is this right?" back={`/inbox/batches/${batch.id}`} />
-        <p className="muted">
-          This file is not waiting any more: it was accepted or removed.{' '}
-          <Link to={`/inbox/batches/${batch.id}`}>Back to the batch</Link>.
-        </p>
-      </main>
-    );
-  }
-  const d = batch.defaults;
-  const me = members.find((m) => m.is_me);
-  // What the card starts from (I2): what the pages say, merged with what the
-  // batch chose (a vault that reads them gives it); else the batch's alone.
-  const p = item.proposals ?? null;
-  const type = types.find((t) => t.key === (p ? p.type_key?.value : d.type_key));
-  // A batch made Only me is the uploader's own: whose these are is them.
-  const owner =
-    role === 'teen'
-      ? (me?.id ?? '')
-      : p
-        ? (p.owner_member_id?.value ?? (d.visibility === 'private' ? (me?.id ?? '') : ''))
-        : (d.owner_member_id ?? (d.visibility === 'private' ? (me?.id ?? '') : ''));
-  const person = members.find((m) => m.id === owner);
-  const startVisibility = (t: DocumentTypeView | undefined, o: string) => {
-    // Somebody else's, chosen on the card, from a batch made Only me: Only
-    // me is not for them, so the narrowest left, shown before accepting.
-    if (d.visibility === 'private' && (o === '' || o !== me?.id)) {
-      return can(role, 'document.see_adults') ? 'adults' : 'household';
-    }
-    return batchVisibility({ chosen: d.visibility, type: t ?? null, role, owner: o, me: me?.id });
-  };
-  const issuer = p?.issued_by?.value ?? '';
-  const issued = p?.issued ? formatDate(p.issued.value) : '';
-  const dup = dupWords(item);
-  return (
-    <ConfirmForm
-      title="Is this right?"
-      back={`/inbox/batches/${batch.id}`}
-      lede={
-        p && item.reading === 'read'
-          ? 'Check it, and accept it as a document. What the pages say is filled in, marked with how sure the vault is, and so is what you chose for the whole batch.'
-          : 'Check it, and accept it as a document. What you chose for the whole batch is filled in already; nothing else is.'
-      }
-      fileName={item.name}
-      aside={
-        <div className="stack batch-card-aside">
-          <FirstPage batchId={batch.id} item={item} large eager />
-          {item.level !== undefined ? (
-            <div className="batch-card-level">
-              {item.level ? (
-                <LevelBadge level={item.level} />
-              ) : (
-                <span className="status status-neutral">
-                  {item.reading === 'reading'
-                    ? 'Being read: accept it with the batch’s choices, or come back once it is read.'
-                    : 'Waiting to be read: accept it with the batch’s choices, or come back once it is read.'}
-                </span>
-              )}
-              <ItemTags item={item} full />
-            </div>
-          ) : (
-            dup && <p className="status status-warn">{dup}</p>
-          )}
-        </div>
-      }
-      types={types}
-      members={members}
-      initial={{
-        typeKey: type?.key ?? '',
-        title: type
-          ? autoTitle(type, person, {
-              issued_by: issuer,
-              issued: p?.issued?.value ?? null,
-            })
-          : '',
-        owner,
-        issuer,
-        issued,
-        expires: p?.expires ? formatDate(p.expires.value) : '',
-        identifier: p?.identifier?.value ?? '',
-        location: d.physical_location ?? '',
-        // Never wider than the batch chose; narrower where its kind usually is.
-        visibility: p?.visibility.value ?? startVisibility(type, owner),
-        notes: '',
-        details: {},
-      }}
-      startVisibility={startVisibility}
-      {...(p
-        ? {
-            marks: {
-              ...(p.type_key ? { type_key: p.type_key } : {}),
-              ...(p.owner_member_id && role !== 'teen'
-                ? { owner_member_id: p.owner_member_id }
-                : {}),
-              ...(p.issued_by ? { issued_by: p.issued_by } : {}),
-              ...(p.issued ? { issued: p.issued } : {}),
-              ...(p.expires ? { expires: p.expires } : {}),
-              ...(p.identifier ? { identifier: p.identifier } : {}),
-            },
-            clashes: item.clashes ?? [],
-          }
-        : {})}
-      extras={{
-        collections: addable(data.collections, role),
-        collectionId: d.collection_id ?? '',
-        tags: d.tags.join(', '),
-        essential: d.is_essential,
-      }}
-      submitLabel="Accept as a document"
-      onSubmit={(details, extra) => accept(batch, item, details, extra)}
-    />
   );
 }

@@ -5,6 +5,7 @@ import type {
   BatchTag,
   ItemProposals,
 } from './batch-levels.js';
+import type { BatchLevelCounts } from './batch-review.js';
 import type { CaptureMetadata } from './capture.js';
 import { effectiveVisibility } from './capture.js';
 import type { DocumentTypeView, Visibility } from './documents.js';
@@ -60,6 +61,11 @@ export interface BatchCounts {
   accepted: number;
   /** Waiting, and a duplicate of a document or of another item. */
   duplicates: number;
+  /**
+   * Removed by the uploader, kept as a line of the batch until it goes
+   * (I3): what the queue's Done says. Absent from an older vault.
+   */
+  removed?: number;
 }
 
 /** `GET /api/v1/batches`: one of the caller's own batches. Nobody else's is ever listed. */
@@ -71,6 +77,12 @@ export interface BatchView {
   ends_at: string;
   defaults: BatchDefaults;
   counts: BatchCounts;
+  /**
+   * How many waiting items are at each level, as the vault levels them now
+   * (I3): only when asked for (`GET /batches?with=levels`) — counting them
+   * opens what each item's pages proposed.
+   */
+  levels?: BatchLevelCounts;
 }
 
 /**

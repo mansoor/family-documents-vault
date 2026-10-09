@@ -162,6 +162,8 @@ export interface HarnessOptions {
   batchBetweenRemoval?: BatchOptions['betweenRemoval'];
   /** Told of each batch item whose sealed proposal is opened (the I2 review). */
   batchOpened?: BatchOptions['opened'];
+  /** An Undo of Accept all Ready, held with the document held (I3): for the races. */
+  batchUndoHeld?: BatchOptions['undoHeld'];
   /** FDV_TRUST_PROXY (5.30): whose X-Forwarded-For is believed; `network` otherwise. */
   trustProxy?: 'network' | 'private' | 'all' | 'none';
   /** Where pages are proposed for (5.37): the process's proposal thread, unless a test stands in. */
@@ -346,6 +348,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     batches: new BatchService(db, keys, vaults, documents, collections, 5 * 1024 * 1024, enqueue, {
       ...(opts.batchBetweenRemoval ? { betweenRemoval: opts.batchBetweenRemoval } : {}),
       ...(opts.batchOpened ? { opened: opts.batchOpened } : {}),
+      ...(opts.batchUndoHeld ? { undoHeld: opts.batchUndoHeld } : {}),
     }),
     audit: new AuditService(db),
     reminders,

@@ -4041,6 +4041,45 @@ batch }]`, where the pages disagree with a default at `CLASH_CONFIDENCE`,
     `CLASH_CONFIDENCE`, `householdDateOrder`. The client fake levels its
     items the same way, read as a test says (`FakeBatchItem.reading`,
     `read_failure`, `proposal`).
+  - The review queue (I3, `features.batch_review`). **Added**, for a batch's
+    uploader alone (anybody else, an owner included, `404`; a viewer or a
+    guest `403`): `POST /api/v1/batches/{id}/accept-ready` (`{ item_ids? }`,
+    at most `ACCEPT_READY_MAX`, 50, else `422`) files every item Ready now —
+    levelled again for each, inside its own transaction, against the
+    batch's defaults and the kinds as they are then, never a client's list
+    taken on trust: named items not Ready now are skipped — each as its
+    card would file it untouched (`untouchedAccept`), item by item; answers
+    `{ accepted: [{ item_id, document_id, version_id, warnings? }], skipped:
+[{ item_id, reason: 'not_ready' | 'decided' | 'not_found', level? }],
+failed: [{ item_id, code, message }], undo_until, more }` (`more`: more
+    were Ready than one request takes, none named). `POST
+/api/v1/batches/{id}/accept-ready/undo` (`{ item_ids }`, 1 to 200) takes
+    documents filed so back for `ACCEPT_UNDO_MINUTES` (5): each removed for
+    good — no tombstone, so its lines in the activity log are shown to
+    nobody — and its item waiting again, its pages drawn and read again;
+    answers `{ restored, kept: [{ item_id, reason: 'too_late' |
+'not_undoable' | 'changed' | 'not_found' | 'failed', message }] }` (a
+    document somebody changed, made a link to, added a copy to or moved to
+    the Trash meanwhile is `changed`, and kept; so is one a collection's
+    link ticked or followed, one any link drew pages of, one with a line in
+    the log by anybody else or from outside, and one somebody else put in a
+    collection, set a reminder for, snoozed or acknowledged one of its
+    reminders, or linked to, and one an export by somebody else, begun since
+    it was filed, may hold). A kind hidden, of no
+    document the caller can see, is no kind in an item's levelling. `GET
+/api/v1/batches?with=levels` gives each batch `levels` (`{ ready, check,
+unrecognised, problem, unread }`); `counts.removed` on every batch.
+    **Changed:** `POST /api/v1/documents/{id}/share` holds the document
+    until the link is made: one removed meanwhile is `404`, and so is a page
+    looked at, a file downloaded or a copy kept on a phone; any other write
+    naming a row that went while it waited is `409 gone_meanwhile`, never a
+    `500`. `DELETE /api/v1/vaults/{id}` of a place that still keeps files
+    is `409 vault_has_files`. `@fdv/shared`:
+    `ACCEPT_READY_MAX`, `ACCEPT_UNDO_MINUTES`, `untouchedAccept`,
+    `BatchAcceptReadyInput`, `BatchAcceptReadyResult`, `AcceptReadySkip`,
+    `BatchUndoInput`, `BatchUndoResult`, `UndoKept`, `BatchLevelCounts`.
+    `@fdv/client`: `acceptReady`, `undoAcceptReady`, and `batches(token, {
+levels })`. The client fake answers the same.
 
 ## Deprecations in effect
 

@@ -201,7 +201,7 @@ describe.skipIf(!testAdminUrl())('many documents at once: batches', () => {
       const b = await made(who, { name: '  Old   papers ' });
       expect(b.name).toBe('Old papers');
       expect(b.items).toEqual([]);
-      expect(b.counts).toEqual({ items: 0, waiting: 0, accepted: 0, duplicates: 0 });
+      expect(b.counts).toEqual({ items: 0, waiting: 0, accepted: 0, removed: 0, duplicates: 0 });
       // Thirty days to decide what is in it.
       expect(Date.parse(b.ends_at) - Date.parse(b.created_at)).toBe(30 * 864e5);
     }
@@ -1159,8 +1159,20 @@ describe.skipIf(!testAdminUrl())('many documents at once: batches', () => {
     expect(listed.statusCode).toBe(200);
     const views = listed.json<{ items: BatchView[] }>().items;
     const box = (n: number) => views.find((v) => v.id === ids[n]) as BatchView;
-    expect(box(0).counts).toEqual({ items: 200, waiting: 200, accepted: 0, duplicates: 199 });
-    expect(box(59).counts).toEqual({ items: 200, waiting: 200, accepted: 0, duplicates: 200 });
+    expect(box(0).counts).toEqual({
+      items: 200,
+      waiting: 200,
+      accepted: 0,
+      removed: 0,
+      duplicates: 199,
+    });
+    expect(box(59).counts).toEqual({
+      items: 200,
+      waiting: 200,
+      accepted: 0,
+      removed: 0,
+      duplicates: 200,
+    });
     t = performance.now();
     const last = await detail(pat, ids[59] as string);
     const detailMs = performance.now() - t;
@@ -1400,7 +1412,13 @@ describe.skipIf(!testAdminUrl())(
       expect(asked.length).toBeGreaterThan(0);
       expect(asked.some((q) => q.includes('original_name'))).toBe(false);
       const view = listed.json<{ items: BatchView[] }>().items.find((v) => v.id === b.id);
-      expect(view?.counts).toEqual({ items: 2, waiting: 2, accepted: 0, duplicates: 1 });
+      expect(view?.counts).toEqual({
+        items: 2,
+        waiting: 2,
+        accepted: 0,
+        removed: 0,
+        duplicates: 1,
+      });
     });
 
     it('a removal fences its batch first: a file sent while what is in it is removed is refused, and nothing is left on disk', async () => {

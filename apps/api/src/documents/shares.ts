@@ -903,6 +903,10 @@ export class ShareService {
         .select(['id', 'title', 'visibility', 'owner_member_id'])
         .where('id', '=', documentId)
         .where('deleted_at', 'is', null)
+        // Held for share until the link is made: a document taken away
+        // meanwhile — removed for good, or taken back into a batch's queue
+        // (I3) — is waited for, and then not there.
+        .forShare()
         .executeTakeFirst();
       // Nobody sends out what they cannot see. For a private document that
       // means nobody but its owner, however senior they are: it is theirs.

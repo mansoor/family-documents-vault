@@ -552,11 +552,11 @@ describe('a batch’s page (I1)', () => {
     await expectAccessible();
   });
 
-  it('Accept opens the card filled from what the batch chose, and only that; it files it, and comes back with the focus on what happened', async () => {
+  it('Accept opens the card filled from what the batch chose, and only that; it files it, and the next file opens, saying what happened', async () => {
     const state = at('/inbox/batches/batch-1', { batches: [OLD_PAPERS()] });
     fireEvent.click(await screen.findByRole('link', { name: 'Accept scan-001.pdf' }));
     await screen.findByLabelText('What it is');
-    expect(screen.getByRole('heading', { name: 'Is this right?' })).toBeVisible();
+    expect(screen.getByRole('heading', { level: 1, name: 'scan-001.pdf' })).toBeVisible();
     await screen.findByRole('option', { name: 'Aisha' });
     // The batch's choices fill the card...
     expect(screen.getByLabelText('What it is')).toHaveValue('birth_certificate');
@@ -576,11 +576,13 @@ describe('a batch’s page (I1)', () => {
     );
     await expectAccessible();
     fireEvent.change(screen.getByLabelText(/Number/), { target: { value: 'BC-1' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Accept as a document' }));
-    const status = await screen.findByText(
-      "“scan-001.pdf” is a document now: Aisha's birth certificate.",
-    );
-    await waitFor(() => expect(status).toHaveFocus());
+    fireEvent.click(screen.getByRole('button', { name: /^Accept and next/ }));
+    // The next file, saying what happened, with the focus on its first field.
+    expect(
+      await screen.findByText("“scan-001.pdf” is a document now: Aisha's birth certificate."),
+    ).toBeVisible();
+    await screen.findByRole('heading', { level: 1, name: 'scan-002.pdf' });
+    await waitFor(() => expect(screen.getByLabelText('What it is')).toHaveFocus());
     const sent = posts(state, /\/items\/item-1\/accept$/);
     expect(sent).toHaveLength(1);
     expect(sent[0]?.body).toMatchObject({
@@ -595,9 +597,10 @@ describe('a batch’s page (I1)', () => {
     });
     expect((sent[0]?.body as Record<string, unknown>).category).toBeUndefined();
     // It is a document now: accepted, with a way to it.
-    const rows = within(screen.getByRole('table', { name: 'Files in Old papers' })).getAllByRole(
-      'row',
-    );
+    fireEvent.click(screen.getByRole('link', { name: 'Old papers' }));
+    const rows = within(
+      await screen.findByRole('table', { name: 'Files in Old papers' }),
+    ).getAllByRole('row');
     expect(rows[1]).toHaveTextContent('Accepted');
     expect(
       within(rows[1] as HTMLElement).getByRole('link', { name: 'Open the document' }),
@@ -898,10 +901,12 @@ describe('many documents at once, the review (I1)', () => {
     await waitFor(() => expect(pages()).toHaveLength(7));
     expect(pages().some((c) => c.url.includes('/items/item-1/'))).toBe(false);
     fireEvent.click(screen.getByRole('link', { name: 'Accept scan-2.pdf' }));
-    await screen.findByRole('heading', { name: 'Is this right?' });
-    expect(await screen.findByRole('img', { name: 'First page of scan-2.pdf' })).toBeVisible();
-    fireEvent.click(await screen.findByRole('button', { name: 'Accept as a document' }));
+    await screen.findByLabelText('What it is');
+    // Its pages, beside the card: the first is the one the batch's page drew.
+    expect(await screen.findByRole('img', { name: 'Page 1 of 2' })).toBeVisible();
+    fireEvent.click(await screen.findByRole('button', { name: /^Accept and next/ }));
     await screen.findByText(/“scan-2.pdf” is a document now/);
+    fireEvent.click(screen.getByRole('link', { name: 'Old papers' }));
     expect(await screen.findByRole('img', { name: 'First page of scan-3.pdf' })).toBeVisible();
     await new Promise((r) => setTimeout(r, 100));
     // Nothing asked again, coming back; far under the vault's 300 a minute in all.
@@ -1102,7 +1107,7 @@ describe('many documents at once, the review (I1)', () => {
         /This collection is shared with Jane Smith/,
       ),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Accept as a document' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Accept and next/ }));
     expect(
       await screen.findByText(
         "“scan-001.pdf” is a document now: Aisha's birth certificate. Jane (viewer) will be able to see this.",

@@ -418,18 +418,7 @@ export class PurgeService {
    * is held that a writer holding one of these could then be waiting for.
    */
   private async holdAround(trx: Db, id: string): Promise<void> {
-    // The sessions of its own links: a request in one holds its session
-    // first, then its link, then the log.
-    await sql`select s.id from share_session s
-               where s.share_id in (select l.id from share_link l where l.document_id = ${id})
-               order by s.id for update of s`.execute(trx);
-    // Its own links, which go with it.
-    await sql`select l.id from share_link l where l.document_id = ${id}
-               order by l.id for update`.execute(trx);
-    // The pages links drew of it: the share-pages worker holds its link,
-    // then these, and only then names the document.
-    await sql`select p.share_id from share_page p where p.document_id = ${id}
-               order by p.share_id, p.version_id, p.n for update`.execute(trx);
+    await holdDocumentRows(trx, id);
   }
 
   private async remove(trx: Db, p: Principal, doc: Held, meta: RequestMeta): Promise<void> {
@@ -443,46 +432,7 @@ export class PurgeService {
       .execute();
 
     // Every object it owns, by the place it is kept.
-    const byVault = new Map<string, Set<string>>();
-    const add = (vaultId: string | null, key: string | null) => {
-      if (!vaultId || !key) return;
-      const keys = byVault.get(vaultId) ?? new Set<string>();
-      keys.add(key);
-      byVault.set(vaultId, keys);
-    };
-    // The links that drew pages of it, or could have: its own and any
-    // collection's whose snapshot names it, to view; and any a page names.
-    const drawn = await trx
-      .selectFrom('share_page')
-      .select(['share_id', 'storage_key', 'version_id'])
-      .where('document_id', '=', doc.id)
-      .execute();
-    const viewLinks = await sql<{ id: string }>`
-      select l.id from share_link l
-       where l.permission = 'view'
-         and (l.document_id = ${doc.id}
-              or exists (select 1 from share_link_item t
-                          where t.share_id = l.id and t.document_id = ${doc.id}))`.execute(trx);
-    const linkIds = new Set([...viewLinks.rows.map((l) => l.id), ...drawn.map((d) => d.share_id)]);
-    const vaultOf = new Map(versions.map((v) => [v.id, v.vault_id]));
-    for (const v of versions) {
-      add(v.vault_id, v.storage_key);
-      add(v.vault_id, thumbnailKey(v.storage_key));
-      add(v.vault_id, v.thumbnail_key);
-      for (let n = 1; n <= PREVIEW_MAX_PAGES; n += 1) {
-        add(v.vault_id, previewKey(v.storage_key, n));
-        for (const share of linkIds) add(v.vault_id, sharePageKey(v.storage_key, share, n));
-      }
-    }
-    for (const d of drawn) add(vaultOf.get(d.version_id) ?? null, d.storage_key);
-    // An upload of a new version that never finished: its bytes, on their way.
-    const unfinished = await trx
-      .selectFrom('upload_idempotency')
-      .select(['temp_key', 'temp_vault_id'])
-      .where('document_id', '=', doc.id)
-      .where('temp_key', 'is not', null)
-      .execute();
-    for (const u of unfinished) add(u.temp_vault_id, u.temp_key);
+    const byVault = await ownedObjects(trx, doc.id, versions);
 
     // Written down, to be deleted once the rows are gone (purge_leftover,
     // 0045): a removal that stops part-way leaves these to finish, never a
@@ -541,4 +491,85 @@ export class PurgeService {
       ip: meta.ip,
     });
   }
+}
+
+/**
+ * Every object a document owns, by the place it is kept (5.24): each
+ * version's file, its thumbnail and page previews, the pages any link to
+ * view drew of it, and the file of an upload to it that never finished.
+ * Its rows, held already. Also what taking back a document Accept all
+ * Ready filed writes down to delete (I3, batches.ts).
+ */
+export async function ownedObjects(
+  trx: Db,
+  documentId: string,
+  versions: ReadonlyArray<{
+    id: string;
+    storage_key: string;
+    thumbnail_key: string | null;
+    vault_id: string;
+  }>,
+): Promise<Map<string, Set<string>>> {
+  const byVault = new Map<string, Set<string>>();
+  const add = (vaultId: string | null, key: string | null) => {
+    if (!vaultId || !key) return;
+    const keys = byVault.get(vaultId) ?? new Set<string>();
+    keys.add(key);
+    byVault.set(vaultId, keys);
+  };
+  // The links that drew pages of it, or could have: its own and any
+  // collection's whose snapshot names it, to view; and any a page names.
+  const drawn = await trx
+    .selectFrom('share_page')
+    .select(['share_id', 'storage_key', 'version_id'])
+    .where('document_id', '=', documentId)
+    .execute();
+  const viewLinks = await sql<{ id: string }>`
+    select l.id from share_link l
+     where l.permission = 'view'
+       and (l.document_id = ${documentId}
+            or exists (select 1 from share_link_item t
+                        where t.share_id = l.id and t.document_id = ${documentId}))`.execute(trx);
+  const linkIds = new Set([...viewLinks.rows.map((l) => l.id), ...drawn.map((d) => d.share_id)]);
+  const vaultOf = new Map(versions.map((v) => [v.id, v.vault_id]));
+  for (const v of versions) {
+    add(v.vault_id, v.storage_key);
+    add(v.vault_id, thumbnailKey(v.storage_key));
+    add(v.vault_id, v.thumbnail_key);
+    for (let n = 1; n <= PREVIEW_MAX_PAGES; n += 1) {
+      add(v.vault_id, previewKey(v.storage_key, n));
+      for (const share of linkIds) add(v.vault_id, sharePageKey(v.storage_key, share, n));
+    }
+  }
+  for (const d of drawn) add(vaultOf.get(d.version_id) ?? null, d.storage_key);
+  // An upload of a new version that never finished: its bytes, on their way.
+  const unfinished = await trx
+    .selectFrom('upload_idempotency')
+    .select(['temp_key', 'temp_vault_id'])
+    .where('document_id', '=', documentId)
+    .where('temp_key', 'is not', null)
+    .execute();
+  for (const u of unfinished) add(u.temp_vault_id, u.temp_key);
+  return byVault;
+}
+
+/**
+ * The rows a removal of a document waits on, held before the document is,
+ * in the order the writers of each hold them (see the top of this file):
+ * its links' sessions, its links, the pages links drew of it. Taking back a
+ * document Accept all Ready filed holds them so too (I3, batches.ts).
+ */
+export async function holdDocumentRows(trx: Db, id: string): Promise<void> {
+  // The sessions of its own links: a request in one holds its session
+  // first, then its link, then the log.
+  await sql`select s.id from share_session s
+             where s.share_id in (select l.id from share_link l where l.document_id = ${id})
+             order by s.id for update of s`.execute(trx);
+  // Its own links, which go with it.
+  await sql`select l.id from share_link l where l.document_id = ${id}
+             order by l.id for update`.execute(trx);
+  // The pages links drew of it: the share-pages worker holds its link,
+  // then these, and only then names the document.
+  await sql`select p.share_id from share_page p where p.document_id = ${id}
+             order by p.share_id, p.version_id, p.n for update`.execute(trx);
 }
