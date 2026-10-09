@@ -708,4 +708,24 @@ describe('who did it, and what sort of thing, for the Activity table (R4)', () =
       ).toBe(true);
     }
   });
+
+  it('says when on the household’s clock and calendar, given its time zone (the review)', () => {
+    const at = '2026-09-30T22:12:00Z';
+    // 23:12 on the 30th in London; 12:12 on 1 October in Kiritimati.
+    expect(whenWords(at, new Date('2026-10-08T12:00:00Z'), 'Europe/London')).toBe(
+      '30 September, 11:12pm',
+    );
+    expect(whenWords(at, new Date('2026-10-08T12:00:00Z'), 'Pacific/Kiritimati')).toBe(
+      '1 October, 12:12pm',
+    );
+    expect(whenWords(at, new Date('2026-10-01T09:00:00Z'), 'Europe/London')).toBe(
+      'yesterday, 11:12pm',
+    );
+    expect(whenWords(at, new Date('2026-10-01T09:00:00Z'), 'Pacific/Kiritimati')).toBe(
+      'today, 12:12pm',
+    );
+    expect(whenWords(at, new Date('2026-10-02T10:00:00Z'), 'Europe/London')).toMatch(
+      /^Wednesday, 11:12pm$/,
+    );
+  });
 });

@@ -4091,8 +4091,11 @@ levels })`. The client fake answers the same.
     `trash` or `vault` (any action not listed is `vault`). Which lines
     anybody is shown is unchanged. Absent from an older vault's lines; a
     client ignores them if it does not know them. `@fdv/shared`:
-    `ActivityKind`, `ACTIVITY_KINDS`, `activityKind`. The client fake keeps a
-    log of the documents created, and answers `GET /audit` with them.
+    `ActivityKind`, `ACTIVITY_KINDS`, `activityKind`, and `eventWords` (a
+    line with whether its template names who did it: the id is given only
+    where the template says so and its words agree); `whenWords` takes the
+    household's time zone, optionally. The client fake keeps a log of the
+    documents created, and answers `GET /audit` with them.
 
 ## Deprecations in effect
 

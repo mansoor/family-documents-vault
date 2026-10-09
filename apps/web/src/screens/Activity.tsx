@@ -151,7 +151,7 @@ export function ActivityScreen() {
               {shown.map((l) => (
                 <tr key={l.id} className={l.notable ? 'notable' : undefined}>
                   <td className="nowrap muted">
-                    <When at={l.at} />
+                    <When at={l.at} timezone={timezone ?? null} />
                   </td>
                   <td>
                     <Who line={l} family={family} />
@@ -181,7 +181,7 @@ export function ActivityScreen() {
             {shown.map((l) => (
               <tr key={l.id} className={l.notable ? 'notable' : undefined}>
                 <td className="when">
-                  <When at={l.at} />
+                  <When at={l.at} timezone={timezone ?? null} />
                 </td>
                 <td>
                   <What line={l} />
@@ -215,7 +215,7 @@ interface Filters {
   /** A member's id, or `else`. */
   who: string;
   kind: string;
-  /** Days, YYYY-MM-DD, on this device's calendar, as the times are said. */
+  /** Days, YYYY-MM-DD, on the household's calendar, as the times are said. */
   from: string;
   to: string;
 }
@@ -275,10 +275,11 @@ function emptyWords(filtered: boolean, older: boolean): string {
     : 'Nothing matches these filters.';
 }
 
-function When({ at }: { at: string }) {
+/** When, on the household's clock, as the From and To days are counted. */
+function When({ at, timezone }: { at: string; timezone: string | null }) {
   return (
-    <time dateTime={at} title={whenWords(at)}>
-      {whenExactly(at)}
+    <time dateTime={at} title={whenWords(at, new Date(), timezone)}>
+      {whenExactly(at, timezone)}
     </time>
   );
 }

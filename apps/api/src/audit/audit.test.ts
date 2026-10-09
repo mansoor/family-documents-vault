@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { appendAudit, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
-import { describeEvent, type ActivityLine, type DocumentView } from '@fdv/shared';
+import {
+  describeEvent,
+  eventWords,
+  type ActivityEvent,
+  type ActivityLine,
+  type DocumentView,
+} from '@fdv/shared';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
@@ -274,6 +280,80 @@ describe('who reads each line', () => {
     return [...source.matchAll(/case '([a-z_]+\.[a-z_]+)':/g)].map((m) => m[1] as string);
   };
   const withoutRule = (actions: string[]) => actions.filter((a) => !hasRule(a));
+
+  it('every template says whether it names who did it, and says it truly (the review)', async () => {
+    // Every action with a sentence, read from the source.
+    const actions = await said();
+    expect(actions.length).toBeGreaterThan(80);
+    // Each branch a template has: by what its detail and object say.
+    const details: Array<Record<string, unknown>> = [
+      {},
+      { change: 'added' },
+      { change: 'removed' },
+      { why: 'collection_deleted' },
+      { why: 'collection_only_me' },
+      { kind: 'guest', display_name: 'Pip', email: 'pip@example.test' },
+      { replaced: true },
+      { path: 'mail', stop_now: true },
+      { path: 'handover' },
+      { reason: 'restored' },
+      { deceased: true },
+      { to: 'private', from: 'family' },
+      { to: 'owners_and_self', notice_until: '2026-10-10T00:00:00Z' },
+      { to: 'family', from: 'family', withdrawn: 'adults' },
+      { mode: 'show', online: true },
+      { files: 1, from: 'Jane' },
+      { files: 3 },
+      { cancelled_purge: true },
+      { builtin: true, label: 'Pets' },
+      { default_visibility: 'adults', widened: true },
+      { reconfirmed: true },
+      { only_me_shareable: true },
+      { recipient_label: 'the agent', follow_collection: true, permission: 'view' },
+    ];
+    const objects: Array<Partial<ActivityEvent>> = [
+      { object_type: 'document', object_id: 'doc-1', object_title: 'Home insurance policy' },
+      { object_type: 'collection', object_id: 'c-1', object_title: null, collection_name: 'Trip' },
+      { object_type: 'member', object_id: 'm-other', object_title: 'Robin' },
+      // About themselves: "their photo".
+      { object_type: 'member', object_id: 'm-zara', object_title: 'Zara Quill' },
+    ];
+    let seen = 0;
+    for (const action of actions) {
+      for (const detail of details) {
+        for (const object of objects) {
+          const line = eventWords({
+            id: 1,
+            at: '2026-09-22T16:12:00.000Z',
+            action,
+            actor: 'Zara Quill',
+            actor_member_id: 'm-zara',
+            actor_label: null,
+            object_type: null,
+            object_id: null,
+            object_title: null,
+            detail,
+            ...object,
+          });
+          if (!line) continue;
+          seen += 1;
+          // Its word, and its words, agree: named exactly where it says who did it.
+          const words = line.text.replace(/Zara Quill’s photo|of Zara Quill|Zara Quill’s/g, '');
+          const inWords =
+            line.text.startsWith('Zara Quill ') ||
+            line.text.startsWith('Zara Quill’s ') ||
+            line.text.includes(': Zara Quill ');
+          expect(line.named, `${action} ${JSON.stringify(detail)}: ${line.text}`).toBe(inWords);
+          expect(line.actor_member_id, line.text).toBe(line.named ? 'm-zara' : null);
+          // Unnamed, the words never say them: but as what the line is about.
+          if (!line.named && object.object_title !== 'Zara Quill') {
+            expect(words, line.text).not.toContain('Zara Quill');
+          }
+        }
+      }
+    }
+    expect(seen).toBeGreaterThan(actions.length);
+  });
 
   it('an action with a sentence but no rule fails the test', async () => {
     const actions = await said();

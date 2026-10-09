@@ -321,7 +321,7 @@ function UploadsWaiting() {
   const { mayBatch } = useMayBatch();
   const { caps, authVersion } = useApp();
   const levels = caps?.features.batch_review === true;
-  const { data } = useLoad(
+  const { data, error } = useLoad(
     async (t) => (mayBatch ? (await api.batches(t, levels ? { levels } : {})).items : []),
     [authVersion, mayBatch, levels],
   );
@@ -351,7 +351,11 @@ function UploadsWaiting() {
           Open your Inbox
         </Link>
       </div>
-      {data === null ? (
+      {/* Quietly: Home says it once already when the vault cannot be reached,
+          and the Inbox, linked above, is where they are. */}
+      {data === null && error !== null ? (
+        <p className="muted">Couldn’t load your uploads. They are in your Inbox.</p>
+      ) : data === null ? (
         <p className="muted">Loading your uploads…</p>
       ) : waiting === 0 ? (
         <p className="muted">Nothing you uploaded is waiting.</p>

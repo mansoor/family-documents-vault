@@ -144,20 +144,8 @@ export function activityKind(action: string): ActivityKind {
   }
 }
 
-/**
- * Lines whose words never name who did it, whatever their first words
- * happen to be: the id stays null for them (R4).
- */
-const NEVER_NAMES_ACTOR: ReadonlySet<string> = new Set([
-  'invitation.accepted',
-  'share.locked',
-  'share.code_sent',
-  'upload_request.code_sent',
-  'upload_request.locked',
-  'upload_request.closed',
-  'incoming.purged',
-  'incoming.moved',
-]);
+/** Said of a line whose words never name who did it (R4): its id stays null. */
+const UNNAMED = { named: false } as const;
 
 const quoted = (title: string | null) => (title ? `“${title}”` : 'a document');
 
@@ -166,6 +154,20 @@ const quoted = (title: string | null) => (title ? `“${title}”` : 'a document
  * all. The caller has already decided visibility; this decides sayability.
  */
 export function describeEvent(e: ActivityEvent): ActivityLine | null {
+  const said = eventWords(e);
+  if (!said) return null;
+  // The template's word stays here: a line carries its id, or null.
+  const line: ActivityLine & { named?: boolean } = { ...said };
+  delete line.named;
+  return line;
+}
+
+/**
+ * A line, with whether its template names who did it (R4): `named` is the
+ * template's own word, given where it is written. For `describeEvent`, and
+ * for the test that holds every template to its word.
+ */
+export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }) | null {
   const who = e.actor ?? (e.actor_label ? capitalise(e.actor_label) : 'Somebody');
   const doc = quoted(e.object_title);
   const detail = e.detail ?? {};
@@ -174,23 +176,30 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
   /** A collection, by the name it has now (0.5.12). */
   const collection = e.collection_name ? `the collection “${e.collection_name}”` : 'a collection';
   const documentId = e.object_type === 'document' ? e.object_id : null;
-  // Who did it, by id, only where the words name them (R4): a member's
-  // name, not "Somebody" or a link's label, and said as the one who did it.
-  const named = (said: string) =>
-    e.actor != null &&
-    e.actor_member_id != null &&
-    !NEVER_NAMES_ACTOR.has(e.action) &&
-    (said.startsWith(`${who} `) ||
-      said.startsWith(`${possessive(who)} `) ||
-      said.includes(`: ${who} `));
-  const line = (text: string, notable = false): ActivityLine => ({
+  // Who did it, by id (R4): only for a member with a name, where the
+  // template says it names them (every template does, but those marked
+  // UNNAMED) — and, failing closed, where the words do begin with them, or
+  // say them after a colon.
+  const wordsName = (said: string) =>
+    said.startsWith(`${who} `) ||
+    said.startsWith(`${possessive(who)} `) ||
+    said.includes(`: ${who} `);
+  const line = (
+    text: string,
+    notable = false,
+    how: { named: boolean } = { named: true },
+  ): ActivityLine & { named: boolean } => ({
     id: e.id,
     at: e.at,
     text,
     notable,
     document_id: documentId,
-    actor_member_id: named(text) ? (e.actor_member_id ?? null) : null,
+    actor_member_id:
+      how.named && e.actor != null && e.actor_member_id != null && wordsName(text)
+        ? e.actor_member_id
+        : null,
     kind: activityKind(e.action),
+    named: how.named,
   });
 
   switch (e.action) {
@@ -502,7 +511,11 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       return line(`${who} invited ${nameOf(detail, 'email')} to sign in`, true);
     }
     case 'invitation.accepted':
-      return line(`${nameOf(detail, 'email')} accepted their invitation and can now sign in`, true);
+      return line(
+        `${nameOf(detail, 'email')} accepted their invitation and can now sign in`,
+        true,
+        UNNAMED,
+      );
     case 'invitation.revoked':
       return line(`${who} cancelled the invitation to ${nameOf(detail, 'email')}`);
 
@@ -561,12 +574,15 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       return line(
         `A link to ${e.object_type === 'collection' ? collection : doc} stopped working: its PIN, password or code was wrong ten times`,
         true,
+        UNNAMED,
       );
     // 5.20: a code emailed for a link, to the address its sharer typed,
     // which the log has only masked.
     case 'share.code_sent':
       return line(
         `A code to open a link to ${e.object_type === 'collection' ? collection : doc} was emailed${text(detail.to) ? ` to ${text(detail.to)}` : ''}`,
+        false,
+        UNNAMED,
       );
     case 'share.resumed':
       return line(
@@ -588,11 +604,14 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
     case 'upload_request.code_sent':
       return line(
         `A code was sent to ${text(detail.sent_to) || 'the address given'} for a request to send documents`,
+        false,
+        UNNAMED,
       );
     case 'upload_request.locked':
       return line(
         'A request to send documents stopped working: a password or code was typed wrong ten times',
         true,
+        UNNAMED,
       );
     case 'upload_request.submitted': {
       const n = typeof detail.files === 'number' ? detail.files : 0;
@@ -606,6 +625,8 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
     case 'upload_request.closed':
       return line(
         'A request to send documents was closed: whoever asked can no longer ask for documents',
+        false,
+        UNNAMED,
       );
 
     // --------------------------------------- what came in, looked at (5.23)
@@ -621,6 +642,8 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       const n = typeof detail.files === 'number' ? detail.files : 0;
       return line(
         `${n === 1 ? 'A file' : `${n || 'Some'} files`} ${sentBy(detail)} ${n === 1 ? 'was' : 'were'} removed: nobody filed ${n === 1 ? 'it' : 'them'} within 30 days`,
+        false,
+        UNNAMED,
       );
     }
     case 'incoming.moved': {
@@ -628,6 +651,7 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       return line(
         `${n === 1 ? 'A file' : `${n || 'Some'} files`} ${sentBy(detail)} ${n === 1 ? 'was' : 'were'} given to the owners to look at: whoever asked for ${n === 1 ? 'it' : 'them'} can no longer`,
         true,
+        UNNAMED,
       );
     }
 
@@ -814,18 +838,45 @@ function roleWords(role: unknown): string {
 /**
  * "yesterday, 4:12pm" — the design's own phrasing. Anything inside a week
  * is said in words, because that is how people talk about last Tuesday.
+ * On the household's clock and calendar when given its time zone (R4: the
+ * Activity table's days are the household's); else this device's.
  */
-export function whenWords(iso: string, now = new Date()): string {
+export function whenWords(iso: string, now = new Date(), timezone?: string | null): string {
   const at = new Date(iso);
-  const time = clockTime(at);
-  const days = daysBetween(at, now);
+  const zone = timezone ? knownZone(timezone) : undefined;
+  const inZone = zone ? { timeZone: zone } : {};
+  const time = clockTime(at, zone);
+  const days = zone ? zonedDaysBetween(at, now, zone) : daysBetween(at, now);
   if (days === 0) return `today, ${time}`;
   if (days === 1) return `yesterday, ${time}`;
-  if (days < 7) return `${at.toLocaleDateString('en-GB', { weekday: 'long' })}, ${time}`;
-  if (at.getFullYear() === now.getFullYear()) {
-    return `${at.toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })}, ${time}`;
+  if (days < 7) return `${at.toLocaleDateString('en-GB', { weekday: 'long', ...inZone })}, ${time}`;
+  const year = (d: Date) => (zone ? dayIn(d, zone).slice(0, 4) : String(d.getFullYear()));
+  if (year(at) === year(now)) {
+    return `${at.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', ...inZone })}, ${time}`;
   }
-  return at.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  return at.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    ...inZone,
+  });
+}
+
+/** The day a moment falls on in a time zone: "2026-09-30". */
+function dayIn(at: Date, zone: string): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: zone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(at);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+/** Calendar days apart on a time zone's calendar. */
+function zonedDaysBetween(a: Date, b: Date, zone: string): number {
+  return Math.round((Date.parse(dayIn(b, zone)) - Date.parse(dayIn(a, zone))) / 86400000);
 }
 
 /**

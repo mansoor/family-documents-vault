@@ -294,6 +294,30 @@ describe('Home from 768 px: a dashboard of cards (R4)', () => {
     await expectAccessible();
   });
 
+  it('uploads that cannot be loaded say so, quietly, with the way to the Inbox (the review)', async () => {
+    atWidth(WIDE);
+    open(
+      '/',
+      homeState({
+        refuseWith: (method, path) =>
+          method === 'GET' && path === '/api/v1/batches'
+            ? { status: 500, code: 'internal', message: 'Something went wrong.' }
+            : undefined,
+      }),
+    );
+    const uploads = await screen.findByRole('region', { name: 'Your uploads waiting' });
+    expect(
+      await within(uploads).findByText('Couldn’t load your uploads. They are in your Inbox.'),
+    ).toBeInTheDocument();
+    expect(within(uploads).queryByText('Loading your uploads…')).toBeNull();
+    expect(within(uploads).getByRole('link', { name: 'Open your Inbox' })).toHaveAttribute(
+      'href',
+      '/inbox',
+    );
+    // Not an alert: Home says once already when something cannot be loaded.
+    expect(within(uploads).queryByRole('alert')).toBeNull();
+  });
+
   it('the notices stay above the cards, as they were', async () => {
     atWidth(WIDE);
     open(
@@ -664,6 +688,37 @@ describe('Activity from 768 px: a table, with filters kept in the address (R4)',
     });
     await waitFor(() => expect(rowsOf()).toEqual(['Sara Seikh made a link to “Home insurance”']));
     await screen.findByText('1 of the 2 loaded match');
+  });
+
+  it('when a line happened is said on the household’s clock, the day its filter counts (the review)', async () => {
+    // A device on the far side of the date line from the household.
+    const before = process.env.TZ;
+    process.env.TZ = 'Pacific/Kiritimati';
+    try {
+      // 22:12 UTC on 30 September: 23:12 that day in London, and 12:12 on
+      // 1 October on this device.
+      const at = '2026-09-30T22:12:00Z';
+      expect(new Date(at).getDate()).toBe(1);
+      atWidth(WIDE);
+      open('/activity?from=2026-09-30&to=2026-09-30', {
+        members: [ME, SARA],
+        timezone: 'Europe/London',
+        activity: [
+          line(2, '2026-10-01T22:12:00Z', 'Sara Seikh signed in', 'sign_in', 'm-2'),
+          line(1, at, 'Sara Seikh made a link to “Home insurance”', 'shared', 'm-2', 'doc-1'),
+        ],
+      });
+      await waitFor(() => expect(rowsOf()).toEqual(['Sara Seikh made a link to “Home insurance”']));
+      const time = await waitFor(() => {
+        const t = main().querySelector('tbody time') as HTMLElement;
+        expect(t).toHaveTextContent(/^30 Sept? 2026, 11:12pm$/);
+        return t;
+      });
+      expect(time.getAttribute('title')).toMatch(/30 September.*11:12pm/);
+    } finally {
+      if (before === undefined) delete process.env.TZ;
+      else process.env.TZ = before;
+    }
   });
 
   it('a link with filters shows them on arrival; what matches further back comes with Show older', async () => {
