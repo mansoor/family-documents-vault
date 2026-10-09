@@ -78,7 +78,7 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
   await expect(menu.getByRole('menuitem', { name: 'Edit details' })).toBeFocused();
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowUp');
-  await expect(menu.getByRole('menuitem', { name: 'Move to Trash' })).toBeFocused();
+  await expect(menu.getByRole('menuitem', { name: 'Move to the Trash' })).toBeFocused();
 
   // Escape closes it, and focus is back on the ⋯.
   await page.keyboard.press('Escape');
@@ -101,10 +101,10 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
   await page.keyboard.press('Enter');
   await page.keyboard.press('End');
   await page.keyboard.press('Enter');
-  const dialog = page.getByRole('alertdialog', { name: 'Move to Trash?' });
+  const dialog = page.getByRole('alertdialog', { name: 'Move to the Trash?' });
   await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
   await page.keyboard.press('Shift+Tab');
-  await expect(dialog.getByRole('button', { name: 'Move to Trash' })).toBeFocused();
+  await expect(dialog.getByRole('button', { name: 'Move to the Trash' })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(row).toHaveCount(0);
 

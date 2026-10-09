@@ -14,6 +14,7 @@ import {
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type FocusEvent as ReactFocusEvent,
@@ -24,7 +25,13 @@ import {
   type RefObject,
 } from 'react';
 import { flushSync } from 'react-dom';
-import { Link, useNavigate, useSearchParams } from 'react-router';
+import {
+  Link,
+  NavigationType,
+  useNavigate,
+  useNavigationType,
+  useSearchParams,
+} from 'react-router';
 import { api, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { AddToCollection, collectionsOffered } from '../collections.js';
@@ -218,6 +225,57 @@ function writeKept(k: Kept): void {
   }
 }
 
+/**
+ * The row last opened from the table, and the view it was opened from (R5's
+ * keyboard paths): Back to that view gives it the focus again, as its
+ * history entry gives back what was chosen and how many were shown (W4).
+ */
+let lastOpened: { search: string; id: string } | null = null;
+
+function rememberOpened(id: string): void {
+  lastOpened = { search: window.location.search, id };
+}
+
+function forgetOpened(): void {
+  lastOpened = null;
+}
+
+/**
+ * Come back (the browser's Back, or the document's own) to the view a
+ * document was opened from: once its row is drawn again, it has the focus,
+ * after the shell has given the page's heading it. Read once, as the list
+ * comes back, and let go: a page loaded afresh has none.
+ */
+function useBackToOpened(
+  rows: readonly DocumentView[],
+  find: (id: string) => HTMLElement | null | undefined,
+) {
+  const navigation = useNavigationType();
+  const [returningTo] = useState(() =>
+    navigation === NavigationType.Pop && lastOpened?.search === window.location.search
+      ? lastOpened.id
+      : null,
+  );
+  const returning = useRef(returningTo);
+  const finder = useRef(find);
+  useLayoutEffect(() => {
+    finder.current = find;
+  });
+  useEffect(forgetOpened, []);
+  const ids = rows.map((d) => d.id).join(',');
+  useEffect(() => {
+    const id = returning.current;
+    if (!id || !ids.split(',').includes(id)) return;
+    const timer = window.setTimeout(() => {
+      const target = finder.current(id);
+      if (!target) return;
+      returning.current = null;
+      target.focus();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [ids]);
+}
+
 /** A view's pages: the first, then each Show more asks for the next after the cursor. */
 function usePages(view: TableView, holder: Holder | null): Pages {
   const { withToken } = useApp();
@@ -362,7 +420,8 @@ function titleOf(doc: Pick<DocumentView, 'title'>): string {
 }
 
 function countWords(pages: Pages, view: TableView): string {
-  if (pages.total === null) return 'Loading your documents…';
+  // Not loaded, and not on its way: said above, not Loading for ever (R5).
+  if (pages.total === null) return pages.error ? '' : 'Loading your documents…';
   const n = documentsCount(pages.total);
   return filtersOn(view) > 0 ? `${n} match these filters` : n;
 }
@@ -555,8 +614,15 @@ function TableDocuments(props: {
     if (target.closest('a, button, input, label, select, td.col-pick')) return;
     // A word being chosen to copy is not a click on the row.
     if (window.getSelection?.()?.toString()) return;
+    rememberOpened(id);
     void navigate(`/documents/${id}`);
   };
+
+  // Back from a document opened here: the focus on its row again, after the
+  // shell has given the page's heading it (R5).
+  useBackToOpened(pages.items, (id) =>
+    table.current?.querySelector<HTMLElement>(`tr[data-id="${id}"] .cell-title`),
+  );
 
   /** The next page; then, by whatever asked for it, the first of it (W2). */
   const showMore = async () => {
@@ -834,7 +900,11 @@ function Cell(props: { column: Column; doc: DocumentView; known: Known; offset: 
     case 'title':
       return (
         <td className="col-title" style={{ left: props.offset }}>
-          <Link className="cell-title" to={`/documents/${doc.id}`}>
+          <Link
+            className="cell-title"
+            to={`/documents/${doc.id}`}
+            onClick={() => rememberOpened(doc.id)}
+          >
             <Clip text={titleOf(doc)} />
           </Link>
         </td>
@@ -1453,7 +1523,7 @@ function BulkBar(props: {
             onClick={() => setActing('trash')}
           >
             <TrashIcon />
-            Move to Trash
+            Move to the Trash
           </button>
         )}
         <span className="bulk-gap" />
@@ -1563,7 +1633,7 @@ function BulkBar(props: {
       {acting === 'trash' && (
         <ConfirmDialog
           title={`Move ${what} to the Trash?`}
-          confirmLabel="Move to Trash"
+          confirmLabel="Move to the Trash"
           busyLabel={progress ? `Moving ${progress.done + 1} of ${progress.of}…` : 'Moving…'}
           icon={<TrashIcon />}
           danger
@@ -1728,6 +1798,11 @@ function PhoneDocuments(props: {
   const { view, pages, known } = props;
   const navigate = useNavigate();
   const select = useSelect(props.who.collections);
+  useBackToOpened(pages.items, (id) =>
+    document.querySelector<HTMLElement>(
+      `li[data-doc="${id}"] button.rowbtn, li[data-doc="${id}"] input.pick`,
+    ),
+  );
   const [filtering, setFiltering] = useState(false);
   const filtersButton = useRef<HTMLButtonElement>(null);
   const on = filtersOn(view);
@@ -1788,7 +1863,10 @@ function PhoneDocuments(props: {
             doc={d}
             types={known.types}
             pick={select.pick(d.id)}
-            onOpen={() => void navigate(`/documents/${d.id}`)}
+            onOpen={() => {
+              rememberOpened(d.id);
+              void navigate(`/documents/${d.id}`);
+            }}
             onChanged={pages.reload}
           />
         ))}

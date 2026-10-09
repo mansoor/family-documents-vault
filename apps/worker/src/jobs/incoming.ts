@@ -427,9 +427,14 @@ function agentOf(tell: IncomingTellDeps): { agent?: https.Agent; allowPrivate?: 
   };
 }
 
-/** The email: how many files, and where to look. Nothing else. */
+/**
+ * The email: how many files, and where to look. Nothing else. Where they
+ * are since the shell (Phase 6, R1): the Inbox's Files sent to you, not the
+ * old /incoming the web only sends on (R5). The push still says /incoming:
+ * a phone's app may go by it, and the web sends it on.
+ */
 export function incomingEmail(count: number, baseUrl: string) {
-  const href = `${baseUrl.replace(/\/+$/, '')}/incoming`;
+  const href = `${baseUrl.replace(/\/+$/, '')}/inbox/sent`;
   const words = incomingWords(count);
   return {
     subject: count === 1 ? 'A file is waiting for you' : 'Files are waiting for you',

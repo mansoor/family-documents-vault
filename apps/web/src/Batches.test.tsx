@@ -569,7 +569,7 @@ describe('a batch’s page (I1)', () => {
     expect(screen.getByLabelText(/Number/)).toHaveValue('');
     expect(screen.getByLabelText('Notes')).toHaveValue('');
     // As each kind says: a birth certificate is for Everyone.
-    const vis = screen.getByRole('group', { name: 'Who can see this' });
+    const vis = screen.getByRole('group', { name: 'Who can see it' });
     expect(within(vis).getByRole('button', { name: 'Everyone' })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -726,7 +726,7 @@ describe('many documents at once, the review (I1)', () => {
     await screen.findByRole('option', { name: 'Aisha' });
     await waitFor(() => expect(screen.getByLabelText('Whose it is')).toHaveValue('me'));
     expect(
-      within(screen.getByRole('group', { name: 'Who can see this' })).getByRole('button', {
+      within(screen.getByRole('group', { name: 'Who can see it' })).getByRole('button', {
         name: 'Only me',
       }),
     ).toHaveAttribute('aria-pressed', 'true');

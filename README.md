@@ -20,7 +20,7 @@ Built for people whose whole skill floor is _scan, upload, download_. You should
 - **A household, not a user.** Members with or without their own sign-in (children, elderly parents), four simple roles, and three plain visibility levels per document: _Everyone in the family_, _Adults only_, _Only me_.
 - **"Only me" is cryptographic.** Private documents are encrypted so that no other account — including the household owner — can open them. Their text is never indexed either, so searching them happens in two passes: everything shareable first, then your own sealed documents, opened inside your own session. One date is the exception: the one a kind of document reminds from, such as a bill's due date, which the vault can read as it can an expiry date, so it can remind the document's owner; everything else in its details stays sealed.
 - **Your storage.** Local disk by default; any S3-compatible bucket (AWS, MinIO, Backblaze B2, Wasabi, Cloudflare R2, DigitalOcean Spaces, Ceph, Storj …). Change later with a verified background migration; add a second location as a mirror.
-- **Always exportable.** One button produces a ZIP of the originals plus a readable index. Deletion is reversible for 30 days.
+- **Always exportable.** One button produces a ZIP of the originals plus a readable index. A document moved to the Trash can be brought back until an owner removes it for good.
 - **The household survives its administrator.** Trusted contacts, a printable recovery sheet, and an offline recovery tool that decrypts your bucket without this software running.
 
 ## What it will run on
@@ -48,7 +48,7 @@ docker compose up -d
 
 The first start builds the images (a few minutes), applies database migrations, and starts the four containers. Then open `http://localhost:8080`. The first visit walks you through setup: your family's name, your name, your email and a password (you become the owner — nobody can run that step again), a few quick questions about your household, the people whose documents you keep, and a starting list of what families like yours usually file.
 
-From then on: **Add** a document from a photo or a file, confirm what it is and whose it is, and it is filed. Browse by person or category from Home, or search — including the words inside scanned pages.
+From then on: **Add** a document from a photo or a file, confirm what it is and whose it is, and it is filed — or add many at once, which wait in the **Inbox** until you accept them. Every document is in **Documents**, to sort and filter; browse by person or category from Home, or search — including the words inside scanned pages.
 
 `gen-env` refuses to overwrite an existing `.env`, because a new master key would make every stored document unreadable. **Back the file up somewhere off the server.**
 
@@ -377,7 +377,7 @@ Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/
 - A refresh token presented twice is treated as stolen and that device is signed out — with one exception, for answers that never arrive (a phone on a network that loses them, a browser page reloaded while it was refreshing): the token just replaced may be presented once more, within 30 seconds, by the same client — the same app installation, or the same browser from the same address. Anyone else presenting it, or presenting it later, ends the session. Every refresh token names the session it belongs to, so this holds for any token the vault ever gave that session, however many refreshes ago: somebody who copied a token and used it, and its successor, before you did is caught when yours comes in, and you are when theirs does. (A device that still holds a token from before this kind is given one of the new kind at its next refresh, and the vault remembers the old token from then on, however many refreshes later; tokens it had replaced before the upgrade are remembered only as before.)
 - **Sign out everywhere.** An owner can sign somebody out of every device at once from their page (**People → their name → Account**), with a passkey or a code from an authenticator app — for a lost phone, or a password somebody else knows. Another owner too, who is told by email; anybody it is about is emailed. Their sign-in stays as it was: they sign in again with their own password. To keep them out, lock their sign-in instead.
 - When a session ends, the app is told why — it expired, it was signed out, its token was used twice, or the person was taken out of the household — so it can say so in plain words.
-- Every signed-in device is listed under the household name; any of them can be signed out from another.
+- Every signed-in device is listed in **Settings → Signed-in devices**; any of them can be signed out from another.
 - The token signing key is derived from `FDV_MASTER_KEY`. [Rotating the master key](#rotating-the-master-key) signs everyone out.
 - Sign-in attempts are limited to 10 per minute per address.
 
@@ -601,14 +601,14 @@ document:
   end and nothing to sign up for.
 
 The link is shown once — the vault keeps only a hash of it — so a lost link is
-replaced rather than recovered. A document moved to the trash stops being
+replaced rather than recovered. A document moved to the Trash stops being
 shared straight away, without anyone having to remember the link exists.
 
 A whole collection can go the same way: on the collection's page, **Share this
 collection** lists what is in it that you can see, with what everybody the
 collection is for may see already ticked. Only what you tick goes, and each is
 checked again every time the link is used: one you can no longer see, one taken
-out of the collection or moved to the trash, stops being sent, and the other end
+out of the collection or moved to the Trash, stops being sent, and the other end
 is never told how many there were. **Keep it up to date** also sends what an
 owner or an adult puts in the collection later — decided once, as it goes in:
 only what the whole of its audience may see, never a private document, and

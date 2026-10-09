@@ -188,14 +188,14 @@ describe('a document in two panes (R3)', () => {
     const right = await pages();
     expect(left.closest('main')).not.toHaveClass('doc-panes');
     // In the DOM, and so for Tab and a screen reader: status and Download,
-    // the facts, the pages within reach, then notes, history, … Move to Trash.
+    // the facts, the pages within reach, then notes, history, … Move to the Trash.
     const order = [
       within(left).getByRole('button', { name: 'Download' }),
       left.querySelector('dl.facts') as HTMLElement,
       right,
       within(left).getByRole('heading', { name: 'Notes' }),
       within(left).getByRole('heading', { name: 'History' }),
-      within(left).getByRole('button', { name: 'Move to Trash' }),
+      within(left).getByRole('button', { name: 'Move to the Trash' }),
     ];
     for (let i = 1; i < order.length; i += 1) {
       const [before, after] = [order[i - 1] as HTMLElement, order[i] as HTMLElement];
@@ -208,7 +208,7 @@ describe('a document in two panes (R3)', () => {
     expect(within(right).queryByRole('button', { name: 'Next page' })).not.toBeInTheDocument();
     // Nothing a phone has today is lost: the actions are all in the details.
     expect(within(left).getByRole('button', { name: 'Download' })).toBeInTheDocument();
-    expect(within(left).getByRole('button', { name: 'Move to Trash' })).toBeInTheDocument();
+    expect(within(left).getByRole('button', { name: 'Move to the Trash' })).toBeInTheDocument();
     expect(pageCalls(state)).toEqual([]);
     await expectAccessible();
   });
@@ -284,7 +284,7 @@ describe('who sees what, in either arrangement (R3)', () => {
       // A link outside the family: an adult's (5.4).
       expect(has('button: Share a link')).toBe(who === 'owner' || who === 'adult');
       // Moving it to the Trash: whoever may change it (5.1).
-      expect(has('button: Move to Trash')).toBe(family);
+      expect(has('button: Move to the Trash')).toBe(family);
       // Read by whoever sees it.
       expect(has('h2: Notes')).toBe(true);
       expect(has('h2: History')).toBe(true);

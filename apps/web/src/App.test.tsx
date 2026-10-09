@@ -758,7 +758,7 @@ describe('App', () => {
     window.history.replaceState({}, '', '/documents/doc-1');
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Change who can see this' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Change who can see it' }));
     fireEvent.click(screen.getByRole('button', { name: 'Only me' }));
     expect(screen.getByText(/Nobody else, including the owner of this vault/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -770,8 +770,8 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'I understand' }));
 
     // And never again for this document: the server decides, and says null.
-    await screen.findByRole('button', { name: 'Change who can see this' });
-    fireEvent.click(screen.getByRole('button', { name: 'Change who can see this' }));
+    await screen.findByRole('button', { name: 'Change who can see it' });
+    fireEvent.click(screen.getByRole('button', { name: 'Change who can see it' }));
     fireEvent.click(screen.getByRole('button', { name: 'Everyone in the family' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() =>
@@ -1985,7 +1985,7 @@ describe("a type's details (5.8)", () => {
 });
 
 describe('the quick fixes (5.1)', () => {
-  it('Move to Trash asks in the app’s own dialog: Cancel and Escape keep it, confirming moves it', async () => {
+  it('Move to the Trash asks in the app’s own dialog: Cancel and Escape keep it, confirming moves it', async () => {
     // A copy: the fake moves it to the Trash, and the next test must not find it there.
     const state = fresh({ documents: [{ ...PASSPORT }] });
     installFakeApi(state);
@@ -1996,23 +1996,23 @@ describe('the quick fixes (5.1)', () => {
     await screen.findByRole('heading', { name: "Mansoor's passport" });
     const deletes = () => state.calls.filter((c) => c.method === 'DELETE');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
-    const dialog = await screen.findByRole('alertdialog', { name: 'Move to Trash?' });
+    fireEvent.click(screen.getByRole('button', { name: 'Move to the Trash' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Move to the Trash?' });
     // Enter never does it by accident: the answer that keeps it is where focus starts.
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus();
     await expectAccessible();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move to the Trash' }));
     await screen.findByRole('alertdialog');
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
     expect(deletes()).toHaveLength(0);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move to the Trash' }));
     const again = await screen.findByRole('alertdialog');
-    fireEvent.click(within(again).getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(within(again).getByRole('button', { name: 'Move to the Trash' }));
     await waitFor(() =>
       expect(deletes().map((c) => c.url)).toEqual([expect.stringMatching(/\/documents\/doc-1$/)]),
     );
@@ -2025,7 +2025,7 @@ describe('the quick fixes (5.1)', () => {
     window.history.replaceState({}, '', '/documents/doc-1');
     render(<App />);
     await screen.findByRole('heading', { name: "Mansoor's passport" });
-    expect(screen.queryByRole('button', { name: 'Move to Trash' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Move to the Trash' })).not.toBeInTheDocument();
   });
 
   it('the Trash lists what was moved there, and brings it back', async () => {
@@ -2130,11 +2130,11 @@ describe('the quick fixes (5.1)', () => {
     window.history.replaceState({}, '', '/documents/doc-1');
     render(<App />);
     await screen.findByRole('heading', { name: "Mansoor's passport" });
-    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move to the Trash' }));
     const dialog = await screen.findByRole('alertdialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move to the Trash' }));
     expect(
-      await within(dialog).findByRole('button', { name: 'Moving to Trash…' }),
+      await within(dialog).findByRole('button', { name: 'Moving to the Trash…' }),
     ).toBeInTheDocument();
 
     fireEvent.keyDown(document, { key: 'Escape' });
@@ -2152,7 +2152,7 @@ describe('the quick fixes (5.1)', () => {
     window.history.replaceState({}, '', '/documents/doc-1');
     const first = render(<App />);
     await screen.findByRole('heading', { name: "Mansoor's passport" });
-    expect(screen.queryByRole('button', { name: 'Move to Trash' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Move to the Trash' })).not.toBeInTheDocument();
     first.unmount();
 
     installFakeApi(fresh({ documents: [{ ...theirs, deleted_at: '2026-09-26T10:04:00Z' }] }));

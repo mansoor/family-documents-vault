@@ -250,8 +250,8 @@ export function bulkOffer(who: Chooser, docs: readonly DocumentView[]): BulkOffe
   const notes: string[] = [];
   if (n > 0 && editor && notMine > 0) {
     const what = seesLocation(who.role)
-      ? 'Set where it’s kept and Move to Trash are'
-      : 'Move to Trash is';
+      ? 'Set where it’s kept and Move to the Trash are'
+      : 'Move to the Trash is';
     notes.push(
       `${notMine === n ? (n === 1 ? 'It isn’t' : 'None of these is') : `${notMine} of these ${notMine === 1 ? 'isn’t' : 'aren’t'}`} yours to change: ${what} offered when every one you chose is.`,
     );

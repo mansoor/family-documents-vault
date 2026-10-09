@@ -14,7 +14,19 @@ export default defineConfig({
   // by where its name happens to sort (collections.spec.ts sorts before it).
   projects: [
     { name: 'first run', testMatch: 'first-run.spec.ts' },
-    { name: 'on its vault', testIgnore: 'first-run.spec.ts', dependencies: ['first run'] },
+    {
+      name: 'on its vault',
+      testIgnore: ['first-run.spec.ts', 'desktop.spec.ts'],
+      dependencies: ['first run'],
+    },
+    // The wide layouts (Phase 6, R5): a few specs at 1280 × 800, on the same
+    // vault, run whatever the phone's came to.
+    {
+      name: 'desktop',
+      testMatch: 'desktop.spec.ts',
+      dependencies: ['first run'],
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 800 } },
+    },
   ],
   timeout: 60_000,
   expect: { timeout: 10_000 },

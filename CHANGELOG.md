@@ -6,6 +6,30 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-dev.8] - 2026-10-09 — Phase 6, R5: the whole app as one
+
+### Changed
+
+- **Every page has its own title** in the browser tab and history, such as "Documents – Family Document Vault". A title never names a document or a person.
+- **Back from a document** returns to where you opened it, and the table's sort, filters and chosen rows are kept. Focus goes back to the row you opened. Opened from a link, Back goes Home. Edit, then Save or Back, no longer sends you round in a loop.
+- **Focus no longer drops to the top of the page** when you:
+  - go from Welcome to Sign in, sign in, or sign out;
+  - choose a file to add;
+  - share a link;
+  - change who can see a document.
+- **The reader's +, − and = keys** follow the single-key shortcuts switch, which is now called "Single-key shortcuts" and lists every key it turns off.
+- **Search keeps everything you type**, even typed quickly, and stays in step with Back and Forward.
+- **Pages that are loading or couldn't load** say so: Home, Needs attention, the Trash and the Documents count.
+- **Moving a document to the Trash from its page** now says so on Home, once.
+- **The same words everywhere:** "Move to the Trash", and "Who can see it".
+- **At 400% zoom** the phone list's Select bar no longer covers the rows.
+- **The "files are waiting" email** links to Inbox → Files sent to you.
+- **README:** the Trash is emptied only by an owner, and signed-in devices are under Settings.
+
+### Added
+
+- **End-to-end tests at 1280 × 800** for the sidebar and `/`, the Documents table, a document's two panes, and a batch through the queue.
+
 ## [0.7.0-dev.7] - 2026-10-09 — Phase 6, R4: Home, People, Collections, Activity and Trash for wide screens
 
 ### Changed

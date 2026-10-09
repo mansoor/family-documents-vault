@@ -4048,6 +4048,13 @@ html:has(.shell-phone):has(.has-toast) {
   html:has(.shell-phone):has(.has-toast) {
     scroll-padding-bottom: calc(96px + env(safe-area-inset-bottom));
   }
+
+  /* Select's bar stays where it is in the list (R5): kept at the top of a
+     window this short, under the bar above it, it hid the rows Tab went to
+     (400% zoom, WCAG 2.4.11). */
+  .select-bar {
+    position: static;
+  }
 }
 
 /* A file in two panes. */

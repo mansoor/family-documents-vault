@@ -24,7 +24,7 @@ import {
   type ShareInput,
   type SharePermission,
 } from '@fdv/shared';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, ApiRequestError, type CreatedShare, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
@@ -72,6 +72,21 @@ export function SharePanel(props: {
   const [busy, setBusy] = useState<'making' | 'taking back' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const mayShare = can(storedRole(), 'document.share');
+  // On a document's page, the form opens in Share a link's place, and
+  // closes back to it: the focus goes with it, to who it is for or back to
+  // the button, never to nowhere (R5's keyboard paths). The link made says
+  // so itself (HandOver).
+  const shareButton = useRef<HTMLButtonElement>(null);
+  const moved = useRef<'form' | 'button' | null>(null);
+  useEffect(() => {
+    const to = moved.current;
+    if (!to) return;
+    // Once it is drawn: the page around it may be drawn again first.
+    const target = to === 'form' ? document.getElementById('share-label') : shareButton.current;
+    if (!target) return;
+    moved.current = null;
+    target.focus();
+  });
 
   const { data, reload } = useLoad(
     async (t) => {
@@ -159,6 +174,7 @@ export function SharePanel(props: {
         created={made}
         timezone={timezone}
         onDone={() => {
+          if (!props.onClose) moved.current = 'button';
           setMade(null);
           props.onClose?.();
         }}
@@ -228,14 +244,25 @@ export function SharePanel(props: {
             <Button
               kind="quiet"
               disabled={busy !== null}
-              onClick={() => (props.onClose ? props.onClose() : setOpen(false))}
+              onClick={() => {
+                if (props.onClose) return props.onClose();
+                moved.current = 'button';
+                setOpen(false);
+              }}
             >
               Cancel
             </Button>
           </div>
         </div>
       ) : (
-        <Button kind="quiet" onClick={() => setOpen(true)}>
+        <Button
+          ref={shareButton}
+          kind="quiet"
+          onClick={() => {
+            moved.current = 'form';
+            setOpen(true);
+          }}
+        >
           Share a link
         </Button>
       )}
@@ -835,9 +862,15 @@ export function HandOver(props: { created: CreatedShare; timezone: string; onDon
   const { share } = props.created;
   const collection = share.collection_id ? (share.collection_name ?? 'this collection') : null;
   const pagesNote = sharePagesNote(share.pages);
+  // Made: the focus comes here, where the link is, from the button that made
+  // it, which is gone (R5's keyboard paths).
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    heading.current?.focus();
+  }, []);
   return (
     <section className="card stack">
-      <h2 style={{ fontSize: 18 }}>
+      <h2 ref={heading} tabIndex={-1} style={{ fontSize: 18 }}>
         {collection
           ? `The link to “${collection}”`
           : `The link to ${share.document_title ?? 'this document'}`}

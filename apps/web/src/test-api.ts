@@ -3448,9 +3448,11 @@ export function installFakeApi(state: FakeState) {
       return answerCollections(state, method, path, query, body, ifMatch);
     }
     if (path === '/api/v1/documents/counts') {
+      // As the vault counts them, grouped: nothing filed, no rows (R5).
+      const n = state.documents.length;
       return json({
-        by_member: [{ member_id: 'me', count: state.documents.length }],
-        by_category: [{ category: 'identity', count: state.documents.length }],
+        by_member: n ? [{ member_id: 'me', count: n }] : [],
+        by_category: n ? [{ category: 'identity', count: n }] : [],
       });
     }
     if (path === '/api/v1/tags' && method === 'GET') {

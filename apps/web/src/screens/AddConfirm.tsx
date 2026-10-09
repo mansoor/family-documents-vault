@@ -60,7 +60,17 @@ import {
   useSuggestionsOffered,
 } from '../suggestions.js';
 import { CollectionSelect } from '../collections.js';
-import { Button, ErrorNote, Field, Select, Switch, TextArea, TopBar } from '../ui.js';
+import { focusHeading } from '../focus-on-move.js';
+import {
+  Button,
+  cameFromTheApp,
+  ErrorNote,
+  Field,
+  Select,
+  Switch,
+  TextArea,
+  TopBar,
+} from '../ui.js';
 import { LinksChoiceDialog, linksAsk, type LinksAsk } from './Visibility.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 
@@ -134,6 +144,17 @@ export function AddScreen() {
   const [file, setFile] = useState<File | null>(null);
   const [keys] = useState(createUploadKeys);
   const input = useRef<HTMLInputElement>(null);
+  // A file chosen puts the card in the chooser's place, and Choose again the
+  // chooser back in the card's: the focus goes with them, to the card's
+  // heading or to the chooser, never to nowhere (R5's keyboard paths).
+  const chooser = useRef<HTMLButtonElement>(null);
+  const moved = useRef<'card' | 'chooser' | null>(null);
+  useEffect(() => {
+    const to = moved.current;
+    moved.current = null;
+    if (to === 'card') focusHeading();
+    else if (to === 'chooser') chooser.current?.focus();
+  }, [file]);
   // Arrived from a missing-document suggestion: it already knows what this
   // is and whose it is, so the card starts with both.
   const [params] = useSearchParams();
@@ -269,7 +290,10 @@ export function AddScreen() {
         submitLabel="Save to the vault"
         onSubmit={(details) => save(file, captureDetails(details))}
         onSkip={() => save(file, undefined)}
-        onChooseAgain={() => setFile(null)}
+        onChooseAgain={() => {
+          moved.current = 'chooser';
+          setFile(null);
+        }}
       />
     );
   }
@@ -299,11 +323,14 @@ export function AddScreen() {
           const chosen = e.target.files?.[0];
           // Cleared, so the same file can be chosen again.
           e.target.value = '';
-          if (chosen) setFile(chosen);
+          if (chosen) {
+            moved.current = 'card';
+            setFile(chosen);
+          }
         }}
       />
       <ErrorNote message={loadError} />
-      <Button onClick={() => input.current?.click()} disabled={!data}>
+      <Button ref={chooser} onClick={() => input.current?.click()} disabled={!data}>
         Take a photo or choose a file
       </Button>
       <p className="muted">PDFs, photos and scans (JPEG, PNG, HEIC, TIFF), Word and Excel files.</p>
@@ -370,14 +397,14 @@ export function ConfirmScreen() {
   if (loadError)
     return (
       <main className="page page-top">
-        <TopBar title="Is this right?" back="/" />
+        <TopBar title="Is this right?" back={`/documents/${id as string}`} backInApp />
         <ErrorNote message={loadError} />
       </main>
     );
   if (!data)
     return (
       <main className="page page-top">
-        <TopBar title="Is this right?" back="/" />
+        <TopBar title="Is this right?" back={`/documents/${id as string}`} backInApp />
       </main>
     );
   const { doc, types, members } = data;
@@ -427,6 +454,7 @@ export function ConfirmScreen() {
       <ConfirmForm
         title="Is this right?"
         back={`/documents/${doc.id}`}
+        backInApp
         lede="Change anything that is wrong. Everything else can wait."
         documentId={doc.id}
         versionId={doc.latest_version_id}
@@ -478,7 +506,13 @@ export function ConfirmScreen() {
               throw new ChangedElsewhere(cardFor(now));
             }
           }
-          if (saved) void navigate(`/documents/${saved.id}`, { replace: true });
+          // Back to the document it was opened from, as Back is (the R5
+          // review): the card leaves no step of its own behind, so the
+          // document's Back still reaches the list. Opened afresh, the
+          // document takes the card's place.
+          if (!saved) return;
+          if (cameFromTheApp()) void navigate(-1);
+          else void navigate(`/documents/${saved.id}`, { replace: true });
         }}
       />
       {linksAsked && (
@@ -639,6 +673,8 @@ function CardMark(props: { field: CardMarkField; mark: ItemSuggestion<unknown> }
 export function ConfirmForm(props: {
   title: string;
   back: string;
+  /** Back is the browser's Back when come to within the app (TopBar's `backInApp`). */
+  backInApp?: boolean;
   lede: string;
   /** The file this card is about, when it has not been sent yet. */
   fileName?: string;
@@ -966,7 +1002,7 @@ export function ConfirmForm(props: {
     // Made wider by whose it is: said, never done silently (the I2 review).
     if (visibility === 'private' && next !== 'private') {
       setWidened(
-        `Who can see this is now ${next === 'adults' ? 'Adults only' : 'Everyone'}: Only me is for your own documents.`,
+        `Who can see it is now ${next === 'adults' ? 'Adults only' : 'Everyone'}: Only me is for your own documents.`,
       );
     }
   };
@@ -1481,8 +1517,8 @@ export function ConfirmForm(props: {
         <p role="status" className="visually-hidden">
           {widened}
         </p>
-        <div className="field" role="group" aria-label="Who can see this">
-          <span className="field-label">Who can see this</span>
+        <div className="field" role="group" aria-label="Who can see it">
+          <span className="field-label">Who can see it</span>
           <div className="pills">
             {(
               [
@@ -1570,7 +1606,7 @@ export function ConfirmForm(props: {
   if (props.pane) return form;
   return (
     <main className="page page-top">
-      <TopBar title={props.title} back={props.back} />
+      <TopBar title={props.title} back={props.back} backInApp={props.backInApp === true} />
       <p className="lede">{props.lede}</p>
       {props.fileName ? (
         <p className="muted card-file">

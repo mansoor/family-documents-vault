@@ -189,6 +189,7 @@ export function TrashScreen() {
         <TrashTable
           items={items}
           loaded={first.data !== null && !first.error}
+          failed={first.error !== null}
           removalOf={removalOf}
           mayRestore={mayRestore}
           busy={busy}
@@ -302,6 +303,8 @@ const docs = (n: number) => `${n} document${n === 1 ? '' : 's'}`;
 function TrashTable(props: {
   items: DocumentView[];
   loaded: boolean;
+  /** It could not be loaded: said, rather than Loading for ever (R5). */
+  failed: boolean;
   removalOf: (d: DocumentView) => Removal | null;
   mayRestore: (d: DocumentView) => boolean;
   busy: string | null;
@@ -582,7 +585,11 @@ function TrashTable(props: {
             {items.length === 0 && (
               <tr className="empty-row">
                 <td colSpan={owner ? 8 : 7}>
-                  {props.loaded ? 'The Trash is empty.' : 'Loading the Trash…'}
+                  {props.loaded
+                    ? 'The Trash is empty.'
+                    : props.failed
+                      ? 'The Trash could not be loaded.'
+                      : 'Loading the Trash…'}
                 </td>
               </tr>
             )}

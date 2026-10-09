@@ -42,7 +42,7 @@ const visibilityCalls = (state: FakeState) =>
     .map((c) => c.body);
 
 const makeItOnlyMe = async () => {
-  fireEvent.click(await screen.findByRole('button', { name: 'Change who can see this' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Change who can see it' }));
   fireEvent.click(screen.getByRole('button', { name: 'Only me' }));
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
   return screen.findByRole('alertdialog', { name: 'Your links to this document' });
@@ -146,7 +146,7 @@ describe('the same choice, wherever Only me is chosen (the third round)', () => 
     signedIn();
     window.history.replaceState({}, '', '/documents/doc-1/confirm');
     render(<App />);
-    const who = await screen.findByRole('group', { name: 'Who can see this' });
+    const who = await screen.findByRole('group', { name: 'Who can see it' });
     fireEvent.click(within(who).getByRole('button', { name: 'Only me' }));
     const save = screen.getByRole('button', { name: 'Save to the vault' });
     fireEvent.click(save);
@@ -182,7 +182,7 @@ describe('the same choice, wherever Only me is chosen (the third round)', () => 
     more.focus();
     fireEvent.click(more);
     const menu = await screen.findByRole('menu', { name: "Actions for “Mansoor's passport”" });
-    fireEvent.click(await within(menu).findByRole('menuitem', { name: 'Who can see' }));
+    fireEvent.click(await within(menu).findByRole('menuitem', { name: 'Who can see it' }));
     const sheet = await screen.findByRole('dialog', { name: "Who can see “Mansoor's passport”" });
     fireEvent.click(within(sheet).getByRole('button', { name: 'Only me' }));
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save' }));
@@ -229,7 +229,7 @@ describe('the same choice, wherever Only me is chosen (the third round)', () => 
       signedIn();
       window.history.replaceState({}, '', '/documents/doc-1/confirm');
       render(<App />);
-      const who = await screen.findByRole('group', { name: 'Who can see this' });
+      const who = await screen.findByRole('group', { name: 'Who can see it' });
       fireEvent.click(within(who).getByRole('button', { name: 'Only me' }));
       const save = screen.getByRole('button', { name: 'Save to the vault' });
       save.focus();

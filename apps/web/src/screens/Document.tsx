@@ -116,7 +116,14 @@ export function DocumentScreen() {
     setTrashing(true);
     try {
       await withToken((t) => api.deleteDocument(t, data.doc.id));
-      void navigate('/', { replace: true });
+      // Home, where what was done is said and has the focus (R5): as Documents
+      // says it of many, and never in silence.
+      void navigate('/', {
+        replace: true,
+        state: {
+          said: `“${data.doc.title ?? 'Needs a name'}” moved to the Trash. You can bring it back from there.`,
+        },
+      });
     } catch (err) {
       setConfirmingTrash(false);
       setActionError(describeError(err));
@@ -173,7 +180,7 @@ export function DocumentScreen() {
   if (error) {
     return (
       <main className="page page-top has-nav">
-        <TopBar title="Document" back="/" />
+        <TopBar title="Document" back="/" backInApp />
         <ErrorNote message={error} />
       </main>
     );
@@ -181,7 +188,7 @@ export function DocumentScreen() {
   if (!data)
     return (
       <main className="page page-top has-nav">
-        <TopBar title="Document" back="/" />
+        <TopBar title="Document" back="/" backInApp />
       </main>
     );
 
@@ -210,6 +217,7 @@ export function DocumentScreen() {
       <TopBar
         title={title}
         back="/"
+        backInApp
         action={
           <Link
             to={`/documents/${doc.id}/confirm`}
@@ -447,7 +455,7 @@ export function DocumentScreen() {
               onClick={() => setConfirmingTrash(true)}
             >
               <TrashIcon />
-              Move to Trash
+              Move to the Trash
             </button>
           )}
           {confirmingTrash && (
@@ -543,7 +551,7 @@ function DocumentCollections(props: { documentId: string; title: string }) {
 /**
  * A document's pages on a phone (R3): today's preview, right after the
  * facts — its first page small, a tap from reading it full size — so
- * nobody scrolls past Move to Trash to reach them. Nothing is fetched but
+ * nobody scrolls past Move to the Trash to reach them. Nothing is fetched but
  * the small picture, as before.
  */
 function PhonePages(props: {

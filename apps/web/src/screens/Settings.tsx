@@ -160,8 +160,10 @@ export function SettingsScreen() {
 }
 
 /**
- * The single-key shortcuts, `/` and `n` (WCAG 2.1.4): on unless turned
- * off, on this device alone (shortcuts.ts).
+ * The single-key shortcuts (WCAG 2.1.4): on unless turned off, on this
+ * device alone (shortcuts.ts). Each of them, named: `/` and `n` (R1), j and
+ * k in a batch (I3), [ and ] on a document's pages (R3), + and − in the
+ * reader (R5) — the switch turns them all off.
  */
 function KeyShortcuts() {
   const on = useShortcutsOn();
@@ -174,8 +176,8 @@ function KeyShortcuts() {
         id="single-keys"
         checked={on}
         onChange={setShortcutsOn}
-        label="Single-key shortcuts (/ and n)"
-        note="With a keyboard, / goes to the search box and n to Add. Turn them off if you type by voice, or if they get in your way."
+        label="Single-key shortcuts"
+        note="With a keyboard, / goes to the search box and n to Add; j and k move through a batch’s files; [ and ] turn a document’s pages; + and − make a page larger and smaller in the reader. Turn them off if you type by voice, or if they get in your way."
       />
     </section>
   );

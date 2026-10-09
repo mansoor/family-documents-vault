@@ -24,7 +24,14 @@ import {
   type ReactNode,
 } from 'react';
 import { flushSync } from 'react-dom';
-import { Link, useNavigate, useSearchParams } from 'react-router';
+import {
+  Link,
+  NavigationType,
+  useLocation,
+  useNavigate,
+  useNavigationType,
+  useSearchParams,
+} from 'react-router';
 import { api, type Invitation, type Member, type SearchHit } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { AddToCollection, collectionsOffered, documentsWord } from '../collections.js';
@@ -202,11 +209,31 @@ export function SearchScreen({ title = 'Search' }: { title?: string } = {}) {
     };
   }, [q, category, memberId, issuer, search, withToken, changed, unpick]);
 
-  const set = (k: string, v: string) => {
+  const set = (k: string, v: string, typed = false) => {
     const next = new URLSearchParams(params);
     if (v) next.set(k, v);
     else next.delete(k);
-    setParams(next, { replace: true });
+    setParams(next, { replace: true, ...(typed ? { state: { typed: true } } : {}) });
+  };
+  // What is typed is the field's own, at once (R5). The address follows it,
+  // in a transition (the router's), and a field drawn from the address alone
+  // went back to it between keys typed fast — dictation, a scanner, a
+  // password manager — and lost them; so did one put back to an address
+  // drawn again before the newest had come. The address it follows is one
+  // come to some other way (a link, the search box on top), once.
+  const location = useLocation();
+  const typedHere = (location.state as { typed?: unknown } | null)?.typed === true;
+  // Back and Forward are the address's to say, an entry this field wrote
+  // included (the R5 review): only a step the field itself just took waits
+  // for what is typed.
+  const navigation = useNavigationType();
+  const [field, setField] = useState({ key: location.key, text: q });
+  if ((!typedHere || navigation === NavigationType.Pop) && field.key !== location.key) {
+    setField({ key: location.key, text: q });
+  }
+  const type = (text: string) => {
+    setField((f) => ({ ...f, text }));
+    set('q', text, true);
   };
 
   return (
@@ -217,8 +244,8 @@ export function SearchScreen({ title = 'Search' }: { title?: string } = {}) {
         <input
           id="q"
           type="search"
-          value={q}
-          onChange={(e) => set('q', e.target.value)}
+          value={field.text}
+          onChange={(e) => type(e.target.value)}
           placeholder="Names, numbers, or words inside a document"
           autoFocus
         />
@@ -769,7 +796,12 @@ export function RemindersScreen() {
   const { authVersion, withToken } = useApp();
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
-  const { data, reload } = useLoad(
+  // Not loaded: said (R5), rather than a heading and nothing under it.
+  const {
+    data,
+    error: loadError,
+    reload,
+  } = useLoad(
     async (t) => {
       const [due, upcoming, docs, suggestions, hidden, types, profile] = await Promise.all([
         api.reminders(t, 'due'),
@@ -844,7 +876,7 @@ export function RemindersScreen() {
   return (
     <main className="page page-top page-wide has-nav">
       <TopBar title="Needs attention" />
-      <ErrorNote message={error} />
+      <ErrorNote message={error ?? loadError} />
       {data && count === 0 && (
         <p className="attention attention-calm" role="status">
           Everything is fine. Nothing needs your attention.

@@ -128,7 +128,7 @@ describe('quick actions on every document (5.4)', () => {
     await expectAccessible();
   });
 
-  it('a teen sees no Share, and Who can see, Edit and Move to Trash only on their own', async () => {
+  it('a teen sees no Share, and Who can see, Edit and Move to the Trash only on their own', async () => {
     // The teen is member "me": the passport is theirs, the bill is not.
     home([{ ...PASSPORT }, { ...COUNCIL_TAX }], 'teen');
 
@@ -139,16 +139,16 @@ describe('quick actions on every document (5.4)', () => {
       'Read full size',
       'Edit details',
       // Their own, between Only me and Everyone (A72).
-      'Who can see',
+      'Who can see it',
       'Stop it being Essential',
       'Add a new version',
-      'Move to Trash',
+      'Move to the Trash',
     ]);
     fireEvent.keyDown(within(menu).getByRole('menuitem', { name: 'Open' }), { key: 'Escape' });
 
     const theirs = await openMenu('Actions for “Council tax bill”');
     expect(offered(theirs.menu)).toEqual(['Open', 'Download', 'Read full size']);
-    for (const never of ['Share a link', 'Who can see', 'Edit details', 'Move to Trash']) {
+    for (const never of ['Share a link', 'Who can see it', 'Edit details', 'Move to the Trash']) {
       expect(within(theirs.menu).queryByRole('menuitem', { name: never })).not.toBeInTheDocument();
     }
   });
@@ -245,10 +245,10 @@ describe('quick actions on every document (5.4)', () => {
       'Read full size',
       'Edit details',
       'Share a link',
-      'Who can see',
+      'Who can see it',
       'Stop it being Essential',
       'Add a new version',
-      'Move to Trash',
+      'Move to the Trash',
     ]);
     await expectAccessible();
     const first = items[0] as HTMLElement;
@@ -280,7 +280,7 @@ describe('quick actions on every document (5.4)', () => {
     expect(more).toHaveFocus();
     fireEvent.keyDown(more, { key: 'ArrowUp' });
     const reopened = await screen.findByRole('menu');
-    expect(within(reopened).getByRole('menuitem', { name: 'Move to Trash' })).toHaveFocus();
+    expect(within(reopened).getByRole('menuitem', { name: 'Move to the Trash' })).toHaveFocus();
   });
 
   it('a search hit’s menu fetches the document when it opens', async () => {
@@ -304,11 +304,11 @@ describe('quick actions on every document (5.4)', () => {
     expect(state.calls.find((c) => c.method === 'PATCH')?.headers?.['if-match']).toBe('"abc"');
   });
 
-  it('Move to Trash asks in the app’s own dialog, and the row goes', async () => {
+  it('Move to the Trash asks in the app’s own dialog, and the row goes', async () => {
     const state = home([{ ...PASSPORT }, { ...COUNCIL_TAX, owner_member_id: 'me' }]);
     const { menu } = await openMenu();
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to Trash' }));
-    const dialog = await screen.findByRole('alertdialog', { name: 'Move to Trash?' });
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to the Trash' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Move to the Trash?' });
     // Focus moves in an effect after the dialog is drawn: under a loaded
     // machine that can be after findByRole has seen it.
     await waitFor(() =>
@@ -316,7 +316,7 @@ describe('quick actions on every document (5.4)', () => {
     );
     await expectAccessible();
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move to the Trash' }));
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: PASSPORT_MENU })).not.toBeInTheDocument(),
     );
@@ -339,7 +339,7 @@ describe('quick actions on every document (5.4)', () => {
     expect(first.more).toHaveFocus();
 
     const second = await openMenu();
-    fireEvent.click(within(second.menu).getByRole('menuitem', { name: 'Who can see' }));
+    fireEvent.click(within(second.menu).getByRole('menuitem', { name: 'Who can see it' }));
     const who = await screen.findByRole('dialog', { name: "Who can see “Mansoor's passport”" });
     fireEvent.click(within(who).getByRole('button', { name: 'Adults only' }));
     fireEvent.click(within(who).getByRole('button', { name: 'Save' }));
@@ -500,12 +500,12 @@ describe('quick actions on every document (5.4)', () => {
     expect(at(540)['--menu-bottom']).toBe('114px');
   });
 
-  it('Move to Trash on the only row leaves focus on the list’s heading', async () => {
+  it('Move to the Trash on the only row leaves focus on the list’s heading', async () => {
     home([{ ...PASSPORT }]);
     const { menu } = await openMenu();
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to Trash' }));
-    const dialog = await screen.findByRole('alertdialog', { name: 'Move to Trash?' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to the Trash' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Move to the Trash?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move to the Trash' }));
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: PASSPORT_MENU })).not.toBeInTheDocument(),
     );
@@ -552,7 +552,7 @@ describe('quick actions on every document (5.4)', () => {
     const name = 'Actions for “Home insurance policy”';
     const searches = () => state.calls.filter((c) => c.url.startsWith('/api/v1/search?')).length;
     const { menu } = await openMenu(name);
-    fireEvent.click(await within(menu).findByRole('menuitem', { name: 'Who can see' }));
+    fireEvent.click(await within(menu).findByRole('menuitem', { name: 'Who can see it' }));
     const who = await screen.findByRole('dialog', { name: 'Who can see “Home insurance policy”' });
     fireEvent.click(within(who).getByRole('button', { name: 'Only me' }));
     fireEvent.click(within(who).getByRole('button', { name: 'Save' }));
@@ -604,7 +604,7 @@ describe('quick actions on every document (5.4)', () => {
     const passport = { ...PASSPORT };
     const state = home([passport, { ...COUNCIL_TAX }], 'teen');
     const { menu } = await openMenu();
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Who can see' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Who can see it' }));
     const who = await screen.findByRole('dialog', { name: "Who can see “Mansoor's passport”" });
     const choices = within(who)
       .getAllByRole('button')
@@ -625,18 +625,20 @@ describe('quick actions on every document (5.4)', () => {
 
   it('a teen is not offered Who can see on a document an owner filed for them', async () => {
     // Theirs, but filed by an owner: not theirs to hide from the family
-    // (the 5.17c review). Edit and Move to Trash stay, as for their own.
+    // (the 5.17c review). Edit and Move to the Trash stay, as for their own.
     home([{ ...PASSPORT, filed_by_me: false }], 'teen');
     const { menu } = await openMenu();
     expect(offered(menu)).toContain('Edit details');
-    expect(within(menu).queryByRole('menuitem', { name: 'Who can see' })).not.toBeInTheDocument();
+    expect(
+      within(menu).queryByRole('menuitem', { name: 'Who can see it' }),
+    ).not.toBeInTheDocument();
   });
 
   it('taking a document out of Only me from the ⋯ asks to confirm it’s you', async () => {
     const passport = { ...PASSPORT, visibility: 'private' };
     home([passport], 'owner', { stepUpNeeded: true });
     const { menu } = await openMenu();
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Who can see' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Who can see it' }));
     const who = await screen.findByRole('dialog', { name: "Who can see “Mansoor's passport”" });
     fireEvent.click(within(who).getByRole('button', { name: 'Everyone in the family' }));
     fireEvent.click(within(who).getByRole('button', { name: 'Save' }));
@@ -654,10 +656,10 @@ describe('quick actions on every document (5.4)', () => {
     expect(offered(menu)).toEqual([
       'Open',
       'Edit details',
-      'Who can see',
+      'Who can see it',
       'Stop it being Essential',
       'Add a new version',
-      'Move to Trash',
+      'Move to the Trash',
     ]);
     // The document's own page does not offer it either.
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Open' }));

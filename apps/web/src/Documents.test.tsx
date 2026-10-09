@@ -419,7 +419,7 @@ describe('the Documents table, from 768 px (R2)', () => {
       'Add to a collection',
       'Set where it’s kept',
       'Who can see it',
-      'Move to Trash',
+      'Move to the Trash',
       'Clear selection',
     ]);
     // Only me is for documents that are yours: with nobody's chosen, not offered.
@@ -449,10 +449,12 @@ describe('the Documents table, from 768 px (R2)', () => {
     await waitFor(() => expect(titles(t)).toHaveLength(2));
     fireEvent.click(within(t).getByRole('checkbox', { name: 'Select “My library card”' }));
     bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
-    expect(within(bar).getByRole('button', { name: 'Move to Trash' })).toBeInTheDocument();
+    expect(within(bar).getByRole('button', { name: 'Move to the Trash' })).toBeInTheDocument();
     expect(within(bar).getByRole('button', { name: 'Set where it’s kept' })).toBeInTheDocument();
     fireEvent.click(within(t).getByRole('checkbox', { name: "Select “Sara's card”" }));
-    expect(within(bar).queryByRole('button', { name: 'Move to Trash' })).not.toBeInTheDocument();
+    expect(
+      within(bar).queryByRole('button', { name: 'Move to the Trash' }),
+    ).not.toBeInTheDocument();
     expect(
       within(bar).queryByRole('button', { name: 'Set where it’s kept' }),
     ).not.toBeInTheDocument();
@@ -460,7 +462,7 @@ describe('the Documents table, from 768 px (R2)', () => {
     expect(within(bar).getByRole('button', { name: 'Add to a collection' })).toBeInTheDocument();
     expect(
       within(bar).getByText(
-        '1 of these isn’t yours to change: Set where it’s kept and Move to Trash are offered when every one you chose is.',
+        '1 of these isn’t yours to change: Set where it’s kept and Move to the Trash are offered when every one you chose is.',
       ),
     ).toBeInTheDocument();
     expect(
@@ -488,7 +490,7 @@ describe('the Documents table, from 768 px (R2)', () => {
       fireEvent.click(within(t).getByRole('checkbox', { name: `Select “${name}”` }));
     }
     const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
-    const trash = within(bar).getByRole('button', { name: 'Move to Trash' });
+    const trash = within(bar).getByRole('button', { name: 'Move to the Trash' });
     fireEvent.click(trash);
     // Asked first, in the app's own words; Cancel is an answer.
     let ask = screen.getByRole('alertdialog', { name: 'Move 3 documents to the Trash?' });
@@ -502,7 +504,7 @@ describe('the Documents table, from 768 px (R2)', () => {
 
     fireEvent.click(trash);
     ask = screen.getByRole('alertdialog', { name: 'Move 3 documents to the Trash?' });
-    fireEvent.click(within(ask).getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(within(ask).getByRole('button', { name: 'Move to the Trash' }));
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
     expect(state.calls.filter((c) => c.method === 'DELETE').map((c) => c.url)).toEqual([
       // In the table's order: by title.
@@ -790,13 +792,13 @@ describe('the Documents table, from 768 px (R2)', () => {
       fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
       await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
       await waitFor(() => expect(button).toHaveFocus());
-      // And where it is kept, and Move to Trash's question.
+      // And where it is kept, and Move to the Trash's question.
       fireEvent.click(within(bar).getByRole('button', { name: 'Set where it’s kept' }));
       const where = screen.getByRole('dialog', { name: /Where .* kept/ });
       await expectTabKeptIn(where);
       fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-      fireEvent.click(within(bar).getByRole('button', { name: 'Move to Trash' }));
+      fireEvent.click(within(bar).getByRole('button', { name: 'Move to the Trash' }));
       const trash = screen.getByRole('alertdialog', { name: 'Move 2 documents to the Trash?' });
       await expectTabKeptIn(trash);
       fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
@@ -1279,9 +1281,9 @@ describe('the Documents table, from 768 px (R2)', () => {
     await waitFor(() => expect(all).toHaveFocus());
     // After an action, its outcome; Dismiss, and back to the box.
     fireEvent.click(within(t).getByRole('checkbox', { name: 'Select “House deed”' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move to the Trash' }));
     fireEvent.click(
-      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Move to Trash' }),
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Move to the Trash' }),
     );
     const dismiss = await screen.findByRole('button', { name: 'Dismiss' });
     act(() => dismiss.focus());
@@ -1345,9 +1347,9 @@ describe('the Documents table, from 768 px (R2)', () => {
     const visa = within(t).getByRole('checkbox', { name: "Select “Sara's visa”" });
     act(() => visa.focus());
     fireEvent.click(visa);
-    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move to the Trash' }));
     fireEvent.click(
-      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Move to Trash' }),
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Move to the Trash' }),
     );
     const dismiss = await screen.findByRole('button', { name: 'Dismiss' });
     await waitFor(() => expect(titles(t)).toHaveLength(3));
@@ -1371,9 +1373,9 @@ describe('the Documents table, from 768 px (R2)', () => {
     t = await table();
     await waitFor(() => expect(titles(t)).toHaveLength(4));
     fireEvent.click(within(t).getByRole('checkbox', { name: 'Select all 4 shown' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move to the Trash' }));
     fireEvent.click(
-      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Move to Trash' }),
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Move to the Trash' }),
     );
     const dismiss = await screen.findByRole('button', { name: 'Dismiss' });
     await screen.findByText('Nothing here yet.');
@@ -1448,9 +1450,9 @@ describe('the Documents table, from 768 px (R2)', () => {
     expect(document.querySelector('.clip-tip')).toHaveTextContent('Tax, Travel');
     // The row to the Trash, the pointer where it was: nothing says it left.
     fireEvent.click(within(visa).getByRole('checkbox', { name: "Select “Sara's visa”" }));
-    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move to the Trash' }));
     fireEvent.click(
-      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Move to Trash' }),
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Move to the Trash' }),
     );
     await waitFor(() => expect(titles(t)).toHaveLength(3));
     expect(document.querySelector('.clip-tip')).toBeNull();
@@ -1549,7 +1551,7 @@ describe('the Documents table, from 768 px (R2)', () => {
     await expectAccessible();
     fireEvent.click(within(t).getByRole('checkbox', { name: 'Select “House deed”' }));
     await expectAccessible();
-    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move to the Trash' }));
     await expectAccessible();
   });
 });
@@ -1600,7 +1602,7 @@ describe('Documents on a phone (under 768 px)', () => {
     // Select, as today: into a collection, and nothing else.
     fireEvent.click(screen.getByRole('button', { name: 'Select' }));
     expect(screen.getByRole('button', { name: 'Add to a collection' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Move to Trash' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Move to the Trash' })).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: "Select “Sara's visa”" })).toBeInTheDocument();
   });
 

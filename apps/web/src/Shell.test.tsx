@@ -508,10 +508,12 @@ describe('the bar on top', () => {
     // vault answered may not yet be listening to the choice when it is
     // clicked (useSyncExternalStore subscribes in an effect), and catches
     // up a moment later — on a loaded machine, after the click.
-    const box = () => screen.getByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' });
-    await screen.findByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' });
+    const box = () => screen.getByRole('checkbox', { name: 'Single-key shortcuts' });
+    await screen.findByRole('checkbox', { name: 'Single-key shortcuts' });
     expect(box()).toBeChecked();
     expect(box()).toHaveAccessibleDescription(/\/ goes to the search box and n to Add/);
+    // Every key the switch turns off, named (R5).
+    expect(box()).toHaveAccessibleDescription(/j and k .* \[ and \] .* \+ and −/);
     fireEvent.click(box());
     await waitFor(() => expect(box()).not.toBeChecked());
     expect(localStorage.getItem('fdv.shortcuts')).toBe('off');
@@ -535,7 +537,7 @@ describe('the bar on top', () => {
     // And on again.
     cleanup();
     at('/settings', EVERYTHING);
-    await screen.findByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' });
+    await screen.findByRole('checkbox', { name: 'Single-key shortcuts' });
     fireEvent.click(box());
     await waitFor(() => expect(box()).toBeChecked());
     expect(localStorage.getItem('fdv.shortcuts')).toBeNull();
@@ -548,8 +550,8 @@ describe('the bar on top', () => {
   it('a browser that keeps nothing (a private window) still turns them off, for now', async () => {
     at('/settings', EVERYTHING);
     // Asked for afresh and waited for, as above.
-    const box = () => screen.getByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' });
-    await screen.findByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' });
+    const box = () => screen.getByRole('checkbox', { name: 'Single-key shortcuts' });
+    await screen.findByRole('checkbox', { name: 'Single-key shortcuts' });
     // From here on this browser keeps nothing it is given.
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new Error('blocked');

@@ -11,11 +11,11 @@ import {
   type Visibility,
 } from '@fdv/shared';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { Link, useLocation, useNavigate, useParams } from 'react-router';
+import { Link, useNavigate, useParams } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { Button, ConfirmDialog, ErrorNote, Field, Select, TopBar } from '../ui.js';
+import { Button, ConfirmDialog, ErrorNote, Field, Select, TopBar, useArrivedSaid } from '../ui.js';
 
 /**
  * Incoming (5.23): what somebody outside the family sent through a request,
@@ -68,8 +68,7 @@ export function IncomingList(props: {
   wrap?: (children: ReactNode, sent: number | null) => ReactNode;
 }) {
   const { authVersion } = useApp();
-  const location = useLocation();
-  const said = (location.state as { said?: string } | null)?.said ?? null;
+  const said = useArrivedSaid();
   const mayReview = can(storedRole(), 'upload_request.create');
   const { data, error } = useLoad(
     async (t) => (mayReview ? (await api.incoming(t)).items : []),
