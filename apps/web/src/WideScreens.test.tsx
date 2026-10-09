@@ -648,6 +648,24 @@ describe('Activity from 768 px: a table, with filters kept in the address (R4)',
     expect(window.location.search).toBe('');
   });
 
+  it('From and To are the household’s days, not this device’s', async () => {
+    // 10:30 on 3 October in UTC is 00:30 on the 4th in Kiritimati (UTC+14),
+    // and still the 3rd on any device from UTC−12 to UTC+13.
+    const at = '2026-10-03T10:30:00Z';
+    expect(new Date(at).getDate()).toBe(3);
+    atWidth(WIDE);
+    open('/activity?from=2026-10-04&to=2026-10-04', {
+      members: [ME, SARA],
+      timezone: 'Pacific/Kiritimati',
+      activity: [
+        line(2, '2026-10-02T12:00:00Z', 'Sara Seikh signed in', 'sign_in', 'm-2'),
+        line(1, at, 'Sara Seikh made a link to “Home insurance”', 'shared', 'm-2', 'doc-1'),
+      ],
+    });
+    await waitFor(() => expect(rowsOf()).toEqual(['Sara Seikh made a link to “Home insurance”']));
+    await screen.findByText('1 of the 2 loaded match');
+  });
+
   it('a link with filters shows them on arrival; what matches further back comes with Show older', async () => {
     atWidth(WIDE);
     open('/activity?who=m-3', { ...ACTIVITY, activityPage: 3 });

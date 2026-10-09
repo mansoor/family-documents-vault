@@ -1,4 +1,4 @@
-import { ACTIVITY_KINDS, whenExactly, whenWords, type ActivityLine } from '@fdv/shared';
+import { ACTIVITY_KINDS, localToday, whenExactly, whenWords, type ActivityLine } from '@fdv/shared';
 import { useId, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { api, type Member } from '../api.js';
@@ -29,6 +29,12 @@ export function ActivityScreen() {
   const { data, error: loadError, loading } = useLoad((t) => api.activity(t), [authVersion]);
   // Who each line's id names: the family, as the reader is given it.
   const { data: members } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
+  // The household's time zone, which every role reads: its days are the
+  // From and To filters' days. None said, this device's.
+  const { data: timezone } = useLoad(
+    async (t) => (await api.profile(t).catch(() => null))?.timezone ?? null,
+    [authVersion],
+  );
   const [older, setOlder] = useState<ActivityLine[]>([]);
   // Undefined until "Show older" is used; then the next page, or null at
   // the end — which used to fall back to the first page's cursor, so the
@@ -49,7 +55,7 @@ export function ActivityScreen() {
   const lines = [...(data?.items ?? []), ...older];
   const next = cursor === undefined ? (data?.next ?? null) : cursor;
   const family = members ?? [];
-  const shown = lines.filter((l) => matches(l, filters, family));
+  const shown = lines.filter((l) => matches(l, filters, family, timezone ?? null));
 
   const more = async (before: number) => {
     setBusy(true);
@@ -231,22 +237,32 @@ function filtersFrom(params: URLSearchParams): Filters {
   };
 }
 
-/** The day a moment falls on, on this device's calendar: as `whenExactly` says it. */
-function dayOf(iso: string): string {
+/**
+ * The day a moment falls on, on the household's calendar, as reminders and
+ * a guest's end are counted; on this device's only while the vault has
+ * said no time zone.
+ */
+function dayOf(iso: string, timezone: string | null): string {
   const at = new Date(iso);
+  if (timezone) return localToday(timezone, at);
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
 }
 
 /** Whether a line is one the filters keep. */
-function matches(l: ActivityLine, f: Filters, family: readonly Member[]): boolean {
+function matches(
+  l: ActivityLine,
+  f: Filters,
+  family: readonly Member[],
+  timezone: string | null,
+): boolean {
   if (f.who) {
     const id = l.actor_member_id ?? null;
     const known = id !== null && family.some((m) => m.id === id);
     if (f.who === ELSE ? known : id !== f.who) return false;
   }
   if (f.kind && l.kind !== f.kind) return false;
-  const day = f.from || f.to ? dayOf(l.at) : '';
+  const day = f.from || f.to ? dayOf(l.at, timezone) : '';
   if (f.from && day < f.from) return false;
   if (f.to && day > f.to) return false;
   return true;
