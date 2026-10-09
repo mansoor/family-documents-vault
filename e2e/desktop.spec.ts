@@ -7,6 +7,13 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
  * the review queue. One file, one sign-in (signing in is limited to 10 a
  * minute, and the suite signs in once in each file), on the vault
  * first-run.spec.ts made; what it makes has this run's name on it.
+ *
+ * And no page loaded afresh once signed in: a load renews the sign-in with
+ * the refresh token, and the vault renews ten a minute for one address —
+ * the address every spec in the run shares. The eleventh was refused (429,
+ * Retry-After 34 s) in CI on 9 Oct, after the phone specs, and the app,
+ * without a token, said every list could not be loaded. Moving within the
+ * app (`visit`) renews nothing.
  */
 
 const EMAIL = 'e2e-owner@example.test';
@@ -41,15 +48,41 @@ async function signIn(p: Page, request: APIRequestContext): Promise<string> {
   await p.getByRole('button', { name: 'Sign in' }).click();
   await p.getByLabel('Email').fill(EMAIL);
   await p.getByLabel('Password').fill(PASSWORD);
-  const [signedIn] = await Promise.all([
-    p.waitForResponse((r) => r.url().endsWith('/api/v1/auth/password') && r.ok()),
-    p.getByRole('button', { name: 'Sign in' }).click(),
-  ]);
-  await expect(p).toHaveURL(/\/$/);
-  return ((await signedIn.json()) as { access_token: string }).access_token;
+  // The phone specs before this one signed in from this address too: when
+  // the minute's ten are spent, the vault says when to try again, and that
+  // is waited out (twice at most: a minute's window clears in one).
+  for (let tries = 0; ; tries++) {
+    const [answer] = await Promise.all([
+      p.waitForResponse((r) => r.url().endsWith('/api/v1/auth/password')),
+      p.getByRole('button', { name: 'Sign in' }).click(),
+    ]);
+    if (answer.status() === 429 && tries < 2) {
+      const wait = Number(answer.headers()['retry-after'] ?? '60');
+      await p.waitForTimeout((Math.min(wait, 60) + 1) * 1000);
+      continue;
+    }
+    expect(answer.ok()).toBe(true);
+    await expect(p).toHaveURL(/\/$/);
+    return ((await answer.json()) as { access_token: string }).access_token;
+  }
+}
+
+/** A page of the app, gone to from within it, as a link would: nothing loaded, nothing renewed. */
+async function visit(p: Page, path: string) {
+  // An entry as the app's router makes one, numbered after this one, so
+  // that its Back (one step back, R5) counts as the router does. (Written
+  // as the page's own script: these specs are typed without the DOM's.)
+  await p.evaluate(`(() => {
+    const idx = ((history.state && history.state.idx) || 0) + 1;
+    const key = Math.random().toString(36).slice(2, 10);
+    history.pushState({ usr: null, key, idx }, '', ${JSON.stringify(path)});
+    dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+  })()`);
+  await expect.poll(() => p.evaluate<string>('location.pathname + location.search')).toBe(path);
 }
 
 test.beforeAll(async ({ browser, request }) => {
+  test.setTimeout(180_000);
   page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   token = await signIn(page, request);
 });
@@ -103,7 +136,7 @@ test('the Documents table sorts by a column, and moves two chosen to the Trash',
     });
     expect(made.ok()).toBe(true);
   }
-  await page.goto(`/documents?tag=${tag}`);
+  await visit(page, `/documents?tag=${tag}`);
   const grid = page.getByRole('grid', { name: /^Documents, sorted by Title/ });
   const titles = grid.locator('tbody .cell-title');
   await expect(titles).toHaveText([`R5 table A ${run}`, `R5 table B ${run}`]);
@@ -130,7 +163,7 @@ test('the Documents table sorts by a column, and moves two chosen to the Trash',
 });
 
 test('a document opens in two panes: its details on the left, its pages on the right', async () => {
-  await page.goto('/documents');
+  await visit(page, '/documents');
   await page.getByRole('link', { name: "Mansoor's passport" }).first().click();
   const details = page.getByRole('region', { name: "Details of Mansoor's passport" });
   const pages = page.getByRole('region', { name: "Pages of Mansoor's passport" });
@@ -149,7 +182,7 @@ test('a document opens in two panes: its details on the left, its pages on the r
 
 test('two files added at once are accepted one after the other through the queue', async () => {
   // Add, with the keyboard: n, down, Many documents.
-  await page.goto('/');
+  await visit(page, '/');
   await page.getByRole('heading', { level: 1 }).focus();
   await page.keyboard.press('n');
   await page.keyboard.press('ArrowDown');
@@ -167,14 +200,23 @@ test('two files added at once are accepted one after the other through the queue
   });
   await page.getByRole('link', { name: 'Open the batch' }).click();
 
-  // The queue: the first file's Accept opens its card, and Accept and next
-  // takes each in turn.
-  await page.getByRole('link', { name: `Accept r5-first-${run}.pdf` }).click();
+  // The queue: the first file's card opens from its row — Accept for a Ready
+  // file, Review for any other (these two PDFs have no pages to read) — and
+  // Accept and next takes each in turn.
+  await page
+    .getByRole('link', { name: new RegExp(`^(Accept|Review) r5-first-${run}[.]pdf$`) })
+    .click();
   for (const name of [`r5-first-${run}.pdf`, `r5-second-${run}.pdf`]) {
     await expect(page.getByText(name, { exact: true }).first()).toBeVisible();
     await page.getByRole('button', { name: /^Accept and next/ }).click();
   }
-  // Both are documents now: none of the batch waits.
-  await expect(page.getByRole('link', { name: `Accept r5-first-${run}.pdf` })).toHaveCount(0);
-  await expect(page.getByRole('link', { name: `Accept r5-second-${run}.pdf` })).toHaveCount(0);
+  // Both are documents now: back on the queue, said so, and none of the
+  // batch waits — Done counts both.
+  await expect(page).toHaveURL(/\/inbox\/batches\/[^/?]+$/);
+  await expect(page.getByText(/All 2 done: 2 accepted\./)).toBeVisible();
+  await expect(page.getByText('Nothing left to check in this batch.')).toBeVisible();
+  const levels = page.getByRole('group', { name: 'Show' });
+  await expect(levels.getByRole('button', { name: /^Done\s*2$/ })).toBeVisible();
+  await expect(levels.getByRole('button', { name: /^All\s*2$/ })).toBeVisible();
+  await expect(page.getByRole('link', { name: /^(Accept|Review) r5-/ })).toHaveCount(0);
 });
