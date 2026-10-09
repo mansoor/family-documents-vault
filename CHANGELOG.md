@@ -6,6 +6,25 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-dev.7] - 2026-10-09 — Phase 6, R4: Home, People, Collections, Activity and Trash for wide screens
+
+### Changed
+
+From 768 px wide, these screens use the width. On a phone each stays as it was.
+
+- **Home** is a dashboard of cards: Needs attention, Recently added, Categories, People and Collections, plus Your uploads waiting for those who add many. Its notices stay above the cards.
+- **People** is a table of the family, with name, relationship, role, sign-in and number of documents. Owners have Family and Outside the family as tabs.
+- **Collections** is a grid of cards: how many documents, whose, who it's for, and who it's shared with.
+- **Activity** is a table of when, who and what happened.
+  - Filters for who, what happened, and from and to. The dates are the household's days, and the address keeps the filters.
+  - Times are on the household's clock.
+  - On a phone, Activity gains the filters and links to the documents too.
+- **The Trash** is a table where you can choose many and bring them back. Owners can also remove them for good, with the usual asks and one "Confirm it's you" for the whole run. Anything that can't be done is named and stays chosen.
+
+### Added
+
+- **API:** each line from `GET /api/v1/audit` gains `actor_member_id`, given only when the line itself names that member, and a coarse `kind` (added, changed, opened, shared, people, sign-in, trash). Older clients ignore both.
+
 ## [0.7.0-dev.6] - 2026-10-09 — Phase 6, R3: a document in two panes
 
 ### Changed
