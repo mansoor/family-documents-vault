@@ -40,7 +40,8 @@ import { createUploadKeys, whileInProgress } from '../upload-keys.js';
  * history of versions, and one primary action — Download. From 768 px the
  * details are on the left and the pages on the right, turned in the shared
  * viewer (R3, the owner's rule); on a phone, one column — the details
- * first, then a preview that opens the pages full size, to read (0.4.12).
+ * first, with a preview right after the facts that opens the pages full
+ * size, to read (0.4.12).
  */
 export function DocumentScreen() {
   const { id } = useParams<{ id: string }>();
@@ -306,6 +307,12 @@ export function DocumentScreen() {
             )}
           </dl>
 
+          {/* On a phone, the pages within reach: right after the facts, before
+              the notes, the history and the rest (R3, as the prototype). */}
+          {!panes && (
+            <PhonePages documentId={doc.id} title={title} docTitle={doc.title} version={latest} />
+          )}
+
           {others.length > 0 && (
             <section aria-labelledby="other-h">
               <h2 id="other-h" className="section-h">
@@ -453,7 +460,7 @@ export function DocumentScreen() {
             />
           )}
         </section>
-        {panes ? (
+        {panes && (
           <DocumentPages
             key={latest?.id ?? 'none'}
             documentId={doc.id}
@@ -461,8 +468,6 @@ export function DocumentScreen() {
             version={latest}
             onDrawn={() => void reload()}
           />
-        ) : (
-          <PhonePages documentId={doc.id} title={title} docTitle={doc.title} version={latest} />
         )}
       </div>
     </main>
@@ -536,9 +541,10 @@ function DocumentCollections(props: { documentId: string; title: string }) {
 }
 
 /**
- * A document's pages on a phone (R3): today's preview, after the details —
- * its first page small, a tap from reading it full size. Nothing is
- * fetched but the small picture, as before.
+ * A document's pages on a phone (R3): today's preview, right after the
+ * facts — its first page small, a tap from reading it full size — so
+ * nobody scrolls past Move to Trash to reach them. Nothing is fetched but
+ * the small picture, as before.
  */
 function PhonePages(props: {
   documentId: string;

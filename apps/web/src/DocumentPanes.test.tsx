@@ -128,12 +128,17 @@ const pages = () => screen.findByRole('region', { name: "Pages of Mansoor's pass
 const pageCalls = (state: FakeState) =>
   state.calls.filter((c) => /\/pages\/\d+$/.test(c.url)).map((c) => c.url.split('/').pop());
 
-/** Everything the details offer and say, in order: headings, controls, and the facts' names. */
+/**
+ * Everything the details offer and say, in order: headings, controls, and
+ * the facts' names — not the pages, which a phone keeps among them.
+ */
 function inventory(region: HTMLElement): string[] {
-  return [...region.querySelectorAll('h2, button, a[href], label.btn, dt')].map(
-    (e) =>
-      `${e.tagName.toLowerCase()}: ${(e.getAttribute('aria-label') ?? e.textContent ?? '').trim()}`,
-  );
+  return [...region.querySelectorAll('h2, button, a[href], label.btn, dt')]
+    .filter((e) => !e.closest('.doc-pages'))
+    .map(
+      (e) =>
+        `${e.tagName.toLowerCase()}: ${(e.getAttribute('aria-label') ?? e.textContent ?? '').trim()}`,
+    );
 }
 
 describe('a document in two panes (R3)', () => {
@@ -175,13 +180,26 @@ describe('a document in two panes (R3)', () => {
     ).toBeInTheDocument();
   });
 
-  it('at 320 px: one column, the details first and then today’s preview; no page is fetched', async () => {
+  it('at 320 px: one column, the facts first, then today’s preview, then the rest; no page is fetched', async () => {
     const state = at('/documents/doc-1', PHONE);
     const left = await details();
     const right = await pages();
     expect(left.closest('main')).not.toHaveClass('doc-panes');
-    expect(left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // The preview that opens the reader, as before, now after the details.
+    // In the DOM, and so for Tab and a screen reader: status and Download,
+    // the facts, the pages within reach, then notes, history, … Move to Trash.
+    const order = [
+      within(left).getByRole('button', { name: 'Download' }),
+      left.querySelector('dl.facts') as HTMLElement,
+      right,
+      within(left).getByRole('heading', { name: 'Notes' }),
+      within(left).getByRole('heading', { name: 'History' }),
+      within(left).getByRole('button', { name: 'Move to Trash' }),
+    ];
+    for (let i = 1; i < order.length; i += 1) {
+      const [before, after] = [order[i - 1] as HTMLElement, order[i] as HTMLElement];
+      expect(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    // The preview that opens the reader, as before, now after the facts.
     expect(
       within(right).getByRole('link', { name: "Read Mansoor's passport, full size" }),
     ).toHaveAttribute('href', '/documents/doc-1/read');
