@@ -28,7 +28,14 @@ import { HouseholdScreen } from './screens/Household.js';
 import { EmailScreen, NotificationsScreen } from './screens/Notifications.js';
 import { PersonDocumentsScreen, ProfileScreen } from './screens/Person.js';
 import { PeopleScreen, RemindersScreen, SearchScreen } from './screens/SearchPeople.js';
-import { SettingsScreen, StorageScreen } from './screens/Settings.js';
+import {
+  AccountScreen,
+  DataScreen,
+  OwnersScreen,
+  SettingsScreen,
+  StorageScreen,
+} from './screens/Settings.js';
+import { SettingsLayout } from './settings-sections.js';
 import { SetupScreen } from './screens/Setup.js';
 import { FocusOnMove } from './focus-on-move.js';
 import { PageTitle } from './page-title.js';
@@ -211,16 +218,23 @@ export function App() {
               <Route path="/trash" element={<TrashScreen />} />
               {/* From Home's banner, while a restore has paused something. */}
               <Route path="/after-restore" element={<AfterRestoreScreen />} />
-              {/* Settings holds settings only (R1). */}
-              <Route path="/settings" element={<SettingsScreen />} />
-              <Route path="/settings/notifications" element={<NotificationsScreen />} />
-              <Route path="/settings/email" element={<EmailScreen />} />
-              <Route path="/settings/storage" element={<StorageScreen />} />
-              <Route path="/settings/household" element={<HouseholdScreen />} />
-              <Route path="/settings/family" element={<FamilyScreen />} />
-              <Route path="/settings/kinds" element={<KindsScreen />} />
-              <Route path="/settings/kinds/new" element={<KindScreen />} />
-              <Route path="/settings/kinds/:key" element={<KindScreen />} />
+              {/* Settings holds settings only (R1), in sections: from 768 px
+                the sub-menu beside each; on a phone, /settings lists them.
+                The pages it had keep their addresses, under their section. */}
+              <Route path="/settings" element={<SettingsLayout />}>
+                <Route index element={<SettingsScreen />} />
+                <Route path="account" element={<AccountScreen />} />
+                <Route path="notifications" element={<NotificationsScreen />} />
+                <Route path="household" element={<HouseholdScreen />} />
+                <Route path="family" element={<FamilyScreen />} />
+                <Route path="kinds" element={<KindsScreen />} />
+                <Route path="kinds/new" element={<KindScreen />} />
+                <Route path="kinds/:key" element={<KindScreen />} />
+                <Route path="data" element={<DataScreen />} />
+                <Route path="owners" element={<OwnersScreen />} />
+                <Route path="storage" element={<StorageScreen />} />
+                <Route path="email" element={<EmailScreen />} />
+              </Route>
             </Route>
             {MOVED.map(([from, to]) => (
               <Route key={from} path={from} element={<Moved to={to} />} />

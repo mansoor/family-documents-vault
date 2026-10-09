@@ -272,9 +272,9 @@ export function HomeScreen() {
       {/* A link, never a status: role="status" took its name away (the 5.33
           review). */}
       {data?.me.totp_required && (
-        <Link to="/settings" className="attention">
+        <Link to="/settings/account#two-step" className="attention">
           <strong>Switch on two-step sign-in</strong>
-          <span className="muted">Owners must. It takes a minute, in Settings.</span>
+          <span className="muted">Owners must. It takes a minute, in Settings → Your account.</span>
         </Link>
       )}
       {/* What a restore paused, while it waits (5.16; in Settings until R1). */}
@@ -545,7 +545,7 @@ export function ResetNoticeStrip(props: { notice: ResetNotice; onSeen: () => voi
         An owner made a link to reset your password
       </h2>
       <p>
-        {`On ${day}, ${by} was given a one-time link to set a new password for your sign-in, to hand to you. If you didn’t ask for it, or someone else set the password you use now, change it in Settings and talk to them.`}
+        {`On ${day}, ${by} was given a one-time link to set a new password for your sign-in, to hand to you. If you didn’t ask for it, or someone else set the password you use now, change it in Settings → Your account and talk to them.`}
       </p>
       {/* What was added to the sign-in since the link was used (the 5.29
           review): whoever used it could have added it, and changing the
@@ -566,7 +566,7 @@ export function ResetNoticeStrip(props: { notice: ResetNotice; onSeen: () => voi
       )}
       <ErrorNote message={error} />
       <div className="row">
-        <Link to="/settings" className="btn btn-quiet">
+        <Link to="/settings/account" className="btn btn-quiet">
           Change your password
         </Link>
         <Button kind="quiet" disabled={busy} onClick={() => void seen()}>

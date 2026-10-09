@@ -949,7 +949,7 @@ describe("a person's details, and the owner's view of a sign-in (5.25)", () => {
     ).toBeInTheDocument();
     expect(within(card).getByRole('link', { name: 'Set up two-step sign-in' })).toHaveAttribute(
       'href',
-      '/settings#two-step',
+      '/settings/account#two-step',
     );
     expect(
       within(card).queryByRole('button', { name: 'Show their account' }),
@@ -1905,7 +1905,7 @@ describe('a password reset an owner starts (5.29)', () => {
     );
     expect(within(told).getByRole('link', { name: 'Change your password' })).toHaveAttribute(
       'href',
-      '/settings',
+      '/settings/account',
     );
     await expectAccessible();
   });
@@ -1986,11 +1986,11 @@ describe('a password reset an owner starts (5.29)', () => {
       name: 'An owner made a link to reset your password',
     });
     expect(told).toHaveTextContent(
-      'On 2 October, Sam Seikh was given a one-time link to set a new password for your sign-in, to hand to you. If you didn’t ask for it, or someone else set the password you use now, change it in Settings and talk to them.',
+      'On 2 October, Sam Seikh was given a one-time link to set a new password for your sign-in, to hand to you. If you didn’t ask for it, or someone else set the password you use now, change it in Settings → Your account and talk to them.',
     );
     expect(within(told).getByRole('link', { name: 'Change your password' })).toHaveAttribute(
       'href',
-      '/settings',
+      '/settings/account',
     );
     await expectAccessible();
     fireEvent.click(within(told).getByRole('button', { name: 'I’ve seen this' }));

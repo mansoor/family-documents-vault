@@ -555,7 +555,7 @@ export function TwoStepNeeded(props: { message: string }) {
       <p className="status status-warn" role="alert" tabIndex={-1}>
         {props.message}
       </p>
-      <Link to="/settings#two-step" className="btn btn-quiet">
+      <Link to="/settings/account#two-step" className="btn btn-quiet">
         Set up two-step sign-in
       </Link>
     </div>

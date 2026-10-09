@@ -1055,7 +1055,7 @@ describe("a person's identity details (5.27)", () => {
     );
     expect(within(region).getByRole('link', { name: 'Set up two-step sign-in' })).toHaveAttribute(
       'href',
-      '/settings#two-step',
+      '/settings/account#two-step',
     );
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(region).not.toHaveTextContent('OM-1');
@@ -1083,7 +1083,7 @@ describe("a person's identity details (5.27)", () => {
     );
     expect(within(region).getByRole('link', { name: 'Set up two-step sign-in' })).toHaveAttribute(
       'href',
-      '/settings#two-step',
+      '/settings/account#two-step',
     );
     expect(region).not.toHaveTextContent('copied');
   });
@@ -1392,9 +1392,9 @@ describe('who can see identity details (5.27, A34)', () => {
     for (const role of ['adult', 'teen', 'viewer'] as const) {
       installFakeApi(fresh({ members: [{ ...ME, role }], identities: {} }));
       signedIn(role);
-      at('/settings');
+      at('/settings/household');
       const r = render(<App />);
-      await screen.findByRole('heading', { name: 'Settings' });
+      await screen.findByRole('heading', { name: 'Household', level: 1 });
       expect(screen.queryByRole('link', { name: /Family/ }), role).not.toBeInTheDocument();
       r.unmount();
       at('/settings/family');
@@ -1412,7 +1412,7 @@ describe('who can see identity details (5.27, A34)', () => {
     const state = fresh({ members: [ME], identities: {}, stepUpNeeded: true, timezone: 'UTC' });
     installFakeApi(state);
     signedIn();
-    at('/settings');
+    at('/settings/household');
     render(<App />);
     fireEvent.click(await screen.findByRole('link', { name: /Family/ }));
     await screen.findByRole('heading', { name: 'Who can see identity details' });
@@ -1474,7 +1474,7 @@ describe('who can see identity details (5.27, A34)', () => {
     );
     expect(screen.getByRole('link', { name: 'Set up two-step sign-in' })).toHaveAttribute(
       'href',
-      '/settings#two-step',
+      '/settings/account#two-step',
     );
   });
 

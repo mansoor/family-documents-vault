@@ -114,7 +114,7 @@ export function htmlBody(d: Digest, baseUrl: string): string {
 <p style="color:#5e574e;margin:0 0 16px">${esc(d.household_name)}</p>
 <table style="width:100%;border-collapse:collapse">${rows}</table>
 <p style="margin-top:20px"><a href="${esc(baseUrl)}" style="background:#1f5d4c;color:#fff;text-decoration:none;padding:12px 18px;border-radius:12px;display:inline-block">Open your vault</a></p>
-<p style="color:#5e574e;font-size:13px;margin-top:20px">You are getting this because you keep documents in this vault. Turn these off in Settings.</p>
+<p style="color:#5e574e;font-size:13px;margin-top:20px">You are getting this because you keep documents in this vault. Turn these off in Settings → Notifications.</p>
 </body></html>`;
 }
 

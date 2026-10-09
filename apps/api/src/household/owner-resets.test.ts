@@ -1140,7 +1140,7 @@ describe.skipIf(!testAdminUrl())(
         expect(told).toHaveLength(1);
         expect(told[0]?.subject).toBe('Your vault password was reset');
         expect(told[0]?.body).toBe(
-          'Owner, an owner of your family vault, was given a one-time link for your sign-in, and it has been used to set a new password. Every device has been signed out and every passkey removed. If you did not choose that password yourself, set one of your own in Settings when you next sign in — that also removes any passkey or two-step sign-in added since — and talk to them.',
+          'Owner, an owner of your family vault, was given a one-time link for your sign-in, and it has been used to set a new password. Every device has been signed out and every passkey removed. If you did not choose that password yourself, set one of your own in Settings → Your account when you next sign in — that also removes any passkey or two-step sign-in added since — and talk to them.',
         );
         expect(told[0]?.body).not.toMatch(/read your email/);
       });

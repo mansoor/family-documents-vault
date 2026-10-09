@@ -565,7 +565,7 @@ export class AuthService {
       accountIds: [p.accountId],
       subject: 'A new device signed in to your vault',
       pushType: 'new_device',
-      body: `Somebody signed in ${device.startsWith('the app') ? 'with' : 'on'} ${device}${meta.ip ? ` from ${meta.ip}` : ''}. If that was you, nothing to do. If it wasn't, change your password and sign that device out under Settings.`,
+      body: `Somebody signed in ${device.startsWith('the app') ? 'with' : 'on'} ${device}${meta.ip ? ` from ${meta.ip}` : ''}. If that was you, nothing to do. If it wasn't, change your password and sign that device out under Settings → Your account.`,
     });
   }
 

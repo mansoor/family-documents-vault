@@ -17,7 +17,7 @@ export function restoreSummary(file: string, r: RestoreReport): string {
     `  - Everybody has been signed out (${plural(r.sessionsEnded, 'session')}). Each person signs in`,
     '    with the password they had when the backup was made.',
     '  - Passkeys and two-step sign-in are as they were then too. Anybody who removed a',
-    '    passkey or reset two-step sign-in since does it again, in Settings.',
+    '    passkey or reset two-step sign-in since does it again, in Settings → Your account.',
   ];
   if (r.rekeyed) {
     const secrets = Object.values(r.rekeyed.resealed).reduce((n, c) => n + c, 0);
@@ -99,14 +99,14 @@ export function restoreSummary(file: string, r: RestoreReport): string {
     lines.push(
       `  - Who can see identity details in household ${a.household_id} went back to`,
       `    the owners and each person (it was ${was}). An owner can widen it again in`,
-      '    Settings → Family; that waits 72 hours, while everybody is told.',
+      '    Settings → Household → Family; that waits 72 hours, while everybody is told.',
     );
   }
   if (r.exportsExpired > 0) {
     lines.push(
       `  - ${plural(r.exportsExpired, 'export')} that could still be downloaded ` +
         `${r.exportsExpired === 1 ? 'was' : 'were'} ended: each held what its maker`,
-      '    could see then. Whoever needs one makes it again, in Settings.',
+      '    could see then. Whoever needs one makes it again, in Settings → Your data.',
     );
   }
   if (r.filesRemoved.length > 0) {

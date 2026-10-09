@@ -10,7 +10,7 @@ import {
   type CollectionView,
   type DocumentTypeView,
 } from '@fdv/shared';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -107,8 +107,12 @@ export function BatchItemScreen() {
 
   // Each new file — or the same one, read meanwhile, its card new: the focus
   // on its first field, unless it is somewhere else on the page, and where it
-  // is, said politely (the status below changes with the file).
-  useEffect(() => {
+  // is, said politely (the status below changes with the file). As the card
+  // is drawn, not after: a passive effect could run once somebody had
+  // already moved to a button on the new card — a browser may handle input
+  // before passive effects — and take the focus from it, so a dialog opened
+  // from there gave it back to the first field (the flaky Skip test).
+  useLayoutEffect(() => {
     if (!cardKey) return;
     const at = document.activeElement;
     if (!at || at === document.body || at.closest('.review-form')) {

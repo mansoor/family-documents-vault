@@ -231,7 +231,11 @@ export function KindsScreen() {
   if (!manage) {
     return (
       <main className="page page-top has-nav">
-        <TopBar title="Kinds of document" back="/settings" />
+        <TopBar
+          title="Kinds of document"
+          back="/settings/household"
+          backLabel="Back to Household"
+        />
         <p className="status status-warn">{refusalFor('types.manage')}</p>
       </main>
     );
@@ -242,7 +246,7 @@ export function KindsScreen() {
 
   return (
     <main className="page page-top has-nav">
-      <TopBar title="Kinds of document" back="/settings" />
+      <TopBar title="Kinds of document" back="/settings/household" backLabel="Back to Household" />
       <p className="lede">
         What the family keeps, and what the card asks for each. Changes are for everyone in the
         household, and in the activity log.

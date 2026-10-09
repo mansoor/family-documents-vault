@@ -4,20 +4,28 @@ import { flushSync } from 'react-dom';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { TwoStepNeeded } from '../identity.js';
-import { ErrorNote, TopBar } from '../ui.js';
+import { householdRows, SettingsRows } from '../settings-sections.js';
+import { storedRole } from '../session.js';
+import { ErrorNote } from '../ui.js';
+import { SettingsPage } from './Settings.js';
 
 /**
  * Settings → Household (5.41): the household's rule for Only me documents
- * and links outside the family (the owner's decision of 6 Oct 2026). An
+ * and links outside the family — and, since Settings has sections, the way
+ * to Family and to Kinds of document, the household's other settings (the owner's decision of 6 Oct 2026). An
  * owner's to change, with two-step sign-in and a passkey or a code (A54);
  * an adult reads it, as it decides what their share sheet offers.
  */
 export function HouseholdScreen() {
+  const { caps, session } = useApp();
+  const rows = householdRows(session.info?.role ?? storedRole(), caps);
   return (
-    <main className="page page-top has-nav">
-      <TopBar title="Household" back="/settings" />
+    <SettingsPage title="Household">
       <OnlyMeSharingCard />
-    </main>
+      {/* Its pages (the owner's ask): who sees identity details, and the
+          kinds of document — each where it was shown before. */}
+      <SettingsRows rows={rows} label="More for the household" />
+    </SettingsPage>
   );
 }
 

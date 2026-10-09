@@ -6,6 +6,20 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-dev.9] - 2026-10-09 — Phase 6: what the owner found trying it
+
+### Changed
+
+- **Your uploads' review queue:** a file's name, its first page, or a click on its row opens it for review. Files that aren't Ready say **Review** rather than Accept.
+- **Needs attention** uses the width from 768 px. Two tables, "Needs attention now" and "Coming up", show the document, whose it is, what is due and when, and its status, with the same actions as before.
+- **Home** fills the width from 1024 px, like Documents.
+- **Other list screens use the full width too:** Activity, the Trash, People, Outside the family, a person's documents, Collections and a collection, Search, Sharing, the Inbox, and After a restore. Forms keep a readable width.
+- **Settings is in sections**, each with its own page: Your account, Notifications, Household, Your data, and For owners.
+  - From 768 px a menu down the left moves between them. On a phone Settings is a list of the sections.
+  - Each person sees only the sections they have something in.
+  - Old links still work, and emails and messages now name the section ("Settings → Your account").
+- **The Add button** stays on one line at every width.
+
 ## [0.7.0-dev.8] - 2026-10-09 — Phase 6, R5: the whole app as one
 
 ### Changed

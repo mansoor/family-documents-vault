@@ -79,7 +79,7 @@ export function ChangePassword() {
 
   return (
     <form onSubmit={(e) => void submit(e)} className="card stack">
-      <h3 style={{ fontSize: 18 }}>Change your password</h3>
+      <h2 style={{ fontSize: 18 }}>Change your password</h2>
       <Field
         id="pw-current"
         label="Your password now"

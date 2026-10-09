@@ -340,13 +340,16 @@ describe('what the 5.35 survey found', () => {
       const state = fresh({ documents: [{ ...PASSPORT }] });
       installFakeApi(state);
       signedIn(role);
-      window.history.replaceState({}, '', '/settings');
+      // Settings → Your data (since Settings has sections).
+      window.history.replaceState({}, '', '/settings/data');
       const shown = render(<App />);
-      await screen.findByRole('heading', { name: 'Settings' });
-      await screen.findByRole('heading', { name: 'Signed-in devices' });
+      await screen.findByRole('heading', { name: 'Your data', level: 1 });
       expect(Boolean(screen.queryByRole('heading', { name: 'Export everything' })), role).toBe(
         offered,
       );
+      if (!offered) {
+        expect(screen.getByText('Only an adult can export the whole vault.')).toBeVisible();
+      }
       // And a refused list of exports is never asked for.
       expect(
         state.calls.some((c) => c.url.startsWith('/api/v1/exports')),
