@@ -2261,11 +2261,12 @@ export function installFakeApi(state: FakeState) {
               owner_member_id: item.proposals?.owner_member_id?.value ?? null,
               visibility: item.proposals?.visibility.value,
             });
-            item.undo_until = '2026-10-06T09:15:00Z';
+            item.undo_until = new Date(Date.now() + 5 * 60_000).toISOString();
             out.accepted.push({ item_id: itemId, document_id: made.id, version_id: 'v-batch' });
           }
         }
-        if (out.accepted.length > 0) out.undo_until = '2026-10-06T09:15:00Z';
+        if (out.accepted.length > 0)
+          out.undo_until = new Date(Date.now() + 5 * 60_000).toISOString();
         return json(out);
       }
       if (acceptReady && undo && method === 'POST') {

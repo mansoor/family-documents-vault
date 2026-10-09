@@ -220,6 +220,19 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       void reply.status(503).send(busy.toBody(req.id));
       return;
     }
+    // What a write named went while it waited for it (a foreign key's
+    // 23503): a document taken back into a batch's queue as somebody put it
+    // in a collection or set a reminder for it (the I3 review, P-I3-2).
+    // Nothing was done; it is the caller's to look again, not the server's.
+    if (pgCode === '23503') {
+      const gone = new ApiError(
+        409,
+        'gone_meanwhile',
+        'What this was about was removed just then, so nothing was changed. Look again.',
+      );
+      void reply.status(409).send(gone.toBody(req.id));
+      return;
+    }
     // A write that waited for a reset or a lock to end the session asking
     // (0052's own SQLSTATE, FDV01, with the session's end as its detail):
     // that session is over, as its next request would be told. Nothing else

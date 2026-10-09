@@ -4022,7 +4022,32 @@ html:has(.has-toast) {
 }
 
 html:has(.shell-phone):has(.has-toast) {
-  scroll-padding-bottom: calc(96px + 180px + env(safe-area-inset-bottom));
+  scroll-padding-bottom: calc(96px + min(180px, 25vh) + env(safe-area-inset-bottom));
+}
+
+/* A short window — a phone on its side, or 400% zoom (the I3 review, W-I3-6):
+   the toast is part of the page, under the levels, so it never covers what
+   has the focus, and no room is kept for it under the page. */
+@media (max-height: 500px) {
+  .toast,
+  .shell-phone .toast {
+    position: static;
+    width: auto;
+    max-height: none;
+    box-shadow: none;
+  }
+
+  .page.has-toast {
+    padding-bottom: 0;
+  }
+
+  html:has(.has-toast) {
+    scroll-padding-bottom: 0;
+  }
+
+  html:has(.shell-phone):has(.has-toast) {
+    scroll-padding-bottom: calc(96px + env(safe-area-inset-bottom));
+  }
 }
 
 /* A file in two panes. */

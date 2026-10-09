@@ -3171,6 +3171,11 @@ export function createFakeVault(): {
       const id = rawId ? decodeURIComponent(rawId) : undefined;
       const itemId = rawItem ? decodeURIComponent(rawItem) : undefined;
       const mine = state.batches.filter((b) => b.member_id === who.memberId);
+      // The kinds as the uploader's card is given them: a hidden one only
+      // while a document uses it (the I3 review, W-I3-10).
+      const cardTypes = state.types.filter(
+        (t) => !t.hidden || state.documents.some((d) => d.type_key === t.key && !d.deleted_at),
+      );
       const reader = { role: who.role, memberId: who.memberId };
       /** Each item's duplicate: a document the caller can see, or an earlier item of theirs. */
       const duplicateOf = (b: FakeBatch, it: FakeBatchItem): BatchDuplicate | null => {
@@ -3224,7 +3229,7 @@ export function createFakeVault(): {
           proposal: reading === 'read' ? (it.proposal ?? null) : null,
           duplicate,
           defaults: b.defaults,
-          types: state.types,
+          types: cardTypes,
           people: state.members
             .filter((m) => (m.kind ?? 'family') === 'family')
             .map((m) => ({ id: m.id, name: m.display_name })),
@@ -3417,7 +3422,7 @@ export function createFakeVault(): {
           const card = untouchedAccept({
             proposals: view.proposals,
             defaults: b.defaults,
-            types: state.types,
+            types: cardTypes,
             people: family,
             role: who.role,
             me: who.memberId,

@@ -84,8 +84,12 @@ export interface ReviewToast {
   text: string;
   /** And what else is worth knowing: what was not filed, who else will see them. */
   more: string[];
-  /** The items Undo takes back; null once there is nothing to undo. */
-  undo: { batchId: string; itemIds: string[] } | null;
+  /**
+   * The items Undo takes back, and until when (the vault's word); null once
+   * there is nothing to undo. Another Accept all Ready of the same batch
+   * while it may still be undone adds its own (the I3 review, W-I3-9).
+   */
+  undo: { batchId: string; itemIds: string[]; until: string | null } | null;
   busy: boolean;
 }
 
@@ -96,10 +100,12 @@ export function acceptedWords(
 ): { text: string; more: string[] } {
   const n = r.accepted.length;
   const nameOf = (id: string) => (names.get(id) ? `“${names.get(id)}”` : 'One file');
+  // Each file said once, however many requests named it (W-I3-11).
+  const failed = [...new Map(r.failed.map((f) => [f.item_id, f])).values()];
   const notReady = r.skipped.filter((s) => s.reason === 'not_ready').length;
   const decided = r.skipped.filter((s) => s.reason !== 'not_ready').length;
   const more: string[] = [];
-  for (const f of r.failed) more.push(`${nameOf(f.item_id)} was not accepted: ${f.message}`);
+  for (const f of failed) more.push(`${nameOf(f.item_id)} was not accepted: ${f.message}`);
   if (notReady > 0) {
     more.push(
       `${plural(notReady, 'file')} ${notReady === 1 ? 'was' : 'were'} not Ready any more, so ${notReady === 1 ? 'it waits' : 'they wait'} for you to check.`,
@@ -159,8 +165,9 @@ export function Toast({
     >
       <div className="toast-words">
         <p>{toast.text}</p>
-        {toast.more.map((m) => (
-          <p key={m} className="toast-more">
+        {toast.more.map((m, i) => (
+          // The same words twice are two lines (the I3 review, W-I3-11).
+          <p key={i} className="toast-more">
             {m}
           </p>
         ))}
@@ -189,36 +196,44 @@ export function Toast({
   );
 }
 
+/** What a page asks Accept all Ready to take: the files it showed Ready, by id and name. */
+export interface ReadyAsk {
+  batchId: string;
+  /** The files shown Ready: the question's count is theirs (the I3 review, W-I3-3). */
+  itemIds: string[];
+  names?: ReadonlyMap<string, string>;
+}
+
 /**
  * Accept all Ready, asked first and then the toast: one per page. `open`
- * asks about a batch — the ids the page showed Ready, or none (from the
- * Inbox: whatever is Ready now); `element` is the dialog, the toast and the
- * words heard; `changed` is called once the vault has answered, for the
- * page to read the batch again.
+ * asks about a batch — the ids the page showed Ready, the queue's or, from
+ * the Inbox, the batch's as it was just read; `element` is the dialog, the
+ * toast and the words heard; `changed` is called once the vault has
+ * answered, for the page to read the batch again; `fallback` is where the
+ * focus goes when the toast is put away and what asked is gone.
  */
 export function useAcceptReady(opts: {
   changed: () => Promise<unknown> | void;
   /** The files' names the page knows, for the toast to name what was not filed. */
   names?: ReadonlyMap<string, string>;
+  /** The focus's place once the toast goes, when the button that asked has gone (W-I3-4). */
+  fallback?: (batchId: string) => HTMLElement | null;
 }): {
-  open: (ask: { batchId: string; count: number; itemIds?: string[] }, from: HTMLElement) => void;
+  open: (ask: ReadyAsk, from: HTMLElement) => void;
   element: ReactNode;
   toastShown: boolean;
 } {
   const { withToken } = useApp();
   const [, uploads] = useUploads();
-  const [asking, setAsking] = useState<{
-    batchId: string;
-    count: number;
-    itemIds?: string[];
-  } | null>(null);
+  const [asking, setAsking] = useState<ReadyAsk | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<ReviewToast | null>(null);
   const [heard, setHeard] = useState('');
   const box = useRef<HTMLDivElement>(null);
   const askedFrom = useRef<HTMLElement | null>(null);
   const focusToast = useRef(false);
-  const { changed, names } = opts;
+  const { changed, names, fallback } = opts;
+  const lastBatch = useRef<string | null>(null);
 
   // The toast takes the focus as it comes, and again once Undo has answered.
   useEffect(() => {
@@ -234,6 +249,8 @@ export function useAcceptReady(opts: {
     if (!asking) return;
     setBusy(true);
     const { batchId, itemIds } = asking;
+    lastBatch.current = batchId;
+    const known = new Map([...(names ?? []), ...(asking.names ?? [])]);
     const all: BatchAcceptReadyResult = {
       accepted: [],
       skipped: [],
@@ -241,52 +258,69 @@ export function useAcceptReady(opts: {
       undo_until: null,
       more: false,
     };
-    const add = (r: BatchAcceptReadyResult) => {
+    // Why the rest were not sent, once a request could not be finished.
+    let stopped: string | null = null;
+    const turns = inTurns(itemIds, ACCEPT_READY_MAX);
+    // A turn at a time; what was filed is kept, whatever happens to a later
+    // turn (the I3 review, W-I3-2): it is said, with its Undo, and so is why
+    // the rest were not.
+    for (const [at, turn] of turns.entries()) {
+      let r: BatchAcceptReadyResult | null;
+      try {
+        r = await withToken((t) => api.acceptReady(t, batchId, { item_ids: turn }));
+      } catch (err) {
+        stopped = describeError(err);
+        break;
+      }
+      if (!r) {
+        stopped = 'You were signed out.';
+        break;
+      }
       all.accepted.push(...r.accepted);
       all.skipped.push(...r.skipped);
       all.failed.push(...r.failed);
       if (r.undo_until && (!all.undo_until || r.undo_until < all.undo_until)) {
         all.undo_until = r.undo_until;
       }
-    };
-    try {
-      if (itemIds) {
-        for (const turn of inTurns(itemIds, ACCEPT_READY_MAX)) {
-          const r = await withToken((t) => api.acceptReady(t, batchId, { item_ids: turn }));
-          if (!r) return;
-          add(r);
-        }
-      } else {
-        // Whatever is Ready now, a turn at a time, while more are.
-        for (let turns = 0; turns < Math.ceil(BATCH_MAX_FILES / ACCEPT_READY_MAX); turns += 1) {
-          const r = await withToken((t) => api.acceptReady(t, batchId));
-          if (!r) return;
-          add(r);
-          if (!r.more || r.accepted.length === 0) break;
-        }
+      // Some could not be filed: the rest are not sent after them (W-I3-11).
+      if (r.failed.length > 0 && at < turns.length - 1) {
+        stopped = `${plural(turns.slice(at + 1).flat().length, 'more file')} ${
+          turns.slice(at + 1).flat().length === 1 ? 'was' : 'were'
+        } not sent, as some could not be accepted. Try again.`;
+        break;
       }
-      forgetPages(all.accepted.map((a) => a.item_id));
-      uploads.changed();
-      const words = acceptedWords(all, names);
-      focusToast.current = true;
-      setToast({
-        ...words,
-        undo:
-          all.accepted.length > 0 ? { batchId, itemIds: all.accepted.map((a) => a.item_id) } : null,
-        busy: false,
-      });
-      say(words);
-      setAsking(null);
-      await changed();
-    } catch (err) {
-      focusToast.current = true;
-      setToast({ text: describeError(err), more: [], undo: null, busy: false });
-      setHeard(describeError(err));
-      setAsking(null);
-      await changed();
-    } finally {
-      setBusy(false);
     }
+    forgetPages(all.accepted.map((a) => a.item_id));
+    if (all.accepted.length > 0) uploads.changed();
+    const words = acceptedWords(all, known);
+    if (stopped) {
+      if (all.accepted.length > 0) words.more.push(`The rest were not accepted: ${stopped}`);
+      else words.text = `Nothing was accepted: ${stopped}`;
+    }
+    // Still to be undone, from this batch: this Undo takes those too (W-I3-9).
+    const ids = all.accepted.map((a) => a.item_id);
+    const earlier =
+      toast?.undo?.batchId === batchId &&
+      (!toast.undo.until || new Date(toast.undo.until).getTime() > Date.now())
+        ? toast.undo
+        : null;
+    const until = [earlier?.until ?? null, all.undo_until]
+      .filter((u): u is string => u !== null)
+      .sort()[0];
+    const undoIds = [...(earlier?.itemIds ?? []), ...ids];
+    if (earlier && ids.length > 0) {
+      words.more.push(`Undo takes back all ${plural(undoIds.length, 'file')} accepted here.`);
+    }
+    focusToast.current = true;
+    setToast({
+      ...words,
+      undo: undoIds.length > 0 ? { batchId, itemIds: undoIds, until: until ?? null } : null,
+      busy: false,
+    });
+    say(words);
+    setAsking(null);
+    setBusy(false);
+    await changed();
   };
 
   const undo = async () => {
@@ -317,17 +351,23 @@ export function useAcceptReady(opts: {
 
   const dismiss = () => {
     setToast(null);
-    // Back where the person was: the button that asked, if it is still there.
+    // Back where the person was: the button that asked, if it is still there;
+    // or else the page's own place for it — never nowhere (the I3 review, W-I3-4).
     const from = askedFrom.current;
-    if (from?.isConnected) from.focus();
+    if (from?.isConnected) {
+      from.focus();
+      return;
+    }
+    const to = lastBatch.current && fallback ? fallback(lastBatch.current) : null;
+    to?.focus();
   };
 
   const element = (
     <>
       {asking && (
         <ConfirmDialog
-          title={`Accept ${plural(asking.count, 'Ready file')}?`}
-          confirmLabel={`Accept ${asking.count}`}
+          title={`Accept ${plural(asking.itemIds.length, 'Ready file')}?`}
+          confirmLabel={`Accept ${asking.itemIds.length}`}
           busyLabel="Accepting…"
           busy={busy}
           returnFocus={askedFrom}
@@ -353,6 +393,7 @@ export function useAcceptReady(opts: {
   return {
     open: (ask, from) => {
       askedFrom.current = from;
+      lastBatch.current = ask.batchId;
       setAsking(ask);
     },
     element,

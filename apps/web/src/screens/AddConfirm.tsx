@@ -1202,6 +1202,13 @@ export function ConfirmForm(props: {
     if (e.key !== 'Enter' || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
     if (e.nativeEvent.isComposing) return;
     const at = e.target as HTMLElement;
+    // Held down, Enter repeats: it accepts once, never the next card it
+    // opens, and the one after (the I3 review, W-I3-1). Only a press made on
+    // this card — a fresh keydown, not a repeat of one before it — accepts.
+    if (e.repeat) {
+      if (at instanceof HTMLInputElement || at instanceof HTMLSelectElement) e.preventDefault();
+      return;
+    }
     // A box or a list only: a text area starts a line, a button or a link is pressed.
     if (!(at instanceof HTMLInputElement || at instanceof HTMLSelectElement)) return;
     if (at instanceof HTMLInputElement && ['button', 'submit', 'reset', 'file'].includes(at.type)) {

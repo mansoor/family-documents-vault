@@ -29,6 +29,7 @@ import {
   ItemTags,
   LevelBadge,
   OnlyYou,
+  batchPolling,
   queueFilter,
 } from './Batches.js';
 import { sizeWords } from './Incoming.js';
@@ -94,12 +95,26 @@ export function BatchItemScreen() {
   const at = run.order.indexOf(itemId ?? '');
   const position = at >= 0 ? at + 1 : null;
 
-  // Each new file: the focus on its first field, and where it is, said
-  // politely (the status below changes with the file, and only then).
-  const shownId = item?.id ?? null;
+  // A card nobody has changed starts again from what the pages say once the
+  // file is read (the I3 review, W-I3-7); one somebody changed keeps theirs.
+  const [touched, setTouched] = useState<{ id: string; reading: string } | null>(null);
+  const cardKey = item
+    ? `${item.id}:${touched?.id === item.id ? touched.reading : item.reading}`
+    : null;
+  const touch = () => {
+    if (item && touched?.id !== item.id) setTouched({ id: item.id, reading: item.reading });
+  };
+
+  // Each new file — or the same one, read meanwhile, its card new: the focus
+  // on its first field, unless it is somewhere else on the page, and where it
+  // is, said politely (the status below changes with the file).
   useEffect(() => {
-    if (shownId) document.getElementById('f-type')?.focus();
-  }, [shownId]);
+    if (!cardKey) return;
+    const at = document.activeElement;
+    if (!at || at === document.body || at.closest('.review-form')) {
+      document.getElementById('f-type')?.focus();
+    }
+  }, [cardKey]);
   const heard = item
     ? `${position ? `Item ${position} of ${run.order.length}` : item.name}, ${
         item.level ? LEVEL_WORDS[item.level] : 'Not read yet'
@@ -129,7 +144,9 @@ export function BatchItemScreen() {
         { replace: true, state: { run: next } },
       );
     } else {
+      // In place of the file: Back goes to where the queue was opened from (W-I3-8).
       void navigate(queuePath, {
+        replace: true,
         state: { said: [next.last, runSummary(next)].filter(Boolean).join(' ') },
       });
     }
@@ -141,6 +158,25 @@ export function BatchItemScreen() {
     if (now && data) setData({ ...data, batch: now });
     return now;
   };
+
+  // The file on the screen still to be read: asked again now and then, as the
+  // batch's page asks (batchPolling), until it is (the I3 review, W-I3-7).
+  const unreadShown =
+    item !== null &&
+    item.level !== undefined &&
+    (item.reading === 'waiting' || item.reading === 'reading');
+  const polls = useRef(0);
+  useEffect(() => {
+    if (!unreadShown) return;
+    const wait = polls.current >= batchPolling.times ? batchPolling.after : batchPolling.every;
+    const timer = setTimeout(() => {
+      polls.current += 1;
+      void fresh().catch(() => null);
+    }, wait);
+    return () => clearTimeout(timer);
+    // Asked again after each answer: the batch as it came back.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unreadShown, data]);
 
   const accept = async (
     b: BatchDetail,
@@ -170,9 +206,11 @@ export function BatchItemScreen() {
     });
   };
 
-  const skip = () => {
+  const skip = async () => {
     if (!batch || !item) return;
-    onward(batch, { ...run, skipped: [...run.skipped, item.id], last: `Skipped “${item.name}”.` });
+    // The batch as it is now: the next file as it stands, read or not (W-I3-7).
+    const now = (await fresh().catch(() => null)) ?? batch;
+    onward(now, { ...run, skipped: [...run.skipped, item.id], last: `Skipped “${item.name}”.` });
   };
 
   const remove = async () => {
@@ -271,7 +309,12 @@ export function BatchItemScreen() {
         {run.last}
       </p>
       <div className="review">
-        <section className="review-form" aria-labelledby="item-h">
+        <section
+          className="review-form"
+          aria-labelledby="item-h"
+          onChangeCapture={touch}
+          onClickCapture={touch}
+        >
           <div className="stack item-head">
             <h1 id="item-h" tabIndex={-1} className="clip-2">
               {heading}
@@ -336,7 +379,7 @@ export function BatchItemScreen() {
           )}
           <ErrorNote message={problem} />
           <ConfirmForm
-            key={item.id}
+            key={cardKey ?? item.id}
             title="Is this right?"
             back={queuePath}
             lede=""
@@ -391,7 +434,7 @@ export function BatchItemScreen() {
               hint: 'Enter',
               actions: (
                 <>
-                  <button type="button" className="btn btn-quiet" onClick={skip}>
+                  <button type="button" className="btn btn-quiet" onClick={() => void skip()}>
                     Skip
                   </button>
                   <span className="spacer" />

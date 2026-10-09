@@ -828,7 +828,7 @@ function InboxPage(props: {
  */
 export function InboxScreen() {
   const { mayBatch } = useMayBatch();
-  const { caps, authVersion } = useApp();
+  const { caps, authVersion, withToken } = useApp();
   const role = storedRole();
   const mayReview = caps?.features.upload_requests === true && can(role, 'upload_request.create');
   const location = useLocation();
@@ -848,7 +848,41 @@ export function InboxScreen() {
     },
     [authVersion, mayBatch, mayReview, levels],
   );
-  const ready = useAcceptReady({ changed: reload });
+  const ready = useAcceptReady({
+    changed: reload,
+    // The toast put away: back to the batch's own row (the I3 review, W-I3-4).
+    fallback: (id) =>
+      document.querySelector<HTMLElement>(`a.batch-row[href="/inbox/batches/${id}"]`),
+  });
+  const [asked, setAsked] = useState<string | null>(null);
+  /**
+   * From the Inbox, the batch read first, and its Ready files asked about
+   * by id, as the queue asks: the question's count is what is sent (the I3
+   * review, W-I3-3).
+   */
+  const askReady = async (b: BatchView, from: HTMLElement) => {
+    setAsked(null);
+    try {
+      const now = await withToken((t) => api.batch(t, b.id));
+      if (!now) return;
+      const ids = now.items.filter((i) => i.state === 'waiting' && i.level === 'ready');
+      if (ids.length === 0) {
+        setAsked(`Nothing in “${batchLabel(b)}” is Ready now.`);
+        await reload();
+        return;
+      }
+      ready.open(
+        {
+          batchId: b.id,
+          itemIds: ids.map((i) => i.id),
+          names: new Map(now.items.map((i) => [i.id, i.name])),
+        },
+        from,
+      );
+    } catch (err) {
+      setAsked(describeError(err));
+    }
+  };
   useEffect(() => {
     if (said) status.current?.focus();
   }, [said]);
@@ -872,6 +906,10 @@ export function InboxScreen() {
         {said}
       </p>
       <ErrorNote message={error} />
+      <p className="status-line" role="status">
+        {asked}
+      </p>
+      {ready.element}
       <OnlyYou>
         Only you can see these until you accept them. Anything not decided within 30 days is
         removed.
@@ -923,9 +961,7 @@ export function InboxScreen() {
                         type="button"
                         className="btn btn-quiet btn-small"
                         aria-label={`Accept all Ready in ${batchLabel(b)} (${l.ready})`}
-                        onClick={(e) =>
-                          ready.open({ batchId: b.id, count: l.ready }, e.currentTarget)
-                        }
+                        onClick={(e) => void askReady(b, e.currentTarget)}
                       >
                         Accept all Ready ({l.ready})
                       </button>
@@ -946,7 +982,6 @@ export function InboxScreen() {
           })}
         </ul>
       )}
-      {ready.element}
     </InboxPage>
   );
 }
@@ -1129,7 +1164,7 @@ function ItemState({ item, stop }: { item: BatchItemView; stop?: number }) {
     return (
       <span className="item-state">
         <span className="status status-ok">Accepted</span>
-        {item.document_id && (
+        {item.document_id ? (
           <Link
             to={`/documents/${item.document_id}`}
             className="quiet-link"
@@ -1138,6 +1173,14 @@ function ItemState({ item, stop }: { item: BatchItemView; stop?: number }) {
           >
             Open the document
           </Link>
+        ) : (
+          stop !== undefined && (
+            // A document they can no longer see: the row still has its stop,
+            // so Tab and the keys reach the rows after it (the I3 review, W-I3-5).
+            <span className="muted" tabIndex={stop} data-row-target="">
+              You can no longer see the document
+            </span>
+          )
         )}
       </span>
     );
@@ -1273,7 +1316,12 @@ export function BatchScreen() {
     () => new Map((data?.batch.items ?? []).map((i) => [i.id, i.name])),
     [data],
   );
-  const ready = useAcceptReady({ changed: reload, names });
+  const ready = useAcceptReady({
+    changed: reload,
+    names,
+    // The toast put away, its button gone: the status line, or the heading (W-I3-4).
+    fallback: () => status.current ?? heading.current,
+  });
   const choose = (v: QueueFilter) =>
     setParams(
       (was) => {
@@ -1480,13 +1528,17 @@ export function BatchScreen() {
     const at = rows.findIndex((r) => r.contains(e.target as Node));
     if (at < 0) return;
     e.preventDefault();
-    const to =
+    // The next row with somewhere to go, that way; never a row without (W-I3-5).
+    const targets = rows.map((r) => r.querySelector<HTMLElement>('[data-row-target]'));
+    const order =
       e.key === 'Home'
-        ? 0
+        ? targets
         : e.key === 'End'
-          ? rows.length - 1
-          : Math.max(0, Math.min(rows.length - 1, at + (down ? 1 : -1)));
-    rows[to]?.querySelector<HTMLElement>('[data-row-target]')?.focus();
+          ? [...targets].reverse()
+          : down
+            ? targets.slice(at + 1)
+            : targets.slice(0, at).reverse();
+    order.find((t) => t !== null)?.focus();
   };
   const row = (item: BatchItemView) => {
     const actions =
@@ -1618,18 +1670,16 @@ export function BatchScreen() {
             <button
               type="button"
               className="btn btn-primary queue-accept"
-              onClick={(e) =>
-                ready.open(
-                  { batchId: b.id, count: readyIds.length, itemIds: readyIds },
-                  e.currentTarget,
-                )
-              }
+              onClick={(e) => ready.open({ batchId: b.id, itemIds: readyIds }, e.currentTarget)}
             >
               Accept all Ready ({readyIds.length})
             </button>
           )}
         </div>
       )}
+      {/* The toast, under the levels: on a short screen it stays here, in the
+          page, never over what has the focus (the I3 review, W-I3-6). */}
+      {ready.element}
       {b.items.length > 0 && shown.length === 0 && (
         <p className="muted queue-none">
           {filter === 'done'
@@ -1740,7 +1790,6 @@ export function BatchScreen() {
             : 'Up and down arrows move between the files.'}
         </p>
       )}
-      {ready.element}
       {asking && asking !== 'batch' && (
         <ConfirmDialog
           title={`Remove “${asking.name}”?`}

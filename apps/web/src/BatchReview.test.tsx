@@ -10,8 +10,10 @@ import {
   type DocumentTypeView,
 } from '@fdv/shared';
 import axe from 'axe-core';
+import { existsSync, readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from './App.js';
+import { batchPolling } from './screens/Batches.js';
 import {
   AISHA,
   fresh,
@@ -581,7 +583,8 @@ describe('the Inbox’s Your uploads (I3)', () => {
     );
     const toast = await screen.findByRole('region', { name: 'What was just done' });
     // From the Inbox, whatever is Ready now: the vault decides.
-    expect(state.acceptReadyCalls).toEqual([{ batch: 'batch-1' }]);
+    // The batch read first: what it showed Ready is what is sent (W-I3-3).
+    expect(state.acceptReadyCalls).toEqual([{ batch: 'batch-1', item_ids: ['item-1', 'item-2'] }]);
     expect(toast).toHaveTextContent('2 files accepted as documents.');
     await waitFor(() =>
       expect(within(list).queryByRole('button', { name: /Accept all Ready/ })).toBeNull(),
@@ -593,5 +596,262 @@ describe('the Inbox’s Your uploads (I3)', () => {
       ),
     );
     await expectAccessible();
+  });
+});
+
+describe('the review round (I3)', () => {
+  const twoReady = (types: DocumentTypeView[]) => QUEUE(types).slice(0, 2);
+  const toast = () => screen.getByRole('region', { name: 'What was just done' });
+  const confirmAll = async (n: number) => {
+    fireEvent.click(await screen.findByRole('button', { name: `Accept all Ready (${n})` }));
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', { name: `Accept ${n}` }),
+    );
+    return screen.findByRole('region', { name: 'What was just done' });
+  };
+
+  it('a held Enter accepts one file, never the ones it opens after; a fresh press accepts the next (W-I3-1)', async () => {
+    const state = at('/inbox/batches/batch-1/items/item-1');
+    await screen.findByRole('heading', { level: 1, name: "Mansoor's passport" });
+    await waitFor(() => expect(screen.getByLabelText(/What it is/)).toHaveFocus());
+    // A repeat before any press on this card: nothing.
+    fireEvent.keyDown(screen.getByLabelText(/What it is/), { key: 'Enter', repeat: true });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(state.batchAccepts ?? []).toHaveLength(0);
+    // Pressed: this one.
+    fireEvent.keyDown(screen.getByLabelText(/What it is/), { key: 'Enter' });
+    await screen.findByRole('heading', { level: 1, name: "Aisha's passport" });
+    // Held on: its repeats on the next card accept nothing.
+    for (let n = 0; n < 6; n++) {
+      fireEvent.keyDown(screen.getByLabelText(/What it is/), { key: 'Enter', repeat: true });
+    }
+    await new Promise((r) => setTimeout(r, 100));
+    expect(state.batchAccepts).toHaveLength(1);
+    expect(window.location.pathname).toBe('/inbox/batches/batch-1/items/item-2');
+    // Let go, and pressed again: the next.
+    fireEvent.keyUp(screen.getByLabelText(/What it is/), { key: 'Enter' });
+    fireEvent.keyDown(screen.getByLabelText(/What it is/), { key: 'Enter' });
+    await waitFor(() => expect(state.batchAccepts).toHaveLength(2));
+  });
+
+  it('a later request that fails keeps what was filed, with its Undo, and says the rest were not accepted (W-I3-2)', async () => {
+    const many = (types: DocumentTypeView[]) =>
+      Array.from({ length: 60 }, (_, i) =>
+        item(`item-${i + 1}`, `f${i + 1}.pdf`, { proposal: PASSPORT('me') }, types),
+      );
+    const state = at('/inbox/batches/batch-1', many, { removed: 0 });
+    const real = window.fetch.bind(window);
+    let n = 0;
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input;
+      if (/accept-ready$/.test(url) && init?.method === 'POST' && ++n === 2) {
+        return Response.json(
+          { error: { code: 'internal', message: 'Something went wrong.', request_id: 'r' } },
+          { status: 500 },
+        );
+      }
+      return real(input, init);
+    };
+    try {
+      const shown = await confirmAll(60);
+      expect(shown).toHaveTextContent('50 files accepted as documents.');
+      expect(shown).toHaveTextContent('The rest were not accepted: Something went wrong.');
+      fireEvent.click(within(toast()).getByRole('button', { name: 'Undo' }));
+      await waitFor(() => expect(state.undoCalls?.[0]?.item_ids).toHaveLength(50));
+    } finally {
+      window.fetch = real;
+    }
+  });
+
+  it('from the Inbox, the batch is read first: the question counts what is Ready then, and only those are sent (W-I3-3)', async () => {
+    const state = at('/inbox', twoReady, { removed: 0 });
+    const list = await screen.findByRole('list', { name: 'Your uploads' });
+    const button = await within(list).findByRole('button', {
+      name: 'Accept all Ready in Scanned post (2)',
+    });
+    // Read meanwhile: one more Ready before the question.
+    const types = state.types as unknown as DocumentTypeView[];
+    state.batches?.[0]?.items.push(item('item-3', 'c.pdf', { proposal: PASSPORT('me') }, types));
+    fireEvent.click(button);
+    const dialog = await screen.findByRole('alertdialog', { name: 'Accept 3 Ready files?' });
+    // And two more while it is asked: not sent.
+    state.batches?.[0]?.items.push(
+      item('item-4', 'd.pdf', { proposal: PASSPORT('me') }, types),
+      item('item-5', 'e.pdf', { proposal: PASSPORT('me') }, types),
+    );
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Accept 3' }));
+    expect(await screen.findByRole('region', { name: 'What was just done' })).toHaveTextContent(
+      '3 files accepted as documents.',
+    );
+    expect(state.acceptReadyCalls).toEqual([
+      { batch: 'batch-1', item_ids: ['item-1', 'item-2', 'item-3'] },
+    ]);
+  });
+
+  it('the toast put away, its button gone: the focus goes to the queue’s status line, or the Inbox’s batch (W-I3-4)', async () => {
+    at('/inbox/batches/batch-1', twoReady, { removed: 0 });
+    await confirmAll(2);
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /Accept all Ready/ })).toBeNull(),
+    );
+    fireEvent.keyDown(toast(), { key: 'Escape' });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(document.querySelector('p.status-line[tabindex="-1"]')),
+    );
+    document.body.innerHTML = '';
+    at('/inbox', twoReady, { removed: 0 });
+    const list = await screen.findByRole('list', { name: 'Your uploads' });
+    fireEvent.click(
+      await within(list).findByRole('button', { name: /Accept all Ready in Scanned post/ }),
+    );
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Accept 2' }),
+    );
+    await screen.findByRole('region', { name: 'What was just done' });
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole('list', { name: 'Your uploads' })).queryByRole('button', {
+          name: /Accept all Ready/,
+        }),
+      ).toBeNull(),
+    );
+    fireEvent.click(within(toast()).getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        document.querySelector('a.batch-row[href="/inbox/batches/batch-1"]'),
+      ),
+    );
+  });
+
+  it('a row whose document the uploader no longer sees still has its stop; the keys pass it and reach the rows after (W-I3-5)', async () => {
+    const rows = (types: DocumentTypeView[]) => [
+      {
+        ...item('item-0', 'gone.pdf', { proposal: PASSPORT('me'), state: 'accepted' }, types),
+        document_id: null,
+      },
+      ...twoReady(types),
+    ];
+    at('/inbox/batches/batch-1', rows, { removed: 0 });
+    const table = await queueTable();
+    const stops = [...table.querySelectorAll<HTMLElement>('[tabindex="0"]')];
+    expect(stops.map((x) => x.textContent)).toEqual(['You can no longer see the document']);
+    stops[0]?.focus();
+    fireEvent.keyDown(stops[0] as HTMLElement, { key: 'ArrowDown' });
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: 'Accept passport.pdf' })).toHaveFocus(),
+    );
+    fireEvent.keyDown(screen.getByRole('link', { name: 'Accept passport.pdf' }), {
+      key: 'ArrowDown',
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: 'Accept aisha.pdf' })).toHaveFocus(),
+    );
+  });
+
+  it('on a short screen the toast is part of the page, under the levels, and keeps no room under it (W-I3-6)', async () => {
+    at('/inbox/batches/batch-1', twoReady, { removed: 0 });
+    const shown = await confirmAll(2);
+    // In the page's order: after the levels, before the files.
+    const levels = screen.getByRole('group', { name: 'Show' });
+    expect(levels.compareDocumentPosition(shown) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      shown.compareDocumentPosition(await queueTable()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const file = ['src/styles.css', 'apps/web/src/styles.css'].find((f) => existsSync(f));
+    const css = readFileSync(file as string, 'utf8').replace(/\s+/g, ' ');
+    const short = /@media \(max-height: 500px\) \{(.*?\} )\}/.exec(css)?.[1] ?? '';
+    expect(short).toMatch(/\.toast, \.shell-phone \.toast \{ position: static;/);
+    expect(short).toMatch(/\.page\.has-toast \{ padding-bottom: 0; \}/);
+    // Never more room kept than a short window has.
+    expect(css).not.toMatch(/scroll-padding-bottom: calc\(96px \+ 180px/);
+  });
+
+  it('a file read while it is on the screen: asked again, and its untouched card starts from what was read; Skip carries the batch as it is (W-I3-7)', async () => {
+    const was = { ...batchPolling };
+    batchPolling.every = 20;
+    try {
+      const pair = (types: DocumentTypeView[]) => [
+        item('item-1', 'a.pdf', { proposal: PASSPORT('me') }, types),
+        item('item-2', 'b.pdf', { reading: 'reading' }, types),
+      ];
+      const state = at('/inbox/batches/batch-1/items/item-2', pair, { removed: 0 });
+      await screen.findByText('b.pdf', { selector: 'h1' });
+      const types = state.types as unknown as DocumentTypeView[];
+      Object.assign(
+        state.batches?.[0]?.items[1] as object,
+        item('item-2', 'b.pdf', { proposal: PASSPORT('m-0') }, types),
+      );
+      await screen.findByRole('heading', { level: 1, name: "Aisha's passport" });
+      await waitFor(() => expect(screen.getByLabelText(/What it is/)).toHaveValue('passport'));
+      // Skip, from the first: the second as it is now — not by asking again.
+      batchPolling.every = 60_000;
+      document.body.innerHTML = '';
+      const again = at('/inbox/batches/batch-1/items/item-1', pair, { removed: 0 });
+      await screen.findByRole('heading', { level: 1, name: "Mansoor's passport" });
+      Object.assign(
+        again.batches?.[0]?.items[1] as object,
+        item('item-2', 'b.pdf', { proposal: PASSPORT('m-0') }, types),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Skip' }));
+      await screen.findByRole('heading', { level: 1, name: "Aisha's passport" });
+      expect(screen.getByLabelText(/What it is/)).toHaveValue('passport');
+    } finally {
+      Object.assign(batchPolling, was);
+    }
+  });
+
+  it('after the last, Back does not open the file it ended on (W-I3-8)', async () => {
+    at('/inbox/batches/batch-1?level=ready', twoReady, { removed: 0 });
+    fireEvent.click(await screen.findByRole('link', { name: 'Accept passport.pdf' }));
+    fireEvent.keyDown(await screen.findByLabelText(/What it is/), { key: 'Enter' });
+    await screen.findByRole('heading', { level: 1, name: "Aisha's passport" });
+    fireEvent.keyDown(screen.getByLabelText(/What it is/), { key: 'Enter' });
+    await screen.findByText(/All 2 done/);
+    window.history.back();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(window.location.pathname).not.toMatch(/\/items\//);
+  });
+
+  it('a second Accept all Ready while the first may still be undone: its Undo takes back both (W-I3-9)', async () => {
+    const state = at('/inbox/batches/batch-1', twoReady, { removed: 0 });
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept all Ready (2)' }));
+    const dialog = await screen.findByRole('alertdialog');
+    const types = state.types as unknown as DocumentTypeView[];
+    state.batches?.[0]?.items.push(item('item-3', 'c.pdf', { proposal: PASSPORT('me') }, types));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Accept 2' }));
+    await screen.findByRole('region', { name: 'What was just done' });
+    await confirmAll(1);
+    await waitFor(() => expect(toast()).toHaveTextContent('Undo takes back all 3 files'));
+    fireEvent.click(within(toast()).getByRole('button', { name: 'Undo' }));
+    await waitFor(() =>
+      expect(state.undoCalls).toEqual([
+        { batch: 'batch-1', item_ids: ['item-1', 'item-2', 'item-3'] },
+      ]),
+    );
+  });
+
+  it('what was not accepted is named, each once; and nothing more is sent after a request where some were not (W-I3-11)', async () => {
+    const many = (types: DocumentTypeView[]) =>
+      Array.from({ length: 60 }, (_, i) =>
+        item(`item-${i + 1}`, `f${i + 1}.pdf`, { proposal: PASSPORT('me') }, types),
+      );
+    const out = {
+      code: 'storage_unreachable',
+      message: 'We can’t reach where your files are kept.',
+    };
+    const state = at('/inbox/batches/batch-1', many, {
+      removed: 0,
+      acceptReadyRefuse: { 'item-1': out, 'item-2': out },
+    });
+    const shown = await confirmAll(60);
+    expect(state.acceptReadyCalls).toHaveLength(1);
+    const lines = within(shown)
+      .getAllByText(/was not accepted/)
+      .map((l) => l.textContent);
+    expect(lines).toEqual([
+      '“f1.pdf” was not accepted: We can’t reach where your files are kept.',
+      '“f2.pdf” was not accepted: We can’t reach where your files are kept.',
+    ]);
+    expect(shown).toHaveTextContent('10 more files were not sent');
   });
 });

@@ -869,6 +869,250 @@ describe.skipIf(!testAdminUrl())('the review queue: Accept all Ready and Undo (I
     expect(counted).toMatch(/row-level security/);
   });
 
+  /** A document of `who`'s with a file, filed the ordinary way. */
+  const filedDoc = async (who: Tokens, title: string) => {
+    const created = await call(who, 'POST', '/api/v1/documents', {
+      title,
+      type_key: 'utility_bill',
+      visibility: 'household',
+      owner_member_id: who.member_id,
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const id = created.json<DocumentView>().id;
+    const form = new FormData();
+    form.append('file', PDF(title), { filename: 'seed.pdf', contentType: 'application/pdf' });
+    const up = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${id}/versions`,
+      headers: { ...h.as(who), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+      payload: form.getBuffer(),
+    });
+    expect(up.statusCode, up.body).toBe(201);
+    return id;
+  };
+  /** One Ready item accepted all at once: its item, and the document it became. */
+  const acceptedOne = async (defaults: Record<string, unknown> = {}) => {
+    const b = await made(adult, { name: `Gone out ${randomUUID().slice(0, 6)}`, defaults });
+    const it = await readyItem(adult, b.id);
+    const out = await accepted(adult, b.id);
+    expect(out.accepted.map((a) => a.item_id)).toEqual([it.id]);
+    return { b, it, docId: out.accepted[0]?.document_id as string };
+  };
+  const keptAs = async (b: { id: string }, it: { id: string }, docId: string) => {
+    const back = await undone(adult, b.id, [it.id]);
+    expect(back.restored).toEqual([]);
+    expect(back.kept.map((k) => k.reason)).toEqual(['changed']);
+    expect((await doc(adult, docId)).statusCode).toBe(200);
+    expect((await itemOf(adult, b.id, it.id)).state).toBe('accepted');
+  };
+
+  it('gone outside the family through a collection’s link that follows it, and downloaded there: kept, and the record of it with it (P-I3-1)', async () => {
+    await h.decider(adult);
+    const c = (
+      await call(adult, 'POST', '/api/v1/collections', {
+        name: 'For the accountant',
+        audience: 'everyone',
+      })
+    ).json<CollectionDetail>();
+    const seed = await filedDoc(adult, 'Seed bill');
+    await call(adult, 'POST', `/api/v1/collections/${c.id}/items`, { document_ids: [seed] });
+    const link = await call(adult, 'POST', `/api/v1/collections/${c.id}/shares`, {
+      document_ids: [seed],
+      follow_collection: true,
+      recipient_label: 'the accountant',
+      permission: 'download',
+    });
+    expect(link.statusCode, link.body).toBe(201);
+    const { b, it, docId } = await acceptedOne({ collection_id: c.id, visibility: 'household' });
+    // The accountant opens it, and downloads it.
+    const un = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/shared/unlock',
+      payload: { token: link.json<{ link_token: string }>().link_token },
+      remoteAddress: '10.93.0.1',
+    });
+    expect(un.statusCode, un.body).toBe(200);
+    const cookie = un.cookies.find((x) => x.name === 'fdv_share')?.value as string;
+    const got = await h.app.inject({
+      url: `/api/v1/shared/items/${docId}/content`,
+      cookies: { fdv_share: cookie },
+      remoteAddress: '10.93.0.1',
+    });
+    expect(got.statusCode).toBe(200);
+    const lines = async () => (await activity(owner)).filter((l) => l.includes('Sana'));
+    const before = await lines();
+    await keptAs(b, it, docId);
+    // The owners still see that it went out, and that it was downloaded.
+    expect((await activity(owner)).join('\n')).toMatch(/sent it outside the family/);
+    expect((await activity(owner)).join('\n')).toMatch(/downloaded/);
+    expect(await lines()).toEqual(before);
+  });
+
+  it('ticked for a collection’s link after it was filed: kept (P-I3-1)', async () => {
+    await h.decider(adult);
+    const c = (
+      await call(adult, 'POST', '/api/v1/collections', { name: 'Ticked', audience: 'everyone' })
+    ).json<CollectionDetail>();
+    const { b, it, docId } = await acceptedOne({ collection_id: c.id, visibility: 'household' });
+    const link = await call(adult, 'POST', `/api/v1/collections/${c.id}/shares`, {
+      document_ids: [docId],
+      recipient_label: 'the bank',
+      permission: 'download',
+    });
+    expect(link.statusCode, link.body).toBe(201);
+    await keptAs(b, it, docId);
+  });
+
+  it('downloaded by somebody else of the family meanwhile: a line about it not the uploader’s, so kept (P-I3-1)', async () => {
+    const { b, it, docId } = await acceptedOne({ visibility: 'household' });
+    const v = (
+      await admin.query<{ id: string }>('select id from document_version where document_id = $1', [
+        docId,
+      ])
+    ).rows[0]?.id as string;
+    const down = await call(owner, 'GET', `/api/v1/versions/${v}/content`);
+    expect(down.statusCode, down.body.slice(0, 200)).toBe(200);
+    await keptAs(b, it, docId);
+  });
+
+  it('somebody else’s work on it meanwhile — put in their collection, a reminder, a document linked to it — and it is kept (P-I3-2)', async () => {
+    const one = await acceptedOne({ visibility: 'household' });
+    const oc = (
+      await call(owner, 'POST', '/api/v1/collections', { name: 'Owner’s', audience: 'everyone' })
+    ).json<CollectionDetail>();
+    const put = await call(owner, 'POST', `/api/v1/collections/${oc.id}/items`, {
+      document_ids: [one.docId],
+    });
+    expect(put.statusCode, put.body).toBe(200);
+    await keptAs(one.b, one.it, one.docId);
+    // Its row alone counts too, whatever the log says.
+    const quiet = await acceptedOne({ visibility: 'household' });
+    const ownerAccount = (
+      await admin.query<{ account_id: string }>(
+        'select account_id from account_household where member_id = $1',
+        [owner.member_id],
+      )
+    ).rows[0]?.account_id as string;
+    await admin.query(
+      `insert into doc_collection_item (collection_id, document_id, household_id, added_by, position)
+       values ($1, $2, $3, $4, 99)`,
+      [oc.id, quiet.docId, hh, ownerAccount],
+    );
+    await keptAs(quiet.b, quiet.it, quiet.docId);
+
+    const two = await acceptedOne({ visibility: 'household' });
+    const rem = await call(owner, 'POST', '/api/v1/reminders', {
+      document_id: two.docId,
+      fire_at: '2030-01-01',
+      note: 'Renew it',
+    });
+    expect(rem.statusCode, rem.body).toBe(201);
+    await keptAs(two.b, two.it, two.docId);
+
+    const three = await acceptedOne({ visibility: 'household' });
+    const other = await filedDoc(adult, 'Linked bill');
+    const [a, z] = [three.docId, other].sort();
+    await admin.query('insert into document_link (household_id, a, b) values ($1, $2, $3)', [
+      hh,
+      a,
+      z,
+    ]);
+    await keptAs(three.b, three.it, three.docId);
+  });
+
+  it('a reminder asked for while Undo holds the document waits, then finds it gone: 409, never 500 (P-I3-2)', async () => {
+    const { b, it, docId } = await acceptedOne({ visibility: 'household' });
+    let release: () => void = () => undefined;
+    undoGate = new Promise<void>((r) => (release = r));
+    const reached = new Promise<void>((r) => (undoReached = r));
+    const undoing = undo(adult, b.id, [it.id]);
+    await reached;
+    const reminding = call(owner, 'POST', '/api/v1/reminders', {
+      document_id: docId,
+      fire_at: '2030-01-01',
+      note: 'Renew it',
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    undoGate = null;
+    release();
+    const [u, r] = await Promise.all([undoing, reminding]);
+    expect(u.json<BatchUndoResult>().restored).toEqual([it.id]);
+    expect(r.statusCode, r.body).toBe(409);
+    expect(r.json<{ error: { code: string } }>().error.code).toBe('gone_meanwhile');
+  });
+
+  it('the uploader writes down only that document’s own objects to delete, never somebody else’s (P-I3-3)', async () => {
+    const ownerDoc = await filedDoc(owner, 'Owner’s deed');
+    const theirs = (
+      await admin.query<{ storage_key: string; vault_id: string }>(
+        'select storage_key, vault_id from document_version where document_id = $1',
+        [ownerDoc],
+      )
+    ).rows[0] as { storage_key: string; vault_id: string };
+    const { docId } = await acceptedOne({ visibility: 'household' });
+    const own = (
+      await admin.query<{ storage_key: string; vault_id: string }>(
+        'select storage_key, vault_id from document_version where document_id = $1',
+        [docId],
+      )
+    ).rows[0] as { storage_key: string; vault_id: string };
+    const account = (
+      await admin.query<{ account_id: string }>(
+        'select account_id from account_household where member_id = $1',
+        [adult.member_id],
+      )
+    ).rows[0]?.account_id as string;
+    const write = async (key: string, vaultId: string) => {
+      const client = await app.connect();
+      try {
+        await client.query('begin');
+        await client.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                  set_config('app.member_id', $2, true), set_config('app.role', 'adult', true),
+                  set_config('app.account_id', $3, true)`,
+          [hh, adult.member_id, account],
+        );
+        await client.query(
+          `insert into purge_leftover (household_id, vault_id, object_key, removed_document)
+           values ($1, $2, $3, $4)`,
+          [hh, vaultId, key, docId],
+        );
+        return null;
+      } catch (err) {
+        return (err as Error).message;
+      } finally {
+        await client.query('rollback').catch(() => undefined);
+        client.release();
+      }
+    };
+    expect(await write(theirs.storage_key, theirs.vault_id)).toMatch(/row-level security/);
+    expect(await write(`${hh}/${ownerDoc}/1/x.pdf.enc`, own.vault_id)).toMatch(
+      /row-level security/,
+    );
+    // Its own: its file, what is drawn beside it.
+    expect(await write(own.storage_key, own.vault_id)).toBeNull();
+    expect(await write(`${own.storage_key}.p1.enc`, own.vault_id)).toBeNull();
+  });
+
+  it('a kind hidden, and of no document the uploader can see, is none: its item is Not recognised, and Accept all Ready leaves it (W-I3-10)', async () => {
+    const hid = await call(owner, 'PATCH', '/api/v1/document-types/vehicle_registration', {
+      hidden: true,
+    });
+    expect(hid.statusCode, hid.body).toBe(200);
+    try {
+      const b = await made(adult, { name: 'Hidden kind' });
+      const it = await readyItem(adult, b.id, {
+        type_key: { value: 'vehicle_registration', confidence: 0.97, cue: 'kind_words' },
+        owner_member_id: { value: adult.member_id, confidence: 0.9, cue: 'name_labelled' },
+      });
+      expect((await itemOf(adult, b.id, it.id)).level).toBe('unrecognised');
+      const out = await accepted(adult, b.id, { item_ids: [it.id] });
+      expect(out.skipped).toEqual([{ item_id: it.id, reason: 'not_ready', level: 'unrecognised' }]);
+    } finally {
+      await call(owner, 'PATCH', '/api/v1/document-types/vehicle_registration', { hidden: false });
+    }
+  });
+
   it('GET /batches?with=levels counts each batch’s levels; a batch says how many were removed', async () => {
     const b = await made(adult, { name: 'Counted' });
     await readyItem(adult, b.id);

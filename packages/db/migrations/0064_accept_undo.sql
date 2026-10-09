@@ -42,7 +42,18 @@
 --    of the document before the document goes, or the document's removal
 --    would take the row with it, 0047).
 --  - Its uploader writes down what is left of that document to delete, as
---    an owner does, while the item still names it (purge_leftover).
+--    an owner does, while the item still names it (purge_leftover) — and
+--    only that document's own objects: its versions' files and what was
+--    drawn beside them, an upload to it never finished, and the item's own
+--    old object and its pages, each in the place it is kept (the I3
+--    review, P-I3-3).
+--  - Whether the document has reached anybody else — a link, a page drawn,
+--    a line in the log by somebody else or from outside, somebody else's
+--    collection or reminder, a document linked to it — is asked of the
+--    database with its owner's rights, by its uploader only, about an item
+--    they may still take back (`incoming_file_document_reached`): what a
+--    teen is not given still counts, and nothing is said to anybody else
+--    (the I3 review, P-I3-1, P-I3-2). One that has is kept.
 
 alter table incoming_file
   add column undo_until timestamptz,
@@ -175,22 +186,81 @@ create constraint trigger incoming_file_undone_document_gone
   deferrable initially deferred
   for each row execute function incoming_file_undone_document_gone();
 
+-- Whether a document Accept all Ready filed has reached anybody but its
+-- uploader: for the uploader alone, about an item of theirs still to be
+-- taken back (null to anybody else, or about anything else).
+create function incoming_file_document_reached(p_document uuid) returns boolean
+  language plpgsql stable security definer set search_path = pg_catalog, public, pg_temp as $$
+declare
+  hh constant uuid := app_household();
+  acct constant uuid := app_account();
+begin
+  if app_actor() is distinct from 'account'
+     or not exists (select 1 from incoming_file f
+                     where f.household_id = hh
+                       and f.document_id = p_document
+                       and f.state = 'accepted'
+                       and f.batch_id is not null
+                       and f.undo_until > now()
+                       and f.decided_by = acct
+                       and f.requester_member_id = app_member()) then
+    return null;
+  end if;
+  return exists (select 1 from share_link l where l.document_id = p_document)
+      or exists (select 1 from share_link_item t
+                  where t.document_id = p_document and t.kind <> 'left_out')
+      or exists (select 1 from share_page s where s.document_id = p_document)
+      or exists (select 1 from share_page_failure s where s.document_id = p_document)
+      or exists (select 1 from audit_event e
+                  where e.household_id = hh
+                    and e.object_type = 'document' and e.object_id = p_document
+                    and (e.actor_account_id is distinct from acct or e.actor_label is not null))
+      or exists (select 1 from doc_collection_item i
+                  where i.document_id = p_document and i.added_by is distinct from acct)
+      or exists (select 1 from reminder m
+                  where m.document_id = p_document and m.created_by is not null
+                    and m.created_by <> acct)
+      or exists (select 1 from document_link k where k.a = p_document or k.b = p_document);
+end $$;
+
+grant execute on function incoming_file_document_reached(uuid) to fdv_app;
+
 -- 0045's: what is left of a removal, written down and cleared by an owner
 -- removing a document, and the vault itself. And (I3) the uploader taking
--- back a document Accept all Ready filed, in time: its own, while its item
--- still names it.
+-- back a document Accept all Ready filed, in time, while its item still
+-- names it: that document's own objects alone, each where it is kept — a
+-- version's file and what is drawn beside it (its pages, its thumbnail, a
+-- link's pages), a file of the document's own, an upload to it never
+-- finished, and the item's own old object and its pages.
 drop policy purge_leftover_actor on purge_leftover;
 create policy purge_leftover_actor on purge_leftover as restrictive
   using (case app_actor()
            when 'account' then
              app_role() = 'owner'
-             or exists (select 1 from incoming_file f
-                         where f.document_id = purge_leftover.removed_document
-                           and f.state = 'accepted'
-                           and f.batch_id is not null
-                           and f.undo_until > now()
-                           and f.decided_by = app_account()
-                           and f.requester_member_id = app_member())
+             or exists (
+               select 1 from incoming_file f
+                where f.document_id = purge_leftover.removed_document
+                  and f.state = 'accepted'
+                  and f.batch_id is not null
+                  and f.undo_until > now()
+                  and f.decided_by = app_account()
+                  and f.requester_member_id = app_member()
+                  and (
+                    (purge_leftover.vault_id = f.vault_id
+                     and (purge_leftover.object_key = f.storage_key
+                          or starts_with(purge_leftover.object_key, f.storage_key || '.p')))
+                    or exists (select 1 from document_version v
+                                where v.document_id = f.document_id
+                                  and v.vault_id = purge_leftover.vault_id
+                                  and (starts_with(purge_leftover.object_key, v.storage_key)
+                                       or purge_leftover.object_key = v.thumbnail_key
+                                       or starts_with(purge_leftover.object_key,
+                                                      f.household_id || '/' || f.document_id
+                                                        || '/')))
+                    or exists (select 1 from upload_idempotency u
+                                where u.document_id = f.document_id
+                                  and u.temp_key = purge_leftover.object_key
+                                  and u.temp_vault_id = purge_leftover.vault_id)))
            when 'system' then true
            when 'upload' then false
            else false

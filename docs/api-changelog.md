@@ -4060,11 +4060,17 @@ failed: [{ item_id, code, message }], undo_until, more }` (`more`: more
     answers `{ restored, kept: [{ item_id, reason: 'too_late' |
 'not_undoable' | 'changed' | 'not_found' | 'failed', message }] }` (a
     document somebody changed, made a link to, added a copy to or moved to
-    the Trash meanwhile is `changed`, and kept). `GET
+    the Trash meanwhile is `changed`, and kept; so is one a collection's
+    link ticked or followed, one any link drew pages of, one with a line in
+    the log by anybody else or from outside, and one somebody else put in a
+    collection, set a reminder for or linked to). A kind hidden, of no
+    document the caller can see, is no kind in an item's levelling. `GET
 /api/v1/batches?with=levels` gives each batch `levels` (`{ ready, check,
 unrecognised, problem, unread }`); `counts.removed` on every batch.
     **Changed:** `POST /api/v1/documents/{id}/share` holds the document
-    until the link is made: one removed meanwhile is `404`. `@fdv/shared`:
+    until the link is made: one removed meanwhile is `404`; any other write
+    whose document (or other row it names) went while it waited is `409
+gone_meanwhile`, never a `500`. `@fdv/shared`:
     `ACCEPT_READY_MAX`, `ACCEPT_UNDO_MINUTES`, `untouchedAccept`,
     `BatchAcceptReadyInput`, `BatchAcceptReadyResult`, `AcceptReadySkip`,
     `BatchUndoInput`, `BatchUndoResult`, `UndoKept`, `BatchLevelCounts`.

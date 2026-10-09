@@ -62,6 +62,8 @@ import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import type { CollectionService } from '../collections/service.js';
 import {
+  kindGiven,
+  kindSeen,
   seenDocument,
   sniffStream,
   typeView,
@@ -1033,7 +1035,7 @@ export class BatchService {
           if (!item || item.level !== 'ready' || !item.proposals) {
             return { skip: 'not_ready' as const, level: item?.level ?? null };
           }
-          const levelling = await this.levelling(trx, [b.id]);
+          const levelling = await this.levelling(trx, p, [b.id]);
           const body = untouchedAccept({
             proposals: item.proposals,
             defaults: levelling.defaults(b.id),
@@ -1242,18 +1244,13 @@ export class BatchService {
           .orderBy('id')
           .forUpdate()
           .execute();
-        const linked = await trx
-          .selectFrom('share_link')
-          .select('id')
-          .where('document_id', '=', docId)
-          .executeTakeFirst();
         // Somebody's since: changed, a copy added, a link made, the Trash.
         if (
           doc.deleted_at !== null ||
           doc.updated_by !== p.accountId ||
           versions.length !== 1 ||
           versions[0]?.id !== held.version_id ||
-          linked
+          (await this.reachedOthers(trx, p, docId))
         ) {
           return 'changed';
         }
@@ -1330,6 +1327,36 @@ export class BatchService {
     }
     if (kept) await found.to.delete(key).catch(() => undefined);
     return kept;
+  }
+
+  /**
+   * Whether a document Accept all Ready filed has reached anybody but its
+   * uploader (the I3 review, P-I3-1, P-I3-2): then it is kept, and the
+   * record of it with it — a document gone outside the family, or somebody
+   * else's work on it, is never taken back, and its lines never made
+   * nobody's. Asked with the document held, and the activity log held too
+   * (the advisory lock appendAudit takes, after the document's rows, as
+   * every writer takes it): what names the document, or a line about it,
+   * cannot come in between this and the commit — a row naming it waits on
+   * the document, and then finds it gone.
+   *
+   * - a link of its own, or a collection's link that ticked or followed it
+   *   (anything but left out), or a page any link drew of it, or tried to;
+   * - a line in the log about it by anybody else, or from outside (a link's
+   *   download, an upload link: `actor_label`);
+   * - a collection somebody else put it in, a reminder somebody else made
+   *   for it, a document it was linked to.
+   */
+  private async reachedOthers(trx: Db, p: Principal, docId: string): Promise<boolean> {
+    await sql`select pg_advisory_xact_lock(hashtext('audit:' || ${p.householdId}::uuid::text))`.execute(
+      trx,
+    );
+    // Asked of the database with its owner's rights (0064): a teen, say, is
+    // given no link's rows, and what they are not given must still count.
+    const r = await sql<{ reached: boolean | null }>`
+      select incoming_file_document_reached(${docId}::uuid) as reached`.execute(trx);
+    // Not to be asked (no item of theirs to take back names it): kept.
+    return r.rows[0]?.reached !== false;
   }
 
   /**
@@ -1707,7 +1734,7 @@ export class BatchService {
         received_at: r.received_at as Date,
       });
     }
-    const levelling = await this.levelling(trx, batchIds);
+    const levelling = await this.levelling(trx, p, batchIds);
     const proposed = new Map<string, DetailProposal | null>();
     for (const r of rows) {
       if (r.state === 'received' && r.read_state === 'read' && (!only || r.id === only)) {
@@ -1792,16 +1819,22 @@ export class BatchService {
    * worker sealed under each item's own key, each scope key unwrapped once.
    * A blob that does not open is nothing proposed, never an error.
    */
-  private async levelling(trx: Db, batchIds: string[]) {
+  private async levelling(trx: Db, p: Principal, batchIds: string[]) {
     const batches = await trx
       .selectFrom('intake_batch as b')
       .select(BATCH_COLUMNS)
       .where('b.id', 'in', batchIds)
       .execute();
+    // The kinds as the uploader's card is given them (GET /document-types,
+    // types()): not deleted, and a hidden one only where they can see a
+    // document of it — otherwise none, and an item of it Not recognised, so
+    // the card and Accept all Ready never disagree (the I3 review, W-I3-10).
     const kinds = await trx
-      .selectFrom('effective_document_type')
-      .selectAll()
-      .where('deleted_at', 'is', null)
+      .selectFrom('effective_document_type as t')
+      .selectAll('t')
+      .where('t.deleted_at', 'is', null)
+      .where(kindGiven(p, sql<boolean>`t.builtin`))
+      .where((eb) => eb.or([eb('t.hidden', '=', false), kindSeen(p, true)]))
       .execute();
     const family = await trx
       .selectFrom('member')
