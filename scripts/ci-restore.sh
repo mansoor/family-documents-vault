@@ -18,9 +18,28 @@ PASSWORD=${FDV_E2E_PASSWORD:-correct horse battery staple}
 
 field() { node -e 'let s="";process.stdin.on("data",(d)=>(s+=d)).on("end",()=>console.log(JSON.parse(s)[process.argv[1]]))' "$1"; }
 titles() { node -e 'let s="";process.stdin.on("data",(d)=>(s+=d)).on("end",()=>console.log(JSON.parse(s).items.map((d)=>d.title).sort().join("|")))'; }
+# Signing in is limited to 10 a minute for each address, and the end-to-end
+# tests just before this, all from this one address, may have spent the
+# minute's: wait out a refusal (429) and try again, up to three times.
 sign_in() {
-  curl -sf -X POST "$BASE/api/v1/auth/password" -H 'content-type: application/json' \
-    -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" | field access_token
+  tries=0
+  while :; do
+    body=$(curl -s -w '\n%{http_code}' -X POST "$BASE/api/v1/auth/password" \
+      -H 'content-type: application/json' \
+      -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}")
+    status=$(printf '%s' "$body" | tail -n 1)
+    if [ "$status" = 200 ]; then
+      printf '%s' "$body" | sed '$d' | field access_token
+      return 0
+    fi
+    tries=$((tries + 1))
+    if [ "$status" != 429 ] || [ "$tries" -ge 3 ]; then
+      echo "signing in failed: $status" >&2
+      return 1
+    fi
+    echo "signing in: too many tries this minute, waiting" >&2
+    sleep 61
+  done
 }
 documents() { curl -sf "$BASE/api/v1/documents" -H "authorization: Bearer $1" | titles; }
 worker_cli() { $COMPOSE exec -T worker node apps/worker/dist/cli.mjs "$@"; }
