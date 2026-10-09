@@ -491,6 +491,14 @@ describe.skipIf(!testAdminUrl())('the review queue: Accept all Ready and Undo (I
     expect((await doc(owner, docs[0] as string)).statusCode).toBe(200);
     expect((await activity(owner)).length).toBeGreaterThan(ownerSaw.length);
     h.jobs.length = 0;
+    // An earlier read that waited on the vault, and was taken twice (I2's
+    // counts): none of it goes back into the queue with the item.
+    await admin.query(
+      `update incoming_file set read_attempts = 2, read_waits = 4,
+              read_waited_since = now() - interval '23 hours'
+        where id = any($1::uuid[])`,
+      [[one.id, two.id]],
+    );
 
     const back = await undone(adult, b.id, [one.id, two.id]);
     expect(back).toEqual({ restored: [one.id, two.id], kept: [] });
@@ -517,12 +525,36 @@ describe.skipIf(!testAdminUrl())('the review queue: Accept all Ready and Undo (I
         document_id: null,
       });
       const row = (
-        await admin.query<{ storage_key: string; undo_until: Date | null }>(
-          'select storage_key, undo_until from incoming_file where id = $1',
+        await admin.query<{
+          storage_key: string;
+          undo_until: Date | null;
+          read_attempts: number;
+          read_waits: number;
+          read_waited_since: Date | null;
+          read_not_before: Date | null;
+          read_started_at: Date | null;
+          read_failure: string | null;
+          text_sealed: Buffer | null;
+          proposals_sealed: Buffer | null;
+        }>(
+          `select storage_key, undo_until, read_attempts, read_waits, read_waited_since,
+                  read_not_before, read_started_at, read_failure, text_sealed, proposals_sealed
+             from incoming_file where id = $1`,
           [id],
         )
       ).rows[0];
       expect(row?.undo_until).toBeNull();
+      // Read again from nought: never given up early as not reachable.
+      expect(row).toMatchObject({
+        read_attempts: 0,
+        read_waits: 0,
+        read_waited_since: null,
+        read_not_before: null,
+        read_started_at: null,
+        read_failure: null,
+        text_sealed: null,
+        proposals_sealed: null,
+      });
       expect(await onDisk(row?.storage_key as string)).toBe(true);
     }
     expect(again.counts).toMatchObject({ waiting: 2, accepted: 0 });
@@ -732,6 +764,22 @@ describe.skipIf(!testAdminUrl())('the review queue: Accept all Ready and Undo (I
         where id = '${it.id}'`,
     );
     expect(kept).toMatch(/must take its document with it/);
+    // Taken back with its document gone, but keeping an earlier read's waits: refused.
+    await admin.query(
+      `update incoming_file set read_waits = 3, read_waited_since = now() - interval '2 hours'
+        where id = $1`,
+      [it.id],
+    );
+    const waits = await asUploader(
+      `update incoming_file set state = 'received', decided_by = null, decided_at = null,
+              document_id = null, version_id = null, undo_until = null, object_removed_at = null,
+              storage_key = '${hh}/batches/${b.id}/waits.enc', preview_state = 'none',
+              preview_pages = null, read_state = 'waiting', read_failure = null,
+              read_started_at = null, read_attempts = 0, read_not_before = null
+        where id = '${it.id}';
+       delete from document where id = '${docId}'`,
+    );
+    expect(waits).toMatch(/may only file or refuse/);
     // Its time made longer: refused.
     const longer = await asUploader(
       `update incoming_file set undo_until = now() + interval '1 day' where id = '${it.id}'`,
@@ -747,12 +795,78 @@ describe.skipIf(!testAdminUrl())('the review queue: Accept all Ready and Undo (I
               document_id = null, version_id = null, undo_until = null, object_removed_at = null,
               storage_key = '${hh}/batches/${b.id}/late.enc', preview_state = 'none',
               preview_pages = null, read_state = 'waiting', read_failure = null,
-              read_started_at = null, read_attempts = 0, read_not_before = null
+              read_started_at = null, read_attempts = 0, read_not_before = null,
+              read_waits = 0, read_waited_since = null
         where id = '${it.id}';
        delete from document where id = '${docId}'`,
     );
     expect(late).toMatch(/may only file or refuse/);
     expect((await doc(adult, docId)).statusCode).toBe(200);
+  });
+
+  it('0063’s rules stand after 0064: nobody signed in counts an item’s takings or waits, or says it was read — waiting, deciding or taking it back', async () => {
+    const b = await made(adult, { name: 'Counted by the vault alone' });
+    const waiting = await readyItem(adult, b.id);
+    const account = (
+      await admin.query<{ account_id: string }>(
+        'select account_id from account_household where member_id = $1',
+        [adult.member_id],
+      )
+    ).rows[0]?.account_id as string;
+    const asUploader = async (text: string) => {
+      const client = await app.connect();
+      try {
+        await client.query('begin');
+        await client.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                  set_config('app.member_id', $2, true), set_config('app.role', 'adult', true),
+                  set_config('app.account_id', $3, true)`,
+          [hh, adult.member_id, account],
+        );
+        await client.query(text);
+        await client.query('commit');
+        return null;
+      } catch (err) {
+        await client.query('rollback').catch(() => undefined);
+        return (err as Error).message;
+      } finally {
+        client.release();
+      }
+    };
+    for (const set of [
+      'read_waits = 5',
+      `read_waited_since = now() - interval '2 days'`,
+      'read_attempts = 9',
+      `read_state = 'read'`,
+      `read_failure = 'not_reachable', read_state = 'failed'`,
+      `read_not_before = now() + interval '1 day'`,
+    ]) {
+      expect(
+        await asUploader(`update incoming_file set ${set} where id = '${waiting.id}'`),
+        set,
+      ).toMatch(/may only file or refuse/);
+    }
+    // Removing it, and its waits put to nought with it: refused too.
+    await admin.query('update incoming_file set read_waits = 3 where id = $1', [waiting.id]);
+    expect(
+      await asUploader(
+        `update incoming_file set state = 'rejected', decided_by = '${account}', decided_at = now(),
+                original_name = null, sha256 = null, proposals_sealed = null, text_sealed = null,
+                read_waits = 0
+          where id = '${waiting.id}'`,
+      ),
+    ).toMatch(/may only file or refuse/);
+    // Nor put in with any of them already counted.
+    const counted = await asUploader(
+      `insert into incoming_file (household_id, batch_id, review_by, requester_member_id, state,
+                                  original_name, storage_key, vault_id, file_key_wrapped,
+                                  wrapped_by_scope, scope, scan_state, read_state, read_waits)
+       select household_id, batch_id, review_by, requester_member_id, 'uploading', 'x.pdf',
+              storage_key || '.again', vault_id, file_key_wrapped, wrapped_by_scope, scope,
+              'unscanned', 'waiting', 2
+         from incoming_file where id = '${waiting.id}'`,
+    );
+    expect(counted).toMatch(/row-level security/);
   });
 
   it('GET /batches?with=levels counts each batch’s levels; a batch says how many were removed', async () => {

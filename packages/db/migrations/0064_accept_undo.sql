@@ -33,7 +33,10 @@
 --    ahead of the database's clock.
 --  - An item goes back to waiting only by its uploader, who accepted it,
 --    before `undo_until` on the database's clock, while its batch has not
---    ended; at a new object of its own batch; undrawn and unread; and only
+--    ended; at a new object of its own batch; undrawn and unread, with
+--    nothing of an earlier read kept — its words, its proposals, why it
+--    failed, its takings, its waits on the vault (0063's `read_waits`,
+--    `read_waited_since`): counted from nought again; and only
 --    if, when the transaction commits, the document it became is gone
 --    (`incoming_file_undone_document_gone`, deferred: the row must let go
 --    of the document before the document goes, or the document's removal
@@ -46,9 +49,12 @@ alter table incoming_file
   add constraint incoming_file_undo_accepted
     check (undo_until is null or (state = 'accepted' and batch_id is not null));
 
--- 0063's: what somebody signed in may change on a file they are given. The
--- same; an accept may say until when it may be taken back; and an item
--- accepted so goes back to waiting, by its uploader, in time.
+-- 0063's, as it stands (its insert policy is untouched, and keeps accounts
+-- off every read column): what somebody signed in may change on a file
+-- they are given. The same, word for word; an accept may say until when it
+-- may be taken back; and an item accepted so goes back to waiting, by its
+-- uploader, in time, read from nought again. Nobody signed in reads an
+-- item, says it was read, or counts its takings or its waits.
 create or replace function incoming_file_account_writes() returns trigger
   language plpgsql set search_path = pg_catalog, public, pg_temp as $$
 declare
@@ -61,7 +67,8 @@ declare
                                   'version_id', 'undo_until', 'object_removed_at', 'storage_key',
                                   'preview_state', 'preview_requested_at', 'preview_pages',
                                   'read_state', 'read_failure', 'read_started_at',
-                                  'read_attempts', 'read_not_before'];
+                                  'read_attempts', 'read_not_before', 'read_waits',
+                                  'read_waited_since', 'text_sealed', 'proposals_sealed'];
 begin
   if app_actor() is distinct from 'account' then
     return new;
@@ -136,6 +143,8 @@ begin
      and new.read_state = 'waiting' and new.read_failure is null
      and new.read_started_at is null and new.read_attempts = 0
      and new.read_not_before is null
+     and new.read_waits = 0 and new.read_waited_since is null
+     and new.text_sealed is null and new.proposals_sealed is null
      and new.storage_key <> old.storage_key
      and starts_with(new.storage_key, old.household_id || '/batches/' || old.batch_id || '/')
      and exists (select 1 from intake_batch b where b.id = old.batch_id and b.ends_at > now())

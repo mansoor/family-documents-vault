@@ -1303,6 +1303,10 @@ export class BatchService {
             read_started_at: null,
             read_attempts: 0,
             read_not_before: null,
+            // Its waits on the vault, from an earlier read, go too: counted from
+            // nought, it is not given up as not reachable early (I2's rules).
+            read_waits: 0,
+            read_waited_since: null,
           })
           .where('id', '=', held.id)
           .execute();
