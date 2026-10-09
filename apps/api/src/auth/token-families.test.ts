@@ -13,6 +13,13 @@ import { deriveSigningKey, parseRefreshToken, refreshFamilyKey, sessionOfToken }
  * then a thief who spent a stolen token and its successor before the owner
  * did kept the session: the owner's token matched nothing.
  */
+/** A base64url tag with its first byte changed, so it never decodes to the same bytes. */
+function flipped(tag: string): string {
+  const bytes = Buffer.from(tag, 'base64url');
+  bytes[0] = (bytes[0] ?? 0) ^ 0xff;
+  return bytes.toString('base64url');
+}
+
 describe.skipIf(!testAdminUrl())('token families (5.30)', () => {
   let h: Harness;
   let admin: ReturnType<typeof createPool>;
@@ -124,7 +131,10 @@ describe.skipIf(!testAdminUrl())('token families (5.30)', () => {
     for (const forged of [
       `${t.household_id}.${sid}.${randomBytes(32).toString('base64url')}`,
       `${t.household_id}.${sid}.short`,
-      `${t.household_id}.${sid}.${t.refresh_token.split('.')[2]?.slice(0, -2) ?? ''}AA`,
+      // The vault's own tag with one byte changed. Not its last characters:
+      // base64url's last character carries spare bits, so "…AA" can decode
+      // to the very same bytes as the real tag (CI, 1 run in about 1,000).
+      `${t.household_id}.${sid}.${flipped(t.refresh_token.split('.')[2] ?? '')}`,
     ]) {
       const res = await refresh(forged);
       expect(res.statusCode, forged).toBe(401);
