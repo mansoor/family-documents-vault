@@ -4224,9 +4224,12 @@ html:has(.shell-phone):has(.has-toast) {
   max-width: none;
 }
 
+/* The details up to 400 px, and never more than 40% of the room: just past
+   1024 px, where the sidebar takes its full width, the pages keep the room
+   they had just below it, and grow smoothly from there (W-R3-4). */
 .doc-panes .doc-split {
-  grid-template-columns: minmax(300px, 400px) minmax(0, 1fr);
-  gap: 32px;
+  grid-template-columns: minmax(280px, min(400px, 40%)) minmax(0, 1fr);
+  gap: clamp(20px, 2.5vw, 32px);
 }
 
 /* 768–1023 px: two panes still, the details narrower and the pages beside. */

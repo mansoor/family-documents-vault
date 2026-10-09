@@ -603,6 +603,19 @@ function PhonePages(props: {
 
 /** About two minutes of "being drawn" before it stops asking by itself (as the reader). */
 const PATIENCE = 40;
+/** How long the turning has to stop before the page turned to is fetched (W-R3-2). */
+const TURN_SETTLES_MS = 150;
+/** The kinds of file the vault draws the pages of, as the worker's `drawable` has them. */
+const DRAWN_KINDS = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/tiff',
+  'image/heic',
+  'image/heif',
+]);
+const drawsKind = (mime: string) => DRAWN_KINDS.has(mime);
 
 type PageState =
   | { kind: 'making' }
@@ -640,7 +653,11 @@ function DocumentPages(props: {
     : version.file_removed
       ? FILE_REMOVED
       : drawn === 0
-        ? 'The vault does not draw this kind of file’s pages. Download it to open it.'
+        ? // 0 is a kind it does not draw, or a drawing that failed (the
+          // vault says both so): a PDF or a picture is always drawn (W-R3-3).
+          drawsKind(version.mime)
+          ? 'Its pages could not be drawn. Download it to open it.'
+          : 'The vault does not draw this kind of file’s pages. Download it to open it.'
         : null;
   const [n, setN] = useState(1);
   const [attempt, setAttempt] = useState(0);
@@ -654,35 +671,56 @@ function DocumentPages(props: {
   const url = pages[n] ?? null;
   const page = url ? null : heard?.key === key ? heard.state : null;
 
+  // While shown: a page that arrives after it was turned away from is kept
+  // (it was fetched, and logged, once); the pages being fetched now; whether
+  // the person has turned yet; and a page given up on mid-way, to ask again.
+  const alive = useRef(true);
+  const fetching = useRef(new Set<number>());
+  const turned = useRef(false);
+  const lastHeard = useRef<{ key: string; state: PageState } | null>(null);
+  const [settled, setSettled] = useState(0);
+
   useEffect(() => {
     const urls = made.current;
+    alive.current = true;
     return () => {
+      alive.current = false;
       for (const u of urls) URL.revokeObjectURL(u);
     };
   }, []);
 
   useEffect(() => {
     if (!versionId || none !== null || url) return;
-    let cancelled = false;
+    // Being fetched already (turned away and back): it is shown when it comes.
+    if (fetching.current.has(n)) return;
+    // Heard of, and nothing to wait for: until "Try again" or "Confirm it's you".
+    const before = lastHeard.current;
+    if (before?.key === key && before.state.kind !== 'making') return;
+    let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const say = (state: PageState) => setHeard({ key, state });
+    const say = (state: PageState) => {
+      lastHeard.current = { key, state };
+      setHeard({ key, state });
+    };
     const fetchPage = (t: string) => api.page(t, versionId, n);
     const asked = confirming === key;
     const tryOnce = async (tries: number) => {
+      fetching.current.add(n);
       try {
         const blob = asked
-          ? await guarded(fetchPage, { cancelled: () => cancelled })
+          ? await guarded(fetchPage, { cancelled: () => stopped })
           : await withToken(fetchPage);
-        if (cancelled) return;
+        if (!alive.current) return;
         if (!blob) {
-          if (asked) say({ kind: 'ask' });
+          if (asked && !stopped) say({ kind: 'ask' });
           return;
         }
+        // Kept even when turned away from meanwhile: turning back asks nothing.
         const shown = URL.createObjectURL(blob);
         made.current.push(shown);
         setPages((was) => ({ ...was, [n]: shown }));
       } catch (err) {
-        if (cancelled) return;
+        if (!alive.current || stopped) return;
         if (err instanceof ApiRequestError && err.code === 'step_up_required') {
           say({ kind: 'ask' });
           return;
@@ -701,14 +739,20 @@ function DocumentPages(props: {
           return;
         }
         say({ kind: 'failed', message: describeError(err) });
+      } finally {
+        fetching.current.delete(n);
+        // Given up on while it was away: looked at again, it is asked again.
+        if (stopped && alive.current) setSettled((s) => s + 1);
       }
     };
-    void tryOnce(0);
+    // The first page at once; a page turned to once the turning stops, so
+    // pages passed on the way are neither fetched nor logged (W-R3-2).
+    timer = setTimeout(() => void tryOnce(0), turned.current ? TURN_SETTLES_MS : 0);
     return () => {
-      cancelled = true;
+      stopped = true;
       if (timer) clearTimeout(timer);
     };
-  }, [versionId, n, key, none, url, confirming, guarded, withToken]);
+  }, [versionId, n, key, none, url, confirming, guarded, withToken, settled]);
 
   // Drawn just now: the version knows how many pages there are. Once.
   const { onDrawn } = props;
@@ -752,7 +796,10 @@ function DocumentPages(props: {
       total={none === null ? last : 0}
       of={length ?? last}
       n={n}
-      onTurn={setN}
+      onTurn={(to) => {
+        turned.current = true;
+        setN(to);
+      }}
       url={url}
       note={note}
       noteAction={noteAction}

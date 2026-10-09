@@ -1,4 +1,11 @@
-import { useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FocusEvent as ReactFocusEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react';
 import { useShortcutsOn } from './shortcuts.js';
 
 /**
@@ -38,6 +45,33 @@ export function PageViewer(props: {
   const of = props.of ?? total;
   const shortcuts = useShortcutsOn();
   const [fit, setFit] = useState(true);
+
+  // A control inside the page ("Try again", "Confirm it's you") goes away
+  // once pressed: the focus it had stays here, on the page, rather than
+  // falling to the top of the document (WCAG 2.4.3, the review's W-R3-1).
+  const box = useRef<HTMLDivElement>(null);
+  const focusInside = useRef(false);
+  useLayoutEffect(() => {
+    const now = document.activeElement;
+    if (focusInside.current && box.current && (now === null || now === document.body)) {
+      box.current.focus({ preventScroll: true });
+    }
+  });
+  const onFocus = () => {
+    focusInside.current = true;
+  };
+  const onBlur = (e: ReactFocusEvent<HTMLDivElement>) => {
+    const to = e.relatedTarget;
+    if (to instanceof Node && e.currentTarget.contains(to)) return;
+    const from = e.target;
+    // Focus gone somewhere: it left. Gone nowhere: it left, unless what had
+    // it was taken off the page, when the effect above puts it back here.
+    if (to) focusInside.current = false;
+    else
+      queueMicrotask(() => {
+        if (from.isConnected) focusInside.current = false;
+      });
+  };
 
   const turn = (by: number) => {
     const to = Math.min(Math.max(n + by, 1), total);
@@ -95,6 +129,9 @@ export function PageViewer(props: {
             aria-label={`Page ${n} of ${of}. Page Up and Page Down turn the pages.`}
             aria-keyshortcuts={shortcuts ? 'PageUp PageDown [ ]' : 'PageUp PageDown'}
             onKeyDown={keys}
+            ref={box}
+            onFocus={onFocus}
+            onBlur={onBlur}
           >
             {props.url ? (
               <img src={props.url} alt={`Page ${n} of ${of}`} />

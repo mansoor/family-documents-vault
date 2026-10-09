@@ -49,11 +49,13 @@ function atWidth(px: number, tall = 900) {
   });
 }
 
+/** How many pictures of pages were made: one for each page that came. */
+let made = 0;
 beforeEach(() => {
   localStorage.clear();
   window.history.replaceState({}, '', '/');
   // jsdom has no object URLs; a page's is its number.
-  let made = 0;
+  made = 0;
   Object.assign(URL, {
     createObjectURL: vi.fn(() => `blob:page-${++made}`),
     revokeObjectURL: vi.fn(),
@@ -359,8 +361,22 @@ describe('the pages, at 1280 px (R3)', () => {
     expect(pageCalls(state)).toEqual(['1', '1']);
   });
 
-  it('a Word file says the vault does not draw its pages, and asks for none', async () => {
+  it('a PDF whose drawing failed says its pages could not be drawn, not that its kind is not drawn (W-R3-3)', async () => {
+    // The vault says 0 pages for both: a kind it does not draw, and a drawing that failed.
     const state = at('/documents/doc-1', WIDE, 'owner', { pagesDrawn: 'unsupported' });
+    const right = await pages();
+    expect(
+      await within(right).findByText('Its pages could not be drawn. Download it to open it.'),
+    ).toBeInTheDocument();
+    expect(within(right).queryByText(/does not draw this kind/)).not.toBeInTheDocument();
+    expect(pageCalls(state)).toEqual([]);
+  });
+
+  it('a Word file says the vault does not draw its pages, and asks for none', async () => {
+    const state = at('/documents/doc-1', WIDE, 'owner', {
+      pagesDrawn: 'unsupported',
+      versionMime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
     const right = await pages();
     expect(
       await within(right).findByText(
@@ -392,5 +408,136 @@ describe('the pages, at 1280 px (R3)', () => {
     const right = await pages();
     await within(right).findByRole('img', { name: 'Page 1 of 50' });
     expect(within(right).getByText('Page 1 of 50')).toBeInTheDocument();
+  });
+});
+
+/** The page's own fetches as they leave, each held until `release` lets it through when asked. */
+function holdPages(hold: (n: number) => boolean) {
+  const real = window.fetch.bind(window);
+  const asked: number[] = [];
+  const waiting: (() => void)[] = [];
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const page = /\/versions\/[^/]+\/pages\/(\d+)$/.exec(url);
+    if (page) {
+      const n = Number(page[1]);
+      asked.push(n);
+      if (hold(n)) await new Promise<void>((go) => waiting.push(go));
+    }
+    return real(input, init);
+  };
+  return {
+    asked,
+    release: () => {
+      for (const go of waiting.splice(0)) go();
+    },
+  };
+}
+
+describe('the review round (R3)', () => {
+  it('W-R3-1: “Try again” leaves the focus on the page, not the top of the document', async () => {
+    at('/documents/doc-1', WIDE);
+    // Page 1 fails once.
+    const real = window.fetch.bind(window);
+    let failed = false;
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (!failed && /\/pages\/1$/.test(url)) {
+        failed = true;
+        return Response.json(
+          { error: { code: 'internal', message: 'Something went wrong.', request_id: 'r' } },
+          { status: 500 },
+        );
+      }
+      return real(input, init);
+    };
+    const right = await pages();
+    const again = await within(right).findByRole('button', { name: 'Try again' });
+    again.focus();
+    fireEvent.click(again);
+    await waitFor(() =>
+      expect(within(right).getByRole('group', { name: /^Page 1 of 2/ })).toHaveFocus(),
+    );
+    await within(right).findByRole('img', { name: 'Page 1 of 2' });
+    await waitFor(() =>
+      expect(within(right).getByRole('group', { name: /^Page 1 of 2/ })).toHaveFocus(),
+    );
+  });
+
+  it('W-R3-1: “Confirm it’s you” leaves the focus on the page, and cancelling the question brings it back there', async () => {
+    at('/documents/doc-1', WIDE, 'owner', { stepUpNeeded: true });
+    const right = await pages();
+    const confirm = await within(right).findByRole('button', { name: 'Confirm it’s you' });
+    confirm.focus();
+    fireEvent.click(confirm);
+    const prompt = await screen.findByRole('dialog');
+    fireEvent.click(within(prompt).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(within(right).getByRole('group', { name: /^Page 1 of 2/ })).toHaveFocus(),
+    );
+    // Asked again, as before.
+    expect(
+      await within(right).findByRole('button', { name: 'Confirm it’s you' }),
+    ).toBeInTheDocument();
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('W-R3-2: turning fast fetches only the page stopped at, and turning back to it asks nothing', async () => {
+    const state = at('/documents/doc-1', WIDE, 'owner', { pagesDrawn: 5, pageCount: 5 });
+    const right = await pages();
+    await within(right).findByRole('img', { name: 'Page 1 of 5' });
+    const viewer = () => within(right).getByRole('group', { name: /^Page \d of 5/ });
+    // A key held down, or pressed quickly: a turn every 40 ms.
+    const quickly = () => act(() => new Promise<void>((r) => setTimeout(r, 40)));
+    fireEvent.keyDown(viewer(), { key: 'PageDown' });
+    await quickly();
+    fireEvent.keyDown(viewer(), { key: 'PageDown' });
+    await quickly();
+    fireEvent.keyDown(viewer(), { key: 'PageDown' });
+    await within(right).findByRole('img', { name: 'Page 4 of 5' });
+    fireEvent.keyDown(viewer(), { key: 'PageUp' });
+    await within(right).findByRole('img', { name: 'Page 3 of 5' });
+    fireEvent.keyDown(viewer(), { key: 'PageDown' });
+    await within(right).findByRole('img', { name: 'Page 4 of 5' });
+    // Pages 2 and 3 on the way to 4 were never shown: not fetched, not logged.
+    expect(pageCalls(state)).toEqual(['1', '4', '3']);
+  });
+
+  it('W-R3-2: a page that arrives after it was turned away from is kept: turning back fetches it no more', async () => {
+    at('/documents/doc-1', WIDE, 'owner', { pagesDrawn: 5, pageCount: 5 });
+    const held = holdPages((n) => n === 2);
+    const right = await pages();
+    await within(right).findByRole('img', { name: 'Page 1 of 5' });
+    const viewer = () => within(right).getByRole('group', { name: /^Page \d of 5/ });
+    fireEvent.keyDown(viewer(), { key: 'PageDown' });
+    // Page 2 on its way, and away from it before it comes.
+    await waitFor(() => expect(held.asked).toEqual([1, 2]));
+    fireEvent.keyDown(viewer(), { key: 'PageDown' });
+    await within(right).findByRole('img', { name: 'Page 3 of 5' });
+    held.release();
+    await waitFor(() => expect(made).toBe(3));
+    fireEvent.keyDown(viewer(), { key: 'PageUp' });
+    expect(await within(right).findByRole('img', { name: 'Page 2 of 5' })).toBeInTheDocument();
+    expect(held.asked).toEqual([1, 2, 3]);
+  });
+
+  it('W-R3-2: turned back to while it is still on its way, it is not asked for twice', async () => {
+    at('/documents/doc-1', WIDE, 'owner', { pagesDrawn: 5, pageCount: 5 });
+    const held = holdPages((n) => n === 2);
+    const right = await pages();
+    await within(right).findByRole('img', { name: 'Page 1 of 5' });
+    const viewer = () => within(right).getByRole('group', { name: /^Page \d of 5/ });
+    fireEvent.keyDown(viewer(), { key: 'PageDown' });
+    await waitFor(() => expect(held.asked).toEqual([1, 2]));
+    fireEvent.keyDown(viewer(), { key: 'PageDown' });
+    await within(right).findByRole('img', { name: 'Page 3 of 5' });
+    fireEvent.keyDown(viewer(), { key: 'PageUp' });
+    // Still on its way: waited for, not asked again.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(held.asked).toEqual([1, 2, 3]);
+    held.release();
+    expect(await within(right).findByRole('img', { name: 'Page 2 of 5' })).toBeInTheDocument();
+    expect(held.asked).toEqual([1, 2, 3]);
   });
 });
