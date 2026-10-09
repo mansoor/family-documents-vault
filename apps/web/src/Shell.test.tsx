@@ -964,14 +964,17 @@ describe('the shell’s styles', () => {
     expect(rule('.skip-link:focus')).toMatch(/top:\s*\d+px/);
   });
 
-  it('beside the sidebar, forms and reading keep a readable width; lists go wider', () => {
+  it('beside the sidebar, forms and reading keep a readable width; lists use the whole of it', () => {
     expect(rule('.shell-wide .page,\n.shell-mid .page')).toMatch(/max-width:\s*720px/);
+    // Across the content's width, as Documents (the owner's report).
     expect(rule('.shell-wide .page.page-wide,\n.shell-mid .page.page-wide')).toMatch(
-      /max-width:\s*1120px/,
+      /max-width:\s*none/,
     );
-    expect(rule('.shell-wide .page-wide > p,\n.shell-mid .page-wide > p')).toMatch(
-      /max-width:\s*72ch/,
-    );
+    expect(
+      rule(
+        '.shell-wide .page-wide > p,\n.shell-mid .page-wide > p,\n.shell-wide .page-wide > section > p,\n.shell-mid .page-wide > section > p',
+      ),
+    ).toMatch(/max-width:\s*72ch/);
   });
 
   it('what sticks to the top of a page sits under the bar on top, and the reader fits the window', () => {

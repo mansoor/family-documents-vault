@@ -8,6 +8,7 @@ import {
   roleLabel,
   shortDate,
   shortName,
+  statusTone,
   type DocumentTypeView,
   type DocumentView,
   type ReminderView,
@@ -803,18 +804,33 @@ export function RemindersScreen() {
     reload,
   } = useLoad(
     async (t) => {
-      const [due, upcoming, docs, suggestions, hidden, types, profile] = await Promise.all([
-        api.reminders(t, 'due'),
-        api.reminders(t, 'upcoming'),
-        api.documents(t, { sort: 'expiring', limit: 100 }),
-        api.suggestions(t),
-        api.suggestions(t, true),
-        api.documentTypes(t),
-        // The household's time zone, which every role reads: its day is the
-        // vault's "today" for a snooze. Unanswered, the vault's own default.
-        api.profile(t).catch(() => null),
-      ]);
+      const [due, upcoming, docs, suggestions, hidden, types, profile, members] = await Promise.all(
+        [
+          api.reminders(t, 'due'),
+          api.reminders(t, 'upcoming'),
+          api.documents(t, { sort: 'expiring', limit: 100 }),
+          api.suggestions(t),
+          api.suggestions(t, true),
+          api.documentTypes(t),
+          // The household's time zone, which every role reads: its day is the
+          // vault's "today" for a snooze. Unanswered, the vault's own default.
+          api.profile(t).catch(() => null),
+          // Whose each is, by the names this reader is given (the wide table).
+          api.members(t).then(
+            (r) => r.items,
+            () => [] as Member[],
+          ),
+        ],
+      );
       const reminded = new Set([...due.items, ...upcoming.items].map((r) => r.document_id));
+      // Each reminder's document, as this reader sees it — whose it is, and
+      // its status — for the wide table. Most are among the soonest to
+      // expire; any other is asked for by itself, and left blank if it
+      // cannot be.
+      const known = new Map(docs.items.map((d) => [d.id, d]));
+      const missing = [...reminded].filter((id) => !known.has(id));
+      const more = await Promise.all(missing.map((id) => api.document(t, id).catch(() => null)));
+      for (const d of more) if (d) known.set(d.id, d);
       return {
         due: due.items,
         upcoming: upcoming.items,
@@ -822,6 +838,8 @@ export function RemindersScreen() {
         attention: docs.items.filter(
           (d) => ['expired', 'needs_info'].includes(d.status.value) && !reminded.has(d.id),
         ),
+        docs: known,
+        members,
         suggestions: suggestions.items,
         profileAnswered: suggestions.profile_answered,
         hidden: hidden.items,
@@ -831,6 +849,9 @@ export function RemindersScreen() {
     },
     [authVersion],
   );
+  // From 768 px, tables across the width (the owner's report): what needs
+  // doing now, then what is coming up. On a phone, the list as it was.
+  const wide = useShellMode() !== 'phone';
 
   const act = async (fn: (t: string) => Promise<unknown>) => {
     setError(null);
@@ -887,14 +908,65 @@ export function RemindersScreen() {
           {count} now, {data.upcoming.length} coming up
         </p>
       )}
+      {wide ? (
+        data && (
+          <AttentionTables
+            due={data.due}
+            attention={data.attention}
+            upcoming={data.upcoming}
+            docs={data.docs}
+            members={data.members}
+            types={data.types}
+            snoozes={snoozes}
+            remindsOn={remindsOn}
+            act={act}
+            onChanged={reload}
+          />
+        )
+      ) : (
+        <AttentionList
+          data={data}
+          snoozes={snoozes}
+          remindsOn={remindsOn}
+          act={act}
+          onOpen={(id) => void navigate(`/documents/${id}`)}
+          onChanged={reload}
+        />
+      )}
+      <Missing
+        items={data?.suggestions ?? []}
+        hidden={data?.hidden ?? []}
+        profileAnswered={data?.profileAnswered ?? true}
+        act={act}
+      />
+    </main>
+  );
+}
+
+type Snoozes = (r: ReminderView) => Array<{ label: string; until: string }>;
+type Act = (fn: (t: string) => Promise<unknown>) => Promise<void>;
+
+/** Needs attention on a phone: the list, as it was. */
+function AttentionList(props: {
+  data: {
+    due: ReminderView[];
+    upcoming: ReminderView[];
+    attention: DocumentView[];
+    types: DocumentTypeView[];
+  } | null;
+  snoozes: Snoozes;
+  remindsOn: (r: ReminderView) => string;
+  act: Act;
+  onOpen: (documentId: string) => void;
+  onChanged: () => Promise<unknown>;
+}) {
+  const { data, snoozes, remindsOn, act, onOpen } = props;
+  return (
+    <>
       <ul className="list">
         {(data?.due ?? []).map((r) => (
           <li key={r.id} className="reminder">
-            <button
-              type="button"
-              className="rowbtn"
-              onClick={() => void navigate(`/documents/${r.document_id}`)}
-            >
+            <button type="button" className="rowbtn" onClick={() => onOpen(r.document_id)}>
               {/* The date it is about, in its kind's words (0.5.15): never
                   "Overdue by 3 days" above a due date still ahead. */}
               <span className="status status-danger">{r.about ?? r.label}</span>
@@ -925,8 +997,8 @@ export function RemindersScreen() {
             key={d.id}
             doc={d}
             types={data?.types}
-            onOpen={() => void navigate(`/documents/${d.id}`)}
-            onChanged={reload}
+            onOpen={() => onOpen(d.id)}
+            onChanged={props.onChanged}
           />
         ))}
       </ul>
@@ -938,11 +1010,7 @@ export function RemindersScreen() {
           <ul className="list">
             {data.upcoming.map((r) => (
               <li key={r.id}>
-                <button
-                  type="button"
-                  className="rowbtn"
-                  onClick={() => void navigate(`/documents/${r.document_id}`)}
-                >
+                <button type="button" className="rowbtn" onClick={() => onOpen(r.document_id)}>
                   <span className="doc-title">{r.document_title ?? 'Untitled'}</span>
                   {/* What it is about first, then when it comes (0.5.15). */}
                   {r.about && <span>{r.about}</span>}
@@ -957,13 +1025,174 @@ export function RemindersScreen() {
           </ul>
         </section>
       )}
-      <Missing
-        items={data?.suggestions ?? []}
-        hidden={data?.hidden ?? []}
-        profileAnswered={data?.profileAnswered ?? true}
-        act={act}
-      />
-    </main>
+    </>
+  );
+}
+
+/**
+ * Needs attention from 768 px (the owner's report; the prototype's): tables
+ * across the width — what needs doing now, then what is coming up — each
+ * row the document (its name opens it, and heads the row for a screen
+ * reader), whose it is, what is due, when, and its status; with what the
+ * list offers on a phone: a snooze and Done for a reminder due, the ⋯ for
+ * a document that needs something and has no reminder. Plain tables: each
+ * control a stop for Tab. Nothing is shown that the list and the document's
+ * page do not already show this reader.
+ */
+function AttentionTables(props: {
+  due: ReminderView[];
+  attention: DocumentView[];
+  upcoming: ReminderView[];
+  docs: ReadonlyMap<string, DocumentView>;
+  members: Member[];
+  types: DocumentTypeView[];
+  snoozes: Snoozes;
+  remindsOn: (r: ReminderView) => string;
+  act: Act;
+  onChanged: () => Promise<unknown>;
+}) {
+  const { docs, types, snoozes, act } = props;
+  const names = shortName(props.members);
+  const whose = (d: DocumentView | undefined) => {
+    const name = d?.owner_member_id ? names.get(d.owner_member_id) : undefined;
+    return name ?? <None />;
+  };
+  const status = (d: DocumentView | undefined) =>
+    d && statusTone(d.status) ? <StatusBadge status={d.status} /> : <None />;
+  /** The document's name, the way to it, and what it is under it. */
+  const named = (id: string, title: string, d: DocumentView | undefined, note?: string | null) => (
+    <th scope="row">
+      <Link className="cell-title" to={`/documents/${id}`}>
+        {title}
+      </Link>
+      {d && <span className="muted cell-sub">{rowLine(d, types)}</span>}
+      {note && <span className="muted cell-sub">{note}</span>}
+    </th>
+  );
+  const head = (when: string, actions: boolean) => (
+    <thead>
+      <tr>
+        <th scope="col">Document</th>
+        <th scope="col">Whose</th>
+        <th scope="col">What is due</th>
+        <th scope="col">{when}</th>
+        <th scope="col">Status</th>
+        {actions && (
+          <th scope="col">
+            <span className="visually-hidden">What to do</span>
+          </th>
+        )}
+      </tr>
+    </thead>
+  );
+  const now = props.due.length + props.attention.length;
+  return (
+    <>
+      {now > 0 && (
+        <div className="tbl-wrap tbl-static">
+          <table className="tbl tbl-plain att-tbl">
+            <caption className="visually-hidden">Needs attention now</caption>
+            {head('When', true)}
+            <tbody>
+              {props.due.map((r) => {
+                const d = docs.get(r.document_id);
+                const title = r.document_title ?? 'Untitled';
+                return (
+                  <tr key={r.id}>
+                    {named(r.document_id, title, d, r.about ? r.note : null)}
+                    <td className="nowrap">{whose(d)}</td>
+                    {/* The date it is about, in its kind's words (0.5.15). */}
+                    <td>{r.about ?? r.note ?? 'A reminder'}</td>
+                    <td className="nowrap">
+                      <span className="status status-danger">{r.label}</span>
+                    </td>
+                    <td className="nowrap">{status(d)}</td>
+                    <td>
+                      <div className="att-actions" role="group" aria-label={`For “${title}”`}>
+                        {snoozes(r).map((s) => (
+                          <button
+                            key={s.label}
+                            type="button"
+                            className="btn btn-quiet btn-small"
+                            onClick={() => void act((t) => api.snoozeReminder(t, r.id, s.until))}
+                          >
+                            {s.label}
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          className="btn btn-quiet btn-small"
+                          onClick={() => void act((t) => api.acknowledgeReminder(t, r.id))}
+                        >
+                          Done
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {props.attention.map((d) => {
+                const title = d.title ?? 'Scan · needs a name';
+                return (
+                  <tr key={d.id}>
+                    {named(d.id, title, d)}
+                    <td className="nowrap">{whose(d)}</td>
+                    <td>
+                      <None />
+                    </td>
+                    <td>
+                      <None />
+                    </td>
+                    <td className="nowrap">{status(d)}</td>
+                    <td>
+                      <div className="att-actions">
+                        <DocActions
+                          documentId={d.id}
+                          title={title}
+                          doc={d}
+                          onChanged={props.onChanged}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {props.upcoming.length > 0 && (
+        <section aria-labelledby="upcoming-h" className="stack att-section">
+          <h2 id="upcoming-h" className="section-h">
+            Coming up
+          </h2>
+          <div className="tbl-wrap tbl-static">
+            <table className="tbl tbl-plain att-tbl">
+              <caption className="visually-hidden">Coming up</caption>
+              {head('Reminder', false)}
+              <tbody>
+                {props.upcoming.map((r) => {
+                  const d = docs.get(r.document_id);
+                  return (
+                    <tr key={r.id}>
+                      {named(r.document_id, r.document_title ?? 'Untitled', d, r.note)}
+                      <td className="nowrap">{whose(d)}</td>
+                      <td>{r.about ?? <None />}</td>
+                      <td>
+                        {/* What it is about first, then when it comes (0.5.15). */}
+                        {r.about ? props.remindsOn(r) : r.label}
+                        {r.recurrence ? ' · repeats' : ''}
+                      </td>
+                      <td className="nowrap">{status(d)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+    </>
   );
 }
 

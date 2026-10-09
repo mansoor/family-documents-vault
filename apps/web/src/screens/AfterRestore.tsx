@@ -202,7 +202,7 @@ export function AfterRestoreScreen() {
   const requests = waiting?.requests ?? [];
   const signIns = waiting?.signIns ?? [];
   return (
-    <main className="page page-top has-nav">
+    <main className="page page-top page-wide has-nav">
       <TopBar title="After a restore" back="/" />
       <p className="lede">
         The vault was put back from a backup. A link taken back after that backup was made would

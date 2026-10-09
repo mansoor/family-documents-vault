@@ -25,6 +25,7 @@ import {
   useSyncExternalStore,
   type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
@@ -1281,8 +1282,10 @@ export function BatchScreen() {
   const role = storedRole();
   const navigate = useNavigate();
   const mode = useShellMode();
-  const location = useLocation();
-  const said = (location.state as { said?: string } | null)?.said ?? null;
+  // What the card said it did — a file accepted, the run at its end — read
+  // as the screen opens and taken out of the history entry (R5): Back to
+  // here later neither says it again nor takes the focus for it.
+  const said = useArrivedSaid();
   const [message, setMessage] = useState<string | null>(said);
   const status = useRef<HTMLParagraphElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -1548,7 +1551,40 @@ export function BatchScreen() {
             : targets.slice(0, at).reverse();
     order.find((t) => t !== null)?.focus();
   };
+  /**
+   * A click on a waiting file's row, anywhere but on its own controls:
+   * its card, as its name and its Accept open it (the owner's report).
+   * Keyboard users have the name's link; a word being chosen to copy is
+   * not a click.
+   */
+  const openRow = (e: ReactMouseEvent<HTMLElement>, item: BatchItemView) => {
+    if (item.state !== 'waiting' || e.defaultPrevented || e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('a, button, input, label, select, textarea')) return;
+    if (window.getSelection?.()?.toString()) return;
+    void navigate(itemPath(item), { state: { run } });
+  };
+  /** A waiting file's name: the way to its card, a stop in its row's one stop. */
+  const nameLink = (item: BatchItemView, words: string, className: string) =>
+    item.state === 'waiting' ? (
+      <Link
+        to={itemPath(item)}
+        state={{ run }}
+        className={`${className} item-name`}
+        title={words}
+        tabIndex={stop(item)}
+      >
+        {words}
+      </Link>
+    ) : (
+      <span className={className} title={words}>
+        {words}
+      </span>
+    );
   const row = (item: BatchItemView) => {
+    // Ready is accepted as it is; anything else is opened to be looked at
+    // first, and is said so (the owner's report).
+    const review = item.level !== undefined && item.level !== 'ready';
+    const verb = review ? 'Review' : 'Accept';
     const actions =
       item.state === 'waiting' ? (
         <span className="row item-actions">
@@ -1557,11 +1593,11 @@ export function BatchScreen() {
             to={itemPath(item)}
             state={{ run }}
             className="btn btn-primary btn-small"
-            aria-label={`Accept ${item.name}`}
+            aria-label={`${verb} ${item.name}`}
             data-row-target=""
             tabIndex={stop(item)}
           >
-            Accept
+            {verb}
           </Link>
           <button
             type="button"
@@ -1705,13 +1741,14 @@ export function BatchScreen() {
               return (
                 <li
                   key={item.id}
-                  className="batch-item"
+                  className={`batch-item${item.state === 'waiting' ? ' row-opens' : ''}`}
                   data-row=""
                   onFocus={() => setActive(item.id)}
+                  onClick={(e) => openRow(e, item)}
                 >
                   <FirstPage batchId={b.id} item={item} eager={i < FIRST_FEW} />
                   <span className="stack batch-item-words">
-                    <span className="doc-title clip">{item.name}</span>
+                    {nameLink(item, item.name, 'doc-title clip')}
                     <span className="muted">{r.about}</span>
                     {item.state === 'waiting' && item.proposals?.type_key && (
                       <ItemKind item={item} types={data.types} />
@@ -1757,14 +1794,18 @@ export function BatchScreen() {
                   const r = row(item);
                   const title = proposedTitle(item, b.defaults, data.types, data.members, role);
                   return (
-                    <tr key={item.id} data-row="" onFocus={() => setActive(item.id)}>
+                    <tr
+                      key={item.id}
+                      data-row=""
+                      className={item.state === 'waiting' ? undefined : 'row-still'}
+                      onFocus={() => setActive(item.id)}
+                      onClick={(e) => openRow(e, item)}
+                    >
                       <td>
                         <FirstPage batchId={b.id} item={item} eager={i < FIRST_FEW} />
                       </td>
                       <td>
-                        <span className="cell-title clip" title={title ?? item.name}>
-                          {title ?? item.name}
-                        </span>
+                        {nameLink(item, title ?? item.name, 'cell-title clip')}
                         <span className="muted clip" title={item.name}>
                           {title ? `${item.name} · ` : ''}
                           {r.about}

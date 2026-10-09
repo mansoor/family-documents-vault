@@ -2665,15 +2665,28 @@ a.menu-item {
   padding: 24px 24px 48px;
 }
 
-/* A list: its rows across the width, up to where a row is still read as one. */
+/* A list or a table: across the whole of the content's width, as Documents
+   is (the owner's report: boxed at 1120 px, a wide window left them in a
+   column at its left). What it says about itself stays a readable line. */
 .shell-wide .page.page-wide,
 .shell-mid .page.page-wide {
-  max-width: 1120px;
+  max-width: none;
 }
 
 /* What a list's page says about it stays a readable line. */
+/* And a field, or a row of pills, at the top of a list's page: a form's
+   width, not stretched across a wide window (Search). */
+.shell-wide .page-wide > .field,
+.shell-mid .page-wide > .field,
+.shell-wide .page-wide > .pills,
+.shell-mid .page-wide > .pills {
+  max-width: 720px;
+}
+
 .shell-wide .page-wide > p,
-.shell-mid .page-wide > p {
+.shell-mid .page-wide > p,
+.shell-wide .page-wide > section > p,
+.shell-mid .page-wide > section > p {
   max-width: 72ch;
 }
 
@@ -3604,6 +3617,35 @@ fieldset.plain {
   border-bottom: 0;
 }
 
+/* A waiting file's row opens its card, as its name does; a decided one's
+   opens nothing, and does not look as if it would (the owner's report). */
+.batch-tbl tbody tr.row-still {
+  cursor: default;
+}
+
+.batch-tbl tbody tr.row-still:hover td {
+  background: var(--surface);
+}
+
+.list li.batch-item.row-opens {
+  cursor: pointer;
+}
+
+a.item-name {
+  color: var(--ink);
+}
+
+a.item-name:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+a.item-name:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 .firstpage {
   display: block;
   width: 44px;
@@ -4279,7 +4321,9 @@ html:has(.shell-phone):has(.has-toast) {
    scrolling; the Trash's is R2's grid, with its box and bar. */
 .shell-wide .page.page-dash,
 .shell-mid .page.page-dash {
-  max-width: 1280px;
+  /* The whole of the content's width, as Documents (the owner's report):
+     the cards' columns grow with the window, never a box at its left. */
+  max-width: none;
 }
 
 .dash {
@@ -4387,6 +4431,63 @@ html:has(.shell-phone):has(.has-toast) {
 
 .tbl-plain tbody tr:hover td {
   background: var(--surface);
+}
+
+/* Needs attention from 768 px (the owner's report): each row headed by its
+   document's name, which reads as a cell, not as the table's head. */
+.att-tbl {
+  table-layout: auto;
+}
+
+.att-tbl tbody th {
+  position: static;
+  height: auto;
+  padding: 8px;
+  vertical-align: middle;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  line-height: inherit;
+  min-width: 200px;
+}
+
+.att-tbl tbody tr:last-child th {
+  border-bottom: 0;
+}
+
+.att-tbl .cell-title {
+  overflow-wrap: anywhere;
+}
+
+.cell-sub {
+  display: block;
+  font-size: 13px;
+}
+
+.att-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.att-actions .btn {
+  white-space: nowrap;
+}
+
+/* With room, a reminder's snoozes and Done on one line. */
+@media (min-width: 1200px) {
+  .att-actions {
+    flex-wrap: nowrap;
+  }
+}
+
+.att-section {
+  margin-top: 8px;
 }
 
 .tbl-plain tbody tr:last-child td {

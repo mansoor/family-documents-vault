@@ -164,10 +164,10 @@ const QUEUE = (types: DocumentTypeView[]) => [
 function at(
   path: string,
   items: (types: DocumentTypeView[]) => BatchItemView[] = QUEUE,
-  over: Partial<FakeState> & { removed?: number } = {},
+  over: Partial<FakeState> & { removed?: number; width?: number } = {},
 ): FakeState {
-  atWidth(WIDE);
-  const { removed = 1, ...rest } = over;
+  const { removed = 1, width = WIDE, ...rest } = over;
+  atWidth(width);
   const state = fresh({ members: [{ ...ME, role: 'owner' }, AISHA], batches: [], ...rest });
   const batch: FakeBatch = {
     id: 'batch-1',
@@ -254,8 +254,10 @@ describe('the review queue (I3)', () => {
     expect(accept('aisha.pdf')).toHaveAttribute('tabindex', '0');
     expect(accept('passport.pdf')).toHaveAttribute('tabindex', '-1');
     fireEvent.keyDown(accept('aisha.pdf'), { key: 'j' });
-    await waitFor(() => expect(accept('unsure.pdf')).toHaveFocus());
-    fireEvent.keyDown(accept('unsure.pdf'), { key: 'k' });
+    // A Check is opened to be looked at: Review, not Accept.
+    const review = () => screen.getByRole('link', { name: 'Review unsure.pdf' });
+    await waitFor(() => expect(review()).toHaveFocus());
+    fireEvent.keyDown(review(), { key: 'k' });
     await waitFor(() => expect(accept('aisha.pdf')).toHaveFocus());
     // Enter opens it: it is the link to its card, at the queue's level.
     expect(accept('aisha.pdf')).toHaveAttribute('href', '/inbox/batches/batch-1/items/item-2');
@@ -921,5 +923,177 @@ describe('the check’s findings (I3)', () => {
       window.fetch = real;
       Object.assign(batchPolling, was);
     }
+  });
+});
+
+/**
+ * The owner's report: three files not recognised, and clicking them opened
+ * nothing — only the small Accept did. A waiting file's name is the link to
+ * its card; its first page and its row's empty space open it too; Accept is
+ * for Ready, and anything else is opened to be reviewed.
+ */
+describe('a file opens from its name (the owner’s report)', () => {
+  it('a waiting file’s name is the link to its card, with the level and the run; Review for anything not Ready', async () => {
+    at('/inbox/batches/batch-1?level=unrecognised');
+    const table = await queueTable();
+    const name = within(table).getByRole('link', { name: 'note.pdf' });
+    expect(name).toHaveAttribute('href', '/inbox/batches/batch-1/items/item-4?level=unrecognised');
+    const review = within(table).getByRole('link', { name: 'Review note.pdf' });
+    expect(review).toHaveTextContent(/^Review$/);
+    expect(review).toHaveAttribute('href', name.getAttribute('href'));
+    expect(within(table).queryByRole('link', { name: 'Accept note.pdf' })).toBeNull();
+    // One stop per row (I3): the name is in the row's stop, never one more.
+    expect(name).toHaveAttribute('tabindex', '0');
+    expect(review).toHaveAttribute('data-row-target');
+    expect(name).not.toHaveAttribute('data-row-target');
+    await expectAccessible();
+    fireEvent.click(name);
+    expect(await screen.findByRole('heading', { level: 1, name: 'note.pdf' })).toBeVisible();
+    // The run came with it: where it is in the queue, as the queue was shown.
+    expect(screen.getByText(/^Item 1 of 1, Not recognised/)).toBeInTheDocument();
+    expect(window.location.search).toBe('?level=unrecognised');
+  });
+
+  it('Accept for Ready, Review for Check, Not recognised and Problems; one stop for the rows', async () => {
+    at('/inbox/batches/batch-1');
+    const table = await queueTable();
+    const actions = within(table)
+      .getAllByRole('link', { name: /^(Accept|Review) / })
+      .map((l) => [l.getAttribute('aria-label'), l.textContent]);
+    expect(actions).toEqual([
+      ['Accept passport.pdf', 'Accept'],
+      ['Accept aisha.pdf', 'Accept'],
+      ['Review unsure.pdf', 'Review'],
+      ['Review note.pdf', 'Review'],
+      ['Review blank.pdf', 'Review'],
+    ]);
+    // Only the first row can be reached with Tab: its name, Accept and Remove.
+    const stops = [...table.querySelectorAll<HTMLElement>('[tabindex="0"]')].map(
+      (x) => x.getAttribute('aria-label') ?? x.textContent,
+    );
+    expect(stops).toEqual(["Mansoor's passport", 'Accept passport.pdf', 'Remove passport.pdf']);
+    // Done: an accepted file's name is not a way to a card.
+    fireEvent.click(within(filters()).getByRole('button', { name: /^Done/ }));
+    await waitFor(() => expect(window.location.search).toBe('?level=done'));
+    const done = await queueTable();
+    expect(within(done).getByText('done.pdf', { exact: false })).toBeVisible();
+    expect(within(done).queryByRole('link', { name: /done\.pdf|passport/ })).toBeNull();
+  });
+
+  it('its first page and its row’s empty space open it; its own buttons and an accepted row do not', async () => {
+    at('/inbox/batches/batch-1');
+    const rowOf = async (words: string) =>
+      within(await queueTable())
+        .getAllByRole('row')
+        .find((r) => r.textContent?.includes(words)) as HTMLTableRowElement;
+    // Remove is its own: it asks, and opens nothing.
+    fireEvent.click(
+      within(await rowOf('note.pdf')).getByRole('button', { name: 'Remove note.pdf' }),
+    );
+    const asked = await screen.findByRole('alertdialog', { name: 'Remove “note.pdf”?' });
+    fireEvent.click(within(asked).getByRole('button', { name: 'Cancel' }));
+    expect(window.location.pathname).toBe('/inbox/batches/batch-1');
+    // The first page.
+    fireEvent.click((await rowOf('note.pdf')).querySelector('.firstpage') as HTMLElement);
+    expect(await screen.findByRole('heading', { level: 1, name: 'note.pdf' })).toBeVisible();
+    expect(window.location.pathname).toBe('/inbox/batches/batch-1/items/item-4');
+    // Back, and the row's empty space: its Whose cell.
+    window.history.back();
+    await waitFor(() => expect(window.location.pathname).toBe('/inbox/batches/batch-1'));
+    fireEvent.click((await rowOf('unsure.pdf')).cells[3] as HTMLElement);
+    await waitFor(() =>
+      expect(window.location.pathname).toBe('/inbox/batches/batch-1/items/item-3'),
+    );
+    expect(await screen.findByRole('heading', { level: 1 })).toBeVisible();
+    // An accepted row opens no card.
+    window.history.back();
+    await waitFor(() => expect(window.location.pathname).toBe('/inbox/batches/batch-1'));
+    fireEvent.click(
+      within(await screen.findByRole('group', { name: 'Show' })).getByRole('button', {
+        name: /^Done/,
+      }),
+    );
+    await waitFor(() => expect(window.location.search).toBe('?level=done'));
+    fireEvent.click((await rowOf('done.pdf')).cells[2] as HTMLElement);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(window.location.pathname).toBe('/inbox/batches/batch-1');
+  });
+
+  it('at phone width, each waiting file’s name is the link, and its first page opens it', async () => {
+    at('/inbox/batches/batch-1', QUEUE, { width: 320 });
+    const list = await screen.findByRole('list', { name: 'Files in Scanned post' });
+    const name = within(list).getByRole('link', { name: 'note.pdf' });
+    expect(name).toHaveAttribute('href', '/inbox/batches/batch-1/items/item-4');
+    expect(within(list).getByRole('link', { name: 'Review note.pdf' })).toBeVisible();
+    expect(within(list).getByRole('link', { name: 'Accept passport.pdf' })).toBeVisible();
+    await expectAccessible();
+    const li = name.closest('li') as HTMLElement;
+    fireEvent.click(li.querySelector('.firstpage') as HTMLElement);
+    expect(await screen.findByRole('heading', { level: 1, name: 'note.pdf' })).toBeVisible();
+  });
+
+  it('a Not recognised file, with no pages drawn, opens with the batch’s choices and no kind; a kind chosen, it is accepted', async () => {
+    const bare = (types: DocumentTypeView[]) => [
+      {
+        ...item('item-4', 'note.pdf', { proposal: {} }, types),
+        preview_state: 'failed' as const,
+        preview_pages: 0,
+      },
+    ];
+    const state = at('/inbox/batches/batch-1', bare, { removed: 0 });
+    fireEvent.click(await screen.findByRole('link', { name: 'note.pdf' }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'note.pdf' })).toBeVisible();
+    expect(screen.getByText('Not recognised', { selector: 'strong' })).toBeVisible();
+    const kind = screen.getByLabelText(/What it is/);
+    expect(kind).toHaveValue('');
+    // Its pages: said, not drawn.
+    expect(screen.getByText('Its pages could not be drawn.')).toBeVisible();
+    // The batch's choices: Everyone, and its tag.
+    expect(screen.getByRole('button', { name: 'Everyone' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByLabelText('Tags')).toHaveValue('post');
+    await expectAccessible();
+    fireEvent.change(kind, { target: { value: 'birth_certificate' } });
+    await waitFor(() => expect(screen.getByLabelText('Name')).not.toHaveValue(''));
+    fireEvent.click(screen.getByRole('button', { name: 'Accept and next' }));
+    await waitFor(() => expect(state.batchAccepts).toHaveLength(1));
+    expect(state.batchAccepts?.[0]?.body).toMatchObject({
+      type_key: 'birth_certificate',
+      visibility: 'household',
+      tags: ['post'],
+    });
+    // The last: back to the queue, with what was done.
+    expect(await screen.findByText(/“note.pdf” is a document now/)).toBeVisible();
+    expect(window.location.pathname).toBe('/inbox/batches/batch-1');
+  });
+
+  it('a Not recognised file can be accepted with no kind at all', async () => {
+    const one = (types: DocumentTypeView[]) => [
+      item('item-4', 'note.pdf', { proposal: {} }, types),
+    ];
+    const state = at('/inbox/batches/batch-1/items/item-4', one, { removed: 0 });
+    await screen.findByRole('heading', { level: 1, name: 'note.pdf' });
+    fireEvent.click(screen.getByRole('button', { name: 'Accept and next' }));
+    await waitFor(() => expect(state.batchAccepts).toHaveLength(1));
+    expect(state.batchAccepts?.[0]?.body).toMatchObject({ type_key: null });
+  });
+
+  it('what the card said, back on the queue, is said once: taken out of the history entry (R5)', async () => {
+    const one = (types: DocumentTypeView[]) => [
+      item('item-4', 'note.pdf', { proposal: {} }, types),
+    ];
+    at('/inbox/batches/batch-1/items/item-4', one, { removed: 0 });
+    await screen.findByRole('heading', { level: 1, name: 'note.pdf' });
+    fireEvent.click(screen.getByRole('button', { name: 'Accept and next' }));
+    const said = await screen.findByText(/“note.pdf” is a document now/);
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(window.location.pathname).toBe('/inbox/batches/batch-1');
+    // Back to this entry later, or a reload, finds nothing to say again.
+    await waitFor(() =>
+      expect((window.history.state as { usr?: unknown } | null)?.usr ?? null).toBeNull(),
+    );
+    expect(screen.getByText(/“note.pdf” is a document now/)).toBeVisible();
   });
 });
