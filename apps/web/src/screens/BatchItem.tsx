@@ -10,15 +10,15 @@ import {
   type CollectionView,
   type DocumentTypeView,
 } from '@fdv/shared';
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { askPage, forgetPages, heldPage, pageKey } from '../batch-pages.js';
 import { newRun, runSummary, type ReviewRun } from '../batch-review.js';
 import { useUploads } from '../batch-store.js';
+import { PageViewer } from '../page-viewer.js';
 import { storedRole } from '../session.js';
-import { useShortcutsOn } from '../shortcuts.js';
 import { ConfirmDialog, ErrorNote, TopBar } from '../ui.js';
 import { captureDetails, ConfirmForm } from './AddConfirm.js';
 import {
@@ -501,17 +501,13 @@ export function BatchItemScreen() {
 }
 
 /**
- * The file's pages, as the worker drew them (I3): one at a time, Previous
- * and Next, "Page 2 of 3", fitted to the pane's width or at their own
- * size. Page Up and Page Down turn them while the page has the focus — and
- * [ and ], while single keys are on (WCAG 2.1.4). Each page is asked for as
- * it is turned to, and kept until the file is decided.
+ * The file's pages, as the worker drew them (I3), in the shared viewer
+ * (page-viewer.tsx, since R3). Each page is asked for as it is turned to,
+ * and kept until the file is decided.
  */
 function ItemPages({ batchId, item }: { batchId: string; item: BatchItemView }) {
   const { withToken } = useApp();
-  const shortcuts = useShortcutsOn();
   const [n, setN] = useState(1);
-  const [fit, setFit] = useState(true);
   // Each page as it came back, by where it is held: a picture, or none.
   const [got, setGot] = useState<Record<string, string | false>>({});
   const total = item.preview_state === 'ready' ? (item.preview_pages ?? 0) : 0;
@@ -532,87 +528,22 @@ function ItemPages({ batchId, item }: { batchId: string; item: BatchItemView }) 
     };
   }, [key, total, batchId, item.id, n, withToken]);
 
-  const turn = (by: number) => {
-    const to = Math.min(Math.max(n + by, 1), total);
-    if (to === n) return false;
-    setN(to);
-    return true;
-  };
-  const keys = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (e.altKey || e.ctrlKey || e.metaKey) return;
-    const next = e.key === 'PageDown' || (shortcuts && e.key === ']');
-    const back = e.key === 'PageUp' || (shortcuts && e.key === '[');
-    if (!next && !back) return;
-    e.preventDefault();
-    turn(next ? 1 : -1);
-  };
-
   return (
-    <section className="review-pages" aria-label={`Pages of ${item.name}`}>
-      {total > 0 ? (
-        <>
-          <div className="row viewer-bar">
-            <button
-              type="button"
-              className="btn btn-quiet btn-small"
-              disabled={n <= 1}
-              onClick={() => turn(-1)}
-            >
-              <span aria-hidden="true">‹ </span>Previous page
-            </button>
-            <span className="viewer-at" aria-live="polite">
-              Page {n} of {total}
-            </span>
-            <button
-              type="button"
-              className="btn btn-quiet btn-small"
-              disabled={n >= total}
-              onClick={() => turn(1)}
-            >
-              Next page<span aria-hidden="true"> ›</span>
-            </button>
-            <button
-              type="button"
-              className="btn btn-quiet btn-small"
-              aria-pressed={fit}
-              onClick={() => setFit(!fit)}
-            >
-              Fit to width
-            </button>
-          </div>
-          <div
-            className={`viewer${fit ? ' viewer-fit' : ''}`}
-            tabIndex={0}
-            role="group"
-            aria-label={`Page ${n} of ${total}. Page Up and Page Down turn the pages.`}
-            aria-keyshortcuts={shortcuts ? 'PageUp PageDown [ ]' : 'PageUp PageDown'}
-            onKeyDown={keys}
-          >
-            {url ? (
-              <img src={url} alt={`Page ${n} of ${total}`} />
-            ) : (
-              <p className="muted">
-                {missing ? 'This page could not be shown.' : 'Loading the page…'}
-              </p>
-            )}
-          </div>
-          <p className="muted viewer-hint">
-            {shortcuts
-              ? 'With the page in focus, Page Up and Page Down, or [ and ], turn the pages.'
-              : 'With the page in focus, Page Up and Page Down turn the pages.'}
-          </p>
-        </>
-      ) : (
-        <div className="viewer viewer-none">
-          <p className="muted">
-            {item.preview_state === 'pending'
-              ? 'Its pages are being drawn. They appear here once they are.'
-              : item.preview_state === 'unsupported'
-                ? 'The vault does not draw this kind of file’s pages.'
-                : 'Its pages could not be drawn.'}
-          </p>
-        </div>
-      )}
-    </section>
+    <PageViewer
+      className="review-pages"
+      label={`Pages of ${item.name}`}
+      total={total}
+      n={n}
+      onTurn={setN}
+      url={url}
+      note={missing ? 'This page could not be shown.' : 'Loading the page…'}
+      none={
+        item.preview_state === 'pending'
+          ? 'Its pages are being drawn. They appear here once they are.'
+          : item.preview_state === 'unsupported'
+            ? 'The vault does not draw this kind of file’s pages.'
+            : 'Its pages could not be drawn.'
+      }
+    />
   );
 }

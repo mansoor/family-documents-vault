@@ -125,8 +125,9 @@ test('an Only me note is found only through its owner’s private search', async
   // The note as it was written, its line break kept. (Its paragraph: since
   // 5.35 the section also says who edited it and when.)
   await expect(page.getByRole('heading', { name: title })).toBeVisible();
+  // The notes' own section: since R3 the details are a section around it too.
   const note = page
-    .locator('section', { has: page.getByRole('heading', { name: 'Notes' }) })
+    .locator('section.notes', { has: page.getByRole('heading', { name: 'Notes' }) })
     .locator('.note p');
   // A <br> since 5.35: its line break shows, though it adds no text.
   await expect(note).toContainText('before the lease ends');

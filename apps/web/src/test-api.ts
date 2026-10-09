@@ -3780,6 +3780,11 @@ export function installFakeApi(state: FakeState) {
             { status: 404, headers },
           ),
         );
+      // An Only me or an Essential document's pages ask who is asking first,
+      // as its file does (the page route, SEC-17).
+      const versionId = /^\/api\/v1\/versions\/([^/]+)\//.exec(path)?.[1];
+      const pageAsk = askedToOpen(state.documents.find((d) => d.latest_version_id === versionId));
+      if (state.stepUpNeeded && pageAsk) return stepUp(pageAsk);
       if (state.pagesDrawn === 'unsupported') {
         return refuse(
           'no_preview',

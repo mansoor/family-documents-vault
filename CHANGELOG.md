@@ -6,6 +6,19 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-dev.6] - 2026-10-09 — Phase 6, R3: a document in two panes
+
+### Changed
+
+- **A document's page has two panes from 768 px.**
+  - **The left pane holds the details:** status and who can see it, Download, suggestions, the facts, other details, notes, history, collections, sharing and the Trash.
+  - **The right pane holds the pages,** beside them as you scroll. Page 1 shows on arrival. Turn pages with Previous/Next, or with Page Up and Page Down while the pages have focus. Open them full size in the reader.
+  - **Essential and Only me documents** ask you to confirm it's you before their pages show.
+- **On a phone** the page is one column as before. The pages now come right after the facts, so you no longer scroll to the bottom to reach them.
+- **Notes now come before the history** of versions.
+- **One page viewer** now serves both the document page and the review queue.
+- **Wording:** when the vault couldn't draw a PDF's pages, the page now says so, rather than calling it a kind of file the vault doesn't draw.
+
 ## [0.7.0-dev.5] - 2026-10-09 — Phase 6, I3: the review queue
 
 ### Added
