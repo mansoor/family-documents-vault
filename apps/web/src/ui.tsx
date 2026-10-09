@@ -9,7 +9,7 @@ import {
   type Ref,
   type RefObject,
 } from 'react';
-import { NavLink } from 'react-router';
+import { NavLink, useNavigate } from 'react-router';
 
 /** Small shared pieces, styled from the tokens in styles.css. */
 
@@ -280,6 +280,8 @@ export function Button({
   ariaLabel?: string;
   /** The id of what a screen reader should hear with it: what pressing it does. */
   describedBy?: string;
+  /** Its key, while single-key shortcuts are on (`aria-keyshortcuts`). */
+  keyShortcuts?: string | undefined;
   /** A quiet button for something that cannot be undone, in the danger colour (5.24). */
   danger?: boolean;
   /** The button itself, for a dialog it opens to give focus back to (Safari focuses none). */
@@ -294,6 +296,7 @@ export function Button({
       onClick={props.onClick}
       aria-label={props.ariaLabel}
       aria-describedby={props.describedBy}
+      aria-keyshortcuts={props.keyShortcuts}
     >
       {props.children}
     </button>
@@ -398,19 +401,49 @@ export function StatusBadge({ status }: { status: Status }) {
   return <span className={`status status-${t.tone}`}>{t.words}</span>;
 }
 
+/**
+ * Whether this tab came to the page from another of the app's own, so that
+ * the browser's Back is a step within the app (react-router numbers the
+ * entries it makes; the first is 0).
+ */
+export function cameFromTheApp(): boolean {
+  const idx = (window.history.state as { idx?: unknown } | null)?.idx;
+  return typeof idx === 'number' && idx > 0;
+}
+
 export function TopBar({
   title,
   back,
+  backInApp,
   action,
 }: {
   title: string;
   back?: string;
+  /**
+   * Back is where the page was come to from, as the browser's Back is —
+   * the Documents table as it was left, a search, a person — when that was
+   * in the app; `back` otherwise (a link opened afresh). R5's keyboard
+   * paths: the table's sort, its filters and its row came back only with
+   * the browser's own Back.
+   */
+  backInApp?: boolean;
   action?: ReactNode;
 }) {
+  const navigate = useNavigate();
   return (
     <header className="topbar">
       {back && (
-        <NavLink to={back} className="back" aria-label="Back">
+        <NavLink
+          to={back}
+          className="back"
+          aria-label="Back"
+          onClick={(e) => {
+            if (!backInApp || e.defaultPrevented || e.button !== 0) return;
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || !cameFromTheApp()) return;
+            e.preventDefault();
+            void navigate(-1);
+          }}
+        >
           ‹
         </NavLink>
       )}

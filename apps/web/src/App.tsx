@@ -30,6 +30,8 @@ import { PersonDocumentsScreen, ProfileScreen } from './screens/Person.js';
 import { PeopleScreen, RemindersScreen, SearchScreen } from './screens/SearchPeople.js';
 import { SettingsScreen, StorageScreen } from './screens/Settings.js';
 import { SetupScreen } from './screens/Setup.js';
+import { FocusOnMove } from './focus-on-move.js';
+import { PageTitle } from './page-title.js';
 import { AppShell } from './shell.js';
 import { Logo } from './ui.js';
 
@@ -119,6 +121,10 @@ export function App() {
       {/* Beside it, the upload of many documents (I1): it outlives the page that started it. */}
       <BatchUploadProvider>
         <BrowserRouter>
+          {/* The window's title, on every page (R5). */}
+          <PageTitle />
+          {/* A move that left the focus nowhere: the new page's heading (R5). */}
+          <FocusOnMove />
           <Routes>
             <Route path="/setup" element={<SetupGate />} />
             <Route

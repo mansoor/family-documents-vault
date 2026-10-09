@@ -3,7 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
-import { Button, ErrorNote, TopBar } from '../ui.js';
+import { shortcutsOn, useShortcutsOn } from '../shortcuts.js';
+import { Button, cameFromTheApp, ErrorNote, TopBar } from '../ui.js';
 
 /** How much larger than "fit to the window" a page can be made. */
 const ZOOMS = [1, 1.5, 2, 3] as const;
@@ -130,26 +131,31 @@ export function ReaderScreen() {
 
   // The keys a reader reaches for — and only those, only when nothing else
   // wants them: not with a modifier (browser zoom, Back), not while a
-  // prompt is open, not in a field, and not the arrows while a page made
-  // larger needs them to scroll.
+  // prompt or a menu is open, not in a field, and not the arrows while a
+  // page made larger needs them to scroll. + and − are single characters:
+  // only while single-key shortcuts are on (WCAG 2.1.4, R5), as `/`, `n`,
+  // `[` and `]` are.
+  const keysOn = useShortcutsOn();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
-      if (document.querySelector('[aria-modal="true"]')) return;
+      if (document.querySelector('[aria-modal="true"], [role="menu"]')) return;
       const target = e.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(target.tagName)) return;
       const paging = zoom === 0;
       let handled = false;
       if (paging && (e.key === 'ArrowRight' || e.key === 'PageDown')) handled = go(pageNo + 1);
       else if (paging && (e.key === 'ArrowLeft' || e.key === 'PageUp')) handled = go(pageNo - 1);
-      else if ((e.key === '+' || e.key === '=') && zoom < ZOOMS.length - 1) {
+      else if (shortcutsOn() && (e.key === '+' || e.key === '=') && zoom < ZOOMS.length - 1) {
         setZoom(zoom + 1);
         handled = true;
-      } else if (e.key === '-' && zoom > 0) {
+      } else if (shortcutsOn() && e.key === '-' && zoom > 0) {
         setZoom(zoom - 1);
         handled = true;
       } else if (e.key === 'Escape') {
-        void navigate(`/documents/${id}`);
+        // Back where it was opened from, as Back is (R5); its page, opened afresh.
+        if (cameFromTheApp()) void navigate(-1);
+        else void navigate(`/documents/${id}`);
         handled = true;
       }
       if (handled) e.preventDefault();
@@ -177,7 +183,7 @@ export function ReaderScreen() {
 
   return (
     <main className="page page-top reader">
-      <TopBar title={data?.doc.title ?? 'Document'} back={`/documents/${id}`} />
+      <TopBar title={data?.doc.title ?? 'Document'} back={`/documents/${id}`} backInApp />
       <ErrorNote message={error} />
       {version && (
         <>
@@ -207,6 +213,7 @@ export function ReaderScreen() {
                 <Button
                   kind="quiet"
                   ariaLabel="Smaller"
+                  keyShortcuts={keysOn ? '-' : undefined}
                   disabled={zoom === 0}
                   onClick={() => setZoom((z) => Math.max(0, z - 1))}
                 >
@@ -215,6 +222,7 @@ export function ReaderScreen() {
                 <Button
                   kind="quiet"
                   ariaLabel="Larger"
+                  keyShortcuts={keysOn ? '+' : undefined}
                   disabled={zoom === ZOOMS.length - 1}
                   onClick={() => setZoom((z) => Math.min(ZOOMS.length - 1, z + 1))}
                 >

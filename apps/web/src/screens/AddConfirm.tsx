@@ -60,6 +60,7 @@ import {
   useSuggestionsOffered,
 } from '../suggestions.js';
 import { CollectionSelect } from '../collections.js';
+import { focusHeading } from '../focus-on-move.js';
 import { Button, ErrorNote, Field, Select, Switch, TextArea, TopBar } from '../ui.js';
 import { LinksChoiceDialog, linksAsk, type LinksAsk } from './Visibility.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
@@ -134,6 +135,17 @@ export function AddScreen() {
   const [file, setFile] = useState<File | null>(null);
   const [keys] = useState(createUploadKeys);
   const input = useRef<HTMLInputElement>(null);
+  // A file chosen puts the card in the chooser's place, and Choose again the
+  // chooser back in the card's: the focus goes with them, to the card's
+  // heading or to the chooser, never to nowhere (R5's keyboard paths).
+  const chooser = useRef<HTMLButtonElement>(null);
+  const moved = useRef<'card' | 'chooser' | null>(null);
+  useEffect(() => {
+    const to = moved.current;
+    moved.current = null;
+    if (to === 'card') focusHeading();
+    else if (to === 'chooser') chooser.current?.focus();
+  }, [file]);
   // Arrived from a missing-document suggestion: it already knows what this
   // is and whose it is, so the card starts with both.
   const [params] = useSearchParams();
@@ -269,7 +281,10 @@ export function AddScreen() {
         submitLabel="Save to the vault"
         onSubmit={(details) => save(file, captureDetails(details))}
         onSkip={() => save(file, undefined)}
-        onChooseAgain={() => setFile(null)}
+        onChooseAgain={() => {
+          moved.current = 'chooser';
+          setFile(null);
+        }}
       />
     );
   }
@@ -299,11 +314,14 @@ export function AddScreen() {
           const chosen = e.target.files?.[0];
           // Cleared, so the same file can be chosen again.
           e.target.value = '';
-          if (chosen) setFile(chosen);
+          if (chosen) {
+            moved.current = 'card';
+            setFile(chosen);
+          }
         }}
       />
       <ErrorNote message={loadError} />
-      <Button onClick={() => input.current?.click()} disabled={!data}>
+      <Button ref={chooser} onClick={() => input.current?.click()} disabled={!data}>
         Take a photo or choose a file
       </Button>
       <p className="muted">PDFs, photos and scans (JPEG, PNG, HEIC, TIFF), Word and Excel files.</p>

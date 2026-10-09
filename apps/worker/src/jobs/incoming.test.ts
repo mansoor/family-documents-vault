@@ -599,7 +599,7 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
     // The email says the count and where to look, and nothing else.
     const email = incomingEmail(2, 'https://vault.incoming.test');
     expect(email.text).toBe(
-      '2 files sent to your vault are waiting for you to look at.\n\nLook at them: https://vault.incoming.test/incoming\n',
+      '2 files sent to your vault are waiting for you to look at.\n\nLook at them: https://vault.incoming.test/inbox/sent\n',
     );
     for (const secret of ['Jane', 'accountant', 'W-2', 'tax papers', '.pdf']) {
       expect(`${email.subject} ${email.text} ${email.html}`).not.toContain(secret);

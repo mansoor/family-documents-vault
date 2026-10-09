@@ -10,8 +10,8 @@ import {
   type ResetNotice,
   type SuggestionView,
 } from '@fdv/shared';
-import { useState, type ReactNode } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router';
 import { api, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { collectionsOffered, CollectionsOnHome } from '../collections.js';
@@ -34,6 +34,15 @@ import { mayBringBack, purgeAskedWords } from './Trash.js';
 export function HomeScreen() {
   const { caps, authVersion } = useApp();
   const navigate = useNavigate();
+  // What a page that sent somebody here did — a document moved to the Trash
+  // from its own page (R5) — said where the focus is, as the Inbox says what
+  // was filed.
+  const location = useLocation();
+  const said = (location.state as { said?: string } | null)?.said ?? null;
+  const saidLine = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (said) saidLine.current?.focus();
+  }, [said]);
   const { data, error, reload } = useLoad(
     async (t) => {
       const [members, counts, recent, docs, me, due, suggestions, types, asked] = await Promise.all(
@@ -175,7 +184,9 @@ export function HomeScreen() {
     id: 'cats-h',
     title: 'Categories',
     children:
-      categories.length === 0 ? (
+      // Nothing said until it is known: not "Nothing filed yet" while it loads,
+      // or when it could not be (R5).
+      !data ? null : categories.length === 0 ? (
         <p className="muted">
           {/* Somebody who files nothing is not asked to (the 5.33 review). */}
           {can(role, 'document.add')
@@ -230,7 +241,7 @@ export function HomeScreen() {
 
   const attention = (
     <>
-      <AttentionStrip items={data?.attention ?? []} />
+      <AttentionStrip items={data?.attention ?? null} />
       <MissingStrip items={data?.suggestions ?? []} />
     </>
   );
@@ -248,6 +259,9 @@ export function HomeScreen() {
         </div>
       </header>
       <ErrorNote message={error} />
+      <p role="status" ref={saidLine} tabIndex={-1} className="status-line">
+        {said}
+      </p>
 
       {/* A link, never a status: role="status" took its name away (the 5.33
           review). */}
@@ -443,8 +457,10 @@ export function addLink(s: SuggestionView): string {
 function AttentionStrip({
   items,
 }: {
-  items: Array<{ id: string; title: string; label: string; tone: 'danger' | 'warn' }>;
+  /** Null until known: never "Everything is fine" while it loads, or when it could not (R5). */
+  items: Array<{ id: string; title: string; label: string; tone: 'danger' | 'warn' }> | null;
 }) {
+  if (items === null) return null;
   if (items.length === 0) {
     return (
       <div className="attention attention-calm" role="status">
@@ -632,7 +648,7 @@ export function DocRow({
     doc.visibility === 'adults' ? 'Adults only' : doc.visibility === 'private' ? 'Only me' : null;
   const title = doc.title ?? 'Scan · needs a name';
   return (
-    <li className="docrow">
+    <li className="docrow" data-doc={doc.id}>
       <RowMain title={title} pick={pick} onOpen={onOpen}>
         <span className="doc-title">{title}</span>
         <span className="muted">

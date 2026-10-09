@@ -733,6 +733,7 @@ function SearchBox({
   return (
     <form
       role="search"
+      aria-label="Search the vault"
       className="app-search"
       onSubmit={(e) => {
         e.preventDefault();

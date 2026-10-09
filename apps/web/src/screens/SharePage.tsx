@@ -13,6 +13,7 @@ import {
   type ShareLinkPreview,
 } from '../api.js';
 import { describeError } from '../app-context.js';
+import { useFixedTitle } from '../page-title.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
 
 /**
@@ -71,6 +72,8 @@ export function SharePage({ token }: { token: string | null }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  // The window's title (R5): what the page is, never the document's name.
+  useFixedTitle('A shared document');
 
   // What was there is gone, and the focus with it: the new heading takes it.
   useEffect(() => {

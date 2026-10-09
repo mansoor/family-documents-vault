@@ -5,7 +5,7 @@ import {
   type OwnLinkToEnd,
   type Visibility,
 } from '@fdv/shared';
-import { useRef, useState, type RefObject } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
 import { storedRole } from '../session.js';
@@ -64,6 +64,26 @@ export function VisibilityControl(props: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ title: string; body: string } | null>(null);
+  // Each of its states takes the place of the one before: the focus goes
+  // with them — to the choice, to what the vault said, or back to the
+  // button — never to nowhere (R5's keyboard paths).
+  const box = useRef<HTMLElement>(null);
+  const change = useRef<HTMLButtonElement>(null);
+  const moved = useRef<'choice' | 'notice' | 'button' | null>(null);
+  useEffect(() => {
+    const to = moved.current;
+    if (!to) return;
+    // Once it is drawn: the page around it may be drawn again first.
+    const target =
+      to === 'button'
+        ? change.current
+        : box.current?.querySelector<HTMLElement>(
+            to === 'notice' ? '#private-notice-h' : '[aria-pressed="true"]',
+          );
+    if (!target) return;
+    moved.current = null;
+    target.focus();
+  });
 
   // What this reader may change it to (visibilityChoices, @fdv/shared):
   // making something private, or taking it back, belongs to the person it
@@ -90,8 +110,13 @@ export function VisibilityControl(props: {
       if (!result) return;
       await props.onChanged();
       setOpen(false);
-      if (result.notice) setNotice(result.notice);
-      else props.onClose?.();
+      if (result.notice) {
+        moved.current = 'notice';
+        setNotice(result.notice);
+      } else {
+        if (!props.onClose) moved.current = 'button';
+        props.onClose?.();
+      }
     } catch (err) {
       const asked = ownLinks ? null : await linksAsk(err, withToken);
       if (asked) {
@@ -107,13 +132,14 @@ export function VisibilityControl(props: {
 
   if (notice) {
     return (
-      <section className="card stack" role="alert" aria-labelledby="private-notice-h">
-        <h2 id="private-notice-h" style={{ fontSize: 18 }}>
+      <section ref={box} className="card stack" role="alert" aria-labelledby="private-notice-h">
+        <h2 id="private-notice-h" tabIndex={-1} style={{ fontSize: 18 }}>
           {notice.title}
         </h2>
         <p>{notice.body}</p>
         <Button
           onClick={() => {
+            if (!props.onClose) moved.current = 'button';
             setNotice(null);
             props.onClose?.();
           }}
@@ -126,14 +152,24 @@ export function VisibilityControl(props: {
 
   if (!open) {
     return (
-      <Button kind="link" onClick={() => setOpen(true)}>
+      <Button
+        ref={change}
+        kind="link"
+        onClick={() => {
+          // From the keyboard, the focus was here: it goes on to the choice.
+          // A click that gave it none (Safari) leaves it where it was, for
+          // the question about links to give back to Save (W3).
+          if (document.activeElement === change.current) moved.current = 'choice';
+          setOpen(true);
+        }}
+      >
         Change who can see it
       </Button>
     );
   }
 
   return (
-    <section className="card stack">
+    <section ref={box} className="card stack">
       <Pills
         label="Who can see it"
         value={choice}
@@ -163,7 +199,11 @@ export function VisibilityControl(props: {
         <Button
           kind="quiet"
           disabled={busy}
-          onClick={() => (props.onClose ? props.onClose() : setOpen(false))}
+          onClick={() => {
+            if (props.onClose) return props.onClose();
+            moved.current = 'button';
+            setOpen(false);
+          }}
         >
           Cancel
         </Button>

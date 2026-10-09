@@ -21,6 +21,7 @@ import {
 } from 'react';
 import { api, ApiRequestError, NetworkError } from '../api.js';
 import { describeError } from '../app-context.js';
+import { useFixedTitle } from '../page-title.js';
 import { sendDropFile } from '../drop-upload.js';
 import { Button, ErrorNote, Field, Logo, TextArea } from '../ui.js';
 
@@ -181,6 +182,8 @@ export function DropPage({ token }: { token: string | null }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const heading = useRef<HTMLHeadingElement>(null);
+  // The window's title (R5): what the page is for, never whose vault.
+  useFixedTitle('Send documents');
 
   // What was there is gone, and the focus with it: the new heading takes it.
   useEffect(() => {
