@@ -310,6 +310,50 @@ describe('Needs attention across the width (the owner’s report)', () => {
 
 // ------------------------------------------------------------------ Home
 
+describe('the bar on top’s Add stays on one line (it wrapped at 1024 px)', () => {
+  it.each([
+    [
+      'a link to Add',
+      (() => {
+        // A vault from before batches: Add is a link, not a menu.
+        const h = household();
+        delete h.batches;
+        return h;
+      })(),
+      'link',
+    ],
+    ['a menu, with many at once', household(), 'button'],
+  ] as const)(
+    'as %s: never wrapped, never shrunk; the search box gives way',
+    async (_, over, role) => {
+      for (const px of [MID, 1024, 1100, WIDE]) {
+        atWidth(px);
+        open('/', over);
+        // The shell's bar (a screen's own header is a banner too, to Testing Library).
+        const add = await waitFor(() =>
+          within(document.querySelector('header.app-bar') as HTMLElement).getByRole(role, {
+            name: 'Add',
+          }),
+        );
+        const bar = add.closest('header.app-bar') as HTMLElement;
+        const style = getComputedStyle(add);
+        expect(style.whiteSpace).toBe('nowrap');
+        expect(style.flexWrap).toBe('nowrap');
+        expect(style.flexShrink).toBe('0');
+        // Its box in the bar, as its only flex item, does not shrink either.
+        const item = add.parentElement?.classList.contains('add-wrap') ? add.parentElement : add;
+        expect(getComputedStyle(item).flexShrink).toBe('0');
+        // What gives way: the search box, and the account's name.
+        expect(getComputedStyle(bar.querySelector('.app-search') as HTMLElement).minWidth).toBe(
+          '0px',
+        );
+        expect(getComputedStyle(bar.querySelector('.account') as HTMLElement).minWidth).toBe('0px');
+        cleanup();
+      }
+    },
+  );
+});
+
 describe('Home uses the width (the owner’s report)', () => {
   it('from 1024 px, the whole of the content’s width: its cards’ grid fills it', async () => {
     atWidth(WIDE);

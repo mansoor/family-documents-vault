@@ -2558,10 +2558,24 @@ kbd {
   gap: 6px;
   padding: 0 16px;
   border-radius: var(--radius-m);
+  /* Add on one line at every width the bar has: the search box and the
+     account's name give way first (it wrapped, a word a line, at 1024 px). */
+  flex: none;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.add-wrap {
+  flex: none;
 }
 
 .account {
   display: inline-flex;
+  min-width: 0;
+}
+
+.account .btn.account-btn {
+  min-width: 0;
 }
 
 .btn.account-btn {

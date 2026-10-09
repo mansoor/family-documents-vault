@@ -522,6 +522,11 @@ describe('a file in two panes (I3)', () => {
     await screen.findByRole('heading', { level: 1, name: "Mansoor's passport" });
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }));
     await screen.findByRole('heading', { level: 1, name: "Aisha's passport" });
+    // The new card has arrived when its first field has the focus: only then
+    // is the focus moved on, as a person would (focused before, the card's
+    // arrival could take it back to the first field, and the dialog gave the
+    // focus back there: the flake under load).
+    await waitFor(() => expect(screen.getByLabelText(/What it is/)).toHaveFocus());
     expect(state.batchAccepts ?? []).toHaveLength(0);
     const remove = screen.getByRole('button', { name: 'Not a document, remove it' });
     // A click puts the focus on the button, as a browser does.
