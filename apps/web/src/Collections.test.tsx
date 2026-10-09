@@ -632,9 +632,9 @@ describe('collections on the web (5.15)', () => {
 
     // To the Trash from its own ⋯: out of the results, and out of the choice.
     const { menu } = await openMenu('Actions for “Council tax bill”');
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to Trash' }));
-    const sure = await screen.findByRole('alertdialog', { name: 'Move to Trash?' });
-    fireEvent.click(within(sure).getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to the Trash' }));
+    const sure = await screen.findByRole('alertdialog', { name: 'Move to the Trash?' });
+    fireEvent.click(within(sure).getByRole('button', { name: 'Move to the Trash' }));
     await waitFor(() =>
       expect(
         screen.queryByRole('checkbox', { name: 'Select “Council tax bill”' }),
@@ -741,9 +741,9 @@ describe('collections on the web (5.15)', () => {
 
     // Moved to the Trash from its row: out of every collection, and counted so.
     const { menu } = await openMenu();
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to Trash' }));
-    const sure = await screen.findByRole('alertdialog', { name: 'Move to Trash?' });
-    fireEvent.click(within(sure).getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to the Trash' }));
+    const sure = await screen.findByRole('alertdialog', { name: 'Move to the Trash?' });
+    fireEvent.click(within(sure).getByRole('button', { name: 'Move to the Trash' }));
     await waitFor(() =>
       expect(screen.getByRole('link', { name: /^Holiday/ })).toHaveTextContent('Holiday1 document'),
     );
@@ -975,9 +975,9 @@ describe('collections on the web (5.15)', () => {
 
     // The bill to the Trash: the results are asked for again...
     const bill = await openMenu('Actions for “Council tax bill”');
-    fireEvent.click(within(bill.menu).getByRole('menuitem', { name: 'Move to Trash' }));
-    const sure = await screen.findByRole('alertdialog', { name: 'Move to Trash?' });
-    fireEvent.click(within(sure).getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(within(bill.menu).getByRole('menuitem', { name: 'Move to the Trash' }));
+    const sure = await screen.findByRole('alertdialog', { name: 'Move to the Trash?' });
+    fireEvent.click(within(sure).getByRole('button', { name: 'Move to the Trash' }));
     await waitFor(() => expect(browses()).toBe(before + 1));
 
     // ...and before they come, the statement made Essential asks again.

@@ -683,9 +683,9 @@ export function MoveToTrashDialog(props: {
 }) {
   return (
     <ConfirmDialog
-      title="Move to Trash?"
-      confirmLabel="Move to Trash"
-      busyLabel="Moving to Trash…"
+      title="Move to the Trash?"
+      confirmLabel="Move to the Trash"
+      busyLabel="Moving to the Trash…"
       returnFocus={props.returnFocus}
       icon={<TrashIcon />}
       danger

@@ -65,7 +65,7 @@ const LOCKED: ReadonlyArray<{ id: string; name: string; why: string }> = [
   { id: 'type', name: 'What it is', why: 'How it is filed, and what the card asks next.' },
   { id: 'title', name: 'Name', why: 'How it is found again.' },
   { id: 'owner', name: 'Whose it is', why: 'Whose papers it is among.' },
-  { id: 'visibility', name: 'Who can see', why: 'Who may open it.' },
+  { id: 'visibility', name: 'Who can see it', why: 'Who may open it.' },
 ];
 
 /** The fixed fields a kind may ask for, in the editor's order, in the app's own words. */
@@ -1591,7 +1591,7 @@ function Preview(props: {
           .filter((f) => draft.core[f].shown)
           .map((f) => row(f, props.cardName(f), needed(f, draft.core[f])))}
         <li>
-          <span>Who can see this</span>
+          <span>Who can see it</span>
           <span className="muted">{visibilityWords(draft.visibility)}</span>
         </li>
       </ol>

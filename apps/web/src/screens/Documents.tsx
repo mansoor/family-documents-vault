@@ -1453,7 +1453,7 @@ function BulkBar(props: {
             onClick={() => setActing('trash')}
           >
             <TrashIcon />
-            Move to Trash
+            Move to the Trash
           </button>
         )}
         <span className="bulk-gap" />
@@ -1563,7 +1563,7 @@ function BulkBar(props: {
       {acting === 'trash' && (
         <ConfirmDialog
           title={`Move ${what} to the Trash?`}
-          confirmLabel="Move to Trash"
+          confirmLabel="Move to the Trash"
           busyLabel={progress ? `Moving ${progress.done + 1} of ${progress.of}…` : 'Moving…'}
           icon={<TrashIcon />}
           danger

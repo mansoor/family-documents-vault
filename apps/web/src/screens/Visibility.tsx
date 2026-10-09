@@ -127,7 +127,7 @@ export function VisibilityControl(props: {
   if (!open) {
     return (
       <Button kind="link" onClick={() => setOpen(true)}>
-        Change who can see this
+        Change who can see it
       </Button>
     );
   }
@@ -135,7 +135,7 @@ export function VisibilityControl(props: {
   return (
     <section className="card stack">
       <Pills
-        label="Who can see this"
+        label="Who can see it"
         value={choice}
         options={choices.map((c) => ({ value: c.value, label: c.label }))}
         onChange={setChoice}
@@ -192,7 +192,7 @@ export async function linksAsk(
 /**
  * What becomes of one's own links to a document made Only me (5.41): each
  * named, End to start with, Keep while the household lets them out. Asked
- * by "Who can see this" and by the edit card alike; and, for many made
+ * by "Who can see it" and by the edit card alike; and, for many made
  * Only me at once (the Documents table, R2), once for all of them, each
  * document's links under its title (`documents`).
  */

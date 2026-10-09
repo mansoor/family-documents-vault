@@ -447,7 +447,7 @@ export function DocumentScreen() {
               onClick={() => setConfirmingTrash(true)}
             >
               <TrashIcon />
-              Move to Trash
+              Move to the Trash
             </button>
           )}
           {confirmingTrash && (
@@ -543,7 +543,7 @@ function DocumentCollections(props: { documentId: string; title: string }) {
 /**
  * A document's pages on a phone (R3): today's preview, right after the
  * facts — its first page small, a tap from reading it full size — so
- * nobody scrolls past Move to Trash to reach them. Nothing is fetched but
+ * nobody scrolls past Move to the Trash to reach them. Nothing is fetched but
  * the small picture, as before.
  */
 function PhonePages(props: {

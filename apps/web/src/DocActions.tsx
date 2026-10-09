@@ -57,7 +57,7 @@ export interface RowCollection {
 /**
  * Who may change a document: whoever may change documents, and a teen only
  * their own, as the vault itself says (5.1). The document's page asks the
- * same question before it offers Move to Trash.
+ * same question before it offers Move to the Trash.
  */
 export function mayChange(
   role: Role,
@@ -134,7 +134,7 @@ function labelFor(action: DocAction, doc: DocumentView | null): string {
     case 'share':
       return 'Share a link';
     case 'visibility':
-      return 'Who can see';
+      return 'Who can see it';
     case 'collect':
       return 'Add to a collection';
     case 'uncollect':
@@ -144,7 +144,7 @@ function labelFor(action: DocAction, doc: DocumentView | null): string {
     case 'version':
       return 'Add a new version';
     case 'trash':
-      return 'Move to Trash';
+      return 'Move to the Trash';
   }
 }
 
