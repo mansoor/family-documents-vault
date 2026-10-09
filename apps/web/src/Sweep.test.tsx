@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -422,5 +422,113 @@ describe('landmarks, and a short window', () => {
     expect(short).toMatch(/\.select-bar \{ position: static; \}/);
     // Everywhere else it stays at the top as the list scrolls.
     expect(css).toMatch(/\.select-bar \{ position: sticky; top: 0;/);
+  });
+});
+
+describe('the review round (R5)', () => {
+  const TWO = {
+    documents: [
+      { ...PASSPORT },
+      { ...PASSPORT, id: 'doc-2', title: 'Council tax bill', etag: '"c"' },
+    ],
+  };
+
+  /** A document opened from the Documents table, at 1280 px. */
+  async function openFromTheTable() {
+    atWidth(1280);
+    at('/documents', { documents: TWO.documents.map((d) => ({ ...d })) });
+    const grid = await screen.findByRole('grid', { name: /^Documents, sorted by/ });
+    fireEvent.click(await within(grid).findByRole('link', { name: "Mansoor's passport" }));
+    await screen.findByRole('heading', { level: 1, name: "Mansoor's passport" });
+  }
+
+  it('R5-1: Edit, the card’s Back, then the document’s Back: the table, not the card again', async () => {
+    await openFromTheTable();
+    fireEvent.click(document.querySelector('a[href="/documents/doc-1/confirm"]') as HTMLElement);
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-1/confirm'));
+    fireEvent.click(await screen.findByRole('link', { name: 'Back' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-1'));
+    await screen.findByRole('heading', { level: 1, name: "Mansoor's passport" });
+    fireEvent.click(screen.getByRole('link', { name: 'Back' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents'));
+  });
+
+  it('R5-1: Edit, Save, then the document’s Back: the table, in one step', async () => {
+    await openFromTheTable();
+    fireEvent.click(document.querySelector('a[href="/documents/doc-1/confirm"]') as HTMLElement);
+    fireEvent.click(await screen.findByRole('button', { name: /^Save/ }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-1'));
+    await screen.findByRole('heading', { level: 1, name: "Mansoor's passport" });
+    fireEvent.click(screen.getByRole('link', { name: 'Back' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents'));
+  });
+
+  it('R5-1: the card opened afresh: its Back takes its place', async () => {
+    at('/documents/doc-1/confirm', { documents: [{ ...PASSPORT }] });
+    await screen.findByRole('button', { name: /^Save/ });
+    const back = screen.getByRole('link', { name: 'Back' });
+    const idx = () => (window.history.state as { idx: number }).idx;
+    const was = idx();
+    fireEvent.click(back);
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-1'));
+    expect(idx()).toBe(was);
+  });
+
+  it('R5-2: a reader opened afresh, Escape, then the document’s Back: Home, not the reader', async () => {
+    at('/documents/doc-1/read');
+    await screen.findByRole('img', { name: /Page 1 of/ });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-1'));
+    await screen.findByRole('heading', { level: 1, name: "Mansoor's passport" });
+    fireEvent.click(screen.getByRole('link', { name: 'Back' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+  });
+
+  it('R5-3: Back after a search asked from the bar on top: the field says what the address does', async () => {
+    atWidth(1280);
+    at('/search?q=passport');
+    const field = await screen.findByLabelText('Search everything');
+    fireEvent.change(field, { target: { value: 'passport renewal' } });
+    await waitFor(() => expect(window.location.search).toBe('?q=passport+renewal'));
+    const top = screen.getByRole('searchbox', { name: 'Search the vault' });
+    fireEvent.change(top, { target: { value: 'will' } });
+    fireEvent.submit(top.closest('form') as HTMLFormElement);
+    await waitFor(() => expect(screen.getByLabelText('Search everything')).toHaveValue('will'));
+    act(() => window.history.back());
+    await waitFor(() => expect(window.location.search).toBe('?q=passport+renewal'));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Search everything')).toHaveValue('passport renewal'),
+    );
+  });
+
+  it('R5-4: Home says the Trash once: not again on coming back to it', async () => {
+    at('/documents/doc-1', { documents: TWO.documents.map((d) => ({ ...d })) });
+    fireEvent.click(await screen.findByRole('button', { name: 'Move to the Trash' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Move to the Trash?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move to the Trash' }));
+    await screen.findByText(/moved to the Trash\. You can bring it back/);
+    // Taken out of the entry, which keeps its place.
+    await waitFor(() => expect((window.history.state as { usr: unknown }).usr ?? null).toBeNull());
+    fireEvent.click(await screen.findByRole('button', { name: /^Council tax bill/ }));
+    await screen.findByRole('heading', { level: 1, name: 'Council tax bill' });
+    fireEvent.click(screen.getByRole('link', { name: 'Back' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+    await screen.findByRole('heading', { level: 2, name: 'People' });
+    expect(screen.queryByText(/moved to the Trash\. You can bring it back/)).toBeNull();
+  });
+
+  it('R5-4: the Inbox and Files sent to you, the same: said once, then let go', async () => {
+    for (const path of ['/inbox', '/inbox/sent']) {
+      cleanup();
+      installFakeApi(fresh({ members: [ME, AISHA], incoming: [], batches: [] }));
+      signedIn('owner');
+      window.history.replaceState({ usr: { said: 'Filed as “W-2”.' }, key: 'k', idx: 0 }, '', path);
+      render(<App />);
+      expect(await screen.findByText('Filed as “W-2”.')).toBeInTheDocument();
+      await waitFor(() =>
+        expect((window.history.state as { usr: unknown }).usr ?? null).toBeNull(),
+      );
+      expect(window.location.pathname).toBe(path);
+    }
   });
 });

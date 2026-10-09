@@ -61,7 +61,16 @@ import {
 } from '../suggestions.js';
 import { CollectionSelect } from '../collections.js';
 import { focusHeading } from '../focus-on-move.js';
-import { Button, ErrorNote, Field, Select, Switch, TextArea, TopBar } from '../ui.js';
+import {
+  Button,
+  cameFromTheApp,
+  ErrorNote,
+  Field,
+  Select,
+  Switch,
+  TextArea,
+  TopBar,
+} from '../ui.js';
 import { LinksChoiceDialog, linksAsk, type LinksAsk } from './Visibility.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 
@@ -388,14 +397,14 @@ export function ConfirmScreen() {
   if (loadError)
     return (
       <main className="page page-top">
-        <TopBar title="Is this right?" back="/" />
+        <TopBar title="Is this right?" back={`/documents/${id as string}`} backInApp />
         <ErrorNote message={loadError} />
       </main>
     );
   if (!data)
     return (
       <main className="page page-top">
-        <TopBar title="Is this right?" back="/" />
+        <TopBar title="Is this right?" back={`/documents/${id as string}`} backInApp />
       </main>
     );
   const { doc, types, members } = data;
@@ -445,6 +454,7 @@ export function ConfirmScreen() {
       <ConfirmForm
         title="Is this right?"
         back={`/documents/${doc.id}`}
+        backInApp
         lede="Change anything that is wrong. Everything else can wait."
         documentId={doc.id}
         versionId={doc.latest_version_id}
@@ -496,7 +506,13 @@ export function ConfirmScreen() {
               throw new ChangedElsewhere(cardFor(now));
             }
           }
-          if (saved) void navigate(`/documents/${saved.id}`, { replace: true });
+          // Back to the document it was opened from, as Back is (the R5
+          // review): the card leaves no step of its own behind, so the
+          // document's Back still reaches the list. Opened afresh, the
+          // document takes the card's place.
+          if (!saved) return;
+          if (cameFromTheApp()) void navigate(-1);
+          else void navigate(`/documents/${saved.id}`, { replace: true });
         }}
       />
       {linksAsked && (
@@ -657,6 +673,8 @@ function CardMark(props: { field: CardMarkField; mark: ItemSuggestion<unknown> }
 export function ConfirmForm(props: {
   title: string;
   back: string;
+  /** Back is the browser's Back when come to within the app (TopBar's `backInApp`). */
+  backInApp?: boolean;
   lede: string;
   /** The file this card is about, when it has not been sent yet. */
   fileName?: string;
@@ -1588,7 +1606,7 @@ export function ConfirmForm(props: {
   if (props.pane) return form;
   return (
     <main className="page page-top">
-      <TopBar title={props.title} back={props.back} />
+      <TopBar title={props.title} back={props.back} backInApp={props.backInApp === true} />
       <p className="lede">{props.lede}</p>
       {props.fileName ? (
         <p className="muted card-file">

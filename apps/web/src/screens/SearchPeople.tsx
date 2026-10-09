@@ -24,7 +24,14 @@ import {
   type ReactNode,
 } from 'react';
 import { flushSync } from 'react-dom';
-import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
+import {
+  Link,
+  NavigationType,
+  useLocation,
+  useNavigate,
+  useNavigationType,
+  useSearchParams,
+} from 'react-router';
 import { api, type Invitation, type Member, type SearchHit } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { AddToCollection, collectionsOffered, documentsWord } from '../collections.js';
@@ -216,8 +223,14 @@ export function SearchScreen({ title = 'Search' }: { title?: string } = {}) {
   // come to some other way (a link, the search box on top), once.
   const location = useLocation();
   const typedHere = (location.state as { typed?: unknown } | null)?.typed === true;
+  // Back and Forward are the address's to say, an entry this field wrote
+  // included (the R5 review): only a step the field itself just took waits
+  // for what is typed.
+  const navigation = useNavigationType();
   const [field, setField] = useState({ key: location.key, text: q });
-  if (!typedHere && field.key !== location.key) setField({ key: location.key, text: q });
+  if ((!typedHere || navigation === NavigationType.Pop) && field.key !== location.key) {
+    setField({ key: location.key, text: q });
+  }
   const type = (text: string) => {
     setField((f) => ({ ...f, text }));
     set('q', text, true);

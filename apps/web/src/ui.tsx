@@ -9,7 +9,7 @@ import {
   type Ref,
   type RefObject,
 } from 'react';
-import { NavLink, useNavigate } from 'react-router';
+import { NavLink, useLocation, useNavigate } from 'react-router';
 
 /** Small shared pieces, styled from the tokens in styles.css. */
 
@@ -402,6 +402,32 @@ export function StatusBadge({ status }: { status: Status }) {
 }
 
 /**
+ * What the page that sent somebody here said it did (`state.said`): read as
+ * the screen opens, kept while it is open, and taken out of the history
+ * entry, so that coming back to the entry later — Back, Forward, a reload —
+ * neither says it again nor takes the focus for it (the R5 review). The
+ * entry keeps its place in the history.
+ */
+export function useArrivedSaid(): string | null {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [said] = useState(() => {
+    const word = (location.state as { said?: unknown } | null)?.said;
+    return typeof word === 'string' ? word : null;
+  });
+  useEffect(() => {
+    if (said === null) return;
+    void navigate(
+      { pathname: location.pathname, search: location.search, hash: location.hash },
+      { replace: true, state: null },
+    );
+    // Only as the screen opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return said;
+}
+
+/**
  * Whether this tab came to the page from another of the app's own, so that
  * the browser's Back is a step within the app (react-router numbers the
  * entries it makes; the first is 0).
@@ -435,6 +461,10 @@ export function TopBar({
       {back && (
         <NavLink
           to={back}
+          // Opened afresh, Back takes the page's place rather than adding a
+          // step after it: its own Back then leads on, never back here (the
+          // R5 review).
+          replace={backInApp === true}
           className="back"
           aria-label="Back"
           onClick={(e) => {

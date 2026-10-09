@@ -11,7 +11,7 @@ import {
   type SuggestionView,
 } from '@fdv/shared';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { api, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { collectionsOffered, CollectionsOnHome } from '../collections.js';
@@ -21,7 +21,14 @@ import { IdentityNotice } from '../identity.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
-import { Button, categoryLabel, CollapsibleSection, ErrorNote, StatusBadge } from '../ui.js';
+import {
+  Button,
+  categoryLabel,
+  CollapsibleSection,
+  ErrorNote,
+  StatusBadge,
+  useArrivedSaid,
+} from '../ui.js';
 import { AfterRestoreBanner } from './AfterRestore.js';
 import { OnlyYou, useMayBatch } from './Batches.js';
 import { mayBringBack, purgeAskedWords } from './Trash.js';
@@ -37,8 +44,7 @@ export function HomeScreen() {
   // What a page that sent somebody here did — a document moved to the Trash
   // from its own page (R5) — said where the focus is, as the Inbox says what
   // was filed.
-  const location = useLocation();
-  const said = (location.state as { said?: string } | null)?.said ?? null;
+  const said = useArrivedSaid();
   const saidLine = useRef<HTMLParagraphElement>(null);
   useEffect(() => {
     if (said) saidLine.current?.focus();

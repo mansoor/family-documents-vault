@@ -38,7 +38,16 @@ import { CollectionSelect, mayChangeCollection } from '../collections.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { useShortcutsOn } from '../shortcuts.js';
-import { Button, ConfirmDialog, ErrorNote, Field, Select, Switch, TopBar } from '../ui.js';
+import {
+  Button,
+  ConfirmDialog,
+  ErrorNote,
+  Field,
+  Select,
+  Switch,
+  TopBar,
+  useArrivedSaid,
+} from '../ui.js';
 import { SuggestedMark } from '../suggestions.js';
 import { IncomingList, sizeWords } from './Incoming.js';
 
@@ -831,8 +840,7 @@ export function InboxScreen() {
   const { caps, authVersion, withToken } = useApp();
   const role = storedRole();
   const mayReview = caps?.features.upload_requests === true && can(role, 'upload_request.create');
-  const location = useLocation();
-  const said = (location.state as { said?: string } | null)?.said ?? null;
+  const said = useArrivedSaid();
   const status = useRef<HTMLParagraphElement>(null);
   // The review queue (I3): each batch's levels, for Accept all Ready and Review.
   const levels = caps?.features.batch_review === true;

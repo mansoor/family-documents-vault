@@ -153,9 +153,11 @@ export function ReaderScreen() {
         setZoom(zoom - 1);
         handled = true;
       } else if (e.key === 'Escape') {
-        // Back where it was opened from, as Back is (R5); its page, opened afresh.
+        // Back where it was opened from, as Back is (R5); opened afresh, its
+        // document in the reader's place, so the document's Back never comes
+        // back here (the R5 review).
         if (cameFromTheApp()) void navigate(-1);
-        else void navigate(`/documents/${id}`);
+        else void navigate(`/documents/${id}`, { replace: true });
         handled = true;
       }
       if (handled) e.preventDefault();
