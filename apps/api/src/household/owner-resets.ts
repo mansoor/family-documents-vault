@@ -167,7 +167,7 @@ export class OwnerResetService {
         throw new ApiError(
           422,
           'validation_failed',
-          'You cannot reset your own password here. Change it in Settings, or use “Forgotten your password?” on the sign-in page.',
+          'You cannot reset your own password here. Change it in Settings → Your account, or use “Forgotten your password?” on the sign-in page.',
         );
       }
       if (target.role === 'owner') {

@@ -282,12 +282,13 @@ describe('the sidebar, from 1024 px (R1)', () => {
     await screen.findByRole('heading', { name: 'Trash', level: 1 });
     expect(current()).toEqual(['Trash']);
     fireEvent.click(within(nav).getByRole('link', { name: 'Settings' }));
-    await screen.findByRole('heading', { name: 'Settings', level: 1 });
+    // Wide, Settings opens on its first section.
+    await screen.findByRole('heading', { name: 'Your account', level: 1 });
     expect(current()).toEqual(['Settings']);
     // A part of a section is the section's: a document is Documents', a
     // settings page Settings'.
-    fireEvent.click(screen.getByRole('link', { name: /How you hear about things/ }));
-    await screen.findByRole('heading', { name: 'How you hear about things', level: 1 });
+    fireEvent.click(screen.getByRole('link', { name: /^Notifications/ }));
+    await screen.findByRole('heading', { name: 'Notifications', level: 1 });
     expect(current()).toEqual(['Settings']);
     cleanup();
     at(`/documents/${PASSPORT.id}`, EVERYTHING);
@@ -428,11 +429,13 @@ describe('an address that names a place on the page (the review)', () => {
         window.history.pushState({}, '', '/settings#two-step');
         window.dispatchEvent(new PopStateEvent('popstate'));
       });
-      await screen.findByRole('heading', { name: 'Settings', level: 1 });
+      // The old address: the place, in its section.
+      await screen.findByRole('heading', { name: 'Your account', level: 1 });
+      expect(window.location.pathname + window.location.hash).toBe('/settings/account#two-step');
       const card = document.getElementById('two-step') as HTMLElement;
       await waitFor(() => expect(card).toHaveFocus());
       expect(scrolled).toContain(card);
-      expect(screen.getByRole('heading', { name: 'Settings', level: 1 })).not.toHaveFocus();
+      expect(screen.getByRole('heading', { name: 'Your account', level: 1 })).not.toHaveFocus();
     } finally {
       if (had) Object.defineProperty(Element.prototype, 'scrollIntoView', had);
       else Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
@@ -783,97 +786,256 @@ describe('on a phone: the bottom bar and the drawer', () => {
   });
 });
 
-describe('Settings holds settings only', () => {
-  /** The rows Settings opens, by title, in order. */
+describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
+  /** The sections the sub-menu offers, by name. */
+  const subMenu = async () => screen.findByRole('navigation', { name: 'Settings sections' });
+  const sectionNames = (nav: HTMLElement) =>
+    within(within(nav).getAllByRole('list')[0] as HTMLElement)
+      .getAllByRole('link')
+      .map((l) => l.querySelector('.settings-nav-label')?.textContent ?? l.textContent);
+  /** The rows a section opens, by title, in order. */
   const rows = (main: HTMLElement) =>
     [...main.querySelectorAll('a.rowbtn .doc-title')].map((t) => t.textContent);
 
-  it('your account, notifications, the household and your data, for an owner', async () => {
-    // A restore paused a link: After a restore is Home's, not here.
-    const state = at('/settings', {
-      ...EVERYTHING,
-      shares: [{ id: 'sh-1', state: 'paused', document_title: 'Lease', created_by_name: 'M' }],
-    });
-    const main = (await screen.findByRole('heading', { name: 'Settings', level: 1 })).closest(
-      'main',
-    ) as HTMLElement;
-    expect(
-      within(main)
-        .getAllByRole('heading', { level: 2 })
-        .map((h) => h.textContent),
-    ).toEqual(['Your account', 'Notifications', 'Household', 'Your data']);
-    expect(within(main).getByRole('button', { name: 'Change your password' })).toBeInTheDocument();
-    expect(
-      await within(main).findByRole('heading', { name: 'Two-step sign-in' }),
-    ).toBeInTheDocument();
-    expect(within(main).getByRole('heading', { name: 'Passkeys' })).toBeInTheDocument();
-    expect(within(main).getByRole('heading', { name: 'Signed-in devices' })).toBeInTheDocument();
-    expect(within(main).getByRole('heading', { name: 'Export everything' })).toBeInTheDocument();
-    expect(rows(main)).toEqual([
-      'How you hear about things',
-      'Family',
-      // The household's rule for Only me documents (5.41): a setting, so here.
-      'Household',
-      'Kinds of document',
-      'Where your files are kept',
-      'Where email comes from',
-    ]);
-    // None of what has a place of its own (the rows above), not even After a
-    // restore while it waits; and no Sign out, which is the account menu's.
-    await waitFor(() =>
-      expect(state.calls.some((c) => c.url === '/api/v1/after-restore')).toBe(false),
-    );
-    expect(within(main).queryByRole('link', { name: /After a restore/ })).toBeNull();
-    expect(within(main).queryByRole('link', { name: /What has been happening/ })).toBeNull();
-    expect(within(main).queryByRole('button', { name: 'Sign out' })).toBeNull();
-    // Said where they went instead.
-    expect(main).toHaveTextContent('Settings holds settings only.');
-    expect(within(main).getByRole('link', { name: 'Files sent to you' })).toHaveAttribute(
-      'href',
-      '/inbox/sent',
-    );
-    expect(within(main).getByRole('link', { name: 'People outside the family' })).toHaveAttribute(
-      'href',
-      '/people/outside',
-    );
-    await expectAccessible();
-  });
+  const SECTIONS: Record<Role, string[]> = {
+    owner: ['Your account', 'Notifications', 'Household', 'Your data', 'For owners'],
+    adult: ['Your account', 'Notifications', 'Household', 'Your data'],
+    teen: ['Your account', 'Notifications'],
+    viewer: ['Your account', 'Notifications'],
+  };
 
-  it('an adult keeps the kinds of document, and reads the Only me rule, under Household', async () => {
-    at('/settings', EVERYTHING, 'adult');
-    const main = (await screen.findByRole('heading', { name: 'Settings', level: 1 })).closest(
-      'main',
-    ) as HTMLElement;
-    expect(rows(main)).toEqual(['How you hear about things', 'Household', 'Kinds of document']);
-    expect(within(main).getByRole('link', { name: /^Household/ })).toHaveAttribute(
-      'href',
-      '/settings/household',
-    );
-    expect(within(main).getByRole('heading', { name: 'Your data', level: 2 })).toBeInTheDocument();
-  });
-
-  it.each(['teen', 'viewer'] as const)(
-    'a %s has their account and notifications, and no export they would be refused',
+  it.each(['owner', 'adult', 'teen', 'viewer'] as const)(
+    'at 1280, a %s’s Settings opens on its first section, the sub-menu beside it with only their sections',
     async (role) => {
+      const before = window.history.length;
       at('/settings', EVERYTHING, role);
-      const main = (await screen.findByRole('heading', { name: 'Settings', level: 1 })).closest(
-        'main',
-      ) as HTMLElement;
+      await waitFor(() => expect(window.location.pathname).toBe('/settings/account'));
+      // In place of /settings, not a step after it.
+      expect(window.history.length).toBe(before);
+      // Asked for again: the page it opened on is drawn afresh.
+      await waitFor(async () =>
+        expect(
+          within(await subMenu()).getByRole('link', { name: /^Your account/ }),
+        ).toHaveAttribute('aria-current', 'page'),
+      );
+      const nav = await subMenu();
+      expect(sectionNames(nav)).toEqual(SECTIONS[role]);
+      // Links, the current one marked: not tabs.
+      expect(within(nav).queryByRole('tab')).toBeNull();
       expect(
-        within(main)
-          .getAllByRole('heading', { level: 2 })
-          .map((h) => h.textContent),
-      ).toEqual(['Your account', 'Notifications']);
-      expect(rows(main)).toEqual(['How you hear about things']);
-      expect(within(main).queryByRole('heading', { name: 'Export everything' })).toBeNull();
+        within(nav)
+          .getAllByRole('link')
+          .filter((l) => l.hasAttribute('aria-current')),
+      ).toHaveLength(1);
+      expect(await screen.findByRole('heading', { level: 1, name: 'Your account' })).toBeVisible();
+      expect(document.title).toBe('Settings: your account – Family Document Vault');
+      // The shell's own Settings, one entry, current.
+      expect(within(await sidebar()).getByRole('link', { name: 'Settings' })).toHaveAttribute(
+        'aria-current',
+        'page',
+      );
+      await expectAccessible();
     },
   );
 
-  it('where email comes from is a setting of its own, an owner’s', async () => {
-    at('/settings', EVERYTHING);
+  it.each(['owner', 'adult', 'teen', 'viewer'] as const)(
+    'at 320, a %s’s Settings is the list of their sections; each opens its page, with Back to Settings',
+    async (role) => {
+      at('/settings', EVERYTHING, role, 320);
+      await screen.findByRole('heading', { level: 1, name: 'Settings' });
+      const list = screen.getByRole('navigation', { name: 'Settings sections' });
+      expect(
+        within(list)
+          .getAllByRole('link')
+          .map((l) => l.querySelector('.doc-title')?.textContent),
+      ).toEqual(SECTIONS[role]);
+      expect(window.location.pathname).toBe('/settings');
+      expect(document.title).toBe('Settings – Family Document Vault');
+      await expectAccessible();
+      fireEvent.click(within(list).getByRole('link', { name: /^Notifications/ }));
+      expect(await screen.findByRole('heading', { level: 1, name: 'Notifications' })).toBeVisible();
+      // No sub-menu on a phone: the way back is the page's own.
+      expect(screen.queryByRole('navigation', { name: 'Settings sections' })).toBeNull();
+      expect(screen.getByRole('link', { name: 'Back to Settings' })).toHaveAttribute(
+        'href',
+        '/settings',
+      );
+      await waitFor(() =>
+        expect(screen.getByRole('heading', { level: 1, name: 'Notifications' })).toHaveFocus(),
+      );
+    },
+  );
+
+  it('a page under a section keeps its address; the sub-menu marks its section', async () => {
+    for (const [path, section, heading] of [
+      ['/settings/family', 'Household', 'Family'],
+      ['/settings/kinds', 'Household', 'Kinds of document'],
+      ['/settings/storage', 'For owners', 'Where your files are kept'],
+      ['/settings/email', 'For owners', 'Where email comes from'],
+    ] as const) {
+      at(path, { ...EVERYTHING, identities: {} });
+      const nav = await subMenu();
+      expect(await screen.findByRole('heading', { level: 1, name: heading })).toBeVisible();
+      expect(window.location.pathname).toBe(path);
+      const marked = within(nav)
+        .getAllByRole('link')
+        .filter((l) => l.hasAttribute('aria-current'));
+      expect(
+        marked.map((l) => [
+          l.querySelector('.settings-nav-label')?.textContent,
+          l.getAttribute('aria-current'),
+        ]),
+      ).toEqual([[section, 'true']]);
+      expect(within(await sidebar()).getByRole('link', { name: 'Settings' })).toHaveAttribute(
+        'aria-current',
+        'page',
+      );
+      cleanup();
+    }
+  });
+
+  it('each section has its own page title and heading; moving to one puts the focus on its heading', async () => {
+    at('/settings/account', EVERYTHING);
+    const nav = await subMenu();
+    await screen.findByRole('heading', { level: 1, name: 'Your account' });
+    for (const [name, path, heading, title] of [
+      ['Notifications', '/settings/notifications', 'Notifications', 'Settings: notifications'],
+      ['Household', '/settings/household', 'Household', 'Settings: household'],
+      ['Your data', '/settings/data', 'Your data', 'Settings: your data'],
+      ['For owners', '/settings/owners', 'For owners', 'Settings: for owners'],
+      ['Your account', '/settings/account', 'Your account', 'Settings: your account'],
+    ] as const) {
+      fireEvent.click(within(nav).getByRole('link', { name: new RegExp(`^${name}`) }));
+      await waitFor(() => expect(window.location.pathname).toBe(path));
+      const h1 = await screen.findByRole('heading', { level: 1, name: heading });
+      await waitFor(() => expect(h1).toHaveFocus());
+      expect(document.title).toBe(`${title} – Family Document Vault`);
+      expect(within(nav).getByRole('link', { name: new RegExp(`^${name}`) })).toHaveAttribute(
+        'aria-current',
+        'page',
+      );
+    }
+  });
+
+  it('an old address with a place on the page goes to that place in its section, at any width', async () => {
+    for (const px of [WIDE, 320]) {
+      at('/settings#two-step', EVERYTHING, 'owner', px);
+      await waitFor(() => expect(window.location.pathname).toBe('/settings/account'));
+      expect(window.location.hash).toBe('#two-step');
+      expect(await screen.findByRole('heading', { name: 'Two-step sign-in' })).toBeVisible();
+      cleanup();
+    }
+  });
+
+  it('widened past 768 px on the list, Settings opens its first section', async () => {
+    at('/settings', EVERYTHING, 'owner', 320);
+    await screen.findByRole('heading', { level: 1, name: 'Settings' });
+    resizeTo(WIDE);
+    await waitFor(() => expect(window.location.pathname).toBe('/settings/account'));
+    expect(await subMenu()).toBeVisible();
+  });
+
+  it('every setting there was is in a section, for an owner', async () => {
+    // A restore paused a link: After a restore is Home's, not here.
+    const state = at('/settings/account', {
+      ...EVERYTHING,
+      shares: [{ id: 'sh-1', state: 'paused', document_title: 'Lease', created_by_name: 'M' }],
+    });
+    let main = (await screen.findByRole('heading', { level: 1, name: 'Your account' })).closest(
+      'main',
+    ) as HTMLElement;
+    // Your account: the password, two-step sign-in, passkeys, the devices, the single keys.
+    expect(within(main).getByRole('button', { name: 'Change your password' })).toBeInTheDocument();
+    expect(await within(main).findByRole('heading', { name: 'Two-step sign-in' })).toBeVisible();
+    expect(within(main).getByRole('heading', { name: 'Passkeys' })).toBeVisible();
+    expect(within(main).getByRole('heading', { name: 'Signed-in devices' })).toBeVisible();
+    expect(within(main).getByRole('checkbox', { name: 'Single-key shortcuts' })).toBeVisible();
+    await expectAccessible();
+    const go = async (name: string, heading: string) => {
+      fireEvent.click(within(await subMenu()).getByRole('link', { name: new RegExp(`^${name}`) }));
+      return (await screen.findByRole('heading', { level: 1, name: heading })).closest(
+        'main',
+      ) as HTMLElement;
+    };
+    // Notifications: how you hear about things.
+    main = await go('Notifications', 'Notifications');
+    expect(within(main).getByRole('heading', { name: 'What you want' })).toBeVisible();
+    await expectAccessible();
+    // Household: the Only me rule, here; who sees identity details and the kinds, a page each.
+    main = await go('Household', 'Household');
+    expect(
+      await within(main).findByRole('heading', {
+        name: 'Only me documents and links outside the family',
+      }),
+    ).toBeVisible();
+    expect(rows(main)).toEqual(['Family', 'Kinds of document']);
+    await expectAccessible();
+    // Your data: the export.
+    main = await go('Your data', 'Your data');
+    expect(within(main).getByRole('button', { name: 'Make an export' })).toBeVisible();
+    await expectAccessible();
+    // For owners: where files are kept, where email comes from.
+    main = await go('For owners', 'For owners');
+    expect(rows(main)).toEqual(['Where your files are kept', 'Where email comes from']);
+    await expectAccessible();
+    // What has a place of its own is said beside the sections, never here.
+    const nav = await subMenu();
+    expect(nav).toHaveTextContent('Settings holds settings only.');
+    expect(within(nav).getByRole('link', { name: 'Files sent to you' })).toHaveAttribute(
+      'href',
+      '/inbox/sent',
+    );
+    expect(within(nav).getByRole('link', { name: 'People outside the family' })).toHaveAttribute(
+      'href',
+      '/people/outside',
+    );
+    await waitFor(() =>
+      expect(state.calls.some((c) => c.url === '/api/v1/after-restore')).toBe(false),
+    );
+    expect(screen.queryByRole('link', { name: /After a restore/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Sign out' })).toBeNull();
+  });
+
+  it('an adult keeps the kinds of document and reads the Only me rule under Household; their data is theirs', async () => {
+    at('/settings/household', EVERYTHING, 'adult');
+    const main = (await screen.findByRole('heading', { level: 1, name: 'Household' })).closest(
+      'main',
+    ) as HTMLElement;
+    expect(rows(main)).toEqual(['Kinds of document']);
+    expect(
+      await within(main).findByRole('heading', {
+        name: 'Only me documents and links outside the family',
+      }),
+    ).toBeVisible();
+    cleanup();
+    at('/settings/data', EVERYTHING, 'adult');
+    expect(await screen.findByRole('button', { name: 'Make an export' })).toBeVisible();
+  });
+
+  it.each(['teen', 'viewer'] as const)(
+    'a %s has their account and notifications; an address for a section not theirs refuses, as before',
+    async (role) => {
+      at('/settings/data', EVERYTHING, role);
+      expect(await screen.findByText('Only an adult can export the whole vault.')).toBeVisible();
+      expect(screen.queryByRole('button', { name: 'Make an export' })).toBeNull();
+      cleanup();
+      at('/settings/owners', EVERYTHING, role);
+      expect(
+        await screen.findByText('Only an owner can change where your files are kept.'),
+      ).toBeVisible();
+      expect(screen.queryByRole('link', { name: /Where your files are kept/ })).toBeNull();
+    },
+  );
+
+  it('where email comes from is under For owners, an owner’s', async () => {
+    at('/settings/owners', EVERYTHING);
     fireEvent.click(await screen.findByRole('link', { name: /Where email comes from/ }));
     await screen.findByRole('heading', { name: 'Where email comes from', level: 1 });
     expect(await screen.findByLabelText('Provider')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Back to For owners' })).toHaveAttribute(
+      'href',
+      '/settings/owners',
+    );
     cleanup();
     at('/settings/email', EVERYTHING, 'adult');
     expect(

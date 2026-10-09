@@ -361,7 +361,8 @@ const LISTS: Array<[string, string, Role, string]> = [
 
 /** Forms, and what is read as one: a readable width, as they were. */
 const FORMS: Array<[string, string, Role, string]> = [
-  ['Settings', '/settings', 'owner', 'Settings'],
+  ['Settings → Your account', '/settings/account', 'owner', 'Your account'],
+  ['Settings → Household', '/settings/household', 'adult', 'Household'],
   ['Ask for documents', '/sharing/ask', 'adult', 'Ask for documents'],
   ['a profile', '/people/m-2', 'owner', 'Sara Seikh'],
   ['the add card', '/add', 'adult', 'Add a document'],

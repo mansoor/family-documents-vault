@@ -33,7 +33,7 @@ const AUDIENCE_WHO: Record<IdentityAudience, string> = {
 export function FamilyScreen() {
   return (
     <main className="page page-top has-nav">
-      <TopBar title="Family" back="/settings" />
+      <TopBar title="Family" back="/settings/household" backLabel="Back to Household" />
       <IdentityAudienceCard />
     </main>
   );

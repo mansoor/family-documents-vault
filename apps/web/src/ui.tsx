@@ -441,6 +441,7 @@ export function TopBar({
   title,
   back,
   backInApp,
+  backLabel,
   action,
 }: {
   title: string;
@@ -453,6 +454,8 @@ export function TopBar({
    * the browser's own Back.
    */
   backInApp?: boolean;
+  /** What Back is called, where it goes somewhere in particular: "Back to Settings". */
+  backLabel?: string;
   action?: ReactNode;
 }) {
   const navigate = useNavigate();
@@ -466,7 +469,7 @@ export function TopBar({
           // R5 review).
           replace={backInApp === true}
           className="back"
-          aria-label="Back"
+          aria-label={backLabel ?? 'Back'}
           onClick={(e) => {
             if (!backInApp || e.defaultPrevented || e.button !== 0) return;
             if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || !cameFromTheApp()) return;

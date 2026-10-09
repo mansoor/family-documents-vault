@@ -5,11 +5,12 @@ import { api, type SmtpProvider, type SmtpView } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import * as push from '../push.js';
 import { Button, ErrorNote, Field, TopBar } from '../ui.js';
+import { SettingsPage } from './Settings.js';
 
 /**
- * "How you hear about things": notifications on this device, and what each
- * person wants. The household's own email settings are Household's, in
- * Settings, since R1 (`EmailScreen`).
+ * Settings → Notifications, "how you hear about things": notifications on
+ * this device, and what each person wants. The household's own email
+ * settings are For owners', in Settings (`EmailScreen`).
  */
 export function NotificationsScreen() {
   const { withToken, session, authVersion } = useApp();
@@ -51,8 +52,7 @@ export function NotificationsScreen() {
   };
 
   return (
-    <main className="page page-top">
-      <TopBar title="How you hear about things" back="/settings" />
+    <SettingsPage title="Notifications">
       <p className="lede">
         Everything due lands in one message a day, not one per document. Nothing fires before 9 in
         the morning.
@@ -114,26 +114,31 @@ export function NotificationsScreen() {
         {isOwner ? (
           <p className="muted">
             Email needs the mail server set up:{' '}
-            <Link to="/settings/email">Where email comes from</Link>, under Household in Settings.
+            <Link to="/settings/email">Where email comes from</Link>, under For owners in Settings.
           </p>
         ) : (
           <p className="muted">Email needs an owner to set up the mail server.</p>
         )}
       </section>
-    </main>
+    </SettingsPage>
   );
 }
 
 /**
  * Where email comes from (decision 13: bring your own SMTP, with presets
- * and a Test): the household's, set by an owner. Under Household in
- * Settings since R1; on How you hear about things until then.
+ * and a Test): the household's, set by an owner. Under For owners in
+ * Settings since its sections (under Household from R1; on How you hear
+ * about things before that).
  */
 export function EmailScreen() {
   const { session } = useApp();
   return (
     <main className="page page-top">
-      <TopBar title="Where email comes from" back="/settings" />
+      <TopBar
+        title="Where email comes from"
+        back="/settings/owners"
+        backLabel="Back to For owners"
+      />
       {session.info?.role === 'owner' ? (
         <SmtpSection />
       ) : (

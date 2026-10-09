@@ -2878,6 +2878,87 @@ a.menu-item {
   text-underline-offset: 2px;
 }
 
+/* Settings in sections (the owner's ask): from 768 px a sub-menu down the
+   left of the Settings area, links with the current one marked, and the
+   section beside it at a form's width. */
+.settings-area {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.settings-area > .page {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-nav {
+  flex: none;
+  width: 240px;
+  position: sticky;
+  top: var(--shell-top);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px 0 24px 24px;
+}
+
+.shell-mid .settings-nav {
+  width: 200px;
+}
+
+.settings-nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-nav-list a {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-height: var(--tap);
+  padding: 8px 12px;
+  border-radius: var(--radius-m);
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.settings-nav-list a:hover {
+  background: var(--surface);
+}
+
+.settings-nav-list a:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.settings-nav-list a[aria-current] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.settings-nav-note {
+  color: var(--ink-muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.settings-nav .elsewhere {
+  font-size: 14px;
+}
+
+.settings-server {
+  margin: 0;
+  font-size: 13px;
+}
+
 /* ---- Phase 6, R2: Documents as a table ----
    From 768 px the page is the window less the shell: its heading and
    filters, then the table in a box of its own that scrolls both ways (its

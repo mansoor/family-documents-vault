@@ -280,7 +280,7 @@ own network needs `FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS=true`.
 [Essentials on a phone](#essentials-on-a-phone). `FDV_OFFLINE_MAX_DAYS` (90 by default)
 is how long a phone may show them without checking in.
 
-**A lost phone.** Sign it out from any other device — _Settings → Signed-in devices_ in
+**A lost phone.** Sign it out from any other device — _Settings → Your account → Signed-in devices_ in
 the browser, or in the app on another phone. At once, the vault:
 
 - ends that phone's session, so its tokens stop working, and its permission to keep
@@ -371,13 +371,13 @@ Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/
 
 ### Sign-in and sessions
 
-- **Two-step sign-in** with an authenticator app (Google Authenticator, Authy, 1Password…) is set up in Settings and is required for owners. Sign-in then asks for the six-digit code after the password.
+- **Two-step sign-in** with an authenticator app (Google Authenticator, Authy, 1Password…) is set up in Settings → Your account and is required for owners. Sign-in then asks for the six-digit code after the password.
 - Passwords are hashed with Argon2id. Sign-in answers with a 15-minute access token and a refresh token that rotates on every use.
 - **A session lasts 30 days from when it was last used, and 180 days at most** from the sign-in: a device used every week stays signed in for half a year, then asks once for the password. This is the same for browsers and the phone app.
 - A refresh token presented twice is treated as stolen and that device is signed out — with one exception, for answers that never arrive (a phone on a network that loses them, a browser page reloaded while it was refreshing): the token just replaced may be presented once more, within 30 seconds, by the same client — the same app installation, or the same browser from the same address. Anyone else presenting it, or presenting it later, ends the session. Every refresh token names the session it belongs to, so this holds for any token the vault ever gave that session, however many refreshes ago: somebody who copied a token and used it, and its successor, before you did is caught when yours comes in, and you are when theirs does. (A device that still holds a token from before this kind is given one of the new kind at its next refresh, and the vault remembers the old token from then on, however many refreshes later; tokens it had replaced before the upgrade are remembered only as before.)
 - **Sign out everywhere.** An owner can sign somebody out of every device at once from their page (**People → their name → Account**), with a passkey or a code from an authenticator app — for a lost phone, or a password somebody else knows. Another owner too, who is told by email; anybody it is about is emailed. Their sign-in stays as it was: they sign in again with their own password. To keep them out, lock their sign-in instead.
 - When a session ends, the app is told why — it expired, it was signed out, its token was used twice, or the person was taken out of the household — so it can say so in plain words.
-- Every signed-in device is listed in **Settings → Signed-in devices**; any of them can be signed out from another.
+- Every signed-in device is listed in **Settings → Your account → Signed-in devices**; any of them can be signed out from another.
 - The token signing key is derived from `FDV_MASTER_KEY`. [Rotating the master key](#rotating-the-master-key) signs everyone out.
 - Sign-in attempts are limited to 10 per minute per address.
 
@@ -451,7 +451,7 @@ them back. Only an owner can do it, and not to another owner.
 
 ### Passwords
 
-**Changing one** is in Settings. Your password is not only a way in: it also
+**Changing one** is in Settings → Your account. Your password is not only a way in: it also
 unlocks your own _Only me_ documents, so changing it moves that key across too,
 and every other device you are signed in on is signed out. If you sign in with
 a passkey and never had a password, you can set one by confirming it is you.
@@ -573,7 +573,7 @@ and the phone keeps no others:
 Keeping them asks for the person's password again (not a code: the
 authenticator is usually on the same phone). That permission lasts 30 days at
 most, never longer than the phone's sign-in, and ends when the phone is
-signed out — from the phone, from **Settings → Signed-in devices**, which
+signed out — from the phone, from **Settings → Your account → Signed-in devices**, which
 says which devices keep Essentials, or by a password change on any device. When
 it ends, the phone removes what it kept the next time it checks in. It never
 skips the "confirm it's you" the vault asks before opening an Essential
@@ -720,11 +720,11 @@ docker compose run --rm --no-deps -v "$PWD/fdv-2026-09-20T02-30-00-000Z.sql.enc:
 
 A database restored by hand — loaded with `psql` from `decrypt-backup <file> out.sql`, as this README once said — can read itself again from the first time the vault starts on it. But nothing signed anybody out: a phone signed out, or a password changed, since that backup is signed in again. Have everybody change their password, which signs out everything else of theirs, or restore again with `restore-backup`.
 
-**Export everything** in Settings makes a ZIP of every original plus a readable index — the way to leave, and a second backup that needs no software at all. It holds the photos and identity details you can see as well: your own identity details whole, Only me included, and other people's without their ID numbers, which the vault shows only when you confirm it's you.
+**Export everything** in Settings → Your data makes a ZIP of every original plus a readable index — the way to leave, and a second backup that needs no software at all. It holds the photos and identity details you can see as well: your own identity details whole, Only me included, and other people's without their ID numbers, which the vault shows only when you confirm it's you.
 
 ### Notifications and email
 
-**Notifications work out of the box.** Open the vault, go to _Settings → How you hear about things_, and turn them on: the day's reminders arrive on that device even when the vault is closed. Nothing is configured, no account anywhere is involved, and the signing keys are generated into your `.env`. On iPhone and iPad, add the vault to the home screen first — Apple only allows notifications for installed web apps.
+**Notifications work out of the box.** Open the vault, go to _Settings → Notifications_, and turn them on: the day's reminders arrive on that device even when the vault is closed. Nothing is configured, no account anywhere is involved, and the signing keys are generated into your `.env`. On iPhone and iPad, add the vault to the home screen first — Apple only allows notifications for installed web apps.
 
 **Email is optional and uses your own mail account.** Every other adult is told whenever an owner changes it, because everything the vault emails travels through it — and for the same reason no email ever names a private document, even to the person it belongs to; that is left to notifications, which are encrypted to your own device. An owner picks a provider (Gmail, Fastmail, iCloud, Outlook, Amazon SES, Postmark, or anything else with an SMTP server), pastes an address and an app password, and presses **Save and send a test**. A real message goes to your own address, and if it does not arrive the screen says why in plain words. Reminders then come from an address your family recognises, and no third party ever handles them.
 
@@ -740,7 +740,7 @@ What the phone is sent says nothing a lock screen should not: _how many_ things 
 - **Your own ntfy on your network** also works, but the vault refuses by default to send anything to an address inside its own network — otherwise whoever registers a device could point the vault at your router or a cloud metadata service. Set `FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS=true` in `.env` (it applies to both the API and the worker) if your distributor is on your LAN.
 - Push addresses must start with `https://`.
 - Signing out, signing a device out from another, a password change or reset, and taking a sign-in away all remove that phone's notifications at once — and tell the phone, so the app can forget what it holds.
-- _Settings → How you hear about things_ lists every browser and phone that hears from the vault, marks the ones that have stopped working ("Not working — last tried …"), and sends a test to any of yours. A device the push service says is gone is removed by itself; one that keeps failing is marked after ten tries in a row.
+- _Settings → Notifications_ lists every browser and phone that hears from the vault, marks the ones that have stopped working ("Not working — last tried …"), and sends a test to any of yours. A device the push service says is gone is removed by itself; one that keeps failing is marked after ten tries in a row.
 
 ### Where files are kept
 

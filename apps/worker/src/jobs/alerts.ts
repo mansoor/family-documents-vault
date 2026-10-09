@@ -161,7 +161,9 @@ async function pushAlert(deps: AlertDeps, alert: Alert): Promise<number> {
   const payload = JSON.stringify({
     title: alert.subject,
     body: alert.body,
-    url: `${deps.baseUrl}/settings`,
+    // About the sign-in and who owns the vault: Your account, where the
+    // devices signed in are.
+    url: `${deps.baseUrl}/settings/account`,
     // No tag: one alert must never replace another in the tray.
     count: 1,
   });

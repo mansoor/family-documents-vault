@@ -2403,7 +2403,9 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       `Who can see identity details in household ${seeded} went back to the owners and each person (it was all adults).`,
     );
     expect(words).toContain('1 notice still waiting was withdrawn');
-    expect(words).toContain('Settings → Family; that waits 72 hours, while everybody is told.');
+    expect(words).toContain(
+      'Settings → Household → Family; that waits 72 hours, while everybody is told.',
+    );
   }, 60_000);
 
   it('an export built under a wider audience cannot be downloaded after a restore (5.27)', async () => {

@@ -268,7 +268,7 @@ describe('App', () => {
     const state = fresh();
     installFakeApi(state);
     signedIn();
-    window.history.replaceState({}, '', '/settings');
+    window.history.replaceState({}, '', '/settings/account');
     render(<App />);
     await waitFor(() =>
       expect(state.calls.filter((c) => c.url.startsWith('/api/v1/auth/sessions'))).toHaveLength(1),
@@ -276,7 +276,7 @@ describe('App', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(state.refreshCalls).toBe(1);
     expect(state.sessionEnded).toBe(false);
-    expect(window.location.pathname).toBe('/settings');
+    expect(window.location.pathname).toBe('/settings/account');
   });
 
   it('losing the network says so, instead of showing an empty household', async () => {
@@ -431,7 +431,7 @@ describe('App', () => {
     const state = fresh({ passkeys: [{ ...PASSKEY }] });
     installFakeApi(state);
     signedIn();
-    window.history.replaceState({}, '', '/settings');
+    window.history.replaceState({}, '', '/settings/account');
     render(<App />);
 
     await screen.findByRole('heading', { name: 'Passkeys' });
@@ -453,7 +453,7 @@ describe('App', () => {
     const state = fresh({ stepUpNeeded: true });
     installFakeApi(state);
     signedIn();
-    window.history.replaceState({}, '', '/settings');
+    window.history.replaceState({}, '', '/settings/data');
     render(<App />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Make an export' }));
@@ -484,7 +484,7 @@ describe('App', () => {
     const state = fresh({ stepUpNeeded: true });
     installFakeApi(state);
     signedIn();
-    window.history.replaceState({}, '', '/settings');
+    window.history.replaceState({}, '', '/settings/data');
     render(<App />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Make an export' }));
@@ -785,7 +785,7 @@ describe('App', () => {
     const state = fresh();
     installFakeApi(state);
     signedIn();
-    window.history.replaceState({}, '', '/settings');
+    window.history.replaceState({}, '', '/settings/account');
     render(<App />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Change your password' }));
@@ -818,7 +818,7 @@ describe('App', () => {
     const state = fresh({ handoverSince: '2026-10-02T09:05:00.000Z' });
     installFakeApi(state);
     signedIn('adult');
-    window.history.replaceState({}, '', '/settings');
+    window.history.replaceState({}, '', '/settings/account');
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Change your password' }));
     const warned = await screen.findByText(
@@ -844,7 +844,7 @@ describe('App', () => {
     const state = fresh({ stepUpNeeded: true });
     installFakeApi(state);
     signedIn();
-    window.history.replaceState({}, '', '/settings');
+    window.history.replaceState({}, '', '/settings/account');
     render(<App />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Change your password' }));

@@ -575,7 +575,7 @@ export class PasswordService {
       // A link an owner was handed (5.29) never went by email: whoever spent
       // it had it from the owner, so the person is told that, and what to do.
       body: handedOver
-        ? `${handedBy ?? 'An owner'}, an owner of your family vault, was given a one-time link for your sign-in, and it has been used to set a new password. Every device has been signed out and every passkey removed. If you did not choose that password yourself, set one of your own in Settings when you next sign in — that also removes any passkey or two-step sign-in added since — and talk to them.`
+        ? `${handedBy ?? 'An owner'}, an owner of your family vault, was given a one-time link for your sign-in, and it has been used to set a new password. Every device has been signed out and every passkey removed. If you did not choose that password yourself, set one of your own in Settings → Your account when you next sign in — that also removes any passkey or two-step sign-in added since — and talk to them.`
         : 'Somebody used a reset link to set a new password, and every device has been signed out. If that was not you, whoever did it can read your email — deal with that first.',
       emailOnly: true,
     });

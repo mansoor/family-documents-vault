@@ -211,8 +211,8 @@ describe('Settings → Kinds of document (5.12)', () => {
       ['teen', false],
       ['viewer', false],
     ] as const) {
-      open('/settings', role);
-      await screen.findByRole('heading', { name: 'Settings', level: 1 });
+      open('/settings/household', role);
+      await screen.findByRole('heading', { name: 'Household', level: 1 });
       const link = screen.queryByRole('link', { name: /Kinds of document/ });
       expect(link !== null, role).toBe(offered);
       if (link) expect(link).toHaveAttribute('href', '/settings/kinds');

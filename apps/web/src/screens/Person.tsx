@@ -621,7 +621,7 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
       {noTwoStep ? (
         <>
           <p className="status status-warn">{TWO_STEP_FOR_SIGN_INS}</p>
-          <Link to="/settings#two-step" className="btn btn-quiet">
+          <Link to="/settings/account#two-step" className="btn btn-quiet">
             Set up two-step sign-in
           </Link>
         </>

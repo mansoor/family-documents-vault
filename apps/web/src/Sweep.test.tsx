@@ -82,8 +82,9 @@ function press(button: HTMLElement) {
 describe('every page has a title of its own (WCAG 2.4.2)', () => {
   it('every route the app has is named, never by what is on it', () => {
     // Each path App.tsx routes, its parameters filled in.
+    // Settings' sections are routes under /settings, by their own part.
     const paths = [...source('App.tsx').matchAll(/path="([^"*]+)"/g)].map((m) =>
-      (m[1] as string).replace(/:(\w+)/g, 'x-1'),
+      (m[1] as string).replace(/:(\w+)/g, 'x-1').replace(/^(?!\/)/, '/settings/'),
     );
     expect(paths.length).toBeGreaterThan(40);
     const unnamed = paths.filter((p) => pageTitle(p) === APP_NAME);
