@@ -53,6 +53,7 @@ import {
   type DocumentSort,
   type BatchDefaults,
   type BatchItemView,
+  type ActivityKind,
 } from '@fdv/shared';
 import { sha256Of } from './batch-upload.js';
 import { vi } from 'vitest';
@@ -191,7 +192,12 @@ export interface FakeState {
     text: string;
     notable: boolean;
     document_id: string | null;
+    /** Who did it, where the words name them; and what sort of thing (R4). */
+    actor_member_id?: string | null;
+    kind?: ActivityKind;
   }>;
+  /** Answer GET /audit in pages of this many lines, with `next` (R4). */
+  activityPage?: number;
   /** True: every document has had its "only you can open this" moment already. */
   privateNoticeShown: boolean;
   /**
@@ -1898,7 +1904,14 @@ export function installFakeApi(state: FakeState) {
         expires_at: new Date(Date.now() + 36e5).toISOString(),
       });
     }
-    if (path.startsWith('/api/v1/audit')) return json({ items: state.activity, next: null });
+    if (path.startsWith('/api/v1/audit')) {
+      // Pages of `activityPage` lines, older ones `before` an id (R4).
+      const before = Number(query.get('before') ?? 0);
+      const rest = before ? state.activity.filter((l) => l.id < before) : state.activity;
+      const n = state.activityPage ?? rest.length;
+      const items = rest.slice(0, n);
+      return json({ items, next: rest.length > n ? (items.at(-1)?.id ?? null) : null });
+    }
     if (path.endsWith('/visibility') && method === 'POST') {
       const { visibility: to, own_links: ownLinks } = body as {
         visibility: string;

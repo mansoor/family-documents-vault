@@ -545,6 +545,8 @@ export function CollectionsOnHome(props: {
    * are none — they make no new ones.
    */
   onlyGiven?: boolean;
+  /** On a wide Home (R4): a card, the way to all of them beside its heading. */
+  card?: boolean;
 }) {
   const { authVersion } = useApp();
   const { data, error } = useLoad(
@@ -553,11 +555,28 @@ export function CollectionsOnHome(props: {
   );
   const none = data !== null && data.length === 0;
   if (props.onlyGiven && (data === null || none)) return null;
+  const all = (
+    <Link to="/collections" className={props.card ? 'dash-all' : 'seeall'}>
+      All collections
+    </Link>
+  );
   return (
-    <section aria-labelledby="collections-h">
-      <h2 id="collections-h" className="section-h">
-        Collections
-      </h2>
+    <section
+      aria-labelledby="collections-h"
+      className={props.card ? 'card dash-card dash-collections' : undefined}
+    >
+      {props.card ? (
+        <div className="dash-head">
+          <h2 id="collections-h" className="dash-h">
+            Collections
+          </h2>
+          {!none && all}
+        </div>
+      ) : (
+        <h2 id="collections-h" className="section-h">
+          Collections
+        </h2>
+      )}
       <ErrorNote message={props.quiet ? null : error} />
       {data !== null && (
         <div className="tiles">
@@ -578,11 +597,7 @@ export function CollectionsOnHome(props: {
           )}
         </div>
       )}
-      {!none && (
-        <Link to="/collections" className="seeall">
-          All collections
-        </Link>
-      )}
+      {!none && !props.card && all}
     </section>
   );
 }

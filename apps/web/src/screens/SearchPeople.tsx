@@ -47,6 +47,8 @@ import { addLink, DocRow, rowLine, RowMain, type RowPick } from './Home.js';
 /** The most documents put in a collection at once, as the vault takes them. */
 const MOST_AT_ONCE = 200;
 import { PeopleTabs } from '../guests.js';
+import { useShellMode } from '../shell.js';
+import { None } from '../table-grid.js';
 import { InvitePanel } from './Invite.js';
 import { OwnerChangeNotices } from './Roles.js';
 
@@ -570,6 +572,8 @@ export function PeopleScreen() {
   const [busy, setBusy] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const letters = initialsFor(data?.members ?? []);
+  // From 768 px the family is a table (R4); on a phone, today's rows.
+  const wide = useShellMode() !== 'phone';
 
   const add = async (e: FormEvent) => {
     e.preventDefault();
@@ -602,33 +606,41 @@ export function PeopleScreen() {
     }
   };
   return (
-    <main className="page page-top page-wide has-nav">
+    <main className="page page-top page-wide has-nav people-page">
       <TopBar title="People" />
       <PeopleTabs at="family" />
       <ErrorNote message={error} />
       <OwnerChangeNotices items={data?.changes ?? []} onChanged={reload} />
       <p className="muted">{data ? `${data.members.length} in the household` : ''}</p>
-      <ul className="list">
-        {/* A name here opens the person's profile (A64); back comes here. */}
-        {(data?.members ?? []).map((m) => (
-          <li key={m.id}>
-            <button
-              type="button"
-              className="rowbtn person"
-              onClick={() => void navigate(`/people/${m.id}`)}
-            >
-              <PersonAvatar person={m} initials={letters.get(m.id)} size={44} />
-              <span>
-                <strong>{m.display_name}</strong>
-                <span className="muted">
-                  {m.role ? roleLabel(m.role) : 'No sign-in'} · {m.document_count} document
-                  {m.document_count === 1 ? '' : 's'}
+      {wide ? (
+        <FamilyTable
+          members={data?.members ?? []}
+          invitations={data?.invitations ?? []}
+          letters={letters}
+        />
+      ) : (
+        <ul className="list">
+          {/* A name here opens the person's profile (A64); back comes here. */}
+          {(data?.members ?? []).map((m) => (
+            <li key={m.id}>
+              <button
+                type="button"
+                className="rowbtn person"
+                onClick={() => void navigate(`/people/${m.id}`)}
+              >
+                <PersonAvatar person={m} initials={letters.get(m.id)} size={44} />
+                <span>
+                  <strong>{m.display_name}</strong>
+                  <span className="muted">
+                    {m.role ? roleLabel(m.role) : 'No sign-in'} · {m.document_count} document
+                    {m.document_count === 1 ? '' : 's'}
+                  </span>
                 </span>
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {adding ? (
         <form onSubmit={(e) => void add(e)} className="card stack">
           <ErrorNote message={addError} />
@@ -683,6 +695,73 @@ export function PeopleScreen() {
         onChanged={reload}
       />
     </main>
+  );
+}
+
+/**
+ * Whether somebody signs in, as the People screen may say it: taken away,
+ * signs in, invited (to whoever is shown the invitations: an adult or an
+ * owner), or none.
+ */
+export function signInWords(m: Member, invitations: readonly Invitation[]): string {
+  if (m.sign_in_removed) return 'Taken away';
+  if (m.has_account) return 'Signs in';
+  if (invitations.some((i) => i.member_id === m.id && i.state === 'pending')) return 'Invited';
+  return 'No sign-in';
+}
+
+/**
+ * The family as a table, from 768 px (R4): a plain table — its one control
+ * in each row is the name, a link to the person's page, so Tab goes from
+ * name to name and nothing else in it is a stop. Nothing is shown here that
+ * today's rows and a person's page do not show this reader.
+ */
+function FamilyTable(props: {
+  members: Member[];
+  invitations: Invitation[];
+  letters: Map<string, string>;
+}) {
+  return (
+    <div className="tbl-wrap tbl-static">
+      <table className="tbl tbl-plain">
+        <caption className="visually-hidden">The family</caption>
+        <colgroup>
+          <col />
+          <col style={{ width: 160 }} />
+          <col style={{ width: 120 }} />
+          <col style={{ width: 130 }} />
+          <col style={{ width: 120 }} />
+        </colgroup>
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Relationship</th>
+            <th scope="col">Role</th>
+            <th scope="col">Sign-in</th>
+            <th scope="col" className="end">
+              Documents
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {props.members.map((m) => (
+            <tr key={m.id}>
+              <td>
+                {/* A name opens the person's profile (A64); back comes here. */}
+                <Link className="person-cell" to={`/people/${m.id}`}>
+                  <PersonAvatar person={m} initials={props.letters.get(m.id)} size={32} />
+                  <span className="cell-title">{m.display_name}</span>
+                </Link>
+              </td>
+              <td>{m.relationship ? <span className="clip">{m.relationship}</span> : <None />}</td>
+              <td>{m.role ? roleLabel(m.role) : <None />}</td>
+              <td>{signInWords(m, props.invitations)}</td>
+              <td className="end">{m.document_count}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

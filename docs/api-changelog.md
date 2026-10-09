@@ -4080,6 +4080,19 @@ unrecognised, problem, unread }`); `counts.removed` on every batch.
     `BatchUndoInput`, `BatchUndoResult`, `UndoKept`, `BatchLevelCounts`.
     `@fdv/client`: `acceptReady`, `undoAcceptReady`, and `batches(token, {
 levels })`. The client fake answers the same.
+  - Home, People, Collections, Activity and Trash for wide screens (R4).
+    **Added** to each line of `GET /api/v1/audit`, for the Activity table's
+    Who column and filters: `actor_member_id`, the member who did it, only
+    where the line's own words name them to its reader — `null` for
+    "Somebody", a link, an invitation accepted (named by its address), a
+    code sent, a link or request locked or closed, files removed or moved,
+    and anything else that does not say who — and `kind`, from the action
+    alone: `added`, `changed`, `opened`, `shared`, `people`, `sign_in`,
+    `trash` or `vault` (any action not listed is `vault`). Which lines
+    anybody is shown is unchanged. Absent from an older vault's lines; a
+    client ignores them if it does not know them. `@fdv/shared`:
+    `ActivityKind`, `ACTIVITY_KINDS`, `activityKind`. The client fake keeps a
+    log of the documents created, and answers `GET /audit` with them.
 
 ## Deprecations in effect
 

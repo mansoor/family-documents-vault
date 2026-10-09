@@ -63,7 +63,101 @@ export interface ActivityLine {
   notable: boolean;
   /** Where tapping it should go, when there is somewhere. */
   document_id: string | null;
+  /**
+   * Who did it, as a member of the household (R4): only where the line's
+   * own words name them to its reader — never for "Somebody", a link, a
+   * code sent, or a line that says nothing of who. Null otherwise. For the
+   * Activity table's Who column and person filter. Absent from older vaults.
+   */
+  actor_member_id?: string | null;
+  /**
+   * What sort of thing it was, from the action alone and coarser than the
+   * words (R4): for the Activity table's filter. Absent from older vaults.
+   */
+  kind?: ActivityKind;
 }
+
+/** What sort of thing a line is about: the Activity table's filter (R4). */
+export type ActivityKind =
+  'added' | 'changed' | 'opened' | 'shared' | 'people' | 'sign_in' | 'trash' | 'vault';
+
+/** Each kind as the filter says it, in the filter's order. */
+export const ACTIVITY_KINDS: ReadonlyArray<{ value: ActivityKind; label: string }> = [
+  { value: 'added', label: 'Added' },
+  { value: 'changed', label: 'Changed' },
+  { value: 'opened', label: 'Opened and downloaded' },
+  { value: 'shared', label: 'Shared and sent' },
+  { value: 'people', label: 'People and access' },
+  { value: 'sign_in', label: 'Signing in' },
+  { value: 'trash', label: 'Trash' },
+  { value: 'vault', label: 'The vault' },
+];
+
+/**
+ * The kind of an action, by the action alone (R4): never more than the
+ * line's own words say. Anything not listed is the vault's.
+ */
+export function activityKind(action: string): ActivityKind {
+  switch (action) {
+    case 'document.created':
+    case 'document.version_added':
+    case 'incoming.accepted':
+      return 'added';
+    case 'document.viewed':
+    case 'document.downloaded':
+    case 'document.cached_offline':
+    case 'document.opened_offline':
+    case 'incoming.downloaded':
+      return 'opened';
+    case 'document.deleted':
+    case 'document.restored':
+    case 'document.purge_requested':
+    case 'document.purged':
+      return 'trash';
+    case 'household.only_me_sharing_changed':
+      return 'shared';
+    case 'household.profile_updated':
+      return 'changed';
+  }
+  const area = action.slice(0, action.indexOf('.'));
+  switch (area) {
+    case 'document':
+    case 'document_type':
+    case 'document_attribute':
+    case 'collection':
+      return 'changed';
+    case 'share':
+    case 'upload_request':
+    case 'incoming':
+      return 'shared';
+    case 'member':
+    case 'identity':
+    case 'access':
+    case 'invitation':
+    case 'owner_change':
+      return 'people';
+    case 'auth':
+    case 'credential':
+      return 'sign_in';
+    default:
+      return 'vault';
+  }
+}
+
+/**
+ * Lines whose words never name who did it, whatever their first words
+ * happen to be: the id stays null for them (R4).
+ */
+const NEVER_NAMES_ACTOR: ReadonlySet<string> = new Set([
+  'invitation.accepted',
+  'share.locked',
+  'share.code_sent',
+  'upload_request.code_sent',
+  'upload_request.locked',
+  'upload_request.closed',
+  'incoming.purged',
+  'incoming.moved',
+]);
 
 const quoted = (title: string | null) => (title ? `“${title}”` : 'a document');
 
@@ -80,12 +174,23 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
   /** A collection, by the name it has now (0.5.12). */
   const collection = e.collection_name ? `the collection “${e.collection_name}”` : 'a collection';
   const documentId = e.object_type === 'document' ? e.object_id : null;
+  // Who did it, by id, only where the words name them (R4): a member's
+  // name, not "Somebody" or a link's label, and said as the one who did it.
+  const named = (said: string) =>
+    e.actor != null &&
+    e.actor_member_id != null &&
+    !NEVER_NAMES_ACTOR.has(e.action) &&
+    (said.startsWith(`${who} `) ||
+      said.startsWith(`${possessive(who)} `) ||
+      said.includes(`: ${who} `));
   const line = (text: string, notable = false): ActivityLine => ({
     id: e.id,
     at: e.at,
     text,
     notable,
     document_id: documentId,
+    actor_member_id: named(text) ? (e.actor_member_id ?? null) : null,
+    kind: activityKind(e.action),
   });
 
   switch (e.action) {

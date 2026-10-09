@@ -208,6 +208,18 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'the activity log says who did it, by id where it names them, and what sort of thing (R4)',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      const doc = await api.createDocument(token, { title: 'Contract activity bill' });
+      const me = await api.me(token);
+      const line = (await api.activity(token)).items.find(
+        (l) => l.document_id === doc.id && l.text.endsWith('added “Contract activity bill”'),
+      );
+      expect(line).toMatchObject({ actor_member_id: me.member_id, kind: 'added' });
+    },
+  },
+  {
     name: 'a capture sent as bytes is stored once, however often it is retried',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;
