@@ -4585,6 +4585,21 @@ html:has(.shell-phone):has(.has-toast) {
   margin-top: 8px;
 }
 
+/* Nothing now, or nothing coming up: a line across the width, in the
+   tables' frame — the calm one marked as the phone's is. */
+.att-panel {
+  padding: 16px 20px;
+}
+
+.att-panel p {
+  margin: 0;
+  color: var(--ink-soft);
+}
+
+.att-calm {
+  border-left: 4px solid var(--accent);
+}
+
 .tbl-plain tbody tr:last-child td {
   border-bottom: 0;
 }

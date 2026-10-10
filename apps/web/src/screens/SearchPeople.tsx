@@ -898,7 +898,9 @@ export function RemindersScreen() {
     <main className="page page-top page-wide has-nav">
       <TopBar title="Needs attention" />
       <ErrorNote message={error ?? loadError} />
-      {data && count === 0 && (
+      {/* From 768 px the calm word is a panel in the tables' frame
+          (AttentionTables); on a phone, the line it always was. */}
+      {data && count === 0 && !wide && (
         <p className="attention attention-calm" role="status">
           Everything is fine. Nothing needs your attention.
         </p>
@@ -1086,8 +1088,16 @@ function AttentionTables(props: {
     </thead>
   );
   const now = props.due.length + props.attention.length;
+  const next = nextReminder(props.upcoming);
   return (
     <>
+      {now === 0 && (
+        // Nothing now: said across the width, in the tables' frame, so the
+        // page reads as the tables' page, not the narrow one before it.
+        <div className="tbl-wrap tbl-static att-panel att-calm">
+          <p role="status">Everything is fine. Nothing needs your attention.</p>
+        </div>
+      )}
       {now > 0 && (
         <div className="tbl-wrap tbl-static">
           <table className="tbl tbl-plain att-tbl">
@@ -1161,11 +1171,22 @@ function AttentionTables(props: {
           </table>
         </div>
       )}
-      {props.upcoming.length > 0 && (
-        <section aria-labelledby="upcoming-h" className="stack att-section">
-          <h2 id="upcoming-h" className="section-h">
-            Coming up
-          </h2>
+      {/* Coming up, always: what is next, or that nothing is as far as the
+          vault looks ahead. */}
+      <section aria-labelledby="upcoming-h" className="stack att-section">
+        <h2 id="upcoming-h" className="section-h">
+          Coming up
+        </h2>
+        {next === null ? (
+          <div className="tbl-wrap tbl-static att-panel">
+            <p>Nothing coming up in the next {UPCOMING_DAYS} days.</p>
+          </div>
+        ) : (
+          <p className="muted">
+            The next reminder is on {shortDate(next.on)}, for {next.title}.
+          </p>
+        )}
+        {props.upcoming.length > 0 && (
           <div className="tbl-wrap tbl-static">
             <table className="tbl tbl-plain att-tbl">
               <caption className="visually-hidden">Coming up</caption>
@@ -1190,10 +1211,29 @@ function AttentionTables(props: {
               </tbody>
             </table>
           </div>
-        </section>
-      )}
+        )}
+      </section>
     </>
   );
+}
+
+/**
+ * How far ahead the vault looks for what is coming up (GET
+ * /reminders?state=upcoming): 90 days, as it has since 2.1.
+ */
+const UPCOMING_DAYS = 90;
+
+/** The soonest reminder coming up — when it is next heard of, and its document — or null. */
+function nextReminder(upcoming: ReminderView[]): { on: string; title: string } | null {
+  let next: { on: string; title: string } | null = null;
+  for (const r of upcoming) {
+    const on = (r.status === 'snoozed' && r.snoozed_until ? r.snoozed_until : r.fire_at).slice(
+      0,
+      10,
+    );
+    if (next === null || on < next.on) next = { on, title: r.document_title ?? 'Untitled' };
+  }
+  return next;
 }
 
 /**

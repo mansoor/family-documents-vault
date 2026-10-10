@@ -308,6 +308,116 @@ describe('Needs attention across the width (the owner’s report)', () => {
   });
 });
 
+describe('Needs attention with nothing to do (the owner: “I don’t see that change”)', () => {
+  const calm = 'Everything is fine. Nothing needs your attention.';
+  const r2 = (over: Record<string, unknown> = {}) =>
+    reminder({
+      id: 'r-2',
+      document_id: 'doc-3',
+      document_title: 'Aisha’s passport',
+      status: 'scheduled',
+      fire_at: '2026-11-20',
+      label: 'In 40 days',
+      about: 'Expiry date: 29 Oct 2026, in 20 days',
+      ...over,
+    });
+  const fine = (d: ReturnType<typeof doc>) => ({
+    ...d,
+    status: { value: 'valid', label: 'Valid' },
+  });
+  const quiet = (reminders: Array<Record<string, unknown>>) => {
+    const h = household({ reminders });
+    return { ...h, documents: (h.documents ?? []).map((d) => fine(d as ReturnType<typeof doc>)) };
+  };
+
+  it.each([WIDE, 1024, MID])(
+    'at %i, nothing now and nothing coming up: a calm panel across the width, then Coming up says so; the questions keep their place',
+    async (px) => {
+      atWidth(px);
+      open('/reminders', quiet([]));
+      const said = await screen.findByText(calm);
+      expect(said).toHaveAttribute('role', 'status');
+      // In the tables' frame, not a short line in a narrow column.
+      const panel = said.closest('.tbl-wrap') as HTMLElement;
+      expect(panel).not.toBeNull();
+      expect(panel).toHaveClass('att-calm');
+      expect(widthOf(main())).toBe('none');
+      const upcoming = screen.getByRole('region', { name: 'Coming up' });
+      expect(upcoming).toHaveTextContent('Nothing coming up in the next 90 days.');
+      expect(screen.queryByRole('table')).toBeNull();
+      // Then the household questions, where they were: last.
+      const questions = screen.getByRole('heading', { name: 'We noticed something missing' });
+      expect(
+        panel.compareDocumentPosition(upcoming) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(
+        upcoming.compareDocumentPosition(questions) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      await expectAccessible();
+    },
+  );
+
+  it('nothing now, something coming up: the calm panel, what is next, and its table', async () => {
+    atWidth(WIDE);
+    open(
+      '/reminders',
+      quiet([
+        r2(),
+        r2({
+          id: 'r-3',
+          document_id: 'doc-1',
+          document_title: 'Sara’s passport',
+          status: 'snoozed',
+          fire_at: '2026-10-01',
+          snoozed_until: '2026-11-03',
+        }),
+      ]),
+    );
+    expect(await screen.findByText(calm)).toBeVisible();
+    const upcoming = screen.getByRole('region', { name: 'Coming up' });
+    // The soonest by when it is next heard of: a snooze's day, not its first.
+    expect(
+      within(upcoming).getByText('The next reminder is on 3 Nov, for Sara’s passport.'),
+    ).toBeVisible();
+    expect(within(upcoming).getByRole('table', { name: 'Coming up' })).toBeVisible();
+    expect(screen.queryByRole('table', { name: 'Needs attention now' })).toBeNull();
+    expect(screen.queryByText(/Nothing coming up/)).toBeNull();
+    await expectAccessible();
+  });
+
+  it('something now, nothing coming up: the table, then Coming up says there is nothing', async () => {
+    atWidth(WIDE);
+    const h = household();
+    open('/reminders', { ...h, reminders: (h.reminders ?? []).filter((r) => r.id === 'r-1') });
+    expect(await screen.findByRole('table', { name: 'Needs attention now' })).toBeVisible();
+    expect(screen.queryByText(calm)).toBeNull();
+    expect(screen.getByRole('region', { name: 'Coming up' })).toHaveTextContent(
+      'Nothing coming up in the next 90 days.',
+    );
+    expect(screen.queryByText(/The next reminder/)).toBeNull();
+    await expectAccessible();
+  });
+
+  it('both: the table now, and Coming up says what is next above its own', async () => {
+    atWidth(WIDE);
+    open('/reminders', household());
+    expect(await screen.findByRole('table', { name: 'Needs attention now' })).toBeVisible();
+    expect(screen.getByText('The next reminder is on 20 Nov, for Aisha’s passport.')).toBeVisible();
+  });
+
+  it('at 320, as it was: the calm line on its own, no panel, nothing said of what is coming', async () => {
+    atWidth(PHONE);
+    open('/reminders', quiet([]));
+    const said = await screen.findByText(calm);
+    expect(said.tagName).toBe('P');
+    expect(said).toHaveClass('attention', 'attention-calm');
+    expect(said.closest('.tbl-wrap')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Coming up' })).toBeNull();
+    expect(screen.queryByText(/Nothing coming up/)).toBeNull();
+    await expectAccessible();
+  });
+});
+
 // ------------------------------------------------------------------ Home
 
 describe('the bar on top’s Add stays on one line (it wrapped at 1024 px)', () => {
