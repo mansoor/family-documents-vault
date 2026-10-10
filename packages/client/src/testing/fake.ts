@@ -1,7 +1,15 @@
 import {
   BATCH_MAX_FILES,
   batchVisibility,
+  correctionsOf,
+  learningOf,
+  LEARNED_RULES_MAX,
+  LEARNING_OUTCOMES_KEPT,
+  LEARNING_WINDOW,
+  isLearned,
   levelItem,
+  ruleTrusted,
+  teach,
   can,
   canEditIdentity,
   canSee,
@@ -72,9 +80,14 @@ import {
   type BatchDefaults,
   type BatchDuplicate,
   type BatchItemView,
+  type BatchLearning,
   type BatchReadFailure,
   type BatchReadState,
   type DetailProposal,
+  type ItemProposals,
+  type Proposed,
+  type KeptRule,
+  type LearnedClash,
   type Capabilities,
   type CaptureMetadata,
   type CollectionAudience,
@@ -347,6 +360,11 @@ export interface FakeVaultState {
    * removed item's row until its batch goes.
    */
   batches: FakeBatch[];
+  /**
+   * What the vault learned from each person's corrections (I4), by member
+   * id: their rules, and their newest accepts for the count. Theirs alone.
+   */
+  learned: Record<string, FakeLearning>;
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -422,6 +440,21 @@ export interface FakeBatch {
   items: FakeBatchItem[];
 }
 
+/** One person's rules and count (I4), as the fake keeps them. */
+export interface FakeLearning {
+  rules: KeptRule[];
+  /** Newest first: each accepted item read, whether it needed no change, and what it taught. */
+  outcomes: Array<{
+    item_id: string;
+    unchanged: boolean;
+    confirmed: string[];
+    contradicted: string[];
+    /** The rules it removed, as they were, for an Undo to put back (I4-3). */
+    removed: KeptRule[];
+    accepted_at: number;
+  }>;
+}
+
 /** One file in a batch: its hash a stand-in of the right shape, the same for the same bytes. */
 export interface FakeBatchItem {
   id: string;
@@ -442,6 +475,8 @@ export interface FakeBatchItem {
   read_failure?: BatchReadFailure | null;
   /** What its pages proposed, once read. */
   proposal?: DetailProposal | null;
+  /** Where a sure rule of the uploader's disagreed with the pages, as the worker sealed it (I4). */
+  learned_clash?: LearnedClash | null;
   /** Filed by Accept all Ready (I3): until when Undo takes it back. */
   undo_until?: string;
 }
@@ -757,6 +792,7 @@ export function createFakeVault(): {
     uploadRequests: [],
     incoming: [],
     batches: [],
+    learned: {},
     calls: [],
     offline: false,
   };
@@ -1519,6 +1555,7 @@ export function createFakeVault(): {
           // Each item read and levelled (I2): the fake's are read as a test says.
           batch_proposals: true,
           batch_review: true,
+          batch_learning: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -3173,6 +3210,62 @@ export function createFakeVault(): {
         return ok({ document_id: documentId, version_id: made.version_id }, 201);
       }
     }
+    // What the vault learned from the caller's corrections (I4): theirs alone.
+    if (path === '/api/v1/batches/learned') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!can(who.role, 'document.add')) {
+        return fail(403, 'forbidden', refusalFor('document.add'));
+      }
+      if (init.method === 'DELETE') {
+        delete state.learned[who.memberId];
+        // What the rules said on an item already read is let go: read again (I4-7).
+        for (const b of state.batches.filter((x) => x.member_id === who.memberId)) {
+          for (const it of b.items) {
+            const said =
+              (Object.values(it.proposal ?? {}) as Array<Proposed<unknown>>).some(isLearned) ||
+              Object.keys(it.learned_clash ?? {}).length > 0;
+            if (it.state === 'waiting' && it.reading === 'read' && said) {
+              it.reading = 'waiting';
+              it.proposal = null;
+              it.learned_clash = null;
+            }
+          }
+        }
+        return empty();
+      }
+      const mine = state.learned[who.memberId] ?? { rules: [], outcomes: [] };
+      const counted = mine.outcomes.slice(0, LEARNING_WINDOW);
+      const out: BatchLearning = {
+        counted: counted.length,
+        unchanged: counted.filter((o) => o.unchanged).length,
+        window: LEARNING_WINDOW,
+        rules: [...mine.rules]
+          .sort(
+            (a, b) =>
+              a.issuer_key.localeCompare(b.issuer_key) ||
+              (a.field === b.field ? 0 : a.field === 'type_key' ? -1 : 1) ||
+              b.confirmed - a.confirmed,
+          )
+          .map((r) => ({
+            id: r.id,
+            issuer: r.issuer_key,
+            field: r.field,
+            value: r.value,
+            label:
+              r.field === 'type_key'
+                ? (state.types.find((t) => t.key === r.value)?.label ?? null)
+                : (state.members.find((m) => m.id === r.value)?.display_name ?? null),
+            confirmed: r.confirmed,
+            contradicted: r.contradicted,
+            sure: ruleTrusted(r, mine.rules),
+            last_used: r.last_used,
+          })),
+        rules_max: LEARNED_RULES_MAX,
+      };
+      return ok(out);
+    }
     // Many documents at once (Phase 6, I1): a batch and its items are their
     // uploader's alone (404 for anybody else's); a viewer or a guest is
     // refused, as adding is.
@@ -3248,6 +3341,7 @@ export function createFakeVault(): {
           reading,
           failure,
           proposal: reading === 'read' ? (it.proposal ?? null) : null,
+          learnedClash: reading === 'read' ? (it.learned_clash ?? null) : null,
           duplicate,
           defaults: b.defaults,
           types: cardTypes,
@@ -3448,7 +3542,10 @@ export function createFakeVault(): {
             role: who.role,
             me: who.memberId,
           });
-          const res = fileOne(b, x, card, who);
+          const res = fileOne(b, x, card, who, {
+            read: view.reading === 'read',
+            proposals: view.proposals,
+          });
           const answer = (await res.json()) as {
             document_id?: string;
             version_id?: string;
@@ -3508,6 +3605,7 @@ export function createFakeVault(): {
           x.document_id = null;
           x.reading = 'waiting';
           delete x.undo_until;
+          unlearn(who.memberId, x.id);
           out.restored.push(itemId);
         }
         return ok(out);
@@ -3586,7 +3684,12 @@ export function createFakeVault(): {
       }
       if (accept && init.method === 'POST') {
         if (it.state !== 'waiting') return decided();
-        return fileOne(b, it, body, who);
+        // What its card started from: what the accept is compared with (I4).
+        const view = itemView(b, it);
+        return fileOne(b, it, body, who, {
+          read: view.reading === 'read',
+          proposals: view.proposals ?? null,
+        });
       }
     }
     // Many documents at once, filed (I1): one item, as its accept sends it.
@@ -3596,6 +3699,7 @@ export function createFakeVault(): {
       it: FakeBatchItem,
       sent: BatchAcceptInput,
       who: { role: Role; memberId: string },
+      learn: { read: boolean; proposals: ItemProposals | null },
     ): ResponseLike {
       {
         const { collection_id: sentCollection, ...rest } = sent;
@@ -3692,8 +3796,65 @@ export function createFakeVault(): {
         filedFrom.set(doc.id, it.sha256);
         it.state = 'accepted';
         it.document_id = doc.id;
+        learnFrom(who, it.id, learn, metadata, kind ?? null);
         return ok({ document_id: doc.id, version_id: made.version_id }, 201);
       }
+    }
+    /**
+     * What an accept teaches (I4), as the vault teaches it: the uploader's
+     * own rules, and — for an item that was read — whether it needed no
+     * change, with what it taught for an Undo to take back.
+     */
+    function learnFrom(
+      who: { role: Role; memberId: string },
+      itemId: string,
+      learn: { read: boolean; proposals: ItemProposals | null },
+      filed: CaptureMetadata,
+      kind: DocumentTypeView | null,
+    ): void {
+      const mine = (state.learned[who.memberId] ??= { rules: [], outcomes: [] });
+      const taught = teach(
+        mine.rules,
+        learningOf({ proposals: learn.proposals, filed, role: who.role }),
+        { newId: () => next('rule'), today: new Date().toISOString().slice(0, 10) },
+      );
+      mine.rules = taught.rules;
+      if (!learn.read) return;
+      const now = Date.now();
+      mine.outcomes = [
+        {
+          item_id: itemId,
+          unchanged: correctionsOf({ proposals: learn.proposals, filed, kind }).length === 0,
+          confirmed: taught.confirmed,
+          contradicted: taught.contradicted,
+          removed: taught.removed,
+          accepted_at: now,
+        },
+        ...mine.outcomes.filter((o) => o.item_id !== itemId),
+      ].filter(
+        // The newest kept, and any whose Undo is still open (I4-2).
+        (o, i) => i < LEARNING_OUTCOMES_KEPT || o.accepted_at >= now - ACCEPT_UNDO_MINUTES * 60_000,
+      );
+    }
+    /** An accept taken back by Undo: what it taught taken back, and not counted (I4). */
+    function unlearn(memberId: string, itemId: string): void {
+      const mine = state.learned[memberId];
+      const o = mine?.outcomes.find((x) => x.item_id === itemId);
+      if (!mine || !o) return;
+      mine.outcomes = mine.outcomes.filter((x) => x !== o);
+      // What it removed, put back as it was (I4-3).
+      for (const r of o.removed) {
+        if (!mine.rules.some((x) => x.id === r.id)) mine.rules.push({ ...r });
+      }
+      for (const r of mine.rules) {
+        if (o.confirmed.includes(r.id)) r.confirmed = Math.max(0, r.confirmed - 1);
+        if (o.contradicted.includes(r.id)) r.contradicted = Math.max(0, r.contradicted - 1);
+      }
+      mine.rules = mine.rules.filter(
+        (r) =>
+          !(o.confirmed.includes(r.id) || o.contradicted.includes(r.id)) ||
+          (r.confirmed > 0 && r.contradicted <= r.confirmed),
+      );
     }
     // Asking somebody to send documents (0.5.21): the family's side. A teen
     // or a viewer is told there is nothing here, as the vault tells them.

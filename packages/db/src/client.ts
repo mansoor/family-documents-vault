@@ -721,6 +721,33 @@ export interface Schema {
     ends_at: Timestamp;
   };
 
+  /** A person's rule, learned from their corrections (0065, Phase 6 I4): theirs alone. */
+  intake_rule: {
+    id: Generated<string>;
+    household_id: string;
+    member_id: string;
+    issuer_key: string;
+    type_key: string | null;
+    person_id: string | null;
+    confirmed: Generated<number>;
+    contradicted: Generated<number>;
+    /** A day: kept as the database's date, read as a string (YYYY-MM-DD). */
+    last_used: ColumnType<string, string | undefined, string>;
+  };
+
+  /** Each item read and accepted, for the count and an Undo (0065, I4): its person's alone. */
+  intake_outcome: {
+    household_id: string;
+    member_id: string;
+    item_id: string;
+    unchanged: boolean;
+    accepted_at: GeneratedTimestamp;
+    confirmed_rules: ColumnType<string[], string[] | undefined, string[]>;
+    contradicted_rules: ColumnType<string[], string[] | undefined, string[]>;
+    /** The rules its accept removed, as they were (JSON), for an Undo to put back. */
+    removed_rules: ColumnType<unknown, string | undefined, string>;
+  };
+
   owner_change_request: {
     id: Generated<string>;
     household_id: string;

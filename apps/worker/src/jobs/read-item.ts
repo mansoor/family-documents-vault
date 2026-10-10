@@ -2,12 +2,14 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { itemProposalsBinding, itemTextBinding, sealBytes, unwrapKey } from '@fdv/crypto';
-import { withSystem, type Db, type Schema } from '@fdv/db';
+import { readAs, withSystem, type Db, type Schema } from '@fdv/db';
 import {
   can,
   householdDateOrder,
   type BatchReadFailure,
   type KnownIssuer,
+  type LearnedClash,
+  type LearnedContext,
   type ProposalContext,
   type ProposalKind,
 } from '@fdv/shared';
@@ -35,6 +37,13 @@ import { WORD_MIME } from './word-text.js';
  * it), the household's name and how it writes dates. Nothing of a document
  * they cannot see — another's Only me, or Adults only for a teen — is
  * read, so no proposal can name it.
+ *
+ * And with the uploader's own rules, learned from their corrections (I4,
+ * @fdv/shared learning.ts): read as the uploader (readAs), so the database
+ * gives this person's rules and nobody else's — never another adult's, an
+ * owner's or a teen's — and applied on the same thread. A proposal they made
+ * carries the cue `learned`; where a sure rule disagreed with the pages,
+ * that is sealed beside the proposal (`learned_clash`).
  *
  * Both the words and the proposal are sealed under the item's own file key
  * (its uploader's member key wraps it, as it wraps the file): never in a
@@ -316,8 +325,18 @@ export async function readItem(
   const deadline = AbortSignal.timeout(opts.deadlineMs ?? READ_DEADLINE_MS);
   let dir: string | null = null;
   try {
-    let had: { fileKey: Buffer; ctx: ProposalContext; plain: Buffer };
-    let got: { fileKey: Buffer; ctx: ProposalContext; adapter: StorageAdapter };
+    let had: {
+      fileKey: Buffer;
+      ctx: ProposalContext;
+      learned: LearnedContext | null;
+      plain: Buffer;
+    };
+    let got: {
+      fileKey: Buffer;
+      ctx: ProposalContext;
+      learned: LearnedContext | null;
+      adapter: StorageAdapter;
+    };
     try {
       got = await withSystem(deps.db, hh, async (trx) => {
         const scopeKey = await deps.keys.unwrapById(trx, f.wrapped_by_scope);
@@ -325,6 +344,7 @@ export async function readItem(
           fileKey: unwrapKey(f.file_key_wrapped, scopeKey, `incoming:${f.id}`),
           adapter: await adapterOf(trx, deps, f.vault_id),
           ctx: await proposalContext(trx, hh, f.requester_member_id),
+          learned: await learnedContext(trx, hh, f.requester_member_id),
         };
       });
     } catch (err) {
@@ -383,7 +403,7 @@ export async function readItem(
       await failed('blank');
       return;
     }
-    const answer = await opts.proposer.propose(text, had.ctx);
+    const answer = await opts.proposer.propose(text, had.ctx, had.learned);
     if (answer.state === 'unavailable') {
       throw new NotNow('the proposal thread could not be had', 'vault');
     }
@@ -406,7 +426,7 @@ export async function readItem(
           text_sealed: sealBytes(had.fileKey, Buffer.from(text, 'utf8'), itemTextBinding(f.id)),
           proposals_sealed: sealBytes(
             had.fileKey,
-            Buffer.from(JSON.stringify({ v: 1, proposal: answer.proposal }), 'utf8'),
+            Buffer.from(JSON.stringify(sealedProposal(answer.proposal, answer.clash)), 'utf8'),
             itemProposalsBinding(f.id),
           ),
         })
@@ -424,6 +444,50 @@ export async function readItem(
   } finally {
     if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+/** What is sealed: the proposal, and where a sure rule disagreed with the pages (I4). */
+const sealedProposal = (proposal: unknown, clash: LearnedClash | undefined) =>
+  clash && Object.keys(clash).length > 0
+    ? { v: 1, proposal, learned_clash: clash }
+    : { v: 1, proposal };
+
+/**
+ * The uploader's own rules, learned from their corrections (I4), read as
+ * them — the vault's own transaction narrowed to their sign-in (readAs), so
+ * the database's rule for each caller (0065) gives their rules and nobody
+ * else's. Somebody with no sign-in here, or none who adds documents, has
+ * none.
+ */
+export async function learnedContext(
+  trx: Db,
+  hh: string,
+  memberId: string,
+): Promise<LearnedContext | null> {
+  const who = await trx
+    .selectFrom('account_household')
+    .select(['account_id', 'role'])
+    .where('household_id', '=', hh)
+    .where('member_id', '=', memberId)
+    .executeTakeFirst();
+  if (!who || !can(who.role, 'document.add')) return null;
+  const rows = await readAs(trx, { accountId: who.account_id, memberId, role: who.role }, (mine) =>
+    mine
+      .selectFrom('intake_rule')
+      .select(['issuer_key', 'type_key', 'person_id', 'confirmed', 'contradicted'])
+      .execute(),
+  );
+  return {
+    rules: rows.map((r) => ({
+      issuer_key: r.issuer_key,
+      field: r.type_key !== null ? ('type_key' as const) : ('owner_member_id' as const),
+      value: (r.type_key ?? r.person_id) as string,
+      confirmed: r.confirmed,
+      contradicted: r.contradicted,
+    })),
+    role: who.role,
+    me: memberId,
+  };
 }
 
 /**

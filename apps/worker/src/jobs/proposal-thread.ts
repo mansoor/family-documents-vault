@@ -22,7 +22,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { Worker, type WorkerOptions } from 'node:worker_threads';
-import type { DetailProposal, ProposalContext } from '@fdv/shared';
+import type { DetailProposal, LearnedClash, LearnedContext, ProposalContext } from '@fdv/shared';
 import type { ProposalJob, ProposalReply } from '../proposal-worker.js';
 
 /**
@@ -57,7 +57,8 @@ function defaultEntry(): URL {
 
 /** What one item's words came to. */
 export type ThreadAnswer =
-  | { state: 'done'; proposal: DetailProposal }
+  /** `clash`: where a sure rule of the uploader's disagreed with the pages (I4). */
+  | { state: 'done'; proposal: DetailProposal; clash?: LearnedClash }
   /** Longer than the deadline: the thread was ended, and nothing is proposed. */
   | { state: 'too_slow' }
   /** The rules failed on these words: nothing is proposed, and asking again would not help. */
@@ -72,7 +73,12 @@ export type ThreadAnswer =
 
 /** What the reading of an item needs of the thread. */
 export interface ItemProposer {
-  propose(text: string, ctx: ProposalContext): Promise<ThreadAnswer>;
+  /** `learned`: the uploader's own rules (I4), applied on the thread too. */
+  propose(
+    text: string,
+    ctx: ProposalContext,
+    learned?: LearnedContext | null,
+  ): Promise<ThreadAnswer>;
 }
 
 export interface ProposalThreadOptions {
@@ -103,8 +109,12 @@ export class ProposalThread implements ItemProposer {
   constructor(private readonly opts: ProposalThreadOptions = {}) {}
 
   /** The words' proposal, or why there is none. Never rejects. */
-  propose(text: string, ctx: ProposalContext): Promise<ThreadAnswer> {
-    const mine = this.turn.then(() => this.one(text, ctx));
+  propose(
+    text: string,
+    ctx: ProposalContext,
+    learned: LearnedContext | null = null,
+  ): Promise<ThreadAnswer> {
+    const mine = this.turn.then(() => this.one(text, ctx, learned));
     this.turn = mine.catch(() => undefined);
     return mine.catch((): ThreadAnswer => ({ state: 'unavailable' }));
   }
@@ -122,7 +132,11 @@ export class ProposalThread implements ItemProposer {
     if (worker) await worker.terminate().catch(() => undefined);
   }
 
-  private async one(text: string, ctx: ProposalContext): Promise<ThreadAnswer> {
+  private async one(
+    text: string,
+    ctx: ProposalContext,
+    learned: LearnedContext | null,
+  ): Promise<ThreadAnswer> {
     if (this.closed) return { state: 'unavailable' };
     if (!(await this.started())) return { state: 'unavailable' };
     const worker = this.worker;
@@ -142,7 +156,7 @@ export class ProposalThread implements ItemProposer {
       timer.unref();
       this.running = { id, done, timer };
       try {
-        worker.postMessage({ id, text, ctx } satisfies ProposalJob);
+        worker.postMessage({ id, text, ctx, learned } satisfies ProposalJob);
       } catch {
         clearTimeout(timer);
         this.running = null;
@@ -197,7 +211,16 @@ export class ProposalThread implements ItemProposer {
         if (!running || running.id !== m.id) return;
         clearTimeout(running.timer);
         this.running = null;
-        running.done('failed' in m ? { state: 'failed' } : { state: 'done', proposal: m.proposal });
+        running.done(
+          'failed' in m
+            ? { state: 'failed' }
+            : {
+                state: 'done',
+                proposal: m.proposal,
+                // Said only where a sure rule disagreed with the pages (I4).
+                ...(m.clash && Object.keys(m.clash).length > 0 ? { clash: m.clash } : {}),
+              },
+        );
       });
       const gone = () => {
         clearTimeout(slow);

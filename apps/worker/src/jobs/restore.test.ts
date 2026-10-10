@@ -445,6 +445,25 @@ async function seed(url: string): Promise<string> {
                from intake_batch b where b.household_id = $1`,
             [hh, kept.rows[0]?.id, scope.rows[0]?.id, hh],
           );
+          // And, where the schema has them (0065), what the vault learned
+          // from that person's corrections: a rule, and their count.
+          const learned = await c.query<{ has: boolean }>(
+            "select to_regclass('public.intake_rule') is not null as has",
+          );
+          if (learned.rows[0]?.has) {
+            await c.query(
+              `insert into intake_rule (household_id, member_id, issuer_key, type_key, confirmed)
+               select $1, b.member_id, 'northgate dental', 'medical_record', 3
+                 from intake_batch b where b.household_id = $1`,
+              [hh],
+            );
+            await c.query(
+              `insert into intake_outcome (household_id, member_id, item_id, unchanged)
+               select $1, b.member_id, gen_random_uuid(), true
+                 from intake_batch b where b.household_id = $1`,
+              [hh],
+            );
+          }
         }
       }
     }
@@ -1366,6 +1385,76 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it('notices the rules learned from somebody’s corrections open to anybody else, an owner included (0065, I4)', async () => {
+    const seeded = await sql(
+      vault.adminUrl,
+      'select (select count(*)::int from intake_rule) as rules, (select count(*)::int from intake_outcome) as outcomes',
+    );
+    expect(seeded.rows[0]).toEqual({ rules: 1, outcomes: 1 });
+    for (const table of ['intake_rule', 'intake_outcome']) {
+      const policy = `${table}_actor`;
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${policy}'`,
+      );
+      const rule = rows[0]?.rule as string;
+      expect(rule).toMatch(/app_member\(\)/);
+      await sql(vault.adminUrl, `drop policy ${policy} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(
+          new RegExp(`no rule for each kind of caller on ${table}`),
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${policy} on public.${table} as restrictive using (${rule})`,
+        );
+      }
+      // Every member given everybody's: one member's own is open to another.
+      await sql(
+        vault.adminUrl,
+        `alter policy ${policy} on public.${table}
+           using (case app_actor() when 'account' then true when 'system' then true else false end)`,
+      );
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(
+          new RegExp(`no rule keeps a member's own to them on .*${table}`),
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter policy ${policy} on public.${table} using (${rule})`);
+      }
+      // An owner given everybody's, the rest kept to their own: still caught.
+      await sql(
+        vault.adminUrl,
+        `alter policy ${policy} on public.${table}
+           using (case app_actor()
+                    when 'account' then app_role() = 'owner' or member_id = app_member()
+                    when 'system' then true else false end)`,
+      );
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(
+          /is open to an owner who is not them/,
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter policy ${policy} on public.${table} using (${rule})`);
+      }
+    }
+    // And somebody made a viewer losing them with the role (the I4 review, I4-6).
+    await sql(
+      vault.adminUrl,
+      'alter table public.account_household disable trigger intake_rules_leave_with_role',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.account_household enable trigger intake_rules_leave_with_role',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it('notices an audit log that can be changed', async () => {
     await sql(vault.adminUrl, 'grant update on public.audit_event to fdv_app');
     await expect(checkRestored(target())).rejects.toThrow(/no longer append-only/);
@@ -1641,6 +1730,7 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
       'upload_request',
       'incoming_file',
       'intake_batch',
+      'intake_rule',
       'export',
     ]) {
       const trigger = `${table}_private_gained`;
@@ -2316,6 +2406,15 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       restored: 1,
       old_devices: 0,
     });
+    // What the vault learned from somebody's corrections came back too, theirs (0065).
+    const learned = await sql(
+      t.adminUrl,
+      `select (select count(*)::int from intake_rule r join intake_batch b on b.member_id = r.member_id
+                where r.issuer_key = 'northgate dental' and r.type_key = 'medical_record'
+                  and r.confirmed = 3) as rules,
+              (select count(*)::int from intake_outcome where unchanged) as outcomes`,
+    );
+    expect(learned.rows[0]).toEqual({ rules: 1, outcomes: 1 });
     // The job queue came back too, and the vault can use it.
     const jobs = await sql(
       t.appUrl,

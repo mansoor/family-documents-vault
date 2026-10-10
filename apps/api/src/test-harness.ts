@@ -164,6 +164,8 @@ export interface HarnessOptions {
   batchOpened?: BatchOptions['opened'];
   /** An Undo of Accept all Ready, held with the document held (I3): for the races. */
   batchUndoHeld?: BatchOptions['undoHeld'];
+  /** An accept held once it has taught its first step (I4-5). */
+  batchLearnTaught?: BatchOptions['learnTaught'];
   /** FDV_TRUST_PROXY (5.30): whose X-Forwarded-For is believed; `network` otherwise. */
   trustProxy?: 'network' | 'private' | 'all' | 'none';
   /** Where pages are proposed for (5.37): the process's proposal thread, unless a test stands in. */
@@ -349,6 +351,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       ...(opts.batchBetweenRemoval ? { betweenRemoval: opts.batchBetweenRemoval } : {}),
       ...(opts.batchOpened ? { opened: opts.batchOpened } : {}),
       ...(opts.batchUndoHeld ? { undoHeld: opts.batchUndoHeld } : {}),
+      ...(opts.batchLearnTaught ? { learnTaught: opts.batchLearnTaught } : {}),
     }),
     audit: new AuditService(db),
     reminders,

@@ -9,6 +9,7 @@ import type {
   BatchDetail,
   BatchInput,
   BatchItemView,
+  BatchLearning,
   BatchUndoResult,
   BatchView,
   Capabilities,
@@ -1289,6 +1290,15 @@ export function createApi(http: Http) {
     /** A page the worker drew: a JPEG; `preview_pending` while it is drawn, `no_preview` if none. */
     batchItemPage: (token: string, batchId: string, itemId: string, n: number) =>
       raw(`/api/v1/batches/${enc(batchId)}/items/${enc(itemId)}/pages/${n}`, { token }),
+    /**
+     * What the vault learned from the caller's corrections (I4,
+     * `features.batch_learning`): the count — of their last `window`
+     * accepted, how many needed no change — and their rules, theirs alone.
+     */
+    batchLearning: (token: string) => request<BatchLearning>('/api/v1/batches/learned', { token }),
+    /** The caller's rules and count, forgotten. */
+    forgetBatchLearning: (token: string) =>
+      request<void>('/api/v1/batches/learned', { method: 'DELETE', token }),
   };
 }
 

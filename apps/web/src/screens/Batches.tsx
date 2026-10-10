@@ -34,6 +34,7 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { askPage, forgetPages, heldPage } from '../batch-pages.js';
 import { labelOfDay, progressOf, useUploads } from '../batch-store.js';
 import { newRun, useAcceptReady } from '../batch-review.js';
+import { LearnedFromYou } from '../batch-learning.js';
 import { BATCH_ACCEPT } from '../batch-upload.js';
 import { CollectionSelect, mayChangeCollection } from '../collections.js';
 import { storedRole } from '../session.js';
@@ -924,6 +925,7 @@ export function InboxScreen() {
         Only you can see these until you accept them. Anything not decided within 30 days is
         removed.
       </OnlyYou>
+      <LearnedFromYou />
       {!data && !error && <p className="muted">Loading your uploads…</p>}
       {data && data.batches.length === 0 && (
         <div className="notice-box">

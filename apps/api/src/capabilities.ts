@@ -131,6 +131,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       batch_proposals: true,
       // I3: Accept all Ready, and its Undo; a batch's levels counted.
       batch_review: true,
+      // I4: each person's rules learned from their corrections, and the count.
+      batch_learning: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

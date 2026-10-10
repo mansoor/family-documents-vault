@@ -659,9 +659,25 @@ function CardMark(props: { field: CardMarkField; mark: ItemSuggestion<unknown> }
   if (mark.from === 'batch' || mark.confidence === null || mark.cue === null) {
     return <span className="mark-batch">from the batch</span>;
   }
-  // Unsure as the level says it: only what the pages alone say (the I2 review).
+  // Unsure as the level says it: only what the pages alone say (the I2
+  // review), or the uploader's own rules (I4).
   const sure =
-    mark.from === 'pages' ? (ITEM_SURE as Record<string, number>)[props.field] : undefined;
+    mark.from === 'pages' || mark.from === 'learned'
+      ? (ITEM_SURE as Record<string, number>)[props.field]
+      : undefined;
+  if (mark.from === 'learned') {
+    // Proposed, or made surer, by the uploader's own earlier choices (I4).
+    return (
+      <>
+        <span className="mark-sugg" title="Learned from your earlier choices for who sent it">
+          suggested · learned from your earlier choices
+        </span>
+        {sure !== undefined && mark.confidence < sure && (
+          <span className="mark-unsure">unsure</span>
+        )}
+      </>
+    );
+  }
   return (
     <>
       <SuggestedMark confidence={mark.confidence} cue={mark.cue} />

@@ -982,6 +982,8 @@ const GUARDS = [
     'incoming_file',
     // A batch is its uploader's alone (0062).
     'intake_batch',
+    // And so are the rules learned from their corrections (0065).
+    'intake_rule',
     'export',
   ].map((table) => ({
     name: `${table}_private_gained`,
@@ -1072,6 +1074,13 @@ const GUARDS = [
     table: 'intake_batch',
     fn: 'intake_batch_account_writes',
   },
+  // Somebody made a viewer keeps no rules learned from their corrections,
+  // nor their count (0065, the I4 review).
+  {
+    name: 'intake_rules_leave_with_role',
+    table: 'account_household',
+    fn: 'intake_rules_leave_with_role',
+  },
 ];
 
 /**
@@ -1154,6 +1163,10 @@ const ACTOR_GUARDED = [
   // Many documents at once (0062): a batch, its uploader's alone; its items
   // are incoming files.
   'intake_batch',
+  // What the vault learned from somebody's corrections, and their count
+  // (0065): theirs alone.
+  'intake_rule',
+  'intake_outcome',
   // What a document removed for good leaves behind: who could see it, and
   // the files still to be deleted (0045).
   'document_tombstone',
@@ -1236,6 +1249,9 @@ const MAKER_ONLY = [
   },
   // A batch, and its items (above, review-by-me): its uploader's alone (0062, Q3).
   { table: 'intake_batch', where: 'true', what: "somebody's batch of uploads" },
+  // The rules learned from somebody's corrections, and their count (0065, I4).
+  { table: 'intake_rule', where: 'true', what: "the rules learned from somebody's corrections" },
+  { table: 'intake_outcome', where: 'true', what: "somebody's count of corrections" },
   // A person's Only me identity details: theirs alone, whoever else asks (0050, A33).
   {
     table: 'member_identity',
@@ -1244,6 +1260,17 @@ const MAKER_ONLY = [
   },
   // A restriction: the owners', and the person's own (0054).
   { table: 'access_restriction', where: 'true', what: "a person's restriction" },
+];
+
+/**
+ * The tables an owner is given none of but their own (0065, I4): what the
+ * vault learned from a person's corrections may say what only their Only me
+ * documents taught, so not even an owner is given another's. Tried as an
+ * owner who is nobody's member: given none.
+ */
+const NOT_EVEN_OWNERS = [
+  { table: 'intake_rule', what: "the rules learned from somebody's corrections" },
+  { table: 'intake_outcome', what: "somebody's count of corrections" },
 ];
 
 /**
@@ -2047,6 +2074,27 @@ export async function checkRestored(
           throw new Error(
             `household ${h.id}: ${m.what} is open to somebody signed in who is not given it`,
           );
+        }
+      }
+      // An owner is given nobody else's rules, nor their count (0065).
+      for (const o of NOT_EVEN_OWNERS) {
+        const client = await app.connect();
+        try {
+          await client.query('begin');
+          await client.query(
+            `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                    set_config('app.role', 'owner', true), set_config('app.member_id', $2, true)`,
+            [h.id, randomUUID()],
+          );
+          const { rows: shown } = await client.query<{ n: number }>(
+            `select count(*)::int as n from ${o.table}`,
+          );
+          await client.query('commit');
+          if ((shown[0]?.n ?? 0) > 0) {
+            throw new Error(`household ${h.id}: ${o.what} is open to an owner who is not them`);
+          }
+        } finally {
+          client.release();
         }
       }
       // An adult — no owner — is given nothing moved to the owners (0047).

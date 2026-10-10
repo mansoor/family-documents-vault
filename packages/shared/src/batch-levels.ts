@@ -18,6 +18,7 @@ import {
   type ProposalCue,
   type Proposed,
 } from './proposals.js';
+import { isLearned, type LearnedClash } from './learning.js';
 import { seesLocation, type Role } from './roles.js';
 
 /**
@@ -115,7 +116,9 @@ export type BatchTagCode =
   | 'person_missing'
   | 'narrowed'
   /** A teen's: the pages confidently name somebody else of the family (the I2 review). */
-  | 'not_theirs';
+  | 'not_theirs'
+  /** The pages and a sure rule of the uploader's own disagree (I4): the pages' stands. */
+  | 'clash_learned';
 
 /** One reason for an item's level: a Problem's, a Check's, or something worth knowing. */
 export interface BatchTag {
@@ -136,7 +139,12 @@ export interface BatchTag {
  */
 export interface ItemSuggestion<T> {
   value: T;
-  from: 'pages' | 'batch' | 'both';
+  /**
+   * `learned` (I4): proposed, or made surer, by the uploader's own earlier
+   * choices for the issuer the pages name — "learned from your earlier
+   * choices". Absent from a vault before I4.
+   */
+  from: 'pages' | 'batch' | 'both' | 'learned';
   /** How sure the pages are, for `pages` and `both`; null for the batch's alone. */
   confidence: number | null;
   cue: ProposalCue | null;
@@ -189,6 +197,8 @@ export interface LevelInput {
   failure: BatchReadFailure | null;
   /** What the pages proposed, once read; null before, or when nothing could be. */
   proposal: DetailProposal | null;
+  /** Where a sure rule of the uploader's disagreed with the pages, as the worker read it (I4). */
+  learnedClash?: LearnedClash | null;
   duplicate: BatchDuplicate | null;
   defaults: BatchDefaults;
   /** The household's kinds as they are now, and not deleted. */
@@ -307,16 +317,31 @@ export function levelItem(input: LevelInput): ItemLevel {
     p: Proposed<string> | undefined,
     dflt: string | null,
   ): ItemSuggestion<string> | undefined => {
-    if (p && dflt === null)
-      return { value: p.value, from: 'pages', confidence: p.confidence, cue: p.cue };
+    // The uploader's earlier choices alone (I4): never "the pages say".
+    const rulesOnly = p?.cue === 'learned';
+    // How sure the pages alone were: a rule's raising never makes a clash,
+    // nor speaks for the pages (the I4 review, I4-4).
+    const own = p ? (p.page_confidence ?? p.confidence) : 0;
+    if (p && dflt === null) {
+      return {
+        value: p.value,
+        from: isLearned(p) ? 'learned' : 'pages',
+        confidence: p.confidence,
+        cue: p.cue,
+      };
+    }
     if (dflt === null) return undefined;
     if (!p) return { value: dflt, from: 'batch', confidence: null, cue: null };
-    if (p.value === dflt)
-      return { value: dflt, from: 'both', confidence: p.confidence, cue: p.cue };
-    if (p.confidence >= CLASH_CONFIDENCE) {
+    if (p.value === dflt) {
+      return rulesOnly
+        ? { value: dflt, from: 'batch', confidence: null, cue: null }
+        : { value: dflt, from: 'both', confidence: own, cue: p.cue };
+    }
+    // A rule never disagrees with the batch: the batch's choice stands, silently.
+    if (!rulesOnly && own >= CLASH_CONFIDENCE) {
       clashes.push({
         field,
-        pages: { value: p.value, confidence: p.confidence, cue: p.cue },
+        pages: { value: p.value, confidence: own, cue: p.cue },
         batch: dflt,
       });
     }
@@ -368,8 +393,9 @@ export function levelItem(input: LevelInput): ItemLevel {
   if (
     role === 'teen' &&
     named &&
+    named.cue !== 'learned' &&
     named.value !== me &&
-    named.confidence >= CLASH_CONFIDENCE &&
+    (named.page_confidence ?? named.confidence) >= CLASH_CONFIDENCE &&
     people.some((p) => p.id === named.value)
   ) {
     check({
@@ -393,13 +419,41 @@ export function levelItem(input: LevelInput): ItemLevel {
       });
     }
   }
+  // Where a sure rule of the uploader's disagrees with the pages (I4): the
+  // pages' stands on the card, and both are said.
+  const lc = input.learnedClash;
+  if (lc?.type_key && kindS?.from === 'pages' && kindS.value !== lc.type_key) {
+    const rule = kindOf(lc.type_key);
+    if (rule) {
+      check({
+        code: 'clash_learned',
+        kind: 'check',
+        words: `The pages say ${aKind(kindOf(kindS.value)?.label ?? 'kind')}, your earlier choices say ${aKind(rule.label)}`,
+      });
+    }
+  }
+  if (
+    lc?.owner_member_id &&
+    personS?.from === 'pages' &&
+    personS.value !== lc.owner_member_id &&
+    choosable(lc.owner_member_id)
+  ) {
+    check({
+      code: 'clash_learned',
+      kind: 'check',
+      words: `The pages say ${nameOf(personS.value)}, your earlier choices say ${nameOf(lc.owner_member_id)}`,
+    });
+  }
+  // Unsure: what the pages alone say, or the uploader's rules (I4) — never the batch's.
+  const guessed = (s: ItemSuggestion<unknown> | undefined) =>
+    s?.from === 'pages' || s?.from === 'learned';
   if (kind) {
-    if (kindS?.from === 'pages' && (kindS.confidence ?? 0) < ITEM_SURE.type_key) {
+    if (guessed(kindS) && (kindS?.confidence ?? 0) < ITEM_SURE.type_key) {
       check({ code: 'kind_unsure', kind: 'check', words: 'Kind unsure' });
     }
     if (!personS) {
       check({ code: 'person_missing', kind: 'check', words: 'Missing: whose it is' });
-    } else if (personS.from === 'pages' && (personS.confidence ?? 0) < ITEM_SURE.owner_member_id) {
+    } else if (guessed(personS) && (personS.confidence ?? 0) < ITEM_SURE.owner_member_id) {
       check({ code: 'person_unsure', kind: 'check', words: 'Person unsure' });
     }
     const missing = missingFields(kind, {
@@ -452,6 +506,24 @@ export function levelItem(input: LevelInput): ItemLevel {
   return { level, tags, proposals: { ...proposals, visibility }, clashes };
 }
 
+/**
+ * Where a sure rule disagreed with the pages, as the worker sealed it beside
+ * the proposal (`{ v: 1, proposal, learned_clash }`, I4): a kind's key or a
+ * member's id by field, each kept only if it is a short string. Anything
+ * else is none.
+ */
+export function storedLearnedClash(raw: unknown): LearnedClash {
+  const out: LearnedClash = {};
+  if (!raw || typeof raw !== 'object' || (raw as { v?: unknown }).v !== 1) return out;
+  const c = (raw as { learned_clash?: unknown }).learned_clash;
+  if (!c || typeof c !== 'object') return out;
+  for (const k of ['type_key', 'owner_member_id'] as const) {
+    const v = (c as Record<string, unknown>)[k];
+    if (typeof v === 'string' && v.length > 0 && v.length <= 64) out[k] = v;
+  }
+  return out;
+}
+
 /** "12 Ready, 5 Check, 2 Not recognised, 1 Problem": the levels there are, in order. */
 export function levelSummary(counts: Partial<Record<BatchLevel, number>>): string {
   const parts: string[] = [];
@@ -493,7 +565,18 @@ export function storedProposal(raw: unknown): DetailProposal {
     } else if (typeof f.value !== 'string' || f.value.length > 500) {
       return null;
     }
-    return f as never;
+    // Only what a proposal is: made surer by the uploader's rules (I4), or not.
+    return {
+      value: f.value,
+      confidence: f.confidence,
+      cue: f.cue,
+      ...((f as { learned?: unknown }).learned === true ? { learned: true } : {}),
+      ...(typeof (f as { page_confidence?: unknown }).page_confidence === 'number' &&
+      (f as { page_confidence: number }).page_confidence >= 0 &&
+      (f as { page_confidence: number }).page_confidence <= 1
+        ? { page_confidence: (f as { page_confidence: number }).page_confidence }
+        : {}),
+    } as never;
   };
   const src = p as Record<string, unknown>;
   for (const k of ['type_key', 'owner_member_id', 'identifier', 'issued_by'] as const) {
