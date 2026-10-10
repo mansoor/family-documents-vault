@@ -199,22 +199,50 @@ describe('"We noticed something missing" from 768 px: a table, as the Trash is',
     },
   );
 
-  it.each([WIDE, MID])(
-    'a viewer at %i px: a plain table, no grid, nothing to do in it',
+  it.each([WIDE, PHONE])(
+    'a viewer at %i px: the vault tells them of nothing missing, so there is no section',
     async (px) => {
       atWidth(px);
-      open({ suggestions: [{ ...SARA_PASSPORT }, { ...HOME_INSURANCE }] }, 'viewer');
-      const table = await screen.findByRole('table', { name: 'We noticed something missing' });
-      await within(table).findByText('No passport for Sara');
-      expect(screen.queryByRole('grid')).toBeNull();
-      expect(headers(table)).toEqual(['What’s missing', 'Kind', 'Person', 'Why']);
-      expect(within(table).queryAllByRole('button')).toEqual([]);
-      expect(within(table).queryAllByRole('link')).toEqual([]);
-      // Nothing in it is made a stop of the grid's.
-      expect(table.querySelector('[tabindex]')).toBeNull();
-      expect(screen.queryByRole('button', { name: /Not for us/ })).toBeNull();
-      expect(screen.queryByRole('link', { name: /Add it/ })).toBeNull();
+      const state = open({}, 'viewer');
+      await screen.findByText('Everything is fine. Nothing needs your attention.');
+      await waitFor(() =>
+        expect(state.calls.filter((c) => c.url.startsWith('/api/v1/suggestions'))).toHaveLength(2),
+      );
+      // As the vault (5.3): no suggestions, and no word on the questions.
+      expect(screen.queryByText(/We noticed something missing/)).toBeNull();
+      expect(screen.queryByRole('table', { name: 'We noticed something missing' })).toBeNull();
+      expect(screen.queryByRole('grid', { name: 'We noticed something missing' })).toBeNull();
+      expect(screen.queryByRole('button', { name: /hidden$/ })).toBeNull();
       await expectAccessible();
+    },
+  );
+
+  it.each([WIDE, MID])(
+    'a teen at %i px: Add it, but not Not for us; the hidden ones read, not shown again',
+    async (px) => {
+      atWidth(px);
+      const state = open({}, 'teen');
+      const table = await missingGrid();
+      await within(table).findByText('No passport for Sara');
+      expect(headers(table)).toEqual(['What’s missing', 'Kind', 'Person', 'Why', 'Add it']);
+      expect(
+        within(table).getByRole('link', { name: 'Add it: No passport for Sara' }),
+      ).toHaveAttribute('href', '/add?type=passport&member=m-2');
+      expect(screen.queryByRole('button', { name: /Not for us/ })).toBeNull();
+      // Still the grid: Add it is in each row.
+      await waitFor(() => expect(table.querySelectorAll('[tabindex="0"]')).toHaveLength(1));
+      // What the family chose to hide, as the vault tells a teen: read, with nothing to do.
+      fireEvent.click(toggle());
+      expect(toggle()).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.queryByRole('grid', { name: 'Hidden: not for us' })).toBeNull();
+      const hidden = screen.getByRole('table', { name: 'Hidden: not for us' });
+      expect(headers(hidden)).toEqual(['What’s missing']);
+      expect(titles(hidden)).toEqual(['No will on file', 'No pet records on file']);
+      expect(within(hidden).queryAllByRole('button')).toEqual([]);
+      expect(hidden.querySelector('[tabindex]')).toBeNull();
+      expect(screen.queryByRole('button', { name: /Show it again/ })).toBeNull();
+      await expectAccessible();
+      expect(state.calls.some((c) => c.url.endsWith('/dismiss'))).toBe(false);
     },
   );
 
@@ -460,14 +488,6 @@ describe('"We noticed something missing" from 768 px: a table, as the Trash is',
     expect(screen.getByRole('button', { name: 'Not for us: No passport for Sara' })).toHaveFocus();
   });
 
-  it('a teen, who may add documents, has the actions too, as on a phone', async () => {
-    atWidth(WIDE);
-    open({}, 'teen');
-    const table = await missingGrid();
-    await within(table).findByText('No passport for Sara');
-    expect(headers(table)).toHaveLength(6);
-  });
-
   it('Home’s card stays a card of tiles at 1280 px: it is not this table', async () => {
     atWidth(WIDE);
     installFakeApi(fresh({ suggestions: suggestions() }));
@@ -529,19 +549,20 @@ describe('"We noticed something missing" on a phone: the list, as it was', () =>
     },
   );
 
-  it('a viewer at 320 px: the rows, with nothing to do', async () => {
+  it('a teen at 320 px: Add it on each row, no Not for us; the hidden ones read, not shown again', async () => {
     atWidth(PHONE);
-    open({ suggestions: [{ ...SARA_PASSPORT }, { ...HOME_INSURANCE }] }, 'viewer');
+    const state = open({}, 'teen');
     const missing = await section();
     await within(missing).findByText('No passport for Sara');
-    expect(missing.querySelectorAll('li.missing-row')).toHaveLength(2);
-    expect(within(missing).queryByRole('table')).toBeNull();
-    expect(within(missing).queryAllByRole('link')).toEqual([]);
-    expect(
-      within(missing)
-        .getAllByRole('button')
-        .map((b) => b.textContent),
-    ).toEqual([expect.stringContaining('We noticed something missing')]);
+    expect(missing.querySelectorAll('li.missing-row')).toHaveLength(3);
+    expect(within(missing).getAllByRole('link', { name: 'Add it' })).toHaveLength(3);
+    expect(within(missing).queryByRole('button', { name: 'Not for us' })).toBeNull();
+    // "N hidden" opens the hidden list once, as for anybody: what is hidden, nothing to do.
+    fireEvent.click(within(missing).getByRole('button', { name: '2 hidden' }));
+    await within(missing).findByText('No will on file');
+    expect(missing.querySelectorAll('li.missing-row')).toHaveLength(5);
+    expect(within(missing).queryByRole('button', { name: 'Show it again' })).toBeNull();
     await expectAccessible();
+    expect(state.calls.some((c) => c.url.endsWith('/dismiss'))).toBe(false);
   });
 });

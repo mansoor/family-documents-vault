@@ -1314,9 +1314,18 @@ function Missing(props: {
   );
 }
 
+/**
+ * Who may answer a suggestion — Not for us, Show it again — as the vault
+ * decides: the household's details are an adult's to change. Anybody who
+ * may add documents is offered Add it; a teen is told what is hidden, as
+ * the vault tells them, but not offered to change it.
+ */
+const mayAnswer = () => can(storedRole(), 'profile.edit');
+
 /** On a phone: the list, as it was. */
 function MissingList(props: { items: SuggestionView[]; hidden: SuggestionView[]; act: Act }) {
   const [showHidden, setShowHidden] = useState(false);
+  const answer = mayAnswer();
   return (
     <>
       <ul className="list">
@@ -1329,12 +1338,14 @@ function MissingList(props: { items: SuggestionView[]; hidden: SuggestionView[];
                 <Link to={addLink(s)} className="btn btn-quiet">
                   Add it
                 </Link>
-                <Button
-                  kind="quiet"
-                  onClick={() => void props.act((t) => api.dismissSuggestion(t, s.key))}
-                >
-                  Not for us
-                </Button>
+                {answer && (
+                  <Button
+                    kind="quiet"
+                    onClick={() => void props.act((t) => api.dismissSuggestion(t, s.key))}
+                  >
+                    Not for us
+                  </Button>
+                )}
               </div>
             )}
           </li>
@@ -1346,12 +1357,14 @@ function MissingList(props: { items: SuggestionView[]; hidden: SuggestionView[];
             {props.hidden.map((s) => (
               <li key={s.key} className="missing-row">
                 <span className="muted">{s.title}</span>
-                <Button
-                  kind="quiet"
-                  onClick={() => void props.act((t) => api.restoreSuggestion(t, s.key))}
-                >
-                  Show it again
-                </Button>
+                {answer && (
+                  <Button
+                    kind="quiet"
+                    onClick={() => void props.act((t) => api.restoreSuggestion(t, s.key))}
+                  >
+                    Show it again
+                  </Button>
+                )}
               </li>
             ))}
           </ul>
@@ -1374,16 +1387,18 @@ interface FocusAfter {
 /**
  * "We noticed something missing" from 768 px (the owner's ask): a table
  * across the width, as the Trash's — what is missing, its kind, whose, why,
- * and for whoever may add documents, Add it and Not for us, each in its
- * own column. R2's grid when rows have something to do: one stop for Tab,
- * the arrows between cells. With nothing to do, a plain table. The hidden
- * ones, behind "N hidden", a second table with Show it again. What an
- * action came to is said politely above them, and the focus stays on the
- * table: the next row's, or the toggle or the heading once there is none.
+ * then Add it for whoever may add documents and Not for us for whoever may
+ * answer (`mayAnswer`), each in its own column. R2's grid when rows have
+ * something to do: one stop for Tab, the arrows between cells. With nothing
+ * to do, a plain table. The hidden ones, behind "N hidden", a second table
+ * with Show it again for whoever may answer. What an action came to is said
+ * politely above them, and the focus stays on the table: the next row's,
+ * or the toggle or the heading once there is none.
  */
 function MissingTables(props: { items: SuggestionView[]; hidden: SuggestionView[]; act: Act }) {
   const { items, hidden } = props;
   const mayAdd = can(storedRole(), 'document.add');
+  const answer = mayAnswer();
   const [showHidden, setShowHidden] = useState(false);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [after, setAfter] = useState<FocusAfter | null>(null);
@@ -1394,10 +1409,15 @@ function MissingTables(props: { items: SuggestionView[]; hidden: SuggestionView[
   const hiddenWrap = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
   const outcomeRef = useRef<HTMLDivElement>(null);
-  const grid = useGrid(table, wrap, [items.map((s) => s.key).join(','), String(mayAdd)]);
+  const grid = useGrid(table, wrap, [
+    items.map((s) => s.key).join(','),
+    String(mayAdd),
+    String(answer),
+  ]);
   const hiddenGrid = useGrid(hiddenTable, hiddenWrap, [
     hidden.map((s) => s.key).join(','),
     String(showHidden),
+    String(answer),
   ]);
 
   /** The section's own heading, which folds it: there whatever else has gone. */
@@ -1474,7 +1494,7 @@ function MissingTables(props: { items: SuggestionView[]; hidden: SuggestionView[
             ref={mayAdd ? table : undefined}
             className={`tbl missing-tbl${mayAdd ? '' : ' tbl-plain'}`}
             role={mayAdd ? 'grid' : undefined}
-            style={{ minWidth: mayAdd ? 720 : 540 }}
+            style={{ minWidth: 540 + (mayAdd ? 80 : 0) + (answer ? 100 : 0) }}
             onKeyDown={mayAdd ? grid.onKeyDown : undefined}
             onFocus={mayAdd ? grid.onFocus : undefined}
           >
@@ -1494,7 +1514,7 @@ function MissingTables(props: { items: SuggestionView[]; hidden: SuggestionView[
                     <span className="visually-hidden">Add it</span>
                   </th>
                 )}
-                {mayAdd && (
+                {answer && (
                   <th scope="col" className="missing-col-act">
                     <span className="visually-hidden">Not for us</span>
                   </th>
@@ -1521,7 +1541,7 @@ function MissingTables(props: { items: SuggestionView[]; hidden: SuggestionView[
                       </Link>
                     </td>
                   )}
-                  {mayAdd && (
+                  {answer && (
                     <td>
                       <button
                         type="button"
@@ -1558,25 +1578,29 @@ function MissingTables(props: { items: SuggestionView[]; hidden: SuggestionView[
           className="tbl-wrap tbl-static"
           hidden={!showHidden}
         >
+          {/* Told what is hidden, as the vault tells every member of the
+              family; Show it again only for whoever may answer. */}
           <table
-            ref={hiddenTable}
-            className="tbl missing-tbl"
-            role="grid"
-            style={{ minWidth: 420 }}
-            onKeyDown={hiddenGrid.onKeyDown}
-            onFocus={hiddenGrid.onFocus}
+            ref={answer ? hiddenTable : undefined}
+            className={`tbl missing-tbl${answer ? '' : ' tbl-plain'}`}
+            role={answer ? 'grid' : undefined}
+            style={{ minWidth: answer ? 420 : 270 }}
+            onKeyDown={answer ? hiddenGrid.onKeyDown : undefined}
+            onFocus={answer ? hiddenGrid.onFocus : undefined}
           >
             <caption className="visually-hidden">Hidden: not for us</caption>
             <colgroup>
               <col />
-              <col style={{ width: 150 }} />
+              {answer && <col style={{ width: 150 }} />}
             </colgroup>
             <thead>
               <tr>
                 <th scope="col">What’s missing</th>
-                <th scope="col">
-                  <span className="visually-hidden">Show it again</span>
-                </th>
+                {answer && (
+                  <th scope="col">
+                    <span className="visually-hidden">Show it again</span>
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -1585,16 +1609,18 @@ function MissingTables(props: { items: SuggestionView[]; hidden: SuggestionView[
                   <td>
                     <span className="missing-title muted">{s.title}</span>
                   </td>
-                  <td>
-                    <button
-                      type="button"
-                      className="btn btn-quiet btn-small"
-                      aria-label={`Show it again: ${s.title}`}
-                      onClick={() => showAgain(s, i)}
-                    >
-                      Show it again
-                    </button>
-                  </td>
+                  {answer && (
+                    <td>
+                      <button
+                        type="button"
+                        className="btn btn-quiet btn-small"
+                        aria-label={`Show it again: ${s.title}`}
+                        onClick={() => showAgain(s, i)}
+                      >
+                        Show it again
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

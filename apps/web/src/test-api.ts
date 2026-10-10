@@ -1117,6 +1117,11 @@ export function installFakeApi(state: FakeState) {
       return json(r);
     }
     if (path === '/api/v1/suggestions') {
+      // As the vault: worked out from the family's details, which a viewer
+      // is not given (5.3) — nothing, and no word on the questions.
+      if (!can(storedRole() as Role, 'family.details')) {
+        return json({ items: [], profile_answered: null, dismissed_count: 0 });
+      }
       const dismissed = query.get('dismissed') === 'true';
       const items = state.suggestions.filter((x) => Boolean(x.dismissed) === dismissed);
       return json({
@@ -1126,6 +1131,10 @@ export function installFakeApi(state: FakeState) {
       });
     }
     if (path.startsWith('/api/v1/suggestions/') && path.endsWith('/dismiss')) {
+      // Not for us, and Show it again: the household's details, an adult's to change.
+      if (!can(storedRole() as Role, 'profile.edit')) {
+        return refuse(403, 'forbidden', 'Only an adult can change the household details.');
+      }
       const key = decodeURIComponent(path.slice('/api/v1/suggestions/'.length, -'/dismiss'.length));
       const row = state.suggestions.find((x) => x.key === key);
       if (row) row.dismissed = method === 'POST';
