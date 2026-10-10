@@ -3218,8 +3218,9 @@ a.menu-item {
   inset: 0;
 }
 
-/* A cell in focus (the grid's arrows) shows where it is. */
-.tbl td:focus-visible {
+/* A cell in focus (the grid's arrows) shows where it is: a head's too. */
+.tbl td:focus-visible,
+.tbl th:focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: -2px;
 }

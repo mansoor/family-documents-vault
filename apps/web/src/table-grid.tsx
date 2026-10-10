@@ -10,7 +10,8 @@ import {
  * What the app's tables share (Phase 6): R2's grid — one stop for Tab, the
  * arrows between cells, the cell in focus kept clear of what stays in place
  * — its header box, a blank cell, a filter, and what an action on many came
- * to. The Documents table (R2) and the Trash (R4) use them.
+ * to. The Documents table (R2), the Trash (R4) and a batch's review queue
+ * use them.
  */
 
 /** Each row of the grid: the head's and the body's, never the line saying there are none. */
@@ -39,8 +40,17 @@ export function useGrid(
   table: RefObject<HTMLTableElement | null>,
   wrap: RefObject<HTMLDivElement | null>,
   deps: string[],
+  options: {
+    /** The cell that is the stop until another has had the focus: the first row's first, unless said. */
+    start?: { row: number; col: number };
+    /**
+     * j and k as well as ↓ and ↑, between the rows: the review queue's
+     * (I3), while single-key shortcuts are on (WCAG 2.1.4).
+     */
+    jk?: boolean;
+  } = {},
 ) {
-  const at = useRef({ row: 1, col: 0 });
+  const at = useRef(options.start ?? { row: 1, col: 0 });
   const version = deps.join('|');
   useLayoutEffect(() => {
     const t = table.current;
@@ -101,8 +111,10 @@ export function useGrid(
     const rows = gridRows(t);
     const last = rows.length - 1;
     const width = (r: number) => rows[r]?.cells.length ?? 0;
+    const single = options.jk === true && !e.ctrlKey && !e.shiftKey;
+    const key = single && e.key === 'j' ? 'ArrowDown' : single && e.key === 'k' ? 'ArrowUp' : e.key;
     let to: { row: number; col: number };
-    switch (e.key) {
+    switch (key) {
       case 'ArrowRight':
         to = { row, col: Math.min(col + 1, width(row) - 1) };
         break;

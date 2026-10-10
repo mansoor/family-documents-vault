@@ -514,7 +514,7 @@ describe('a batch’s page (I1)', () => {
   it('its files: the first page when drawn, name, size and pages, waiting to be read, a duplicate said', async () => {
     at('/inbox/batches/batch-1', { batches: [OLD_PAPERS()] });
     expect(await screen.findByRole('heading', { name: 'Old papers' })).toBeVisible();
-    const table = screen.getByRole('table', { name: 'Files in Old papers' });
+    const table = screen.getByRole('grid', { name: 'Files in Old papers' });
     const rows = within(table).getAllByRole('row').slice(1);
     expect(rows).toHaveLength(3);
     expect(rows[0]).toHaveTextContent('scan-001.pdf');
@@ -599,7 +599,7 @@ describe('a batch’s page (I1)', () => {
     // It is a document now: accepted, with a way to it.
     fireEvent.click(screen.getByRole('link', { name: 'Old papers' }));
     const rows = within(
-      await screen.findByRole('table', { name: 'Files in Old papers' }),
+      await screen.findByRole('grid', { name: 'Files in Old papers' }),
     ).getAllByRole('row');
     expect(rows[1]).toHaveTextContent('Accepted');
     expect(
@@ -1057,7 +1057,7 @@ describe('many documents at once, the review (I1)', () => {
       );
       fail = true;
       expect(await screen.findByText('The vault is busy.')).toBeVisible();
-      expect(screen.getByRole('table', { name: 'Files in Old papers' })).toBeVisible();
+      expect(screen.getByRole('grid', { name: 'Files in Old papers' })).toBeVisible();
       expect(screen.getByRole('alertdialog').contains(document.activeElement)).toBe(true);
       // Asked again, more slowly: the vault back, the note goes.
       const asked = state.calls.length;
