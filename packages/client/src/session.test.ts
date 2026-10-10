@@ -295,3 +295,121 @@ describe('the session core', () => {
     expect(tabB.signedIn).toBe(false);
   });
 });
+
+/**
+ * A renewal turned away for too many tries (429; the PR #100
+ * investigation): a short Retry-After is waited out and the renewal asked
+ * again — twice at most, and only for a minute or less — and it is never
+ * "signed out".
+ */
+describe('a renewal turned away for too many tries', () => {
+  /** A vault that answers 429 to the first `refusals` renewals, asking for `after` seconds. */
+  async function busyVault(refusals: number, after: number | undefined) {
+    const { api, tokens } = await signedInVault();
+    let asked = 0;
+    const refresher = {
+      refresh: async (rt: string): Promise<Tokens> => {
+        asked++;
+        if (asked <= refusals) {
+          throw new ApiRequestError(429, 'rate_limited', 'Too many requests.', undefined, {
+            ...(after !== undefined ? { retryAfterSeconds: after } : {}),
+          });
+        }
+        return api.refresh(rt);
+      },
+    };
+    const mem = memoryStore();
+    let clock = 0;
+    const slept: number[] = [];
+    const told: Array<number | null> = [];
+    const session = new SessionCore(refresher, mem.store, {
+      now: () => clock,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+      onWait: (s) => told.push(s),
+    });
+    await session.accept(tokens);
+    clock = 20 * 60 * 1000;
+    return { session, mem, slept, told, tokens, asked: () => asked };
+  }
+
+  it('a short Retry-After is waited out, said, and the renewal asked again', async () => {
+    const v = await busyVault(1, 5);
+    const r = await v.session.token();
+    expect(r.kind).toBe('ok');
+    expect(v.asked()).toBe(2);
+    expect(v.slept).toEqual([5000]);
+    // Said as it starts, and put away once it is over.
+    expect(v.told).toEqual([5, null]);
+  });
+
+  it('five callers share the one wait and the one renewal after it', async () => {
+    const v = await busyVault(1, 3);
+    const results = await Promise.all([1, 2, 3, 4, 5].map(() => v.session.token()));
+    expect(results.every((r) => r.kind === 'ok')).toBe(true);
+    expect(v.asked()).toBe(2);
+    expect(v.slept).toEqual([3000]);
+  });
+
+  it('asked again at most twice: then offline, too many tries, and still signed in', async () => {
+    const v = await busyVault(10, 20);
+    const r = await v.session.token();
+    expect(r).toEqual({ kind: 'offline', tooMany: { retryAfterSeconds: 20 } });
+    expect(v.asked()).toBe(3);
+    expect(v.slept).toEqual([20000, 20000]);
+    expect(v.session.signedIn).toBe(true);
+    expect(v.mem.current()?.refresh_token).toBe(v.tokens.refresh_token);
+  });
+
+  it('a wait longer than a minute, or none said, is not waited out', async () => {
+    for (const after of [61, 300, undefined]) {
+      const v = await busyVault(1, after);
+      expect(await v.session.token()).toEqual({
+        kind: 'offline',
+        tooMany: { retryAfterSeconds: after ?? null },
+      });
+      expect(v.asked()).toBe(1);
+      expect(v.slept).toEqual([]);
+      expect(v.told).toEqual([]);
+      expect(v.session.signedIn).toBe(true);
+    }
+  });
+
+  it('a minute exactly is waited out', async () => {
+    const v = await busyVault(1, 60);
+    expect((await v.session.token()).kind).toBe('ok');
+    expect(v.slept).toEqual([60000]);
+  });
+
+  it('signed out while it waits: nothing more is asked, and nobody is signed back in', async () => {
+    const { api, tokens } = await signedInVault();
+    let asked = 0;
+    const refresher = {
+      refresh: async (rt: string): Promise<Tokens> => {
+        asked++;
+        if (asked === 1) {
+          throw new ApiRequestError(429, 'rate_limited', 'Too many requests.', undefined, {
+            retryAfterSeconds: 2,
+          });
+        }
+        return api.refresh(rt);
+      },
+    };
+    const mem = memoryStore();
+    let clock = 0;
+    const holder: { session: SessionCore | null } = { session: null };
+    const session = new SessionCore(refresher, mem.store, {
+      now: () => clock,
+      sleep: async () => {
+        await holder.session?.clear();
+      },
+    });
+    holder.session = session;
+    await session.accept(tokens);
+    clock = 20 * 60 * 1000;
+    expect(await session.token()).toEqual({ kind: 'signed_out' });
+    expect(asked).toBe(1);
+    expect(mem.current()).toBeNull();
+  });
+});

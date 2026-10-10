@@ -4084,6 +4084,31 @@ a.item-name:focus-visible {
   gap: 8px;
 }
 
+/* A sign-in renewal turned away for too many tries, being waited out (the
+   investigation of PR 100): said over the page, at its top, until it is
+   asked again. */
+.renewal-wait {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  z-index: 60;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--warn);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 6px 24px var(--scrim);
+  overflow-wrap: anywhere;
+}
+
+.renewal-wait p {
+  margin: 0;
+}
+
 /* The toast: what was just done, and Undo while there is something to
    undo. Never on a timer (WCAG 2.2.1); the page leaves room under it, so
    nothing in focus is hidden behind it (WCAG 2.4.11). */

@@ -22,7 +22,35 @@ import { StepUpPrompt } from './StepUpPrompt.js';
 export const UNREACHABLE =
   "We can't reach the vault right now. Check that it is running, then reload.";
 
+/**
+ * The sign-in's renewal was turned away for too many tries (429), and not
+ * waited out: the vault was reached, and the session is still good. Still
+ * no answer to what was asked, so as offline it is treated — and said for
+ * what it is, never "can't reach the vault… reload", as a reload spends
+ * another try (the PR #100 investigation).
+ */
+export class TooManyTries extends NetworkError {
+  constructor(retryAfterSeconds: number | null) {
+    super('offline', tooManyWords(retryAfterSeconds));
+    this.name = 'TooManyTries';
+  }
+}
+
+/** "Too many tries just now. Try again in 2 minutes." */
+export function tooManyWords(seconds: number | null): string {
+  if (seconds === null) return 'Too many tries just now. Wait a minute, then try again.';
+  const minutes = Math.ceil(seconds / 60);
+  return seconds <= 90
+    ? `Too many tries just now. Try again in ${seconds} second${seconds === 1 ? '' : 's'}.`
+    : `Too many tries just now. Try again in ${minutes} minutes.`;
+}
+
+/** What is said while a renewal waits: "…; trying again in 12 seconds." */
+export const waitingWords = (seconds: number) =>
+  `Too many tries just now; trying again in ${seconds} second${seconds === 1 ? '' : 's'}.`;
+
 export function describeError(err: unknown): string {
+  if (err instanceof TooManyTries) return err.message;
   return err instanceof ApiRequestError ? err.message : UNREACHABLE;
 }
 
@@ -95,7 +123,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // No answer is not "signed out": the session is kept, and the
         // screen that asked says the vault cannot be reached, rather than
         // showing an empty household as if there were nothing in it. Only
-        // that screen: a blip must not wipe a half-filled form.
+        // that screen: a blip must not wipe a half-filled form. Too many
+        // tries is not "signed out" either, and is said as what it is.
+        if (got.tooMany) throw new TooManyTries(got.tooMany.retryAfterSeconds);
         throw new NetworkError('offline');
       }
       if (got.kind !== 'ok') {
@@ -186,10 +216,45 @@ export function AppProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={value}>
       {children}
+      <RenewalWait session={session} />
       {asking && (
         <StepUpPrompt action={asking.action} message={asking.message} onSettled={asking.settle} />
       )}
     </Ctx.Provider>
+  );
+}
+
+/**
+ * While a renewal turned away for too many tries is waited out (the session
+ * core waits a short Retry-After, twice at most): said, with the seconds
+ * counting down, where "can't reach the vault" would otherwise be all
+ * anybody heard. Heard once as it starts; the count is for the eye.
+ */
+function RenewalWait({ session }: { session: Session }) {
+  const [until, setUntil] = useState<{ at: number; seconds: number } | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(
+    () =>
+      session.onWait((seconds) => {
+        setNow(Date.now());
+        setUntil(seconds === null ? null : { at: Date.now() + seconds * 1000, seconds });
+      }),
+    [session],
+  );
+  useEffect(() => {
+    if (!until) return;
+    const tick = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(tick);
+  }, [until]);
+  if (!until) return null;
+  const left = Math.max(0, Math.ceil((until.at - now) / 1000));
+  return (
+    <div className="renewal-wait">
+      <p className="visually-hidden" role="status">
+        {waitingWords(until.seconds)}
+      </p>
+      <p aria-hidden="true">{waitingWords(left)}</p>
+    </div>
   );
 }
 
