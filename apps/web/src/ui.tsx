@@ -313,6 +313,25 @@ export function ErrorNote({ message }: { message: string | null }) {
 }
 
 /**
+ * A panel whose content could not be loaded — the vault not reached, or
+ * refusing — said in it, with Try again: never left empty, or offering
+ * "Set up", as if that were how things are. "Try again" is named for its
+ * panel, as a page can have several.
+ */
+export function LoadFailed(props: { message: string; what: string; onRetry: () => void }) {
+  return (
+    <div className="load-failed stack">
+      <p className="error" role="alert">
+        {props.message}
+      </p>
+      <Button kind="quiet" ariaLabel={`Try again: ${props.what}`} onClick={props.onRetry}>
+        Try again
+      </Button>
+    </div>
+  );
+}
+
+/**
  * A choice made of pills: the wizard's "We own it / We rent" pattern. The
  * group is named by what it shows, so one that must be answered before
  * the card saves is "… required" to a screen reader too (5.10's mark).
