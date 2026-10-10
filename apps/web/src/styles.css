@@ -4086,11 +4086,11 @@ a.item-name:focus-visible {
 }
 
 /* A sign-in renewal turned away for too many tries, being waited out (the
-   investigation of PR 100): said over the page, at its top, until it is
-   asked again. */
+   investigation of PR 100): said over the page, at its foot — above the
+   phone's bar, never over the search box — until it is asked again. */
 .renewal-wait {
   position: fixed;
-  top: 12px;
+  bottom: calc(84px + env(safe-area-inset-bottom));
   left: 50%;
   z-index: 60;
   transform: translateX(-50%);
@@ -4110,14 +4110,29 @@ a.item-name:focus-visible {
   margin: 0;
 }
 
+@media (min-width: 768px) {
+  .renewal-wait {
+    bottom: 24px;
+  }
+}
+
+/* A panel that could not be loaded: its Try again as wide as its words. */
+.load-failed .btn {
+  align-self: flex-start;
+}
+
 /* A screen this role can't use, typed into the address bar: its name, and
    who it is for (the prototype's notFor). */
 .notfor {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 16px;
+  gap: 12px;
   max-width: 560px;
+}
+
+.notfor p {
+  margin: 0;
 }
 
 /* The toast: what was just done, and Undo while there is something to

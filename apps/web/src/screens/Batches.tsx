@@ -1811,7 +1811,7 @@ export function BatchScreen() {
                 <col className="batch-col-person" />
                 <col className="batch-col-level" />
                 <col style={{ width: 100 }} />
-                <col style={{ width: 96 }} />
+                <col style={{ width: 108 }} />
               </colgroup>
               <thead>
                 <tr>

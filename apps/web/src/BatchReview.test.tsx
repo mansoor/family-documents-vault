@@ -992,6 +992,15 @@ describe('the review queue is R2’s grid', () => {
   });
 });
 
+describe('the review queue’s Remove has a cell of its own', () => {
+  it('wide enough for its button: the screenshots found it cut 4 px short at 96 px', async () => {
+    at('/inbox/batches/batch-1');
+    const table = await queueTable();
+    const cols = [...table.querySelectorAll('col')];
+    expect(parseInt(cols.at(-1)?.style.width ?? '0', 10)).toBeGreaterThanOrEqual(104);
+  });
+});
+
 describe('a file opens from its name (the owner’s report)', () => {
   it('a waiting file’s name is the link to its card, with the level and the run; Review for anything not Ready', async () => {
     at('/inbox/batches/batch-1?level=unrecognised');

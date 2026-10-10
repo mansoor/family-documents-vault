@@ -728,3 +728,28 @@ describe('Sharing and After a restore are tables from 768 px (the prototype’s)
     expect(screen.queryByRole('grid')).toBeNull();
   });
 });
+
+// ------------------------------------------------ what the screenshots found
+
+describe('what the screenshots of the small fixes found', () => {
+  it('a panel that could not load has its Try again as wide as its words, not the panel', async () => {
+    atWidth(WIDE);
+    open('/settings/account', { ...household(), offline: true });
+    const again = await screen.findByRole('button', { name: 'Try again: passkeys' });
+    expect(getComputedStyle(again).alignSelf).toBe('flex-start');
+  });
+
+  it('a screen not theirs says its two lines together, not a gap apart', async () => {
+    atWidth(WIDE);
+    open('/people/outside', household(), 'adult');
+    const said = await screen.findByText('This isn’t something you can open.');
+    expect(getComputedStyle(said).marginBottom).toBe('0px');
+    expect(getComputedStyle(said).marginTop).toBe('0px');
+  });
+
+  it('a renewal’s wait is said at the foot of the page, never over the search box at its top', () => {
+    const rule = /\.renewal-wait\s*\{([^}]*)\}/.exec(CSS)?.[1] ?? '';
+    expect(rule).toMatch(/bottom:/);
+    expect(rule).not.toMatch(/\btop:/);
+  });
+});
