@@ -6,6 +6,24 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-dev.10] - 2026-10-10 — Phase 6: the small fixes
+
+### Changed
+
+- **Needs attention when nothing needs attention:**
+  - From 768 px it keeps the wide layout: a full-width "Everything is fine" panel.
+  - Coming up says when the next reminder is, or that nothing is due in the next 90 days.
+- **Signing in again too often:** when the vault turns down renewing your sign-in because of too many tries, the app waits and tries again, showing "Too many tries just now; trying again in N seconds", instead of saying it can't reach the vault. Signing out never waits for it.
+- **Your uploads' review queue** moves with the keyboard like the Documents table and the Trash.
+- **Moving a document to the Trash from a row's ⋯ menu** now says so, and focus stays on the next row.
+- **Settings when the vault can't be reached:** each panel says it couldn't load and offers Try again, instead of showing empty or default values.
+- **A screen you can't use, typed into the address bar,** says "This isn't something you can open" and who it is for, instead of an empty or failing page.
+- **Sharing and After a restore** are tables from 768 px.
+
+### Client
+
+- `@fdv/client`'s session waits out a short `Retry-After` when a token renewal is answered 429, at most twice, and reports `tooMany`. Signing out cancels the wait.
+
 ## [0.7.0-dev.9] - 2026-10-09 — Phase 6: what the owner found trying it
 
 ### Changed
