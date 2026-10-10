@@ -413,3 +413,117 @@ describe('a renewal turned away for too many tries', () => {
     expect(mem.current()).toBeNull();
   });
 });
+
+/**
+ * The review round: a sign-in or a sign-out ends a wait at once, and the
+ * wait is neither under the lock nor repeated by another context — it is
+ * kept in the store, and said at once to whoever asks meanwhile.
+ */
+describe('a renewal’s wait, and everybody else meanwhile', () => {
+  /** A vault that turns every renewal away for `after` seconds; a wait that never ends by itself. */
+  async function waiting(after = 30) {
+    const { api, tokens } = await signedInVault();
+    let asked = 0;
+    let refuse = true;
+    const refresher = {
+      refresh: async (rt: string): Promise<Tokens> => {
+        asked++;
+        if (refuse) {
+          throw new ApiRequestError(429, 'rate_limited', 'Too many requests.', undefined, {
+            retryAfterSeconds: after,
+          });
+        }
+        return api.refresh(rt);
+      },
+    };
+    const mem = memoryStore();
+    let clock = 0;
+    // One holder at a time, as Web Locks are for the tabs of a browser.
+    let held: Promise<unknown> = Promise.resolve();
+    const lock: CrossContextLock = (fn) => {
+      const run = held.then(fn, fn);
+      held = run.catch(() => undefined);
+      return run;
+    };
+    const slept: number[] = [];
+    const tab = (initial: StoredSession | null) =>
+      new SessionCore(refresher, mem.store, {
+        initial,
+        now: () => clock,
+        lock,
+        sleep: (ms) => {
+          slept.push(ms);
+          return new Promise<void>(() => undefined);
+        },
+      });
+    const a = tab(null);
+    await a.accept(tokens);
+    clock = 20 * 60 * 1000;
+    const tick = () => new Promise<void>((r) => setTimeout(r, 10));
+    return {
+      a,
+      tab,
+      mem,
+      slept,
+      tokens,
+      tick,
+      asked: () => asked,
+      answer: () => {
+        refuse = false;
+      },
+      later: (ms: number) => {
+        clock += ms;
+      },
+    };
+  }
+
+  it('signing out during the wait ends it at once, and nothing more is asked', async () => {
+    const v = await waiting();
+    const first = v.a.token();
+    await v.tick();
+    expect(v.slept).toEqual([30000]);
+    // Signing out asks without waiting: not behind the renewal under way.
+    expect(await v.a.token({ wait: false })).toEqual({ kind: 'offline' });
+    await v.a.clear();
+    expect(await first).toEqual({ kind: 'signed_out' });
+    await v.tick();
+    expect(v.asked()).toBe(1);
+    expect(v.mem.current()).toBeNull();
+  });
+
+  it('a sign-in during the wait ends it too: the new session stands', async () => {
+    const v = await waiting();
+    const first = v.a.token();
+    await v.tick();
+    await v.a.accept({ ...v.tokens, access_token: 'new-access' });
+    expect(await first).toEqual({ kind: 'ok', token: 'new-access' });
+    expect(v.asked()).toBe(1);
+  });
+
+  it('another tab asking during the wait is told at once, is not held by the lock, and asks nothing', async () => {
+    const v = await waiting();
+    void v.a.token();
+    await v.tick();
+    expect(v.mem.current()?.retry_not_before).toBe(20 * 60 * 1000 + 30000);
+    const b = v.tab(v.mem.current());
+    expect(await b.token()).toEqual({ kind: 'offline', tooMany: { retryAfterSeconds: 30 } });
+    // And asked again later in the window: still nothing sent.
+    v.later(12_000);
+    expect(await b.token()).toEqual({ kind: 'offline', tooMany: { retryAfterSeconds: 18 } });
+    expect(v.asked()).toBe(1);
+    expect(b.signedIn).toBe(true);
+  });
+
+  it('this tab, asked again in a window a refusal of more than a minute left, asks nothing until it is over', async () => {
+    const v = await waiting(120);
+    expect(await v.a.token()).toEqual({ kind: 'offline', tooMany: { retryAfterSeconds: 120 } });
+    expect(await v.a.token()).toEqual({ kind: 'offline', tooMany: { retryAfterSeconds: 120 } });
+    expect(v.asked()).toBe(1);
+    v.later(121_000);
+    v.answer();
+    expect((await v.a.token()).kind).toBe('ok');
+    expect(v.asked()).toBe(2);
+    // A session saved afresh has no window.
+    expect(v.mem.current()?.retry_not_before).toBeUndefined();
+  });
+});

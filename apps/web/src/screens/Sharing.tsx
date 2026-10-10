@@ -435,16 +435,17 @@ function LinksTable(props: {
 }) {
   const take = props.onTakeBack;
   const table = useRef<HTMLTableElement>(null);
-  const plain = useRef<HTMLTableElement>(null);
+  // Never in the page: a plain table is given no grid, so no stop of its own.
+  const none = useRef<HTMLTableElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
-  const grid = useGrid(take ? table : plain, wrap, [
+  const grid = useGrid(take ? table : none, wrap, [
     props.links.map((s) => s.id).join(','),
     String(props.busy),
   ]);
   return (
     <div ref={wrap} className="tbl-wrap tbl-static tbl-section">
       <table
-        ref={take ? table : plain}
+        ref={table}
         className="tbl tbl-plain links-tbl"
         {...(take ? { role: 'grid', onKeyDown: grid.onKeyDown, onFocus: grid.onFocus } : {})}
       >

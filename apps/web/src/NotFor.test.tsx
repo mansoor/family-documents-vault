@@ -97,4 +97,27 @@ describe('a screen a role cannot use, typed into the address bar', () => {
     await waitFor(() => expect(screen.getAllByRole('heading', { level: 1 }).length).toBe(1));
     expect(screen.queryByText(/This isn’t something you can open/)).toBeNull();
   });
+
+  it('a viewer’s Back from a person’s page goes to their documents, never to People (the review round)', async () => {
+    open('/people/me', 'viewer');
+    await screen.findByRole('heading', { level: 1, name: 'Mansoor Seikh' });
+    expect(screen.getByRole('link', { name: 'Back' })).toHaveAttribute(
+      'href',
+      '/people/me/documents',
+    );
+  });
+
+  it('a viewer who finds nobody there is offered Home, not People', async () => {
+    open('/people/nobody', 'viewer');
+    expect(await screen.findByText('We can’t find that person.')).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Back to Home' })).toHaveAttribute('href', '/');
+    expect(screen.getByRole('link', { name: 'Back' })).toHaveAttribute('href', '/');
+    expect(screen.queryByRole('link', { name: 'Back to People' })).toBeNull();
+  });
+
+  it('anybody of the family still goes back to People', async () => {
+    open('/people/me', 'teen');
+    await screen.findByRole('heading', { level: 1, name: 'Mansoor Seikh' });
+    expect(screen.getByRole('link', { name: 'Back' })).toHaveAttribute('href', '/people');
+  });
 });

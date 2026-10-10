@@ -28,7 +28,10 @@ import { ApiRequestError, isRetriableStatus, isSessionOver, NetworkError } from 
  * (429) with a short Retry-After is waited out and asked again — at most
  * twice, and only for a wait of a minute or less — rather than reported
  * at once, when the next thing somebody does (a reload) spends another
- * try. It is never "signed out" (the PR #100 investigation).
+ * try. It is never "signed out" (the PR #100 investigation). The wait is
+ * not under the lock, and is kept in the store (`retry_not_before`), so
+ * another context asking meanwhile is told at once rather than asking the
+ * vault again; signing in or out ends it at once (the review round).
  */
 
 export interface StoredSession {
@@ -36,6 +39,12 @@ export interface StoredSession {
   household_id: string;
   member_id: string;
   role: Role;
+  /**
+   * The vault turned a renewal away for too many tries: not asked again
+   * before this moment (ms since the epoch), by any context sharing the
+   * store. Gone with the next session saved.
+   */
+  retry_not_before?: number;
 }
 
 export interface TokenStore {
@@ -96,6 +105,8 @@ export class SessionCore {
   private readonly lock: CrossContextLock;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly onWait: ((seconds: number | null) => void) | undefined;
+  /** Ends a wait for a renewal early: a sign-in or a sign-out landed. */
+  private wake: (() => void) | null = null;
 
   constructor(
     private readonly refresher: { refresh(refreshToken: string): Promise<Tokens> },
@@ -122,6 +133,7 @@ export class SessionCore {
   }
 
   async accept(tokens: Tokens): Promise<void> {
+    this.wake?.();
     this.access = tokens.access_token;
     this.accessExpiresAt = this.now() + tokens.expires_in * 1000 - EARLY_MS;
     this.stored = {
@@ -134,20 +146,53 @@ export class SessionCore {
   }
 
   async clear(): Promise<void> {
+    this.wake?.();
     this.access = null;
     this.accessExpiresAt = 0;
     this.stored = null;
     await this.store.save(null);
   }
 
-  /** A usable access token, refreshing when it has to — once, for everybody. */
-  async token(): Promise<TokenResult> {
+  /**
+   * A usable access token, refreshing when it has to — once, for everybody.
+   * `wait: false` (signing out) neither joins a renewal under way nor waits
+   * out a refusal: what there is now, or a renewal that waits for nothing.
+   */
+  async token(opts: { wait?: boolean } = {}): Promise<TokenResult> {
     if (this.access && this.now() < this.accessExpiresAt) return { kind: 'ok', token: this.access };
     if (!this.stored) return { kind: 'signed_out' };
-    this.inflight ??= this.lock(() => this.refreshOnce()).finally(() => {
+    if (opts.wait === false && this.inflight) return this.current();
+    this.inflight ??= this.renew(opts.wait === false ? 0 : RENEWAL_RETRIES).finally(() => {
       this.inflight = null;
     });
     return this.inflight;
+  }
+
+  /**
+   * A renewal, and a refusal for too many tries waited out — outside the
+   * lock, so no other context is held up by it, and ended at once by a
+   * sign-in or a sign-out — then asked again, `retries` times at most.
+   */
+  private async renew(retries: number): Promise<TokenResult> {
+    for (let retried = 0; ; retried++) {
+      const r = await this.lock(() => this.refreshOnce(retried > 0));
+      if (r.waitFor === undefined || retried >= retries) return r.result;
+      const at = this.stored;
+      this.onWait?.(r.waitFor);
+      try {
+        await Promise.race([
+          this.sleep(r.waitFor * 1000),
+          new Promise<void>((resolve) => {
+            this.wake = resolve;
+          }),
+        ]);
+      } finally {
+        this.wake = null;
+        this.onWait?.(null);
+      }
+      // Signed in or out while it waited: that stands.
+      if (this.stored !== at) return this.current();
+    }
   }
 
   /** The server said this session is over: forget it here too. */
@@ -162,58 +207,75 @@ export class SessionCore {
     return this.stored ? { kind: 'offline' } : { kind: 'signed_out' };
   }
 
-  private async refreshOnce(retried = 0): Promise<TokenResult> {
+  /**
+   * One renewal, under the lock. `waitFor`: the vault turned it away for
+   * too many tries and asked for a wait short enough to wait out. `waited`:
+   * this context has just waited out its own refusal, so its window is over.
+   */
+  private async refreshOnce(waited: boolean): Promise<{ result: TokenResult; waitFor?: number }> {
+    const done = (result: TokenResult) => ({ result });
     const believed = this.stored;
-    if (!believed) return { kind: 'signed_out' };
+    if (!believed) return done({ kind: 'signed_out' });
     // Another context may have rotated the refresh token, or signed out,
     // since this one last looked. The store is the truth.
     const latest = await this.store.load();
-    if (this.stored !== believed) return this.current();
+    if (this.stored !== believed) return done(this.current());
     if (!latest) {
       this.access = null;
       this.accessExpiresAt = 0;
       this.stored = null;
-      return { kind: 'signed_out' };
+      return done({ kind: 'signed_out' });
     }
-    const using = latest.refresh_token !== believed.refresh_token ? latest : believed;
+    let using = latest.refresh_token !== believed.refresh_token ? latest : believed;
+    // Turned away for too many tries, here or in another context, and its
+    // wait not over: said at once, the vault not asked again.
+    const notBefore = latest.retry_not_before;
+    if (notBefore !== using.retry_not_before) {
+      const rest: StoredSession = { ...using };
+      delete rest.retry_not_before;
+      using = notBefore === undefined ? rest : { ...rest, retry_not_before: notBefore };
+    }
     this.stored = using;
+    if (!waited && notBefore !== undefined && this.now() < notBefore) {
+      const left = Math.ceil((notBefore - this.now()) / 1000);
+      return done({ kind: 'offline', tooMany: { retryAfterSeconds: left } });
+    }
 
     let tokens: Tokens;
     try {
       tokens = await this.refresher.refresh(using.refresh_token);
     } catch (err) {
       // A sign-in or sign-out landed while this was in the air: it stands.
-      if (this.stored !== using) return this.current();
-      if (isSessionOver(err)) return this.end(err);
-      if (err instanceof ApiRequestError && isVaultRefusal(err)) return this.end(err);
+      if (this.stored !== using) return done(this.current());
+      if (isSessionOver(err)) return done(await this.end(err));
+      if (err instanceof ApiRequestError && isVaultRefusal(err)) return done(await this.end(err));
       if (err instanceof ApiRequestError && err.status === 429) {
-        // Too many tries: the token was not spent. A short wait the vault
-        // asked for is waited out — still holding the lock, so no other
-        // context spends a try meanwhile — and the store read again, as
-        // for any refresh. Never more than twice: never a loop.
+        // Too many tries: the token was not spent. Kept in the store, so no
+        // context asks again before the vault's moment; a short wait is
+        // waited out by whoever asked (renew), outside the lock. Never
+        // more than twice: never a loop.
         const wait = err.retryAfterSeconds;
-        if (wait !== undefined && wait <= RENEWAL_WAIT_MOST && retried < RENEWAL_RETRIES) {
-          this.onWait?.(wait);
-          try {
-            await this.sleep(wait * 1000);
-          } finally {
-            this.onWait?.(null);
-          }
-          // Signed in or out while it waited: that stands.
-          if (this.stored !== using) return this.current();
-          return this.refreshOnce(retried + 1);
+        if (wait !== undefined) {
+          this.stored = { ...using, retry_not_before: this.now() + wait * 1000 };
+          await this.store.save(this.stored);
         }
-        return { kind: 'offline', tooMany: { retryAfterSeconds: wait ?? null } };
+        const result: TokenResult = {
+          kind: 'offline',
+          tooMany: { retryAfterSeconds: wait ?? null },
+        };
+        return wait !== undefined && wait <= RENEWAL_WAIT_MOST
+          ? { result, waitFor: wait }
+          : { result };
       }
       // No answer, a timeout, a 5xx, or an answer that was not the vault's
       // (a proxy's login page): the session is still good.
-      return { kind: 'offline' };
+      return done({ kind: 'offline' });
     }
     // Likewise on success: tokens for a session that has since been
     // replaced or signed out are thrown away, not written over it.
-    if (this.stored !== using) return this.current();
+    if (this.stored !== using) return done(this.current());
     await this.accept(tokens);
-    return { kind: 'ok', token: this.access as string };
+    return done({ kind: 'ok', token: this.access as string });
   }
 }
 

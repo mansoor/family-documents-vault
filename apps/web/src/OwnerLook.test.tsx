@@ -644,6 +644,8 @@ describe('Sharing and After a restore are tables from 768 px (the prototype’s)
       const ended = screen.getByRole('table', { name: 'Links that no longer work' });
       expect(headsOf(ended)).toEqual(['Link to', 'For', 'Where it stands', 'Made by']);
       expect(within(ended).queryByRole('button')).toBeNull();
+      // A plain table: no stop for Tab of its own (the review round).
+      expect(ended.querySelectorAll('[tabindex]')).toHaveLength(0);
       expect(ended).toHaveTextContent('Expired on 1 October.');
       await expectAccessible();
       // Taken back as before: asked first.

@@ -349,6 +349,23 @@ describe('App', () => {
       expect(screen.queryByRole('heading', { name: 'Welcome' })).toBeNull();
     });
 
+    it('signing out during the wait is at once, and asks the vault nothing more (the review round)', async () => {
+      const { state } = busy(100, 30);
+      await screen.findByText('Too many tries just now; trying again in 30 seconds.', {
+        selector: '[role="status"]',
+      });
+      fireEvent.click(await screen.findByRole('button', { name: 'Menu' }));
+      const drawer = await screen.findByRole('dialog', { name: 'Menu' });
+      await act(async () => {
+        fireEvent.click(within(drawer).getByRole('button', { name: 'Sign out' }));
+      });
+      await waitFor(() => expect(localStorage.getItem('fdv.session')).toBeNull());
+      await waitFor(() => expect(window.location.pathname).toMatch(/^\/(welcome|sign-in)$/));
+      expect(screen.queryByText(/Too many tries/)).toBeNull();
+      await new Promise((r) => setTimeout(r, 100));
+      expect(renewals(state)).toBe(1);
+    });
+
     it('a wait of more than a minute is not waited out: said at once, asked once', async () => {
       const { state } = busy(100, 120);
       expect(

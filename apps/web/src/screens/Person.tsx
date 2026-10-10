@@ -151,14 +151,19 @@ export function ProfileScreen() {
   const member = data?.member ?? null;
   const name = member ? nameOf(member, data?.members ?? []) : '';
   const myRole: Role = session.info?.role ?? storedRole();
+  // People is the family's (5.3): a viewer, come here from a person's
+  // documents ("About …"), goes back there — never to a screen that is not
+  // theirs to open (the review round).
+  const family = can(myRole, 'family.details');
+  const back = family ? '/people' : `/people/${id ?? ''}/documents`;
 
   if (data && !member) {
     return (
       <main className="page page-top has-nav">
-        <TopBar title="Person" back="/people" />
+        <TopBar title="Person" back={family ? '/people' : '/'} />
         <p className="lede">We can’t find that person.</p>
-        <Link to="/people" className="btn btn-quiet">
-          Back to People
+        <Link to={family ? '/people' : '/'} className="btn btn-quiet">
+          {family ? 'Back to People' : 'Back to Home'}
         </Link>
       </main>
     );
@@ -175,7 +180,7 @@ export function ProfileScreen() {
 
   return (
     <main className="page page-top has-nav">
-      <TopBar title={member?.display_name ?? 'Person'} back="/people" />
+      <TopBar title={member?.display_name ?? 'Person'} back={back} />
       <ErrorNote message={error} />
       {member && (
         <>
