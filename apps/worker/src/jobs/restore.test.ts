@@ -1439,6 +1439,19 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         await sql(vault.adminUrl, `alter policy ${policy} on public.${table} using (${rule})`);
       }
     }
+    // And somebody made a viewer losing them with the role (the I4 review, I4-6).
+    await sql(
+      vault.adminUrl,
+      'alter table public.account_household disable trigger intake_rules_leave_with_role',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.account_household enable trigger intake_rules_leave_with_role',
+      );
+    }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 

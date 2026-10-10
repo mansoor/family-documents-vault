@@ -38,6 +38,7 @@ import {
   PRIVATE_TO_THEM,
   refusalFor,
   seesLocation,
+  isLearned,
   storedLearnedClash,
   storedProposal,
   type BatchAccepted,
@@ -55,6 +56,7 @@ import {
   type DetailProposal,
   type IncomingPreviewState,
   type ItemProposals,
+  type Proposed,
   type BatchLearning,
   type LearnedClash,
   type LevelKind,
@@ -316,6 +318,8 @@ export interface BatchOptions {
   opened?: (itemId: string) => void;
   /** An Undo, held once it holds the item and the document, before it changes them (I3): for the races. */
   undoHeld?: (itemId: string) => Promise<void>;
+  /** An accept, held once it has taught its first step (the I4 review, I4-5): for the races. */
+  learnTaught?: (itemId: string) => Promise<void>;
 }
 
 export class BatchService {
@@ -954,12 +958,12 @@ export class BatchService {
       .executeTakeFirst();
     // Held since it was read: anything else is a rule that said no.
     if (!decided) throw decidedAlready();
-    await learnFromAccept(trx, p, {
-      itemId: f.id,
-      read: learn.read,
-      proposals: learn.proposals,
-      filed: metadata,
-    });
+    await learnFromAccept(
+      trx,
+      p,
+      { itemId: f.id, read: learn.read, proposals: learn.proposals, filed: metadata },
+      this.opts.learnTaught ? { taught: this.opts.learnTaught } : {},
+    );
     return {
       file: f,
       documentId: version.document_id,
@@ -1004,7 +1008,82 @@ export class BatchService {
   /** DELETE /batches/learned: the caller's rules and count, forgotten. */
   async forget(p: Principal): Promise<void> {
     this.mayAdd(p);
-    await withPrincipal(this.db, p, (trx) => forgetLearned(trx, p));
+    const again = await withPrincipal(this.db, p, async (trx) => {
+      await forgetLearned(trx, p);
+      return this.readAgain(trx, p);
+    });
+    if (again > 0) {
+      await this.enqueue(
+        BATCH_PREVIEWS_JOB,
+        { household_id: p.householdId },
+        { singletonKey: batchPreviewsKey(p.householdId) },
+      ).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Forgotten, what the rules said on the caller's items already read is
+   * let go too (the I4 review, I4-7): each waiting item whose sealed
+   * proposal a rule spoke in — a suggestion it made or made surer, or one
+   * it disagreed with — and each being read now (with rules read before
+   * they were forgotten), back to be read again, without them. Answers how
+   * many.
+   */
+  private async readAgain(trx: Db, p: Principal): Promise<number> {
+    const rows = (await trx
+      .selectFrom('incoming_file')
+      .select(['id', 'read_state', 'proposals_sealed', 'file_key_wrapped', 'wrapped_by_scope'])
+      .where('batch_id', 'is not', null)
+      .where('state', '=', 'received')
+      .where('requester_member_id', '=', p.memberId)
+      .where('read_state', 'in', ['read', 'reading'])
+      .forUpdate()
+      .execute()) as Array<
+      Pick<ItemRow, 'id' | 'proposals_sealed' | 'file_key_wrapped' | 'wrapped_by_scope'> & {
+        read_state: string | null;
+      }
+    >;
+    const again: string[] = [];
+    for (const r of rows) {
+      if (r.read_state === 'reading') {
+        again.push(r.id);
+        continue;
+      }
+      if (!r.proposals_sealed) continue;
+      try {
+        const fileKey = unwrapKey(
+          r.file_key_wrapped,
+          await this.keys.unwrapById(trx, r.wrapped_by_scope),
+          `incoming:${r.id}`,
+        );
+        const raw: unknown = JSON.parse(
+          openBytes(fileKey, r.proposals_sealed, itemProposalsBinding(r.id)).toString('utf8'),
+        );
+        const said =
+          (Object.values(storedProposal(raw)) as Array<Proposed<unknown>>).some(isLearned) ||
+          Object.keys(storedLearnedClash(raw)).length > 0;
+        if (said) again.push(r.id);
+      } catch {
+        // Not to be opened: nothing the rules said can be read from it either.
+      }
+    }
+    if (again.length === 0) return 0;
+    await trx
+      .updateTable('incoming_file')
+      .set({
+        read_state: 'waiting',
+        read_failure: null,
+        read_started_at: null,
+        read_attempts: 0,
+        read_not_before: null,
+        read_waits: 0,
+        read_waited_since: null,
+        text_sealed: null,
+        proposals_sealed: null,
+      })
+      .where('id', 'in', again)
+      .execute();
+    return again.length;
   }
 
   // ------------------------------------------------ the review queue (I3)

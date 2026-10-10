@@ -744,6 +744,8 @@ export interface Schema {
     accepted_at: GeneratedTimestamp;
     confirmed_rules: ColumnType<string[], string[] | undefined, string[]>;
     contradicted_rules: ColumnType<string[], string[] | undefined, string[]>;
+    /** The rules its accept removed, as they were (JSON), for an Undo to put back. */
+    removed_rules: ColumnType<unknown, string | undefined, string>;
   };
 
   owner_change_request: {

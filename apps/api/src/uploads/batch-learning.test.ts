@@ -7,7 +7,7 @@ import {
   sealBytes,
   unwrapKey,
 } from '@fdv/crypto';
-import { createPool, withSystem } from '@fdv/db';
+import { createPool, withPrincipal, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   LEARNED_RULES_MAX,
@@ -24,6 +24,8 @@ import {
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
+import { unlearnAccept } from './learning.js';
+import type { Principal } from '../auth/service.js';
 
 /**
  * The vault learns from your corrections (Phase 6, I4), in the API: what an
@@ -48,9 +50,22 @@ describe.skipIf(!testAdminUrl())('learning from corrections (I4)', () => {
   let admin: ReturnType<typeof createPool>;
   let app: ReturnType<typeof createPool>;
   const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+  /** While set, an accept that has taught its first step waits for this (I4-5). */
+  let taughtGate: Promise<void> | null = null;
+  let taughtReached: (() => void) | null = null;
 
   beforeAll(async () => {
-    h = await createHarness({ rateLimitPerMinute: 100_000 });
+    h = await createHarness({
+      rateLimitPerMinute: 100_000,
+      batchLearnTaught: async () => {
+        const gate = taughtGate;
+        if (!gate) return;
+        // Only the first to get here waits.
+        taughtGate = null;
+        taughtReached?.();
+        await gate;
+      },
+    });
     owner = await h.setup();
     hh = owner.household_id;
     adult = await h.join(owner, { name: 'Sana', email: 'sana@example.test', role: 'adult' });
@@ -283,6 +298,7 @@ describe.skipIf(!testAdminUrl())('learning from corrections (I4)', () => {
       'household_id',
       'item_id',
       'member_id',
+      'removed_rules',
       'unchanged',
     ]);
     // …and none of what was filed: not the number, the date, the name, the
@@ -544,5 +560,265 @@ describe.skipIf(!testAdminUrl())('learning from corrections (I4)', () => {
     expect(await ask()).toBe(true);
     await forget(plain);
     expect(await ask()).toBe(false);
+  });
+
+  // ------------------------------------------------------ the I4 review
+
+  /** The adult's rules, planted as the API keeps them. */
+  const plantRule = (
+    who: Tokens,
+    issuer: string,
+    says: { kind?: string; person?: string },
+    confirmed: number,
+    contradicted = 0,
+  ) =>
+    admin.query(
+      `insert into intake_rule (household_id, member_id, issuer_key, type_key, person_id, confirmed, contradicted)
+       values ($1, $2, $3, $4, $5, $6, $7) returning id`,
+      [hh, who.member_id, issuer, says.kind ?? null, says.person ?? null, confirmed, contradicted],
+    );
+  const principalOf = async (who: Tokens, role: Principal['role']): Promise<Principal> => {
+    const a = await admin.query<{ account_id: string }>(
+      'select account_id from account_household where member_id = $1',
+      [who.member_id],
+    );
+    return {
+      householdId: hh,
+      accountId: a.rows[0]?.account_id as string,
+      memberId: who.member_id,
+      role,
+    } as Principal;
+  };
+
+  it('a rule beside another choice ever confirmed for its sender is never trusted (I4-1)', async () => {
+    await forget(adult);
+    await plantRule(adult, 'riverside surgery', { person: owner.member_id }, 4, 4);
+    await plantRule(adult, 'riverside surgery', { person: other.member_id }, 4, 0);
+    await plantRule(adult, 'riverside surgery', { kind: 'medical_record' }, 5, 0);
+    const got = await learned(adult);
+    expect(Object.fromEntries(got.rules.map((r) => [r.value, r.sure]))).toEqual({
+      medical_record: true,
+      [owner.member_id]: false,
+      [other.member_id]: false,
+    });
+    await forget(adult);
+  });
+
+  it('an outcome whose Undo is still open is never let go, however many come after (I4-2)', async () => {
+    await forget(adult);
+    await accept(adult, await readItem(adult, dentist()), {
+      type_key: 'medical_record',
+      issued_by: 'Northgate Dental',
+    });
+    const at = await readItem(adult, {
+      type_key: { value: 'medical_record', confidence: 0.97, cue: 'kind_words' },
+      owner_member_id: { value: adult.member_id, confidence: 0.95, cue: 'name_labelled' },
+      issued_by: { value: 'Northgate Dental', confidence: 0.9, cue: 'known_issuer' },
+    });
+    const res = await call(adult, 'POST', `/api/v1/batches/${at.batch}/accept-ready`, {});
+    expect(res.json<BatchAcceptReadyResult>().accepted).toHaveLength(1);
+    // 200 newer accepts, all within the last minute.
+    await admin.query(
+      `insert into intake_outcome (household_id, member_id, item_id, unchanged, accepted_at)
+       select $1, $2, gen_random_uuid(), true, now() + interval '1 second' * n
+         from generate_series(1, 200) n`,
+      [hh, adult.member_id],
+    );
+    // Another accept, which trims.
+    await accept(adult, await readItem(adult, dentist()), {
+      type_key: 'medical_record',
+      issued_by: 'Northgate Dental',
+    });
+    const kind = async () =>
+      (await learned(adult)).rules.find((r) => r.field === 'type_key')?.confirmed;
+    expect(await kind()).toBe(3);
+    const undone = await call(adult, 'POST', `/api/v1/batches/${at.batch}/accept-ready/undo`, {
+      item_ids: [at.item],
+    });
+    expect(undone.json<{ restored: string[] }>().restored).toEqual([at.item]);
+    // What Accept all Ready taught is taken back: its outcome was kept.
+    expect(await kind()).toBe(2);
+    await forget(adult);
+  });
+
+  it('Undo puts back, exactly, a rule its accept removed (I4-3)', async () => {
+    await forget(adult);
+    // Ahmed's letters from the dentist: once, against once for the owner.
+    const [ahmed] = (await plantRule(adult, 'northgate dental', { person: other.member_id }, 1, 1))
+      .rows as Array<{ id: string }>;
+    await plantRule(adult, 'northgate dental', { person: adult.member_id }, 1, 1);
+    const at = await readItem(adult, {
+      type_key: { value: 'medical_record', confidence: 0.97, cue: 'kind_words' },
+      owner_member_id: { value: adult.member_id, confidence: 0.95, cue: 'name_labelled' },
+      issued_by: { value: 'Northgate Dental', confidence: 0.9, cue: 'known_issuer' },
+    });
+    const before = await rulesOf(adult);
+    const res = await call(adult, 'POST', `/api/v1/batches/${at.batch}/accept-ready`, {});
+    expect(res.json<BatchAcceptReadyResult>().accepted).toHaveLength(1);
+    // Contradicted a second time: dropped.
+    expect((await learned(adult)).rules.some((r) => r.id === ahmed?.id)).toBe(false);
+    await call(adult, 'POST', `/api/v1/batches/${at.batch}/accept-ready/undo`, {
+      item_ids: [at.item],
+    });
+    expect(await rulesOf(adult)).toEqual(before);
+    expect((await learned(adult)).rules.some((r) => r.id === ahmed?.id)).toBe(true);
+    await forget(adult);
+  });
+
+  it('what an accept evicted past the cap is put back by taking it back (I4-3)', async () => {
+    await forget(other);
+    await admin.query(
+      `insert into intake_rule (household_id, member_id, issuer_key, type_key, confirmed, last_used)
+       select $1, $2, 'issuer ' || n, 'tax_return', 2,
+              case when n = 0 then date '2026-01-01' else current_date end
+         from generate_series(0, $3::int - 1) n`,
+      [hh, other.member_id, LEARNED_RULES_MAX],
+    );
+    const before = await rulesOf(other);
+    const at = await readItem(other, dentist());
+    await accept(other, at, { type_key: 'medical_record', issued_by: 'Northgate Dental' });
+    expect((await learned(other)).rules.some((r) => r.issuer === 'issuer 0')).toBe(false);
+    // Undo takes back only Accept all Ready's; what it would do, done to this one.
+    const p = await principalOf(other, 'adult');
+    await withPrincipal(h.db, p, (trx) => unlearnAccept(trx, p, at.item));
+    expect(await rulesOf(other)).toEqual(before);
+    await forget(other);
+  });
+
+  it('two accepts at once teaching the same sender wait in turn, never a deadlock (I4-5)', async () => {
+    await forget(adult);
+    await plantRule(adult, 'northgate dental', { person: owner.member_id }, 2);
+    await plantRule(adult, 'northgate dental', { person: other.member_id }, 2);
+    const a = await readItem(adult, dentist());
+    const b = await readItem(adult, dentist());
+    let release: () => void = () => undefined;
+    taughtGate = new Promise<void>((r) => (release = r));
+    const reached = new Promise<void>((r) => (taughtReached = r));
+    const first = call(adult, 'POST', `/api/v1/batches/${a.batch}/items/${a.item}/accept`, {
+      owner_member_id: owner.member_id,
+      issued_by: 'Northgate Dental',
+    });
+    await reached;
+    const second = call(adult, 'POST', `/api/v1/batches/${b.batch}/items/${b.item}/accept`, {
+      owner_member_id: other.member_id,
+      issued_by: 'Northgate Dental',
+    });
+    await new Promise((r) => setTimeout(r, 1500));
+    release();
+    const [one, two] = await Promise.all([first, second]);
+    expect([one.statusCode, two.statusCode], `${one.body} ${two.body}`).toEqual([201, 201]);
+    expect(await rulesOf(adult)).toEqual([
+      expect.stringMatching(/ 3\/1$/) as string,
+      expect.stringMatching(/ 3\/1$/) as string,
+    ]);
+    await forget(adult);
+  }, 60_000);
+
+  it('an accept teaching while Forget all runs: one waits for the other, never a deadlock (I4-5)', async () => {
+    await forget(adult);
+    // Rules of two senders; the accept will confirm one and contradict the other.
+    await plantRule(adult, 'northgate dental', { person: other.member_id }, 2);
+    await plantRule(adult, 'riverside surgery', { kind: 'tax_return' }, 2);
+    await plantRule(adult, 'northgate dental', { person: owner.member_id }, 2);
+    const a = await readItem(adult, dentist());
+    let release: () => void = () => undefined;
+    taughtGate = new Promise<void>((r) => (release = r));
+    const reached = new Promise<void>((r) => (taughtReached = r));
+    const accepting = call(adult, 'POST', `/api/v1/batches/${a.batch}/items/${a.item}/accept`, {
+      owner_member_id: owner.member_id,
+      issued_by: 'Northgate Dental',
+    });
+    await reached;
+    // Forget all, while the accept holds the rule it confirmed.
+    const forgetting = call(adult, 'DELETE', '/api/v1/batches/learned');
+    await new Promise((r) => setTimeout(r, 1500));
+    release();
+    const [one, two] = await Promise.all([accepting, forgetting]);
+    expect([one.statusCode, two.statusCode], `${one.body} ${two.body}`).toEqual([201, 204]);
+    // Forgotten after the accept taught: nothing left.
+    expect(await learned(adult)).toMatchObject({ counted: 0, rules: [] });
+  }, 60_000);
+
+  it('made a viewer, somebody keeps no rules and no count; nor do a viewer’s stand in an owner’s way (I4-6)', async () => {
+    const vee = await h.join(owner, { name: 'Vera', email: 'vera@example.test', role: 'adult' });
+    const at = await readItem(vee, dentist());
+    await accept(vee, at, { type_key: 'medical_record', issued_by: 'Northgate Dental' });
+    expect(await rulesOf(vee)).toHaveLength(1);
+    await admin.query(
+      `update session set verified_at = now(), factor_verified_at = now()
+        where account_id = (select account_id from account_household where member_id = $1)`,
+      [owner.member_id],
+    );
+    const made = await call(owner, 'POST', `/api/v1/members/${vee.member_id}/role`, {
+      role: 'viewer',
+    });
+    expect(made.statusCode, made.body).toBe(200);
+    const left = await admin.query<{ rules: number; outcomes: number }>(
+      `select (select count(*)::int from intake_rule where member_id = $1) as rules,
+              (select count(*)::int from intake_outcome where member_id = $1) as outcomes`,
+      [vee.member_id],
+    );
+    expect(left.rows[0]).toEqual({ rules: 0, outcomes: 0 });
+    // And were a viewer's rules there anyway, they are not something kept private.
+    await admin.query('delete from intake_batch where member_id = $1', [vee.member_id]);
+    await admin.query(
+      `update document set visibility = 'household', owner_member_id = null
+        where id in (select document_id from incoming_file where id = $1)`,
+      [at.item],
+    );
+    await plantRule(vee, 'planted', { kind: 'passport' }, 1);
+    const held = await asThem(
+      { who: owner, role: 'owner' },
+      `select member_holds_private((select account_id from account_household
+                                    where member_id = $1)) as held`,
+      [vee.member_id],
+    );
+    expect(held).toEqual([{ held: false }]);
+  });
+
+  it('Forget all sends the files the rules spoke on back to be read again; others stay read (I4-7)', async () => {
+    await forget(adult);
+    const spoke = await readItem(adult, {
+      type_key: { value: 'medical_record', confidence: 0.9, cue: 'learned' },
+      issued_by: { value: 'Northgate Dental', confidence: 0.9, cue: 'known_issuer' },
+    });
+    const raised = await readItem(adult, {
+      type_key: {
+        value: 'medical_record',
+        confidence: 0.9,
+        cue: 'kind_words',
+        learned: true,
+        page_confidence: 0.8,
+      },
+    });
+    const clashed = await readItem(
+      adult,
+      { type_key: { value: 'passport', confidence: 0.97, cue: 'kind_words' } },
+      { type_key: 'visa' },
+    );
+    const plain = await readItem(adult, dentist());
+    const othersItem = await readItem(other, {
+      type_key: { value: 'medical_record', confidence: 0.9, cue: 'learned' },
+    });
+    await forget(adult);
+    const state = async (id: string) =>
+      (
+        await admin.query<{ read_state: string; sealed: boolean }>(
+          'select read_state, proposals_sealed is not null as sealed from incoming_file where id = $1',
+          [id],
+        )
+      ).rows[0];
+    for (const it of [spoke, raised, clashed]) {
+      expect(await state(it.item)).toEqual({ read_state: 'waiting', sealed: false });
+    }
+    expect(await state(plain.item)).toEqual({ read_state: 'read', sealed: true });
+    expect(await state(othersItem.item)).toEqual({ read_state: 'read', sealed: true });
+  });
+
+  it('an issuer the card did not file teaches nothing: never one only the pages named (I4-8)', async () => {
+    await forget(adult);
+    await accept(adult, await readItem(adult, dentist()), { type_key: 'medical_record' });
+    expect(await learned(adult)).toMatchObject({ counted: 1, rules: [] });
+    await forget(adult);
   });
 });

@@ -6,8 +6,9 @@ import {
   LEARNED_RULES_MAX,
   LEARNING_OUTCOMES_KEPT,
   LEARNING_WINDOW,
+  isLearned,
   levelItem,
-  ruleSure,
+  ruleTrusted,
   teach,
   can,
   canEditIdentity,
@@ -84,6 +85,7 @@ import {
   type BatchReadState,
   type DetailProposal,
   type ItemProposals,
+  type Proposed,
   type KeptRule,
   type LearnedClash,
   type Capabilities,
@@ -447,6 +449,9 @@ export interface FakeLearning {
     unchanged: boolean;
     confirmed: string[];
     contradicted: string[];
+    /** The rules it removed, as they were, for an Undo to put back (I4-3). */
+    removed: KeptRule[];
+    accepted_at: number;
   }>;
 }
 
@@ -3215,6 +3220,19 @@ export function createFakeVault(): {
       }
       if (init.method === 'DELETE') {
         delete state.learned[who.memberId];
+        // What the rules said on an item already read is let go: read again (I4-7).
+        for (const b of state.batches.filter((x) => x.member_id === who.memberId)) {
+          for (const it of b.items) {
+            const said =
+              (Object.values(it.proposal ?? {}) as Array<Proposed<unknown>>).some(isLearned) ||
+              Object.keys(it.learned_clash ?? {}).length > 0;
+            if (it.state === 'waiting' && it.reading === 'read' && said) {
+              it.reading = 'waiting';
+              it.proposal = null;
+              it.learned_clash = null;
+            }
+          }
+        }
         return empty();
       }
       const mine = state.learned[who.memberId] ?? { rules: [], outcomes: [] };
@@ -3241,7 +3259,7 @@ export function createFakeVault(): {
                 : (state.members.find((m) => m.id === r.value)?.display_name ?? null),
             confirmed: r.confirmed,
             contradicted: r.contradicted,
-            sure: ruleSure(r),
+            sure: ruleTrusted(r, mine.rules),
             last_used: r.last_used,
           })),
         rules_max: LEARNED_RULES_MAX,
@@ -3802,15 +3820,21 @@ export function createFakeVault(): {
       );
       mine.rules = taught.rules;
       if (!learn.read) return;
+      const now = Date.now();
       mine.outcomes = [
         {
           item_id: itemId,
           unchanged: correctionsOf({ proposals: learn.proposals, filed, kind }).length === 0,
           confirmed: taught.confirmed,
           contradicted: taught.contradicted,
+          removed: taught.removed,
+          accepted_at: now,
         },
         ...mine.outcomes.filter((o) => o.item_id !== itemId),
-      ].slice(0, LEARNING_OUTCOMES_KEPT);
+      ].filter(
+        // The newest kept, and any whose Undo is still open (I4-2).
+        (o, i) => i < LEARNING_OUTCOMES_KEPT || o.accepted_at >= now - ACCEPT_UNDO_MINUTES * 60_000,
+      );
     }
     /** An accept taken back by Undo: what it taught taken back, and not counted (I4). */
     function unlearn(memberId: string, itemId: string): void {
@@ -3818,6 +3842,10 @@ export function createFakeVault(): {
       const o = mine?.outcomes.find((x) => x.item_id === itemId);
       if (!mine || !o) return;
       mine.outcomes = mine.outcomes.filter((x) => x !== o);
+      // What it removed, put back as it was (I4-3).
+      for (const r of o.removed) {
+        if (!mine.rules.some((x) => x.id === r.id)) mine.rules.push({ ...r });
+      }
       for (const r of mine.rules) {
         if (o.confirmed.includes(r.id)) r.confirmed = Math.max(0, r.confirmed - 1);
         if (o.contradicted.includes(r.id)) r.contradicted = Math.max(0, r.contradicted - 1);

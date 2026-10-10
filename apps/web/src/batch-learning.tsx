@@ -71,7 +71,9 @@ export function LearnedFromYou() {
       await withToken((t) => api.forgetBatchLearning(t));
       setAsking(false);
       setOpen(false);
-      setSaid('Forgotten. The vault starts learning again from your next accepts.');
+      setSaid(
+        'Forgotten. Your waiting files will be read again, and the vault starts learning again from your next accepts.',
+      );
       await reload();
       status.current?.focus();
     } catch (err) {
@@ -107,7 +109,8 @@ export function LearnedFromYou() {
                     From the files you accepted and corrected: who sent them, and what you chose.
                     Only you can see these, and they are used only on your own uploads. A rule is
                     trusted once you have confirmed it {LEARNED_SURE_CONFIRMATIONS} times and never
-                    chosen differently.
+                    chosen differently for that sender. What you’ve taught stays until you forget
+                    it, even after the documents it came from are gone.
                   </p>
                   <ul className="learned-list" aria-label="Rules learned from you">
                     {data.rules.map((r) => (
@@ -160,7 +163,8 @@ export function LearnedFromYou() {
             {data.rules.length > 0
               ? `Its ${data.rules.length} ${data.rules.length === 1 ? 'rule' : 'rules'} and the count go. `
               : 'The count goes. '}
-            It starts learning again from your next accepts. Your documents are not changed.
+            Your waiting files will be read again. It starts learning again from your next accepts.
+            Your documents are not changed.
           </p>
           <ErrorNote message={failed} />
         </ConfirmDialog>

@@ -319,6 +319,9 @@ export function levelItem(input: LevelInput): ItemLevel {
   ): ItemSuggestion<string> | undefined => {
     // The uploader's earlier choices alone (I4): never "the pages say".
     const rulesOnly = p?.cue === 'learned';
+    // How sure the pages alone were: a rule's raising never makes a clash,
+    // nor speaks for the pages (the I4 review, I4-4).
+    const own = p ? (p.page_confidence ?? p.confidence) : 0;
     if (p && dflt === null) {
       return {
         value: p.value,
@@ -332,13 +335,13 @@ export function levelItem(input: LevelInput): ItemLevel {
     if (p.value === dflt) {
       return rulesOnly
         ? { value: dflt, from: 'batch', confidence: null, cue: null }
-        : { value: dflt, from: 'both', confidence: p.confidence, cue: p.cue };
+        : { value: dflt, from: 'both', confidence: own, cue: p.cue };
     }
     // A rule never disagrees with the batch: the batch's choice stands, silently.
-    if (!rulesOnly && p.confidence >= CLASH_CONFIDENCE) {
+    if (!rulesOnly && own >= CLASH_CONFIDENCE) {
       clashes.push({
         field,
-        pages: { value: p.value, confidence: p.confidence, cue: p.cue },
+        pages: { value: p.value, confidence: own, cue: p.cue },
         batch: dflt,
       });
     }
@@ -392,7 +395,7 @@ export function levelItem(input: LevelInput): ItemLevel {
     named &&
     named.cue !== 'learned' &&
     named.value !== me &&
-    named.confidence >= CLASH_CONFIDENCE &&
+    (named.page_confidence ?? named.confidence) >= CLASH_CONFIDENCE &&
     people.some((p) => p.id === named.value)
   ) {
     check({
@@ -568,6 +571,11 @@ export function storedProposal(raw: unknown): DetailProposal {
       confidence: f.confidence,
       cue: f.cue,
       ...((f as { learned?: unknown }).learned === true ? { learned: true } : {}),
+      ...(typeof (f as { page_confidence?: unknown }).page_confidence === 'number' &&
+      (f as { page_confidence: number }).page_confidence >= 0 &&
+      (f as { page_confidence: number }).page_confidence <= 1
+        ? { page_confidence: (f as { page_confidence: number }).page_confidence }
+        : {}),
     } as never;
   };
   const src = p as Record<string, unknown>;

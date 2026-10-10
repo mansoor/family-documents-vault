@@ -144,9 +144,33 @@ export interface BatchLearning {
   rules_max: number;
 }
 
-/** Whether a rule's proposal is sure: confirmed enough, and never contradicted. */
+/** Whether a rule's own counts are enough: confirmed enough, and never contradicted. */
 export const ruleSure = (r: Pick<LearnedRule, 'confirmed' | 'contradicted'>): boolean =>
   r.confirmed >= LEARNED_SURE_CONFIRMATIONS && r.contradicted === 0;
+
+/**
+ * Whether a rule is trusted — its proposal sure (the I4 review, I4-1): its
+ * own counts are enough (`ruleSure`), and no other rule of its issuer and
+ * field says anything else that was ever confirmed. A shared surgery's
+ * letters filed for Sara four times and then for Ahmed four times leave
+ * Ahmed's rule never contradicted, but Sara's is still there: neither is
+ * trusted, and "never chosen differently" stays true.
+ */
+export function ruleTrusted(
+  rule: Pick<LearnedRule, 'issuer_key' | 'field' | 'value' | 'confirmed' | 'contradicted'>,
+  rules: ReadonlyArray<Pick<LearnedRule, 'issuer_key' | 'field' | 'value' | 'confirmed'>>,
+): boolean {
+  return (
+    ruleSure(rule) &&
+    !rules.some(
+      (r) =>
+        r.issuer_key === rule.issuer_key &&
+        r.field === rule.field &&
+        r.value !== rule.value &&
+        r.confirmed > 0,
+    )
+  );
+}
 
 /** A proposal that came from (or was made surer by) the uploader's earlier choices. */
 export const isLearned = (p: Pick<Proposed<unknown>, 'cue' | 'learned'>): boolean =>
@@ -210,7 +234,11 @@ export function applyLearned(input: {
           p.confidence,
           Math.min(LEARNED_RAISE_UNSURE_MAX, round(p.confidence + LEARNED_RAISE)),
         );
-    return to > p.confidence ? { ...p, confidence: to, learned: true } : p;
+    // The page's own confidence kept beside it: a clash with the batch, and
+    // what "the pages say", are the page's alone (the I4 review, I4-4).
+    return to > p.confidence
+      ? { ...p, confidence: to, learned: true, page_confidence: p.confidence }
+      : p;
   };
 
   // The kind: one the household keeps and may be proposed (never a hidden one).
@@ -219,7 +247,7 @@ export function applyLearned(input: {
     input.types.some((t) => t.key === v && !t.hidden),
   );
   if (kindRule) {
-    const sure = ruleSure(kindRule);
+    const sure = ruleTrusted(kindRule, learned.rules);
     const page = out.type_key;
     if (!page) {
       // Where the pages could not choose, a rule for one of their kinds
@@ -245,7 +273,7 @@ export function applyLearned(input: {
       input.people.some((m) => m.id === v),
     );
     if (personRule) {
-      const sure = ruleSure(personRule);
+      const sure = ruleTrusted(personRule, learned.rules);
       const page = out.owner_member_id;
       if (!page) {
         out.owner_member_id = {
@@ -362,11 +390,12 @@ export interface LearningStep {
 }
 
 /**
- * What an accept teaches (I4): the issuer's key — the issuer filed, or where
- * none was sent, the one the card started from (one cleared on the card
- * teaches nothing) — and, for each of the kind and the person filed, the
- * value and whether it was a correction. A teen is taught no person.
- * Nothing without an issuer.
+ * What an accept teaches (I4): the issuer's key — the issuer filed, and only
+ * that: one the pages named but the card did not file (a kind that hides
+ * the field, or one cleared) teaches nothing, so what was read off the
+ * pages never reaches a rule (the I4 review, I4-8) — and, for each of the
+ * kind and the person filed, the value and whether it was a correction. A
+ * teen is taught no person. Nothing without an issuer filed.
  */
 export function learningOf(opts: {
   proposals: ItemProposals | null;
@@ -374,10 +403,7 @@ export function learningOf(opts: {
   role: Role;
 }): { issuer: string; steps: LearningStep[] } {
   const { proposals: p, filed } = opts;
-  const issuer =
-    filed.issued_by === null
-      ? ''
-      : learnedIssuerKey(text(filed.issued_by) ?? p?.issued_by?.value ?? null);
+  const issuer = learnedIssuerKey(text(filed.issued_by));
   if (!issuer) return { issuer: '', steps: [] };
   const steps: LearningStep[] = [];
   for (const field of ['type_key', 'owner_member_id'] as const) {
@@ -402,19 +428,21 @@ export interface KeptRule extends LearnedRule {
  * fake vault and the accuracy tests: the rule that says what was filed made
  * (a correction) or confirmed; every other rule of the issuer and field
  * contradicted; those contradicted more often than confirmed dropped; past
- * LEARNED_RULES_MAX, the least used. Answers the rules after, and which it
- * confirmed and contradicted.
+ * LEARNED_RULES_MAX, the least used. Answers the rules after, which it
+ * confirmed and contradicted, and those it removed as they were (for an
+ * Undo to put back, I4-3).
  */
 export function teach(
   rules: readonly KeptRule[],
   lesson: { issuer: string; steps: readonly LearningStep[] },
   opts: { newId: () => string; today: string },
-): { rules: KeptRule[]; confirmed: string[]; contradicted: string[] } {
+): { rules: KeptRule[]; confirmed: string[]; contradicted: string[]; removed: KeptRule[] } {
   let out = rules.map((r) => ({ ...r }));
   const confirmed: string[] = [];
   const contradicted: string[] = [];
   const made: string[] = [];
-  if (!lesson.issuer) return { rules: out, confirmed, contradicted };
+  const removed: KeptRule[] = [];
+  if (!lesson.issuer) return { rules: out, confirmed, contradicted, removed };
   for (const step of lesson.steps) {
     const same = (r: KeptRule) => r.issuer_key === lesson.issuer && r.field === step.field;
     const own = out.find((r) => same(r) && r.value === step.value);
@@ -443,6 +471,9 @@ export function teach(
       }
     }
   }
+  removed.push(
+    ...out.filter((r) => r.issuer_key === lesson.issuer && r.contradicted > r.confirmed),
+  );
   out = out.filter((r) => r.issuer_key !== lesson.issuer || r.contradicted <= r.confirmed);
   const over = out.length - LEARNED_RULES_MAX;
   if (over > 0) {
@@ -459,7 +490,8 @@ export function teach(
         .slice(0, over)
         .map((r) => r.id),
     );
+    removed.push(...out.filter((r) => gone.has(r.id)));
     out = out.filter((r) => !gone.has(r.id));
   }
-  return { rules: out, confirmed, contradicted };
+  return { rules: out, confirmed, contradicted, removed };
 }

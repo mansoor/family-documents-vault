@@ -11,6 +11,7 @@ import {
   LEARNED_SURE_CONFIDENCE,
   proposeLearned,
   ruleSure,
+  ruleTrusted,
   teach,
   type KeptRule,
   type LearnedRule,
@@ -191,12 +192,14 @@ describe('a rule used (I4)', () => {
       confidence: LEARNED_SURE_CONFIDENCE,
       cue: 'kind_words',
       learned: true,
+      page_confidence: 0.8,
     });
     expect(apply(page, [rule('type_key', 'medical_record', 1)]).proposal.type_key).toEqual({
       value: 'medical_record',
       confidence: 0.84,
       cue: 'kind_words',
       learned: true,
+      page_confidence: 0.8,
     });
     // Already surer than the rule would make it: untouched.
     const sure = {
@@ -377,6 +380,135 @@ describe('a rule used (I4)', () => {
   });
 });
 
+describe('the I4 review', () => {
+  /** Each letter filed as it truly is, in turn, the pages proposing neither kind nor person. */
+  const history = (filed: Array<{ kind?: string; person?: string }>) => {
+    let rules: KeptRule[] = [];
+    let n = 0;
+    for (const f of filed) {
+      rules = teach(
+        rules,
+        learningOf({
+          proposals: level({ issued_by: { ...dentist, value: 'Riverside Surgery' } }).proposals,
+          filed: {
+            type_key: f.kind ?? null,
+            owner_member_id: f.person ?? null,
+            issued_by: 'Riverside Surgery',
+          },
+          role: 'adult',
+        }),
+        { newId: () => `r${n++}`, today: '2026-10-10' },
+      ).rules;
+    }
+    return rules;
+  };
+  const surgery = { value: 'Riverside Surgery', confidence: 0.9, cue: 'letterhead' } as const;
+
+  it('a shared surgery: four letters for Sara, then four for Ahmed — neither is trusted, and the next is Check (I4-1)', () => {
+    const rules = history([
+      ...Array.from({ length: 4 }, () => ({ kind: 'medical_record', person: SARA })),
+      ...Array.from({ length: 4 }, () => ({ kind: 'medical_record', person: AHMED })),
+    ]);
+    const people_ = rules.filter((r) => r.field === 'owner_member_id');
+    expect(people_.map((r) => [r.value, r.confirmed, r.contradicted])).toEqual([
+      [SARA, 4, 4],
+      [AHMED, 4, 0],
+    ]);
+    const ahmed = people_.find((r) => r.value === AHMED) as KeptRule;
+    expect(ruleSure(ahmed)).toBe(true);
+    expect(ruleTrusted(ahmed, rules)).toBe(false);
+    const got = apply(
+      {
+        issued_by: surgery,
+        type_key: { value: 'medical_record', confidence: 0.97, cue: 'kind_words' },
+      },
+      rules,
+    );
+    expect(got.proposal.owner_member_id).toEqual({
+      value: AHMED,
+      confidence: LEARNED_CONFIDENCE,
+      cue: 'learned',
+    });
+    const l = level(got.proposal);
+    expect(l.level).toBe('check');
+    expect(l.tags.map((t) => t.code)).toContain('person_unsure');
+    // The kind, always the same: trusted.
+    expect(got.proposal.type_key?.confidence).toBe(0.97);
+  });
+
+  it('a sender of several kinds: four tax returns, then four medical records — the kind is never trusted (I4-1)', () => {
+    const rules = history([
+      ...Array.from({ length: 4 }, () => ({ kind: 'tax_return' })),
+      ...Array.from({ length: 4 }, () => ({ kind: 'medical_record' })),
+    ]);
+    const got = apply({ issued_by: surgery }, rules);
+    expect(got.proposal.type_key).toEqual({
+      value: 'medical_record',
+      confidence: LEARNED_CONFIDENCE,
+      cue: 'learned',
+    });
+    // Nor, against the pages, is it said as a clash.
+    const pages = apply(
+      { issued_by: surgery, type_key: { value: 'passport', confidence: 0.97, cue: 'kind_words' } },
+      rules,
+    );
+    expect(pages.clash).toEqual({});
+  });
+
+  it('a rule raising the pages never makes a clash with the batch, nor speaks for the pages (I4-4)', () => {
+    const page: DetailProposal = {
+      issued_by: { ...surgery },
+      type_key: { value: 'tax_return', confidence: 0.77, cue: 'kind_words' },
+    };
+    const raised = apply(page, [rule('type_key', 'tax_return', 1, 0, 'riverside surgery')]);
+    expect(raised.proposal.type_key).toMatchObject({ confidence: 0.82, page_confidence: 0.77 });
+    const defaults = { ...none, type_key: 'medical_record' };
+    expect(level(page, { defaults }).clashes).toEqual([]);
+    expect(level(raised.proposal, { defaults }).clashes).toEqual([]);
+    // Sure on the pages alone: the clash says the pages' own confidence.
+    const strong: DetailProposal = {
+      issued_by: { ...surgery },
+      type_key: { value: 'tax_return', confidence: 0.85, cue: 'kind_words' },
+    };
+    const both = apply(strong, [rule('type_key', 'tax_return', 3, 0, 'riverside surgery')]);
+    expect(level(both.proposal, { defaults }).clashes).toEqual([
+      {
+        field: 'type_key',
+        pages: { value: 'tax_return', confidence: 0.85, cue: 'kind_words' },
+        batch: 'medical_record',
+      },
+    ]);
+    // Agreeing with the batch: "both", at the pages' own confidence.
+    expect(
+      level(both.proposal, { defaults: { ...none, type_key: 'tax_return' } }).proposals?.type_key,
+    ).toMatchObject({ from: 'both', confidence: 0.85 });
+  });
+
+  it('what an accept removed is answered as it was, for an Undo (I4-3)', () => {
+    const rules: KeptRule[] = [
+      {
+        id: 'x',
+        issuer_key: 'riverside surgery',
+        field: 'owner_member_id',
+        value: SARA,
+        confirmed: 1,
+        contradicted: 1,
+        last_used: '2026-10-01',
+      },
+    ];
+    const r = teach(
+      rules,
+      {
+        issuer: 'riverside surgery',
+        steps: [{ field: 'owner_member_id', value: AHMED, corrected: true }],
+      },
+      { newId: () => 'y', today: '2026-10-10' },
+    );
+    expect(r.rules.map((x) => x.id)).toEqual(['y']);
+    expect(r.removed).toEqual([{ ...rules[0], contradicted: 2 }]);
+  });
+});
+
 describe('what an accept teaches (I4)', () => {
   const proposals = level({
     issued_by: dentist,
@@ -420,7 +552,7 @@ describe('what an accept teaches (I4)', () => {
     ).toEqual(['issued_by']);
   });
 
-  it('teaches the issuer filed, else the one proposed; a cleared issuer teaches nothing; a teen no person', () => {
+  it('teaches the issuer filed, and only that; a teen no person (I4-8)', () => {
     expect(
       learningOf({
         proposals,
@@ -438,7 +570,18 @@ describe('what an accept teaches (I4)', () => {
         { field: 'owner_member_id', value: SARA, corrected: true },
       ],
     });
+    // The pages named the dentist, but the card filed no issuer: nothing.
     expect(learningOf({ proposals, filed: { type_key: 'tax_return' }, role: 'adult' })).toEqual({
+      issuer: '',
+      steps: [],
+    });
+    expect(
+      learningOf({
+        proposals,
+        filed: { type_key: 'tax_return', issued_by: 'Northgate Dental' },
+        role: 'adult',
+      }),
+    ).toEqual({
       issuer: 'northgate dental',
       steps: [{ field: 'type_key', value: 'tax_return', corrected: false }],
     });
@@ -448,7 +591,7 @@ describe('what an accept teaches (I4)', () => {
     expect(
       learningOf({
         proposals,
-        filed: { type_key: 'medical_record', owner_member_id: ZAIN },
+        filed: { type_key: 'medical_record', owner_member_id: ZAIN, issued_by: 'Northgate Dental' },
         role: 'teen',
       }).steps.map((s) => s.field),
     ).toEqual(['type_key']);

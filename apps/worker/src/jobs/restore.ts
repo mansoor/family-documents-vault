@@ -1074,6 +1074,13 @@ const GUARDS = [
     table: 'intake_batch',
     fn: 'intake_batch_account_writes',
   },
+  // Somebody made a viewer keeps no rules learned from their corrections,
+  // nor their count (0065, the I4 review).
+  {
+    name: 'intake_rules_leave_with_role',
+    table: 'account_household',
+    fn: 'intake_rules_leave_with_role',
+  },
 ];
 
 /**

@@ -210,6 +210,8 @@ describe('learning from your corrections, on the web (I4)', () => {
       'From northgate dental — whose: Aishaconfirmed twice, not once',
     ]);
     expect(box).toHaveTextContent('Only you can see these');
+    expect(box).toHaveTextContent('never chosen differently for that sender');
+    expect(box).toHaveTextContent('What you’ve taught stays until you forget it');
     await expectAccessible();
 
     const forget = within(box).getByRole('button', { name: 'Forget all' });
@@ -218,6 +220,7 @@ describe('learning from your corrections, on the web (I4)', () => {
       name: 'Forget what the vault learned from you?',
     });
     expect(ask).toHaveTextContent('Its 2 rules and the count go.');
+    expect(ask).toHaveTextContent('Your waiting files will be read again.');
     await expectAccessible();
     fireEvent.click(within(ask).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
@@ -232,7 +235,7 @@ describe('learning from your corrections, on the web (I4)', () => {
     );
     await waitFor(() => expect(state.forgotten).toBe(1));
     const said = await screen.findByText(
-      'Forgotten. The vault starts learning again from your next accepts.',
+      'Forgotten. Your waiting files will be read again, and the vault starts learning again from your next accepts.',
     );
     await waitFor(() => expect(said).toHaveFocus());
     expect(screen.queryByRole('region', { name: 'What the vault learned from you' })).toBeNull();

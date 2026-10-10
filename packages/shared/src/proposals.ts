@@ -103,6 +103,8 @@ export interface Proposed<T> {
    * for its issuer (Phase 6, I4): its cue is still the page's.
    */
   learned?: true;
+  /** And how sure the pages alone were, before (the I4 review, I4-4). */
+  page_confidence?: number;
 }
 
 /** What the pages propose: only the fields above their threshold, and only empty ones. */
