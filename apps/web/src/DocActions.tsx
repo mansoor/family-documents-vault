@@ -1,11 +1,13 @@
 import { can, visibilityChoices, type DocumentView, type Role } from '@fdv/shared';
 import {
+  useCallback,
   useId,
   useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
   type RefObject,
 } from 'react';
 import { flushSync } from 'react-dom';
@@ -15,7 +17,9 @@ import { describeError, useApp } from './app-context.js';
 import { AddToCollection, collectionsOffered } from './collections.js';
 import { SharePanel } from './screens/Share.js';
 import { VisibilityControl } from './screens/Visibility.js';
+import { focusHeading } from './focus-on-move.js';
 import { storedRole } from './session.js';
+import { OutcomeNote } from './table-grid.js';
 import {
   ConfirmDialog,
   ErrorNote,
@@ -189,6 +193,11 @@ export function DocActions(props: {
   onChanged: () => void | Promise<unknown>;
   /** The row is on this collection's page (5.15): its maker may take it out from here. */
   collection?: RowCollection | undefined;
+  /**
+   * Moved to the Trash from here: the list says so (`useTrashedNote`), as
+   * the row — and what it would have said — goes with it.
+   */
+  onTrashed?: ((title: string) => void) | undefined;
 }) {
   const { withToken, guarded, session, caps } = useApp();
   const navigate = useNavigate();
@@ -323,7 +332,7 @@ export function DocActions(props: {
   };
 
   /** The row leaves its list: moved to the Trash, or taken out of this collection (5.15). */
-  const leave = async (go: (token: string) => Promise<unknown>) => {
+  const leave = async (go: (token: string) => Promise<unknown>, said?: () => void) => {
     setLeaving(true);
     try {
       await withToken(go);
@@ -341,6 +350,8 @@ export function DocActions(props: {
         setSheet(null);
       });
       neighbour?.focus();
+      // Said by the list, politely: the focus stays where it went.
+      said?.();
       await props.onChanged();
     } catch (err) {
       setLeaving(false);
@@ -348,7 +359,11 @@ export function DocActions(props: {
       setError(describeError(err));
     }
   };
-  const remove = () => leave((t) => api.deleteDocument(t, props.documentId));
+  const remove = () =>
+    leave(
+      (t) => api.deleteDocument(t, props.documentId),
+      () => props.onTrashed?.(props.title),
+    );
   const uncollect = (collection: RowCollection) =>
     leave((t) => api.removeFromCollection(t, collection.id, props.documentId));
 
@@ -532,6 +547,36 @@ export function DocActions(props: {
       )}
     </>
   );
+}
+
+/** Said when a row's ⋯ moved its document to the Trash. */
+export const trashedWords = (title: string) =>
+  `“${title}” moved to the Trash. You can bring it back from there.`;
+
+/**
+ * What moving a document to the Trash from its row's ⋯ came to (the R5
+ * list): said above the list as the Documents table says what an action on
+ * many came to (R2's OutcomeNote) — politely, the focus staying on the next
+ * row, where the ⋯ put it — until it is put away. A list's screen holds it:
+ * the row, and its ⋯, are gone by then.
+ */
+export function useTrashedNote(): { note: ReactNode; onTrashed: (title: string) => void } {
+  const [said, setSaid] = useState<string | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const onTrashed = useCallback((title: string) => setSaid(trashedWords(title)), []);
+  const note =
+    said === null ? null : (
+      <OutcomeNote
+        ref={ref}
+        outcome={{ said, failedHead: null, failed: [], untouched: [] }}
+        onDismiss={() => {
+          flushSync(() => setSaid(null));
+          // Its Dismiss gone with it: the page's heading, never nowhere.
+          focusHeading();
+        }}
+      />
+    );
+  return { note, onTrashed };
 }
 
 /**

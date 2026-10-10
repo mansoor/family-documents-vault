@@ -26,6 +26,7 @@ import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { Button, ConfirmDialog, ErrorNote, Sheet, TopBar, TrashIcon } from '../ui.js';
 import { DocRow } from './Home.js';
+import { useTrashedNote } from '../DocActions.js';
 import { collectionShareOffered, ShareCollectionPanel } from './ShareCollection.js';
 
 /**
@@ -203,6 +204,7 @@ export function CollectionScreen() {
   const { id } = useParams<{ id: string }>();
   const { withToken, authVersion, caps } = useApp();
   const navigate = useNavigate();
+  const trashed = useTrashedNote();
   const role = storedRole();
   const first = useLoad(
     async (t) => {
@@ -461,6 +463,7 @@ export function CollectionScreen() {
         <p className="muted" tabIndex={-1} data-landing>
           {documentsWord(collection.item_count)}
         </p>
+        {trashed.note}
         <ul className="list">
           {items.map((item) => (
             <DocRow
@@ -471,6 +474,7 @@ export function CollectionScreen() {
               collection={{ id: collection.id, name: collection.name, mayChange }}
               onOpen={() => void navigate(`/documents/${item.document.id}`)}
               onChanged={again}
+              onTrashed={trashed.onTrashed}
             />
           ))}
           {items.length === 0 && (

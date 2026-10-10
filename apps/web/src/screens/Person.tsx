@@ -56,6 +56,7 @@ import {
   useSheetFocus,
 } from '../ui.js';
 import { DocRow } from './Home.js';
+import { useTrashedNote } from '../DocActions.js';
 import { RoleControls } from './Roles.js';
 
 /**
@@ -116,6 +117,7 @@ export function ProfileScreen() {
   const { id } = useParams<{ id: string }>();
   const { authVersion, session } = useApp();
   const navigate = useNavigate();
+  const trashed = useTrashedNote();
   const location = useLocation();
   // "Add their details now" (5.27) opens the form once, as the screen
   // opens: taken, and the history entry cleared of it, so that Back and a
@@ -208,6 +210,7 @@ export function ProfileScreen() {
             <h2 id="their-docs-h" className="section-h">
               {member.is_me ? 'Your documents' : `${name}’s documents`}
             </h2>
+            {trashed.note}
             <ul className="list">
               {(data?.docs ?? []).map((d) => (
                 <DocRow
@@ -216,6 +219,7 @@ export function ProfileScreen() {
                   types={data?.types}
                   onOpen={() => void navigate(`/documents/${d.id}`)}
                   onChanged={reload}
+                  onTrashed={trashed.onTrashed}
                 />
               ))}
               {data && data.docs.length === 0 && <li className="muted">No documents yet.</li>}
@@ -1379,6 +1383,7 @@ export function PersonDocumentsScreen() {
   const { id } = useParams<{ id: string }>();
   const { authVersion } = useApp();
   const navigate = useNavigate();
+  const trashed = useTrashedNote();
   const location = useLocation();
   // Back to where this was opened from: Home, or their profile (and their
   // profile for an old bookmark or a link from anywhere else).
@@ -1413,6 +1418,7 @@ export function PersonDocumentsScreen() {
           About {member.is_me ? 'you' : name}
         </Link>
       )}
+      {trashed.note}
       <ul className="list">
         {(data?.docs ?? []).map((d) => (
           <DocRow
@@ -1421,6 +1427,7 @@ export function PersonDocumentsScreen() {
             types={data?.types}
             onOpen={() => void navigate(`/documents/${d.id}`)}
             onChanged={reload}
+            onTrashed={trashed.onTrashed}
           />
         ))}
         {data && member && data.docs.length === 0 && <li className="muted">No documents yet.</li>}

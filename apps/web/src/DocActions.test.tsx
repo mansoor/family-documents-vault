@@ -693,3 +693,99 @@ describe('quick actions on every document (5.4)', () => {
     expect(screen.queryByRole('button', { name: 'Share a link' })).not.toBeInTheDocument();
   });
 });
+
+/**
+ * Moving to the Trash from a row's ⋯ (R5's list): the focus goes to the
+ * next row, as before, and the list now says what happened — politely, as
+ * the Documents table says what an action on many came to.
+ */
+describe('moving to the Trash from a row’s ⋯ says so', () => {
+  const SAID = "“Mansoor's passport” moved to the Trash. You can bring it back from there.";
+  const TRAVEL = {
+    id: 'collection-t',
+    name: 'Travel',
+    description: null,
+    audience: 'everyone' as const,
+    owner_member_id: 'me',
+    etag: '"t.1"',
+    items: ['doc-1', 'doc-3'],
+  };
+
+  it.each([
+    ['Home’s recent rows', '/'],
+    ['the Documents list on a phone', '/documents'],
+    ['a person’s page', '/people/me'],
+    ['a person’s documents', '/people/me/documents'],
+    ['a collection', '/collections/collection-t'],
+  ])('%s: said, politely, with the focus on the next row', async (_, path) => {
+    const state = fresh({
+      documents: [{ ...PASSPORT }, { ...COUNCIL_TAX, owner_member_id: 'me' }],
+      collections: [TRAVEL],
+    });
+    installFakeApi(state);
+    signedIn('owner');
+    window.history.replaceState({}, '', path);
+    render(<App />);
+    const { menu } = await openMenu();
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to the Trash' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Move to the Trash?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move to the Trash' }));
+    const said = await screen.findByText(SAID);
+    // Polite: a status, never an alert, and the focus not taken from the row.
+    expect(said).toHaveAttribute('role', 'status');
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: PASSPORT_MENU })).not.toBeInTheDocument(),
+    );
+    expect(document.activeElement?.closest('li')).toHaveTextContent('Council tax bill');
+    expect(
+      state.calls.filter((c) => c.method === 'DELETE').map((c) => c.url.split('/').pop()),
+    ).toEqual(['doc-1']);
+    await expectAccessible();
+    // Put away, the focus goes to the page's heading, never nowhere.
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect(screen.queryByText(SAID)).not.toBeInTheDocument());
+    expect(document.activeElement?.tagName).toBe('H1');
+  });
+
+  it('a search: said too, the focus on the next hit', async () => {
+    const state = fresh({
+      documents: [{ ...PASSPORT }, { ...COUNCIL_TAX, owner_member_id: 'me' }],
+    });
+    installFakeApi(state);
+    signedIn('owner');
+    window.history.replaceState({}, '', '/search?q=a');
+    render(<App />);
+    const { menu } = await openMenu();
+    fireEvent.click(await within(menu).findByRole('menuitem', { name: 'Move to the Trash' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Move to the Trash?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move to the Trash' }));
+    expect(await screen.findByText(SAID)).toHaveAttribute('role', 'status');
+    await waitFor(() =>
+      expect(document.activeElement?.closest('li')).toHaveTextContent('Council tax bill'),
+    );
+    await expectAccessible();
+  });
+
+  it('nothing is said when the vault refuses: the row stays, with its own error', async () => {
+    const state = fresh({
+      documents: [{ ...PASSPORT }, { ...COUNCIL_TAX, owner_member_id: 'me' }],
+    });
+    state.refuseWith = (method) =>
+      method === 'DELETE'
+        ? {
+            status: 403,
+            code: 'forbidden',
+            message: 'Viewers can open and download documents, but not remove them.',
+          }
+        : undefined;
+    installFakeApi(state);
+    signedIn('owner');
+    render(<App />);
+    const { menu } = await openMenu();
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to the Trash' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Move to the Trash?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move to the Trash' }));
+    expect(await screen.findByText(/but not remove them/)).toBeInTheDocument();
+    expect(screen.queryByText(SAID)).toBeNull();
+  });
+});

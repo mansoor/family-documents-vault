@@ -36,7 +36,7 @@ import {
 import { api, type Invitation, type Member, type SearchHit } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { AddToCollection, collectionsOffered, documentsWord } from '../collections.js';
-import { DocActions } from '../DocActions.js';
+import { DocActions, useTrashedNote } from '../DocActions.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
 import {
@@ -73,6 +73,7 @@ const ISSUER_CHIPS = 8;
 export function SearchScreen({ title = 'Search' }: { title?: string } = {}) {
   const { withToken, authVersion, caps } = useApp();
   const navigate = useNavigate();
+  const trashed = useTrashedNote();
   const select = useSelect(collectionsOffered(caps, storedRole()));
   const unpick = select.drop;
   const [params, setParams] = useSearchParams();
@@ -306,6 +307,7 @@ export function SearchScreen({ title = 'Search' }: { title?: string } = {}) {
         </div>
       )}
       <ErrorNote message={error} />
+      {trashed.note}
       {/* Select, where there is something to choose, or something chosen already. */}
       {(select.on ||
         (hits !== null && hits.length + sealed.items.length > 0) ||
@@ -329,6 +331,7 @@ export function SearchScreen({ title = 'Search' }: { title?: string } = {}) {
                 pick={select.pick(h.document_id)}
                 onOpen={() => void navigate(`/documents/${h.document_id}`)}
                 onChanged={actedOn(h.document_id)}
+                onTrashed={trashed.onTrashed}
               />
             ))}
           </ul>
@@ -350,6 +353,7 @@ export function SearchScreen({ title = 'Search' }: { title?: string } = {}) {
                     pick={select.pick(h.document_id)}
                     onOpen={() => void navigate(`/documents/${h.document_id}`)}
                     onChanged={actedOn(h.document_id)}
+                    onTrashed={trashed.onTrashed}
                   />
                 ))}
               </ul>
@@ -374,6 +378,7 @@ export function SearchScreen({ title = 'Search' }: { title?: string } = {}) {
               pick={select.pick(d.id)}
               onOpen={() => void navigate(`/documents/${d.id}`)}
               onChanged={actedOn(d.id)}
+              onTrashed={trashed.onTrashed}
             />
           ))}
         </ul>
@@ -528,6 +533,7 @@ function HitRow({
   pick,
   onOpen,
   onChanged,
+  onTrashed,
 }: {
   hit: SearchHit;
   types: DocumentTypeView[] | null;
@@ -536,6 +542,8 @@ function HitRow({
   onOpen: () => void;
   /** Its ⋯ changed something (5.4): the search is run again. */
   onChanged: () => void;
+  /** Its ⋯ moved it to the Trash: the search says so (`useTrashedNote`). */
+  onTrashed: (title: string) => void;
 }) {
   const title = hit.title ?? 'Untitled';
   return (
@@ -547,7 +555,12 @@ function HitRow({
         <StatusBadge status={hit.status} />
       </RowMain>
       {/* A hit has no version or ETag: its ⋯ fetches the document on opening. */}
-      <DocActions documentId={hit.document_id} title={title} onChanged={onChanged} />
+      <DocActions
+        documentId={hit.document_id}
+        title={title}
+        onChanged={onChanged}
+        onTrashed={onTrashed}
+      />
     </li>
   );
 }
@@ -796,6 +809,7 @@ function FamilyTable(props: {
 export function RemindersScreen() {
   const { authVersion, withToken } = useApp();
   const navigate = useNavigate();
+  const trashed = useTrashedNote();
   const [error, setError] = useState<string | null>(null);
   // Not loaded: said (R5), rather than a heading and nothing under it.
   const {
@@ -898,6 +912,7 @@ export function RemindersScreen() {
     <main className="page page-top page-wide has-nav">
       <TopBar title="Needs attention" />
       <ErrorNote message={error ?? loadError} />
+      {trashed.note}
       {/* From 768 px the calm word is a panel in the tables' frame
           (AttentionTables); on a phone, the line it always was. */}
       {data && count === 0 && !wide && (
@@ -923,6 +938,7 @@ export function RemindersScreen() {
             remindsOn={remindsOn}
             act={act}
             onChanged={reload}
+            onTrashed={trashed.onTrashed}
           />
         )
       ) : (
@@ -933,6 +949,7 @@ export function RemindersScreen() {
           act={act}
           onOpen={(id) => void navigate(`/documents/${id}`)}
           onChanged={reload}
+          onTrashed={trashed.onTrashed}
         />
       )}
       <Missing
@@ -961,6 +978,7 @@ function AttentionList(props: {
   act: Act;
   onOpen: (documentId: string) => void;
   onChanged: () => Promise<unknown>;
+  onTrashed: (title: string) => void;
 }) {
   const { data, snoozes, remindsOn, act, onOpen } = props;
   return (
@@ -1001,6 +1019,7 @@ function AttentionList(props: {
             types={data?.types}
             onOpen={() => onOpen(d.id)}
             onChanged={props.onChanged}
+            onTrashed={props.onTrashed}
           />
         ))}
       </ul>
@@ -1052,6 +1071,7 @@ function AttentionTables(props: {
   remindsOn: (r: ReminderView) => string;
   act: Act;
   onChanged: () => Promise<unknown>;
+  onTrashed: (title: string) => void;
 }) {
   const { docs, types, snoozes, act } = props;
   const names = shortName(props.members);
@@ -1161,6 +1181,7 @@ function AttentionTables(props: {
                           title={title}
                           doc={d}
                           onChanged={props.onChanged}
+                          onTrashed={props.onTrashed}
                         />
                       </div>
                     </td>
