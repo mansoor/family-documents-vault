@@ -561,3 +561,170 @@ describe('every list and table uses the width; forms keep a readable one (the sw
     expect(widthOf(screen.getByLabelText('Filters'))).toBe('720px');
   });
 });
+
+// ------------------------------------------- Sharing and After a restore
+
+/** A link outside the family, as GET /shares gives it. */
+const link = (over: Record<string, unknown> = {}) => ({
+  id: 'sh-1',
+  document_id: 'doc-1',
+  document_title: 'Sara’s passport',
+  recipient_label: 'the visa agent',
+  created_by_name: ME.display_name,
+  created_at: '2026-10-01T09:00:00Z',
+  expires_at: new Date(Date.now() + 9 * 864e5).toISOString(),
+  has_pin: false,
+  open_count: 1,
+  last_opened_at: null,
+  state: 'active',
+  summary: 'Shared with the visa agent, opened once. Stops working on 18 October at 17:00.',
+  ...over,
+});
+const ENDED = link({
+  id: 'sh-2',
+  document_title: 'Council tax bill',
+  recipient_label: null,
+  state: 'expired',
+  summary: 'Shared by link, not opened. Expired on 1 October.',
+});
+const PAUSED_REQUEST = {
+  id: 'req-a',
+  title: 'Tax papers for 2025',
+  message: null,
+  items: [{ id: 'i1', label: 'W-2' }],
+  recipient_label: 'Jane, accountant',
+  recipient_email: null,
+  requested_by_name: ME.display_name,
+  mine: true,
+  created_at: '2026-09-30T10:00:00Z',
+  expires_at: new Date(Date.now() + 10 * 864e5).toISOString(),
+  protection: ['password'],
+  max_visits: 3,
+  visits_used: 1,
+  max_files: 10,
+  files_used: 2,
+  max_total_bytes: 200 * 1024 * 1024,
+  bytes_used: 2048,
+  accept_types: 'standard',
+  review_by: 'me',
+  suggested_member_id: null,
+  suggested_type_key: null,
+  close_after_submit: false,
+  state: 'paused',
+  paused_reason: 'restored',
+  closed_reason: null,
+  files_received: 2,
+};
+const headsOf = (table: HTMLElement) =>
+  within(table)
+    .getAllByRole('columnheader')
+    .map((h) => h.textContent);
+
+describe('Sharing and After a restore are tables from 768 px (the prototype’s)', () => {
+  it.each([WIDE, MID])(
+    'Sharing at %i: the links and their details, each taken back from its row; the ended a plain table',
+    async (px) => {
+      atWidth(px);
+      open('/sharing', household({ shares: [link(), ENDED] }));
+      const live = await screen.findByRole('grid', { name: 'Links that work now' });
+      expect(headsOf(live)).toEqual([
+        'Link to',
+        'For',
+        'Where it stands',
+        'Made by',
+        'Take it back',
+      ]);
+      const row = within(live).getAllByRole('row')[1] as HTMLElement;
+      expect(row).toHaveTextContent('“Sara’s passport”');
+      expect(row).toHaveTextContent('the visa agent');
+      expect(row).toHaveTextContent('Stops working on 18 October at 17:00.');
+      expect(row).toHaveTextContent(ME.display_name);
+      // R2's grid: one stop for Tab.
+      await waitFor(() => expect(live.querySelectorAll('[tabindex="0"]')).toHaveLength(1));
+      const ended = screen.getByRole('table', { name: 'Links that no longer work' });
+      expect(headsOf(ended)).toEqual(['Link to', 'For', 'Where it stands', 'Made by']);
+      expect(within(ended).queryByRole('button')).toBeNull();
+      expect(ended).toHaveTextContent('Expired on 1 October.');
+      await expectAccessible();
+      // Taken back as before: asked first.
+      fireEvent.click(
+        within(row).getByRole('button', {
+          name: 'Take back the link to “Sara’s passport”, shared with the visa agent',
+        }),
+      );
+      expect(
+        await screen.findByRole('alertdialog', { name: 'Take this link back?' }),
+      ).toBeVisible();
+    },
+  );
+
+  it('Sharing at 320: the lists, as before', async () => {
+    atWidth(PHONE);
+    open('/sharing', household({ shares: [link(), ENDED] }));
+    expect(await screen.findByRole('list', { name: 'Links that no longer work' })).toBeVisible();
+    expect(screen.getByRole('list', { name: 'Links that work now' })).toHaveTextContent(
+      'Sara’s passport',
+    );
+    expect(screen.queryByRole('grid')).toBeNull();
+    expect(screen.queryByRole('table')).toBeNull();
+  });
+
+  const restored = () =>
+    household({
+      shares: [link({ state: 'paused', paused_reason: 'restored' })],
+      uploadRequests: [PAUSED_REQUEST],
+      accounts: {
+        'm-0': {
+          member_id: 'm-0',
+          role: 'teen',
+          suspension: {
+            reason: 'restored',
+            since: '2026-10-01T09:00:00Z',
+            until: null,
+            note: null,
+            by: null,
+          },
+        },
+      } as never,
+    });
+
+  it.each([WIDE, MID])(
+    'After a restore at %i: what was paused, as tables, each row with what can be done about it',
+    async (px) => {
+      atWidth(px);
+      const state = open('/after-restore', restored());
+      const signIns = await screen.findByRole('grid', { name: 'Paused sign-ins' });
+      expect(headsOf(signIns)).toEqual(['Name', 'Role', 'What they can see', 'Turn back on']);
+      expect(within(signIns).getByRole('button', { name: /Turn back on .*sign-in/ })).toBeVisible();
+      const links = screen.getByRole('grid', { name: 'Links waiting for you' });
+      expect(headsOf(links)).toEqual([
+        'Link to',
+        'For',
+        'Made by',
+        'Would work until',
+        'Turn back on',
+        'Take it back',
+      ]);
+      expect(links).toHaveTextContent('Sara’s passport');
+      const requests = screen.getByRole('grid', { name: 'Paused requests' });
+      expect(requests).toHaveTextContent('“Tax papers for 2025”');
+      expect(requests).toHaveTextContent('Paused after a restore');
+      await expectAccessible();
+      // Turned back on from its row, as from the list.
+      fireEvent.click(
+        within(links).getByRole('button', { name: 'Turn back on the link to “Sara’s passport”' }),
+      );
+      await waitFor(() =>
+        expect(state.calls.some((c) => c.url === '/api/v1/shares/sh-1/resume')).toBe(true),
+      );
+    },
+  );
+
+  it('After a restore at 320: the lists, as before', async () => {
+    atWidth(PHONE);
+    open('/after-restore', restored());
+    expect(await screen.findByRole('list', { name: 'Paused sign-ins' })).toBeVisible();
+    expect(screen.getByRole('list', { name: 'Paused requests' })).toBeVisible();
+    expect(screen.queryByRole('grid')).toBeNull();
+  });
+});

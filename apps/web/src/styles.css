@@ -4621,6 +4621,17 @@ html:has(.shell-phone):has(.has-toast) {
   margin-top: 8px;
 }
 
+/* A table's words that may be one long run (a name, a link's summary):
+   broken anywhere rather than pushed past its cell. */
+.tbl .wrap-any {
+  overflow-wrap: anywhere;
+}
+
+/* Sharing's and After a restore's tables: room before the next section. */
+.tbl-section {
+  margin-bottom: 16px;
+}
+
 /* Nothing now, or nothing coming up: a line across the width, in the
    tables' frame — the calm one marked as the phone's is. */
 .att-panel {

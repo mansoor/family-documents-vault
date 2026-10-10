@@ -5,13 +5,22 @@ import {
   type PausedSignIn,
   type UploadRequestView,
 } from '@fdv/shared';
-import { useRef, useState } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { api, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
+import { useShellMode } from '../shell.js';
+import { None, useGrid } from '../table-grid.js';
 import { Button, ConfirmDialog, ErrorNote, TopBar } from '../ui.js';
-import { linkTarget, RequestRow, requestTarget, turnedBackOnWords } from './Sharing.js';
+import {
+  linkTarget,
+  RequestRow,
+  requestState,
+  requestTally,
+  requestTarget,
+  turnedBackOnWords,
+} from './Sharing.js';
 
 /**
  * "1 link is paused until you turn it back on", "2 links and 1 request you
@@ -124,6 +133,9 @@ export function AfterRestoreScreen() {
   const [asking, setAsking] = useState<UploadRequestView | null>(null);
   const status = useRef<HTMLParagraphElement>(null);
   const returnTo = useRef<HTMLButtonElement | null>(null);
+  // From 768 px what was paused is in tables, as in the prototype: R2's
+  // grid, each row with what can be done about it. On a phone, the lists.
+  const wide = useShellMode() !== 'phone';
 
   const actOnRequest = async (r: UploadRequestView, how: 'resume' | 'revoke') => {
     setBusy(r.id);
@@ -257,36 +269,72 @@ export function AfterRestoreScreen() {
             Everyone but the owners was signed out, and can’t sign in until you turn their sign-in
             back on. Each role is as the backup had it: check it is still right first.
           </p>
-          <ul className="list" aria-label="Paused sign-ins">
-            {signIns.map((s) => (
-              <li key={s.member_id} className="place">
-                <div className="place-title">{s.display_name}</div>
-                <div className="muted">Role: {roleLabel(s.role)}</div>
-                {/* A restricted viewer's restriction, beside the role, to be
-                    confirmed with it (A55, 5.32): read from the vault, and
-                    read-only here; 5.33 gives owners the screens to change
-                    it. A vault from before 5.32 sends none. */}
-                {s.restriction && (
-                  <div className="muted" data-testid="paused-restriction">
-                    {s.restriction.summary}
-                  </div>
-                )}
-                <div className="row">
-                  {/* aria-disabled while one is on its way, not disabled:
-                      "confirm it is you" gives focus back to it. */}
+          {wide ? (
+            <PausedTable
+              caption="Paused sign-ins"
+              heads={['Name', 'Role', 'What they can see']}
+              actions={['Turn back on']}
+              rows={signIns.map((s) => ({
+                id: s.member_id,
+                cells: [
+                  <span key="n" className="cell-title wrap-any">
+                    {s.display_name}
+                  </span>,
+                  roleLabel(s.role),
+                  s.restriction ? (
+                    <span key="r" className="wrap-any" data-testid="paused-restriction">
+                      {s.restriction.summary}
+                    </span>
+                  ) : (
+                    <None key="r" />
+                  ),
+                ],
+                actions: [
                   <button
+                    key="on"
                     type="button"
-                    className="btn btn-primary"
+                    className="btn btn-primary btn-small"
                     aria-disabled={busy !== null}
                     aria-label={`Turn back on ${s.display_name}’s sign-in`}
                     onClick={() => void resumeSignIn(s)}
                   >
                     {busy === s.member_id ? 'Working…' : 'Turn back on'}
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
+                  </button>,
+                ],
+              }))}
+            />
+          ) : (
+            <ul className="list" aria-label="Paused sign-ins">
+              {signIns.map((s) => (
+                <li key={s.member_id} className="place">
+                  <div className="place-title">{s.display_name}</div>
+                  <div className="muted">Role: {roleLabel(s.role)}</div>
+                  {/* A restricted viewer's restriction, beside the role, to be
+                    confirmed with it (A55, 5.32): read from the vault, and
+                    read-only here; 5.33 gives owners the screens to change
+                    it. A vault from before 5.32 sends none. */}
+                  {s.restriction && (
+                    <div className="muted" data-testid="paused-restriction">
+                      {s.restriction.summary}
+                    </div>
+                  )}
+                  <div className="row">
+                    {/* aria-disabled while one is on its way, not disabled:
+                      "confirm it is you" gives focus back to it. */}
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      aria-disabled={busy !== null}
+                      aria-label={`Turn back on ${s.display_name}’s sign-in`}
+                      onClick={() => void resumeSignIn(s)}
+                    >
+                      {busy === s.member_id ? 'Working…' : 'Turn back on'}
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       )}
       <section aria-labelledby="paused-links-h" className="stack">
@@ -299,6 +347,60 @@ export function AfterRestoreScreen() {
               ? 'No link is waiting.'
               : 'Nothing is waiting. Every link you may decide about is decided.'}
           </p>
+        ) : wide ? (
+          links.length > 0 && (
+            <PausedTable
+              caption={owner ? 'Links waiting for you' : 'Your paused links'}
+              heads={['Link to', 'For', 'Made by', 'Would work until']}
+              actions={owner ? ['Turn back on', 'Take it back'] : ['Take it back']}
+              rows={links.map((link) => ({
+                id: link.id,
+                cells: [
+                  <span key="t" className="cell-title wrap-any">
+                    {link.collection_id ? linkTarget(link) : (link.document_title ?? 'A document')}
+                  </span>,
+                  link.recipient_label ? (
+                    <span key="f" className="wrap-any">
+                      {link.recipient_label}
+                    </span>
+                  ) : (
+                    'Shared by link'
+                  ),
+                  link.created_by_name ?? <None key="m" />,
+                  <span key="u">
+                    {new Date(link.expires_at).toLocaleDateString([], { dateStyle: 'long' })}
+                    {link.has_pin ? <span className="muted cell-sub">Has a PIN</span> : null}
+                  </span>,
+                ],
+                actions: [
+                  ...(owner
+                    ? [
+                        <button
+                          key="on"
+                          type="button"
+                          className="btn btn-primary btn-small"
+                          disabled={busy !== null}
+                          aria-label={`Turn back on the link to ${linkTarget(link, true)}`}
+                          onClick={() => void act(link, 'resume')}
+                        >
+                          {busy === link.id ? 'Working…' : 'Turn back on'}
+                        </button>,
+                      ]
+                    : []),
+                  <button
+                    key="back"
+                    type="button"
+                    className="btn btn-quiet btn-small"
+                    disabled={busy !== null}
+                    aria-label={`Take back the link to ${linkTarget(link, true)}`}
+                    onClick={() => void act(link, 'revoke')}
+                  >
+                    {busy === link.id && !owner ? 'Working…' : 'Take it back'}
+                  </button>,
+                ],
+              }))}
+            />
+          )
         ) : (
           <ul className="list">
             {links.map((link) => (
@@ -348,21 +450,97 @@ export function AfterRestoreScreen() {
               ? 'Requests for someone to send documents were paused too. Their links open nothing until you turn them back on.'
               : 'Requests you made for someone to send documents were paused too. An owner decides which work again; you can take any of them back.'}
           </p>
-          <ul className="list" aria-label="Paused requests">
-            {requests.map((r) => (
-              <RequestRow
-                key={r.id}
-                request={r}
-                busy={busy !== null}
-                owner={owner}
-                onResume={() => void actOnRequest(r, 'resume')}
-                onTakeBack={(button) => {
-                  returnTo.current = button;
-                  setAsking(r);
-                }}
-              />
-            ))}
-          </ul>
+          {wide ? (
+            <PausedTable
+              caption="Paused requests"
+              heads={['Request', 'For', 'What it has had', 'Where it stands']}
+              actions={owner ? ['Turn back on', 'Take it back'] : ['Take it back']}
+              rows={requests.map((r) => {
+                const state = requestState(r, owner);
+                const who = [
+                  r.recipient_label ?? null,
+                  !r.mine && r.requested_by_name ? `Asked by ${r.requested_by_name}` : null,
+                ].filter(Boolean);
+                return {
+                  id: r.id,
+                  cells: [
+                    <span key="t" className="cell-title wrap-any">
+                      “{r.title}”
+                    </span>,
+                    who.length > 0 ? (
+                      <span key="w" className="wrap-any">
+                        {who.join(' · ')}
+                      </span>
+                    ) : (
+                      <None key="w" />
+                    ),
+                    requestTally(r),
+                    <span
+                      key="s"
+                      className={`wrap-any${state.tone ? ` status status-${state.tone}` : ''}`}
+                    >
+                      {state.words}
+                    </span>,
+                  ],
+                  actions: [
+                    ...(owner
+                      ? [
+                          r.state === 'paused' && r.paused_reason === 'restored' ? (
+                            <button
+                              key="on"
+                              type="button"
+                              className="btn btn-primary btn-small"
+                              disabled={busy !== null}
+                              aria-label={`Turn back on ${requestTarget(r)}`}
+                              onClick={() => void actOnRequest(r, 'resume')}
+                            >
+                              Turn back on
+                            </button>
+                          ) : r.state === 'paused' && r.paused_reason === 'sign_in_paused' ? (
+                            <a key="on" href="#paused-sign-ins-h" className="quiet-link">
+                              {r.requested_by_name
+                                ? `Turn on ${r.requested_by_name}’s sign-in first`
+                                : 'Turn on their sign-in first'}
+                            </a>
+                          ) : (
+                            <None key="on" />
+                          ),
+                        ]
+                      : []),
+                    <button
+                      key="back"
+                      type="button"
+                      className="btn btn-quiet btn-small"
+                      disabled={busy !== null}
+                      aria-label={`Take back ${requestTarget(r)}`}
+                      onClick={(e) => {
+                        returnTo.current = e.currentTarget;
+                        setAsking(r);
+                      }}
+                    >
+                      Take it back
+                    </button>,
+                  ],
+                };
+              })}
+            />
+          ) : (
+            <ul className="list" aria-label="Paused requests">
+              {requests.map((r) => (
+                <RequestRow
+                  key={r.id}
+                  request={r}
+                  busy={busy !== null}
+                  owner={owner}
+                  onResume={() => void actOnRequest(r, 'resume')}
+                  onTakeBack={(button) => {
+                    returnTo.current = button;
+                    setAsking(r);
+                  }}
+                />
+              ))}
+            </ul>
+          )}
         </section>
       )}
       {asking && (
@@ -384,5 +562,69 @@ export function AfterRestoreScreen() {
         </ConfirmDialog>
       )}
     </main>
+  );
+}
+
+/**
+ * What a restore paused, as a table from 768 px (the prototype's): R2's
+ * grid — one stop for Tab, the arrows between cells — its columns what the
+ * list says of each, and a cell for each thing that can be done about it.
+ */
+function PausedTable(props: {
+  caption: string;
+  heads: string[];
+  /** What each action column does, for a screen reader: each button says it again, with whose. */
+  actions: string[];
+  rows: Array<{ id: string; cells: ReactNode[]; actions: ReactNode[] }>;
+}) {
+  const table = useRef<HTMLTableElement>(null);
+  const wrap = useRef<HTMLDivElement>(null);
+  const grid = useGrid(table, wrap, [props.rows.map((r) => r.id).join(','), props.caption]);
+  return (
+    <div ref={wrap} className="tbl-wrap tbl-static tbl-section">
+      <table
+        ref={table}
+        className="tbl tbl-plain paused-tbl"
+        role="grid"
+        onKeyDown={grid.onKeyDown}
+        onFocus={grid.onFocus}
+      >
+        <caption className="visually-hidden">{props.caption}</caption>
+        <colgroup>
+          {props.heads.map((h, i) => (
+            <col key={h} style={i === 0 ? undefined : { width: `${60 / props.heads.length}%` }} />
+          ))}
+          {props.actions.map((a) => (
+            <col key={a} style={{ width: 140 }} />
+          ))}
+        </colgroup>
+        <thead>
+          <tr>
+            {props.heads.map((h) => (
+              <th key={h} scope="col">
+                {h}
+              </th>
+            ))}
+            {props.actions.map((a) => (
+              <th key={a} scope="col">
+                <span className="visually-hidden">{a}</span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {props.rows.map((r) => (
+            <tr key={r.id}>
+              {r.cells.map((c, i) => (
+                <td key={i}>{c}</td>
+              ))}
+              {r.actions.map((a, i) => (
+                <td key={`a${i}`}>{a}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
