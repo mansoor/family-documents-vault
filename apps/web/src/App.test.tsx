@@ -292,6 +292,91 @@ describe('App', () => {
     expect(localStorage.getItem('fdv.session')).not.toBeNull();
   });
 
+  describe('a sign-in renewal turned away for too many tries (the PR #100 investigation)', () => {
+    /** The vault answers the first `times` renewals 429, asking for `after` seconds. */
+    function busy(times: number, after: number) {
+      const state = fresh();
+      let refused = 0;
+      state.refuseWith = (method, path) => {
+        if (path !== '/api/v1/auth/refresh' || refused >= times) return undefined;
+        refused++;
+        return {
+          status: 429,
+          code: 'rate_limited',
+          message: 'Too many requests.',
+          retryAfter: after,
+        };
+      };
+      installFakeApi(state);
+      signedIn();
+      window.history.replaceState({}, '', '/');
+      render(<App />);
+      return { state, refused: () => refused };
+    }
+    const renewals = (state: FakeState) =>
+      state.calls.filter((c) => c.url === '/api/v1/auth/refresh').length;
+
+    it('a short wait is waited out, said as it is, and the renewal asked again: Home, nobody signed out', async () => {
+      const { state } = busy(1, 1);
+      expect(
+        await screen.findByText('Too many tries just now; trying again in 1 second.', {
+          selector: '[role="status"]',
+        }),
+      ).toBeInTheDocument();
+      await expectAccessible();
+      await screen.findByRole('heading', { name: 'The Seikh family' }, { timeout: 4000 });
+      await waitFor(() => expect(screen.queryByText(/Too many tries/)).toBeNull());
+      expect(screen.queryByText(/can't reach the vault/)).toBeNull();
+      expect(renewals(state)).toBe(2);
+      expect(state.sessionEnded).toBe(false);
+      expect(localStorage.getItem('fdv.session')).not.toBeNull();
+    });
+
+    it('asked again twice at most: then it says too many tries, never “can’t reach… reload”, and keeps the session', async () => {
+      const { state } = busy(100, 1);
+      expect(
+        await screen.findByText(
+          'Too many tries just now. Try again in 1 second.',
+          {},
+          { timeout: 5000 },
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/can't reach the vault/)).toBeNull();
+      // Never a loop: the first renewal and two more, and no more after.
+      await new Promise((r) => setTimeout(r, 1500));
+      expect(renewals(state)).toBe(3);
+      expect(localStorage.getItem('fdv.session')).not.toBeNull();
+      expect(screen.queryByRole('heading', { name: 'Welcome' })).toBeNull();
+    });
+
+    it('signing out during the wait is at once, and asks the vault nothing more (the review round)', async () => {
+      const { state } = busy(100, 30);
+      await screen.findByText('Too many tries just now; trying again in 30 seconds.', {
+        selector: '[role="status"]',
+      });
+      fireEvent.click(await screen.findByRole('button', { name: 'Menu' }));
+      const drawer = await screen.findByRole('dialog', { name: 'Menu' });
+      await act(async () => {
+        fireEvent.click(within(drawer).getByRole('button', { name: 'Sign out' }));
+      });
+      await waitFor(() => expect(localStorage.getItem('fdv.session')).toBeNull());
+      await waitFor(() => expect(window.location.pathname).toMatch(/^\/(welcome|sign-in)$/));
+      expect(screen.queryByText(/Too many tries/)).toBeNull();
+      await new Promise((r) => setTimeout(r, 100));
+      expect(renewals(state)).toBe(1);
+    });
+
+    it('a wait of more than a minute is not waited out: said at once, asked once', async () => {
+      const { state } = busy(100, 120);
+      expect(
+        await screen.findByText('Too many tries just now. Try again in 2 minutes.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/trying again in/)).toBeNull();
+      expect(renewals(state)).toBe(1);
+      expect(localStorage.getItem('fdv.session')).not.toBeNull();
+    });
+  });
+
   it('searches and renders snippets with highlights but without scripts', async () => {
     const state = fresh();
     installFakeApi(state);

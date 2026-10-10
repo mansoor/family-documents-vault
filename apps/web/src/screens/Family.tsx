@@ -14,7 +14,7 @@ import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { TwoStepNeeded, whenWords } from '../identity.js';
 import { storedRole } from '../session.js';
-import { Button, ErrorNote, Pills, TopBar } from '../ui.js';
+import { Button, ErrorNote, LoadFailed, Pills, TopBar } from '../ui.js';
 
 /**
  * Settings → Family (5.27): who can see the identity details kept on each
@@ -42,7 +42,7 @@ export function FamilyScreen() {
 function IdentityAudienceCard() {
   const { authVersion, guarded } = useApp();
   const owner = can(storedRole(), 'identity.audience');
-  const { data, error, setData } = useLoad(
+  const { data, error, setData, reload } = useLoad(
     async (t) => {
       const [audience, profile] = await Promise.all([api.identityAudience(t), api.profile(t)]);
       return { audience, timezone: profile.timezone ?? 'UTC' };
@@ -113,7 +113,15 @@ function IdentityAudienceCard() {
         always sees their own, and no one but them sees what they mark Only me. Viewers never see
         anyone else’s.
       </p>
-      <ErrorNote message={error} />
+      {data === null && error ? (
+        <LoadFailed
+          message={error}
+          what="who sees identity details"
+          onRetry={() => void reload()}
+        />
+      ) : (
+        <ErrorNote message={error} />
+      )}
       {view && (
         <dl className="facts">
           <dt>Now</dt>

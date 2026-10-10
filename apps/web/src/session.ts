@@ -76,12 +76,26 @@ export function storedRole(): Tokens['role'] {
 }
 
 export class Session {
+  /** Who is told while a renewal turned away for too many tries is waited out. */
+  private readonly waitListeners = new Set<(seconds: number | null) => void>();
   // localStorage can be read at once, so the web starts already knowing
   // whether anybody is signed in; a phone calls hydrate() instead.
   private readonly core = new SessionCore(api, localStorageStore, {
     initial: read(),
     ...(tabLock ? { lock: tabLock } : {}),
+    onWait: (seconds) => {
+      for (const listen of this.waitListeners) listen(seconds);
+    },
   });
+
+  /**
+   * Told the seconds a renewal waits, the vault having said too many tries
+   * just now, and null once it is asked again. Returns the way to stop.
+   */
+  onWait(listen: (seconds: number | null) => void): () => void {
+    this.waitListeners.add(listen);
+    return () => this.waitListeners.delete(listen);
+  }
 
   get signedIn(): boolean {
     return this.core.signedIn;
@@ -111,9 +125,9 @@ export class Session {
   }
 
   /** A usable access token — or why there is not one. */
-  async token(): Promise<TokenResult> {
+  async token(opts: { wait?: boolean } = {}): Promise<TokenResult> {
     const before = this.core.info;
-    const r = await this.core.token();
+    const r = await this.core.token(opts);
     const after = this.core.info;
     // A session that ended by itself — signed out on another device, taken
     // away, run out — takes its unsaved notes with it, as signing out does
@@ -135,7 +149,11 @@ export class Session {
   }
 
   async signOut() {
-    const r = await this.token();
+    // Never behind a renewal waiting out "too many tries" (up to two
+    // minutes; the review round): the access token while it lasts, or a
+    // renewal that waits for nothing. Without one, as offline: signed out
+    // here, the vault not told.
+    const r = await this.token({ wait: false });
     if (r.kind === 'ok') {
       // This browser stops being told things before the sign-in ends, so
       // the next person to use it is not sent the last one's digest.

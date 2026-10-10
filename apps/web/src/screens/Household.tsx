@@ -6,7 +6,7 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { TwoStepNeeded } from '../identity.js';
 import { householdRows, SettingsRows } from '../settings-sections.js';
 import { storedRole } from '../session.js';
-import { ErrorNote } from '../ui.js';
+import { ErrorNote, LoadFailed } from '../ui.js';
 import { SettingsPage } from './Settings.js';
 
 /**
@@ -31,7 +31,7 @@ export function HouseholdScreen() {
 
 function OnlyMeSharingCard() {
   const { authVersion, guarded } = useApp();
-  const { data, error, setData } = useLoad((t) => api.onlyMeSharing(t), [authVersion]);
+  const { data, error, setData, reload } = useLoad((t) => api.onlyMeSharing(t), [authVersion]);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [twoStep, setTwoStep] = useState<string | null>(null);
@@ -73,7 +73,11 @@ function OnlyMeSharingCard() {
       <h2 id="only-me-h" style={{ fontSize: 18 }}>
         Only me documents and links outside the family
       </h2>
-      <ErrorNote message={error} />
+      {data === null && error ? (
+        <LoadFailed message={error} what="Only me documents" onRetry={() => void reload()} />
+      ) : (
+        <ErrorNote message={error} />
+      )}
       {data && (
         <>
           <dl className="facts">

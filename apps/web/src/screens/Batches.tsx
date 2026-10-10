@@ -39,6 +39,7 @@ import { CollectionSelect, mayChangeCollection } from '../collections.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { useShortcutsOn } from '../shortcuts.js';
+import { useGrid } from '../table-grid.js';
 import {
   Button,
   ConfirmDialog,
@@ -1182,14 +1183,15 @@ function ItemState({ item, stop }: { item: BatchItemView; stop?: number }) {
           >
             Open the document
           </Link>
+        ) : stop !== undefined ? (
+          // A document they can no longer see: the row still has its stop,
+          // so Tab and the keys reach the rows after it (the I3 review, W-I3-5).
+          <span className="muted" tabIndex={stop} data-row-target="">
+            You can no longer see the document
+          </span>
         ) : (
-          stop !== undefined && (
-            // A document they can no longer see: the row still has its stop,
-            // so Tab and the keys reach the rows after it (the I3 review, W-I3-5).
-            <span className="muted" tabIndex={stop} data-row-target="">
-              You can no longer see the document
-            </span>
-          )
+          // In the table, R2's grid: its cell takes the focus itself.
+          <span className="muted">You can no longer see the document</span>
         )}
       </span>
     );
@@ -1323,6 +1325,24 @@ export function BatchScreen() {
   const filter = queueFilter(params.get('level'));
   const shortcuts = useShortcutsOn();
   const [active, setActive] = useState<string | null>(null);
+  // From 768 px the queue is R2's grid, as Documents and the Trash are: one
+  // stop for Tab, the arrows between its cells — and j and k between the
+  // rows, while single keys are on. The stop starts on the first file's
+  // name. Drawn again as files are shown, accepted or removed.
+  const queueTable = useRef<HTMLTableElement>(null);
+  const queueWrap = useRef<HTMLDivElement>(null);
+  const grid = useGrid(
+    queueTable,
+    queueWrap,
+    [
+      (data?.batch.items ?? [])
+        .filter(inQueue(filter))
+        .map((i) => `${i.id}:${i.state}:${i.level ?? ''}`)
+        .join(','),
+      mode,
+    ],
+    { start: { row: 1, col: 1 }, jk: shortcuts },
+  );
   const names = useMemo(
     () => new Map((data?.batch.items ?? []).map((i) => [i.id, i.name])),
     [data],
@@ -1563,15 +1583,20 @@ export function BatchScreen() {
     if (window.getSelection?.()?.toString()) return;
     void navigate(itemPath(item), { state: { run } });
   };
+  /**
+   * A row's own stops: on a phone, the row's one stop (I3); in the table,
+   * none — the grid gives each cell's its own (useGrid).
+   */
+  const stops = (item: BatchItemView, inGrid: boolean) => (inGrid ? {} : { tabIndex: stop(item) });
   /** A waiting file's name: the way to its card, a stop in its row's one stop. */
-  const nameLink = (item: BatchItemView, words: string, className: string) =>
+  const nameLink = (item: BatchItemView, words: string, className: string, inGrid = false) =>
     item.state === 'waiting' ? (
       <Link
         to={itemPath(item)}
         state={{ run }}
         className={`${className} item-name`}
         title={words}
-        tabIndex={stop(item)}
+        {...stops(item, inGrid)}
       >
         {words}
       </Link>
@@ -1580,41 +1605,47 @@ export function BatchScreen() {
         {words}
       </span>
     );
-  const row = (item: BatchItemView) => {
+  const row = (item: BatchItemView, inGrid = false) => {
     // Ready is accepted as it is; anything else is opened to be looked at
     // first, and is said so (the owner's report).
     const review = item.level !== undefined && item.level !== 'ready';
     const verb = review ? 'Review' : 'Accept';
-    const actions =
-      item.state === 'waiting' ? (
-        <span className="row item-actions">
-          <Link
-            id={`accept-${item.id}`}
-            to={itemPath(item)}
-            state={{ run }}
-            className="btn btn-primary btn-small"
-            aria-label={`${verb} ${item.name}`}
-            data-row-target=""
-            tabIndex={stop(item)}
-          >
-            {verb}
-          </Link>
-          <button
-            type="button"
-            className="btn btn-quiet btn-small"
-            aria-label={`Remove ${item.name}`}
-            tabIndex={stop(item)}
-            onClick={(e) => {
-              removeAsked.current = e.currentTarget;
-              setAsking(item);
-            }}
-          >
-            Remove
-          </button>
-        </span>
-      ) : null;
+    const waits = item.state === 'waiting';
+    const accept = waits ? (
+      <Link
+        id={`accept-${item.id}`}
+        to={itemPath(item)}
+        state={{ run }}
+        className="btn btn-primary btn-small"
+        aria-label={`${verb} ${item.name}`}
+        {...(inGrid ? {} : { 'data-row-target': '' })}
+        {...stops(item, inGrid)}
+      >
+        {verb}
+      </Link>
+    ) : null;
+    const remove = waits ? (
+      <button
+        type="button"
+        className="btn btn-quiet btn-small"
+        aria-label={`Remove ${item.name}`}
+        {...stops(item, inGrid)}
+        onClick={(e) => {
+          removeAsked.current = e.currentTarget;
+          setAsking(item);
+        }}
+      >
+        Remove
+      </button>
+    ) : null;
+    const actions = waits ? (
+      <span className="row item-actions">
+        {accept}
+        {remove}
+      </span>
+    ) : null;
     const about = `${sizeWords(item.byte_size)}${item.preview_pages ? ` · ${plural(item.preview_pages, 'page')}` : ''}`;
-    return { actions, about };
+    return { actions, accept, remove, about };
   };
 
   return (
@@ -1761,8 +1792,14 @@ export function BatchScreen() {
             })}
           </ul>
         ) : (
-          <div className="tbl-wrap batch-wrap">
-            <table className="tbl batch-tbl">
+          <div ref={queueWrap} className="tbl-wrap batch-wrap">
+            <table
+              ref={queueTable}
+              className="tbl batch-tbl"
+              role="grid"
+              onKeyDown={grid.onKeyDown}
+              onFocus={grid.onFocus}
+            >
               <caption className="visually-hidden">
                 Files in {label}
                 {filter ? `: ${QUEUE_FILTERS.find(([v]) => v === filter)?.[1] ?? ''}` : ''}
@@ -1773,7 +1810,8 @@ export function BatchScreen() {
                 <col className="batch-col-kind" />
                 <col className="batch-col-person" />
                 <col className="batch-col-level" />
-                <col style={{ width: 190 }} />
+                <col style={{ width: 100 }} />
+                <col style={{ width: 108 }} />
               </colgroup>
               <thead>
                 <tr>
@@ -1784,28 +1822,28 @@ export function BatchScreen() {
                   <th scope="col">Kind</th>
                   <th scope="col">Whose</th>
                   <th scope="col">Level</th>
-                  <th scope="col">
+                  {/* Accept (or Review), and Remove: a cell each, as the
+                      grid moves between them. */}
+                  <th scope="colgroup" colSpan={2}>
                     <span className="visually-hidden">Actions</span>
                   </th>
                 </tr>
               </thead>
-              <tbody onKeyDown={rowKeys}>
+              <tbody>
                 {shown.map((item, i) => {
-                  const r = row(item);
+                  const r = row(item, true);
                   const title = proposedTitle(item, b.defaults, data.types, data.members, role);
                   return (
                     <tr
                       key={item.id}
-                      data-row=""
                       className={item.state === 'waiting' ? undefined : 'row-still'}
-                      onFocus={() => setActive(item.id)}
                       onClick={(e) => openRow(e, item)}
                     >
                       <td>
                         <FirstPage batchId={b.id} item={item} eager={i < FIRST_FEW} />
                       </td>
                       <td>
-                        {nameLink(item, title ?? item.name, 'cell-title clip')}
+                        {nameLink(item, title ?? item.name, 'cell-title clip', true)}
                         <span className="muted clip" title={item.name}>
                           {title ? `${item.name} · ` : ''}
                           {r.about}
@@ -1818,9 +1856,10 @@ export function BatchScreen() {
                         <ItemPerson item={item} members={data.members} />
                       </td>
                       <td>
-                        <ItemState item={item} stop={stop(item)} />
+                        <ItemState item={item} />
                       </td>
-                      <td>{r.actions}</td>
+                      <td>{r.accept}</td>
+                      <td>{r.remove}</td>
                     </tr>
                   );
                 })}

@@ -211,7 +211,7 @@ const EVERY_LEVEL = (types: DocumentTypeView[]) => [
 describe('the batch page, read (I2)', () => {
   it('a Level column with an icon and words, the tags, the kind and how sure, and a summary', async () => {
     at('/inbox/batches/batch-1', EVERY_LEVEL);
-    const table = await screen.findByRole('table', { name: 'Files in Scanned post' });
+    const table = await screen.findByRole('grid', { name: 'Files in Scanned post' });
     expect(
       within(table)
         .getAllByRole('columnheader')

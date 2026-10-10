@@ -4,6 +4,8 @@ import { Link } from 'react-router';
 import { api, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
+import { useShellMode } from '../shell.js';
+import { None, useGrid } from '../table-grid.js';
 import { Button, ConfirmDialog, ErrorNote, TopBar } from '../ui.js';
 
 /**
@@ -174,6 +176,12 @@ export function SharingScreen() {
   const [said, setSaid] = useState<string | null>(null);
   const status = useRef<HTMLParagraphElement>(null);
   const returnTo = useRef<HTMLButtonElement | null>(null);
+  // From 768 px the links are tables, as in the prototype; on a phone, the list.
+  const wide = useShellMode() !== 'phone';
+  const askToTakeBack = (s: Share, button: HTMLButtonElement) => {
+    returnTo.current = button;
+    setAsking(s);
+  };
 
   const takeBack = async (s: Share) => {
     setBusy(true);
@@ -256,30 +264,42 @@ export function SharingScreen() {
             <Link to="/collections">its page</Link>.
           </p>
         )}
-        <ul className="list" aria-label="Links that work now">
-          {live.map((s) => (
-            <LinkRow
-              key={s.id}
-              link={s}
+        {wide ? (
+          live.length > 0 && (
+            <LinksTable
+              links={live}
+              caption="Links that work now"
               busy={busy}
-              onTakeBack={(button) => {
-                returnTo.current = button;
-                setAsking(s);
-              }}
+              onTakeBack={askToTakeBack}
             />
-          ))}
-        </ul>
+          )
+        ) : (
+          <ul className="list" aria-label="Links that work now">
+            {live.map((s) => (
+              <LinkRow
+                key={s.id}
+                link={s}
+                busy={busy}
+                onTakeBack={(button) => askToTakeBack(s, button)}
+              />
+            ))}
+          </ul>
+        )}
       </section>
       {ended.length > 0 && (
         <section aria-labelledby="links-ended-h" className="stack">
           <h2 id="links-ended-h" className="section-h">
             No longer working
           </h2>
-          <ul className="list" aria-label="Links that no longer work">
-            {ended.map((s) => (
-              <LinkRow key={s.id} link={s} busy={busy} />
-            ))}
-          </ul>
+          {wide ? (
+            <LinksTable links={ended} caption="Links that no longer work" busy={busy} />
+          ) : (
+            <ul className="list" aria-label="Links that no longer work">
+              {ended.map((s) => (
+                <LinkRow key={s.id} link={s} busy={busy} />
+              ))}
+            </ul>
+          )}
         </section>
       )}
       {mayAsk && (
@@ -386,7 +406,7 @@ function LinkRow(props: {
             type="button"
             className="btn btn-quiet"
             disabled={props.busy}
-            aria-label={`Take back the link to ${linkTarget(s, true)}${s.recipient_label ? `, shared with ${s.recipient_label}` : ''}`}
+            aria-label={takeBackLabel(s)}
             onClick={(e) => props.onTakeBack?.(e.currentTarget)}
           >
             Take it back
@@ -394,6 +414,93 @@ function LinkRow(props: {
         </div>
       )}
     </li>
+  );
+}
+
+/** "Take back the link to “Mansoor’s passport”, shared with the visa agent" */
+const takeBackLabel = (s: Share) =>
+  `Take back the link to ${linkTarget(s, true)}${s.recipient_label ? `, shared with ${s.recipient_label}` : ''}`;
+
+/**
+ * Links as a table, from 768 px (the prototype's): what each is to, whom it
+ * is for, where it stands in the vault's own words, and who made it — what
+ * the list says, a column each. With a way to take each back, R2's grid
+ * (one stop for Tab, the arrows between cells); without, a plain table.
+ */
+function LinksTable(props: {
+  links: Share[];
+  caption: string;
+  busy: boolean;
+  onTakeBack?: (link: Share, button: HTMLButtonElement) => void;
+}) {
+  const take = props.onTakeBack;
+  const table = useRef<HTMLTableElement>(null);
+  // Never in the page: a plain table is given no grid, so no stop of its own.
+  const none = useRef<HTMLTableElement>(null);
+  const wrap = useRef<HTMLDivElement>(null);
+  const grid = useGrid(take ? table : none, wrap, [
+    props.links.map((s) => s.id).join(','),
+    String(props.busy),
+  ]);
+  return (
+    <div ref={wrap} className="tbl-wrap tbl-static tbl-section">
+      <table
+        ref={table}
+        className="tbl tbl-plain links-tbl"
+        {...(take ? { role: 'grid', onKeyDown: grid.onKeyDown, onFocus: grid.onFocus } : {})}
+      >
+        <caption className="visually-hidden">{props.caption}</caption>
+        <colgroup>
+          <col />
+          <col style={{ width: '16%' }} />
+          <col style={{ width: '36%' }} />
+          <col style={{ width: '13%' }} />
+          {take && <col style={{ width: 130 }} />}
+        </colgroup>
+        <thead>
+          <tr>
+            <th scope="col">Link to</th>
+            <th scope="col">For</th>
+            <th scope="col">Where it stands</th>
+            <th scope="col">Made by</th>
+            {take && (
+              <th scope="col">
+                <span className="visually-hidden">Take it back</span>
+              </th>
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {props.links.map((s) => {
+            const pages = s.document_id ? sharePagesNote(s.pages) : null;
+            return (
+              <tr key={s.id}>
+                <td>
+                  <span className="cell-title wrap-any">{linkTarget(s)}</span>
+                  {pages && <span className="status status-warn cell-sub">{pages}</span>}
+                </td>
+                <td className="wrap-any">{s.recipient_label ?? <None />}</td>
+                <td className="wrap-any">{s.summary}</td>
+                <td className="wrap-any">{s.created_by_name ?? <None />}</td>
+                {take && (
+                  <td>
+                    <button
+                      type="button"
+                      className="btn btn-quiet btn-small"
+                      disabled={props.busy}
+                      aria-label={takeBackLabel(s)}
+                      onClick={(e) => take(s, e.currentTarget)}
+                    >
+                      Take it back
+                    </button>
+                  </td>
+                )}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

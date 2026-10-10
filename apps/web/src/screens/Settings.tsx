@@ -4,7 +4,7 @@ import { Link, Navigate, useLocation } from 'react-router';
 import * as passkeys from '../passkeys.js';
 import { api, type ExportRow, type NewVault, type Provider } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
-import { Button, Check, ErrorNote, Field, TopBar } from '../ui.js';
+import { Button, Check, ErrorNote, Field, LoadFailed, TopBar } from '../ui.js';
 import { can, refusalFor } from '@fdv/shared';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
@@ -78,10 +78,11 @@ export function SettingsScreen() {
  */
 export function AccountScreen() {
   const { authVersion, withToken } = useApp();
-  const { data: sessions, reload } = useLoad(
-    async (t) => (await api.sessions(t)).items,
-    [authVersion],
-  );
+  const {
+    data: sessions,
+    error: sessionsError,
+    reload,
+  } = useLoad(async (t) => (await api.sessions(t)).items, [authVersion]);
   const revoke = async (id: string) => {
     await withToken((t) => api.revokeSession(t, id));
     await reload();
@@ -95,23 +96,32 @@ export function AccountScreen() {
         <h2 id="devices-h" className="section-h">
           Signed-in devices
         </h2>
-        <ul className="list">
-          {(sessions ?? []).map((d) => (
-            <li key={d.id}>
-              <span>
-                {d.label ?? shortAgent(d.user_agent)}
-                {d.current && <span className="muted"> · this one</span>}
-                {/* Signing it out also ends what it keeps (0.4.13). */}
-                {d.offline && <span className="muted"> · Keeps Essentials for offline use</span>}
-              </span>
-              {!d.current && (
-                <Button kind="quiet" onClick={() => void revoke(d.id)}>
-                  Sign out
-                </Button>
-              )}
-            </li>
-          ))}
-        </ul>
+        {/* Not reached: said, never an empty list as if no device were signed in. */}
+        {sessions === null && sessionsError ? (
+          <LoadFailed
+            message={sessionsError}
+            what="signed-in devices"
+            onRetry={() => void reload()}
+          />
+        ) : (
+          <ul className="list">
+            {(sessions ?? []).map((d) => (
+              <li key={d.id}>
+                <span>
+                  {d.label ?? shortAgent(d.user_agent)}
+                  {d.current && <span className="muted"> · this one</span>}
+                  {/* Signing it out also ends what it keeps (0.4.13). */}
+                  {d.offline && <span className="muted"> · Keeps Essentials for offline use</span>}
+                </span>
+                {!d.current && (
+                  <Button kind="quiet" onClick={() => void revoke(d.id)}>
+                    Sign out
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
       <KeyShortcuts />
     </SettingsPage>
@@ -180,7 +190,11 @@ function KeyShortcuts() {
  */
 function Passkeys() {
   const { guarded, authVersion } = useApp();
-  const { data, reload } = useLoad(async (t) => (await api.passkeys(t)).items, [authVersion]);
+  const {
+    data,
+    error: loadError,
+    reload,
+  } = useLoad(async (t) => (await api.passkeys(t)).items, [authVersion]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [label, setLabel] = useState('');
@@ -219,48 +233,55 @@ function Passkeys() {
         Sign in with your face, your fingerprint or your screen lock. There is nothing to remember
         and nothing a fake sign-in page could take.
       </p>
-      <ul className="list">
-        {(data ?? []).map((k) => (
-          <li key={k.id}>
-            <span>
-              <strong>{k.label ?? 'A passkey'}</strong>
-              <span className="muted">
-                Added {new Date(k.created_at).toLocaleDateString()}
-                {k.last_used_at
-                  ? ` · last used ${new Date(k.last_used_at).toLocaleDateString()}`
-                  : ' · not used yet'}
-                {k.backed_up ? ' · synced to your other devices' : ''}
-              </span>
-            </span>
-            <Button kind="quiet" onClick={() => void remove(k.id)}>
-              Remove
-            </Button>
-          </li>
-        ))}
-        {data?.length === 0 && <li className="muted">None yet.</li>}
-      </ul>
-      <ErrorNote message={error} />
-      {!passkeys.supported() ? (
-        <p className="status status-warn">This browser cannot make passkeys.</p>
-      ) : !passkeys.secureEnough() ? (
-        <p className="status status-warn">
-          Passkeys need a secure connection. The vault is reachable at an address the browser does
-          not trust yet — the README explains how to give it one.
-        </p>
+      {/* Not reached: said, never "None yet" as if there were none. */}
+      {data === null && loadError ? (
+        <LoadFailed message={loadError} what="passkeys" onRetry={() => void reload()} />
       ) : (
-        <form onSubmit={(e) => void add(e)} className="stack">
-          <Field
-            id="passkey-label"
-            label="What to call this device"
-            value={label}
-            onChange={setLabel}
-            required={false}
-            hint="So you can tell them apart later."
-          />
-          <Button type="submit" disabled={busy}>
-            {busy ? 'Waiting for your device…' : 'Add a passkey on this device'}
-          </Button>
-        </form>
+        <>
+          <ul className="list">
+            {(data ?? []).map((k) => (
+              <li key={k.id}>
+                <span>
+                  <strong>{k.label ?? 'A passkey'}</strong>
+                  <span className="muted">
+                    Added {new Date(k.created_at).toLocaleDateString()}
+                    {k.last_used_at
+                      ? ` · last used ${new Date(k.last_used_at).toLocaleDateString()}`
+                      : ' · not used yet'}
+                    {k.backed_up ? ' · synced to your other devices' : ''}
+                  </span>
+                </span>
+                <Button kind="quiet" onClick={() => void remove(k.id)}>
+                  Remove
+                </Button>
+              </li>
+            ))}
+            {data?.length === 0 && <li className="muted">None yet.</li>}
+          </ul>
+          <ErrorNote message={error} />
+          {!passkeys.supported() ? (
+            <p className="status status-warn">This browser cannot make passkeys.</p>
+          ) : !passkeys.secureEnough() ? (
+            <p className="status status-warn">
+              Passkeys need a secure connection. The vault is reachable at an address the browser
+              does not trust yet — the README explains how to give it one.
+            </p>
+          ) : (
+            <form onSubmit={(e) => void add(e)} className="stack">
+              <Field
+                id="passkey-label"
+                label="What to call this device"
+                value={label}
+                onChange={setLabel}
+                required={false}
+                hint="So you can tell them apart later."
+              />
+              <Button type="submit" disabled={busy}>
+                {busy ? 'Waiting for your device…' : 'Add a passkey on this device'}
+              </Button>
+            </form>
+          )}
+        </>
       )}
     </section>
   );
@@ -274,7 +295,7 @@ function TwoStep() {
   useEffect(() => {
     if (hash === '#two-step') document.getElementById('two-step')?.scrollIntoView?.();
   }, [hash]);
-  const { data: me, reload } = useLoad(async (t) => api.me(t), [authVersion]);
+  const { data: me, error: meError, reload } = useLoad(async (t) => api.me(t), [authVersion]);
   const [enrol, setEnrol] = useState<{ secret: string; otpauth_url: string; qr: string } | null>(
     null,
   );
@@ -314,7 +335,14 @@ function TwoStep() {
       <h2 id="twostep-h" style={{ fontSize: 18 }}>
         Two-step sign-in
       </h2>
-      {me?.totp_enabled ? (
+      {/* Not known yet, or not reached: never "Set up" as if it were off. */}
+      {me === null ? (
+        meError ? (
+          <LoadFailed message={meError} what="two-step sign-in" onRetry={() => void reload()} />
+        ) : (
+          <p className="muted">Loading…</p>
+        )
+      ) : me.totp_enabled ? (
         <p className="status status-ok">
           On. Signing in asks for a code from your authenticator app.
         </p>
@@ -342,7 +370,7 @@ function TwoStep() {
         </form>
       ) : (
         <>
-          {me?.totp_required && (
+          {me.totp_required && (
             <p className="status status-warn">Owners must switch this on. It takes a minute.</p>
           )}
           <p className="muted">
@@ -362,7 +390,11 @@ function TwoStep() {
 /** STO-07: one button, one ZIP, no lock-in. */
 function ExportSection() {
   const { guarded, authVersion } = useApp();
-  const { data, reload } = useLoad(async (t) => (await api.exports(t)).items, [authVersion]);
+  const {
+    data,
+    error: loadError,
+    reload,
+  } = useLoad(async (t) => (await api.exports(t)).items, [authVersion]);
   const [error, setError] = useState<string | null>(null);
   const pending = (data ?? []).some((e) => e.state === 'queued' || e.state === 'running');
 
@@ -407,30 +439,36 @@ function ExportSection() {
         all, and it doubles as your disaster plan.
       </p>
       <ErrorNote message={error} />
-      <Button kind="quiet" onClick={() => void start()} disabled={pending}>
-        {pending ? 'Preparing…' : 'Make an export'}
-      </Button>
-      <ul className="list">
-        {(data ?? []).slice(0, 3).map((e) => (
-          <li key={e.id}>
-            <span>
-              <strong>{new Date(e.created_at).toLocaleString()}</strong>
-              <span className="muted">
-                {e.state === 'done'
-                  ? `${e.document_count} document${e.document_count === 1 ? '' : 's'} · ${((e.byte_size ?? 0) / 1024 / 1024).toFixed(1)} MB`
-                  : e.state === 'failed'
-                    ? `Failed: ${e.error ?? 'unknown'}`
-                    : 'Preparing…'}
-              </span>
-            </span>
-            {e.state === 'done' && (
-              <Button kind="quiet" onClick={() => void download(e)}>
-                Download
-              </Button>
-            )}
-          </li>
-        ))}
-      </ul>
+      {data === null && loadError ? (
+        <LoadFailed message={loadError} what="your exports" onRetry={() => void reload()} />
+      ) : (
+        <>
+          <Button kind="quiet" onClick={() => void start()} disabled={pending}>
+            {pending ? 'Preparing…' : 'Make an export'}
+          </Button>
+          <ul className="list">
+            {(data ?? []).slice(0, 3).map((e) => (
+              <li key={e.id}>
+                <span>
+                  <strong>{new Date(e.created_at).toLocaleString()}</strong>
+                  <span className="muted">
+                    {e.state === 'done'
+                      ? `${e.document_count} document${e.document_count === 1 ? '' : 's'} · ${((e.byte_size ?? 0) / 1024 / 1024).toFixed(1)} MB`
+                      : e.state === 'failed'
+                        ? `Failed: ${e.error ?? 'unknown'}`
+                        : 'Preparing…'}
+                  </span>
+                </span>
+                {e.state === 'done' && (
+                  <Button kind="quiet" onClick={() => void download(e)}>
+                    Download
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </section>
   );
 }

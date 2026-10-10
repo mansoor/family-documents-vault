@@ -308,6 +308,116 @@ describe('Needs attention across the width (the owner’s report)', () => {
   });
 });
 
+describe('Needs attention with nothing to do (the owner: “I don’t see that change”)', () => {
+  const calm = 'Everything is fine. Nothing needs your attention.';
+  const r2 = (over: Record<string, unknown> = {}) =>
+    reminder({
+      id: 'r-2',
+      document_id: 'doc-3',
+      document_title: 'Aisha’s passport',
+      status: 'scheduled',
+      fire_at: '2026-11-20',
+      label: 'In 40 days',
+      about: 'Expiry date: 29 Oct 2026, in 20 days',
+      ...over,
+    });
+  const fine = (d: ReturnType<typeof doc>) => ({
+    ...d,
+    status: { value: 'valid', label: 'Valid' },
+  });
+  const quiet = (reminders: Array<Record<string, unknown>>) => {
+    const h = household({ reminders });
+    return { ...h, documents: (h.documents ?? []).map((d) => fine(d as ReturnType<typeof doc>)) };
+  };
+
+  it.each([WIDE, 1024, MID])(
+    'at %i, nothing now and nothing coming up: a calm panel across the width, then Coming up says so; the questions keep their place',
+    async (px) => {
+      atWidth(px);
+      open('/reminders', quiet([]));
+      const said = await screen.findByText(calm);
+      expect(said).toHaveAttribute('role', 'status');
+      // In the tables' frame, not a short line in a narrow column.
+      const panel = said.closest('.tbl-wrap') as HTMLElement;
+      expect(panel).not.toBeNull();
+      expect(panel).toHaveClass('att-calm');
+      expect(widthOf(main())).toBe('none');
+      const upcoming = screen.getByRole('region', { name: 'Coming up' });
+      expect(upcoming).toHaveTextContent('Nothing coming up in the next 90 days.');
+      expect(screen.queryByRole('table')).toBeNull();
+      // Then the household questions, where they were: last.
+      const questions = screen.getByRole('heading', { name: 'We noticed something missing' });
+      expect(
+        panel.compareDocumentPosition(upcoming) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(
+        upcoming.compareDocumentPosition(questions) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      await expectAccessible();
+    },
+  );
+
+  it('nothing now, something coming up: the calm panel, what is next, and its table', async () => {
+    atWidth(WIDE);
+    open(
+      '/reminders',
+      quiet([
+        r2(),
+        r2({
+          id: 'r-3',
+          document_id: 'doc-1',
+          document_title: 'Sara’s passport',
+          status: 'snoozed',
+          fire_at: '2026-10-01',
+          snoozed_until: '2026-11-03',
+        }),
+      ]),
+    );
+    expect(await screen.findByText(calm)).toBeVisible();
+    const upcoming = screen.getByRole('region', { name: 'Coming up' });
+    // The soonest by when it is next heard of: a snooze's day, not its first.
+    expect(
+      within(upcoming).getByText('The next reminder is on 3 Nov, for Sara’s passport.'),
+    ).toBeVisible();
+    expect(within(upcoming).getByRole('table', { name: 'Coming up' })).toBeVisible();
+    expect(screen.queryByRole('table', { name: 'Needs attention now' })).toBeNull();
+    expect(screen.queryByText(/Nothing coming up/)).toBeNull();
+    await expectAccessible();
+  });
+
+  it('something now, nothing coming up: the table, then Coming up says there is nothing', async () => {
+    atWidth(WIDE);
+    const h = household();
+    open('/reminders', { ...h, reminders: (h.reminders ?? []).filter((r) => r.id === 'r-1') });
+    expect(await screen.findByRole('table', { name: 'Needs attention now' })).toBeVisible();
+    expect(screen.queryByText(calm)).toBeNull();
+    expect(screen.getByRole('region', { name: 'Coming up' })).toHaveTextContent(
+      'Nothing coming up in the next 90 days.',
+    );
+    expect(screen.queryByText(/The next reminder/)).toBeNull();
+    await expectAccessible();
+  });
+
+  it('both: the table now, and Coming up says what is next above its own', async () => {
+    atWidth(WIDE);
+    open('/reminders', household());
+    expect(await screen.findByRole('table', { name: 'Needs attention now' })).toBeVisible();
+    expect(screen.getByText('The next reminder is on 20 Nov, for Aisha’s passport.')).toBeVisible();
+  });
+
+  it('at 320, as it was: the calm line on its own, no panel, nothing said of what is coming', async () => {
+    atWidth(PHONE);
+    open('/reminders', quiet([]));
+    const said = await screen.findByText(calm);
+    expect(said.tagName).toBe('P');
+    expect(said).toHaveClass('attention', 'attention-calm');
+    expect(said.closest('.tbl-wrap')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Coming up' })).toBeNull();
+    expect(screen.queryByText(/Nothing coming up/)).toBeNull();
+    await expectAccessible();
+  });
+});
+
 // ------------------------------------------------------------------ Home
 
 describe('the bar on top’s Add stays on one line (it wrapped at 1024 px)', () => {
@@ -449,5 +559,199 @@ describe('every list and table uses the width; forms keep a readable one (the sw
       widthOf(screen.getByLabelText('Search everything').closest('.field') as HTMLElement),
     ).toBe('720px');
     expect(widthOf(screen.getByLabelText('Filters'))).toBe('720px');
+  });
+});
+
+// ------------------------------------------- Sharing and After a restore
+
+/** A link outside the family, as GET /shares gives it. */
+const link = (over: Record<string, unknown> = {}) => ({
+  id: 'sh-1',
+  document_id: 'doc-1',
+  document_title: 'Sara’s passport',
+  recipient_label: 'the visa agent',
+  created_by_name: ME.display_name,
+  created_at: '2026-10-01T09:00:00Z',
+  expires_at: new Date(Date.now() + 9 * 864e5).toISOString(),
+  has_pin: false,
+  open_count: 1,
+  last_opened_at: null,
+  state: 'active',
+  summary: 'Shared with the visa agent, opened once. Stops working on 18 October at 17:00.',
+  ...over,
+});
+const ENDED = link({
+  id: 'sh-2',
+  document_title: 'Council tax bill',
+  recipient_label: null,
+  state: 'expired',
+  summary: 'Shared by link, not opened. Expired on 1 October.',
+});
+const PAUSED_REQUEST = {
+  id: 'req-a',
+  title: 'Tax papers for 2025',
+  message: null,
+  items: [{ id: 'i1', label: 'W-2' }],
+  recipient_label: 'Jane, accountant',
+  recipient_email: null,
+  requested_by_name: ME.display_name,
+  mine: true,
+  created_at: '2026-09-30T10:00:00Z',
+  expires_at: new Date(Date.now() + 10 * 864e5).toISOString(),
+  protection: ['password'],
+  max_visits: 3,
+  visits_used: 1,
+  max_files: 10,
+  files_used: 2,
+  max_total_bytes: 200 * 1024 * 1024,
+  bytes_used: 2048,
+  accept_types: 'standard',
+  review_by: 'me',
+  suggested_member_id: null,
+  suggested_type_key: null,
+  close_after_submit: false,
+  state: 'paused',
+  paused_reason: 'restored',
+  closed_reason: null,
+  files_received: 2,
+};
+const headsOf = (table: HTMLElement) =>
+  within(table)
+    .getAllByRole('columnheader')
+    .map((h) => h.textContent);
+
+describe('Sharing and After a restore are tables from 768 px (the prototype’s)', () => {
+  it.each([WIDE, MID])(
+    'Sharing at %i: the links and their details, each taken back from its row; the ended a plain table',
+    async (px) => {
+      atWidth(px);
+      open('/sharing', household({ shares: [link(), ENDED] }));
+      const live = await screen.findByRole('grid', { name: 'Links that work now' });
+      expect(headsOf(live)).toEqual([
+        'Link to',
+        'For',
+        'Where it stands',
+        'Made by',
+        'Take it back',
+      ]);
+      const row = within(live).getAllByRole('row')[1] as HTMLElement;
+      expect(row).toHaveTextContent('“Sara’s passport”');
+      expect(row).toHaveTextContent('the visa agent');
+      expect(row).toHaveTextContent('Stops working on 18 October at 17:00.');
+      expect(row).toHaveTextContent(ME.display_name);
+      // R2's grid: one stop for Tab.
+      await waitFor(() => expect(live.querySelectorAll('[tabindex="0"]')).toHaveLength(1));
+      const ended = screen.getByRole('table', { name: 'Links that no longer work' });
+      expect(headsOf(ended)).toEqual(['Link to', 'For', 'Where it stands', 'Made by']);
+      expect(within(ended).queryByRole('button')).toBeNull();
+      // A plain table: no stop for Tab of its own (the review round).
+      expect(ended.querySelectorAll('[tabindex]')).toHaveLength(0);
+      expect(ended).toHaveTextContent('Expired on 1 October.');
+      await expectAccessible();
+      // Taken back as before: asked first.
+      fireEvent.click(
+        within(row).getByRole('button', {
+          name: 'Take back the link to “Sara’s passport”, shared with the visa agent',
+        }),
+      );
+      expect(
+        await screen.findByRole('alertdialog', { name: 'Take this link back?' }),
+      ).toBeVisible();
+    },
+  );
+
+  it('Sharing at 320: the lists, as before', async () => {
+    atWidth(PHONE);
+    open('/sharing', household({ shares: [link(), ENDED] }));
+    expect(await screen.findByRole('list', { name: 'Links that no longer work' })).toBeVisible();
+    expect(screen.getByRole('list', { name: 'Links that work now' })).toHaveTextContent(
+      'Sara’s passport',
+    );
+    expect(screen.queryByRole('grid')).toBeNull();
+    expect(screen.queryByRole('table')).toBeNull();
+  });
+
+  const restored = () =>
+    household({
+      shares: [link({ state: 'paused', paused_reason: 'restored' })],
+      uploadRequests: [PAUSED_REQUEST],
+      accounts: {
+        'm-0': {
+          member_id: 'm-0',
+          role: 'teen',
+          suspension: {
+            reason: 'restored',
+            since: '2026-10-01T09:00:00Z',
+            until: null,
+            note: null,
+            by: null,
+          },
+        },
+      } as never,
+    });
+
+  it.each([WIDE, MID])(
+    'After a restore at %i: what was paused, as tables, each row with what can be done about it',
+    async (px) => {
+      atWidth(px);
+      const state = open('/after-restore', restored());
+      const signIns = await screen.findByRole('grid', { name: 'Paused sign-ins' });
+      expect(headsOf(signIns)).toEqual(['Name', 'Role', 'What they can see', 'Turn back on']);
+      expect(within(signIns).getByRole('button', { name: /Turn back on .*sign-in/ })).toBeVisible();
+      const links = screen.getByRole('grid', { name: 'Links waiting for you' });
+      expect(headsOf(links)).toEqual([
+        'Link to',
+        'For',
+        'Made by',
+        'Would work until',
+        'Turn back on',
+        'Take it back',
+      ]);
+      expect(links).toHaveTextContent('Sara’s passport');
+      const requests = screen.getByRole('grid', { name: 'Paused requests' });
+      expect(requests).toHaveTextContent('“Tax papers for 2025”');
+      expect(requests).toHaveTextContent('Paused after a restore');
+      await expectAccessible();
+      // Turned back on from its row, as from the list.
+      fireEvent.click(
+        within(links).getByRole('button', { name: 'Turn back on the link to “Sara’s passport”' }),
+      );
+      await waitFor(() =>
+        expect(state.calls.some((c) => c.url === '/api/v1/shares/sh-1/resume')).toBe(true),
+      );
+    },
+  );
+
+  it('After a restore at 320: the lists, as before', async () => {
+    atWidth(PHONE);
+    open('/after-restore', restored());
+    expect(await screen.findByRole('list', { name: 'Paused sign-ins' })).toBeVisible();
+    expect(screen.getByRole('list', { name: 'Paused requests' })).toBeVisible();
+    expect(screen.queryByRole('grid')).toBeNull();
+  });
+});
+
+// ------------------------------------------------ what the screenshots found
+
+describe('what the screenshots of the small fixes found', () => {
+  it('a panel that could not load has its Try again as wide as its words, not the panel', async () => {
+    atWidth(WIDE);
+    open('/settings/account', { ...household(), offline: true });
+    const again = await screen.findByRole('button', { name: 'Try again: passkeys' });
+    expect(getComputedStyle(again).alignSelf).toBe('flex-start');
+  });
+
+  it('a screen not theirs says its two lines together, not a gap apart', async () => {
+    atWidth(WIDE);
+    open('/people/outside', household(), 'adult');
+    const said = await screen.findByText('This isn’t something you can open.');
+    expect(getComputedStyle(said).marginBottom).toBe('0px');
+    expect(getComputedStyle(said).marginTop).toBe('0px');
+  });
+
+  it('a renewal’s wait is said at the foot of the page, never over the search box at its top', () => {
+    const rule = /\.renewal-wait\s*\{([^}]*)\}/.exec(CSS)?.[1] ?? '';
+    expect(rule).toMatch(/bottom:/);
+    expect(rule).not.toMatch(/\btop:/);
   });
 });

@@ -38,6 +38,7 @@ import {
 import { SettingsLayout } from './settings-sections.js';
 import { SetupScreen } from './screens/Setup.js';
 import { FocusOnMove } from './focus-on-move.js';
+import { Only, SCREEN_RULES } from './not-for.js';
 import { PageTitle } from './page-title.js';
 import { AppShell } from './shell.js';
 import { Logo } from './ui.js';
@@ -172,7 +173,8 @@ export function App() {
                 </Gate>
               }
             />
-            {/* Every signed-in screen, inside the shell (Phase 6, R1). */}
+            {/* Every signed-in screen, inside the shell (Phase 6, R1). A screen a
+                role cannot use, typed into the address bar, says so (`Only`). */}
             <Route
               element={
                 <Gate need="signed-in">
@@ -181,20 +183,50 @@ export function App() {
               }
             >
               <Route path="/" element={<HomeScreen />} />
-              <Route path="/add" element={<AddScreen />} />
-              <Route path="/add/many" element={<AddManyScreen />} />
+              <Route
+                path="/add"
+                element={
+                  <Only rule={SCREEN_RULES.add}>
+                    <AddScreen />
+                  </Only>
+                }
+              />
+              <Route
+                path="/add/many"
+                element={
+                  <Only rule={SCREEN_RULES.addMany}>
+                    <AddManyScreen />
+                  </Only>
+                }
+              />
               {/* Documents (R2): the table from 768 px, today's rows on a phone. */}
               <Route path="/documents" element={<DocumentsScreen />} />
               <Route path="/documents/:id" element={<DocumentScreen />} />
               <Route path="/documents/:id/read" element={<ReaderScreen />} />
               <Route path="/documents/:id/confirm" element={<ConfirmScreen />} />
               <Route path="/search" element={<SearchScreen />} />
+              {/* Open to a viewer too: the role rules let a viewer see reminders,
+                  and Home's Needs attention links a viewer here. */}
               <Route path="/reminders" element={<RemindersScreen />} />
               {/* The household's questions on their own, from Reminders (5.35). */}
               <Route path="/household-questions" element={<HouseholdQuestionsScreen />} />
-              <Route path="/people" element={<PeopleScreen />} />
+              <Route
+                path="/people"
+                element={
+                  <Only rule={SCREEN_RULES.people}>
+                    <PeopleScreen />
+                  </Only>
+                }
+              />
               {/* Beside the family, for owners (5.34; under People since R1). */}
-              <Route path="/people/outside" element={<GuestsScreen />} />
+              <Route
+                path="/people/outside"
+                element={
+                  <Only rule={SCREEN_RULES.outside}>
+                    <GuestsScreen />
+                  </Only>
+                }
+              />
               {/* A person's profile, from People (and old bookmarks); their
                 documents, from Home (A64). */}
               <Route path="/people/:id" element={<ProfileScreen />} />
@@ -203,21 +235,87 @@ export function App() {
               <Route path="/collections/:id" element={<CollectionScreen />} />
               {/* What was sent through a request, looked at before it is filed
                 (5.23): the Inbox since R1. */}
-              <Route path="/inbox" element={<InboxScreen />} />
+              <Route
+                path="/inbox"
+                element={
+                  <Only rule={SCREEN_RULES.inbox}>
+                    <InboxScreen />
+                  </Only>
+                }
+              />
               {/* Phase 6, I1: the files sent to you beside your uploads, a
                 batch, and one of its files' card. */}
-              <Route path="/inbox/sent" element={<SentScreen />} />
-              <Route path="/inbox/batches/:id" element={<BatchScreen />} />
-              <Route path="/inbox/batches/:id/items/:itemId" element={<BatchItemScreen />} />
-              <Route path="/inbox/:id" element={<IncomingFileScreen />} />
-              <Route path="/sharing" element={<SharingScreen />} />
+              <Route
+                path="/inbox/sent"
+                element={
+                  <Only rule={SCREEN_RULES.sent}>
+                    <SentScreen />
+                  </Only>
+                }
+              />
+              <Route
+                path="/inbox/batches/:id"
+                element={
+                  <Only rule={SCREEN_RULES.batches}>
+                    <BatchScreen />
+                  </Only>
+                }
+              />
+              <Route
+                path="/inbox/batches/:id/items/:itemId"
+                element={
+                  <Only rule={SCREEN_RULES.batches}>
+                    <BatchItemScreen />
+                  </Only>
+                }
+              />
+              <Route
+                path="/inbox/:id"
+                element={
+                  <Only rule={SCREEN_RULES.sent}>
+                    <IncomingFileScreen />
+                  </Only>
+                }
+              />
+              <Route
+                path="/sharing"
+                element={
+                  <Only rule={SCREEN_RULES.sharing}>
+                    <SharingScreen />
+                  </Only>
+                }
+              />
               {/* Ask for documents (5.22): from Sharing, and from a person's
                 page (?person=<their id>, a hint for whoever reviews). */}
-              <Route path="/sharing/ask" element={<AskForDocumentsScreen />} />
-              <Route path="/activity" element={<ActivityScreen />} />
+              <Route
+                path="/sharing/ask"
+                element={
+                  <Only rule={SCREEN_RULES.ask}>
+                    <AskForDocumentsScreen />
+                  </Only>
+                }
+              />
+              <Route
+                path="/activity"
+                element={
+                  <Only rule={SCREEN_RULES.activity}>
+                    <ActivityScreen />
+                  </Only>
+                }
+              />
+              {/* Open to a viewer too: a viewer sees what they filed that is in
+                  the Trash, and Home sends them here when an owner asks to remove
+                  it for good (5.24). */}
               <Route path="/trash" element={<TrashScreen />} />
               {/* From Home's banner, while a restore has paused something. */}
-              <Route path="/after-restore" element={<AfterRestoreScreen />} />
+              <Route
+                path="/after-restore"
+                element={
+                  <Only rule={SCREEN_RULES.afterRestore}>
+                    <AfterRestoreScreen />
+                  </Only>
+                }
+              />
               {/* Settings holds settings only (R1), in sections: from 768 px
                 the sub-menu beside each; on a phone, /settings lists them.
                 The pages it had keep their addresses, under their section. */}
@@ -230,10 +328,38 @@ export function App() {
                 <Route path="kinds" element={<KindsScreen />} />
                 <Route path="kinds/new" element={<KindScreen />} />
                 <Route path="kinds/:key" element={<KindScreen />} />
-                <Route path="data" element={<DataScreen />} />
-                <Route path="owners" element={<OwnersScreen />} />
-                <Route path="storage" element={<StorageScreen />} />
-                <Route path="email" element={<EmailScreen />} />
+                <Route
+                  path="data"
+                  element={
+                    <Only rule={SCREEN_RULES.data}>
+                      <DataScreen />
+                    </Only>
+                  }
+                />
+                <Route
+                  path="owners"
+                  element={
+                    <Only rule={SCREEN_RULES.owners}>
+                      <OwnersScreen />
+                    </Only>
+                  }
+                />
+                <Route
+                  path="storage"
+                  element={
+                    <Only rule={SCREEN_RULES.storage}>
+                      <StorageScreen />
+                    </Only>
+                  }
+                />
+                <Route
+                  path="email"
+                  element={
+                    <Only rule={SCREEN_RULES.email}>
+                      <EmailScreen />
+                    </Only>
+                  }
+                />
               </Route>
             </Route>
             {MOVED.map(([from, to]) => (

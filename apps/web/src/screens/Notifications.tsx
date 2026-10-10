@@ -4,7 +4,7 @@ import { Link } from 'react-router';
 import { api, type SmtpProvider, type SmtpView } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import * as push from '../push.js';
-import { Button, ErrorNote, Field, TopBar } from '../ui.js';
+import { Button, ErrorNote, Field, LoadFailed, TopBar } from '../ui.js';
 import { SettingsPage } from './Settings.js';
 
 /**
@@ -17,15 +17,24 @@ export function NotificationsScreen() {
   const [state, setState] = useState<push.PushState | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { data: prefs, setData: setPrefs } = useLoad(
-    async (t) => api.preferences(t),
-    [authVersion],
-  );
+  const {
+    data: prefs,
+    error: prefsError,
+    setData: setPrefs,
+    reload: reloadPrefs,
+  } = useLoad(async (t) => api.preferences(t), [authVersion]);
   const isOwner = session.info?.role === 'owner';
 
+  // Not reached: said, with Try again, rather than an empty panel.
+  const [stateError, setStateError] = useState<string | null>(null);
   const refresh = useCallback(async () => {
-    const s = await withToken((t) => push.currentState(t));
-    if (s) setState(s);
+    try {
+      const s = await withToken((t) => push.currentState(t));
+      setStateError(null);
+      if (s) setState(s);
+    } catch (err) {
+      setStateError(describeError(err));
+    }
   }, [withToken]);
 
   useEffect(() => {
@@ -63,6 +72,13 @@ export function NotificationsScreen() {
         <h2 id="push-h" style={{ fontSize: 18 }}>
           On this device
         </h2>
+        {state === null && stateError && (
+          <LoadFailed
+            message={stateError}
+            what="notifications on this device"
+            onRetry={() => void refresh()}
+          />
+        )}
         {state?.kind === 'on' && (
           <>
             <p className="status status-ok">Notifications are on for this device.</p>
@@ -92,25 +108,40 @@ export function NotificationsScreen() {
         <h2 id="prefs-h" style={{ fontSize: 18 }}>
           What you want
         </h2>
-        <Check
-          id="p-push"
-          label="The day's reminders, on my devices"
-          checked={prefs?.daily_push ?? true}
-          onChange={(v) => void setPref({ daily_push: v })}
-        />
-        <Check
-          id="p-daily"
-          label="The day's reminders, by email"
-          hint="Off by default: the app already tells you."
-          checked={prefs?.daily_email ?? false}
-          onChange={(v) => void setPref({ daily_email: v })}
-        />
-        <Check
-          id="p-weekly"
-          label="A summary every Sunday evening, by email"
-          checked={prefs?.weekly_email ?? true}
-          onChange={(v) => void setPref({ weekly_email: v })}
-        />
+        {/* Not reached, or not known yet: never the defaults, ticked as if chosen. */}
+        {prefs === null ? (
+          prefsError ? (
+            <LoadFailed
+              message={prefsError}
+              what="what you want"
+              onRetry={() => void reloadPrefs()}
+            />
+          ) : (
+            <p className="muted">Loading…</p>
+          )
+        ) : (
+          <>
+            <Check
+              id="p-push"
+              label="The day's reminders, on my devices"
+              checked={prefs.daily_push}
+              onChange={(v) => void setPref({ daily_push: v })}
+            />
+            <Check
+              id="p-daily"
+              label="The day's reminders, by email"
+              hint="Off by default: the app already tells you."
+              checked={prefs.daily_email}
+              onChange={(v) => void setPref({ daily_email: v })}
+            />
+            <Check
+              id="p-weekly"
+              label="A summary every Sunday evening, by email"
+              checked={prefs.weekly_email}
+              onChange={(v) => void setPref({ weekly_email: v })}
+            />
+          </>
+        )}
         {isOwner ? (
           <p className="muted">
             Email needs the mail server set up:{' '}
@@ -174,7 +205,11 @@ function Check(props: {
 /** The SMTP wizard: pick a provider, paste two fields, press Test. */
 function SmtpSection() {
   const { withToken, authVersion } = useApp();
-  const { data, reload } = useLoad(
+  const {
+    data,
+    error: loadError,
+    reload,
+  } = useLoad(
     async (t) => {
       const [smtp, providers] = await Promise.all([api.smtp(t), api.smtpProviders(t)]);
       return { smtp, providers };
@@ -246,6 +281,14 @@ function SmtpSection() {
     }
   };
 
+  // Not reached: said, never an empty form as if no mail server were set up.
+  if (!data && loadError) {
+    return (
+      <section className="card stack" aria-label="The mail server">
+        <LoadFailed message={loadError} what="the mail server" onRetry={() => void reload()} />
+      </section>
+    );
+  }
   return (
     <section className="card stack" aria-label="The mail server">
       {smtp?.configured && !touched ? (
@@ -358,9 +401,28 @@ function deviceName(d: DeviceRow): string {
  */
 function Devices() {
   const { withToken, authVersion } = useApp();
-  const { data, reload } = useLoad(async (t) => (await api.devices(t)).items, [authVersion]);
+  const {
+    data,
+    error: loadError,
+    reload,
+  } = useLoad(async (t) => (await api.devices(t)).items, [authVersion]);
   const [sent, setSent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Not reached: said, rather than nothing, as if no device heard from the vault.
+  if (!data && loadError) {
+    return (
+      <section className="card stack" aria-labelledby="devices-h">
+        <h2 id="devices-h" style={{ fontSize: 18 }}>
+          Where you hear from the vault
+        </h2>
+        <LoadFailed
+          message={loadError}
+          what="where you hear from the vault"
+          onRetry={() => void reload()}
+        />
+      </section>
+    );
+  }
   if (!data || data.length === 0) return null;
   const test = async (id: string) => {
     setError(null);

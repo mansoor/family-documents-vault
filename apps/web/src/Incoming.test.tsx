@@ -329,8 +329,9 @@ describe('incoming on the web (5.23)', () => {
     { timeout: 15_000 },
     async () => {
       const state = at('/inbox', {}, 'teen');
-      const main = await screenCalled('Files sent to you');
-      expect(await within(main).findByText('Nothing is waiting for you.')).toBeInTheDocument();
+      // Not theirs to open (the small fixes): the screen's name, and who it is for.
+      const main = await screenCalled('Inbox');
+      expect(within(main).getByText('This isn’t something you can open.')).toBeInTheDocument();
       expect(state.calls.some((c) => c.url.startsWith('/api/v1/incoming'))).toBe(false);
     },
   );

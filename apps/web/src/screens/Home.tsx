@@ -15,7 +15,7 @@ import { Link, useNavigate } from 'react-router';
 import { api, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { collectionsOffered, CollectionsOnHome } from '../collections.js';
-import { DocActions, type RowCollection } from '../DocActions.js';
+import { DocActions, useTrashedNote, type RowCollection } from '../DocActions.js';
 import { accessEndWords } from '../guests.js';
 import { IdentityNotice } from '../identity.js';
 import { PersonAvatar } from '../person-avatar.js';
@@ -225,23 +225,29 @@ export function HomeScreen() {
     )
   );
 
+  // A recent row moved to the Trash from its ⋯: said above the rows.
+  const trashed = useTrashedNote();
   const recent = part({
     id: 'recent-h',
     title: 'Recently added',
     to: { href: '/documents', label: 'All documents' },
     className: 'dash-recent',
     children: (
-      <ul className="list">
-        {(data?.recent ?? []).map((d) => (
-          <DocRow
-            key={d.id}
-            doc={d}
-            types={data?.types}
-            onOpen={() => void navigate(`/documents/${d.id}`)}
-            onChanged={changed}
-          />
-        ))}
-      </ul>
+      <>
+        {trashed.note}
+        <ul className="list">
+          {(data?.recent ?? []).map((d) => (
+            <DocRow
+              key={d.id}
+              doc={d}
+              types={data?.types}
+              onOpen={() => void navigate(`/documents/${d.id}`)}
+              onChanged={changed}
+              onTrashed={trashed.onTrashed}
+            />
+          ))}
+        </ul>
+      </>
     ),
   });
 
@@ -636,6 +642,7 @@ export function DocRow({
   hint,
   collection,
   pick,
+  onTrashed,
 }: {
   doc: DocumentView;
   /** The vault's types, for the type's short name; the category until they arrive. */
@@ -649,6 +656,8 @@ export function DocRow({
   collection?: RowCollection | undefined;
   /** Chosen in search's Select (5.15). */
   pick?: RowPick | undefined;
+  /** Its ⋯ moved it to the Trash: the list says so (`useTrashedNote`). */
+  onTrashed?: ((title: string) => void) | undefined;
 }) {
   const who =
     doc.visibility === 'adults' ? 'Adults only' : doc.visibility === 'private' ? 'Only me' : null;
@@ -672,6 +681,7 @@ export function DocRow({
         doc={doc}
         onChanged={onChanged}
         collection={collection}
+        onTrashed={onTrashed}
       />
     </li>
   );

@@ -191,7 +191,7 @@ function at(
   return state;
 }
 
-const queueTable = () => screen.findByRole('table', { name: /^Files in Scanned post/ });
+const queueTable = () => screen.findByRole('grid', { name: /^Files in Scanned post/ });
 const rowsOf = async () =>
   within(await queueTable())
     .getAllByRole('row')
@@ -244,9 +244,16 @@ describe('the review queue (I3)', () => {
 
   it('moves from file to file with the arrows, and j and k while single keys are on; one stop for Tab', async () => {
     at('/inbox/batches/batch-1');
-    await queueTable();
+    const table = await queueTable();
     const accept = (name: string) => screen.getByRole('link', { name: `Accept ${name}` });
-    expect(accept('passport.pdf')).toHaveAttribute('tabindex', '0');
+    // One stop for the whole table (R2's grid): the first file's name.
+    await waitFor(() =>
+      expect(within(table).getAllByRole('link', { name: "Mansoor's passport" })[0]).toHaveAttribute(
+        'tabindex',
+        '0',
+      ),
+    );
+    expect(accept('passport.pdf')).toHaveAttribute('tabindex', '-1');
     expect(accept('aisha.pdf')).toHaveAttribute('tabindex', '-1');
     accept('passport.pdf').focus();
     fireEvent.keyDown(accept('passport.pdf'), { key: 'ArrowDown' });
@@ -740,18 +747,21 @@ describe('the review round (I3)', () => {
     ];
     at('/inbox/batches/batch-1', rows, { removed: 0 });
     const table = await queueTable();
-    const stops = [...table.querySelectorAll<HTMLElement>('[tabindex="0"]')];
-    expect(stops.map((x) => x.textContent)).toEqual(['You can no longer see the document']);
-    stops[0]?.focus();
-    fireEvent.keyDown(stops[0] as HTMLElement, { key: 'ArrowDown' });
+    // Said, and its cell the grid's one stop: every cell takes the focus (R2).
+    const gone = within(table).getByText('You can no longer see the document');
+    expect(gone).toBeVisible();
     await waitFor(() =>
-      expect(screen.getByRole('link', { name: 'Accept passport.pdf' })).toHaveFocus(),
+      expect([...table.querySelectorAll<HTMLElement>('[tabindex="0"]')]).toHaveLength(1),
     );
-    fireEvent.keyDown(screen.getByRole('link', { name: 'Accept passport.pdf' }), {
-      key: 'ArrowDown',
-    });
+    const stop = table.querySelector<HTMLElement>('[tabindex="0"]') as HTMLElement;
+    expect(stop.closest('tr')).toHaveTextContent('gone.pdf');
+    stop.focus();
+    fireEvent.keyDown(stop, { key: 'ArrowDown' });
+    const name = within(table).getByRole('link', { name: "Mansoor's passport" });
+    await waitFor(() => expect(name).toHaveFocus());
+    fireEvent.keyDown(name, { key: 'ArrowDown' });
     await waitFor(() =>
-      expect(screen.getByRole('link', { name: 'Accept aisha.pdf' })).toHaveFocus(),
+      expect(within(table).getByRole('link', { name: "Aisha's passport" })).toHaveFocus(),
     );
   });
 
@@ -937,6 +947,60 @@ describe('the check’s findings (I3)', () => {
  * its card; its first page and its row's empty space open it too; Accept is
  * for Ready, and anything else is opened to be reviewed.
  */
+/**
+ * The queue's rows are R2's grid (R5's list), as the Documents table and
+ * the Trash are: one stop for Tab, the arrows between cells along a row and
+ * between rows, Home and End, and with Control the corners.
+ */
+describe('the review queue is R2’s grid', () => {
+  it('one stop for the table; the arrows, Home and End move between its cells, as in Documents and the Trash', async () => {
+    at('/inbox/batches/batch-1');
+    const table = await queueTable();
+    // The first file's name (another proposes the same title further down).
+    const name = within(table).getAllByRole('link', {
+      name: "Mansoor's passport",
+    })[0] as HTMLElement;
+    await waitFor(() =>
+      expect([...table.querySelectorAll('[tabindex="0"]')]).toEqual([name as Element]),
+    );
+    name.focus();
+    // Along the row: End to its last cell, Remove; Left to Accept, a cell of its own.
+    fireEvent.keyDown(name, { key: 'End' });
+    const remove = within(table).getByRole('button', { name: 'Remove passport.pdf' });
+    await waitFor(() => expect(remove).toHaveFocus());
+    expect(remove).toHaveAttribute('tabindex', '0');
+    expect(name).toHaveAttribute('tabindex', '-1');
+    fireEvent.keyDown(remove, { key: 'ArrowLeft' });
+    const accept = within(table).getByRole('link', { name: 'Accept passport.pdf' });
+    await waitFor(() => expect(accept).toHaveFocus());
+    // Home: the row's first cell, its first page — the cell itself takes the focus.
+    fireEvent.keyDown(accept, { key: 'Home' });
+    await waitFor(() => expect(document.activeElement?.tagName).toBe('TD'));
+    expect(document.activeElement?.closest('tr')).toHaveTextContent('passport.pdf');
+    // Up, to the head; Control and End, the last row's last cell.
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowUp' });
+    await waitFor(() => expect(document.activeElement?.tagName).toBe('TH'));
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'End', ctrlKey: true });
+    await waitFor(() =>
+      expect(document.activeElement?.closest('tr')).toBe(
+        within(table).getAllByRole('row').at(-1) as HTMLElement,
+      ),
+    );
+    // Still one stop for Tab: wherever the focus last was.
+    expect(table.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+    await expectAccessible();
+  });
+});
+
+describe('the review queue’s Remove has a cell of its own', () => {
+  it('wide enough for its button: the screenshots found it cut 4 px short at 96 px', async () => {
+    at('/inbox/batches/batch-1');
+    const table = await queueTable();
+    const cols = [...table.querySelectorAll('col')];
+    expect(parseInt(cols.at(-1)?.style.width ?? '0', 10)).toBeGreaterThanOrEqual(104);
+  });
+});
+
 describe('a file opens from its name (the owner’s report)', () => {
   it('a waiting file’s name is the link to its card, with the level and the run; Review for anything not Ready', async () => {
     at('/inbox/batches/batch-1?level=unrecognised');
@@ -947,10 +1011,9 @@ describe('a file opens from its name (the owner’s report)', () => {
     expect(review).toHaveTextContent(/^Review$/);
     expect(review).toHaveAttribute('href', name.getAttribute('href'));
     expect(within(table).queryByRole('link', { name: 'Accept note.pdf' })).toBeNull();
-    // One stop per row (I3): the name is in the row's stop, never one more.
-    expect(name).toHaveAttribute('tabindex', '0');
-    expect(review).toHaveAttribute('data-row-target');
-    expect(name).not.toHaveAttribute('data-row-target');
+    // One stop for the table (R2's grid): the first file's name; its Review a cell away.
+    await waitFor(() => expect(name).toHaveAttribute('tabindex', '0'));
+    expect(review).toHaveAttribute('tabindex', '-1');
     await expectAccessible();
     fireEvent.click(name);
     expect(await screen.findByRole('heading', { level: 1, name: 'note.pdf' })).toBeVisible();
@@ -972,11 +1035,14 @@ describe('a file opens from its name (the owner’s report)', () => {
       ['Review note.pdf', 'Review'],
       ['Review blank.pdf', 'Review'],
     ]);
-    // Only the first row can be reached with Tab: its name, Accept and Remove.
-    const stops = [...table.querySelectorAll<HTMLElement>('[tabindex="0"]')].map(
-      (x) => x.getAttribute('aria-label') ?? x.textContent,
+    // One stop for Tab in the whole table (R2's grid): the first file's name.
+    await waitFor(() =>
+      expect(
+        [...table.querySelectorAll<HTMLElement>('[tabindex="0"]')].map(
+          (x) => x.getAttribute('aria-label') ?? x.textContent,
+        ),
+      ).toEqual(["Mansoor's passport"]),
     );
-    expect(stops).toEqual(["Mansoor's passport", 'Accept passport.pdf', 'Remove passport.pdf']);
     // Done: an accepted file's name is not a way to a card.
     fireEvent.click(within(filters()).getByRole('button', { name: /^Done/ }));
     await waitFor(() => expect(window.location.search).toBe('?level=done'));

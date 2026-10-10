@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router';
 import { api, type ResetPreview } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { heldLinkToken, linkSpent, markLinkSpent } from '../link-token.js';
-import { Button, ErrorNote, Field, Logo } from '../ui.js';
+import { Button, ErrorNote, Field, LoadFailed, Logo } from '../ui.js';
 
 /**
  * Passwords, from the three places a person meets them.
@@ -19,7 +19,7 @@ export function ChangePassword() {
   const { guarded, authVersion } = useApp();
   // When a link an owner was handed for this sign-in was last used (5.29):
   // every change takes away each passkey and two-step sign-in added since.
-  const { data: me } = useLoad((t) => api.me(t), [authVersion]);
+  const { data: me, error: meError, reload } = useLoad((t) => api.me(t), [authVersion]);
   const since = me?.handover_since
     ? new Date(me.handover_since).toLocaleDateString('en-GB', {
         day: 'numeric',
@@ -61,6 +61,11 @@ export function ChangePassword() {
     }
   };
 
+  // Not reached: said, rather than a change that would not say what it
+  // takes away (5.29).
+  if (!open && me === null && meError) {
+    return <LoadFailed message={meError} what="your password" onRetry={() => void reload()} />;
+  }
   if (!open) {
     return (
       <div className="stack">

@@ -79,6 +79,7 @@ import {
   TrashIcon,
 } from '../ui.js';
 import { DocRow } from './Home.js';
+import { useTrashedNote } from '../DocActions.js';
 import { useSelect } from './SearchPeople.js';
 import { LinksChoiceDialog, linksAsk, linksChoice, type LinksAsk } from './Visibility.js';
 
@@ -1798,6 +1799,7 @@ function PhoneDocuments(props: {
   const { view, pages, known } = props;
   const navigate = useNavigate();
   const select = useSelect(props.who.collections);
+  const trashed = useTrashedNote();
   useBackToOpened(pages.items, (id) =>
     document.querySelector<HTMLElement>(
       `li[data-doc="${id}"] button.rowbtn, li[data-doc="${id}"] input.pick`,
@@ -1847,6 +1849,7 @@ function PhoneDocuments(props: {
       </p>
       <ErrorNote message={pages.error} />
       {(select.on || pages.items.length > 0) && select.bar}
+      {trashed.note}
       <ul className="list">
         {pages.items.length === 0 && !pages.loading && (
           <li className="muted">
@@ -1868,6 +1871,7 @@ function PhoneDocuments(props: {
               void navigate(`/documents/${d.id}`);
             }}
             onChanged={pages.reload}
+            onTrashed={trashed.onTrashed}
           />
         ))}
       </ul>
