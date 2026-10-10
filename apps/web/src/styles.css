@@ -4110,6 +4110,16 @@ a.item-name:focus-visible {
   margin: 0;
 }
 
+/* A screen this role can't use, typed into the address bar: its name, and
+   who it is for (the prototype's notFor). */
+.notfor {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+  max-width: 560px;
+}
+
 /* The toast: what was just done, and Undo while there is something to
    undo. Never on a timer (WCAG 2.2.1); the page leaves room under it, so
    nothing in focus is hidden behind it (WCAG 2.4.11). */
