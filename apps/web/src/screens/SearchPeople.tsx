@@ -56,7 +56,7 @@ import { addLink, DocRow, rowLine, RowMain, type RowPick } from './Home.js';
 const MOST_AT_ONCE = 200;
 import { PeopleTabs } from '../guests.js';
 import { useShellMode } from '../shell.js';
-import { None } from '../table-grid.js';
+import { None, OutcomeNote, useGrid, type Outcome } from '../table-grid.js';
 import { InvitePanel } from './Invite.js';
 import { OwnerChangeNotices } from './Roles.js';
 
@@ -867,13 +867,16 @@ export function RemindersScreen() {
   // doing now, then what is coming up. On a phone, the list as it was.
   const wide = useShellMode() !== 'phone';
 
-  const act = async (fn: (t: string) => Promise<unknown>) => {
+  /** Whether it was done: not when it failed (said), nor when the sign-in ended. */
+  const act = async (fn: (t: string) => Promise<unknown>): Promise<boolean> => {
     setError(null);
     try {
-      await withToken(fn);
+      const done = await withToken(fn);
       await reload();
+      return done !== null;
     } catch (err) {
       setError(describeError(err));
+      return false;
     }
   };
   /**
@@ -957,13 +960,14 @@ export function RemindersScreen() {
         hidden={data?.hidden ?? []}
         profileAnswered={data?.profileAnswered ?? true}
         act={act}
+        wide={wide}
       />
     </main>
   );
 }
 
 type Snoozes = (r: ReminderView) => Array<{ label: string; until: string }>;
-type Act = (fn: (t: string) => Promise<unknown>) => Promise<void>;
+type Act = (fn: (t: string) => Promise<unknown>) => Promise<boolean>;
 
 /** Needs attention on a phone: the list, as it was. */
 function AttentionList(props: {
@@ -1267,9 +1271,10 @@ function Missing(props: {
   hidden: SuggestionView[];
   /** Null for a viewer, who is not told about the family (5.3). */
   profileAnswered: boolean | null;
-  act: (fn: (t: string) => Promise<unknown>) => Promise<void>;
+  act: Act;
+  /** From 768 px: tables across the width, as the Trash's; on a phone, the list. */
+  wide: boolean;
 }) {
-  const [showHidden, setShowHidden] = useState(false);
   if (props.items.length === 0 && props.hidden.length === 0) {
     // Only an answered "no" is an invitation to answer; a viewer's null is not.
     // The questions, on their own, with any answers already given, and back
@@ -1300,6 +1305,29 @@ function Missing(props: {
       title="We noticed something missing"
       count={props.items.length}
     >
+      {props.wide ? (
+        <MissingTables items={props.items} hidden={props.hidden} act={props.act} />
+      ) : (
+        <MissingList items={props.items} hidden={props.hidden} act={props.act} />
+      )}
+    </CollapsibleSection>
+  );
+}
+
+/**
+ * Who may answer a suggestion — Not for us, Show it again — as the vault
+ * decides: the household's details are an adult's to change. Anybody who
+ * may add documents is offered Add it; a teen is told what is hidden, as
+ * the vault tells them, but not offered to change it.
+ */
+const mayAnswer = () => can(storedRole(), 'profile.edit');
+
+/** On a phone: the list, as it was. */
+function MissingList(props: { items: SuggestionView[]; hidden: SuggestionView[]; act: Act }) {
+  const [showHidden, setShowHidden] = useState(false);
+  const answer = mayAnswer();
+  return (
+    <>
       <ul className="list">
         {props.items.map((s) => (
           <li key={s.key} className="missing-row">
@@ -1310,12 +1338,14 @@ function Missing(props: {
                 <Link to={addLink(s)} className="btn btn-quiet">
                   Add it
                 </Link>
-                <Button
-                  kind="quiet"
-                  onClick={() => void props.act((t) => api.dismissSuggestion(t, s.key))}
-                >
-                  Not for us
-                </Button>
+                {answer && (
+                  <Button
+                    kind="quiet"
+                    onClick={() => void props.act((t) => api.dismissSuggestion(t, s.key))}
+                  >
+                    Not for us
+                  </Button>
+                )}
               </div>
             )}
           </li>
@@ -1327,12 +1357,14 @@ function Missing(props: {
             {props.hidden.map((s) => (
               <li key={s.key} className="missing-row">
                 <span className="muted">{s.title}</span>
-                <Button
-                  kind="quiet"
-                  onClick={() => void props.act((t) => api.restoreSuggestion(t, s.key))}
-                >
-                  Show it again
-                </Button>
+                {answer && (
+                  <Button
+                    kind="quiet"
+                    onClick={() => void props.act((t) => api.restoreSuggestion(t, s.key))}
+                  >
+                    Show it again
+                  </Button>
+                )}
               </li>
             ))}
           </ul>
@@ -1341,6 +1373,260 @@ function Missing(props: {
             {props.hidden.length} hidden
           </Button>
         ))}
-    </CollapsibleSection>
+    </>
+  );
+}
+
+/** Where the focus goes once "Not for us" or "Show it again" is done: as near that row as there is. */
+interface FocusAfter {
+  key: string;
+  list: 'items' | 'hidden';
+  index: number;
+}
+
+/**
+ * "We noticed something missing" from 768 px (the owner's ask): a table
+ * across the width, as the Trash's — what is missing, its kind, whose, why,
+ * then Add it for whoever may add documents and Not for us for whoever may
+ * answer (`mayAnswer`), each in its own column. R2's grid when rows have
+ * something to do: one stop for Tab, the arrows between cells. With nothing
+ * to do, a plain table. The hidden ones, behind "N hidden", a second table
+ * with Show it again for whoever may answer. What an action came to is said
+ * politely above them, and the focus stays on the table: the next row's,
+ * or the toggle or the heading once there is none.
+ */
+function MissingTables(props: { items: SuggestionView[]; hidden: SuggestionView[]; act: Act }) {
+  const { items, hidden } = props;
+  const mayAdd = can(storedRole(), 'document.add');
+  const answer = mayAnswer();
+  const [showHidden, setShowHidden] = useState(false);
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [after, setAfter] = useState<FocusAfter | null>(null);
+  const busy = useRef(false);
+  const table = useRef<HTMLTableElement>(null);
+  const wrap = useRef<HTMLDivElement>(null);
+  const hiddenTable = useRef<HTMLTableElement>(null);
+  const hiddenWrap = useRef<HTMLDivElement>(null);
+  const toggle = useRef<HTMLButtonElement>(null);
+  const outcomeRef = useRef<HTMLDivElement>(null);
+  const grid = useGrid(table, wrap, [
+    items.map((s) => s.key).join(','),
+    String(mayAdd),
+    String(answer),
+  ]);
+  const hiddenGrid = useGrid(hiddenTable, hiddenWrap, [
+    hidden.map((s) => s.key).join(','),
+    String(showHidden),
+    String(answer),
+  ]);
+
+  /** The section's own heading, which folds it: there whatever else has gone. */
+  const heading = () => document.querySelector<HTMLElement>('#missing-h button');
+
+  // Once the list is loaded again without the row acted on: the row now in
+  // its place (or the last), in the same column; the toggle once the list
+  // is empty, or the heading once the hidden ones are.
+  useEffect(() => {
+    if (!after) return;
+    const list = after.list === 'items' ? items : hidden;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAfter(null);
+    // Still there (it could not be loaded again): the focus stays put.
+    if (list.some((s) => s.key === after.key)) return;
+    const body = (after.list === 'items' ? table : hiddenTable).current?.tBodies[0];
+    const row = body?.rows[Math.min(after.index, list.length - 1)];
+    const button = row?.querySelector<HTMLButtonElement>('button');
+    if (list.length > 0 && button) button.focus();
+    else if (after.list === 'items' && toggle.current) toggle.current.focus();
+    else heading()?.focus();
+  }, [after, items, hidden]);
+
+  const run = async (
+    s: SuggestionView,
+    list: FocusAfter['list'],
+    index: number,
+    call: (t: string) => Promise<unknown>,
+    said: string,
+  ) => {
+    if (busy.current) return;
+    busy.current = true;
+    try {
+      if (!(await props.act(call))) return;
+      setOutcome({ said, failedHead: null, failed: [], untouched: [] });
+      setAfter({ key: s.key, list, index });
+    } finally {
+      busy.current = false;
+    }
+  };
+
+  const notForUs = (s: SuggestionView, index: number) =>
+    void run(
+      s,
+      'items',
+      index,
+      (t) => api.dismissSuggestion(t, s.key),
+      `“${s.title}” is hidden. You can show it again below.`,
+    );
+  const showAgain = (s: SuggestionView, index: number) =>
+    void run(
+      s,
+      'hidden',
+      index,
+      (t) => api.restoreSuggestion(t, s.key),
+      `“${s.title}” is on the list again.`,
+    );
+
+  return (
+    <div className="stack missing-tables">
+      {outcome && (
+        <OutcomeNote
+          ref={outcomeRef}
+          outcome={outcome}
+          onDismiss={() => {
+            flushSync(() => setOutcome(null));
+            if (!grid.focusActive()) (toggle.current ?? heading())?.focus();
+          }}
+        />
+      )}
+      {items.length > 0 && (
+        <div ref={wrap} className="tbl-wrap tbl-static">
+          <table
+            ref={mayAdd ? table : undefined}
+            className={`tbl missing-tbl${mayAdd ? '' : ' tbl-plain'}`}
+            role={mayAdd ? 'grid' : undefined}
+            style={{ minWidth: 540 + (mayAdd ? 80 : 0) + (answer ? 100 : 0) }}
+            onKeyDown={mayAdd ? grid.onKeyDown : undefined}
+            onFocus={mayAdd ? grid.onFocus : undefined}
+          >
+            <caption className="visually-hidden">We noticed something missing</caption>
+            <thead>
+              <tr>
+                <th scope="col" className="missing-col-title">
+                  What’s missing
+                </th>
+                <th scope="col">Kind</th>
+                <th scope="col">Person</th>
+                <th scope="col" className="missing-col-why">
+                  Why
+                </th>
+                {mayAdd && (
+                  <th scope="col" className="missing-col-act">
+                    <span className="visually-hidden">Add it</span>
+                  </th>
+                )}
+                {answer && (
+                  <th scope="col" className="missing-col-act">
+                    <span className="visually-hidden">Not for us</span>
+                  </th>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((s, i) => (
+                <tr key={s.key}>
+                  <td>
+                    <span className="missing-title">{s.title}</span>
+                  </td>
+                  <td className="nowrap">{s.type_label}</td>
+                  <td className="nowrap">{s.member_name ?? <None />}</td>
+                  <td className="muted">{s.why}</td>
+                  {mayAdd && (
+                    <td>
+                      <Link
+                        to={addLink(s)}
+                        className="btn btn-quiet btn-small"
+                        aria-label={`Add it: ${s.title}`}
+                      >
+                        Add it
+                      </Link>
+                    </td>
+                  )}
+                  {answer && (
+                    <td>
+                      <button
+                        type="button"
+                        className="btn btn-quiet btn-small"
+                        aria-label={`Not for us: ${s.title}`}
+                        onClick={() => notForUs(s, i)}
+                      >
+                        Not for us
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {hidden.length > 0 && (
+        <button
+          ref={toggle}
+          type="button"
+          className="btn btn-quiet missing-toggle"
+          aria-expanded={showHidden}
+          aria-controls="missing-hidden"
+          onClick={() => setShowHidden(!showHidden)}
+        >
+          {hidden.length} hidden
+        </button>
+      )}
+      {hidden.length > 0 && (
+        <div
+          ref={hiddenWrap}
+          id="missing-hidden"
+          className="tbl-wrap tbl-static"
+          hidden={!showHidden}
+        >
+          {/* Told what is hidden, as the vault tells every member of the
+              family; Show it again only for whoever may answer. */}
+          <table
+            ref={answer ? hiddenTable : undefined}
+            className={`tbl missing-tbl${answer ? '' : ' tbl-plain'}`}
+            role={answer ? 'grid' : undefined}
+            style={{ minWidth: answer ? 420 : 270 }}
+            onKeyDown={answer ? hiddenGrid.onKeyDown : undefined}
+            onFocus={answer ? hiddenGrid.onFocus : undefined}
+          >
+            <caption className="visually-hidden">Hidden: not for us</caption>
+            <colgroup>
+              <col />
+              {answer && <col style={{ width: 150 }} />}
+            </colgroup>
+            <thead>
+              <tr>
+                <th scope="col">What’s missing</th>
+                {answer && (
+                  <th scope="col">
+                    <span className="visually-hidden">Show it again</span>
+                  </th>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {hidden.map((s, i) => (
+                <tr key={s.key}>
+                  <td>
+                    <span className="missing-title muted">{s.title}</span>
+                  </td>
+                  {answer && (
+                    <td>
+                      <button
+                        type="button"
+                        className="btn btn-quiet btn-small"
+                        aria-label={`Show it again: ${s.title}`}
+                        onClick={() => showAgain(s, i)}
+                      >
+                        Show it again
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }

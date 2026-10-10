@@ -6,6 +6,13 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-dev.12] - 2026-10-10 — Phase 6: "We noticed something missing" as a table
+
+### Changed
+
+- **Needs attention's "We noticed something missing"** is a table from 768 px, like the Trash. It shows what is missing, its kind, whose it would be and why, with **Add it** and **Not for us** in their own columns. The ones you hid are in a second table, with **Show it again**. After each, the page says what happened. On a phone it stays a list.
+- **"Not for us" and "Show it again"** are offered only to those the vault lets answer them (owners and adults). Anyone who can add documents still sees **Add it**.
+
 ## [0.7.0-dev.11] - 2026-10-10 — Phase 6, I4: the vault learns from your corrections
 
 ### Added

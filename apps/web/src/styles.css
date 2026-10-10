@@ -4840,3 +4840,47 @@ html:has(.shell-phone):has(.has-toast) {
   border-top: 1px solid var(--border);
   overflow-wrap: anywhere;
 }
+
+/* "We noticed something missing" from 768 px: tables as the Trash's. */
+.missing-tables {
+  gap: 12px;
+}
+
+/* Laid out by what each holds: the kind and the person as wide as their
+   words, the actions as their buttons, and the reason the rest. */
+.missing-tbl {
+  table-layout: auto;
+}
+
+.missing-tbl .missing-col-title {
+  width: 26%;
+  min-width: 170px;
+}
+
+.missing-tbl .missing-col-why {
+  min-width: 200px;
+}
+
+.missing-tbl .missing-col-act {
+  width: 1%;
+}
+
+.missing-tbl tbody tr {
+  cursor: default;
+}
+
+.missing-tbl td {
+  overflow-wrap: break-word;
+}
+
+.missing-title {
+  font-weight: 600;
+}
+
+.missing-tbl .btn {
+  white-space: nowrap;
+}
+
+.missing-toggle {
+  align-self: flex-start;
+}
