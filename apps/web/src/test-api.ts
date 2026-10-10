@@ -53,6 +53,7 @@ import {
   type DocumentSort,
   type BatchDefaults,
   type BatchItemView,
+  type BatchLearning,
   type ActivityKind,
 } from '@fdv/shared';
 import { sha256Of } from './batch-upload.js';
@@ -576,6 +577,16 @@ export interface FakeState {
   acceptReadyRefuse?: Record<string, { code: string; message: string }>;
   /** An item Undo keeps, with why (I3). */
   undoRefuse?: Record<string, { reason: string; message: string }>;
+  /**
+   * What the vault learned from the signed-in person's corrections (I4), as
+   * GET /batches/learned answers it. Given, the vault learns
+   * (`features.batch_learning`); DELETE empties it, and is counted.
+   */
+  learned?: BatchLearning;
+  /** How many times Forget all arrived (I4). */
+  forgotten?: number;
+  /** GET /batches/learned refused, as the vault would refuse it (I4). */
+  learnedRefuse?: { status: number; code: string; message: string };
   /** The vault's most for one file (`limits.max_upload_bytes`). */
   maxUploadBytes?: number;
   /** How many files sent by XMLHttpRequest were stopped part way (I1 review: a sign-out stops one). */
@@ -947,6 +958,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.batches ? { batches: true } : {}),
           // The review queue (I3): said unless a test is an older vault.
           ...(state.batches && state.batchReview !== false ? { batch_review: true } : {}),
+          // Learning from corrections (I4): said when a test gives what was learned.
+          ...(state.learned ? { batch_learning: true } : {}),
         },
         limits: {
           ...(state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {}),
@@ -2144,6 +2157,26 @@ export function installFakeApi(state: FakeState) {
         },
         201,
       );
+    }
+    // What the vault learned from the person's corrections (I4): theirs alone.
+    if (path === '/api/v1/batches/learned' && state.learned) {
+      if (!can(storedRole() as Role, 'document.add')) {
+        return refuse(
+          403,
+          'forbidden',
+          'Viewers can open and download documents, but not add them.',
+        );
+      }
+      if (method === 'DELETE') {
+        state.forgotten = (state.forgotten ?? 0) + 1;
+        state.learned = { ...state.learned, counted: 0, unchanged: 0, rules: [] };
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (state.learnedRefuse) {
+        const r = state.learnedRefuse;
+        return refuse(r.status, r.code, r.message);
+      }
+      return json(state.learned);
     }
     // Many documents at once (I1): the person's own batches. A viewer is
     // refused, as adding is; somebody else's batch is not here.

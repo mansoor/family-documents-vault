@@ -4807,3 +4807,36 @@ html:has(.shell-phone):has(.has-toast) {
 .trash-title {
   overflow-wrap: anywhere;
 }
+
+/* What the vault learned from your corrections (Phase 6, I4), under Your
+   uploads: the count, and the rules a press away. */
+.learned-box {
+  gap: 8px;
+}
+
+.learned-count {
+  margin: 0;
+  font-weight: 600;
+}
+
+.learned-toggle {
+  align-self: flex-start;
+  text-align: left;
+  white-space: normal;
+}
+
+.learned-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.learned-rule {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}

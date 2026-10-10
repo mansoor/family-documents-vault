@@ -2725,6 +2725,74 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'learning from corrections: a correction teaches a rule for the issuer, an unchanged accept confirms it and is counted, and forgetting takes both (I4)',
+    run: async (api, ctx) => {
+      if (!ctx.readBatchItems) return;
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.batch_learning).toBe(true);
+      const me = await api.me(token);
+      await api.forgetBatchLearning(token);
+      expect(await api.batchLearning(token)).toMatchObject({
+        counted: 0,
+        unchanged: 0,
+        window: 50,
+        rules: [],
+        rules_max: 500,
+      });
+      const b = await api.createBatch(token, { name: 'Learning' });
+      const file = (n: string) => ({
+        kind: 'bytes' as const,
+        filename: `${n}.pdf`,
+        contentType: 'application/pdf',
+        bytes: new TextEncoder().encode(`%PDF-1.4\n% the contract learns ${n}\n%%EOF\n`),
+      });
+      const issuer = { value: 'Northgate Bank', confidence: 0.9, cue: 'letterhead' } as const;
+      const first = await api.addBatchItem(token, b.id, file('first'));
+      const second = await api.addBatchItem(token, b.id, file('second'));
+      await ctx.readBatchItems(b.id, {
+        [first.id]: {
+          proposal: {
+            type_key: { value: 'utility_bill', confidence: 0.9, cue: 'kind_words' },
+            issued_by: issuer,
+          },
+        },
+        [second.id]: {
+          proposal: {
+            type_key: { value: 'bank_statement', confidence: 0.97, cue: 'kind_words' },
+            issued_by: issuer,
+          },
+        },
+      });
+      // The kind changed, and whose it is filled: both corrections.
+      await api.acceptBatchItem(token, b.id, first.id, {
+        type_key: 'bank_statement',
+        owner_member_id: me.member_id,
+        issued_by: 'Northgate Bank PLC',
+      });
+      const taught = await api.batchLearning(token);
+      expect(taught).toMatchObject({ counted: 1, unchanged: 0 });
+      expect(
+        taught.rules.map((r) => [r.issuer, r.field, r.value, r.confirmed, r.contradicted, r.sure]),
+      ).toEqual([
+        ['northgate bank', 'type_key', 'bank_statement', 1, 0, false],
+        ['northgate bank', 'owner_member_id', me.member_id, 1, 0, false],
+      ]);
+      expect(taught.rules.every((r) => typeof r.label === 'string')).toBe(true);
+      // Accepted as proposed: the rule confirmed, and it needed no change.
+      await api.acceptBatchItem(token, b.id, second.id, {
+        type_key: 'bank_statement',
+        issued_by: 'Northgate Bank',
+      });
+      const confirmed = await api.batchLearning(token);
+      expect(confirmed).toMatchObject({ counted: 2, unchanged: 1 });
+      expect(confirmed.rules.find((r) => r.field === 'type_key')).toMatchObject({ confirmed: 2 });
+      // Forgotten: the rules and the count.
+      await api.forgetBatchLearning(token);
+      expect(await api.batchLearning(token)).toMatchObject({ counted: 0, rules: [] });
+      await api.removeBatch(token, b.id);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

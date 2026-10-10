@@ -355,6 +355,14 @@ export function registerBatches(app: FastifyInstance, batches: BatchService) {
     return { items: await batches.list(principal(req), { levels: q.with === 'levels' }) };
   });
 
+  // What the vault learned from the caller's corrections (I4): their count
+  // and their rules, theirs alone; and forgetting them.
+  app.get('/api/v1/batches/learned', auth, async (req) => batches.learned(principal(req)));
+  app.delete('/api/v1/batches/learned', auth, async (req, reply) => {
+    await batches.forget(principal(req));
+    return reply.status(204).send();
+  });
+
   app.get<{ Params: { id: string } }>('/api/v1/batches/:id', auth, async (req) =>
     batches.get(principal(req), parse(idParam, req.params).id),
   );

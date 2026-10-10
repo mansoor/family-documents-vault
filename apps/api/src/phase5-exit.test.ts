@@ -60,6 +60,9 @@ const PAGE_TEXT = `Registration certificate\nKeeper AHMED KHAN\n${PAGE_WORD} mot
  */
 const LOCATION = 'Bedroom safe, top shelf, behind the shoebox';
 
+/** An issuer the vault learned from Ahmed's corrections (Phase 6, I4): his rules alone. */
+const AHMED_LEARNED = 'ahmed learned issuer 541';
+
 const DAY = 24 * 60 * 60 * 1000;
 const inDays = (n: number) => new Date(Date.now() + n * DAY).toISOString();
 
@@ -714,6 +717,10 @@ const RULES: Record<string, Rule> = {
     who: 'family',
     body: (f) => ({ item_ids: [f.batchItem] }),
   },
+  // What the vault learned from the caller's own corrections (I4): theirs
+  // alone, read and forgotten — never anybody else's, an owner's included.
+  'GET /api/v1/batches/learned': { who: 'family' },
+  'DELETE /api/v1/batches/learned': { who: 'family' },
 };
 
 /** Whether a role is among those a rule is for. */
@@ -1128,6 +1135,37 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
       await ok(send(ahmed, 'GET', `/api/v1/batches/${ids.batch}`)),
     );
     expect(JSON.stringify(read.items[0]?.proposals)).toContain('AHMED-PROPOSED-NUMBER-541');
+    // What the vault learned from his corrections (I4): an issuer that is
+    // his alone, ruled to be a kind and a person, and his count.
+    await withSystem(h.db, olivia.household_id, async (trx) => {
+      await trx
+        .insertInto('intake_rule')
+        .values([
+          {
+            household_id: olivia.household_id,
+            member_id: ahmed.member_id,
+            issuer_key: AHMED_LEARNED,
+            type_key: 'boat_licence_541',
+          },
+          {
+            household_id: olivia.household_id,
+            member_id: ahmed.member_id,
+            issuer_key: AHMED_LEARNED,
+            person_id: ahmed.member_id,
+          },
+        ])
+        .execute();
+      await trx
+        .insertInto('intake_outcome')
+        .values({
+          household_id: olivia.household_id,
+          member_id: ahmed.member_id,
+          item_id: ids.batchItem as string,
+          unchanged: true,
+        })
+        .execute();
+    });
+    expect((await ok(send(ahmed, 'GET', '/api/v1/batches/learned'))).body).toContain(AHMED_LEARNED);
 
     // Ahmed's own: a reminder, an export, a phone.
     const reminder = await ok(
@@ -2088,6 +2126,13 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
       [ids.device],
     );
     expect(phone.rows).toEqual([{ member_id: ahmed.member_id, p256dh: 'ahmed-p256dh' }]);
+    // I4: every attacker's forgetting forgot only its own: Ahmed's rules and count are his still.
+    const learned = await admin.query<{ rules: number; outcomes: number }>(
+      `select (select count(*)::int from intake_rule where member_id = $1) as rules,
+              (select count(*)::int from intake_outcome where member_id = $1) as outcomes`,
+      [ahmed.member_id],
+    );
+    expect(learned.rows[0]).toEqual({ rules: 2, outcomes: 1 });
   }, 600_000);
 
   it('no identity value, note, detail, suggestion, page text or location reaches the activity log, a push or an email', async () => {
@@ -2349,6 +2394,9 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
       'AHMED-PROPOSED-NUMBER-541',
       'AHMED-PROPOSED-ISSUER-541',
       'AHMED-ITEM-WORDS-541',
+      // What the vault learned from his corrections (I4).
+      AHMED_LEARNED,
+      'boat_licence_541',
     ];
     const outsideGrant = [
       ...secretsOf('will', 'deed', 'carInsurance'),

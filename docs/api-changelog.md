@@ -4096,6 +4096,38 @@ levels })`. The client fake answers the same.
     where the template says so and its words agree); `whenWords` takes the
     household's time zone, optionally. The client fake keeps a log of the
     documents created, and answers `GET /audit` with them.
+  - The vault learns from your corrections (I4, `features.batch_learning`).
+    Each accept of a batch's item (one, Accept and next, or Accept all
+    Ready) is compared with what its card started from, field by field;
+    a field changed, or filled where nothing was proposed, teaches the
+    uploader's own rules — the issuer's key (`issuerKey`) → a kind, and →
+    a person (never for a teen) — keeping only that key, the kind's key or
+    the member's id, how often each was confirmed and contradicted, and the
+    day it was last used; a rule contradicted more often than confirmed is
+    dropped, and a person keeps `LEARNED_RULES_MAX` (500) at most. The
+    worker reads an item with its uploader's rules, as them. **Added:**
+    `GET /api/v1/batches/learned` answers the caller's own `{ counted,
+unchanged, window, rules: [{ id, issuer, field: 'type_key' |
+'owner_member_id', value, label, confirmed, contradicted, sure,
+last_used }], rules_max }` — of their newest `window` (50) items read and
+    accepted, how many needed no change; `DELETE /api/v1/batches/learned`
+    forgets their rules and count (`204`). A viewer or a guest is `403`;
+    nobody is given anybody else's, an owner included. An item's
+    `proposals.*.from` may be `learned` (proposed, or made surer, by the
+    uploader's rules), with the new cue `learned` where only the rules
+    proposed it; `tags` gain `clash_learned` (a sure rule disagreeing with
+    the pages, whose proposal stands: Check). Taken back by Undo, an
+    accept's lessons and count are taken back too. **Unchanged:** an accept
+    takes what it is sent and the batch's defaults; levels are worked out
+    as before, a learned proposal sure only once its rule is confirmed
+    `LEARNED_SURE_CONFIRMATIONS` (3) times and never contradicted.
+    `@fdv/shared`: `BatchLearning`, `LearnedRuleView`, `LearnedRule`,
+    `LearnedField`, `LearnedClash`, `LearnedContext`, `KeptRule`,
+    `LearningStep`, `ruleSure`, `isLearned`, `bestRule`, `applyLearned`,
+    `proposeLearned`, `proposeWithTie`, `correctionsOf`, `learningOf`,
+    `teach`, `learnedIssuerKey`, `storedLearnedClash` and the
+    `LEARNED_*`/`LEARNING_*` constants. `@fdv/client`: `batchLearning`,
+    `forgetBatchLearning`. The client fake learns and answers the same.
 
 ## Deprecations in effect
 

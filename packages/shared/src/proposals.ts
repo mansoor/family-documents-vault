@@ -65,6 +65,11 @@ export const PROPOSAL_CUES = [
   'letterhead',
   'issuing_body',
   'issuing_country',
+  /**
+   * Not from the pages: the uploader's own earlier choices for the issuer
+   * the pages name (Phase 6, I4, learning.ts). Only a batch's item has it.
+   */
+  'learned',
 ] as const;
 export type ProposalCue = (typeof PROPOSAL_CUES)[number];
 
@@ -84,6 +89,7 @@ export const CUE_WORDS: Readonly<Record<ProposalCue, string>> = {
   letterhead: 'The name the page gives itself',
   issuing_body: 'The body that issues this kind of document, named on the page',
   issuing_country: 'The country the page says issued it',
+  learned: 'Learned from your earlier choices for this issuer',
 };
 
 /** One proposal: the value, how sure, and why. */
@@ -92,6 +98,11 @@ export interface Proposed<T> {
   /** From 0 to 1, rounded to hundredths; never below the field's threshold. */
   confidence: number;
   cue: ProposalCue;
+  /**
+   * The pages' proposal, made surer by the uploader's own earlier choices
+   * for its issuer (Phase 6, I4): its cue is still the page's.
+   */
+  learned?: true;
 }
 
 /** What the pages propose: only the fields above their threshold, and only empty ones. */
@@ -1761,6 +1772,20 @@ const filled = (v: unknown) =>
  * same answer.
  */
 export function proposeDetails(text: string, ctx: ProposalContext): DetailProposal {
+  return proposeWithTie(text, ctx).proposal;
+}
+
+/**
+ * `proposeDetails`, and the kinds it could not choose between (Phase 6,
+ * I4): where the best kind scores KIND_MIN_SCORE or more but leads by less
+ * than KIND_MIN_LEAD, nothing is proposed for the kind, and `tie` names the
+ * kinds within that lead of it, best first — what the uploader's earlier
+ * choices may choose between. Empty otherwise.
+ */
+export function proposeWithTie(
+  text: string,
+  ctx: ProposalContext,
+): { proposal: DetailProposal; tie: string[] } {
   const body = normalise(text);
   const hay = fold(body);
   const current = ctx.current ?? {};
@@ -1771,11 +1796,16 @@ export function proposeDetails(text: string, ctx: ProposalContext): DetailPropos
   // The kind: the document's own, or one the page proposes above the bar.
   let kind: ProposalKind | null = null;
   let kindFactor = 1;
+  let tie: string[] = [];
   if (filled(current.type_key)) {
     kind = ctx.types.find((t) => t.key === current.type_key) ?? null;
   } else {
-    const [best, next] = scoreKinds(hay, ctx.types, mrz);
+    const scored = scoreKinds(hay, ctx.types, mrz);
+    const [best, next] = scored;
     const lead = best ? best.score - (next?.score ?? 0) : 0;
+    if (best && best.score >= KIND_MIN_SCORE && lead < KIND_MIN_LEAD) {
+      tie = scored.filter((s) => s.score > best.score - KIND_MIN_LEAD).map((s) => s.kind.key);
+    }
     if (best && best.score >= KIND_MIN_SCORE && lead >= KIND_MIN_LEAD) {
       const confidence = round(Math.min(0.97, 0.5 + 0.04 * best.score + 0.04 * lead));
       if (confidence >= PROPOSAL_THRESHOLDS.type_key) {
@@ -1807,7 +1837,7 @@ export function proposeDetails(text: string, ctx: ProposalContext): DetailPropos
   }
 
   // No date, and no number, without a confident kind.
-  if (!kind) return out;
+  if (!kind) return { proposal: out, tie };
   const mrzFits = mrz !== null && kind.key === 'passport';
 
   const { issued, expires: expiring } = claimDates(body, hay, kind, ctx.dateOrder, lines);
@@ -1862,5 +1892,5 @@ export function proposeDetails(text: string, ctx: ProposalContext): DetailPropos
       if (confidence >= PROPOSAL_THRESHOLDS.identifier) out.identifier = { ...number, confidence };
     }
   }
-  return out;
+  return { proposal: out, tie };
 }

@@ -6,6 +6,14 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The vault learns from your corrections** when you accept files from Your uploads. If you change a file's kind or whose it is, it remembers small rules for that sender, such as "letters from this clinic are medical records" or "are Sara's", and suggests them next time, marked "learned from your earlier choices". It keeps only the sender's name in a simple form and what you chose, never the words, numbers or dates.
+  - A rule is trusted enough to make a file Ready only after you have confirmed it three times and never chosen differently. It never overrides what the pages clearly say; if they disagree, the file goes to Check with both.
+  - Your rules are yours alone: nobody else, an owner included, sees them, and they are used only on your own uploads.
+  - **Your uploads** says how well it is doing: "Of your last 50 accepted, 31 needed no change." Under it, see what it has learned from you, and **Forget all**.
+- **API:** `GET` and `DELETE /api/v1/batches/learned`, and the feature flag `features.batch_learning`.
+
 ## [0.7.0-dev.10] - 2026-10-10 — Phase 6: the small fixes
 
 ### Changed

@@ -38,6 +38,7 @@ import {
   PRIVATE_TO_THEM,
   refusalFor,
   seesLocation,
+  storedLearnedClash,
   storedProposal,
   type BatchAccepted,
   type BatchAcceptInput,
@@ -53,6 +54,9 @@ import {
   type CaptureMetadata,
   type DetailProposal,
   type IncomingPreviewState,
+  type ItemProposals,
+  type BatchLearning,
+  type LearnedClash,
   type LevelKind,
   type Visibility,
 } from '@fdv/shared';
@@ -74,6 +78,7 @@ import { holdDocumentRows, ownedObjects } from '../documents/purge.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import { incomingPreviewKey } from './incoming.js';
+import { forgetLearned, learnedOf, learnFromAccept, unlearnAccept } from './learning.js';
 
 /**
  * Many documents at once (Phase 6, I1).
@@ -266,6 +271,12 @@ interface WaitingRow {
   wrapped_by_scope: string;
   preview_state: string;
   preview_pages: number | null;
+}
+
+/** What an accept learns from (I4): the card as it started, and whether its pages were read. */
+interface LearnFrom {
+  read: boolean;
+  proposals: ItemProposals | null;
 }
 
 /** Where a filing put its copy of the file: removed if its transaction fails. */
@@ -852,7 +863,12 @@ export class BatchService {
         await this.stillAdds(trx, p);
         const b = await this.batch(trx, batchId);
         const f = await this.waiting(trx, batchId, itemId, true);
-        return this.file(trx, p, b, f, input, meta, placed, false);
+        // What its card started from, at this moment: what the accept is compared with (I4).
+        const [item] = (await this.itemsOf(trx, p, [b.id], f.id)).filter((i) => i.id === f.id);
+        return this.file(trx, p, b, f, input, meta, placed, false, {
+          read: item?.reading === 'read',
+          proposals: item?.proposals ?? null,
+        });
       });
     } catch (err) {
       await this.dropPlaced(p, itemId, placed);
@@ -872,7 +888,9 @@ export class BatchService {
    * unwrapped from the uploader's and wrapped for the document, its bytes
    * copied to where versions are kept, put in the collection named, and the
    * item decided — its words and proposals let go. Filed by Accept all
-   * Ready (`undoable`), until when it may be taken back (I3, 0064).
+   * Ready (`undoable`), until when it may be taken back (I3, 0064). What was
+   * filed is compared with what the card started from, and teaches the
+   * uploader's own rules (I4, `learnFromAccept`).
    */
   private async file(
     trx: Db,
@@ -883,6 +901,7 @@ export class BatchService {
     meta: RequestMeta,
     placed: Placed,
     undoable: boolean,
+    learn: LearnFrom,
   ): Promise<Filed> {
     const { collection_id: sentCollection, ...sent } = input;
     const metadata = await this.filled(trx, p, sent, b);
@@ -935,6 +954,12 @@ export class BatchService {
       .executeTakeFirst();
     // Held since it was read: anything else is a rule that said no.
     if (!decided) throw decidedAlready();
+    await learnFromAccept(trx, p, {
+      itemId: f.id,
+      read: learn.read,
+      proposals: learn.proposals,
+      filed: metadata,
+    });
     return {
       file: f,
       documentId: version.document_id,
@@ -962,6 +987,24 @@ export class BatchService {
       household_id: p.householdId,
       version_id: out.versionId,
     }).catch(() => undefined);
+  }
+
+  // ------------------------------------------------- learning (I4)
+
+  /**
+   * GET /batches/learned: the caller's count and the rules learned from
+   * their corrections — theirs alone (0065): an owner is given nobody
+   * else's. A viewer or a guest is refused, as adding is.
+   */
+  async learned(p: Principal): Promise<BatchLearning> {
+    this.mayAdd(p);
+    return withPrincipal(this.db, p, (trx) => learnedOf(trx, p));
+  }
+
+  /** DELETE /batches/learned: the caller's rules and count, forgotten. */
+  async forget(p: Principal): Promise<void> {
+    this.mayAdd(p);
+    await withPrincipal(this.db, p, (trx) => forgetLearned(trx, p));
   }
 
   // ------------------------------------------------ the review queue (I3)
@@ -1044,7 +1087,10 @@ export class BatchService {
             role: p.role,
             me: p.memberId,
           });
-          return this.file(trx, p, b, f, body, meta, placed, true);
+          return this.file(trx, p, b, f, body, meta, placed, true, {
+            read: item.reading === 'read',
+            proposals: item.proposals,
+          });
         });
       } catch (err) {
         await this.dropPlaced(p, itemId, placed);
@@ -1309,6 +1355,8 @@ export class BatchService {
           .execute();
         const gone = await trx.deleteFrom('document').where('id', '=', docId).executeTakeFirst();
         if (Number(gone.numDeletedRows) !== 1) throw new Error('a held document was not removed');
+        // What its accept taught is taken back with it, and it is not counted (I4).
+        await unlearnAccept(trx, p, held.id);
         // Its lines, this one too, have no tombstone to be shown by: nobody's (0064).
         await appendAudit(trx, {
           householdId: p.householdId,
@@ -1735,7 +1783,7 @@ export class BatchService {
       });
     }
     const levelling = await this.levelling(trx, p, batchIds);
-    const proposed = new Map<string, DetailProposal | null>();
+    const proposed = new Map<string, { proposal: DetailProposal; clash: LearnedClash } | null>();
     for (const r of rows) {
       if (r.state === 'received' && r.read_state === 'read' && (!only || r.id === only)) {
         proposed.set(r.id, await levelling.open(r));
@@ -1781,7 +1829,8 @@ export class BatchService {
         state,
         reading,
         failure,
-        proposal: proposed.get(r.id) ?? null,
+        proposal: proposed.get(r.id)?.proposal ?? null,
+        learnedClash: proposed.get(r.id)?.clash ?? null,
         duplicate,
         defaults: levelling.defaults(r.batch_id as string),
         types: levelling.types,
@@ -1868,7 +1917,9 @@ export class BatchService {
           is_essential: b?.default_essential ?? false,
         };
       },
-      open: async (r: ItemRow): Promise<DetailProposal | null> => {
+      open: async (
+        r: ItemRow,
+      ): Promise<{ proposal: DetailProposal; clash: LearnedClash } | null> => {
         if (!r.proposals_sealed) return null;
         this.opts.opened?.(r.id);
         try {
@@ -1878,7 +1929,9 @@ export class BatchService {
             `incoming:${r.id}`,
           );
           const plain = openBytes(fileKey, r.proposals_sealed, itemProposalsBinding(r.id));
-          return storedProposal(JSON.parse(plain.toString('utf8')));
+          const raw: unknown = JSON.parse(plain.toString('utf8'));
+          // And where a sure rule of the uploader's disagreed with the pages (I4).
+          return { proposal: storedProposal(raw), clash: storedLearnedClash(raw) };
         } catch {
           return null;
         }

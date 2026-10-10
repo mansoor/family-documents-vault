@@ -238,6 +238,15 @@ export interface CapabilityFeatures {
    * levels, and `counts.removed`. Absent from older vaults: accept each.
    */
   batch_review?: boolean;
+  /**
+   * The vault learns from your corrections (Phase 6, I4): each person's own
+   * small rules — this issuer → this kind, this issuer → this person —
+   * learned from what they accept and used only on their own items, where a
+   * proposal says `from: 'learned'`. GET /batches/learned gives the caller
+   * the count ("Of your last 50 accepted, 31 needed no change") and their
+   * rules; DELETE /batches/learned forgets them. Absent from older vaults.
+   */
+  batch_learning?: boolean;
 }
 
 export interface CapabilityLimits {
