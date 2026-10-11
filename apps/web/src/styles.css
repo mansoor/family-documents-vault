@@ -2256,7 +2256,9 @@ fieldset.identity-section {
   --shell-top: 64px;
   --shell-chrome: 64px;
   display: grid;
-  grid-template-columns: 216px minmax(0, 1fr);
+  /* From 1024 px, as wide as it was dragged, or the rail's when folded:
+     the shell says which (sidebar.tsx). */
+  grid-template-columns: var(--side-w, 216px) minmax(0, 1fr);
 }
 
 .shell-mid {
@@ -2475,6 +2477,113 @@ html:has(.shell-phone) {
 .shell-mid .side-link:hover::after,
 .shell-mid .side-link:focus-visible::after {
   opacity: 1;
+}
+
+/* From 1024 px (the owner's ask): the sidebar's edge, to drag or to move
+   with the arrow keys; and folded, its icons alone, the whole of it opening
+   over the page while hovered or focused. Nothing moves on its own: it is
+   open, or not (prefers-reduced-motion has nothing to stop). */
+.side-resize {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--side-w) - 6px);
+  width: 12px;
+  /* Over the bar on top (30), which it overlaps by its half; under menus (40). */
+  z-index: 31;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+/* The line it moves: drawn over the sidebar's edge on hover, while dragged,
+   and with focus. */
+.side-resize::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 2px;
+  background: transparent;
+}
+
+.side-resize:hover::before,
+.side-resize:focus-visible::before,
+.side-resizing .side-resize::before {
+  background: var(--accent);
+}
+
+.side-resize:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* While dragged: no words chosen on the way, and the cursor kept. */
+.side-resizing,
+.side-resizing * {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Fold it, or open it again: a section's row, above Settings. */
+.side-foot-wide {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.side-toggle {
+  width: 100%;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.side-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Folded: the icons alone, as the rail at 768–1023 px; the names are heard,
+   and seen when it opens. */
+.side-collapsed:not(.side-peek) .sidebar {
+  padding: 16px 10px;
+  align-items: center;
+}
+
+.side-collapsed:not(.side-peek) .brand {
+  padding: 2px 0 16px;
+}
+
+.side-collapsed:not(.side-peek) .brand-words {
+  display: none;
+}
+
+.side-collapsed:not(.side-peek) .side-link {
+  width: 48px;
+  justify-content: center;
+  padding: 0;
+}
+
+.side-collapsed:not(.side-peek) .side-count {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  min-width: 18px;
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 17px;
+}
+
+/* Open over the page: its own width again, the page beside it where it was
+   (the column stays the rail's), and a shadow to say it is above it. Over
+   the bar on top (30), under menus (40) and sheets (50). */
+.side-peek .sidebar {
+  width: var(--side-open-w);
+  z-index: 35;
+  box-shadow: 0 8px 24px var(--scrim);
 }
 
 /* The bar on top: search, Add, and the account menu. */

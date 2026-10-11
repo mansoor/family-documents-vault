@@ -22,6 +22,7 @@ import { beside } from './DocActions.js';
 import { PersonAvatar } from './person-avatar.js';
 import { storedRole } from './session.js';
 import { shortcutsOn, useShortcutsOn } from './shortcuts.js';
+import { CollapseButton, ResizeHandle, useSidebar } from './sidebar.js';
 import { useSheetFocus } from './ui.js';
 
 /**
@@ -29,7 +30,8 @@ import { useSheetFocus } from './ui.js';
  *
  *  - 1024 px and wider: a sidebar of sections, always there, and a bar on
  *    top with search (`/`), Add (`n`) and the account menu; Add is a menu
- *    since bulk intake (I1): one document, or many;
+ *    since bulk intake (I1): one document, or many. The sidebar is as wide
+ *    as it is dragged, or folded to its icons (sidebar.tsx);
  *  - 768–1023 px, and 600 px tall or more: the same, the sidebar narrowed
  *    to its icons, each named and with its name beside it on hover or focus;
  *  - narrower, or shorter (a phone on its side): today's bottom bar, and a
@@ -514,6 +516,11 @@ export function AppShell() {
     <AccountMenu me={me ?? null} role={role} compact={mode !== 'wide'} onSignOut={signOut} />
   );
   const phone = mode === 'phone';
+  // From 1024 px the sidebar is as wide as it was dragged, or folded to its
+  // icons and open over the page while hovered or focused (sidebar.tsx).
+  const side = useSidebar(mode);
+  const wide = mode === 'wide';
+  const narrow = mode === 'mid' || (side.rail && !side.peek);
 
   // Many documents on their way, away from their page (the I1 review): how
   // far, with a way back to it — said politely as it goes on and as it ends,
@@ -553,7 +560,7 @@ export function AppShell() {
   // window turned or resized across 768 px keeps what is on the page (a
   // half-filled form) rather than drawing it again from nothing.
   return (
-    <div className={`shell shell-${mode}`}>
+    <div className={`shell shell-${mode}${side.shellClass}`} style={side.shellStyle}>
       <a className="skip-link" href="#main-content" onClick={skip}>
         Skip to main content
       </a>
@@ -577,11 +584,22 @@ export function AppShell() {
           {account}
         </header>
       ) : (
-        <nav className="sidebar" aria-label="Sections">
+        <nav className="sidebar" aria-label="Sections" {...(wide ? side.navProps : {})}>
           <Brand household={household} />
-          <SectionList sections={sections} path={pathname} narrow={mode === 'mid'} />
+          <SectionList sections={sections} path={pathname} narrow={narrow} />
           <div className="side-gap" />
-          <SectionList sections={[SETTINGS]} path={pathname} narrow={mode === 'mid'} foot />
+          {wide ? (
+            // Fold it, or open it again, above Settings; and its edge to drag.
+            <>
+              <div className="side-foot side-foot-wide">
+                <CollapseButton side={side} />
+                <SectionList sections={[SETTINGS]} path={pathname} narrow={narrow} />
+              </div>
+              {!side.rail && <ResizeHandle side={side} />}
+            </>
+          ) : (
+            <SectionList sections={[SETTINGS]} path={pathname} narrow={narrow} foot />
+          )}
         </nav>
       )}
       <div className="shell-main">
