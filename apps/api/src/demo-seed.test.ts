@@ -1,0 +1,195 @@
+import { execFile } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { testAdminUrl } from '@fdv/db/testing';
+import {
+  issuerKey,
+  proposeDetails,
+  type DocumentTypeView,
+  type ProposalPerson,
+  type Tokens,
+} from '@fdv/shared';
+import FormData from 'form-data';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createHarness, type Harness } from './test-harness.js';
+
+const run = promisify(execFile);
+const SCRIPT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '..',
+  'scripts',
+  'demo-seed.mjs',
+);
+
+/** The lines a PDF demo-seed made carries: its text is `(…) Tj`, one a line. */
+const linesOf = (pdf: Buffer): string[] =>
+  [...pdf.toString('latin1').matchAll(/\(((?:[^()\\]|\\.)*)\) Tj/g)].map((m) =>
+    (m[1] as string).replace(/\\(.)/g, '$1'),
+  );
+
+/**
+ * scripts/demo-seed.mjs against a vault of this release (the Phase 6 exit):
+ * it fills a new vault as the demonstration's runbook says, and its --out
+ * folder holds the files the review queue is shown with — a duplicate, a
+ * blank page, and four letters from one sender that name nobody, from
+ * which the vault learns.
+ */
+describe.skipIf(!testAdminUrl())('demo-seed.mjs', () => {
+  let h: Harness;
+  let port = 0;
+  let out = '';
+  const owner = { email: 'olivia-seed@example.test', password: `${randomUUID()}-seed` };
+
+  beforeAll(async () => {
+    h = await createHarness();
+    await h.app.listen({ port: 0, host: '127.0.0.1' });
+    port = (h.app.server.address() as AddressInfo).port;
+    out = await mkdtemp(path.join(tmpdir(), 'fdv-demo-seed-'));
+  }, 120_000);
+  afterAll(async () => {
+    await h?.close();
+    if (out) await rm(out, { recursive: true, force: true });
+  });
+
+  it('fills a new vault, and writes the files for the review queue', async () => {
+    const { stdout } = await run(
+      process.execPath,
+      [
+        SCRIPT,
+        '--url',
+        `http://127.0.0.1:${port}`,
+        '--email',
+        owner.email,
+        '--password',
+        owner.password,
+        '--out',
+        out,
+      ],
+      { timeout: 120_000 },
+    );
+    expect(stdout).toContain('set up "The Khan family" with Olivia as its owner');
+    // Where two-step sign-in is now: Settings → Your account (R1).
+    expect(stdout).toContain('Settings → Your account → Two-step sign-in');
+
+    // The vault as the runbook needs it.
+    const signedIn = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/password',
+      payload: owner,
+    });
+    const t = signedIn.json<Tokens>();
+    const get = async <T>(url: string) => (await h.app.inject({ url, headers: h.as(t) })).json<T>();
+    const people = await get<{ items: Array<{ id: string; display_name: string }> }>(
+      '/api/v1/members',
+    );
+    expect(people.items.map((m) => m.display_name).sort()).toEqual([
+      'Ahmed',
+      'Olivia',
+      'Tariq',
+      'Vera',
+    ]);
+    const docs = await get<{ items: Array<{ id: string; title: string | null }> }>(
+      '/api/v1/documents?limit=200',
+    );
+    expect(docs.items.map((d) => d.title).sort()).toEqual([
+      'A scan from the printer',
+      'Ahmed passport',
+      'Ahmed tax return 2025',
+      'Ahmed tax return 2025, the adults’ copy',
+      'Car insurance',
+      'House deed, 14 Elm Street',
+      "Olivia's will",
+    ]);
+    const collections = await get<{ items: Array<{ name: string }> }>('/api/v1/collections');
+    expect(collections.items.map((c) => c.name)).toContain('For the attorney');
+
+    // The files: each a PDF, and those the queue is shown with.
+    const names = (await readdir(out)).sort();
+    expect(names).toEqual([
+      'blank-page.pdf',
+      'car-insurance-again.pdf',
+      'clinic-letter-1.pdf',
+      'clinic-letter-2.pdf',
+      'clinic-letter-3.pdf',
+      'clinic-letter-4.pdf',
+      'passport-scan.pdf',
+      'tariq-passport.pdf',
+    ]);
+    const file = (name: string) => readFile(path.join(out, name));
+    for (const name of names) expect((await file(name)).subarray(0, 5).toString()).toBe('%PDF-');
+    expect(linesOf(await file('blank-page.pdf'))).toEqual([]);
+
+    // The copy of the car insurance, and the scanned page, are each a
+    // duplicate of a document filed, to the vault: in a batch, it says so.
+    // Tariq's passport is nobody's duplicate.
+    const batch = (
+      await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/batches',
+        headers: h.as(t),
+        payload: { name: 'From the runbook' },
+      })
+    ).json<{ id: string }>();
+    const add = async (name: string) => {
+      const form = new FormData();
+      const bytes = await file(name);
+      form.append('file', bytes, { filename: name, contentType: 'application/pdf' });
+      const item = await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/batches/${batch.id}/items`,
+        headers: { ...h.as(t), ...form.getHeaders() },
+        payload: form.getBuffer(),
+      });
+      expect(item.statusCode, item.body).toBe(201);
+      const got = item.json<{ sha256: string; duplicate: unknown }>();
+      expect(got.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+      return got.duplicate;
+    };
+    const idOf = (title: string) => docs.items.find((d) => d.title === title)?.id;
+    expect(await add('car-insurance-again.pdf')).toMatchObject({
+      of: 'document',
+      document_id: idOf('Car insurance'),
+    });
+    expect(await add('passport-scan.pdf')).toMatchObject({
+      of: 'document',
+      document_id: idOf('A scan from the printer'),
+    });
+    expect(await add('tariq-passport.pdf')).toBeNull();
+
+    // What the worker reads off them, as it proposes (I2).
+    const types = await get<{ items: DocumentTypeView[] }>('/api/v1/document-types');
+    const family: ProposalPerson[] = people.items.map((m) => ({ id: m.id, name: m.display_name }));
+    const propose = async (name: string) =>
+      proposeDetails(linesOf(await file(name)).join('\n'), {
+        types: types.items,
+        people: family,
+        household: 'The Khan family',
+        dateOrder: 'dmy',
+      });
+    // Tariq's passport: what it is and whose, its dates and number — Ready.
+    const tariq = people.items.find((m) => m.display_name === 'Tariq');
+    expect(await propose('tariq-passport.pdf')).toMatchObject({
+      type_key: { value: 'passport' },
+      owner_member_id: { value: tariq?.id },
+      issued: { value: { date: '2022-08-02' } },
+      expires: { value: { date: '2027-08-02' } },
+      identifier: { value: '548812306' },
+    });
+    // The four letters: the same sender read off each, and nothing else,
+    // so what and whose they are is the uploader's to say, and the vault's
+    // to learn.
+    const read = await Promise.all([1, 2, 3, 4].map((n) => propose(`clinic-letter-${n}.pdf`)));
+    for (const p of read) {
+      expect(p.type_key).toBeUndefined();
+      expect(p.owner_member_id).toBeUndefined();
+      expect(issuerKey(p.issued_by?.value ?? '')).toBe(issuerKey('Northfield Medical Centre'));
+    }
+  }, 180_000);
+});

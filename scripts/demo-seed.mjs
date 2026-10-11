@@ -18,8 +18,16 @@
 //   --household <name>       FDV_DEMO_HOUSEHOLD       a new vault's name (default "The Khan family")
 //   --name <name>            FDV_DEMO_OWNER_NAME      a new vault's owner's name (default "Olivia")
 //   --domain <domain>        FDV_DEMO_EMAIL_DOMAIN    the made-up people's addresses (default example.test)
-//   --out <folder>           FDV_DEMO_OUT             also write the scanned page there, to upload by hand
+//   --out <folder>           FDV_DEMO_OUT             also write made-up files there, to add by hand
+//                                                     with Add → Many documents (the review queue)
 //   --i-mean-it                                       allow port 8080
+//
+// --out writes the files a demonstration of the review queue adds (Phase 6):
+// Tariq's passport page, which reads as his passport; the scanned page
+// "A scan from the printer" was filed from, and a copy of the car insurance
+// already filed, each a duplicate; a blank page, which reads as nothing;
+// and four letters from one clinic that name nobody, for the vault to
+// learn whose and what kind they are from the first three.
 //
 // A vault that has not been set up is set up with the owner's details. One
 // that has is signed in to; run it once, as a second run adds a second set.
@@ -179,6 +187,64 @@ const passportScan = textPdf([
   'This is a made-up document for a demonstration.',
 ]);
 
+/** Tariq's passport page, filed nowhere: what the review queue calls Ready. */
+const tariqPassport = textPdf([
+  'PASSPORT',
+  'UNITED KINGDOM OF GREAT BRITAIN AND NORTHERN IRELAND',
+  'Passport No.',
+  '548812306',
+  'Surname',
+  SURNAME,
+  'Given names',
+  'TARIQ',
+  'Nationality',
+  'BRITISH CITIZEN',
+  'Date of issue',
+  '2 AUG 2022',
+  'Date of expiry',
+  '2 AUG 2027',
+  'Authority',
+  'HMPO',
+  'This is a made-up document for a demonstration.',
+]);
+
+/** The car insurance's page, as filed: the same bytes again are a duplicate of it. */
+const carInsurance = textPdf([
+  'MOTOR INSURANCE CERTIFICATE',
+  'Insurer: Example Mutual',
+  `Policyholder: ${ownerName.toUpperCase()} ${SURNAME}`,
+  'This is a made-up document for a demonstration.',
+]);
+
+/**
+ * Four letters from one clinic, naming nobody: what the vault learns from
+ * (I4). Accept the first three as the same kind and the same person, then
+ * add the fourth, which the vault reads with what it learned.
+ */
+const clinicLetter = (n, date, what) =>
+  textPdf([
+    'NORTHFIELD MEDICAL CENTRE',
+    '12 High Street, Northfield',
+    'Telephone 01632 960123',
+    date,
+    'Dear patient,',
+    what,
+    'Please bring this letter with you.',
+    `Letter ${n} of 4. This is a made-up document for a demonstration.`,
+  ]);
+
+/** What --out writes: each file's name, and its bytes. */
+const samples = () => [
+  ['passport-scan.pdf', passportScan],
+  ['tariq-passport.pdf', tariqPassport],
+  ['car-insurance-again.pdf', carInsurance],
+  ['blank-page.pdf', textPdf([])],
+  ['clinic-letter-1.pdf', clinicLetter(1, '3 March 2026', 'Your blood test results are normal.')],
+  ['clinic-letter-2.pdf', clinicLetter(2, '14 April 2026', 'Your vaccination record is enclosed.')],
+  ['clinic-letter-3.pdf', clinicLetter(3, '2 June 2026', 'Your referral to the hospital is made.')],
+  ['clinic-letter-4.pdf', clinicLetter(4, '9 September 2026', 'Your annual check is due.')],
+];
+
 // ------------------------------------------------------------------ seeding
 
 async function main() {
@@ -239,7 +305,8 @@ async function main() {
   const file = async (doc, lines, name) => {
     const made = await call('POST', '/documents', { token: t, body: doc });
     const form = new FormData();
-    form.append('file', new Blob([textPdf(lines)], { type: 'application/pdf' }), name);
+    const bytes = Buffer.isBuffer(lines) ? lines : textPdf(lines);
+    form.append('file', new Blob([bytes], { type: 'application/pdf' }), name);
     await call('POST', `/documents/${made.id}/versions`, {
       token: t,
       body: form,
@@ -340,12 +407,7 @@ async function main() {
       // one daily digest is left for the demonstration's own reminders.
       expires: { date: day(60), precision: 'day' },
     },
-    [
-      'MOTOR INSURANCE CERTIFICATE',
-      'Insurer: Example Mutual',
-      `Policyholder: ${ownerName.toUpperCase()} ${SURNAME}`,
-      'This is a made-up document for a demonstration.',
-    ],
+    carInsurance,
     'car-insurance.pdf',
   );
   // A scanned page with nothing filed about it: its page shows what the
@@ -364,8 +426,10 @@ async function main() {
   console.log('  filed "A scan from the printer"');
   if (out) {
     mkdirSync(out, { recursive: true });
-    writeFileSync(path.join(out, 'passport-scan.pdf'), passportScan);
-    console.log(`  wrote ${path.join(out, 'passport-scan.pdf')}, to add by hand`);
+    for (const [name, bytes] of samples()) writeFileSync(path.join(out, name), bytes);
+    console.log(
+      `  wrote ${samples().length} made-up files to ${out}, to add with Add → Many documents`,
+    );
   }
 
   // The collection the will and the deed go into, during the demonstration.
@@ -399,7 +463,7 @@ async function main() {
   console.log(`  password  ${request.password}`);
   console.log(
     `\nNow sign in at ${base} as ${ownerEmail} and turn on two-step sign-in ` +
-      '(Settings, then Two-step sign-in), with an authenticator app. The checks that use an ' +
+      '(Settings → Your account → Two-step sign-in), with an authenticator app. The checks that use an ' +
       "owner's powers — locking a sign-in, a reset, limits on a viewer — need it.",
   );
 }
