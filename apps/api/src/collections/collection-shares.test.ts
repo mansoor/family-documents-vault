@@ -2368,16 +2368,36 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
     }
   });
 
+  /** ShareService's own methods, to be watched or held up by a test. */
+  const shareMethods = ShareService.prototype as unknown as Record<
+    string,
+    (...args: unknown[]) => Promise<unknown>
+  >;
+
   it('a first look or download racing its link’s end is never a deadlock, whichever comes first (fourth review)', async () => {
     await fresh('owner', true);
     const admin = createPool(h.adminUrl, 1);
     const before = await deadlocksSoFar(admin);
+    // Whether the request found its session when it came: under way as the
+    // link ended, or come after the ending had removed it (a busy machine
+    // can finish the ending before a request 2 ms behind it even looks).
+    const lookUp = shareMethods.sessionOf as (...args: unknown[]) => Promise<unknown>;
+    let found: boolean | null = null;
+    const watching = vi.spyOn(shareMethods, 'sessionOf').mockImplementation(async function (
+      this: unknown,
+      ...args: unknown[]
+    ) {
+      const session = await lookUp.apply(this, args);
+      found ??= session !== undefined;
+      return session;
+    });
     try {
       for (const [what, perm, how, of] of cases) {
         // A few tries each, the ending a little before or after the request.
         for (const offset of [-2, 0, 2, 5]) {
           const { id, link, use } = await inUse(perm, `Racing: ${what}, ${how}, ${offset}`, of);
           const pause = (ms: number) => new Promise((res) => setTimeout(res, ms));
+          found = null;
           const [u, e] = await Promise.all([
             (async () => {
               if (offset < 0) await pause(-offset);
@@ -2392,12 +2412,17 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
           expect(e.statusCode, `${said}: ${e.body}`).toBe(endedWith[how]);
           // Done before the link ended, its own answer (the file; for a
           // page not yet drawn, "being drawn"); otherwise the link's, gone —
-          // and nothing else (the fifth review).
+          // and nothing else (the fifth review). Come after the ending had
+          // removed its session, a later request's answer: the session has
+          // ended, as after any end of its link.
           const answered =
             u.statusCode === 200 ? 'done' : ((code(u) as string | undefined) ?? `${u.statusCode}`);
+          expect(found, `${said}: the request looked for its session`).not.toBeNull();
           expect(
-            [perm === 'download' ? 'done' : 'preview_pending', 'link_not_valid'],
-            `${said}: ${u.statusCode} ${u.body}`,
+            found
+              ? [perm === 'download' ? 'done' : 'preview_pending', 'link_not_valid']
+              : ['share_session_ended'],
+            `${said}, its session ${found ? 'found' : 'gone'}: ${u.statusCode} ${u.body}`,
           ).toContain(answered);
           expect(await revoked(link.share.id), said).toBe(true);
         }
@@ -2405,6 +2430,7 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
       await new Promise((res) => setTimeout(res, 1500));
       expect(await deadlocksSoFar(admin)).toBe(before);
     } finally {
+      watching.mockRestore();
       await admin.end();
     }
   }, 120_000);
@@ -2466,6 +2492,63 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
       } finally {
         gate.release();
         gate.restore();
+      }
+    });
+  }
+
+  // The test-stability round (Phase 6): a request that had found its
+  // session, its link ended before its transaction looked at the session
+  // again, was answered 401 share_session_ended — as if it had come after —
+  // where every other request under way as its link ends is answered the
+  // link's, gone. The race above found it under load, made Only me 2 ms
+  // ahead of a first look.
+  for (const how of ['made Only me', 'deleted', 'taken back'] as const) {
+    it(`a request that found its session just before its link was ${how} is answered link_not_valid`, async () => {
+      await fresh('owner', true);
+      const { id, link, cookie, lease, use } = await inUse('download', `Found, then ${how}`);
+      // Stopped just after it found its session, before its transaction.
+      const lookUp = shareMethods.sessionOf as (...args: unknown[]) => Promise<unknown>;
+      let release!: () => void;
+      const letGo = new Promise<void>((res) => (release = res));
+      let reached!: () => void;
+      const arrived = new Promise<void>((res) => (reached = res));
+      let first = true;
+      const holding = vi.spyOn(shareMethods, 'sessionOf').mockImplementation(async function (
+        this: unknown,
+        ...args: unknown[]
+      ) {
+        const session = await lookUp.apply(this, args);
+        if (first) {
+          first = false;
+          reached();
+          await letGo;
+        }
+        return session;
+      });
+      try {
+        const using = use();
+        await arrived;
+        const e = await ending(how, id, link.share.id);
+        expect(e.statusCode, e.body).toBe(endedWith[how]);
+        // Its session went with the link: it was not in use yet.
+        expect(await sessionsOf(link.share.id)).toEqual([]);
+        release();
+        const u = await using;
+        expect(u.statusCode, u.body).toBe(404);
+        expect(code(u)).toBe('link_not_valid');
+        // Nothing counted, and a later request of it finds no session.
+        expect(code(await content(cookie, lease))).toBe('share_session_ended');
+        const used = await withSystem(h.db, t.owner.household_id, (trx) =>
+          trx
+            .selectFrom('share_link')
+            .select('downloads_used')
+            .where('id', '=', link.share.id)
+            .executeTakeFirstOrThrow(),
+        );
+        expect(used.downloads_used).toBe(0);
+      } finally {
+        release();
+        holding.mockRestore();
       }
     });
   }

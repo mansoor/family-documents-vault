@@ -758,6 +758,39 @@ describe('the page a request opens (5.22)', () => {
     expect(state.drop?.files).toHaveLength(1);
   });
 
+  it('Check again pressed the moment a lost answer is said still settles it (N522W2-1, on a busy machine)', async () => {
+    // What a busy machine does: the press lands as the row is drawn, before
+    // React's effects after that render have run. The page once read its
+    // files on their way from an effect, so this answer found the file
+    // still "on its way", left it unsettled for good, and took Check again
+    // away with nothing to press.
+    const state = await opened();
+    state.dropLostAfterBytes = true;
+    (state.drop as FakeDrop).sessionDrops = 1;
+    const w2 = screen.getByRole('region', { name: 'W-2' });
+    let pressed = false;
+    const drawn = new MutationObserver(() => {
+      if (pressed || !/answer did not come back/.test(w2.textContent ?? '')) return;
+      pressed = true;
+      delete state.dropLostAfterBytes;
+      fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    });
+    drawn.observe(w2, { subtree: true, childList: true, characterData: true });
+    try {
+      choose('W-2', pdf('w2-2025.pdf'));
+      expect(await within(w2).findByRole('alert')).toHaveTextContent(
+        'It did not reach the vault. Try again.',
+      );
+    } finally {
+      drawn.disconnect();
+    }
+    expect(pressed).toBe(true);
+    expect(within(w2).queryByText(/answer did not come back/)).toBeNull();
+    fireEvent.click(within(w2).getByRole('button', { name: 'Try w2-2025.pdf again' }));
+    await within(w2).findByRole('button', { name: 'Remove w2-2025.pdf' });
+    expect(state.drop?.files).toHaveLength(1);
+  });
+
   it('a file the vault kept under its tidied name is found after a lost answer: no duplicate (N522W2-2)', async () => {
     const state = await opened();
     state.dropAnswerLost = true;

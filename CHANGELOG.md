@@ -6,6 +6,13 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-dev.14] - 2026-10-11 — Phase 6: two races fixed, and steadier tests
+
+### Fixed
+
+- **Sending documents to a request:** when the vault's answer about a file was lost and **Check again** was pressed the moment the page said so, the file could stay at "It will be listed here if it arrived" for good, with **Check again** gone. It is now settled either way: listed, or offered to send again.
+- **A link you shared, as it stops working:** a page opened from it that asked for something just as the link was taken back, or its collection deleted or made Only me, was told it had been open too long. It is now told the link no longer works, as every other request at that moment is.
+
 ## [0.7.0-dev.13] - 2026-10-11 — Phase 6: add documents from a collection
 
 ### Added

@@ -439,19 +439,32 @@ describe('People from 768 px: the family as a table, and its tabs (R4)', () => {
         .getAllByRole('columnheader')
         .map((h) => h.textContent),
     ).toEqual(['Name', 'Relationship', 'Role', 'Sign-in', 'Documents']);
-    const sara = within(table).getByRole('link', { name: 'Sara Seikh' });
-    expect(sara).toHaveAttribute('href', '/people/m-2');
+    // The table and its headers come before its rows, and the invitations
+    // after the members: each looked for afresh, and waited for, so a busy
+    // machine never finds the table half drawn.
     const row = (link: HTMLElement) =>
       [...(link.closest('tr') as HTMLElement).querySelectorAll('td')].map((c) => c.textContent);
-    expect(row(sara)).toEqual(['SSara Seikh', 'Wife', 'Adult', 'Signs in', '2']);
+    const sara = await within(table).findByRole('link', { name: 'Sara Seikh' });
+    expect(sara).toHaveAttribute('href', '/people/m-2');
+    await waitFor(() =>
+      expect(row(within(table).getByRole('link', { name: 'Sara Seikh' }))).toEqual([
+        'SSara Seikh',
+        'Wife',
+        'Adult',
+        'Signs in',
+        '2',
+      ]),
+    );
     // Invited and not yet accepted: as the invitations below say.
-    expect(row(within(table).getByRole('link', { name: 'Gran' }))).toEqual([
-      'GGran',
-      'Grandmother',
-      '—None',
-      'Invited',
-      '0',
-    ]);
+    await waitFor(() =>
+      expect(row(within(table).getByRole('link', { name: 'Gran' }))).toEqual([
+        'GGran',
+        'Grandmother',
+        '—None',
+        'Invited',
+        '0',
+      ]),
+    );
     await expectAccessible();
     fireEvent.click(outside);
     await screen.findByRole('heading', { name: 'People outside the family' });

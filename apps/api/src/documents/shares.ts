@@ -2543,10 +2543,7 @@ export class ShareService {
   ): Promise<T> {
     if (!cookie || cookie.length > 128) throw sessionEnded();
     const cookieHash = hashToken(cookie);
-    const r = await sql<{ household_id: string; share_id: string }>`
-      select household_id, share_id from share_session_find(${cookieHash})
-    `.execute(this.db);
-    const found = r.rows[0];
+    const found = await this.sessionOf(cookieHash);
     if (!found) throw sessionEnded();
     const scope: LinkScope = {
       householdId: found.household_id,
@@ -2558,7 +2555,15 @@ export class ShareService {
         .select(['id', 'share_id', 'expires_at', 'last_seen_at', 'device_hash'])
         .where('cookie_hash', '=', cookieHash)
         .executeTakeFirst();
-      if (!session) return { ended: 'session' } as const;
+      // Found a moment ago, and gone now: removed as its link ended
+      // (endSessions passes over only a session already in use, and this
+      // one was not yet). Being answered as its link ended, it is answered
+      // as the link's, gone, as when its row went as it waited for it
+      // below; only a session ended on its own is "ended" (the
+      // test-stability round, Phase 6: it said share_session_ended).
+      if (!session) {
+        return { ended: (await this.stillLive(trx, found.share_id)) ? 'session' : 'link' } as const;
+      }
       const now = Date.now();
       const end = async (why: 'session' | 'link') => {
         await trx.deleteFrom('share_session').where('id', '=', session.id).execute();
@@ -3012,6 +3017,20 @@ export class ShareService {
       // An outsider's address is kept only as far as their network (A24).
       ip: truncatedIp(meta.ip),
     });
+  }
+
+  /**
+   * The household and link of the session a cookie names, if it has not
+   * ended: asked before inSession's transaction, which needs the household
+   * to begin. Its own method so a test can stop a request just after it.
+   */
+  private async sessionOf(
+    cookieHash: Buffer,
+  ): Promise<{ household_id: string; share_id: string } | undefined> {
+    const r = await sql<{ household_id: string; share_id: string }>`
+      select household_id, share_id from share_session_find(${cookieHash})
+    `.execute(this.db);
+    return r.rows[0];
   }
 
   /**
