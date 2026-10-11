@@ -542,7 +542,7 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
     'document.see_adults': 'a filter, not a refusal — the test above',
     'family.details': 'a filter, not a refusal — household/what-viewers-see.test.ts (5.3)',
     'document.see_location':
-      'a filter, not a refusal — phase5-exit.test.ts, where the original is kept (5.41)',
+      'a filter, not a refusal — release-exit.test.ts, where the original is kept (5.41)',
     'document.share': '3.3, share links',
     'upload_request.create':
       'a 404, not a refusal: a teen or a viewer never learns a request exists — uploads/upload-requests.test.ts (5.21)',
