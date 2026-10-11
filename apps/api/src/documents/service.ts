@@ -2604,6 +2604,8 @@ export class DocumentService {
           owner_member_id: r.owner_member_id,
           issued_by: r.issued_by,
           issued,
+          expires,
+          tags: r.tags,
           status: statusOf(
             type,
             { ...r, issued, expires },

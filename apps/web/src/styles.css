@@ -4884,3 +4884,194 @@ html:has(.shell-phone):has(.has-toast) {
 .missing-toggle {
   align-self: flex-start;
 }
+
+/* A collection's Add documents (Phase 6): from 768 px a dialog as wide as the
+   window allows, its results scrolling inside it, what is chosen and the
+   button to add them always in sight at its foot; on a phone, the whole
+   screen. */
+.sheet.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(1040px, 100%);
+  height: min(880px, calc(100dvh - 32px));
+  max-height: none;
+  overflow: hidden;
+  padding: 20px;
+  border-radius: var(--radius-l);
+}
+
+.picker-h {
+  font-size: 20px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.picker-find {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.picker-find .field {
+  margin: 0;
+}
+
+.picker-count {
+  margin: 0;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* What was found: it scrolls, nothing else does. */
+.picker-results {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.picker-wrap {
+  min-height: 120px;
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-l);
+}
+
+.picker-results .tbl-more {
+  margin-top: 0;
+  border: 0;
+  padding-left: 0;
+}
+
+.tbl tbody tr.in {
+  cursor: default;
+}
+
+.tbl tbody tr.in td {
+  color: var(--ink-muted);
+}
+
+.tbl tbody tr.in:hover td {
+  background: var(--surface);
+}
+
+.picker-title {
+  display: block;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tbl tr.in .picker-title {
+  color: var(--ink-soft);
+}
+
+.picker-in {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.rowpick-words .picker-in {
+  align-self: flex-start;
+}
+
+.pick-in {
+  color: var(--ink-muted);
+  font-weight: 700;
+}
+
+.picker-list .rowbtn.picker-row-in {
+  cursor: default;
+}
+
+.picker-row-in .pick-in {
+  flex: none;
+  width: var(--tap);
+}
+
+.picker-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.picker-foot p {
+  margin: 0;
+}
+
+.picker-actions {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.picker-chosen {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.picker-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.picker-buttons .btn {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 767px) {
+  /* The whole of a phone's screen: nothing of the page behind it. */
+  .sheet.picker {
+    position: fixed;
+    inset: 0;
+    width: auto;
+    height: auto;
+    padding: 16px 16px 0;
+    border: 0;
+    border-radius: 0;
+    /* The whole of it scrolls, the search and filters away with the rows:
+       a phone has no room to keep them. What is chosen, and the button,
+       stay at its foot. */
+    overflow: auto;
+    /* A row given the focus is never under the foot (2.4.11). */
+    scroll-padding-bottom: 200px;
+  }
+
+  .picker-results {
+    flex: none;
+    overflow: visible;
+  }
+
+  .picker-foot {
+    position: sticky;
+    bottom: 0;
+    margin: auto -16px 0;
+    padding: 12px 16px 16px;
+    background: var(--surface);
+  }
+
+  .picker-buttons {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .picker-buttons .btn {
+    flex: 1 1 auto;
+  }
+}

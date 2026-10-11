@@ -3,7 +3,8 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 /**
  * The wide layouts (Phase 6, R5), on the real stack at 1280 × 800: the
  * shell's sidebar and `/`, the Documents table's sort and an action on
- * many, a document's two panes, and a batch of two files accepted through
+ * many, a collection's Add documents (Phase 6), a document's two panes,
+ * and a batch of two files accepted through
  * the review queue. One file, one sign-in (signing in is limited to 10 a
  * minute, and the suite signs in once in each file), on the vault
  * first-run.spec.ts made; what it makes has this run's name on it.
@@ -160,6 +161,41 @@ test('the Documents table sorts by a column, and moves two chosen to the Trash',
     page.getByText('2 documents moved to the Trash. You can bring them back from there.'),
   ).toBeVisible();
   await expect(titles).toHaveCount(0);
+});
+
+test("a collection's own page finds two documents by search and adds them", async () => {
+  const auth = { authorization: `Bearer ${token}` };
+  const word = `picker${run}`;
+  for (const title of [`Picker one ${word}`, `Picker two ${word}`]) {
+    const made = await page.request.post('/api/v1/documents', {
+      headers: auth,
+      data: { title, visibility: 'household' },
+    });
+    expect(made.ok()).toBe(true);
+  }
+  const collection = await page.request.post('/api/v1/collections', {
+    headers: auth,
+    data: { name: `Picker ${run}`, audience: 'everyone' },
+  });
+  expect(collection.ok()).toBe(true);
+  const { id } = (await collection.json()) as { id: string };
+
+  await visit(page, `/collections/${id}`);
+  await page.getByRole('button', { name: 'Add documents' }).click();
+  const picker = page.getByRole('dialog', { name: `Add documents to “Picker ${run}”` });
+  await picker.getByLabel('Search').fill(word);
+  const grid = picker.getByRole('grid');
+  await expect(grid.locator('tbody .picker-title')).toHaveCount(2);
+  await grid.getByRole('checkbox', { name: `Choose “Picker one ${word}”` }).check();
+  await grid.getByRole('checkbox', { name: `Choose “Picker two ${word}”` }).check();
+  await expect(picker.getByText('2 chosen')).toBeVisible();
+  await picker.getByRole('button', { name: `Add 2 to “Picker ${run}”` }).click();
+
+  await expect(picker).toHaveCount(0);
+  await expect(page.getByText(`2 documents added to “Picker ${run}”.`)).toBeVisible();
+  const inIt = page.getByRole('region', { name: 'In this collection' });
+  await expect(inIt.getByRole('button', { name: new RegExp(`^Picker one ${word}`) })).toBeVisible();
+  await expect(inIt.getByRole('button', { name: new RegExp(`^Picker two ${word}`) })).toBeVisible();
 });
 
 test('a document opens in two panes: its details on the left, its pages on the right', async () => {

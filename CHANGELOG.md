@@ -6,6 +6,15 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Add documents, from a collection's own page.** Whoever may put documents in a collection (the same people the ⋯ menu's **Add to a collection** offers it to) sees **Add documents** beside its heading. It opens a picker: a wide dialog from 768 px, the whole screen on a phone.
+  - Search by title, number or the words inside, as Search does, or browse the list. Narrow either by person, kind, status and tag, as on Documents. From 768 px the results are a table like Documents, with title, kind, person, issued and expires; on a phone, rows. **Show more** brings the next page.
+  - What is in the collection already is marked **In this collection** and can't be chosen.
+  - Choose as many as you like, across searches, and press **Add N to "the collection"**. They all go in at once, or none do.
+  - A collection shared outside the family says so before anything goes in, and asks first. Once they are in, the page says how many went in and who else can now see them, as Add to a collection does.
+- **API:** a search result (`GET /api/v1/search`, and its second pass) gives the document's `expires` and `tags`.
+
 ## [0.7.0-dev.12] - 2026-10-10 — Phase 6: "We noticed something missing" as a table
 
 ### Changed

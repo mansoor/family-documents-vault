@@ -24,7 +24,9 @@ import {
 } from '../collections.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
+import { OutcomeNote, type Outcome } from '../table-grid.js';
 import { Button, ConfirmDialog, ErrorNote, Sheet, TopBar, TrashIcon } from '../ui.js';
+import { AddDocumentsPicker } from '../collection-add.js';
 import { DocRow } from './Home.js';
 import { useTrashedNote } from '../DocActions.js';
 import { collectionShareOffered, ShareCollectionPanel } from './ShareCollection.js';
@@ -100,7 +102,7 @@ export function CollectionsScreen() {
     if (!made) return;
     void navigate(`/collections/${made.id}`, {
       state: {
-        notice: `“${made.name}” is made. Put documents in it with Add to a collection, in the ⋯ beside any document.`,
+        notice: `“${made.name}” is made. Put documents in it with Add documents, above, or Add to a collection in the ⋯ beside any document.`,
       },
     });
   };
@@ -238,6 +240,11 @@ export function CollectionScreen() {
   const { notice, setNotice, status, statusRef } = useArrivedNotice();
   const editButton = useRef<HTMLButtonElement>(null);
   const deleteButton = useRef<HTMLButtonElement>(null);
+  // Add documents (Phase 6): the picker, and what it came to.
+  const [picking, setPicking] = useState(false);
+  const [added, setAdded] = useState<Outcome | null>(null);
+  const addButton = useRef<HTMLButtonElement>(null);
+  const addedRef = useRef<HTMLDivElement>(null);
 
   /**
    * Whether `err` says the collection is not there for the reader: then the
@@ -288,6 +295,20 @@ export function CollectionScreen() {
       maker.role === null ||
       !inCollectionAudience(maker.role, collection.audience));
   const mayDelete = collection.mine || stranded;
+  // Whoever may put documents in it from a row's ⋯ (Add to a collection):
+  // collections offered to them, and this one theirs to change (A18).
+  const mayAdd = mayChange && collectionsOffered(caps, role);
+
+  /** In: the picker goes, what it came to is said and has the focus, and the list is loaded again. */
+  const onAdded = (said: string) => {
+    flushSync(() => {
+      setPicking(false);
+      setAdded({ said, failedHead: null, failed: [], untouched: [] });
+    });
+    // The picker gives the focus back as it closes; then it comes here.
+    window.setTimeout(() => addedRef.current?.focus(), 0);
+    void again();
+  };
 
   const more = async (from: string) => {
     setLoadingMore(true);
@@ -421,16 +442,31 @@ export function CollectionScreen() {
               {sharedOutsideWords(collection.shared_outside, role)}
             </p>
           )}
-          {collectionShareOffered(caps, role, collection) && (
+          {(mayAdd || collectionShareOffered(caps, role, collection)) && (
             <div className="row">
-              <button
-                ref={shareButton}
-                type="button"
-                className="btn btn-quiet"
-                onClick={() => setSharing(true)}
-              >
-                Share this collection
-              </button>
+              {mayAdd && (
+                <button
+                  ref={addButton}
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => {
+                    setAdded(null);
+                    setPicking(true);
+                  }}
+                >
+                  Add documents
+                </button>
+              )}
+              {collectionShareOffered(caps, role, collection) && (
+                <button
+                  ref={shareButton}
+                  type="button"
+                  className="btn btn-quiet"
+                  onClick={() => setSharing(true)}
+                >
+                  Share this collection
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -450,9 +486,31 @@ export function CollectionScreen() {
           />
         </Sheet>
       )}
+      {picking && mayAdd && (
+        <AddDocumentsPicker
+          collection={collection}
+          role={role}
+          types={types}
+          members={members}
+          returnFocus={addButton}
+          onClose={() => setPicking(false)}
+          onAdded={onAdded}
+          onGone={goneIf}
+        />
+      )}
       <p role="status" ref={statusRef} tabIndex={-1} className="notice status-line">
         {notice}
       </p>
+      {added && (
+        <OutcomeNote
+          ref={addedRef}
+          outcome={added}
+          onDismiss={() => {
+            flushSync(() => setAdded(null));
+            addButton.current?.focus();
+          }}
+        />
+      )}
       <ErrorNote message={problem ?? first.error} />
       <section aria-labelledby="collection-items-h">
         <h2 id="collection-items-h" className="section-h">
@@ -480,7 +538,9 @@ export function CollectionScreen() {
           {items.length === 0 && (
             <li className="muted">
               Nothing in this collection yet.
-              {mayChange ? ' Use Add to a collection, in the ⋯ beside any document.' : ''}
+              {mayAdd
+                ? ' Use Add documents, above, or Add to a collection in the ⋯ beside any document.'
+                : ''}
             </li>
           )}
         </ul>

@@ -171,6 +171,8 @@ export class SealedSearchService {
             owner_member_id: row.owner_member_id,
             issued_by: row.issued_by,
             issued,
+            expires: expires && { ...expires, date: String(expires.date).slice(0, 10) },
+            tags: row.tags,
             status: statusOf(
               type,
               { ...row, issued, expires },
