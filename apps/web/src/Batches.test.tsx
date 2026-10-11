@@ -168,6 +168,18 @@ const appBar = async () => {
 const posts = (state: FakeState, pattern: RegExp) =>
   state.calls.filter((c) => c.method === 'POST' && pattern.test(c.url));
 
+/**
+ * The upload finished: its "Open the batch" link. Waited for by its words,
+ * then asked for as a link once: a role query on every change of the page
+ * while the files went (each works out the name of every link there) took
+ * a busy machine 3.5 s against 1.1 s, more than the upload itself, and ran
+ * past the 3 s a wait has (the test-stability round, Phase 6).
+ */
+async function uploaded() {
+  await screen.findByText('Open the batch');
+  return screen.getByRole('link', { name: 'Open the batch' });
+}
+
 /** Files chosen with the page's own "Choose files": once its lists have loaded (Aisha is there). */
 function choose(files: File[]) {
   const input = screen.getByLabelText('Choose files');
@@ -270,10 +282,7 @@ describe('Add many documents (I1)', () => {
     choose([pdf('one.pdf'), pdf('two.pdf')]);
     await expectAccessible();
     fireEvent.click(screen.getByRole('button', { name: 'Start: upload 2 files' }));
-    expect(await screen.findByRole('link', { name: 'Open the batch' })).toHaveAttribute(
-      'href',
-      '/inbox/batches/batch-1',
-    );
+    expect(await uploaded()).toHaveAttribute('href', '/inbox/batches/batch-1');
     const made = posts(state, /\/api\/v1\/batches$/);
     expect(made).toHaveLength(1);
     expect(made[0]?.body).toEqual({
@@ -348,7 +357,7 @@ describe('Add many documents (I1)', () => {
     expect(live).toHaveTextContent('Sending 3 files.');
     await waitFor(() => expect(release).not.toBeNull());
     act(() => (release as () => void)());
-    await screen.findByRole('link', { name: 'Open the batch' });
+    await uploaded();
     expect(within(list).getAllByText('Arrived · waiting to be read')).toHaveLength(2);
     expect(
       within(list).getByText(
@@ -438,7 +447,7 @@ describe('Add many documents (I1)', () => {
     expect(await screen.findByText('Filing cabinet')).toBeVisible();
     choose([first, pdf('scan-002.pdf', 'yy'), pdf('scan-004.pdf')]);
     fireEvent.click(screen.getByRole('button', { name: 'Send 3 files' }));
-    await screen.findByRole('link', { name: 'Open the batch' });
+    await uploaded();
     expect(posts(state, /\/items$/).map((c) => (c.body as { file: string }).file)).toEqual([
       'scan-002.pdf',
       'scan-004.pdf',
@@ -708,7 +717,7 @@ describe('many documents at once, the review (I1)', () => {
     fireEvent.click(within(vis()).getByRole('button', { name: 'Only me' }));
     choose([pdf('mine.pdf')]);
     fireEvent.click(screen.getByRole('button', { name: 'Start: upload 1 file' }));
-    await screen.findByRole('link', { name: 'Open the batch' });
+    await uploaded();
     expect(posts(state, /\/api\/v1\/batches$/)[0]?.body).toEqual({
       defaults: { owner_member_id: 'me', visibility: 'private' },
     });
@@ -744,7 +753,7 @@ describe('many documents at once, the review (I1)', () => {
     await screen.findByRole('option', { name: 'Aisha' });
     choose([pdf('a.pdf'), pdf('b.pdf'), pdf('c.pdf')]);
     fireEvent.click(screen.getByRole('button', { name: 'Start: upload 3 files' }));
-    await screen.findByRole('link', { name: 'Open the batch' });
+    await uploaded();
     expect(posts(state, /\/items$/)).toHaveLength(2);
     expect(screen.getAllByText(/This batch is not there any more/).length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: 'Send the rest' })).toBeNull();
@@ -800,7 +809,7 @@ describe('many documents at once, the review (I1)', () => {
     expect(await screen.findByRole('button', { name: 'Making the batch…' })).toBeDisabled();
     await waitFor(() => expect(release).not.toBeNull());
     act(() => (release as () => void)());
-    await screen.findByRole('link', { name: 'Open the batch' });
+    await uploaded();
     expect(posts(state, /\/api\/v1\/batches$/)).toHaveLength(1);
     expect(posts(state, /\/items$/)).toHaveLength(2);
   });
@@ -883,7 +892,7 @@ describe('many documents at once, the review (I1)', () => {
     ).toBeVisible();
     choose([resume, twinA]);
     fireEvent.click(screen.getByRole('button', { name: 'Send 2 files' }));
-    await screen.findByRole('link', { name: 'Open the batch' });
+    await uploaded();
     expect(posts(state, /\/items$/)).toHaveLength(0);
     expect(screen.getAllByText('Already in this batch.')).toHaveLength(2);
   });
@@ -900,7 +909,10 @@ describe('many documents at once, the review (I1)', () => {
     // No IntersectionObserver here: the first few rows draw theirs.
     await waitFor(() => expect(pages()).toHaveLength(7));
     expect(pages().some((c) => c.url.includes('/items/item-1/'))).toBe(false);
-    fireEvent.click(screen.getByRole('link', { name: 'Accept scan-2.pdf' }));
+    // Asked of its own row: a link's name worked out for every link of 200
+    // rows took 2 of this test's 6 s, and a busy machine took it past its 15.
+    const second = screen.getAllByTitle('scan-2.pdf')[0]?.closest('tr') as HTMLElement;
+    fireEvent.click(within(second).getByRole('link', { name: 'Accept scan-2.pdf' }));
     await screen.findByLabelText('What it is');
     // Its pages, beside the card: the first is the one the batch's page drew.
     expect(await screen.findByRole('img', { name: 'Page 1 of 2' })).toBeVisible();
@@ -1132,14 +1144,14 @@ describe('many documents at once, the review (I1)', () => {
     await screen.findByRole('option', { name: 'Aisha' });
     choose([pdf('one.pdf')]);
     fireEvent.click(screen.getByRole('button', { name: 'Start: upload 1 file' }));
-    await screen.findByRole('link', { name: 'Open the batch' });
+    await uploaded();
     fireEvent.click(within(await appBar()).getByRole('button', { name: 'Add' }));
     fireEvent.click(await screen.findByRole('menuitem', { name: /Many documents/ }));
     await waitFor(() => expect(screen.getByLabelText('Choose files')).toBeInTheDocument());
     expect(screen.queryByRole('link', { name: 'Open the batch' })).toBeNull();
     choose([pdf('two.pdf')]);
     fireEvent.click(screen.getByRole('button', { name: 'Start: upload 1 file' }));
-    await screen.findByRole('link', { name: 'Open the batch' });
+    await uploaded();
     fireEvent.click(screen.getByRole('button', { name: 'Add another batch' }));
     await waitFor(() => expect(screen.getByLabelText('Choose files')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: 'Choose some files first' })).toBeDisabled();
@@ -1194,7 +1206,7 @@ describe('many documents at once, the check (I1)', () => {
     await screen.findByRole('heading', { name: 'Carry on: Old papers' });
     choose([pdf('one.pdf')]);
     fireEvent.click(screen.getByRole('button', { name: 'Send 1 file' }));
-    await screen.findByRole('link', { name: 'Open the batch' });
+    await uploaded();
     fireEvent.click(screen.getByRole('button', { name: 'Add another batch' }));
     await waitFor(() =>
       expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Add many documents'),
@@ -1202,7 +1214,7 @@ describe('many documents at once, the check (I1)', () => {
     await screen.findByRole('option', { name: 'Aisha' });
     choose([pdf('two.pdf')]);
     fireEvent.click(screen.getByRole('button', { name: 'Start: upload 1 file' }));
-    await screen.findByRole('link', { name: 'Open the batch' });
+    await uploaded();
     expect(posts(state, /\/api\/v1\/batches$/)).toHaveLength(1);
     expect(posts(state, /\/items$/).map((c) => c.url)).toEqual([
       '/api/v1/batches/batch-1/items',
