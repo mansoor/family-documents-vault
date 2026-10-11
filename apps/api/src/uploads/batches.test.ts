@@ -49,9 +49,16 @@ describe.skipIf(!testAdminUrl())('many documents at once: batches', () => {
   let app: ReturnType<typeof createPool>;
   let peerN = 0;
   const peer = () => ({ remoteAddress: `10.91.${(++peerN >> 8) & 0xff}.${peerN & 0xff}` });
+  // Every query the API runs while a test listens.
+  let heard: string[] | null = null;
 
   beforeAll(async () => {
-    h = await createHarness({ rateLimitPerMinute: 100_000 });
+    h = await createHarness({
+      rateLimitPerMinute: 100_000,
+      log: (e) => {
+        if (e.level === 'query') heard?.push(e.query.sql);
+      },
+    });
     owner = await h.setup();
     hh = owner.household_id;
     adult = await h.join(owner, { name: 'Sana', email: 'sana@example.test', role: 'adult' });
@@ -1116,46 +1123,60 @@ describe.skipIf(!testAdminUrl())('many documents at once: batches', () => {
   });
 
   it('batches are counted by the database, and a batch’s duplicates found in one pass: 12,000 items of one person', async () => {
+    /**
+     * Boxes of 200, every file the same scan: each a duplicate of one
+     * before it. Made straight into the database, after one sent the usual
+     * way for its keys. Returns the boxes, oldest first.
+     */
+    const boxesOf = async (who: Tokens, boxes: number) => {
+      const seedBatch = await made(who, { name: 'Seed' });
+      const seed = await sent(who, seedBatch.id, 'seed.pdf', PDF('the seed'));
+      const r = (
+        await admin.query<{ vault_id: string; file_key_wrapped: Buffer; wrapped_by_scope: string }>(
+          'select vault_id, file_key_wrapped, wrapped_by_scope from incoming_file where id = $1',
+          [seed.id],
+        )
+      ).rows[0] as { vault_id: string; file_key_wrapped: Buffer; wrapped_by_scope: string };
+      const ids: string[] = [];
+      for (let n = 0; n < boxes; n++) {
+        const b = await made(who, { name: `Box ${n + 1}` });
+        ids.push(b.id);
+        await admin.query(
+          `insert into incoming_file (household_id, batch_id, review_by, requester_member_id, state,
+              original_name, mime, byte_size, sha256, cipher_bytes, cipher_sha256, storage_key, vault_id,
+              file_key_wrapped, wrapped_by_scope, scope, scan_state, read_state, received_at,
+              submitted_at, preview_state)
+           select $1, $2::uuid, 'me', $3, 'received', 'scan.pdf', 'application/pdf', 1,
+                  decode(repeat('ab', 32), 'hex'), 1, decode(repeat('cd', 32), 'hex'),
+                  $4::text || '/' || g::text || '.enc', $5, $6, $7, 'member', 'unscanned', 'waiting',
+                  timestamptz '2026-10-01 00:00:00+00' + make_interval(secs => $8::int * 200 + g),
+                  now(), 'unsupported'
+             from generate_series(1, 200) g`,
+          [
+            hh,
+            b.id,
+            who.member_id,
+            `${hh}/batches/${b.id}`,
+            r.vault_id,
+            r.file_key_wrapped,
+            r.wrapped_by_scope,
+            n,
+          ],
+        );
+      }
+      return ids;
+    };
+    // Pat has 12,000 items; Quinn, the same made the same way, a sixth of them.
     const pat = await h.join(owner, { name: 'Pat', email: 'pat@example.test', role: 'adult' });
-    const seedBatch = await made(pat, { name: 'Seed' });
-    const seed = await sent(pat, seedBatch.id, 'seed.pdf', PDF('the seed'));
-    const r = (
-      await admin.query<{ vault_id: string; file_key_wrapped: Buffer; wrapped_by_scope: string }>(
-        'select vault_id, file_key_wrapped, wrapped_by_scope from incoming_file where id = $1',
-        [seed.id],
-      )
-    ).rows[0] as { vault_id: string; file_key_wrapped: Buffer; wrapped_by_scope: string };
-    // Sixty boxes of 200, every file the same scan: each a duplicate of one before it.
-    const ids: string[] = [];
-    for (let n = 0; n < 60; n++) {
-      const b = await made(pat, { name: `Box ${n + 1}` });
-      ids.push(b.id);
-      await admin.query(
-        `insert into incoming_file (household_id, batch_id, review_by, requester_member_id, state,
-            original_name, mime, byte_size, sha256, cipher_bytes, cipher_sha256, storage_key, vault_id,
-            file_key_wrapped, wrapped_by_scope, scope, scan_state, read_state, received_at,
-            submitted_at, preview_state)
-         select $1, $2::uuid, 'me', $3, 'received', 'scan.pdf', 'application/pdf', 1,
-                decode(repeat('ab', 32), 'hex'), 1, decode(repeat('cd', 32), 'hex'),
-                $4::text || '/' || g::text || '.enc', $5, $6, $7, 'member', 'unscanned', 'waiting',
-                timestamptz '2026-10-01 00:00:00+00' + make_interval(secs => $8::int * 200 + g),
-                now(), 'unsupported'
-           from generate_series(1, 200) g`,
-        [
-          hh,
-          b.id,
-          pat.member_id,
-          `${hh}/batches/${b.id}`,
-          r.vault_id,
-          r.file_key_wrapped,
-          r.wrapped_by_scope,
-          n,
-        ],
-      );
-    }
-    let t = performance.now();
+    const quinn = await h.join(owner, {
+      name: 'Quinn',
+      email: 'quinn@example.test',
+      role: 'adult',
+    });
+    const ids = await boxesOf(pat, 60);
+    const fewer = await boxesOf(quinn, 10);
+
     const listed = await list(pat);
-    const listMs = performance.now() - t;
     expect(listed.statusCode).toBe(200);
     const views = listed.json<{ items: BatchView[] }>().items;
     const box = (n: number) => views.find((v) => v.id === ids[n]) as BatchView;
@@ -1173,9 +1194,7 @@ describe.skipIf(!testAdminUrl())('many documents at once: batches', () => {
       removed: 0,
       duplicates: 200,
     });
-    t = performance.now();
     const last = await detail(pat, ids[59] as string);
-    const detailMs = performance.now() - t;
     const items = last.json<BatchDetail>().items;
     expect(items).toHaveLength(200);
     // The first in its box is a duplicate of the first of all; the rest, of the first in theirs.
@@ -1186,9 +1205,28 @@ describe.skipIf(!testAdminUrl())('many documents at once: batches', () => {
         .every((i) => i.duplicate?.of === 'item' && i.duplicate.item_id === items[0]?.id),
     ).toBe(true);
     expect(last.json<BatchDetail>().counts.duplicates).toBe(200);
-    // Far quicker than item against item, which took seconds here.
-    expect(listMs).toBeLessThan(1000);
-    expect(detailMs).toBeLessThan(1000);
+
+    // Counted by the database, in one pass: what it asks of the database is
+    // the same for 12,000 items as for 2,000, statement for statement, so
+    // nothing is asked once an item or once a batch; and no item is read to
+    // count it (the list's own test, below). Not a bound on the clock: one
+    // of 1,000 ms failed whenever the machine was busy (1,063 ms once,
+    // 31.9 s once), and side by side the database's cache can keep Quinn's
+    // rows and not Pat's (Pat's list once took 10 times Quinn's). Item
+    // against item in the database runs this test out of its time.
+    const asked = async (call: () => Promise<{ statusCode: number }>) => {
+      heard = [];
+      try {
+        expect((await call()).statusCode).toBe(200);
+        return heard;
+      } finally {
+        heard = null;
+      }
+    };
+    expect(await asked(() => list(pat))).toEqual(await asked(() => list(quinn)));
+    expect(await asked(() => detail(pat, ids[59] as string))).toEqual(
+      await asked(() => detail(quinn, fewer[9] as string)),
+    );
   }, 180_000);
 
   it('the database holds a batch and its items to their uploader, whatever the API asks', async () => {
