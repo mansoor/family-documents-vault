@@ -31,6 +31,7 @@ describe.skipIf(!testAdminUrl())('dropping a test database', () => {
     await tdb.drop();
     await closing;
     expect(errors).toEqual([]);
+    await tdb.dropped();
     const root = new pg.Client({ connectionString: testAdminUrl() });
     await root.connect();
     try {
@@ -38,6 +39,57 @@ describe.skipIf(!testAdminUrl())('dropping a test database', () => {
       expect(rows).toEqual([]);
     } finally {
       await root.end();
+    }
+  });
+});
+
+/**
+ * A test database's drop is the server's to finish (the test-stability
+ * round, Phase 6): DROP DATABASE waits for a checkpoint of the whole
+ * cluster, which every test run on the machine shares, and a file's
+ * afterAll timed out waiting for other runs' checkpoints after every test
+ * in it had passed. Here the drop is held up by a lock instead, as a
+ * checkpoint holds it: drop() returns once the server has it, and the
+ * server's drop goes on once the lock is let go.
+ */
+describe.skipIf(!testAdminUrl())('a test database the server is still dropping', () => {
+  it('is let go of once the server has the drop, not once it is done', async () => {
+    const tdb = await createTestDatabase();
+    const holder = new pg.Client({ connectionString: testAdminUrl() });
+    await holder.connect();
+    const exists = async () =>
+      (await holder.query('select 1 from pg_database where datname = $1', [tdb.name])).rows
+        .length === 1;
+    try {
+      // Held from another database, which a forced drop does not end.
+      await holder.query('begin');
+      await holder.query(`comment on database ${tdb.name} is 'held'`);
+      await tdb.drop();
+      // Returned while the server's drop still waits.
+      const waiting = await holder.query<{ n: number }>(
+        `select count(*)::int as n from pg_stat_activity
+          where state = 'active' and wait_event_type = 'Lock' and query like $1`,
+        [`drop database if exists ${tdb.name}%`],
+      );
+      expect(waiting.rows[0]?.n).toBe(1);
+      expect(await exists()).toBe(true);
+      // Let go, the server's drop goes on: past the lock, to the checkpoint
+      // and its end, which can take a busy shared server 30 s and more —
+      // the very wait this is about, so not waited for here (the test
+      // above waits for a drop to finish).
+      await holder.query('rollback');
+      for (;;) {
+        const held = await holder.query<{ n: number }>(
+          `select count(*)::int as n from pg_stat_activity
+            where wait_event_type = 'Lock' and query like $1`,
+          [`drop database if exists ${tdb.name}%`],
+        );
+        if (held.rows[0]?.n === 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    } finally {
+      await holder.query('rollback').catch(() => undefined);
+      await holder.end();
     }
   });
 });

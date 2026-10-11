@@ -38,7 +38,13 @@ export interface TestDatabase {
   adminUrl: string;
   /** A member of the application role: the same grants, and RLS applies. */
   appUrl: string;
+  /**
+   * Drops it once its own connections have closed, and resolves as soon as
+   * the server is dropping it: the rest is the server's (see underway).
+   */
   drop(): Promise<void>;
+  /** Resolves once the server has finished dropping it (after drop()). */
+  dropped(): Promise<void>;
 }
 
 export const TEST_APP_ROLE = 'fdv_app_test';
@@ -190,6 +196,8 @@ async function newDatabase(
     await root.end();
   }
 
+  /** The drop, once begun: finished when the server has dropped it. */
+  let dropping: Promise<void> | null = null;
   return {
     name,
     adminUrl: withDatabase(adminUrl, name),
@@ -197,14 +205,65 @@ async function newDatabase(
     async drop() {
       const c = new pg.Client({ connectionString: adminUrl });
       await c.connect();
+      let pid: number;
       try {
         await settle(c, name);
-        await c.query(`drop database if exists ${name} with (force)`);
-      } finally {
+        pid = (await c.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]
+          ?.pid as number;
+      } catch (err) {
         await c.end();
+        throw err;
       }
+      let over = false;
+      const going = c
+        .query(`drop database if exists ${name} with (force)`)
+        .then(() => undefined)
+        .finally(() => {
+          over = true;
+          return c.end();
+        });
+      dropping = going;
+      // Not waited on by whoever dropped it, so never an unhandled rejection:
+      // a drop that fails later leaves the database behind, and says so.
+      going.catch((err: Error) =>
+        process.emitWarning(`The test database ${name} was not dropped: ${err.message}`, {
+          type: 'FdvWarning',
+        }),
+      );
+      await Promise.race([going, underway(adminUrl, pid, () => over)]);
     },
+    dropped: () => dropping ?? Promise.resolve(),
   };
+}
+
+/**
+ * Resolves once the server is running the drop that backend `pid` was sent:
+ * from then on it finishes on its own, whatever becomes of this process —
+ * Postgres does not stop a statement whose client has gone.
+ *
+ * Why the drop is not waited for to the end: DROP DATABASE asks for a
+ * checkpoint of the whole cluster and waits for it, and on the server every
+ * test run on the machine shares, each file's drop queued behind the
+ * others' checkpoints — 2 to 30 s and more of fsync on a busy machine,
+ * none of it this test's. A file's afterAll waited for all of it, and
+ * failed as "Hook timed out in 30000ms" after every test in it had passed.
+ */
+async function underway(adminUrl: string, pid: number, over: () => boolean): Promise<void> {
+  const c = new pg.Client({ connectionString: adminUrl });
+  await c.connect();
+  try {
+    while (!over()) {
+      const { rows } = await c.query<{ n: number }>(
+        `select count(*)::int as n from pg_stat_activity
+          where pid = $1 and state = 'active' and query like 'drop database%'`,
+        [pid],
+      );
+      if (rows[0]?.n) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  } finally {
+    await c.end();
+  }
 }
 
 const HOUR_MS = 60 * 60 * 1000;
