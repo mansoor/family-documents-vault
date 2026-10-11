@@ -4138,6 +4138,15 @@ last_used }], rules_max }` — of their newest `window` (50) items read and
     `teach`, `learnedIssuerKey`, `storedLearnedClash` and the
     `LEARNED_*`/`LEARNING_*` constants. `@fdv/client`: `batchLearning`,
     `forgetBatchLearning`. The client fake learns and answers the same.
+  - A collection's own page adds documents (the web's "Add documents"):
+    search and the Documents table's list, filtered by person, kind,
+    status and tag, and those chosen put in with
+    `POST /api/v1/collections/{id}/items`, as before. **Added:** a
+    `SearchHit`, from `GET /api/v1/search` and `GET /api/v1/search/sealed`,
+    gives `expires` (a date and its precision, or `null`) and `tags`: what
+    the document says to whoever may see it, as `GET /documents/{id}`
+    does. Absent from older vaults. Nothing else changes: who is found,
+    and what may be put in a collection, is as it was.
 
 ## Deprecations in effect
 

@@ -932,6 +932,13 @@ export interface SearchHit {
   /** Who issued it, and when (0.4.10): "Bank statement · Barclays · Sep 2026". */
   issued_by?: string | null;
   issued?: DocumentView['issued'];
+  /**
+   * When it expires, and its tags (Phase 6): what the document itself
+   * says to whoever finds it, for a collection's "Add documents" — its
+   * Expires column, and its filter by tag. Absent from older vaults.
+   */
+  expires?: DocumentView['expires'];
+  tags?: string[];
   /** Server-highlighted with `<em>`; clients escape everything else. */
   snippet: string;
   matched_in: 'title' | 'content';

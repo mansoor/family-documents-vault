@@ -299,4 +299,25 @@ describe.skipIf(!testAdminUrl())('the second pass of search', () => {
       (await h.app.inject({ url: '/api/v1/search/sealed', headers: h.as(owner) })).statusCode,
     ).toBe(422);
   });
+
+  it('gives what a found document says of its expiry and tags, as the first pass does (Phase 6)', async () => {
+    const id = await privateDocument('Lease', 'The tenancy of the flat runs to quokkaword.', [
+      'flat',
+    ]);
+    const set = await h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${id}`,
+      headers: h.as(owner),
+      payload: { expires: { date: '2031-03-31', precision: 'month' } },
+    });
+    expect(set.statusCode).toBe(200);
+    const r = await first('quokkaword');
+    const body = (await second(r.sealed_pending.token as string)).json<{ items: SearchHit[] }>();
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({
+      document_id: id,
+      expires: { date: '2031-03-31', precision: 'month' },
+      tags: ['flat'],
+    });
+  });
 });

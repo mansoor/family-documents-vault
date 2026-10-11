@@ -152,8 +152,11 @@ export function DocumentsScreen() {
   );
 }
 
-/** What the filters offer and the cells name: the household as this reader is given it. */
-interface Known {
+/**
+ * What the filters offer and the cells name: the household as this reader
+ * is given it. A collection's Add documents (Phase 6) offers the same.
+ */
+export interface Known {
   members: Member[];
   /** How a person is named in a cell: their first name, or more where two share it. */
   names: Map<string, string>;
@@ -428,7 +431,7 @@ function countWords(pages: Pages, view: TableView): string {
 }
 
 /** Each filter's choices, as its select offers them: "All …" first. */
-function filterChoices(
+export function filterChoices(
   key: FilterKey,
   known: Known,
   view: TableView,
@@ -479,7 +482,7 @@ function filterChoices(
   }
 }
 
-const FILTER_LABELS: Record<FilterKey, string> = {
+export const FILTER_LABELS: Record<FilterKey, string> = {
   person: 'Person',
   kind: 'Kind',
   status: 'Status',

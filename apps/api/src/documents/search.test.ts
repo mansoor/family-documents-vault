@@ -98,6 +98,31 @@ describe.skipIf(!testAdminUrl())('search', () => {
     expect(byTag.items.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('gives what a found document says of its expiry and tags (Phase 6: a collection’s Add documents)', async () => {
+    const made = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/documents',
+      headers: h.as(owner),
+      payload: {
+        type_key: 'passport',
+        title: 'Zebedee passport',
+        tags: ['travel', 'zeb'],
+        expires: { date: '2031-03-31', precision: 'month' },
+        owner_member_id: owner.member_id,
+      },
+    });
+    expect(made.statusCode).toBe(201);
+    const id = made.json<DocumentView>().id;
+    const plain = await search('policy');
+    const found = (await search('zebedee')).items.find((i) => i.document_id === id);
+    expect(found).toMatchObject({
+      expires: { date: '2031-03-31', precision: 'month' },
+      tags: ['travel', 'zeb'],
+    });
+    // None given, none said: never left out.
+    expect(plain.items[0]).toMatchObject({ expires: null, tags: ['house'] });
+  });
+
   it('finds words that only exist inside the document (OCR text)', async () => {
     // Stand in for the worker: write OCR text for a version directly.
     const form = new FormData();

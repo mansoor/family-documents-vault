@@ -3902,9 +3902,14 @@ export function installFakeApi(state: FakeState) {
           status: d.status,
           issued_by: d.issued_by ?? null,
           issued: d.issued ?? null,
+          // What it says of its expiry and tags (Phase 6), as the vault's search does.
+          expires: d.expires ?? null,
+          tags: (d.tags as string[] | undefined) ?? [],
           snippet: '',
           matched_in: 'title',
-        }));
+        }))
+        // Whose, as the vault's search narrows it.
+        .filter((h) => !query.get('member_id') || h.owner_member_id === query.get('member_id'));
       const from = query.get('issued_by');
       // The words inside doc-1's pages, while they are in the index: made
       // Only me, they move to the sealed table, out of the first pass.

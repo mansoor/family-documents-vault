@@ -652,6 +652,8 @@ export function Sheet(props: {
   busy: boolean;
   returnFocus: RefObject<HTMLElement | null>;
   onClose: () => void;
+  /** More of its look: a collection's Add documents is wide, and the whole of a phone (Phase 6). */
+  className?: string;
   children: ReactNode;
 }) {
   const box = useRef<HTMLElement>(null);
@@ -664,7 +666,7 @@ export function Sheet(props: {
     <div className="scrim" role="presentation">
       <section
         ref={box}
-        className="sheet"
+        className={props.className ? `sheet ${props.className}` : 'sheet'}
         role="dialog"
         aria-modal="true"
         aria-label={props.label}
