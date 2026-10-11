@@ -16,7 +16,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { alertsSent, createHarness, mailSent, TEST_MASTER, type Harness } from './test-harness.js';
 
 /**
- * The Phase 5 exit (5.41): every door, attacked together.
+ * The release's exit test: every door, attacked together. Written for the
+ * Phase 5 exit (5.41, as phase5-exit.test.ts), and the gate of every
+ * release since: for 0.7.0 (the Phase 6 exit) it holds the batches, the
+ * review queue, the learned rules and the Documents table's sorts and
+ * filters to the same rules, with their planted secrets.
  *
  * Phase 5 added kinds of caller the vault never had — a restricted viewer,
  * a guest, somebody holding a share link, somebody sending files to a
@@ -62,6 +66,38 @@ const LOCATION = 'Bedroom safe, top shelf, behind the shoebox';
 
 /** An issuer the vault learned from Ahmed's corrections (Phase 6, I4): his rules alone. */
 const AHMED_LEARNED = 'ahmed learned issuer 541';
+
+/**
+ * A tag on Ahmed's Only me document, and one among his batch's defaults
+ * (the Phase 6 exit): the Documents table filters by tag, and a search hit
+ * gives a document's tags (0.7.0-dev.13), so neither may reach anybody else.
+ */
+const AHMED_TAG = 'ahmed-private-tag-541';
+const BATCH_TAG = 'ahmed-batch-tag-541';
+
+/**
+ * The Documents table's sorts and filters (R2), each asked of every route
+ * sweep's attacker: a different query from the older list's, read and
+ * ordered by the caller's own rules. Its victims are the fill's collection
+ * and person.
+ */
+const TABLE_QUERIES = (f: Fill): string[] => [
+  '',
+  'sort=title&limit=200',
+  'sort=title&direction=desc&limit=200',
+  'sort=status&limit=200',
+  'sort=collections&limit=200',
+  'sort=visibility&limit=200',
+  'sort=person&member_id=none',
+  'sort=location&limit=200',
+  `sort=title&location=${encodeURIComponent(LOCATION)}`,
+  `sort=title&tag=${AHMED_TAG}`,
+  `sort=title&tag=${BATCH_TAG}`,
+  `sort=title&collection_id=${f.collection}`,
+  'sort=title&collection_id=none',
+  `sort=expires&member_id=${f.member}`,
+  'sort=title&status=expired',
+];
 
 const DAY = 24 * 60 * 60 * 1000;
 const inDays = (n: number) => new Date(Date.now() + n * DAY).toISOString();
@@ -202,6 +238,8 @@ interface Rule {
   /** Several bodies, each tried: for a route whose refusal depends on what is asked. */
   bodies?: (f: Fill) => unknown[];
   query?: (f: Fill) => string;
+  /** Several queries, each tried: for a route that answers differently by what is asked. */
+  queries?: (f: Fill) => string[];
   /** A multipart upload: a PDF, or a photo. */
   file?: 'pdf' | 'photo';
   /** It ends or changes the caller: tried after everything else. */
@@ -359,7 +397,8 @@ const RULES: Record<string, Rule> = {
   'POST /api/v1/auth/logout': { who: 'signedIn', body: () => ({}), last: true },
 
   // Documents.
-  'GET /api/v1/documents': { who: 'signedIn' },
+  // The older list, and the Documents table's every sort and filter (R2).
+  'GET /api/v1/documents': { who: 'signedIn', queries: TABLE_QUERIES },
   'POST /api/v1/documents': {
     who: 'family',
     body: (f) => ({ title: 'Attacker’s document', owner_member_id: f.member }),
@@ -388,9 +427,16 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/versions/:id/content': { who: 'signedIn' },
   'POST /api/v1/capture': { who: 'family', file: 'pdf' },
   'GET /api/v1/uploads/:key': { who: 'signedIn' },
-  'GET /api/v1/search': { who: 'signedIn', query: () => `q=${PAGE_WORD}` },
-  'GET /api/v1/search/sealed': { who: 'signedIn', query: () => `token=${PAGE_WORD}` },
-  'GET /api/v1/tags': { who: 'signedIn' },
+  // A hit gives its document's tags and expiry (0.7.0-dev.13).
+  'GET /api/v1/search': {
+    who: 'signedIn',
+    queries: () => [`q=${PAGE_WORD}`, `q=${AHMED_TAG}`, 'q=ahmed'],
+  },
+  'GET /api/v1/search/sealed': {
+    who: 'signedIn',
+    queries: () => [`token=${PAGE_WORD}`, `token=${AHMED_TAG}`],
+  },
+  'GET /api/v1/tags': { who: 'signedIn', queries: () => ['', 'q=ahmed'] },
   'GET /api/v1/issuers': { who: 'signedIn' },
   'GET /api/v1/document-types': { who: 'signedIn' },
   'GET /api/v1/document-attributes': { who: 'signedIn' },
@@ -740,7 +786,7 @@ function roleAllowed(who: Who, role: string): boolean {
   }
 }
 
-describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
+describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7.0)', () => {
   let h: Harness;
   let admin: ReturnType<typeof createPool>;
   let nth = 0;
@@ -922,6 +968,7 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
         owner_member_id: ahmed.member_id,
         notes: NOTE,
         extra: { vin: DETAIL },
+        tags: [AHMED_TAG],
       },
       ids.uploadKey,
     );
@@ -1070,7 +1117,11 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
     const batch = await ok(
       send(ahmed, 'POST', '/api/v1/batches', {
         name: 'AHMED-BATCH-541',
-        defaults: { physical_location: 'AHMED-BATCH-SHELF' },
+        defaults: {
+          physical_location: 'AHMED-BATCH-SHELF',
+          tags: [BATCH_TAG],
+          collection_id: ids.ahmedOnly,
+        },
       }),
       201,
     );
@@ -2027,6 +2078,76 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
     await h?.close();
   }, 30_000);
 
+  it('the Documents table sorts, filters and counts by nothing the caller may not see (the Phase 6 exit)', async () => {
+    const table = async (who: Tokens, query: string) => {
+      const res = await send(who, 'GET', `/api/v1/documents?${query}`);
+      const body =
+        res.statusCode === 200
+          ? json<{ items: Array<{ id: string }>; total: number }>(res)
+          : { items: [], total: -1 };
+      return { status: res.statusCode, ids: body.items.map((d) => d.id), total: body.total };
+    };
+    const priv = doc.ahmedPrivate as { id: string };
+    const tax = doc.ahmedTax as { id: string };
+    // The test of the test: Ahmed finds his own by its tag and his collection.
+    expect(await table(ahmed, `sort=title&tag=${AHMED_TAG}`)).toEqual({
+      status: 200,
+      ids: [priv.id],
+      total: 1,
+    });
+    expect(await table(ahmed, `sort=title&collection_id=${ids.ahmedOnly as string}`)).toEqual({
+      status: 200,
+      ids: [priv.id],
+      total: 1,
+    });
+    // …and the family finds the tax return by where it is kept.
+    expect(
+      (await table(olivia, `sort=title&location=${encodeURIComponent(LOCATION)}`)).ids,
+    ).toContain(tax.id);
+
+    const others: Array<[string, Tokens]> = [
+      ['an owner', olivia],
+      ['a password-only owner', peter],
+      ['another adult', sara],
+      ['a teen', tariq],
+      ['a limited viewer', vera],
+      ['a guest', jane],
+    ];
+    const problems: string[] = [];
+    for (const [name, who] of others) {
+      // Neither his Only me document's tag nor his collection gives a row, or a count.
+      for (const q of [
+        `sort=title&tag=${AHMED_TAG}`,
+        `sort=title&tag=${BATCH_TAG}`,
+        `sort=title&collection_id=${ids.ahmedOnly as string}`,
+      ]) {
+        const got = await table(who, q);
+        if (got.status >= 500 || got.ids.length > 0 || got.total > 0) {
+          problems.push(`${name}: ${q} → ${got.status}, ${got.total}`);
+        }
+      }
+      // Every sort is of the same documents: what the caller may see, never his.
+      for (const sort of ['title', 'status', 'collections', 'visibility', 'person', 'expires']) {
+        const got = await table(who, `sort=${sort}&limit=200`);
+        if (got.status !== 200 || got.ids.includes(priv.id) || got.total !== got.ids.length) {
+          problems.push(
+            `${name}: sort=${sort} → ${got.status}, ${got.total} for ${got.ids.length}`,
+          );
+        }
+      }
+      // Where the original is kept: a viewer, limited or not, and a guest
+      // neither sort nor filter by it (5.41), and so learn nothing of it.
+      const viewer = name === 'a limited viewer' || name === 'a guest';
+      for (const q of ['sort=location', `sort=title&location=${encodeURIComponent(LOCATION)}`]) {
+        const got = await table(who, q);
+        if (viewer ? got.status !== 422 : got.status !== 200) {
+          problems.push(`${name}: ${q} → ${got.status}`);
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+  });
+
   it('every route the router has has a rule, and every rule a route', () => {
     const routes = routeTable(h).map((r) => `${r.method} ${r.url}`);
     expect(routes.length).toBeGreaterThan(170);
@@ -2071,9 +2192,12 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
         const objectParam = params.some((p) => p.kind !== null && OBJECT_KINDS.has(p.kind));
         const expected = expectation(a, rule, objectParam);
         for (const fill of fillsFor(a, params, rule)) {
-          for (const body of rule.bodies ? rule.bodies(fill) : [rule.body?.(fill)]) {
-            const res = await attack(a, route, rule, fill, body);
-            results.push(judge(a, key, rule, expected, res));
+          const queries = rule.queries ? rule.queries(fill) : [rule.query?.(fill)];
+          for (const query of queries) {
+            for (const body of rule.bodies ? rule.bodies(fill) : [rule.body?.(fill)]) {
+              const res = await attack(a, route, rule, fill, body, query);
+              results.push(judge(a, key, rule, expected, res));
+            }
           }
         }
       }
@@ -2397,6 +2521,9 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
       // What the vault learned from his corrections (I4).
       AHMED_LEARNED,
       'boat_licence_541',
+      // A tag on his Only me document, and his batch's default tag (the Phase 6 exit).
+      AHMED_TAG,
+      BATCH_TAG,
     ];
     const outsideGrant = [
       ...secretsOf('will', 'deed', 'carInsurance'),
@@ -2559,7 +2686,14 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
     });
   }
 
-  async function attack(a: AttackerDef, route: Route, rule: Rule, fill: Fill, body: unknown) {
+  async function attack(
+    a: AttackerDef,
+    route: Route,
+    rule: Rule,
+    fill: Fill,
+    body: unknown,
+    query: string | undefined,
+  ) {
     const url =
       route.url
         .split('/')
@@ -2568,7 +2702,7 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
           const kind = kindOf(all[i - 1] ?? '', seg);
           return encodeURIComponent(kind ? fill[kind] : 'x');
         })
-        .join('/') + (rule.query ? `?${rule.query(fill)}` : '');
+        .join('/') + (query ? `?${query}` : '');
     const headers: Record<string, string> = {};
     if (a.tokens) headers.authorization = `Bearer ${a.tokens.access_token}`;
     let payload: unknown;
