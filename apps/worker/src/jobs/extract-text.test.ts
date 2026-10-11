@@ -3,14 +3,42 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import type * as WorkerThreads from 'node:worker_threads';
 import { ZipArchive } from 'archiver';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { proposeDetails } from '@fdv/shared';
 import { extractText, MAX_TEXT_CHARS } from './extract-text.js';
 import { detectTools, ocrImage } from './tools.js';
 import { NotWordError, WORD_MIME, wordText, wordXmlText } from './word-text.js';
 
 const run = promisify(execFile);
+
+/**
+ * Every thread a Word file's XML is turned into text on: when it started,
+ * when it answered (if it did), and its end. What the tests of that thread
+ * look at, rather than a clock (the test-stability round, Phase 6): on a
+ * busy machine a timer ticks slower and the same work takes longer.
+ */
+const threads = vi.hoisted(
+  () => [] as Array<{ started: number; answered?: number; exited: Promise<void> }>,
+);
+vi.mock('node:worker_threads', async (importOriginal) => {
+  const real = await importOriginal<typeof WorkerThreads>();
+  class Watched extends real.Worker {
+    constructor(...args: ConstructorParameters<typeof real.Worker>) {
+      super(...args);
+      const seen: (typeof threads)[number] = {
+        started: performance.now(),
+        exited: new Promise<void>((resolve) => this.once('exit', () => resolve())),
+      };
+      this.once('message', () => {
+        seen.answered = performance.now();
+      });
+      threads.push(seen);
+    }
+  }
+  return { ...real, Worker: Watched, default: { ...real, Worker: Watched } };
+});
 
 /**
  * 5.37: a file's words, read as cheaply as they can be. A PDF that carries
@@ -464,19 +492,27 @@ describe('extracting text (5.37)', () => {
         'word/document.xml': `<w:document ${W}><w:body>${para('Start')}${'<a '.repeat(3_000_000)}`,
       }),
     );
-    let ticks = 0;
-    const tick = setInterval(() => (ticks += 1), 5);
-    const started = Date.now();
+    const ticks: number[] = [];
+    const tick = setInterval(() => ticks.push(performance.now()), 5);
+    const before = threads.length;
     try {
+      // In time: the thread is stopped at TEXT_DEADLINE_MS, and this would
+      // be refused as taking too long.
       const text = await wordText(file);
       expect(text).toContain('Start');
     } finally {
       clearInterval(tick);
     }
-    const took = Date.now() - started;
-    expect(took).toBeLessThan(20_000);
-    // The event loop ran all the while: a tick every few milliseconds.
-    expect(ticks).toBeGreaterThan(Math.floor(took / 5 / 4));
+    // Read on a thread of its own, which answered...
+    expect(threads).toHaveLength(before + 1);
+    const thread = threads[before] as (typeof threads)[number];
+    expect(thread.answered).toBeDefined();
+    // ...while the event loop ran: it ticked while the thread worked, and
+    // not once only (an overdue tick runs as a blocked loop is let go). A
+    // count of ticks for the time it took failed on a busy machine, where
+    // a 5 ms timer ticks every 20 ms or more.
+    const whileItWorked = ticks.filter((t) => t > thread.started && t < (thread.answered ?? 0));
+    expect(whileItWorked.length).toBeGreaterThan(2);
   }, 60_000);
 
   it('turning XML into text stops at its deadline, whatever it is doing (P537-01)', async () => {
@@ -488,11 +524,18 @@ describe('extracting text (5.37)', () => {
         'word/document.xml': `<w:document ${W}><w:body>${para('Start').repeat(80_000)}</w:body></w:document>`,
       }),
     );
-    const started = Date.now();
+    const before = threads.length;
     await expect(wordText(file, { deadlineMs: 30 })).rejects.toThrow('took too long');
-    expect(Date.now() - started).toBeLessThan(5_000);
-    // Given the time, the same file is read.
+    // Stopped, not raced: the thread ended without ever answering. (Left
+    // to run, it would have answered before it ended.) A bound on the time
+    // the refusal took failed on a busy machine at 5.6 s, and could not
+    // tell a thread stopped from one left running.
+    const stopped = threads[before] as (typeof threads)[number];
+    await stopped.exited;
+    expect(stopped.answered).toBeUndefined();
+    // Given the time, the same file is read: its thread answers.
     expect(await wordText(file)).toContain('Start');
+    expect(threads[before + 1]?.answered).toBeDefined();
   }, 60_000);
 
   it('a Word file gives its text: its header, its body and its tables, then its footer', async () => {
