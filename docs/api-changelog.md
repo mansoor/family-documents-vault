@@ -15,10 +15,76 @@ against self-hosted servers that are months or years behind.
 4. The client declares its minimum server version; the server declares its
    minimum client version. Either side refusing says so in plain words.
 
+## 0.7.0
+
+The release on `main` after 0.4.5: there was no 0.6.0. Its candidate,
+0.6.0-rc.1, never went to `main`, and all of it is in 0.7.0, so a client
+moving from 0.4.5 reads the [0.6.0](#060) summary below as well as this one.
+This is what changed for API clients since 0.6.0-rc.1 (the 0.7.0-dev tags,
+Phase 6); each item is given in full under "After 0.6.0 (Phase 6)" in
+[Unreleased](#unreleased). Everything here is **additive** unless it says
+otherwise: nothing a 0.4.x or 0.6.0-rc.1 client calls is gone or answers
+differently when it is called as before. `min_client_version` stays `0.0.1`;
+the phone app still needs a vault of 0.4.10 or later, and its 0.3.0 needs
+0.7.0 for what it adds (`features.batches`).
+
+- **New `features`**, each `true` from 0.7.0: `document_table`, `batches`,
+  `batch_proposals`, `batch_review` and `batch_learning`. A client asks for
+  what they name only when they are there.
+- **Added: the Documents table** (`document_table`). `GET /api/v1/documents`
+  with a column sort (`sort=title|kind|person|issued|expires|status|
+visibility|collections|location`, `direction=asc|desc`) takes
+  `member_id=none`, `collection_id=<id>|none` and `location=<text>`, and
+  answers each page with `total` and each document with `collections`; its
+  `next_cursor` is signed and holds its sort. A sort or filter by location
+  is `422` for a viewer or a guest. Without a column sort the answer is as
+  it was, and the new parameters are refused (`422`) rather than ignored.
+- **Added: many documents at once** (`batches`), for whoever may add
+  documents (a viewer or a guest is `403`): `POST`/`GET /api/v1/batches`;
+  `GET`, `PATCH`, `DELETE /api/v1/batches/{id}`; `POST …/items` (one file a
+  request, an optional `Idempotency-Key`), `DELETE …/items/{itemId}`,
+  `POST …/items/{itemId}/accept` and `GET …/items/{itemId}/pages/{n}`. A
+  batch and its items are their uploader's alone: anybody else, an owner
+  included, is `404`, and nothing says they exist until an item is
+  accepted. New errors on these routes: `409 batch_ended`,
+  `422 batch_full`, `409 already_decided`, `409 upload_in_progress`.
+- **Added: what the vault reads and suggests** (`batch_proposals`): each
+  item's `reading`, `read_failure`, `level`, `tags`, `proposals` and
+  `clashes`, for its uploader. An accept still takes only what it is sent
+  and the batch's defaults.
+- **Added: the review queue** (`batch_review`): `POST
+/api/v1/batches/{id}/accept-ready` and `…/accept-ready/undo` (5 minutes),
+  and `GET /api/v1/batches?with=levels`.
+- **Added: learning from corrections** (`batch_learning`):
+  `GET` and `DELETE /api/v1/batches/learned`, the caller's own; a
+  proposal's `from` may be `learned`, and an item's tags `clash_learned`.
+- **Added fields**, absent from older vaults: `actor_member_id` and `kind`
+  on each line of `GET /api/v1/audit`; `expires` and `tags` on each hit of
+  `GET /api/v1/search` and `GET /api/v1/search/sealed`.
+- **Changed answers** (an error that was a `500`, or a race, now answered
+  plainly; a client that handled any error already handles these):
+  - a write naming a row that went while it waited (a document taken back
+    by an Undo as somebody put it in a collection, say) is
+    `409 gone_meanwhile`, never a `500`; nothing was changed;
+  - `POST /api/v1/documents/{id}/share` holds the document until the link
+    is made, so one removed meanwhile is `404`, as are a page, a download
+    or a phone's copy asked for meanwhile;
+  - `DELETE /api/v1/vaults/{id}` of a place that still keeps files is
+    `409 vault_has_files`;
+  - a share link's session request (`GET /api/v1/shared/items`,
+    `…/content`, `…/pages/{n}`) that found its session just as the link
+    ended is `404 link_not_valid`, as every request under way then is,
+    not `401 share_session_ended`; one that comes after is still `401`.
+- **`@fdv/client`'s session** waits out a short `Retry-After` when a
+  token renewal is answered `429`, at most twice, and reports `tooMany`.
+- **Nothing deprecated** since 0.6.0-rc.1: the token-in-path routes are
+  still removed in 0.9.0, as below.
+
 ## 0.6.0
 
-The Phase 5 release: the first on `main` since 0.4.5 (0.5.x were development
-tags). This is the summary for client authors; each item is given in full
+The Phase 5 release candidate (0.6.0-rc.1), which never went to `main`:
+everything in it is in [0.7.0](#070), the first release on `main` since
+0.4.5 (0.5.x were development tags). This is the summary for client authors; each item is given in full
 under "After 0.5.0 (Phase 5)" in [Unreleased](#unreleased). Nothing a 0.4.x
 client calls is gone: `min_client_version` stays `0.0.1`, and the phone app
 needs a vault of 0.4.10 or later.

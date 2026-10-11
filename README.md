@@ -6,7 +6,7 @@ Passports, birth certificates, licences, insurance policies, tax returns, bills.
 
 Built for people whose whole skill floor is _scan, upload, download_. You should never have to see the words bucket, key, schema or encryption unless you go looking.
 
-> **Status: 0.6.0.** The vault, its web app and its Android app are built in small, tested iterations. The [changelog](CHANGELOG.md) says what each release does, and [Upgrading](#upgrading) how to move from one to the next.
+> **Status: 0.7.0.** The vault, its web app and its Android app are built in small, tested iterations. The [changelog](CHANGELOG.md) says what each release does, and [Upgrading](#upgrading) how to move from one to the next.
 
 ---
 
@@ -301,10 +301,12 @@ last used, 180 days at most (see [Sign-in and sessions](#sign-in-and-sessions)).
 
 **Which versions work together.** The phone app needs a vault of **0.4.10 or later**;
 an older one is told so in both version numbers, with the way to [upgrade](#upgrading).
-The vault works with every version of the app released so far, the release-signed 0.3.0
-included: a newer vault adds to what it answers and never takes away within the
-deprecation window (see [`docs/api-changelog.md`](docs/api-changelog.md)), so an app
-that has not been updated keeps working, without what came after it.
+The vault works with every version of the app released so far: a newer vault adds to
+what it answers and never takes away within the deprecation window (see
+[`docs/api-changelog.md`](docs/api-changelog.md)), so an app that has not been updated
+keeps working, without what came after it. The app's 0.3.0 adds **Send to my Inbox**
+(a scan goes to your uploads, for the vault to read and you to accept on the web), which
+needs a vault of **0.7.0 or later**; with an older vault, 0.3.0 is as 0.2.3 was.
 
 ## Configuration
 
@@ -318,7 +320,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_MAX_UPLOAD_BYTES`                          | `104857600`                               | Largest single file the vault accepts (100 MB).                                                                                                                                                                         |
 | `FDV_OFFLINE_MAX_DAYS`                          | `90`                                      | How many days a phone may show the Essentials it keeps without reaching the vault (1 to 365). See [Essentials on a phone](#essentials-on-a-phone).                                                                      |
 | `FDV_RATE_LIMIT_PER_MINUTE`                     | `300`                                     | How many requests one address may make in a minute, beyond the tighter limits on signing in and opening links (60 to 100000). Raise it when many devices share one address.                                             |
-| `FDV_DISPLAY_NAME`                              | `Our family vault`                        | What your family calls the vault. Shown on every screen.                                                                                                                                                                |
+| `FDV_DISPLAY_NAME`                              | `Our family vault`                        | The vault's name until it is set up. From then on every screen, and the phone app, shows the family's name, given at setup.                                                                                             |
 | `FDV_PORT`                                      | `8080`                                    | The port the web app listens on.                                                                                                                                                                                        |
 | `LOG_LEVEL`                                     | `info`                                    | `fatal`, `error`, `warn`, `info`, `debug` or `trace`.                                                                                                                                                                   |
 | `FDV_VERSION`                                   | `latest`                                  | Image tag to run. Pin it to a release once you are past testing.                                                                                                                                                        |
@@ -366,6 +368,15 @@ docker run --rm -v fdv_vault-data:/from:ro -v /mnt/big/fdv:/to alpine sh -c "cp 
 ```
 
 Then add the override and start it again (`docker compose up -d`).
+
+Three more are read by the images and are not passed by `docker-compose.yml` either, and
+need no setting: `FDV_BACKUP_DIR` (default `/data/backups`), where the worker writes the
+nightly backups and where `restore-backup latest` looks; `FDV_EDITION` (default
+`self_hosted`), which the API reports to apps and which should stay as it is; and
+`FDV_MIGRATIONS_DIR` (`/app/migrations`, set by the images themselves), where the
+database's migrations are read from. `FDV_DB_PORT` (default `5432`) is for development
+only: the port `docker-compose.dev.yml` opens the database on (see
+[Developing](#developing)).
 
 Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/readyz` (it can reach the database).
 
@@ -535,8 +546,11 @@ _Sarah looked at "Passport"_.
 
 ### Reading a document
 
-Tap a document's preview to read it full size: its pages one at a time, fit to
-the window, larger with **+**, turned with the arrows (or the arrow keys).
+A document's page shows its pages beside its details on a wider screen (from 768
+pixels), turned with Previous and Next or Page Up and Page Down, and under its
+facts on a phone. **Read it full size** there, or a tap on the preview, opens
+them one at a time, fit to the window, larger with **+**, turned with the arrows
+(or the arrow keys).
 
 The worker draws the pages — JPEGs, 1600 pixels on the long edge, with no
 EXIF or location data — encrypted with the document's own key and stored
@@ -670,7 +684,7 @@ The restore drill restores the newest backup into a scratch database beside your
 
 A restore goes into an empty database, never over a vault that is running: it refuses to. It gives the vault's database user its privileges back, brings a backup from an older release up to date, and checks the result before it says it is done. It refuses a backup from a newer release than the one you run — restore that with the newer release (`FDV_VERSION`).
 
-**Everything since the backup was made is undone** — documents added since, and also passwords changed, people removed and share links revoked since. So pick the newest backup; afterwards everybody signs in again, with the password they had when it was made. Every share link is paused, since one you took back after the backup would otherwise work again: an owner turns back on the ones still wanted in **After a restore**, which Home leads to while anything is paused, and nobody else can, not even whoever made the link. They can take their own links back there. A link to somebody's Only me document, which no owner can see, stays paused: if it is still needed, they take it back and make a new one. At first only the owners can sign in: everybody else's sign-in is paused, since a lock an owner put on somebody after the backup would otherwise be undone, and an owner turns each back on, one tap each, in the same place. A sign-in that was locked when the backup was made stays locked until an owner unlocks it, even if the lock was due to end by itself. A link or a request somebody made works again only once both it and their sign-in are turned back on. The restore lists what else to look at.
+**Everything since the backup was made is undone** — documents added since, and also passwords changed, people removed and share links revoked since. So pick the newest backup; afterwards everybody signs in again, with the password they had when it was made. Every share link is paused, since one you took back after the backup would otherwise work again: an owner turns back on the ones still wanted in **After a restore**, which Home leads to while anything is paused, and nobody else can, not even whoever made the link. They can take their own links back there. A link to somebody's Only me document, which no owner can see, stays paused: if it is still needed, they take it back and make a new one. At first only the owners can sign in: everybody else's sign-in is paused, since a lock an owner put on somebody after the backup would otherwise be undone, and an owner turns each back on, one tap each, in the same place; that needs the owner's two-step sign-in or a passkey (Settings → Your account), so an owner without either sets one up first. A sign-in that was locked when the backup was made stays locked until an owner unlocks it, even if the lock was due to end by itself. A link or a request somebody made works again only once both it and their sign-in are turned back on. The restore lists what else to look at.
 
 **A document removed for good can come back from an older backup as a record, never as a file.** A backup holds only the database; an owner removing a document from the Trash for good deletes its files there and then. So a restore from a backup made before the removal brings its details back without its file: the restore looks for every file, lists the documents whose files are gone, and each of them says "The file was removed for good" when it is opened. An owner can remove such a record for good again, from the Trash. The restore also clears every request to remove a document for good: an owner who still wants one gone asks again, and whoever filed it has a day again.
 
@@ -726,7 +740,7 @@ A database restored by hand — loaded with `psql` from `decrypt-backup <file> o
 
 **Notifications work out of the box.** Open the vault, go to _Settings → Notifications_, and turn them on: the day's reminders arrive on that device even when the vault is closed. Nothing is configured, no account anywhere is involved, and the signing keys are generated into your `.env`. On iPhone and iPad, add the vault to the home screen first — Apple only allows notifications for installed web apps.
 
-**Email is optional and uses your own mail account.** Every other adult is told whenever an owner changes it, because everything the vault emails travels through it — and for the same reason no email ever names a private document, even to the person it belongs to; that is left to notifications, which are encrypted to your own device. An owner picks a provider (Gmail, Fastmail, iCloud, Outlook, Amazon SES, Postmark, or anything else with an SMTP server), pastes an address and an app password, and presses **Save and send a test**. A real message goes to your own address, and if it does not arrive the screen says why in plain words. Reminders then come from an address your family recognises, and no third party ever handles them.
+**Email is optional and uses your own mail account.** Every other adult is told whenever an owner changes it, because everything the vault emails travels through it — and for the same reason no email ever names a private document, even to the person it belongs to; that is left to notifications, which are encrypted to your own device. In **Settings → For owners → Where email comes from**, an owner picks a provider (Gmail, Fastmail, iCloud, Outlook, Amazon SES, Postmark, or anything else with an SMTP server), pastes an address and an app password, and presses **Save and send a test**. A real message goes to your own address, and if it does not arrive the screen says why in plain words. Reminders then come from an address your family recognises, and no third party ever handles them.
 
 Each person chooses what they want: the day's reminders on their devices, the same by email, and a summary every Sunday evening.
 
@@ -744,7 +758,7 @@ What the phone is sent says nothing a lock screen should not: _how many_ things 
 
 ### Where files are kept
 
-Setup creates a local vault on the server (the `fdv_vault-data` volume) and uses it straight away. An owner can add an S3-compatible bucket under **Where your files are kept**: pick the provider (Amazon S3, Backblaze B2, Wasabi, Cloudflare R2, DigitalOcean Spaces, MinIO, or anything with an S3 address), paste the bucket name and two keys, and press **Test and save**. The test writes a small object, reads it back and deletes it, and tells you in plain words what happened. A place that has not passed its test cannot be chosen.
+Setup creates a local vault on the server (the `fdv_vault-data` volume) and uses it straight away. An owner can add an S3-compatible bucket under **Settings → For owners → Where your files are kept**: pick the provider (Amazon S3, Backblaze B2, Wasabi, Cloudflare R2, DigitalOcean Spaces, MinIO, or anything with an S3 address), paste the bucket name and two keys, and press **Test and save**. The test writes a small object, reads it back and deletes it, and tells you in plain words what happened. A place that has not passed its test cannot be chosen.
 
 Objects are laid out as `<household>/<document>/<version>/<hash>.<ext>.enc`, with a version's thumbnail and page previews beside it (`….thumb.enc`, `….p1.enc`), so a bucket can always be read with the provider's own console — the files are ciphertext until the offline recovery tool (a later release) opens them with your recovery code.
 
@@ -812,14 +826,18 @@ If you ran that README's command exactly as written, it made the new key inside 
 
 Images are version-tagged, and `latest` is the newest release (a milestone or a fix to one — never a development build or a release candidate); set `FDV_VERSION` in your `.env` to stay on one version until you choose to move. Database migrations run automatically on start, and only forward: the way back from an upgrade is the image you had and the backup taken before it, restored with that image. An older release will not start on a database a newer one has upgraded (from 0.5.5; it says so in the API's and the worker's logs), because it would not see the documents in it. So take a backup first — `docker compose exec worker node apps/worker/dist/cli.mjs backup-now` — and if you ever need it, restore it as [above](#restoring). Breaking API changes are announced in [`docs/api-changelog.md`](docs/api-changelog.md) with a deprecation window of four minor releases, so an older mobile app keeps working against a newer server and vice versa.
 
-### From 0.4.5 to 0.6.0
+### From 0.4.5 to 0.7.0
 
-0.6.0 follows 0.4.5 as the release `latest` points to (the 0.5.x tags between them were
-development builds; from one of those, the same steps apply). Its migrations (`0022` to
-`0061`) run by themselves the first time the new API starts, in one go; nothing needs
-doing by hand. 0.4.5 has no guard against a database a newer release has upgraded, so
-**never start the 0.4.5 images on it again**: going back means restoring the backup below
-with them.
+0.7.0 follows 0.4.5 as the release `latest` points to. There was no 0.6.0: its release
+candidate, 0.6.0-rc.1, never became a release, and everything in it is in 0.7.0. The
+0.5.x and 0.7.0-dev tags between were development builds; from any of those, or from
+0.6.0-rc.1, the same steps apply. Its migrations (`0022` to `0065`) run by themselves the
+first time the new API starts, in one go; nothing needs doing by hand. 0.4.5 has no guard
+against a database a newer release has upgraded, so **never start the 0.4.5 images on it
+again**: going back means restoring the backup below with them.
+
+Run every command from the folder that holds your `docker-compose.yml` and `.env`, and
+give each the same `-f` files (and `--profile public-only`) you always use.
 
 1. **Take a backup, and copy it off the server**, with your `.env` beside it:
 
@@ -828,8 +846,12 @@ with them.
    ```
 
    It is written to `/data/backups` in the `fdv_vault-data` volume
-   (`fdv-<time>.sql.enc`); `docker compose cp worker:/data/backups ./backups` copies the
-   folder out.
+   (`fdv-<time>.sql.enc`, the time in UTC). This copies the folder out, as `./backups`
+   (run it while there is no `./backups` folder yet, or it lands in `./backups/backups`):
+
+   ```bash
+   docker compose cp worker:/data/backups ./backups
+   ```
 
 2. **Read the two changes that can break a 0.4.5 setup, and prepare for them first.**
    - **With the TLS overlay, `:8080` now answers this machine only** (it is bound to
@@ -845,47 +867,63 @@ with them.
      `FDV_TRUST_PROXY=private` does not bring the old behaviour back for a proxy in front of
      `:8080`.
 
+   Nothing else needs preparing: no setting was removed or renamed, and nothing an app or
+   a script of yours calls has gone (see the 0.7.0 and 0.6.0 summaries in
+   [`docs/api-changelog.md`](docs/api-changelog.md)). Bookmarks to the old Settings pages
+   (`/settings/sharing`, `/settings/trash` and the rest) still open, at their new places.
+
 3. **Bring the files beside `.env` up to the release.** The images are not all of it:
    `docker-compose.yml`, `docker-compose.tls.yml` and the `docker/` folder (the Caddy
-   files) come from your folder, and 0.4.5's would leave the new settings unpassed and the
-   TLS overlay as it was. In a clone (your `.env` is not in git, and stays):
+   files, and the database's first-start script) come from your folder, and 0.4.5's would
+   leave the new settings unpassed and the TLS overlay as it was. In a clone (your `.env`
+   and `./backups` are not in git, and stay):
 
    ```bash
-   git fetch --tags && git checkout v0.6.0
+   git fetch --tags && git checkout v0.7.0
    ```
 
    Otherwise download `docker-compose.yml`, `docker-compose.tls.yml`,
-   `docker-compose.dev.yml` and the `docker/` folder from the v0.6.0 release into the
+   `docker-compose.dev.yml` and the `docker/` folder from the v0.7.0 release into the
    folder, keeping `.env`. The TLS overlay now needs Docker Compose 2.24.4 or later
    (`docker compose version`), for its `!override`. If you run the public-only site, every
    `docker compose` command from here on takes `--profile public-only` too, with the
    overlay's `-f` files.
 
-4. **Rehearse the restore.** `docker compose exec worker sh scripts/restore-drill.sh`
-   restores the newest backup into a scratch database beside yours, checks it, and drops
-   it. To rehearse the upgrade itself, do the same with the new images in a project of its
-   own, which shares nothing with your vault but the backup file and `.env`:
+4. **Rehearse the restore.** The restore drill restores the newest backup into a scratch
+   database beside yours, checks it, and drops it:
 
    ```bash
-   FDV_VERSION=0.6.0 docker compose -p fdvrehearse -f docker-compose.yml pull api worker
-   FDV_VERSION=0.6.0 docker compose -p fdvrehearse -f docker-compose.yml up -d --wait postgres
-   FDV_VERSION=0.6.0 docker compose -p fdvrehearse -f docker-compose.yml run --rm --no-deps -v "$PWD/backups/fdv-<time>.sql.enc:/restore.sql.enc:ro" worker node apps/worker/dist/cli.mjs restore-backup /restore.sql.enc
-   docker compose -p fdvrehearse down -v
+   docker compose exec worker sh scripts/restore-drill.sh
    ```
 
-   It brings the 0.4.5 backup up to date and says what it found. Start no worker in a
-   rehearsal (it would send real reminders from restored data), and only ever use
-   `down -v` with `-p fdvrehearse`.
+   To rehearse the upgrade itself, restore the backup with the new images in a project of
+   its own, `fdvrehearse`, which shares nothing with your vault but the backup file and
+   `.env`. Name your backup's file in place of `fdv-<time>.sql.enc`:
 
-5. **Upgrade.** Set `FDV_VERSION=0.6.0` in `.env`, then:
+   ```bash
+   FDV_VERSION=0.7.0 docker compose -p fdvrehearse -f docker-compose.yml pull api worker
+   FDV_VERSION=0.7.0 docker compose -p fdvrehearse -f docker-compose.yml up -d --wait postgres
+   FDV_VERSION=0.7.0 docker compose -p fdvrehearse -f docker-compose.yml run --rm --no-deps -v "$PWD/backups/fdv-<time>.sql.enc:/restore.sql.enc:ro" worker node apps/worker/dist/cli.mjs restore-backup /restore.sql.enc
+   docker compose -p fdvrehearse -f docker-compose.yml down -v
+   ```
+
+   It brings the 0.4.5 backup up to date (`backup brought up to date`, with 44 migrations),
+   and ends by saying what it restored — households, people, documents, `database schema
+65` — and what a restore leaves to do. As the rehearsal has none of your files, it also
+   says they could not be looked for. Its last line says to start the vault: in a
+   rehearsal, don't. On Windows, in PowerShell, set the version first (`$env:FDV_VERSION = "0.7.0"`), leave
+   `FDV_VERSION=0.7.0` off each line and write `${PWD}` for `$PWD`; then
+   `Remove-Item Env:FDV_VERSION`. Start no worker in a rehearsal (it would send real
+   reminders from restored data), and only ever use `down -v` with `-p fdvrehearse`.
+
+5. **Upgrade.** Set `FDV_VERSION=0.7.0` in `.env`, then:
 
    ```bash
    docker compose pull
    docker compose up -d
    ```
 
-   Give every command the same `-f` files (and `--profile`) you always use. The API
-   migrates the database as it starts, and the worker and the web app wait for it.
+   The API migrates the database as it starts, and the worker and the web app wait for it.
 
    With the TLS overlay, start Caddy again too. It reads its Caddyfile only when its
    container starts, and `up -d` leaves a container whose own definition has not changed
@@ -898,20 +936,60 @@ with them.
    With the public-only site, add `--profile public-only` and name `caddy-public` after
    `caddy`.
 
-6. **What to look at afterwards.** Every document, person and setting is as it was. What
-   is new needs no setting, with three exceptions worth a minute: `FDV_SMTP_URL` (a mail
-   server of yours, for password-reset links and the codes a share link can ask for: see
-   [Passwords](#passwords)); `FDV_PUBLIC_URL` and the public-only site, for share links and
-   requests to send documents that reach people outside your network (see
+6. **Check that it took.** The API's log says how many migrations it ran (44, from 0.4.5),
+   and the vault says which version it is:
+
+   ```bash
+   docker compose logs api | grep migrate
+   curl -s http://localhost:8080/api/v1/capabilities   # or your FDV_PORT
+   ```
+
+   The first says `[migrate] 44 applied` (and `up to date` on every start after), and the
+   second starts `{"product":"family-document-vault","server_version":"0.7.0"`. Sign in:
+   every person, document, reminder and Only me document is as it was. A share link made
+   on 0.4.5 still opens, with its PIN, until it ends (its address is the old kind,
+   `/shared/…`, which 0.9.0 will stop answering). If you ever restore the backup from
+   step 1 on 0.7.0, as [Restoring](#restoring) says, everybody but the owners is paused
+   until an owner turns them back on, which needs that owner's two-step sign-in or a
+   passkey: an owner from 0.4.5 without either turns it on first.
+
+7. **What to look at afterwards.** What is new needs no setting, with three exceptions
+   worth a minute: `FDV_SMTP_URL` (a mail server of yours, for password-reset links and
+   the codes a share link can ask for: see [Passwords](#passwords)); `FDV_PUBLIC_URL` and
+   the public-only site, for share links and requests to send documents that reach people
+   outside your network (see
    [Links for people outside the family](#links-for-people-outside-the-family)); and
    two-step sign-in or a passkey for every owner, without which an owner cannot lock a
    sign-in, start a reset, sign somebody out everywhere, limit what a viewer sees, change
    another person's identity details, or decide whether Only me documents can be shared
    outside the family (Settings → Household; on unless an owner turns it off). Making a
-   document Only me now asks what becomes of your own links to it: they end, unless you keep
-   them. A viewer who already had a sign-in keeps seeing the
-   family's documents until an owner limits them (People → their name → Account); no viewer
-   sees birthdays, the household's answers, or where the paper originals are kept.
+   document Only me now asks what becomes of your own links to it: they end, unless you
+   keep them. A viewer who already had a sign-in keeps seeing the family's documents until
+   an owner limits them (People → their name → Account); no viewer sees birthdays, the
+   household's answers, or where the paper originals are kept.
+
+   **The settings that are new or changed since 0.4.5** (each is in
+   [Configuration](#configuration), with its default; none is needed):
+   - changed: `FDV_TRUST_PROXY` defaults to `network` (was `private`; step 2);
+     `FDV_SMTP_URL` also carries the codes a share link can ask for; the worker takes
+     every `LOG_LEVEL` the API does (`trace` and `fatal` too);
+   - new: `FDV_PUBLIC_URL`, `FDV_PUBLIC_HOSTNAME`, `FDV_PUBLIC_HTTPS_PORT` and
+     `FDV_PUBLIC_HTTP_PORT` (the public-only site), `FDV_SHARE_MAX_DAYS`,
+     `FDV_RATE_LIMIT_PER_MINUTE`, `FDV_OFFLINE_MAX_DAYS` and
+     `FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS` (the phone app), and `FDV_MASTER_KEY_PREVIOUS`
+     (given to a restore, never kept in `.env`).
+
+   **The web app has a new layout**: a sidebar from 1024 px (icons alone from 768 px, and
+   the bottom bar on a phone), with Documents as a table to sort, filter and act on many
+   at once, Inbox, Sharing, Activity and Trash each a page of their own, and Settings in
+   sections (Your account, Notifications, Household, Your data, For owners). **Add → Many
+   documents** sends up to 200 files at once into **Inbox → Your uploads**, where the vault
+   reads each, suggests what it is, and waits for you to accept it; nobody else sees them
+   until you do.
+
+   **The phone app.** Every version of the app works with 0.7.0. The app's 0.3.0 adds
+   **Send to my Inbox**, which needs a vault of 0.7.0 or later; with an older vault, 0.3.0
+   works as 0.2.3 did.
 
 ## Developing
 
