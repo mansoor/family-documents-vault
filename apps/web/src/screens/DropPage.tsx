@@ -662,7 +662,20 @@ function Opened({
   onOver: (message: string) => void;
 }) {
   const [session, setSession] = useState(first);
-  const [sending, setSending] = useState<Sending[]>([]);
+  const [sending, setSendingState] = useState<Sending[]>([]);
+  /**
+   * The files on their way as they are now, for what an answer settles and
+   * what Check again asks. Changed with them, never an effect later: an
+   * answer arriving between a render and its effects — a busy machine's
+   * gap — once found a file whose answer was lost still "on its way", left
+   * it unsettled for good and took Check again away (N522W2-1).
+   */
+  const sendingNow = useRef(sending);
+  const setSending = useCallback((change: Sending[] | ((all: Sending[]) => Sending[])) => {
+    const next = typeof change === 'function' ? change(sendingNow.current) : change;
+    sendingNow.current = next;
+    setSendingState(next);
+  }, []);
   const [note, setNote] = useState('');
   const [said, setSaid] = useState('');
   const [removing, setRemoving] = useState<string | null>(null);
@@ -682,8 +695,6 @@ function Opened({
   useEffect(() => {
     latest.current = session;
   }, [session]);
-  /** The files on their way as they are now, for what an answer settles. */
-  const sendingNow = useRef(sending);
   /**
    * The files the page knows are another upload's: answered for (201), or
    * already found as one whose answer was lost. Never taken for a file
@@ -691,9 +702,6 @@ function Opened({
    * after x.pdf went unanswered is not x.pdf, however alike.
    */
   const known = useRef(new Set<string>());
-  useEffect(() => {
-    sendingNow.current = sending;
-  }, [sending]);
   const name = session.requested_by;
 
   /** Says something in the page's one status line, and puts the focus there. */
@@ -757,7 +765,6 @@ function Opened({
           },
         ];
       });
-      sendingNow.current = next;
       setSending(next);
       const names = unknown.map((s) => `“${s.file.name}”`).join(', ');
       say(
@@ -767,7 +774,7 @@ function Opened({
       );
       return unknown.filter((s) => !arrived.has(s.key)).map((s) => s.file.name);
     },
-    [say],
+    [say, setSending],
   );
 
   const refresh = useCallback(async (): Promise<DropSession | null> => {
@@ -910,7 +917,7 @@ function Opened({
         }
       },
     );
-  }, [current, waiting, session.request_id, refresh, over, say]);
+  }, [current, waiting, session.request_id, refresh, over, say, setSending]);
 
   const choose = (itemId: string | null, chosen: FileList | null) => {
     if (!chosen || chosen.length === 0) return;
