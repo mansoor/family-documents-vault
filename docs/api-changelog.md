@@ -4147,6 +4147,13 @@ last_used }], rules_max }` — of their newest `window` (50) items read and
     the document says to whoever may see it, as `GET /documents/{id}`
     does. Absent from older vaults. Nothing else changes: who is found,
     and what may be put in a collection, is as it was.
+  - **Fixed (share sessions):** a session request (`GET /shared/items`,
+    `…/content`, `…/pages/{n}`) that had found its session just as its
+    link ended — taken back, locked, or its collection deleted or made
+    Only me — was answered `401 share_session_ended`, as if it had come
+    after; it is answered `404 link_not_valid`, as every request under way
+    as its link ends is (5.19). A request that comes once its session is
+    gone is `401 share_session_ended`, as before.
 
 ## Deprecations in effect
 
