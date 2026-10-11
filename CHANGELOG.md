@@ -6,6 +6,20 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-dev.15] - 2026-10-11 — Phase 6: the sidebar resizes and collapses
+
+### Added
+
+- **The sidebar can be resized** on screens 1024 px and wider:
+  - Drag its right edge, or focus the edge and use the arrow keys.
+  - Home or a double-click puts it back. It can be between 200 and 360 px wide.
+  - This device remembers the width.
+- **The sidebar can be collapsed** to its icons with the button at its foot:
+  - Collapsed, it opens over the page while you hover over it or move into it with the keyboard, and closes when you leave. Escape also closes it.
+  - The page doesn't move when it opens.
+  - This device remembers whether it was collapsed.
+- Middle widths and phones are unchanged.
+
 ## [0.7.0-dev.14] - 2026-10-11 — Phase 6: two races fixed, and steadier tests
 
 ### Fixed
