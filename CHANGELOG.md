@@ -6,6 +6,8 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-dev.13] - 2026-10-11 — Phase 6: add documents from a collection
+
 ### Added
 
 - **Add documents, from a collection's own page.** Whoever may put documents in a collection (the same people the ⋯ menu's **Add to a collection** offers it to) sees **Add documents** beside its heading. It opens a picker: a wide dialog from 768 px, the whole screen on a phone.
