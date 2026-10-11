@@ -1,8 +1,9 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 
 /**
  * The wide layouts (Phase 6, R5), on the real stack at 1280 × 800: the
- * shell's sidebar and `/`, the Documents table's sort and an action on
+ * shell's sidebar and `/`, the sidebar folded and opened on hover, the
+ * Documents table's sort and an action on
  * many, a collection's Add documents (Phase 6), a document's two panes,
  * and a batch of two files accepted through
  * the review queue. One file, one sign-in (signing in is limited to 10 a
@@ -126,6 +127,37 @@ test('the sidebar names each section, and / goes to the search box, every key ke
   await sections.getByRole('link', { name: 'Home' }).focus();
   await page.keyboard.press('n');
   await expect(page.getByRole('button', { name: 'Add' })).toBeFocused();
+});
+
+test('the sidebar folds to its icons, opens over the page while hovered, and opens again', async () => {
+  await visit(page, '/');
+  const sections = page.getByRole('navigation', { name: 'Sections' });
+  const content = page.locator('#main-content');
+  const widthOf = async (l: Locator) => Math.round((await l.boundingBox())?.width ?? 0);
+  const leftOf = async (l: Locator) => Math.round((await l.boundingBox())?.x ?? 0);
+  const open = await widthOf(sections);
+  await page.getByRole('button', { name: 'Collapse the sidebar' }).click();
+  const expand = page.getByRole('button', { name: 'Expand the sidebar' });
+  await expect(expand).toHaveAttribute('aria-expanded', 'false');
+  await page.mouse.move(800, 400);
+  await expect.poll(() => widthOf(sections)).toBe(72);
+  const left = await leftOf(content);
+  expect(left).toBe(72);
+
+  // Hovered, after a moment: its names, over the page, the page where it was.
+  await sections.hover();
+  await expect.poll(() => widthOf(sections)).toBe(open);
+  expect(await leftOf(content)).toBe(left);
+  // Away from it, after a moment: folded again.
+  await page.mouse.move(800, 400);
+  await expect.poll(() => widthOf(sections)).toBe(72);
+
+  await expand.click();
+  await expect(page.getByRole('button', { name: 'Collapse the sidebar' })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+  await expect.poll(() => leftOf(content)).toBe(open);
 });
 
 test('the Documents table sorts by a column, and moves two chosen to the Trash', async () => {
