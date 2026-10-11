@@ -350,11 +350,17 @@ describe('what the 5.35 survey found', () => {
       if (!offered) {
         expect(screen.getByText('Only an adult can export the whole vault.')).toBeVisible();
       }
-      // And a refused list of exports is never asked for.
-      expect(
-        state.calls.some((c) => c.url.startsWith('/api/v1/exports')),
-        role,
-      ).toBe(offered);
+      // And a refused list of exports is never asked for. The heading is drawn
+      // before the export's list is asked (an effect, after the token), so
+      // whoever may export is waited for: on a busy machine the heading came
+      // first and the list had not been asked yet. Whoever may not has no
+      // export section at all, so nothing is left to ask it later.
+      const askedForExports = () => state.calls.some((c) => c.url.startsWith('/api/v1/exports'));
+      if (offered) {
+        await waitFor(() => expect(askedForExports(), role).toBe(true));
+      } else {
+        expect(askedForExports(), role).toBe(false);
+      }
       shown.unmount();
     }
   });
