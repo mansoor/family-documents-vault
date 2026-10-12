@@ -6,6 +6,29 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.8.0-dev.2] - 2026-10-12 — invite family members to sign up
+
+### Added
+
+- **Inviting family members to sign up.**
+  - **When you add someone** aged 13 or over, tick **Invite them to sign up now** to add their email and the role their age allows. For 13 to 17 that is Teen. For 18 and over it is Adult or Viewer, as you may hand out.
+  - **Later, from their page:** use **Invite to sign up**.
+  - **On Invite, after Family:** **Who is it for?** lists the family members who don't sign in yet.
+- **Owners are reminded when a child turns 13** and could have their own sign-in: "Sara is 13 today", on Home, with Invite and Dismiss. The daily email says only that someone in the family can now have their own sign-in.
+
+### Changed
+
+- **The vault holds the age rules itself.**
+  - Nobody under 13 can be given a sign-in.
+  - 13 to 17 only as a Teen, and 18 and over never as a Teen.
+  - An invitation that suited the person's age when it was made stays good.
+  - Only an owner can change the date of birth of a child under 13 who doesn't sign in.
+- **An invitation that has expired or been locked no longer stops a new one** being made.
+
+### Database
+
+- **Migration 0066** adds the turned-13 reminder, which only owners can see.
+
 ## [0.8.0-dev.1] - 2026-10-12 — after 0.7.0: a light count, and a quicker token
 
 ### Added
