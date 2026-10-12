@@ -3,6 +3,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type RefObject,
   type CSSProperties,
   type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -33,6 +34,17 @@ export const BIG_STEP = 48;
 export const PEEK_OPEN_MS = 150;
 /** …and away from it this long before it folds again (a move on the slant does not flicker). */
 export const PEEK_CLOSE_MS = 300;
+/**
+ * Folding and opening again take this long (styles.css: the sidebar's
+ * width and the page's start move together). The shell is moving until the
+ * page's start has arrived; or, where nothing moves (prefers-reduced-motion)
+ * or a busy page held it up, at the latest this long after: a move is never
+ * cut short by the clock.
+ */
+export const MOVE_MS = 200;
+export const MOVING_AT_MOST_MS = 600;
+/** The page's start arriving (styles.css's `@keyframes side-shift`). */
+export const MOVE_NAME = 'side-shift';
 
 export const WIDTH_KEY = 'fdv.sidebar.width';
 export const COLLAPSED_KEY = 'fdv.sidebar.collapsed';
@@ -112,14 +124,23 @@ export interface Sidebar {
   toggle: () => void;
 }
 
-export function useSidebar(mode: ShellMode): Sidebar {
+/**
+ * `page` is the page beside it (the shell's `.shell-main`), whose start
+ * moves with it as it folds and opens.
+ */
+export function useSidebar(mode: ShellMode, page: RefObject<HTMLDivElement | null>): Sidebar {
   const viewport = useSyncExternalStore(watchViewport, viewportWidth, () => 1280);
   const [chosen, setChosen] = useState(storedWidth);
   const [collapsed, setCollapsed] = useState(storedCollapsed);
   const [hoverOpen, setHoverOpen] = useState(false);
   const [focusOpen, setFocusOpen] = useState(false);
   const [resizing, setResizing] = useState(false);
+  // Folded or opened a moment ago, until the page's start is there; and how
+  // far it comes (from the right, folding; from the left, opening).
+  const [moving, setMoving] = useState(false);
+  const [shift, setShift] = useState(0);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const moved = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // A press on the rail moves focus into it too: that is the pointer's, not
   // the keyboard's, and the rail folds again when the pointer leaves.
   const pressed = useRef(false);
@@ -141,6 +162,21 @@ export function useSidebar(mode: ShellMode): Sidebar {
     timer.current = undefined;
   };
   useEffect(() => stop, []);
+  useEffect(() => () => clearTimeout(moved.current), []);
+
+  // The page's start arrived where it was going: no longer moving. Its own
+  // move, not one inside it (a spinner's turn) bubbling up.
+  useEffect(() => {
+    const el = page.current;
+    if (!el) return;
+    const arrived = (e: AnimationEvent) => {
+      if (e.target !== el || e.animationName !== MOVE_NAME) return;
+      clearTimeout(moved.current);
+      setMoving(false);
+    };
+    el.addEventListener('animationend', arrived);
+    return () => el.removeEventListener('animationend', arrived);
+  }, [page]);
 
   // Escape folds it while it is open over the page (WCAG 1.4.13), wherever
   // focus is: the pointer may be resting on it while the keys are elsewhere.
@@ -199,12 +235,16 @@ export function useSidebar(mode: ShellMode): Sidebar {
     widest,
     resizing,
     shellClass: wide
-      ? `${collapsed ? ' side-collapsed' : ''}${peek ? ' side-peek' : ''}${resizing ? ' side-resizing' : ''}`
+      ? `${collapsed ? ' side-collapsed' : ''}${peek ? ' side-peek' : ''}${resizing ? ' side-resizing' : ''}${moving ? ' side-moving' : ''}`
       : '',
+    // The last move's distance stays when it is over: put, and taken away,
+    // a value every element under the shell inherits would have each of
+    // them looked at again, for nothing (measured).
     shellStyle: wide
       ? ({
           '--side-w': `${collapsed ? RAIL : width}px`,
           '--side-open-w': `${width}px`,
+          '--side-shift': `${shift}px`,
         } as CSSProperties)
       : undefined,
     navProps,
@@ -220,6 +260,12 @@ export function useSidebar(mode: ShellMode): Sidebar {
       setFocusOpen(false);
       setCollapsed(!collapsed);
       write(COLLAPSED_KEY, collapsed ? null : '1');
+      // The page is laid out once, where it ends up, and its start comes
+      // there from where it was: nothing in it wraps again on the way.
+      setShift(collapsed ? RAIL - width : width - RAIL);
+      setMoving(true);
+      clearTimeout(moved.current);
+      moved.current = setTimeout(() => setMoving(false), MOVING_AT_MOST_MS);
     },
   };
 }

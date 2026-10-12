@@ -2240,11 +2240,12 @@ fieldset.identity-section {
 }
 
 /* ---- Phase 6, R1: the app's shell ----
-   One layout around every signed-in screen (shell.tsx): a sidebar and a bar
-   on top from 768 px (the sidebar its icons alone below 1024 px), and on a
-   phone a bar with the menu on top and today's bar at the bottom. The page
-   scrolls as a whole; what sticks to its top sits under the bar there
-   (--shell-top), and the reader is the window less the shell (--shell-chrome). */
+   One layout around every signed-in screen (shell.tsx): from 768 px a bar
+   on top across the whole window, and under it a sidebar (its icons alone
+   below 1024 px) beside the page; on a phone a bar with the menu on top and
+   today's bar at the bottom. The page scrolls as a whole; what sticks to its
+   top sits under the bar there (--shell-top), and the reader is the window
+   less the shell (--shell-chrome). */
 .shell {
   --shell-top: 0px;
   --shell-chrome: 0px;
@@ -2259,10 +2260,18 @@ fieldset.identity-section {
   /* From 1024 px, as wide as it was dragged, or the rail's when folded:
      the shell says which (sidebar.tsx). */
   grid-template-columns: var(--side-w, 216px) minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
 }
 
 .shell-mid {
   grid-template-columns: 72px minmax(0, 1fr);
+}
+
+/* The bar on top, the window's whole width (the owner's ask): the sidebar
+   and the page under it. */
+.shell-wide > .app-bar,
+.shell-mid > .app-bar {
+  grid-column: 1 / -1;
 }
 
 .shell-phone {
@@ -2305,17 +2314,18 @@ html:has(.shell-phone) {
   top: 12px;
 }
 
-/* The sidebar: the household, the sections, and Settings at the foot. */
+/* The sidebar, under the bar on top: the sections, and Settings at the foot. */
 .sidebar {
   position: sticky;
-  top: 0;
-  height: 100dvh;
+  top: var(--shell-top);
+  align-self: start;
+  height: calc(100dvh - var(--shell-top));
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   background: var(--surface);
   border-right: 1px solid var(--border);
-  padding: 18px 12px 14px;
+  padding: 14px 12px;
 }
 
 .brand {
@@ -2430,14 +2440,6 @@ html:has(.shell-phone) {
   z-index: 25;
 }
 
-.shell-mid .brand {
-  padding: 2px 0 16px;
-}
-
-.shell-mid .brand-words {
-  display: none;
-}
-
 .shell-mid .side-link {
   width: 48px;
   justify-content: center;
@@ -2481,16 +2483,39 @@ html:has(.shell-phone) {
 
 /* From 1024 px (the owner's ask): the sidebar's edge, to drag or to move
    with the arrow keys; and folded, its icons alone, the whole of it opening
-   over the page while hovered or focused. Nothing moves on its own: it is
-   open, or not (prefers-reduced-motion has nothing to stop). */
+   over the page while hovered or focused. Folding and opening move, briefly
+   (below); a drag does not. */
+.shell-wide .sidebar {
+  /* Its own width, not only its column's, so that the width can move. */
+  width: var(--side-w);
+  overflow-x: hidden;
+  /* Over whatever the page positions, as the rail at 768–1023 px is. */
+  z-index: 25;
+}
+
+/* Each icon where it is folded too (the rail's middle), so that nothing in
+   it moves sideways as it folds or opens. */
+.shell-wide .side-link {
+  padding: 8px 12px 8px 14px;
+}
+
+/* Open, its sections are its open width already: as it opens they are
+   uncovered, not squeezed and wrapped on the way. */
+.shell-wide:not(.side-collapsed) .side-list,
+.shell-wide:not(.side-collapsed) .side-foot-wide,
+.side-peek .side-list,
+.side-peek .side-foot-wide {
+  min-width: calc(var(--side-open-w) - 24px);
+}
+
 .side-resize {
   position: fixed;
-  top: 0;
+  top: var(--shell-top);
   bottom: 0;
   left: calc(var(--side-w) - 6px);
   width: 12px;
-  /* Over the bar on top (30), which it overlaps by its half; under menus (40). */
-  z-index: 31;
+  /* Over the page beside it; under the bar on top (30) and menus (40). */
+  z-index: 26;
   cursor: col-resize;
   touch-action: none;
 }
@@ -2548,19 +2573,6 @@ html:has(.shell-phone) {
 
 /* Folded: the icons alone, as the rail at 768–1023 px; the names are heard,
    and seen when it opens. */
-.side-collapsed:not(.side-peek) .sidebar {
-  padding: 16px 10px;
-  align-items: center;
-}
-
-.side-collapsed:not(.side-peek) .brand {
-  padding: 2px 0 16px;
-}
-
-.side-collapsed:not(.side-peek) .brand-words {
-  display: none;
-}
-
 .side-collapsed:not(.side-peek) .side-link {
   width: 48px;
   justify-content: center;
@@ -2579,21 +2591,79 @@ html:has(.shell-phone) {
 
 /* Open over the page: its own width again, the page beside it where it was
    (the column stays the rail's), and a shadow to say it is above it. Over
-   the bar on top (30), under menus (40) and sheets (50). */
+   the page and the bar on top (30), under menus (40) and sheets (50). */
 .side-peek .sidebar {
   width: var(--side-open-w);
   z-index: 35;
   box-shadow: 0 8px 24px var(--scrim);
 }
 
-/* The bar on top: search, Add, and the account menu. */
+/* Moving (the owner's ask). Opened over the page and folded again, it
+   slides, in 150 ms: only its width, the page under it still. */
+.side-collapsed .sidebar {
+  transition:
+    width 150ms ease-out,
+    box-shadow 150ms ease-out;
+}
+
+/* Folded or opened again from its foot, in 200 ms: its width, and the
+   page's start with it. The page is laid out once, where it ends up, and
+   only its start moves there (sidebar.tsx says from where): nothing in it
+   wraps again on the way, and it is cut at the window's edge meanwhile,
+   never scrolled sideways. */
+.side-moving {
+  overflow-x: clip;
+}
+
+.side-moving .sidebar {
+  transition: width 200ms ease-out;
+}
+
+.side-moving .shell-main {
+  position: relative;
+  animation: side-shift 200ms ease-out;
+}
+
+@keyframes side-shift {
+  from {
+    left: var(--side-shift, 0px);
+  }
+
+  to {
+    left: 0;
+  }
+}
+
+/* Dragged, it follows the pointer at once. */
+.side-resizing .sidebar {
+  transition: none;
+}
+
+.side-resizing .shell-main {
+  animation: none;
+}
+
+/* And for whoever asks for less motion, nothing moves: it is open, or not. */
+@media (prefers-reduced-motion: reduce) {
+  .shell .sidebar,
+  .shell .shell-main {
+    transition: none;
+    animation: none;
+  }
+}
+
+/* The page beside the sidebar, under the bar on top. */
 .shell-main {
   min-width: 0;
   display: flex;
   flex-direction: column;
 }
 
+/* The bar on top: the household, search, Add, and the account menu. */
 .app-bar {
+  /* The household's name at its left, as wide whatever the sidebar under it
+     does; at 768–1023 px narrower, and the name alone. */
+  --brand-w: 209px;
   position: sticky;
   top: 0;
   z-index: 30;
@@ -2601,13 +2671,45 @@ html:has(.shell-phone) {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 24px;
+  /* The mark over the sidebar's icons (their middle 36 px in). */
+  padding: 0 24px 0 19px;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
 
 .shell-mid .app-bar {
-  padding: 0 20px;
+  --brand-w: 200px;
+  padding: 0 20px 0 19px;
+}
+
+/* Each line on one: a long name ends in "…" (its title and its words say
+   the whole of it). */
+.app-bar .brand {
+  flex: none;
+  width: var(--brand-w);
+  min-width: 0;
+  padding: 0;
+  border-radius: var(--radius-s);
+}
+
+.app-bar .brand-name,
+.app-bar .brand-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-bar .brand-name {
+  line-height: 1.25;
+}
+
+.shell-mid .brand-sub {
+  display: none;
+}
+
+.app-bar .brand:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
 }
 
 .app-bar-gap {

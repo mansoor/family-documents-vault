@@ -135,19 +135,36 @@ test('the sidebar folds to its icons, opens over the page while hovered, and ope
   const content = page.locator('#main-content');
   const widthOf = async (l: Locator) => Math.round((await l.boundingBox())?.width ?? 0);
   const leftOf = async (l: Locator) => Math.round((await l.boundingBox())?.x ?? 0);
+  const topOf = async (l: Locator) => Math.round((await l.boundingBox())?.y ?? 0);
+  // The bar on top across the window, the household's name in it and not
+  // in the sidebar, which starts under it (0.7.0).
+  const bar = page.getByRole('banner');
+  await expect(bar).toHaveCount(1);
+  expect(await leftOf(bar)).toBe(0);
+  expect(await widthOf(bar)).toBe(
+    await page.evaluate<number>('document.documentElement.clientWidth'),
+  );
+  const brand = bar.getByRole('link', { name: /Family Document Vault$/ });
+  await expect(brand).toBeVisible();
+  await expect(sections.getByText('Family Document Vault')).toHaveCount(0);
+  expect(await topOf(sections)).toBe(64);
+  const brandAt = await brand.boundingBox();
   const open = await widthOf(sections);
   await page.getByRole('button', { name: 'Collapse the sidebar' }).click();
   const expand = page.getByRole('button', { name: 'Expand the sidebar' });
   await expect(expand).toHaveAttribute('aria-expanded', 'false');
   await page.mouse.move(800, 400);
   await expect.poll(() => widthOf(sections)).toBe(72);
+  await expect.poll(() => leftOf(content)).toBe(72);
   const left = await leftOf(content);
-  expect(left).toBe(72);
+  // The household's name has not moved.
+  expect(await brand.boundingBox()).toEqual(brandAt);
 
   // Hovered, after a moment: its names, over the page, the page where it was.
   await sections.hover();
   await expect.poll(() => widthOf(sections)).toBe(open);
   expect(await leftOf(content)).toBe(left);
+  expect(await brand.boundingBox()).toEqual(brandAt);
   // Away from it, after a moment: folded again.
   await page.mouse.move(800, 400);
   await expect.poll(() => widthOf(sections)).toBe(72);
@@ -158,6 +175,7 @@ test('the sidebar folds to its icons, opens over the page while hovered, and ope
     'true',
   );
   await expect.poll(() => leftOf(content)).toBe(open);
+  expect(await brand.boundingBox()).toEqual(brandAt);
 });
 
 test('the Documents table sorts by a column, and moves two chosen to the Trash', async () => {
