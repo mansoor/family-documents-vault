@@ -149,6 +149,9 @@ test('the sidebar folds to its icons, opens over the page while hovered, and ope
   await expect(sections.getByText('Family Document Vault')).toHaveCount(0);
   expect(await topOf(sections)).toBe(64);
   const brandAt = await brand.boundingBox();
+  // As wide as the household's name, between 209 and 360 px.
+  expect(brandAt?.width).toBeGreaterThanOrEqual(209);
+  expect(brandAt?.width).toBeLessThanOrEqual(360);
   const open = await widthOf(sections);
   await page.getByRole('button', { name: 'Collapse the sidebar' }).click();
   const expand = page.getByRole('button', { name: 'Expand the sidebar' });

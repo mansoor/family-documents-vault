@@ -2606,6 +2606,12 @@ html:has(.shell-phone) {
     box-shadow 150ms ease-out;
 }
 
+/* Keyboard focus gone from it to the page: folded at once, so that what
+   has focus now is never under it (WCAG 2.4.11; sidebar.tsx). */
+.side-shut-now .sidebar {
+  transition: none;
+}
+
 /* Folded or opened again from its foot, in 200 ms: its width, and the
    page's start with it. The page is laid out once, where it ends up, and
    only its start moves there (sidebar.tsx says from where): nothing in it
@@ -2661,9 +2667,11 @@ html:has(.shell-phone) {
 
 /* The bar on top: the household, search, Add, and the account menu. */
 .app-bar {
-  /* The household's name at its left, as wide whatever the sidebar under it
-     does; at 768–1023 px narrower, and the name alone. */
-  --brand-w: 209px;
+  /* The household's name at its left, as wide as the name (no narrower
+     than 209 px, no wider than 360), whatever the sidebar under it does;
+     at 768–1023 px 200 px, and the name alone. */
+  --brand-min: 209px;
+  --brand-max: 360px;
   position: sticky;
   top: 0;
   z-index: 30;
@@ -2678,16 +2686,19 @@ html:has(.shell-phone) {
 }
 
 .shell-mid .app-bar {
-  --brand-w: 200px;
+  --brand-min: 200px;
+  --brand-max: 200px;
   padding: 0 20px 0 19px;
 }
 
-/* Each line on one: a long name ends in "…" (its title and its words say
-   the whole of it). */
+/* Each line on one: a name longer than the most it has ends in "…" (its
+   title and its words say the whole of it). Its width is the name's own,
+   never the sidebar's. */
 .app-bar .brand {
   flex: none;
-  width: var(--brand-w);
-  min-width: 0;
+  width: max-content;
+  min-width: var(--brand-min);
+  max-width: var(--brand-max);
   padding: 0;
   border-radius: var(--radius-s);
 }

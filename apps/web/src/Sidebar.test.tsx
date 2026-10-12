@@ -607,7 +607,8 @@ const banners = () =>
 /**
  * Where the household's name sits, as a browser lays it out: the bar from
  * the window's left edge (a row of the shell's grid of its own, across both
- * columns), its padding, then the brand, first in it, as wide as it says.
+ * columns), its padding, then the brand, first in it, as wide as its own
+ * words between its least and its most: nothing of the sidebar's in it.
  */
 function brandPlace() {
   const header = bar();
@@ -617,9 +618,13 @@ function brandPlace() {
     barColumns: getComputedStyle(header).gridColumn,
     barPadding: resolved(header, 'padding-left'),
     brandFirst: header.firstElementChild === name,
-    brandWidth: resolved(name, 'width'),
+    brandWidth: brandSize(name),
   };
 }
+
+/** How the brand's width is decided: its own, its least, its most. */
+const brandSize = (link: HTMLElement) =>
+  ['width', 'min-width', 'max-width'].map((p) => resolved(link, p)).join(' / ');
 
 describe('the bar on top, across the window (the owner’s ask)', () => {
   it.each([
@@ -685,7 +690,9 @@ describe('the bar on top, across the window (the owner’s ask)', () => {
       barColumns: '1 / -1',
       barPadding: '19px',
       brandFirst: true,
-      brandWidth: '209px',
+      // The name's own width (Chromium: 209 px for "The Seikh family", the
+      // long test name 360 and cut; the harness's report.json).
+      brandWidth: 'max-content / 209px / 360px',
     });
     drag(216, 0);
     expect(now()).toBe(200);
@@ -717,8 +724,8 @@ describe('the bar on top, across the window (the owner’s ask)', () => {
     }
     expect(name).toHaveAttribute('title', LONG);
     expect(sub).toHaveAttribute('title', 'Family Document Vault');
-    // Its words in a box no wider than its own, whatever the name.
-    expect(resolved(link, 'width')).toBe('209px');
+    // As wide as its words, up to 360 px: beyond that, "…".
+    expect(brandSize(link)).toBe('max-content / 209px / 360px');
     // Neither squeezed by the search box nor grown (`flex: none`).
     expect(getComputedStyle(link).flex).toBe('0 0 auto');
     expect(getComputedStyle(link.querySelector('.brand-words') as HTMLElement).minWidth).toBe(
@@ -733,7 +740,8 @@ describe('the bar on top, across the window (the owner’s ask)', () => {
     expect(getComputedStyle(within(link).getByText('Family Document Vault')).display).toBe('none');
     expect(getComputedStyle(within(link).getByText(LONG)).whiteSpace).toBe('nowrap');
     expect(within(link).getByText(LONG)).toHaveAttribute('title', LONG);
-    expect(resolved(link, 'width')).toBe('200px');
+    // 200 px whatever the name.
+    expect(brandSize(link)).toBe('max-content / 200px / 200px');
     // Wide, both lines.
     cleanup();
     await loaded();
@@ -862,6 +870,53 @@ describe('folding and opening move, smoothly (the owner’s ask)', () => {
     expect(sideMoves()).toMatch(/^width 150ms ease-out/);
     // Above the page while it shuts, as it was open.
     expect(Number(getComputedStyle(nav()).zIndex)).toBeGreaterThan(0);
+  });
+
+  it('keyboard focus leaving it folds it at once: what has focus is never under it (WCAG 2.4.11)', async () => {
+    await loaded({ 'fdv.sidebar.collapsed': '1', 'fdv.sidebar.width': '280' });
+    const home = within(nav()).getByRole('link', { name: 'Home' });
+    act(() => home.focus());
+    expect(peeking()).toBe(true);
+    // Opening by the keys still slides.
+    expect(sideMoves()).toMatch(/^width 150ms ease-out/);
+    // Along it: still open, still sliding.
+    act(() => within(nav()).getByRole('link', { name: 'Documents' }).focus());
+    expect(peeking()).toBe(true);
+    expect(shell()).not.toHaveClass('side-shut-now');
+    // Out of it, to the page: folded, with nothing to wait for.
+    const heading = screen.getByRole('heading', { level: 1 });
+    heading.setAttribute('tabindex', '-1');
+    act(() => heading.focus());
+    expect(peeking()).toBe(false);
+    expect(shell()).toHaveClass('side-shut-now');
+    expect(sideMoves()).toBe('none');
+    // Into it again: it slides open as before.
+    act(() => home.focus());
+    expect(peeking()).toBe(true);
+    expect(shell()).not.toHaveClass('side-shut-now');
+    expect(sideMoves()).toMatch(/^width 150ms ease-out/);
+  });
+
+  it('a pointer leaving it, even after the keys left it, keeps its moment and its ease', async () => {
+    await loaded({ 'fdv.sidebar.collapsed': '1' });
+    const home = within(nav()).getByRole('link', { name: 'Home' });
+    act(() => home.focus());
+    const heading = screen.getByRole('heading', { level: 1 });
+    heading.setAttribute('tabindex', '-1');
+    act(() => heading.focus());
+    expect(sideMoves()).toBe('none');
+    vi.useFakeTimers();
+    fireEvent.pointerEnter(nav(), { pointerType: 'mouse' });
+    pass(150);
+    expect(peeking()).toBe(true);
+    expect(sideMoves()).toMatch(/^width 150ms ease-out/);
+    fireEvent.pointerLeave(nav(), { pointerType: 'mouse' });
+    pass(290);
+    expect(peeking()).toBe(true);
+    pass(10);
+    expect(peeking()).toBe(false);
+    expect(shell()).not.toHaveClass('side-shut-now');
+    expect(sideMoves()).toMatch(/^width 150ms ease-out/);
   });
 
   it('opening, its sections are already their open width: uncovered, not wrapped on the way', async () => {

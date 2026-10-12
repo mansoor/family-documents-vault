@@ -139,6 +139,10 @@ export function useSidebar(mode: ShellMode, page: RefObject<HTMLDivElement | nul
   // far it comes (from the right, folding; from the left, opening).
   const [moving, setMoving] = useState(false);
   const [shift, setShift] = useState(0);
+  // Keyboard focus left it: it folds at once, not over 150 ms, so that what
+  // focus went to is never under it, even for a moment (WCAG 2.4.11). A
+  // pointer leaving still has its moment and its ease.
+  const [shutAtOnce, setShutAtOnce] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const moved = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // A press on the rail moves focus into it too: that is the pointer's, not
@@ -202,7 +206,10 @@ export function useSidebar(mode: ShellMode, page: RefObject<HTMLDivElement | nul
     onPointerLeave: (e) => {
       if (!rail || e.pointerType === 'touch') return;
       stop();
-      timer.current = setTimeout(() => setHoverOpen(false), PEEK_CLOSE_MS);
+      timer.current = setTimeout(() => {
+        setHoverOpen(false);
+        setShutAtOnce(false);
+      }, PEEK_CLOSE_MS);
     },
     onPointerDown: () => {
       pressed.current = true;
@@ -219,6 +226,7 @@ export function useSidebar(mode: ShellMode, page: RefObject<HTMLDivElement | nul
       const to = e.relatedTarget;
       if (to instanceof Node && e.currentTarget.contains(to)) return;
       setFocusOpen(false);
+      setShutAtOnce(true);
     },
   };
 
@@ -235,7 +243,7 @@ export function useSidebar(mode: ShellMode, page: RefObject<HTMLDivElement | nul
     widest,
     resizing,
     shellClass: wide
-      ? `${collapsed ? ' side-collapsed' : ''}${peek ? ' side-peek' : ''}${resizing ? ' side-resizing' : ''}${moving ? ' side-moving' : ''}`
+      ? `${collapsed ? ' side-collapsed' : ''}${peek ? ' side-peek' : ''}${resizing ? ' side-resizing' : ''}${moving ? ' side-moving' : ''}${shutAtOnce && rail && !peek ? ' side-shut-now' : ''}`
       : '',
     // The last move's distance stays when it is over: put, and taken away,
     // a value every element under the shell inherits would have each of
@@ -258,6 +266,7 @@ export function useSidebar(mode: ShellMode, page: RefObject<HTMLDivElement | nul
       stop();
       setHoverOpen(false);
       setFocusOpen(false);
+      setShutAtOnce(false);
       setCollapsed(!collapsed);
       write(COLLAPSED_KEY, collapsed ? null : '1');
       // The page is laid out once, where it ends up, and its start comes
