@@ -60,6 +60,8 @@ import {
   missingFields,
   nextReminder,
   ageOn,
+  CHILD_BIRTHDAY_REFUSAL,
+  childBirthday,
   localToday,
   oldEnoughToSignIn,
   ROLE_NOT_FOR_AGE,
@@ -4830,6 +4832,18 @@ export function createFakeVault(): {
       };
       const passing = b.is_deceased !== undefined && b.is_deceased !== (m.is_deceased ?? false);
       if (passing && state.role !== 'owner') return fail(403, 'forbidden', DECEASED_REFUSAL);
+      // A child's date of birth is an owner's to change or clear (INV-6).
+      if (
+        b.date_of_birth !== undefined &&
+        (b.date_of_birth ?? null) !== (m.date_of_birth ?? null) &&
+        whoOf(s).role !== 'owner' &&
+        childBirthday(
+          { date_of_birth: m.date_of_birth ?? null, has_account: Boolean(m.role) },
+          localToday(state.timezone),
+        )
+      ) {
+        return fail(403, 'child_birthday_owners', CHILD_BIRTHDAY_REFUSAL, 'date_of_birth');
+      }
       const version = m.version ?? 1;
       const ifMatch = init.headers['if-match'];
       if (ifMatch !== undefined && ifMatch !== `"${version}"`) {

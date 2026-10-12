@@ -23,8 +23,13 @@
 -- and the owners are. That is said in the reminders' own rule for each kind
 -- of caller (reminder_actor, 0030), not in a rule beside it: a second rule
 -- asking who is asking would let a restore's check go on passing with the
--- first one gone. A reminder about a document is as it was: nothing below
--- changes who is given one.
+-- first one gone. Who is given a reminder about a document is as it was.
+--
+-- A reminder's deliveries (reminder_delivery: its id, the day and the
+-- channel) follow it: somebody signed in is given those of the reminders
+-- they are given, and no other — before, every one in the household. They
+-- name no person and no document, but they say that a reminder the reader
+-- cannot see was sent, and when (the review, INV-8).
 --
 -- Every query that lists or delivers a document's reminders joins its
 -- document, so none of them ever meets one of these.
@@ -55,6 +60,14 @@ create unique index reminder_turned_13 on reminder (household_id, member_id)
 alter policy reminder_actor on reminder
   using (case app_actor()
            when 'account' then member_id is null or app_role() = 'owner'
+           when 'system' then true
+           else false
+         end);
+
+-- Its deliveries, as the reminder is given.
+alter policy reminder_delivery_actor on reminder_delivery
+  using (case app_actor()
+           when 'account' then reminder_id in (select r.id from reminder r)
            when 'system' then true
            else false
          end);

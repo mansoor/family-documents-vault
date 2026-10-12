@@ -89,6 +89,26 @@ export const ROLE_NOT_FOR_AGE = (name: string, age: number) =>
     ? `${name} is under 18, so they can only be invited as a teen.`
     : `${name} is 18 or over, so they can’t be invited as a teen.`;
 
+/**
+ * Said to anybody but an owner who would change or clear the date of birth
+ * of somebody under 13 by it, with no sign-in (`403 child_birthday_owners`,
+ * the review, INV-6): it decides whether they may be invited to sign in, so
+ * it is an owner's, as another's identity is (A54).
+ */
+export const CHILD_BIRTHDAY_REFUSAL =
+  'Only an owner can change the date of birth of a child under 13.';
+
+/**
+ * Whether changing this person's date of birth is an owner's alone: they
+ * have no sign-in, and their date of birth as it is says they are under 13.
+ */
+export function childBirthday(
+  m: { date_of_birth: string | null; has_account: boolean },
+  today: string,
+): boolean {
+  return !m.has_account && m.date_of_birth !== null && !oldEnoughToSignIn(m.date_of_birth, today);
+}
+
 /** What the web needs of a person to say whether they may be invited. */
 export interface InvitableFacts {
   id: string;
@@ -134,6 +154,17 @@ export interface PersonReminderView {
   /** "They can now have their own sign-in." */
   label: string;
 }
+
+/**
+ * What the owners' digest says of somebody turned 13 (the review, INV-7):
+ * by email and by push, no name and no date — a mail server an owner points
+ * anywhere, and a lock screen, are told nothing of a child. The vault's own
+ * Home card names them.
+ */
+export const TURNED_13_TOLD = {
+  title: 'Someone in the family can now have their own sign-in.',
+  label: 'Open the vault to invite them.',
+} as const;
 
 /**
  * What a turning-13 reminder says, on `today`: a title and a line, said

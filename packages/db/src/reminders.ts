@@ -300,13 +300,29 @@ export const mayYetSignUp = (now: Date) => sql<boolean>`(
                      and i.expires_at > ${now} and i.attempts < 5))`;
 
 /**
+ * Whether a turning-13 reminder is still about the person's 13th birthday:
+ * their date of birth, corrected since, may say another day, or none (the
+ * review, INV-3). One that no longer is is not listed, not delivered, and
+ * done with at the next tick.
+ */
+export function stillTurned13(r: { date_of_birth: string | null; fire_at: string }): boolean {
+  if (!r.date_of_birth) return false;
+  return (
+    birthdayAt(String(r.date_of_birth).slice(0, 10), OWN_SIGN_IN_AGE) ===
+    String(r.fire_at).slice(0, 10)
+  );
+}
+
+/**
  * The owners' reminders that somebody has turned 13 (0066), as the vault
  * itself, in the worker's reminders.tick: one, due, for each person of the
  * family whose 13th birthday on the household's calendar is today — or
  * within the week, for a vault that was off — who was already in the
  * vault before it, and may yet sign up (`mayYetSignUp`). Never a second
  * for anybody. One no longer about somebody who may sign up (they were
- * invited, signed in, passed away) is done with: resolved. How many made.
+ * invited, signed in, passed away), or about their 13th birthday (their
+ * date of birth corrected, `stillTurned13`), is done with: resolved. How
+ * many made.
  */
 export async function remindTurned13(
   trx: Db,
@@ -332,6 +348,22 @@ export async function remindTurned13(
       ),
     )
     .execute();
+  // And those whose date of birth was corrected since (INV-3).
+  const open = await trx
+    .selectFrom('reminder')
+    .innerJoin('member', 'member.id', 'reminder.member_id')
+    .select(['reminder.id', 'reminder.fire_at', 'member.date_of_birth'])
+    .where('reminder.kind', '=', 'turned_13')
+    .where('reminder.status', 'in', ['scheduled', 'due', 'snoozed'])
+    .execute();
+  const corrected = open.filter((r) => !stillTurned13(r)).map((r) => r.id);
+  if (corrected.length > 0) {
+    await trx
+      .updateTable('reminder')
+      .set({ status: 'resolved', acknowledged_at: now })
+      .where('id', 'in', corrected)
+      .execute();
+  }
   const people = await trx
     .selectFrom('member')
     .select(['member.id', 'member.date_of_birth', 'member.created_at'])

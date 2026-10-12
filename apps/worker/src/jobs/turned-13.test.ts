@@ -149,13 +149,15 @@ describe.skipIf(!testAdminUrl())('somebody turning 13', () => {
     expect(await deliver({ ...deps(), digestHour: 9 })).toEqual({ digests: 1 });
     expect(sent).toHaveLength(1);
     expect(sent[0]?.recipient.account_id).toBe(accounts.Owner);
+    expect(JSON.stringify(sent[0]?.items)).not.toMatch(/Sara|2013|2026-10-12|12 Oct/);
     expect(sent[0]?.items).toEqual([
       {
         reminder_id: expect.any(String) as unknown,
         document_id: null,
         member_id: ids.Sara,
-        title: 'Sara is 13 today',
-        label: 'They can now have their own sign-in.',
+        // No name and no date, by email or push (INV-7).
+        title: 'Someone in the family can now have their own sign-in.',
+        label: 'Open the vault to invite them.',
         about: null,
         note: null,
         overdue: false,
@@ -196,5 +198,26 @@ describe.skipIf(!testAdminUrl())('somebody turning 13', () => {
     clock = new Date('2026-10-13T03:00:00Z'); // the 13th in Tokyo, the day they were added
     await tick(deps());
     expect((await reminders()).some((x) => x.startsWith('Newcomer'))).toBe(false);
+  });
+
+  it('a date of birth corrected since is not delivered, and the tick is done with it (INV-3)', async () => {
+    await person('Fixed', '2013-10-14');
+    clock = new Date('2026-10-13T16:00:00Z'); // the 14th in Tokyo, 01:00
+    await tick(deps());
+    expect((await reminders()).filter((x) => x.startsWith('Fixed'))).toEqual([
+      'Fixed:2026-10-14:due',
+    ]);
+    // Twelve, after all.
+    await admin.query("update member set date_of_birth = '2014-10-14' where id = $1", [ids.Fixed]);
+    const before = sent.length;
+    clock = new Date('2026-10-14T00:30:00Z'); // 09:30 in Tokyo
+    await deliver({ ...deps(), digestHour: 9 });
+    expect(sent.slice(before).flatMap((d) => d.items.map((i) => i.member_id))).not.toContain(
+      ids.Fixed,
+    );
+    await tick(deps());
+    expect((await reminders()).filter((x) => x.startsWith('Fixed'))).toEqual([
+      'Fixed:2026-10-14:resolved',
+    ]);
   });
 });

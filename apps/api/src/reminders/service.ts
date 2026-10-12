@@ -2,6 +2,7 @@ import {
   appendAudit,
   mayYetSignUp,
   regenerateDerived,
+  stillTurned13,
   reminderWords,
   withPrincipal,
   type Db,
@@ -307,14 +308,22 @@ export class ReminderService {
       const rows = await trx
         .selectFrom('reminder')
         .innerJoin('member', 'member.id', 'reminder.member_id')
-        .select(['reminder.id', 'reminder.member_id', 'reminder.fire_at', 'member.display_name'])
+        .select([
+          'reminder.id',
+          'reminder.member_id',
+          'reminder.fire_at',
+          'member.display_name',
+          'member.date_of_birth',
+        ])
         .where('reminder.kind', '=', 'turned_13')
         .where('reminder.status', '=', 'due')
         .where(mayYetSignUp(new Date()))
         .orderBy('reminder.fire_at')
         .orderBy('reminder.id')
         .execute();
-      return rows.map((r) => {
+      // Still about their 13th birthday: a date of birth corrected since is
+      // not (the review, INV-3).
+      return rows.filter(stillTurned13).map((r) => {
         const fireAt = iso(r.fire_at) as string;
         return {
           id: r.id,

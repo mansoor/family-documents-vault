@@ -520,6 +520,10 @@ export function useSignUpOnAdd(myRole: Role, dateOfBirth: string, today: string)
 
 export type SignUpOnAdd = ReturnType<typeof useSignUpOnAdd>;
 
+/** Said when the person was added and the invitation's step-up was cancelled (the review, INV-4). */
+export const NOT_INVITED = (name: string) =>
+  `${name} was added, but no invitation was made. You can invite them from their page.`;
+
 /** Said when the box is ticked and no address is given. */
 export const EMAIL_NEEDED = 'Give their email address, or untick “Invite them to sign up now”.';
 

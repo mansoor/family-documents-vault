@@ -469,12 +469,17 @@ export class InvitationService {
       // partial unique index would otherwise refuse the insert. But only its
       // maker or an owner may: otherwise any adult could quietly swap an
       // owner's invitation for one of their own and accept it themselves.
+      // Only a live one stands in the way: one run out or used up (five
+      // wrong codes) is dead, and anybody who may invite replaces it, as the
+      // screens and the owners' reminder say (the review, INV-2).
       const pending = await trx
         .selectFrom('invitation')
         .select(['invited_by'])
         .where('member_id', '=', memberId)
         .where('accepted_at', 'is', null)
         .where('revoked_at', 'is', null)
+        .where('expires_at', '>', new Date())
+        .where('attempts', '<', MAX_ATTEMPTS)
         .executeTakeFirst();
       if (pending && pending.invited_by !== p.accountId && p.role !== 'owner') {
         throw new ApiError(

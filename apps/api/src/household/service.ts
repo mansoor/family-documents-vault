@@ -2,9 +2,12 @@ import type { ScopeKeys } from '@fdv/crypto';
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   canChangeDetails,
+  CHILD_BIRTHDAY_REFUSAL,
+  childBirthday,
   DECEASED_REFUSAL,
   DECEASED_SIGNED_IN,
   DETAILS_REFUSAL,
+  localToday,
   suspensionInEffect,
   type MemberAccount,
   type MemberAccountDevice,
@@ -488,6 +491,29 @@ export class HouseholdService {
       };
       const passing = next.is_deceased !== current.is_deceased;
       if (passing && p.role !== 'owner') throw new ApiError(403, 'forbidden', DECEASED_REFUSAL);
+      // A child's date of birth is an owner's to change or clear (the
+      // review, INV-6): under 13 by it, with no sign-in, it is what keeps
+      // them from being invited to sign in; cleared or moved, nothing would.
+      const born =
+        current.date_of_birth === null ? null : String(current.date_of_birth).slice(0, 10);
+      const after = next.date_of_birth === null ? null : String(next.date_of_birth).slice(0, 10);
+      if (after !== born && p.role !== 'owner') {
+        const hh = await trx
+          .selectFrom('household')
+          .select('timezone')
+          .where('id', '=', p.householdId)
+          .executeTakeFirstOrThrow();
+        if (
+          childBirthday(
+            { date_of_birth: born, has_account: signedIn !== undefined },
+            localToday(hh.timezone),
+          )
+        ) {
+          throw new ApiError(403, 'child_birthday_owners', CHILD_BIRTHDAY_REFUSAL, {
+            detail: 'date_of_birth',
+          });
+        }
+      }
       if (ifMatch !== undefined && !matches(ifMatch, current.version)) {
         return { id: current.id, stale: true };
       }

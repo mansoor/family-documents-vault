@@ -4288,6 +4288,25 @@ kind: 'turned_13', member_id, display_name, fire_at, title, label }] }`
     `dismissPersonReminder`. The client fake answers both, adds people
     (`POST /members`) and takes back an invitation (`DELETE
 /invitations/{id}`), and refuses an under-13 as the vault does.
+  - The review's findings on the above. **Changed:** an invitation run out
+    or used up (five wrong codes) no longer stands in anybody's way: an
+    adult may invite somebody whose owner's invitation has died, as
+    `GET /invitations` already said (`expired`, `locked`), and the dead one
+    is taken back. **Changed:** a date of birth corrected after a
+    turning-13 reminder was made — to another day, or none — takes it away:
+    `GET /reminders/people` no longer lists it, the digest does not carry
+    it, and the next tick resolves it. **Changed:** the date of birth of
+    somebody under 13 by it, with no sign-in, is an owner's to change or
+    clear: anybody else is `403 child_birthday_owners` (`detail:
+"date_of_birth"`) on `PATCH /api/v1/members/{id}`; their other details,
+    and anybody else's birthday, are as before. **Changed:** the owners'
+    daily digest says of somebody turned 13, by email and push, only
+    "Someone in the family can now have their own sign-in. Open the vault
+    to invite them." — no name, no date; the app's own Home names them.
+    **Changed:** a reminder's deliveries are given to whoever is given the
+    reminder, and nobody else. `@fdv/shared`: `CHILD_BIRTHDAY_REFUSAL`,
+    `childBirthday`, `TURNED_13_TOLD`. The client fake refuses a child's
+    date of birth to anybody but an owner, as the vault does.
 
 ## Deprecations in effect
 

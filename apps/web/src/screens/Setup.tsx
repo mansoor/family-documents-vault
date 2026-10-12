@@ -8,6 +8,7 @@ import { Avatar, Button, ErrorNote, Field, Logo } from '../ui.js';
 import {
   EMAIL_NEEDED,
   HandOver,
+  NOT_INVITED,
   inviteAdded,
   SignUpFields,
   useHouseholdToday,
@@ -124,6 +125,8 @@ export function SetupScreen() {
         try {
           const made = await inviteAdded(guarded, added.id, invite);
           if (made) setHanded({ made, email });
+          // The step-up was cancelled: the person is there, and no invitation.
+          else setError(NOT_INVITED(added.display_name));
         } catch (err) {
           setError(
             `${added.display_name} was added, but the invitation wasn’t made: ${describeError(err)} You can invite them from their page.`,

@@ -66,6 +66,7 @@ import { None, OutcomeNote, useGrid, type Outcome } from '../table-grid.js';
 import {
   EMAIL_NEEDED,
   HandOver,
+  NOT_INVITED,
   inviteAdded,
   InvitePanel,
   SignUpFields,
@@ -671,6 +672,8 @@ export function PeopleScreen() {
         try {
           const made = await inviteAdded(guarded, added.id, { ...signUp, email });
           if (made) setHanded({ made, email, then });
+          // The step-up was cancelled: the person is there, and no invitation.
+          else setAddError(NOT_INVITED(added.display_name));
         } catch (err) {
           setAddError(
             `${added.display_name} was added, but the invitation wasn’t made: ${describeError(err)} You can invite them from their page.`,

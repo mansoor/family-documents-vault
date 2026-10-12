@@ -3,6 +3,7 @@ import {
   readAs,
   remindTurned13,
   reminderWords,
+  stillTurned13,
   withSystem,
   type Db,
   type Role,
@@ -19,7 +20,7 @@ import {
   reminderAbout,
   reminderLabel,
   seesAdults,
-  turnedThirteenWords,
+  TURNED_13_TOLD,
   withSealed,
   type DateValue,
   type RequiredRules,
@@ -329,22 +330,17 @@ async function dueItems(
 
 /** The digest's lines for turning-13 reminders (0066), as of `today`: an owner's alone. */
 function personItems(
-  rows: ReadonlyArray<{
-    id: string;
-    member_id: string | null;
-    fire_at: string;
-    display_name: string;
-  }>,
-  today: string,
+  rows: ReadonlyArray<{ id: string; member_id: string | null; fire_at: string }>,
 ): Due[] {
   return rows.map((r) => {
     const fireAt = String(r.fire_at).slice(0, 10);
-    const words = turnedThirteenWords(r.display_name, fireAt, today);
+    // No name and no date (the review, INV-7): the digest goes by email
+    // and push, and says only that somebody may now be invited.
     return {
       reminder_id: r.id,
       document_id: null,
-      title: words.title,
-      label: words.label,
+      title: TURNED_13_TOLD.title,
+      label: TURNED_13_TOLD.label,
       about: null,
       note: null,
       overdue: false,
@@ -463,11 +459,17 @@ async function deliverTo(
       .execute();
     // Somebody who has turned 13 (0066), told once to the owners while they
     // may still sign up: held as the others are.
-    const people = await trx
+    const found = await trx
       .selectFrom('reminder')
       .innerJoin('member', 'member.id', 'reminder.member_id')
       .leftJoin('reminder_delivery', 'reminder_delivery.reminder_id', 'reminder.id')
-      .select(['reminder.id', 'reminder.member_id', 'reminder.fire_at', 'member.display_name'])
+      .select([
+        'reminder.id',
+        'reminder.member_id',
+        'reminder.fire_at',
+        'member.display_name',
+        'member.date_of_birth',
+      ])
       .where('reminder.kind', '=', 'turned_13')
       .where('reminder.status', '=', 'due')
       .where('reminder_delivery.reminder_id', 'is', null)
@@ -475,9 +477,12 @@ async function deliverTo(
       .orderBy('reminder.fire_at')
       .forKeyShare('reminder')
       .execute();
+    // Still about their 13th birthday (INV-3): a date of birth corrected
+    // since is not, and waits for the tick to be done with it.
+    const people = found.filter(stillTurned13);
     if (due.length === 0 && people.length === 0) return false;
 
-    const items = [...(await dueItems(trx, due, today)), ...personItems(people, today)];
+    const items = [...(await dueItems(trx, due, today)), ...personItems(people)];
     const reached = await sendToEach(
       trx,
       deps.notifier,

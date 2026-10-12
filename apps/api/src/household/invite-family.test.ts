@@ -359,6 +359,127 @@ describe.skipIf(!testAdminUrl())('inviting family members to sign up', () => {
     expect(errorOf(byAdult).code).toBe('already_invited');
   });
 
+  // ------------------------------------------------- the review's findings
+
+  it('an invitation run out or used up stands in nobody’s way: an adult replaces an owner’s dead one (INV-2)', async () => {
+    await timezone('UTC');
+    const today = localToday('UTC');
+    for (const [name, dead] of [
+      ['Exp', "expires_at = now() - interval '1 day'"],
+      ['Lok', 'attempts = 5'],
+    ] as const) {
+      const m = await add(name, bornYearsBefore(today, 15));
+      const first = await invite(m.id, { email: `${name}-1@example.test`, role: 'teen' });
+      expect(first.statusCode).toBe(201);
+      // While it is live, an adult may not replace an owner's.
+      const blocked = await invite(m.id, { email: `${name}-2@example.test`, role: 'teen' }, adult);
+      expect(errorOf(blocked).code).toBe('already_invited');
+      await admin.query(`update invitation set ${dead} where member_id = $1`, [m.id]);
+      const listed = (await h.app.inject({ url: '/api/v1/invitations', headers: h.as(adult) }))
+        .json<{ items: InvitationView[] }>()
+        .items.filter((i) => i.member_id === m.id);
+      expect(listed.map((i) => i.state)).not.toContain('pending');
+      const again = await invite(m.id, { email: `${name}-3@example.test`, role: 'teen' }, adult);
+      expect(again.statusCode, again.body).toBe(201);
+      // Still one live invitation for them: the dead one taken back.
+      const live = await admin.query<{ n: number }>(
+        `select count(*)::int as n from invitation
+          where member_id = $1 and accepted_at is null and revoked_at is null`,
+        [m.id],
+      );
+      expect(live.rows[0]?.n).toBe(1);
+    }
+  });
+
+  it('a date of birth corrected after the reminder was made takes it away (INV-3)', async () => {
+    await timezone('UTC');
+    const today = localToday('UTC');
+    const typo = await add('Typo', bornYearsBefore(today, 13));
+    await admin.query("update member set created_at = now() - interval '1 year' where id = $1", [
+      typo.id,
+    ]);
+    await withSystem(h.db, owner.household_id, (trx) =>
+      remindTurned13(trx, owner.household_id, 'UTC', new Date()),
+    );
+    const listed = async () =>
+      (await h.app.inject({ url: '/api/v1/reminders/people', headers: h.as(owner) }))
+        .json<{ items: PersonReminderView[] }>()
+        .items.filter((r) => r.member_id === typo.id);
+    expect(await listed()).toHaveLength(1);
+    // Ten, after all: not listed, and the tick is done with it.
+    const fixed = await h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/members/${typo.id}`,
+      headers: h.as(owner),
+      payload: { date_of_birth: bornYearsBefore(today, 10) },
+    });
+    expect(fixed.statusCode).toBe(200);
+    expect(await listed()).toHaveLength(0);
+    await withSystem(h.db, owner.household_id, (trx) =>
+      remindTurned13(trx, owner.household_id, 'UTC', new Date()),
+    );
+    const row = await admin.query<{ status: string }>(
+      "select status from reminder where member_id = $1 and kind = 'turned_13'",
+      [typo.id],
+    );
+    expect(row.rows.map((r) => r.status)).toEqual(['resolved']);
+    // And with none at all, none either.
+    const zed = await add('Zed', bornYearsBefore(today, 13));
+    await admin.query("update member set created_at = now() - interval '1 year' where id = $1", [
+      zed.id,
+    ]);
+    await withSystem(h.db, owner.household_id, (trx) =>
+      remindTurned13(trx, owner.household_id, 'UTC', new Date()),
+    );
+    await admin.query('update member set date_of_birth = null where id = $1', [zed.id]);
+    const people = (await h.app.inject({ url: '/api/v1/reminders/people', headers: h.as(owner) }))
+      .json<{ items: PersonReminderView[] }>()
+      .items.map((r) => r.member_id);
+    expect(people).not.toContain(zed.id);
+  });
+
+  it('a child’s date of birth is an owner’s to change or clear: an adult may not, and so may not invite them by clearing it (INV-6)', async () => {
+    await timezone('UTC');
+    const today = localToday('UTC');
+    const kid = await add('Kid', bornYearsBefore(today, 10));
+    const patch = (t: Tokens, date_of_birth: string | null) =>
+      h.app.inject({
+        method: 'PATCH',
+        url: `/api/v1/members/${kid.id}`,
+        headers: h.as(t),
+        payload: { date_of_birth },
+      });
+    for (const dob of [null, bornYearsBefore(today, 15)]) {
+      const r = await patch(adult, dob);
+      expect(r.statusCode).toBe(403);
+      expect(errorOf(r)).toMatchObject({
+        code: 'child_birthday_owners',
+        message: 'Only an owner can change the date of birth of a child under 13.',
+      });
+    }
+    // The probe's way round (P4): cleared by an adult, then invited. Closed.
+    const invited = await invite(kid.id, { email: 'kid@example.test', role: 'teen' }, adult);
+    expect(errorOf(invited).code).toBe('too_young');
+    // An adult still changes the rest of their details, and somebody 13 or over's birthday.
+    const renamed = await h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/members/${kid.id}`,
+      headers: h.as(adult),
+      payload: { display_name: 'Kiddo' },
+    });
+    expect(renamed.statusCode).toBe(200);
+    const older = await add('Older', bornYearsBefore(today, 15));
+    const moved = await h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/members/${older.id}`,
+      headers: h.as(adult),
+      payload: { date_of_birth: bornYearsBefore(today, 16) },
+    });
+    expect(moved.statusCode).toBe(200);
+    // An owner may.
+    expect((await patch(owner, null)).statusCode).toBe(200);
+  });
+
   // ------------------------------------------ who is told, and of what (R4 + 0066)
 
   it('what the web works out who has no sign-in from is given only to those who may invite', async () => {

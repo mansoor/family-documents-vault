@@ -2847,7 +2847,7 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
-    name: 'inviting family members to sign up: nobody under 13 by their date of birth, somebody 13 today as a teen and never as an adult, somebody 18 never as a teen; the owners told once somebody turns 13, and the reminder dismissed (after 0.7.0)',
+    name: 'inviting family members to sign up: nobody under 13 by their date of birth, somebody 13 today as a teen and never as an adult, somebody 18 never as a teen; a child’s date of birth an owner’s to change; the owners told once somebody turns 13, and the reminder dismissed (after 0.7.0)',
     run: async (api, ctx) => {
       const { access_token: token } = await signIn(api, ctx);
       // Somebody else with a sign-in, made first: the real vault's run asks
@@ -2929,6 +2929,16 @@ export const contractScenarios: Scenario[] = [
       // The reminders are the owners' alone.
       const adult = await signInAs(api, ann.email, ann.password);
       expect((await refusal(api.personReminders(adult.access_token))).status).toBe(403);
+      // A child's date of birth is an owner's to change or clear (the review,
+      // INV-6): an adult may not, so may not make them old enough to invite.
+      const cleared = await refusal(
+        api.updateMember(adult.access_token, young.id, { date_of_birth: null }),
+      );
+      expect(cleared.status).toBe(403);
+      expect(cleared.code).toBe('child_birthday_owners');
+      expect(
+        (await api.updateMember(token, young.id, { date_of_birth: null })).date_of_birth,
+      ).toBeNull();
     },
   },
   {

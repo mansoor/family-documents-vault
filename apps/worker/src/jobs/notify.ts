@@ -82,11 +82,27 @@ export function forEmail(i: Digest['items'][number]): {
 /** An item's line after its title: what it is about (0.5.15), else when it fell due. */
 const lineOf = (i: { label: string; about: string | null }) => i.about ?? i.label;
 
+/**
+ * An item in one line, as an email's text says it: its title, then what it
+ * is about. Somebody turned 13 (0066) is one sentence and its ask, with no
+ * name and no date (the review, INV-7).
+ */
+export function itemLine(item: Digest['items'][number]): string {
+  if (item.member_id) return `${item.title} ${item.label}`;
+  const i = forEmail(item);
+  return `${i.title} — ${lineOf(i)}${i.note ? ` (${i.note})` : ''}`;
+}
+
+/** What a browser's push says: the first three items, a line each, with no note. */
+export function pushBody(d: Digest): string {
+  return d.items
+    .slice(0, 3)
+    .map((i) => (i.member_id ? itemLine(i) : `${i.title} — ${lineOf(i)}`))
+    .join('\n');
+}
+
 export function textBody(d: Digest, baseUrl: string): string {
-  const lines = d.items.map((item) => {
-    const i = forEmail(item);
-    return `• ${i.title} — ${lineOf(i)}${i.note ? ` (${i.note})` : ''}`;
-  });
+  const lines = d.items.map((item) => `• ${itemLine(item)}`);
   const intro =
     d.kind === 'catch_up'
       ? 'While nobody was looking, these came up:'
@@ -224,10 +240,7 @@ async function sendPush(deps: NotifyDeps, d: Digest): Promise<number> {
   const phone = unifiedPayload({ v: 1, type: 'digest', count: forPhone, date: d.local_date });
   const payload = JSON.stringify({
     title: subject(d),
-    body: d.items
-      .slice(0, 3)
-      .map((i) => `${i.title} — ${lineOf(i)}`)
-      .join('\n'),
+    body: pushBody(d),
     url: `${deps.baseUrl}/reminders`,
     tag: `fdv-digest-${d.local_date}`,
     count: d.items.length,

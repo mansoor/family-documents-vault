@@ -40,7 +40,7 @@ import { mayBringBack, purgeAskedWords } from './Trash.js';
  * category tiles with counts, and what was added recently.
  */
 export function HomeScreen() {
-  const { caps, authVersion } = useApp();
+  const { caps, authVersion, session } = useApp();
   const navigate = useNavigate();
   // What a page that sent somebody here did — a document moved to the Trash
   // from its own page (R5) — said where the focus is, as the Inbox says what
@@ -64,9 +64,11 @@ export function HomeScreen() {
           api.documentTypes(t),
           // An owner asked to remove something you filed for good (5.24).
           api.documents(t, { deleted: 'true', purge_requested: 'true', limit: 50 }),
-          // Somebody turned 13 (after 0.7.0): told to the owners alone.
-          storedRole() === 'owner'
-            ? api.personReminders(t)
+          // Somebody turned 13 (after 0.7.0): told to the owners alone. Home
+          // is never lost to it: refused or failed, there are none to say
+          // (the review, INV-5).
+          (session.info?.role ?? storedRole()) === 'owner'
+            ? api.personReminders(t).catch(() => ({ items: [] as PersonReminderView[] }))
             : Promise.resolve({ items: [] as PersonReminderView[] }),
         ]);
       // A guest is told when their access ends, on the family's clock (5.34).

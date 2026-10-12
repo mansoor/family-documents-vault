@@ -468,3 +468,80 @@ describe('the owners told that somebody turned 13 (after 0.7.0)', () => {
     expect(state.calls.some((c) => c.url.startsWith('/api/v1/reminders/people'))).toBe(false);
   });
 });
+
+describe('the review’s findings (after 0.7.0)', () => {
+  it('the invitation’s step-up cancelled once the person is saved: said so, on People (INV-4)', async () => {
+    const state = at('/people', { members: [ME], invitations: [], stepUpNeeded: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'Add someone' }));
+    fireEvent.change(screen.getByLabelText('Name of another family member'), {
+      target: { value: 'Zara' },
+    });
+    fireEvent.change(screen.getByLabelText('Date of birth'), { target: { value: born(15) } });
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Invite them to sign up now' }));
+    fireEvent.change(screen.getByLabelText('Their email address'), {
+      target: { value: 'zara@example.test' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(
+      await screen.findByText(
+        'Zara was added, but no invitation was made. You can invite them from their page.',
+      ),
+    ).toBeInTheDocument();
+    expect(posted(state, '/api/v1/members')).toHaveLength(1);
+    expect(state.invitations).toHaveLength(0);
+  });
+
+  it('… and in the first-run wizard (INV-4)', async () => {
+    const state = fresh({ setupRequired: true, members: [], stepUpNeeded: true });
+    installFakeApi(state);
+    render(<App />);
+    await screen.findByRole('heading', { name: /Set up your family/ });
+    fireEvent.change(screen.getByLabelText(/call your family/), { target: { value: 'Khans' } });
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Mansoor' } });
+    fireEvent.change(screen.getByLabelText('Your email'), { target: { value: 'm@example.test' } });
+    fireEvent.change(screen.getByLabelText('Choose a password'), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create my vault' }));
+    await screen.findByRole('heading', { name: 'A few quick questions' });
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }));
+    await screen.findByRole('heading', { name: 'Who is in the family?' });
+    fireEvent.change(screen.getByLabelText('Name of another family member'), {
+      target: { value: 'Hana' },
+    });
+    fireEvent.change(screen.getByLabelText('Date of birth'), { target: { value: born(16) } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Invite them to sign up now' }));
+    fireEvent.change(screen.getByLabelText('Their email address'), {
+      target: { value: 'hana@example.test' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(
+      await screen.findByText(
+        'Hana was added, but no invitation was made. You can invite them from their page.',
+      ),
+    ).toBeInTheDocument();
+    expect(state.invitations).toHaveLength(0);
+  });
+
+  it('Home stands when the owners’ reminders cannot be had, refused or failed (INV-5)', async () => {
+    for (const status of [403, 500]) {
+      at('/', {
+        members: FAMILY,
+        invitations: [],
+        personReminders: [],
+        refuseWith: (_method, path) =>
+          path === '/api/v1/reminders/people'
+            ? { status, code: status === 403 ? 'forbidden' : 'internal', message: 'No.' }
+            : undefined,
+      });
+      expect(await screen.findByText(/Everything is fine/)).toBeInTheDocument();
+      expect(screen.queryByText('No.')).toBeNull();
+      cleanup();
+      localStorage.clear();
+    }
+  });
+});
