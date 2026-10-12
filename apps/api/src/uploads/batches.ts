@@ -52,6 +52,7 @@ import {
   type BatchReadFailure,
   type BatchReadState,
   type BatchView,
+  type BatchWaitingCounts,
   type CaptureMetadata,
   type DetailProposal,
   type IncomingPreviewState,
@@ -457,6 +458,28 @@ export class BatchService {
         });
         return levels ? { ...view, levels: levels.get(b.id) ?? noLevels() } : view;
       });
+    });
+  }
+
+  /**
+   * GET /batches/counts: how many of the caller's own items wait, every
+   * batch of theirs together — the sum of `counts.waiting` over GET
+   * /batches, as the Inbox counts it, in one count: no batch listed, no
+   * item opened. A file sent through a request is not an item, and
+   * nobody else's is counted, an owner included (Q3): the batch is joined
+   * so the database's rule for batches holds here too.
+   */
+  async counts(p: Principal): Promise<BatchWaitingCounts> {
+    this.mayAdd(p);
+    return withPrincipal(this.db, p, async (trx) => {
+      const row = await trx
+        .selectFrom('incoming_file as f')
+        .innerJoin('intake_batch as b', 'b.id', 'f.batch_id')
+        .where('f.requester_member_id', '=', p.memberId)
+        .where('f.state', '=', 'received')
+        .select((eb) => eb.fn.countAll<string>().as('waiting'))
+        .executeTakeFirstOrThrow();
+      return { waiting: Number(row.waiting) };
     });
   }
 

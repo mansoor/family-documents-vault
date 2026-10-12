@@ -68,6 +68,16 @@ export interface BatchCounts {
   removed?: number;
 }
 
+/**
+ * `GET /api/v1/batches/counts`: how many of the caller's own items wait,
+ * every batch of theirs together — what the Inbox counts, without the list.
+ * Nobody else's, an owner included. Absent from a vault before 0.7.0.
+ */
+export interface BatchWaitingCounts {
+  /** Not decided yet: the sum of `counts.waiting` over `GET /api/v1/batches`. */
+  waiting: number;
+}
+
 /** `GET /api/v1/batches`: one of the caller's own batches. Nobody else's is ever listed. */
 export interface BatchView {
   id: string;

@@ -1005,8 +1005,7 @@ export function SentScreen() {
   const mayReview =
     caps?.features.upload_requests === true && can(storedRole(), 'upload_request.create');
   const { data } = useLoad(
-    async (t) =>
-      mayBatch ? (await api.batches(t)).items.reduce((n, b) => n + b.counts.waiting, 0) : null,
+    async (t) => (mayBatch ? (await api.batchCounts(t)).waiting : null),
     [authVersion, mayBatch],
   );
   if (!mayBatch || !mayReview) return <IncomingList standalone />;

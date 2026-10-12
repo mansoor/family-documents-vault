@@ -2793,6 +2793,51 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'how many of your uploads wait, in one count: the list’s sum, your own alone, an owner’s too; a viewer refused',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      const summed = async (t: string) =>
+        (await api.batches(t)).items.reduce((n, b) => n + b.counts.waiting, 0);
+      const before = (await api.batchCounts(token)).waiting;
+      expect(before).toBe(await summed(token));
+      const b = await api.createBatch(token, { name: 'Counted' });
+      const file = (n: string) => ({
+        kind: 'bytes' as const,
+        filename: `${n}.pdf`,
+        contentType: 'application/pdf',
+        bytes: new TextEncoder().encode(`%PDF-1.4\n% the contract counts ${n}\n%%EOF\n`),
+      });
+      const one = await api.addBatchItem(token, b.id, file('one'));
+      await api.addBatchItem(token, b.id, file('two'));
+      expect(await api.batchCounts(token)).toEqual({ waiting: before + 2 });
+
+      // Somebody else who uploads counts their own, and the owner's stays theirs.
+      const ada = { email: 'counted-adult@example.test', password: 'the adult’s own password' };
+      await ctx.addSignIn(token, { name: 'Ada', role: 'adult', ...ada });
+      const adult = await signInAs(api, ada.email, ada.password);
+      expect(await api.batchCounts(adult.access_token)).toEqual({ waiting: 0 });
+      const theirs = await api.createBatch(adult.access_token, { name: 'Theirs' });
+      await api.addBatchItem(adult.access_token, theirs.id, file('theirs'));
+      expect(await api.batchCounts(adult.access_token)).toEqual({ waiting: 1 });
+      expect(await api.batchCounts(token)).toEqual({ waiting: before + 2 });
+
+      // Removed: no longer waiting.
+      await api.removeBatchItem(token, b.id, one.id);
+      expect(await api.batchCounts(token)).toEqual({ waiting: before + 1 });
+      expect((await api.batchCounts(token)).waiting).toBe(await summed(token));
+
+      const vee = { email: 'counted-viewer@example.test', password: 'the viewer’s own password' };
+      await ctx.addSignIn(token, { name: 'Vic', role: 'viewer', ...vee });
+      const viewer = await signInAs(api, vee.email, vee.password);
+      expect(await refusal(api.batchCounts(viewer.access_token))).toMatchObject({
+        status: 403,
+        code: 'forbidden',
+      });
+      await api.removeBatch(token, b.id);
+      await api.removeBatch(adult.access_token, theirs.id);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

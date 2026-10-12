@@ -77,6 +77,8 @@ visibility|collections|location`, `direction=asc|desc`) takes
     not `401 share_session_ended`; one that comes after is still `401`.
 - **`@fdv/client`'s session** waits out a short `Retry-After` when a
   token renewal is answered `429`, at most twice, and reports `tooMany`.
+  `token({ wait: 'join' })` joins a renewal under way but is answered at
+  once, `tooMany`, when that renewal begins such a wait.
 - **Nothing deprecated** since 0.6.0-rc.1: the token-in-path routes are
   still removed in 0.9.0, as below.
 
@@ -4220,6 +4222,25 @@ last_used }], rules_max }` — of their newest `window` (50) items read and
     after; it is answered `404 link_not_valid`, as every request under way
     as its link ends is (5.19). A request that comes once its session is
     gone is `401 share_session_ended`, as before.
+  - **Added (`@fdv/client`'s session):** `token({ wait: 'join' })`, for
+    an interactive read that has something to show meanwhile. It joins a
+    renewal under way (a cold start's) and is answered with it; once that
+    renewal begins waiting out a refusal for too many tries, it is answered
+    at once: `{ kind: 'offline', tooMany: { retryAfterSeconds } }`, the
+    seconds left. With nothing under way it starts a renewal that waits for
+    nothing, as `wait: false` does. It never waits out a refusal itself.
+    **Unchanged:** `token()` and `token({ wait: false })`.
+  - **Added:** `GET /api/v1/batches/counts` answers `{ waiting }`: how
+    many of the caller's own items wait, every batch of theirs together —
+    the sum of `counts.waiting` over `GET /api/v1/batches`, counted by the
+    database in one count, nothing opened. A file sent through a request
+    is not counted. Whoever may add documents: a viewer or a guest is
+    `403`, as for `/batches`; nobody is given a count of anybody else's,
+    an owner included. A vault without it answers `404`, or `422` (a 0.7.0
+    candidate up to rc.2, whose `/batches/{id}` takes `counts` for an id):
+    sum the list there, as before. `@fdv/shared`: `BatchWaitingCounts`.
+    `@fdv/client`: `batchCounts`. The client fake answers the same. The
+    web's sidebar and the Inbox's "Your uploads" tab count with it.
 
 ## Deprecations in effect
 
