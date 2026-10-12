@@ -6,6 +6,8 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.8.0-dev.1] - 2026-10-12 — after 0.7.0: a light count, and a quicker token
+
 ### Added
 
 - **API:** `GET /api/v1/batches/counts` answers `{ waiting }`: how many of your own uploads wait, every batch together, in one count. It is yours alone, an owner's included; a viewer or a guest is refused. `@fdv/client` gains `batchCounts`.

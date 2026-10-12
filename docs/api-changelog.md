@@ -54,8 +54,7 @@ visibility|collections|location`, `direction=asc|desc`) takes
   and the batch's defaults.
 - **Added: the review queue** (`batch_review`): `POST
 /api/v1/batches/{id}/accept-ready` and `…/accept-ready/undo` (5 minutes),
-  and `GET /api/v1/batches?with=levels`. `GET /api/v1/batches/counts`
-  answers `{ waiting }`, the caller's own items waiting, in one count.
+  and `GET /api/v1/batches?with=levels`.
 - **Added: learning from corrections** (`batch_learning`):
   `GET` and `DELETE /api/v1/batches/learned`, the caller's own; a
   proposal's `from` may be `learned`, and an item's tags `clash_learned`.
