@@ -33,7 +33,13 @@ import {
   useNavigationType,
   useSearchParams,
 } from 'react-router';
-import { api, type Invitation, type Member, type SearchHit } from '../api.js';
+import {
+  api,
+  type CreatedInvitation,
+  type Invitation,
+  type Member,
+  type SearchHit,
+} from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { AddToCollection, collectionsOffered, documentsWord } from '../collections.js';
 import { DocActions, useTrashedNote } from '../DocActions.js';
@@ -57,7 +63,16 @@ const MOST_AT_ONCE = 200;
 import { PeopleTabs } from '../guests.js';
 import { useShellMode } from '../shell.js';
 import { None, OutcomeNote, useGrid, type Outcome } from '../table-grid.js';
-import { InvitePanel } from './Invite.js';
+import {
+  EMAIL_NEEDED,
+  HandOver,
+  NOT_INVITED,
+  inviteAdded,
+  InvitePanel,
+  SignUpFields,
+  useHouseholdToday,
+  useSignUpOnAdd,
+} from './Invite.js';
 import { OwnerChangeNotices } from './Roles.js';
 
 /** How many of the household's issuers are offered as filter chips. */
@@ -612,6 +627,17 @@ export function PeopleScreen() {
   const [detailsNow, setDetailsNow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  // An invitation as they are added (after 0.7.0): offered at 13 and over,
+  // by the date of birth typed, on the household's calendar.
+  const today = useHouseholdToday();
+  const signUp = useSignUpOnAdd(myRole, dob, today);
+  // The invitation just made with them: its link and code, shown once.
+  const [handed, setHanded] = useState<{
+    made: CreatedInvitation;
+    email: string;
+    /** Where Done goes: their profile, its identity details open (5.27). */
+    then: string | null;
+  } | null>(null);
   const letters = initialsFor(data?.members ?? []);
   // From 768 px the family is a table (R4); on a phone, today's rows.
   const wide = useShellMode() !== 'phone';
@@ -619,6 +645,10 @@ export function PeopleScreen() {
   const add = async (e: FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
+    if (signUp.wanted && !signUp.email.trim()) {
+      setAddError(EMAIL_NEEDED);
+      return;
+    }
     setBusy(true);
     setAddError(null);
     try {
@@ -629,6 +659,29 @@ export function PeopleScreen() {
           relationship: relationship.trim() || null,
         }),
       );
+      const then = added && detailsOffered && detailsNow ? added.id : null;
+      if (added && signUp.wanted) {
+        // The person is there now, whatever becomes of the invitation.
+        const email = signUp.email.trim();
+        setName('');
+        setDob('');
+        setRelationship('');
+        setDetailsNow(false);
+        signUp.reset();
+        setAdding(false);
+        try {
+          const made = await inviteAdded(guarded, added.id, { ...signUp, email });
+          if (made) setHanded({ made, email, then });
+          // The step-up was cancelled: the person is there, and no invitation.
+          else setAddError(NOT_INVITED(added.display_name));
+        } catch (err) {
+          setAddError(
+            `${added.display_name} was added, but the invitation wasn’t made: ${describeError(err)} You can invite them from their page.`,
+          );
+        }
+        await reload();
+        return;
+      }
       if (added && detailsOffered && detailsNow) {
         // Straight to their profile, its Identity details' form open.
         void navigate(`/people/${added.id}`, { state: { editIdentity: true } });
@@ -638,6 +691,7 @@ export function PeopleScreen() {
       setDob('');
       setRelationship('');
       setDetailsNow(false);
+      signUp.reset();
       setAdding(false);
       await reload();
     } catch (err) {
@@ -682,7 +736,20 @@ export function PeopleScreen() {
           ))}
         </ul>
       )}
-      {adding ? (
+      {/* Made as they were added (after 0.7.0): an error here once the form
+          has gone says the person is there, and the invitation is not. */}
+      {!adding && <ErrorNote message={addError} />}
+      {handed ? (
+        <HandOver
+          created={handed.made}
+          email={handed.email}
+          onDone={() => {
+            const then = handed.then;
+            setHanded(null);
+            if (then) void navigate(`/people/${then}`, { state: { editIdentity: true } });
+          }}
+        />
+      ) : adding ? (
         <form onSubmit={(e) => void add(e)} className="card stack">
           <ErrorNote message={addError} />
           <Field
@@ -709,6 +776,7 @@ export function PeopleScreen() {
             maxLength={60}
             hint="For example: Mum, Son, Grandad"
           />
+          <SignUpFields idPrefix="member" signUp={signUp} />
           {detailsOffered && (
             <Check
               id="member-details-now"

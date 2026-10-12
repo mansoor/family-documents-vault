@@ -115,7 +115,9 @@ test('Home to documents, People to a profile; add a photo and see it on Home', a
   await page.getByRole('link', { name: 'People' }).click();
   await page.getByRole('button', { name: new RegExp(NAME) }).click();
   await expect(page.getByRole('heading', { name: NAME, level: 1 })).toBeVisible();
-  await expect(page.getByText('No sign-in')).toBeVisible();
+  // Said twice since the invite card (0.8): in her details, and on the card
+  // that offers her a sign-in of her own.
+  await expect(page.getByText('No sign-in', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('Niece')).toBeVisible();
 
   // A photo: chosen, the part to show moved a little, and used.

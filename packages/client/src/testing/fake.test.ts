@@ -1,4 +1,4 @@
-import { refusalFor, shareEndWords, type Role, type Tokens } from '@fdv/shared';
+import { localToday, refusalFor, shareEndWords, type Role, type Tokens } from '@fdv/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { createApi } from '../api.js';
 import { createHttp } from '../http.js';
@@ -61,6 +61,16 @@ describe('the fake vault keeps the contract', () => {
     endGuestAccess: async (memberId) => {
       const m = vault.state.members.find((x) => x.id === memberId);
       if (m) m.access_expires_at = new Date(Date.now() - 60_000).toISOString();
+    },
+    // Somebody's 13th birthday, today (after 0.7.0): the owners' reminder,
+    // as the worker would make it.
+    turnThirteen: async (memberId) => {
+      vault.state.personReminders.push({
+        id: `person-reminder-${vault.state.personReminders.length + 1}`,
+        member_id: memberId,
+        fire_at: localToday(vault.state.timezone),
+        dismissed: false,
+      });
     },
     // A batch's items read, as the worker would read them (I2): kept on each.
     readBatchItems: async (batchId, reads) => {

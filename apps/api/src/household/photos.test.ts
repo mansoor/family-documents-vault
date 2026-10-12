@@ -103,7 +103,9 @@ describe.skipIf(!testAdminUrl())("a person's photo (5.17c)", () => {
       method: 'POST',
       url: '/api/v1/members',
       headers: h.as(owner),
-      payload: { display_name: 'Aisha', date_of_birth: '2016-04-02', relationship: 'Daughter' },
+      // 14: old enough to be invited to sign in, as the last test does
+      // (nobody under 13 is, after 0.7.0).
+      payload: { display_name: 'Aisha', date_of_birth: '2012-04-02', relationship: 'Daughter' },
     });
     expect(added.statusCode, added.body).toBe(201);
     child = added.json<Member>().id;

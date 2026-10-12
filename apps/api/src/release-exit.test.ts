@@ -187,6 +187,8 @@ const PARAM_KINDS: Record<string, Kind> = {
   'upload-requests/:id': 'uploadRequest',
   'incoming/:id': 'incoming',
   'reminders/:id': 'reminder',
+  // Somebody turned 13 (0066): an owner's reminder about a person.
+  'people/:id': 'reminder',
   'exports/:id': 'export',
   'vaults/:id': 'vault',
   'devices/:id': 'device',
@@ -510,6 +512,9 @@ const RULES: Record<string, Rule> = {
   'POST /api/v1/reminders/:id/snooze': { who: 'family', body: () => ({ until: IS_DAY }) },
   'POST /api/v1/reminders/:id/acknowledge': { who: 'family', body: () => ({}) },
   'DELETE /api/v1/reminders/:id': { who: 'family' },
+  // Somebody turned 13 (0066, after 0.7.0): the owners' alone.
+  'GET /api/v1/reminders/people': { who: 'owners' },
+  'POST /api/v1/reminders/people/:id/dismiss': { who: 'owners', body: () => ({}) },
 
   // The household's suggestions (what is missing), not a document's.
   'GET /api/v1/suggestions': { who: 'signedIn' },

@@ -2,6 +2,7 @@ import {
   CATEGORY_LABELS,
   CORE_FIELDS,
   COLLECTION_HINT_TEENS,
+  localToday,
   onlyEveryone,
   reminderOf,
   reminderSentence,
@@ -94,6 +95,14 @@ export interface ContractContext {
     batchId: string,
     reads: Record<string, { proposal: DetailProposal } | { failure: BatchReadFailure }>,
   ) => Promise<void>;
+  /**
+   * Somebody's 13th birthday, today, as the vault's worker sees it (after
+   * 0.7.0): the real API's run puts them in the vault a year ago and runs
+   * the reminders' tick for somebody turning 13 (`remindTurned13`); the
+   * fake's makes the owners' reminder. Optional: a context from before has
+   * none, and its scenarios never ask.
+   */
+  turnThirteen?: (memberId: string) => Promise<void>;
 }
 
 export interface Scenario {
@@ -2835,6 +2844,101 @@ export const contractScenarios: Scenario[] = [
       });
       await api.removeBatch(token, b.id);
       await api.removeBatch(adult.access_token, theirs.id);
+    },
+  },
+  {
+    name: 'inviting family members to sign up: nobody under 13 by their date of birth, somebody 13 today as a teen and never as an adult, somebody 18 never as a teen; a child’s date of birth an owner’s to change; the owners told once somebody turns 13, and the reminder dismissed (after 0.7.0)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      // Somebody else with a sign-in, made first: the real vault's run asks
+      // the owner to confirm it is them, which the invitations below ask too.
+      const ann = { email: 'ann-thirteen@contract.test', password: 'ann has a long password' };
+      await ctx.addSignIn(token, { name: 'Ann', role: 'adult', ...ann });
+      // A new vault's calendar: UTC, as each of these is.
+      const today = localToday('UTC');
+      const [y, m, d] = today.split('-').map(Number) as [number, number, number];
+      /** Born `years` before today: the 28th for a 29 February. */
+      const born = (years: number, plusDays = 0) => {
+        const day = Math.min(d, new Date(Date.UTC(y - years, m, 0)).getUTCDate()) + plusDays;
+        return new Date(Date.UTC(y - years, m - 1, day)).toISOString().slice(0, 10);
+      };
+      const young = await api.addMember(token, {
+        display_name: 'Contract Twelve',
+        date_of_birth: born(13, 1),
+      });
+      const tooYoung = await refusal(
+        api.invite(token, { member_id: young.id, email: 'twelve@contract.test', role: 'teen' }),
+      );
+      expect(tooYoung.status).toBe(422);
+      expect(tooYoung.code).toBe('too_young');
+
+      const thirteen = await api.addMember(token, {
+        display_name: 'Contract Thirteen',
+        date_of_birth: born(13),
+      });
+      expect((await api.personReminders(token)).items).toEqual([]);
+      if (ctx.turnThirteen) {
+        await ctx.turnThirteen(thirteen.id);
+        const told = (await api.personReminders(token)).items;
+        expect(told).toEqual([
+          {
+            id: expect.any(String) as unknown,
+            kind: 'turned_13',
+            member_id: thirteen.id,
+            display_name: 'Contract Thirteen',
+            fire_at: today,
+            title: 'Contract Thirteen is 13 today',
+            label: 'They can now have their own sign-in.',
+          },
+        ]);
+        await api.dismissPersonReminder(token, (told[0] as { id: string }).id);
+        expect((await api.personReminders(token)).items).toEqual([]);
+      }
+      // The role is one their age allows: a teen's at 13, never a teen's at 18.
+      const notAdult = await refusal(
+        api.invite(token, {
+          member_id: thirteen.id,
+          email: 'thirteen@contract.test',
+          role: 'adult',
+        }),
+      );
+      expect(notAdult.status).toBe(422);
+      expect(notAdult.code).toBe('role_not_for_age');
+      const grown = await api.addMember(token, {
+        display_name: 'Contract Eighteen',
+        date_of_birth: born(18),
+      });
+      const notTeen = await refusal(
+        api.invite(token, { member_id: grown.id, email: 'eighteen@contract.test', role: 'teen' }),
+      );
+      expect(notTeen.status).toBe(422);
+      expect(notTeen.code).toBe('role_not_for_age');
+      const made = await api.invite(token, {
+        member_id: thirteen.id,
+        email: 'thirteen@contract.test',
+        role: 'teen',
+      });
+      expect(made.invitation).toMatchObject({
+        member_id: thirteen.id,
+        display_name: 'Contract Thirteen',
+        role: 'teen',
+        state: 'pending',
+      });
+      await api.revokeInvitation(token, made.invitation.id);
+
+      // The reminders are the owners' alone.
+      const adult = await signInAs(api, ann.email, ann.password);
+      expect((await refusal(api.personReminders(adult.access_token))).status).toBe(403);
+      // A child's date of birth is an owner's to change or clear (the review,
+      // INV-6): an adult may not, so may not make them old enough to invite.
+      const cleared = await refusal(
+        api.updateMember(adult.access_token, young.id, { date_of_birth: null }),
+      );
+      expect(cleared.status).toBe(403);
+      expect(cleared.code).toBe('child_birthday_owners');
+      expect(
+        (await api.updateMember(token, young.id, { date_of_birth: null })).date_of_birth,
+      ).toBeNull();
     },
   },
   {

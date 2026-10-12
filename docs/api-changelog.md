@@ -4242,6 +4242,72 @@ last_used }], rules_max }` — of their newest `window` (50) items read and
     `@fdv/client`: `batchCounts`. The client fake answers the same. The
     web's sidebar and the Inbox's "Your uploads" tab count with it.
 
+- After 0.7.0:
+  - Inviting family members to sign up. The web offers an invitation as a
+    person is added, from their page, and on Invite's "Who is it for?":
+    each is `POST /api/v1/invitations` with `member_id` (or `POST
+/api/v1/members/{id}/invite`), as since SHR-02. Who has no sign-in and
+    no live invitation is worked out from what an inviter is already given
+    (`GET /members`' `has_account`, `sign_in_removed` and `date_of_birth`,
+    and `GET /invitations`), so no field is added for it. **Changed:** an
+    invitation for somebody already in the vault who is under 13 by their
+    date of birth, on the household's calendar, is refused `422 too_young`
+    (`detail: "member_id"`); so is accepting one once their date of birth
+    has been changed to say so. Nothing was made or spent. Somebody with
+    no date of birth is invited as before. **Changed:** for somebody
+    already in the vault, the role must be one their age allows, by date of
+    birth on the household's calendar: from 13 to 17 `teen` alone, from 18
+    any but `teen`; any other is `422 role_not_for_age` (`detail: "role"`),
+    by either route. Accepting one is refused the same way once a changed
+    date of birth says they are under 13 today, or that its role did not
+    suit their age on the day it was made (so a teen's invitation made at
+    17 is still good at 18); either refusal at accept says "This invitation
+    no longer fits. Ask whoever invited you for a new one." With no date of
+    birth, any role the inviter may hand out. `@fdv/shared`: `roleSuitsAge`, `ROLE_NOT_FOR_AGE`.
+    **Added:** an owner's reminders
+    that somebody of the family has turned 13 and may now have a sign-in
+    of their own. The worker's reminder tick makes one on their 13th
+    birthday on the household's calendar (or within the week, for a vault
+    that was off), for somebody already in the vault before it with no
+    sign-in, none taken away and no live invitation; once each person,
+    ever. `GET /api/v1/reminders/people` answers an owner `{ items: [{ id,
+kind: 'turned_13', member_id, display_name, fire_at, title, label }] }`
+    — each due, not dismissed, while the person may still be invited —
+    and `POST /api/v1/reminders/people/{id}/dismiss` is `204` (`404` once
+    dismissed); anybody else is `403` on both. They are in the owners'
+    daily digest, once, by email and on a browser; a phone's push counts
+    only reminders about documents, and is not sent for these alone.
+    **Unchanged:** `GET /api/v1/reminders` and the document reminders'
+    routes never answer one of these; who may invite, the roles an
+    inviter may hand out, a viewer's limits set at invitation, one live
+    invitation for each person, and the outside-the-family path.
+    `@fdv/shared`: `PersonReminderView`, `OWN_SIGN_IN_AGE`,
+    `GROWN_UP_AGE`, `UNDER_13_NOTE`, `TOO_YOUNG`, `birthdayAt`,
+    `oldEnoughToSignIn`, `rolesToHandOut`, `rolesForAge`, `mayBeInvited`
+    and `turnedThirteenWords`. `@fdv/client`: `personReminders`,
+    `dismissPersonReminder`. The client fake answers both, adds people
+    (`POST /members`) and takes back an invitation (`DELETE
+/invitations/{id}`), and refuses an under-13 as the vault does.
+  - The review's findings on the above. **Changed:** an invitation run out
+    or used up (five wrong codes) no longer stands in anybody's way: an
+    adult may invite somebody whose owner's invitation has died, as
+    `GET /invitations` already said (`expired`, `locked`), and the dead one
+    is taken back. **Changed:** a date of birth corrected after a
+    turning-13 reminder was made — to another day, or none — takes it away:
+    `GET /reminders/people` no longer lists it, the digest does not carry
+    it, and the next tick resolves it. **Changed:** the date of birth of
+    somebody under 13 by it, with no sign-in, is an owner's to change or
+    clear: anybody else is `403 child_birthday_owners` (`detail:
+"date_of_birth"`) on `PATCH /api/v1/members/{id}`; their other details,
+    and anybody else's birthday, are as before. **Changed:** the owners'
+    daily digest says of somebody turned 13, by email and push, only
+    "Someone in the family can now have their own sign-in. Open the vault
+    to invite them." — no name, no date; the app's own Home names them.
+    **Changed:** a reminder's deliveries are given to whoever is given the
+    reminder, and nobody else. `@fdv/shared`: `CHILD_BIRTHDAY_REFUSAL`,
+    `childBirthday`, `TURNED_13_TOLD`. The client fake refuses a child's
+    date of birth to anybody but an owner, as the vault does.
+
 ## Deprecations in effect
 
 - `GET /api/v1/shared/{token}`, `POST /api/v1/shared/{token}/open` and

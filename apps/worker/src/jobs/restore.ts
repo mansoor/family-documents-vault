@@ -1095,6 +1095,8 @@ const OWNERS_ONLY = [
     where: 'moved_to_owners_at is not null',
   },
   { table: 'incoming_file', column: 'owners_only', where: 'owners_only' },
+  // A reminder that somebody has turned 13 (0066): the owners' alone.
+  { table: 'reminder', column: 'member_id', where: 'member_id is not null' },
 ];
 
 /**

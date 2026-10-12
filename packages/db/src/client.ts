@@ -1171,8 +1171,11 @@ export interface Schema {
   reminder: {
     id: Generated<string>;
     household_id: string;
-    document_id: string;
-    kind: 'derived' | 'manual';
+    /** The document it is about; null for one about a person (0066). */
+    document_id: string | null;
+    /** The person a `turned_13` reminder is about (0066): the owners' alone; null otherwise. */
+    member_id: ColumnType<string | null, string | null | undefined, string | null>;
+    kind: 'derived' | 'manual' | 'turned_13';
     fire_at: ColumnType<string, string, string>;
     lead_days: number | null;
     /** A derived reminder's date: 'expires' or a date field's key; null for a manual one (0038). */

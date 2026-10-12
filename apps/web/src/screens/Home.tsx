@@ -7,6 +7,7 @@ import {
   type DateValue,
   type DocumentTypeView,
   type DocumentView,
+  type PersonReminderView,
   type ResetNotice,
   type SuggestionView,
 } from '@fdv/shared';
@@ -39,7 +40,7 @@ import { mayBringBack, purgeAskedWords } from './Trash.js';
  * category tiles with counts, and what was added recently.
  */
 export function HomeScreen() {
-  const { caps, authVersion } = useApp();
+  const { caps, authVersion, session } = useApp();
   const navigate = useNavigate();
   // What a page that sent somebody here did — a document moved to the Trash
   // from its own page (R5) — said where the focus is, as the Inbox says what
@@ -51,8 +52,8 @@ export function HomeScreen() {
   }, [said]);
   const { data, error, reload } = useLoad(
     async (t) => {
-      const [members, counts, recent, docs, me, due, suggestions, types, asked] = await Promise.all(
-        [
+      const [members, counts, recent, docs, me, due, suggestions, types, asked, people] =
+        await Promise.all([
           api.members(t),
           api.counts(t),
           api.documents(t, { limit: 5, sort: 'recent' }),
@@ -63,8 +64,13 @@ export function HomeScreen() {
           api.documentTypes(t),
           // An owner asked to remove something you filed for good (5.24).
           api.documents(t, { deleted: 'true', purge_requested: 'true', limit: 50 }),
-        ],
-      );
+          // Somebody turned 13 (after 0.7.0): told to the owners alone. Home
+          // is never lost to it: refused or failed, there are none to say
+          // (the review, INV-5).
+          (session.info?.role ?? storedRole()) === 'owner'
+            ? api.personReminders(t).catch(() => ({ items: [] as PersonReminderView[] }))
+            : Promise.resolve({ items: [] as PersonReminderView[] }),
+        ]);
       // A guest is told when their access ends, on the family's clock (5.34).
       const timezone =
         me.kind === 'guest' ? ((await api.profile(t).catch(() => null))?.timezone ?? 'UTC') : 'UTC';
@@ -94,6 +100,7 @@ export function HomeScreen() {
         counts,
         recent: recent.items,
         attention,
+        people: people.items,
         suggestions: suggestions.items,
         types: types.items,
         // Yours, that an owner has asked to remove for good: you may keep it.
@@ -253,7 +260,8 @@ export function HomeScreen() {
 
   const attention = (
     <>
-      <AttentionStrip items={data?.attention ?? null} />
+      <TurnedThirteen items={data?.people ?? []} onDismissed={reload} />
+      <AttentionStrip items={data?.attention ?? null} others={(data?.people.length ?? 0) > 0} />
       <MissingStrip items={data?.suggestions ?? []} />
     </>
   );
@@ -468,11 +476,15 @@ export function addLink(s: SuggestionView): string {
 
 function AttentionStrip({
   items,
+  others = false,
 }: {
   /** Null until known: never "Everything is fine" while it loads, or when it could not (R5). */
   items: Array<{ id: string; title: string; label: string; tone: 'danger' | 'warn' }> | null;
+  /** Something else above needs attention (somebody turned 13): never "Everything is fine". */
+  others?: boolean;
 }) {
   if (items === null) return null;
+  if (items.length === 0 && others) return null;
   if (items.length === 0) {
     return (
       <div className="attention attention-calm" role="status">
@@ -500,6 +512,80 @@ function AttentionStrip({
         </ul>
       </Link>
     </div>
+  );
+}
+
+/**
+ * Somebody turned 13 (after 0.7.0): "Sara is 13 today. They can now have
+ * their own sign-in." Said to the owners alone, each once, with the way to
+ * their page's "Invite to sign up" and to dismiss it. It goes on its own
+ * once they are invited or sign in.
+ */
+export function TurnedThirteen(props: {
+  items: PersonReminderView[];
+  onDismissed: () => Promise<void>;
+}) {
+  const { guarded } = useApp();
+  const [error, setError] = useState<string | null>(null);
+  const [said, setSaid] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const line = useRef<HTMLParagraphElement>(null);
+  // Where the reader is once one is dismissed: what happened, not the top.
+  useEffect(() => {
+    if (said) line.current?.focus();
+  }, [said]);
+  const dismiss = async (r: PersonReminderView) => {
+    if (busy) return;
+    setBusy(r.id);
+    setError(null);
+    try {
+      const done = await guarded((t) => api.dismissPersonReminder(t, r.id));
+      if (done !== null) {
+        await props.onDismissed();
+        setSaid(`Dismissed. You can still invite ${r.display_name} from their page.`);
+      }
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+  if (props.items.length === 0 && !said && !error) return null;
+  return (
+    <>
+      {props.items.map((r) => (
+        <section
+          key={r.id}
+          className="attention attention-calm turned-13 stack"
+          aria-labelledby={`turned-13-${r.id}`}
+        >
+          <p id={`turned-13-${r.id}`} className="turned-13-words">
+            <strong>{r.title}.</strong> {r.label}
+          </p>
+          <div className="row">
+            <Link
+              to={`/people/${r.member_id}`}
+              state={{ invite: true }}
+              className="btn btn-quiet btn-small"
+            >
+              Invite {r.display_name} to sign up
+            </Link>
+            <Button
+              kind="quiet"
+              disabled={busy !== null}
+              ariaLabel={`Dismiss the reminder about ${r.display_name}`}
+              onClick={() => void dismiss(r)}
+            >
+              Dismiss
+            </Button>
+          </div>
+        </section>
+      ))}
+      <ErrorNote message={error} />
+      <p ref={line} className="status-line" role="status" tabIndex={-1}>
+        {said}
+      </p>
+    </>
   );
 }
 

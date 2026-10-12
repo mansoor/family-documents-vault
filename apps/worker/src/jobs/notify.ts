@@ -82,11 +82,27 @@ export function forEmail(i: Digest['items'][number]): {
 /** An item's line after its title: what it is about (0.5.15), else when it fell due. */
 const lineOf = (i: { label: string; about: string | null }) => i.about ?? i.label;
 
+/**
+ * An item in one line, as an email's text says it: its title, then what it
+ * is about. Somebody turned 13 (0066) is one sentence and its ask, with no
+ * name and no date (the review, INV-7).
+ */
+export function itemLine(item: Digest['items'][number]): string {
+  if (item.member_id) return `${item.title} ${item.label}`;
+  const i = forEmail(item);
+  return `${i.title} — ${lineOf(i)}${i.note ? ` (${i.note})` : ''}`;
+}
+
+/** What a browser's push says: the first three items, a line each, with no note. */
+export function pushBody(d: Digest): string {
+  return d.items
+    .slice(0, 3)
+    .map((i) => (i.member_id ? itemLine(i) : `${i.title} — ${lineOf(i)}`))
+    .join('\n');
+}
+
 export function textBody(d: Digest, baseUrl: string): string {
-  const lines = d.items.map((item) => {
-    const i = forEmail(item);
-    return `• ${i.title} — ${lineOf(i)}${i.note ? ` (${i.note})` : ''}`;
-  });
+  const lines = d.items.map((item) => `• ${itemLine(item)}`);
   const intro =
     d.kind === 'catch_up'
       ? 'While nobody was looking, these came up:'
@@ -204,25 +220,27 @@ async function sendPush(deps: NotifyDeps, d: Digest): Promise<number> {
       .where(liveDevice)
       .execute(),
   );
+  // A phone is told how many of the day's reminders about documents there
+  // are, and asks the vault for them (GET /reminders); one about a person
+  // (0066, somebody turned 13) is not among those, so it is not counted,
+  // and a digest of nothing else is not sent to a phone.
+  const forPhone = d.items.filter((i) => i.document_id !== null).length;
   // The Sunday summary is an email; a phone hears of the day's reminders (4.13).
   const wanted = devices.filter(
     (x) =>
       x.daily_push !== false &&
       x.p256dh &&
       x.auth &&
-      !(d.kind === 'weekly' && x.kind === 'unified_push'),
+      !(x.kind === 'unified_push' && (d.kind === 'weekly' || forPhone === 0)),
   );
   if (wanted.length === 0) return 0;
 
   // A browser shows the first few; a phone is told how many, and asks the
   // vault for the rest once it is unlocked (4.13): no title leaves in it.
-  const phone = unifiedPayload({ v: 1, type: 'digest', count: d.items.length, date: d.local_date });
+  const phone = unifiedPayload({ v: 1, type: 'digest', count: forPhone, date: d.local_date });
   const payload = JSON.stringify({
     title: subject(d),
-    body: d.items
-      .slice(0, 3)
-      .map((i) => `${i.title} — ${lineOf(i)}`)
-      .join('\n'),
+    body: pushBody(d),
     url: `${deps.baseUrl}/reminders`,
     tag: `fdv-digest-${d.local_date}`,
     count: d.items.length,

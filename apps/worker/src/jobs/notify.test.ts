@@ -4,7 +4,8 @@ import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createNotifier, htmlBody, subject, textBody } from './notify.js';
+import { TURNED_13_TOLD } from '@fdv/shared';
+import { createNotifier, htmlBody, pushBody, subject, textBody } from './notify.js';
 import { deliver, weekly, type Digest } from './reminders.js';
 
 const MASTER = 'notify-test-master-secret-at-least-32-bytes';
@@ -69,6 +70,34 @@ const digest = (over: Partial<Digest> = {}): Digest => ({
 });
 
 describe('digest copy', () => {
+  it('somebody turned 13 is said with no name and no date, by email and by push (INV-7)', () => {
+    const d = digest({
+      items: [
+        {
+          reminder_id: 'r13',
+          document_id: null,
+          member_id: 'm13',
+          title: TURNED_13_TOLD.title,
+          label: TURNED_13_TOLD.label,
+          about: null,
+          note: null,
+          overdue: false,
+          private: false,
+        },
+      ],
+    });
+    const line =
+      'Someone in the family can now have their own sign-in. Open the vault to invite them.';
+    expect(textBody(d, 'https://vault.example')).toContain(`• ${line}`);
+    expect(pushBody(d)).toBe(line);
+    const html = htmlBody(d, 'https://vault.example');
+    expect(html).toContain('Someone in the family can now have their own sign-in.');
+    expect(html).toContain('Open the vault to invite them.');
+    for (const body of [textBody(d, 'x'), htmlBody(d, 'x'), pushBody(d)]) {
+      expect(body).not.toMatch(/Sara|13 today|turned 13|\d{4}-\d{2}-\d{2}/);
+    }
+  });
+
   it('says how many things need attention, in plain words', () => {
     expect(subject(digest())).toBe('2 things need attention');
     expect(subject(digest({ items: [digest().items[0] as never] }))).toBe('1 thing has lapsed');

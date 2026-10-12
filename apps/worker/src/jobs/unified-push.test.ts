@@ -198,6 +198,36 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
     expect(got.headers['content-encoding']).toBe('aes128gcm');
   });
 
+  // Somebody turned 13 (0066): not among the reminders a phone asks the
+  // vault for (GET /reminders), so not counted, and never pushed alone.
+  const turned13 = {
+    reminder_id: randomUUID(),
+    document_id: null,
+    member_id: randomUUID(),
+    title: 'Sara is 13 today',
+    label: 'They can now have their own sign-in.',
+    about: null,
+    note: null,
+    overdue: false,
+    private: false,
+  };
+
+  it('a phone is told only of the reminders about documents (0066)', async () => {
+    await device('phone-13');
+    const mixed = digestOf('daily');
+    mixed.items.push(turned13);
+    expect(await notifier().digest(mixed)).toContain('push');
+    expect(received).toHaveLength(1);
+    expect(open((received[0] as Received).body)).toMatchObject({ type: 'digest', count: 3 });
+  });
+
+  it('a digest of nothing but somebody turning 13 is not pushed to a phone (0066)', async () => {
+    await device('phone-13-alone');
+    const alone = { ...digestOf('daily'), items: [turned13] };
+    expect(await notifier().digest(alone)).not.toContain('push');
+    expect(received).toHaveLength(0);
+  });
+
   it('the Sunday summary is not pushed to a phone: it is an email', async () => {
     await device('weekly-phone');
     expect(await notifier().digest(digestOf('weekly'))).not.toContain('push');

@@ -18,6 +18,20 @@ export function registerReminders(app: FastifyInstance, reminders: ReminderServi
     return { items: await reminders.list(principal(req), state) };
   });
 
+  // Somebody turned 13 (0066): the owners' reminders, and dismissing one.
+  app.get('/api/v1/reminders/people', auth, async (req) => ({
+    items: await reminders.listPeople(principal(req)),
+  }));
+
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/reminders/people/:id/dismiss',
+    auth,
+    async (req, reply) => {
+      await reminders.dismissPerson(principal(req), req.params.id, metaOf(req));
+      return reply.status(204).send();
+    },
+  );
+
   app.post('/api/v1/reminders', guard('reminder.manage'), async (req, reply) => {
     const body = parse(
       z.object({

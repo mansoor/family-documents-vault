@@ -1,12 +1,15 @@
 import {
   addDays,
+  birthdayAt,
   derivedFireDates,
   localToday,
+  OWN_SIGN_IN_AGE,
   reminderWord,
   wellFormedDate,
   type DateValue,
   type ReminderWords,
 } from '@fdv/shared';
+import { sql } from 'kysely';
 import type { Db } from './client.js';
 
 /**
@@ -268,4 +271,137 @@ export async function regenerateDerived(
       })
       .execute();
   }
+}
+
+// ------------------------------------------------- somebody turning 13 (0066)
+
+/**
+ * How many days late a turning-13 reminder is still made: a vault that was
+ * off on somebody's 13th birthday tells the owners when it is back, within
+ * the week ("Sara turned 13 on 9 Oct"), and not long after.
+ */
+export const TURNED_13_CATCH_UP_DAYS = 7;
+
+/**
+ * Whether the person (`member`, in the query) may yet be invited to sign
+ * up, at `now`: alive, of the family, with no sign-in, never one taken away
+ * (they are given it back, never invited), and no invitation waiting for
+ * them — one not accepted, taken back, run out or used up (five wrong
+ * codes). What a turning-13 reminder is still about.
+ */
+export const mayYetSignUp = (now: Date) => sql<boolean>`(
+  member.kind = 'family'
+  and not member.is_deceased
+  and member.former_account_id is null
+  and not exists (select 1 from account_household ah where ah.member_id = member.id)
+  and not exists (select 1 from invitation i
+                   where i.member_id = member.id
+                     and i.accepted_at is null and i.revoked_at is null
+                     and i.expires_at > ${now} and i.attempts < 5))`;
+
+/**
+ * Whether a turning-13 reminder is still about the person's 13th birthday:
+ * their date of birth, corrected since, may say another day, or none (the
+ * review, INV-3). One that no longer is is not listed, not delivered, and
+ * done with at the next tick.
+ */
+export function stillTurned13(r: { date_of_birth: string | null; fire_at: string }): boolean {
+  if (!r.date_of_birth) return false;
+  return (
+    birthdayAt(String(r.date_of_birth).slice(0, 10), OWN_SIGN_IN_AGE) ===
+    String(r.fire_at).slice(0, 10)
+  );
+}
+
+/**
+ * The owners' reminders that somebody has turned 13 (0066), as the vault
+ * itself, in the worker's reminders.tick: one, due, for each person of the
+ * family whose 13th birthday on the household's calendar is today — or
+ * within the week, for a vault that was off — who was already in the
+ * vault before it, and may yet sign up (`mayYetSignUp`). Never a second
+ * for anybody. One no longer about somebody who may sign up (they were
+ * invited, signed in, passed away), or about their 13th birthday (their
+ * date of birth corrected, `stillTurned13`), is done with: resolved. How
+ * many made.
+ */
+export async function remindTurned13(
+  trx: Db,
+  householdId: string,
+  timezone: string,
+  now: Date,
+): Promise<number> {
+  const today = localToday(timezone, now);
+  await trx
+    .updateTable('reminder')
+    .set({ status: 'resolved', acknowledged_at: now })
+    .where('kind', '=', 'turned_13')
+    .where('status', 'in', ['scheduled', 'due', 'snoozed'])
+    .where((eb) =>
+      eb.not(
+        eb.exists(
+          eb
+            .selectFrom('member')
+            .select('member.id')
+            .whereRef('member.id', '=', 'reminder.member_id')
+            .where(mayYetSignUp(now)),
+        ),
+      ),
+    )
+    .execute();
+  // And those whose date of birth was corrected since (INV-3).
+  const open = await trx
+    .selectFrom('reminder')
+    .innerJoin('member', 'member.id', 'reminder.member_id')
+    .select(['reminder.id', 'reminder.fire_at', 'member.date_of_birth'])
+    .where('reminder.kind', '=', 'turned_13')
+    .where('reminder.status', 'in', ['scheduled', 'due', 'snoozed'])
+    .execute();
+  const corrected = open.filter((r) => !stillTurned13(r)).map((r) => r.id);
+  if (corrected.length > 0) {
+    await trx
+      .updateTable('reminder')
+      .set({ status: 'resolved', acknowledged_at: now })
+      .where('id', 'in', corrected)
+      .execute();
+  }
+  const people = await trx
+    .selectFrom('member')
+    .select(['member.id', 'member.date_of_birth', 'member.created_at'])
+    .where('member.date_of_birth', 'is not', null)
+    .where(mayYetSignUp(now))
+    .where((eb) =>
+      eb.not(
+        eb.exists(
+          eb
+            .selectFrom('reminder')
+            .select('reminder.id')
+            .whereRef('reminder.member_id', '=', 'member.id')
+            .where('reminder.kind', '=', 'turned_13'),
+        ),
+      ),
+    )
+    .execute();
+  let made = 0;
+  for (const m of people) {
+    const day = birthdayAt(String(m.date_of_birth).slice(0, 10), OWN_SIGN_IN_AGE);
+    if (!day || day > today || day <= addDays(today, -TURNED_13_CATCH_UP_DAYS)) continue;
+    // Added on the day or after it: whoever added them was offered the
+    // invitation then, and needs no reminder.
+    if (localToday(timezone, m.created_at) >= day) continue;
+    const r = await trx
+      .insertInto('reminder')
+      .values({
+        household_id: householdId,
+        member_id: m.id,
+        document_id: null,
+        kind: 'turned_13',
+        fire_at: day,
+        status: 'due',
+      })
+      .onConflict((oc) => oc.doNothing())
+      .returning('id')
+      .executeTakeFirst();
+    if (r) made++;
+  }
+  return made;
 }

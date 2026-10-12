@@ -1,10 +1,22 @@
-import { can, roleDescription, roleLabel, ROLES, type Role } from '@fdv/shared';
-import { useState, type FormEvent } from 'react';
+import {
+  ageOn,
+  can,
+  localToday,
+  mayBeInvited,
+  OWN_SIGN_IN_AGE,
+  roleDescription,
+  roleLabel,
+  rolesForAge,
+  rolesToHandOut,
+  UNDER_13_NOTE,
+  type Role,
+} from '@fdv/shared';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { LimitsPicker, NO_LIMITS, type Limits } from '../access.js';
 import { api, type CreatedInvitation, type Invitation, type Member } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
 import { GuestInviteForm, OutsideTheFamily } from '../guests.js';
-import { Button, Check, ErrorNote, Field, Pills } from '../ui.js';
+import { Button, Check, ErrorNote, Field, Pills, Select } from '../ui.js';
 
 /**
  * Inviting somebody (SHR-02), from the People screen.
@@ -34,7 +46,7 @@ export function InvitePanel(props: {
   const { session, guarded } = useApp();
   const myRole: Role = session.info?.role ?? 'viewer';
   const [inviting, setInviting] = useState<{ member?: Member } | null>(null);
-  const [created, setCreated] = useState<CreatedInvitation | null>(null);
+  const [created, setCreated] = useState<{ made: CreatedInvitation; email: string } | null>(null);
 
   if (!can(myRole, 'member.invite')) return null;
 
@@ -47,7 +59,9 @@ export function InvitePanel(props: {
   );
 
   if (created) {
-    return <HandOver created={created} onDone={() => setCreated(null)} />;
+    return (
+      <HandOver created={created.made} email={created.email} onDone={() => setCreated(null)} />
+    );
   }
 
   if (inviting) {
@@ -55,10 +69,12 @@ export function InvitePanel(props: {
       <InviteForm
         myRole={myRole}
         member={inviting.member}
+        members={props.members}
+        invitations={props.invitations}
         onCancel={() => setInviting(null)}
-        onCreated={async (c) => {
+        onCreated={async (c, email) => {
           setInviting(null);
-          setCreated(c);
+          setCreated({ made: c, email });
           await props.onChanged();
         }}
       />
@@ -112,53 +128,193 @@ export function InvitePanel(props: {
   );
 }
 
-function InviteForm(props: {
-  myRole: Role;
-  member?: Member | undefined;
-  onCancel: () => void;
-  onCreated: (c: CreatedInvitation) => Promise<void>;
-}) {
-  const { guarded, caps } = useApp();
-  const [name, setName] = useState(props.member?.display_name ?? '');
-  const [email, setEmail] = useState('');
+/**
+ * The household's today, on its own calendar: the vault works ages out on
+ * it (an invitation for an under-13 is refused, after 0.7.0), so the screens
+ * do too. The browser's own day until the vault has said.
+ */
+export function useHouseholdToday(active = true): string {
+  const { authVersion, withToken } = useApp();
+  const [timezone, setTimezone] = useState<string | null>(null);
+  useEffect(() => {
+    // Not asked before there is a sign-in to ask with (the wizard's first board).
+    if (!active) return;
+    let gone = false;
+    withToken((t) => api.profile(t)).then(
+      (p) => {
+        if (!gone && p?.timezone) setTimezone(p.timezone);
+      },
+      () => undefined,
+    );
+    return () => {
+      gone = true;
+    };
+  }, [active, authVersion, withToken]);
+  return localToday(timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+}
+
+/** The role an invitation gives, and a viewer's limits (5.33): chosen in `RoleFields`. */
+export interface RoleChoice {
+  /** What this inviter may hand out to somebody of this age (`rolesForAge`). */
+  offered: Role[];
+  chosen: Role | null;
+  setRole: (r: Role) => void;
+  limited: boolean;
+  setLimited: (on: boolean) => void;
+  limits: Limits;
+  setLimits: (v: Limits) => void;
+  /** A viewer is chosen, and the vault limits viewers. */
+  limitsOffered: boolean;
+  /** Limits go with the invitation: always an adult's viewer (A27); an owner's, unless they say. */
+  limiting: boolean;
+  owner: boolean;
+}
+
+/**
+ * The roles offered are the ones this person may actually hand out, and
+ * that the invitee's age allows (after 0.7.0): a teen's from 13 to 17;
+ * from 18 every other one the inviter may give; every one when the age is
+ * not known. Offering one that will be refused is a worse answer than not
+ * offering it.
+ */
+export function useRoleChoice(myRole: Role, age: number | null): RoleChoice {
+  const { caps } = useApp();
   const [role, setRole] = useState<Role>('adult');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   // What a viewer will see (5.33): limited unless an owner says otherwise.
   const [limited, setLimited] = useState(true);
   const [limits, setLimits] = useState<Limits>(NO_LIMITS);
-  const owner = props.myRole === 'owner';
+  const owner = myRole === 'owner';
+  const offered = rolesForAge(age, rolesToHandOut(myRole));
+  const chosen = offered.includes(role) ? role : (offered[0] ?? null);
+  const limitsOffered = chosen === 'viewer' && caps?.features.access_restrictions === true;
+  return {
+    offered,
+    chosen,
+    setRole,
+    limited,
+    setLimited,
+    limits,
+    setLimits,
+    limitsOffered,
+    limiting: limitsOffered && (limited || !owner),
+    owner,
+  };
+}
+
+/** What an invitation's body says of the role and a viewer's limits. */
+export function roleBody(c: RoleChoice): { role: Role; restriction?: Limits } {
+  return {
+    role: c.chosen as Role,
+    ...(c.limiting
+      ? { restriction: c.owner ? c.limits : { ...c.limits, include_adults_only: false } }
+      : {}),
+  };
+}
+
+/** What they can do, and — for a viewer — what they can see. */
+export function RoleFields(props: {
+  idPrefix: string;
+  choice: RoleChoice;
+  memberId: string | null;
+  /** Its heading's level: under the card's own (3), or in a form with none (2). */
+  level?: 2 | 3;
+}) {
+  const c = props.choice;
+  if (!c.chosen) return null;
+  const H = props.level === 2 ? 'h2' : 'h3';
+  return (
+    <>
+      <Pills
+        label="What they can do"
+        value={c.chosen}
+        options={c.offered.map((r) => ({ value: r, label: roleLabel(r) }))}
+        onChange={c.setRole}
+      />
+      <p className="muted">{roleDescription(c.chosen)}</p>
+      {c.limitsOffered && (
+        <section className="stack" aria-labelledby={`${props.idPrefix}-limits-h`}>
+          <H id={`${props.idPrefix}-limits-h`} className="section-h">
+            Limit what they can see
+          </H>
+          {c.owner ? (
+            <Check
+              id={`${props.idPrefix}-limited`}
+              label="Only what I choose"
+              note="Off, they see every family document but the Adults only ones."
+              checked={c.limited}
+              onChange={c.setLimited}
+            />
+          ) : (
+            <p className="muted">
+              Choose what they can see. Only an owner can invite a viewer who sees every family
+              document.
+            </p>
+          )}
+          {c.limiting && (
+            <LimitsPicker
+              idPrefix={`${props.idPrefix}-limits`}
+              value={c.limits}
+              onChange={c.setLimits}
+              memberId={props.memberId}
+              owner={c.owner}
+            />
+          )}
+        </section>
+      )}
+    </>
+  );
+}
+
+/** Said under "Who is it for?": who is not listed, and why. */
+export const WHO_NOTE =
+  'Only family members with no sign-in and no invitation waiting are listed. Under-13s can’t have a sign-in of their own, so they are listed once they turn 13.';
+
+export function InviteForm(props: {
+  myRole: Role;
+  /** The person it is for, fixed (from their page): nobody is asked who. */
+  member?: Member | undefined;
+  /** The family and the invitations, for "Who is it for?" (after 0.7.0). */
+  members?: Member[] | undefined;
+  invitations?: Invitation[] | undefined;
+  onCancel: () => void;
+  onCreated: (c: CreatedInvitation, email: string) => Promise<void>;
+}) {
+  const { guarded, caps } = useApp();
+  const today = useHouseholdToday();
+  const [name, setName] = useState(props.member?.display_name ?? '');
+  const [email, setEmail] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   // Family, or somebody outside it (5.34): asked first of somebody new.
   const asksFamily = caps?.features.guests === true && !props.member;
   const [family, setFamily] = useState<'yes' | 'no' | null>(null);
   const [guest, setGuest] = useState(false);
-
-  // Only the roles this person is allowed to hand out are shown; offering
-  // one that will be refused is a worse answer than not offering it.
-  const offerable = ROLES.filter((r) =>
-    can(props.myRole, r === 'owner' || r === 'adult' ? 'member.invite_adult' : 'member.invite'),
+  // Who it is for (after 0.7.0): somebody of the family with no sign-in and
+  // no invitation waiting, 13 or over or of no known age; or somebody new.
+  const invitable = (props.members ?? []).filter((m) =>
+    mayBeInvited(m, props.invitations ?? [], today),
   );
-  const chosen = offerable.includes(role) ? role : (offerable[0] as Role);
-  // An adult's viewer is always limited (A27); an owner's, unless they say.
-  const limitsOffered = chosen === 'viewer' && caps?.features.access_restrictions === true;
-  const limiting = limitsOffered && (limited || !owner);
+  const [who, setWho] = useState<string>('new');
+  const fixed = props.member ?? invitable.find((m) => m.id === who) ?? null;
+  // Its heading is where the reader is, as it opens.
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => heading.current?.focus(), []);
+  const choice = useRoleChoice(props.myRole, fixed ? ageOn(fixed.date_of_birth, today) : null);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!choice.chosen) return;
     setBusy(true);
     setError(null);
     try {
       const created = await guarded((t) =>
         api.invite(t, {
-          ...(props.member ? { member_id: props.member.id } : { display_name: name }),
+          ...(fixed ? { member_id: fixed.id } : { display_name: name }),
           email,
-          role: chosen,
-          ...(limiting
-            ? { restriction: owner ? limits : { ...limits, include_adults_only: false } }
-            : {}),
+          ...roleBody(choice),
         }),
       );
-      if (created) await props.onCreated(created);
+      if (created) await props.onCreated(created, email);
       else setBusy(false);
     } catch (err) {
       setError(describeError(err));
@@ -167,12 +323,23 @@ function InviteForm(props: {
   };
 
   if (guest) {
-    return <GuestInviteForm owner={owner} onCancel={props.onCancel} onCreated={props.onCreated} />;
+    return (
+      <GuestInviteForm
+        owner={choice.owner}
+        onCancel={props.onCancel}
+        onCreated={(c) => props.onCreated(c, '')}
+      />
+    );
   }
 
+  const isFamily = !asksFamily || family === 'yes';
   return (
-    <form onSubmit={(e) => void submit(e)} className="card stack">
-      <h2 style={{ fontSize: 18 }}>Invite someone to sign in</h2>
+    <form onSubmit={(e) => void submit(e)} className="card stack" aria-labelledby="invite-h">
+      <h2 id="invite-h" ref={heading} style={{ fontSize: 18 }} tabIndex={-1}>
+        {props.member
+          ? `Invite ${props.member.display_name} to sign up`
+          : 'Invite someone to sign in'}
+      </h2>
       {asksFamily && (
         <Pills
           label="Is this person family?"
@@ -185,11 +352,27 @@ function InviteForm(props: {
         />
       )}
       {asksFamily && family === 'no' && <OutsideTheFamily onSignIn={() => setGuest(true)} />}
-      {(!asksFamily || family === 'yes') && (
+      {isFamily && (
         <>
           {!props.member && (
-            <Field id="invite-name" label="Their name" value={name} onChange={setName} />
+            <>
+              <Select
+                id="invite-who"
+                label="Who is it for?"
+                value={fixed ? fixed.id : 'new'}
+                options={[
+                  { value: 'new', label: 'Someone new' },
+                  ...invitable.map((m) => ({ value: m.id, label: m.display_name })),
+                ]}
+                onChange={setWho}
+                describedBy="invite-who-note"
+              />
+              <p id="invite-who-note" className="muted">
+                {WHO_NOTE}
+              </p>
+            </>
           )}
+          {!fixed && <Field id="invite-name" label="Their name" value={name} onChange={setName} />}
           <Field
             id="invite-email"
             label="Their email address"
@@ -199,49 +382,13 @@ function InviteForm(props: {
             autoComplete="off"
             hint="This becomes their sign-in. Nothing is sent to it — you pass the invitation on yourself."
           />
-          <Pills
-            label="What they can do"
-            value={chosen}
-            options={offerable.map((r) => ({ value: r, label: roleLabel(r) }))}
-            onChange={setRole}
-          />
-          <p className="muted">{roleDescription(chosen)}</p>
-          {limitsOffered && (
-            <section className="stack" aria-labelledby="invite-limits-h">
-              <h3 id="invite-limits-h" className="section-h">
-                Limit what they can see
-              </h3>
-              {owner ? (
-                <Check
-                  id="invite-limited"
-                  label="Only what I choose"
-                  note="Off, they see every family document but the Adults only ones."
-                  checked={limited}
-                  onChange={setLimited}
-                />
-              ) : (
-                <p className="muted">
-                  Choose what they can see. Only an owner can invite a viewer who sees every family
-                  document.
-                </p>
-              )}
-              {limiting && (
-                <LimitsPicker
-                  idPrefix="invite-limits"
-                  value={limits}
-                  onChange={setLimits}
-                  memberId={props.member?.id ?? null}
-                  owner={owner}
-                />
-              )}
-            </section>
-          )}
+          <RoleFields idPrefix="invite" choice={choice} memberId={fixed?.id ?? null} />
           <ErrorNote message={error} />
         </>
       )}
       <div className="row">
-        {(!asksFamily || family === 'yes') && (
-          <Button type="submit" disabled={busy || !email || (!props.member && !name)}>
+        {isFamily && (
+          <Button type="submit" disabled={busy || !email || (!fixed && !name) || !choice.chosen}>
             {busy ? 'Making the invitation…' : 'Make the invitation'}
           </Button>
         )}
@@ -253,14 +400,26 @@ function InviteForm(props: {
   );
 }
 
-/** The one moment the two secrets exist outside the invitee's head. */
-function HandOver(props: { created: CreatedInvitation; onDone: () => void }) {
+/**
+ * The one moment the two secrets exist outside the invitee's head. It
+ * offers to email the link (after 0.7.0) from the inviter's own mail — the
+ * vault sends nothing — and never the code, which goes another way.
+ */
+export function HandOver(props: {
+  created: CreatedInvitation;
+  /** The address it was made for, to email the link to; none for no offer. */
+  email?: string | undefined;
+  onDone: () => void;
+}) {
   // The secret after the #: a browser sends it to no server, and the page
   // it opens takes it out of the address bar and that tab's history (5.17).
   // The browser's own history of pages visited keeps it: the link works
   // once, only with the code, and for seven days.
   const link = `${window.location.origin}/join#${props.created.link_token}`;
   const [copied, setCopied] = useState<'link' | 'code' | null>(null);
+  // Where the reader is once it is made: what to send, and to whom.
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => heading.current?.focus(), []);
 
   const copy = (what: 'link' | 'code', text: string) => {
     void navigator.clipboard?.writeText(text).then(
@@ -271,7 +430,9 @@ function HandOver(props: { created: CreatedInvitation; onDone: () => void }) {
 
   return (
     <section className="card stack">
-      <h2 style={{ fontSize: 18 }}>Send these to {props.created.invitation.display_name}</h2>
+      <h2 ref={heading} tabIndex={-1} style={{ fontSize: 18 }}>
+        Send these to {props.created.invitation.display_name}
+      </h2>
       <p className="muted">
         Send the link one way and the code another — a message and a phone call, say. Anyone who
         gets both can sign in as them.
@@ -293,11 +454,137 @@ function HandOver(props: { created: CreatedInvitation; onDone: () => void }) {
         </Button>
       </div>
 
+      {props.email && (
+        <p>
+          <a
+            className="btn btn-quiet"
+            href={mailtoLink(props.email, props.created.invitation.display_name, link)}
+          >
+            Email the link
+          </a>{' '}
+          <span className="muted">From your own email. Then tell them the code another way.</span>
+        </p>
+      )}
+
       <p className="muted">
         This is the only time they are shown. The vault keeps no copy, so if you lose them, cancel
         the invitation and make another. It stops working in seven days.
       </p>
       <Button onClick={props.onDone}>Done</Button>
     </section>
+  );
+}
+
+/**
+ * An email of the link alone, opened in the inviter's own mail (after
+ * 0.7.0): the code is not in it, so the email on its own is not a way in.
+ */
+export function mailtoLink(to: string, name: string, link: string): string {
+  const subject = 'Your invitation to our family vault';
+  const body = `Hello ${name},\n\nHere is your link to sign up to our family vault:\n\n${link}\n\nI will give you the code it asks for another way. The link stops working in seven days.\n`;
+  return `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
+/**
+ * An invitation as somebody is added (after 0.7.0): People → Add someone,
+ * and the first-run wizard's people. For somebody 13 or over by the date of
+ * birth typed — or with none — "Invite them to sign up now", unticked;
+ * ticked, their email address and the roles their age allows, and saving
+ * the person makes the invitation for them too. For an under-13, a note
+ * instead. Nothing for somebody who may not invite.
+ */
+export function useSignUpOnAdd(myRole: Role, dateOfBirth: string, today: string) {
+  const age = ageOn(dateOfBirth || null, today);
+  const [on, setOn] = useState(false);
+  const [email, setEmail] = useState('');
+  const choice = useRoleChoice(myRole, age);
+  const offered = can(myRole, 'member.invite');
+  const tooYoung = age !== null && age < OWN_SIGN_IN_AGE;
+  return {
+    age,
+    on,
+    setOn,
+    email,
+    setEmail,
+    choice,
+    offered,
+    tooYoung,
+    /** Saving the person makes an invitation too. */
+    wanted: offered && !tooYoung && on && choice.chosen !== null,
+    reset: () => {
+      setOn(false);
+      setEmail('');
+    },
+  };
+}
+
+export type SignUpOnAdd = ReturnType<typeof useSignUpOnAdd>;
+
+/** Said when the person was added and the invitation's step-up was cancelled (the review, INV-4). */
+export const NOT_INVITED = (name: string) =>
+  `${name} was added, but no invitation was made. You can invite them from their page.`;
+
+/** Said when the box is ticked and no address is given. */
+export const EMAIL_NEEDED = 'Give their email address, or untick “Invite them to sign up now”.';
+
+/** What the add-person forms show of it: the box and what it asks, or the under-13 note. */
+export function SignUpFields(props: { idPrefix: string; signUp: SignUpOnAdd }) {
+  const s = props.signUp;
+  if (!s.offered) return null;
+  if (s.tooYoung) {
+    return (
+      <p className="muted under-13-note" id={`${props.idPrefix}-under-13`}>
+        {UNDER_13_NOTE}
+      </p>
+    );
+  }
+  return (
+    <>
+      <Check
+        id={`${props.idPrefix}-invite`}
+        checked={s.on}
+        onChange={s.setOn}
+        label="Invite them to sign up now"
+        note={
+          s.age === null
+            ? 'A sign-in of their own, for someone 13 or over. You can invite them later instead, from their page.'
+            : 'A sign-in of their own. You can invite them later instead, from their page.'
+        }
+      />
+      {s.on && (
+        <div className="stack sign-up-fields">
+          <Field
+            id={`${props.idPrefix}-email`}
+            label="Their email address"
+            type="email"
+            value={s.email}
+            onChange={s.setEmail}
+            autoComplete="off"
+            hint="This becomes their sign-in. Nothing is sent to it — you pass the invitation on yourself."
+          />
+          <RoleFields
+            idPrefix={`${props.idPrefix}-invite`}
+            choice={s.choice}
+            memberId={null}
+            level={2}
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * The invitation for somebody just added, as `SignUpFields` asked: made
+ * with `guarded`, so a step-up is asked for as anywhere. Null when the
+ * step-up was cancelled; throws what the vault refused.
+ */
+export function inviteAdded(
+  guarded: <T>(fn: (t: string) => Promise<T>) => Promise<T | null>,
+  memberId: string,
+  s: SignUpOnAdd,
+): Promise<CreatedInvitation | null> {
+  return guarded((t) =>
+    api.invite(t, { member_id: memberId, email: s.email.trim(), ...roleBody(s.choice) }),
   );
 }

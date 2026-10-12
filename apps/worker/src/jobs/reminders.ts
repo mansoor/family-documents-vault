@@ -1,4 +1,13 @@
-import { readAs, reminderWords, withSystem, type Db, type Role } from '@fdv/db';
+import {
+  mayYetSignUp,
+  readAs,
+  remindTurned13,
+  reminderWords,
+  stillTurned13,
+  withSystem,
+  type Db,
+  type Role,
+} from '@fdv/db';
 import {
   aboutDate,
   addDays,
@@ -11,6 +20,7 @@ import {
   reminderAbout,
   reminderLabel,
   seesAdults,
+  TURNED_13_TOLD,
   withSealed,
   type DateValue,
   type RequiredRules,
@@ -42,11 +52,25 @@ import type pg from 'pg';
  *
  * `refreshStatus` (nightly): materialises status_cache for fast list
  * filtering. Never authoritative — status is computed on read.
+ *
+ * Since 0066 a reminder may be about a person instead of a document: the
+ * owners are told that somebody has turned 13 and may now have a sign-in of
+ * their own (`turned_13`). `tick` makes it on the day, due, as the
+ * household's calendar has it (`remindTurned13`); `deliver` puts it in the
+ * owners' digest — theirs alone, as the database gives it — once, by the
+ * same ledger. Every other query here joins a document, and never meets one.
  */
 
 export interface DigestItem {
   reminder_id: string;
-  document_id: string;
+  /** The document it is about; null for one about a person (0066). */
+  document_id: string | null;
+  /**
+   * The person a turning-13 reminder is about (0066): "Sara is 13 today"
+   * — They can now have their own sign-in. Only ever in an owner's copy.
+   * Absent for a document's.
+   */
+  member_id?: string | null;
   title: string;
   label: string;
   /**
@@ -130,6 +154,8 @@ interface Due extends Omit<DigestItem, 'private'> {
   fire_at: string;
   visibility: string;
   owner_member_id: string | null;
+  /** The person a turning-13 reminder is about (0066), or null for a document's. */
+  member_id: string | null;
 }
 
 /**
@@ -189,7 +215,13 @@ async function sendToEach(
     };
     // The reminders the database gives this person, asked as them (5.32).
     const theirs = await givenTo(trx, person, due);
-    const mine = due.filter((r) => theirs.has(r.reminder_id) && canSee(viewer, r));
+    // A document's, as its document may be seen; a person's (0066), to an
+    // owner alone — as the database gives them, and said again here.
+    const mine = due.filter(
+      (r) =>
+        theirs.has(r.reminder_id) &&
+        (r.member_id === null ? canSee(viewer, r) : person.role === 'owner'),
+    );
     if (mine.length === 0) continue;
     const channels = await notifier.digest({
       ...base,
@@ -198,6 +230,7 @@ async function sendToEach(
       items: mine.map((r) => ({
         reminder_id: r.reminder_id,
         document_id: r.document_id,
+        ...(r.member_id === null ? {} : { member_id: r.member_id }),
         title: r.title,
         label: r.label,
         about: r.about,
@@ -256,8 +289,9 @@ async function dueItems(
   trx: Db,
   rows: ReadonlyArray<{
     id: string;
-    document_id: string;
-    kind: 'derived' | 'manual';
+    /** Every row here is a document's: each query joins its document (0066). */
+    document_id: string | null;
+    kind: 'derived' | 'manual' | 'turned_13';
     fire_at: string;
     lead_days: number | null;
     source: string | null;
@@ -271,6 +305,9 @@ async function dueItems(
 ): Promise<Due[]> {
   const words = await reminderWords(trx, rows);
   return rows.map((r) => {
+    if (r.document_id === null || r.kind === 'turned_13') {
+      throw new Error('a reminder about a person among a document’s');
+    }
     const fireAt = String(r.fire_at).slice(0, 10);
     const on = { kind: r.kind, fire_at: fireAt, lead_days: r.lead_days };
     const about = aboutDate(on);
@@ -286,6 +323,31 @@ async function dueItems(
       fire_at: fireAt,
       visibility: r.visibility,
       owner_member_id: r.owner_member_id,
+      member_id: null,
+    };
+  });
+}
+
+/** The digest's lines for turning-13 reminders (0066), as of `today`: an owner's alone. */
+function personItems(
+  rows: ReadonlyArray<{ id: string; member_id: string | null; fire_at: string }>,
+): Due[] {
+  return rows.map((r) => {
+    const fireAt = String(r.fire_at).slice(0, 10);
+    // No name and no date (the review, INV-7): the digest goes by email
+    // and push, and says only that somebody may now be invited.
+    return {
+      reminder_id: r.id,
+      document_id: null,
+      title: TURNED_13_TOLD.title,
+      label: TURNED_13_TOLD.label,
+      about: null,
+      note: null,
+      overdue: false,
+      fire_at: fireAt,
+      visibility: 'household',
+      owner_member_id: null,
+      member_id: r.member_id,
     };
   });
 }
@@ -296,6 +358,8 @@ export async function tick(deps: ReminderDeps): Promise<{ became_due: number }> 
   for (const hh of await households(deps.admin)) {
     const today = localToday(hh.timezone, now);
     total += await withSystem(deps.app, hh.id, async (trx) => {
+      // Somebody who turns 13 today, for the owners (0066): made due.
+      const turned = await remindTurned13(trx, hh.id, hh.timezone, now);
       const a = await trx
         .updateTable('reminder')
         .set({ status: 'due' })
@@ -308,7 +372,7 @@ export async function tick(deps: ReminderDeps): Promise<{ became_due: number }> 
         .where('status', '=', 'snoozed')
         .where('snoozed_until', '<=', today)
         .executeTakeFirst();
-      return Number(a.numUpdatedRows) + Number(b.numUpdatedRows);
+      return turned + Number(a.numUpdatedRows) + Number(b.numUpdatedRows);
     });
   }
   return { became_due: total };
@@ -393,9 +457,32 @@ async function deliverTo(
       // Held until the ledger is written: see deliver.
       .forKeyShare('reminder')
       .execute();
-    if (due.length === 0) return false;
+    // Somebody who has turned 13 (0066), told once to the owners while they
+    // may still sign up: held as the others are.
+    const found = await trx
+      .selectFrom('reminder')
+      .innerJoin('member', 'member.id', 'reminder.member_id')
+      .leftJoin('reminder_delivery', 'reminder_delivery.reminder_id', 'reminder.id')
+      .select([
+        'reminder.id',
+        'reminder.member_id',
+        'reminder.fire_at',
+        'member.display_name',
+        'member.date_of_birth',
+      ])
+      .where('reminder.kind', '=', 'turned_13')
+      .where('reminder.status', '=', 'due')
+      .where('reminder_delivery.reminder_id', 'is', null)
+      .where(mayYetSignUp(now))
+      .orderBy('reminder.fire_at')
+      .forKeyShare('reminder')
+      .execute();
+    // Still about their 13th birthday (INV-3): a date of birth corrected
+    // since is not, and waits for the tick to be done with it.
+    const people = found.filter(stillTurned13);
+    if (due.length === 0 && people.length === 0) return false;
 
-    const items = await dueItems(trx, due, today);
+    const items = [...(await dueItems(trx, due, today)), ...personItems(people)];
     const reached = await sendToEach(
       trx,
       deps.notifier,
@@ -408,7 +495,7 @@ async function deliverTo(
         return daysBetween(oldest, today) > 1 ? 'catch_up' : 'daily';
       },
     );
-    for (const r of due) {
+    for (const r of [...due, ...people]) {
       const channels = [...(reached.get(r.id) ?? [])];
       for (const channel of channels.length ? channels : ['none']) {
         await trx
@@ -424,7 +511,7 @@ async function deliverTo(
         household_id: hh.id,
         local_date: today,
         kind: 'daily',
-        item_count: due.length,
+        item_count: due.length + people.length,
         channels: union(reached),
       })
       .execute();

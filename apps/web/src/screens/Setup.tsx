@@ -1,10 +1,19 @@
 import { initialsFor } from '@fdv/shared';
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
-import { api, type Member } from '../api.js';
+import { api, type CreatedInvitation, type Member } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
 import { answersBody, answersFrom, HouseholdAnswerFields } from '../household-answers.js';
 import { Avatar, Button, ErrorNote, Field, Logo } from '../ui.js';
+import {
+  EMAIL_NEEDED,
+  HandOver,
+  NOT_INVITED,
+  inviteAdded,
+  SignUpFields,
+  useHouseholdToday,
+  useSignUpOnAdd,
+} from './Invite.js';
 
 /**
  * First run, four boards: account → a few quick questions → who is in
@@ -30,7 +39,7 @@ const Steps = ({ current }: { current: Step }) => {
 };
 
 export function SetupScreen() {
-  const { caps, session, reloadCaps, markAuthChanged, withToken } = useApp();
+  const { caps, session, reloadCaps, markAuthChanged, withToken, guarded } = useApp();
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>(
     caps?.setup_required === false && session.signedIn ? 'profile' : 'account',
@@ -83,6 +92,11 @@ export function SetupScreen() {
   const [members, setMembers] = useState<Member[] | null>(null);
   const [newName, setNewName] = useState('');
   const [newDob, setNewDob] = useState('');
+  // An invitation as they are added (after 0.7.0): the first owner may give
+  // anybody 13 or over a sign-in of their own straight away.
+  const today = useHouseholdToday(step === 'household');
+  const signUp = useSignUpOnAdd('owner', newDob, today);
+  const [handed, setHanded] = useState<{ made: CreatedInvitation; email: string } | null>(null);
   const loadMembers = async () => {
     const r = await withToken((t) => api.members(t));
     if (r) setMembers(r.items);
@@ -91,14 +105,34 @@ export function SetupScreen() {
   const addMember = async (e: FormEvent) => {
     e.preventDefault();
     if (!newName.trim()) return;
+    if (signUp.wanted && !signUp.email.trim()) {
+      setError(EMAIL_NEEDED);
+      return;
+    }
     setBusy(true);
+    setError(null);
     try {
-      await withToken((t) =>
+      const added = await withToken((t) =>
         api.addMember(t, { display_name: newName.trim(), date_of_birth: newDob || null }),
       );
+      const email = signUp.email.trim();
+      const invite = signUp.wanted ? { ...signUp, email } : null;
       setNewName('');
       setNewDob('');
+      signUp.reset();
       await loadMembers();
+      if (added && invite) {
+        try {
+          const made = await inviteAdded(guarded, added.id, invite);
+          if (made) setHanded({ made, email });
+          // The step-up was cancelled: the person is there, and no invitation.
+          else setError(NOT_INVITED(added.display_name));
+        } catch (err) {
+          setError(
+            `${added.display_name} was added, but the invitation wasn’t made: ${describeError(err)} You can invite them from their page.`,
+          );
+        }
+      }
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -221,7 +255,10 @@ export function SetupScreen() {
             </li>
           ))}
         </ul>
-        <form onSubmit={(e) => void addMember(e)} className="stack">
+        {handed && (
+          <HandOver created={handed.made} email={handed.email} onDone={() => setHanded(null)} />
+        )}
+        <form onSubmit={(e) => void addMember(e)} className="stack" hidden={handed !== null}>
           <div className="row">
             <div className="field" style={{ flexGrow: 1 }}>
               <label htmlFor="new-name">Name of another family member</label>
@@ -249,6 +286,7 @@ export function SetupScreen() {
               about.
             </span>
           </div>
+          <SignUpFields idPrefix="new" signUp={signUp} />
         </form>
         <p className="muted">
           Each adult keeps their own private documents. Nobody else can open those, including you.

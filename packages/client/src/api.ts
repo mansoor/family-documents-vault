@@ -76,6 +76,7 @@ import type {
   OwnerChange,
   PausedSignIn,
   PasskeyView,
+  PersonReminderView,
   Preferences,
   Profile,
   Provider,
@@ -583,7 +584,9 @@ export function createApi(http: Http) {
     invitations: (token: string) =>
       request<{ items: Invitation[] }>('/api/v1/invitations', { token }),
     /**
-     * An invitation (SHR-02). For a viewer, `restriction` limits what they
+     * An invitation (SHR-02). For somebody of the family already in the
+     * vault (`member_id`), under 13 by their date of birth on the
+     * household's calendar, `422 too_young` (after 0.7.0). For a viewer, `restriction` limits what they
      * will see from the moment they accept (5.33): an adult inviting a viewer
      * must give one, without Adults only documents (`403 forbidden`, A27).
      *
@@ -966,6 +969,16 @@ export function createApi(http: Http) {
       }),
     acknowledgeReminder: (token: string, id: string) =>
       request<ReminderView>(`/api/v1/reminders/${id}/acknowledge`, { method: 'POST', token }),
+    /**
+     * An owner's reminders that somebody has turned 13 and may now have a
+     * sign-in of their own (after 0.7.0): each due one, while they may
+     * still be invited. Anybody else is `403`; an older vault, `404`.
+     */
+    personReminders: (token: string) =>
+      request<{ items: PersonReminderView[] }>('/api/v1/reminders/people', { token }),
+    /** An owner done with one of those: it is not made again (`204`). */
+    dismissPersonReminder: (token: string, id: string) =>
+      request<void>(`/api/v1/reminders/people/${enc(id)}/dismiss`, { method: 'POST', token }),
 
     // ------------------------------------------------------- notifications
     pushKey: () => request<PushKey>('/api/v1/notifications/push-key'),
