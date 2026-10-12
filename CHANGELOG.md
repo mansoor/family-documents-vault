@@ -6,6 +6,15 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-rc.2] - 2026-10-11 — the owner's look at the sidebar
+
+### Changed
+
+- **The top bar spans the whole window** from 768 px, with the vault's name at its left. The sidebar starts below it, so collapsing or resizing the sidebar never moves the name.
+- **The vault's name stays on one line.** It takes the room it needs, up to a limit; a longer name ends in "…" and is shown in full on hover and to screen readers.
+- **Collapsing and expanding the sidebar is smooth.** The sidebar and the page move together over a fifth of a second, and the sidebar opening on hover eases in and out. Nothing animates if your device asks for reduced motion, and resizing by dragging stays immediate.
+- **Moving away from the sidebar with the keyboard closes it at once**, so what you move to is never under it.
+
 ## [0.7.0-rc.1] - 2026-10-11 — the Phase 6 exit, the release candidate for 0.7.0
 
 The release candidate for 0.7.0, the next release after 0.4.5. There is no 0.6.0: its candidate (0.6.0-rc.1, below) never became a release, and everything in it is here. This entry gathers, for someone upgrading from 0.4.5, everything since: the phone release (0.5.0), Phase 5 (0.5.1 to 0.6.0-rc.1) and Phase 6 (0.7.0-dev.1 to dev.14). The entries below it are the history, release by release. Once the owner's demonstration passes, 0.7.0 goes to `main` and the `latest` images move to it.
