@@ -27,6 +27,7 @@ import {
   COLLECTION_SHARE_REASONS,
   inCollectionAudience,
   guestEndProblem,
+  childBirthday,
   localToday,
   oldEnoughToSignIn,
   TOO_YOUNG,
@@ -1807,6 +1808,25 @@ export function installFakeApi(state: FakeState) {
           {
             detail: JSON.stringify(withDetails(m)),
           },
+        );
+      }
+      // A child's date of birth is an owner's to change (INV-6), as the vault holds it.
+      if (
+        b.date_of_birth !== undefined &&
+        (b.date_of_birth ?? null) !== ((m.date_of_birth as string | null) ?? null) &&
+        storedRole() !== 'owner' &&
+        childBirthday(
+          {
+            date_of_birth: (m.date_of_birth as string | null) ?? null,
+            has_account: Boolean(m.has_account),
+          },
+          localToday(state.timezone ?? 'UTC'),
+        )
+      ) {
+        return refuse(
+          403,
+          'child_birthday_owners',
+          'Only an owner can change the date of birth of a child under 13.',
         );
       }
       if (b.is_deceased !== undefined && b.is_deceased !== m.is_deceased) {

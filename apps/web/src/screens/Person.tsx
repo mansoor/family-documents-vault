@@ -1,6 +1,7 @@
 import {
   can,
   canRemovePhoto,
+  childBirthday,
   initialsFor,
   LOCK_MAX_DAYS,
   mayBeInvited,
@@ -503,12 +504,18 @@ function EditDetails(props: {
   // Only somebody with no sign-in is recorded as passed away: whoever can
   // still sign in has it taken away first (the vault refuses otherwise).
   const passing = props.owner && (base.role === null || base.is_deceased);
+  // A child's date of birth (under 13 by it, with no sign-in) is an owner's
+  // to change (INV-6): shown to anybody else, never offered, never sent.
+  const today = useHouseholdToday();
+  const childsBirthday =
+    !props.owner &&
+    childBirthday({ date_of_birth: base.date_of_birth, has_account: base.has_account }, today);
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
     const body: MemberEdit = {};
     if (name.trim() !== base.display_name) body.display_name = name.trim();
-    if ((dob || null) !== base.date_of_birth) body.date_of_birth = dob || null;
+    if (!childsBirthday && (dob || null) !== base.date_of_birth) body.date_of_birth = dob || null;
     if ((relationship.trim() || null) !== base.relationship) {
       body.relationship = relationship.trim() || null;
     }
@@ -558,14 +565,24 @@ function EditDetails(props: {
         </p>
       )}
       <Field id="edit-name" label="Name" value={name} onChange={setName} maxLength={120} />
-      <Field
-        id="edit-dob"
-        label="Date of birth (optional)"
-        type="date"
-        value={dob}
-        onChange={setDob}
-        required={false}
-      />
+      {childsBirthday && base.date_of_birth ? (
+        <div className="field" role="group" aria-labelledby="edit-dob-label">
+          <span id="edit-dob-label" className="field-label">
+            Date of birth
+          </span>
+          <span>{bornLine(base.date_of_birth, base.is_deceased)}</span>
+          <span className="muted">{CHILD_BIRTHDAY_NOTE}</span>
+        </div>
+      ) : (
+        <Field
+          id="edit-dob"
+          label="Date of birth (optional)"
+          type="date"
+          value={dob}
+          onChange={setDob}
+          required={false}
+        />
+      )}
       <Field
         id="edit-relationship"
         label="Relationship (optional)"
@@ -595,6 +612,9 @@ function EditDetails(props: {
     </form>
   );
 }
+
+/** Said where a child's date of birth is shown to somebody who may not change it (INV-6). */
+export const CHILD_BIRTHDAY_NOTE = 'Only an owner can change a child’s date of birth.';
 
 /** Said to an owner with neither two-step sign-in nor a passkey (A54). */
 export const TWO_STEP_FOR_SIGN_INS = 'Turn on two-step sign-in to manage other people’s sign-ins.';

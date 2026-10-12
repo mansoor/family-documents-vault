@@ -545,3 +545,49 @@ describe('the review’s findings (after 0.7.0)', () => {
     }
   });
 });
+
+describe('a child’s birthday, to those who may not change it (INV-6)', () => {
+  const patched = (state: FakeState) =>
+    state.calls.filter((c) => c.method === 'PATCH' && c.url === '/api/v1/members/m-0');
+
+  it('an adult sees a 10-year-old’s date of birth, is not offered it, and saves a new name', async () => {
+    const state = at(
+      '/people/m-0',
+      { members: FAMILY.map((m) => (m.id === 'me' ? { ...ME, role: 'adult' } : m)) },
+      'adult',
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit details' }));
+    const form = await screen.findByRole('form', { name: 'Aisha’s details' });
+    expect(within(form).queryByLabelText('Date of birth (optional)')).toBeNull();
+    const shown = within(form).getByRole('group', { name: 'Date of birth' });
+    expect(shown).toHaveTextContent('2 April 2016');
+    expect(shown).toHaveTextContent('Only an owner can change a child’s date of birth.');
+    await expectAccessible();
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'Aisha Seikh' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('Details saved.')).toBeInTheDocument();
+    expect(patched(state)).toHaveLength(1);
+    expect(patched(state)[0]?.body).toEqual({ display_name: 'Aisha Seikh' });
+  });
+
+  it('an owner still changes it', async () => {
+    const state = at('/people/m-0', { members: FAMILY });
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit details' }));
+    const field = await screen.findByLabelText('Date of birth (optional)');
+    expect(screen.queryByText('Only an owner can change a child’s date of birth.')).toBeNull();
+    fireEvent.change(field, { target: { value: '2015-04-02' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('Details saved.')).toBeInTheDocument();
+    expect(patched(state)[0]?.body).toEqual({ date_of_birth: '2015-04-02' });
+  });
+
+  it('an adult is offered the date of birth of somebody 13 or over, as before', async () => {
+    at(
+      '/people/m-teen',
+      { members: FAMILY.map((m) => (m.id === 'me' ? { ...ME, role: 'adult' } : m)) },
+      'adult',
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit details' }));
+    expect(await screen.findByLabelText('Date of birth (optional)')).toBeInTheDocument();
+  });
+});
