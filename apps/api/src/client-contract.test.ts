@@ -12,7 +12,7 @@ import {
   sealBytes,
   unwrapKey,
 } from '@fdv/crypto';
-import { createPool, withSystem } from '@fdv/db';
+import { createPool, remindTurned13, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { Tokens } from '@fdv/shared';
 import { LocalAdapter } from '@fdv/storage';
@@ -245,6 +245,28 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
       const { secret } = await api.totpEnrol(token);
       await api.totpConfirm(token, codeFor(secret));
       await api.stepUp(token, { code: codeFor(secret) });
+    },
+    // Somebody's 13th birthday (after 0.7.0): in the vault a year already, as
+    // the owning role writes it, and the reminders' tick for it, as the
+    // worker runs it — the worker is not here.
+    turnThirteen: async (memberId) => {
+      const householdId = ctx.tokens?.household_id as string;
+      const admin = createPool(h.adminUrl, 1);
+      try {
+        await admin.query(
+          "update member set created_at = now() - interval '1 year' where id = $1",
+          [memberId],
+        );
+        const { rows } = await admin.query<{ timezone: string }>(
+          'select timezone from household where id = $1',
+          [householdId],
+        );
+        await withSystem(h.db, householdId, (trx) =>
+          remindTurned13(trx, householdId, rows[0]?.timezone ?? 'UTC', new Date()),
+        );
+      } finally {
+        await admin.end();
+      }
     },
     // A guest's sign-in ended a minute ago (5.34), as the owning role: nobody
     // signed in may set an end in the past.

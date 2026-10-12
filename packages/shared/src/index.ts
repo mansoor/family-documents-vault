@@ -28,3 +28,4 @@ export * from './batches.js';
 export * from './batch-levels.js';
 export * from './batch-review.js';
 export * from './learning.js';
+export * from './sign-up.js';

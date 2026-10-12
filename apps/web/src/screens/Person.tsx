@@ -3,6 +3,7 @@ import {
   canRemovePhoto,
   initialsFor,
   LOCK_MAX_DAYS,
+  mayBeInvited,
   LOCK_NOTE_MAX,
   PHOTO_MAX_BYTES,
   PHOTO_TYPES,
@@ -36,7 +37,13 @@ import {
 } from 'react';
 import { flushSync } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
-import { api, ApiRequestError, type Member } from '../api.js';
+import {
+  api,
+  ApiRequestError,
+  type CreatedInvitation,
+  type Invitation,
+  type Member,
+} from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { ViewerLimits } from '../access.js';
 import { IdentityCard } from '../identity.js';
@@ -58,6 +65,7 @@ import {
 import { DocRow } from './Home.js';
 import { useTrashedNote } from '../DocActions.js';
 import { RoleControls } from './Roles.js';
+import { HandOver, InviteForm, useHouseholdToday } from './Invite.js';
 
 /**
  * A person (5.17c). A name on People opens their profile, which also lists
@@ -69,6 +77,11 @@ interface Came {
   from?: string;
   /** "Add their details now" (5.27): the profile opens with their identity details' form. */
   editIdentity?: boolean;
+  /**
+   * "Invite to sign up" (after 0.7.0), from the owners' reminder that they
+   * turned 13: the profile opens with the invitation's card.
+   */
+  invite?: boolean;
 }
 
 /**
@@ -125,32 +138,46 @@ export function ProfileScreen() {
   const [start] = useState(() => ({
     id,
     edit: (location.state as Came | null)?.editIdentity === true,
+    invite: (location.state as Came | null)?.invite === true,
   }));
   useEffect(() => {
-    if (!(location.state as Came | null)?.editIdentity) return;
+    const came = location.state as Came | null;
+    if (!came?.editIdentity && !came?.invite) return;
     void navigate(`${location.pathname}${location.hash}`, { replace: true, state: null });
     // Only as the screen opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  const myRole: Role = session.info?.role ?? storedRole();
+  // Who may invite is told who has been (after 0.7.0): "Invite to sign up".
+  const invites = can(myRole, 'member.invite');
   const { data, error, reload } = useLoad(
     async (t) => {
-      const [members, docs, types] = await Promise.all([
+      const [members, docs, types, invitations] = await Promise.all([
         api.members(t),
         api.documents(t, { member_id: id, limit: FIRST_DOCUMENTS }),
         api.documentTypes(t),
+        invites ? api.invitations(t) : Promise.resolve({ items: [] as Invitation[] }),
       ]);
       return {
         members: members.items,
         member: members.items.find((m) => m.id === id) ?? null,
         docs: docs.items,
         types: types.items,
+        invitations: invitations.items,
       };
     },
-    [id, authVersion],
+    [id, authVersion, invites],
   );
   const member = data?.member ?? null;
   const name = member ? nameOf(member, data?.members ?? []) : '';
-  const myRole: Role = session.info?.role ?? storedRole();
+  const today = useHouseholdToday(invites);
+  // What the invitation's card did, once it has gone: heard, and where the
+  // reader is (after 0.7.0).
+  const [said, setSaid] = useState<string | null>(null);
+  const saidLine = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (said) saidLine.current?.focus();
+  }, [said]);
   // People is the family's (5.3): a viewer, come here from a person's
   // documents ("About …"), goes back there — never to a screen that is not
   // theirs to open (the review round).
@@ -193,6 +220,9 @@ export function ProfileScreen() {
             <p className="profile-line">{roleLine(member)}</p>
             <PhotoControls member={member} name={name} onChanged={reload} />
           </div>
+          <p ref={saidLine} className="status-line" role="status" tabIndex={-1}>
+            {said}
+          </p>
 
           <AboutCard
             member={member}
@@ -201,6 +231,22 @@ export function ProfileScreen() {
             owner={myRole === 'owner'}
             onChanged={reload}
           />
+
+          {/* A sign-in of their own (after 0.7.0): for somebody 13 or over,
+              or of no known age, with none and no invitation waiting. */}
+          {invites && !member.is_me && mayBeInvited(member, data?.invitations ?? [], today) && (
+            <SignUpCard
+              key={member.id}
+              member={member}
+              name={name}
+              myRole={myRole}
+              startOpen={start.invite && start.id === member.id}
+              onDone={async () => {
+                await reload();
+                setSaid(`${name} is invited. They can sign in once they accept.`);
+              }}
+            />
+          )}
 
           {/* Their identity details (5.27), where the reader is given them;
               the owners' note about ID numbers (A69) was until then. */}
@@ -267,6 +313,72 @@ export function ProfileScreen() {
         </>
       )}
     </main>
+  );
+}
+
+/**
+ * "Invite to sign up" (after 0.7.0): the invitation's card with the person
+ * fixed — their email address, and the roles their age allows — then the
+ * link and the code, shown once. Done tells the page; until then the link
+ * and the code stay, though the person now has an invitation waiting.
+ */
+function SignUpCard(props: {
+  member: Member;
+  name: string;
+  myRole: Role;
+  /** Opened as the page opens: from the owners' reminder that they turned 13. */
+  startOpen: boolean;
+  /** The link and the code passed on: the page is loaded again, and says so. */
+  onDone: () => Promise<void>;
+}) {
+  const [inviting, setInviting] = useState(props.startOpen);
+  const [handed, setHanded] = useState<{ made: CreatedInvitation; email: string } | null>(null);
+  const opener = useRef<HTMLButtonElement>(null);
+  // Back on "Invite to sign up" once the card has gone without one made.
+  const wasInviting = useRef(false);
+  useEffect(() => {
+    if (wasInviting.current && !inviting && !handed) opener.current?.focus();
+    wasInviting.current = inviting;
+  }, [inviting, handed]);
+  if (handed) {
+    return (
+      <HandOver
+        created={handed.made}
+        email={handed.email}
+        onDone={() => {
+          setHanded(null);
+          void props.onDone();
+        }}
+      />
+    );
+  }
+  if (inviting) {
+    return (
+      <InviteForm
+        myRole={props.myRole}
+        member={props.member}
+        onCancel={() => setInviting(false)}
+        onCreated={async (made, email) => {
+          setHanded({ made, email });
+          setInviting(false);
+        }}
+      />
+    );
+  }
+  return (
+    <section className="card stack" aria-labelledby="sign-up-h">
+      <h2 id="sign-up-h" style={{ fontSize: 18 }}>
+        Their own sign-in
+      </h2>
+      <p className="muted">
+        {props.name} has no sign-in yet. Invite them, and they choose their own password.
+      </p>
+      <div className="row">
+        <Button ref={opener} onClick={() => setInviting(true)}>
+          Invite to sign up
+        </Button>
+      </div>
+    </section>
   );
 }
 

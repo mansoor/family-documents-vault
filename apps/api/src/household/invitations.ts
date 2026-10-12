@@ -8,10 +8,13 @@ import {
   GUEST_DESCRIPTION_MAX,
   guestAccessEnded,
   guestEndProblem,
+  localToday,
   mayBeRestricted,
+  oldEnoughToSignIn,
   refusalFor,
   roleLabel,
   ROLES,
+  TOO_YOUNG,
   type MemberKind,
   type Role,
 } from '@fdv/shared';
@@ -407,7 +410,7 @@ export class InvitationService {
 
     const id = await withPrincipal(this.db, p, async (trx) => {
       const memberId = input.member_id
-        ? await this.existingMember(trx, input.member_id, kind)
+        ? await this.existingMember(trx, p.householdId, input.member_id, kind)
         : await this.newMember(trx, p, input.display_name as string, meta, {
             kind,
             relationship: input.relationship ?? null,
@@ -527,7 +530,12 @@ export class InvitationService {
     return { invitation, link_token: token, code };
   }
 
-  private async existingMember(trx: Db, memberId: string, kind: MemberKind): Promise<string> {
+  private async existingMember(
+    trx: Db,
+    householdId: string,
+    memberId: string,
+    kind: MemberKind,
+  ): Promise<string> {
     const member = await trx
       .selectFrom('member')
       .select(['id', 'display_name', 'is_deceased', 'kind'])
@@ -566,7 +574,7 @@ export class InvitationService {
     // an adult's, once the person has a sign-in.
     const now = await trx
       .selectFrom('member')
-      .select(['is_deceased'])
+      .select(['is_deceased', 'date_of_birth'])
       .where('id', '=', member.id)
       .forKeyShare()
       .executeTakeFirst();
@@ -578,6 +586,10 @@ export class InvitationService {
       .where('member_id', '=', member.id)
       .executeTakeFirst();
     if (signedIn) throw alreadySignedIn();
+    // Nobody under 13 has a sign-in of their own: by their date of birth,
+    // on the household's calendar. Somebody of no known age is taken at the
+    // inviter's word.
+    await mustBeOldEnough(trx, householdId, member.display_name, now.date_of_birth);
     return member.id;
   }
 
@@ -886,13 +898,16 @@ export class InvitationService {
       // N534A-01): the invitation went with them, so it is the one refusal.
       const member = await trx
         .selectFrom('member')
-        .select(['display_name', 'is_deceased', 'kind'])
+        .select(['display_name', 'is_deceased', 'kind', 'date_of_birth'])
         .where('id', '=', invited.member_id)
         .forUpdate()
         .executeTakeFirst();
       if (!member) throw gone();
       const row = await this.live(trx, token);
       if (member.is_deceased) throw passedAway(member.display_name);
+      // A date of birth changed since the invitation was made, to one under
+      // 13: no sign-in of their own yet, as when it is made.
+      await mustBeOldEnough(trx, householdId, member.display_name, member.date_of_birth);
       // A guest's invitation is a guest's (5.34), and gives a sign-in only
       // while what it gives has not ended.
       if (row.kind !== member.kind) throw gone();
@@ -1111,6 +1126,29 @@ function stateOf(r: {
   if (r.attempts >= MAX_ATTEMPTS) return 'locked';
   if (r.expires_at.getTime() < Date.now()) return 'expired';
   return 'pending';
+}
+
+/**
+ * Refuses an invitation for somebody under 13 by their date of birth, on
+ * the household's calendar (`422 too_young`): an under-13 is a family
+ * profile, with no sign-in of their own.
+ */
+async function mustBeOldEnough(
+  trx: Db,
+  householdId: string,
+  name: string,
+  dateOfBirth: string | null,
+): Promise<void> {
+  if (!dateOfBirth) return;
+  const household = await trx
+    .selectFrom('household')
+    .select('timezone')
+    .where('id', '=', householdId)
+    .executeTakeFirstOrThrow();
+  const today = localToday(household.timezone);
+  if (!oldEnoughToSignIn(String(dateOfBirth).slice(0, 10), today)) {
+    throw new ApiError(422, 'too_young', TOO_YOUNG(name), { detail: 'member_id' });
+  }
 }
 
 const alreadySignedIn = () =>

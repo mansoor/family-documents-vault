@@ -1336,6 +1336,57 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
   });
 
+  it('notices the owners’ reminder that somebody turned 13 open to an adult, or its rule gone (0066)', async () => {
+    const ruleOf = async (name: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${name}'`,
+        )
+      ).rows[0]?.rule as string;
+    // Somebody of the household turned 13, as the worker's tick reminds the owners.
+    const made = await sql(
+      vault.adminUrl,
+      `insert into reminder (household_id, member_id, kind, fire_at, status)
+       select household_id, id, 'turned_13', current_date, 'due' from member
+        order by created_at limit 1
+       returning id`,
+    );
+    const id = made.rows[0]?.id as string;
+    try {
+      expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+      const rule = await ruleOf('reminder_actor');
+      await sql(
+        vault.adminUrl,
+        `alter policy reminder_actor on public.reminder
+           using ((${rule}) or app_role() = 'adult')`,
+      );
+      try {
+        await expect(checkRestored(target())).rejects.toThrow(
+          /what was moved to the owners \(reminder\) is open to an adult/,
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter policy reminder_actor on public.reminder using (${rule})`);
+      }
+      // The rule as 0030 had it: every caller signed in given every reminder.
+      await sql(
+        vault.adminUrl,
+        `alter policy reminder_actor on public.reminder
+           using (case app_actor() when 'account' then true when 'system' then true else false end)`,
+      );
+      try {
+        await expect(checkRestored(target())).rejects.toThrow(
+          /no rule keeps what was moved to the owners theirs on reminder/,
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter policy reminder_actor on public.reminder using (${rule})`);
+      }
+    } finally {
+      await sql(vault.adminUrl, `delete from reminder where id = '${id}'`);
+    }
+    expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+  });
+
   it('notices a batch’s rules gone: its uploader’s alone, and only its name and defaults theirs to change (0062, I1)', async () => {
     const { rows } = await sql(
       vault.adminUrl,

@@ -4242,6 +4242,43 @@ last_used }], rules_max }` — of their newest `window` (50) items read and
     `@fdv/client`: `batchCounts`. The client fake answers the same. The
     web's sidebar and the Inbox's "Your uploads" tab count with it.
 
+- After 0.7.0:
+  - Inviting family members to sign up. The web offers an invitation as a
+    person is added, from their page, and on Invite's "Who is it for?":
+    each is `POST /api/v1/invitations` with `member_id` (or `POST
+/api/v1/members/{id}/invite`), as since SHR-02. Who has no sign-in and
+    no live invitation is worked out from what an inviter is already given
+    (`GET /members`' `has_account`, `sign_in_removed` and `date_of_birth`,
+    and `GET /invitations`), so no field is added for it. **Changed:** an
+    invitation for somebody already in the vault who is under 13 by their
+    date of birth, on the household's calendar, is refused `422 too_young`
+    (`detail: "member_id"`); so is accepting one once their date of birth
+    has been changed to say so. Nothing was made or spent. Somebody with
+    no date of birth is invited as before. **Added:** an owner's reminders
+    that somebody of the family has turned 13 and may now have a sign-in
+    of their own. The worker's reminder tick makes one on their 13th
+    birthday on the household's calendar (or within the week, for a vault
+    that was off), for somebody already in the vault before it with no
+    sign-in, none taken away and no live invitation; once each person,
+    ever. `GET /api/v1/reminders/people` answers an owner `{ items: [{ id,
+kind: 'turned_13', member_id, display_name, fire_at, title, label }] }`
+    — each due, not dismissed, while the person may still be invited —
+    and `POST /api/v1/reminders/people/{id}/dismiss` is `204` (`404` once
+    dismissed); anybody else is `403` on both. They are in the owners'
+    daily digest, once, by email and on a browser; a phone's push counts
+    only reminders about documents, and is not sent for these alone.
+    **Unchanged:** `GET /api/v1/reminders` and the document reminders'
+    routes never answer one of these; who may invite, the roles an
+    inviter may hand out, a viewer's limits set at invitation, one live
+    invitation for each person, and the outside-the-family path.
+    `@fdv/shared`: `PersonReminderView`, `OWN_SIGN_IN_AGE`,
+    `GROWN_UP_AGE`, `UNDER_13_NOTE`, `TOO_YOUNG`, `birthdayAt`,
+    `oldEnoughToSignIn`, `rolesToHandOut`, `rolesForAge`, `mayBeInvited`
+    and `turnedThirteenWords`. `@fdv/client`: `personReminders`,
+    `dismissPersonReminder`. The client fake answers both, adds people
+    (`POST /members`) and takes back an invitation (`DELETE
+/invitations/{id}`), and refuses an under-13 as the vault does.
+
 ## Deprecations in effect
 
 - `GET /api/v1/shared/{token}`, `POST /api/v1/shared/{token}/open` and

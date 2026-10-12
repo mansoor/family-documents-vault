@@ -1,5 +1,6 @@
 import {
   appendAudit,
+  mayYetSignUp,
   regenerateDerived,
   reminderWords,
   withPrincipal,
@@ -15,6 +16,8 @@ import {
   parseRecurrence,
   reminderAbout,
   reminderLabel,
+  turnedThirteenWords,
+  type PersonReminderView,
   type ReminderView,
 } from '@fdv/shared';
 import { sql } from 'kysely';
@@ -141,7 +144,7 @@ export class ReminderService {
       const rows = await q.execute();
       const words = await reminderWords(trx, rows);
       return rows.map((r) =>
-        view({ ...r, status: r.status }, r.title, today, words.get(r.id) ?? null),
+        view(ofDocument({ ...r, status: r.status }), r.title, today, words.get(r.id) ?? null),
       );
     });
   }
@@ -192,7 +195,7 @@ export class ReminderService {
         detail: { document_id: doc.id, fire_at: input.fire_at },
         ip: meta.ip,
       });
-      return view(row, doc.title, today, null);
+      return view(ofDocument(row), doc.title, today, null);
     });
   }
 
@@ -288,6 +291,74 @@ export class ReminderService {
     });
   }
 
+  // ------------------------------------------- about a person (0066)
+
+  /**
+   * GET /reminders/people: the owners' reminders that somebody has turned
+   * 13 and may now have a sign-in of their own — due, not dismissed, and
+   * only while they may still sign up (no sign-in, none taken away, no
+   * invitation waiting, alive). An owner's alone: anybody else is refused,
+   * and the database gives them none.
+   */
+  async listPeople(p: Principal): Promise<PersonReminderView[]> {
+    mustBeOwner(p);
+    return withPrincipal(this.db, p, async (trx) => {
+      const today = await this.today(trx, p.householdId);
+      const rows = await trx
+        .selectFrom('reminder')
+        .innerJoin('member', 'member.id', 'reminder.member_id')
+        .select(['reminder.id', 'reminder.member_id', 'reminder.fire_at', 'member.display_name'])
+        .where('reminder.kind', '=', 'turned_13')
+        .where('reminder.status', '=', 'due')
+        .where(mayYetSignUp(new Date()))
+        .orderBy('reminder.fire_at')
+        .orderBy('reminder.id')
+        .execute();
+      return rows.map((r) => {
+        const fireAt = iso(r.fire_at) as string;
+        return {
+          id: r.id,
+          kind: 'turned_13' as const,
+          member_id: r.member_id as string,
+          display_name: r.display_name,
+          fire_at: fireAt,
+          ...turnedThirteenWords(r.display_name, fireAt, today),
+        };
+      });
+    });
+  }
+
+  /**
+   * POST /reminders/people/{id}/dismiss: an owner is done with a reminder
+   * that somebody has turned 13. It is not made again; inviting them is
+   * still on their page. 404 for one that is not there, or not an owner's
+   * to see.
+   */
+  async dismissPerson(p: Principal, id: string, meta: RequestMeta): Promise<void> {
+    mustBeOwner(p);
+    const gone = () => new ApiError(404, 'not_found', 'That reminder does not exist.');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw gone();
+    await withPrincipal(this.db, p, async (trx) => {
+      const r = await trx
+        .updateTable('reminder')
+        .set({ status: 'acknowledged', acknowledged_by: p.accountId, acknowledged_at: new Date() })
+        .where('id', '=', id)
+        .where('kind', '=', 'turned_13')
+        .where('status', 'in', ['scheduled', 'due', 'snoozed'])
+        .returning('id')
+        .executeTakeFirst();
+      if (!r) throw gone();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'reminder.acknowledged',
+        objectType: 'reminder',
+        objectId: id,
+        ip: meta.ip,
+      });
+    });
+  }
+
   private async transition(
     p: Principal,
     id: string,
@@ -314,7 +385,7 @@ export class ReminderService {
         .executeTakeFirst();
       if (!r) throw new ApiError(404, 'not_found', 'That reminder does not exist.');
       const today = await this.today(trx, p.householdId);
-      const { action, ...set } = await decide(trx, r, today);
+      const { action, ...set } = await decide(trx, ofDocument(r), today);
       const updated = await trx
         .updateTable('reminder')
         .set(set as never)
@@ -330,8 +401,29 @@ export class ReminderService {
         ip: meta.ip,
       });
       const words = await reminderWords(trx, [r]);
-      return view(updated, r.title, today, words.get(r.id) ?? null);
+      return view(ofDocument(updated), r.title, today, words.get(r.id) ?? null);
     });
+  }
+}
+
+/**
+ * A reminder about a document, as every query of these gives them: each
+ * joins its document. Since 0066 a reminder may be about a person (an
+ * owner's `turned_13`), which none of them ever meets.
+ */
+function ofDocument<T extends { document_id: string | null; kind: string }>(
+  r: T,
+): T & { document_id: string; kind: 'derived' | 'manual' } {
+  if (r.document_id === null || (r.kind !== 'derived' && r.kind !== 'manual')) {
+    throw new Error('a reminder about a person, where one about a document was asked for');
+  }
+  return r as T & { document_id: string; kind: 'derived' | 'manual' };
+}
+
+/** A turning-13 reminder is the owners' (0066): said to anybody else as a refusal. */
+function mustBeOwner(p: Principal): void {
+  if (p.role !== 'owner') {
+    throw new ApiError(403, 'forbidden', 'Only an owner is reminded when somebody turns 13.');
   }
 }
 

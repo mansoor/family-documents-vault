@@ -204,19 +204,24 @@ async function sendPush(deps: NotifyDeps, d: Digest): Promise<number> {
       .where(liveDevice)
       .execute(),
   );
+  // A phone is told how many of the day's reminders about documents there
+  // are, and asks the vault for them (GET /reminders); one about a person
+  // (0066, somebody turned 13) is not among those, so it is not counted,
+  // and a digest of nothing else is not sent to a phone.
+  const forPhone = d.items.filter((i) => i.document_id !== null).length;
   // The Sunday summary is an email; a phone hears of the day's reminders (4.13).
   const wanted = devices.filter(
     (x) =>
       x.daily_push !== false &&
       x.p256dh &&
       x.auth &&
-      !(d.kind === 'weekly' && x.kind === 'unified_push'),
+      !(x.kind === 'unified_push' && (d.kind === 'weekly' || forPhone === 0)),
   );
   if (wanted.length === 0) return 0;
 
   // A browser shows the first few; a phone is told how many, and asks the
   // vault for the rest once it is unlocked (4.13): no title leaves in it.
-  const phone = unifiedPayload({ v: 1, type: 'digest', count: d.items.length, date: d.local_date });
+  const phone = unifiedPayload({ v: 1, type: 'digest', count: forPhone, date: d.local_date });
   const payload = JSON.stringify({
     title: subject(d),
     body: d.items

@@ -27,6 +27,9 @@ import {
   COLLECTION_SHARE_REASONS,
   inCollectionAudience,
   guestEndProblem,
+  localToday,
+  oldEnoughToSignIn,
+  TOO_YOUNG,
   LOCK_MAX_DAYS,
   LOCK_NOTE_MAX,
   maskEmail,
@@ -324,6 +327,12 @@ export interface FakeState {
    * ones by `?state=upcoming`. Left out, there are none.
    */
   reminders?: Array<Record<string, unknown>>;
+  /**
+   * The owners' reminders that somebody turned 13 (after 0.7.0), as GET
+   * /reminders/people gives them (PersonReminderView): an owner is answered
+   * them, anybody else 403. Dismissing one takes it away. Left out, none.
+   */
+  personReminders?: Array<Record<string, unknown> & { id: string }>;
   /**
    * The household's time zone, as GET /profile gives it: reminders fall due
    * on its calendar. Left out, 'UTC', the vault's default.
@@ -1093,6 +1102,22 @@ export function installFakeApi(state: FakeState) {
     }
     if (path === '/api/v1/auth/step-up') return json({ verified_at: null, expires_in: 0 });
     if (path === '/api/v1/exports') return json({ items: [] });
+    if (path === '/api/v1/reminders/people') {
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner is reminded when somebody turns 13.');
+      }
+      return json({ items: state.personReminders ?? [] });
+    }
+    const dismissAt = /^\/api\/v1\/reminders\/people\/([^/]+)\/dismiss$/.exec(path);
+    if (dismissAt && method === 'POST') {
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner is reminded when somebody turns 13.');
+      }
+      const had = (state.personReminders ?? []).some((r) => r.id === dismissAt[1]);
+      if (!had) return refuse(404, 'not_found', 'That reminder does not exist.');
+      state.personReminders = (state.personReminders ?? []).filter((r) => r.id !== dismissAt[1]);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
     if (path === '/api/v1/reminders') {
       // As the vault lists them: due, or coming up (scheduled, snoozed).
       const want = query.get('state') ?? 'all';
@@ -3293,6 +3318,21 @@ export function installFakeApi(state: FakeState) {
           'Only an owner can invite a viewer who sees every family document. Choose what they can see.',
         );
       }
+      // Somebody already in the vault (after 0.7.0): by their name, and
+      // never an under-13, as the vault refuses one.
+      const existing = b.member_id
+        ? (state.members.find((m) => m.id === b.member_id) as
+            { display_name: string; date_of_birth?: string | null } | undefined)
+        : undefined;
+      if (b.member_id && !existing) {
+        return refuse(404, 'not_found', 'That person does not exist.');
+      }
+      if (
+        existing?.date_of_birth &&
+        !oldEnoughToSignIn(existing.date_of_birth, localToday(state.timezone ?? 'UTC'))
+      ) {
+        return refuse(422, 'too_young', TOO_YOUNG(existing.display_name));
+      }
       const invitation = {
         kind: b.kind ?? 'family',
         access_expires_at: b.access_expires_at ?? null,
@@ -3301,7 +3341,7 @@ export function installFakeApi(state: FakeState) {
         limited: Boolean(b.restriction),
         id: `inv-${state.invitations.length}`,
         member_id: b.member_id ?? `m-${state.members.length}`,
-        display_name: b.display_name ?? 'Someone',
+        display_name: existing?.display_name ?? b.display_name ?? 'Someone',
         email: b.email,
         role: b.role,
         invited_by: 'Mansoor Seikh',

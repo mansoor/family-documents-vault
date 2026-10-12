@@ -59,6 +59,10 @@ import {
   libraryHasName,
   missingFields,
   nextReminder,
+  localToday,
+  oldEnoughToSignIn,
+  TOO_YOUNG,
+  turnedThirteenWords,
   PHOTO_MAX_BYTES,
   PHOTO_TYPES,
   PREVIEW_MAX_PAGES,
@@ -119,6 +123,7 @@ import {
   type OfflineGrant,
   type OfflineItem,
   type PausedSignIn,
+  type PersonReminderView,
   type ReminderView,
   type ResetNotice,
   type ResetPath,
@@ -365,6 +370,13 @@ export interface FakeVaultState {
    * id: their rules, and their newest accepts for the count. Theirs alone.
    */
   learned: Record<string, FakeLearning>;
+  /**
+   * The owners' reminders that somebody turned 13 (after 0.7.0), as the
+   * vault's worker makes them: by `id`, the person, and the day. GET
+   * /reminders/people answers an owner those not dismissed, while the
+   * person may still be invited, in the real vault's words.
+   */
+  personReminders: Array<{ id: string; member_id: string; fire_at: string; dismissed: boolean }>;
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -793,6 +805,7 @@ export function createFakeVault(): {
     incoming: [],
     batches: [],
     learned: {},
+    personReminders: [],
     calls: [],
     offline: false,
   };
@@ -1318,6 +1331,14 @@ export function createFakeVault(): {
     if (typeof b.member_id === 'string') {
       if (!member) return fail(404, 'not_found', 'That person is not in the family.');
       if (member.role) return fail(409, 'already_signed_in', 'That person already has a sign-in.');
+      // Nobody under 13 has a sign-in of their own, by their date of birth
+      // on the household's calendar (after 0.7.0).
+      if (
+        member.date_of_birth &&
+        !oldEnoughToSignIn(member.date_of_birth, localToday(state.timezone))
+      ) {
+        return fail(422, 'too_young', TOO_YOUNG(member.display_name), 'member_id');
+      }
       if ((member.kind ?? 'family') !== kind) {
         return kind === 'guest'
           ? fail(
@@ -3979,6 +4000,40 @@ export function createFakeVault(): {
       });
       return ok({ items: describeEvents(events), next: null });
     }
+    // Somebody of the family with no sign-in (POST /members), by whoever may
+    // add people: a name, and a date of birth that has come, or none.
+    if (path === '/api/v1/members' && init.method === 'POST') {
+      const s = session();
+      if (!('id' in s)) return s;
+      if (!can(whoOf(s).role, 'member.add')) {
+        return fail(403, 'forbidden', refusalFor('member.add'));
+      }
+      const name = typeof body.display_name === 'string' ? body.display_name.trim() : '';
+      if (!name || name.length > 120) {
+        return fail(422, 'validation_failed', 'Give them a name.', 'display_name');
+      }
+      const dob = typeof body.date_of_birth === 'string' ? body.date_of_birth : null;
+      if (dob !== null && (!/^\d{4}-\d{2}-\d{2}$/.test(dob) || dob > localToday('UTC'))) {
+        return fail(
+          422,
+          'validation_failed',
+          'That date of birth is not a day that has been yet.',
+          'date_of_birth',
+        );
+      }
+      const m: FakeVaultState['members'][number] = {
+        id: next('member'),
+        display_name: name,
+        role: null,
+        is_me: false,
+        kind: 'family',
+        date_of_birth: dob,
+        relationship:
+          typeof body.relationship === 'string' ? body.relationship.trim() || null : null,
+      };
+      state.members.push(m);
+      return ok(memberAnswer(m), 201);
+    }
     if (path === '/api/v1/members' && init.method === 'GET') {
       const s = session();
       if (!('id' in s)) return s;
@@ -4020,6 +4075,21 @@ export function createFakeVault(): {
       const s = session();
       if (!('id' in s)) return s;
       return invite(whoOf(s), body);
+    }
+    // Taken back before it is accepted, by whoever may invite (SHR-02).
+    const revokeAt = /^\/api\/v1\/invitations\/([^/]+)$/.exec(path);
+    if (revokeAt && init.method === 'DELETE') {
+      const s = session();
+      if (!('id' in s)) return s;
+      if (!can(whoOf(s).role, 'member.invite')) {
+        return fail(403, 'forbidden', refusalFor('member.invite'));
+      }
+      const found = state.invitations.find(
+        (i) => i.view.id === revokeAt[1] && i.view.state === 'pending',
+      );
+      if (!found) return fail(404, 'not_found', 'That invitation does not exist.');
+      found.view.state = 'revoked';
+      return empty();
     }
     if (path === '/api/v1/invitations/accept' && init.method === 'POST') {
       return acceptInvitation(body, init.headers['x-fdv-installation'] ?? null);
@@ -4778,6 +4848,47 @@ export function createFakeVault(): {
         next.is_deceased !== (m.is_deceased ?? false);
       if (moved) Object.assign(m, next, { version: version + 1 });
       return respond(200, memberAnswer(m), { etag: `"${m.version ?? 1}"` });
+    }
+    // Somebody turned 13 (after 0.7.0): the owners' reminders, as the real
+    // vault answers them — while the person may still be invited.
+    if (path === '/api/v1/reminders/people' || path.startsWith('/api/v1/reminders/people/')) {
+      const s = session();
+      if (!('id' in s)) return s;
+      if (whoOf(s).role !== 'owner') {
+        return fail(403, 'forbidden', 'Only an owner is reminded when somebody turns 13.');
+      }
+      const open = state.personReminders.filter((r) => {
+        if (r.dismissed) return false;
+        const m = state.members.find((x) => x.id === r.member_id);
+        return (
+          m !== undefined &&
+          !m.role &&
+          !m.is_deceased &&
+          !state.invitations.some((i) => i.view.member_id === m.id && i.view.state === 'pending')
+        );
+      });
+      const dismissAt = /^\/api\/v1\/reminders\/people\/([^/]+)\/dismiss$/.exec(path);
+      if (dismissAt && init.method === 'POST') {
+        const r = state.personReminders.find((x) => x.id === dismissAt[1] && !x.dismissed);
+        if (!r) return fail(404, 'not_found', 'That reminder does not exist.');
+        r.dismissed = true;
+        return empty();
+      }
+      if (path === '/api/v1/reminders/people' && init.method === 'GET') {
+        const today = localToday(state.timezone);
+        const items: PersonReminderView[] = open.map((r) => {
+          const name = state.members.find((x) => x.id === r.member_id)?.display_name ?? '';
+          return {
+            id: r.id,
+            kind: 'turned_13',
+            member_id: r.member_id,
+            display_name: name,
+            fire_at: r.fire_at,
+            ...turnedThirteenWords(name, r.fire_at, today),
+          };
+        });
+        return ok({ items });
+      }
     }
     if (path === '/api/v1/reminders' && init.method === 'GET') {
       const s = session();

@@ -5,8 +5,9 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
  * shell's sidebar and `/`, the sidebar folded and opened on hover, the
  * Documents table's sort and an action on
  * many, a collection's Add documents (Phase 6), a document's two panes,
- * and a batch of two files accepted through
- * the review queue. One file, one sign-in (signing in is limited to 10 a
+ * a batch of two files accepted through
+ * the review queue, and a 15-year-old added with an invitation to sign up
+ * (after 0.7.0). One file, one sign-in (signing in is limited to 10 a
  * minute, and the suite signs in once in each file), on the vault
  * first-run.spec.ts made; what it makes has this run's name on it.
  *
@@ -308,4 +309,51 @@ test('two files added at once are accepted one after the other through the queue
   await expect(levels.getByRole('button', { name: /^Done\s*2$/ })).toBeVisible();
   await expect(levels.getByRole('button', { name: /^All\s*2$/ })).toBeVisible();
   await expect(page.getByRole('link', { name: /^(Accept|Review) r5-/ })).toHaveCount(0);
+});
+
+test('a 15-year-old added with “Invite them to sign up now” ticked: the link and the code, once', async () => {
+  // Fifteen on any calendar: born fifteen years and a month or so ago.
+  const now = new Date();
+  const dob = new Date(Date.UTC(now.getUTCFullYear() - 15, now.getUTCMonth() - 1, 1))
+    .toISOString()
+    .slice(0, 10);
+  const name = `Teen ${run}`;
+  const email = `teen-${run}@example.test`;
+  await visit(page, '/people');
+  await page.getByRole('button', { name: 'Add someone' }).click();
+  await page.getByLabel('Name of another family member').fill(name);
+  await page.getByLabel('Date of birth').fill(dob);
+  const box = page.getByRole('checkbox', { name: 'Invite them to sign up now' });
+  await expect(box).not.toBeChecked();
+  await box.check();
+  await page.getByLabel('Their email address').fill(email);
+  // At fifteen, a teen's sign-in and nothing else.
+  await expect(
+    page.getByRole('group', { name: 'What they can do' }).getByRole('button'),
+  ).toHaveText(['Teen']);
+  // The form's Add, not the bar's.
+  await page
+    .locator('form')
+    .filter({ has: page.getByLabel('Name of another family member') })
+    .getByRole('button', { name: 'Add', exact: true })
+    .click();
+  // Inviting asks who is asking — unless this session proved it moments ago.
+  const prompt = page.getByRole('dialog', { name: 'Just checking it is you' });
+  const handed = page.getByRole('heading', { name: `Send these to ${name}` });
+  await expect(prompt.or(handed)).toBeVisible();
+  if (await prompt.isVisible()) {
+    await prompt.getByLabel('Or your password').fill(PASSWORD);
+    await prompt.getByRole('button', { name: 'Confirm' }).click();
+  }
+  await expect(handed).toBeVisible();
+  await expect(handed).toBeFocused();
+  await expect(page.locator('code').filter({ hasText: '/join#' })).toHaveText(/\/join#[\w-]{40,}$/);
+  await expect(page.locator('code').filter({ hasText: /^[A-Z0-9]{4}-[A-Z0-9]{4}$/ })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Email the link' })).toHaveAttribute(
+    'href',
+    /^mailto:teen-/,
+  );
+  await page.getByRole('button', { name: 'Done' }).click();
+  // Waiting to be accepted, as a teen, at the address given.
+  await expect(page.getByText(`Teen · ${email}`)).toBeVisible();
 });
