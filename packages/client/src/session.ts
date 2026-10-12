@@ -107,6 +107,10 @@ export class SessionCore {
   private readonly onWait: ((seconds: number | null) => void) | undefined;
   /** Ends a wait for a renewal early: a sign-in or a sign-out landed. */
   private wake: (() => void) | null = null;
+  /** The renewal under way is waiting out a refusal for too many tries. */
+  private waitingOut = false;
+  /** Told the refusal when a renewal begins waiting it out: `token({ wait: 'join' })` stops there. */
+  private readonly waitBegun = new Set<(refusal: TokenResult) => void>();
 
   constructor(
     private readonly refresher: { refresh(refreshToken: string): Promise<Tokens> },
@@ -155,17 +159,50 @@ export class SessionCore {
 
   /**
    * A usable access token, refreshing when it has to — once, for everybody.
-   * `wait: false` (signing out) neither joins a renewal under way nor waits
-   * out a refusal: what there is now, or a renewal that waits for nothing.
+   *
+   * - By default it joins a renewal under way, or starts one, and waits out
+   *   a refusal for too many tries (see `renew`).
+   * - `wait: false` (signing out) neither joins a renewal under way nor
+   *   waits out a refusal: what there is now, or a renewal that waits for
+   *   nothing.
+   * - `wait: 'join'` (an interactive read that has something to show
+   *   meanwhile) joins a renewal under way — a cold start's, say — and is
+   *   answered with it; but once that renewal begins waiting out a refusal,
+   *   it is answered at once: `offline`, `tooMany` and the seconds left. With
+   *   nothing under way it starts a renewal that waits for nothing, as
+   *   `wait: false` does. It never waits out a refusal itself.
    */
-  async token(opts: { wait?: boolean } = {}): Promise<TokenResult> {
+  async token(opts: { wait?: boolean | 'join' } = {}): Promise<TokenResult> {
     if (this.access && this.now() < this.accessExpiresAt) return { kind: 'ok', token: this.access };
     if (!this.stored) return { kind: 'signed_out' };
     if (opts.wait === false && this.inflight) return this.current();
-    this.inflight ??= this.renew(opts.wait === false ? 0 : RENEWAL_RETRIES).finally(() => {
+    if (opts.wait === 'join' && this.inflight && this.waitingOut) return this.refusal();
+    this.inflight ??= this.renew(
+      opts.wait === false || opts.wait === 'join' ? 0 : RENEWAL_RETRIES,
+    ).finally(() => {
       this.inflight = null;
     });
-    return this.inflight;
+    return opts.wait === 'join' ? this.untilWaitBegins(this.inflight) : this.inflight;
+  }
+
+  /** A renewal's answer, or the refusal it was given as soon as it begins waiting that out. */
+  private untilWaitBegins(renewal: Promise<TokenResult>): Promise<TokenResult> {
+    let begun: ((refusal: TokenResult) => void) | undefined;
+    const stop = new Promise<TokenResult>((resolve) => {
+      begun = resolve;
+      this.waitBegun.add(resolve);
+    });
+    return Promise.race([renewal, stop]).finally(() => {
+      if (begun) this.waitBegun.delete(begun);
+    });
+  }
+
+  /** The refusal the renewal under way is waiting out: offline, too many tries, the seconds left. */
+  private refusal(): TokenResult {
+    const notBefore = this.stored?.retry_not_before;
+    if (notBefore === undefined) return this.current();
+    const left = Math.max(0, Math.ceil((notBefore - this.now()) / 1000));
+    return { kind: 'offline', tooMany: { retryAfterSeconds: left } };
   }
 
   /**
@@ -178,6 +215,8 @@ export class SessionCore {
       const r = await this.lock(() => this.refreshOnce(retried > 0));
       if (r.waitFor === undefined || retried >= retries) return r.result;
       const at = this.stored;
+      this.waitingOut = true;
+      for (const told of [...this.waitBegun]) told(r.result);
       this.onWait?.(r.waitFor);
       try {
         await Promise.race([
@@ -188,6 +227,7 @@ export class SessionCore {
         ]);
       } finally {
         this.wake = null;
+        this.waitingOut = false;
         this.onWait?.(null);
       }
       // Signed in or out while it waited: that stands.

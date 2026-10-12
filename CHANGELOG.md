@@ -6,6 +6,10 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Client
+
+- `@fdv/client`'s session gains `token({ wait: 'join' })`: it joins a token renewal already under way, such as a cold start's, but answers at once (`offline`, `tooMany`) as soon as that renewal starts waiting out a 429, and never waits one out itself. `token()` and `token({ wait: false })` are unchanged.
+
 ## [0.7.0-rc.2] - 2026-10-11 — the owner's look at the sidebar
 
 ### Changed

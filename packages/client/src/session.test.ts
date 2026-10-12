@@ -527,3 +527,180 @@ describe('a renewal’s wait, and everybody else meanwhile', () => {
     expect(v.mem.current()?.retry_not_before).toBeUndefined();
   });
 });
+
+/**
+ * `token({ wait: 'join' })`: for an interactive read with something to show
+ * meanwhile (the phone's Home and its card's choices, I5). It joins a
+ * renewal under way — a cold start's — but never waits out a refusal for
+ * too many tries: told at once as soon as the renewal it joined begins
+ * one, and it starts none of its own.
+ */
+describe('a token that joins a renewal but never waits out a refusal', () => {
+  it('on a cold start it joins the renewal under way and gets its token; wait: false still does not', async () => {
+    const { vault, api, tokens } = await signedInVault();
+    let answer: () => void = () => undefined;
+    const slow = {
+      refresh: async (rt: string): Promise<Tokens> => {
+        await new Promise<void>((r) => {
+          answer = r;
+        });
+        return api.refresh(rt);
+      },
+    };
+    const mem = memoryStore({
+      refresh_token: tokens.refresh_token,
+      household_id: tokens.household_id,
+      member_id: tokens.member_id,
+      role: tokens.role,
+    });
+    // A phone opened afresh: the refresh token in its store, no access token.
+    const session = new SessionCore(slow, mem.store);
+    await session.hydrate();
+    const starting = session.token();
+    const quick = session.token({ wait: 'join' });
+    expect(await session.token({ wait: false })).toEqual({ kind: 'offline' });
+    answer();
+    const [s, q] = await Promise.all([starting, quick]);
+    expect(q.kind).toBe('ok');
+    expect(q).toEqual(s);
+    expect(vault.state.calls.filter((c) => c.path === '/api/v1/auth/refresh')).toHaveLength(1);
+  });
+
+  /** A vault that turns every renewal away for 30 seconds; a wait that never ends by itself. */
+  async function refusing() {
+    const { tokens } = await signedInVault();
+    let asked = 0;
+    const refresher = {
+      refresh: async (): Promise<Tokens> => {
+        asked++;
+        throw new ApiRequestError(429, 'rate_limited', 'Too many requests.', undefined, {
+          retryAfterSeconds: 30,
+        });
+      },
+    };
+    let clock = 0;
+    const slept: number[] = [];
+    const session = new SessionCore(refresher, memoryStore().store, {
+      now: () => clock,
+      sleep: (ms) => {
+        slept.push(ms);
+        return new Promise<void>(() => undefined);
+      },
+    });
+    await session.accept(tokens);
+    clock = 20 * 60 * 1000;
+    const tick = () => new Promise<'not yet'>((r) => setTimeout(() => r('not yet'), 10));
+    return {
+      session,
+      slept,
+      tick,
+      asked: () => asked,
+      later: (ms: number) => {
+        clock += ms;
+      },
+    };
+  }
+
+  it('joined before the renewal begins waiting out a refusal: told at once when it does', async () => {
+    const v = await refusing();
+    const waiting = v.session.token();
+    const quick = v.session.token({ wait: 'join' });
+    expect(await Promise.race([quick, v.tick()])).toEqual({
+      kind: 'offline',
+      tooMany: { retryAfterSeconds: 30 },
+    });
+    // The renewal itself still waits, for whoever asked to wait.
+    expect(v.slept).toEqual([30000]);
+    expect(await Promise.race([waiting, v.tick()])).toBe('not yet');
+    expect(v.asked()).toBe(1);
+  });
+
+  it('asked while the renewal waits: told at once, with the seconds left, and nothing asked', async () => {
+    const v = await refusing();
+    void v.session.token();
+    await v.tick();
+    expect(v.slept).toEqual([30000]);
+    v.later(12_000);
+    expect(await Promise.race([v.session.token({ wait: 'join' }), v.tick()])).toEqual({
+      kind: 'offline',
+      tooMany: { retryAfterSeconds: 18 },
+    });
+    expect(v.asked()).toBe(1);
+  });
+
+  it('with nothing under way and the token expired: one renewal, and no wait', async () => {
+    const { api, tokens } = await signedInVault();
+    let asked = 0;
+    const refresher = {
+      refresh: async (rt: string): Promise<Tokens> => {
+        asked++;
+        if (asked === 1) {
+          throw new ApiRequestError(429, 'rate_limited', 'Too many requests.', undefined, {
+            retryAfterSeconds: 5,
+          });
+        }
+        return api.refresh(rt);
+      },
+    };
+    let clock = 0;
+    const slept: number[] = [];
+    const told: Array<number | null> = [];
+    const session = new SessionCore(refresher, memoryStore().store, {
+      now: () => clock,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+      onWait: (s) => told.push(s),
+    });
+    await session.accept(tokens);
+    clock = 20 * 60 * 1000;
+    expect(await session.token({ wait: 'join' })).toEqual({
+      kind: 'offline',
+      tooMany: { retryAfterSeconds: 5 },
+    });
+    expect(asked).toBe(1);
+    expect(slept).toEqual([]);
+    expect(told).toEqual([]);
+    // Once the vault's moment is over, it renews as anybody would.
+    clock += 5_000;
+    expect((await session.token({ wait: 'join' })).kind).toBe('ok');
+    expect(asked).toBe(2);
+    expect(slept).toEqual([]);
+  });
+
+  it('the other two are as they were: the default waits the refusal out, wait: false does not', async () => {
+    for (const wait of [undefined, true, false] as const) {
+      const { api, tokens } = await signedInVault();
+      let asked = 0;
+      const refresher = {
+        refresh: async (rt: string): Promise<Tokens> => {
+          asked++;
+          if (asked === 1) {
+            throw new ApiRequestError(429, 'rate_limited', 'Too many requests.', undefined, {
+              retryAfterSeconds: 5,
+            });
+          }
+          return api.refresh(rt);
+        },
+      };
+      let clock = 0;
+      const slept: number[] = [];
+      const session = new SessionCore(refresher, memoryStore().store, {
+        now: () => clock,
+        sleep: async (ms) => {
+          slept.push(ms);
+        },
+      });
+      await session.accept(tokens);
+      clock = 20 * 60 * 1000;
+      const r = await session.token(wait === undefined ? {} : { wait });
+      if (wait === false) {
+        expect(r).toEqual({ kind: 'offline', tooMany: { retryAfterSeconds: 5 } });
+        expect([asked, slept]).toEqual([1, []]);
+      } else {
+        expect(r.kind).toBe('ok');
+        expect([asked, slept]).toEqual([2, [5000]]);
+      }
+    }
+  });
+});
