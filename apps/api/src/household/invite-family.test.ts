@@ -4,7 +4,7 @@ import { ageOn, localToday, type PersonReminderView, type Role } from '@fdv/shar
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import { createHarness, type Harness } from '../test-harness.js';
-import type { CreatedInvitation, InvitationView } from './invitations.js';
+import { NO_LONGER_FITS, type CreatedInvitation, type InvitationView } from './invitations.js';
 import type { MemberView } from './service.js';
 
 /**
@@ -182,12 +182,110 @@ describe.skipIf(!testAdminUrl())('inviting family members to sign up', () => {
     ]);
     const r = await accept(created);
     expect(r.statusCode).toBe(422);
-    expect(errorOf(r).code).toBe('too_young');
+    // Said to the invitee, who chose neither the date nor the role.
+    expect(errorOf(r)).toMatchObject({ code: 'too_young', message: NO_LONGER_FITS });
     // Nothing was made: they still have no sign-in.
     const members = (await h.app.inject({ url: '/api/v1/members', headers: h.as(owner) })).json<{
       items: MemberView[];
     }>();
     expect(members.items.find((m) => m.id === ray.id)?.has_account).toBe(false);
+  });
+
+  it('refuses a role the age does not allow, by either route: from 13 to 17 a teen’s alone, from 18 never a teen’s', async () => {
+    await timezone('UTC');
+    const today = localToday('UTC');
+    const una = await add('Uma', bornYearsBefore(today, 17));
+    const vik = await add('Vik', bornYearsBefore(today, 18));
+    for (const route of ['invitations', 'member'] as const) {
+      for (const role of ['adult', 'owner', 'viewer'] as const) {
+        const r = await invite(una.id, { email: `uma-${route}@example.test`, role }, owner, route);
+        expect(r.statusCode, `${route} ${role}`).toBe(422);
+        expect(errorOf(r)).toMatchObject({
+          code: 'role_not_for_age',
+          message: 'Uma is under 18, so they can only be invited as a teen.',
+        });
+        expect(r.json<{ error: { detail: string } }>().error.detail).toBe('role');
+      }
+      const teenAt18 = await invite(
+        vik.id,
+        { email: `vik-${route}@example.test`, role: 'teen' },
+        owner,
+        route,
+      );
+      expect(teenAt18.statusCode).toBe(422);
+      expect(errorOf(teenAt18)).toMatchObject({
+        code: 'role_not_for_age',
+        message: 'Vik is 18 or over, so they can’t be invited as a teen.',
+      });
+    }
+    // An adult is told the same of a teen's sign-in for somebody grown.
+    expect(
+      errorOf(await invite(vik.id, { email: 'vik-ada@example.test', role: 'teen' }, adult)).code,
+    ).toBe('role_not_for_age');
+    // Nothing was made for either.
+    const listed = (await h.app.inject({ url: '/api/v1/invitations', headers: h.as(owner) })).json<{
+      items: InvitationView[];
+    }>();
+    expect(listed.items.some((i) => [una.id, vik.id].includes(i.member_id))).toBe(false);
+    // The roles their ages allow are made; somebody of no known age, any.
+    expect((await invite(una.id, { email: 'uma@example.test', role: 'teen' })).statusCode).toBe(
+      201,
+    );
+    expect((await invite(vik.id, { email: 'vik@example.test', role: 'adult' })).statusCode).toBe(
+      201,
+    );
+    const wes = await add('Wes', null);
+    expect((await invite(wes.id, { email: 'wes@example.test', role: 'teen' })).statusCode).toBe(
+      201,
+    );
+  });
+
+  it('refuses to accept an invitation once their date of birth says its role is not for their age', async () => {
+    await timezone('UTC');
+    const today = localToday('UTC');
+    const xan = await add('Xan', bornYearsBefore(today, 16));
+    const created = (
+      await invite(xan.id, { email: 'xan@example.test', role: 'teen' })
+    ).json<CreatedInvitation>();
+    await admin.query('update member set date_of_birth = $1 where id = $2', [
+      bornYearsBefore(today, 25),
+      xan.id,
+    ]);
+    const r = await accept(created);
+    expect(r.statusCode).toBe(422);
+    expect(errorOf(r)).toMatchObject({ code: 'role_not_for_age', message: NO_LONGER_FITS });
+    const members = (await h.app.inject({ url: '/api/v1/members', headers: h.as(owner) })).json<{
+      items: MemberView[];
+    }>();
+    expect(members.items.find((m) => m.id === xan.id)?.has_account).toBe(false);
+  });
+
+  it('a teen’s invitation made at 17 is still accepted once they are 18: the role is judged on the day it was made (INV-1)', async () => {
+    await timezone('UTC');
+    const today = localToday('UTC');
+    const day = (iso: string, n: number) => {
+      const t = new Date(`${iso}T00:00:00Z`);
+      t.setUTCDate(t.getUTCDate() + n);
+      return t.toISOString().slice(0, 10);
+    };
+    // Invited at 17, as a teen; then five days pass, and they turned 18 on
+    // the third — moved back, the invitation's day and their birthday both.
+    const yan = await add('Yan', day(bornYearsBefore(today, 18), 2));
+    const created = (
+      await invite(yan.id, { email: 'yan@example.test', role: 'teen' })
+    ).json<CreatedInvitation>();
+    expect(created.invitation.role).toBe('teen');
+    await admin.query(
+      "update invitation set created_at = now() - interval '5 days' where id = $1",
+      [created.invitation.id],
+    );
+    await admin.query('update member set date_of_birth = $1 where id = $2', [
+      day(bornYearsBefore(today, 18), -3),
+      yan.id,
+    ]);
+    const joined = await accept(created);
+    expect(joined.statusCode, joined.body).toBe(201);
+    expect(joined.json<Tokens>()).toMatchObject({ role: 'teen', member_id: yan.id });
   });
 
   // ------------------------------------------------- what is kept, for a member

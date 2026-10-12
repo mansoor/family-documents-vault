@@ -59,8 +59,11 @@ import {
   libraryHasName,
   missingFields,
   nextReminder,
+  ageOn,
   localToday,
   oldEnoughToSignIn,
+  ROLE_NOT_FOR_AGE,
+  roleSuitsAge,
   TOO_YOUNG,
   turnedThirteenWords,
   PHOTO_MAX_BYTES,
@@ -1338,6 +1341,12 @@ export function createFakeVault(): {
         !oldEnoughToSignIn(member.date_of_birth, localToday(state.timezone))
       ) {
         return fail(422, 'too_young', TOO_YOUNG(member.display_name), 'member_id');
+      }
+      // And the role is one their age allows: a teen's from 13 to 17, any
+      // but a teen's from 18 (after 0.7.0).
+      const age = ageOn(member.date_of_birth ?? null, localToday(state.timezone));
+      if (age !== null && !roleSuitsAge(age, role)) {
+        return fail(422, 'role_not_for_age', ROLE_NOT_FOR_AGE(member.display_name, age), 'role');
       }
       if ((member.kind ?? 'family') !== kind) {
         return kind === 'guest'

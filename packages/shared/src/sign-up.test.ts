@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   birthdayAt,
+  roleSuitsAge,
+  ROLE_NOT_FOR_AGE,
   mayBeInvited,
   oldEnoughToSignIn,
   rolesForAge,
@@ -36,6 +38,18 @@ describe('who may have a sign-in of their own (after 0.7.0)', () => {
     expect(rolesForAge(18, rolesToHandOut('owner'))).toEqual(['owner', 'adult', 'viewer']);
     expect(rolesForAge(18, rolesToHandOut('adult'))).toEqual(['viewer']);
     expect(rolesForAge(null, rolesToHandOut('adult'))).toEqual(['teen', 'viewer']);
+  });
+
+  it('the roles the vault holds an age to: a teen’s from 13 to 17, never a teen’s from 18, any of no known age', () => {
+    expect(roleSuitsAge(12, 'teen')).toBe(false);
+    expect(roleSuitsAge(13, 'teen')).toBe(true);
+    expect(roleSuitsAge(17, 'viewer')).toBe(false);
+    expect(roleSuitsAge(18, 'teen')).toBe(false);
+    expect(roleSuitsAge(18, 'viewer')).toBe(true);
+    expect(roleSuitsAge(null, 'teen')).toBe(true);
+    expect(ROLE_NOT_FOR_AGE('Sara', 15)).toBe(
+      'Sara is under 18, so they can only be invited as a teen.',
+    );
   });
 
   it('who may be offered an invitation: of the family, alive, no sign-in, none waiting, 13 or over', () => {

@@ -2847,7 +2847,7 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
-    name: 'inviting family members to sign up: nobody under 13 by their date of birth, somebody 13 today as a teen; the owners told once somebody turns 13, and the reminder dismissed (after 0.7.0)',
+    name: 'inviting family members to sign up: nobody under 13 by their date of birth, somebody 13 today as a teen and never as an adult, somebody 18 never as a teen; the owners told once somebody turns 13, and the reminder dismissed (after 0.7.0)',
     run: async (api, ctx) => {
       const { access_token: token } = await signIn(api, ctx);
       // Somebody else with a sign-in, made first: the real vault's run asks
@@ -2894,6 +2894,25 @@ export const contractScenarios: Scenario[] = [
         await api.dismissPersonReminder(token, (told[0] as { id: string }).id);
         expect((await api.personReminders(token)).items).toEqual([]);
       }
+      // The role is one their age allows: a teen's at 13, never a teen's at 18.
+      const notAdult = await refusal(
+        api.invite(token, {
+          member_id: thirteen.id,
+          email: 'thirteen@contract.test',
+          role: 'adult',
+        }),
+      );
+      expect(notAdult.status).toBe(422);
+      expect(notAdult.code).toBe('role_not_for_age');
+      const grown = await api.addMember(token, {
+        display_name: 'Contract Eighteen',
+        date_of_birth: born(18),
+      });
+      const notTeen = await refusal(
+        api.invite(token, { member_id: grown.id, email: 'eighteen@contract.test', role: 'teen' }),
+      );
+      expect(notTeen.status).toBe(422);
+      expect(notTeen.code).toBe('role_not_for_age');
       const made = await api.invite(token, {
         member_id: thirteen.id,
         email: 'thirteen@contract.test',

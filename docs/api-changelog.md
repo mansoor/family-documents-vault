@@ -4254,7 +4254,17 @@ last_used }], rules_max }` — of their newest `window` (50) items read and
     date of birth, on the household's calendar, is refused `422 too_young`
     (`detail: "member_id"`); so is accepting one once their date of birth
     has been changed to say so. Nothing was made or spent. Somebody with
-    no date of birth is invited as before. **Added:** an owner's reminders
+    no date of birth is invited as before. **Changed:** for somebody
+    already in the vault, the role must be one their age allows, by date of
+    birth on the household's calendar: from 13 to 17 `teen` alone, from 18
+    any but `teen`; any other is `422 role_not_for_age` (`detail: "role"`),
+    by either route. Accepting one is refused the same way once a changed
+    date of birth says they are under 13 today, or that its role did not
+    suit their age on the day it was made (so a teen's invitation made at
+    17 is still good at 18); either refusal at accept says "This invitation
+    no longer fits. Ask whoever invited you for a new one." With no date of
+    birth, any role the inviter may hand out. `@fdv/shared`: `roleSuitsAge`, `ROLE_NOT_FOR_AGE`.
+    **Added:** an owner's reminders
     that somebody of the family has turned 13 and may now have a sign-in
     of their own. The worker's reminder tick makes one on their 13th
     birthday on the household's calendar (or within the week, for a vault

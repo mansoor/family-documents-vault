@@ -72,6 +72,23 @@ export function rolesForAge(age: number | null, offerable: readonly Role[]): Rol
   return offerable.filter((r) => r !== 'teen');
 }
 
+/**
+ * Whether somebody of this age may be invited with this role, as the vault
+ * holds it: a teen's from 13 to 17, any but a teen's from 18, any when the
+ * age is not known. (Under 13, none: `TOO_YOUNG`.)
+ */
+export function roleSuitsAge(age: number | null, role: Role): boolean {
+  if (age === null) return true;
+  if (age < OWN_SIGN_IN_AGE) return false;
+  return age < GROWN_UP_AGE ? role === 'teen' : role !== 'teen';
+}
+
+/** The API's refusal of a role somebody's age does not allow (`422 role_not_for_age`). */
+export const ROLE_NOT_FOR_AGE = (name: string, age: number) =>
+  age < GROWN_UP_AGE
+    ? `${name} is under 18, so they can only be invited as a teen.`
+    : `${name} is 18 or over, so they can’t be invited as a teen.`;
+
 /** What the web needs of a person to say whether they may be invited. */
 export interface InvitableFacts {
   id: string;

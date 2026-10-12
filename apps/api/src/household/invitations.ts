@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { ScopeKeys } from '@fdv/crypto';
 import { ANONYMOUS, appendAudit, withPrincipal, withScope, withSystem, type Db } from '@fdv/db';
 import {
+  ageOn,
   can,
   capabilityToInvite,
   DECEASED_NO_SIGN_IN,
@@ -12,8 +13,10 @@ import {
   mayBeRestricted,
   oldEnoughToSignIn,
   refusalFor,
+  ROLE_NOT_FOR_AGE,
   roleLabel,
   ROLES,
+  roleSuitsAge,
   TOO_YOUNG,
   type MemberKind,
   type Role,
@@ -410,7 +413,7 @@ export class InvitationService {
 
     const id = await withPrincipal(this.db, p, async (trx) => {
       const memberId = input.member_id
-        ? await this.existingMember(trx, p.householdId, input.member_id, kind)
+        ? await this.existingMember(trx, p.householdId, input.member_id, kind, input.role)
         : await this.newMember(trx, p, input.display_name as string, meta, {
             kind,
             relationship: input.relationship ?? null,
@@ -535,6 +538,7 @@ export class InvitationService {
     householdId: string,
     memberId: string,
     kind: MemberKind,
+    role: Role,
   ): Promise<string> {
     const member = await trx
       .selectFrom('member')
@@ -586,10 +590,10 @@ export class InvitationService {
       .where('member_id', '=', member.id)
       .executeTakeFirst();
     if (signedIn) throw alreadySignedIn();
-    // Nobody under 13 has a sign-in of their own: by their date of birth,
-    // on the household's calendar. Somebody of no known age is taken at the
-    // inviter's word.
-    await mustBeOldEnough(trx, householdId, member.display_name, now.date_of_birth);
+    // Nobody under 13 has a sign-in of their own, and the role is one their
+    // age allows: by their date of birth, on the household's calendar.
+    // Somebody of no known age is taken at the inviter's word.
+    await mustSuitAge(trx, householdId, member.display_name, now.date_of_birth, role);
     return member.id;
   }
 
@@ -905,9 +909,15 @@ export class InvitationService {
       if (!member) throw gone();
       const row = await this.live(trx, token);
       if (member.is_deceased) throw passedAway(member.display_name);
-      // A date of birth changed since the invitation was made, to one under
-      // 13: no sign-in of their own yet, as when it is made.
-      await mustBeOldEnough(trx, householdId, member.display_name, member.date_of_birth);
+      // A date of birth changed since the invitation was made: under 13
+      // today, no sign-in of their own yet; a role their age did not allow
+      // on the day it was made, not this one. Judged on that day, so a
+      // teen's invitation made at 17 is still good once they are 18 (the
+      // review, INV-1). Said to the invitee, who did not choose either.
+      await mustSuitAge(trx, householdId, member.display_name, member.date_of_birth, row.role, {
+        roleOn: row.created_at,
+        invitee: true,
+      });
       // A guest's invitation is a guest's (5.34), and gives a sign-in only
       // while what it gives has not ended.
       if (row.kind !== member.kind) throw gone();
@@ -1128,16 +1138,25 @@ function stateOf(r: {
   return 'pending';
 }
 
+/** Said to whoever accepts an invitation their age no longer allows (the review, INV-1). */
+export const NO_LONGER_FITS =
+  'This invitation no longer fits. Ask whoever invited you for a new one.';
+
 /**
- * Refuses an invitation for somebody under 13 by their date of birth, on
- * the household's calendar (`422 too_young`): an under-13 is a family
- * profile, with no sign-in of their own.
+ * Refuses an invitation its person's age does not allow, by their date of
+ * birth on the household's calendar: under 13 today, any (`422 too_young`:
+ * an under-13 is a family profile, with no sign-in of their own); from 13
+ * to 17, any but a teen's; from 18, a teen's (`422 role_not_for_age`) — the
+ * age on `roleOn`'s day, the invitation's own as it is accepted, or today.
+ * As it is accepted, said to the invitee (`NO_LONGER_FITS`).
  */
-async function mustBeOldEnough(
+async function mustSuitAge(
   trx: Db,
   householdId: string,
   name: string,
   dateOfBirth: string | null,
+  role: Role,
+  opts: { roleOn?: Date; invitee?: boolean } = {},
 ): Promise<void> {
   if (!dateOfBirth) return;
   const household = await trx
@@ -1146,8 +1165,20 @@ async function mustBeOldEnough(
     .where('id', '=', householdId)
     .executeTakeFirstOrThrow();
   const today = localToday(household.timezone);
-  if (!oldEnoughToSignIn(String(dateOfBirth).slice(0, 10), today)) {
-    throw new ApiError(422, 'too_young', TOO_YOUNG(name), { detail: 'member_id' });
+  const born = String(dateOfBirth).slice(0, 10);
+  if (!oldEnoughToSignIn(born, today)) {
+    throw new ApiError(422, 'too_young', opts.invitee ? NO_LONGER_FITS : TOO_YOUNG(name), {
+      detail: 'member_id',
+    });
+  }
+  const age = ageOn(born, opts.roleOn ? localToday(household.timezone, opts.roleOn) : today);
+  if (age !== null && !roleSuitsAge(age, role)) {
+    throw new ApiError(
+      422,
+      'role_not_for_age',
+      opts.invitee ? NO_LONGER_FITS : ROLE_NOT_FOR_AGE(name, age),
+      { detail: 'role' },
+    );
   }
 }
 
