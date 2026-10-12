@@ -2187,6 +2187,21 @@ export function installFakeApi(state: FakeState) {
       }
       return json(state.learned);
     }
+    // How many of the person's own uploads wait, every batch together.
+    if (path === '/api/v1/batches/counts' && state.batches && method === 'GET') {
+      if (!can(storedRole() as Role, 'document.add')) {
+        return refuse(
+          403,
+          'forbidden',
+          'Viewers can open and download documents, but not add them.',
+        );
+      }
+      const waiting = state.batches.reduce(
+        (n, b) => n + b.items.filter((i) => !i.removed && i.state === 'waiting').length,
+        0,
+      );
+      return json({ waiting });
+    }
     // Many documents at once (I1): the person's own batches. A viewer is
     // refused, as adding is; somebody else's batch is not here.
     const batchAt =

@@ -355,6 +355,10 @@ export function registerBatches(app: FastifyInstance, batches: BatchService) {
     return { items: await batches.list(principal(req), { levels: q.with === 'levels' }) };
   });
 
+  // How many of the caller's own items wait, every batch together: what
+  // the Inbox counts, in one count rather than the whole list.
+  app.get('/api/v1/batches/counts', auth, async (req) => batches.counts(principal(req)));
+
   // What the vault learned from the caller's corrections (I4): their count
   // and their rules, theirs alone; and forgetting them.
   app.get('/api/v1/batches/learned', auth, async (req) => batches.learned(principal(req)));

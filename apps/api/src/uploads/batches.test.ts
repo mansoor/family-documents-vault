@@ -289,6 +289,90 @@ describe.skipIf(!testAdminUrl())('many documents at once: batches', () => {
     expect(there.statusCode).toBe(404);
   });
 
+  it('how many of yours wait, in one count: the list’s sum, your own alone (an owner’s too), never a file sent in; a viewer and a guest refused', async () => {
+    const counted = async (who: Tokens) => {
+      const res = await h.app.inject({ url: '/api/v1/batches/counts', headers: h.as(who) });
+      expect(res.statusCode, res.body).toBe(200);
+      return res.json<{ waiting: number }>().waiting;
+    };
+    const summed = async (who: Tokens) =>
+      (await list(who))
+        .json<{ items: BatchView[] }>()
+        .items.reduce((n, b) => n + b.counts.waiting, 0);
+    const uploaders = [owner, adult, teen];
+    const before = await Promise.all(uploaders.map(counted));
+    for (const [i, who] of uploaders.entries()) expect(before[i]).toBe(await summed(who));
+
+    // Sana sends three; nobody else's count moves, an owner's included.
+    const b = await made(adult, { name: 'Counted' });
+    const one = await sent(adult, b.id, 'one.pdf', PDF('counted one'));
+    const two = await sent(adult, b.id, 'two.pdf', PDF('counted two'));
+    await sent(adult, b.id, 'three.pdf', PDF('counted three'));
+    const [ownerAt, adultAt, teenAt] = before as [number, number, number];
+    expect(await Promise.all(uploaders.map(counted))).toEqual([ownerAt, adultAt + 3, teenAt]);
+    expect(await counted(adult)).toBe(await summed(adult));
+
+    // Accepted, or removed: no longer waiting.
+    const accepted = await accept(adult, b.id, one.id, { title: 'Counted one' });
+    expect(accepted.statusCode, accepted.body).toBe(201);
+    const removed = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/batches/${b.id}/items/${two.id}`,
+      headers: h.as(adult),
+    });
+    expect(removed.statusCode).toBe(204);
+    expect(await counted(adult)).toBe(adultAt + 1);
+    expect(await counted(adult)).toBe(await summed(adult));
+
+    // A file sent to the owner through a request waits for them, and is
+    // not one of their uploads.
+    const request = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/upload-requests',
+      headers: h.as(owner),
+      payload: {
+        title: 'Counted papers',
+        expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+      },
+    });
+    expect(request.statusCode, request.body).toBe(201);
+    const { link_token } = request.json<{ link_token: string }>();
+    const opened = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/unlock',
+      payload: { token: link_token },
+      ...peer(),
+    });
+    const cookie = opened.cookies.find((c) => c.name.startsWith('fdv_drop_s_'));
+    const form = new FormData();
+    form.append('file', PDF('sent in, not counted'), {
+      filename: 'sent-in.pdf',
+      contentType: 'application/pdf',
+    });
+    const sentIn = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/files',
+      headers: form.getHeaders(),
+      cookies: { [cookie?.name as string]: cookie?.value as string },
+      payload: form.getBuffer(),
+      ...peer(),
+    });
+    expect(sentIn.statusCode, sentIn.body).toBe(201);
+    // The test of the test: it is there, waiting, under the owner's name.
+    const waitingIn = await admin.query<{ n: number }>(
+      `select count(*)::int as n from incoming_file
+        where batch_id is null and state = 'received' and requester_member_id = $1`,
+      [owner.member_id],
+    );
+    expect(waitingIn.rows[0]?.n).toBeGreaterThan(0);
+    expect(await counted(owner)).toBe(ownerAt);
+
+    for (const who of [viewer, guest]) {
+      const res = await h.app.inject({ url: '/api/v1/batches/counts', headers: h.as(who) });
+      expect(res.statusCode).toBe(403);
+    }
+  });
+
   it('the activity log has nothing of a batch before acceptance, for anybody; then the document’s lines', async () => {
     const before = {
       owner: await activity(owner),
@@ -1457,6 +1541,27 @@ describe.skipIf(!testAdminUrl())(
         removed: 0,
         duplicates: 1,
       });
+    });
+
+    it('how many wait is one count: no batch listed, no item read, nothing opened', async () => {
+      const b = await made('Counted in one');
+      for (const n of [1, 2]) {
+        expect((await send(b.id, `one-${n}.pdf`, PDF(`counted in one ${n}`))).statusCode).toBe(201);
+      }
+      heard = [];
+      const res = await h.app.inject({ url: '/api/v1/batches/counts', headers: h.as(owner) });
+      const asked = heard;
+      heard = null;
+      expect(res.statusCode, res.body).toBe(200);
+      const summed = (await h.app.inject({ url: '/api/v1/batches', headers: h.as(owner) }))
+        .json<{ items: BatchView[] }>()
+        .items.reduce((n, v) => n + v.counts.waiting, 0);
+      expect(res.json()).toEqual({ waiting: summed });
+      const ofBatches = asked.filter((q) => /intake_batch|incoming_file/.test(q));
+      expect(ofBatches).toHaveLength(1);
+      expect(ofBatches[0]).toMatch(/count\(\*\)/);
+      // Nothing of an item is read: its name, its key, what its pages said.
+      expect(asked.some((q) => /original_name|wrapped|proposal|sha256|text_/.test(q))).toBe(false);
     });
 
     it('a removal fences its batch first: a file sent while what is in it is removed is refused, and nothing is left on disk', async () => {

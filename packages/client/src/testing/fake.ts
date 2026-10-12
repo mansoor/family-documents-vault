@@ -3210,6 +3210,19 @@ export function createFakeVault(): {
         return ok({ document_id: documentId, version_id: made.version_id }, 201);
       }
     }
+    // How many of the caller's own items wait, every batch together: theirs alone.
+    if (path === '/api/v1/batches/counts' && (init.method ?? 'GET') === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!can(who.role, 'document.add')) {
+        return fail(403, 'forbidden', refusalFor('document.add'));
+      }
+      const waiting = state.batches
+        .filter((b) => b.member_id === who.memberId)
+        .reduce((n, b) => n + b.items.filter((it) => it.state === 'waiting').length, 0);
+      return ok({ waiting });
+    }
     // What the vault learned from the caller's corrections (I4): theirs alone.
     if (path === '/api/v1/batches/learned') {
       const s = session();

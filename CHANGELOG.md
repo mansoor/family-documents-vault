@@ -6,6 +6,14 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **API:** `GET /api/v1/batches/counts` answers `{ waiting }`: how many of your own uploads wait, every batch together, in one count. It is yours alone, an owner's included; a viewer or a guest is refused. `@fdv/client` gains `batchCounts`.
+
+### Changed
+
+- **The Inbox's count in the sidebar, and on the "Your uploads" tab, is one small request** rather than the whole list of your uploads.
+
 ### Client
 
 - `@fdv/client`'s session gains `token({ wait: 'join' })`: it joins a token renewal already under way, such as a cold start's, but answers at once (`offline`, `tooMany`) as soon as that renewal starts waiting out a 429, and never waits one out itself. `token()` and `token({ wait: false })` are unchanged.

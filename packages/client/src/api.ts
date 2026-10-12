@@ -12,6 +12,7 @@ import type {
   BatchLearning,
   BatchUndoResult,
   BatchView,
+  BatchWaitingCounts,
   Capabilities,
   CaptureResult,
   UploadStatus,
@@ -1221,6 +1222,15 @@ export function createApi(http: Http) {
       request<{ items: BatchView[] }>(`/api/v1/batches${opts.levels ? '?with=levels' : ''}`, {
         token,
       }),
+    /**
+     * How many of the caller's own items wait, every batch together: what
+     * the Inbox counts, in one count rather than the whole list. A vault
+     * without it answers 404, or 422 (a 0.7.0 candidate, rc.2 or before,
+     * takes `counts` for a batch's id): then sum `counts.waiting` over
+     * `batches()`, as before.
+     */
+    batchCounts: (token: string) =>
+      request<BatchWaitingCounts>('/api/v1/batches/counts', { token }),
     /** One batch, and its items not removed, oldest first, each with what it duplicates. */
     batch: (token: string, id: string) =>
       request<BatchDetail>(`/api/v1/batches/${enc(id)}`, { token }),

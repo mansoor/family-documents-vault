@@ -746,6 +746,8 @@ const RULES: Record<string, Rule> = {
   // batch and its files their uploader's alone — an owner's too (Q3).
   'POST /api/v1/batches': { who: 'family', body: () => ({ name: 'Attacker’s batch' }) },
   'GET /api/v1/batches': { who: 'family' },
+  // How many of the caller's own items wait: theirs alone, an owner's too.
+  'GET /api/v1/batches/counts': { who: 'family' },
   'GET /api/v1/batches/:id': { who: 'family' },
   'PATCH /api/v1/batches/:id': { who: 'family', body: () => ({ name: 'Renamed' }) },
   'DELETE /api/v1/batches/:id': { who: 'family' },
@@ -2146,6 +2148,27 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       }
     }
     expect(problems).toEqual([]);
+  });
+
+  it('how many uploads wait counts the caller’s own alone: an owner is given nothing of another’s (Q3)', async () => {
+    const waiting = async (who: Tokens) => {
+      const res = await send(who, 'GET', '/api/v1/batches/counts');
+      return res.statusCode === 200 ? json<{ waiting: number }>(res).waiting : -res.statusCode;
+    };
+    // The test of the test: Ahmed's file waits, and is counted for him.
+    expect(await waiting(ahmed)).toBeGreaterThan(0);
+    // Nobody else in this household has sent anything into a batch of
+    // their own: whatever they are given of his is a leak.
+    const others: Array<[string, Tokens, number]> = [
+      ['an owner', olivia, 0],
+      ['a password-only owner', peter, 0],
+      ['another adult', sara, 0],
+      ['a teen', tariq, 0],
+      ['a limited viewer', vera, -403],
+      ['a guest', jane, -403],
+    ];
+    const got = await Promise.all(others.map(async ([name, who]) => [name, await waiting(who)]));
+    expect(got).toEqual(others.map(([name, , want]) => [name, want]));
   });
 
   it('every route the router has has a rule, and every rule a route', () => {

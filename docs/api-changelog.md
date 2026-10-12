@@ -54,7 +54,8 @@ visibility|collections|location`, `direction=asc|desc`) takes
   and the batch's defaults.
 - **Added: the review queue** (`batch_review`): `POST
 /api/v1/batches/{id}/accept-ready` and `…/accept-ready/undo` (5 minutes),
-  and `GET /api/v1/batches?with=levels`.
+  and `GET /api/v1/batches?with=levels`. `GET /api/v1/batches/counts`
+  answers `{ waiting }`, the caller's own items waiting, in one count.
 - **Added: learning from corrections** (`batch_learning`):
   `GET` and `DELETE /api/v1/batches/learned`, the caller's own; a
   proposal's `from` may be `learned`, and an item's tags `clash_learned`.
@@ -4230,6 +4231,17 @@ last_used }], rules_max }` — of their newest `window` (50) items read and
     seconds left. With nothing under way it starts a renewal that waits for
     nothing, as `wait: false` does. It never waits out a refusal itself.
     **Unchanged:** `token()` and `token({ wait: false })`.
+  - **Added:** `GET /api/v1/batches/counts` answers `{ waiting }`: how
+    many of the caller's own items wait, every batch of theirs together —
+    the sum of `counts.waiting` over `GET /api/v1/batches`, counted by the
+    database in one count, nothing opened. A file sent through a request
+    is not counted. Whoever may add documents: a viewer or a guest is
+    `403`, as for `/batches`; nobody is given a count of anybody else's,
+    an owner included. A vault without it answers `404`, or `422` (a 0.7.0
+    candidate up to rc.2, whose `/batches/{id}` takes `counts` for an id):
+    sum the list there, as before. `@fdv/shared`: `BatchWaitingCounts`.
+    `@fdv/client`: `batchCounts`. The client fake answers the same. The
+    web's sidebar and the Inbox's "Your uploads" tab count with it.
 
 ## Deprecations in effect
 

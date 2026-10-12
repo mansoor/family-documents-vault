@@ -376,6 +376,7 @@ export function AppShell() {
   // uploads not yet decided (I1), asked when something changes them — an
   // accept, a removal, files arriving — and when the window is come back
   // to, never on every move (the I1 review). Not asked at all of anybody else.
+  // Counted by the vault in one count, never by fetching the list.
   const [upload] = useUploads();
   const [lookedBack, setLookedBack] = useState(0);
   useEffect(() => {
@@ -394,8 +395,7 @@ export function AppShell() {
     [authVersion, mayReview, pathname],
   );
   const { data: mineWaiting } = useLoad(
-    async (t) =>
-      many ? (await api.batches(t)).items.reduce((n, b) => n + b.counts.waiting, 0) : 0,
+    async (t) => (many ? (await api.batchCounts(t)).waiting : 0),
     [authVersion, many, upload.changed, lookedBack],
   );
   const waiting = sentWaiting === null || mineWaiting === null ? null : sentWaiting + mineWaiting;

@@ -505,6 +505,40 @@ describe('the Inbox: your uploads (I1)', () => {
     ).toHaveAttribute('aria-current', 'page');
   });
 
+  it('the sidebar and the Inbox’s tab count your uploads in one count: the list of batches is not fetched to count them', async () => {
+    const W2 = {
+      id: 'in-1',
+      request_id: 'req-1',
+      request_title: 'Your tax papers',
+      recipient_label: 'Jane, accountant',
+      item_label: null,
+      name: 'W-2 2025.pdf',
+      content_type: 'application/pdf',
+      byte_size: 120 * 1024,
+      sender_note: null,
+      sent_at: '2026-10-01T09:00:00Z',
+      removed_at: '2026-10-31T09:00:00Z',
+      scan_state: 'unscanned',
+      preview_state: 'ready',
+      preview_pages: 2,
+      suggested_member_id: null,
+      suggested_type_key: null,
+      review_by: 'me',
+      moved_to_owners: false,
+    };
+    const state = at('/inbox/sent', { batches: [OLD_PAPERS()], incoming: [W2] });
+    const tabs = await screen.findByRole('navigation', { name: 'Inbox' });
+    expect(
+      await within(tabs).findByRole('link', { name: 'Your uploads, 3 waiting' }),
+    ).toBeVisible();
+    const side = await screen.findByRole('navigation', { name: 'Sections' });
+    expect(await within(side).findByRole('link', { name: 'Inbox, 4 waiting' })).toBeVisible();
+    const asked = (url: string) =>
+      state.calls.filter((c) => c.method === 'GET' && c.url === url).length;
+    await waitFor(() => expect(asked('/api/v1/batches/counts')).toBeGreaterThanOrEqual(2));
+    expect(asked('/api/v1/batches')).toBe(0);
+  });
+
   it('a teen has their own uploads, and no files sent to them; an empty Inbox says what it is for; a viewer has no Inbox', async () => {
     at('/inbox', { batches: [] }, 'teen');
     expect(await screen.findByText('Nothing you uploaded is waiting.')).toBeVisible();
@@ -982,8 +1016,9 @@ describe('many documents at once, the review (I1)', () => {
       expect(within(side()).getByRole('link', { name: 'Inbox, 1 waiting' })).toBeVisible(),
     );
     const listed = () =>
-      state.calls.filter((c) => c.method === 'GET' && c.url === '/api/v1/batches').length;
+      state.calls.filter((c) => c.method === 'GET' && c.url === '/api/v1/batches/counts').length;
     const before = listed();
+    expect(before).toBeGreaterThan(0);
     fireEvent.click(within(side()).getByRole('link', { name: /^Home/ }));
     await waitFor(() => expect(window.location.pathname).toBe('/'));
     fireEvent.click(within(side()).getByRole('link', { name: /^Documents/ }));
