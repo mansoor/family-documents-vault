@@ -28,10 +28,11 @@ import { useSheetFocus } from './ui.js';
 /**
  * The app's shell (Phase 6, R1): one layout around every signed-in screen.
  *
- *  - 1024 px and wider: a sidebar of sections, always there, and a bar on
- *    top with search (`/`), Add (`n`) and the account menu; Add is a menu
- *    since bulk intake (I1): one document, or many. The sidebar is as wide
- *    as it is dragged, or folded to its icons (sidebar.tsx);
+ *  - 1024 px and wider: a bar on top across the whole window, with the
+ *    household's name, search (`/`), Add (`n`) and the account menu; Add is
+ *    a menu since bulk intake (I1): one document, or many. Under it a
+ *    sidebar of sections, always there, as wide as it is dragged, or folded
+ *    to its icons (sidebar.tsx);
  *  - 768–1023 px, and 600 px tall or more: the same, the sidebar narrowed
  *    to its icons, each named and with its name beside it on hover or focus;
  *  - narrower, or shorter (a phone on its side): today's bottom bar, and a
@@ -518,7 +519,9 @@ export function AppShell() {
   const phone = mode === 'phone';
   // From 1024 px the sidebar is as wide as it was dragged, or folded to its
   // icons and open over the page while hovered or focused (sidebar.tsx).
-  const side = useSidebar(mode);
+  // The page beside it, whose start moves as it folds and opens.
+  const page = useRef<HTMLDivElement>(null);
+  const side = useSidebar(mode, page);
   const wide = mode === 'wide';
   const narrow = mode === 'mid' || (side.rail && !side.peek);
 
@@ -559,13 +562,17 @@ export function AppShell() {
   // One tree at every width, the page always in the same place in it: a
   // window turned or resized across 768 px keeps what is on the page (a
   // half-filled form) rather than drawing it again from nothing.
+  //
+  // From 768 px the bar on top is the window's whole width, the household's
+  // name at its left (the owner's ask): it stays where it is whatever the
+  // sidebar below it does, folded, opened or dragged.
   return (
     <div className={`shell shell-${mode}${side.shellClass}`} style={side.shellStyle}>
       <a className="skip-link" href="#main-content" onClick={skip}>
         Skip to main content
       </a>
       {phone ? (
-        <header className="phone-bar">
+        <header key="phone" className="phone-bar">
           <button
             ref={hamburger}
             type="button"
@@ -584,8 +591,16 @@ export function AppShell() {
           {account}
         </header>
       ) : (
+        <header key="bar" className="app-bar">
+          <Brand household={household} home />
+          <SearchBox field={search} keysOn={keysOn} />
+          <span className="app-bar-gap" />
+          {canAdd && <AddControl link={add} keysOn={keysOn} many={many} />}
+          {account}
+        </header>
+      )}
+      {phone ? null : (
         <nav className="sidebar" aria-label="Sections" {...(wide ? side.navProps : {})}>
-          <Brand household={household} />
           <SectionList sections={sections} path={pathname} narrow={narrow} />
           <div className="side-gap" />
           {wide ? (
@@ -602,15 +617,7 @@ export function AppShell() {
           )}
         </nav>
       )}
-      <div className="shell-main">
-        {!phone && (
-          <header className="app-bar">
-            <SearchBox field={search} keysOn={keysOn} />
-            <span className="app-bar-gap" />
-            {canAdd && <AddControl link={add} keysOn={keysOn} many={many} />}
-            {account}
-          </header>
-        )}
+      <div className="shell-main" ref={page}>
         {upload.batch && (
           <p className="visually-hidden" role="status">
             {stripSaid}
@@ -644,9 +651,14 @@ export function AppShell() {
   );
 }
 
-function Brand(props: { household: string; children?: ReactNode }) {
-  return (
-    <div className="brand">
+/**
+ * The mark, the household's name, and the app's under it. In the bar on top
+ * (`home`) it is a link to Home, each line kept to one: a long name ends in
+ * "…", the whole of it still its words and in its title.
+ */
+function Brand(props: { household: string; home?: boolean; children?: ReactNode }) {
+  const inside = (
+    <>
       <span className="brand-mark" aria-hidden="true">
         <svg
           width="19"
@@ -662,11 +674,23 @@ function Brand(props: { household: string; children?: ReactNode }) {
         </svg>
       </span>
       <span className="brand-words">
-        <span className="brand-name">{props.household}</span>
-        <span className="brand-sub">Family Document Vault</span>
+        <span className="brand-name" title={props.home ? props.household : undefined}>
+          {props.household}
+        </span>
+        {/* Said apart, "The Seikh family Family Document Vault"; not drawn. */}{' '}
+        <span className="brand-sub" title={props.home ? 'Family Document Vault' : undefined}>
+          Family Document Vault
+        </span>
       </span>
       {props.children}
-    </div>
+    </>
+  );
+  return props.home ? (
+    <Link to="/" className="brand">
+      {inside}
+    </Link>
+  ) : (
+    <div className="brand">{inside}</div>
   );
 }
 

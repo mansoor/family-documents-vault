@@ -16,8 +16,9 @@ import {
 } from './test-api.js';
 
 /**
- * The app's shell (Phase 6, R1): a sidebar and a bar on top from 768 px, the
- * sidebar its icons alone below 1024 px, and on a phone today's bottom bar
+ * The app's shell (Phase 6, R1): a bar on top across the window from 768 px,
+ * the household's name at its left (0.7.0), and a sidebar under it, its
+ * icons alone below 1024 px; and on a phone today's bottom bar
  * with a drawer for the rest. Each section only for whom its screen is;
  * Settings holds settings only; and every address Settings had still works.
  */
@@ -334,18 +335,25 @@ describe('the sidebar, from 1024 px (R1)', () => {
   });
 
   it('has its landmarks, and nothing axe finds, wide and in the middle', async () => {
-    at('/', EVERYTHING);
-    await sidebar();
-    await screen.findByRole('heading', { name: 'Recently added' });
-    expect(appBar().closest('main')).toBeNull();
-    expect(screen.getByRole('main')).toBeInTheDocument();
-    expect(screen.getByRole('search')).toBeInTheDocument();
-    await expectAccessible();
-    cleanup();
-    at('/', EVERYTHING, 'owner', MID);
-    await sidebar();
-    await screen.findByRole('heading', { name: 'Recently added' });
-    await expectAccessible();
+    for (const px of [WIDE, MID]) {
+      at('/', EVERYTHING, 'owner', px);
+      const nav = await sidebar();
+      await screen.findByRole('heading', { name: 'Recently added' });
+      // The bar on top is the shell's own, above the sidebar and the page,
+      // with the household's name in it (0.7.0): the sidebar has none.
+      const bar = appBar();
+      expect(bar.parentElement).toBe(document.querySelector('.shell'));
+      expect(bar.closest('main')).toBeNull();
+      expect(within(bar).getByRole('link', { name: /^The Seikh family/ })).toHaveAttribute(
+        'href',
+        '/',
+      );
+      expect(within(nav).queryByText('The Seikh family')).toBeNull();
+      expect(within(bar).getByRole('search')).toBeInTheDocument();
+      expect(screen.getByRole('main')).toBeInTheDocument();
+      await expectAccessible();
+      cleanup();
+    }
   });
 });
 
