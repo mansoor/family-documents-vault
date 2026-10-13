@@ -5,6 +5,8 @@ import {
   duplicateWords,
   LEVEL_WORDS,
   levelSummary,
+  renewalWords,
+  sameAsWords,
   seesLocation,
   untouchedAccept,
   type BatchDefaults,
@@ -33,7 +35,7 @@ import { api, ApiRequestError, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { askPage, forgetPages, heldPage } from '../batch-pages.js';
 import { labelOfDay, progressOf, useUploads } from '../batch-store.js';
-import { newRun, useAcceptReady } from '../batch-review.js';
+import { newRun, useAcceptReady, useVersionUndo } from '../batch-review.js';
 import { LearnedFromYou } from '../batch-learning.js';
 import { BATCH_ACCEPT } from '../batch-upload.js';
 import { CollectionSelect, mayChangeCollection } from '../collections.js';
@@ -1137,21 +1139,33 @@ export function ItemTags({
   item,
   full = false,
   stop,
+  renewal = false,
 }: {
   item: BatchItemView;
   full?: boolean;
   /** In the queue (I3): the row's stop, so Tab passes the rows the keys move between. */
   stop?: number;
+  /**
+   * In the queue (0.8.0, S1): a near match said as a tag too — "New version
+   * of Aisha's passport?" — and a document it is the same file as, "Same as
+   * Aisha's passport". The card says both in its own boxes.
+   */
+  renewal?: boolean;
 }) {
+  const { caps } = useApp();
   const tags = item.tags ?? [];
-  if (tags.length === 0) return null;
+  const near =
+    renewal && caps?.features.batch_versions === true && item.state === 'waiting'
+      ? (item.renewals?.[0] ?? null)
+      : null;
+  if (tags.length === 0 && !near) return null;
   return (
     <ul className="item-tags" aria-label="Why">
       {tags.map((t) => (
         <li key={`${t.code}:${t.field ?? ''}`} className={`item-tag item-tag-${t.kind}`}>
           {t.code === 'duplicate_document' && item.duplicate?.of === 'document' ? (
             <Link to={`/documents/${item.duplicate.document_id}`} tabIndex={stop}>
-              {dupWords(item)}
+              {renewal ? sameAsWords(item.duplicate) : dupWords(item)}
             </Link>
           ) : t.code.startsWith('duplicate_') ? (
             dupWords(item)
@@ -1161,6 +1175,13 @@ export function ItemTags({
           {full && t.detail && <span className="item-tag-detail">{t.detail}</span>}
         </li>
       ))}
+      {near && (
+        <li className="item-tag item-tag-info item-tag-renewal">
+          <Link to={`/documents/${near.document_id}`} tabIndex={stop}>
+            {renewalWords(near)}
+          </Link>
+        </li>
+      )}
     </ul>
   );
 }
@@ -1223,7 +1244,7 @@ function ItemState({ item, stop }: { item: BatchItemView; stop?: number }) {
           {item.reading === 'reading' ? 'Reading…' : 'Waiting to be read'}
         </span>
       )}
-      <ItemTags item={item} {...(stop !== undefined ? { stop } : {})} />
+      <ItemTags item={item} renewal {...(stop !== undefined ? { stop } : {})} />
     </span>
   );
 }
@@ -1354,6 +1375,10 @@ export function BatchScreen() {
     // The toast put away, its button gone: the status line, or the heading (W-I3-4).
     fallback: () => status.current ?? heading.current,
   });
+  // A file just added as a new version from its card (S1): the same toast, with its Undo.
+  // On a phone, in the page's flow under the levels: over the page, it hid
+  // what the focus went to (the 320 sweep).
+  const versionUndo = useVersionUndo(id, reload, mode === 'phone');
   const choose = (v: QueueFilter) =>
     setParams(
       (was) => {
@@ -1651,7 +1676,7 @@ export function BatchScreen() {
 
   return (
     <main
-      className={`page page-top page-wide has-nav batch-page${ready.toastShown ? ' has-toast' : ''}`}
+      className={`page page-top page-wide has-nav batch-page${ready.toastShown || (versionUndo.shown && mode !== 'phone') ? ' has-toast' : ''}`}
     >
       <nav className="crumbs" aria-label="Breadcrumb">
         <Link to="/inbox">Inbox</Link> <span aria-hidden="true">›</span> <span>Your uploads</span>
@@ -1756,6 +1781,7 @@ export function BatchScreen() {
       {/* The toast, under the levels: on a short screen it stays here, in the
           page, never over what has the focus (the I3 review, W-I3-6). */}
       {ready.element}
+      {!ready.toastShown && versionUndo.element}
       {b.items.length > 0 && shown.length === 0 && (
         <p className="muted queue-none">
           {filter === 'done'

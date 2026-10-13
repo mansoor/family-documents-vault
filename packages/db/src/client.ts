@@ -652,6 +652,10 @@ export interface Schema {
     read_waited_since: Date | null;
     /** Accepted by Accept all Ready (I3, 0064): until when its uploader may take it back into the queue. */
     undo_until: Date | null;
+    /** Filed as a new version of a document that was there before (0067, S1): an Undo takes back the version alone. */
+    as_version: Generated<boolean>;
+    /** What that accept changed on the document, sealed under the item's own key, for an Undo (0067). */
+    prior_sealed: Buffer | null;
     /** A batch's item: the uploader's Idempotency-Key for it, so a re-send is answered, not made twice. */
     idempotency_key: string | null;
     review_by: 'me' | 'adults';

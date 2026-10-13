@@ -335,8 +335,13 @@ export function registerBatches(app: FastifyInstance, batches: BatchService) {
   const idParam = z.object({ id: z.string().uuid() });
   const itemParams = z.object({ id: z.string().uuid(), itemId: z.string().uuid() });
   const pageParams = itemParams.extend({ n: z.coerce.number().int().min(1).max(9999) });
+  // A new document with these details; or (0.8.0, S1) a new version of a
+  // document, with only what that takes from the new paper.
   const acceptItemBody = captureBody
-    .extend({ collection_id: z.string().uuid().nullable().optional() })
+    .extend({
+      collection_id: z.string().uuid().nullable().optional(),
+      into_document_id: z.string().uuid().optional(),
+    })
     .strict();
 
   app.post('/api/v1/batches', auth, async (req, reply) => {

@@ -247,6 +247,14 @@ export interface CapabilityFeatures {
    * rules; DELETE /batches/learned forgets them. Absent from older vaults.
    */
   batch_learning?: boolean;
+  /**
+   * Duplicates as versions (0.8.0, S1): an item's `renewals` — documents the
+   * uploader may change that it is probably a new version of, from what its
+   * pages proposed — and POST …/items/{itemId}/accept with
+   * `into_document_id`, which adds it to one as its new version, taken back
+   * with …/accept-ready/undo. Absent from older vaults: accept, or discard.
+   */
+  batch_versions?: boolean;
 }
 
 export interface CapabilityLimits {

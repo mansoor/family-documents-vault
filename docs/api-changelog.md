@@ -4307,6 +4307,42 @@ kind: 'turned_13', member_id, display_name, fire_at, title, label }] }`
     reminder, and nobody else. `@fdv/shared`: `CHILD_BIRTHDAY_REFUSAL`,
     `childBirthday`, `TURNED_13_TOLD`. The client fake refuses a child's
     date of birth to anybody but an owner, as the vault does.
+  - Duplicates as versions (S1, `features.batch_versions`). **Added:** each
+    batch item's `renewals`, `[{ document_id, title, by }]`, best first,
+    five at most: documents the uploader may change that the item is
+    probably the same paper as, or a renewal of, judged on what its pages
+    proposed alone (never the batch's defaults), as it is asked. `by` is
+    `number` (the same kind and number, spaces, dashes and case aside) or
+    `details` (the same kind, person and issuer). Empty while it is not
+    read, once it is accepted, and when it is the same file as a document
+    the uploader can see (`duplicate`). Out of the Trash only, documents
+    the uploader can see, and a teen's own only. Nothing of a match is
+    stored. **Added:** `POST /api/v1/batches/{id}/items/{itemId}/accept`
+    takes `into_document_id`: the item is added as that document's new
+    version, through the same commit as `POST /documents/{id}/versions`
+    (its open reminders resolved, `version.process` queued); `issued`,
+    `expires` and `identifier`, when sent, change the document as `PATCH
+/documents/{id}` does (`null` clears one; one not sent stays), and
+    only what differs is written. Anything else beside it is `422
+validation_failed`. A document the uploader can see but not change (a
+    teen's not their own) is `403 forbidden`; one they cannot see, or in
+    the Trash, `404 not_found`. It answers `{ document_id, version_id,
+undo_until }`, and counts as an accept for `GET /batches/learned`.
+    **Changed:** `POST /api/v1/batches/{id}/accept-ready/undo` also takes
+    back an item added so, until `undo_until`: the version removed, the
+    document's number and dates put back as an edit puts them, the
+    reminders it resolved open again, and the item waiting to be read
+    again — the document kept. Kept, with a message of its own (`changed`),
+    once the document was changed, another version added, a link made or
+    used, or somebody else looked at it since. A new line in the activity
+    log, `batch.version_undone` ("Sana took back the new copy of …"), for
+    whoever may see the document. **Unchanged:** a single accept with no
+    `into_document_id` cannot be undone; `duplicate` still names only a
+    document the uploader can see. `@fdv/shared`: `BatchRenewal`,
+    `RENEWALS_MAX`, `VERSION_ACCEPT_FIELDS`, `numberKey`, `issuerMatchKey`,
+    `renewalWords`, `sameAsWords`; `BatchAcceptInput.into_document_id`,
+    `BatchAccepted.undo_until`. The client fake does not claim
+    `batch_versions` yet.
 
 ## Deprecations in effect
 

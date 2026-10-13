@@ -117,6 +117,7 @@ export function activityKind(action: string): ActivityKind {
     case 'household.only_me_sharing_changed':
       return 'shared';
     case 'household.profile_updated':
+    case 'batch.version_undone':
       return 'changed';
   }
   const area = action.slice(0, action.indexOf('.'));
@@ -218,6 +219,9 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
           : line(`${who} changed the note on ${doc}`);
     case 'document.version_added':
       return line(`${who} uploaded a new copy of ${doc}`);
+    // 0.8.0 (S1): a copy added from a batch, taken back within its minutes.
+    case 'batch.version_undone':
+      return line(`${who} took back the new copy of ${doc}`);
     case 'document.downloaded':
       return line(`${who} downloaded ${doc}`);
     // Every page fetched is audited; the log folds a sitting into one line.

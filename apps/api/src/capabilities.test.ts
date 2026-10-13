@@ -98,6 +98,7 @@ describe('buildCapabilities', () => {
       batch_proposals: true,
       batch_review: true,
       batch_learning: true,
+      batch_versions: true,
     });
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's

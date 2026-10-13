@@ -1117,6 +1117,48 @@ export class DocumentService {
     this.canWrite(p);
     let drawNow: string | null = null;
     const view = await withPrincipal(this.db, p, async (trx) => {
+      const done = await this.edit(trx, p, id, input, ifMatch, meta);
+      drawNow = done.drawNow;
+      return this.view(trx, p, done.row, typeLookup(trx), await this.opened(trx, p, done.row));
+    });
+    if (drawNow) {
+      await this.enqueue(
+        PREVIEWS_JOB,
+        { household_id: p.householdId, version_id: drawNow },
+        { singletonKey: previewJobKey(drawNow), priority: 5 },
+      ).catch(() => undefined);
+    }
+    return view;
+  }
+
+  /**
+   * An edit in the caller's own transaction, as PATCH /documents/{id} makes
+   * it (0.8.0, S1): a batch's item added as a new version of a document
+   * carries the dates and number accepted with it, and its Undo puts them
+   * back, each through the same checks, sealing, reminders and activity as
+   * any edit. Nothing to draw comes of what they change.
+   */
+  async editWithin(
+    trx: Db,
+    p: Principal,
+    id: string,
+    input: Pick<DocumentInput, 'issued' | 'expires' | 'identifier'>,
+    meta: RequestMeta,
+  ): Promise<void> {
+    this.canWrite(p);
+    await this.edit(trx, p, id, input, undefined, meta);
+  }
+
+  private async edit(
+    trx: Db,
+    p: Principal,
+    id: string,
+    input: DocumentInput,
+    ifMatch: string | undefined,
+    meta: RequestMeta,
+  ): Promise<{ row: DocRow; drawNow: string | null }> {
+    let drawNow: string | null = null;
+    {
       // The row is held for every edit, and read as it is once held (5.9
       // review): details are checked against what it holds (16 KB at most);
       // an Only me document's notes and details are opened, merged and
@@ -1238,16 +1280,8 @@ export class DocumentService {
           .executeTakeFirst();
         drawNow = latest?.id ?? null;
       }
-      return this.view(trx, p, row, typeLookup(trx), await this.opened(trx, p, row));
-    });
-    if (drawNow) {
-      await this.enqueue(
-        PREVIEWS_JOB,
-        { household_id: p.householdId, version_id: drawNow },
-        { singletonKey: previewJobKey(drawNow), priority: 5 },
-      ).catch(() => undefined);
+      return { row, drawNow };
     }
-    return view;
   }
 
   /** ORG-08: soft delete, recoverable for 30 days. */

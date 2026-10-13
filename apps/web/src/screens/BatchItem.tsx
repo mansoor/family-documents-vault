@@ -5,6 +5,7 @@ import {
   formatDate,
   LEVEL_WORDS,
   untouchedAccept,
+  type BatchAcceptInput,
   type BatchDetail,
   type BatchItemView,
   type CollectionView,
@@ -15,7 +16,13 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'reac
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { askPage, forgetPages, heldPage, pageKey } from '../batch-pages.js';
-import { newRun, runSummary, type ReviewRun } from '../batch-review.js';
+import {
+  newRun,
+  runSummary,
+  useVersionUndo,
+  versionUndoStore,
+  type ReviewRun,
+} from '../batch-review.js';
 import { useUploads } from '../batch-store.js';
 import { PageViewer } from '../page-viewer.js';
 import { storedRole } from '../session.js';
@@ -200,6 +207,78 @@ export function BatchItemScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unreadShown, asks]);
 
+  // A file just added as a new version (S1): its toast, with Undo, here and on the next.
+  // In the card's own flow, above it: it never covers a field the focus is on.
+  const versionUndo = useVersionUndo(
+    id,
+    async () => {
+      await fresh().catch(() => null);
+    },
+    true,
+  );
+
+  /**
+   * Added as a new version of a document (S1): the card's dates and number
+   * with it, then on to the next file, the toast saying so with its Undo.
+   * One the vault refuses keeps the card open, and says why on it.
+   */
+  const addAsVersion = async (
+    b: BatchDetail,
+    it: BatchItemView,
+    documentId: string,
+    fields: Pick<BatchAcceptInput, 'issued' | 'expires' | 'identifier'>,
+  ) => {
+    const to = (it.renewals ?? []).find((r) => r.document_id === documentId);
+    const sent = await withToken((t) =>
+      api.acceptBatchItem(t, b.id, it.id, {
+        into_document_id: documentId,
+        ...fields,
+      }),
+    );
+    if (!sent) return;
+    forgetPages([it.id]);
+    uploads.changed();
+    const title = to?.title ?? 'a document with no name';
+    versionUndoStore.set({
+      batchId: b.id,
+      itemId: it.id,
+      name: it.name,
+      title,
+      until: sent.undo_until ?? null,
+    });
+    const now = (await fresh().catch(() => null)) ?? b;
+    // Said by the toast, and heard from it: the status line does not say it twice.
+    const next: ReviewRun = { ...run, accepted: run.accepted + 1 };
+    delete next.last;
+    onward(now, next);
+  };
+
+  /** The same file as one already in the vault (S1): this copy dropped, as Remove drops it. */
+  const discard = async () => {
+    if (!batch || !item) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      await withToken((t) => api.removeBatchItem(t, batch.id, item.id));
+      forgetPages([item.id]);
+      uploads.changed();
+      const now = (await fresh().catch(() => null)) ?? batch;
+      onward(now, {
+        ...run,
+        removed: run.removed + 1,
+        last: `Discarded “${item.name}”: the copy already in the vault stays as it is.`,
+      });
+    } catch (err) {
+      setProblem(
+        err instanceof ApiRequestError && err.code === 'already_decided'
+          ? 'This file was accepted or removed already.'
+          : describeError(err),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const accept = async (
     b: BatchDetail,
     it: BatchItemView,
@@ -310,6 +389,11 @@ export function BatchItemScreen() {
   };
   const issuer = p?.issued_by?.value ?? '';
   const dup = item.duplicate ? dupWords(item) : null;
+  // Probably the same paper, or its renewal (S1): documents of theirs to add it to, best first.
+  const renewals =
+    caps?.features.batch_versions === true && !item.duplicate ? (item.renewals ?? []) : [];
+  const best = renewals[0];
+  const titleOf = (t: string | null) => t ?? 'a document with no name';
   const unread = (item.tags ?? []).find((t) => t.code === 'unread');
   const heading = card?.title ?? item.name;
   const pages = item.preview_pages ?? 0;
@@ -330,6 +414,7 @@ export function BatchItemScreen() {
       <p className="status-line" role="status">
         {run.last}
       </p>
+      {versionUndo.element}
       <div className="review">
         <section
           className="review-form"
@@ -376,10 +461,46 @@ export function BatchItemScreen() {
           </div>
           {dup && (
             <div className="problem-box" role="note">
-              <strong>{dup}</strong>
+              <strong>
+                {item.duplicate?.of === 'document' ? (
+                  <>
+                    Already in the vault:{' '}
+                    <Link to={`/documents/${item.duplicate.document_id}`}>
+                      {titleOf(item.duplicate.title)}
+                    </Link>
+                  </>
+                ) : (
+                  dup
+                )}
+              </strong>
               <span>
-                It is the same file, byte for byte. Most likely this copy can go: remove it below,
-                or accept it anyway to keep both.
+                It is the same file, byte for byte. Most likely this copy can go: discard it, or
+                accept it anyway to keep both.
+              </span>
+              <span className="row">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-small"
+                  disabled={busy}
+                  onClick={() => void discard()}
+                >
+                  Discard this copy
+                </button>
+              </span>
+            </div>
+          )}
+          {best && (
+            <div className="problem-box problem-box-calm renewal-box" role="note">
+              <strong>
+                Looks like a new copy of{' '}
+                <Link to={`/documents/${best.document_id}`}>{titleOf(best.title)}</Link>
+              </strong>
+              <span>
+                {best.by === 'number'
+                  ? 'The pages give the same kind and number.'
+                  : 'The pages give the same kind, person and issuer.'}{' '}
+                Add it as that document’s new version to keep its history and reminders together, or
+                accept it as a document of its own.
               </span>
             </div>
           )}
@@ -461,6 +582,16 @@ export function BatchItemScreen() {
             submitLabel={dup ? 'Accept anyway' : 'Accept and next'}
             pane={{
               hint: 'Enter',
+              // The same file as one in the vault: Discard is the likelier choice (S1).
+              quietSubmit: dup !== null,
+              ...(renewals.length > 0
+                ? {
+                    version: {
+                      to: renewals.map((r) => ({ id: r.document_id, title: titleOf(r.title) })),
+                      onAdd: (documentId, fields) => addAsVersion(batch, item, documentId, fields),
+                    },
+                  }
+                : {}),
               actions: (
                 <>
                   <button type="button" className="btn btn-quiet" onClick={() => void skip()}>

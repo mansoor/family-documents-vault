@@ -194,6 +194,12 @@ begin
     revoke execute on function public.incoming_file_document_reached(uuid) from public;
     grant execute on function public.incoming_file_document_reached(uuid) to fdv_app;
   end if;
+  -- And whether a version added from a batch has (0067, S1): asked by its
+  -- uploader's Undo.
+  if to_regprocedure('public.incoming_file_version_reached(uuid)') is not null then
+    revoke execute on function public.incoming_file_version_reached(uuid) from public;
+    grant execute on function public.incoming_file_version_reached(uuid) to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

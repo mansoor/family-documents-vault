@@ -749,6 +749,25 @@ export function ConfirmForm(props: {
     hint: string;
     /** Skip and Remove: after the submit button, in its row. */
     actions: ReactNode;
+    /**
+     * Something else is the likelier choice (0.8.0, S1: Discard this copy of
+     * a file already in the vault): the submit button is a quiet one.
+     */
+    quietSubmit?: boolean;
+    /**
+     * Beside the submit button (0.8.0, S1): "Add as a new version of …" the
+     * first of `to`, which files the item into that document with the
+     * card's dates and number as read — only those given; a blank one keeps
+     * the document's. With more than one, "or another…" shows the rest, a
+     * button each.
+     */
+    version?: {
+      to: ReadonlyArray<{ id: string; title: string }>;
+      onAdd: (
+        documentId: string,
+        fields: Pick<DocumentInput, 'issued' | 'expires' | 'identifier'>,
+      ) => Promise<void>;
+    };
   };
   /** Throws to keep the card open with the vault's words. */
   onSubmit: (details: DocumentInput, extra?: { collection_id: string | null }) => Promise<void>;
@@ -1176,6 +1195,38 @@ export function ConfirmForm(props: {
   };
 
   /**
+   * Added as a new version of a document (0.8.0, S1): what the card says of
+   * the new paper — its dates and number, read as Save reads them — and only
+   * those given; a blank one keeps what the document has.
+   */
+  const addAsVersion = async (documentId: string) => {
+    const version = props.pane?.version;
+    if (!version) return;
+    const exp = expiresShown && expires.trim() ? parseDateInput(expires, { order }) : null;
+    const iss = issuedShown && issued.trim() ? parseDateInput(issued, { order }) : null;
+    if (expiresShown && expires.trim() && !exp) {
+      unreadable('The expiry date: try 14 Mar 2031, March 2031, or just 2031.', 'f-expires');
+      return;
+    }
+    if (issuedShown && issued.trim() && !iss) {
+      unreadable('The issue date: try 14 Mar 2021, March 2021, or just 2021.', 'f-issued');
+      return;
+    }
+    const fields: Pick<DocumentInput, 'issued' | 'expires' | 'identifier'> = {};
+    if (iss) fields.issued = iss;
+    if (exp) fields.expires = exp;
+    if (identifierShown && identifier.trim()) fields.identifier = identifier.trim();
+    await run(() => version.onAdd(documentId, fields));
+  };
+  // "or another…" opened (S1): every near match, a button each — the focus
+  // on the first of them, where the button that opened them was.
+  const [otherVersions, setOtherVersions] = useState(false);
+  const otherList = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    if (otherVersions) otherList.current?.querySelector('button')?.focus();
+  }, [otherVersions]);
+
+  /**
    * A confident disagreement between the pages and the batch (I2): both
    * said, under the field, and the other one press away. The batch's is on
    * the card until somebody chooses.
@@ -1574,7 +1625,7 @@ export function ConfirmForm(props: {
             <button
               ref={saveButton}
               type="submit"
-              className="btn btn-primary"
+              className={props.pane.quietSubmit ? 'btn btn-quiet' : 'btn btn-primary'}
               disabled={busy}
               aria-keyshortcuts="Enter"
             >
@@ -1583,6 +1634,43 @@ export function ConfirmForm(props: {
                 {props.pane.hint}
               </kbd>
             </button>
+            {props.pane.version?.to[0] && (
+              <button
+                type="button"
+                className="btn btn-quiet btn-version"
+                disabled={busy}
+                onClick={() => void addAsVersion(props.pane?.version?.to[0]?.id as string)}
+              >
+                Add as a new version of {props.pane.version.to[0].title}
+              </button>
+            )}
+            {props.pane.version &&
+              props.pane.version.to.length > 1 &&
+              (otherVersions ? (
+                <ul ref={otherList} className="other-versions" aria-label="Or add it to another">
+                  {props.pane.version.to.slice(1).map((d) => (
+                    <li key={d.id}>
+                      <button
+                        type="button"
+                        className="btn btn-quiet btn-small"
+                        disabled={busy}
+                        onClick={() => void addAsVersion(d.id)}
+                      >
+                        Add as a new version of {d.title}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-link"
+                  aria-expanded="false"
+                  onClick={() => setOtherVersions(true)}
+                >
+                  or another…
+                </button>
+              ))}
             {props.pane.actions}
           </div>
         ) : (

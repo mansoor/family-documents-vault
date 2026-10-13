@@ -943,7 +943,7 @@ const GUARDS = [
     fn: 'incoming_file_leaves_bytes',
   },
   // An item taken back into the queue takes its document with it, held at
-  // commit (0064, I3).
+  // commit (0064, I3) — or, added as a version, that version (0067, S1).
   {
     name: 'incoming_file_undone_document_gone',
     table: 'incoming_file',

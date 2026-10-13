@@ -311,6 +311,126 @@ test('two files added at once are accepted one after the other through the queue
   await expect(page.getByRole('link', { name: /^(Accept|Review) r5-/ })).toHaveCount(0);
 });
 
+/** An MRZ check digit (ICAO 9303): weights 7, 3, 1; a letter is 10 for A on. */
+const checkDigit = (s: string) =>
+  [...s].reduce((sum, c, i) => {
+    const v = /\d/.test(c) ? Number(c) : c === '<' ? 0 : c.charCodeAt(0) - 55;
+    return sum + v * ([7, 3, 1][i % 3] as number);
+  }, 0) % 10;
+
+/**
+ * A renewed passport's one page, with words a reader reads (S1): its kind,
+ * its number on its label and in its machine-readable lines (check digits
+ * right), and its new expiry, 14 March 2031.
+ */
+function passportPdf(number: string): Buffer {
+  const lines = [
+    'UNITED KINGDOM OF GREAT BRITAIN AND NORTHERN IRELAND',
+    'PASSPORT',
+    'Type  Code  Passport No.',
+    `P  GBR  ${number}`,
+    'Surname',
+    'KHAN',
+    'Given names',
+    'SARA AMINA',
+    'Nationality',
+    'BRITISH CITIZEN',
+    'Date of issue',
+    '14 MAR 21',
+    'Authority',
+    'HMPO',
+    'Date of expiry',
+    '14 MAR 31',
+    'P<GBRKHAN<<SARA<AMINA<<<<<<<<<<<<<<<<<<<<<<<',
+    `${number}${checkDigit(number)}GBR8503035F3103142<<<<<<<<<<<<<<08`,
+  ];
+  const content = lines.map((l, i) => `BT /F1 12 Tf 40 ${750 - i * 18} Td (${l}) Tj ET`).join('\n');
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  let out = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  objs.forEach((o, i) => {
+    offsets.push(out.length);
+    out += `${i + 1} 0 obj\n${o}\nendobj\n`;
+  });
+  const xref = out.length;
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) out += `${String(off).padStart(10, '0')} 00000 n \n`;
+  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+}
+
+test('a renewed passport, uploaded in a batch, is added as a new version of the one in the vault', async () => {
+  test.setTimeout(150_000);
+  // This run's own number: nine digits, written with a space in the vault.
+  const number = String(Date.now() % 1e9).padStart(9, '7');
+  const title = `E2E passport ${run}`;
+  const auth = { authorization: `Bearer ${token}` };
+  const made = await page.request.post('/api/v1/documents', {
+    headers: auth,
+    data: {
+      title,
+      type_key: 'passport',
+      identifier: `${number.slice(0, 4)} ${number.slice(4)}`,
+      issued_by: 'United Kingdom',
+      issued: { date: '2014-03-14', precision: 'day' },
+      expires: { date: '2024-03-14', precision: 'day' },
+    },
+  });
+  expect(made.status()).toBe(201);
+  const docId = ((await made.json()) as { id: string }).id;
+  const first = await page.request.post(`/api/v1/documents/${docId}/versions`, {
+    headers: { ...auth, 'idempotency-key': crypto.randomUUID() },
+    multipart: {
+      file: { name: `old-${run}.pdf`, mimeType: 'application/pdf', buffer: pdf('old passport') },
+    },
+  });
+  expect(first.status()).toBe(201);
+
+  // The renewed one, in a batch of its own.
+  await visit(page, '/add/many');
+  await expect(page.getByRole('heading', { name: 'Add many documents', level: 1 })).toBeVisible();
+  await page
+    .getByLabel('Choose files')
+    .setInputFiles([
+      { name: `renewed-${run}.pdf`, mimeType: 'application/pdf', buffer: passportPdf(number) },
+    ]);
+  await page.getByLabel('Name this batch').fill(`S1 batch ${run}`);
+  await page.getByRole('button', { name: 'Start: upload 1 file' }).click();
+  await expect(page.getByText(`1 file arrived in “S1 batch ${run}”.`)).toBeVisible({
+    timeout: 30_000,
+  });
+  await page.getByRole('link', { name: 'Open the batch' }).click();
+  // Read by the worker: the queue says what it is a new version of.
+  await expect(page.getByRole('link', { name: `New version of ${title}?` })).toBeVisible({
+    timeout: 90_000,
+  });
+  await page
+    .getByRole('link', { name: new RegExp(`^(Accept|Review) renewed-${run}[.]pdf$`) })
+    .click();
+  await expect(page.getByText('Looks like a new copy of')).toBeVisible();
+  await page.getByRole('button', { name: `Add as a new version of ${title}` }).click();
+  // Back on the queue, the toast says so, with its Undo.
+  const toast = page.getByRole('region', { name: 'What was just done' });
+  await expect(toast).toContainText(`is now the newest copy of ${title}`);
+  await expect(toast.getByRole('button', { name: 'Undo' })).toBeVisible();
+  // The document: two copies now, and the new paper's expiry and number.
+  const doc = (await (
+    await page.request.get(`/api/v1/documents/${docId}`, { headers: auth })
+  ).json()) as { expires: { date: string } | null; identifier: string | null };
+  expect(doc.expires?.date).toBe('2031-03-14');
+  expect(doc.identifier?.replace(/\s/g, '')).toBe(number);
+  const versions = (await (
+    await page.request.get(`/api/v1/documents/${docId}/versions`, { headers: auth })
+  ).json()) as { items: unknown[] };
+  expect(versions.items).toHaveLength(2);
+});
+
 test('a 15-year-old added with “Invite them to sign up now” ticked: the link and the code, once', async () => {
   // Fifteen on any calendar: born fifteen years and a month or so ago.
   const now = new Date();

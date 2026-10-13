@@ -576,6 +576,8 @@ export interface FakeState {
   batchRefuse?: Record<string, { status: number; code: string; message: string }>;
   /** False: a vault from before the review queue (I3), with no Accept all Ready. */
   batchReview?: boolean;
+  /** False: a vault from before 0.8.0 (S1), which adds no item as a new version of a document. */
+  batchVersions?: boolean;
   /** Every item accept that arrived, with what it sent (I3: the card's body, untouched or not). */
   batchAccepts?: Array<{ item: string; body: Record<string, unknown> }>;
   /** An item whose accept is refused, as the vault would refuse it (I3: the error stays on the card). */
@@ -614,7 +616,15 @@ export interface FakeBatch {
   created_at: string;
   ends_at: string;
   defaults: BatchDefaults;
-  items: Array<BatchItemView & { removed?: boolean; key?: string; undo_until?: string }>;
+  items: Array<
+    BatchItemView & {
+      removed?: boolean;
+      key?: string;
+      undo_until?: string;
+      /** Added as a new version (S1): what the document held before, for an Undo. */
+      prior?: { versions: number; identifier: unknown; issued: unknown; expires: unknown };
+    }
+  >;
 }
 
 /** What has to be said the first time a document is Only me (SEC-19), as the vault says it. */
@@ -968,6 +978,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.batches ? { batches: true } : {}),
           // The review queue (I3): said unless a test is an older vault.
           ...(state.batches && state.batchReview !== false ? { batch_review: true } : {}),
+          // Duplicates as versions (S1): said unless a test is an older vault.
+          ...(state.batches && state.batchVersions !== false ? { batch_versions: true } : {}),
           // Learning from corrections (I4): said when a test gives what was learned.
           ...(state.learned ? { batch_learning: true } : {}),
         },
@@ -2282,7 +2294,9 @@ export function installFakeApi(state: FakeState) {
       };
       const detail = (b: FakeBatch) => ({
         ...view(b),
-        items: kept(b).map(({ removed: _removed, key: _key, undo_until: _u, ...i }) => i),
+        items: kept(b).map(
+          ({ removed: _removed, key: _key, undo_until: _u, prior: _p, ...i }) => i,
+        ),
       });
       if (!id && method === 'GET') {
         // Each batch's levels, asked for (I3).
@@ -2402,6 +2416,26 @@ export function installFakeApi(state: FakeState) {
             });
           } else if (late) {
             out.kept.push({ item_id: itemId, ...late });
+          } else if (item.prior) {
+            // Added as a version (S1): the version taken back, the document as it was.
+            const d = state.documents.find((x) => x.id === item.document_id);
+            if (d) {
+              Object.assign(d, {
+                versions: item.prior.versions,
+                identifier: item.prior.identifier,
+                issued: item.prior.issued,
+                expires: item.prior.expires,
+              });
+            }
+            delete item.prior;
+            item.state = 'waiting';
+            item.document_id = null;
+            item.reading = 'waiting';
+            item.level = null;
+            item.tags = [];
+            item.preview_state = 'pending';
+            delete item.undo_until;
+            out.restored.push(itemId);
           } else {
             state.documents = state.documents.filter((d) => d.id !== item.document_id);
             item.state = 'waiting';
@@ -2491,6 +2525,32 @@ export function installFakeApi(state: FakeState) {
         state.batchAccepts = [...(state.batchAccepts ?? []), { item: item.id, body: sent }];
         const refused = state.acceptRefuse?.[item.id];
         if (refused) return refuse(refused.status, refused.code, refused.message);
+        // A new version of a document (S1): its dates and number as sent.
+        if (typeof sent.into_document_id === 'string') {
+          const d = state.documents.find((x) => x.id === sent.into_document_id);
+          if (!d) return refuse(404, 'not_found', 'That document is not in the vault.');
+          item.prior = {
+            versions: (d as { versions?: number }).versions ?? 1,
+            identifier: d.identifier,
+            issued: d.issued,
+            expires: d.expires,
+          };
+          Object.assign(d, {
+            versions: item.prior.versions + 1,
+            ...(sent.identifier !== undefined ? { identifier: sent.identifier } : {}),
+            ...(sent.issued !== undefined ? { issued: sent.issued } : {}),
+            ...(sent.expires !== undefined ? { expires: sent.expires } : {}),
+          });
+          item.state = 'accepted';
+          item.document_id = d.id as string;
+          item.preview_state = 'none';
+          item.preview_pages = null;
+          item.undo_until = new Date(Date.now() + 5 * 60_000).toISOString();
+          return json(
+            { document_id: d.id, version_id: 'v-batch-version', undo_until: item.undo_until },
+            201,
+          );
+        }
         const made = file(item, sent);
         // Put in a collection: who else will now see it, as the collection says (5.33).
         const into =
