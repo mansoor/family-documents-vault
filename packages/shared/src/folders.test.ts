@@ -6,9 +6,11 @@ import type { DocumentTypeView } from './documents.js';
 import {
   FOLDER_CHARS_MAX,
   FOLDER_CONFIDENCE,
+  FOLDER_KIND_PARENTS,
   FOLDER_KIND_WORDS,
   FOLDER_NEW_TAGS_MAX,
   FOLDER_SEGMENTS_MAX,
+  folderMatcher,
   foldKey,
   isGenericFolder,
   itemFolder,
@@ -26,22 +28,28 @@ import type { DetailProposal } from './proposals.js';
  */
 
 const KINDS: LevelKind[] = [
-  ['passport', 'Passport', 'household', 'expires_on'],
-  ['drivers_licence', "Driver's licence", 'household', 'expires_on'],
-  ['birth_certificate', 'Birth certificate', 'household', null],
-  ['bank_statement', 'Bank / investment statement', 'adults', null],
-  ['insurance_policy', 'Insurance policy', 'household', 'expires_on'],
-  ['tax_return', 'Tax return', 'adults', null],
-  ['medical_record', 'Medical record / immunisation', 'adults', null],
-  ['utility_bill', 'Utility / bill', 'household', 'expires_on'],
-  ['will', 'Will / trust / power of attorney', 'adults', 'review_on'],
-  ['other', 'Something else', 'household', null],
-].map(([key, label, vis, driver]) => ({
+  ['passport', 'Passport', 'household', 'expires_on', null],
+  ['drivers_licence', "Driver's licence", 'household', 'expires_on', null],
+  ['birth_certificate', 'Birth certificate', 'household', null, null],
+  ['bank_statement', 'Bank / investment statement', 'adults', null, 'Bank statement'],
+  ['insurance_policy', 'Insurance policy', 'household', 'expires_on', null],
+  ['tax_return', 'Tax return', 'adults', null, null],
+  ['tax_form', 'W-2 / 1099 / tax form', 'adults', null, null],
+  ['medical_record', 'Medical record / immunisation', 'adults', null, null],
+  ['prescription', 'Prescription', 'adults', 'expires_on', null],
+  ['utility_bill', 'Utility / bill', 'household', 'expires_on', null],
+  ['vehicle_registration', 'Vehicle title / registration', 'household', 'expires_on', null],
+  ['employment_contract', 'Employment contract / offer', 'adults', 'expires_on', null],
+  ['will', 'Will / trust / power of attorney', 'adults', 'review_on', null],
+  ['marriage_certificate', 'Marriage / divorce certificate', 'adults', null, null],
+  ['other', 'Something else', 'household', null, null],
+].map(([key, label, vis, driver, short]) => ({
   key: key as string,
   label: label as string,
   default_visibility: vis as LevelKind['default_visibility'],
   expiry_driver: driver as LevelKind['expiry_driver'],
   fields: [],
+  ...(short ? { short_label: short } : {}),
 }));
 const PEOPLE = [
   { id: 'm-sara', name: 'Sara' },
@@ -51,7 +59,11 @@ const PEOPLE = [
 const ctx = (over: Partial<FolderContext> = {}): FolderContext => ({
   types: KINDS,
   people: PEOPLE,
-  tags: ['holiday', 'car-insurance'],
+  tags: [
+    { value: 'holiday', visibility: 'household' },
+    { value: 'car', visibility: 'household' },
+    { value: 'ivf', visibility: 'private' },
+  ],
   ...over,
 });
 const NO_DEFAULTS: BatchDefaults = {
@@ -64,6 +76,10 @@ const NO_DEFAULTS: BatchDefaults = {
   is_essential: false,
 };
 const day = (date: string) => ({ date, precision: 'day' as const });
+/** "Résumés/résumé.pdf" composed, its name decomposed (a Mac's), and the folder composed. */
+const NFC_PATH = `R${String.fromCharCode(0xe9)}sum${String.fromCharCode(0xe9)}s/r${String.fromCharCode(0xe9)}sum${String.fromCharCode(0xe9)}.pdf`;
+const NFD_NAME = (NFC_PATH.split('/')[1] ?? '').normalize('NFD');
+const NFC_DIR = NFC_PATH.split('/')[0];
 
 describe('the folder an item came from, as it is kept (S2)', () => {
   it('keeps its folders without the file’s own name, tidied and bounded', () => {
@@ -72,10 +88,17 @@ describe('the folder an item came from, as it is kept (S2)', () => {
     );
     // The file's name is dropped only when it is the last segment.
     expect(itemFolder('Passports/Ahmed', { fileName: 'scan 1.pdf' })).toBe('Passports/Ahmed');
+    // Compared in NFC: a name decomposed (a Mac's) is the same name.
+    expect(itemFolder(NFC_PATH, { fileName: NFD_NAME })).toBe(NFC_DIR);
+    expect(itemFolder(NFC_PATH.normalize('NFD'), { fileName: NFD_NAME.normalize('NFC') })).toBe(
+      NFC_DIR,
+    );
     expect(itemFolder('Passports\\Ahmed\\x.pdf', { withFileName: true })).toBe('Passports/Ahmed');
     expect(itemFolder('./a//../Bills/ ', {})).toBe('a/Bills');
     // Control characters (a bidi override among them) are never kept.
     expect(itemFolder('Pass‮ports/Ah\u0000med\n', {})).toBe('Passports/Ahmed');
+    // Letters that draw nothing go, and a segment with nothing visible left.
+    expect(itemFolder('ㅤㅤ/Pass⠀ports/ᅟᅠﾠ/x.pdf', { withFileName: true })).toBe('Passports');
     expect(itemFolder('', {})).toBeNull();
     expect(itemFolder('scan.pdf', { fileName: 'scan.pdf' })).toBeNull();
     const deep = Array.from({ length: 15 }, (_, i) => `level${i}`).join('/');
@@ -106,7 +129,7 @@ describe('the folder an item came from, as it is kept (S2)', () => {
 });
 
 describe('what a folder’s segments say (S2)', () => {
-  it('folds separators, case, accents, possessives and simple plurals', () => {
+  it('folds separators, case, accents, possessives and simple plurals — and not what only looks plural', () => {
     expect(foldKey('Bank_Statements')).toBe('bank statement');
     expect(foldKey('bank-statements')).toBe('bank statement');
     expect(foldKey('Bank.Statements')).toBe('bank statement');
@@ -116,21 +139,26 @@ describe('what a folder’s segments say (S2)', () => {
     expect(singular('passports')).toBe('passport');
     expect(singular('taxes')).toBe('tax');
     expect(singular('glasses')).toBe('glass');
-    expect(singular('bus')).toBe('bus');
+    for (const w of ['news', 'series', 'status', 'bus', 'gas']) expect(singular(w)).toBe(w);
+    expect(singular('ids')).toBe('id');
+    expect(singular('gps')).toBe('gp');
   });
 
-  it('names a kind by its label, a part of it, its key or the families’ words', () => {
+  it('names a kind by its name, a long part of it, its short name or the families’ own words', () => {
     const kindOf = (folder: string) => suggestFromFolder(folder, ctx())?.type_key ?? null;
     expect(kindOf('Passports')).toBe('passport');
     expect(kindOf('passport')).toBe('passport');
     expect(kindOf('Birth certificates')).toBe('birth_certificate');
     expect(kindOf('Bank statements')).toBe('bank_statement');
     expect(kindOf('Bank_Statements')).toBe('bank_statement');
-    // A part of a label: "Bank / investment statement" is "Bank" too.
     expect(kindOf('Bank')).toBe('bank_statement');
+    // Its short name, and a part of its name of more than one word.
+    expect(kindOf('Investment statements')).toBe('bank_statement');
+    expect(kindOf('Power of attorney')).toBe('will');
     expect(kindOf('Insurance')).toBe('insurance_policy');
     expect(kindOf('Tax')).toBe('tax_return');
     expect(kindOf('Medical')).toBe('medical_record');
+    expect(kindOf('GPs')).toBe('medical_record');
     expect(kindOf('Bills')).toBe('utility_bill');
     expect(kindOf('driving-licence')).toBe('drivers_licence');
     expect(kindOf('drivers_licence')).toBe('drivers_licence');
@@ -147,7 +175,32 @@ describe('what a folder’s segments say (S2)', () => {
     ).toBeNull();
   });
 
-  it('keeps its synonyms to kinds that exist, each to one kind', () => {
+  it('never a word that could as well hold another kind’s papers, nor a one-word part of a name', () => {
+    const kindOf = (folder: string) => suggestFromFolder(folder, ctx())?.type_key ?? null;
+    for (const w of [
+      'Statements',
+      'Receipts',
+      'Trust',
+      'Property',
+      'School',
+      'Gas',
+      'Licences',
+      'License',
+      'Wedding',
+      'Divorce',
+      'Birth',
+      // One word of a kind's name: "Employment contract / offer", "Vehicle title / registration".
+      'Offers',
+      'Registration',
+    ]) {
+      expect(kindOf(w), w).toBeNull();
+    }
+    // Their longer forms still say the kind.
+    expect(kindOf('Gas bills')).toBe('utility_bill');
+    expect(kindOf('Divorce certificate')).toBe('marriage_certificate');
+  });
+
+  it('keeps its synonyms to one kind each, and its parents to kinds of the vault', () => {
     const seen = new Map<string, string>();
     for (const [kind, words] of Object.entries(FOLDER_KIND_WORDS)) {
       for (const w of words) {
@@ -158,9 +211,22 @@ describe('what a folder’s segments say (S2)', () => {
         seen.set(key, kind);
       }
     }
+    for (const [child, parent] of Object.entries(FOLDER_KIND_PARENTS)) {
+      expect(FOLDER_KIND_WORDS[child]).toBeDefined();
+      expect(FOLDER_KIND_WORDS[parent]).toBeDefined();
+    }
   });
 
-  it('two segments saying different kinds say none; the nearest saying one is enough', () => {
+  it('a kind beside other words is still the kind, the rest a tag; the specific under the general', () => {
+    const car = suggestFromFolder('Car insurance', ctx());
+    expect(car?.type_key).toBe('insurance_policy');
+    expect(car?.tags).toEqual([{ value: 'car', existing: true, visibility: 'household' }]);
+    const home = suggestFromFolder('Home contents insurance', ctx());
+    expect(home?.type_key).toBe('insurance_policy');
+    expect(home?.tags).toEqual([{ value: 'Home contents', existing: false, visibility: null }]);
+    expect(suggestFromFolder('Tax/P60', ctx())?.type_key).toBe('tax_form');
+    expect(suggestFromFolder('Medical/Prescriptions', ctx())?.type_key).toBe('prescription');
+    // Two kinds neither under the other say none.
     expect(suggestFromFolder('Passports/Insurance', ctx())?.type_key).toBeNull();
     expect(suggestFromFolder('Family/Passports', ctx())?.type_key).toBe('passport');
   });
@@ -178,6 +244,8 @@ describe('what a folder’s segments say (S2)', () => {
     expect([both?.type_key, both?.owner_member_id]).toEqual(['passport', 'm-sara']);
     const turned = suggestFromFolder('Passports - Zain', ctx());
     expect([turned?.type_key, turned?.owner_member_id]).toEqual(['passport', 'm-zain']);
+    // A name ending in s is never made singular.
+    expect(who('James', { people: [...PEOPLE, { id: 'm-james', name: 'James' }] })).toBe('m-james');
     // Two segments naming two people name nobody.
     expect(who('Sara/Zain')).toBeNull();
   });
@@ -187,18 +255,22 @@ describe('what a folder’s segments say (S2)', () => {
     const hidden = suggestFromFolder('Sara/Passports', ctx({ people: seen }));
     const nobody = suggestFromFolder('Qwerty/Passports', ctx({ people: seen }));
     expect(hidden?.owner_member_id).toBeNull();
-    // Exactly as a name nobody has: a new tag, and nothing more.
-    expect(hidden?.tags).toEqual([{ value: 'sara', existing: false }]);
-    expect(nobody?.tags).toEqual([{ value: 'qwerty', existing: false }]);
+    // Exactly as a name nobody has: a new tag, as written, and nothing more.
+    expect(hidden?.tags).toEqual([{ value: 'Sara', existing: false, visibility: null }]);
+    expect(nobody?.tags).toEqual([{ value: 'Qwerty', existing: false, visibility: null }]);
     expect(hidden?.type_key).toBe(nobody?.type_key);
   });
 
-  it('gives a teen themselves alone; another of the family is no person and no tag', () => {
+  it('gives a teen themselves alone: a segment with somebody else’s name gives no person and no tag, but its kind', () => {
     const teen = { choosable: (id: string) => id === 'm-zain' };
     expect(suggestFromFolder('Zain/Passports', ctx(teen))?.owner_member_id).toBe('m-zain');
     const other = suggestFromFolder('Sara/Passports', ctx(teen));
     expect(other?.owner_member_id).toBeNull();
     expect(other?.tags).toEqual([]);
+    const inOne = suggestFromFolder('Sara passport trip', ctx(teen));
+    expect(inOne?.type_key).toBe('passport');
+    expect(inOne?.owner_member_id).toBeNull();
+    expect(inOne?.tags).toEqual([]);
   });
 
   it('a name two of them share suggests nobody, and no tag', () => {
@@ -216,19 +288,55 @@ describe('what a folder’s segments say (S2)', () => {
     expect([s?.type_key, s?.owner_member_id, s?.tags]).toEqual([null, null, []]);
   });
 
-  it('proposes tags: one already used, or a new one from the folder’s name', () => {
-    const s = suggestFromFolder('Scans/Holidays/Car insurance/2024/Greece trip', ctx());
+  it('the household’s own name is a container, with "The" and "family" or without', () => {
+    for (const name of ['The Khan family', 'Khan family', 'Khan', 'Khan Family Documents']) {
+      expect(
+        suggestFromFolder(`${name}/Passports`, ctx({ household: 'The Khan family' }))?.tags,
+        name,
+      ).toEqual([]);
+    }
+    // Words of its own beside it are a tag.
+    expect(
+      suggestFromFolder('Khan holiday house', ctx({ household: 'The Khan family' }))?.tags,
+    ).toEqual([{ value: 'Khan holiday house', existing: false, visibility: null }]);
+  });
+
+  it('proposes tags: one already used, with how widely; or a new one, as written, dates gone', () => {
+    const s = suggestFromFolder('Scans/Holidays/2024/Greece Trip 2024', ctx());
     expect(s?.tags).toEqual([
-      { value: 'greece trip', existing: false },
-      // "Car insurance" is the tag "car-insurance", already used: not the kind.
-      { value: 'car-insurance', existing: true },
-      { value: 'holiday', existing: true },
+      { value: 'Greece Trip', existing: false, visibility: null },
+      { value: 'holiday', existing: true, visibility: 'household' },
+    ]);
+    expect(suggestFromFolder('IVF', ctx())?.tags).toEqual([
+      { value: 'ivf', existing: true, visibility: 'private' },
     ]);
     // Containers, years and dates are never tags.
     expect(suggestFromFolder('Documents/2024/March', ctx())?.tags).toEqual([]);
     // At most a few new ones.
     const many = suggestFromFolder('aa/bb/cc/dd/ee', ctx());
     expect(many?.tags.filter((t) => !t.existing)).toHaveLength(FOLDER_NEW_TAGS_MAX);
+  });
+
+  it('is built once for a context: 200 folders against 5,000 tags in well under a second', () => {
+    const tags = Array.from({ length: 5000 }, (_, i) => ({
+      value: `tag ${i} word`,
+      visibility: 'household' as const,
+    }));
+    const people = Array.from({ length: 40 }, (_, i) => ({
+      id: `m-${i}`,
+      name: `Person${i} Khan`,
+    }));
+    const started = Date.now();
+    const match = folderMatcher(ctx({ tags, people }));
+    const built = Date.now() - started;
+    for (let i = 0; i < 200; i += 1) {
+      match(`Scans/Person${i % 40}/Passports/Holiday ${i}/tag ${i} word/Greece`);
+    }
+    const all = Date.now() - started;
+    (globalThis as { console?: { info: (s: string) => void } }).console?.info(
+      `folderMatcher: built in ${built} ms; 200 folders against 5,000 tags in ${all} ms`,
+    );
+    expect(all).toBeLessThan(1000);
   });
 });
 
@@ -250,12 +358,16 @@ const level = (over: Partial<LevelInput>) =>
   });
 const folder = (path: string, over: Partial<FolderContext> = {}) =>
   suggestFromFolder(path, ctx(over));
-const pages = (over: DetailProposal): DetailProposal => over;
 const passportSure: DetailProposal = {
   type_key: { value: 'passport', confidence: 0.95, cue: 'kind_words' },
   owner_member_id: { value: 'm-ahmed', confidence: 0.92, cue: 'name_labelled' },
   expires: { value: day('2031-03-14'), confidence: 0.9, cue: 'expiry_label' },
 };
+const passportAt = (c: number): DetailProposal => ({
+  type_key: { value: 'passport', confidence: c, cue: 'kind_words' },
+  owner_member_id: { value: 'm-ahmed', confidence: c, cue: 'name_on_page' },
+  expires: { value: day('2031-03-14'), confidence: 0.9, cue: 'expiry_label' },
+});
 
 describe('a folder weighed with the pages and the batch (S2)', () => {
   it('fills a blank, from the folder, unsure: never Ready on the folder alone', () => {
@@ -273,32 +385,69 @@ describe('a folder weighed with the pages and the batch (S2)', () => {
     expect(out.tags.map((t) => t.words)).toContain('Whose it is: from the folder name');
   });
 
-  it('agreeing with the pages makes them surer: Ready on the folder and the pages together', () => {
-    const unsure = pages({
-      type_key: { value: 'passport', confidence: 0.76, cue: 'kind_words' },
-      owner_member_id: { value: 'm-ahmed', confidence: 0.78, cue: 'name_on_page' },
-      expires: { value: day('2031-03-14'), confidence: 0.9, cue: 'expiry_label' },
-    });
-    expect(level({ proposal: unsure }).level).toBe('check');
-    const out = level({ proposal: unsure, folder: folder('Ahmed/Passports') });
+  it('agreeing with the pages: Ready where the pages alone were nearly sure, else just under', () => {
+    expect(level({ proposal: passportAt(0.8) }).level).toBe('check');
+    const out = level({ proposal: passportAt(0.8), folder: folder('Ahmed/Passports') });
     expect(out.level).toBe('ready');
     expect(out.proposals?.type_key).toMatchObject({
       value: 'passport',
       from: 'pages',
-      confidence: 0.86,
+      confidence: 0.9,
       cue: 'kind_words',
       folder: true,
     });
     expect(out.proposals?.owner_member_id).toMatchObject({ from: 'pages', folder: true });
+    // Under the floor: surer, still Check.
+    const under = level({ proposal: passportAt(0.76), folder: folder('Ahmed/Passports') });
+    expect(under.level).toBe('check');
+    expect(under.proposals?.type_key).toMatchObject({ confidence: 0.84, folder: true });
   });
 
-  it('disagreeing, the pages win and the item is Check, with both said', () => {
-    const out = level({ proposal: passportSure, folder: folder('Sara/Driving licences') });
+  it('never makes an unsure rule of the uploader’s Ready (I4)', () => {
+    // A rule alone, not sure yet (0.78), with the folder agreeing: still Check.
+    const ruleOnly = level({
+      proposal: {
+        ...passportSure,
+        type_key: { value: 'passport', confidence: 0.78, cue: 'learned' },
+      },
+      folder: folder('Passports'),
+    });
+    expect(ruleOnly.proposals?.type_key).toMatchObject({ from: 'learned', confidence: 0.84 });
+    expect(ruleOnly.level).toBe('check');
+    // The pages at 0.70 made 0.84 by a rule, with the folder agreeing: from 0.70, still Check.
+    const raisedByRule = level({
+      proposal: {
+        ...passportSure,
+        type_key: {
+          value: 'passport',
+          confidence: 0.84,
+          cue: 'kind_words',
+          learned: true,
+          page_confidence: 0.7,
+        },
+      },
+      folder: folder('Passports'),
+    });
+    expect(raisedByRule.proposals?.type_key).toMatchObject({ confidence: 0.84, folder: true });
+    expect(raisedByRule.level).toBe('check');
+    // A sure rule stays sure.
+    const sureRule = level({
+      proposal: {
+        ...passportSure,
+        type_key: { value: 'passport', confidence: 0.9, cue: 'learned' },
+      },
+      folder: folder('Passports'),
+    });
+    expect(sureRule.level).toBe('ready');
+  });
+
+  it('disagreeing, the pages win and the item is Check, with both said by their short names', () => {
+    const out = level({ proposal: passportSure, folder: folder('Sara/Bank statements') });
     expect(out.proposals?.type_key).toMatchObject({ value: 'passport', from: 'pages' });
     expect(out.proposals?.owner_member_id).toMatchObject({ value: 'm-ahmed', from: 'pages' });
     expect(out.level).toBe('check');
     expect(out.tags.filter((t) => t.code === 'clash_folder').map((t) => t.words)).toEqual([
-      "The folder says Driver's licence; the pages look like a passport",
+      'The folder says Bank statement; the pages look like a passport',
       'The folder says Sara; the pages say Ahmed Khan',
     ]);
     // Without the folder, the same pages are Ready.
@@ -327,12 +476,37 @@ describe('a folder weighed with the pages and the batch (S2)', () => {
     expect(tagged.proposals?.tags).toBeUndefined();
     const untagged = level({ proposal: {}, folder: folder('Holidays/Greece') });
     expect(untagged.proposals?.tags).toEqual([
-      { value: 'greece', from: 'folder', existing: false },
-      { value: 'holiday', from: 'folder', existing: true },
+      { value: 'Greece', from: 'folder', existing: false, ticked: false },
+      { value: 'holiday', from: 'folder', existing: true, ticked: true },
     ]);
   });
 
-  it('a teen’s folder never names somebody else; and the rules agree as the pages do', () => {
+  it('ticks a used tag only where it is seen at least as widely as the item would be (IVF)', () => {
+    // A tag of her Only me papers, and a file going to everybody: offered, not ticked.
+    const everybody = level({
+      proposal: passportSure,
+      defaults: { ...NO_DEFAULTS, visibility: 'household' },
+      folder: folder('IVF'),
+    });
+    expect(everybody.proposals?.visibility.value).toBe('household');
+    expect(everybody.proposals?.tags).toEqual([
+      { value: 'ivf', from: 'folder', existing: true, ticked: false },
+    ]);
+    // The same file kept Only me: ticked.
+    const onlyMe = level({
+      proposal: {
+        ...passportSure,
+        owner_member_id: { value: 'm-sara', confidence: 0.92, cue: 'name_labelled' },
+      },
+      defaults: { ...NO_DEFAULTS, visibility: 'private' },
+      folder: folder('IVF'),
+    });
+    expect(onlyMe.proposals?.tags).toEqual([
+      { value: 'ivf', from: 'folder', existing: true, ticked: true },
+    ]);
+  });
+
+  it('a teen’s folder never names somebody else; a person or kind no longer to be chosen is none', () => {
     const teen = level({
       role: 'teen',
       me: 'm-zain',
@@ -345,42 +519,22 @@ describe('a folder weighed with the pages and the batch (S2)', () => {
       confidence: null,
       cue: null,
     });
-    // A rule's proposal and the folder agreeing: surer, as the pages are.
-    const learned = level({
-      proposal: { type_key: { value: 'passport', confidence: 0.78, cue: 'learned' } },
-      folder: folder('Passports'),
-    });
-    expect(learned.proposals?.type_key).toMatchObject({
-      from: 'learned',
-      confidence: 0.88,
-      folder: true,
-    });
-    const against = level({
-      proposal: { type_key: { value: 'passport', confidence: 0.9, cue: 'learned' } },
-      folder: folder('Bills'),
-    });
-    expect(against.tags.find((t) => t.code === 'clash_folder')?.words).toBe(
-      'The folder says Utility / bill; your earlier choices say a passport',
-    );
-  });
-
-  it('a person or kind the folder names that is no longer to be chosen is none', () => {
-    const s = folder('Ahmed/Passports');
-    const out = level({
+    const gone = level({
       proposal: {},
-      folder: s,
+      folder: folder('Ahmed/Passports'),
       people: PEOPLE.filter((m) => m.id !== 'm-ahmed'),
       types: KINDS.filter((k) => k.key !== 'passport'),
     });
-    expect(out.proposals?.type_key).toBeUndefined();
-    expect(out.proposals?.owner_member_id).toBeUndefined();
+    expect(gone.proposals?.type_key).toBeUndefined();
+    expect(gone.proposals?.owner_member_id).toBeUndefined();
   });
 
-  it('untouched, the card files the folder’s kind, person and used tags, never a new tag', () => {
+  it('untouched — as Accept all Ready files it — never a folder’s tag, ticked or not', () => {
     const out = level({
       proposal: passportSure,
       folder: folder('Ahmed/Passports/Holidays/Greece'),
     });
+    expect(out.proposals?.tags?.some((t) => t.ticked)).toBe(true);
     const body = untouchedAccept({
       proposals: out.proposals as NonNullable<typeof out.proposals>,
       defaults: NO_DEFAULTS,
@@ -391,7 +545,7 @@ describe('a folder weighed with the pages and the batch (S2)', () => {
     });
     expect(body.type_key).toBe('passport');
     expect(body.owner_member_id).toBe('m-ahmed');
-    expect(body.tags).toEqual(['holiday']);
+    expect(body.tags).toEqual([]);
   });
 
   it('accepting what the folder suggested is a confirmation, as accepting the pages’ is', () => {

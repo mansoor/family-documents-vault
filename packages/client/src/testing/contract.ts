@@ -2700,10 +2700,10 @@ export const contractScenarios: Scenario[] = [
         identifier: { value: '533401872', confidence: 0.95, cue: 'machine_lines' },
       });
       await ctx.readBatchItems(b.id, {
-        [agree.id]: { proposal: passport(0.76) },
+        [agree.id]: { proposal: passport(0.8) },
         [against.id]: { proposal: passport(0.97) },
         [alone.id]: { proposal: {} },
-        [none.id]: { proposal: passport(0.76) },
+        [none.id]: { proposal: passport(0.8) },
       });
       const got = await api.batch(token, b.id);
       const by = (id: string) => got.items.find((i) => i.id === id);
@@ -2712,8 +2712,8 @@ export const contractScenarios: Scenario[] = [
         level: 'ready',
         folder: 'Rukhsana/Passports',
         proposals: {
-          type_key: { value: 'passport', from: 'pages', confidence: 0.86, folder: true },
-          owner_member_id: { value: ruth, from: 'pages', confidence: 0.86, folder: true },
+          type_key: { value: 'passport', from: 'pages', confidence: 0.9, folder: true },
+          owner_member_id: { value: ruth, from: 'pages', confidence: 0.9, folder: true },
         },
       });
       // The same pages with no folder: Check.
@@ -2724,7 +2724,7 @@ export const contractScenarios: Scenario[] = [
         proposals: { type_key: { value: 'passport', from: 'pages' } },
       });
       expect(by(against.id)?.tags?.find((t) => t.code === 'clash_folder')?.words).toBe(
-        'The folder says Bank / investment statement; the pages look like a passport',
+        'The folder says Bank statement; the pages look like a passport',
       );
       // From the folder alone: shown, unsure — never Ready.
       expect(by(alone.id)).toMatchObject({

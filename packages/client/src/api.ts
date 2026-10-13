@@ -1270,9 +1270,11 @@ export function createApi(http: Http) {
      * is answered with the item it made (`idempotent-replayed`), never a
      * second; `409 upload_in_progress` while the first try is on its way.
      * With `relativePath` (0.8.0, `features.folder_suggestions` only: an
-     * older vault refuses it), where it was under the folder chosen: kept
-     * sealed, given back to the uploader as the item's `folder`, and read for
-     * what it suggests (`from: 'folder'`).
+     * older vault refuses it), the folders it was in under the folder chosen
+     * — folders only, "Passports/Ahmed", 4,096 bytes at most (a last
+     * segment equal to the file's name is dropped): kept sealed, given back
+     * to the uploader as the item's `folder`, and read for what it suggests
+     * (`from: 'folder'`).
      */
     addBatchItem: (
       token: string,

@@ -619,16 +619,23 @@ export function BatchItemScreen() {
               item.folder
                 ? {
                     path: item.folder,
-                    usedTags: (p?.tags ?? []).filter((t) => t.existing).map((t) => t.value),
-                    newTags: (p?.tags ?? []).filter((t) => !t.existing).map((t) => t.value),
+                    ticked: (p?.tags ?? []).filter((t) => t.ticked).map((t) => t.value),
+                    offered: (p?.tags ?? [])
+                      .filter((t) => !t.ticked)
+                      .map((t) => ({ value: t.value, existing: t.existing })),
                   }
                 : null
             }
             extras={{
               collections: addable(data.collections, role),
               collectionId: d.collection_id ?? '',
-              // The batch's tags, or the folder's already used (S2): as Accept all Ready files them.
-              tags: (card?.tags ?? d.tags).join(', '),
+              // The batch's tags; where it chose none, the folder's the vault
+              // ticks — used already, at least as widely as this would be (S2).
+              // Accept all Ready files none of the folder's.
+              tags: (d.tags.length > 0
+                ? d.tags
+                : (p?.tags ?? []).filter((t) => t.ticked).map((t) => t.value)
+              ).join(', '),
               essential: d.is_essential,
             }}
             submitLabel={dup ? 'Accept anyway' : 'Accept and next'}

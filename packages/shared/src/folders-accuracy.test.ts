@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { levelItem, type BatchLevel, type LevelKind } from './batch-levels.js';
-import { suggestFromFolder } from './folders.js';
+import { folderMatcher } from './folders.js';
 import {
   FIXTURE_KINDS,
   FIXTURE_PEOPLE,
@@ -18,7 +18,10 @@ import {
  * might have sorted them: `Ahmed/Passport/…`, `Bills/…`; and the same tree
  * with every fifth paper in the wrong folder. How many are Ready, Check and
  * Not recognised each way — and the rule that matters most: no Ready item
- * is wrong, however the folders are sorted.
+ * is wrong, however the folders are sorted. With them, papers whose folder
+ * and pages could be wrong together (the review, M2): Visa card statements
+ * in "Visa/", a pension statement in "Statements/", TV licences in
+ * "Licences/".
  */
 
 const KINDS: LevelKind[] = FIXTURE_KINDS.map((k) => ({
@@ -43,20 +46,151 @@ const FOLDER_OF: Record<string, string> = {
   tax_form: 'Tax forms',
   utility_bill: 'Bills',
   vehicle_registration: 'Car registration',
-  warranty: 'Receipts',
+  warranty: 'Warranties',
 };
+
+/** A new line, between a page's lines. */
+const LF = '\n';
+
+/**
+ * Papers a folder name and their own words could both get wrong: a Visa
+ * card's statements (the word "Visa" is a visa's cue), a pension's annual
+ * statement, a TV licence. Each in the folder a family would keep it in.
+ */
+const CORRELATED: Array<ProposalFixture & { folder: string }> = [
+  {
+    name: 'visa-card-statement-sara',
+    folder: 'Visa',
+    text: [
+      'Barclaycard',
+      'Barclaycard Visa',
+      'SARA KHAN',
+      '12 Acacia Avenue, Leeds LS6 2AB',
+      'Your statement',
+      'Statement date: 14 September 2026',
+      'Card number ending 4421',
+      'Previous balance £312.40',
+      'Payments received £312.40',
+      'New balance £186.22',
+      'Minimum payment £25.00, due by 9 October 2026',
+      'Credit limit £3,000.00',
+      'Card valid until 09/29',
+      'Card expiry date: 30 September 2029',
+    ].join(LF),
+    truth: {
+      type_key: 'bank_statement',
+      owner: 'm-sara',
+      issued: '2026-09-14',
+      expires: null,
+      identifier: null,
+      issued_by: 'Barclaycard',
+    },
+  },
+  {
+    name: 'visa-card-statement-ahmed',
+    folder: 'Visa',
+    text: [
+      'Chase Freedom Visa Signature',
+      'AHMED KHAN',
+      'Account summary',
+      'Statement closing date 09/25/2026',
+      'Previous balance $1,120.05',
+      'Payment, credits -$1,120.05',
+      'Purchases +$842.19',
+      'New balance $842.19',
+      'Minimum payment due $35.00',
+      'Payment due date 10/22/2026',
+      'Visa',
+    ].join(LF),
+    truth: {
+      type_key: 'bank_statement',
+      owner: 'm-ahmed',
+      issued: '2026-09-25',
+      expires: null,
+      identifier: null,
+      issued_by: 'Chase',
+    },
+  },
+  {
+    name: 'pension-statement-ahmed',
+    folder: 'Statements',
+    text: [
+      'Aviva',
+      'Your annual pension statement',
+      'Mr Ahmed Khan',
+      'Statement date: 5 April 2026',
+      'Plan number: PN 4471 2290',
+      'Value of your plan on 5 April 2026: £48,210.33',
+      'Contributions this year £3,600.00',
+      'Your selected retirement age: 67',
+    ].join(LF),
+    truth: {
+      type_key: 'bank_statement',
+      owner: 'm-ahmed',
+      issued: '2026-04-05',
+      expires: null,
+      identifier: 'PN 4471 2290',
+      issued_by: 'Aviva',
+    },
+  },
+  {
+    name: 'tv-licence-sara',
+    folder: 'Licences',
+    text: [
+      'TV Licensing',
+      'Your TV Licence',
+      'Ms Sara Khan',
+      '12 Acacia Avenue, Leeds LS6 2AB',
+      'Licence number: 3401 2289 7712',
+      'Valid from 1 August 2026 to 31 July 2027',
+      'This licence covers you to watch or record live TV on any channel.',
+    ].join(LF),
+    truth: {
+      type_key: null,
+      owner: 'm-sara',
+      issued: null,
+      expires: null,
+      identifier: null,
+      issued_by: null,
+    },
+  },
+  {
+    name: 'tv-licence-renewal-ahmed',
+    folder: 'Licences',
+    text: [
+      'TV Licensing',
+      'TV Licence renewal',
+      'Mr A Khan',
+      'Your licence runs out on 31 March 2027.',
+      'Pay £174.50 to renew it.',
+      'Licence number 8812 0043 1197',
+    ].join(LF),
+    truth: {
+      type_key: null,
+      owner: 'm-ahmed',
+      issued: null,
+      expires: null,
+      identifier: null,
+      issued_by: null,
+    },
+  },
+];
+const fixedFolder = (f: ProposalFixture) =>
+  (f as Partial<(typeof CORRELATED)[number]>).folder ?? null;
 const firstName = (id: string) =>
   (FIXTURE_PEOPLE.find((p) => p.id === id)?.name ?? '').split(' ').pop() as string;
 
 /** `Ahmed/Passport/…`, `Bills/…` (a household's own), `Letters/…` for what is no kind. */
 function tidy(f: ProposalFixture): string {
+  const fixed = fixedFolder(f);
+  if (fixed) return fixed;
   const kind = f.truth.type_key ? (FOLDER_OF[f.truth.type_key] ?? 'Other') : 'Letters';
   if (f.truth.type_key === 'utility_bill' || !f.truth.owner) return `Scans/${kind}/2024`;
   return `Scans/${firstName(f.truth.owner)}/${kind}`;
 }
 /** The same, with every fifth paper put in the folder of another kind. */
 function messy(f: ProposalFixture, i: number): string {
-  if (i % 5 !== 0) return tidy(f);
+  if (i % 5 !== 0 || fixedFolder(f)) return tidy(f);
   const kinds = Object.values(FOLDER_OF);
   const wrong = kinds[(kinds.indexOf(FOLDER_OF[f.truth.type_key ?? ''] ?? '') + 3) % kinds.length];
   return f.truth.owner ? `${firstName(f.truth.owner)}/${wrong}` : `${wrong}`;
@@ -76,10 +210,10 @@ function measure(
     unread: 0,
     wrongReady: [],
   };
+  // Built once, and asked for each paper, as the API does.
+  const match = folderMatcher({ types: KINDS, people: FIXTURE_PEOPLE });
   fixtures.forEach((f, i) => {
-    const folder = folderOf
-      ? suggestFromFolder(folderOf(f, i), { types: KINDS, people: FIXTURE_PEOPLE })
-      : null;
+    const folder = folderOf ? match(folderOf(f, i)) : null;
     const level = levelItem({
       state: 'waiting',
       reading: 'read',
@@ -129,6 +263,9 @@ describe('folder names, measured on the synthetic documents (S2, for the S5 exit
   const none = measure(all, null);
   const sorted = measure(all, tidy);
   const muddled = measure(all, messy);
+  // And those the folder and the pages could both get wrong, without it and with it.
+  const alone = measure(CORRELATED, null);
+  const together = measure(CORRELATED, tidy);
 
   it('reports Ready, Check and Not recognised with and without folder names', () => {
     const row = (name: string, o: Outcome) =>
@@ -140,6 +277,9 @@ describe('folder names, measured on the synthetic documents (S2, for the S5 exit
         row('no folder', none),
         row('Ahmed/Passport/…, Bills/…', sorted),
         row('…, every fifth misfiled', muddled),
+        `${CORRELATED.length} the folder and the pages could both get wrong:`,
+        row('no folder', alone),
+        row('Visa/, Statements/, Licences/', together),
       ].join('\n'),
     );
     expect(none.ready + none.check + none.unrecognised + none.problem).toBe(all.length);
@@ -156,5 +296,9 @@ describe('folder names, measured on the synthetic documents (S2, for the S5 exit
     expect(none.wrongReady).toEqual([]);
     expect(sorted.wrongReady).toEqual([]);
     expect(muddled.wrongReady).toEqual([]);
+    // Papers the folder and the pages could both get wrong: never Ready wrongly.
+    expect(alone.wrongReady).toEqual([]);
+    expect(together.wrongReady).toEqual([]);
+    expect(together.ready).toBe(0);
   });
 });

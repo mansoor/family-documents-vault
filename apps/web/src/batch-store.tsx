@@ -110,10 +110,13 @@ export const running = (u: Upload) => u.phase === 'making' || u.phase === 'sendi
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** Where a file was under the folder chosen (`webkitRelativePath`) or dropped (its entry's path). */
-const pathOf = (c: ChosenFile): string | null =>
-  c instanceof File
-    ? (c as File & { webkitRelativePath?: string }).webkitRelativePath || null
-    : c.path;
+const pathOf = (c: ChosenFile): string | null => {
+  const path =
+    c instanceof File ? (c as File & { webkitRelativePath?: string }).webkitRelativePath : c.path;
+  // A dropped entry's path starts with "/", a chosen folder's does not: one
+  // file chosen both ways is chosen once.
+  return path ? path.replace(/^\/+/, '') || null : null;
+};
 
 /** A file and its size and when it was changed, and where it was under a folder: chosen once. */
 const fileKey = (f: File, path: string | null) => `${path || f.name}:${f.size}:${f.lastModified}`;

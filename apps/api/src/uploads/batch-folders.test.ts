@@ -231,6 +231,12 @@ describe.skipIf(!testAdminUrl())('the folder an item came from, for its uploader
     const long = await send(adult, b.id, 'x/'.repeat(3000));
     expect(long.statusCode, long.body).toBe(422);
     expect(long.json<{ error: { detail: string } }>().error.detail).toBe('relative_path');
+    // Counted as the parser counts it: bytes, and said so.
+    expect(long.json<{ error: { message: string } }>().error.message).toBe(
+      'A relative_path is 4096 bytes at most.',
+    );
+    // 2,000 three-byte letters are 2,000 characters, and 6,000 bytes: refused.
+    expect((await send(adult, b.id, 'ア'.repeat(2000))).statusCode).toBe(422);
     // Control characters stripped, dots and empties gone, the file's name dropped.
     const tidy = await sent(adult, b.id, './Pass‮ports//Sana\u0007/../scan.pdf');
     expect(tidy.folder).toBe('Passports/Sana');
@@ -248,9 +254,9 @@ describe.skipIf(!testAdminUrl())('the folder an item came from, for its uploader
     const against = await sent(adult, b.id, 'Olivia/Bills/scan.pdf');
     const plain = await sent(adult, b.id);
     await plant(alone.id, {});
-    await plant(agree.id, passport(adult.member_id, 0.76));
+    await plant(agree.id, passport(adult.member_id, 0.8));
     await plant(against.id, passport(adult.member_id, 0.97));
-    await plant(plain.id, passport(adult.member_id, 0.76));
+    await plant(plain.id, passport(adult.member_id, 0.8));
     const got = await batch(adult, b.id);
     const by = (id: string) => got.items.find((i) => i.id === id) as BatchItemView;
     expect(by(alone.id)).toMatchObject({
@@ -262,7 +268,7 @@ describe.skipIf(!testAdminUrl())('the folder an item came from, for its uploader
     });
     expect(by(agree.id)).toMatchObject({
       level: 'ready',
-      proposals: { type_key: { from: 'pages', confidence: 0.86, folder: true } },
+      proposals: { type_key: { from: 'pages', confidence: 0.9, folder: true } },
     });
     expect(by(plain.id).level).toBe('check');
     expect(by(against.id)).toMatchObject({
@@ -277,7 +283,7 @@ describe.skipIf(!testAdminUrl())('the folder an item came from, for its uploader
         .tags?.filter((t) => t.code === 'clash_folder')
         .map((t) => t.words),
     ).toEqual([
-      'The folder says Utility / bill; the pages look like a passport',
+      'The folder says Bill; the pages look like a passport',
       'The folder says Olivia; the pages say Sana Malik',
     ]);
     // Accept all Ready files the one Ready on the folder and the pages together.
@@ -327,17 +333,17 @@ describe.skipIf(!testAdminUrl())('the folder an item came from, for its uploader
     // A guest's name is any other word: no person, a new tag, exactly as a name nobody has.
     expect(by(guest.id).proposals?.owner_member_id).toBeUndefined();
     expect(by(guest.id).proposals?.tags).toEqual([
-      { value: 'gita', from: 'folder', existing: false },
+      { value: 'Gita', from: 'folder', existing: false, ticked: false },
     ]);
     expect(by(nobody.id).proposals?.tags).toEqual([
-      { value: 'qwerty', from: 'folder', existing: false },
+      { value: 'Qwerty', from: 'folder', existing: false, ticked: false },
     ]);
     // Her Only me document's tag is not his to be told of: a new tag, as any word.
     expect(by(hidden.id).proposals?.tags).toEqual([
-      { value: 'kestrels', from: 'folder', existing: false },
+      { value: 'Kestrels', from: 'folder', existing: false, ticked: false },
     ]);
     expect(by(seen.id).proposals?.tags).toEqual([
-      { value: 'heron', from: 'folder', existing: true },
+      { value: 'heron', from: 'folder', existing: true, ticked: true },
     ]);
     // A teen's are their own: the folder naming somebody else names nobody, and no tag.
     const tb = await made(teen);
@@ -353,8 +359,47 @@ describe.skipIf(!testAdminUrl())('the folder an item came from, for its uploader
     });
     expect(tby(theirs.id).proposals?.tags).toBeUndefined();
     expect(tby(own.id).proposals?.tags).toEqual([
-      { value: 'holidays', from: 'folder', existing: false },
+      { value: 'Holidays', from: 'folder', existing: false, ticked: false },
     ]);
+  });
+
+  it('a tag only on her Only me papers is never filed by Accept all Ready, nor ticked onto one everybody sees (IVF)', async () => {
+    const mine = await call(adult, 'POST', '/api/v1/documents', {
+      title: 'Clinic letter',
+      visibility: 'private',
+      owner_member_id: adult.member_id,
+      tags: ['ivf'],
+    });
+    expect(mine.statusCode, mine.body).toBe(201);
+    const everybody = await made(adult, { defaults: { visibility: 'household' } });
+    const shown = await sent(adult, everybody.id, 'IVF/scan.pdf');
+    await plant(shown.id, passport(adult.member_id, 0.95));
+    const got = await itemOf(adult, everybody.id, shown.id);
+    expect(got.level).toBe('ready');
+    expect(got.proposals?.visibility.value).toBe('household');
+    expect(got.proposals?.tags).toEqual([
+      { value: 'ivf', from: 'folder', existing: true, ticked: false },
+    ]);
+    const all = await call(adult, 'POST', `/api/v1/batches/${everybody.id}/accept-ready`, {});
+    const filed = all.json<{ accepted: Array<{ item_id: string; document_id: string }> }>()
+      .accepted;
+    expect(filed.map((a) => a.item_id)).toEqual([shown.id]);
+    const doc = await call(adult, 'GET', `/api/v1/documents/${filed[0]?.document_id as string}`);
+    expect(doc.json<{ tags: string[]; visibility: string }>()).toMatchObject({
+      tags: [],
+      visibility: 'household',
+    });
+    // Kept Only me, the same tag starts ticked on the card — still never filed unasked.
+    const onlyMe = await made(adult, { defaults: { visibility: 'private' } });
+    const kept = await sent(adult, onlyMe.id, 'IVF/scan.pdf');
+    await plant(kept.id, passport(adult.member_id, 0.95));
+    expect((await itemOf(adult, onlyMe.id, kept.id)).proposals?.tags).toEqual([
+      { value: 'ivf', from: 'folder', existing: true, ticked: true },
+    ]);
+    const again = await call(adult, 'POST', `/api/v1/batches/${onlyMe.id}/accept-ready`, {});
+    const second = again.json<{ accepted: Array<{ document_id: string }> }>().accepted[0];
+    const kept2 = await call(adult, 'GET', `/api/v1/documents/${second?.document_id as string}`);
+    expect(kept2.json<{ tags: string[] }>().tags).toEqual([]);
   });
 
   it('a scanner folder’s subfolder, sealed as the worker seals it, suggests the same', async () => {
@@ -372,7 +417,7 @@ describe.skipIf(!testAdminUrl())('the folder an item came from, for its uploader
         .where('id', '=', item.id)
         .execute(),
     );
-    await plant(item.id, passport(adult.member_id, 0.76));
+    await plant(item.id, passport(adult.member_id, 0.8));
     expect(await itemOf(adult, b.id, item.id)).toMatchObject({
       folder: 'Sana/Passports',
       level: 'ready',
@@ -384,7 +429,7 @@ describe.skipIf(!testAdminUrl())('the folder an item came from, for its uploader
     const filed = await sent(adult, b.id, 'Sana/Passports/scan.pdf');
     const removed = await sent(adult, b.id, 'Sana/Bills/scan.pdf');
     const held = await sent(adult, b.id, 'Sana/Wills/scan.pdf');
-    await plant(filed.id, passport(adult.member_id, 0.76));
+    await plant(filed.id, passport(adult.member_id, 0.8));
     // Accepted by Accept all Ready: the folder stays with it, and an Undo puts it back as it was.
     const all = await call(adult, 'POST', `/api/v1/batches/${b.id}/accept-ready`, {
       item_ids: [filed.id],

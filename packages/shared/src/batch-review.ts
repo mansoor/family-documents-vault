@@ -127,8 +127,8 @@ const shows = (type: Pick<DocumentTypeView, 'core'> | undefined, key: CoreField)
  *   says, when the kind shows it.
  * - A required yes-or-no of the kind's own, left alone, is a no — as the
  *   card shows it, and sends it.
- * - The batch's collection, tags and Essential; where the batch chose no
- *   tags, the tags its folder named that are already used (0.8.0, S2).
+ * - The batch's collection, tags and Essential — never a tag from the
+ *   folder an item came from (0.8.0, S2), which the card only offers.
  */
 export function untouchedAccept(opts: {
   proposals: ItemProposals;
@@ -165,13 +165,10 @@ export function untouchedAccept(opts: {
     if (f.kind === 'yes_no' && f.required === true) answers[f.key] = false;
   }
   if (Object.keys(answers).length > 0) out.extra = answers;
-  // The batch's tags; where it chose none, those of the folder already used
-  // (S2) — a new tag from the folder's name is only offered, never filed unasked.
-  out.tags = (
-    d.tags.length > 0 ? d.tags : (p.tags ?? []).filter((t) => t.existing).map((t) => t.value)
-  )
-    .map((t) => t.trim())
-    .filter(Boolean);
+  // The batch's tags only: a folder's are offered on the card, never filed
+  // unasked (S2) — a tag of somebody's Only me papers is never made one the
+  // household sees by Accept all Ready.
+  out.tags = d.tags.map((t) => t.trim()).filter(Boolean);
   out.is_essential = d.is_essential;
   out.collection_id = d.collection_id ?? null;
   return out;

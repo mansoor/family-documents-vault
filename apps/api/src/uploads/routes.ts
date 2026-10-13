@@ -451,7 +451,7 @@ export function registerBatches(app: FastifyInstance, batches: BatchService) {
           throw new ApiError(
             422,
             'validation_failed',
-            `A relative_path is ${RELATIVE_PATH_MAX} characters at most.`,
+            `A relative_path is ${RELATIVE_PATH_MAX} bytes at most.`,
             { detail: 'relative_path' },
           );
         }

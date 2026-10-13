@@ -197,6 +197,8 @@ interface FakeSession {
 
 export interface FakeVaultState {
   setupRequired: boolean;
+  /** The household's name, as set up: a container in a folder's name (S2). */
+  householdName?: string | null;
   email: string | null;
   password: string | null;
   sessions: FakeSession[];
@@ -1612,6 +1614,7 @@ export function createFakeVault(): {
     if (path === '/api/v1/setup' && init.method === 'POST') {
       if (!state.setupRequired) return fail(409, 'already_set_up', 'This vault is already set up.');
       state.setupRequired = false;
+      state.householdName = typeof body.household_name === 'string' ? body.household_name : null;
       state.email = String(body.email).toLowerCase();
       state.password = String(body.password);
       return ok(open(init.headers['x-fdv-installation'] ?? null), 201);
@@ -3398,20 +3401,23 @@ export function createFakeVault(): {
                 types: cardTypes,
                 people,
                 choosable: (id) => who.role !== 'teen' || id === who.memberId,
-                tags: [
-                  ...new Set(
-                    state.documents
-                      .filter(
-                        (d) =>
-                          !d.deleted_at &&
-                          canSee(reader, {
-                            visibility: d.visibility ?? 'household',
-                            owner_member_id: d.owner_member_id ?? null,
-                          }),
-                      )
-                      .flatMap((d) => d.tags ?? []),
+                // Each tag with the widest a document it is on is seen, as the vault gives it.
+                tags: state.documents
+                  .filter(
+                    (d) =>
+                      !d.deleted_at &&
+                      canSee(reader, {
+                        visibility: d.visibility ?? 'household',
+                        owner_member_id: d.owner_member_id ?? null,
+                      }),
+                  )
+                  .flatMap((d) =>
+                    (d.tags ?? []).map((t) => ({
+                      value: t,
+                      visibility: d.visibility ?? 'household',
+                    })),
                   ),
-                ],
+                household: state.householdName ?? null,
               })
             : null;
         // Levelled as the vault levels it (I2): the pages, the defaults and the kinds now.
@@ -3738,11 +3744,11 @@ export function createFakeVault(): {
             'Send one file, named file, and nothing else but a relative_path before it.',
           );
         }
-        if (path && (path.value ?? '').length > RELATIVE_PATH_MAX) {
+        if (path && new TextEncoder().encode(path.value ?? '').length > RELATIVE_PATH_MAX) {
           return fail(
             422,
             'validation_failed',
-            `A relative_path is ${RELATIVE_PATH_MAX} characters at most.`,
+            `A relative_path is ${RELATIVE_PATH_MAX} bytes at most.`,
           );
         }
         const type = (file.type ?? '').split(';')[0] ?? '';

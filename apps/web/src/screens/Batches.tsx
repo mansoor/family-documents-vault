@@ -173,8 +173,9 @@ function ItemPerson({ item, members }: { item: BatchItemView; members: Member[] 
 export function ItemFolder({ item }: { item: Pick<BatchItemView, 'folder'> }) {
   if (!item.folder) return null;
   return (
-    <span className="muted clip item-folder" title={item.folder}>
-      From the folder {item.folder}
+    // Cut short at two lines, so all of it on hover, and on focus by keyboard.
+    <span className="muted clip item-folder" tabIndex={0} title={item.folder}>
+      From the folder ‘<bdi>{item.folder}</bdi>’
     </span>
   );
 }
@@ -1292,7 +1293,7 @@ function ItemKind({ item, types }: { item: BatchItemView; types: DocumentTypeVie
       <span className="clip">{label}</span>
       {kind.from === 'folder' ? (
         // From the folder's name alone (S2).
-        <span className="mark-sugg" title={folderWords(item.folder ?? 'it came from')}>
+        <span className="mark-sugg" {...(item.folder ? { title: folderWords(item.folder) } : {})}>
           from the folder
         </span>
       ) : kind.from === 'batch' || kind.confidence === null || kind.cue === null ? (

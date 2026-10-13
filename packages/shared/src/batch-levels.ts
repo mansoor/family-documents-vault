@@ -20,7 +20,9 @@ import {
   type Proposed,
 } from './proposals.js';
 import { isLearned, type LearnedClash } from './learning.js';
+import { shortTypeLabel } from './titles.js';
 import {
+  FOLDER_AGREE_FLOOR,
   FOLDER_AGREE_MAX,
   FOLDER_AGREE_RAISE,
   FOLDER_CONFIDENCE,
@@ -58,13 +60,17 @@ import { seesLocation, type Role } from './roles.js';
  *
  * **The folder it came from** (0.8.0, S2, `suggestFromFolder`) is one more
  * source, below a sure page reading: alone, its kind or person is shown
- * from the folder, unsure (FOLDER_CONFIDENCE); agreeing with the pages (or
- * the uploader's rules), it makes them surer (FOLDER_AGREE_RAISE), so an
- * item can be Ready on the folder and the pages together; disagreeing, the
- * pages' stands and the item is Check, with both said ("The folder says
+ * from the folder, unsure (FOLDER_CONFIDENCE); agreeing with the pages, it
+ * raises what the pages alone said by FOLDER_AGREE_RAISE — to a sure
+ * reading only where they were FOLDER_AGREE_FLOOR sure already, otherwise
+ * to just under ITEM_SURE (and the uploader's rules alone only where the
+ * rule is sure: never an unsure rule made Ready); disagreeing, the pages'
+ * stands and the item is Check, with both said ("The folder says
  * Passport; the pages look like a driver's licence"). A default the
  * uploader chose for the batch wins over the folder, silently: the folder
- * fills only what the defaults leave blank — tags too.
+ * fills only what the defaults leave blank — tags too, which are only ever
+ * offered or ticked on the card (`ItemTagSuggestion`), never filed by
+ * Accept all Ready, and never counted for a kind's required tags.
  */
 
 /** How an item stands once read. */
@@ -190,15 +196,21 @@ export interface ItemSuggestion<T> {
 
 /**
  * A tag the card starts with, or offers (0.8.0, S2): from the folder an
- * item came from, where the batch chose no tags. One already on a document
- * the uploader can see starts on the card (`existing`); a new one is only
- * offered — "new tag from the folder name" — and made only if the item is
- * accepted with it.
+ * item came from, where the batch chose no tags. Accept all Ready, and an
+ * untouched accept (`untouchedAccept`), never file one. The card ticks one
+ * (`ticked`) only if it is already on a document the uploader can see that
+ * is seen at least as widely as this item would be filed: a tag of their
+ * Only me papers is never ticked onto one everybody sees. Any other —
+ * used more narrowly, or new ("new tag from the folder name") — is only
+ * offered, and made only if the item is accepted with it.
  */
 export interface ItemTagSuggestion {
   value: string;
   from: 'folder';
+  /** Already on a document the uploader can see. */
   existing: boolean;
+  /** Ticked on the card as it starts: used, at least as widely as the item would be seen. */
+  ticked: boolean;
 }
 
 /** Who can see it, as the card starts: the batch's choice, as its kind usually is, or narrowed. */
@@ -242,7 +254,7 @@ export type LevelKind = Pick<
   DocumentTypeView,
   'key' | 'label' | 'default_visibility' | 'expiry_driver' | 'fields'
 > &
-  Partial<Pick<DocumentTypeView, 'core'>>;
+  Partial<Pick<DocumentTypeView, 'core' | 'short_label'>>;
 
 export interface LevelInput {
   state: BatchItemState;
@@ -295,6 +307,9 @@ const FIELD_WORDS: Readonly<Record<string, string>> = {
 };
 
 const lowerFirst = (s: string) => `${s.charAt(0).toLowerCase()}${s.slice(1)}`;
+/** A kind by its short name ("Bank statement", "Bill"), as a line names it (`shortTypeLabel`). */
+const shortName = (k: LevelKind | null | undefined) => (k ? shortTypeLabel(k) : undefined);
+
 /** "a passport", "an insurance policy". */
 const aKind = (label: string) => {
   const l = lowerFirst(label);
@@ -410,12 +425,17 @@ export function levelItem(input: LevelInput): ItemLevel {
       };
       if (fromFolder === null) return said;
       if (fromFolder === p.value) {
-        const raised = Math.round((p.confidence + FOLDER_AGREE_RAISE) * 100) / 100;
-        return {
-          ...said,
-          confidence: Math.max(p.confidence, Math.min(FOLDER_AGREE_MAX, raised)),
-          folder: true,
-        };
+        // Raised from what the pages alone said (a rule's raising aside, I4-4);
+        // to a sure reading only where the pages alone were nearly sure — or,
+        // for the rules alone, where the rule is sure already.
+        const sure = ITEM_SURE[field];
+        const raised = Math.round((own + FOLDER_AGREE_RAISE) * 100) / 100;
+        const mayBeSure = rulesOnly ? p.confidence >= sure : own >= FOLDER_AGREE_FLOOR;
+        const to = Math.min(
+          raised,
+          mayBeSure ? FOLDER_AGREE_MAX : Math.round((sure - 0.01) * 100) / 100,
+        );
+        return { ...said, confidence: Math.max(p.confidence, to), folder: true };
       }
       // The pages (or the rules) stand; both are said.
       folderClashes.push({ field, folder: fromFolder, other: p.value, rules: rulesOnly });
@@ -449,19 +469,6 @@ export function levelItem(input: LevelInput): ItemLevel {
   if (kindS) proposals.type_key = kindS;
   if (personS) proposals.owner_member_id = personS;
   const kind = kindOf(kindS?.value);
-  // Tags from the folder, where the batch chose none (S2): one already used
-  // starts on the card, a new one is offered.
-  if (d.tags.length === 0 && folder && folder.tags.length > 0) {
-    proposals.tags = folder.tags.map((t) => ({
-      value: t.value,
-      from: 'folder' as const,
-      existing: t.existing,
-    }));
-  }
-  const tagsFilled =
-    d.tags.length > 0
-      ? d.tags
-      : (proposals.tags ?? []).filter((t) => t.existing).map((t) => t.value);
 
   // Its dates and its number were read for the kind the pages proposed: for
   // another kind (the batch's), they are not offered — nor its issuer.
@@ -489,6 +496,18 @@ export function levelItem(input: LevelInput): ItemLevel {
       : NARROW[vis] < NARROW[d.visibility]
         ? { value: vis, from: 'narrowed' }
         : { value: vis, from: 'batch' };
+
+  // Tags from the folder, where the batch chose none (S2): only offered, but
+  // one already on a document seen at least as widely as this one would be
+  // starts ticked on the card. Never filed by Accept all Ready.
+  if (d.tags.length === 0 && folder && folder.tags.length > 0) {
+    proposals.tags = folder.tags.map((t) => ({
+      value: t.value,
+      from: 'folder' as const,
+      existing: t.existing,
+      ticked: t.existing && t.visibility !== null && NARROW[t.visibility] >= NARROW[vis],
+    }));
+  }
 
   // What makes it Check is said once it is read, or its read failed; before
   // that only what is a Problem, or worth knowing, is (the I2 review).
@@ -560,9 +579,9 @@ export function levelItem(input: LevelInput): ItemLevel {
       check({
         code: 'clash_folder',
         kind: 'check',
-        words: `The folder says ${kindOf(c.folder)?.label ?? 'another kind'}; ${
+        words: `The folder says ${shortName(kindOf(c.folder)) ?? 'another kind'}; ${
           c.rules ? other : `${other} look like`
-        } ${aKind(kindOf(c.other)?.label ?? 'kind')}`,
+        } ${aKind(shortName(kindOf(c.other)) ?? 'kind')}`,
       });
     } else {
       check({
@@ -604,8 +623,8 @@ export function levelItem(input: LevelInput): ItemLevel {
       issued_by: proposals.issued_by?.value ?? null,
       // Where the paper copies are, for whoever sees that (seesLocation).
       physical_location: seesLocation(role) ? d.physical_location : null,
-      // The batch's tags, or else the folder's that start on the card (S2).
-      tags: tagsFilled,
+      // The batch's tags: a folder's are never filed unasked (S2).
+      tags: d.tags,
       notes: null,
       extra: {},
     });

@@ -37,7 +37,7 @@ import {
   incomingFileName,
   itemFolder,
   levelItem,
-  suggestFromFolder,
+  folderMatcher,
   type FolderSuggestion,
   lockInEffect,
   PREVIEW_MAX_PAGES,
@@ -2422,7 +2422,7 @@ export class BatchService {
       const path = await levelling.folder(r);
       if (path) folders.set(r.id, path);
     }
-    const suggests = folders.size > 0 ? await levelling.folderContext() : null;
+    const suggests = folders.size > 0 ? await levelling.folderMatcher() : null;
     // Near matches (S1): for each item read, and not the same file as a
     // document they can see, from what its pages proposed.
     const renewals = await this.renewalsOf(
@@ -2473,7 +2473,7 @@ export class BatchService {
         reading === 'failed' ? ((r.read_failure ?? 'unreadable') as BatchReadFailure) : null;
       const path = folders.get(r.id) ?? null;
       const fromFolder: FolderSuggestion | null =
-        path && suggests && state === 'waiting' ? suggestFromFolder(path, suggests) : null;
+        path && suggests && state === 'waiting' ? suggests(path) : null;
       const levelled = levelItem({
         state,
         reading,
@@ -2690,30 +2690,40 @@ export class BatchService {
         }
       },
       /**
-       * What a folder is matched against (S2), asked once: the kinds and the
-       * family as above — a teen choosing themselves alone — and the tags on
-       * documents the uploader can see, as GET /tags gives them.
+       * A matcher for folders (S2), built once for these items: the kinds and
+       * the family as above — a teen choosing themselves alone — the
+       * household's name, and the tags on documents the uploader can see, as
+       * GET /tags gives them, each with the widest any of those documents is
+       * seen: a tag only on their Only me papers is never ticked onto one
+       * everybody sees.
        */
-      folderContext: async () => {
-        const tags = await sql<{ tag: string }>`
-          select distinct t as tag
+      folderMatcher: async () => {
+        const tags = await sql<{ tag: string; widest: number }>`
+          select t as tag,
+                 max(case d.visibility when 'household' then 2 when 'adults' then 1 else 0 end)
+                   as widest
             from document d, unnest(d.tags) as t
            where d.household_id = ${p.householdId}::uuid
              and d.deleted_at is null
              and ${seenDocument(p)}
+           group by t
            limit 5000`.execute(trx);
         const home = await trx
           .selectFrom('household')
           .select('name')
           .where('id', '=', p.householdId)
           .executeTakeFirst();
-        return {
+        const WIDEST: Visibility[] = ['private', 'adults', 'household'];
+        return folderMatcher({
           types: kinds.map(typeView),
           people: family.map((m) => ({ id: m.id, name: m.display_name })),
           choosable: (id: string) => p.role !== 'teen' || id === p.memberId,
-          tags: tags.rows.map((r) => r.tag),
+          tags: tags.rows.map((r) => ({
+            value: r.tag,
+            visibility: WIDEST[Number(r.widest)] ?? 'private',
+          })),
           household: home?.name ?? null,
-        };
+        });
       },
     };
   }

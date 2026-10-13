@@ -6,6 +6,7 @@ import {
   type BatchItemView,
   type DetailProposal,
   type DocumentTypeView,
+  type SeenTag,
 } from '@fdv/shared';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -167,6 +168,59 @@ describe('Add many documents, from a folder (S2)', () => {
     ]);
   });
 
+  it('a file chosen in a folder and then dropped from it is chosen once', async () => {
+    const state = addMany();
+    await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
+    const file = inFolder('Aisha/Bills/b1.pdf');
+    fireEvent.change(screen.getByLabelText('Choose a folder'), { target: { files: [file] } });
+    const zone = screen.getByRole('heading', { name: 'Drop files or a folder here' })
+      .parentElement as HTMLElement;
+    const entry = {
+      isFile: true,
+      isDirectory: false,
+      fullPath: '/Aisha/Bills/b1.pdf',
+      file: (ok: (f: File) => void) => ok(file),
+    };
+    let given = false;
+    const top = {
+      isFile: false,
+      isDirectory: true,
+      fullPath: '/Aisha',
+      createReader: () => ({
+        readEntries: (ok: (e: unknown[]) => void) => {
+          ok(
+            given
+              ? []
+              : [
+                  {
+                    isFile: false,
+                    isDirectory: true,
+                    fullPath: '/Aisha/Bills',
+                    createReader: () => {
+                      let more = true;
+                      return {
+                        readEntries: (done: (e: unknown[]) => void) => {
+                          done(more ? [entry] : []);
+                          more = false;
+                        },
+                      };
+                    },
+                  },
+                ],
+          );
+          given = true;
+        },
+      }),
+    };
+    fireEvent.drop(zone, {
+      dataTransfer: { items: [{ kind: 'file', webkitGetAsEntry: () => top }], files: [] },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Start: upload 1 file' }));
+    await screen.findByText('Open the batch');
+    expect(posted(state)).toEqual([{ relative_path: 'Aisha/Bills', file: 'b1.pdf' }]);
+  });
+
   it('a vault from before 0.8.0 is sent the file alone, as it takes it', async () => {
     const state = addMany({ folderSuggestions: false });
     await screen.findByRole('heading', { name: 'Add many documents' });
@@ -204,7 +258,7 @@ function fromFolder(
   folder: string,
   proposal: DetailProposal,
   types: DocumentTypeView[],
-  tags: string[] = [],
+  tags: SeenTag[] = [],
 ): BatchItemView {
   const suggested = suggestFromFolder(folder, { types, people: PEOPLE, tags });
   const levelled = levelItem({
@@ -264,20 +318,34 @@ function atBatch(path: string): FakeState {
           identifier: { value: '533401872', confidence: 0.95, cue: 'machine_lines' },
         },
         types,
-        ['holiday'],
+        [{ value: 'holiday', visibility: 'household' }],
       ),
-      // The pages unsure, the folder agreeing.
+      // The pages nearly sure, the folder agreeing.
       fromFolder(
         'item-2',
         'p2.pdf',
         'Passports/Aisha',
         {
-          type_key: { value: 'passport', confidence: 0.78, cue: 'kind_words' },
-          owner_member_id: { value: 'm-0', confidence: 0.78, cue: 'name_labelled' },
+          type_key: { value: 'passport', confidence: 0.8, cue: 'kind_words' },
+          owner_member_id: { value: 'm-0', confidence: 0.8, cue: 'name_labelled' },
           expires: { value: day('2031-03-14'), confidence: 0.94, cue: 'machine_lines' },
           identifier: { value: '533401872', confidence: 0.95, cue: 'machine_lines' },
         },
         types,
+      ),
+      // A tag only on her Only me papers, and a file going to everybody: offered, not ticked.
+      fromFolder(
+        'item-3',
+        'p3.pdf',
+        'IVF',
+        {
+          type_key: { value: 'passport', confidence: 0.95, cue: 'kind_words' },
+          owner_member_id: { value: 'm-0', confidence: 0.95, cue: 'name_labelled' },
+          expires: { value: day('2031-03-14'), confidence: 0.94, cue: 'machine_lines' },
+          identifier: { value: '533401872', confidence: 0.95, cue: 'machine_lines' },
+        },
+        types,
+        [{ value: 'ivf', visibility: 'private' }],
       ),
     ],
   };
@@ -297,12 +365,17 @@ describe('the folder, on the batch page and the card (S2)', () => {
       within(table)
         .getAllByRole('row')
         .find((r) => r.textContent?.includes(name)) as HTMLElement;
-    expect(
-      within(row('p1.pdf')).getByText('From the folder Passports/Aisha/Holidays/Greece'),
-    ).toBeVisible();
+    const line = (name: string) => row(name).querySelector('.item-folder') as HTMLElement;
+    expect(line('p1.pdf')).toHaveTextContent('From the folder ‘Passports/Aisha/Holidays/Greece’');
+    // Cut short, so reachable by keyboard, all of it in its title; the path kept to its own direction.
+    expect(line('p1.pdf')).toHaveAttribute('tabindex', '0');
+    expect(line('p1.pdf')).toHaveAttribute('title', 'Passports/Aisha/Holidays/Greece');
+    expect(line('p1.pdf').querySelector('bdi')).toHaveTextContent(
+      'Passports/Aisha/Holidays/Greece',
+    );
     expect(row('p1.pdf')).toHaveTextContent('Passportfrom the folder');
     expect(row('p1.pdf')).toHaveTextContent('Check');
-    expect(within(row('p2.pdf')).getByText('From the folder Passports/Aisha')).toBeVisible();
+    expect(line('p2.pdf')).toHaveTextContent('From the folder ‘Passports/Aisha’');
     expect(row('p2.pdf')).toHaveTextContent('Ready');
     await expectAccessible();
   });
@@ -312,7 +385,9 @@ describe('the folder, on the batch page and the card (S2)', () => {
     const kind = await screen.findByLabelText(/What it is/);
     await screen.findByRole('option', { name: 'Aisha' });
     expect(kind).toHaveValue('passport');
-    expect(screen.getByText('From the folder Passports/Aisha/Holidays/Greece')).toBeVisible();
+    expect(document.querySelector('.item-folder')).toHaveTextContent(
+      'From the folder ‘Passports/Aisha/Holidays/Greece’',
+    );
     expect(screen.getByText('What it is').closest('label')).toHaveTextContent(
       'What it is suggested from the folder ‘Passports/Aisha/Holidays/Greece’unsure',
     );
@@ -320,23 +395,46 @@ describe('the folder, on the batch page and the card (S2)', () => {
     expect(screen.getByText('Whose it is').closest('label')).toHaveTextContent(
       'suggested from the folder',
     );
-    // A tag already used starts on the card; a new one is offered.
+    // A tag already used everywhere starts ticked, and is said; a new one is offered, as written.
+    const hint = /holiday: suggested from the folder/;
     expect(screen.getByLabelText('Tags')).toHaveValue('holiday');
+    expect(screen.getByText(hint)).toBeVisible();
     const offer = screen.getByRole('button', {
-      name: 'Add the tag greece: a new tag from the folder name',
+      name: 'Add the tag Greece: a new tag from the folder name',
     });
     await expectAccessible();
     fireEvent.click(offer);
-    await waitFor(() => expect(screen.getByLabelText('Tags')).toHaveValue('holiday, greece'));
+    await waitFor(() => expect(screen.getByLabelText('Tags')).toHaveValue('holiday, Greece'));
     expect(
-      screen.queryByRole('button', { name: 'Add the tag greece: a new tag from the folder name' }),
+      screen.queryByRole('button', { name: 'Add the tag Greece: a new tag from the folder name' }),
     ).toBeNull();
+    // Taken off, the hint follows.
+    fireEvent.change(screen.getByLabelText('Tags'), { target: { value: 'Greece' } });
+    await waitFor(() => expect(screen.queryByText(hint)).toBeNull());
+    fireEvent.change(screen.getByLabelText('Tags'), { target: { value: 'holiday, Greece' } });
     fireEvent.click(screen.getByRole('button', { name: /^Accept and next/ }));
     await waitFor(() =>
       expect(state.batchAccepts?.find((a) => a.item === 'item-1')?.body).toMatchObject({
         type_key: 'passport',
         owner_member_id: 'm-0',
-        tags: ['holiday', 'greece'],
+        tags: ['holiday', 'Greece'],
+      }),
+    );
+  });
+
+  it('a tag only on papers fewer people see is offered, never ticked onto one everybody sees (IVF)', async () => {
+    const state = atBatch('/inbox/batches/batch-1/items/item-3');
+    await screen.findByLabelText(/What it is/);
+    await screen.findByRole('option', { name: 'Aisha' });
+    expect(screen.getByLabelText('Tags')).toHaveValue('');
+    expect(
+      screen.getByRole('button', { name: 'Add the tag ivf: a tag from the folder name' }),
+    ).toBeVisible();
+    await expectAccessible();
+    fireEvent.click(screen.getByRole('button', { name: /^Accept and next/ }));
+    await waitFor(() =>
+      expect(state.batchAccepts?.find((a) => a.item === 'item-3')?.body).toMatchObject({
+        tags: [],
       }),
     );
   });
@@ -346,7 +444,7 @@ describe('the folder, on the batch page and the card (S2)', () => {
     await screen.findByLabelText(/What it is/);
     await screen.findByRole('option', { name: 'Aisha' });
     expect(screen.getByText('What it is').closest('label')).toHaveTextContent(
-      'suggested · 88%and the folder ‘Passports/Aisha’',
+      'suggested · 90%and the folder ‘Passports/Aisha’',
     );
     expect(screen.getByText('What it is').closest('label')).not.toHaveTextContent('unsure');
     await expectAccessible();

@@ -667,11 +667,19 @@ function CardMark(props: {
   const { mark } = props;
   // From the folder's name alone (S2): "suggested from the folder ‘Passports/Ahmed’", unsure.
   if (mark.from === 'folder') {
-    const words = folderWords(props.folder ?? 'it came from');
     return (
       <>
-        <span className="mark-sugg mark-folder" title={words}>
-          {words}
+        <span
+          className="mark-sugg mark-folder"
+          {...(props.folder ? { title: folderWords(props.folder) } : {})}
+        >
+          suggested from the folder
+          {props.folder ? (
+            <>
+              {' '}
+              ‘<bdi>{props.folder}</bdi>’
+            </>
+          ) : null}
         </span>
         <span className="mark-unsure">unsure</span>
       </>
@@ -690,7 +698,7 @@ function CardMark(props: {
   const agrees =
     mark.folder === true && props.folder ? (
       <span className="mark-sugg mark-folder" title={folderWords(props.folder)}>
-        and the folder ‘{props.folder}’
+        and the folder ‘<bdi>{props.folder}</bdi>’
       </span>
     ) : null;
   if (mark.from === 'learned') {
@@ -765,10 +773,17 @@ export function ConfirmForm(props: {
   marks?: Partial<Record<CardMarkField, ItemSuggestion<unknown>>>;
   /**
    * The folder a batch's item came from (0.8.0, S2): a mark that is the
-   * folder's says so ("suggested from the folder ‘Passports/Ahmed’"), and
-   * a new tag its name proposes is offered beside the tags.
+   * folder's says so ("suggested from the folder ‘Passports/Ahmed’"); the
+   * tags it ticked on the card are said under Tags while they are there, and
+   * the others its name proposes are offered beside them.
    */
-  folder?: { path: string; usedTags: readonly string[]; newTags: readonly string[] } | null;
+  folder?: {
+    path: string;
+    /** Ticked as the card starts (`extras.tags` holds them). */
+    ticked: readonly string[];
+    /** Offered: one used more narrowly than this would be, or a new one. */
+    offered: ReadonlyArray<{ value: string; existing: boolean }>;
+  } | null;
   /**
    * Where the pages confidently disagree with the batch (I2): both said, the
    * batch's on the card, and the pages' one press away.
@@ -840,6 +855,13 @@ export function ConfirmForm(props: {
   // A batch's item (I1): its collection, its tags and Essential.
   const [collectionId, setCollectionId] = useState(props.extras?.collectionId ?? '');
   const [tags, setTags] = useState(props.extras?.tags ?? '');
+  // The tags as typed now, each in lower case: what the folder's offers and hint follow (S2).
+  const tagsTyped = new Set(
+    tags
+      .split(',')
+      .map((t) => t.trim().toLowerCase())
+      .filter(Boolean),
+  );
   const [essential, setEssential] = useState(props.extras?.essential ?? false);
   // The type's own details, by field key. A key stays when the type
   // changes, so a field the next type shares keeps what was typed.
@@ -1609,38 +1631,50 @@ export function ConfirmForm(props: {
               onChange={setTags}
               required={false}
               placeholder="house, car"
-              hint={
-                props.folder && props.folder.usedTags.length > 0
-                  ? `A comma between tags. ${props.folder.usedTags.join(', ')}: ${folderWords(props.folder.path)}.`
-                  : 'A comma between tags.'
-              }
+              hint={(() => {
+                // The folder's tags still on the card, as typed now (S2): said, and no more once removed.
+                const still = (props.folder?.ticked ?? []).filter((t) =>
+                  tagsTyped.has(t.toLowerCase()),
+                );
+                return props.folder && still.length > 0
+                  ? `A comma between tags. ${still.join(', ')}: ${folderWords(props.folder.path)}.`
+                  : 'A comma between tags.';
+              })()}
             />
             {(() => {
-              // New tags the folder's name proposes (S2): offered, made only if accepted with them.
-              const have = new Set(
-                tags
-                  .split(',')
-                  .map((t) => t.trim().toLowerCase())
-                  .filter(Boolean),
+              // Tags the folder's name proposes and the card does not tick (S2):
+              // offered, made only if accepted with them.
+              const offered = (props.folder?.offered ?? []).filter(
+                (t) => !tagsTyped.has(t.value.toLowerCase()),
               );
-              const offered = (props.folder?.newTags ?? []).filter((t) => !have.has(t));
               if (offered.length === 0) return null;
               return (
                 <div className="pills folder-tags" role="group" aria-label="Tags from the folder">
-                  {offered.map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      className="pill pill-sugg"
-                      aria-label={`Add the tag ${t}: a new tag from the folder name`}
-                      onClick={() =>
-                        setTags((was) => (was.trim() ? `${was.replace(/,\s*$/, '')}, ${t}` : t))
-                      }
-                    >
-                      <span className="pill-sugg-value">+ {t}</span>{' '}
-                      <span className="mark-sugg">new tag from the folder name</span>
-                    </button>
-                  ))}
+                  {offered.map((t) => {
+                    const what = t.existing
+                      ? 'a tag from the folder name'
+                      : 'a new tag from the folder name';
+                    return (
+                      <button
+                        key={t.value}
+                        type="button"
+                        className="pill pill-sugg"
+                        aria-label={`Add the tag ${t.value}: ${what}`}
+                        onClick={() =>
+                          setTags((was) =>
+                            was.trim() ? `${was.replace(/,\s*$/, '')}, ${t.value}` : t.value,
+                          )
+                        }
+                      >
+                        <span className="pill-sugg-value">
+                          + <bdi>{t.value}</bdi>
+                        </span>{' '}
+                        <span className="mark-sugg">
+                          {t.existing ? 'tag from the folder name' : 'new tag from the folder name'}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               );
             })()}
