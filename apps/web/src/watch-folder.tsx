@@ -96,6 +96,12 @@ export function ScannerScreen() {
             {data.enabled && !data.paused && data.last_added_at && (
               <p className="muted">Last file added {whenWords(data.last_added_at)}.</p>
             )}
+            {/* Stored, but still in the folder, not encrypted (the S3 review). */}
+            {data.stuck_words && (
+              <p className="attention" role="status">
+                {data.stuck_words}
+              </p>
+            )}
           </section>
           <form className="stack" onSubmit={(e) => void save(e)} aria-labelledby="scanner-set-h">
             <h2 id="scanner-set-h" className="section-h">
@@ -122,6 +128,13 @@ export function ScannerScreen() {
                 aria-describedby="scanner-who-note"
                 onChange={(e) => setMember(e.target.value)}
               >
+                {/* Whose Inbox it fills now, when they may no longer add: said, never
+                    silently replaced by somebody else (the S3 review). */}
+                {data.member_id && !data.candidates.some((c) => c.member_id === data.member_id) && (
+                  <option value={data.member_id} disabled>
+                    {`${data.member_name ?? 'Someone no longer here'} (can’t add now)`}
+                  </option>
+                )}
                 {data.candidates.map((c) => (
                   <option key={c.member_id} value={c.member_id}>
                     {c.member_id === session.info?.member_id
@@ -151,13 +164,15 @@ export function ScannerScreen() {
             </h2>
             <ul className="scanner-what">
               <li>
-                The vault waits until the scanner has finished saving it, then encrypts it into that
-                person’s Inbox and deletes it from the folder.
+                The vault waits until a file has stopped changing for a few seconds and looks
+                complete, then encrypts it into that person’s Inbox and deletes it from the folder.
+                A scanner that pauses for long in the middle of a file can still be taken too early:
+                the person sees it in their Inbox, and can remove it.
               </li>
               <li>
-                A file it can’t take — not a PDF, photo, Word or Excel file, too large, or empty —
-                is moved to the folder’s <code>rejected</code> folder with a note saying why, and
-                that person is told in Needs attention.
+                A file it can’t take — not a PDF, photo, Word or Excel file, too large, empty, or
+                never finished — is moved to the folder’s <code>rejected</code> folder with a note
+                saying why, and that person is told in Needs attention.
               </li>
               <li>
                 While it is paused, files wait in the folder. Anything still in the folder is not

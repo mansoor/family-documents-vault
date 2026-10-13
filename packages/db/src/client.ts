@@ -1258,6 +1258,8 @@ export interface Schema {
       | null;
     paused_at: Timestamp | null;
     last_added_at: Timestamp | null;
+    /** Files stored that the worker could not then delete from the folder. */
+    stuck_files: Generated<number>;
   };
 
   /** "A scanned file couldn't be added" (0068, S3): its person's alone. */
@@ -1266,7 +1268,9 @@ export interface Schema {
     household_id: string;
     member_id: string;
     file_name: string;
-    reason: 'unsupported' | 'too_large' | 'unreadable' | 'empty';
+    reason: 'unsupported' | 'too_large' | 'unreadable' | 'empty' | 'incomplete' | 'linked';
+    /** A keyed hash of the file's place, size and time: one note a file. */
+    file_key: string;
     created_at: GeneratedTimestamp;
   };
 

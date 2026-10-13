@@ -1144,6 +1144,8 @@ export function installFakeApi(state: FakeState) {
         member_name: null,
         paused: null,
         last_added_at: null,
+        stuck_files: 0,
+        stuck_words: null,
         candidates: [],
       };
       if (method === 'PUT') {

@@ -93,7 +93,10 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the API', () => {
     expect((await view()).folder).toMatchObject({
       state: 'not_writable',
       dir: '/watch',
-      words: expect.stringMatching(/can’t write to \/watch/) as unknown,
+      // The folder in the worker, and where the README puts it on the server.
+      words: expect.stringMatching(
+        /can’t write to \/watch in the worker \(\.\/scanner on the server/,
+      ) as unknown,
     });
     await said('missing');
     expect((await view()).folder.words).toMatch(/nothing there/);
@@ -280,8 +283,8 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the API', () => {
       await asCaller(
         adult,
         'adult',
-        `insert into watch_notice (household_id, member_id, file_name, reason)
-         values (app_household(), app_member(), 'x.pdf', 'empty')`,
+        `insert into watch_notice (household_id, member_id, file_name, reason, file_key)
+         values (app_household(), app_member(), 'x.pdf', 'empty', gen_random_uuid())`,
       ),
     ).toMatchObject({ code: '42501' });
     // The folder's state: read by the application, written by the vault's owning role alone.
@@ -323,6 +326,23 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the API', () => {
       reason: 'sealed',
       words: expect.stringMatching(/can’t open Ahmed’s key/) as unknown,
     });
+    // …only while the worker's word on the folder is fresh, and ready: a
+    // pause it said before it stopped, or before the folder went, is not today's.
+    await said('ready', 180);
+    expect((await view()).paused).toBeNull();
+    await said('missing');
+    expect((await view()).paused).toBeNull();
+    await said('ready');
+    expect((await view()).paused?.reason).toBe('sealed');
+    // Stored, but still in the folder: the owners are told how many, and what to do.
+    expect((await view()).stuck_words).toBeNull();
+    await admin.query('update watch_folder set stuck_files = 2');
+    expect(await view()).toMatchObject({
+      stuck_files: 2,
+      stuck_words: expect.stringMatching(
+        /^2 scans are safely in the vault but couldn’t be deleted from the scanner folder/,
+      ) as unknown,
+    });
     // Off, it is not paused: it is off.
     await call(owner, 'PUT', '/api/v1/watch-folder', { enabled: false });
     expect((await view()).paused).toBeNull();
@@ -332,8 +352,8 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the API', () => {
 
   it('“a scanned file couldn’t be added” is its person’s alone, an owner’s too', async () => {
     const note = await admin.query<{ id: string }>(
-      `insert into watch_notice (household_id, member_id, file_name, reason)
-       values ($1, $2, 'AHMED-SCAN-77.zip', 'unsupported') returning id`,
+      `insert into watch_notice (household_id, member_id, file_name, reason, file_key)
+       values ($1, $2, 'AHMED-SCAN-77.zip', 'unsupported', gen_random_uuid()) returning id`,
       [owner.household_id, adult.member_id],
     );
     const id = note.rows[0]?.id as string;

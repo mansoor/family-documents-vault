@@ -4391,6 +4391,16 @@ display_name, role }] }` — `state` one of `ready`, `off`, `missing`,
     `watchDirWords`, `watchPauseWords`, `watchRejectWords`, `watchPauseOf`,
     `mayFillFromScanner`, `scannerDay` and `watchIgnored`. `@fdv/client`:
     `watchFolder`, `setWatchFolder`, `watchNotices`, `dismissWatchNotice`.
+    The review's findings on the above. **Added:** `GET /watch-folder`
+    answers `stuck_files` and `stuck_words` too — scans stored in the vault
+    that the worker could not then delete from the folder, said to the
+    owners with what to do (`null` for none) — and `folder.words` names the
+    folder both inside the worker and on the server as the README sets it
+    up. A notice's `reason` may also be `incomplete` (still unfinished a day
+    after it stopped changing) or `linked` (a hard link to a file kept
+    elsewhere). **Changed:** a pause the worker said is answered only while
+    its word on the folder is fresh and ready. `@fdv/shared`:
+    `WATCH_INCOMPLETE_MS`, `WATCH_HOST_DIR`, `watchStuckWords`.
 
 ## Deprecations in effect
 

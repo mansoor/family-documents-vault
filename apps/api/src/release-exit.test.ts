@@ -1245,6 +1245,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
           member_id: ahmed.member_id,
           file_name: 'ahmed-scan-541.zip',
           reason: 'unsupported',
+          file_key: randomUUID(),
         })
         .returning('id')
         .executeTakeFirstOrThrow();

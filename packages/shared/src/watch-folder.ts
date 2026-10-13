@@ -9,19 +9,23 @@ import { suspensionInEffect } from './wire.js';
  * household's scanner saves into it over SMB or FTP. An owner turns it on in
  * Settings and chooses whose Inbox it fills — by default themselves, or
  * anybody of the family who may add documents, never a viewer. The worker
- * looks every WATCH_POLL_MS, takes a file once its size and time have stood
- * still for WATCH_STABLE_MS, and adds it as Add → Many documents adds a file:
- * an item in that person's batch of the day ("Scanner, 12 Oct"), theirs
- * alone until they accept it. Once it is safely stored the file is deleted.
- * A file the vault cannot take is moved to `rejected/`, with a note beside
- * it saying why, and that person is told in Needs attention.
+ * looks every WATCH_POLL_MS, and takes a file once it has stopped changing
+ * (FDV_WATCH_STABLE_SECONDS, WATCH_STABLE_MS by default) and looks complete
+ * for its kind; it adds it as Add → Many documents adds a file: an item in
+ * that person's batch of the day ("Scanner, 12 Oct"), theirs alone until
+ * they accept it. Once it is safely stored the file is deleted. A file the
+ * vault cannot take is moved to `rejected/`, with a note beside it saying
+ * why, and that person is told in Needs attention.
  */
 
 /** How often the worker looks in the folder. Polling: bind mounts on Docker Desktop deliver no events. */
 export const WATCH_POLL_MS = 15_000;
 
-/** A file is taken once its size and time have not changed for this long. */
+/** By default, a file is taken once its size and time have not changed for this long. */
 export const WATCH_STABLE_MS = 10_000;
+
+/** A file that has stopped changing but does not look complete is waited for this long, then rejected. */
+export const WATCH_INCOMPLETE_MS = 24 * 3_600_000;
 
 /**
  * The worker's word on the folder older than this is no word at all: the
@@ -32,6 +36,9 @@ export const WATCH_STALE_MS = 2 * 60_000;
 
 /** The folder the worker moves what it cannot take into, beside a note saying why. */
 export const WATCH_REJECTED_DIR = 'rejected';
+
+/** Where the README puts the scanner folder on the server, beside docker-compose.yml. */
+export const WATCH_HOST_DIR = './scanner';
 
 /** How long a "couldn't be added" note stays in Needs attention, unless dismissed. */
 export const WATCH_NOTICE_DAYS = 30;
@@ -62,8 +69,13 @@ export type WatchPause =
   | 'no_storage'
   | 'day_full';
 
-/** Why a file was moved to rejected/. */
-export type WatchRejectReason = 'unsupported' | 'too_large' | 'unreadable' | 'empty';
+/**
+ * Why a file was moved to rejected/: not a kind the vault keeps, too large,
+ * not to be read, empty, still not complete a day after it stopped
+ * changing (`incomplete`), or a linked copy of a file elsewhere (`linked`).
+ */
+export type WatchRejectReason =
+  'unsupported' | 'too_large' | 'unreadable' | 'empty' | 'incomplete' | 'linked';
 
 /** Somebody whose Inbox the folder may fill: of the family, with a sign-in, who may add documents. */
 export interface WatchCandidate {
@@ -81,7 +93,7 @@ export interface WatchFolderView {
     /** FDV_WATCH_DIR as the worker has it, inside its container. */
     dir: string | null;
     checked_at: string | null;
-    /** What it means, in a sentence. */
+    /** What it means, in a sentence: the folder in the worker, and on the server as the README sets it up. */
     words: string;
   };
   enabled: boolean;
@@ -91,6 +103,12 @@ export interface WatchFolderView {
   /** While it is on and cannot add: why, in a sentence. */
   paused: { reason: WatchPause; words: string } | null;
   last_added_at: string | null;
+  /**
+   * Files stored in the vault that the worker could not then delete from the
+   * folder: still there, not encrypted. 0 when there are none; with what to do.
+   */
+  stuck_files: number;
+  stuck_words: string | null;
   /** Whose Inbox it may fill. */
   candidates: WatchCandidate[];
 }
@@ -113,14 +131,20 @@ export interface WatchNoticeView {
   at: string;
 }
 
-/** What the folder's state means, to an owner in Settings. */
+/**
+ * What the folder's state means, to an owner in Settings: the folder as the
+ * worker has it (`dir`, inside its container) and where the README puts it on
+ * the server (WATCH_HOST_DIR), so an owner can find it either way.
+ */
 export function watchDirWords(state: WatchDirState | 'unknown', dir: string | null): string {
-  const at = dir ?? 'the folder';
+  const at = dir
+    ? `${dir} in the worker (${WATCH_HOST_DIR} on the server, if set up as the README says)`
+    : 'the folder';
   switch (state) {
     case 'ready':
-      return `The folder ${at} is ready.`;
+      return `The scanner folder is ready: ${at}.`;
     case 'off':
-      return 'There is no scanner folder: FDV_WATCH_DIR is not set on the worker. The README’s “Scanning straight into the vault” says how to set one up.';
+      return `There is no scanner folder: FDV_WATCH_DIR is not set on the worker. The README’s “Scanning straight into the vault” says how to set one up, as ${WATCH_HOST_DIR} on the server.`;
     case 'missing':
       return `FDV_WATCH_DIR names ${at}, but there is nothing there. Check the scanner folder’s mount in docker-compose.yml.`;
     case 'not_a_folder':
@@ -130,6 +154,13 @@ export function watchDirWords(state: WatchDirState | 'unknown', dir: string | nu
     case 'unknown':
       return 'The worker hasn’t looked at the scanner folder in the last few minutes. Check that it is running.';
   }
+}
+
+/** Files stored that could not then be deleted from the folder, to an owner; null for none. */
+export function watchStuckWords(n: number): string | null {
+  if (n <= 0) return null;
+  const files = n === 1 ? '1 scan is' : `${n} scans are`;
+  return `${files} safely in the vault but couldn’t be deleted from the scanner folder, where ${n === 1 ? 'it is' : 'they are'} not encrypted. Delete ${n === 1 ? 'it' : 'them'} from the folder by hand, and check the folder’s permissions.`;
 }
 
 /** Why the folder is paused, to an owner: `name` is whose Inbox it fills. */
@@ -169,6 +200,10 @@ export function watchRejectWords(reason: WatchRejectReason, maxBytes?: number): 
       return 'The vault couldn’t read it from the folder. Check the file, then save it into the folder again.';
     case 'empty':
       return 'It was empty. Scan it again.';
+    case 'incomplete':
+      return 'It still looked unfinished a day after it stopped changing, as if the scanner stopped part-way. Scan it again.';
+    case 'linked':
+      return 'It was a linked copy of a file kept somewhere else. Save it into the folder as a plain file.';
   }
 }
 

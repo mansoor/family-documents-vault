@@ -57,6 +57,8 @@ const folder = (over: Record<string, unknown> = {}) => ({
   member_name: null,
   paused: null,
   last_added_at: null,
+  stuck_files: 0,
+  stuck_words: null,
   candidates: CANDIDATES,
   ...over,
 });
@@ -135,6 +137,26 @@ describe('the scanner folder’s page (S3)', () => {
       expect(screen.getByRole('checkbox', { name: 'Add what the scanner saves' })).toBeChecked();
       expect(screen.getByLabelText('Whose Inbox it fills')).toHaveValue('m-ahmed');
     });
+  });
+
+  it('says whose Inbox it fills though they can’t add now, and when stored scans couldn’t be deleted', async () => {
+    at('/settings/scanner', {
+      watchFolder: folder({
+        enabled: true,
+        member_id: 'm-bea',
+        member_name: 'Bea',
+        paused: { reason: 'cannot_add', words: 'Paused: Bea can’t add documents now.' },
+        stuck_files: 2,
+        stuck_words:
+          '2 scans are safely in the vault but couldn’t be deleted from the scanner folder, where they are not encrypted.',
+      }),
+    });
+    const who = await screen.findByLabelText('Whose Inbox it fills');
+    await waitFor(() => expect(screen.getByLabelText('Whose Inbox it fills')).toHaveValue('m-bea'));
+    const kept = within(who).getByRole('option', { name: 'Bea (can’t add now)' });
+    expect(kept).toBeDisabled();
+    expect(screen.getByText(/2 scans are safely in the vault/)).toBeInTheDocument();
+    await expectAccessible();
   });
 
   it('is an owner’s: an adult is told so, and the vault is not asked', async () => {

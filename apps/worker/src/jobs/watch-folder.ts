@@ -1,8 +1,10 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { constants, createReadStream } from 'node:fs';
+import { constants } from 'node:fs';
+import type { BigIntStats } from 'node:fs';
 import * as fsp from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { EncryptStream, newKey, wrapKey, type ScopeKeys } from '@fdv/crypto';
 import { withSystem, type Db } from '@fdv/db';
@@ -12,6 +14,7 @@ import {
   dropFileName,
   scannerDay,
   UPLOAD_KINDS,
+  WATCH_INCOMPLETE_MS,
   WATCH_NOTICE_DAYS,
   WATCH_POLL_MS,
   WATCH_REJECTED_DIR,
@@ -33,9 +36,9 @@ import { adapterOf } from './incoming.js';
  * The operator mounts a folder into this container (FDV_WATCH_DIR, say
  * ./scanner:/watch) and points the household's scanner at that folder over
  * SMB or FTP. Every WATCH_POLL_MS one worker — whichever holds a Postgres
- * advisory lock (WATCH_LOCK_KEY), on a connection of its own for as long as
- * it lives — looks in the folder. Polling, not inotify: bind mounts on
- * Docker Desktop deliver no events.
+ * advisory lock (WATCH_LOCK_KEY), on a connection of its own, kept alive,
+ * checked in pg_locks before every file — looks in the folder. Polling, not
+ * inotify: bind mounts on Docker Desktop deliver no events.
  *
  *  - It says how it found the folder (watch_dir): the API offers the scanner
  *    folder only when it is set, there and writable, and said so lately.
@@ -44,33 +47,48 @@ import { adapterOf } from './incoming.js';
  *    documents, not locked nor waiting after a restore; the vault must open
  *    their key and have somewhere to keep files; and their batch of the day
  *    must have room. Otherwise it is paused, and says why (watch_folder),
- *    and the files wait.
+ *    and the files wait. All of it is asked again, held, as each file is
+ *    placed: an owner who turns it off or points it elsewhere mid-round
+ *    stops the round there.
+ *  - Nothing outside the folder is ever read, written or removed. The walk
+ *    never follows a link or a junction (lstat), and each folder it walks
+ *    is, by its real path, inside the folder's. A file is opened with
+ *    O_NOFOLLOW, and the handle must be the very file listed (device and
+ *    inode), a plain file with one link, and — on Linux — inside the folder
+ *    by its real path (/proc/self/fd). Every byte is read from that handle.
+ *    A name is deleted or moved only while it is still that file.
  *  - A file is taken once its size and time have not changed for
- *    WATCH_STABLE_MS, seen twice. Hidden files, names a program writes while
- *    it saves (`~…`, `….tmp`, `….part`) and `rejected/` are left alone;
- *    files in folders inside it are taken too. A link is never followed.
- *  - It is added as Add → Many documents adds a file (the API's
- *    BatchService.addItem): an item of that person's batch of the day
- *    ("Scanner, 12 Oct", on the household's calendar), on its way first,
- *    its bytes counted, hashed and encrypted under a new key wrapped by
- *    their own member key straight to its object, then arrived — and the
- *    worker's batch.previews job draws its pages, reads it and proposes for
- *    it, with their own rules (I2, I4), as for anything they upload.
+ *    FDV_WATCH_STABLE_SECONDS, seen twice, and it looks complete for its
+ *    kind (a PDF's %%EOF, a JPEG's end, a PNG's IEND, a zip's directory,
+ *    and no tail of zeros); one that does not is waited for, and a day on
+ *    rejected as `incomplete`. Hidden files, names a program writes while it
+ *    saves (`~…`, `….tmp`, `….part`) and `rejected/` are left alone.
+ *  - It is hashed, and then added as Add → Many documents adds a file (the
+ *    API's BatchService.addItem): an item of that person's batch of the day
+ *    ("Scanner, 12 Oct"), on its way first, its bytes counted, hashed and
+ *    encrypted under a new key wrapped by their own member key straight to
+ *    its object, then arrived — and the worker's batch.previews job draws
+ *    its pages, reads it and proposes for it, with their own rules (I2, I4).
  *  - Only once the item has arrived is the file deleted: no plaintext
- *    lingers. Its Idempotency-Key is a keyed hash of its path, size and time
- *    (watchItemKey): a worker that stops between storing a file and deleting
- *    it finds the item next time and deletes the file without adding it
- *    twice; one that stops while it is on its way removes that and adds it
- *    again.
- *  - What cannot be added — not a kind the vault keeps, larger than
- *    FDV_MAX_UPLOAD_BYTES, empty, or not to be read — is moved to
- *    `rejected/<name>`, with `<name>.txt` beside it saying why in plain
- *    words; and that person is told in Needs attention (watch_notice).
+ *    lingers. A worker that stops between storing and deleting finds the
+ *    item next time by the file's SHA-256 among that person's scanner items
+ *    waiting or accepted, and deletes the file without adding it twice; one
+ *    removed from the Inbox since is added again. One that stops while it is
+ *    on its way leaves an item its Idempotency-Key finds, removed before the
+ *    file is added again. A stored file that cannot be deleted is said once
+ *    in the log, and counted for the owners (stuck_files).
+ *  - What cannot be added is moved to `rejected/<name>` (0700), its person
+ *    told first (watch_notice, once a file), with `<name>.txt` (0600, made
+ *    new, never through a link) saying why in plain words. Moved by a hard
+ *    link and an unlink, never over another file.
+ *  - `stop` stops between files, and aborts a file on its way: its row and
+ *    object are removed then (as a worker that stopped mid-file would have
+ *    them removed on the next start, by the Idempotency-Key).
  *
  * The bytes are only ever streamed through: nothing parses them here but
- * the first few, compared with the kinds' own first bytes (watchKindOf). A
- * file's words are read by the batch job, in its tools' own processes, as
- * any item's are.
+ * the first and last few, compared with the kinds' own (watchKindOf,
+ * looksComplete). A file's words are read by the batch job, in its tools'
+ * own processes, as any item's are.
  */
 
 /** The advisory lock one worker holds while it watches: beside migrate's 7401 and the tests' 7402. */
@@ -83,11 +101,15 @@ export const WATCH_ROUND_MAX = 25;
 const WALK_MAX_ENTRIES = 5000;
 const WALK_MAX_DEPTH = 10;
 
-/** A file that could not be moved to rejected/ is left alone this long before it is tried again. */
-const REJECT_RETRY_MS = 10 * 60_000;
+/** A file that could not be moved, or deleted once stored, is left alone this long before it is tried again. */
+const RETRY_MS = 10 * 60_000;
 
-/** The first bytes a kind is told from (the API's sniffStream reads as many). */
+/** The first bytes a kind is told from (the API's sniffStream reads as many), and the last a file's end is. */
 const HEAD_BYTES = 4100;
+const TAIL_BYTES = 1024;
+
+/** Read from a handle this much at a time. */
+const CHUNK = 1024 * 1024;
 
 /** An upload this old, still on its way, holds no place in its batch (the API's UPLOAD_FRESH_MS). */
 const UPLOAD_FRESH_MS = 15 * 60_000;
@@ -119,36 +141,45 @@ export const WATCH_KEY_PURPOSE = 'watch-folder-items';
 export interface WatchOptions {
   /** FDV_WATCH_DIR: null when it is not set. */
   dir: string | null;
-  /** Where the lock's own connection goes (DATABASE_URL). */
+  /** Where the lock's own connection goes (DATABASE_URL: a direct connection, never a transaction pooler). */
   lockUrl: string;
   pollMs?: number;
+  /** FDV_WATCH_STABLE_SECONDS, in ms. */
   stableMs?: number;
   roundMax?: number;
   /** The clock, for the tests. */
   now?: () => number;
-  /** The file system, for the tests that cannot make a folder read-only. */
+  /** The file system, for the tests that cannot make a folder read-only, or swap one mid-round. */
   fs?: WatchFs;
+  /** Tests: held just before a file is placed, for the races. */
+  beforePlace?: (rel: string) => Promise<void>;
 }
 
 /** What is asked of the file system: node's own, unless a test stands in. */
 export interface WatchFs {
   stat: typeof fsp.stat;
+  lstat: typeof fsp.lstat;
+  realpath: typeof fsp.realpath;
+  readlink: typeof fsp.readlink;
   access: typeof fsp.access;
   writeFile: typeof fsp.writeFile;
   unlink: typeof fsp.unlink;
   readdir: typeof fsp.readdir;
-  rename: typeof fsp.rename;
+  link: typeof fsp.link;
   mkdir: typeof fsp.mkdir;
   open: typeof fsp.open;
 }
 
 const nodeFs: WatchFs = {
   stat: fsp.stat,
+  lstat: fsp.lstat,
+  realpath: fsp.realpath,
+  readlink: fsp.readlink,
   access: fsp.access,
   writeFile: fsp.writeFile,
   unlink: fsp.unlink,
   readdir: fsp.readdir,
-  rename: fsp.rename,
+  link: fsp.link,
   mkdir: fsp.mkdir,
   open: fsp.open,
 };
@@ -166,6 +197,19 @@ const whyOf = (err: unknown) => {
   const m = err instanceof Error ? err.message : String(err);
   return m.replace(/(['"`]).*?\1/g, '…').slice(0, 120);
 };
+
+/** A file's identity: its device and inode, as the system has them (exactly: bigint). */
+const idOf = (st: Pick<BigIntStats, 'dev' | 'ino'>) => `${st.dev}:${st.ino}`;
+
+/** Whether a real path is the folder's, or inside it. */
+export const within = (root: string, real: string) =>
+  real === root || real.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+
+/** A name for a note: its control characters gone, its folders each so. */
+const cleanRel = (rel: string) => rel.split('/').map(dropFileName).join('/');
+
+/** Opened with no link followed at its last part (O_NOFOLLOW where the system has it). */
+const READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
 
 // ------------------------------------------------------------- the folder
 
@@ -189,7 +233,7 @@ export async function checkWatchDir(
   try {
     await fsx.access(dir, constants.R_OK | constants.W_OK | constants.X_OK);
     const probe = path.join(dir, `.fdv-probe-${randomBytes(6).toString('hex')}`);
-    await fsx.writeFile(probe, '');
+    await fsx.writeFile(probe, '', { flag: 'wx', mode: 0o600 });
     await fsx.unlink(probe);
     return 'ready';
   } catch {
@@ -197,27 +241,39 @@ export async function checkWatchDir(
   }
 }
 
-/** A file in the folder: its path from the folder (`/` between parts), size and time. */
+/** A file in the folder: its path from the folder (`/` between parts), size, time and identity. */
 export interface WatchFile {
   rel: string;
   abs: string;
   size: number;
   mtimeMs: number;
+  /** Device and inode, as listed: what is opened, moved and deleted must still be it. */
+  id: string;
 }
 
 /**
  * Every file in the folder and the folders inside it, but what is left
- * alone (watchIgnored) — never through a link — up to WALK_MAX_ENTRIES,
- * WALK_MAX_DEPTH deep.
+ * alone (watchIgnored), up to WALK_MAX_ENTRIES, WALK_MAX_DEPTH deep. Never
+ * through a link or a junction (lstat, entry by entry); and each folder,
+ * looked at again just before it is read, must be a folder whose real path
+ * is inside the folder's.
  */
 export async function listWatchFiles(dir: string, fsx: WatchFs = nodeFs): Promise<WatchFile[]> {
+  const root = await fsx.realpath(dir);
   const out: WatchFile[] = [];
   let seen = 0;
   const walk = async (rel: string, depth: number): Promise<void> => {
     if (depth > WALK_MAX_DEPTH) return;
+    const here = rel ? path.join(dir, ...rel.split('/')) : dir;
+    if (rel) {
+      const st = await fsx.lstat(here).catch(() => null);
+      if (!st || !st.isDirectory() || st.isSymbolicLink()) return;
+      const real = await fsx.realpath(here).catch(() => null);
+      if (!real || !within(root, real)) return;
+    }
     let entries;
     try {
-      entries = await fsx.readdir(path.join(dir, rel), { withFileTypes: true });
+      entries = await fsx.readdir(here, { withFileTypes: true });
     } catch {
       return;
     }
@@ -226,16 +282,19 @@ export async function listWatchFiles(dir: string, fsx: WatchFs = nodeFs): Promis
       if (++seen > WALK_MAX_ENTRIES) return;
       const r = rel ? `${rel}/${e.name}` : e.name;
       if (watchIgnored(r)) continue;
-      if (e.isDirectory()) {
+      const abs = path.join(here, e.name);
+      const st = await fsx.lstat(abs, { bigint: true }).catch(() => null);
+      if (!st || st.isSymbolicLink()) continue;
+      if (st.isDirectory()) {
         await walk(r, depth + 1);
-      } else if (e.isFile()) {
-        const abs = path.join(dir, ...r.split('/'));
-        try {
-          const st = await fsx.stat(abs);
-          if (st.isFile()) out.push({ rel: r, abs, size: st.size, mtimeMs: st.mtimeMs });
-        } catch {
-          // Gone as it was looked at.
-        }
+      } else if (st.isFile()) {
+        out.push({
+          rel: r,
+          abs,
+          size: Number(st.size),
+          mtimeMs: Number(st.mtimeMs),
+          id: idOf(st),
+        });
       }
     }
   };
@@ -285,23 +344,71 @@ export function watchKindOf(head: Buffer, name: string): { mime: string; ext: st
 }
 
 /**
+ * Whether a file looks complete for its kind, from its first and last
+ * bytes: a PDF's `%%EOF` near its end, a JPEG's end marker, a PNG's IEND, a
+ * zip's end-of-directory record, a WebP whose size says this size — and no
+ * kind's tail all zeros (space a program set aside and has not written).
+ * Compared, never parsed.
+ */
+export function looksComplete(mime: string, head: Buffer, tail: Buffer, size: number): boolean {
+  if (tail.length === 0 || tail.every((b) => b === 0)) return false;
+  const has = (s: string | number[]) =>
+    tail.includes(typeof s === 'string' ? Buffer.from(s, 'latin1') : Buffer.from(s));
+  switch (mime) {
+    case 'application/pdf':
+      return has('%%EOF');
+    case 'image/jpeg':
+      return tail.length >= 2 && tail[tail.length - 2] === 0xff && tail[tail.length - 1] === 0xd9;
+    case 'image/png':
+      return has('IEND');
+    case 'image/webp':
+      return head.length >= 8 && head.readUInt32LE(4) + 8 === size;
+    case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+    case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+      return has([0x50, 0x4b, 0x05, 0x06]);
+    default:
+      return true;
+  }
+}
+
+/**
  * A file's Idempotency-Key: a keyed hash of its household, its path in the
- * folder, its size and its time, made a UUID. The same file is the same
- * key, every time; the key says nothing of the file's name or folders.
+ * folder, its size, its time and its SHA-256, made a UUID. The same file is
+ * the same key, every time; the key says nothing of the file.
  */
 export function watchItemKey(
   key: Buffer,
   householdId: string,
   f: Pick<WatchFile, 'rel' | 'size' | 'mtimeMs'>,
+  sha256: Buffer | null = null,
 ): string {
   const h = createHmac('sha256', key)
-    .update(`${householdId}\0${f.rel}\0${f.size}\0${Math.trunc(f.mtimeMs)}`)
+    .update(
+      `${householdId}\0${f.rel}\0${f.size}\0${Math.trunc(f.mtimeMs)}\0${sha256?.toString('hex') ?? ''}`,
+    )
     .digest();
   // As a version 8 UUID (RFC 9562: custom), so the column takes it.
   h[6] = ((h[6] as number) & 0x0f) | 0x80;
   h[8] = ((h[8] as number) & 0x3f) | 0x80;
   const x = h.subarray(0, 16).toString('hex');
   return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20)}`;
+}
+
+/** A handle's bytes, `size` of them, chunk by chunk from the start: never through its name again. */
+async function* bytesOf(
+  fh: FileHandle,
+  size: number,
+  signal?: AbortSignal,
+): AsyncGenerator<Buffer> {
+  let at = 0;
+  while (at < size) {
+    signal?.throwIfAborted();
+    const buf = Buffer.alloc(Math.min(CHUNK, size - at));
+    const { bytesRead } = await fh.read(buf, 0, buf.length, at);
+    if (bytesRead === 0) break;
+    at += bytesRead;
+    yield buf.subarray(0, bytesRead);
+  }
 }
 
 // ------------------------------------------------------------- the round
@@ -320,6 +427,10 @@ export type WatchOutcome =
   | { kind: 'already' }
   | { kind: 'rejected'; reason: WatchRejectReason; as: string }
   | { kind: 'paused'; reason: WatchPause }
+  /** Stopped changing but not complete yet: waited for (WATCH_INCOMPLETE_MS). */
+  | { kind: 'waiting' }
+  /** The round stops here: the setting changed under it, the lock was lost, or the worker stops. */
+  | { kind: 'stopped'; why: string }
   /** Not now — changed as it was read, gone, its batch being removed, a blip — tried next round. */
   | { kind: 'later'; why: string };
 
@@ -330,6 +441,12 @@ export interface WatchRound {
   state?: WatchDirState;
   paused?: WatchPause | null;
   outcomes: Array<{ rel: string } & WatchOutcome>;
+}
+
+/** An open file, checked: the handle, its identity and its size. */
+interface Opened {
+  fh: FileHandle;
+  st: BigIntStats;
 }
 
 /**
@@ -345,10 +462,19 @@ export class WatchRunner {
   private timer: NodeJS.Timeout | null = null;
   private running: Promise<WatchRound> | null = null;
   private stopped = false;
+  private readonly abort = new AbortController();
+  /** The folder's real path, as of this round. */
+  private root = '';
   /** Each file as last seen, and since when it has not changed. */
   private readonly seen = new Map<string, { size: number; mtimeMs: number; since: number }>();
-  /** Files that could not be moved to rejected/: left alone until then. */
+  /** Files left alone until then: could not be moved to rejected/. */
   private readonly held = new Map<string, number>();
+  /** Files stored that could not be deleted: said once, counted, tried again after RETRY_MS. */
+  private readonly stuck = new Map<string, { id: string; retry: number }>();
+  /** Files that stopped changing but did not look complete, since when. */
+  private readonly unfinished = new Map<string, { id: string; since: number }>();
+  /** The stuck count the owners were last told. */
+  private told = -1;
 
   constructor(
     private readonly deps: WatchDeps,
@@ -383,9 +509,13 @@ export class WatchRunner {
       .finally(next);
   }
 
-  /** Stops looking, lets the round under way finish, and lets go of the lock. */
+  /**
+   * Stops looking: between files, and a file on its way aborted (its row
+   * and object removed), then lets go of the lock.
+   */
   async stop(): Promise<void> {
     this.stopped = true;
+    this.abort.abort();
     if (this.timer) clearTimeout(this.timer);
     await this.running?.catch(() => undefined);
     await this.letGo();
@@ -410,23 +540,40 @@ export class WatchRunner {
   }
 
   /**
-   * The lock, held on a connection of its own for as long as this worker
-   * lives: asked for once a round until it is had, and checked once a
-   * round while it is. A connection that has gone has let go of it.
+   * Whether this connection still holds the lock, by pg_locks: a session
+   * lock on a connection that has gone is no lock, and a pooler that hands
+   * the session to somebody else would show it (README: a direct connection).
+   */
+  private async stillHolding(): Promise<boolean> {
+    const c = this.lock;
+    if (!c) return false;
+    try {
+      const { rows } = await c.query<{ held: boolean }>(
+        `select exists (select 1 from pg_locks
+                         where locktype = 'advisory' and pid = pg_backend_pid() and granted
+                           and classid = 0 and objid = $1 and objsubid = 1) as held`,
+        [WATCH_LOCK_KEY],
+      );
+      if (rows[0]?.held) return true;
+    } catch {
+      // Gone with its connection.
+    }
+    await this.letGo();
+    return false;
+  }
+
+  /**
+   * The lock, held on a connection of its own, kept alive, for as long as
+   * this worker lives: asked for once a round until it is had, and checked
+   * (stillHolding) at each round and before each file while it is.
    */
   private async holdLock(): Promise<boolean> {
-    if (this.lock) {
-      try {
-        await this.lock.query('select 1');
-        return true;
-      } catch {
-        await this.letGo();
-      }
-    }
+    if (this.lock && (await this.stillHolding())) return true;
     if (this.stopped) return false;
-    const c = new pg.Client({ connectionString: this.opts.lockUrl });
+    const c = new pg.Client({ connectionString: this.opts.lockUrl, keepAlive: true });
     c.on('error', () => {
       if (this.lock === c) this.lock = null;
+      void c.end().catch(() => undefined);
     });
     try {
       await c.connect();
@@ -475,8 +622,6 @@ export class WatchRunner {
       `delete from watch_notice where created_at < now() - make_interval(days => $1)`,
       [WATCH_NOTICE_DAYS],
     );
-    if (state !== 'ready') return out;
-
     const { rows } = await this.deps.admin.query<{
       household_id: string;
       member_id: string | null;
@@ -486,10 +631,16 @@ export class WatchRunner {
         order by household_id limit 1`,
     );
     const setting = rows[0];
+    if (state !== 'ready') {
+      // Not paused for its person's sake while the folder is not there at all.
+      if (setting) await this.paused(setting.household_id, setting.paused_reason, null);
+      return out;
+    }
     if (!setting) {
       this.seen.clear();
       return out;
     }
+    this.root = await this.fs.realpath(dir);
     const hh = setting.household_id;
     const target = await this.target(hh, setting.member_id);
     if ('pause' in target) {
@@ -504,6 +655,10 @@ export class WatchRunner {
     let pause: WatchPause | null = null;
     for (const f of ready.slice(0, this.opts.roundMax ?? WATCH_ROUND_MAX)) {
       if (this.stopped) break;
+      if (!(await this.stillHolding())) {
+        out.outcomes.push({ rel: f.rel, kind: 'stopped', why: 'the lock was lost' });
+        break;
+      }
       const r = await this.take(target, f).catch((err: unknown): WatchOutcome => ({
         kind: 'later',
         why: whyOf(err),
@@ -512,6 +667,7 @@ export class WatchRunner {
       if (r.kind === 'added') added++;
       if (r.kind === 'added' || r.kind === 'already' || r.kind === 'rejected') {
         this.seen.delete(f.rel);
+        this.unfinished.delete(f.rel);
       }
       if (r.kind === 'later') {
         this.deps.log('warn', 'a scanned file is to be tried again', {
@@ -522,9 +678,11 @@ export class WatchRunner {
         pause = r.reason;
         break;
       }
+      if (r.kind === 'stopped') break;
     }
     out.paused = pause;
     await this.paused(hh, setting.paused_reason, pause);
+    await this.tellStuck(hh, files);
     if (added > 0) {
       await withSystem(this.deps.db, hh, (trx) =>
         trx
@@ -554,6 +712,22 @@ export class WatchRunner {
         .execute(),
     );
     if (now) this.deps.log('info', 'the scanner folder is paused', { household: hh, why: now });
+  }
+
+  /** How many stored files could not be deleted, and are still there: told to the owners when it changes. */
+  private async tellStuck(hh: string, files: WatchFile[]) {
+    const here = new Map(files.map((f) => [f.rel, f.id]));
+    for (const [rel, s] of [...this.stuck]) if (here.get(rel) !== s.id) this.stuck.delete(rel);
+    const n = this.stuck.size;
+    if (n === this.told) return;
+    await withSystem(this.deps.db, hh, (trx) =>
+      trx
+        .updateTable('watch_folder')
+        .set({ stuck_files: n })
+        .where('household_id', '=', hh)
+        .execute(),
+    );
+    this.told = n;
   }
 
   /** Whose Inbox, as they are now — or why nothing can be added to it. */
@@ -600,6 +774,8 @@ export class WatchRunner {
       here.add(f.rel);
       const held = this.held.get(f.rel);
       if (held !== undefined && held > now) continue;
+      const stuck = this.stuck.get(f.rel);
+      if (stuck && stuck.id === f.id && stuck.retry > now) continue;
       const was = this.seen.get(f.rel);
       if (!was || was.size !== f.size || was.mtimeMs !== f.mtimeMs) {
         this.seen.set(f.rel, { size: f.size, mtimeMs: f.mtimeMs, since: now });
@@ -607,66 +783,169 @@ export class WatchRunner {
         ready.push(f);
       }
     }
-    for (const rel of [...this.seen.keys()]) if (!here.has(rel)) this.seen.delete(rel);
-    for (const rel of [...this.held.keys()]) if (!here.has(rel)) this.held.delete(rel);
+    for (const map of [this.seen, this.held, this.unfinished]) {
+      for (const rel of [...map.keys()]) if (!here.has(rel)) map.delete(rel);
+    }
     return ready;
   }
 
-  /** One file, taken: added, found added already, rejected — or why not now. */
-  private async take(t: Target, f: WatchFile): Promise<WatchOutcome> {
-    const hh = t.householdId;
-    const key = watchItemKey(this.deps.itemKey, hh, f);
-    // Taken before? Arrived, or decided since: the file only had to go.
-    const prior = await withSystem(this.deps.db, hh, (trx) =>
-      trx
-        .selectFrom('incoming_file')
-        .select(['id', 'state', 'storage_key', 'vault_id'])
-        .where('idempotency_key', '=', key)
-        .where('batch_id', 'is not', null)
-        .executeTakeFirst(),
-    );
-    if (prior && prior.state !== 'uploading') {
-      await this.remove(f);
-      return { kind: 'already' };
-    }
-    if (prior) {
-      // On its way when a worker stopped: removed, and added again.
-      await withSystem(this.deps.db, hh, async (trx) => {
-        const gone = await trx
-          .deleteFrom('incoming_file')
-          .where('id', '=', prior.id)
-          .where('state', '=', 'uploading')
-          .returning('id')
-          .executeTakeFirst();
-        if (gone) {
-          const adapter = await adapterOf(trx, this.deps, prior.vault_id);
-          await adapter.delete(prior.storage_key).catch(() => undefined);
-        }
-      });
-    }
-
-    if (f.size === 0) return this.reject(t, f, 'empty');
-    if (f.size > this.deps.maxBytes) return this.reject(t, f, 'too_large');
-    let head: Buffer;
+  /**
+   * The file opened, and checked to be the very file listed, inside the
+   * folder: O_NOFOLLOW, then on the handle a plain file of the listed
+   * device and inode — and, on Linux, the handle's own real path inside the
+   * folder's. Or why not: skipped (`later`), or unreadable.
+   */
+  private async open(f: WatchFile): Promise<Opened | { later: string } | { unreadable: true }> {
+    let fh: FileHandle;
     try {
-      const h = await this.fs.open(f.abs, 'r');
-      try {
-        const buf = Buffer.alloc(Math.min(HEAD_BYTES, f.size));
-        const { bytesRead } = await h.read(buf, 0, buf.length, 0);
-        head = buf.subarray(0, bytesRead);
-      } finally {
-        await h.close();
-      }
+      fh = await this.fs.open(f.abs, READ_FLAGS);
     } catch (err) {
-      if (code(err) === 'ENOENT') return { kind: 'later', why: 'gone' };
-      return this.reject(t, f, 'unreadable');
+      const c = code(err);
+      if (c === 'ENOENT' || c === 'ELOOP' || c === 'EMLINK' || c === 'ENOTDIR') {
+        return { later: `not the file listed (${c})` };
+      }
+      return { unreadable: true };
+    }
+    try {
+      const st = await fh.stat({ bigint: true });
+      if (!st.isFile() || idOf(st) !== f.id) throw new Error('not the file listed');
+      if (process.platform === 'linux') {
+        const real = await this.fs.readlink(`/proc/self/fd/${fh.fd}`);
+        if (!within(this.root, real)) throw new Error('outside the folder');
+      }
+      return { fh, st };
+    } catch (err) {
+      await fh.close().catch(() => undefined);
+      return { later: whyOf(err) };
+    }
+  }
+
+  /** Whether the name is still the file held: what is moved or deleted must be. */
+  private async stillThere(f: WatchFile): Promise<boolean> {
+    const st = await this.fs.lstat(f.abs, { bigint: true }).catch(() => null);
+    return st !== null && st.isFile() && !st.isSymbolicLink() && idOf(st) === f.id;
+  }
+
+  /** One file, taken: added, found added already, rejected, waited for — or why not now. */
+  private async take(t: Target, f: WatchFile): Promise<WatchOutcome> {
+    const opened = await this.open(f);
+    if ('later' in opened) return { kind: 'later', why: opened.later };
+    if ('unreadable' in opened) return this.reject(t, f, 'unreadable', null);
+    const { fh, st } = opened;
+    try {
+      return await this.takeOpen(t, f, fh, st);
+    } finally {
+      await fh.close().catch(() => undefined);
+    }
+  }
+
+  private async takeOpen(
+    t: Target,
+    f: WatchFile,
+    fh: FileHandle,
+    st: BigIntStats,
+  ): Promise<WatchOutcome> {
+    const hh = t.householdId;
+    const size = Number(st.size);
+    if (st.nlink !== 1n) return this.reject(t, f, 'linked', fh);
+    if (size === 0) return this.reject(t, f, 'empty', fh);
+    if (size > this.deps.maxBytes) return this.reject(t, f, 'too_large', fh);
+    const head = Buffer.alloc(Math.min(HEAD_BYTES, size));
+    const tail = Buffer.alloc(Math.min(TAIL_BYTES, size));
+    try {
+      await fh.read(head, 0, head.length, 0);
+      await fh.read(tail, 0, tail.length, size - tail.length);
+    } catch {
+      return this.reject(t, f, 'unreadable', fh);
     }
     const name = dropFileName(path.basename(f.abs));
     const kind = watchKindOf(head, name);
-    if (!kind) return this.reject(t, f, 'unsupported');
+    if (!kind) return this.reject(t, f, 'unsupported', fh);
+    if (!looksComplete(kind.mime, head, tail, size)) {
+      const was = this.unfinished.get(f.rel);
+      const since = was && was.id === f.id ? was.since : this.now();
+      this.unfinished.set(f.rel, { id: f.id, since });
+      if (this.now() - since >= WATCH_INCOMPLETE_MS) return this.reject(t, f, 'incomplete', fh);
+      return { kind: 'waiting' };
+    }
+    this.unfinished.delete(f.rel);
 
-    // Its row, on its way, in the day's batch: holding its place.
+    // Hashed first, from the handle: a file stored before is found by it.
+    const firstHash = createHash('sha256');
+    try {
+      for await (const chunk of bytesOf(fh, size, this.abort.signal)) firstHash.update(chunk);
+    } catch (err) {
+      if (this.abort.signal.aborted) return { kind: 'stopped', why: 'the worker is stopping' };
+      return { kind: 'later', why: `not read: ${whyOf(err)}` };
+    }
+    const sha = firstHash.digest();
+    const key = watchItemKey(this.deps.itemKey, hh, f, sha);
+
+    // Stored before, and waiting or accepted: the file only had to go. One
+    // removed from the Inbox since is added again.
+    const prior = await withSystem(this.deps.db, hh, (trx) =>
+      trx
+        .selectFrom('incoming_file as i')
+        .innerJoin('intake_batch as b', 'b.id', 'i.batch_id')
+        .select(['i.id'])
+        .where('i.requester_member_id', '=', t.memberId)
+        .where('b.watch_day', 'is not', null)
+        .where('i.state', 'in', ['received', 'accepted'])
+        .where('i.sha256', '=', sha)
+        .executeTakeFirst(),
+    );
+    if (prior) {
+      await this.remove(f);
+      return { kind: 'already' };
+    }
+    // On its way when a worker stopped: removed, and added again.
+    await withSystem(this.deps.db, hh, async (trx) => {
+      const gone = await trx
+        .deleteFrom('incoming_file')
+        .where('idempotency_key', '=', key)
+        .where('state', '=', 'uploading')
+        .returning(['storage_key', 'vault_id'])
+        .execute();
+      for (const g of gone) {
+        const adapter = await adapterOf(trx, this.deps, g.vault_id);
+        await adapter.delete(g.storage_key).catch(() => undefined);
+      }
+      // A removed one keeps no key a new one would need.
+      await trx
+        .updateTable('incoming_file')
+        .set({ idempotency_key: null })
+        .where('idempotency_key', '=', key)
+        .where('state', '=', 'rejected')
+        .execute();
+    });
+
+    await this.opts.beforePlace?.(f.rel);
+    // Its row, on its way, in the day's batch: holding its place — and the
+    // setting and its person asked again, held, as it is placed.
     const placed = await withSystem(this.deps.db, hh, async (trx) => {
+      const setting = await trx
+        .selectFrom('watch_folder')
+        .select(['enabled', 'member_id'])
+        .where('household_id', '=', hh)
+        .forShare()
+        .executeTakeFirst();
+      if (!setting?.enabled || setting.member_id !== t.memberId) {
+        return { stop: 'the scanner folder was changed' };
+      }
+      const signIn = await trx
+        .selectFrom('account_household')
+        .select(['role', 'suspended_at', 'suspended_until', 'suspend_reason'])
+        .where('member_id', '=', t.memberId)
+        .where('household_id', '=', hh)
+        .forShare()
+        .executeTakeFirst();
+      const member = await trx
+        .selectFrom('member')
+        .select('kind')
+        .where('id', '=', t.memberId)
+        .executeTakeFirst();
+      const pause = watchPauseOf(member ?? null, signIn ?? null, this.now());
+      if (pause) return { pause };
       let scopeKey;
       try {
         scopeKey = await this.deps.keys.unwrap(trx, {
@@ -711,6 +990,7 @@ export class WatchRunner {
         .executeTakeFirstOrThrow();
       return { id: row.id, storageKey: row.storage_key, adapter, fileKey };
     });
+    if ('stop' in placed) return { kind: 'stopped', why: placed.stop };
     if ('pause' in placed) return { kind: 'paused', reason: placed.pause };
     if ('later' in placed) return { kind: 'later', why: placed.later };
 
@@ -725,7 +1005,8 @@ export class WatchRunner {
       ).catch(() => undefined);
     };
 
-    // Its bytes counted and hashed as they go, encrypted straight to its object.
+    // Its bytes, from the same handle, counted and hashed as they go,
+    // encrypted straight to its object.
     const plainHash = createHash('sha256');
     let bytes = 0;
     const counted = new PassThrough();
@@ -736,7 +1017,9 @@ export class WatchRunner {
     });
     const enc = new EncryptStream(placed.fileKey);
     const storing = placed.adapter.put(placed.storageKey, enc);
-    const flowing = pipeline(createReadStream(f.abs), counted, enc);
+    const flowing = pipeline(Readable.from(bytesOf(fh, size, this.abort.signal)), counted, enc, {
+      signal: this.abort.signal,
+    });
     let put: { bytes: number; sha256: string };
     try {
       [put] = await Promise.all([storing, flowing]);
@@ -744,11 +1027,18 @@ export class WatchRunner {
       enc.destroy();
       await Promise.allSettled([storing, flowing]);
       await discard();
+      if (this.abort.signal.aborted) return { kind: 'stopped', why: 'the worker is stopping' };
       return { kind: 'later', why: `not stored: ${whyOf(err)}` };
     }
     // Changed as it was read — the scanner still writing after all: tried again.
-    const after = await this.fs.stat(f.abs).catch(() => null);
-    if (!after || bytes !== f.size || after.size !== f.size || after.mtimeMs !== f.mtimeMs) {
+    const after = await fh.stat({ bigint: true }).catch(() => null);
+    if (
+      !after ||
+      bytes !== size ||
+      after.size !== st.size ||
+      after.mtimeNs !== st.mtimeNs ||
+      !plainHash.digest().equals(sha)
+    ) {
       await discard();
       return { kind: 'later', why: 'changed as it was read' };
     }
@@ -761,7 +1051,7 @@ export class WatchRunner {
           state: 'received',
           mime: kind.mime,
           byte_size: bytes,
-          sha256: plainHash.digest(),
+          sha256: sha,
           cipher_bytes: put.bytes,
           cipher_sha256: Buffer.from(put.sha256, 'hex'),
           received_at: at,
@@ -836,12 +1126,21 @@ export class WatchRunner {
     return { id: b.id };
   }
 
-  /** The file deleted, once stored; a file that cannot be is tried again next round. */
+  /**
+   * The file deleted, once stored — only while its name is still the file
+   * stored. One that cannot be deleted is said once in the log, counted for
+   * the owners, and tried again after RETRY_MS.
+   */
   private async remove(f: WatchFile): Promise<void> {
+    if (!(await this.stillThere(f))) return;
     try {
       await this.fs.unlink(f.abs);
+      this.stuck.delete(f.rel);
     } catch (err) {
-      if (code(err) !== 'ENOENT') {
+      if (code(err) === 'ENOENT') return;
+      const had = this.stuck.get(f.rel);
+      this.stuck.set(f.rel, { id: f.id, retry: this.now() + RETRY_MS });
+      if (!had || had.id !== f.id) {
         this.deps.log('warn', 'a scanned file is stored but could not be deleted from the folder', {
           err: whyOf(err),
         });
@@ -850,25 +1149,67 @@ export class WatchRunner {
   }
 
   /**
-   * Moved to rejected/, a note beside it saying why, and its person told.
-   * A file that cannot be moved is left where it is, and tried again later.
+   * rejected/, made 0700 the first time; and only ever a real folder inside
+   * the folder, never a link to one.
    */
-  private async reject(t: Target, f: WatchFile, reason: WatchRejectReason): Promise<WatchOutcome> {
-    const dir = this.opts.dir as string;
-    const into = path.join(dir, WATCH_REJECTED_DIR);
+  private async rejectedDir(): Promise<string | null> {
+    const into = path.join(this.opts.dir as string, WATCH_REJECTED_DIR);
+    await this.fs.mkdir(into, { mode: 0o700 }).catch((err: unknown) => {
+      if (code(err) !== 'EEXIST') throw err;
+    });
+    const st = await this.fs.lstat(into);
+    if (!st.isDirectory() || st.isSymbolicLink()) return null;
+    const real = await this.fs.realpath(into);
+    return within(this.root, real) && real !== this.root ? into : null;
+  }
+
+  /**
+   * Moved to rejected/, its person told first (once a file, whatever
+   * happens after), a note beside it saying why. Moved by a hard link to a
+   * name nothing has and the old name's unlink — never over another file,
+   * and only while the name is still the file — or, where the folder takes
+   * no links, copied from the handle to a new file. A file that cannot be
+   * moved is left where it is, and tried again later.
+   */
+  private async reject(
+    t: Target,
+    f: WatchFile,
+    reason: WatchRejectReason,
+    fh: FileHandle | null,
+  ): Promise<WatchOutcome> {
     const original = path.basename(f.abs);
-    let as: string;
-    try {
-      await this.fs.mkdir(into, { recursive: true });
-      as = await this.freeName(into, original);
-      await this.fs.rename(f.abs, path.join(into, as));
-    } catch (err) {
-      this.held.set(f.rel, this.now() + REJECT_RETRY_MS);
-      this.deps.log('warn', 'a scanned file could not be moved to rejected/', {
-        err: whyOf(err),
-      });
+    const notName = (why: string): WatchOutcome => {
+      this.held.set(f.rel, this.now() + RETRY_MS);
+      this.deps.log('warn', 'a scanned file could not be moved to rejected/', { err: why });
       return { kind: 'later', why: 'could not be moved to rejected/' };
+    };
+    let into: string | null;
+    try {
+      into = await this.rejectedDir();
+    } catch (err) {
+      return notName(whyOf(err));
     }
+    if (!into) return notName('rejected/ is not a folder of its own');
+    await withSystem(this.deps.db, t.householdId, (trx) =>
+      trx
+        .insertInto('watch_notice')
+        .values({
+          household_id: t.householdId,
+          member_id: t.memberId,
+          file_name: [...dropFileName(original)].slice(0, 255).join(''),
+          reason,
+          file_key: watchItemKey(this.deps.itemKey, t.householdId, f),
+        })
+        .onConflict((oc) => oc.columns(['household_id', 'member_id', 'file_key']).doNothing())
+        .execute(),
+    );
+    let as: string | null;
+    try {
+      as = await this.move(f, into, original, fh);
+    } catch (err) {
+      return notName(whyOf(err));
+    }
+    if (!as) return notName('changed, or no name free');
     const words = watchRejectWords(reason, this.deps.maxBytes);
     const when = new Date(this.now()).toLocaleString('en-GB', {
       timeZone: t.timezone,
@@ -878,10 +1219,12 @@ export class WatchRunner {
       hour: '2-digit',
       minute: '2-digit',
     });
+    const shown = dropFileName(original);
+    const where = cleanRel(f.rel);
     const note = [
       `${WATCH_REJECTED_TITLE}.`,
       '',
-      `File: ${original}${f.rel !== original ? ` (it was ${f.rel})` : ''}`,
+      `File: ${shown}${where !== shown ? ` (it was ${where})` : ''}`,
       `When: ${when}`,
       `Why: ${words}`,
       '',
@@ -890,41 +1233,62 @@ export class WatchRunner {
       '',
     ].join('\n');
     await this.fs
-      .writeFile(path.join(into, `${as}.txt`), note)
+      .writeFile(path.join(into, `${as}.txt`), note, { flag: 'wx', mode: 0o600 })
       .catch((err: unknown) =>
-        this.deps.log('warn', 'a rejected scan’s note could not be written', { err: code(err) }),
+        this.deps.log('warn', 'a rejected scan’s note could not be written', { err: whyOf(err) }),
       );
-    await withSystem(this.deps.db, t.householdId, (trx) =>
-      trx
-        .insertInto('watch_notice')
-        .values({
-          household_id: t.householdId,
-          member_id: t.memberId,
-          file_name: [...dropFileName(original)].slice(0, 255).join(''),
-          reason,
-        })
-        .execute(),
-    );
     this.deps.log('info', 'a scanned file was moved to rejected/', { why: reason });
     return { kind: 'rejected', reason, as };
   }
 
-  /** A name in rejected/ nothing has: "scan.pdf", then "scan (2).pdf", and its note's too. */
-  private async freeName(into: string, name: string): Promise<string> {
+  /** The file moved into rejected/ under a name nothing has (lstat), or null when it changed. */
+  private async move(
+    f: WatchFile,
+    into: string,
+    name: string,
+    fh: FileHandle | null,
+  ): Promise<string | null> {
     const ext = path.extname(name);
     const stem = name.slice(0, name.length - ext.length);
-    for (let n = 1; n < 1000; n++) {
-      const candidate = n === 1 ? name : `${stem} (${n})${ext}`;
-      const taken = await Promise.all(
-        [candidate, `${candidate}.txt`].map((c) =>
-          this.fs.stat(path.join(into, c)).then(
+    const free = async (c: string) => {
+      for (const n of [c, `${c}.txt`]) {
+        if (
+          await this.fs.lstat(path.join(into, n)).then(
             () => true,
             () => false,
-          ),
-        ),
-      );
-      if (!taken.includes(true)) return candidate;
+          )
+        )
+          return false;
+      }
+      return true;
+    };
+    for (let n = 1; n < 1000; n++) {
+      const candidate = n === 1 ? name : `${stem} (${n})${ext}`;
+      if (!(await free(candidate))) continue;
+      if (!(await this.stillThere(f))) return null;
+      const to = path.join(into, candidate);
+      try {
+        await this.fs.link(f.abs, to);
+      } catch (err) {
+        const c = code(err);
+        if (c === 'EEXIST') continue;
+        if (!fh || !['EXDEV', 'EPERM', 'ENOTSUP', 'ENOSYS', 'EOPNOTSUPP'].includes(c)) throw err;
+        // No links here: a new file, from the handle.
+        const out = await this.fs.open(to, 'wx', 0o600).catch((e: unknown) => {
+          if (code(e) === 'EEXIST') return null;
+          throw e;
+        });
+        if (!out) continue;
+        try {
+          const st = await fh.stat({ bigint: true });
+          for await (const chunk of bytesOf(fh, Number(st.size))) await out.write(chunk);
+        } finally {
+          await out.close();
+        }
+      }
+      if (await this.stillThere(f)) await this.fs.unlink(f.abs);
+      return candidate;
     }
-    return `${stem} (${randomBytes(4).toString('hex')})${ext}`;
+    return null;
   }
 }

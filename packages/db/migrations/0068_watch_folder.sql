@@ -33,10 +33,12 @@
 --
 -- Nothing of a file's content is kept here: its bytes are an item's, under
 -- an item's rules. A file's place in the folder is kept only as the item's
--- Idempotency-Key (0062), a keyed hash of its path, size and time that says
--- nothing of them: a worker that stops between storing a file and deleting
--- it finds the item the next time, and deletes the file without making it
--- twice.
+-- Idempotency-Key (0062), a keyed hash of its path, size, time and SHA-256
+-- that says nothing of them, which finds an item a worker left on its way.
+-- A worker that stops between storing a file and deleting it finds the item
+-- the next time by the file's SHA-256 among that person's scanner items
+-- waiting or accepted, and deletes the file without making it twice; one
+-- removed from the Inbox since is added again.
 
 -- ------------------------------------------------------------ the folder
 
@@ -69,6 +71,10 @@ create table watch_folder (
                                             'restored', 'sealed', 'no_storage', 'day_full')),
   paused_at      timestamptz,
   last_added_at  timestamptz,
+  -- Files stored in the vault that the worker could not then delete from
+  -- the folder: still there, not encrypted. Owners are told the count.
+  stuck_files    integer not null default 0
+                   constraint watch_folder_stuck check (stuck_files between 0 and 100000),
   foreign key (member_id, household_id) references member (id, household_id)
     on delete set null (member_id)
 );
@@ -107,7 +113,7 @@ begin
   end if;
   if tg_op = 'INSERT' then
     if new.paused_reason is not null or new.paused_at is not null
-       or new.last_added_at is not null then
+       or new.last_added_at is not null or new.stuck_files <> 0 then
       raise exception 'what the worker says of the scanner folder is the worker''s'
         using errcode = 'insufficient_privilege';
     end if;
@@ -144,11 +150,17 @@ create table watch_notice (
   file_name    text not null constraint watch_notice_name check (char_length(file_name) between 1 and 255),
   reason       text not null
                  constraint watch_notice_reason
-                 check (reason in ('unsupported', 'too_large', 'unreadable', 'empty')),
+                 check (reason in ('unsupported', 'too_large', 'unreadable', 'empty',
+                                   'incomplete', 'linked')),
+  -- Which file it was, as a keyed hash of its place, size and time (no
+  -- name): the note is made before the file is moved, once however often
+  -- the move is tried.
+  file_key     uuid not null,
   created_at   timestamptz not null default now(),
   foreign key (member_id, household_id) references member (id, household_id) on delete cascade
 );
 create index watch_notice_member_idx on watch_notice (household_id, member_id, created_at desc);
+create unique index watch_notice_file_idx on watch_notice (household_id, member_id, file_key);
 create index watch_notice_created_idx on watch_notice (created_at);
 
 alter table watch_notice enable row level security;

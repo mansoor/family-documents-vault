@@ -479,8 +479,8 @@ async function seed(url: string): Promise<string> {
               [hh],
             );
             await c.query(
-              `insert into watch_notice (household_id, member_id, file_name, reason)
-               select $1, b.member_id, 'letter.zip', 'unsupported'
+              `insert into watch_notice (household_id, member_id, file_name, reason, file_key)
+               select $1, b.member_id, 'letter.zip', 'unsupported', gen_random_uuid()
                  from intake_batch b where b.household_id = $1`,
               [hh],
             );

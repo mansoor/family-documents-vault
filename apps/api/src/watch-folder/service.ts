@@ -8,6 +8,7 @@ import {
   watchDirWords,
   watchPauseOf,
   watchPauseWords,
+  watchStuckWords,
   watchRejectWords,
   type WatchCandidate,
   type WatchDirState,
@@ -110,7 +111,7 @@ export class WatchFolderService {
     return withPrincipal(this.db, p, async (trx) => {
       const setting = await trx
         .selectFrom('watch_folder')
-        .select(['enabled', 'member_id', 'paused_reason', 'last_added_at'])
+        .select(['enabled', 'member_id', 'paused_reason', 'last_added_at', 'stuck_files'])
         .where('household_id', '=', p.householdId)
         .executeTakeFirst();
       const candidates = await this.candidates(trx);
@@ -129,8 +130,13 @@ export class WatchFolderService {
             .select(['role', 'suspended_at', 'suspended_until', 'suspend_reason'])
             .where('member_id', '=', setting.member_id)
             .executeTakeFirst();
-          // As they are now; and what only the worker can tell, as it last said.
-          paused = watchPauseOf(m ?? null, signIn ?? null, this.now()) ?? setting.paused_reason;
+          // As they are now; and what only the worker can tell, as it last
+          // said — only while its word on the folder is fresh and ready: a
+          // pause the worker said before it stopped, or before the folder
+          // went, is not today's.
+          paused =
+            watchPauseOf(m ?? null, signIn ?? null, this.now()) ??
+            (state === 'ready' ? setting.paused_reason : null);
         }
       } else if (setting?.enabled) {
         paused = 'removed';
@@ -148,6 +154,8 @@ export class WatchFolderService {
         member_name: name,
         paused: paused ? { reason: paused, words: watchPauseWords(paused, name) } : null,
         last_added_at: setting?.last_added_at ? setting.last_added_at.toISOString() : null,
+        stuck_files: setting?.stuck_files ?? 0,
+        stuck_words: watchStuckWords(setting?.stuck_files ?? 0),
         candidates,
       };
     });

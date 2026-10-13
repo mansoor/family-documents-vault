@@ -463,7 +463,11 @@ async function main(): Promise<void> {
       maxBytes: config.FDV_MAX_UPLOAD_BYTES,
       sendBatchPreviews: (hh) => sendBatchPreviews(boss, hh),
     },
-    { dir: config.FDV_WATCH_DIR ?? null, lockUrl: config.DATABASE_URL },
+    {
+      dir: config.FDV_WATCH_DIR ?? null,
+      lockUrl: config.DATABASE_URL,
+      stableMs: config.FDV_WATCH_STABLE_SECONDS * 1000,
+    },
   );
   watch.start();
   if (config.FDV_WATCH_DIR) log('info', 'scanner folder set', { dir: config.FDV_WATCH_DIR });

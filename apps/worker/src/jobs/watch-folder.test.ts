@@ -1,35 +1,49 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { EnvKeyProvider, ScopeKeys, unwrapKey } from '@fdv/crypto';
 import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
-import { BATCH_MAX_FILES, scannerDay, watchIgnored } from '@fdv/shared';
+import { BATCH_MAX_FILES, scannerDay, WATCH_INCOMPLETE_MS, watchIgnored } from '@fdv/shared';
 import { LocalAdapter } from '@fdv/storage';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { loadConfig } from '../config.js';
 import { decryptToBuffer } from './process-version.js';
 import {
   checkWatchDir,
+  looksComplete,
+  WATCH_LOCK_KEY,
   watchItemKey,
   watchKindOf,
   WatchRunner,
   type WatchDeps,
   type WatchFs,
+  type WatchOptions,
   type WatchRound,
 } from './watch-folder.js';
 
 /**
  * The scanner folder (0.8.0, S3), in the worker: a file taken once it has
- * stood still, added to its person's batch of the day as Add → Many
- * documents adds one, and deleted; temp names, hidden files and rejected/
- * left alone; never two items of one file, whatever stops between storing
+ * stood still and looks complete, added to its person's batch of the day as
+ * Add → Many documents adds one, and deleted; temp names, hidden files and
+ * rejected/ left alone; nothing outside the folder ever read, written or
+ * removed — through a link, a junction, a hard link or a folder swapped
+ * mid-round; never two items of one file, whatever stops between storing
  * and deleting; what cannot be added moved to rejected/ with its reason and
- * its person told; one runner however many workers; paused while its person
- * cannot have files added, or the vault cannot store them; the folder known
- * to be missing or read-only; and what it adds its person's alone.
+ * its person told first; one runner however many workers, and a lost lock
+ * stops the round; the setting asked again as each file is placed; paused
+ * while its person cannot have files added, or the vault cannot store them;
+ * the folder known to be missing or read-only; and what it adds its
+ * person's alone.
+ *
+ * The tests of links, swaps and permissions run wherever the system can
+ * make them: all of them on Linux (the worker's own, and CI's node:22-alpine
+ * run); on Windows a folder link is a junction, and a file link or the
+ * /proc check is skipped.
  */
 
 const MASTER = 'watch-folder-test-master-key-with-32-bytes-or-more';
@@ -37,7 +51,14 @@ const PDF = (marker: string) =>
   Buffer.from(
     `%PDF-1.4\n% ${marker}\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n`,
   );
-const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
+/** A PNG's signature, a header, and its IEND: complete as far as its ends go. */
+const PNG = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 0,
+  0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+]);
+const LINUX = process.platform === 'linux';
+const WINDOWS = process.platform === 'win32';
+const ROOT_USER = process.getuid?.() === 0;
 
 describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
   let tdb: TestDatabase;
@@ -117,6 +138,9 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     await admin.query('delete from intake_batch where household_id = $1', [hh]);
     await admin.query('delete from watch_notice where household_id = $1', [hh]);
     await admin.query('delete from watch_folder where household_id = $1', [hh]);
+    await admin.query("update account_household set role = 'adult' where member_id = $1", [
+      people.adult.member,
+    ]);
     sent.length = 0;
   });
 
@@ -152,16 +176,24 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     },
     ...over,
   });
-  const runner = (dir: string | null, over: Partial<WatchDeps> = {}, fs?: WatchFs) => {
+  const runner = (
+    dir: string | null,
+    over: Partial<WatchDeps> = {},
+    fs?: WatchFs,
+    opts: Partial<WatchOptions> = {},
+  ) => {
     const r = new WatchRunner(deps(over), {
       dir,
       lockUrl: tdb.appUrl,
       now: () => clock,
       ...(fs ? { fs } : {}),
+      ...opts,
     });
     runners.push(r);
     return r;
   };
+  /** Node's own, with some of it stood in for. */
+  const fsWith = (over: Partial<WatchFs>): WatchFs => ({ ...fsp, ...over });
   /** Seen, then seen again once it has stood still: what the second look did. */
   const settle = async (r: WatchRunner): Promise<WatchRound> => {
     await r.tick();
@@ -175,10 +207,23 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     return abs;
   };
   const there = (p: string) =>
-    fsp.stat(p).then(
+    fsp.lstat(p).then(
       () => true,
       () => false,
     );
+  /** A link to a folder: a junction on Windows, which needs no privilege. */
+  const linkDir = (target: string, at: string) =>
+    fsp.symlink(target, at, WINDOWS ? 'junction' : 'dir');
+  /** A link to a file, where the system lets this user make one. */
+  const linkFile = async (target: string, at: string) => {
+    try {
+      await fsp.symlink(target, at, 'file');
+      return true;
+    } catch (err) {
+      if (WINDOWS) return false;
+      throw err;
+    }
+  };
   const items = async () =>
     (
       await admin.query<{
@@ -205,13 +250,34 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
         [hh],
       )
     ).rows;
-  const pausedAs = async () =>
+  const setting = async () =>
     (
-      await admin.query<{ paused_reason: string | null }>(
-        'select paused_reason from watch_folder where household_id = $1',
+      await admin.query<{ paused_reason: string | null; stuck_files: number }>(
+        'select paused_reason, stuck_files from watch_folder where household_id = $1',
         [hh],
       )
-    ).rows[0]?.paused_reason;
+    ).rows[0];
+  const pausedAs = async () => (await setting())?.paused_reason;
+  const notes = async () =>
+    (
+      await admin.query<{ member_id: string; file_name: string; reason: string }>(
+        'select member_id, file_name, reason from watch_notice where household_id = $1 order by file_name, reason',
+        [hh],
+      )
+    ).rows;
+  /** Every file under a folder outside the scanner folder, and its bytes: what must not change. */
+  const snapshot = async (dir: string) => {
+    const out: Record<string, string> = {};
+    for (const n of (await fsp.readdir(dir, { recursive: true })).map(String).sort()) {
+      const p = path.join(dir, n);
+      const st = await fsp.lstat(p);
+      if (st.isFile())
+        out[n] = createHash('sha256')
+          .update(await fsp.readFile(p))
+          .digest('hex');
+    }
+    return out;
+  };
 
   // ------------------------------------------------------------ taking a file
 
@@ -269,6 +335,80 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     expect(both[1]?.mime).toBe('image/png');
   });
 
+  it('waits as long as FDV_WATCH_STABLE_SECONDS says (10 by default)', async () => {
+    expect(
+      loadConfig({ DATABASE_URL: 'postgres://x/y', FDV_MASTER_KEY: 'k'.repeat(43) })
+        .FDV_WATCH_STABLE_SECONDS,
+    ).toBe(10);
+    const dir = await folder();
+    await turnOn('adult');
+    const r = runner(dir, {}, undefined, { stableMs: 30_000 });
+    await write(dir, 'slow.pdf', PDF('slow'));
+    expect((await settle(r)).outcomes).toEqual([]);
+    clock += 20_000;
+    expect((await r.tick()).outcomes).toMatchObject([{ rel: 'slow.pdf', kind: 'added' }]);
+  });
+
+  it('waits for a file that has stopped changing but looks unfinished, and a day on rejects it', async () => {
+    const dir = await folder();
+    await turnOn('adult');
+    const r = runner(dir);
+    // A PDF with no end yet, a JPEG cut off, and one whose tail is space set aside.
+    await write(dir, 'cut.pdf', Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\n'));
+    await write(dir, 'cut.jpg', Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]));
+    await write(dir, 'zeros.pdf', Buffer.concat([PDF('zeros'), Buffer.alloc(4096)]));
+    const round = await settle(r);
+    expect(round.outcomes.map((o) => [o.rel, o.kind])).toEqual([
+      ['cut.jpg', 'waiting'],
+      ['cut.pdf', 'waiting'],
+      ['zeros.pdf', 'waiting'],
+    ]);
+    expect(await items()).toEqual([]);
+    // Finished after all: taken.
+    await fsp.appendFile(path.join(dir, 'cut.jpg'), Buffer.from([0xff, 0xd9]));
+    clock += 60_000;
+    await r.tick();
+    clock += 11_000;
+    const done = await r.tick();
+    expect(done.outcomes.find((o) => o.rel === 'cut.jpg')?.kind).toBe('added');
+    // Never finished: a day on, rejected as such, and its person told.
+    clock += WATCH_INCOMPLETE_MS;
+    const late = await r.tick();
+    expect(late.outcomes.map((o) => [o.rel, o.kind === 'rejected' ? o.reason : o.kind])).toEqual([
+      ['cut.pdf', 'incomplete'],
+      ['zeros.pdf', 'incomplete'],
+    ]);
+    expect((await notes()).map((n) => n.reason)).toEqual(['incomplete', 'incomplete']);
+    // The rule itself, by its ends alone.
+    expect(looksComplete('application/pdf', PDF('x'), PDF('x'), 1)).toBe(true);
+    expect(looksComplete('image/png', PNG, PNG, PNG.length)).toBe(true);
+    expect(looksComplete('image/png', PNG, PNG.subarray(0, 12), PNG.length)).toBe(false);
+    const zip = Buffer.concat([
+      Buffer.from('PK\x03\x04....'),
+      Buffer.from('PK\x05\x06'),
+      Buffer.alloc(18, 1),
+    ]);
+    expect(
+      looksComplete(
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        zip,
+        zip,
+        zip.length,
+      ),
+    ).toBe(true);
+    expect(
+      looksComplete(
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        zip,
+        zip.subarray(0, 8),
+        zip.length,
+      ),
+    ).toBe(false);
+    const webp = Buffer.from('RIFF\x0c\x00\x00\x00WEBPVP8 ', 'latin1');
+    expect(looksComplete('image/webp', webp, webp, 20)).toBe(true);
+    expect(looksComplete('image/webp', webp, webp, 40)).toBe(false);
+  });
+
   it('leaves temp names, hidden files and rejected/ alone, and takes files in folders inside it', async () => {
     const dir = await folder();
     await turnOn('adult');
@@ -300,43 +440,236 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     ]);
   });
 
+  // ------------------------------------------------------------ the folder's own, and nothing else
+
+  it('never reads, adds or deletes anything through a linked folder, a junction or a linked file', async () => {
+    const dir = await folder();
+    const outside = await folder();
+    await turnOn('adult');
+    await write(outside, 'secret.pdf', PDF('outside the folder'));
+    await write(outside, 'deep/also.pdf', PDF('outside, deeper'));
+    const before = await snapshot(outside);
+    await linkDir(outside, path.join(dir, 'Swapped'));
+    await linkDir(path.join(outside, 'deep'), path.join(dir, 'Inner'));
+    const fileLinked = await linkFile(path.join(outside, 'secret.pdf'), path.join(dir, 'link.pdf'));
+    await write(dir, 'own.pdf', PDF('the folder’s own'));
+    const opened: string[] = [];
+    const watching = fsWith({
+      open: (async (p: string, flags: number) => {
+        opened.push(String(p));
+        return fsp.open(p, flags);
+      }) as WatchFs['open'],
+    });
+    const r = runner(dir, {}, watching);
+    const round = await settle(r);
+    expect(round.outcomes).toMatchObject([{ rel: 'own.pdf', kind: 'added' }]);
+    expect((await items()).map((i) => i.original_name)).toEqual(['own.pdf']);
+    // Nothing outside opened, nothing outside changed, the links left where they are.
+    expect(opened.filter((p) => !p.endsWith('own.pdf'))).toEqual([]);
+    expect(await snapshot(outside)).toEqual(before);
+    expect(await there(path.join(dir, 'Swapped'))).toBe(true);
+    if (fileLinked) expect(await there(path.join(dir, 'link.pdf'))).toBe(true);
+    expect(await notes()).toEqual([]);
+  });
+
+  it('a hard link to a file elsewhere is never read: it is moved aside as a linked copy, and the other left as it was', async () => {
+    const dir = await folder();
+    const outside = await folder();
+    await turnOn('adult');
+    const elsewhere = await write(outside, 'payslip.pdf', PDF('a payslip kept elsewhere'));
+    const before = await snapshot(outside);
+    await fsp.link(elsewhere, path.join(dir, 'payslip.pdf'));
+    const read: number[] = [];
+    const r = runner(
+      dir,
+      {},
+      fsWith({
+        open: (async (p: string, flags: number | string, mode?: number) => {
+          const fh = await fsp.open(p, flags, mode);
+          const real = fh.read.bind(fh);
+          fh.read = async (...a: Parameters<typeof fh.read>) => {
+            read.push(1);
+            return real(...a);
+          };
+          return fh;
+        }) as WatchFs['open'],
+      }),
+    );
+    const round = await settle(r);
+    expect(round.outcomes).toMatchObject([
+      { rel: 'payslip.pdf', kind: 'rejected', reason: 'linked' },
+    ]);
+    expect(read).toEqual([]);
+    expect(await items()).toEqual([]);
+    expect(await snapshot(outside)).toEqual(before);
+    expect(await there(path.join(dir, 'payslip.pdf'))).toBe(false);
+    expect(await fsp.readFile(path.join(dir, 'rejected', 'payslip.pdf.txt'), 'utf8')).toMatch(
+      /linked copy of a file kept somewhere else/,
+    );
+    expect((await notes()).map((n) => n.reason)).toEqual(['linked']);
+  });
+
+  it('a folder swapped for a link to another as the file is opened: a different file there is never read nor deleted', async () => {
+    const dir = await folder();
+    const outside = await folder();
+    await turnOn('adult');
+    await write(dir, 'Letters/bill.pdf', PDF('the bill listed'));
+    const decoy = await write(
+      outside,
+      'Letters/bill.pdf',
+      PDF('a file outside with the same name'),
+    );
+    const before = await snapshot(outside);
+    let swapped = false;
+    const r = runner(
+      dir,
+      {},
+      fsWith({
+        open: (async (p: string, flags: number | string, mode?: number) => {
+          if (!swapped && String(p).endsWith('bill.pdf')) {
+            swapped = true;
+            await fsp.rename(path.join(dir, 'Letters'), path.join(dir, '.gone'));
+            await linkDir(path.join(outside, 'Letters'), path.join(dir, 'Letters'));
+          }
+          return fsp.open(p, flags, mode);
+        }) as WatchFs['open'],
+      }),
+    );
+    const round = await settle(r);
+    expect(swapped).toBe(true);
+    expect(round.outcomes.map((o) => o.kind)).toEqual(['later']);
+    expect(await items()).toEqual([]);
+    expect(await snapshot(outside)).toEqual(before);
+    expect(await there(decoy)).toBe(true);
+  });
+
+  it.skipIf(!LINUX)(
+    'a folder moved outside and linked back as the file is opened: the very file, now outside, is never read (Linux, /proc)',
+    async () => {
+      const dir = await folder();
+      const outside = await folder();
+      await turnOn('adult');
+      await write(dir, 'Letters/deed.pdf', PDF('the deed'));
+      let swapped = false;
+      const r = runner(
+        dir,
+        {},
+        fsWith({
+          open: (async (p: string, flags: number | string, mode?: number) => {
+            if (!swapped && String(p).endsWith('deed.pdf')) {
+              swapped = true;
+              // The same file — same device, same inode — but no longer in the folder.
+              await fsp.rename(path.join(dir, 'Letters'), path.join(outside, 'Letters'));
+              await fsp.symlink(path.join(outside, 'Letters'), path.join(dir, 'Letters'), 'dir');
+            }
+            return fsp.open(p, flags, mode);
+          }) as WatchFs['open'],
+        }),
+      );
+      const round = await settle(r);
+      expect(swapped).toBe(true);
+      expect(round.outcomes).toMatchObject([{ rel: 'Letters/deed.pdf', kind: 'later' }]);
+      expect(await items()).toEqual([]);
+      expect(await there(path.join(outside, 'Letters', 'deed.pdf'))).toBe(true);
+    },
+  );
+
+  it.skipIf(!LINUX)(
+    'a file swapped for a link to itself moved outside, as it is opened, is never read (Linux)',
+    async () => {
+      const dir = await folder();
+      const outside = await folder();
+      await turnOn('adult');
+      const scan = await write(dir, 'deed.pdf', PDF('the deed'));
+      let swapped = false;
+      const r = runner(
+        dir,
+        {},
+        fsWith({
+          open: (async (p: string, flags: number | string, mode?: number) => {
+            if (!swapped && String(p).endsWith('deed.pdf')) {
+              swapped = true;
+              await fsp.rename(scan, path.join(outside, 'deed.pdf'));
+              await fsp.symlink(path.join(outside, 'deed.pdf'), scan, 'file');
+            }
+            return fsp.open(p, flags, mode);
+          }) as WatchFs['open'],
+        }),
+      );
+      const round = await settle(r);
+      expect(swapped).toBe(true);
+      expect(round.outcomes).toMatchObject([{ rel: 'deed.pdf', kind: 'later' }]);
+      expect(await items()).toEqual([]);
+      expect(await there(path.join(outside, 'deed.pdf'))).toBe(true);
+    },
+  );
+
+  it('a file swapped for another after it is stored is not deleted: only the file stored is', async () => {
+    const dir = await folder();
+    await turnOn('adult');
+    const scan = await write(dir, 'swap.pdf', PDF('the file stored'));
+    const r = runner(dir, {}, undefined, {
+      beforePlace: async () => {
+        await fsp.rename(scan, path.join(dir, '.kept-aside'));
+        await fsp.writeFile(scan, PDF('a new file under the same name'));
+      },
+    });
+    const round = await settle(r);
+    expect(round.outcomes).toMatchObject([{ rel: 'swap.pdf', kind: 'added' }]);
+    // What was stored is what was opened, and the new file is still there.
+    expect(await fsp.readFile(scan, 'utf8')).toMatch(/a new file under the same name/);
+  });
+
   // ------------------------------------------------------------ never twice
 
-  it('a worker that stops between storing and deleting makes no second item; one that stops on the way adds it once', async () => {
+  it('a worker that stops between storing and deleting makes no second item, under a new master key too; one removed from the Inbox is added again', async () => {
     const dir = await folder();
     await turnOn('adult');
     const scan = await write(dir, 'deed.pdf', PDF('deed'));
+    const said: string[] = [];
     // Stored, and then the delete never happens: the worker stopped.
-    const stuck: WatchFs = {
-      ...(await import('node:fs/promises')),
-      unlink: async (p) => {
-        if (String(p).endsWith('deed.pdf'))
+    const stuck = fsWith({
+      unlink: (async (p: string) => {
+        if (String(p).endsWith('deed.pdf')) {
           throw Object.assign(new Error('stopped'), { code: 'EIO' });
+        }
         return fsp.unlink(p);
-      },
-    };
-    const first = runner(dir, {}, stuck);
+      }) as WatchFs['unlink'],
+    });
+    const first = runner(dir, { log: (_l, m) => said.push(m) }, stuck);
     expect((await settle(first)).outcomes).toMatchObject([{ rel: 'deed.pdf', kind: 'added' }]);
     expect(await there(scan)).toBe(true);
+    // Counted for the owners, and said once however often it is tried.
+    expect((await setting())?.stuck_files).toBe(1);
+    clock += 11 * 60_000;
+    await first.tick();
+    clock += 11 * 60_000;
+    await first.tick();
+    expect(said.filter((m) => m.includes('could not be deleted'))).toHaveLength(1);
     await first.stop();
-    // The next worker: the same file, the same item — found, and the file deleted.
-    const next = runner(dir);
+    // The next worker — on a rotated master key, so another item key: the
+    // same bytes, the same item — found, and the file deleted.
+    const next = runner(dir, { itemKey: Buffer.alloc(32, 9) });
     expect((await settle(next)).outcomes).toMatchObject([{ rel: 'deed.pdf', kind: 'already' }]);
     expect(await there(scan)).toBe(false);
     expect((await items()).length).toBe(1);
+    expect((await setting())?.stuck_files).toBe(0);
 
-    // Removed from the Inbox before the file went: still not added again.
+    // Removed from the Inbox before the file went: added again.
     const again = await write(dir, 'again.pdf', PDF('again'));
-    const stuck2: WatchFs = {
-      ...stuck,
-      unlink: async (p) => {
-        if (String(p).endsWith('again.pdf'))
-          throw Object.assign(new Error('stopped'), { code: 'EIO' });
-        return fsp.unlink(p);
-      },
-    };
     await next.stop();
-    const third = runner(dir, {}, stuck2);
+    const third = runner(
+      dir,
+      {},
+      fsWith({
+        unlink: (async (p: string) => {
+          if (String(p).endsWith('again.pdf')) {
+            throw Object.assign(new Error('stopped'), { code: 'EIO' });
+          }
+          return fsp.unlink(p);
+        }) as WatchFs['unlink'],
+      }),
+    );
     expect((await settle(third)).outcomes).toMatchObject([{ rel: 'again.pdf', kind: 'added' }]);
     await admin.query(
       `update incoming_file set state = 'rejected', decided_at = now(), original_name = null, sha256 = null
@@ -344,27 +677,38 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     );
     await third.stop();
     const fourth = runner(dir);
-    expect((await settle(fourth)).outcomes).toMatchObject([{ rel: 'again.pdf', kind: 'already' }]);
+    expect((await settle(fourth)).outcomes).toMatchObject([{ rel: 'again.pdf', kind: 'added' }]);
     expect(await there(again)).toBe(false);
-    expect((await items()).length).toBe(2);
+    expect((await items()).map((i) => i.state)).toEqual(['received', 'rejected', 'received']);
+
+    // A file with the same path, size and time but other bytes is a file of its own.
+    const same = await write(dir, 'same.pdf', PDF('one'));
+    const st = await fsp.stat(same);
+    expect((await settle(fourth)).outcomes).toMatchObject([{ rel: 'same.pdf', kind: 'added' }]);
+    await write(dir, 'same.pdf', PDF('two'));
+    await fsp.utimes(same, st.atime, st.mtime);
+    expect((await settle(fourth)).outcomes).toMatchObject([{ rel: 'same.pdf', kind: 'added' }]);
 
     // On its way when the worker stopped: that row (and its object) go, and it is added once.
     const will = await write(dir, 'will.pdf', PDF('will'));
-    const st = await fsp.stat(will);
-    const key = watchItemKey(Buffer.alloc(32, 7), hh, {
-      rel: 'will.pdf',
-      size: st.size,
-      mtimeMs: st.mtimeMs,
-    });
+    const wst = await fsp.stat(will);
+    const sha = createHash('sha256').update(PDF('will')).digest();
+    const key = watchItemKey(
+      Buffer.alloc(32, 7),
+      hh,
+      {
+        rel: 'will.pdf',
+        size: wst.size,
+        mtimeMs: Number((await fsp.stat(will, { bigint: true })).mtimeMs),
+      },
+      sha,
+    );
     const batch = (await items())[0];
     const scope = await withSystem(db, hh, (trx) =>
       keys.unwrap(trx, { householdId: hh, kind: 'member', memberId: people.adult.member }),
     );
     const halfKey = `${hh}/batches/half-${randomBytes(4).toString('hex')}.enc`;
-    await new LocalAdapter(root).put(
-      halfKey,
-      (await import('node:stream')).Readable.from([Buffer.from('half')]),
-    );
+    await new LocalAdapter(root).put(halfKey, Readable.from([Buffer.from('half')]));
     await admin.query(
       `insert into incoming_file (household_id, batch_id, review_by, requester_member_id, state,
                                   original_name, storage_key, vault_id, file_key_wrapped,
@@ -383,7 +727,7 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
 
   // ------------------------------------------------------------ rejected
 
-  it('moves what it cannot add to rejected/, with a note saying why, and tells its person', async () => {
+  it('moves what it cannot add to rejected/, its person told first, with a note saying why', async () => {
     const dir = await folder();
     await turnOn('adult');
     const big = Buffer.concat([PDF('big'), Buffer.alloc(70 * 1024, 0x20)]);
@@ -395,15 +739,14 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     // And two of the same name, from two folders.
     await write(dir, 'a/form.bmp', Buffer.from('BM not kept'));
     await write(dir, 'b/form.bmp', Buffer.from('BM not kept either'));
-    const unreadable: WatchFs = {
-      ...(await import('node:fs/promises')),
-      open: (async (p: string, flags: string) => {
+    const unreadable = fsWith({
+      open: (async (p: string, flags: number | string, mode?: number) => {
         if (String(p).endsWith('locked.pdf')) {
           throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
         }
-        return fsp.open(p, flags);
+        return fsp.open(p, flags, mode);
       }) as WatchFs['open'],
-    };
+    });
     const r = runner(dir, {}, unreadable);
     const round = await settle(r);
     const why = Object.fromEntries(
@@ -435,11 +778,7 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     expect(await note('form (2).bmp')).toMatch(/File: form\.bmp \(it was b\/form\.bmp\)/);
     expect(await note('notes.txt')).toMatch(/not encrypted/);
     // Its person told, each by name and why — and nobody else.
-    const notes = await admin.query<{ member_id: string; file_name: string; reason: string }>(
-      'select member_id, file_name, reason from watch_notice where household_id = $1 order by file_name, reason',
-      [hh],
-    );
-    expect(notes.rows).toEqual(
+    expect(await notes()).toEqual(
       [
         ['blank.pdf', 'empty'],
         ['form.bmp', 'unsupported'],
@@ -455,6 +794,83 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     expect((await settle(r)).outcomes).toEqual([]);
   });
 
+  it('tells its person before it moves the file, once, however often the move is tried', async () => {
+    const dir = await folder();
+    await turnOn('adult');
+    const odd = await write(dir, 'odd.gif', Buffer.from('GIF89a'));
+    let refuse = true;
+    const r = runner(
+      dir,
+      {},
+      fsWith({
+        link: (async (from: string, to: string) => {
+          if (refuse) throw Object.assign(new Error('no'), { code: 'EACCES' });
+          return fsp.link(from, to);
+        }) as WatchFs['link'],
+      }),
+    );
+    expect((await settle(r)).outcomes).toMatchObject([{ rel: 'odd.gif', kind: 'later' }]);
+    // Told, though the file could not be moved yet: a stop now loses nothing.
+    expect((await notes()).map((n) => n.file_name)).toEqual(['odd.gif']);
+    expect(await there(odd)).toBe(true);
+    refuse = false;
+    clock += 11 * 60_000;
+    expect((await r.tick()).outcomes).toMatchObject([{ rel: 'odd.gif', kind: 'rejected' }]);
+    expect((await notes()).map((n) => n.file_name)).toEqual(['odd.gif']);
+    expect(await there(odd)).toBe(false);
+  });
+
+  it('never writes a note through a link left at its name, nor over another file; and makes rejected/ a folder of its own', async () => {
+    const dir = await folder();
+    const outside = await folder();
+    await turnOn('adult');
+    await fsp.mkdir(path.join(dir, 'rejected'));
+    const planted = await linkFile(
+      path.join(outside, 'written-through.txt'),
+      path.join(dir, 'rejected', 'letter.zip.txt'),
+    );
+    await fsp.writeFile(path.join(dir, 'rejected', 'letter (2).zip'), 'somebody’s own');
+    await write(dir, 'letter.zip', Buffer.from('PK\x03\x04 not a document'));
+    const r = runner(dir);
+    const round = await settle(r);
+    expect(round.outcomes).toMatchObject([
+      { rel: 'letter.zip', kind: 'rejected', as: planted ? 'letter (3).zip' : 'letter.zip' },
+    ]);
+    // Nothing written outside; nothing overwritten.
+    expect(await fsp.readdir(outside)).toEqual([]);
+    expect(await fsp.readFile(path.join(dir, 'rejected', 'letter (2).zip'), 'utf8')).toBe(
+      'somebody’s own',
+    );
+    // rejected/ as a link to somewhere else: nothing moved into it.
+    const dir2 = await folder();
+    await linkDir(outside, path.join(dir2, 'rejected'));
+    await write(dir2, 'other.zip', Buffer.from('PK\x03\x04 not a document'));
+    await r.stop();
+    const r2 = runner(dir2);
+    expect((await settle(r2)).outcomes).toMatchObject([{ rel: 'other.zip', kind: 'later' }]);
+    expect(await fsp.readdir(outside)).toEqual([]);
+    expect(await there(path.join(dir2, 'other.zip'))).toBe(true);
+  });
+
+  it.skipIf(!LINUX || ROOT_USER)(
+    'makes rejected/ 0700 and each note 0600, and a name’s control characters never reach a note (Linux)',
+    async () => {
+      const dir = await folder();
+      await turnOn('adult');
+      await write(dir, 'evil\nWhy: it is fine.zip', Buffer.from('PK\x03\x04 not a document'));
+      const r = runner(dir);
+      expect((await settle(r)).outcomes.map((o) => o.kind)).toEqual(['rejected']);
+      const rejected = path.join(dir, 'rejected');
+      expect((await fsp.stat(rejected)).mode & 0o777).toBe(0o700);
+      const [noteName] = (await fsp.readdir(rejected)).filter((n) => n.endsWith('.txt'));
+      const note = path.join(rejected, noteName as string);
+      expect((await fsp.stat(note)).mode & 0o777).toBe(0o600);
+      const text = await fsp.readFile(note, 'utf8');
+      expect(text.split('\n').filter((l) => l.startsWith('Why:'))).toHaveLength(1);
+      expect(text).toMatch(/File: evilWhy: it is fine\.zip/);
+    },
+  );
+
   it('never names a scanned file, or its folders, in the log', async () => {
     const dir = await folder();
     await turnOn('adult');
@@ -462,20 +878,19 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     await write(dir, 'Clinic/biopsy-secret.pdf', PDF('biopsy'));
     const said: string[] = [];
     // A system that names the file in every refusal, as node's own do.
-    const refusing: WatchFs = {
-      ...(await import('node:fs/promises')),
-      rename: (async (from: string) => {
-        throw Object.assign(new Error(`EPERM: operation not permitted, rename '${from}'`), {
-          code: 'EPERM',
+    const refusing = fsWith({
+      link: (async (from: string) => {
+        throw Object.assign(new Error(`EACCES: permission denied, link '${from}'`), {
+          code: 'EACCES',
         });
-      }) as WatchFs['rename'],
+      }) as WatchFs['link'],
       unlink: (async (p: string) => {
         if (!p.includes('secret')) return fsp.unlink(p);
         throw Object.assign(new Error(`EBUSY: resource busy or locked, unlink '${p}'`), {
           code: 'EBUSY',
         });
       }) as WatchFs['unlink'],
-    };
+    });
     const r = runner(
       dir,
       { log: (level, msg, extra) => said.push(JSON.stringify({ level, msg, extra })) },
@@ -484,7 +899,7 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     const round = await settle(r);
     expect(round.outcomes.map((o) => o.kind).sort()).toEqual(['added', 'later']);
     const log = said.join('\n');
-    expect(log).toMatch(/EPERM/);
+    expect(log).toMatch(/EACCES/);
     expect(log).toMatch(/EBUSY/);
     for (const word of ['secret', 'Clinic', 'hiv', 'biopsy']) expect(log).not.toContain(word);
   });
@@ -515,9 +930,7 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     for (let n = 1; n <= 4; n++) await write(dir, `page-${n}.pdf`, PDF(`page ${n}`));
     const a = runner(dir);
     const b = runner(dir);
-    const firstA = a.tick();
-    const firstB = b.tick();
-    const [ra, rb] = await Promise.all([firstA, firstB]);
+    const [ra, rb] = await Promise.all([a.tick(), b.tick()]);
     expect([ra.ran, rb.ran].sort()).toEqual([false, true]);
     const [holder, waiting] = ra.ran ? [a, b] : [b, a];
     expect(holder.holding).toBe(true);
@@ -533,6 +946,102 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     expect((await settle(waiting)).outcomes).toMatchObject([{ rel: 'page-5.pdf', kind: 'added' }]);
     expect(waiting.holding).toBe(true);
     expect((await items()).length).toBe(5);
+  });
+
+  it('a lost lock stops the round before the next file, and the worker that lost it never looks again while another holds it', async () => {
+    const dir = await folder();
+    await turnOn('adult');
+    await write(dir, 'one.pdf', PDF('one'));
+    await write(dir, 'two.pdf', PDF('two'));
+    const killLock = () =>
+      admin.query(
+        `select pg_terminate_backend(pid) from pg_locks
+          where locktype = 'advisory' and classid = 0 and objid = $1 and objsubid = 1
+            and database = (select oid from pg_database where datname = current_database())`,
+        [WATCH_LOCK_KEY],
+      );
+    let killed = false;
+    const a = runner(dir, {}, undefined, {
+      beforePlace: async () => {
+        if (!killed) {
+          killed = true;
+          await killLock();
+        }
+      },
+    });
+    const round = await settle(a);
+    expect(round.outcomes.map((o) => [o.rel, o.kind])).toEqual([
+      ['one.pdf', 'added'],
+      ['two.pdf', 'stopped'],
+    ]);
+    // Another worker takes it, and the first one, asking again, is refused.
+    const b = runner(dir);
+    expect((await b.tick()).ran).toBe(true);
+    expect((await a.tick()).ran).toBe(false);
+    expect(a.holding).toBe(false);
+  });
+
+  // ------------------------------------------------------------ changed under it
+
+  it('asks again as each file is placed: turned off, pointed elsewhere or its person made a viewer mid-round, nothing is added', async () => {
+    const dir = await folder();
+    for (const change of [
+      () => admin.query('update watch_folder set enabled = false where household_id = $1', [hh]),
+      () =>
+        admin.query('update watch_folder set member_id = $2 where household_id = $1', [
+          hh,
+          people.other.member,
+        ]),
+      () =>
+        admin.query("update account_household set role = 'viewer' where member_id = $1", [
+          people.adult.member,
+        ]),
+    ]) {
+      await turnOn('adult');
+      await admin.query("update account_household set role = 'adult' where member_id = $1", [
+        people.adult.member,
+      ]);
+      const scan = await write(dir, 'mid.pdf', PDF('mid-round'));
+      const r = runner(dir, {}, undefined, { beforePlace: async () => void (await change()) });
+      const round = await settle(r);
+      expect(round.outcomes.map((o) => o.kind)).toEqual([
+        expect.stringMatching(/^(stopped|paused)$/),
+      ]);
+      expect(await items()).toEqual([]);
+      expect(await there(scan)).toBe(true);
+      await r.stop();
+    }
+  });
+
+  it('stops between files, and a file on its way is aborted: its row and object removed, the file kept', async () => {
+    const dir = await folder();
+    await turnOn('adult');
+    const scan = await write(dir, 'big.pdf', PDF('on its way'));
+    await write(dir, 'next.pdf', PDF('never started'));
+    const objects = async () =>
+      (await fsp.readdir(root, { recursive: true })).map(String).filter((k) => k.endsWith('.enc'));
+    const had = await objects();
+    const stopping: Array<Promise<void>> = [];
+    const r = runner(dir, {}, undefined, {
+      beforePlace: async () => {
+        if (stopping.length === 0) stopping.push(r.stop());
+      },
+    });
+    await r.tick();
+    clock += 11_000;
+    const round = await r.tick();
+    await Promise.all(stopping);
+    expect(round.outcomes.map((o) => [o.rel, o.kind])).toEqual([['big.pdf', 'stopped']]);
+    expect(
+      (
+        await admin.query('select count(*)::int as n from incoming_file where household_id = $1', [
+          hh,
+        ])
+      ).rows[0],
+    ).toEqual({ n: 0 });
+    expect(await objects()).toEqual(had);
+    expect(await there(scan)).toBe(true);
+    expect(await there(path.join(dir, 'next.pdf'))).toBe(true);
   });
 
   // ------------------------------------------------------------ paused
@@ -662,32 +1171,35 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     expect(await checkWatchDir(path.join(dir, 'a-file'))).toBe('not_a_folder');
     expect(await checkWatchDir(dir)).toBe('ready');
     // A folder mounted read-only: nothing can be written in it.
-    const readOnly: WatchFs = {
-      ...(await import('node:fs/promises')),
+    const readOnly = fsWith({
       writeFile: (async () => {
         throw Object.assign(new Error('read-only file system'), { code: 'EROFS' });
       }) as WatchFs['writeFile'],
-    };
+    });
     expect(await checkWatchDir(dir, readOnly)).toBe('not_writable');
-    const noAccess: WatchFs = {
-      ...(await import('node:fs/promises')),
+    const noAccess = fsWith({
       access: (async (_p: string, mode?: number) => {
         if (mode !== undefined && mode & constants.W_OK) {
           throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
         }
       }) as WatchFs['access'],
-    };
+    });
     expect(await checkWatchDir(dir, noAccess)).toBe('not_writable');
     // Nothing is left behind by the look.
     expect(await fsp.readdir(dir)).toEqual(['a-file']);
 
-    // The worker says so, for the API; and adds nothing from a folder it cannot write in.
+    // The worker says so, for the API; adds nothing from a folder it cannot
+    // write in; and keeps no pause of its person's while it is so.
     await turnOn('adult');
+    await admin.query("update watch_folder set paused_reason = 'sealed' where household_id = $1", [
+      hh,
+    ]);
     const scan = await write(dir, 'scan.pdf', PDF('scan'));
     const r = runner(dir, {}, readOnly);
     const round = await settle(r);
     expect(round).toMatchObject({ ran: true, state: 'not_writable', outcomes: [] });
     expect(await there(scan)).toBe(true);
+    expect(await pausedAs()).toBeNull();
     const said = await admin.query<{ dir: string; state: string }>(
       'select dir, state from watch_dir',
     );
@@ -709,7 +1221,7 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     ]);
   });
 
-  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+  it.skipIf(WINDOWS || ROOT_USER)(
     'a folder the vault cannot write in, on this system’s own permissions, is not ready',
     async () => {
       const dir = await folder();
