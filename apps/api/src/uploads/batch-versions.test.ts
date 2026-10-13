@@ -409,6 +409,56 @@ describe.skipIf(!testAdminUrl())('duplicates as versions (S1)', () => {
     expect((await itemOf(adult, b.id, unread.id)).renewals).toEqual([]);
   });
 
+  it('a near match is Check, never Ready: Accept all Ready leaves it, and files the rest', async () => {
+    const issuer = `Ready Renewals ${randomUUID().slice(0, 6)}`;
+    const docId = await filed(adult, {
+      title: 'Sana’s passport to renew',
+      type_key: 'passport',
+      owner_member_id: adult.member_id,
+      identifier: 'RR-1',
+      issued_by: issuer,
+    });
+    const b = await made(adult, { name: 'Ready, but a renewal' });
+    // Everything a passport needs, and sure: Ready, but for its near match.
+    const full = (number: string, by: string) =>
+      passport({
+        who: adult.member_id,
+        number,
+        issuer: by,
+        issued: '2026-09-01',
+        expires: '2036-09-01',
+      });
+    const renewal = await sent(adult, b.id);
+    await plant(renewal.id, full('RR-2', issuer));
+    const plain = await sent(adult, b.id);
+    await plant(plain.id, full(`PL-${randomUUID().slice(0, 6)}`, `Elsewhere ${randomUUID()}`));
+    const seen = await batchOf(adult, b.id);
+    const r = seen.items.find((i) => i.id === renewal.id) as BatchItemView;
+    expect(r.renewals?.map((x) => x.document_id)).toEqual([docId]);
+    expect(r.level).toBe('check');
+    expect(r.tags).toContainEqual({
+      code: 'renewal',
+      kind: 'check',
+      words: 'New version of Sana’s passport to renew?',
+    });
+    expect(seen.items.find((i) => i.id === plain.id)?.level).toBe('ready');
+    // Named as the client saw them, and without naming any: never filed.
+    const named = await call(adult, 'POST', `/api/v1/batches/${b.id}/accept-ready`, {
+      item_ids: [renewal.id, plain.id],
+    });
+    expect(named.statusCode, named.body).toBe(200);
+    const out = named.json<{
+      accepted: Array<{ item_id: string }>;
+      skipped: Array<{ item_id: string; reason: string; level?: string | null }>;
+    }>();
+    expect(out.accepted.map((a) => a.item_id)).toEqual([plain.id]);
+    expect(out.skipped).toEqual([{ item_id: renewal.id, reason: 'not_ready', level: 'check' }]);
+    const all = await call(adult, 'POST', `/api/v1/batches/${b.id}/accept-ready`, {});
+    expect(all.json<{ accepted: unknown[] }>().accepted).toEqual([]);
+    expect((await itemOf(adult, b.id, renewal.id)).state).toBe('waiting');
+    expect((await versionsOf(adult, docId)).length).toBe(1);
+  });
+
   // ------------------------------------------------------- as a version
 
   it('added as a new version: its newest version, its dates and number from the card, reminders resolved as a renewal’s, the activity — and Undo puts it all back', async () => {

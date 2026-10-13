@@ -1169,14 +1169,18 @@ export function ItemTags({
             </Link>
           ) : t.code.startsWith('duplicate_') ? (
             dupWords(item)
+          ) : t.code === 'renewal' && item.renewals?.[0] ? (
+            <Link to={`/documents/${item.renewals[0].document_id}`} tabIndex={stop}>
+              {t.words}
+            </Link>
           ) : (
             t.words
           )}
           {full && t.detail && <span className="item-tag-detail">{t.detail}</span>}
         </li>
       ))}
-      {near && (
-        <li className="item-tag item-tag-info item-tag-renewal">
+      {near && !tags.some((t) => t.code === 'renewal') && (
+        <li className="item-tag item-tag-check item-tag-renewal">
           <Link to={`/documents/${near.document_id}`} tabIndex={stop}>
             {renewalWords(near)}
           </Link>

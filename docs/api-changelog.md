@@ -4317,7 +4317,11 @@ kind: 'turned_13', member_id, display_name, fire_at, title, label }] }`
     read, once it is accepted, and when it is the same file as a document
     the uploader can see (`duplicate`). Out of the Trash only, documents
     the uploader can see, and a teen's own only. Nothing of a match is
-    stored. **Added:** `POST /api/v1/batches/{id}/items/{itemId}/accept`
+    stored. **Changed:** an item with a near match is `check`, never
+    `ready`, with a tag of its own (`code: "renewal"`, "New version of
+    …?"), so Accept all Ready never files a renewal as a document of its
+    own: it skips one it is named (`not_ready`, `level: "check"`). Items
+    waiting are re-levelled as they are next asked for. **Added:** `POST /api/v1/batches/{id}/items/{itemId}/accept`
     takes `into_document_id`: the item is added as that document's new
     version, through the same commit as `POST /documents/{id}/versions`
     (its open reminders resolved, `version.process` queued); `issued`,

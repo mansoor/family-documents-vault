@@ -1,6 +1,7 @@
 import {
   batchVisibility,
   duplicateWords,
+  renewalWords,
   type BatchDefaults,
   type BatchDuplicate,
   type BatchItemState,
@@ -118,7 +119,13 @@ export type BatchTagCode =
   /** A teen's: the pages confidently name somebody else of the family (the I2 review). */
   | 'not_theirs'
   /** The pages and a sure rule of the uploader's own disagree (I4): the pages' stands. */
-  | 'clash_learned';
+  | 'clash_learned'
+  /**
+   * Probably the same paper as a document of the uploader's, or its renewal
+   * (0.8.0, S1): "New version of Aisha's passport?". Check, never Ready, so
+   * Accept all Ready never files a renewal as a document of its own.
+   */
+  | 'renewal';
 
 /** One reason for an item's level: a Problem's, a Check's, or something worth knowing. */
 export interface BatchTag {
@@ -200,6 +207,8 @@ export interface LevelInput {
   /** Where a sure rule of the uploader's disagreed with the pages, as the worker read it (I4). */
   learnedClash?: LearnedClash | null;
   duplicate: BatchDuplicate | null;
+  /** Its best near match, a document the uploader may change (0.8.0, S1): it makes the item Check. */
+  renewal?: { title: string | null } | null;
   defaults: BatchDefaults;
   /** The household's kinds as they are now, and not deleted. */
   types: readonly LevelKind[];
@@ -443,6 +452,10 @@ export function levelItem(input: LevelInput): ItemLevel {
       kind: 'check',
       words: `The pages say ${nameOf(personS.value)}, your earlier choices say ${nameOf(lc.owner_member_id)}`,
     });
+  }
+  // A near match (S1): to be looked at, never filed as a new document unseen.
+  if (input.renewal && !problem) {
+    check({ code: 'renewal', kind: 'check', words: renewalWords(input.renewal) });
   }
   // Unsure: what the pages alone say, or the uploader's rules (I4) — never the batch's.
   const guessed = (s: ItemSuggestion<unknown> | undefined) =>

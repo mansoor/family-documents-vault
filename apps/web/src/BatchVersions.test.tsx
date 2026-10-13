@@ -106,6 +106,8 @@ function item(
     failure: null,
     proposal: RENEWED,
     duplicate,
+    // As the vault levels it: a near match is Check (S1).
+    renewal: o.renewals?.[0] ?? null,
     defaults: DEFAULTS,
     types,
     people: [
@@ -367,6 +369,9 @@ describe('duplicates as versions (S1)', () => {
       }),
     ).toHaveAttribute('href', '/documents/doc-1');
     expect(rows[2]).not.toHaveTextContent(/Same as|New version of/);
+    // A near match is Check: Accept all Ready counts only the file with none.
+    expect(rows[1]).toHaveTextContent('Check');
+    expect(screen.getByRole('button', { name: 'Accept all Ready (1)' })).toBeVisible();
     await expectAccessible();
   });
 });

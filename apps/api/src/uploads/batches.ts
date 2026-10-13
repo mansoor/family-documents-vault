@@ -2344,6 +2344,8 @@ export class BatchService {
         proposal: proposed.get(r.id)?.proposal ?? null,
         learnedClash: proposed.get(r.id)?.clash ?? null,
         duplicate,
+        // A near match makes it Check (S1): Accept all Ready leaves it.
+        renewal: renewals.get(r.id)?.[0] ?? null,
         defaults: levelling.defaults(r.batch_id as string),
         types: levelling.types,
         people: levelling.people,
