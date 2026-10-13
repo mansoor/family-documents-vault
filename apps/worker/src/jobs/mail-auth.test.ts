@@ -44,16 +44,46 @@ describe('Authentication-Results, as the vault reads them (S4, F2)', () => {
     });
   });
 
+  it('reads what RFC 8601 allows: a reason after the result, any ptype, a provider’s own words — and decides on header.from and header.d alone', () => {
+    // Gmail's, with a reason (as it writes one for a DKIM signature it could not check).
+    const gmail = `${ID};\r\n       dkim=neutral reason="invalid (public key: not available)" header.i=@other.test header.s=s1;\r\n       dkim=pass header.i=@example.com header.s=20230601 header.b=AbC1;\r\n       dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=example.com`;
+    expect(parseAuthResults(gmail)?.results.map((r) => [r.method, r.result])).toEqual([
+      ['dkim', 'neutral'],
+      ['dkim', 'pass'],
+      ['dmarc', 'pass'],
+    ]);
+    expect(verdict(gmail)).toBe('pass');
+    // Fastmail's: x-bits=2048, policy.* and an x- ptype, its own methods.
+    const fm = 'mx3.messagingengine.com';
+    const fastmail = `${fm};\r\n    dkim=pass (2048-bit rsa key sha256) header.d=example.com header.i=@example.com header.b=AbCd header.a=rsa-sha256 header.s=fm1 x-bits=2048;\r\n    dmarc=pass policy.published-domain-policy=none policy.applied-disposition=none policy.evaluated-disposition=none (p=none,d=none,d.eval=none) policy.policy-from=p header.from=example.com;\r\n    iprev=pass smtp.remote-ip=192.0.2.1 (mail.example.com);\r\n    spf=pass smtp.mailfrom=ann@example.com smtp.helo=mail.example.com;\r\n    x-aligned-from=pass (Address match);\r\n    x-me-sender=none;\r\n    x-ptr=pass smtp.helo=mail.example.com x-ptr.ptr=mail.example.com`;
+    expect(parseAuthResults(fastmail)?.results.map((r) => r.method)).toEqual([
+      'dkim',
+      'dmarc',
+      'iprev',
+      'spf',
+      'x-aligned-from',
+      'x-me-sender',
+      'x-ptr',
+    ]);
+    expect(authVerdict([line(fastmail)], fm, 'example.com')).toBe('pass');
+    // Only header.from decides DMARC: another ptype's from is not it.
+    expect(verdict(`${ID}; dmarc=pass x-other.from=example.com`)).toBe('fail');
+    expect(verdict(`${ID}; dmarc=pass reason="header.from=example.com"`)).toBe('fail');
+    // And only header.d decides DKIM.
+    expect(verdict(`${ID}; dkim=pass x-dkim.d=example.com`)).toBe('fail');
+  });
+
   it('reads nothing of a header out of the grammar: a stray ), an open quote or comment, a word out of place', () => {
     for (const bad of [
       `${ID}; dmarc=pass header.from=example.com)`,
       `${ID}; dmarc=pass (unclosed header.from=example.com`,
       `${ID}; spf=pass smtp.mailfrom="open; dmarc=pass header.from=example.com`,
-      `${ID}; dmarc=pass reason=ok header.from=example.com`,
-      `${ID}; dmarc=pass x-bits=2048 header.from=example.com`,
-      `${ID}; dmarc=pass reason.x=1 header.from=example.com`,
       `${ID}; dmarc=pass header.from=example.com header.from=evil.test`,
       `${ID}; dmarc pass header.from=example.com`,
+      // A reason only straight after the result; a property with no name; a value missing.
+      `${ID}; dmarc=pass header.from=example.com reason=late`,
+      `${ID}; dmarc=pass .from=example.com`,
+      `${ID}; dmarc=pass header.from=`,
     ]) {
       expect(parseAuthResults(bad), bad).toBeNull();
       expect(verdict(bad), bad).toBe('fail');

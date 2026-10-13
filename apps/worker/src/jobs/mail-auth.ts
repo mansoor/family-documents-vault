@@ -12,12 +12,14 @@
  * top, and nothing passes. Nothing below it is read.
  *
  * It is read strictly (the S4 review, F2): an authserv-id and version,
- * then each result as `method[/version]=result` followed only by
- * `ptype.property=value` (ptype `smtp`, `header`, `body` or `policy`), with
- * comments and quoted strings as RFC 5322 has them. Anything else — a stray
- * `)`, an open quote or comment, a word out of place — and the header says
- * nothing: a sender's own words, quoted into it by the provider (an
- * smtp.mailfrom, say), can never be taken for a result.
+ * then each result as `method[/version]=result`, an optional
+ * `reason=value` straight after it, then `keyword.property=value` (any
+ * ptype, registered or `x-`) or a provider's own `keyword=value` (as
+ * Fastmail's x-bits=2048), with comments and quoted strings as RFC 5322 has
+ * them. Anything else — a stray `)`, an open quote or comment, a word or a
+ * quote out of place — and the header says nothing: a sender's own words,
+ * quoted into it by the provider (an smtp.mailfrom, say), can never be
+ * taken for a result. Only `header.from` and `header.d` decide.
  *
  * In it, a DMARC result decides: exactly one, `pass`, for the From's own
  * domain (`header.from`, required). Without one, a DKIM signature passes
@@ -182,25 +184,41 @@ export function parseAuthResults(header: string): AuthHeader | null {
       const result = run(/[A-Za-z0-9_-]/).toLowerCase();
       if (!result) throw new Bad('a result missing');
       const props: Record<string, string> = {};
+      let first = true;
       for (;;) {
         cfws();
         const c = peek();
         if (c === undefined || c === ';') break;
-        const ptype = run(/[A-Za-z]/).toLowerCase();
-        if (!['smtp', 'header', 'body', 'policy'].includes(ptype)) {
-          throw new Bad('not a property');
-        }
-        expect('.');
-        const property = run(/[A-Za-z0-9_-]/).toLowerCase();
-        if (!property) throw new Bad('a property missing');
+        // A keyword: `reason` straight after the result (its reasonspec), a
+        // registered ptype or an extension one (`x-…`) before `.property=`,
+        // or a provider's own `keyword=value` (Fastmail's x-bits=2048).
+        const keyword = run(/[A-Za-z0-9_-]/).toLowerCase();
+        if (!keyword) throw new Bad('a keyword missing');
         cfws();
+        let key: string;
+        if (peek() === '.') {
+          i++;
+          cfws();
+          const property = run(/[A-Za-z0-9_-]/).toLowerCase();
+          if (!property) throw new Bad('a property missing');
+          cfws();
+          key = `${keyword}.${property}`;
+        } else if (keyword === 'reason' && !first) {
+          throw new Bad('a reason out of place');
+        } else {
+          key = keyword;
+        }
         expect('=');
         cfws();
-        const key = `${ptype}.${property}`;
         const got = pvalue();
         if (key in props) throw new Bad('a property twice');
-        props[key] = got;
+        // A reason, or a provider's own word, is read and set aside: only a
+        // `ptype.property` is a property the vault looks at.
+        if (key.includes('.')) props[key] = got;
+        else props[`\0${key}`] = got;
+        first = false;
       }
+      for (const k of Object.keys(props)) if (k.startsWith('\0')) delete props[k];
       results.push({ method, result, props });
       if (peek() === undefined) break;
       expect(';');

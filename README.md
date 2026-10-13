@@ -891,10 +891,12 @@ remove them, but should not have to. So:
   the email arrives, and only if it carries that name; it reads it strictly,
   and accepts the email only if it says the sender passed DMARC for the
   From's own domain, or, with no DMARC result, carries a DKIM signature of
-  exactly that domain. Anything a sender wrote is ignored. The check is
-  written for Gmail's header; with another provider, look at a few emails'
-  headers first, and use the check only if the first `Authentication-Results`
-  always starts with the same name.
+  exactly that domain. Anything a sender wrote is ignored. It works with any
+  provider that puts its own `Authentication-Results`, under its own name, on
+  top of every email it receives (Gmail, Fastmail, iCloud, most others):
+  look at a few emails' headers to find the name, and check it is always the
+  same. A provider whose header is out of the standard's grammar, or carries
+  no name, is never trusted: its email then counts as not verified.
 - Without it, the vault goes by the From alone, warns owners in Settings, and
   marks every item from an email **"sender not verified"** on its card.
 - Either way, nothing emailed in is ever filed without its person accepting
