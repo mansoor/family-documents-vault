@@ -217,6 +217,14 @@ export interface BatchItemView {
    * its card. Absent otherwise, and from older vaults.
    */
   sender_unverified?: boolean;
+  /**
+   * The folder it came from (0.8.0, S2): its path under the folder chosen,
+   * dropped or watched, without the file's own name — "Passports/Ahmed" —
+   * kept sealed and given to its uploader alone; null when it came from no
+   * folder. What it suggests is in `proposals` (`from: 'folder'`). Absent
+   * from a vault before 0.8.0.
+   */
+  folder?: string | null;
 }
 
 /** `GET /api/v1/batches/{id}`: a batch, and every item not removed, oldest first. */

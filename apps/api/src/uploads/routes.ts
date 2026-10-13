@@ -3,6 +3,7 @@ import {
   ACCEPT_READY_MAX,
   BATCH_MAX_FILES,
   NOT_SCANNED,
+  RELATIVE_PATH_MAX,
   type BatchAcceptInput,
   type BatchAcceptReadyInput,
   type BatchInput,
@@ -391,11 +392,14 @@ export function registerBatches(app: FastifyInstance, batches: BatchService) {
   });
 
   /**
-   * One file, multipart, as `file`, and nothing else: the size limit is a
-   * single add's (413), and so are the kinds it takes (415). Refused before
-   * a byte is stored when the batch is not the caller's, has ended, or is
-   * full. An Idempotency-Key, optional, makes a file sent again after its
-   * answer was lost the item it made already, answered as a replay.
+   * One file, multipart, as `file`, and nothing else — but, before it, an
+   * optional `relative_path` (0.8.0, S2): where it was under the folder
+   * chosen, kept sealed for its uploader (RELATIVE_PATH_MAX characters at
+   * most, tidied by the service). The size limit is a single add's (413),
+   * and so are the kinds it takes (415). Refused before a byte is stored
+   * when the batch is not the caller's, has ended, or is full. An
+   * Idempotency-Key, optional, makes a file sent again after its answer was
+   * lost the item it made already, answered as a replay.
    */
   app.post<{ Params: { id: string } }>('/api/v1/batches/:id/items', auth, async (req, reply) => {
     const { id } = parse(idParam, req.params);
@@ -413,7 +417,15 @@ export function registerBatches(app: FastifyInstance, batches: BatchService) {
     // reading, which, were it the file, would fail it as if storage had. A
     // second file is refused once the first has arrived.
     const parts = req
-      .parts({ limits: { fileSize: batches.fileLimit, files: 2, fields: 0 } })
+      .parts({
+        limits: {
+          fileSize: batches.fileLimit,
+          files: 2,
+          // Where it was under the folder chosen (S2), before the file: one field.
+          fields: 1,
+          fieldSize: RELATIVE_PATH_MAX,
+        },
+      })
       [Symbol.asyncIterator]();
     const drainRest = async () => {
       for (;;) {
@@ -423,10 +435,29 @@ export function registerBatches(app: FastifyInstance, batches: BatchService) {
       }
     };
     const order = () =>
-      new ApiError(422, 'validation_failed', 'Send one file, named file, and nothing else.');
+      new ApiError(
+        422,
+        'validation_failed',
+        'Send one file, named file, and nothing else but a relative_path before it.',
+      );
     let file: MultipartFile;
+    let relativePath: string | null = null;
     try {
-      const next = await parts.next();
+      let next = await parts.next();
+      // Where it was under the folder chosen (S2): kept sealed, tidied by the service.
+      if (!next.done && next.value.type === 'field') {
+        if (next.value.fieldname !== 'relative_path') throw order();
+        if (next.value.valueTruncated) {
+          throw new ApiError(
+            422,
+            'validation_failed',
+            `A relative_path is ${RELATIVE_PATH_MAX} characters at most.`,
+            { detail: 'relative_path' },
+          );
+        }
+        relativePath = String(next.value.value);
+        next = await parts.next();
+      }
       if (next.done) throw new ApiError(422, 'validation_failed', 'Choose a file to send.');
       if (next.value.type !== 'file' || next.value.fieldname !== 'file') {
         if (next.value.type === 'file') next.value.file.resume();
@@ -444,6 +475,7 @@ export function registerBatches(app: FastifyInstance, batches: BatchService) {
         id,
         {
           ...(idempotencyKey ? { idempotencyKey } : {}),
+          relativePath,
           filename: theFile.filename,
           mime: theFile.mimetype,
           stream: theFile.file,

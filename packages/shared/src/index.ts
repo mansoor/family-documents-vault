@@ -31,3 +31,4 @@ export * from './learning.js';
 export * from './sign-up.js';
 export * from './watch-folder.js';
 export * from './mail-in.js';
+export * from './folders.js';

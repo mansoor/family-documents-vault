@@ -15,7 +15,13 @@ import {
 } from 'react';
 import { api, ApiRequestError, NetworkError } from './api.js';
 import { useApp } from './app-context.js';
-import { sendBatchItem, sha256Of, takenKind, type BatchSending } from './batch-upload.js';
+import {
+  folderOfChosen,
+  sendBatchItem,
+  sha256Of,
+  takenKind,
+  type BatchSending,
+} from './batch-upload.js';
 import { sizeWords } from './screens/Incoming.js';
 
 /**
@@ -40,7 +46,16 @@ export interface Chosen {
   sent: number;
   /** Its Idempotency-Key, kept until it arrives. */
   idem: string;
+  /**
+   * Where it was under the folder chosen or dropped (0.8.0, S2): its
+   * folders, sent with it to a vault that takes them; null for a file
+   * chosen alone, or a vault that does not.
+   */
+  folder: string | null;
 }
+
+/** A file as chosen: alone, or with where it was under the folder dropped. */
+export type ChosenFile = File | { file: File; path: string | null };
 
 /** Choosing; the batch being made; files going; stopped (asked, or by what happened); done. */
 export type UploadPhase = 'choosing' | 'making' | 'sending' | 'stopped' | 'done';
@@ -94,9 +109,14 @@ export const running = (u: Upload) => u.phase === 'making' || u.phase === 'sendi
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+/** Where a file was under the folder chosen (`webkitRelativePath`) or dropped (its entry's path). */
+const pathOf = (c: ChosenFile): string | null =>
+  c instanceof File
+    ? (c as File & { webkitRelativePath?: string }).webkitRelativePath || null
+    : c.path;
+
 /** A file and its size and when it was changed, and where it was under a folder: chosen once. */
-const fileKey = (f: File) =>
-  `${(f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name}:${f.size}:${f.lastModified}`;
+const fileKey = (f: File, path: string | null) => `${path || f.name}:${f.size}:${f.lastModified}`;
 
 type WithToken = <T>(fn: (token: string) => Promise<T>) => Promise<T | null>;
 
@@ -218,13 +238,19 @@ export class BatchUploads {
     this.set({ ...EMPTY, changed: this.state.changed });
   }
 
-  /** Files chosen, checked as the vault would check them: refused here, with why, or ready. */
-  choose(files: File[], opts: { limit: number; already: number }): void {
+  /**
+   * Files chosen, checked as the vault would check them: refused here, with
+   * why, or ready. With `folders` (the vault keeps them, S2), where each was
+   * under the folder chosen or dropped is kept to send with it.
+   */
+  choose(files: ChosenFile[], opts: { limit: number; already: number; folders?: boolean }): void {
     this.set((was) => {
       const keys = new Set(was.chosen.map((c) => c.key));
       const next = [...was.chosen];
-      for (const file of files) {
-        const key = fileKey(file);
+      for (const chosen of files) {
+        const file = chosen instanceof File ? chosen : chosen.file;
+        const path = pathOf(chosen);
+        const key = fileKey(file, path);
         if (keys.has(key)) continue;
         keys.add(key);
         const room =
@@ -242,6 +268,7 @@ export class BatchUploads {
           state: reason ? 'refused' : 'ready',
           sent: 0,
           idem: crypto.randomUUID(),
+          folder: opts.folders ? folderOfChosen(path) : null,
           ...(reason ? { reason } : {}),
         });
       }
@@ -409,6 +436,7 @@ export class BatchUploads {
             c.file,
             (sent) => this.update(c.key, { sent }),
             c.idem,
+            c.folder,
           );
           this.current = sending;
           return sending.done;

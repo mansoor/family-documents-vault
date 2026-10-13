@@ -4244,6 +4244,18 @@ a.item-name:focus-visible {
   display: block;
 }
 
+/* The folder an item came from (0.8.0, S2): a line under its name, two at most. */
+.item-folder {
+  font-size: 13px;
+}
+
+/* A mark naming the folder (S2): a path can be long, so it wraps, anywhere. */
+.mark-sugg.mark-folder {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  border-radius: 8px;
+}
+
 /* Where the pages and the batch disagree (I2): both said, the other one press away. */
 .clash-box {
   display: flex;

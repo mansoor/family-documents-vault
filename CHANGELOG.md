@@ -6,6 +6,19 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Folder names suggest the kind, whose it is and tags.** Choose or drop a folder on **Add → Many documents**, and where each file was goes with it: "Passports/Ahmed" suggests a passport, and Ahmed's. A scanner folder's subfolders do the same.
+  - **What it reads:** the household's kinds by their names ("Passports", "Bank statements", "Insurance", "Tax", "Medical", "Bills" and other common words), the family you can choose by name or first name (a teen only themselves; a name two people share says nobody), and tags you already use. Any other folder name is offered as a new tag ("new tag from the folder name"), made only if you accept the file with it. Years, dates and folders like "Scans" or "Documents" are ignored, and the top folder's name is dropped when it is only a container like those.
+  - **How it weighs it:** the folder alone is a suggestion to check, never Ready. When the pages and the folder agree, the vault is surer, so a file can be Ready on both together. When they disagree, the pages win and the file is Check: "The folder says Passport; the pages look like a driver's licence". What you chose for the whole batch wins over the folder, which fills only what you left blank. Accepting what the folder suggested counts as needing no change, as accepting the pages' does.
+  - **Where it shows:** under each file's name on the batch's page ("From the folder Passports/Ahmed"), and beside each detail on its card ("suggested from the folder ‘Passports/Ahmed’", or "and the folder" where it agrees with the pages).
+  - **Private:** the folder is kept encrypted with the file, is never written in the clear to the database or a log, and only the person who uploaded it sees it. It goes when the file is removed.
+  - **API:** `features.folder_suggestions`; `relative_path` on `POST /api/v1/batches/{id}/items`; each item's `folder`; `from: "folder"`, `folder: true`, `proposals.tags` and the tag `clash_folder`.
+
+### Database
+
+- **Migration 0071** keeps the folder each upload came from, sealed with it.
+
 ## [0.8.0-dev.5] - 2026-10-13 — email documents to the vault
 
 ## [0.8.0-dev.4] - 2026-10-13 — a watched folder for network scanners

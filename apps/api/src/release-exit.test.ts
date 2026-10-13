@@ -1154,6 +1154,8 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     );
     ids.batch = json<{ id: string }>(batch).id;
     const batchForm = new FormData();
+    // The folder it came from (0.8.0, S2): his alone, sealed.
+    batchForm.append('relative_path', 'AHMED-FOLDER-541/Passports/ahmed-batch-file-541.pdf');
     batchForm.append('file', PDF('AHMED-BATCH-FILE'), {
       filename: 'ahmed-batch-file-541.pdf',
       contentType: 'application/pdf',
@@ -1213,6 +1215,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       await ok(send(ahmed, 'GET', `/api/v1/batches/${ids.batch}`)),
     );
     expect(JSON.stringify(read.items[0]?.proposals)).toContain('AHMED-PROPOSED-NUMBER-541');
+    expect((read.items[0] as { folder?: string }).folder).toBe('AHMED-FOLDER-541/Passports');
     // What the vault learned from his corrections (I4): an issuer that is
     // his alone, ruled to be a kind and a person, and his count.
     await withSystem(h.db, olivia.household_id, async (trx) => {
@@ -2524,6 +2527,8 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
         SUGGESTED,
         LOCATION,
         'shoebox',
+        // The folder Ahmed's file came from (0.8.0, S2).
+        'AHMED-FOLDER-541',
       ]) {
         expect(text.includes(secret), `${where} holds ${secret}`).toBe(false);
       }
@@ -2603,6 +2608,9 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       'AHMED-PROPOSED-NUMBER-541',
       'AHMED-PROPOSED-ISSUER-541',
       'AHMED-ITEM-WORDS-541',
+      // The folder his file came from (0.8.0, S2), and the tag it proposes.
+      'AHMED-FOLDER-541',
+      'ahmed folder',
       // What the vault learned from his corrections (I4).
       AHMED_LEARNED,
       'boat_licence_541',

@@ -1,7 +1,14 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { PassThrough, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { EncryptStream, newKey, wrapKey, type ScopeKeys } from '@fdv/crypto';
+import {
+  EncryptStream,
+  itemFolderBinding,
+  newKey,
+  sealBytes,
+  wrapKey,
+  type ScopeKeys,
+} from '@fdv/crypto';
 import { withSystem, type Db } from '@fdv/db';
 import {
   BATCH_MAX_FILES,
@@ -317,6 +324,13 @@ export async function placeItem(
     mailKey?: string | null;
     /** An email whose sender the mailbox's check could not vouch for (0069). */
     senderUnverified?: boolean;
+    /**
+     * The subfolder it was in, under the scanner folder (0.8.0, S2): its
+     * folders, without its own name (`itemFolder`) — sealed under the item’s
+     * own key and bound to it (itemFolderBinding), never plain. An email has
+     * none.
+     */
+    folder?: string | null;
   },
 ): Promise<Placed | { pause: WatchPause } | { later: string }> {
   const hh = t.householdId;
@@ -359,6 +373,15 @@ export async function placeItem(
     .insertInto('incoming_file')
     .values({
       id,
+      ...(item.folder
+        ? {
+            folder_sealed: sealBytes(
+              fileKey,
+              Buffer.from(item.folder, 'utf8'),
+              itemFolderBinding(id),
+            ),
+          }
+        : {}),
       household_id: hh,
       request_id: null,
       batch_id: batch.id,

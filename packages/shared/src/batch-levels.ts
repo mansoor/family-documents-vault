@@ -20,6 +20,12 @@ import {
   type Proposed,
 } from './proposals.js';
 import { isLearned, type LearnedClash } from './learning.js';
+import {
+  FOLDER_AGREE_MAX,
+  FOLDER_AGREE_RAISE,
+  FOLDER_CONFIDENCE,
+  type FolderSuggestion,
+} from './folders.js';
 import { seesLocation, type Role } from './roles.js';
 
 /**
@@ -49,6 +55,16 @@ import { seesLocation, type Role } from './roles.js';
  * Who can see it is never widened by a guess: the batch's choice stands,
  * and a kind usually kept narrower (Adults only, Only me) narrows it, said
  * by a tag (`batchVisibility`).
+ *
+ * **The folder it came from** (0.8.0, S2, `suggestFromFolder`) is one more
+ * source, below a sure page reading: alone, its kind or person is shown
+ * from the folder, unsure (FOLDER_CONFIDENCE); agreeing with the pages (or
+ * the uploader's rules), it makes them surer (FOLDER_AGREE_RAISE), so an
+ * item can be Ready on the folder and the pages together; disagreeing, the
+ * pages' stands and the item is Check, with both said ("The folder says
+ * Passport; the pages look like a driver's licence"). A default the
+ * uploader chose for the batch wins over the folder, silently: the folder
+ * fills only what the defaults leave blank — tags too.
  */
 
 /** How an item stands once read. */
@@ -125,7 +141,12 @@ export type BatchTagCode =
    * (0.8.0, S1): "New version of Aisha's passport?". Check, never Ready, so
    * Accept all Ready never files a renewal as a document of its own.
    */
-  | 'renewal';
+  | 'renewal'
+  /**
+   * The folder it came from says another kind, or another person, than the
+   * pages (or the uploader's rules) do (0.8.0, S2): the pages' stands.
+   */
+  | 'clash_folder';
 
 /** One reason for an item's level: a Problem's, a Check's, or something worth knowing. */
 export interface BatchTag {
@@ -149,12 +170,35 @@ export interface ItemSuggestion<T> {
   /**
    * `learned` (I4): proposed, or made surer, by the uploader's own earlier
    * choices for the issuer the pages name — "learned from your earlier
-   * choices". Absent from a vault before I4.
+   * choices". Absent from a vault before I4. `folder` (0.8.0, S2): from the
+   * name of the folder it came from alone ("suggested from the folder
+   * ‘Passports/Ahmed’"), with no cue. Absent from a vault before 0.8.0.
    */
-  from: 'pages' | 'batch' | 'both' | 'learned';
-  /** How sure the pages are, for `pages` and `both`; null for the batch's alone. */
+  from: 'pages' | 'batch' | 'both' | 'learned' | 'folder';
+  /**
+   * How sure: the pages (or the rules) for `pages`, `learned` and `both`;
+   * the folder's for `folder`; null for the batch's alone.
+   */
   confidence: number | null;
   cue: ProposalCue | null;
+  /**
+   * The folder it came from says the same (0.8.0, S2): `confidence` is the
+   * surer for it. Only beside `pages` or `learned`.
+   */
+  folder?: true;
+}
+
+/**
+ * A tag the card starts with, or offers (0.8.0, S2): from the folder an
+ * item came from, where the batch chose no tags. One already on a document
+ * the uploader can see starts on the card (`existing`); a new one is only
+ * offered — "new tag from the folder name" — and made only if the item is
+ * accepted with it.
+ */
+export interface ItemTagSuggestion {
+  value: string;
+  from: 'folder';
+  existing: boolean;
 }
 
 /** Who can see it, as the card starts: the batch's choice, as its kind usually is, or narrowed. */
@@ -172,6 +216,8 @@ export interface ItemProposals {
   identifier?: ItemSuggestion<string>;
   issued_by?: ItemSuggestion<string>;
   visibility: ItemVisibility;
+  /** Tags from the folder it came from, where the batch chose none (0.8.0, S2). */
+  tags?: ItemTagSuggestion[];
 }
 
 /** Where the pages and a default confidently disagree: the default stands until somebody chooses. */
@@ -209,6 +255,11 @@ export interface LevelInput {
   duplicate: BatchDuplicate | null;
   /** Its best near match, a document the uploader may change (0.8.0, S1): it makes the item Check. */
   renewal?: { title: string | null } | null;
+  /**
+   * What the folder it came from suggests (0.8.0, S2), worked out for the
+   * uploader as it is asked (`suggestFromFolder`); null with no folder.
+   */
+  folder?: FolderSuggestion | null;
   defaults: BatchDefaults;
   /** The household's kinds as they are now, and not deleted. */
   types: readonly LevelKind[];
@@ -320,11 +371,30 @@ export function levelItem(input: LevelInput): ItemLevel {
         ? d.owner_member_id
         : null;
 
-  /** A field with a default and a proposal: the default fills only a blank (Q4). */
+  // What the folder it came from says (S2): a kind the uploader is given, and
+  // somebody they may choose — asked again here, as the pages' are.
+  const folder = input.folder ?? null;
+  const kindF = folder?.type_key && kindOf(folder.type_key) ? folder.type_key : null;
+  const personF =
+    folder?.owner_member_id && choosable(folder.owner_member_id) ? folder.owner_member_id : null;
+  const folderClashes: Array<{
+    field: 'type_key' | 'owner_member_id';
+    folder: string;
+    other: string;
+    rules: boolean;
+  }> = [];
+
+  /**
+   * A field with a default, a proposal and the folder: the default fills
+   * only a blank (Q4), and wins over the folder; the folder fills a blank
+   * the default leaves, below a sure page reading, and makes an agreeing
+   * proposal surer (S2).
+   */
   const merge = (
     field: 'type_key' | 'owner_member_id',
     p: Proposed<string> | undefined,
     dflt: string | null,
+    fromFolder: string | null,
   ): ItemSuggestion<string> | undefined => {
     // The uploader's earlier choices alone (I4): never "the pages say".
     const rulesOnly = p?.cue === 'learned';
@@ -332,14 +402,30 @@ export function levelItem(input: LevelInput): ItemLevel {
     // nor speaks for the pages (the I4 review, I4-4).
     const own = p ? (p.page_confidence ?? p.confidence) : 0;
     if (p && dflt === null) {
-      return {
+      const said: ItemSuggestion<string> = {
         value: p.value,
         from: isLearned(p) ? 'learned' : 'pages',
         confidence: p.confidence,
         cue: p.cue,
       };
+      if (fromFolder === null) return said;
+      if (fromFolder === p.value) {
+        const raised = Math.round((p.confidence + FOLDER_AGREE_RAISE) * 100) / 100;
+        return {
+          ...said,
+          confidence: Math.max(p.confidence, Math.min(FOLDER_AGREE_MAX, raised)),
+          folder: true,
+        };
+      }
+      // The pages (or the rules) stand; both are said.
+      folderClashes.push({ field, folder: fromFolder, other: p.value, rules: rulesOnly });
+      return said;
     }
-    if (dflt === null) return undefined;
+    if (dflt === null) {
+      return fromFolder === null
+        ? undefined
+        : { value: fromFolder, from: 'folder', confidence: FOLDER_CONFIDENCE, cue: null };
+    }
     if (!p) return { value: dflt, from: 'batch', confidence: null, cue: null };
     if (p.value === dflt) {
       return rulesOnly
@@ -358,11 +444,24 @@ export function levelItem(input: LevelInput): ItemLevel {
   };
 
   const proposals: Omit<ItemProposals, 'visibility'> = {};
-  const kindS = merge('type_key', kindP, kindD);
-  const personS = merge('owner_member_id', personP, personD);
+  const kindS = merge('type_key', kindP, kindD, kindF);
+  const personS = merge('owner_member_id', personP, personD, personF);
   if (kindS) proposals.type_key = kindS;
   if (personS) proposals.owner_member_id = personS;
   const kind = kindOf(kindS?.value);
+  // Tags from the folder, where the batch chose none (S2): one already used
+  // starts on the card, a new one is offered.
+  if (d.tags.length === 0 && folder && folder.tags.length > 0) {
+    proposals.tags = folder.tags.map((t) => ({
+      value: t.value,
+      from: 'folder' as const,
+      existing: t.existing,
+    }));
+  }
+  const tagsFilled =
+    d.tags.length > 0
+      ? d.tags
+      : (proposals.tags ?? []).filter((t) => t.existing).map((t) => t.value);
 
   // Its dates and its number were read for the kind the pages proposed: for
   // another kind (the batch's), they are not offered — nor its issuer.
@@ -453,21 +552,50 @@ export function levelItem(input: LevelInput): ItemLevel {
       words: `The pages say ${nameOf(personS.value)}, your earlier choices say ${nameOf(lc.owner_member_id)}`,
     });
   }
+  // Where the folder it came from says otherwise (S2): the pages' (or the
+  // rules') stands on the card, and both are said.
+  for (const c of folderClashes) {
+    const other = c.rules ? 'your earlier choices say' : 'the pages';
+    if (c.field === 'type_key') {
+      check({
+        code: 'clash_folder',
+        kind: 'check',
+        words: `The folder says ${kindOf(c.folder)?.label ?? 'another kind'}; ${
+          c.rules ? other : `${other} look like`
+        } ${aKind(kindOf(c.other)?.label ?? 'kind')}`,
+      });
+    } else {
+      check({
+        code: 'clash_folder',
+        kind: 'check',
+        words: `The folder says ${nameOf(c.folder)}; ${c.rules ? other : `${other} say`} ${nameOf(c.other)}`,
+      });
+    }
+  }
   // A near match (S1): to be looked at, never filed as a new document unseen.
   if (input.renewal && !problem) {
     check({ code: 'renewal', kind: 'check', words: renewalWords(input.renewal) });
   }
-  // Unsure: what the pages alone say, or the uploader's rules (I4) — never the batch's.
+  // Unsure: what the pages alone say, the uploader's rules (I4), or the
+  // folder alone (S2) — never the batch's.
   const guessed = (s: ItemSuggestion<unknown> | undefined) =>
-    s?.from === 'pages' || s?.from === 'learned';
+    s?.from === 'pages' || s?.from === 'learned' || s?.from === 'folder';
   if (kind) {
     if (guessed(kindS) && (kindS?.confidence ?? 0) < ITEM_SURE.type_key) {
-      check({ code: 'kind_unsure', kind: 'check', words: 'Kind unsure' });
+      check({
+        code: 'kind_unsure',
+        kind: 'check',
+        words: kindS?.from === 'folder' ? 'Kind from the folder name' : 'Kind unsure',
+      });
     }
     if (!personS) {
       check({ code: 'person_missing', kind: 'check', words: 'Missing: whose it is' });
     } else if (guessed(personS) && (personS.confidence ?? 0) < ITEM_SURE.owner_member_id) {
-      check({ code: 'person_unsure', kind: 'check', words: 'Person unsure' });
+      check({
+        code: 'person_unsure',
+        kind: 'check',
+        words: personS.from === 'folder' ? 'Whose it is: from the folder name' : 'Person unsure',
+      });
     }
     const missing = missingFields(kind, {
       issued: proposals.issued?.value ?? null,
@@ -476,7 +604,8 @@ export function levelItem(input: LevelInput): ItemLevel {
       issued_by: proposals.issued_by?.value ?? null,
       // Where the paper copies are, for whoever sees that (seesLocation).
       physical_location: seesLocation(role) ? d.physical_location : null,
-      tags: d.tags,
+      // The batch's tags, or else the folder's that start on the card (S2).
+      tags: tagsFilled,
       notes: null,
       extra: {},
     });

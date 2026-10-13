@@ -8,6 +8,7 @@ import {
   issuerFromFilename,
   issuerKey,
   ITEM_SURE,
+  folderWords,
   missingFields,
   NOTES_MAX,
   parseDateInput,
@@ -657,8 +658,25 @@ export type CardMarkField =
  * (I2): "suggested · 92%" — "· unsure" under the bar a Ready item needs —
  * or "from the batch". The prototype's marks.
  */
-function CardMark(props: { field: CardMarkField; mark: ItemSuggestion<unknown> }) {
+function CardMark(props: {
+  field: CardMarkField;
+  mark: ItemSuggestion<unknown>;
+  /** The folder the item came from (S2), for a mark that is the folder's. */
+  folder?: string | null | undefined;
+}) {
   const { mark } = props;
+  // From the folder's name alone (S2): "suggested from the folder ‘Passports/Ahmed’", unsure.
+  if (mark.from === 'folder') {
+    const words = folderWords(props.folder ?? 'it came from');
+    return (
+      <>
+        <span className="mark-sugg mark-folder" title={words}>
+          {words}
+        </span>
+        <span className="mark-unsure">unsure</span>
+      </>
+    );
+  }
   if (mark.from === 'batch' || mark.confidence === null || mark.cue === null) {
     return <span className="mark-batch">from the batch</span>;
   }
@@ -668,6 +686,13 @@ function CardMark(props: { field: CardMarkField; mark: ItemSuggestion<unknown> }
     mark.from === 'pages' || mark.from === 'learned'
       ? (ITEM_SURE as Record<string, number>)[props.field]
       : undefined;
+  // The folder says the same (S2): said beside the pages' mark.
+  const agrees =
+    mark.folder === true && props.folder ? (
+      <span className="mark-sugg mark-folder" title={folderWords(props.folder)}>
+        and the folder ‘{props.folder}’
+      </span>
+    ) : null;
   if (mark.from === 'learned') {
     // Proposed, or made surer, by the uploader's own earlier choices (I4).
     return (
@@ -675,6 +700,7 @@ function CardMark(props: { field: CardMarkField; mark: ItemSuggestion<unknown> }
         <span className="mark-sugg" title="Learned from your earlier choices for who sent it">
           suggested · learned from your earlier choices
         </span>
+        {agrees}
         {sure !== undefined && mark.confidence < sure && (
           <span className="mark-unsure">unsure</span>
         )}
@@ -684,6 +710,7 @@ function CardMark(props: { field: CardMarkField; mark: ItemSuggestion<unknown> }
   return (
     <>
       <SuggestedMark confidence={mark.confidence} cue={mark.cue} />
+      {agrees}
       {sure !== undefined && mark.confidence < sure && <span className="mark-unsure">unsure</span>}
     </>
   );
@@ -736,6 +763,12 @@ export function ConfirmForm(props: {
    * the card loses its mark.
    */
   marks?: Partial<Record<CardMarkField, ItemSuggestion<unknown>>>;
+  /**
+   * The folder a batch's item came from (0.8.0, S2): a mark that is the
+   * folder's says so ("suggested from the folder ‘Passports/Ahmed’"), and
+   * a new tag its name proposes is offered beside the tags.
+   */
+  folder?: { path: string; usedTags: readonly string[]; newTags: readonly string[] } | null;
   /**
    * Where the pages confidently disagree with the batch (I2): both said, the
    * batch's on the card, and the pages' one press away.
@@ -821,7 +854,9 @@ export function ConfirmForm(props: {
     setUnmarked((was) => (was.has(field) ? was : new Set([...was, field])));
   const markOf = (field: CardMarkField) => {
     const mark = props.marks?.[field];
-    return mark && !unmarked.has(field) ? <CardMark field={field} mark={mark} /> : undefined;
+    return mark && !unmarked.has(field) ? (
+      <CardMark field={field} mark={mark} folder={props.folder?.path} />
+    ) : undefined;
   };
   // The field Save could not read, marked until it is changed.
   const [unread, setUnread] = useState<string | null>(null);
@@ -1574,8 +1609,41 @@ export function ConfirmForm(props: {
               onChange={setTags}
               required={false}
               placeholder="house, car"
-              hint="A comma between tags."
+              hint={
+                props.folder && props.folder.usedTags.length > 0
+                  ? `A comma between tags. ${props.folder.usedTags.join(', ')}: ${folderWords(props.folder.path)}.`
+                  : 'A comma between tags.'
+              }
             />
+            {(() => {
+              // New tags the folder's name proposes (S2): offered, made only if accepted with them.
+              const have = new Set(
+                tags
+                  .split(',')
+                  .map((t) => t.trim().toLowerCase())
+                  .filter(Boolean),
+              );
+              const offered = (props.folder?.newTags ?? []).filter((t) => !have.has(t));
+              if (offered.length === 0) return null;
+              return (
+                <div className="pills folder-tags" role="group" aria-label="Tags from the folder">
+                  {offered.map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      className="pill pill-sugg"
+                      aria-label={`Add the tag ${t}: a new tag from the folder name`}
+                      onClick={() =>
+                        setTags((was) => (was.trim() ? `${was.replace(/,\s*$/, '')}, ${t}` : t))
+                      }
+                    >
+                      <span className="pill-sugg-value">+ {t}</span>{' '}
+                      <span className="mark-sugg">new tag from the folder name</span>
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
             <Switch
               id="f-essential"
               label="Essential"

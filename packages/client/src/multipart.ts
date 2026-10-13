@@ -101,11 +101,14 @@ export function photoUpload(body: PhotoBody): UploadBody {
 
 /**
  * The body POST /batches/{id}/items takes (Phase 6, I1): the file as
- * `file`, and nothing else.
+ * `file`; and, before it, where it was under the folder chosen
+ * (`relative_path`, 0.8.0, S2) — only to a vault with
+ * `features.folder_suggestions`, as an older one refuses the field.
  */
-export function batchItemUpload(file: CaptureFile): UploadBody {
+export function batchItemUpload(file: CaptureFile, relativePath?: string | null): UploadBody {
   if (file.kind === 'bytes') {
     const m = multipartBody([
+      ...(relativePath ? [{ name: 'relative_path', value: relativePath }] : []),
       { name: 'file', filename: file.filename, contentType: file.contentType, bytes: file.bytes },
     ]);
     return { kind: 'bytes', bytes: m.bytes, contentType: m.contentType };
@@ -113,6 +116,7 @@ export function batchItemUpload(file: CaptureFile): UploadBody {
   const FormDataCtor = (globalThis as { FormData?: new () => FormDataLike }).FormData;
   if (!FormDataCtor) throw new Error('No FormData on this platform: send the file as bytes.');
   const form = new FormDataCtor();
+  if (relativePath) form.append('relative_path', relativePath);
   form.append('file', file.blob, file.filename);
   return { kind: 'form', form };
 }

@@ -656,6 +656,12 @@ export interface Schema {
     as_version: Generated<boolean>;
     /** What that accept changed on the document, sealed under the item's own key, for an Undo (0067). */
     prior_sealed: Buffer | null;
+    /**
+     * Where a batch's item came from under the folder it was added from, without the
+     * file's name (0071, S2): sealed under the item's own key, set where its row is made;
+     * kept as it is filed, gone as it is removed.
+     */
+    folder_sealed: Buffer | null;
     /** A batch's item: the uploader's Idempotency-Key for it, so a re-send is answered, not made twice. */
     idempotency_key: string | null;
     review_by: 'me' | 'adults';

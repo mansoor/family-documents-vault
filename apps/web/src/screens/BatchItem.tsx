@@ -34,6 +34,7 @@ import {
   batchLabel,
   dupWords,
   inQueue,
+  ItemFolder,
   ItemTags,
   LevelBadge,
   OnlyYou,
@@ -463,6 +464,7 @@ export function BatchItemScreen() {
               {item.name} · {sizeWords(item.byte_size)}
               {pages > 0 ? ` · ${pages === 1 ? '1 page' : `${pages} pages`}` : ''}
             </p>
+            <ItemFolder item={item} />
             {item.level !== undefined && (
               <div className="batch-card-level">
                 {item.level ? (
@@ -613,10 +615,20 @@ export function BatchItemScreen() {
                   clashes: item.clashes ?? [],
                 }
               : {})}
+            folder={
+              item.folder
+                ? {
+                    path: item.folder,
+                    usedTags: (p?.tags ?? []).filter((t) => t.existing).map((t) => t.value),
+                    newTags: (p?.tags ?? []).filter((t) => !t.existing).map((t) => t.value),
+                  }
+                : null
+            }
             extras={{
               collections: addable(data.collections, role),
               collectionId: d.collection_id ?? '',
-              tags: d.tags.join(', '),
+              // The batch's tags, or the folder's already used (S2): as Accept all Ready files them.
+              tags: (card?.tags ?? d.tags).join(', '),
               essential: d.is_essential,
             }}
             submitLabel={dup ? 'Accept anyway' : 'Accept and next'}

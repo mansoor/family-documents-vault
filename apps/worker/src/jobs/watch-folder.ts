@@ -8,6 +8,7 @@ import { type ScopeKeys } from '@fdv/crypto';
 import { withSystem, type Db } from '@fdv/db';
 import {
   dropFileName,
+  itemFolder,
   UPLOAD_KINDS,
   WATCH_INCOMPLETE_GRACE_MS,
   WATCH_NOTICE_DAYS,
@@ -101,6 +102,11 @@ import {
  * the first and last few, compared with the kinds' own (watchKindOf,
  * looksComplete). A file's words are read by the batch job, in its tools'
  * own processes, as any item's are.
+ *
+ * The subfolder a file was in (0.8.0, S2) — "Passports/Ahmed" — is kept
+ * with its item as Add → Many documents keeps a folder's: sealed under the
+ * item's own key (`itemFolder`, itemFolderBinding), never plain and never
+ * logged, to suggest its kind, whose it is and tags to its person alone.
  */
 
 /** The advisory lock one worker holds while it watches: beside migrate's 7401 and the tests' 7402. */
@@ -865,7 +871,13 @@ export class WatchRunner {
       if (!setting?.enabled || setting.member_id !== t.memberId) {
         return { stop: 'the scanner folder was changed' };
       }
-      return placeItem(trx, this.deps, t, 'scanner', this.now(), { name, key });
+      // The subfolder it was in under the folder (S2): its folders, without its
+      // own name, sealed with its row — never plain, never logged.
+      return placeItem(trx, this.deps, t, 'scanner', this.now(), {
+        name,
+        key,
+        folder: itemFolder(f.rel, { withFileName: true }),
+      });
     });
     if ('stop' in placed) return { kind: 'stopped', why: placed.stop };
     if ('pause' in placed) return { kind: 'paused', reason: placed.pause };

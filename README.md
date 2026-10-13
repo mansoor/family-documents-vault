@@ -718,6 +718,10 @@ What happens to each file:
   that the file is the one it listed and that its real path is inside the
   folder; on Linux, the worker's own system, it checks the open file itself.
   Anything else it leaves alone, and names to nobody.
+- The folders inside it can say what a scan is. If the scanner saves into
+  `Passports/Ahmed`, say, the vault suggests a passport, and Ahmed's, as
+  Add → Many documents does for a folder chosen there. The folder's name is
+  kept encrypted with the file, for that person alone.
 - It is encrypted into that person's batch of the day, "Scanner, 12 Oct" on the
   household's calendar, read and proposed for like anything they upload, and
   only then deleted from the folder. Until they accept it nobody else sees

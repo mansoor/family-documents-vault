@@ -106,6 +106,13 @@ export const itemProposalsBinding = (itemId: string) => `item-proposals:${itemId
  */
 export const itemPriorBinding = (itemId: string, versionId: string) =>
   `item-prior:${itemId}:${versionId}`;
+/**
+ * And the folder an item came from (0.8.0, S2, 0071): its path under the
+ * folder chosen or watched, without the file's own name — "Passports/Ahmed"
+ * says whose and what as plainly as the pages do. Sealed under the item's
+ * key where its row is made, bound to the item, never plain.
+ */
+export const itemFolderBinding = (itemId: string) => `item-folder:${itemId}`;
 
 /** What sealing adds to the bytes sealed: the nonce before them, the tag after. */
 export const SEAL_OVERHEAD = IV_BYTES + TAG_BYTES;

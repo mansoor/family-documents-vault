@@ -1,5 +1,5 @@
 import { ApiRequestError, NetworkError, parseRetryAfter } from '@fdv/client';
-import type { BatchItemView } from '@fdv/shared';
+import { itemFolder, type BatchItemView } from '@fdv/shared';
 import { api } from './api.js';
 
 /**
@@ -22,6 +22,12 @@ export function sendBatchItem(
   progress: (sent: number, total: number) => void,
   /** Kept for the file until it arrives: sent again, the vault answers the item it made (the I1 review). */
   idempotencyKey?: string,
+  /**
+   * Where it was under the folder chosen or dropped (0.8.0, S2), its folders
+   * alone: sent before the file, only to a vault that takes it
+   * (`features.folder_suggestions`).
+   */
+  folder?: string | null,
 ): BatchSending {
   const xhr = new XMLHttpRequest();
   const done = new Promise<BatchItemView>((resolve, reject) => {
@@ -46,10 +52,22 @@ export function sendBatchItem(
     xhr.onerror = () => reject(new NetworkError('offline'));
     xhr.onabort = () => reject(new DOMException('Stopped', 'AbortError'));
     const form = new FormData();
+    if (folder) form.append('relative_path', folder);
     form.append('file', file, file.name);
     xhr.send(form);
   });
   return { done, stop: () => xhr.abort() };
+}
+
+/**
+ * Where a file chosen or dropped was, under the folder chosen (0.8.0, S2):
+ * its folders, without its own name, as `webkitRelativePath` or a dropped
+ * entry's `fullPath` say — the top folder's name dropped when it is only a
+ * container ("Scans", "Documents"), as "Ahmed" at the top says whose. Null
+ * for a file chosen alone.
+ */
+export function folderOfChosen(path: string | null | undefined): string | null {
+  return itemFolder(path, { withFileName: true, dropGenericTop: true });
 }
 
 /** The vault's refusal, read as `@fdv/client` reads one. */

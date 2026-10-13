@@ -4478,6 +4478,53 @@ last_at } | null`, the caller's own mail left in the mailbox. `GET
     `MailInFiling`, `MailSkippedCounts`, `MAIL_IN_EMAILED_CODE_PATTERN`,
     `MAIL_IN_NO_CONFIRM`, `skippedWords`, `mailFilingWords`. `@fdv/client`:
     `emailMailInCode`, `confirmMailIn`.
+  - Folder names → suggested details (0.8.0, S2, CAP-11). **Added:**
+    `features.folder_suggestions`, `true`; absent from older vaults.
+    **Added:** `POST /api/v1/batches/{id}/items` takes an optional
+    `relative_path` field before the file: where it was under the folder
+    chosen or dropped, at most 4,096 characters (longer is `422
+validation_failed`, `detail: "relative_path"`). A field of any other
+    name, or one after the file, is `422 validation_failed`, as before; an
+    older vault refuses the field, so send it only with
+    `features.folder_suggestions`. What is kept is its folders without the
+    file's own name (dropped when it is the last segment), each segment
+    trimmed and stripped of control characters, `.` and `..` gone, at most
+    10 segments and 512 characters (the deepest kept) — sealed under the
+    item's own key, never in a plain column or a log. A scanner folder's
+    subfolders (`features.watch_folder`) are kept the same way. **Added:**
+    each batch item's `folder` (`"Passports/Ahmed"`, or `null`), for its
+    uploader alone, kept while it waits and once accepted (an Undo puts it
+    back), gone once removed. **Added:** a proposal's `from` may be
+    `folder`: a kind or a person the folder's name alone suggests, at
+    `confidence` 0.8 (under the bar a Ready item needs) and `cue: null`;
+    `kind_unsure` and `person_unsure` say "Kind from the folder name" and
+    "Whose it is: from the folder name". A proposal of the pages' (or the
+    uploader's rules') may carry `folder: true`: the folder says the same,
+    and its `confidence` is raised by 0.1 (to 0.95 at most), so an item can
+    be `ready` on the pages and the folder together. **Added:** an item's
+    tag `clash_folder` (`check`): the folder says another kind or person
+    than the pages, whose value stands ("The folder says Passport; the
+    pages look like a driver's licence"). **Added:** `proposals.tags`,
+    `[{ value, from: "folder", existing }]`, where the batch chose no tags:
+    a tag already on a document the uploader can see (`existing: true`,
+    which an untouched card, and Accept all Ready, file) or a new one from
+    the folder's name (`existing: false`, only offered). Matching is the
+    uploader's own, as it is asked: the household's kinds by their labels,
+    any part of them, their short labels and a fixed list of words; the
+    family the uploader may choose, by the name the household knows them by
+    or its first word — a teen only themselves, never a guest, and a name
+    two of them share says nobody; tags they can see. A batch's defaults
+    win over the folder, silently. Accepting what the folder suggested
+    counts as accepting a proposal for `GET /batches/learned`. **Unchanged:**
+    an item sent with no `relative_path` is answered exactly as before,
+    with `folder: null`. `@fdv/shared`: `itemFolder`, `suggestFromFolder`,
+    `isGenericFolder`, `foldKey`, `foldWords`, `singular`, `folderWords`,
+    `FOLDER_KIND_WORDS`, `FOLDER_CONFIDENCE`, `FOLDER_AGREE_RAISE`,
+    `FOLDER_AGREE_MAX`, `FOLDER_SEGMENTS_MAX`, `FOLDER_CHARS_MAX`,
+    `FOLDER_NEW_TAGS_MAX`, `RELATIVE_PATH_MAX`, `FolderSuggestion`,
+    `FolderTag`, `FolderContext`, `ItemTagSuggestion`. `@fdv/client`:
+    `addBatchItem(…, { relativePath })`, `batchItemUpload(file,
+relativePath)`; the client fake keeps the folder and suggests from it.
 
 ## Deprecations in effect
 

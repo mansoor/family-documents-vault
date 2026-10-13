@@ -2664,6 +2664,86 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'folder names suggest the kind, whose it is and tags: kept for the uploader as `folder`, from the folder alone unsure, with the pages agreeing Ready, disagreeing Check (0.8.0, S2)',
+    run: async (api, ctx) => {
+      if (!ctx.readBatchItems) return;
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.folder_suggestions).toBe(true);
+      const ruth = await ctx.addSignIn(token, {
+        name: 'Rukhsana',
+        email: 'folder-rukhsana@example.test',
+        password: 'Rukhsana’s own long password',
+        role: 'adult',
+      });
+      const b = await api.createBatch(token, { name: 'From the folders' });
+      const file = (n: string) => ({
+        kind: 'bytes' as const,
+        filename: `${n}.pdf`,
+        contentType: 'application/pdf',
+        bytes: new TextEncoder().encode(`%PDF-1.4\n% the contract folders ${n}\n%%EOF\n`),
+      });
+      const add = (n: string, path: string) =>
+        api.addBatchItem(token, b.id, file(n), undefined, { relativePath: path });
+      const agree = await add('agree', 'Rukhsana/Passports/agree.pdf');
+      const against = await add('against', 'Bank statements/against.pdf');
+      const alone = await add('alone', 'Rukhsana/Bank_Statements/2024');
+      const none = await api.addBatchItem(token, b.id, file('none'));
+      // Kept for the uploader, without the file's own name.
+      expect(agree.folder).toBe('Rukhsana/Passports');
+      expect(alone.folder).toBe('Rukhsana/Bank_Statements/2024');
+      expect(none.folder ?? null).toBeNull();
+      const day = (date: string) => ({ date, precision: 'day' as const });
+      const passport = (sure: number): DetailProposal => ({
+        type_key: { value: 'passport', confidence: sure, cue: 'kind_words' },
+        owner_member_id: { value: ruth, confidence: sure, cue: 'name_labelled' },
+        expires: { value: day('2031-03-14'), confidence: 0.94, cue: 'machine_lines' },
+        identifier: { value: '533401872', confidence: 0.95, cue: 'machine_lines' },
+      });
+      await ctx.readBatchItems(b.id, {
+        [agree.id]: { proposal: passport(0.76) },
+        [against.id]: { proposal: passport(0.97) },
+        [alone.id]: { proposal: {} },
+        [none.id]: { proposal: passport(0.76) },
+      });
+      const got = await api.batch(token, b.id);
+      const by = (id: string) => got.items.find((i) => i.id === id);
+      // The pages unsure, the folder agreeing: surer, and Ready.
+      expect(by(agree.id)).toMatchObject({
+        level: 'ready',
+        folder: 'Rukhsana/Passports',
+        proposals: {
+          type_key: { value: 'passport', from: 'pages', confidence: 0.86, folder: true },
+          owner_member_id: { value: ruth, from: 'pages', confidence: 0.86, folder: true },
+        },
+      });
+      // The same pages with no folder: Check.
+      expect(by(none.id)?.level).toBe('check');
+      // The folder disagreeing: the pages stand, and Check with both said.
+      expect(by(against.id)).toMatchObject({
+        level: 'check',
+        proposals: { type_key: { value: 'passport', from: 'pages' } },
+      });
+      expect(by(against.id)?.tags?.find((t) => t.code === 'clash_folder')?.words).toBe(
+        'The folder says Bank / investment statement; the pages look like a passport',
+      );
+      // From the folder alone: shown, unsure — never Ready.
+      expect(by(alone.id)).toMatchObject({
+        level: 'check',
+        proposals: {
+          type_key: { value: 'bank_statement', from: 'folder', cue: null },
+          owner_member_id: { value: ruth, from: 'folder', cue: null },
+        },
+      });
+      // Accepted, it keeps where it came from; removed, it is gone.
+      await api.acceptBatchItem(token, b.id, agree.id, {});
+      await api.removeBatchItem(token, b.id, alone.id);
+      const after = await api.batch(token, b.id);
+      expect(after.items.find((i) => i.id === agree.id)?.folder).toBe('Rukhsana/Passports');
+      expect(after.items.some((i) => i.id === alone.id)).toBe(false);
+      await api.removeBatch(token, b.id);
+    },
+  },
+  {
     name: 'the review queue: Accept all Ready files what is Ready now, each as its untouched card would; Undo takes it back into the queue; levels are counted when asked (I3)',
     run: async (api, ctx) => {
       if (!ctx.readBatchItems) return;

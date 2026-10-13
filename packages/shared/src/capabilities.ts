@@ -270,6 +270,16 @@ export interface CapabilityFeatures {
    * not add (GET /watch-folder/notices). Absent from older vaults.
    */
   watch_folder?: boolean;
+  /**
+   * Folder names → suggested details (0.8.0, S2): POST
+   * /batches/{id}/items takes an optional `relative_path` field before the
+   * file — where it was under the folder chosen or dropped — kept sealed and
+   * given back to its uploader alone as the item's `folder`; and what its
+   * segments say of the kind, whose it is and tags is proposed with
+   * `from: 'folder'`. The scanner folder's subfolders are kept the same way.
+   * Absent from older vaults, which refuse the field: send the file alone.
+   */
+  folder_suggestions?: boolean;
 }
 
 export interface CapabilityLimits {

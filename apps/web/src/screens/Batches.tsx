@@ -3,6 +3,7 @@ import {
   BATCH_NAME_MAX,
   can,
   duplicateWords,
+  folderWords,
   LEVEL_WORDS,
   levelSummary,
   renewalWords,
@@ -35,7 +36,7 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'reac
 import { api, ApiRequestError, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { askPage, forgetPages, heldPage } from '../batch-pages.js';
-import { labelOfDay, progressOf, useUploads } from '../batch-store.js';
+import { labelOfDay, progressOf, useUploads, type ChosenFile } from '../batch-store.js';
 import { newRun, useAcceptReady, useVersionUndo } from '../batch-review.js';
 import { LearnedFromYou } from '../batch-learning.js';
 import { BATCH_ACCEPT } from '../batch-upload.js';
@@ -165,6 +166,19 @@ function ItemPerson({ item, members }: { item: BatchItemView; members: Member[] 
   return <span className="clip">{nameOf(who.value)}</span>;
 }
 
+/**
+ * The folder an item came from (0.8.0, S2), under its name: its uploader's
+ * alone, as the batch is. Nothing for a file that came from no folder.
+ */
+export function ItemFolder({ item }: { item: Pick<BatchItemView, 'folder'> }) {
+  if (!item.folder) return null;
+  return (
+    <span className="muted clip item-folder" title={item.folder}>
+      From the folder {item.folder}
+    </span>
+  );
+}
+
 /** Whether somebody may make batches: the vault has them, and they add documents. */
 export function useMayBatch(): { mayBatch: boolean; role: Role } {
   const { caps, session } = useApp();
@@ -188,21 +202,27 @@ export function OnlyYou({ children }: { children?: ReactNode }) {
 
 // ------------------------------------------------------------ add many
 
-/** Every file under what was dropped: a folder's own, and its folders' (Chrome, Edge, Safari, Firefox). */
-async function droppedFiles(e: DragEvent<HTMLElement>): Promise<File[]> {
+/**
+ * Every file under what was dropped: a folder's own, and its folders'
+ * (Chrome, Edge, Safari, Firefox) — each with where it was under what was
+ * dropped (its entry's `fullPath`, S2); a file dropped alone with none.
+ */
+export async function droppedFiles(
+  e: Pick<DragEvent<HTMLElement>, 'dataTransfer'>,
+): Promise<ChosenFile[]> {
   const items = [...e.dataTransfer.items];
   const entries = items
     .map((i) => (i.kind === 'file' ? (i.webkitGetAsEntry?.() ?? null) : null))
     .filter((x): x is FileSystemEntry => x !== null);
   if (entries.length === 0) return [...e.dataTransfer.files];
-  const out: File[] = [];
-  const walk = async (entry: FileSystemEntry): Promise<void> => {
+  const out: ChosenFile[] = [];
+  const walk = async (entry: FileSystemEntry, top: boolean): Promise<void> => {
     if (entry.isFile) {
-      out.push(
-        await new Promise<File>((resolve, reject) =>
-          (entry as FileSystemFileEntry).file(resolve, reject),
-        ),
+      const file = await new Promise<File>((resolve, reject) =>
+        (entry as FileSystemFileEntry).file(resolve, reject),
       );
+      // A file dropped alone came from no folder.
+      out.push(top ? file : { file, path: entry.fullPath });
       return;
     }
     const reader = (entry as FileSystemDirectoryEntry).createReader();
@@ -211,10 +231,10 @@ async function droppedFiles(e: DragEvent<HTMLElement>): Promise<File[]> {
         reader.readEntries(resolve, reject),
       );
       if (batch.length === 0) return;
-      for (const child of batch) await walk(child);
+      for (const child of batch) await walk(child, false);
     }
   };
-  for (const entry of entries) await walk(entry);
+  for (const entry of entries) await walk(entry, true);
   return out;
 }
 
@@ -303,7 +323,13 @@ function AddMany({ visit }: { visit: string }) {
     if (phase === 'done' || phase === 'stopped') outcome.current?.focus();
   }, [phase]);
 
-  const add = (files: File[]) => uploads.choose(files, { limit, already });
+  // Where each was under the folder chosen or dropped goes with it, to a vault that keeps it (S2).
+  const add = (files: ChosenFile[]) =>
+    uploads.choose(files, {
+      limit,
+      already,
+      folders: caps?.features.folder_suggestions === true,
+    });
 
   /** The defaults, as the batch is made with them: only what was chosen. */
   const defaultsChosen = (): Partial<BatchDefaults> => {
@@ -1264,7 +1290,12 @@ function ItemKind({ item, types }: { item: BatchItemView; types: DocumentTypeVie
   return (
     <span className="item-kind">
       <span className="clip">{label}</span>
-      {kind.from === 'batch' || kind.confidence === null || kind.cue === null ? (
+      {kind.from === 'folder' ? (
+        // From the folder's name alone (S2).
+        <span className="mark-sugg" title={folderWords(item.folder ?? 'it came from')}>
+          from the folder
+        </span>
+      ) : kind.from === 'batch' || kind.confidence === null || kind.cue === null ? (
         <span className="mark-batch">from the batch</span>
       ) : (
         <SuggestedMark confidence={kind.confidence} cue={kind.cue} />
@@ -1818,6 +1849,7 @@ export function BatchScreen() {
                   <FirstPage batchId={b.id} item={item} eager={i < FIRST_FEW} />
                   <span className="stack batch-item-words">
                     {nameLink(item, item.name, 'doc-title clip')}
+                    <ItemFolder item={item} />
                     <span className="muted">{r.about}</span>
                     {item.state === 'waiting' && item.proposals?.type_key && (
                       <ItemKind item={item} types={data.types} />
@@ -1886,6 +1918,7 @@ export function BatchScreen() {
                           {title ? `${item.name} · ` : ''}
                           {r.about}
                         </span>
+                        <ItemFolder item={item} />
                       </td>
                       <td>
                         <ItemKind item={item} types={data.types} />
