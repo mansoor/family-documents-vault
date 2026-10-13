@@ -1656,6 +1656,26 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         );
       }
     }
+    // And the unique indexes its rules rest on: one note a file, one
+    // household on, one scanner batch a person a day.
+    for (const [index, table, columns] of [
+      ['watch_notice_file_idx', 'watch_notice', '(household_id, member_id, file_key)'],
+      ['watch_folder_one_on', 'watch_folder', '((true)) where enabled'],
+      [
+        'intake_batch_watch_day_idx',
+        'intake_batch',
+        '(household_id, member_id, watch_day) where watch_day is not null',
+      ],
+    ] as const) {
+      await sql(vault.adminUrl, `drop index public.${index}`);
+      try {
+        await expect(checkRestored(target()), index).rejects.toThrow(
+          new RegExp(`unique index the vault relies on is missing: .*${index}`),
+        );
+      } finally {
+        await sql(vault.adminUrl, `create unique index ${index} on public.${table} ${columns}`);
+      }
+    }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 

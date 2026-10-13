@@ -150,11 +150,12 @@ create table watch_notice (
   file_name    text not null constraint watch_notice_name check (char_length(file_name) between 1 and 255),
   reason       text not null
                  constraint watch_notice_reason
-                 check (reason in ('unsupported', 'too_large', 'unreadable', 'empty',
-                                   'incomplete', 'linked')),
+                 check (reason in ('unsupported', 'too_large', 'unreadable', 'empty', 'linked')),
+  -- It could not be moved to rejected/ either: still where the scanner saved it.
+  left_in_place boolean not null default false,
   -- Which file it was, as a keyed hash of its place, size and time (no
-  -- name): the note is made before the file is moved, once however often
-  -- the move is tried.
+  -- name): one note a file, made once it is moved — or, when it cannot be,
+  -- once, saying it was left in place.
   file_key     uuid not null,
   created_at   timestamptz not null default now(),
   foreign key (member_id, household_id) references member (id, household_id) on delete cascade

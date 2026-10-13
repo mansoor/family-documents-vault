@@ -91,6 +91,15 @@ const schema = z.object({
     .describe(
       'How long a file in the scanner folder must stop changing before it is taken (it must look complete too).',
     ),
+  FDV_WATCH_INCOMPLETE_GRACE_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(86400)
+    .default(120)
+    .describe(
+      'How long a scan that has stopped changing but looks unfinished waits before it is taken anyway.',
+    ),
   FDV_MAX_UPLOAD_BYTES: z.coerce
     .number()
     .int()

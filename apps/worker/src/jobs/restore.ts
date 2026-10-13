@@ -1098,6 +1098,26 @@ const GUARDS = [
 const OWNERS_SETTINGS = [{ table: 'watch_folder', what: 'the scanner folder' }];
 
 /**
+ * Unique indexes the vault relies on for a rule, not for speed (0068, S3):
+ * one note a scanned file, one household filling Inboxes from the scanner
+ * folder, one scanner batch a person a day. Each must be there, unique and
+ * valid, on its own table.
+ */
+const UNIQUE_INDEXES = [
+  { name: 'watch_notice_file_idx', table: 'watch_notice', what: 'one note a scanned file' },
+  {
+    name: 'watch_folder_one_on',
+    table: 'watch_folder',
+    what: 'one household filling Inboxes from the scanner folder',
+  },
+  {
+    name: 'intake_batch_watch_day_idx',
+    table: 'intake_batch',
+    what: 'one scanner batch a person a day',
+  },
+];
+
+/**
  * What was moved to the owners from a requester who can no longer review
  * it (0047): a request and its files, each kept from every other caller
  * signed in by a rule of its own that names the column saying so.
@@ -1794,6 +1814,23 @@ export async function checkRestored(
     if (guards.length !== GUARDS.length) {
       throw new Error(
         `a guard the vault relies on is missing (found: ${guards.map((g) => g.tgname).join(', ') || 'none'})`,
+      );
+    }
+    // And the unique indexes a rule rests on (0068): there, unique, valid.
+    const { rows: uniques } = await admin.query<{ name: string }>(
+      `select i.relname as name
+         from pg_index x
+         join pg_class i on i.oid = x.indexrelid
+         join pg_class t on t.oid = x.indrelid
+         join pg_namespace n on n.oid = t.relnamespace and n.nspname = 'public'
+         join unnest($1::text[], $2::text[]) as u(name, tbl) on u.name = i.relname and u.tbl = t.relname
+        where x.indisunique and x.indisvalid`,
+      [UNIQUE_INDEXES.map((u) => u.name), UNIQUE_INDEXES.map((u) => u.table)],
+    );
+    if (uniques.length !== UNIQUE_INDEXES.length) {
+      const missing = UNIQUE_INDEXES.filter((u) => !uniques.some((f) => f.name === u.name));
+      throw new Error(
+        `a unique index the vault relies on is missing: ${missing.map((m) => `${m.what} (${m.name})`).join(', ')}`,
       );
     }
     // And the second wall (0030): a rule for each kind of caller on the

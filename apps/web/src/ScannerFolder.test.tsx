@@ -148,14 +148,14 @@ describe('the scanner folder’s page (S3)', () => {
         paused: { reason: 'cannot_add', words: 'Paused: Bea can’t add documents now.' },
         stuck_files: 2,
         stuck_words:
-          '2 scans are safely in the vault but couldn’t be deleted from the scanner folder, where they are not encrypted.',
+          '2 scans are still in the scanner folder, not encrypted, though the vault has dealt with them.',
       }),
     });
     const who = await screen.findByLabelText('Whose Inbox it fills');
     await waitFor(() => expect(screen.getByLabelText('Whose Inbox it fills')).toHaveValue('m-bea'));
     const kept = within(who).getByRole('option', { name: 'Bea (can’t add now)' });
     expect(kept).toBeDisabled();
-    expect(screen.getByText(/2 scans are safely in the vault/)).toBeInTheDocument();
+    expect(screen.getByText(/2 scans are still in the scanner folder/)).toBeInTheDocument();
     await expectAccessible();
   });
 
@@ -173,6 +173,7 @@ describe('a scanned file that couldn’t be added (S3)', () => {
     id: 'wn-1',
     file_name: 'letter.zip',
     reason: 'unsupported',
+    left_in_place: false,
     title: 'A scanned file couldn’t be added',
     words:
       'letter.zip was moved to the scanner folder’s rejected folder. It isn’t a kind of file the vault keeps.',

@@ -14,7 +14,7 @@ import {
   dropFileName,
   scannerDay,
   UPLOAD_KINDS,
-  WATCH_INCOMPLETE_MS,
+  WATCH_INCOMPLETE_GRACE_MS,
   WATCH_NOTICE_DAYS,
   WATCH_POLL_MS,
   WATCH_REJECTED_DIR,
@@ -50,18 +50,23 @@ import { adapterOf } from './incoming.js';
  *    and the files wait. All of it is asked again, held, as each file is
  *    placed: an owner who turns it off or points it elsewhere mid-round
  *    stops the round there.
- *  - Nothing outside the folder is ever read, written or removed. The walk
- *    never follows a link or a junction (lstat), and each folder it walks
- *    is, by its real path, inside the folder's. A file is opened with
- *    O_NOFOLLOW, and the handle must be the very file listed (device and
- *    inode), a plain file with one link, and — on Linux — inside the folder
- *    by its real path (/proc/self/fd). Every byte is read from that handle.
- *    A name is deleted or moved only while it is still that file.
+ *  - What it reads, moves and deletes it checks to be inside the folder,
+ *    just before: the walk never follows a link or a junction (lstat), and
+ *    each folder it walks is, by its real path, inside the folder's. A file
+ *    is opened with O_NOFOLLOW, and the handle must be the very file listed
+ *    (device and inode), a plain file with one link, and inside the folder
+ *    by its real path — on Linux the handle's own (/proc/self/fd), elsewhere
+ *    the name's, whose lstat must be the handle's file. Every byte is read
+ *    from that handle. A name is linked, renamed or unlinked only while its
+ *    folder's real path is inside the folder's and lstat shows the file
+ *    listed. (A swap in the instant between that check and the call itself
+ *    is the one gap left: the system has no call that checks as it acts.)
  *  - A file is taken once its size and time have not changed for
  *    FDV_WATCH_STABLE_SECONDS, seen twice, and it looks complete for its
  *    kind (a PDF's %%EOF, a JPEG's end, a PNG's IEND, a zip's directory,
- *    and no tail of zeros); one that does not is waited for, and a day on
- *    rejected as `incomplete`. Hidden files, names a program writes while it
+ *    and, but for a TIFF, no tail of zeros); one that does not is waited
+ *    for FDV_WATCH_INCOMPLETE_GRACE_SECONDS and then taken anyway — the
+ *    reader flags a page that is bad. Hidden files, names a program writes while it
  *    saves (`~…`, `….tmp`, `….part`) and `rejected/` are left alone.
  *  - It is hashed, and then added as Add → Many documents adds a file (the
  *    API's BatchService.addItem): an item of that person's batch of the day
@@ -77,10 +82,13 @@ import { adapterOf } from './incoming.js';
  *    on its way leaves an item its Idempotency-Key finds, removed before the
  *    file is added again. A stored file that cannot be deleted is said once
  *    in the log, and counted for the owners (stuck_files).
- *  - What cannot be added is moved to `rejected/<name>` (0700), its person
- *    told first (watch_notice, once a file), with `<name>.txt` (0600, made
+ *  - What cannot be added is moved to `rejected/<name>` (0700), and then its
+ *    person told (watch_notice, once a file), with `<name>.txt` (0600, made
  *    new, never through a link) saying why in plain words. Moved by a hard
- *    link and an unlink, never over another file.
+ *    link and an unlink (or a copy from the handle), never over another
+ *    name; a file that could not be opened, by a rename onto a free name. One
+ *    that cannot be moved is left in place, its person told so once, and
+ *    counted for the owners with the stored files not deleted.
  *  - `stop` stops between files, and aborts a file on its way: its row and
  *    object are removed then (as a worker that stopped mid-file would have
  *    them removed on the next start, by the Idempotency-Key).
@@ -151,6 +159,8 @@ export interface WatchOptions {
   now?: () => number;
   /** The file system, for the tests that cannot make a folder read-only, or swap one mid-round. */
   fs?: WatchFs;
+  /** FDV_WATCH_INCOMPLETE_GRACE_SECONDS, in ms: how long a file that looks unfinished waits. */
+  incompleteGraceMs?: number;
   /** Tests: held just before a file is placed, for the races. */
   beforePlace?: (rel: string) => Promise<void>;
 }
@@ -166,6 +176,7 @@ export interface WatchFs {
   unlink: typeof fsp.unlink;
   readdir: typeof fsp.readdir;
   link: typeof fsp.link;
+  rename: typeof fsp.rename;
   mkdir: typeof fsp.mkdir;
   open: typeof fsp.open;
 }
@@ -180,6 +191,7 @@ const nodeFs: WatchFs = {
   unlink: fsp.unlink,
   readdir: fsp.readdir,
   link: fsp.link,
+  rename: fsp.rename,
   mkdir: fsp.mkdir,
   open: fsp.open,
 };
@@ -207,6 +219,9 @@ export const within = (root: string, real: string) =>
 
 /** A name for a note: its control characters gone, its folders each so. */
 const cleanRel = (rel: string) => rel.split('/').map(dropFileName).join('/');
+
+/** Why a hard link could not be made where a copy will do: another file system, none taken, or refused. */
+const LINKLESS = ['EXDEV', 'EPERM', 'ENOTSUP', 'ENOSYS', 'EOPNOTSUPP', 'EMLINK'];
 
 /** Opened with no link followed at its last part (O_NOFOLLOW where the system has it). */
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
@@ -345,20 +360,23 @@ export function watchKindOf(head: Buffer, name: string): { mime: string; ext: st
 
 /**
  * Whether a file looks complete for its kind, from its first and last
- * bytes: a PDF's `%%EOF` near its end, a JPEG's end marker, a PNG's IEND, a
- * zip's end-of-directory record, a WebP whose size says this size — and no
- * kind's tail all zeros (space a program set aside and has not written).
- * Compared, never parsed.
+ * bytes: a PDF's `%%EOF` near its end, a JPEG's end marker near its end, a
+ * PNG's IEND, a zip's end-of-directory record, a WebP whose size says this
+ * size — and, but for a TIFF (whose last strip may be blank paper), no tail
+ * all zeros (space a program set aside and has not written). Compared, never
+ * parsed. Only a hint: a file that stays "unfinished" past its grace is
+ * taken anyway (a motion photo, a PDF with more after its end).
  */
 export function looksComplete(mime: string, head: Buffer, tail: Buffer, size: number): boolean {
-  if (tail.length === 0 || tail.every((b) => b === 0)) return false;
+  if (tail.length === 0) return false;
+  if (mime !== 'image/tiff' && tail.every((b) => b === 0)) return false;
   const has = (s: string | number[]) =>
     tail.includes(typeof s === 'string' ? Buffer.from(s, 'latin1') : Buffer.from(s));
   switch (mime) {
     case 'application/pdf':
       return has('%%EOF');
     case 'image/jpeg':
-      return tail.length >= 2 && tail[tail.length - 2] === 0xff && tail[tail.length - 1] === 0xd9;
+      return has([0xff, 0xd9]);
     case 'image/png':
       return has('IEND');
     case 'image/webp':
@@ -471,8 +489,10 @@ export class WatchRunner {
   private readonly held = new Map<string, number>();
   /** Files stored that could not be deleted: said once, counted, tried again after RETRY_MS. */
   private readonly stuck = new Map<string, { id: string; retry: number }>();
+  /** Files meant for rejected/ that could not be moved there: counted with the stuck ones. */
+  private readonly unmovable = new Map<string, { id: string }>();
   /** Files that stopped changing but did not look complete, since when. */
-  private readonly unfinished = new Map<string, { id: string; since: number }>();
+  private readonly unfinished = new Map<string, { id: string; since: number; said: boolean }>();
   /** The stuck count the owners were last told. */
   private told = -1;
 
@@ -633,7 +653,10 @@ export class WatchRunner {
     const setting = rows[0];
     if (state !== 'ready') {
       // Not paused for its person's sake while the folder is not there at all.
-      if (setting) await this.paused(setting.household_id, setting.paused_reason, null);
+      if (setting) {
+        await this.paused(setting.household_id, setting.paused_reason, null);
+        await this.tellStuck(setting.household_id, null);
+      }
       return out;
     }
     if (!setting) {
@@ -646,6 +669,7 @@ export class WatchRunner {
     if ('pause' in target) {
       out.paused = target.pause;
       await this.paused(hh, setting.paused_reason, target.pause);
+      await this.tellStuck(hh, null);
       return out;
     }
 
@@ -714,11 +738,26 @@ export class WatchRunner {
     if (now) this.deps.log('info', 'the scanner folder is paused', { household: hh, why: now });
   }
 
-  /** How many stored files could not be deleted, and are still there: told to the owners when it changes. */
-  private async tellStuck(hh: string, files: WatchFile[]) {
-    const here = new Map(files.map((f) => [f.rel, f.id]));
-    for (const [rel, s] of [...this.stuck]) if (here.get(rel) !== s.id) this.stuck.delete(rel);
-    const n = this.stuck.size;
+  /**
+   * How many files the worker has dealt with are still in the folder —
+   * stored but not deleted, or meant for rejected/ but not moved — told to
+   * the owners at the end of every round that has the folder on. With the
+   * folder listed (`files`), those no longer there are let go first. A round
+   * that ends before it lists the folder (paused, the folder not ready)
+   * cannot tell which are still there, so the owners keep the last count
+   * known: this worker's own as of its last listing, or, before it has one
+   * (just started), what the database already says.
+   */
+  private async tellStuck(hh: string, files: WatchFile[] | null) {
+    if (files) {
+      const here = new Map(files.map((f) => [f.rel, f.id]));
+      for (const map of [this.stuck, this.unmovable]) {
+        for (const [rel, s] of [...map]) if (here.get(rel) !== s.id) map.delete(rel);
+      }
+    } else if (this.told === -1) {
+      return;
+    }
+    const n = this.stuck.size + this.unmovable.size;
     if (n === this.told) return;
     await withSystem(this.deps.db, hh, (trx) =>
       trx
@@ -792,8 +831,10 @@ export class WatchRunner {
   /**
    * The file opened, and checked to be the very file listed, inside the
    * folder: O_NOFOLLOW, then on the handle a plain file of the listed
-   * device and inode — and, on Linux, the handle's own real path inside the
-   * folder's. Or why not: skipped (`later`), or unreadable.
+   * device and inode — and the file's real path inside the folder's: on
+   * Linux the handle's own (/proc/self/fd); elsewhere the name's real path,
+   * whose lstat must be the handle's device and inode. Or why not: skipped
+   * (`later`), or unreadable.
    */
   private async open(f: WatchFile): Promise<Opened | { later: string } | { unreadable: true }> {
     let fh: FileHandle;
@@ -812,6 +853,11 @@ export class WatchRunner {
       if (process.platform === 'linux') {
         const real = await this.fs.readlink(`/proc/self/fd/${fh.fd}`);
         if (!within(this.root, real)) throw new Error('outside the folder');
+      } else {
+        const real = await this.fs.realpath(f.abs);
+        if (!within(this.root, real)) throw new Error('outside the folder');
+        const there = await this.fs.lstat(real, { bigint: true });
+        if (idOf(there) !== idOf(st)) throw new Error('not the file opened');
       }
       return { fh, st };
     } catch (err) {
@@ -820,8 +866,15 @@ export class WatchRunner {
     }
   }
 
-  /** Whether the name is still the file held: what is moved or deleted must be. */
+  /**
+   * Whether the name is still the file listed, inside the folder: its
+   * folder's real path under the folder's, and the name a plain file (no
+   * link) of the listed device and inode. Asked just before anything is
+   * linked, renamed or unlinked.
+   */
   private async stillThere(f: WatchFile): Promise<boolean> {
+    const parent = await this.fs.realpath(path.dirname(f.abs)).catch(() => null);
+    if (!parent || !within(this.root, parent)) return false;
     const st = await this.fs.lstat(f.abs, { bigint: true }).catch(() => null);
     return st !== null && st.isFile() && !st.isSymbolicLink() && idOf(st) === f.id;
   }
@@ -830,7 +883,12 @@ export class WatchRunner {
   private async take(t: Target, f: WatchFile): Promise<WatchOutcome> {
     const opened = await this.open(f);
     if ('later' in opened) return { kind: 'later', why: opened.later };
-    if ('unreadable' in opened) return this.reject(t, f, 'unreadable', null);
+    if ('unreadable' in opened) {
+      // Not to be read: only the very file listed, still inside, is moved
+      // aside or named in a note. Anything else is left alone, unnamed.
+      if (!(await this.stillThere(f))) return { kind: 'later', why: 'not the file listed' };
+      return this.reject(t, f, 'unreadable', null);
+    }
     const { fh, st } = opened;
     try {
       return await this.takeOpen(t, f, fh, st);
@@ -864,11 +922,20 @@ export class WatchRunner {
     if (!looksComplete(kind.mime, head, tail, size)) {
       const was = this.unfinished.get(f.rel);
       const since = was && was.id === f.id ? was.since : this.now();
-      this.unfinished.set(f.rel, { id: f.id, since });
-      if (this.now() - since >= WATCH_INCOMPLETE_MS) return this.reject(t, f, 'incomplete', fh);
-      return { kind: 'waiting' };
+      this.unfinished.set(f.rel, { id: f.id, since, said: was?.said ?? false });
+      if (this.now() - since < (this.opts.incompleteGraceMs ?? WATCH_INCOMPLETE_GRACE_MS)) {
+        return { kind: 'waiting' };
+      }
+      // Its grace over: taken as it is. A file cut short has its pages
+      // flagged by the reader, as any item's; said once, never named.
+      const now = this.unfinished.get(f.rel);
+      if (now && !now.said) {
+        now.said = true;
+        this.deps.log('info', 'a scanned file that looked unfinished is taken after its grace', {
+          kind: kind.mime,
+        });
+      }
     }
-    this.unfinished.delete(f.rel);
 
     // Hashed first, from the handle: a file stored before is found by it.
     const firstHash = createHash('sha256');
@@ -1164,12 +1231,13 @@ export class WatchRunner {
   }
 
   /**
-   * Moved to rejected/, its person told first (once a file, whatever
-   * happens after), a note beside it saying why. Moved by a hard link to a
-   * name nothing has and the old name's unlink — never over another file,
-   * and only while the name is still the file — or, where the folder takes
-   * no links, copied from the handle to a new file. A file that cannot be
-   * moved is left where it is, and tried again later.
+   * Moved to rejected/, then its person told (once a file), and a note
+   * beside it saying why. Only the very file listed, still inside the
+   * folder, is moved (move). One that cannot be moved — rejected/ not a
+   * folder of its own, the move refused — is left where it is, its person
+   * told once that it was left in place, counted for the owners, and tried
+   * again later. Anything that is no longer the file listed is left alone,
+   * and named to nobody.
    */
   private async reject(
     t: Target,
@@ -1178,38 +1246,51 @@ export class WatchRunner {
     fh: FileHandle | null,
   ): Promise<WatchOutcome> {
     const original = path.basename(f.abs);
-    const notName = (why: string): WatchOutcome => {
+    const tell = (leftInPlace: boolean) =>
+      withSystem(this.deps.db, t.householdId, (trx) =>
+        trx
+          .insertInto('watch_notice')
+          .values({
+            household_id: t.householdId,
+            member_id: t.memberId,
+            file_name: [...dropFileName(original)].slice(0, 255).join(''),
+            reason,
+            left_in_place: leftInPlace,
+            file_key: watchItemKey(this.deps.itemKey, t.householdId, f),
+          })
+          .onConflict((oc) =>
+            leftInPlace
+              ? oc.columns(['household_id', 'member_id', 'file_key']).doNothing()
+              : oc
+                  .columns(['household_id', 'member_id', 'file_key'])
+                  .doUpdateSet({ left_in_place: false }),
+          )
+          .execute(),
+      );
+    const cannotMove = async (why: string): Promise<WatchOutcome> => {
       this.held.set(f.rel, this.now() + RETRY_MS);
       this.deps.log('warn', 'a scanned file could not be moved to rejected/', { err: why });
+      if (!(await this.stillThere(f))) return { kind: 'later', why: 'not the file listed' };
+      await tell(true);
+      this.unmovable.set(f.rel, { id: f.id });
       return { kind: 'later', why: 'could not be moved to rejected/' };
     };
     let into: string | null;
     try {
       into = await this.rejectedDir();
     } catch (err) {
-      return notName(whyOf(err));
+      return cannotMove(whyOf(err));
     }
-    if (!into) return notName('rejected/ is not a folder of its own');
-    await withSystem(this.deps.db, t.householdId, (trx) =>
-      trx
-        .insertInto('watch_notice')
-        .values({
-          household_id: t.householdId,
-          member_id: t.memberId,
-          file_name: [...dropFileName(original)].slice(0, 255).join(''),
-          reason,
-          file_key: watchItemKey(this.deps.itemKey, t.householdId, f),
-        })
-        .onConflict((oc) => oc.columns(['household_id', 'member_id', 'file_key']).doNothing())
-        .execute(),
-    );
+    if (!into) return cannotMove('rejected/ is not a folder of its own');
     let as: string | null;
     try {
       as = await this.move(f, into, original, fh);
     } catch (err) {
-      return notName(whyOf(err));
+      return cannotMove(whyOf(err));
     }
-    if (!as) return notName('changed, or no name free');
+    if (as === null) return { kind: 'later', why: 'not the file listed' };
+    this.unmovable.delete(f.rel);
+    await tell(false);
     const words = watchRejectWords(reason, this.deps.maxBytes);
     const when = new Date(this.now()).toLocaleString('en-GB', {
       timeZone: t.timezone,
@@ -1241,7 +1322,20 @@ export class WatchRunner {
     return { kind: 'rejected', reason, as };
   }
 
-  /** The file moved into rejected/ under a name nothing has (lstat), or null when it changed. */
+  /**
+   * The file listed moved into rejected/ under a name nothing has (lstat):
+   * the name it went by, null when the file listed is no longer there (gone,
+   * changed, or its folder no longer inside) — nothing done — and a throw
+   * when it is but could not be moved. Before anything is linked, renamed or
+   * unlinked, the name is asked again (stillThere).
+   *
+   *  - Opened (a handle): a hard link, never over another name, whose new
+   *    name must then be the file listed, and the old name unlinked; where
+   *    no link can be made (another file system, a folder that takes none,
+   *    or a file the link is refused for), a new file copied from the
+   *    handle — removed again if the copy fails or is aborted.
+   *  - Not to be opened (no handle): renamed onto a name lstat says is free.
+   */
   private async move(
     f: WatchFile,
     into: string,
@@ -1267,28 +1361,56 @@ export class WatchRunner {
       if (!(await free(candidate))) continue;
       if (!(await this.stillThere(f))) return null;
       const to = path.join(into, candidate);
+      if (!fh) {
+        await this.fs.rename(f.abs, to);
+        return candidate;
+      }
       try {
         await this.fs.link(f.abs, to);
       } catch (err) {
         const c = code(err);
         if (c === 'EEXIST') continue;
-        if (!fh || !['EXDEV', 'EPERM', 'ENOTSUP', 'ENOSYS', 'EOPNOTSUPP'].includes(c)) throw err;
-        // No links here: a new file, from the handle.
-        const out = await this.fs.open(to, 'wx', 0o600).catch((e: unknown) => {
-          if (code(e) === 'EEXIST') return null;
-          throw e;
-        });
-        if (!out) continue;
-        try {
-          const st = await fh.stat({ bigint: true });
-          for await (const chunk of bytesOf(fh, Number(st.size))) await out.write(chunk);
-        } finally {
-          await out.close();
-        }
+        if (!LINKLESS.includes(c)) throw err;
+        if (!(await this.copy(fh, to))) continue;
+        if (await this.stillThere(f)) await this.fs.unlink(f.abs);
+        return candidate;
       }
-      if (await this.stillThere(f)) await this.fs.unlink(f.abs);
+      // The new name must be the very file listed; else it is taken back.
+      const linked = await this.fs.lstat(to, { bigint: true }).catch(() => null);
+      if (!linked || idOf(linked) !== f.id) {
+        await this.fs.unlink(to).catch(() => undefined);
+        return null;
+      }
+      if (!(await this.stillThere(f))) return candidate;
+      try {
+        await this.fs.unlink(f.abs);
+      } catch (err) {
+        await this.fs.unlink(to).catch(() => undefined);
+        throw err;
+      }
       return candidate;
     }
-    return null;
+    throw new Error('no name free in rejected/');
+  }
+
+  /** A new file at `to` (never over one), copied from the handle; false when the name was taken. */
+  private async copy(fh: FileHandle, to: string): Promise<boolean> {
+    const out = await this.fs.open(to, 'wx', 0o600).catch((e: unknown) => {
+      if (code(e) === 'EEXIST') return null;
+      throw e;
+    });
+    if (!out) return false;
+    try {
+      const st = await fh.stat({ bigint: true });
+      for await (const chunk of bytesOf(fh, Number(st.size), this.abort.signal)) {
+        await out.write(chunk);
+      }
+      await out.close();
+      return true;
+    } catch (err) {
+      await out.close().catch(() => undefined);
+      await this.fs.unlink(to).catch(() => undefined);
+      throw err;
+    }
   }
 }

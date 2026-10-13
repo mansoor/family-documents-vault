@@ -7,7 +7,7 @@ import { Readable } from 'node:stream';
 import { EnvKeyProvider, ScopeKeys, unwrapKey } from '@fdv/crypto';
 import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
-import { BATCH_MAX_FILES, scannerDay, WATCH_INCOMPLETE_MS, watchIgnored } from '@fdv/shared';
+import { BATCH_MAX_FILES, scannerDay, watchIgnored } from '@fdv/shared';
 import { LocalAdapter } from '@fdv/storage';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -349,38 +349,82 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     expect((await r.tick()).outcomes).toMatchObject([{ rel: 'slow.pdf', kind: 'added' }]);
   });
 
-  it('waits for a file that has stopped changing but looks unfinished, and a day on rejects it', async () => {
+  it('waits for a file that looks unfinished, then takes it anyway after its grace; never holds a valid file up for long', async () => {
+    expect(
+      loadConfig({ DATABASE_URL: 'postgres://x/y', FDV_MASTER_KEY: 'k'.repeat(43) })
+        .FDV_WATCH_INCOMPLETE_GRACE_SECONDS,
+    ).toBe(120);
     const dir = await folder();
     await turnOn('adult');
-    const r = runner(dir);
-    // A PDF with no end yet, a JPEG cut off, and one whose tail is space set aside.
+    const said: Array<{ msg: string; extra: string }> = [];
+    const r = runner(dir, {
+      log: (_l, msg, extra) => said.push({ msg, extra: JSON.stringify(extra ?? {}) }),
+    });
+    // A PDF with no end yet, a JPEG cut off, one whose tail is space set aside…
     await write(dir, 'cut.pdf', Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\n'));
     await write(dir, 'cut.jpg', Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]));
     await write(dir, 'zeros.pdf', Buffer.concat([PDF('zeros'), Buffer.alloc(4096)]));
+    // …a motion photo (a JPEG, then a video after its end), a PDF with more
+    // than a kilobyte after its %%EOF, and a TIFF whose last strip is blank paper.
+    const motion = Buffer.concat([
+      Buffer.from([0xff, 0xd8, 0xff, 0xe1, 9, 9]),
+      Buffer.from([0xff, 0xd9]),
+      Buffer.from('\0\0\0\x18ftypmp42'),
+      Buffer.alloc(8192, 7),
+    ]);
+    await write(dir, 'motion.jpg', motion);
+    await write(dir, 'appended.pdf', Buffer.concat([PDF('appended'), Buffer.alloc(2048, 0x41)]));
+    await write(
+      dir,
+      'blank-bottom.tif',
+      Buffer.concat([Buffer.from('II*\0\x08\0\0\0'), Buffer.alloc(8192)]),
+    );
+    // A JPEG with a little after its end marker is complete at once.
+    await write(
+      dir,
+      'trailer.jpg',
+      Buffer.concat([
+        Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1]),
+        Buffer.from([0xff, 0xd9]),
+        Buffer.alloc(40, 3),
+      ]),
+    );
     const round = await settle(r);
     expect(round.outcomes.map((o) => [o.rel, o.kind])).toEqual([
+      ['appended.pdf', 'waiting'],
+      ['blank-bottom.tif', 'added'],
       ['cut.jpg', 'waiting'],
       ['cut.pdf', 'waiting'],
+      ['motion.jpg', 'waiting'],
+      ['trailer.jpg', 'added'],
       ['zeros.pdf', 'waiting'],
     ]);
-    expect(await items()).toEqual([]);
     // Finished after all: taken.
     await fsp.appendFile(path.join(dir, 'cut.jpg'), Buffer.from([0xff, 0xd9]));
-    clock += 60_000;
+    clock += 30_000;
     await r.tick();
     clock += 11_000;
     const done = await r.tick();
     expect(done.outcomes.find((o) => o.rel === 'cut.jpg')?.kind).toBe('added');
-    // Never finished: a day on, rejected as such, and its person told.
-    clock += WATCH_INCOMPLETE_MS;
+    // Its grace over: every one taken, none rejected, nobody told of any.
+    clock += 120_000;
     const late = await r.tick();
-    expect(late.outcomes.map((o) => [o.rel, o.kind === 'rejected' ? o.reason : o.kind])).toEqual([
-      ['cut.pdf', 'incomplete'],
-      ['zeros.pdf', 'incomplete'],
+    expect(late.outcomes.map((o) => [o.rel, o.kind])).toEqual([
+      ['appended.pdf', 'added'],
+      ['cut.pdf', 'added'],
+      ['motion.jpg', 'added'],
+      ['zeros.pdf', 'added'],
     ]);
-    expect((await notes()).map((n) => n.reason)).toEqual(['incomplete', 'incomplete']);
+    expect(await notes()).toEqual([]);
+    expect((await items()).length).toBe(7);
+    // Said in the log once each, and never by name.
+    const taken = said.filter((s) => s.msg.includes('looked unfinished'));
+    expect(taken).toHaveLength(4);
+    for (const s of taken) expect(s.extra).not.toMatch(/cut|motion|zeros|appended/);
     // The rule itself, by its ends alone.
     expect(looksComplete('application/pdf', PDF('x'), PDF('x'), 1)).toBe(true);
+    expect(looksComplete('image/jpeg', motion, motion.subarray(-1024), motion.length)).toBe(false);
+    expect(looksComplete('image/tiff', Buffer.from('II*\0'), Buffer.alloc(1024), 9000)).toBe(true);
     expect(looksComplete('image/png', PNG, PNG, PNG.length)).toBe(true);
     expect(looksComplete('image/png', PNG, PNG.subarray(0, 12), PNG.length)).toBe(false);
     const zip = Buffer.concat([
@@ -543,36 +587,33 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     expect(await there(decoy)).toBe(true);
   });
 
-  it.skipIf(!LINUX)(
-    'a folder moved outside and linked back as the file is opened: the very file, now outside, is never read (Linux, /proc)',
-    async () => {
-      const dir = await folder();
-      const outside = await folder();
-      await turnOn('adult');
-      await write(dir, 'Letters/deed.pdf', PDF('the deed'));
-      let swapped = false;
-      const r = runner(
-        dir,
-        {},
-        fsWith({
-          open: (async (p: string, flags: number | string, mode?: number) => {
-            if (!swapped && String(p).endsWith('deed.pdf')) {
-              swapped = true;
-              // The same file — same device, same inode — but no longer in the folder.
-              await fsp.rename(path.join(dir, 'Letters'), path.join(outside, 'Letters'));
-              await fsp.symlink(path.join(outside, 'Letters'), path.join(dir, 'Letters'), 'dir');
-            }
-            return fsp.open(p, flags, mode);
-          }) as WatchFs['open'],
-        }),
-      );
-      const round = await settle(r);
-      expect(swapped).toBe(true);
-      expect(round.outcomes).toMatchObject([{ rel: 'Letters/deed.pdf', kind: 'later' }]);
-      expect(await items()).toEqual([]);
-      expect(await there(path.join(outside, 'Letters', 'deed.pdf'))).toBe(true);
-    },
-  );
+  it('a folder moved outside and linked back as the file is opened: the very file, now outside, is never read (Linux: /proc; elsewhere: its real path)', async () => {
+    const dir = await folder();
+    const outside = await folder();
+    await turnOn('adult');
+    await write(dir, 'Letters/deed.pdf', PDF('the deed'));
+    let swapped = false;
+    const r = runner(
+      dir,
+      {},
+      fsWith({
+        open: (async (p: string, flags: number | string, mode?: number) => {
+          if (!swapped && String(p).endsWith('deed.pdf')) {
+            swapped = true;
+            // The same file — same device, same inode — but no longer in the folder.
+            await fsp.rename(path.join(dir, 'Letters'), path.join(outside, 'Letters'));
+            await linkDir(path.join(outside, 'Letters'), path.join(dir, 'Letters'));
+          }
+          return fsp.open(p, flags, mode);
+        }) as WatchFs['open'],
+      }),
+    );
+    const round = await settle(r);
+    expect(swapped).toBe(true);
+    expect(round.outcomes).toMatchObject([{ rel: 'Letters/deed.pdf', kind: 'later' }]);
+    expect(await items()).toEqual([]);
+    expect(await there(path.join(outside, 'Letters', 'deed.pdf'))).toBe(true);
+  });
 
   it.skipIf(!LINUX)(
     'a file swapped for a link to itself moved outside, as it is opened, is never read (Linux)',
@@ -746,6 +787,14 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
         }
         return fsp.open(p, flags, mode);
       }) as WatchFs['open'],
+      // As protected_hardlinks refuses a link to a file the worker cannot
+      // read: such a file is renamed, never linked.
+      link: (async (from: string, to: string) => {
+        if (String(from).endsWith('locked.pdf')) {
+          throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+        }
+        return fsp.link(from, to);
+      }) as WatchFs['link'],
     });
     const r = runner(dir, {}, unreadable);
     const round = await settle(r);
@@ -794,7 +843,7 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     expect((await settle(r)).outcomes).toEqual([]);
   });
 
-  it('tells its person before it moves the file, once, however often the move is tried', async () => {
+  it('a file it cannot move is left in place: its person told once that it was, the owners counted it — still after a pause — and once moved, told so', async () => {
     const dir = await folder();
     await turnOn('adult');
     const odd = await write(dir, 'odd.gif', Buffer.from('GIF89a'));
@@ -810,15 +859,156 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
       }),
     );
     expect((await settle(r)).outcomes).toMatchObject([{ rel: 'odd.gif', kind: 'later' }]);
-    // Told, though the file could not be moved yet: a stop now loses nothing.
-    expect((await notes()).map((n) => n.file_name)).toEqual(['odd.gif']);
+    const told = () =>
+      admin
+        .query<{ file_name: string; left_in_place: boolean }>(
+          'select file_name, left_in_place from watch_notice where household_id = $1',
+          [hh],
+        )
+        .then((q) => q.rows);
+    expect(await told()).toEqual([{ file_name: 'odd.gif', left_in_place: true }]);
     expect(await there(odd)).toBe(true);
+    expect((await setting())?.stuck_files).toBe(1);
+    // Tried again: told once, however often.
+    clock += 11 * 60_000;
+    await r.tick();
+    expect(await told()).toEqual([{ file_name: 'odd.gif', left_in_place: true }]);
+    // Paused: the folder is not listed, and the owners keep the last count.
+    await admin.query(
+      "update account_household set suspended_at = now(), suspend_reason = 'locked' where member_id = $1",
+      [people.adult.member],
+    );
+    clock += 11 * 60_000;
+    expect((await r.tick()).paused).toBe('locked');
+    expect((await setting())?.stuck_files).toBe(1);
+    await admin.query(
+      'update account_household set suspended_at = null, suspend_reason = null where member_id = $1',
+      [people.adult.member],
+    );
+    // Moved at last: the same note, now saying so; nothing left to count.
     refuse = false;
     clock += 11 * 60_000;
-    expect((await r.tick()).outcomes).toMatchObject([{ rel: 'odd.gif', kind: 'rejected' }]);
-    expect((await notes()).map((n) => n.file_name)).toEqual(['odd.gif']);
+    await r.tick();
+    expect((await r.tick()).outcomes.map((o) => o.kind)).toEqual([]);
+    expect(await told()).toEqual([{ file_name: 'odd.gif', left_in_place: false }]);
     expect(await there(odd)).toBe(false);
+    expect((await setting())?.stuck_files).toBe(0);
   });
+
+  it('a link made to the wrong file is taken back, and a copy that fails or is stopped leaves nothing behind', async () => {
+    const dir = await folder();
+    await turnOn('adult');
+    await write(dir, 'swapped.zip', Buffer.from('PK\x03\x04 not a document'));
+    const decoy = await write(dir, '.decoy', Buffer.from('another file'));
+    // The name swapped in the instant between the check and the link.
+    const r = runner(
+      dir,
+      {},
+      fsWith({
+        link: (async (_from: string, to: string) => fsp.link(decoy, to)) as WatchFs['link'],
+      }),
+    );
+    expect((await settle(r)).outcomes).toMatchObject([{ rel: 'swapped.zip', kind: 'later' }]);
+    expect(await fsp.readdir(path.join(dir, 'rejected'))).toEqual([]);
+    expect(await there(path.join(dir, 'swapped.zip'))).toBe(true);
+    expect(await notes()).toEqual([]);
+    await r.stop();
+
+    // No links here, and the copy fails part-way: no half copy left.
+    const dir2 = await folder();
+    await write(
+      dir2,
+      'copied.zip',
+      Buffer.from('PK\x03\x04 not a document, longer than one write'),
+    );
+    const noLinks = {
+      link: (async () => {
+        throw Object.assign(new Error('no links'), { code: 'EXDEV' });
+      }) as WatchFs['link'],
+    };
+    const r2 = runner(
+      dir2,
+      {},
+      fsWith({
+        ...noLinks,
+        open: (async (p: string, flags: number | string, mode?: number) => {
+          const fh = await fsp.open(p, flags, mode);
+          if (flags === 'wx') {
+            fh.write = async () => {
+              throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+            };
+          }
+          return fh;
+        }) as WatchFs['open'],
+      }),
+    );
+    expect((await settle(r2)).outcomes).toMatchObject([{ rel: 'copied.zip', kind: 'later' }]);
+    expect(await fsp.readdir(path.join(dir2, 'rejected'))).toEqual([]);
+    expect(await there(path.join(dir2, 'copied.zip'))).toBe(true);
+    await r2.stop();
+
+    // And stopped as it copies: no half copy either.
+    const dir3 = await folder();
+    await write(dir3, 'stopped.zip', Buffer.from('PK\x03\x04 not a document'));
+    const stopping: Array<Promise<void>> = [];
+    const r3: WatchRunner = runner(
+      dir3,
+      {},
+      fsWith({
+        ...noLinks,
+        open: (async (p: string, flags: number | string, mode?: number) => {
+          if (flags === 'wx' && stopping.length === 0) stopping.push(r3.stop());
+          return fsp.open(p, flags, mode);
+        }) as WatchFs['open'],
+      }),
+    );
+    await r3.tick();
+    clock += 11_000;
+    await r3.tick();
+    await Promise.all(stopping);
+    expect(stopping).toHaveLength(1);
+    expect(await fsp.readdir(path.join(dir3, 'rejected'))).toEqual([]);
+    expect(await there(path.join(dir3, 'stopped.zip'))).toBe(true);
+  });
+
+  it.skipIf(!LINUX || ROOT_USER)(
+    'PROBE 1c: a file outside, not to be opened (mode 000), reached through a swapped folder, is never moved nor named (Linux)',
+    async () => {
+      const dir = await folder();
+      const outside = await folder();
+      await turnOn('adult');
+      await write(dir, 'Letters/bill.pdf', PDF('the bill listed'));
+      const secret = await write(outside, 'Letters/bill.pdf', PDF('somebody else’s, unreadable'));
+      await fsp.chmod(secret, 0o000);
+      let swapped = false;
+      const r = runner(
+        dir,
+        {},
+        fsWith({
+          open: (async (p: string, flags: number | string, mode?: number) => {
+            if (!swapped && String(p).endsWith('bill.pdf')) {
+              swapped = true;
+              await fsp.rename(path.join(dir, 'Letters'), path.join(dir, '.gone'));
+              await fsp.symlink(path.join(outside, 'Letters'), path.join(dir, 'Letters'), 'dir');
+            }
+            return fsp.open(p, flags, mode);
+          }) as WatchFs['open'],
+        }),
+      );
+      try {
+        const round = await settle(r);
+        expect(swapped).toBe(true);
+        expect(round.outcomes).toMatchObject([{ rel: 'Letters/bill.pdf', kind: 'later' }]);
+        // Still where it was, never moved, never named.
+        expect(await there(secret)).toBe(true);
+        expect(await there(path.join(dir, 'rejected'))).toBe(false);
+        expect(await notes()).toEqual([]);
+        expect(await items()).toEqual([]);
+      } finally {
+        await fsp.chmod(secret, 0o600);
+      }
+    },
+  );
 
   it('never writes a note through a link left at its name, nor over another file; and makes rejected/ a folder of its own', async () => {
     const dir = await folder();

@@ -3,6 +3,7 @@ import {
   can,
   mayFillFromScanner,
   refusalFor,
+  WATCH_LEFT_IN_PLACE,
   WATCH_REJECTED_TITLE,
   WATCH_STALE_MS,
   watchDirWords,
@@ -266,7 +267,7 @@ export class WatchFolderService {
     return withPrincipal(this.db, p, async (trx) => {
       const rows = await trx
         .selectFrom('watch_notice')
-        .select(['id', 'file_name', 'reason', 'created_at'])
+        .select(['id', 'file_name', 'reason', 'left_in_place', 'created_at'])
         .where('member_id', '=', p.memberId)
         .orderBy('created_at', 'desc')
         .orderBy('id')
@@ -276,8 +277,11 @@ export class WatchFolderService {
         id: r.id,
         file_name: r.file_name,
         reason: r.reason,
+        left_in_place: r.left_in_place,
         title: WATCH_REJECTED_TITLE,
-        words: `${r.file_name} was moved to the scanner folder’s rejected folder. ${watchRejectWords(r.reason)}`,
+        words: r.left_in_place
+          ? `${r.file_name}: ${watchRejectWords(r.reason)} ${WATCH_LEFT_IN_PLACE}`
+          : `${r.file_name} was moved to the scanner folder’s rejected folder. ${watchRejectWords(r.reason)}`,
         at: r.created_at.toISOString(),
       }));
     });

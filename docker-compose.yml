@@ -93,6 +93,7 @@ services:
       # largest file it takes is the same as for an upload.
       FDV_WATCH_DIR: ${FDV_WATCH_DIR:-}
       FDV_WATCH_STABLE_SECONDS: ${FDV_WATCH_STABLE_SECONDS:-}
+      FDV_WATCH_INCOMPLETE_GRACE_SECONDS: ${FDV_WATCH_INCOMPLETE_GRACE_SECONDS:-}
       FDV_MAX_UPLOAD_BYTES: ${FDV_MAX_UPLOAD_BYTES:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:

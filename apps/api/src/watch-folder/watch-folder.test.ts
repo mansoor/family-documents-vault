@@ -340,7 +340,7 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the API', () => {
     expect(await view()).toMatchObject({
       stuck_files: 2,
       stuck_words: expect.stringMatching(
-        /^2 scans are safely in the vault but couldn’t be deleted from the scanner folder/,
+        /^2 scans are still in the scanner folder, not encrypted, though the vault has dealt with them/,
       ) as unknown,
     });
     // Off, it is not paused: it is off.
@@ -364,6 +364,7 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the API', () => {
         id,
         file_name: 'AHMED-SCAN-77.zip',
         reason: 'unsupported',
+        left_in_place: false,
         title: 'A scanned file couldn’t be added',
         words: expect.stringMatching(
           /^AHMED-SCAN-77\.zip was moved to the scanner folder’s rejected folder\. It isn’t a kind of file/,
@@ -389,6 +390,19 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the API', () => {
     expect(
       (await call(adult, 'GET', '/api/v1/watch-folder/notices')).json<{ items: unknown[] }>().items,
     ).toEqual([]);
+    // One the worker could not move either: it says the file is still where it was.
+    await admin.query(
+      `insert into watch_notice (household_id, member_id, file_name, reason, file_key, left_in_place)
+       values ($1, $2, 'stuck.gif', 'unsupported', gen_random_uuid(), true)`,
+      [owner.household_id, adult.member_id],
+    );
+    const [left] = (await call(adult, 'GET', '/api/v1/watch-folder/notices')).json<{
+      items: WatchNoticeView[];
+    }>().items;
+    expect(left?.left_in_place).toBe(true);
+    expect(left?.words).toMatch(
+      /^stuck\.gif: It isn’t a kind of file.*still where the scanner saved it/,
+    );
   });
 
   // ------------------------------------------------------------ whose Inbox

@@ -4396,11 +4396,14 @@ display_name, role }] }` — `state` one of `ready`, `off`, `missing`,
     that the worker could not then delete from the folder, said to the
     owners with what to do (`null` for none) — and `folder.words` names the
     folder both inside the worker and on the server as the README sets it
-    up. A notice's `reason` may also be `incomplete` (still unfinished a day
-    after it stopped changing) or `linked` (a hard link to a file kept
-    elsewhere). **Changed:** a pause the worker said is answered only while
+    up. `stuck_files` also counts files meant for rejected/ that could not
+    be moved there. A notice's `reason` may also be `linked` (a hard link to
+    a file kept elsewhere), and each notice carries `left_in_place`: true
+    when the file could not be moved to rejected/ either, and its `words`
+    say so. **Changed:** a pause the worker said is answered only while
     its word on the folder is fresh and ready. `@fdv/shared`:
-    `WATCH_INCOMPLETE_MS`, `WATCH_HOST_DIR`, `watchStuckWords`.
+    `WATCH_INCOMPLETE_GRACE_MS`, `WATCH_HOST_DIR`, `WATCH_LEFT_IN_PLACE`,
+    `watchStuckWords`.
 
 ## Deprecations in effect
 

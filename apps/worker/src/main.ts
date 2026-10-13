@@ -467,6 +467,7 @@ async function main(): Promise<void> {
       dir: config.FDV_WATCH_DIR ?? null,
       lockUrl: config.DATABASE_URL,
       stableMs: config.FDV_WATCH_STABLE_SECONDS * 1000,
+      incompleteGraceMs: config.FDV_WATCH_INCOMPLETE_GRACE_SECONDS * 1000,
     },
   );
   watch.start();

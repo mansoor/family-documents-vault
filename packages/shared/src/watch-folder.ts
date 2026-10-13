@@ -11,7 +11,7 @@ import { suspensionInEffect } from './wire.js';
  * anybody of the family who may add documents, never a viewer. The worker
  * looks every WATCH_POLL_MS, and takes a file once it has stopped changing
  * (FDV_WATCH_STABLE_SECONDS, WATCH_STABLE_MS by default) and looks complete
- * for its kind; it adds it as Add → Many documents adds a file: an item in
+ * for its kind — or has stayed so for FDV_WATCH_INCOMPLETE_GRACE_SECONDS; it adds it as Add → Many documents adds a file: an item in
  * that person's batch of the day ("Scanner, 12 Oct"), theirs alone until
  * they accept it. Once it is safely stored the file is deleted. A file the
  * vault cannot take is moved to `rejected/`, with a note beside it saying
@@ -24,8 +24,14 @@ export const WATCH_POLL_MS = 15_000;
 /** By default, a file is taken once its size and time have not changed for this long. */
 export const WATCH_STABLE_MS = 10_000;
 
-/** A file that has stopped changing but does not look complete is waited for this long, then rejected. */
-export const WATCH_INCOMPLETE_MS = 24 * 3_600_000;
+/**
+ * By default, a file that has stopped changing but does not look complete
+ * for its kind is waited for this long, then taken anyway
+ * (FDV_WATCH_INCOMPLETE_GRACE_SECONDS): a valid file whose end the check does
+ * not know (a motion photo, a PDF with data after its end) is never held up
+ * for long, and the reader says of a file cut short that its pages are bad.
+ */
+export const WATCH_INCOMPLETE_GRACE_MS = 120_000;
 
 /**
  * The worker's word on the folder older than this is no word at all: the
@@ -70,12 +76,11 @@ export type WatchPause =
   | 'day_full';
 
 /**
- * Why a file was moved to rejected/: not a kind the vault keeps, too large,
- * not to be read, empty, still not complete a day after it stopped
- * changing (`incomplete`), or a linked copy of a file elsewhere (`linked`).
+ * Why a file was moved to rejected/ (or would have been): not a kind the
+ * vault keeps, too large, not to be read, empty, or a linked copy of a file
+ * elsewhere (`linked`).
  */
-export type WatchRejectReason =
-  'unsupported' | 'too_large' | 'unreadable' | 'empty' | 'incomplete' | 'linked';
+export type WatchRejectReason = 'unsupported' | 'too_large' | 'unreadable' | 'empty' | 'linked';
 
 /** Somebody whose Inbox the folder may fill: of the family, with a sign-in, who may add documents. */
 export interface WatchCandidate {
@@ -104,8 +109,9 @@ export interface WatchFolderView {
   paused: { reason: WatchPause; words: string } | null;
   last_added_at: string | null;
   /**
-   * Files stored in the vault that the worker could not then delete from the
-   * folder: still there, not encrypted. 0 when there are none; with what to do.
+   * Files the worker has dealt with that are still in the folder, not
+   * encrypted: stored in the vault but not deleted, or meant for rejected/
+   * but not moved. 0 when there are none; with what to do.
    */
   stuck_files: number;
   stuck_words: string | null;
@@ -124,6 +130,8 @@ export interface WatchNoticeView {
   id: string;
   file_name: string;
   reason: WatchRejectReason;
+  /** It could not be moved to rejected/ either: it is still where the scanner saved it. */
+  left_in_place: boolean;
   /** "A scanned file couldn't be added" */
   title: string;
   /** Why, and what to do. */
@@ -156,11 +164,16 @@ export function watchDirWords(state: WatchDirState | 'unknown', dir: string | nu
   }
 }
 
-/** Files stored that could not then be deleted from the folder, to an owner; null for none. */
+/**
+ * Files the worker has dealt with that are still in the folder, to an
+ * owner — stored but not deleted, or meant for rejected/ but not moved —
+ * as of the worker's last look; null for none.
+ */
 export function watchStuckWords(n: number): string | null {
   if (n <= 0) return null;
   const files = n === 1 ? '1 scan is' : `${n} scans are`;
-  return `${files} safely in the vault but couldn’t be deleted from the scanner folder, where ${n === 1 ? 'it is' : 'they are'} not encrypted. Delete ${n === 1 ? 'it' : 'them'} from the folder by hand, and check the folder’s permissions.`;
+  const it = n === 1 ? 'it' : 'them';
+  return `${files} still in the scanner folder, not encrypted, though the vault has dealt with ${it}: stored safely but not deleted, or not added and not moved to rejected/. Check the folder’s permissions, and delete ${it} from the folder by hand once you have checked.`;
 }
 
 /** Why the folder is paused, to an owner: `name` is whose Inbox it fills. */
@@ -200,8 +213,6 @@ export function watchRejectWords(reason: WatchRejectReason, maxBytes?: number): 
       return 'The vault couldn’t read it from the folder. Check the file, then save it into the folder again.';
     case 'empty':
       return 'It was empty. Scan it again.';
-    case 'incomplete':
-      return 'It still looked unfinished a day after it stopped changing, as if the scanner stopped part-way. Scan it again.';
     case 'linked':
       return 'It was a linked copy of a file kept somewhere else. Save it into the folder as a plain file.';
   }
@@ -212,6 +223,10 @@ function sizeWords(bytes: number): string {
   const mb = bytes / (1024 * 1024);
   return mb >= 1 ? `${Math.floor(mb)} MB` : `${Math.max(1, Math.floor(bytes / 1024))} KB`;
 }
+
+/** What a note says when the file could not be moved to rejected/ either. */
+export const WATCH_LEFT_IN_PLACE =
+  'It could not be moved to the rejected folder either, so it is still where the scanner saved it, not encrypted. Delete it from the scanner folder once you have dealt with it.';
 
 /** Needs attention's heading for a file moved to rejected/. */
 export const WATCH_REJECTED_TITLE = 'A scanned file couldn’t be added';

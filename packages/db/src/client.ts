@@ -1268,7 +1268,9 @@ export interface Schema {
     household_id: string;
     member_id: string;
     file_name: string;
-    reason: 'unsupported' | 'too_large' | 'unreadable' | 'empty' | 'incomplete' | 'linked';
+    reason: 'unsupported' | 'too_large' | 'unreadable' | 'empty' | 'linked';
+    /** It could not be moved to rejected/ either. */
+    left_in_place: Generated<boolean>;
     /** A keyed hash of the file's place, size and time: one note a file. */
     file_key: string;
     created_at: GeneratedTimestamp;

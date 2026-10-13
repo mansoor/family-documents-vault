@@ -221,7 +221,11 @@ export function ScannerNotices(props: {
       const done = await guarded((t) => api.dismissWatchNotice(t, n.id));
       if (done !== null) {
         await props.onDismissed();
-        setSaid(`Dismissed. ${n.file_name} is still in the scanner folder’s rejected folder.`);
+        setSaid(
+          n.left_in_place
+            ? `Dismissed. ${n.file_name} is still where the scanner saved it.`
+            : `Dismissed. ${n.file_name} is still in the scanner folder’s rejected folder.`,
+        );
       }
     } catch (err) {
       setError(describeError(err));
