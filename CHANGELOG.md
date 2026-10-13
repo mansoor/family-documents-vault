@@ -6,10 +6,12 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.8.0-dev.3] - 2026-10-13 — duplicates and renewals as new versions
+
 ### Added
 
 - **A file you upload that is already in the vault says so.** On its card: "Already in the vault: Aisha's passport", with a link, and **Discard this copy** first; **Accept anyway** keeps both. A copy of something you cannot see — somebody's Only me, an Adults only document if you are a teen, or the Trash — still says nothing.
-- **A renewal can be added as a new version.** When a file's pages give the same kind and number as a document of yours, or the same kind, person and issuer, its card offers **Add as a new version of …** beside Accept, with **or another…** when there are several. The document keeps its history: the new file becomes its current version, and the dates and number on the card update it. Its reminders are dealt with as a renewal's are. You can undo it for 5 minutes: the dates, number and reminders go back as they were. A teen is offered only their own documents. Such a file is **Check**, never Ready, so **Accept all Ready** never files a renewal as a document of its own.
+- **A renewal can be added as a new version.** When a file's pages give the same kind and number as a document of yours, or the same kind, person and issuer, its card offers **Add as a new version of …** beside Accept, with **or another match…** when there are several. The document keeps its history: the new file becomes its current version, and the dates and number on the card update it. Its reminders are dealt with as a renewal's are. You can undo it for 5 minutes: the dates, number and reminders go back as they were. A teen is offered only their own documents. Such a file is **Check**, never Ready, so **Accept all Ready** never files a renewal as a document of its own.
 - **The batch's page says it too:** "Same as …" or "New version of …?", each linking to the document.
 
 ### Database
