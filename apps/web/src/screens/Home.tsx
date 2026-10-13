@@ -33,6 +33,7 @@ import {
 import { AfterRestoreBanner } from './AfterRestore.js';
 import { OnlyYou, useMayBatch } from './Batches.js';
 import { mayBringBack, purgeAskedWords } from './Trash.js';
+import { loadScannerNotices, ScannerNotices } from '../watch-folder.js';
 
 /**
  * Home is the whole product in one view: the needs-attention strip (the
@@ -52,7 +53,7 @@ export function HomeScreen() {
   }, [said]);
   const { data, error, reload } = useLoad(
     async (t) => {
-      const [members, counts, recent, docs, me, due, suggestions, types, asked, people] =
+      const [members, counts, recent, docs, me, due, suggestions, types, asked, people, scans] =
         await Promise.all([
           api.members(t),
           api.counts(t),
@@ -70,6 +71,9 @@ export function HomeScreen() {
           (session.info?.role ?? storedRole()) === 'owner'
             ? api.personReminders(t).catch(() => ({ items: [] as PersonReminderView[] }))
             : Promise.resolve({ items: [] as PersonReminderView[] }),
+          // A scanned file the scanner folder couldn't add (S3): told to
+          // whoever's Inbox it fills, and nobody else; never Home's loss.
+          loadScannerNotices(t, can(session.info?.role ?? storedRole(), 'document.add')),
         ]);
       // A guest is told when their access ends, on the family's clock (5.34).
       const timezone =
@@ -101,6 +105,7 @@ export function HomeScreen() {
         recent: recent.items,
         attention,
         people: people.items,
+        scans,
         suggestions: suggestions.items,
         types: types.items,
         // Yours, that an owner has asked to remove for good: you may keep it.
@@ -261,7 +266,11 @@ export function HomeScreen() {
   const attention = (
     <>
       <TurnedThirteen items={data?.people ?? []} onDismissed={reload} />
-      <AttentionStrip items={data?.attention ?? null} others={(data?.people.length ?? 0) > 0} />
+      <ScannerNotices items={data?.scans ?? []} onDismissed={reload} />
+      <AttentionStrip
+        items={data?.attention ?? null}
+        others={(data?.people.length ?? 0) + (data?.scans.length ?? 0) > 0}
+      />
       <MissingStrip items={data?.suggestions ?? []} />
     </>
   );

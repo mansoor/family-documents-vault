@@ -57,6 +57,7 @@ import {
   TopBar,
 } from '../ui.js';
 import { addLink, DocRow, rowLine, RowMain, type RowPick } from './Home.js';
+import { loadScannerNotices, ScannerNotices } from '../watch-folder.js';
 
 /** The most documents put in a collection at once, as the vault takes them. */
 const MOST_AT_ONCE = 200;
@@ -886,8 +887,8 @@ export function RemindersScreen() {
     reload,
   } = useLoad(
     async (t) => {
-      const [due, upcoming, docs, suggestions, hidden, types, profile, members] = await Promise.all(
-        [
+      const [due, upcoming, docs, suggestions, hidden, types, profile, members, scans] =
+        await Promise.all([
           api.reminders(t, 'due'),
           api.reminders(t, 'upcoming'),
           api.documents(t, { sort: 'expiring', limit: 100 }),
@@ -902,8 +903,9 @@ export function RemindersScreen() {
             (r) => r.items,
             () => [] as Member[],
           ),
-        ],
-      );
+          // A scanned file the scanner folder couldn't add (S3): the reader's own.
+          loadScannerNotices(t, can(storedRole(), 'document.add')),
+        ]);
       const reminded = new Set([...due.items, ...upcoming.items].map((r) => r.document_id));
       // Each reminder's document, as this reader sees it — whose it is, and
       // its status — for the wide table. Most are among the soonest to
@@ -927,6 +929,7 @@ export function RemindersScreen() {
         hidden: hidden.items,
         types: types.items,
         timezone: profile?.timezone ?? 'UTC',
+        scans,
       };
     },
     [authVersion],
@@ -978,12 +981,14 @@ export function RemindersScreen() {
       (r.status === 'snoozed' && r.snoozed_until ? r.snoozed_until : r.fire_at).slice(0, 10),
     )}`;
 
-  const count = (data?.due.length ?? 0) + (data?.attention.length ?? 0);
+  const scans = data?.scans.length ?? 0;
+  const count = (data?.due.length ?? 0) + (data?.attention.length ?? 0) + scans;
   return (
     <main className="page page-top page-wide has-nav">
       <TopBar title="Needs attention" />
       <ErrorNote message={error ?? loadError} />
       {trashed.note}
+      <ScannerNotices items={data?.scans ?? []} onDismissed={reload} />
       {/* From 768 px the calm word is a panel in the tables' frame
           (AttentionTables); on a phone, the line it always was. */}
       {data && count === 0 && !wide && (
@@ -1010,6 +1015,7 @@ export function RemindersScreen() {
             act={act}
             onChanged={reload}
             onTrashed={trashed.onTrashed}
+            others={scans}
           />
         )
       ) : (
@@ -1144,6 +1150,8 @@ function AttentionTables(props: {
   act: Act;
   onChanged: () => Promise<unknown>;
   onTrashed: (title: string) => void;
+  /** Something else above needs attention (a scanned file, S3): never "Everything is fine". */
+  others?: number;
 }) {
   const { docs, types, snoozes, act } = props;
   const names = shortName(props.members);
@@ -1183,7 +1191,7 @@ function AttentionTables(props: {
   const next = nextReminder(props.upcoming);
   return (
     <>
-      {now === 0 && (
+      {now === 0 && !props.others && (
         // Nothing now: said across the width, in the tables' frame, so the
         // page reads as the tables' page, not the narrow one before it.
         <div className="tbl-wrap tbl-static att-panel att-calm">

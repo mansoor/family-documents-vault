@@ -88,9 +88,17 @@ services:
       FDV_BACKUP_CRON: ${FDV_BACKUP_CRON:-30 2 * * *}
       FDV_DIGEST_HOUR: ${FDV_DIGEST_HOUR:-9}
       FDV_BACKUP_RETAIN_DAYS: ${FDV_BACKUP_RETAIN_DAYS:-30}
+      # The scanner folder (README, "Scanning straight into the vault"): set
+      # FDV_WATCH_DIR=/watch in .env and uncomment the mount below. The
+      # largest file it takes is the same as for an upload.
+      FDV_WATCH_DIR: ${FDV_WATCH_DIR:-}
+      FDV_WATCH_STABLE_SECONDS: ${FDV_WATCH_STABLE_SECONDS:-}
+      FDV_WATCH_INCOMPLETE_GRACE_SECONDS: ${FDV_WATCH_INCOMPLETE_GRACE_SECONDS:-}
+      FDV_MAX_UPLOAD_BYTES: ${FDV_MAX_UPLOAD_BYTES:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - vault-data:/data
+      # - ./scanner:/watch
     depends_on:
       # The API runs migrations; the worker's queue schema depends on them.
       api:

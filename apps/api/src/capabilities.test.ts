@@ -99,7 +99,10 @@ describe('buildCapabilities', () => {
       batch_review: true,
       batch_learning: true,
       batch_versions: true,
+      // S3: the scanner folder, only while the worker has it ready.
+      watch_folder: false,
     });
+    expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's
     // token in a path go with them: the body forms took over in 5.17.

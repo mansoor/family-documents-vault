@@ -317,7 +317,10 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_MASTER_KEY`                                | generated                                 | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost.                                                                                                           |
 | `FDV_DB_PASSWORD`                               | generated                                 | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                                                                                                    |
 | `FDV_DB_APP_PASSWORD`                           | generated                                 | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query.                                                                      |
-| `FDV_MAX_UPLOAD_BYTES`                          | `104857600`                               | Largest single file the vault accepts (100 MB).                                                                                                                                                                         |
+| `FDV_MAX_UPLOAD_BYTES`                          | `104857600`                               | Largest single file the vault accepts (100 MB), uploaded or from the scanner folder.                                                                                                                                    |
+| `FDV_WATCH_DIR`                                 | unset                                     | A folder a scanner saves into, inside the worker: `/watch`, with the compose file's mount. Unset: none. See [Scanning straight into the vault](#scanning-straight-into-the-vault).                                      |
+| `FDV_WATCH_STABLE_SECONDS`                      | `10`                                      | How long a scan must stop changing before the worker takes it (2 to 3600); raise it for a slow scanner.                                                                                                                 |
+| `FDV_WATCH_INCOMPLETE_GRACE_SECONDS`            | `120`                                     | How long a scan that has stopped changing but looks unfinished waits before it is taken anyway (0 to 86400).                                                                                                            |
 | `FDV_OFFLINE_MAX_DAYS`                          | `90`                                      | How many days a phone may show the Essentials it keeps without reaching the vault (1 to 365). See [Essentials on a phone](#essentials-on-a-phone).                                                                      |
 | `FDV_RATE_LIMIT_PER_MINUTE`                     | `300`                                     | How many requests one address may make in a minute, beyond the tighter limits on signing in and opening links (60 to 100000). Raise it when many devices share one address.                                             |
 | `FDV_DISPLAY_NAME`                              | `Our family vault`                        | The vault's name until it is set up. From then on every screen, and the phone app, shows the family's name, given at setup.                                                                                             |
@@ -632,6 +635,104 @@ only takes away. Such a link lasts 30 days at most. Sharing a collection
 always asks you to confirm it is you; a teen cannot share one; and deleting the
 collection, or making it Only me, ends its links. Every link, to a document or a
 collection, is in **Sharing**, to take back.
+
+### Scanning straight into the vault
+
+A network scanner, or a printer's "scan to folder", can save straight into a
+folder on the server. Each scan then lands in one person's Inbox to look over,
+as if they had added it.
+
+**Who can write to the folder can fill that person's Inbox, and who can read
+it sees scans on their way in, and the ones it rejected.** Share it with the
+scanner alone, on your home network, with a password of its own.
+
+1. **Make the folder**, beside your `docker-compose.yml`, owned by the
+   containers' user (uid 1000) and open to nobody else:
+
+   ```bash
+   mkdir scanner && sudo chown 1000:1000 scanner && sudo chmod 700 scanner
+   ```
+
+   It must be a bind mount of its own: never inside `vault-data` or any other
+   volume of the vault's.
+
+2. **Mount it into the worker.** In `docker-compose.yml`, uncomment
+   `# - ./scanner:/watch` under the worker's `volumes`, add `FDV_WATCH_DIR=/watch`
+   to `.env`, and run `docker compose up -d`. Only the worker needs it.
+3. **Point the scanner at it.** Share the host's `scanner` folder over SMB or
+   FTP, with everything the scanner writes owned by the uid-1000 account and
+   private to it, so the worker can delete the files and any folders the
+   scanner makes. Most scanners name each file by the date and time, so no
+   two are alike. With Samba:
+
+   ```ini
+   [scanner]
+     path = /srv/fdv/scanner
+     valid users = scanner
+     force user = fdv
+     create mask = 0600
+     directory mask = 0700
+     read only = no
+   ```
+
+   (`fdv` here is the host account with uid 1000; `scanner` the account the
+   scanner signs in with.) With vsftpd, the same: `guest_enable=YES`,
+   `guest_username=fdv`, `local_umask=077`, and the folder as that user's
+   `local_root`.
+
+4. **Turn it on.** An owner, in **Settings → For owners → Scanner folder**,
+   chooses whose Inbox it fills: themselves, or anyone in the family who signs
+   in and adds documents, never a viewer. The page says whether the folder is
+   ready and, if not, why: not set, not there, or not writable.
+
+What happens to each file:
+
+- The worker looks every 15 seconds. It takes a file once its size and time
+  haven't changed for `FDV_WATCH_STABLE_SECONDS` (10 by default) and it looks
+  complete for its kind (a PDF's end marker, a JPEG's, a PNG's, a Word or
+  Excel file's). One that looks unfinished waits
+  `FDV_WATCH_INCOMPLETE_GRACE_SECONDS` more (two minutes by default) and is
+  then taken anyway: a motion photo or a PDF with more after its end is
+  fine, and a scan that really was cut short shows its bad pages in the
+  Inbox. A scanner that pauses longer than both in the middle of a file can
+  still be taken part-way: raise `FDV_WATCH_STABLE_SECONDS` for it. It polls
+  rather than waiting for the system to say a file changed, which bind
+  mounts on Docker Desktop never do.
+- One worker watches, however many run, by holding a Postgres advisory lock
+  for as long as it runs. That needs `DATABASE_URL` to reach Postgres
+  directly, as the compose file does: not through PgBouncer or another pooler
+  in transaction mode, which would let two workers watch at once.
+- Files in folders inside it are taken too. Hidden files (a name starting with
+  `.`), names a program uses while it saves (`~…`, `….tmp`, `….part`) and the
+  `rejected` folder are left alone. The worker never follows a link, to a
+  file or a folder. Just before it reads, moves or deletes a file it checks
+  that the file is the one it listed and that its real path is inside the
+  folder; on Linux, the worker's own system, it checks the open file itself.
+  Anything else it leaves alone, and names to nobody.
+- It is encrypted into that person's batch of the day, "Scanner, 12 Oct" on the
+  household's calendar, read and proposed for like anything they upload, and
+  only then deleted from the folder. Until they accept it nobody else sees
+  it, not even an owner.
+- A file the vault can't take is moved to `rejected/` (only uid 1000 can open
+  it), with a note beside it (`<name>.txt`) saying why. That happens when it
+  isn't a PDF, JPEG, PNG, TIFF, HEIC, WebP, Word or Excel file, is larger
+  than `FDV_MAX_UPLOAD_BYTES`, is empty, can't be read, or is a hard link to
+  a file kept somewhere else. That person sees "A scanned file couldn't be
+  added" in Needs attention. Delete the file and its note once you have
+  dealt with them.
+- A file the worker has dealt with that is still in the folder — stored but
+  not deleted, or meant for `rejected/` but not moved (the folder's
+  permissions) — is counted for the owners in Settings, so they can delete
+  it by hand; a file that couldn't be moved also says so in that person's
+  Needs attention.
+- It pauses while that person's sign-in is locked or waiting after a restore,
+  while they can no longer add documents, while the vault can't open their key
+  (the wrong `FDV_MASTER_KEY`) or has nowhere to keep files, and once the
+  day's batch is full (200 files). Settings says why. Scans wait in the folder
+  meanwhile.
+
+Nothing in the folder is encrypted, and the folder is not backed up: a scan
+sits there only until it is stored, or until you deal with what was rejected.
 
 ### When a new device signs in
 

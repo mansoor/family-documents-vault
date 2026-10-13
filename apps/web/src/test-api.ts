@@ -335,6 +335,15 @@ export interface FakeState {
    */
   personReminders?: Array<Record<string, unknown> & { id: string }>;
   /**
+   * The scanner folder (S3), as GET /watch-folder gives it to an owner
+   * (WatchFolderView); `available` says /capabilities' watch_folder too. A
+   * PUT sets `enabled` and `member_id` (409 while it is not available).
+   * Left out, no folder: GET answers it unknown, and it is not offered.
+   */
+  watchFolder?: Record<string, unknown> & { available: boolean };
+  /** "A scanned file couldn't be added", the reader's own (WatchNoticeView); left out, none. */
+  watchNotices?: Array<Record<string, unknown> & { id: string }>;
+  /**
    * The household's time zone, as GET /profile gives it: reminders fall due
    * on its calendar. Left out, 'UTC', the vault's default.
    */
@@ -982,6 +991,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.batches && state.batchVersions !== false ? { batch_versions: true } : {}),
           // Learning from corrections (I4): said when a test gives what was learned.
           ...(state.learned ? { batch_learning: true } : {}),
+          // The scanner folder (S3): said while a test's folder is ready.
+          ...(state.watchFolder?.available ? { watch_folder: true } : {}),
         },
         limits: {
           ...(state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {}),
@@ -1115,6 +1126,65 @@ export function installFakeApi(state: FakeState) {
     }
     if (path === '/api/v1/auth/step-up') return json({ verified_at: null, expires_in: 0 });
     if (path === '/api/v1/exports') return json({ items: [] });
+    if (path === '/api/v1/watch-folder') {
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner can set up the scanner folder.');
+      }
+      const folder = state.watchFolder ?? {
+        available: false,
+        folder: {
+          state: 'unknown',
+          dir: null,
+          checked_at: null,
+          words:
+            'The worker hasn’t looked at the scanner folder in the last few minutes. Check that it is running.',
+        },
+        enabled: false,
+        member_id: null,
+        member_name: null,
+        paused: null,
+        last_added_at: null,
+        stuck_files: 0,
+        stuck_words: null,
+        candidates: [],
+      };
+      if (method === 'PUT') {
+        const b = body as { enabled: boolean; member_id?: string | null };
+        if (b.enabled && !folder.available) {
+          return refuse(409, 'watch_folder_unavailable', 'The scanner folder can’t be turned on.');
+        }
+        const member = b.member_id ?? (b.enabled ? 'me' : (folder.member_id as string | null));
+        const candidates = (folder.candidates ?? []) as Array<{
+          member_id: string;
+          display_name: string;
+        }>;
+        state.watchFolder = {
+          ...folder,
+          enabled: b.enabled,
+          member_id: member,
+          member_name: candidates.find((c) => c.member_id === member)?.display_name ?? null,
+        };
+        return json(state.watchFolder);
+      }
+      return json(folder);
+    }
+    if (path === '/api/v1/watch-folder/notices') {
+      if (storedRole() === 'viewer') {
+        return refuse(
+          403,
+          'forbidden',
+          'Viewers can open and download documents, but not add them.',
+        );
+      }
+      return json({ items: state.watchNotices ?? [] });
+    }
+    const noticeAt = /^\/api\/v1\/watch-folder\/notices\/([^/]+)\/dismiss$/.exec(path);
+    if (noticeAt && method === 'POST') {
+      const had = (state.watchNotices ?? []).some((n) => n.id === noticeAt[1]);
+      if (!had) return refuse(404, 'not_found', 'That note is not here.');
+      state.watchNotices = (state.watchNotices ?? []).filter((n) => n.id !== noticeAt[1]);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
     if (path === '/api/v1/reminders/people') {
       if (storedRole() !== 'owner') {
         return refuse(403, 'forbidden', 'Only an owner is reminded when somebody turns 13.');

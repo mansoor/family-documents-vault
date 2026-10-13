@@ -1081,6 +1081,40 @@ const GUARDS = [
     table: 'account_household',
     fn: 'intake_rules_leave_with_role',
   },
+  // An owner turns the scanner folder on or off and chooses whose Inbox it
+  // fills, as themselves, somebody who may add documents; what the worker
+  // says of it is the worker's (0068, S3).
+  {
+    name: 'watch_folder_account_writes',
+    table: 'watch_folder',
+    fn: 'watch_folder_account_writes',
+  },
+];
+
+/**
+ * The owners' settings (0068, S3): the scanner folder, kept from every
+ * other caller signed in by a rule of its own that asks the caller's role.
+ */
+const OWNERS_SETTINGS = [{ table: 'watch_folder', what: 'the scanner folder' }];
+
+/**
+ * Unique indexes the vault relies on for a rule, not for speed (0068, S3):
+ * one note a scanned file, one household filling Inboxes from the scanner
+ * folder, one scanner batch a person a day. Each must be there, unique and
+ * valid, on its own table.
+ */
+const UNIQUE_INDEXES = [
+  { name: 'watch_notice_file_idx', table: 'watch_notice', what: 'one note a scanned file' },
+  {
+    name: 'watch_folder_one_on',
+    table: 'watch_folder',
+    what: 'one household filling Inboxes from the scanner folder',
+  },
+  {
+    name: 'intake_batch_watch_day_idx',
+    table: 'intake_batch',
+    what: 'one scanner batch a person a day',
+  },
 ];
 
 /**
@@ -1169,6 +1203,10 @@ const ACTOR_GUARDED = [
   // (0065): theirs alone.
   'intake_rule',
   'intake_outcome',
+  // The scanner folder, the owners'; and what it could not add, its
+  // person's alone (0068, S3).
+  'watch_folder',
+  'watch_notice',
   // What a document removed for good leaves behind: who could see it, and
   // the files still to be deleted (0045).
   'document_tombstone',
@@ -1254,6 +1292,8 @@ const MAKER_ONLY = [
   // The rules learned from somebody's corrections, and their count (0065, I4).
   { table: 'intake_rule', where: 'true', what: "the rules learned from somebody's corrections" },
   { table: 'intake_outcome', where: 'true', what: "somebody's count of corrections" },
+  // A scanned file the scanner folder could not add (0068, S3).
+  { table: 'watch_notice', where: 'true', what: "somebody's note of a scan not added" },
   // A person's Only me identity details: theirs alone, whoever else asks (0050, A33).
   {
     table: 'member_identity',
@@ -1273,6 +1313,8 @@ const MAKER_ONLY = [
 const NOT_EVEN_OWNERS = [
   { table: 'intake_rule', what: "the rules learned from somebody's corrections" },
   { table: 'intake_outcome', what: "somebody's count of corrections" },
+  // Its file's name is of their own scanner's; an owner who is not them is told nothing (0068).
+  { table: 'watch_notice', what: "somebody's note of a scan not added" },
 ];
 
 /**
@@ -1404,6 +1446,27 @@ const REQUIRED_RULES = [
     name: 'member_remove_actor',
     cmd: 'd',
     what: 'who removes somebody from the household',
+  },
+  // A note that a scan could not be added is the vault's to write; its
+  // person only dismisses it. A scanner's batch is made by the vault alone
+  // (0068, S3).
+  {
+    table: 'watch_notice',
+    name: 'watch_notice_actor_insert',
+    cmd: 'a',
+    what: 'who writes a note that a scan could not be added',
+  },
+  {
+    table: 'watch_notice',
+    name: 'watch_notice_actor_update',
+    cmd: 'w',
+    what: 'who changes a note that a scan could not be added',
+  },
+  {
+    table: 'intake_batch',
+    name: 'intake_batch_watch_insert',
+    cmd: 'a',
+    what: "who makes a scanner's batch",
   },
   // A restriction, and what it names, are written by an owner or the vault:
   // the person reads theirs and changes none of it (0054).
@@ -1753,6 +1816,23 @@ export async function checkRestored(
         `a guard the vault relies on is missing (found: ${guards.map((g) => g.tgname).join(', ') || 'none'})`,
       );
     }
+    // And the unique indexes a rule rests on (0068): there, unique, valid.
+    const { rows: uniques } = await admin.query<{ name: string }>(
+      `select i.relname as name
+         from pg_index x
+         join pg_class i on i.oid = x.indexrelid
+         join pg_class t on t.oid = x.indrelid
+         join pg_namespace n on n.oid = t.relnamespace and n.nspname = 'public'
+         join unnest($1::text[], $2::text[]) as u(name, tbl) on u.name = i.relname and u.tbl = t.relname
+        where x.indisunique and x.indisvalid`,
+      [UNIQUE_INDEXES.map((u) => u.name), UNIQUE_INDEXES.map((u) => u.table)],
+    );
+    if (uniques.length !== UNIQUE_INDEXES.length) {
+      const missing = UNIQUE_INDEXES.filter((u) => !uniques.some((f) => f.name === u.name));
+      throw new Error(
+        `a unique index the vault relies on is missing: ${missing.map((m) => `${m.what} (${m.name})`).join(', ')}`,
+      );
+    }
     // And the second wall (0030): a rule for each kind of caller on the
     // document, all that hangs off it, and exports — one that governs what
     // is read, and asks who is asking. (What each rule then gives is tried
@@ -1855,6 +1935,23 @@ export async function checkRestored(
       throw new Error(
         `no rule keeps what was moved to the owners theirs on ${unowned.map((u) => u.name).join(', ')}`,
       );
+    }
+    // And the owners' settings (0068): a rule that governs what is read,
+    // asks who is asking, and asks for an owner.
+    const { rows: unsettled } = await admin.query<{ name: string }>(
+      `select t as name from unnest($1::text[]) as t
+        where not exists (select 1 from pg_policy p
+                           where p.polrelid = to_regclass('public.' || t)
+                             and not p.polpermissive
+                             and p.polcmd in ('*', 'r')
+                             and pg_get_expr(p.polqual, p.polrelid) like '%app_actor()%'
+                             and pg_get_expr(p.polqual, p.polrelid) like '%app_role()%'
+                             and pg_get_expr(p.polqual, p.polrelid) like '%''owner''%')`,
+      [OWNERS_SETTINGS.map((o) => o.table)],
+    );
+    if (unsettled.length) {
+      const what = OWNERS_SETTINGS.filter((o) => unsettled.some((u) => u.name === o.table));
+      throw new Error(`no rule keeps ${what.map((o) => o.what).join(', ')} to the owners`);
     }
     // And the rules the vault relies on by name (0050, the 5.26 review).
     const { rows: unnamed } = await admin.query<{ name: string }>(
@@ -2117,6 +2214,27 @@ export async function checkRestored(
             throw new Error(
               `household ${h.id}: what was moved to the owners (${o.table}) is open to an adult`,
             );
+          }
+        } finally {
+          client.release();
+        }
+      }
+      // And the owners' settings (0068): an adult — no owner — is given none.
+      for (const o of OWNERS_SETTINGS) {
+        const client = await app.connect();
+        try {
+          await client.query('begin');
+          await client.query(
+            `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                    set_config('app.role', 'adult', true)`,
+            [h.id],
+          );
+          const { rows: shown } = await client.query<{ n: number }>(
+            `select count(*)::int as n from ${o.table}`,
+          );
+          await client.query('commit');
+          if ((shown[0]?.n ?? 0) > 0) {
+            throw new Error(`household ${h.id}: ${o.what} is open to an adult`);
           }
         } finally {
           client.release();

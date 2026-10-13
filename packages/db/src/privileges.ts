@@ -37,6 +37,11 @@ begin
   if to_regclass('public.instance') is not null then
     revoke insert, update, delete on public.instance from fdv_app;
   end if;
+  -- The scanner folder as the worker last found it (0068): written by the
+  -- owning role alone, read by the API.
+  if to_regclass('public.watch_dir') is not null then
+    revoke insert, update, delete on public.watch_dir from fdv_app;
+  end if;
   if to_regprocedure('public.invitation_household(bytea)') is not null then
     grant execute on function public.invitation_household(bytea) to fdv_app;
   end if;

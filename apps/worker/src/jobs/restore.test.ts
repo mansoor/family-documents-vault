@@ -464,6 +464,27 @@ async function seed(url: string): Promise<string> {
               [hh],
             );
           }
+          // And, where the schema has them (0068), the scanner folder on,
+          // filling that person's Inbox, and a note of a scan it could not add.
+          const watched = await c.query<{ has: boolean }>(
+            "select to_regclass('public.watch_folder') is not null as has",
+          );
+          if (watched.rows[0]?.has) {
+            await c.query(
+              // On for the first household seeded: the folder is the server's,
+              // so a second household in the same database has it off.
+              `insert into watch_folder (household_id, enabled, member_id)
+               select $1, not exists (select 1 from watch_folder where enabled), b.member_id
+                 from intake_batch b where b.household_id = $1 limit 1`,
+              [hh],
+            );
+            await c.query(
+              `insert into watch_notice (household_id, member_id, file_name, reason, file_key)
+               select $1, b.member_id, 'letter.zip', 'unsupported', gen_random_uuid()
+                 from intake_batch b where b.household_id = $1`,
+              [hh],
+            );
+          }
         }
       }
     }
@@ -1502,6 +1523,158 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         vault.adminUrl,
         'alter table public.account_household enable trigger intake_rules_leave_with_role',
       );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
+  it('notices the scanner folder open to anybody but the owners, or its notes to anybody but their person (0068, S3)', async () => {
+    const seeded = await sql(
+      vault.adminUrl,
+      'select (select count(*)::int from watch_folder) as folders, (select count(*)::int from watch_notice) as notes',
+    );
+    expect(seeded.rows[0]).toEqual({ folders: 1, notes: 1 });
+    const ruleOf = async (name: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${name}'`,
+        )
+      ).rows[0]?.rule as string;
+
+    // The setting: its rule gone; or an adult given it.
+    const folder = await ruleOf('watch_folder_actor');
+    expect(folder).toMatch(/'owner'/);
+    await sql(vault.adminUrl, 'drop policy watch_folder_actor on public.watch_folder');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on watch_folder/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy watch_folder_actor on public.watch_folder as restrictive using (${folder})`,
+      );
+    }
+    await sql(
+      vault.adminUrl,
+      `alter policy watch_folder_actor on public.watch_folder
+         using (case app_actor() when 'account' then app_role() in ('owner', 'adult')
+                                 when 'system' then true else false end)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /the scanner folder is open to an adult/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy watch_folder_actor on public.watch_folder using (${folder})`,
+      );
+    }
+    await sql(
+      vault.adminUrl,
+      `alter policy watch_folder_actor on public.watch_folder
+         using (case app_actor() when 'account' then true when 'system' then true else false end)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule keeps the scanner folder to the owners/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy watch_folder_actor on public.watch_folder using (${folder})`,
+      );
+    }
+    await sql(
+      vault.adminUrl,
+      'alter table public.watch_folder disable trigger watch_folder_account_writes',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.watch_folder enable trigger watch_folder_account_writes',
+      );
+    }
+
+    // The notes: their person's alone, an owner's too; written by the vault.
+    const note = await ruleOf('watch_notice_actor');
+    expect(note).toMatch(/app_member\(\)/);
+    await sql(
+      vault.adminUrl,
+      `alter policy watch_notice_actor on public.watch_notice
+         using (case app_actor() when 'account' then true when 'system' then true else false end)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule keeps a member's own to them on .*watch_notice/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy watch_notice_actor on public.watch_notice using (${note})`,
+      );
+    }
+    await sql(
+      vault.adminUrl,
+      `alter policy watch_notice_actor on public.watch_notice
+         using (case app_actor()
+                  when 'account' then app_role() = 'owner' or member_id = app_member()
+                  when 'system' then true else false end)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/is open to an owner who is not them/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy watch_notice_actor on public.watch_notice using (${note})`,
+      );
+    }
+    for (const [table, policy] of [
+      ['watch_notice', 'watch_notice_actor_insert'],
+      ['watch_notice', 'watch_notice_actor_update'],
+      ['intake_batch', 'intake_batch_watch_insert'],
+    ] as const) {
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as q, pg_get_expr(polwithcheck, polrelid) as c,
+                polcmd from pg_policy where polname = '${policy}'`,
+      );
+      const was = rows[0] as { q: string | null; c: string | null; polcmd: string };
+      await sql(vault.adminUrl, `drop policy ${policy} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), policy).rejects.toThrow(new RegExp(policy));
+      } finally {
+        const cmd = { a: 'insert', w: 'update' }[was.polcmd] as string;
+        await sql(
+          vault.adminUrl,
+          `create policy ${policy} on public.${table} as restrictive for ${cmd}` +
+            (was.q ? ` using (${was.q})` : '') +
+            (was.c ? ` with check (${was.c})` : ''),
+        );
+      }
+    }
+    // And the unique indexes its rules rest on: one note a file, one
+    // household on, one scanner batch a person a day.
+    for (const [index, table, columns] of [
+      ['watch_notice_file_idx', 'watch_notice', '(household_id, member_id, file_key)'],
+      ['watch_folder_one_on', 'watch_folder', '((true)) where enabled'],
+      [
+        'intake_batch_watch_day_idx',
+        'intake_batch',
+        '(household_id, member_id, watch_day) where watch_day is not null',
+      ],
+    ] as const) {
+      await sql(vault.adminUrl, `drop index public.${index}`);
+      try {
+        await expect(checkRestored(target()), index).rejects.toThrow(
+          new RegExp(`unique index the vault relies on is missing: .*${index}`),
+        );
+      } finally {
+        await sql(vault.adminUrl, `create unique index ${index} on public.${table} ${columns}`);
+      }
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });

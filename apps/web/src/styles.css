@@ -824,6 +824,21 @@ h3 {
   color: var(--ink);
 }
 
+/* The scanner folder (S3): a file it couldn't add, told to its person. */
+.scanner-notice p {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* The scanner folder's page: what happens to each file, a plain list. */
+.scanner-what {
+  margin: 0;
+  padding-left: 1.25em;
+  display: grid;
+  gap: 6px;
+}
+
 /* 5.33: what a restricted viewer can see, on their Home. */
 .limits-told {
   margin: 0;

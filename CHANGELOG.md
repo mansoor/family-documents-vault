@@ -6,6 +6,22 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.8.0-dev.4] - 2026-10-13 — a watched folder for network scanners
+
+### Added
+
+- **Scanning straight into the vault.** Point a network scanner at a folder on the server, and each scan goes into one person's Inbox to look over, as if they had added it.
+  - **The server:** mount a folder into the worker and set `FDV_WATCH_DIR` (README, "Scanning straight into the vault"). The compose file has the mount, commented out.
+  - **The app:** an owner turns it on in **Settings → For owners → Scanner folder** and chooses whose Inbox it fills: themselves, or anyone in the family who signs in and adds documents, never a viewer. The page says when the folder isn't ready, and why.
+  - **Each file** is taken once it has stopped changing (`FDV_WATCH_STABLE_SECONDS`, 10 by default) and looks complete for its kind (or has waited `FDV_WATCH_INCOMPLETE_GRACE_SECONDS`, 120 by default), encrypted into that person's batch of the day ("Scanner, 12 Oct"), read and proposed for as anything they upload, and then deleted from the folder. Files in folders inside it are taken too. A link, to a file or a folder, is never followed, and a file is read, moved or deleted only once it is checked, just before, to be the file listed with its real path inside the folder.
+  - **A file the vault can't take** (not a PDF, photo, Word or Excel file, too large, empty, unreadable, or a hard link to a file elsewhere) is moved to `rejected/` (private to the vault), with a note beside it saying why, and that person sees "A scanned file couldn't be added" in Needs attention. One that can't be moved either is left in place, and its person told so. Owners are told how many scans are still in the folder though dealt with: stored but not deleted, or not moved.
+  - **It pauses**, and Settings says why, while that person is locked, waits after a restore or can no longer add documents, while the vault can't open their key or has nowhere to keep files, and once the day's batch is full. Files wait in the folder until then.
+  - **API:** `features.watch_folder`; `GET` and `PUT /api/v1/watch-folder` (owners); `GET /api/v1/watch-folder/notices` and `POST …/notices/{id}/dismiss` (the person's own).
+
+### Database
+
+- **Migration 0068** adds the scanner folder: the folder as the worker last found it, each household's setting (an owner's alone), the notes of files it couldn't add (their person's alone), and the day a scanner's batch is for.
+
 ## [0.8.0-dev.3] - 2026-10-13 — duplicates and renewals as new versions
 
 ### Added

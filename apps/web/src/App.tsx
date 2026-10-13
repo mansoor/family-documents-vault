@@ -26,6 +26,7 @@ import { SharedScreen } from './screens/Shared.js';
 import { SharingScreen } from './screens/Sharing.js';
 import { HouseholdScreen } from './screens/Household.js';
 import { EmailScreen, NotificationsScreen } from './screens/Notifications.js';
+import { ScannerScreen } from './watch-folder.js';
 import { PersonDocumentsScreen, ProfileScreen } from './screens/Person.js';
 import { PeopleScreen, RemindersScreen, SearchScreen } from './screens/SearchPeople.js';
 import {
@@ -357,6 +358,14 @@ export function App() {
                   element={
                     <Only rule={SCREEN_RULES.email}>
                       <EmailScreen />
+                    </Only>
+                  }
+                />
+                <Route
+                  path="scanner"
+                  element={
+                    <Only rule={SCREEN_RULES.scanner}>
+                      <ScannerScreen />
                     </Only>
                   }
                 />

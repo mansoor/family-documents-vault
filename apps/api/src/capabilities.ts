@@ -20,6 +20,8 @@ export interface CapabilityConfig {
   shareMaxDays?: number;
   /** FDV_SMTP_URL is set: the operator's mail server, which alone sends a link's code (5.20, A21). */
   operatorMail?: boolean;
+  /** The scanner folder (S3): set, there and writable, and said so lately by the worker. */
+  watchFolder?: boolean;
 }
 
 /**
@@ -135,6 +137,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       batch_learning: true,
       // S1 (0.8.0): an item's near matches, and adding it as a new version of one.
       batch_versions: true,
+      // 0.8.0 (S3): a watched folder for network scanners, only while the
+      // folder is set, there and writable.
+      watch_folder: config.watchFolder === true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

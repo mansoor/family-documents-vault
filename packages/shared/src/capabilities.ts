@@ -255,6 +255,14 @@ export interface CapabilityFeatures {
    * with …/accept-ready/undo. Absent from older vaults: accept, or discard.
    */
   batch_versions?: boolean;
+  /**
+   * A watched folder for network scanners (0.8.0, S3): true only while the
+   * worker has the folder (FDV_WATCH_DIR) set, there and writable, and has
+   * said so lately. An owner turns it on and chooses whose Inbox it fills
+   * (GET, PUT /watch-folder); whoever it fills is told of a file it could
+   * not add (GET /watch-folder/notices). Absent from older vaults.
+   */
+  watch_folder?: boolean;
 }
 
 export interface CapabilityLimits {

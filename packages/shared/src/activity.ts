@@ -672,6 +672,11 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return line(`${who} removed a place files were kept`, true);
     case 'notifications.smtp_saved':
       return line(`${who} changed how the vault sends email`);
+    // The scanner folder (S3): on, and whose Inbox it fills; or off.
+    case 'watch_folder.changed':
+      return detail.enabled === true
+        ? line(`${who} set the scanner folder to fill ${possessive(personOf(e))} Inbox`, true)
+        : line(`${who} turned off the scanner folder`, true);
     case 'export.requested':
       return line(`${who} asked for a copy of everything`, true);
     case 'export.downloaded':

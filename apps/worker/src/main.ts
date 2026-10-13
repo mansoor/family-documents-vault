@@ -40,6 +40,7 @@ import {
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import { resumeBatchItems, sendBatchPreviews, workBatchPreviews } from './jobs/batches.js';
 import { ProposalThread } from './jobs/proposal-thread.js';
+import { WATCH_KEY_PURPOSE, WatchRunner } from './jobs/watch-folder.js';
 import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
 import { masterKeyOpensVault, resolveMasterSecret } from './master-key-check.js';
@@ -448,6 +449,29 @@ async function main(): Promise<void> {
   // waiting for the nightly sweep.
   const resumed = await resumeBatchItems(incomingDeps, (hh) => sendBatchPreviews(boss, hh));
   if (resumed > 0) log('info', 'batch items to draw or read, sent again', { households: resumed });
+  // The scanner folder (S3): looked in every 15 seconds by one worker, the
+  // one holding its advisory lock; what it adds is drawn and read above.
+  const watch = new WatchRunner(
+    {
+      admin: dbs.admin,
+      db: dbs.app,
+      keys: processDeps.keys,
+      credentialsKey: processDeps.credentialsKey,
+      localRoot: processDeps.localRoot,
+      log,
+      itemKey: deriveKey(masterSecret, WATCH_KEY_PURPOSE),
+      maxBytes: config.FDV_MAX_UPLOAD_BYTES,
+      sendBatchPreviews: (hh) => sendBatchPreviews(boss, hh),
+    },
+    {
+      dir: config.FDV_WATCH_DIR ?? null,
+      lockUrl: config.DATABASE_URL,
+      stableMs: config.FDV_WATCH_STABLE_SECONDS * 1000,
+      incompleteGraceMs: config.FDV_WATCH_INCOMPLETE_GRACE_SECONDS * 1000,
+    },
+  );
+  watch.start();
+  if (config.FDV_WATCH_DIR) log('info', 'scanner folder set', { dir: config.FDV_WATCH_DIR });
   await boss.createQueue(JOBS.remindersWeekly);
   await boss.work(JOBS.remindersWeekly, async () => {
     const r = await weekly(reminderDeps);
@@ -460,6 +484,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string) => {
     log('info', 'shutting down', { signal });
+    await watch.stop();
     await boss.stop({ graceful: true, timeout: 10_000 });
     await proposals.close();
     await dbs.close();

@@ -66,6 +66,7 @@ import { VaultService } from './vaults/service.js';
 import { alertJob, type AlertRequest } from './alert-job.js';
 import { pushJob, type PushRequest } from './push-job.js';
 import { instanceIdReader } from './instance.js';
+import { WatchFolderService } from './watch-folder/service.js';
 import { serverVersion } from './version.js';
 
 /**
@@ -311,6 +312,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
   const app = await buildApp(config, {
     serverVersion: await serverVersion(),
     instanceId: instanceIdReader(db),
+    watchFolder: new WatchFolderService(db),
     pingDatabase: async () => undefined,
     auth,
     totp,

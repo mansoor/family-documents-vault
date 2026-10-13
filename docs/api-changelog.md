@@ -4352,6 +4352,58 @@ undo_until }`, and counts as an accept for `GET /batches/learned`.
     `renewalWords`, `sameAsWords`; `BatchAcceptInput.into_document_id`,
     `BatchAccepted.undo_until`. The client fake does not claim
     `batch_versions` yet.
+  - A watched folder for network scanners (0.8.0, S3, CAP-10). **Added:**
+    `features.watch_folder`, `true` only while the worker has
+    `FDV_WATCH_DIR` set, the folder there and writable, and has said so in
+    the last two minutes; absent from older vaults. **Added:** `GET
+/api/v1/watch-folder` answers an owner `{ available, folder: { state,
+dir, checked_at, words }, enabled, member_id, member_name, paused:
+{ reason, words } | null, last_added_at, candidates: [{ member_id,
+display_name, role }] }` — `state` one of `ready`, `off`, `missing`,
+    `not_a_folder`, `not_writable` or `unknown` (the worker has not said
+    lately), `words` what it means; `paused.reason` one of `removed`,
+    `no_sign_in`, `cannot_add`, `locked`, `restored`, `sealed`,
+    `no_storage` or `day_full`; `candidates` whose Inbox it may fill:
+    somebody of the family with a sign-in who may add documents. `PUT
+/api/v1/watch-folder` takes `{ enabled, member_id? }` (left out or null:
+    the owner turning it on) and answers the same; turning it on while the
+    folder is not offered is `409 watch_folder_unavailable`, a viewer, a
+    guest or nobody `422`, and another household on the server having it
+    on `409 watch_folder_in_use`; turning it off is always taken. Anybody
+    but an owner is `403` on both. A change is a line in the activity log
+    (`watch_folder.changed`), for the owners and the person it names.
+    **Added:** `GET /api/v1/watch-folder/notices` answers the caller's own
+    `{ items: [{ id, file_name, reason, title, words, at }] }` — a file the
+    folder could not add for them, moved to its `rejected/` folder, `reason`
+    one of `unsupported`, `too_large`, `unreadable` or `empty` — newest
+    first, kept 30 days; and `POST
+/api/v1/watch-folder/notices/{id}/dismiss` is `204` (`404` for one not
+    theirs, or gone). Whoever may add documents; a viewer or a guest is
+    `403`; nobody is given anybody else's, an owner included. What the
+    folder adds is a batch's item, as an upload is: in the person's batch of
+    the day, named "Scanner, 12 Oct" on the household's calendar, read and
+    proposed for as theirs, theirs alone until they accept it. **Unchanged:**
+    every batch route answers a scanner's batch as any other. `@fdv/shared`:
+    `WatchFolderView`, `WatchFolderInput`, `WatchNoticeView`, `WatchCandidate`,
+    `WatchDirState`, `WatchPause`, `WatchRejectReason`, `WATCH_POLL_MS`,
+    `WATCH_STABLE_MS`, `WATCH_STALE_MS`, `WATCH_REJECTED_DIR`,
+    `WATCH_NOTICE_DAYS`, `WATCH_REJECTED_TITLE`, `UPLOAD_KINDS`,
+    `watchDirWords`, `watchPauseWords`, `watchRejectWords`, `watchPauseOf`,
+    `mayFillFromScanner`, `scannerDay` and `watchIgnored`. `@fdv/client`:
+    `watchFolder`, `setWatchFolder`, `watchNotices`, `dismissWatchNotice`.
+    The review's findings on the above. **Added:** `GET /watch-folder`
+    answers `stuck_files` and `stuck_words` too — scans stored in the vault
+    that the worker could not then delete from the folder, said to the
+    owners with what to do (`null` for none) — and `folder.words` names the
+    folder both inside the worker and on the server as the README sets it
+    up. `stuck_files` also counts files meant for rejected/ that could not
+    be moved there. A notice's `reason` may also be `linked` (a hard link to
+    a file kept elsewhere), and each notice carries `left_in_place`: true
+    when the file could not be moved to rejected/ either, and its `words`
+    say so. **Changed:** a pause the worker said is answered only while
+    its word on the folder is fresh and ready. `@fdv/shared`:
+    `WATCH_INCOMPLETE_GRACE_MS`, `WATCH_HOST_DIR`, `WATCH_LEFT_IN_PLACE`,
+    `watchStuckWords`.
 
 ## Deprecations in effect
 

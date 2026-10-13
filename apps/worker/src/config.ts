@@ -74,6 +74,38 @@ const schema = z.object({
     .describe(
       "Pages of a PDF that are read, by the PDF's own text or by OCR where a page has none; the rest are stored but not searchable.",
     ),
+  FDV_WATCH_DIR: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'A folder a network scanner saves into (S3): mounted into the worker, it fills one ' +
+        "person's Inbox once an owner turns it on. Unset: there is no scanner folder.",
+    ),
+  FDV_WATCH_STABLE_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(2)
+    .max(3600)
+    .default(10)
+    .describe(
+      'How long a file in the scanner folder must stop changing before it is taken (it must look complete too).',
+    ),
+  FDV_WATCH_INCOMPLETE_GRACE_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(86400)
+    .default(120)
+    .describe(
+      'How long a scan that has stopped changing but looks unfinished waits before it is taken anyway.',
+    ),
+  FDV_MAX_UPLOAD_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(100 * 1024 * 1024)
+    .describe('Largest single file the vault accepts: from the scanner folder as from an upload.'),
   DATABASE_ADMIN_URL: z
     .string()
     .min(1)
