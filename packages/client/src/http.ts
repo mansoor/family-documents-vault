@@ -32,6 +32,8 @@ export interface RequestInitLike {
   signal?: AbortSignalLike;
   /** Honoured by browsers; the `cache-control` request header covers the rest. */
   cache?: 'no-store';
+  /** A streamed body (`UploadBody` kind `stream`): Node's fetch requires it to be said. */
+  duplex?: 'half';
 }
 
 export type FetchLike = (url: string, init: RequestInitLike) => Promise<ResponseLike>;
@@ -47,7 +49,13 @@ export interface FormDataLike {
  * queue that already holds the bytes — sends `multipartBody()`'s output.
  */
 export type UploadBody =
-  { kind: 'form'; form: FormDataLike } | { kind: 'bytes'; bytes: Uint8Array; contentType: string };
+  | { kind: 'form'; form: FormDataLike }
+  | { kind: 'bytes'; bytes: Uint8Array; contentType: string }
+  /**
+   * A body read as it is sent (0.8.0, D1: a computer's file): the
+   * platform's own ReadableStream, sent half-duplex, as Node's fetch asks.
+   */
+  | { kind: 'stream'; stream: unknown; contentType: string };
 
 export interface HttpOptions {
   /** '' for the same origin (the web app), or the vault's origin. */
@@ -117,6 +125,10 @@ export function createHttp(options: HttpOptions): Http {
     } else if (opts.upload?.kind === 'bytes') {
       headers['content-type'] = opts.upload.contentType;
       init.body = opts.upload.bytes;
+    } else if (opts.upload?.kind === 'stream') {
+      headers['content-type'] = opts.upload.contentType;
+      init.body = opts.upload.stream;
+      init.duplex = 'half';
     }
     // Nothing the vault says is kept or reused by the platform's HTTP cache.
     // `cache` is for browsers; the header is for fetches that ignore it — a

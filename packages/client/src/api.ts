@@ -15,6 +15,12 @@ import type {
   BatchWaitingCounts,
   Capabilities,
   CaptureResult,
+  DeviceMe,
+  DevicePairInput,
+  DevicePaired,
+  DevicePairingCode,
+  DeviceUploaded,
+  PairedDevice,
   UploadStatus,
   IssuerCount,
   DetailSuggestions,
@@ -122,9 +128,11 @@ import type { Http, ResponseLike, UploadBody } from './http.js';
 import {
   batchItemUpload,
   captureUpload,
+  deviceUploadBody,
   photoUpload,
   type CaptureBody,
   type CaptureFile,
+  type DeviceFile,
   type PhotoBody,
 } from './multipart.js';
 
@@ -1390,7 +1398,63 @@ export function createApi(http: Http) {
     /** That code, typed in: the address confirmed (`204`); `422` wrong, `410` expired or used up. */
     confirmMailIn: (token: string, code: string) =>
       request<void>('/api/v1/mail-in/me/confirm', { method: 'POST', body: { code }, token }),
+    // ------------------------------------- computers that send scans (0.8.0, D1)
+    /**
+     * A one-time code for pairing a computer (`features.device_uploads`):
+     * whoever may add documents, after the step-up (`403
+     * step_up_required` first). Shown once, for 10 minutes; any code the
+     * caller had before ends.
+     */
+    createDevicePairing: (token: string) =>
+      request<DevicePairingCode>('/api/v1/device-pairings', { method: 'POST', body: {}, token }),
+    /**
+     * The code traded for a key, by the app on the computer: no sign-in.
+     * `401 pairing_code_invalid` for a code that is wrong, run out, used or
+     * ended (five wrong tries end one); `429` past the address's limit. The
+     * key is answered once: keep it, with `device_id`.
+     */
+    pairDevice: (body: DevicePairInput) =>
+      request<DevicePaired>('/api/v1/devices/pair', { method: 'POST', body }),
+    /** What a computer's key is: its name, its person, and why its files are refused if they are. */
+    deviceMe: (device: DeviceKey) =>
+      request<DeviceMe>('/api/v1/devices/me', { headers: deviceHeaders(device) }),
+    /**
+     * One file from a computer into its person's batch for the day, read as
+     * it is sent (a stream or a Blob), with an Idempotency-Key the app keeps
+     * with the file: sent again, it is answered with the item it made.
+     * Refusals: `401 device_revoked`, `403 cannot_add`, `403
+     * member_locked`, `403 member_paused`, `422 batch_full`, `413
+     * too_large`, `415 unsupported_type`, `409 upload_in_progress`.
+     */
+    deviceUpload: (
+      device: DeviceKey,
+      file: DeviceFile,
+      idempotencyKey: string,
+      opts: { relativePath?: string } = {},
+    ) =>
+      request<DeviceUploaded>('/api/v1/device-uploads', {
+        method: 'POST',
+        upload: deviceUploadBody(file, opts.relativePath),
+        headers: { ...deviceHeaders(device), 'idempotency-key': idempotencyKey },
+      }),
+    /** The caller's computers; an owner's, every one in the household (names and people only). */
+    listDevices: (token: string) =>
+      request<{ items: PairedDevice[] }>('/api/v1/paired-devices', { token }),
+    /** A computer's key revoked, for good: the caller's own, or for an owner, anybody's. */
+    revokeDevice: (token: string, id: string) =>
+      request<void>(`/api/v1/paired-devices/${enc(id)}`, { method: 'DELETE', token }),
   };
+}
+
+/** A computer's key, as `POST /devices/pair` answered it (0.8.0, D1). */
+export interface DeviceKey {
+  device_id: string;
+  key: string;
+}
+
+/** The header a computer's key is sent in: `Authorization: Device <id>.<key>`. */
+export function deviceHeaders(device: DeviceKey): Record<string, string> {
+  return { authorization: `Device ${device.device_id}.${device.key}` };
 }
 
 /** Which request a sender's call is about (0.5.21): the `request_id` Open answered. */

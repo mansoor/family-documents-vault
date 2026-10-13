@@ -53,6 +53,7 @@ import {
 import { PurgeService } from './documents/purge.js';
 import { IncomingService } from './uploads/incoming.js';
 import { BatchService } from './uploads/batches.js';
+import { DEVICE_KEY_PURPOSE, DeviceService } from './devices/service.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { VaultService } from './vaults/service.js';
@@ -199,6 +200,15 @@ async function main(): Promise<void> {
     deriveCursorKey(masterSecret),
   );
   const collections = new CollectionService(db, documents);
+  const batches = new BatchService(
+    db,
+    keys,
+    vaults,
+    documents,
+    collections,
+    config.FDV_MAX_UPLOAD_BYTES,
+    enqueue,
+  );
   const app = await buildApp(config, {
     serverVersion: version,
     instanceId: instanceIdReader(db),
@@ -269,15 +279,16 @@ async function main(): Promise<void> {
       alert,
     }),
     incoming: new IncomingService(db, keys, vaults, documents, { enqueue }),
-    batches: new BatchService(
-      db,
-      keys,
-      vaults,
-      documents,
-      collections,
-      config.FDV_MAX_UPLOAD_BYTES,
-      enqueue,
-    ),
+    batches,
+    // 0.8.0 (D1): a computer paired to send scans, its code and key HMACed
+    // under a key of their own.
+    devices: new DeviceService(db, batches, {
+      hmacKey: deriveKey(masterSecret, DEVICE_KEY_PURPOSE),
+      baseUrl: config.FDV_BASE_URL,
+      downloadUrl: config.FDV_DESKTOP_DOWNLOAD_URL ?? null,
+      maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
+      alert,
+    }),
     audit: new AuditService(db),
     suggestions: new SuggestionService(db),
     stepUp: stepUpService,

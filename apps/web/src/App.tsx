@@ -38,6 +38,7 @@ import {
   StorageScreen,
 } from './screens/Settings.js';
 import { SettingsLayout } from './settings-sections.js';
+import { ComputersScreen } from './screens/Computers.js';
 import { SetupScreen } from './screens/Setup.js';
 import { FocusOnMove } from './focus-on-move.js';
 import { Only, SCREEN_RULES } from './not-for.js';
@@ -324,6 +325,14 @@ export function App() {
               <Route path="/settings" element={<SettingsLayout />}>
                 <Route index element={<SettingsScreen />} />
                 <Route path="account" element={<AccountScreen />} />
+                <Route
+                  path="computers"
+                  element={
+                    <Only rule={SCREEN_RULES.computers}>
+                      <ComputersScreen />
+                    </Only>
+                  }
+                />
                 <Route path="notifications" element={<NotificationsScreen />} />
                 <Route path="household" element={<HouseholdScreen />} />
                 <Route path="family" element={<FamilyScreen />} />

@@ -127,6 +127,13 @@ export interface RestoreReport {
    */
   exportsExpired: number;
   /**
+   * Computers' keys revoked (0.8.0, D1): a key revoked since the backup was
+   * made would otherwise send files again, so every one is, and every
+   * pairing code is forgotten. Each person pairs their computer again, in
+   * Settings → Your computers.
+   */
+  devicesEnded: number;
+  /**
    * Sign-ins waiting for an owner to turn them back on (5.28, A55): every
    * one but the owners', since a backup cannot know of a lock made after it,
    * nor of a sign-in taken away since. Each is turned back on, one tap
@@ -272,6 +279,7 @@ interface Undone {
   noticesWithdrawn: number;
   identityAudiences: Array<{ household_id: string; was: string }>;
   exportsExpired: number;
+  devicesEnded: number;
 }
 
 interface StillOpen {
@@ -700,6 +708,7 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
     purgeRequestsCleared: counted('purge_requests'),
     noticesWithdrawn: counted('notices_withdrawn'),
     exportsExpired: counted('exports_expired'),
+    devicesEnded: counted('devices_ended'),
     identityAudiences: [...stdout.matchAll(/fdv-restore-audience:([0-9a-f-]{36})=([a-z_]+)/g)].map(
       (m) => ({ household_id: m[1] as string, was: m[2] as string }),
     ),
@@ -737,8 +746,10 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
  * narrowing since the backup had ended would be served again. And every
  * sign-in but the owners' is paused for an owner to turn back on (5.28,
  * A55): a lock made since, or a sign-in taken away since, is not in the
- * backup; a lock in it stays, with no end of its own. Guarded for older
- * schemas.
+ * backup; a lock in it stays, with no end of its own. And every computer's
+ * key is revoked, and every pairing code forgotten (0.8.0, D1): a key
+ * revoked since would otherwise send files again; each person pairs again.
+ * Guarded for older schemas.
  */
 const UNDO = `create temporary table fdv_restore_undone (what text, n int) on commit drop;
 create temporary table fdv_restore_audience (household_id uuid, was text) on commit drop;
@@ -847,6 +858,13 @@ begin
      where state = 'done' and (expires_at is null or expires_at > now());
     get diagnostics n = row_count;
     insert into pg_temp.fdv_restore_undone values ('exports_expired', n);
+  end if;
+  if to_regclass('public.upload_device') is not null then
+    update public.upload_device set revoked_at = now(), revoked_reason = 'restored'
+     where revoked_at is null;
+    get diagnostics n = row_count;
+    insert into pg_temp.fdv_restore_undone values ('devices_ended', n);
+    delete from public.device_pairing;
   end if;
 end $undo$;
 select 'fdv-restore:' || what || '=' || n from pg_temp.fdv_restore_undone;
@@ -1100,6 +1118,15 @@ const GUARDS = [
     table: 'mail_in_address',
     fn: 'mail_in_address_account_writes',
   },
+  // A computer's key is only ever revoked, once, by its person or an owner
+  // as themselves; and the database revokes it, and forgets its person's
+  // code, as their sign-in goes or their role can no longer add (0070, D1).
+  { name: 'upload_device_writes', table: 'upload_device', fn: 'upload_device_writes' },
+  {
+    name: 'upload_devices_leave_with_role',
+    table: 'account_household',
+    fn: 'upload_devices_leave_with_role',
+  },
 ];
 
 /**
@@ -1141,6 +1168,12 @@ const UNIQUE_INDEXES = [
     name: 'intake_batch_mail_day_idx',
     table: 'intake_batch',
     what: 'one email batch a person a day',
+  },
+  // One batch a computer a day (0070, D1).
+  {
+    name: 'intake_batch_device_day_key',
+    table: 'intake_batch',
+    what: 'one batch a computer a day',
   },
 ];
 
@@ -1240,6 +1273,10 @@ const ACTOR_GUARDED = [
   'mail_in_address',
   // A mail dealt with but left in place, the vault's alone (0069, F10).
   'mail_in_done',
+  // Computers that send scans, and their pairing codes (0070, D1): their
+  // person's, an owner's by name; nobody else's.
+  'upload_device',
+  'device_pairing',
   // What a document removed for good leaves behind: who could see it, and
   // the files still to be deleted (0045).
   'document_tombstone',
@@ -1329,6 +1366,9 @@ const MAKER_ONLY = [
   { table: 'watch_notice', where: 'true', what: "somebody's note of a scan not added" },
   // Somebody's address confirmed for email in, and their code (0069, S4).
   { table: 'mail_in_address', where: 'true', what: "somebody's address for email in" },
+  // A computer that sends scans, and a code to pair one (0070, D1).
+  { table: 'upload_device', where: 'true', what: "somebody's computer" },
+  { table: 'device_pairing', where: 'true', what: "somebody's code to pair a computer" },
   // A person's Only me identity details: theirs alone, whoever else asks (0050, A33).
   {
     table: 'member_identity',
@@ -1352,6 +1392,8 @@ const NOT_EVEN_OWNERS = [
   { table: 'watch_notice', what: "somebody's note of a scan not added" },
   // Somebody's address, and the code they send from it (0069, S4).
   { table: 'mail_in_address', what: "somebody's address for email in" },
+  // A code is a way in for whoever holds it: its person's alone (0070, D1).
+  { table: 'device_pairing', what: "somebody's code to pair a computer" },
 ];
 
 /**

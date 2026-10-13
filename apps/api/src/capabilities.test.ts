@@ -103,6 +103,7 @@ describe('buildCapabilities', () => {
       watch_folder: false,
       // S2: an item's folder, and what its names suggest.
       folder_suggestions: true,
+      device_uploads: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     // S4: email in, reserved as email_ingest since 1.0, only while the worker

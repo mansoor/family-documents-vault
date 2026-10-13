@@ -59,6 +59,8 @@ import {
   type BatchItemView,
   type BatchLearning,
   type ActivityKind,
+  type DevicePairingCode,
+  type PairedDevice,
 } from '@fdv/shared';
 import { sha256Of } from './batch-upload.js';
 import { vi } from 'vitest';
@@ -634,6 +636,18 @@ export interface FakeState {
   accessSeconds?: number;
   /** Whose session a refresh answers with: another tab signed in as somebody else (W535-07). */
   refreshMember?: string;
+  /**
+   * Computers that send scans (0.8.0, D1), as GET /paired-devices gives
+   * them to an owner (`mine` for the signed-in person's own). Given, the
+   * vault pairs them (`features.device_uploads`); DELETE revokes one.
+   */
+  computers?: PairedDevice[];
+  /** What POST /device-pairings answers: its code, and where the uploader comes from. */
+  pairing?: Partial<DevicePairingCode>;
+  /** How many codes were asked for. */
+  pairings?: number;
+  /** Computers paired by the app while a code is shown: added to the list as it is next asked. */
+  pairedMeanwhile?: PairedDevice[];
 }
 
 /** A batch as the fake keeps it (I1): its items, removed ones marked so. */
@@ -1017,6 +1031,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.watchFolder?.available ? { watch_folder: true } : {}),
           // Email in (S4): said while a test's mailbox is ready.
           ...(state.mailIn?.available ? { email_ingest: true } : {}),
+          // A computer that sends scans (0.8.0, D1): said when a test gives computers.
+          ...(state.computers ? { device_uploads: true } : {}),
         },
         limits: {
           ...(state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {}),
@@ -1090,6 +1106,53 @@ export function installFakeApi(state: FakeState) {
     if (path.startsWith('/api/v1/auth/passkeys/') && method === 'DELETE') {
       const id = path.slice('/api/v1/auth/passkeys/'.length);
       state.passkeys = state.passkeys.filter((k) => k.id !== id);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    // A computer that sends scans (0.8.0, D1), as the vault answers.
+    if (path === '/api/v1/device-pairings' && method === 'POST' && state.computers) {
+      if (!can(storedRole() as Role, 'document.add')) {
+        return refuse(
+          403,
+          'forbidden',
+          'Viewers can open and download documents, but not add them.',
+        );
+      }
+      if (state.stepUpNeeded) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to change how you sign in.',
+          {
+            action: 'change_sign_in',
+          },
+        );
+      }
+      state.pairings = (state.pairings ?? 0) + 1;
+      return json(
+        {
+          code: 'KX7P-3M9Q',
+          expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+          vault_address: 'https://vault.example.test',
+          download_url: null,
+          ...state.pairing,
+        },
+        201,
+      );
+    }
+    if (path === '/api/v1/paired-devices' && method === 'GET' && state.computers) {
+      if (state.pairedMeanwhile && state.pairings) {
+        state.computers = [...state.pairedMeanwhile, ...state.computers];
+        delete state.pairedMeanwhile;
+      }
+      const owner = storedRole() === 'owner';
+      return json({ items: state.computers.filter((d) => owner || d.mine) });
+    }
+    const computerAt = /^\/api\/v1\/paired-devices\/([^/]+)$/.exec(path);
+    if (computerAt && method === 'DELETE' && state.computers) {
+      const owner = storedRole() === 'owner';
+      const d = state.computers.find((x) => x.id === computerAt[1] && (owner || x.mine));
+      if (!d) return refuse(404, 'not_found', 'That computer is not here.');
+      state.computers = state.computers.filter((x) => x !== d);
       return Promise.resolve(new Response(null, { status: 204 }));
     }
     if (path === '/api/v1/exports' && method === 'POST') {

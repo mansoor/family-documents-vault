@@ -109,6 +109,14 @@ export function restoreSummary(file: string, r: RestoreReport): string {
       '    could see then. Whoever needs one makes it again, in Settings → Your data.',
     );
   }
+  if (r.devicesEnded > 0) {
+    lines.push(
+      `  - ${plural(r.devicesEnded, "computer's key", "computers' keys")} for sending scans ` +
+        `${r.devicesEnded === 1 ? 'was' : 'were'} revoked: one revoked since the backup`,
+      '    would otherwise work again. Each person pairs their computer again, in',
+      '    Settings → Your computers.',
+    );
+  }
   if (r.filesRemoved.length > 0) {
     const documents = [...new Set(r.filesRemoved.map((f) => f.document_id))];
     lines.push(

@@ -15,7 +15,7 @@ import {
   type Tokens,
 } from '@fdv/shared';
 import { expect } from 'vitest';
-import type { Api } from '../api.js';
+import { deviceHeaders, type Api } from '../api.js';
 import { ApiRequestError, isSessionOver } from '../errors.js';
 import { multipartBody } from '../multipart.js';
 import { negotiate } from '../negotiate.js';
@@ -3019,6 +3019,71 @@ export const contractScenarios: Scenario[] = [
       expect(
         (await api.updateMember(token, young.id, { date_of_birth: null })).date_of_birth,
       ).toBeNull();
+    },
+  },
+  {
+    name: 'a computer is paired with a one-time code, sends a scan with its key into its person’s uploads, is refused everything else, and is revoked (0.8.0, D1)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.device_uploads).toBe(true);
+      const pairing = await api.createDevicePairing(token);
+      expect(pairing.code).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+      expect(Date.parse(pairing.expires_at) - Date.now()).toBeLessThanOrEqual(10 * 60_000);
+      const wrong = await refusal(
+        api.pairDevice({ code: 'AAAA-AAAA', device_name: 'Laptop', platform: 'windows' }),
+      );
+      expect(wrong).toMatchObject({ status: 401, code: 'pairing_code_invalid' });
+      // Typed as a person types it: lower case, the dash or not.
+      const paired = await api.pairDevice({
+        code: pairing.code.toLowerCase().replace('-', ''),
+        device_name: '  Contract   laptop ',
+        platform: 'windows',
+      });
+      expect(paired.key.length).toBeGreaterThanOrEqual(43);
+      const device = { device_id: paired.device_id, key: paired.key };
+      expect(await api.deviceMe(device)).toMatchObject({
+        device_id: paired.device_id,
+        device_name: 'Contract laptop',
+        active: true,
+        paused: null,
+      });
+      // A code is used once.
+      const again = await refusal(
+        api.pairDevice({ code: pairing.code, device_name: 'Another', platform: 'macos' }),
+      );
+      expect(again.code).toBe('pairing_code_invalid');
+      const key = '0d1e2f3a-4b5c-4d6e-8f70-8192a3b4c5d6';
+      const scan = {
+        kind: 'bytes' as const,
+        filename: 'scan.pdf',
+        contentType: 'application/pdf',
+        bytes: PDF,
+      };
+      const sent = await api.deviceUpload(device, scan, key, { relativePath: 'Bills/scan.pdf' });
+      expect(sent).toEqual({ item_id: expect.any(String) as unknown, status: 'waiting' });
+      // Sent again after its answer was lost: the item it made.
+      expect(await api.deviceUpload(device, scan, key)).toEqual(sent);
+      // Into its person's own uploads, a batch for the day.
+      const day = (await api.batches(token)).items.find((b) =>
+        (b.name ?? '').startsWith('From Contract laptop, '),
+      );
+      expect(day?.counts.waiting).toBe(1);
+      // Its key opens nothing else.
+      const elsewhere = await refusal(
+        api.http.request('/api/v1/batches', { headers: deviceHeaders(device) }),
+      );
+      expect(elsewhere.status).toBe(401);
+      expect(
+        (await api.listDevices(token)).items.find((d) => d.id === paired.device_id),
+      ).toMatchObject({ name: 'Contract laptop', platform: 'windows', mine: true });
+      await api.revokeDevice(token, paired.device_id);
+      expect((await refusal(api.deviceMe(device))).code).toBe('device_revoked');
+      expect((await refusal(api.deviceUpload(device, scan, NEVER_USED))).code).toBe(
+        'device_revoked',
+      );
+      expect((await api.listDevices(token)).items.some((d) => d.id === paired.device_id)).toBe(
+        false,
+      );
     },
   },
   {

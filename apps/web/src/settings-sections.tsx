@@ -17,7 +17,8 @@ import { useShellMode } from './shell.js';
  * Kinds of document under Household, Where your files are kept and Where
  * email comes from under For owners.
  */
-export type SectionKey = 'account' | 'notifications' | 'household' | 'data' | 'owners';
+export type SectionKey =
+  'account' | 'computers' | 'notifications' | 'household' | 'data' | 'owners';
 
 export interface SettingsSection {
   key: SectionKey;
@@ -106,6 +107,20 @@ export function settingsSections(
       note: 'Password, two-step sign-in, passkeys, devices, shortcuts',
       holds: at('/settings/account'),
     },
+    // A computer that sends scans (0.8.0, D1): whoever may add documents.
+    ...(caps?.features.device_uploads === true && can(role, 'document.add')
+      ? [
+          {
+            key: 'computers' as const,
+            to: '/settings/computers',
+            label: 'Your computers',
+            note: owner
+              ? 'Send scans from a computer; the family’s computers'
+              : 'Send scans from a computer',
+            holds: at('/settings/computers'),
+          },
+        ]
+      : []),
     {
       key: 'notifications',
       to: '/settings/notifications',

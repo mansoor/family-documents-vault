@@ -147,3 +147,130 @@ export function captureUpload(body: CaptureBody): UploadBody {
   form.append('file', body.file.blob, body.file.filename);
   return { kind: 'form', form };
 }
+
+/** As much of a ReadableStream as a computer's upload needs, with no platform's types. */
+export interface ReadableStreamLike {
+  getReader(): {
+    read(): Promise<{ done: boolean; value?: Uint8Array }>;
+  };
+}
+
+/**
+ * A file a computer sends (0.8.0, D1): bytes it holds, a platform file
+ * object (a webview's File or Blob, or Node's `fs.openAsBlob`), or a stream
+ * of bytes read as they are sent (Node's `fs.createReadStream`, or a
+ * ReadableStream) — never the whole file in memory but for `bytes`.
+ */
+export type DeviceFile =
+  | CaptureFile
+  | {
+      kind: 'stream';
+      filename: string;
+      contentType: string;
+      /** An async iterable of chunks, or anything with `getReader()` (a ReadableStream). */
+      stream: AsyncIterable<Uint8Array> | ReadableStreamLike;
+    };
+
+/**
+ * The body POST /device-uploads takes: an optional `relative_path` field
+ * first, then the file as `file`, and nothing else.
+ */
+export function deviceUploadBody(file: DeviceFile, relativePath?: string): UploadBody {
+  const fields: FieldPart[] = relativePath ? [{ name: 'relative_path', value: relativePath }] : [];
+  if (file.kind === 'bytes') {
+    const m = multipartBody([
+      ...fields,
+      { name: 'file', filename: file.filename, contentType: file.contentType, bytes: file.bytes },
+    ]);
+    return { kind: 'bytes', bytes: m.bytes, contentType: m.contentType };
+  }
+  if (file.kind === 'stream') return streamedMultipart(fields, file);
+  const FormDataCtor = (globalThis as { FormData?: new () => FormDataLike }).FormData;
+  if (!FormDataCtor) throw new Error('No FormData on this platform: send the file as bytes.');
+  const form = new FormDataCtor();
+  if (relativePath) form.append('relative_path', relativePath);
+  form.append('file', file.blob, file.filename);
+  return { kind: 'form', form };
+}
+
+/** The platform's ReadableStream, as far as a streamed body needs it. */
+type StreamCtor = new (source: {
+  pull(controller: {
+    enqueue(chunk: Uint8Array): void;
+    close(): void;
+    error(e: unknown): void;
+  }): Promise<void>;
+  cancel?(): Promise<void>;
+}) => unknown;
+
+/** A multipart body whose file part is read from a stream as it is sent. */
+function streamedMultipart(
+  fields: FieldPart[],
+  file: {
+    filename: string;
+    contentType: string;
+    stream: AsyncIterable<Uint8Array> | ReadableStreamLike;
+  },
+): UploadBody {
+  const Stream = (globalThis as { ReadableStream?: StreamCtor }).ReadableStream;
+  if (!Stream) throw new Error('No ReadableStream on this platform: send the file as a Blob.');
+  const boundary = `fdv-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+  const enc = new TextEncoder();
+  const head = enc.encode(
+    fields
+      .map(
+        (f) =>
+          `--${boundary}\r\nContent-Disposition: form-data; name="${quote(f.name)}"\r\n\r\n${f.value}\r\n`,
+      )
+      .join('') +
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${quote(file.filename)}"\r\nContent-Type: ${file.contentType}\r\n\r\n`,
+  );
+  const tail = enc.encode(`\r\n--${boundary}--\r\n`);
+  const source = file.stream;
+  const chunks: AsyncIterator<Uint8Array> =
+    'getReader' in source
+      ? (() => {
+          const reader = source.getReader();
+          return {
+            async next(): Promise<IteratorResult<Uint8Array>> {
+              const r = await reader.read();
+              return r.done || !r.value
+                ? { done: true, value: undefined }
+                : { done: false, value: r.value };
+            },
+          };
+        })()
+      : source[Symbol.asyncIterator]();
+  let stage: 'head' | 'file' | 'tail' | 'done' = 'head';
+  const stream = new Stream({
+    async pull(controller) {
+      try {
+        if (stage === 'head') {
+          stage = 'file';
+          controller.enqueue(head);
+          return;
+        }
+        if (stage === 'file') {
+          const next = await chunks.next();
+          if (!next.done) {
+            controller.enqueue(next.value);
+            return;
+          }
+          stage = 'tail';
+        }
+        if (stage === 'tail') {
+          stage = 'done';
+          controller.enqueue(tail);
+          return;
+        }
+        controller.close();
+      } catch (e) {
+        controller.error(e);
+      }
+    },
+    async cancel() {
+      await chunks.return?.();
+    },
+  });
+  return { kind: 'stream', stream, contentType: `multipart/form-data; boundary=${boundary}` };
+}

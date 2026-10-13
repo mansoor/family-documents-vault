@@ -20,6 +20,7 @@ function report(over: Partial<RestoreReport> = {}): RestoreReport {
     noticesWithdrawn: 0,
     identityAudiences: [],
     exportsExpired: 0,
+    devicesEnded: 0,
     signInsPaused: 0,
     locksKept: 0,
     openInvitations: 0,

@@ -308,6 +308,42 @@ keeps working, without what came after it. The app's 0.3.0 adds **Send to my Inb
 (a scan goes to your uploads, for the vault to read and you to accept on the web), which
 needs a vault of **0.7.0 or later**; with an older vault, 0.3.0 is as 0.2.3 was.
 
+## Sending scans from a computer
+
+A scanner that saves to a folder on somebody's own Windows or Mac computer can send each
+new scan straight into their uploads, with the **Family Documents Vault uploader**: a
+small app that watches that folder. Nobody has to set up a network share on the server.
+It needs a vault of **0.8.0 or later**.
+
+**Pairing a computer.** Whoever scans — an owner, an adult or a teen; never a viewer or a
+guest — opens _Settings → Your computers_ in the browser and chooses **Add a computer**.
+The vault asks for their password again, then shows a code like `KX7P-3M9Q` and the
+vault's address. They type both into the uploader on the computer. The code works once,
+for 10 minutes; five wrong tries end it, and a new code replaces the last. The person is
+emailed "A computer was added to your sign-in", and it is in the activity log.
+
+Set `FDV_DESKTOP_DOWNLOAD_URL` to where your family downloads the uploader, and the
+pairing dialog links to it. Unset, it says to ask whoever runs the vault for it.
+
+**What a computer's key can do.** Pairing gives the uploader a key of its own (the vault
+keeps only its hash). That key does exactly one thing: it sends a file into its person's
+own uploads — a batch a day, called "From _the computer's name_, _the date_" — where
+they accept or discard it as any upload. A file sent twice is kept once. It is read and
+proposed for like any other upload, and nobody else sees it until it is accepted: not
+another adult, not an owner.
+
+**What it cannot do.** It cannot open, list, search or download anything, sign in, or
+change anything; every other part of the vault refuses it. A file is refused while its
+person is locked, or waiting after a restore; when the day's batch is full (200 files);
+and when it is too large or of a kind the vault does not keep — and the uploader says so.
+
+**Removing one.** _Settings → Your computers_ lists each computer by name, with when it
+was added and last sent something; **Remove** stops its key at once. Owners also see
+every computer in the household, by name and person — never what one sent — and can
+remove any. A computer is removed by itself when its person's sign-in is taken away or
+they can no longer add documents (made a viewer), and a restore removes every one: each
+person pairs again.
+
 ## Configuration
 
 All configuration is through environment variables in `.env` (see [`.env.example`](.env.example)).
@@ -341,6 +377,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_CADDYFILE`                                 | internal                                  | Which TLS setup to use: `./docker/caddy/Caddyfile.internal` or `./docker/caddy/Caddyfile.public`.                                                                                                                       |
 | `FDV_PUBLIC_URL`                                | unset                                     | The public-only site's `https://` address, which share links start with. See [Links for people outside the family](#links-for-people-outside-the-family).                                                               |
 | `FDV_SHARE_MAX_DAYS`                            | `90`                                      | The longest a share link may last, in days (1 to 90). A link always ends; this only shortens the longest end the vault accepts.                                                                                         |
+| `FDV_DESKTOP_DOWNLOAD_URL`                      | unset                                     | Where your family downloads the uploader app that sends scans from a computer. See [Sending scans from a computer](#sending-scans-from-a-computer).                                                                     |
 | `FDV_PUBLIC_HOSTNAME`                           | unset                                     | The public-only site's name, for its certificate (profile `public-only`).                                                                                                                                               |
 | `FDV_PUBLIC_HTTPS_PORT`                         | `8443`                                    | The port the public-only site listens on for `https://`; forward the router's 443 to it.                                                                                                                                |
 | `FDV_PUBLIC_HTTP_PORT`                          | `8081`                                    | The port it listens on for `http://` (certificates, and the redirect); forward the router's 80 to it.                                                                                                                   |

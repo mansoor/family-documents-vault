@@ -49,6 +49,8 @@ services:
       FDV_BASE_URL: ${FDV_BASE_URL:-http://localhost:8080}
       # The public-only site, when you run one (README): share links start with it.
       FDV_PUBLIC_URL: ${FDV_PUBLIC_URL:-}
+      # Where the uploader app for computers is downloaded from (0.8.0); optional.
+      FDV_DESKTOP_DOWNLOAD_URL: ${FDV_DESKTOP_DOWNLOAD_URL:-}
       # The longest a share link may last, in days (90 at most).
       FDV_SHARE_MAX_DAYS: ${FDV_SHARE_MAX_DAYS:-}
       FDV_SMTP_URL: ${FDV_SMTP_URL:-}
