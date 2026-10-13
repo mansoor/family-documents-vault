@@ -4335,10 +4335,15 @@ undo_until }`, and counts as an accept for `GET /batches/learned`.
     **Changed:** `POST /api/v1/batches/{id}/accept-ready/undo` also takes
     back an item added so, until `undo_until`: the version removed, the
     document's number and dates put back as an edit puts them, the
-    reminders it resolved open again, and the item waiting to be read
-    again — the document kept. Kept, with a message of its own (`changed`),
-    once the document was changed, another version added, a link made or
-    used, or somebody else looked at it since. A new line in the activity
+    reminders it resolved open again, its expiry's reminders each as it
+    stood (acknowledged, snoozed or open, even where putting the expiry
+    back made them again), and the item waiting to be read again — the
+    document kept. Kept, with a message of its own (`changed`), once the
+    document was changed (by anybody, its uploader too, by the log's own
+    order), another version added, a link made or used, or somebody else
+    looked at it since; `not_undoable` for an uploader since made a teen,
+    of a document not their own. What the Undo needs is let go by the
+    worker's nightly sweep once `undo_until` has passed. A new line in the activity
     log, `batch.version_undone` ("Sana took back the new copy of …"), for
     whoever may see the document. **Unchanged:** a single accept with no
     `into_document_id` cannot be undone; `duplicate` still names only a

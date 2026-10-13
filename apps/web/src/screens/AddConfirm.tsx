@@ -754,6 +754,8 @@ export function ConfirmForm(props: {
      * a file already in the vault): the submit button is a quiet one.
      */
     quietSubmit?: boolean;
+    /** What Enter does instead of the submit button (S1, the review W2: Discard this copy). */
+    enter?: () => void;
     /**
      * Beside the submit button (0.8.0, S1): "Add as a new version of …" the
      * first of `to`, which files the item into that document with the
@@ -1218,13 +1220,9 @@ export function ConfirmForm(props: {
     if (identifierShown && identifier.trim()) fields.identifier = identifier.trim();
     await run(() => version.onAdd(documentId, fields));
   };
-  // "or another…" opened (S1): every near match, a button each — the focus
-  // on the first of them, where the button that opened them was.
+  // "or another match…" (S1): every other near match, a button each, shown
+  // and put away again by the same button (the review, W4).
   const [otherVersions, setOtherVersions] = useState(false);
-  const otherList = useRef<HTMLUListElement>(null);
-  useEffect(() => {
-    if (otherVersions) otherList.current?.querySelector('button')?.focus();
-  }, [otherVersions]);
 
   /**
    * A confident disagreement between the pages and the batch (I2): both
@@ -1319,7 +1317,9 @@ export function ConfirmForm(props: {
     }
     if (at.getAttribute('aria-expanded') === 'true') return;
     e.preventDefault();
-    if (!busy) formRef.current?.requestSubmit();
+    if (busy) return;
+    if (props.pane?.enter) props.pane.enter();
+    else formRef.current?.requestSubmit();
   };
 
   const form = (
@@ -1627,12 +1627,14 @@ export function ConfirmForm(props: {
               type="submit"
               className={props.pane.quietSubmit ? 'btn btn-quiet' : 'btn btn-primary'}
               disabled={busy}
-              aria-keyshortcuts="Enter"
+              {...(props.pane.enter ? {} : { 'aria-keyshortcuts': 'Enter' })}
             >
               {busy ? 'Saving…' : props.submitLabel}
-              <kbd className="key-hint" aria-hidden="true">
-                {props.pane.hint}
-              </kbd>
+              {!props.pane.enter && (
+                <kbd className="key-hint" aria-hidden="true">
+                  {props.pane.hint}
+                </kbd>
+              )}
             </button>
             {props.pane.version?.to[0] && (
               <button
@@ -1644,33 +1646,39 @@ export function ConfirmForm(props: {
                 Add as a new version of {props.pane.version.to[0].title}
               </button>
             )}
-            {props.pane.version &&
-              props.pane.version.to.length > 1 &&
-              (otherVersions ? (
-                <ul ref={otherList} className="other-versions" aria-label="Or add it to another">
-                  {props.pane.version.to.slice(1).map((d) => (
-                    <li key={d.id}>
-                      <button
-                        type="button"
-                        className="btn btn-quiet btn-small"
-                        disabled={busy}
-                        onClick={() => void addAsVersion(d.id)}
-                      >
-                        Add as a new version of {d.title}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
+            {props.pane.version && props.pane.version.to.length > 1 && (
+              <>
                 <button
                   type="button"
                   className="btn btn-link"
-                  aria-expanded="false"
-                  onClick={() => setOtherVersions(true)}
+                  aria-expanded={otherVersions}
+                  aria-controls="other-versions"
+                  onClick={() => setOtherVersions((open) => !open)}
                 >
-                  or another…
+                  or another match…
                 </button>
-              ))}
+                {otherVersions && (
+                  <ul
+                    id="other-versions"
+                    className="other-versions"
+                    aria-label="Or add it to another"
+                  >
+                    {props.pane.version.to.slice(1).map((d) => (
+                      <li key={d.id}>
+                        <button
+                          type="button"
+                          className="btn btn-quiet btn-small"
+                          disabled={busy}
+                          onClick={() => void addAsVersion(d.id)}
+                        >
+                          Add as a new version of {d.title}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
             {props.pane.actions}
           </div>
         ) : (

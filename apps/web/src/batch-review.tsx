@@ -244,9 +244,20 @@ export const versionAddedWords = (v: Pick<VersionUndo, 'name' | 'title'>) =>
 export function useVersionUndo(
   batchId: string | undefined,
   changed: () => Promise<unknown> | void,
-  /** In the page's flow (a file's card): it covers nothing, and keeps no room under the page. */
-  inline = false,
+  opts: {
+    /** In the page's flow (a file's card): it covers nothing, and keeps no room under the page. */
+    inline?: boolean;
+    /**
+     * Where the focus goes when the toast is put away (× or Escape), as
+     * Accept all Ready's goes (W-I3-4): the page's status line, or its
+     * heading (the review, W1).
+     */
+    fallback?: () => HTMLElement | null;
+    /** Taken back: the item is waiting again (the review, W3: the card's run counts it so). */
+    undone?: (itemId: string) => void;
+  } = {},
 ): { element: ReactNode; shown: boolean } {
+  const { inline = false, fallback, undone } = opts;
   const { withToken } = useApp();
   const [, uploads] = useUploads();
   const [held, setHeld] = useState(versionUndoStore.get());
@@ -287,6 +298,9 @@ export function useVersionUndo(
               more: [],
             }
           : { text: 'Nothing was taken back.', more: r.kept.map((k) => k.message) };
+      // The page told first, in the same turn as the words: nothing done on
+      // it after them goes by what it was before (W3).
+      if (r.restored.length > 0) undone?.(mine.itemId);
       versionUndoStore.set(null);
       setDone({ ...words, undo: null, busy: false });
       setHeard([words.text, ...words.more].join(' '));
@@ -322,6 +336,8 @@ export function useVersionUndo(
           onDismiss={() => {
             versionUndoStore.set(null);
             setDone(null);
+            // The toast gone: never nowhere (W1).
+            fallback?.()?.focus();
           }}
         />
       )}

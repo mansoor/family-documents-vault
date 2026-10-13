@@ -1382,7 +1382,11 @@ export function BatchScreen() {
   // A file just added as a new version from its card (S1): the same toast, with its Undo.
   // On a phone, in the page's flow under the levels: over the page, it hid
   // what the focus went to (the 320 sweep).
-  const versionUndo = useVersionUndo(id, reload, mode === 'phone');
+  const versionUndo = useVersionUndo(id, reload, {
+    inline: mode === 'phone',
+    // Put away: the status line, or the heading, as Accept all Ready's (W1).
+    fallback: () => status.current ?? heading.current,
+  });
   const choose = (v: QueueFilter) =>
     setParams(
       (was) => {

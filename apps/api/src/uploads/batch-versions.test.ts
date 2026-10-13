@@ -442,6 +442,11 @@ describe.skipIf(!testAdminUrl())('duplicates as versions (S1)', () => {
       words: 'New version of Sana’s passport to renew?',
     });
     expect(seen.items.find((i) => i.id === plain.id)?.level).toBe('ready');
+    // The Inbox counts it so too (M2): its Accept all Ready is for the plain one.
+    const inbox = (await call(adult, 'GET', '/api/v1/batches?with=levels')).json<{
+      items: BatchView[];
+    }>();
+    expect(inbox.items.find((x) => x.id === b.id)?.levels).toMatchObject({ ready: 1, check: 1 });
     // Named as the client saw them, and without naming any: never filed.
     const named = await call(adult, 'POST', `/api/v1/batches/${b.id}/accept-ready`, {
       item_ids: [renewal.id, plain.id],
@@ -579,10 +584,25 @@ describe.skipIf(!testAdminUrl())('duplicates as versions (S1)', () => {
               `incoming:${x.item.id}`,
             ),
             row?.prior_sealed as Buffer,
-            itemPriorBinding(x.item.id),
+            itemPriorBinding(x.item.id, added.version_id),
           ).toString('utf8'),
         ) as { fields: unknown },
     );
+    // Bound to the item and the version it added: it opens for no other (L2).
+    await withSystem(h.db, hh, async (trx) => {
+      const key = unwrapKey(
+        row?.file_key_wrapped as Buffer,
+        await keys.unwrapById(trx, row?.wrapped_by_scope as string),
+        `incoming:${x.item.id}`,
+      );
+      expect(() =>
+        openBytes(
+          key,
+          row?.prior_sealed as Buffer,
+          itemPriorBinding(x.item.id, original?.id ?? ''),
+        ),
+      ).toThrow();
+    });
     expect(prior.fields).toEqual({
       identifier: 'R-111',
       issued: day('2016-06-01'),
@@ -661,6 +681,16 @@ describe.skipIf(!testAdminUrl())('duplicates as versions (S1)', () => {
     const newer = await make('A newer copy since');
     const looked = await make('Looked at since');
     const late = await make('Too late');
+    // Its uploader's own edit since: the log says it came after (L3).
+    const own = await make('Edited by its uploader since');
+    const ownNow = await docOf(adult, own.docId);
+    const ownPatch = await h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${own.docId}`,
+      headers: { ...h.as(adult), 'if-match': String(ownNow.etag) },
+      payload: { title: 'Renamed by Sana' },
+    });
+    expect(ownPatch.statusCode, ownPatch.body).toBe(200);
     const editedNow = await docOf(owner, edited.docId);
     const patched = await h.app.inject({
       method: 'PATCH',
@@ -684,7 +714,7 @@ describe.skipIf(!testAdminUrl())('duplicates as versions (S1)', () => {
       `update incoming_file set undo_until = now() - interval '1 second' where id = $1`,
       [late.item.id],
     );
-    for (const x of [edited, newer, looked, late]) {
+    for (const x of [edited, newer, looked, late, own]) {
       const back = await undone(adult, x.batchId, [x.item.id]);
       expect(back.restored).toEqual([]);
       const why = back.kept[0];
@@ -692,6 +722,119 @@ describe.skipIf(!testAdminUrl())('duplicates as versions (S1)', () => {
       expect(why?.message).toMatch(/newest version/);
       expect((await versionsOf(adult, x.docId)).map((v) => v.id)).toContain(x.version);
     }
+  });
+
+  it('its derived reminders come back as they were — one acknowledged, one snoozed — after an Undo that puts the expiry back (M1)', async () => {
+    const issuer = `Reminded ${randomUUID().slice(0, 6)}`;
+    const docId = await filed(adult, {
+      title: 'Sana’s reminded passport',
+      type_key: 'passport',
+      owner_member_id: adult.member_id,
+      issued_by: issuer,
+      expires: day(inDays(200)),
+    });
+    const [due, scheduled] = (await reminders(docId)).filter((r) => r.kind === 'derived');
+    expect([due?.status, scheduled?.status]).toEqual(['due', 'scheduled']);
+    const acked = await call(adult, 'POST', `/api/v1/reminders/${due?.id}/acknowledge`, {});
+    expect(acked.statusCode, acked.body).toBe(200);
+    const snoozedUntil = inDays(40);
+    const snoozed = await call(adult, 'POST', `/api/v1/reminders/${scheduled?.id}/snooze`, {
+      until: snoozedUntil,
+    });
+    expect(snoozed.statusCode, snoozed.body).toBe(200);
+    const before = await admin.query<Record<string, unknown>>(
+      `select to_char(fire_at, 'YYYY-MM-DD') as fire_at, lead_days, status,
+              to_char(snoozed_until, 'YYYY-MM-DD') as snoozed_until, acknowledged_by,
+              acknowledged_at
+         from reminder where document_id = $1 and kind = 'derived' order by fire_at`,
+      [docId],
+    );
+    const x = await readItem(
+      adult,
+      passport({ who: adult.member_id, issuer, number: 'M1-2', expires: inDays(3650) }),
+    );
+    const res = await accept(adult, x.batchId, x.item.id, {
+      into_document_id: docId,
+      expires: day(inDays(3650)),
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    // The expiry changed: its derived reminders made again for the new date.
+    expect((await reminders(docId)).some((r) => r.id === due?.id)).toBe(false);
+    expect((await undone(adult, x.batchId, [x.item.id])).restored).toEqual([x.item.id]);
+    const after = await admin.query<Record<string, unknown>>(
+      `select to_char(fire_at, 'YYYY-MM-DD') as fire_at, lead_days, status,
+              to_char(snoozed_until, 'YYYY-MM-DD') as snoozed_until, acknowledged_by,
+              acknowledged_at
+         from reminder where document_id = $1 and kind = 'derived' order by fire_at`,
+      [docId],
+    );
+    expect(after.rows).toEqual(before.rows);
+    expect(after.rows.map((r) => r.status)).toEqual(['acknowledged', 'snoozed']);
+    expect(after.rows[1]?.snoozed_until).toBe(snoozedUntil);
+  });
+
+  it('a version accept teaches only what the card sent: a blank date that keeps the document’s, and the document’s own issuer, are no correction (L4)', async () => {
+    const docId = await filed(adult, {
+      title: 'Sana’s taught passport',
+      type_key: 'passport',
+      owner_member_id: adult.member_id,
+      identifier: 'L4-1',
+      issued_by: 'HM Passport Office',
+      expires: day('2024-01-31'),
+    });
+    const x = await readItem(
+      adult,
+      passport({
+        who: adult.member_id,
+        number: 'L4-1',
+        issuer: `Teaching Kingdom ${randomUUID().slice(0, 6)}`,
+        expires: '2034-01-31',
+      }),
+    );
+    const before = (await call(adult, 'GET', '/api/v1/batches/learned')).json<BatchLearning>();
+    // Only the number sent; the expiry left as the document has it.
+    const res = await accept(adult, x.batchId, x.item.id, {
+      into_document_id: docId,
+      identifier: 'L4-1',
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    const after = (await call(adult, 'GET', '/api/v1/batches/learned')).json<BatchLearning>();
+    expect(after.counted).toBe(before.counted + 1);
+    expect(after.unchanged).toBe(before.unchanged + 1);
+  });
+
+  it('a teen now — made one since adding it to somebody else’s document — takes nothing back (L1)', async () => {
+    const someone = await h.join(owner, {
+      name: 'Rafa',
+      email: 'rafa-s1@example.test',
+      role: 'adult',
+    });
+    const docId = await filed(owner, {
+      title: 'The owner’s renewed licence',
+      type_key: 'passport',
+      owner_member_id: owner.member_id,
+      issued_by: 'United Kingdom',
+    });
+    const x = await readItem(someone, passport({ who: owner.member_id, number: 'L1-1' }));
+    const res = await accept(someone, x.batchId, x.item.id, { into_document_id: docId });
+    expect(res.statusCode, res.body).toBe(201);
+    await admin.query("update account_household set role = 'teen' where member_id = $1", [
+      someone.member_id,
+    ]);
+    const signedIn = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/password',
+      payload: { email: 'rafa-s1@example.test', password: 'another correct horse' },
+      remoteAddress: '10.67.1.1',
+    });
+    expect(signedIn.statusCode, signedIn.body).toBe(200);
+    const asTeen = signedIn.json<Tokens>();
+    const back = await undone(asTeen, x.batchId, [x.item.id]);
+    expect(back.restored).toEqual([]);
+    expect(back.kept.map((k) => k.reason)).toEqual(['not_undoable']);
+    expect((await versionsOf(owner, docId)).map((v) => v.id)).toContain(
+      res.json<BatchAccepted>().version_id,
+    );
   });
 
   // ------------------------------------------------------------- who may

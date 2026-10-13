@@ -27,7 +27,7 @@ import {
  * vault — "Already in the vault: Mansoor's passport", Discard this copy
  * first and Accept anyway after it; one that is probably a renewal of a
  * document — "Add as a new version of Mansoor's passport" beside Accept,
- * "or another…" for the rest, then a toast with Undo; and the batch's page
+ * "or another match…" for the rest, then a toast with Undo; and the batch's page
  * saying "Same as …" or "New version of …?". Only what the vault gives is
  * shown: a duplicate of something the uploader cannot see comes with
  * nothing, and the card says nothing.
@@ -207,12 +207,18 @@ describe('duplicates as versions (S1)', () => {
     const anyway = screen.getByRole('button', { name: /Accept anyway/ });
     expect(anyway).toHaveClass('btn-quiet');
     expect(anyway).not.toHaveClass('btn-primary');
+    // Enter is Discard's, said so: never the quiet Accept anyway (W2).
+    expect(discard).toHaveAttribute('aria-keyshortcuts', 'Enter');
+    expect(anyway).not.toHaveAttribute('aria-keyshortcuts');
     // Nothing to add it to: the same file is not a new version of itself.
     expect(screen.queryByRole('button', { name: /Add as a new version/ })).toBeNull();
     await expectAccessible();
 
-    // Discard: dropped, as Remove drops it, without asking; on to the next.
-    fireEvent.click(discard);
+    // Discard, with Enter from a field: dropped, as Remove drops it, without
+    // asking; on to the next.
+    const kind = screen.getByLabelText(/What it is/);
+    kind.focus();
+    fireEvent.keyDown(kind, { key: 'Enter' });
     await waitFor(() =>
       expect(window.location.pathname).toBe('/inbox/batches/batch-1/items/item-2'),
     );
@@ -258,7 +264,7 @@ describe('duplicates as versions (S1)', () => {
     expect(box).toHaveTextContent('The pages give the same kind, person and issuer.');
     // Accept is still the first choice; this is beside it.
     expect(screen.getByRole('button', { name: /Accept and next/ })).toHaveClass('btn-primary');
-    expect(screen.queryByRole('button', { name: 'or another…' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'or another match…' })).toBeNull();
     await expectAccessible();
     fireEvent.click(
       screen.getByRole('button', { name: "Add as a new version of Mansoor's passport" }),
@@ -294,18 +300,27 @@ describe('duplicates as versions (S1)', () => {
     });
   });
 
-  it('several near matches: the best one, and “or another…” for the rest', async () => {
+  it('several near matches: the best one, and “or another match…” for the rest, shown and put away again', async () => {
     const state = at('/inbox/batches/batch-1/items/item-1', (types) => [
       item('item-1', 'renewed.pdf', types, { renewals: [NEAR, NEAR_OLD] }),
       item('item-2', 'next.pdf', types),
     ]);
-    fireEvent.click(await screen.findByRole('button', { name: 'or another…' }));
+    const more = await screen.findByRole('button', { name: 'or another match…' });
+    expect(more).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(more);
+    expect(more).toHaveAttribute('aria-expanded', 'true');
     const others = await screen.findByRole('list', { name: 'Or add it to another' });
-    const old = within(others).getByRole('button', {
-      name: "Add as a new version of Mansoor's old passport",
-    });
-    await waitFor(() => expect(old).toHaveFocus());
     await expectAccessible();
+    // Put away again (W4), and shown again.
+    fireEvent.click(more);
+    expect(more).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('list', { name: 'Or add it to another' })).toBeNull();
+    fireEvent.click(more);
+    const old = within(await screen.findByRole('list', { name: 'Or add it to another' })).getByRole(
+      'button',
+      { name: "Add as a new version of Mansoor's old passport" },
+    );
+    expect(others).not.toBeInTheDocument();
     fireEvent.click(old);
     await waitFor(() => expect(state.batchAccepts).toHaveLength(1));
     expect(state.batchAccepts?.[0]?.body).toMatchObject({ into_document_id: 'doc-old' });
@@ -313,9 +328,66 @@ describe('duplicates as versions (S1)', () => {
     await waitFor(() =>
       expect(window.location.pathname).toBe('/inbox/batches/batch-1/items/item-2'),
     );
-    expect(await screen.findByRole('region', { name: 'What was just done' })).toHaveTextContent(
-      "is now the newest copy of Mansoor's old passport",
+    const toast = await screen.findByRole('region', { name: 'What was just done' });
+    expect(toast).toHaveTextContent("is now the newest copy of Mansoor's old passport");
+    // Put away with Escape: the focus on the card's status line, never nowhere (W1).
+    fireEvent.keyDown(toast, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'What was just done' })).toBeNull(),
     );
+    expect(document.querySelector('.status-line')).toHaveFocus();
+  });
+
+  it('taken back from the next card: one fewer accepted, and the file in the run again (W3)', async () => {
+    at('/inbox/batches/batch-1/items/item-1', (types) => [
+      item('item-1', 'renewed.pdf', types, { renewals: [NEAR] }),
+      item('item-2', 'next.pdf', types),
+    ]);
+    fireEvent.click(
+      await screen.findByRole('button', { name: "Add as a new version of Mansoor's passport" }),
+    );
+    await waitFor(() =>
+      expect(window.location.pathname).toBe('/inbox/batches/batch-1/items/item-2'),
+    );
+    const toast = await screen.findByRole('region', { name: 'What was just done' });
+    fireEvent.click(within(toast).getByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(toast).toHaveTextContent(/^Undone:/));
+    // The run, kept with the page, counts it accepted no more.
+    await waitFor(() =>
+      expect(
+        (window.history.state as { usr?: { run?: { accepted: number } } } | null)?.usr?.run
+          ?.accepted,
+      ).toBe(0),
+    );
+    // The next one accepted: on to the one taken back, waiting again in the run.
+    fireEvent.click(screen.getByRole('button', { name: /Accept and next/ }));
+    await waitFor(() =>
+      expect(window.location.pathname).toBe('/inbox/batches/batch-1/items/item-1'),
+    );
+    fireEvent.click(await screen.findByRole('button', { name: /Accept and next/ }));
+    await waitFor(() => expect(window.location.pathname).toBe('/inbox/batches/batch-1'));
+    await waitFor(() =>
+      expect(document.querySelector('.status-line')).toHaveTextContent(/All 2 done: 2 accepted\./),
+    );
+  });
+
+  it('from the Inbox, Accept all Ready counts and sends only Ready files: a near match is Check (M2)', async () => {
+    const state = at('/inbox', (types) => [
+      item('item-1', 'renewed.pdf', types, { renewals: [NEAR] }),
+      item('item-2', 'plain.pdf', types),
+    ]);
+    const list = await screen.findByRole('list', { name: 'Your uploads' });
+    fireEvent.click(
+      await within(list).findByRole('button', { name: 'Accept all Ready in Scanned post (1)' }),
+    );
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog', { name: 'Accept 1 Ready file?' })).getByRole(
+        'button',
+        { name: 'Accept 1' },
+      ),
+    );
+    await screen.findByRole('region', { name: 'What was just done' });
+    expect(state.acceptReadyCalls).toEqual([{ batch: 'batch-1', item_ids: ['item-2'] }]);
   });
 
   it('refused by the vault — not theirs to change — the card stays, and says why', async () => {

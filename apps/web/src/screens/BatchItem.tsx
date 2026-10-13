@@ -90,15 +90,20 @@ export function BatchItemScreen() {
   const item = batch?.items.find((i) => i.id === itemId && i.state === 'waiting') ?? null;
   // The go through the queue this belongs to; begun here when opened by its address.
   const carried = (location.state as { run?: ReviewRun } | null)?.run;
+  // The run as an Undo on this card left it (W3): at once, before the page's
+  // own state catches up with it.
+  const [undoneRun, setUndoneRun] = useState<{ itemId: string; run: ReviewRun } | null>(null);
   const run: ReviewRun =
-    carried && carried.order.includes(itemId ?? '')
-      ? carried
-      : newRun(
-          (batch?.items ?? [])
-            .filter((i) => i.state === 'waiting' && inQueue(level)(i))
-            .map((i) => i.id),
-          level,
-        );
+    undoneRun && undoneRun.itemId === itemId
+      ? undoneRun.run
+      : carried && carried.order.includes(itemId ?? '')
+        ? carried
+        : newRun(
+            (batch?.items ?? [])
+              .filter((i) => i.state === 'waiting' && inQueue(level)(i))
+              .map((i) => i.id),
+            level,
+          );
   const at = run.order.indexOf(itemId ?? '');
   const position = at >= 0 ? at + 1 : null;
 
@@ -209,12 +214,32 @@ export function BatchItemScreen() {
 
   // A file just added as a new version (S1): its toast, with Undo, here and on the next.
   // In the card's own flow, above it: it never covers a field the focus is on.
+  const statusLine = useRef<HTMLParagraphElement>(null);
   const versionUndo = useVersionUndo(
     id,
     async () => {
       await fresh().catch(() => null);
     },
-    true,
+    {
+      inline: true,
+      // Put away: the status line, or the heading (W1).
+      fallback: () => statusLine.current ?? document.getElementById('item-h'),
+      // Taken back: one fewer accepted, and the file in the run again (W3).
+      undone: (back) => {
+        const next: ReviewRun = {
+          ...run,
+          accepted: Math.max(0, run.accepted - 1),
+          order: run.order.includes(back) ? run.order : [...run.order, back],
+          skipped: run.skipped.filter((x) => x !== back),
+        };
+        delete next.last;
+        if (itemId) setUndoneRun({ itemId, run: next });
+        void navigate(
+          { pathname: location.pathname, search: location.search },
+          { replace: true, state: { run: next } },
+        );
+      },
+    },
   );
 
   /**
@@ -411,7 +436,7 @@ export function BatchItemScreen() {
       <p className="visually-hidden" role="status" aria-live="polite">
         {heard}
       </p>
-      <p className="status-line" role="status">
+      <p className="status-line" role="status" ref={statusLine} tabIndex={-1}>
         {run.last}
       </p>
       {versionUndo.element}
@@ -482,9 +507,13 @@ export function BatchItemScreen() {
                   type="button"
                   className="btn btn-primary btn-small"
                   disabled={busy}
+                  aria-keyshortcuts="Enter"
                   onClick={() => void discard()}
                 >
                   Discard this copy
+                  <kbd className="key-hint" aria-hidden="true">
+                    Enter
+                  </kbd>
                 </button>
               </span>
             </div>
@@ -584,6 +613,8 @@ export function BatchItemScreen() {
               hint: 'Enter',
               // The same file as one in the vault: Discard is the likelier choice (S1).
               quietSubmit: dup !== null,
+              // Enter discards it (W2): the likelier choice, never the quiet one.
+              ...(dup !== null ? { enter: () => void discard() } : {}),
               ...(renewals.length > 0
                 ? {
                     version: {

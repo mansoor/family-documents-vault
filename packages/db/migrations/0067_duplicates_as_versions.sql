@@ -11,9 +11,12 @@
 --                 before: an Undo takes back its version, never the
 --                 document;
 --   prior_sealed  what that accept changed on the document — its number and
---                 dates as they were, and which of its reminders it
---                 resolved — sealed under the item's own file key, bound to
---                 the item (@fdv/crypto itemPriorBinding). Never plain.
+--                 dates as they were, which of its reminders it resolved and
+--                 how its derived ones stood — sealed under the item's own
+--                 file key, bound to the item and the version it added
+--                 (@fdv/crypto itemPriorBinding). Never plain; and let go by
+--                 the worker's nightly sweep once its Undo can no longer be
+--                 asked (`undo_until` passed).
 --
 -- What the database holds to, whatever the API asks:
 --
