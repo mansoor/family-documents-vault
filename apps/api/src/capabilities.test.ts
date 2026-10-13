@@ -103,6 +103,9 @@ describe('buildCapabilities', () => {
       watch_folder: false,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
+    // S4: email in, reserved as email_ingest since 1.0, only while the worker
+    // has a mailbox set up and checked it lately.
+    expect(buildCapabilities({ ...config, mailIn: true }).features.email_ingest).toBe(true);
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's
     // token in a path go with them: the body forms took over in 5.17.

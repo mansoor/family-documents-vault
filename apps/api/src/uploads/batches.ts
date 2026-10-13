@@ -315,6 +315,8 @@ interface ItemRow {
   preview_pages: number | null;
   document_id: string | null;
   document_seen: boolean | null;
+  /** From an email whose sender the mailbox's check could not vouch for (0069, S4). */
+  sender_unverified: boolean;
 }
 
 /** An item waiting, as a decision reads it. */
@@ -2311,6 +2313,7 @@ export class BatchService {
         'f.preview_pages',
         'f.document_id',
         sql<boolean>`d.id is not null`.as('document_seen'),
+        'f.sender_unverified',
       ])
       .where('f.batch_id', 'in', batchIds)
       .where('f.state', 'in', ['received', 'accepted'])
@@ -2464,6 +2467,8 @@ export class BatchService {
         proposals: levelled.proposals,
         clashes: levelled.clashes,
         renewals: state === 'waiting' ? (renewals.get(r.id) ?? []) : [],
+        // From an email whose sender was not verified (S4): said on its card.
+        ...(r.sender_unverified ? { sender_unverified: true } : {}),
       };
     });
   }

@@ -677,6 +677,11 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return detail.enabled === true
         ? line(`${who} set the scanner folder to fill ${possessive(personOf(e))} Inbox`, true)
         : line(`${who} turned off the scanner folder`, true);
+    // Email in (S4): on or off.
+    case 'mail_in.changed':
+      return detail.enabled === true
+        ? line(`${who} turned on email in`, true)
+        : line(`${who} turned off email in`, true);
     case 'export.requested':
       return line(`${who} asked for a copy of everything`, true);
     case 'export.downloaded':

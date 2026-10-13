@@ -56,6 +56,8 @@ import type { BatchService } from './uploads/batches.js';
 import { registerVaults } from './vaults/routes.js';
 import { registerWatchFolder } from './watch-folder/routes.js';
 import type { WatchFolderService } from './watch-folder/service.js';
+import { registerMailIn } from './mail-in/routes.js';
+import type { MailInService } from './mail-in/service.js';
 import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
 import { ownNetworks, trustProxyFor } from './client-address.js';
@@ -118,6 +120,8 @@ export interface AppDeps {
   offline: OfflineService;
   /** The scanner folder (0.8.0, S3): the owners' setting, and the notes it leaves. */
   watchFolder?: WatchFolderService;
+  /** Email in (0.8.0, S4): the owners' setting, and each person's address and code. */
+  mailIn?: MailInService;
   logger?: boolean | object;
   /**
    * The networks this process is on, for `FDV_TRUST_PROXY=network` (5.30):
@@ -389,6 +393,12 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
           return false;
         },
       ),
+      // Email in (S4): only while the worker has a mailbox set up, and
+      // checked it in its last two polls.
+      mailIn: await (deps.mailIn?.available() ?? Promise.resolve(false)).catch((err: unknown) => {
+        req.log.warn({ err }, 'email in could not be asked about');
+        return false;
+      }),
       setupRequired,
       pushEnabled: Boolean(config.FDV_VAPID_PUBLIC_KEY),
       // Without it the document is still true, only less specific; say
@@ -453,6 +463,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerIncoming(app, deps.incoming);
   registerBatches(app, deps.batches);
   if (deps.watchFolder) registerWatchFolder(app, deps.watchFolder);
+  if (deps.mailIn) registerMailIn(app, deps.mailIn);
 
   return app;
 }

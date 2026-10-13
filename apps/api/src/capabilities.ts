@@ -22,6 +22,8 @@ export interface CapabilityConfig {
   operatorMail?: boolean;
   /** The scanner folder (S3): set, there and writable, and said so lately by the worker. */
   watchFolder?: boolean;
+  /** Email in (S4): the household mailbox set up, and checked by the worker in its last two polls. */
+  mailIn?: boolean;
 }
 
 /**
@@ -69,7 +71,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
     features: {
       passkeys: true,
       private_mode: false,
-      email_ingest: false,
+      // Email in (0.8.0, S4): the household mailbox set up on the worker,
+      // and checked in its last two polls. Reserved since 1.0 for this.
+      email_ingest: config.mailIn === true,
       // "This vault can send Web Push": the same fact as push-key's `enabled`.
       push: config.pushEnabled,
       share_links: true,

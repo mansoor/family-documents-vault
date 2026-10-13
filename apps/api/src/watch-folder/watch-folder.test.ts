@@ -362,6 +362,8 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the API', () => {
     expect(listed.json<{ items: WatchNoticeView[] }>().items).toEqual([
       {
         id,
+        // The scanner's, as an email's are said to be theirs (S4).
+        source: 'scanner',
         file_name: 'AHMED-SCAN-77.zip',
         reason: 'unsupported',
         left_in_place: false,

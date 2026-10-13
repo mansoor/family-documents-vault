@@ -109,6 +109,10 @@ import type {
   VersionView,
   Visibility,
   VisibilityChange,
+  MailInCode,
+  MailInInput,
+  MailInMine,
+  MailInView,
   WatchFolderInput,
   WatchFolderView,
   WatchNoticeView,
@@ -1351,6 +1355,22 @@ export function createApi(http: Http) {
         method: 'POST',
         token,
       }),
+
+    // ----------------------------------------------------- email in (S4)
+    /**
+     * An owner's view of email in (`features.email_ingest`, or to say why it is
+     * not offered): the household mailbox as the worker has it, on or off,
+     * the last problem, and the mail it left alone.
+     */
+    mailIn: (token: string) => request<MailInView>('/api/v1/mail-in', { token }),
+    /** On or off: an owner's. `409 mail_in_unavailable` while it is not offered. */
+    setMailIn: (token: string, body: MailInInput) =>
+      request<MailInView>('/api/v1/mail-in', { method: 'PUT', body, token }),
+    /** Where the caller emails documents, from which address, and whether it is confirmed. */
+    myMailIn: (token: string) => request<MailInMine>('/api/v1/mail-in/me', { token }),
+    /** A new code to confirm the caller's address, shown once; lasts a day. */
+    newMailInCode: (token: string) =>
+      request<MailInCode>('/api/v1/mail-in/me/code', { method: 'POST', token }),
   };
 }
 

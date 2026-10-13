@@ -1,6 +1,8 @@
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   can,
+  mailNoticeTitle,
+  mailNoticeWords,
   mayFillFromScanner,
   refusalFor,
   WATCH_LEFT_IN_PLACE,
@@ -16,7 +18,9 @@ import {
   type WatchFolderInput,
   type WatchFolderView,
   type WatchNoticeView,
+  type MailNoticeReason,
   type WatchPause,
+  type WatchRejectReason,
 } from '@fdv/shared';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
@@ -257,33 +261,54 @@ export class WatchFolderService {
   }
 
   /**
-   * GET /watch-folder/notices: "A scanned file couldn't be added" — the
-   * caller's own, newest first. Whoever may add documents; nobody is given
-   * anybody else's, an owner included (0068).
+   * GET /watch-folder/notices: "A scanned file couldn't be added" — and,
+   * since S4, "An email couldn't be added" (`source`) — the caller's own,
+   * newest first. Whoever may add documents; nobody is given anybody else's,
+   * an owner included (0068, 0069).
    */
   async notices(p: Principal): Promise<WatchNoticeView[]> {
     if (!can(p.role, 'document.add'))
       throw new ApiError(403, 'forbidden', refusalFor('document.add'));
+    // What is done with an email once it is dealt with, as the worker says.
+    const mailbox = await this.db.selectFrom('mail_in_server').select('after').executeTakeFirst();
     return withPrincipal(this.db, p, async (trx) => {
       const rows = await trx
         .selectFrom('watch_notice')
-        .select(['id', 'file_name', 'reason', 'left_in_place', 'created_at'])
+        .select(['id', 'source', 'file_name', 'reason', 'left_in_place', 'created_at'])
         .where('member_id', '=', p.memberId)
         .orderBy('created_at', 'desc')
         .orderBy('id')
         .limit(50)
         .execute();
-      return rows.map((r) => ({
-        id: r.id,
-        file_name: r.file_name,
-        reason: r.reason,
-        left_in_place: r.left_in_place,
-        title: WATCH_REJECTED_TITLE,
-        words: r.left_in_place
-          ? `${r.file_name}: ${watchRejectWords(r.reason)} ${WATCH_LEFT_IN_PLACE}`
-          : `${r.file_name} was moved to the scanner folder’s rejected folder. ${watchRejectWords(r.reason)}`,
-        at: r.created_at.toISOString(),
-      }));
+      return rows.map((r) => {
+        if (r.source === 'email') {
+          const reason = r.reason as MailNoticeReason;
+          return {
+            id: r.id,
+            source: 'email' as const,
+            file_name: r.file_name,
+            reason,
+            left_in_place: false,
+            title: mailNoticeTitle(reason),
+            words: mailNoticeWords(reason, r.file_name, mailbox?.after ?? 'move'),
+            at: r.created_at.toISOString(),
+          };
+        }
+        const reason = r.reason as WatchRejectReason;
+        const name = r.file_name ?? 'A scanned file';
+        return {
+          id: r.id,
+          source: 'scanner' as const,
+          file_name: r.file_name,
+          reason,
+          left_in_place: r.left_in_place,
+          title: WATCH_REJECTED_TITLE,
+          words: r.left_in_place
+            ? `${name}: ${watchRejectWords(reason)} ${WATCH_LEFT_IN_PLACE}`
+            : `${name} was moved to the scanner folder’s rejected folder. ${watchRejectWords(reason)}`,
+          at: r.created_at.toISOString(),
+        };
+      });
     });
   }
 

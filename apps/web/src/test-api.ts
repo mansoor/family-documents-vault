@@ -344,6 +344,20 @@ export interface FakeState {
   /** "A scanned file couldn't be added", the reader's own (WatchNoticeView); left out, none. */
   watchNotices?: Array<Record<string, unknown> & { id: string }>;
   /**
+   * Email in (S4), as GET /mail-in gives it to an owner (MailInView);
+   * `available` says /capabilities' mail_in too. A PUT sets `enabled` (409
+   * while it is not available). Left out, no mailbox: GET answers it
+   * unknown, and it is not offered.
+   */
+  mailIn?: Record<string, unknown> & { available: boolean; enabled: boolean };
+  /**
+   * The reader's own (MailInMine), as GET /mail-in/me gives it; left out,
+   * `on` as mailIn says, from 'you@example.test', not confirmed. A viewer
+   * is refused. POST /mail-in/me/code answers `mailInCode`.
+   */
+  mailInMine?: Record<string, unknown>;
+  mailInCode?: string;
+  /**
    * The household's time zone, as GET /profile gives it: reminders fall due
    * on its calendar. Left out, 'UTC', the vault's default.
    */
@@ -993,6 +1007,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.learned ? { batch_learning: true } : {}),
           // The scanner folder (S3): said while a test's folder is ready.
           ...(state.watchFolder?.available ? { watch_folder: true } : {}),
+          // Email in (S4): said while a test's mailbox is ready.
+          ...(state.mailIn?.available ? { email_ingest: true } : {}),
         },
         limits: {
           ...(state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {}),
@@ -1167,6 +1183,67 @@ export function installFakeApi(state: FakeState) {
         return json(state.watchFolder);
       }
       return json(folder);
+    }
+    if (path === '/api/v1/mail-in') {
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner can set up email in.');
+      }
+      const mail = state.mailIn ?? {
+        available: false,
+        enabled: false,
+        server: {
+          state: 'unknown',
+          address: null,
+          folder: null,
+          after: 'move',
+          sender_check: false,
+          poll_seconds: null,
+          checked_at: null,
+          words: 'The worker hasn’t checked the mailbox lately. Check that it is running.',
+        },
+        last_checked_at: null,
+        last_error: null,
+        last_added_at: null,
+        unknown_senders: 0,
+        unverified: 0,
+        waiting: 0,
+        counts: [],
+        sender_warning: null,
+      };
+      if (method === 'PUT') {
+        const b = body as { enabled: boolean };
+        if (b.enabled && !mail.available) {
+          return refuse(409, 'mail_in_unavailable', 'Email in can’t be turned on.');
+        }
+        state.mailIn = { ...mail, enabled: b.enabled };
+        return json(state.mailIn);
+      }
+      return json(mail);
+    }
+    if (path === '/api/v1/mail-in/me' || path === '/api/v1/mail-in/me/code') {
+      if (storedRole() === 'viewer') {
+        return refuse(
+          403,
+          'forbidden',
+          'Viewers can open and download documents, but not add them.',
+        );
+      }
+      const on = state.mailIn?.available === true && state.mailIn.enabled;
+      const mine = state.mailInMine ?? {
+        on,
+        address: on ? 'home@vault.test' : null,
+        email: 'you@example.test',
+        confirmed: false,
+        code_expires_at: null,
+        sender_check: false,
+      };
+      if (path.endsWith('/code') && method === 'POST') {
+        if (!mine.on) return refuse(409, 'mail_in_unavailable', 'Email in isn’t turned on.');
+        const expires = new Date(Date.now() + 864e5).toISOString();
+        state.mailInMine = { ...mine, code_expires_at: expires };
+        return json({ code: state.mailInCode ?? 'FDV-ABCD-EFGH-JKMN', expires_at: expires });
+      }
+      return json(mine);
     }
     if (path === '/api/v1/watch-folder/notices') {
       if (storedRole() === 'viewer') {

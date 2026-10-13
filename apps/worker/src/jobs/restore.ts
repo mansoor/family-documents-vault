@@ -1089,13 +1089,26 @@ const GUARDS = [
     table: 'watch_folder',
     fn: 'watch_folder_account_writes',
   },
+  // An owner turns email in on or off, as themselves; what the worker says
+  // of it is the worker's. Somebody writes only their own code; that their
+  // address is confirmed is the vault's to say (0069, S4).
+  { name: 'mail_in_account_writes', table: 'mail_in', fn: 'mail_in_account_writes' },
+  {
+    name: 'mail_in_address_account_writes',
+    table: 'mail_in_address',
+    fn: 'mail_in_address_account_writes',
+  },
 ];
 
 /**
  * The owners' settings (0068, S3): the scanner folder, kept from every
  * other caller signed in by a rule of its own that asks the caller's role.
  */
-const OWNERS_SETTINGS = [{ table: 'watch_folder', what: 'the scanner folder' }];
+const OWNERS_SETTINGS = [
+  { table: 'watch_folder', what: 'the scanner folder' },
+  // Email in, and what the worker says of it (0069, S4).
+  { table: 'mail_in', what: 'email in' },
+];
 
 /**
  * Unique indexes the vault relies on for a rule, not for speed (0068, S3):
@@ -1114,6 +1127,18 @@ const UNIQUE_INDEXES = [
     name: 'intake_batch_watch_day_idx',
     table: 'intake_batch',
     what: 'one scanner batch a person a day',
+  },
+  // One household filling Inboxes from the household mailbox, one email
+  // batch a person a day (0069, S4).
+  {
+    name: 'mail_in_one_on',
+    table: 'mail_in',
+    what: 'one household filling Inboxes from the household mailbox',
+  },
+  {
+    name: 'intake_batch_mail_day_idx',
+    table: 'intake_batch',
+    what: 'one email batch a person a day',
   },
 ];
 
@@ -1207,6 +1232,10 @@ const ACTOR_GUARDED = [
   // person's alone (0068, S3).
   'watch_folder',
   'watch_notice',
+  // Email in, the owners'; and somebody's confirmed address, theirs alone
+  // (0069, S4).
+  'mail_in',
+  'mail_in_address',
   // What a document removed for good leaves behind: who could see it, and
   // the files still to be deleted (0045).
   'document_tombstone',
@@ -1294,6 +1323,8 @@ const MAKER_ONLY = [
   { table: 'intake_outcome', where: 'true', what: "somebody's count of corrections" },
   // A scanned file the scanner folder could not add (0068, S3).
   { table: 'watch_notice', where: 'true', what: "somebody's note of a scan not added" },
+  // Somebody's address confirmed for email in, and their code (0069, S4).
+  { table: 'mail_in_address', where: 'true', what: "somebody's address for email in" },
   // A person's Only me identity details: theirs alone, whoever else asks (0050, A33).
   {
     table: 'member_identity',
@@ -1315,6 +1346,8 @@ const NOT_EVEN_OWNERS = [
   { table: 'intake_outcome', what: "somebody's count of corrections" },
   // Its file's name is of their own scanner's; an owner who is not them is told nothing (0068).
   { table: 'watch_notice', what: "somebody's note of a scan not added" },
+  // Somebody's address, and the code they send from it (0069, S4).
+  { table: 'mail_in_address', what: "somebody's address for email in" },
 ];
 
 /**
@@ -1467,6 +1500,26 @@ const REQUIRED_RULES = [
     name: 'intake_batch_watch_insert',
     cmd: 'a',
     what: "who makes a scanner's batch",
+  },
+  // An email's batch, and an item saying where it came from, are the
+  // vault's; a confirmed address is removed by the vault alone (0069, S4).
+  {
+    table: 'intake_batch',
+    name: 'intake_batch_mail_insert',
+    cmd: 'a',
+    what: "who makes an email's batch",
+  },
+  {
+    table: 'incoming_file',
+    name: 'incoming_file_mail_insert',
+    cmd: 'a',
+    what: 'who says an item came from an email',
+  },
+  {
+    table: 'mail_in_address',
+    name: 'mail_in_address_actor_delete',
+    cmd: 'd',
+    what: "who removes somebody's address for email in",
   },
   // A restriction, and what it names, are written by an owner or the vault:
   // the person reads theirs and changes none of it (0054).

@@ -15,6 +15,13 @@ export type ProtectionMode = 'standard' | 'private';
 export interface CapabilityFeatures {
   passkeys: boolean;
   private_mode: boolean;
+  /**
+   * Email documents to the vault (0.8.0, S4; false before): true only while
+   * the worker has a household mailbox set up (FDV_MAIL_IN_*) and has checked
+   * it in its last two polls. An owner turns it on (GET, PUT /mail-in);
+   * whoever may add documents confirms their address and is told where to
+   * send (GET /mail-in/me, POST /mail-in/me/code).
+   */
   email_ingest: boolean;
   push: boolean;
   share_links: boolean;

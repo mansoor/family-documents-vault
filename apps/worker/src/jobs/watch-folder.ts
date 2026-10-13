@@ -1,18 +1,13 @@
-import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import type { BigIntStats } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
-import { PassThrough, Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
-import { EncryptStream, newKey, wrapKey, type ScopeKeys } from '@fdv/crypto';
+import { type ScopeKeys } from '@fdv/crypto';
 import { withSystem, type Db } from '@fdv/db';
 import {
-  BATCH_MAX_FILES,
-  INCOMING_KEEP_DAYS,
   dropFileName,
-  scannerDay,
   UPLOAD_KINDS,
   WATCH_INCOMPLETE_GRACE_MS,
   WATCH_NOTICE_DAYS,
@@ -21,14 +16,23 @@ import {
   WATCH_REJECTED_TITLE,
   WATCH_STABLE_MS,
   watchIgnored,
-  watchPauseOf,
   watchRejectWords,
   type WatchDirState,
   type WatchPause,
   type WatchRejectReason,
 } from '@fdv/shared';
-import pg from 'pg';
-import { adapterOf } from './incoming.js';
+import type pg from 'pg';
+import {
+  AdvisoryLock,
+  arriveItem,
+  clearStaleItem,
+  discardItem,
+  placeItem,
+  storeItem,
+  whoseInbox,
+  whyOf,
+  type Target,
+} from './intake-ingest.js';
 
 /**
  * A watched folder for network scanners (0.8.0, S3, CAP-10).
@@ -119,11 +123,6 @@ const TAIL_BYTES = 1024;
 /** Read from a handle this much at a time. */
 const CHUNK = 1024 * 1024;
 
-/** An upload this old, still on its way, holds no place in its batch (the API's UPLOAD_FRESH_MS). */
-const UPLOAD_FRESH_MS = 15 * 60_000;
-
-const DAY = 864e5;
-
 type Log = (level: string, msg: string, extra?: Record<string, unknown>) => void;
 
 export interface WatchDeps {
@@ -197,18 +196,6 @@ const nodeFs: WatchFs = {
 };
 
 const code = (err: unknown) => (err as NodeJS.ErrnoException | null)?.code ?? '';
-
-/**
- * Why, for the log: an error's code where it has one — a file system's
- * message names the file and its folders, and a database's can carry a
- * value — and otherwise the start of its message. Never a file's name.
- */
-const whyOf = (err: unknown) => {
-  const c = code(err);
-  if (c) return c;
-  const m = err instanceof Error ? err.message : String(err);
-  return m.replace(/(['"`]).*?\1/g, '…').slice(0, 120);
-};
 
 /** A file's identity: its device and inode, as the system has them (exactly: bigint). */
 const idOf = (st: Pick<BigIntStats, 'dev' | 'ino'>) => `${st.dev}:${st.ino}`;
@@ -431,14 +418,6 @@ async function* bytesOf(
 
 // ------------------------------------------------------------- the round
 
-/** Whose Inbox, as they are now: the household's, the person, their sign-in. */
-interface Target {
-  householdId: string;
-  memberId: string;
-  accountId: string;
-  timezone: string;
-}
-
 /** What became of one file. */
 export type WatchOutcome =
   | { kind: 'added'; itemId: string }
@@ -476,7 +455,7 @@ interface Opened {
 export class WatchRunner {
   private readonly fs: WatchFs;
   private readonly now: () => number;
-  private lock: pg.Client | null = null;
+  private readonly lock: AdvisoryLock;
   private timer: NodeJS.Timeout | null = null;
   private running: Promise<WatchRound> | null = null;
   private stopped = false;
@@ -502,11 +481,12 @@ export class WatchRunner {
   ) {
     this.fs = opts.fs ?? nodeFs;
     this.now = opts.now ?? Date.now;
+    this.lock = new AdvisoryLock(WATCH_LOCK_KEY, opts.lockUrl, deps.log, 'the scanner folder');
   }
 
   /** Whether this worker holds the lock now. */
   get holding(): boolean {
-    return this.lock !== null;
+    return this.lock.holding;
   }
 
   /** Looks every pollMs from now on, a round at a time. */
@@ -538,7 +518,7 @@ export class WatchRunner {
     this.abort.abort();
     if (this.timer) clearTimeout(this.timer);
     await this.running?.catch(() => undefined);
-    await this.letGo();
+    await this.lock.letGo();
   }
 
   /** One round: never two at once. */
@@ -548,70 +528,6 @@ export class WatchRunner {
       this.running = null;
     });
     return this.running;
-  }
-
-  private async letGo(): Promise<void> {
-    const c = this.lock;
-    this.lock = null;
-    if (c) {
-      await c.query('select pg_advisory_unlock($1)', [WATCH_LOCK_KEY]).catch(() => undefined);
-      await c.end().catch(() => undefined);
-    }
-  }
-
-  /**
-   * Whether this connection still holds the lock, by pg_locks: a session
-   * lock on a connection that has gone is no lock, and a pooler that hands
-   * the session to somebody else would show it (README: a direct connection).
-   */
-  private async stillHolding(): Promise<boolean> {
-    const c = this.lock;
-    if (!c) return false;
-    try {
-      const { rows } = await c.query<{ held: boolean }>(
-        `select exists (select 1 from pg_locks
-                         where locktype = 'advisory' and pid = pg_backend_pid() and granted
-                           and classid = 0 and objid = $1 and objsubid = 1) as held`,
-        [WATCH_LOCK_KEY],
-      );
-      if (rows[0]?.held) return true;
-    } catch {
-      // Gone with its connection.
-    }
-    await this.letGo();
-    return false;
-  }
-
-  /**
-   * The lock, held on a connection of its own, kept alive, for as long as
-   * this worker lives: asked for once a round until it is had, and checked
-   * (stillHolding) at each round and before each file while it is.
-   */
-  private async holdLock(): Promise<boolean> {
-    if (this.lock && (await this.stillHolding())) return true;
-    if (this.stopped) return false;
-    const c = new pg.Client({ connectionString: this.opts.lockUrl, keepAlive: true });
-    c.on('error', () => {
-      if (this.lock === c) this.lock = null;
-      void c.end().catch(() => undefined);
-    });
-    try {
-      await c.connect();
-      const { rows } = await c.query<{ got: boolean }>('select pg_try_advisory_lock($1) as got', [
-        WATCH_LOCK_KEY,
-      ]);
-      if (rows[0]?.got) {
-        this.lock = c;
-        this.deps.log('info', 'this worker watches the scanner folder', { dir: this.opts.dir });
-        return true;
-      }
-    } catch (err) {
-      this.deps.log('warn', 'could not ask for the scanner folder’s lock', {
-        err: whyOf(err),
-      });
-    }
-    await c.end().catch(() => undefined);
-    return false;
   }
 
   private async round(): Promise<WatchRound> {
@@ -628,7 +544,7 @@ export class WatchRunner {
       out.state = 'off';
       return out;
     }
-    if (!(await this.holdLock())) return out;
+    if (!(await this.lock.hold(this.stopped))) return out;
     out.ran = true;
     const state = await checkWatchDir(dir, this.fs);
     out.state = state;
@@ -665,7 +581,9 @@ export class WatchRunner {
     }
     this.root = await this.fs.realpath(dir);
     const hh = setting.household_id;
-    const target = await this.target(hh, setting.member_id);
+    const target = setting.member_id
+      ? await whoseInbox(this.deps.db, hh, setting.member_id, this.now())
+      : { pause: 'removed' as const };
     if ('pause' in target) {
       out.paused = target.pause;
       await this.paused(hh, setting.paused_reason, target.pause);
@@ -679,7 +597,7 @@ export class WatchRunner {
     let pause: WatchPause | null = null;
     for (const f of ready.slice(0, this.opts.roundMax ?? WATCH_ROUND_MAX)) {
       if (this.stopped) break;
-      if (!(await this.stillHolding())) {
+      if (!(await this.lock.still())) {
         out.outcomes.push({ rel: f.rel, kind: 'stopped', why: 'the lock was lost' });
         break;
       }
@@ -767,40 +685,6 @@ export class WatchRunner {
         .execute(),
     );
     this.told = n;
-  }
-
-  /** Whose Inbox, as they are now — or why nothing can be added to it. */
-  private async target(
-    hh: string,
-    memberId: string | null,
-  ): Promise<Target | { pause: WatchPause }> {
-    if (!memberId) return { pause: 'removed' };
-    return withSystem(this.deps.db, hh, async (trx) => {
-      const member = await trx
-        .selectFrom('member')
-        .select(['kind'])
-        .where('id', '=', memberId)
-        .executeTakeFirst();
-      const signIn = await trx
-        .selectFrom('account_household')
-        .select(['account_id', 'role', 'suspended_at', 'suspended_until', 'suspend_reason'])
-        .where('member_id', '=', memberId)
-        .where('household_id', '=', hh)
-        .executeTakeFirst();
-      const pause = watchPauseOf(member ?? null, signIn ?? null, this.now());
-      if (pause || !signIn) return { pause: pause ?? 'no_sign_in' };
-      const home = await trx
-        .selectFrom('household')
-        .select('timezone')
-        .where('id', '=', hh)
-        .executeTakeFirstOrThrow();
-      return {
-        householdId: hh,
-        memberId,
-        accountId: signIn.account_id,
-        timezone: home.timezone,
-      };
-    });
   }
 
   /** The files whose size and time have stood still since stableMs ago, seen twice. */
@@ -966,25 +850,7 @@ export class WatchRunner {
       return { kind: 'already' };
     }
     // On its way when a worker stopped: removed, and added again.
-    await withSystem(this.deps.db, hh, async (trx) => {
-      const gone = await trx
-        .deleteFrom('incoming_file')
-        .where('idempotency_key', '=', key)
-        .where('state', '=', 'uploading')
-        .returning(['storage_key', 'vault_id'])
-        .execute();
-      for (const g of gone) {
-        const adapter = await adapterOf(trx, this.deps, g.vault_id);
-        await adapter.delete(g.storage_key).catch(() => undefined);
-      }
-      // A removed one keeps no key a new one would need.
-      await trx
-        .updateTable('incoming_file')
-        .set({ idempotency_key: null })
-        .where('idempotency_key', '=', key)
-        .where('state', '=', 'rejected')
-        .execute();
-    });
+    await clearStaleItem(this.deps, hh, key);
 
     await this.opts.beforePlace?.(f.rel);
     // Its row, on its way, in the day's batch: holding its place — and the
@@ -999,101 +865,24 @@ export class WatchRunner {
       if (!setting?.enabled || setting.member_id !== t.memberId) {
         return { stop: 'the scanner folder was changed' };
       }
-      const signIn = await trx
-        .selectFrom('account_household')
-        .select(['role', 'suspended_at', 'suspended_until', 'suspend_reason'])
-        .where('member_id', '=', t.memberId)
-        .where('household_id', '=', hh)
-        .forShare()
-        .executeTakeFirst();
-      const member = await trx
-        .selectFrom('member')
-        .select('kind')
-        .where('id', '=', t.memberId)
-        .executeTakeFirst();
-      const pause = watchPauseOf(member ?? null, signIn ?? null, this.now());
-      if (pause) return { pause };
-      let scopeKey;
-      try {
-        scopeKey = await this.deps.keys.unwrap(trx, {
-          householdId: hh,
-          kind: 'member',
-          memberId: t.memberId,
-        });
-      } catch {
-        return { pause: 'sealed' as const };
-      }
-      const home = await trx
-        .selectFrom('household')
-        .select('active_vault_id')
-        .where('id', '=', hh)
-        .executeTakeFirstOrThrow();
-      if (!home.active_vault_id) return { pause: 'no_storage' as const };
-      const adapter = await adapterOf(trx, this.deps, home.active_vault_id);
-      const batch = await this.dayBatch(trx, t);
-      if ('pause' in batch || 'later' in batch) return batch;
-      const fileKey = newKey();
-      const id = randomUUID();
-      const row = await trx
-        .insertInto('incoming_file')
-        .values({
-          id,
-          household_id: hh,
-          request_id: null,
-          batch_id: batch.id,
-          review_by: 'me',
-          requester_member_id: t.memberId,
-          original_name: name,
-          storage_key: `${hh}/batches/${batch.id}/${randomBytes(16).toString('hex')}.enc`,
-          vault_id: home.active_vault_id,
-          file_key_wrapped: wrapKey(fileKey, scopeKey.key, `incoming:${id}`),
-          wrapped_by_scope: scopeKey.id,
-          scope: 'member',
-          scan_state: 'unscanned',
-          read_state: 'waiting',
-          idempotency_key: key,
-        })
-        .returning(['id', 'storage_key'])
-        .executeTakeFirstOrThrow();
-      return { id: row.id, storageKey: row.storage_key, adapter, fileKey };
+      return placeItem(trx, this.deps, t, 'scanner', this.now(), { name, key });
     });
     if ('stop' in placed) return { kind: 'stopped', why: placed.stop };
     if ('pause' in placed) return { kind: 'paused', reason: placed.pause };
     if ('later' in placed) return { kind: 'later', why: placed.later };
 
-    const discard = async () => {
-      await placed.adapter.delete(placed.storageKey).catch(() => undefined);
-      await withSystem(this.deps.db, hh, (trx) =>
-        trx
-          .deleteFrom('incoming_file')
-          .where('id', '=', placed.id)
-          .where('state', '=', 'uploading')
-          .execute(),
-      ).catch(() => undefined);
-    };
-
     // Its bytes, from the same handle, counted and hashed as they go,
     // encrypted straight to its object.
-    const plainHash = createHash('sha256');
-    let bytes = 0;
-    const counted = new PassThrough();
-    counted.on('data', (chunk: Buffer) => {
-      plainHash.update(chunk);
-      bytes += chunk.length;
-      if (bytes > this.deps.maxBytes) counted.destroy(new Error('larger than the vault takes'));
-    });
-    const enc = new EncryptStream(placed.fileKey);
-    const storing = placed.adapter.put(placed.storageKey, enc);
-    const flowing = pipeline(Readable.from(bytesOf(fh, size, this.abort.signal)), counted, enc, {
-      signal: this.abort.signal,
-    });
-    let put: { bytes: number; sha256: string };
+    let stored: Awaited<ReturnType<typeof storeItem>>;
     try {
-      [put] = await Promise.all([storing, flowing]);
+      stored = await storeItem(
+        placed,
+        bytesOf(fh, size, this.abort.signal),
+        this.deps.maxBytes,
+        this.abort.signal,
+      );
     } catch (err) {
-      enc.destroy();
-      await Promise.allSettled([storing, flowing]);
-      await discard();
+      await discardItem(this.deps.db, placed);
       if (this.abort.signal.aborted) return { kind: 'stopped', why: 'the worker is stopping' };
       return { kind: 'later', why: `not stored: ${whyOf(err)}` };
     }
@@ -1101,96 +890,24 @@ export class WatchRunner {
     const after = await fh.stat({ bigint: true }).catch(() => null);
     if (
       !after ||
-      bytes !== size ||
+      stored.bytes !== size ||
       after.size !== st.size ||
       after.mtimeNs !== st.mtimeNs ||
-      !plainHash.digest().equals(sha)
+      !stored.sha256.equals(sha)
     ) {
-      await discard();
+      await discardItem(this.deps.db, placed);
       return { kind: 'later', why: 'changed as it was read' };
     }
 
-    const arrived = await withSystem(this.deps.db, hh, async (trx) => {
-      const at = new Date();
-      const done = await trx
-        .updateTable('incoming_file')
-        .set({
-          state: 'received',
-          mime: kind.mime,
-          byte_size: bytes,
-          sha256: sha,
-          cipher_bytes: put.bytes,
-          cipher_sha256: Buffer.from(put.sha256, 'hex'),
-          received_at: at,
-          submitted_at: at,
-        })
-        .where('id', '=', placed.id)
-        .where('state', '=', 'uploading')
-        .returning('id')
-        .executeTakeFirst();
-      return done !== undefined;
-    }).catch(() => false);
+    const arrived = await arriveItem(this.deps.db, placed, { mime: kind.mime, ...stored });
     if (!arrived) {
       // Its batch removed as it arrived, or the database out of reach.
-      await discard();
+      await discardItem(this.deps.db, placed);
       return { kind: 'later', why: 'its batch went as it arrived' };
     }
     // Safely stored: the file goes. A worker that stops here finds the item next time.
     await this.remove(f);
     return { kind: 'added', itemId: placed.id };
-  }
-
-  /** The person's batch of the day, made the first time; or why there is no room in it. */
-  private async dayBatch(
-    trx: Db,
-    t: Target,
-  ): Promise<{ id: string } | { pause: 'day_full' } | { later: string }> {
-    const { day, name } = scannerDay(t.timezone, new Date(this.now()));
-    const find = () =>
-      trx
-        .selectFrom('intake_batch')
-        .select(['id', 'ends_at'])
-        .where('member_id', '=', t.memberId)
-        .where('watch_day', '=', day)
-        .forUpdate()
-        .executeTakeFirst();
-    let b = await find();
-    if (!b) {
-      const at = new Date();
-      await trx
-        .insertInto('intake_batch')
-        .values({
-          household_id: t.householdId,
-          created_by: t.accountId,
-          member_id: t.memberId,
-          name,
-          watch_day: day,
-          created_at: at,
-          ends_at: new Date(at.getTime() + INCOMING_KEEP_DAYS * DAY),
-        })
-        .onConflict((oc) => oc.doNothing())
-        .execute();
-      b = await find();
-    }
-    if (!b) return { later: 'the day’s batch could not be made' };
-    // Being removed by its person just now: tried again once it has gone.
-    if (b.ends_at.getTime() <= Date.now()) return { later: 'the day’s batch is being removed' };
-    const taken = await trx
-      .selectFrom('incoming_file')
-      .select((eb) => eb.fn.countAll<string>().as('n'))
-      .where('batch_id', '=', b.id)
-      .where((eb) =>
-        eb.or([
-          eb('state', 'in', ['received', 'accepted']),
-          eb.and([
-            eb('state', '=', 'uploading'),
-            eb('created_at', '>', new Date(Date.now() - UPLOAD_FRESH_MS)),
-          ]),
-        ]),
-      )
-      .executeTakeFirstOrThrow();
-    if (Number(taken.n) >= BATCH_MAX_FILES) return { pause: 'day_full' };
-    return { id: b.id };
   }
 
   /**

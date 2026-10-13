@@ -4404,6 +4404,53 @@ display_name, role }] }` — `state` one of `ready`, `off`, `missing`,
     its word on the folder is fresh and ready. `@fdv/shared`:
     `WATCH_INCOMPLETE_GRACE_MS`, `WATCH_HOST_DIR`, `WATCH_LEFT_IN_PLACE`,
     `watchStuckWords`.
+  - Email documents to the vault: a household mailbox checked over IMAP
+    (0.8.0, S4, CAP-09). **Changed:** `features.email_ingest`, reserved and `false` until now, is `true` only while
+    the worker has a mailbox set up (`FDV_MAIL_IN_*`) and has checked it in
+    its last two polls (and a minute); always `false` in older vaults. **Added:**
+    `GET /api/v1/mail-in` answers an owner `{ available, server: { state,
+address, folder, after, sender_check, poll_seconds, checked_at, words },
+enabled, last_checked_at, last_error: { code, words, at } | null,
+last_added_at, unknown_senders, unverified, waiting, counts,
+sender_warning }` — `state` one of `ready`, `not_configured` or `unknown`
+    (the worker has not said lately); `after` `move` or `delete`;
+    `last_error.code` one of `login_failed`, `unreachable`, `certificate`,
+    `no_folder`, `not_filed`, `sealed`, `no_storage` or `unreadable`, its
+    `words` what to do, never the mail server's message; `counts` the mail
+    left in the mailbox, in sentences; `sender_warning` while
+    `FDV_MAIL_IN_AUTHSERV_ID` is unset. Never the mailbox's password, which
+    the API never has. `PUT /api/v1/mail-in` takes `{ enabled }` and answers
+    the same; turning it on while it is not offered is `409
+mail_in_unavailable`, another household on the server having it on `409
+mail_in_in_use`; turning it off is always taken. Anybody but an owner is
+    `403` on both. A change is a line in the activity log
+    (`mail_in.changed`), for the owners. **Added:** `GET
+/api/v1/mail-in/me` answers whoever may add documents (an owner, an
+    adult, a teen) `{ on, address, email, confirmed, code_expires_at,
+sender_check }`: where to email documents, from which address (their
+    sign-in's), and whether that address is confirmed; `on: false` names no
+    mailbox. `POST /api/v1/mail-in/me/code` makes a new code (`{ code,
+expires_at }`, `cache-control: no-store`, lasting a day; the last one
+    stops working), `409 mail_in_unavailable` while email in is off. A
+    viewer or a guest is `403` on both. **Changed:** `GET
+/api/v1/watch-folder/notices` answers an email's notes too, each with
+    `source` (`scanner` or `email`); an email's `reason` is one of
+    `message_too_large`, `too_large` (an attachment, named), `unreadable` or
+    `nothing_to_add`, and its `file_name` may be `null`. An S3 client reads
+    them as it reads the scanner's. **Added:** a batch's item answers
+    `sender_unverified: true` when it came from an email whose sender the
+    mailbox's provider could not vouch for; absent otherwise. What email in
+    adds is a batch's item, as an upload is: in the sender's batch of the
+    day, named "Email, 13 Oct". `@fdv/shared`: `MailInView`, `MailInInput`,
+    `MailInMine`, `MailInCode`, `MailInError`, `MailInAfter`,
+    `MailNoticeReason`, `MAIL_IN_POLL_SECONDS`, `MAIL_IN_MAX_MESSAGE_BYTES`,
+    `MAIL_IN_INLINE_SKIP_BYTES`, `MAIL_IN_FILED_FOLDER`, `MAIL_IN_CODE_MS`,
+    `MAIL_IN_CODE_ALPHABET`, `MAIL_IN_CODE_PATTERN`, `MAIL_IN_STALE_POLLS`,
+    `MAIL_IN_STALE_GRACE_MS`, `MAIL_IN_SENDER_WARNING`, `SENDER_NOT_VERIFIED`,
+    `emailDay`, `normaliseMailInCode`, `mailInCodesIn`, `mailServerWords`,
+    `mailInErrorWords`, `mailInCountWords`, `mailNoticeTitle` and
+    `mailNoticeWords`. `@fdv/client`: `mailIn`, `setMailIn`, `myMailIn`,
+    `newMailInCode`.
 
 ## Deprecations in effect
 

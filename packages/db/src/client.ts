@@ -701,6 +701,13 @@ export interface Schema {
     owners_only: Generated<boolean>;
     /** When its reviewers were told it is waiting (0047): told once. */
     told_at: Timestamp | null;
+    /**
+     * An email's attachment (0069, S4): a keyed hash of its mail's
+     * Message-ID and its SHA-256, found again whatever the mailbox's UIDs.
+     */
+    mail_key: string | null;
+    /** From an email whose sender the mailbox's check could not vouch for (0069): said on its card. */
+    sender_unverified: Generated<boolean>;
   };
 
   /**
@@ -729,6 +736,11 @@ export interface Schema {
      * null for a batch somebody made.
      */
     watch_day: ColumnType<string | null, string | null | undefined, string | null>;
+    /**
+     * An email batch (0069, S4): the day it is for, on the household's
+     * calendar, one a person a day. Set by the vault alone.
+     */
+    mail_day: ColumnType<string | null, string | null | undefined, string | null>;
   };
 
   /** A person's rule, learned from their corrections (0065, Phase 6 I4): theirs alone. */
@@ -1262,18 +1274,90 @@ export interface Schema {
     stuck_files: Generated<number>;
   };
 
-  /** "A scanned file couldn't be added" (0068, S3): its person's alone. */
+  /**
+   * "A scanned file couldn't be added" (0068, S3), and "An email couldn't be
+   * added" (0069, S4): its person's alone.
+   */
   watch_notice: {
     id: Generated<string>;
     household_id: string;
     member_id: string;
-    file_name: string;
-    reason: 'unsupported' | 'too_large' | 'unreadable' | 'empty' | 'linked';
+    /** The scanner folder's, or an email's (0069). */
+    source: Generated<'scanner' | 'email'>;
+    /** The file's name; for an email, the attachment's, or null for the mail as a whole (0069). */
+    file_name: string | null;
+    reason:
+      | 'unsupported'
+      | 'too_large'
+      | 'unreadable'
+      | 'empty'
+      | 'linked'
+      | 'message_too_large'
+      | 'nothing_to_add';
     /** It could not be moved to rejected/ either. */
     left_in_place: Generated<boolean>;
-    /** A keyed hash of the file's place, size and time: one note a file. */
+    /** A keyed hash of the file's place, size and time (an email's: its mail and part): one note each. */
     file_key: string;
     created_at: GeneratedTimestamp;
+  };
+
+  /**
+   * The household mailbox as the worker last had it (0069, S4): the
+   * installation's, one row. Written by the owning role alone. Never its
+   * password: only whether one is set.
+   */
+  mail_in_server: {
+    singleton: Generated<boolean>;
+    configured: boolean;
+    address: string | null;
+    folder: string | null;
+    after: Generated<'move' | 'delete'>;
+    sender_check: Generated<boolean>;
+    poll_seconds: number;
+    checked_at: GeneratedTimestamp;
+  };
+
+  /**
+   * A household's email in (0069, S4): on or off; and what the worker says
+   * of it. An owner's alone.
+   */
+  mail_in: {
+    household_id: string;
+    enabled: Generated<boolean>;
+    updated_by: string | null;
+    updated_at: GeneratedTimestamp;
+    last_checked_at: Timestamp | null;
+    last_error:
+      | 'login_failed'
+      | 'unreachable'
+      | 'certificate'
+      | 'no_folder'
+      | 'not_filed'
+      | 'sealed'
+      | 'no_storage'
+      | 'unreadable'
+      | null;
+    last_error_at: Timestamp | null;
+    last_added_at: Timestamp | null;
+    unknown_senders: Generated<number>;
+    unverified: Generated<number>;
+    waiting: Generated<number>;
+  };
+
+  /**
+   * Somebody's sign-in address, confirmed for email in by a code sent from
+   * it (0069, S4): theirs alone.
+   */
+  mail_in_address: {
+    household_id: string;
+    member_id: string;
+    /** The address confirmed: confirmed only while it is still their sign-in's. */
+    email: string | null;
+    confirmed_at: Timestamp | null;
+    /** The SHA-256 of the code they are to send, and until when. */
+    code_hash: Buffer | null;
+    code_expires_at: Timestamp | null;
+    updated_at: GeneratedTimestamp;
   };
 
   device: {

@@ -8,6 +8,7 @@ import {
   renewalWords,
   sameAsWords,
   seesLocation,
+  SENDER_NOT_VERIFIED,
   untouchedAccept,
   type BatchDefaults,
   type BatchItemView,
@@ -1158,9 +1159,11 @@ export function ItemTags({
     renewal && caps?.features.batch_versions === true && item.state === 'waiting'
       ? (item.renewals?.[0] ?? null)
       : null;
-  if (tags.length === 0 && !near) return null;
+  if (tags.length === 0 && !near && !item.sender_unverified) return null;
   return (
     <ul className="item-tags" aria-label="Why">
+      {/* From an email whose sender the mailbox could not check (S4). */}
+      {item.sender_unverified && <li className="item-tag item-tag-check">{SENDER_NOT_VERIFIED}</li>}
       {tags.map((t) => (
         <li key={`${t.code}:${t.field ?? ''}`} className={`item-tag item-tag-${t.kind}`}>
           {t.code === 'duplicate_document' && item.duplicate?.of === 'document' ? (
