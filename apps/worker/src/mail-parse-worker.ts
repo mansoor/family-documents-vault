@@ -27,7 +27,11 @@ import { authVerdict, type AuthVerdict } from './jobs/mail-auth.js';
 
 /** What a mail's header says, as far as the vault asks. */
 export interface MailHead {
-  /** Its From: one address, lower-cased; null for none, several, a group, or several From headers. */
+  /**
+   * Its From: one address, lower-cased, in ASCII alone (the review, F6);
+   * null for none, several, a group, several From headers, or an address
+   * with any other character in it.
+   */
   from: string | null;
   /** Its Message-ID, as written (at most 998 characters); null for none. */
   messageId: string | null;
@@ -35,6 +39,14 @@ export interface MailHead {
   codes: string[];
   /** The provider's word on the sender, when an authserv-id is set; `fail` otherwise. */
   auth: AuthVerdict;
+  /** Its Date, as an ISO time; null for none or one that is not a date. */
+  date: string | null;
+}
+
+/** Attachments not kept of a mail, by why (F5): past MAX_PARTS, or forwarded too deep. */
+export interface MailSkipped {
+  tooMany: number;
+  tooDeep: number;
 }
 
 /** An attachment of a mail. */
@@ -64,7 +76,7 @@ export type MailJob =
 
 export type MailReply =
   | { ready: true }
-  | { id: number; head: MailHead; parts?: MailPart[] }
+  | { id: number; head: MailHead; parts?: MailPart[]; skipped?: MailSkipped }
   | { id: number; failed: true };
 
 /** At most this many attachments are kept of a mail; the rest are not read. */
@@ -97,10 +109,16 @@ function headOf(headers: Headers, lines: HeaderLines, authservId: string | null)
   const one = addresses.length === 1 ? addresses[0] : undefined;
   const address =
     fromLines === 1 && one && !one.group && typeof one.address === 'string'
-      ? one.address.trim().toLowerCase()
+      ? one.address.trim()
       : null;
-  // An address the vault could compare: one @, something either side, no space.
-  const from = address && /^[^\s@]+@[^\s@]+$/.test(address) ? address : null;
+  // An address the vault could compare: printable ASCII alone, one @,
+  // something either side. Anything else — an accented letter, a look-alike
+  // from another script — is nobody's (F6).
+  // ASCII before it is folded: a Kelvin sign lower-cased is a k.
+  const from =
+    address && /^[\x21-\x3f\x41-\x7e]+@[\x21-\x3f\x41-\x7e]+$/.test(address)
+      ? address.toLowerCase()
+      : null;
   const rawId = headers.get('message-id');
   const messageId =
     typeof rawId === 'string' && rawId.trim().length > 0 ? rawId.trim().slice(0, 998) : null;
@@ -114,7 +132,15 @@ function headOf(headers: Headers, lines: HeaderLines, authservId: string | null)
           from.split('@')[1] as string,
         )
       : 'fail';
-  return { from, messageId, codes, auth };
+  const when = headers.get('date');
+  const date = when instanceof Date && !Number.isNaN(when.getTime()) ? when.toISOString() : null;
+  return { from, messageId, codes, auth, date };
+}
+
+/** What a whole mail's reading collects: its attachments, and what was not kept. */
+interface Collect {
+  parts: MailPart[];
+  skipped: MailSkipped;
 }
 
 /**
@@ -126,8 +152,9 @@ function read(
   authservId: string | null,
   maxPartBytes: number,
   depth: number,
-  parts: MailPart[],
+  into: Collect,
 ): Promise<MailHead> {
+  const parts = into.parts;
   return new Promise<MailHead>((resolve, reject) => {
     const parser = new MailParser(PARSER_OPTIONS);
     let headers: Headers | null = null;
@@ -166,9 +193,15 @@ function read(
       });
       a.content.on('end', () => {
         const forwarded = a.contentType === 'message/rfc822';
-        if (forwarded && !tooLarge && depth < MAX_DEPTH && maxPartBytes > 0) {
+        if (maxPartBytes <= 0) {
+          // A header alone: nothing of the body is kept.
+        } else if (forwarded && !tooLarge && depth < MAX_DEPTH) {
           nested.push(Buffer.concat(chunks));
-        } else if (maxPartBytes > 0 && !forwarded && parts.length < MAX_PARTS) {
+        } else if (forwarded && !tooLarge) {
+          into.skipped.tooDeep += 1;
+        } else if (parts.length >= MAX_PARTS) {
+          into.skipped.tooMany += 1;
+        } else {
           parts.push({
             name: typeof a.filename === 'string' ? a.filename.slice(0, 1024) : null,
             contentType: String(a.contentType).slice(0, 200),
@@ -197,7 +230,7 @@ function read(
       // they are, and what they say of themselves, count for nothing.
       void nested
         .reduce<Promise<unknown>>(
-          (p, b) => p.then(() => read(b, null, maxPartBytes, depth + 1, parts)),
+          (p, b) => p.then(() => read(b, null, maxPartBytes, depth + 1, into)),
           Promise.resolve(),
         )
         .then(() => resolve(head), reject);
@@ -211,18 +244,15 @@ async function run(job: MailJob): Promise<MailReply> {
   if (job.kind === 'head') {
     // The header alone: a mail's first bytes may stop in its body, which is never read.
     const block = headerBlock(bytes) ?? bytes;
-    const head = await read(
-      Buffer.concat([block, Buffer.from('\r\n\r\n')]),
-      job.authservId,
-      0,
-      0,
-      [],
-    );
+    const head = await read(Buffer.concat([block, Buffer.from('\r\n\r\n')]), job.authservId, 0, 0, {
+      parts: [],
+      skipped: { tooMany: 0, tooDeep: 0 },
+    });
     return { id: job.id, head };
   }
-  const parts: MailPart[] = [];
-  const head = await read(bytes, job.authservId, job.maxPartBytes, 0, parts);
-  return { id: job.id, head, parts };
+  const into: Collect = { parts: [], skipped: { tooMany: 0, tooDeep: 0 } };
+  const head = await read(bytes, job.authservId, job.maxPartBytes, 0, into);
+  return { id: job.id, head, parts: into.parts, skipped: into.skipped };
 }
 
 const port = parentPort;

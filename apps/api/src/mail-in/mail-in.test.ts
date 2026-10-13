@@ -5,13 +5,14 @@ import {
   MAIL_IN_CODE_PATTERN,
   type Capabilities,
   type MailInCode,
+  type MailInEmailed,
   type MailInMine,
   type MailInView,
   type WatchNoticeView,
 } from '@fdv/shared';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
-import { createHarness, type Harness } from '../test-harness.js';
+import { createHarness, mailSent, type Harness } from '../test-harness.js';
 
 /**
  * Email in (0.8.0, S4), in the API: offered in /capabilities only while
@@ -290,61 +291,185 @@ describe.skipIf(!testAdminUrl())('email in, in the API (S4)', () => {
     ).toMatchObject({ code: '42501' });
   });
 
-  it('tells whoever may add documents where to send from where, and gives them a code to confirm it: theirs alone', async () => {
-    // Off: says so, and names no mailbox.
+  it('tells whoever may add documents where to send from where: never a viewer, and nothing while it is off', async () => {
     await said(true);
-    expect(await mine(adult)).toEqual({
+    expect(await mine(adult)).toMatchObject({
       on: false,
       address: null,
       email: 'ahmed@example.test',
       confirmed: false,
-      code_expires_at: null,
-      sender_check: false,
+      confirm: { send_from: false, emailed: false },
+      held: null,
     });
     expect((await call(adult, 'POST', '/api/v1/mail-in/me/code')).statusCode).toBe(409);
+    expect((await call(adult, 'POST', '/api/v1/mail-in/me/email-code')).statusCode).toBe(409);
     await turnOn();
     // A viewer is never included; a teen is.
-    expect((await call(viewer, 'GET', '/api/v1/mail-in/me')).statusCode).toBe(403);
-    expect((await call(viewer, 'POST', '/api/v1/mail-in/me/code')).statusCode).toBe(403);
+    for (const url of [
+      '/api/v1/mail-in/me',
+      '/api/v1/mail-in/me/code',
+      '/api/v1/mail-in/me/email-code',
+    ]) {
+      expect((await call(viewer, url.endsWith('me') ? 'GET' : 'POST', url)).statusCode, url).toBe(
+        403,
+      );
+    }
+    expect(
+      (await call(viewer, 'POST', '/api/v1/mail-in/me/confirm', { code: 'ABCD-EFGH' })).statusCode,
+    ).toBe(403);
     expect(await mine(teen)).toMatchObject({
       on: true,
       address: 'home@vault.test',
       email: 'tia@example.test',
     });
+    // What of theirs was left in the mailbox: told to them alone, counts and a date.
+    await admin.query(
+      `insert into mail_in_address (household_id, member_id, held_unverified, held_unconfirmed, held_last_at)
+       values ($1, $2, 1, 2, '2026-10-12T08:00:00Z')`,
+      [owner.household_id, adult.member_id],
+    );
+    expect((await mine(adult)).held).toEqual({
+      unverified: 1,
+      unconfirmed: 2,
+      last_at: '2026-10-12T08:00:00.000Z',
+    });
+    expect((await mine(other)).held).toBeNull();
+  });
+
+  it('a code to send FROM the address only while the mailbox checks senders, with a mailto link (F1)', async () => {
+    await turnOn();
+    // Senders not checked: sending a code from an address would prove nothing.
+    await said(true);
+    expect((await mine(adult)).confirm.send_from).toBe(false);
+    const refused = await call(adult, 'POST', '/api/v1/mail-in/me/code');
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json<{ error: { code: string } }>().error.code).toBe('mail_in_no_sender_check');
+    await said(true, 0, { sender_check: true });
+    expect((await mine(adult)).confirm.send_from).toBe(true);
     const made = await call(adult, 'POST', '/api/v1/mail-in/me/code');
     expect(made.statusCode, made.body).toBe(200);
     expect(made.headers['cache-control']).toBe('no-store');
-    const { code, expires_at } = made.json<MailInCode>();
+    const { code, mailto } = made.json<MailInCode>();
     expect(code).toMatch(new RegExp(`^${MAIL_IN_CODE_PATTERN.source}$`));
-    expect(new Date(expires_at).getTime() - Date.now()).toBeGreaterThan(23 * 3600_000);
-    // Kept as its SHA-256 alone.
-    const row = await admin.query<{ code_hash: Buffer; email: string | null }>(
-      'select code_hash, email from mail_in_address where member_id = $1',
+    expect(mailto).toBe(`mailto:home%40vault.test?subject=${code}`);
+    // Kept as its SHA-256 alone, as one to send from the address.
+    const row = await admin.query<{ code_hash: Buffer; code_kind: string }>(
+      'select code_hash, code_kind from mail_in_address where member_id = $1',
       [adult.member_id],
     );
     expect(row.rows[0]?.code_hash.equals(createHash('sha256').update(code).digest())).toBe(true);
-    expect(JSON.stringify(row.rows)).not.toContain(code);
-    expect(await mine(adult)).toMatchObject({
-      on: true,
-      confirmed: false,
-      code_expires_at: expires_at,
-    });
-    // A new code is a new one: the old stops working.
-    const again = (await call(adult, 'POST', '/api/v1/mail-in/me/code')).json<MailInCode>();
-    expect(again.code).not.toBe(code);
-    // Confirmed by the worker: while it is still their sign-in's address.
-    await admin.query(
-      "update mail_in_address set email = 'ahmed@example.test', confirmed_at = now(), code_hash = null, code_expires_at = null where member_id = $1",
-      [adult.member_id],
-    );
-    expect(await mine(adult)).toMatchObject({ confirmed: true, code_expires_at: null });
-    await admin.query(
-      "update mail_in_address set email = 'old@example.test' where member_id = $1",
-      [adult.member_id],
-    );
-    expect((await mine(adult)).confirmed).toBe(false);
+    expect(row.rows[0]?.code_kind).toBe('send');
+    expect(await mine(adult)).toMatchObject({ code_kind: 'send', confirmed: false });
+    // A code a minute.
+    expect((await call(adult, 'POST', '/api/v1/mail-in/me/code')).statusCode).toBe(429);
+  });
 
-    // In the database: each reads and writes their own, and only their code.
+  it('a code emailed TO the address, typed in: used once, five tries, a day, a code a minute and five a day (F1)', async () => {
+    await turnOn();
+    await said(true);
+    expect((await mine(adult)).confirm).toEqual({ send_from: false, emailed: true });
+    const before = mailSent(h).length;
+    const sent = await call(adult, 'POST', '/api/v1/mail-in/me/email-code');
+    expect(sent.statusCode, sent.body).toBe(200);
+    expect(sent.json<MailInEmailed>().sent_to).not.toBe('ahmed@example.test');
+    const out = mailSent(h).slice(before);
+    expect(out.map((m) => m.to)).toEqual(['ahmed@example.test']);
+    const code = /\b([A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})\b/.exec(
+      out[0]?.text ?? '',
+    )?.[1] as string;
+    expect(code).toBeTruthy();
+    // Kept as an HMAC, never as itself.
+    const kept = await admin.query<{ code_hash: Buffer; code_kind: string }>(
+      'select code_hash, code_kind from mail_in_address where member_id = $1',
+      [adult.member_id],
+    );
+    expect(kept.rows[0]?.code_kind).toBe('enter');
+    expect(kept.rows[0]?.code_hash.equals(createHash('sha256').update(code).digest())).toBe(false);
+    // The wrong code: refused, a try spent; the right one confirms; used once.
+    const wrong = await call(adult, 'POST', '/api/v1/mail-in/me/confirm', { code: 'AAAA-BBBB' });
+    expect(wrong.statusCode).toBe(422);
+    // Another person's typing it is nothing to them: the code is the adult's.
+    expect((await call(other, 'POST', '/api/v1/mail-in/me/confirm', { code })).statusCode).toBe(
+      410,
+    );
+    const ok = await call(adult, 'POST', '/api/v1/mail-in/me/confirm', {
+      code: code.toLowerCase(),
+    });
+    expect(ok.statusCode, ok.body).toBe(204);
+    expect(await mine(adult)).toMatchObject({ confirmed: true });
+    expect((await call(adult, 'POST', '/api/v1/mail-in/me/confirm', { code })).statusCode).toBe(
+      410,
+    );
+    // Five wrong tries, and the code is spent.
+    await call(teen, 'POST', '/api/v1/mail-in/me/email-code');
+    const teenCode = /\b([A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})\b/.exec(
+      mailSent(h).at(-1)?.text ?? '',
+    )?.[1] as string;
+    for (let i = 0; i < 5; i++) {
+      expect(
+        (await call(teen, 'POST', '/api/v1/mail-in/me/confirm', { code: 'AAAA-BBBB' })).statusCode,
+      ).toBe(422);
+    }
+    expect(
+      (await call(teen, 'POST', '/api/v1/mail-in/me/confirm', { code: teenCode })).statusCode,
+    ).toBe(410);
+    // A code a minute; five a day.
+    expect((await call(teen, 'POST', '/api/v1/mail-in/me/email-code')).statusCode).toBe(429);
+    await admin.query(
+      "update mail_in_address set code_sent_at = now() - interval '2 minutes', codes_sent = 5 where member_id = $1",
+      [teen.member_id],
+    );
+    const many = await call(teen, 'POST', '/api/v1/mail-in/me/email-code');
+    expect(many.statusCode).toBe(429);
+    expect(many.json<{ error: { message: string } }>().error.message).toMatch(/Five codes/);
+    // A day on: expired.
+    await admin.query(
+      "update mail_in_address set code_expires_at = now() - interval '1 second', code_attempts = 0 where member_id = $1",
+      [teen.member_id],
+    );
+    expect(
+      (await call(teen, 'POST', '/api/v1/mail-in/me/confirm', { code: teenCode })).statusCode,
+    ).toBe(410);
+  });
+
+  it('with neither the sender check nor the operator’s mail server, nobody can confirm, and both pages say why (F1)', async () => {
+    const quiet = await createHarness({ rateLimitPerMinute: 100_000, operatorMail: false });
+    try {
+      const boss = await quiet.setup();
+      const kid = await quiet.join(boss, { name: 'Kid', email: 'kid@example.test', role: 'teen' });
+      const qadmin = createPool(quiet.adminUrl, 1);
+      try {
+        await qadmin.query(
+          `insert into mail_in_server (singleton, configured, address, folder, after, sender_check, poll_seconds, checked_at)
+           values (true, true, 'home@vault.test', 'INBOX', 'move', false, 300, now())
+           on conflict (singleton) do update set configured = true, sender_check = false, checked_at = now()`,
+        );
+        await qadmin.query('insert into mail_in (household_id, enabled) values ($1, true)', [
+          boss.household_id,
+        ]);
+        const ask = (who: Tokens, method: 'GET' | 'POST', url: string) =>
+          quiet.app.inject({ method, url, headers: quiet.as(who), remoteAddress: '10.70.0.1' });
+        const me = (await ask(kid, 'GET', '/api/v1/mail-in/me')).json<MailInMine>();
+        expect(me).toMatchObject({
+          on: true,
+          confirmed: false,
+          confirm: { send_from: false, emailed: false },
+        });
+        expect(me.confirm_words).toMatch(/Nobody can confirm their address yet/);
+        expect((await ask(kid, 'POST', '/api/v1/mail-in/me/code')).statusCode).toBe(409);
+        expect((await ask(kid, 'POST', '/api/v1/mail-in/me/email-code')).statusCode).toBe(409);
+        const owners = (await ask(boss, 'GET', '/api/v1/mail-in')).json<MailInView>();
+        expect(owners.confirm_warning).toMatch(/FDV_MAIL_IN_AUTHSERV_ID .* or FDV_SMTP_URL/);
+      } finally {
+        await qadmin.query('delete from mail_in');
+        await qadmin.end();
+      }
+    } finally {
+      await quiet.close();
+    }
+  });
+
+  it('an address’s row is written by the vault’s own functions alone: nobody signed in writes it directly (F1)', async () => {
     await admin.query(
       `insert into mail_in_address (household_id, member_id, email, confirmed_at) values ($1, $2, 'bea@example.test', now())`,
       [owner.household_id, other.member_id],
@@ -352,48 +477,54 @@ describe.skipIf(!testAdminUrl())('email in, in the API (S4)', () => {
     expect(await asCaller(owner, 'owner', 'select * from mail_in_address')).toMatchObject({
       rows: [],
     });
-    expect(await asCaller(adult, 'adult', 'select member_id from mail_in_address')).toMatchObject({
-      rows: [{ member_id: adult.member_id }],
+    expect(await asCaller(other, 'adult', 'select member_id from mail_in_address')).toMatchObject({
+      rows: [{ member_id: other.member_id }],
     });
     expect(await asCaller(viewer, 'viewer', 'select * from mail_in_address')).toMatchObject({
       rows: [],
     });
-    expect(
-      await asCaller(
-        adult,
+    for (const [who, role, text] of [
+      [
+        other,
         'adult',
-        'update mail_in_address set confirmed_at = now(), email = $1',
-        ['ahmed@example.test'],
-      ),
-    ).toMatchObject({ code: '42501' });
-    expect(
-      await asCaller(
+        'update mail_in_address set code_hash = null, code_kind = null, code_expires_at = null',
+      ],
+      [other, 'adult', 'update mail_in_address set confirmed_at = now()'],
+      [
+        teen,
+        'teen',
+        `insert into mail_in_address (household_id, member_id) values (app_household(), app_member())`,
+      ],
+      [
         teen,
         'teen',
         `insert into mail_in_address (household_id, member_id, email, confirmed_at)
          values (app_household(), app_member(), 'tia@example.test', now())`,
-      ),
-    ).toMatchObject({ code: '42501' });
-    expect(
-      await asCaller(
-        teen,
-        'teen',
-        `insert into mail_in_address (household_id, member_id, code_hash, code_expires_at)
-         values (app_household(), $1, $2, now() + interval '1 hour')`,
-        [other.member_id, randomBytes(32)],
-      ),
-    ).toMatchObject({ code: '42501' });
-    expect(await asCaller(adult, 'adult', 'delete from mail_in_address')).toMatchObject({
+      ],
+    ] as const) {
+      expect(await asCaller(who, role, text), text).toMatchObject({ code: '42501' });
+    }
+    expect(await asCaller(other, 'adult', 'delete from mail_in_address')).toMatchObject({
       count: 0,
     });
+    // A viewer's call of the vault's functions is refused by them.
     expect(
-      await asCaller(
-        adult,
-        'adult',
-        "update mail_in_address set code_hash = $1, code_expires_at = now() + interval '30 days'",
-        [randomBytes(32)],
-      ),
-    ).toMatchObject({ code: '23514' });
+      await asCaller(viewer, 'viewer', 'select mail_in_issue_code($1, $2)', [
+        randomBytes(32),
+        'enter',
+      ]),
+    ).toMatchObject({ code: '42501' });
+    // And they are the application's alone, as mail_in_on is (F9).
+    const granted = await admin.query<{ fn: string; public: boolean }>(
+      `select p.proname as fn, has_function_privilege('public', p.oid, 'execute') as public
+         from pg_proc p where p.proname in ('mail_in_on', 'mail_in_issue_code', 'mail_in_check_code')
+        order by p.proname`,
+    );
+    expect(granted.rows).toEqual([
+      { fn: 'mail_in_check_code', public: false },
+      { fn: 'mail_in_issue_code', public: false },
+      { fn: 'mail_in_on', public: false },
+    ]);
   });
 
   it('says what went wrong and what was left alone, in words with no secret; warns while senders are not checked', async () => {
@@ -433,19 +564,27 @@ describe.skipIf(!testAdminUrl())('email in, in the API (S4)', () => {
     await said(true, 0, { after: 'delete' });
     await admin.query(
       `insert into watch_notice (household_id, member_id, source, file_name, reason, file_key)
-       values ($1, $2, 'email', null, 'nothing_to_add', gen_random_uuid()),
-              ($1, $2, 'email', 'AHMED-HUGE-SCAN.pdf', 'too_large', gen_random_uuid())`,
+       values ($1, $2, 'email', null, 'nothing_to_add', gen_random_uuid())`,
+      [owner.household_id, adult.member_id],
+    );
+    await admin.query(
+      `insert into watch_notice (household_id, member_id, source, file_name, reason, skipped, file_key)
+       values ($1, $2, 'email', 'AHMED-HUGE-SCAN.pdf', 'skipped', '{"too_large": 1, "unsupported": 2}', gen_random_uuid())`,
       [owner.household_id, adult.member_id],
     );
     const got = (await call(adult, 'GET', '/api/v1/watch-folder/notices')).json<{
       items: WatchNoticeView[];
     }>().items;
     expect(got.map((n) => [n.source, n.title]).sort()).toEqual([
-      ['email', 'An attachment couldn’t be added'],
       ['email', 'An email had nothing we could add'],
+      ['email', 'Some attachments couldn’t be added'],
     ]);
+    // Never "deleted": a provider may keep what is deleted (Gmail archives it).
     expect(got.find((n) => n.reason === 'nothing_to_add')?.words).toMatch(
-      /No PDF, photo, Word or Excel file was attached.*deleted from the household mailbox/,
+      /No PDF, photo, Word or Excel file was attached.*taken out of the household mailbox’s inbox/,
+    );
+    expect(got.find((n) => n.reason === 'skipped')?.words).toMatch(
+      /2 aren’t a kind of file the vault keeps; 1 is larger than .*kept in the household mailbox, so nothing is lost/,
     );
     for (const who of [owner, other, teen]) {
       const r = await call(who, 'GET', '/api/v1/watch-folder/notices');

@@ -195,6 +195,51 @@ export async function whoseInbox(
   });
 }
 
+/** How many items hold a place in a batch: arrived, or on their way lately. */
+async function taken(trx: Db, batchId: string): Promise<number> {
+  const n = await trx
+    .selectFrom('incoming_file')
+    .select((eb) => eb.fn.countAll<string>().as('n'))
+    .where('batch_id', '=', batchId)
+    .where((eb) =>
+      eb.or([
+        eb('state', 'in', ['received', 'accepted']),
+        eb.and([
+          eb('state', '=', 'uploading'),
+          eb('created_at', '>', new Date(Date.now() - UPLOAD_FRESH_MS)),
+        ]),
+      ]),
+    )
+    .executeTakeFirstOrThrow();
+  return Number(n.n);
+}
+
+/**
+ * Whether the person's batch of the day is full already: asked before
+ * anything is fetched for it (email in, F4), and nothing made.
+ */
+export async function dayIsFull(
+  db: Db,
+  t: Target,
+  source: IntakeSource,
+  now: number,
+): Promise<boolean> {
+  const { day } =
+    source === 'scanner'
+      ? scannerDay(t.timezone, new Date(now))
+      : emailDay(t.timezone, new Date(now));
+  const column = source === 'scanner' ? 'watch_day' : 'mail_day';
+  return withSystem(db, t.householdId, async (trx) => {
+    const b = await trx
+      .selectFrom('intake_batch')
+      .select('id')
+      .where('member_id', '=', t.memberId)
+      .where(column, '=', day)
+      .executeTakeFirst();
+    return b ? (await taken(trx, b.id)) >= BATCH_MAX_FILES : false;
+  });
+}
+
 /**
  * The person's batch of the day — a scanner's or an email's — made the
  * first time; or why there is no room in it.
@@ -239,21 +284,7 @@ export async function dayBatch(
   if (!b) return { later: 'the day’s batch could not be made' };
   // Being removed by its person just now: tried again once it has gone.
   if (b.ends_at.getTime() <= Date.now()) return { later: 'the day’s batch is being removed' };
-  const taken = await trx
-    .selectFrom('incoming_file')
-    .select((eb) => eb.fn.countAll<string>().as('n'))
-    .where('batch_id', '=', b.id)
-    .where((eb) =>
-      eb.or([
-        eb('state', 'in', ['received', 'accepted']),
-        eb.and([
-          eb('state', '=', 'uploading'),
-          eb('created_at', '>', new Date(Date.now() - UPLOAD_FRESH_MS)),
-        ]),
-      ]),
-    )
-    .executeTakeFirstOrThrow();
-  if (Number(taken.n) >= BATCH_MAX_FILES) return { pause: 'day_full' };
+  if ((await taken(trx, b.id)) >= BATCH_MAX_FILES) return { pause: 'day_full' };
   return { id: b.id };
 }
 
@@ -433,6 +464,12 @@ export async function clearStaleItem(
   key: string,
   /** An email's attachment: one on its way under its Message-ID's key too, whatever its UID was. */
   mailKey: string | null = null,
+  /**
+   * An email's (F8): one its person removed keeps its key, so it counts as
+   * taken and is never added again while its mail waits to be filed. The
+   * scanner folder's lets go of it, and a file saved again is added again.
+   */
+  opts: { keepRemoved?: boolean } = {},
 ): Promise<void> {
   await withSystem(deps.db, hh, async (trx) => {
     const gone = await trx
@@ -449,6 +486,7 @@ export async function clearStaleItem(
       const adapter = await adapterOf(trx, deps, g.vault_id);
       await adapter.delete(g.storage_key).catch(() => undefined);
     }
+    if (opts.keepRemoved) return;
     await trx
       .updateTable('incoming_file')
       .set({ idempotency_key: null })

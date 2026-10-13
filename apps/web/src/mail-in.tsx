@@ -1,4 +1,4 @@
-import { can, type MailInCode, type MailInMine } from '@fdv/shared';
+import { can, type MailInCode, type MailInEmailed, type MailInMine } from '@fdv/shared';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
@@ -85,6 +85,18 @@ export function EmailInScreen() {
               <p className="attention attention-warn" role="status">
                 <strong>Senders aren’t verified.</strong>{' '}
                 <span>{data.sender_warning.replace(/^Senders aren’t verified\. /, '')}</span>
+              </p>
+            )}
+            {/* Nobody can confirm an address yet (F1): what to set. */}
+            {data.confirm_warning && (
+              <p className="attention attention-warn" role="status">
+                {data.confirm_warning}
+              </p>
+            )}
+            {/* Filed otherwise than told, as the server allows (F10). */}
+            {data.server.filing_words && (
+              <p className="attention" role="status">
+                {data.server.filing_words}
               </p>
             )}
             {data.last_error && (
@@ -175,41 +187,95 @@ function whenWords(at: string): string {
   });
 }
 
+/** "12 Oct", in this browser's time. */
+function dayWords(at: string): string {
+  return new Date(at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+
+/** What of theirs was left in the mailbox, to its person (F1): counts, and the newest one's date. */
+function heldWords(held: NonNullable<MailInMine['held']>): string {
+  const n = (k: number) => (k === 1 ? '1 email' : `${k} emails`);
+  const out: string[] = [];
+  if (held.unconfirmed > 0) {
+    out.push(
+      `${n(held.unconfirmed)} from your address ${held.unconfirmed === 1 ? 'is' : 'are'} waiting in the mailbox until your address is confirmed.`,
+    );
+  }
+  if (held.unverified > 0) {
+    out.push(
+      `${n(held.unverified)} from your address didn’t pass the mailbox’s sender check, so ${held.unverified === 1 ? 'it wasn’t' : 'they weren’t'} added. Send ${held.unverified === 1 ? 'it' : 'them'} again from your own mail account.`,
+    );
+  }
+  if (held.last_at) out.push(`The newest is from ${dayWords(held.last_at)}.`);
+  return out.join(' ');
+}
+
 /**
  * "Email documents to <mailbox> from <your sign-in email>" (S4), on Add and
  * Home, for whoever may add documents while email in is on. Until their
- * address is confirmed, how to: a code, shown once, to send from it.
+ * address is confirmed, how to (F1): send a code FROM it while the mailbox
+ * checks senders (a mailto link has it in the subject), or type in a code
+ * the vault emailed TO it — or, with neither, why they cannot yet. And what
+ * of theirs was left in the mailbox.
  */
 export function EmailInLine(props: { className?: string }) {
   const { caps, authVersion, guarded, session } = useApp();
   const role = session.info?.role ?? storedRole();
   const offered = caps?.features.email_ingest === true && can(role, 'document.add');
-  const { data } = useLoad(
+  const { data, reload } = useLoad(
     async (t): Promise<MailInMine | null> =>
       offered ? await api.myMailIn(t).catch(() => null) : null,
     [authVersion, offered],
   );
   const [code, setCode] = useState<MailInCode | null>(null);
+  const [emailed, setEmailed] = useState<MailInEmailed | null>(null);
+  const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [said, setSaid] = useState<string | null>(null);
   const shown = useRef<HTMLParagraphElement>(null);
+  const field = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (code) shown.current?.focus();
   }, [code]);
+  useEffect(() => {
+    if (emailed) field.current?.focus();
+  }, [emailed]);
   if (!data?.on || !data.address) return null;
-  const getCode = async () => {
+  const act = async (fn: () => Promise<void>) => {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      const made = await guarded((t) => api.newMailInCode(t));
-      if (made) setCode(made);
+      await fn();
     } catch (err) {
       setError(describeError(err));
     } finally {
       setBusy(false);
     }
   };
+  const getCode = () =>
+    act(async () => {
+      const made = await guarded((t) => api.newMailInCode(t));
+      if (made) setCode(made);
+    });
+  const emailMe = () =>
+    act(async () => {
+      const sent = await guarded((t) => api.emailMailInCode(t));
+      if (sent) setEmailed(sent);
+    });
+  const confirm = (e: FormEvent) => {
+    e.preventDefault();
+    void act(async () => {
+      const done = await guarded((t) => api.confirmMailIn(t, typed));
+      if (done !== null) {
+        setSaid('Your address is confirmed: emails from it now come into your Inbox.');
+        setEmailed(null);
+        await reload();
+      }
+    });
+  };
+  const ways = data.confirm;
   return (
     <section
       className={`card mail-in-line stack ${props.className ?? ''}`}
@@ -226,26 +292,60 @@ export function EmailInLine(props: { className?: string }) {
           Attachments go into your Inbox to look over
           {data.sender_check ? '' : ', each marked “sender not verified”'}.
         </p>
+      ) : !ways.send_from && !ways.emailed ? (
+        <p className="muted">{data.confirm_words}</p>
       ) : (
         <>
-          <p className="muted">
-            First, confirm your address: send an email from {data.email} to {data.address} with a
-            code as its subject. Your emails come in once the vault has it.
-          </p>
-          {code ? (
-            <p ref={shown} tabIndex={-1} className="mail-in-code" role="status">
-              Your code: <code>{code.code}</code>. It works for a day.
-            </p>
-          ) : (
-            <div className="row">
-              <Button kind="quiet" disabled={busy} onClick={() => void getCode()}>
-                {data.code_expires_at ? 'Get a new code' : 'Get a code'}
-              </Button>
-            </div>
-          )}
-          <ErrorNote message={error} />
+          <p className="muted">First, confirm that the address is yours.</p>
+          {ways.send_from &&
+            (code ? (
+              <p ref={shown} tabIndex={-1} className="mail-in-code" role="status">
+                Send an email from {data.email} to {data.address} with <code>{code.code}</code> as
+                its subject. It works for a day. <a href={code.mailto}>Write that email</a>
+              </p>
+            ) : (
+              <div className="row">
+                <Button kind="quiet" disabled={busy} onClick={() => void getCode()}>
+                  {data.code_kind === 'send' ? 'Get a new code to send' : 'Get a code to send'}
+                </Button>
+              </div>
+            ))}
+          {ways.emailed &&
+            (emailed ? (
+              <form className="stack" onSubmit={confirm} aria-label="Confirm with the emailed code">
+                <div className="field">
+                  <label htmlFor="mail-in-typed">
+                    Code from the email sent to {emailed.sent_to}
+                  </label>
+                  <input
+                    id="mail-in-typed"
+                    ref={field}
+                    value={typed}
+                    autoComplete="one-time-code"
+                    inputMode="text"
+                    onChange={(e) => setTyped(e.target.value)}
+                  />
+                </div>
+                <div className="row">
+                  <Button kind="primary" type="submit" disabled={busy || typed.trim() === ''}>
+                    Confirm
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <div className="row">
+                <Button kind="quiet" disabled={busy} onClick={() => void emailMe()}>
+                  Email me a code
+                </Button>
+              </div>
+            ))}
         </>
       )}
+      {data.held && <p className="muted">{heldWords(data.held)}</p>}
+      <ErrorNote message={error} />
+      <p className="status-line" role="status">
+        {said}
+      </p>
     </section>
   );
 }

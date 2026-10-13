@@ -1293,7 +1293,10 @@ export interface Schema {
       | 'empty'
       | 'linked'
       | 'message_too_large'
-      | 'nothing_to_add';
+      | 'nothing_to_add'
+      | 'skipped';
+    /** An email's attachments not added, by why: how many of each (F5). */
+    skipped: Record<string, number> | null;
     /** It could not be moved to rejected/ either. */
     left_in_place: Generated<boolean>;
     /** A keyed hash of the file's place, size and time (an email's: its mail and part): one note each. */
@@ -1313,6 +1316,8 @@ export interface Schema {
     folder: string | null;
     after: Generated<'move' | 'delete'>;
     sender_check: Generated<boolean>;
+    /** How mail is filed, as the server allows (F10); null until the worker has signed in. */
+    filing: 'move' | 'delete' | 'leave' | null;
     poll_seconds: number;
     checked_at: GeneratedTimestamp;
   };
@@ -1354,10 +1359,26 @@ export interface Schema {
     /** The address confirmed: confirmed only while it is still their sign-in's. */
     email: string | null;
     confirmed_at: Timestamp | null;
-    /** The SHA-256 of the code they are to send, and until when. */
+    /** A code (a SHA-256, or an HMAC for one emailed), which kind, and until when (F1). */
     code_hash: Buffer | null;
+    code_kind: 'send' | 'enter' | null;
     code_expires_at: Timestamp | null;
+    code_attempts: Generated<number>;
+    code_sent_at: Timestamp | null;
+    codes_sent: Generated<number>;
+    codes_since: Timestamp | null;
+    /** What the worker left in the mailbox from this address, and the newest of it. */
+    held_unverified: Generated<number>;
+    held_unconfirmed: Generated<number>;
+    held_last_at: Timestamp | null;
     updated_at: GeneratedTimestamp;
+  };
+
+  /** A mail dealt with but left in place, by a keyed hash (0069, F10): the vault's alone. */
+  mail_in_done: {
+    household_id: string;
+    mail_key: string;
+    done_at: GeneratedTimestamp;
   };
 
   device: {

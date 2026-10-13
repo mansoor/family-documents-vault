@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { childEnv, LIBPQ } from './child-env.js';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createReadStream } from 'node:fs';
@@ -643,7 +644,8 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
   // processes can read.
   const conn = libpqConnection(adminUrl);
   const psql = spawn('psql', ['--no-psqlrc', '--quiet', '--set', 'ON_ERROR_STOP=1', ...conn.args], {
-    env: { ...process.env, ...conn.env, PGAPPNAME: 'fdv-restore' },
+    // libpq's own settings and the connection: nothing else of the worker's (F7).
+    env: childEnv({ ...conn.env, PGAPPNAME: 'fdv-restore' }, LIBPQ),
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -1236,6 +1238,8 @@ const ACTOR_GUARDED = [
   // (0069, S4).
   'mail_in',
   'mail_in_address',
+  // A mail dealt with but left in place, the vault's alone (0069, F10).
+  'mail_in_done',
   // What a document removed for good leaves behind: who could see it, and
   // the files still to be deleted (0045).
   'document_tombstone',

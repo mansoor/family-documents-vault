@@ -274,7 +274,7 @@ export class WatchFolderService {
     return withPrincipal(this.db, p, async (trx) => {
       const rows = await trx
         .selectFrom('watch_notice')
-        .select(['id', 'source', 'file_name', 'reason', 'left_in_place', 'created_at'])
+        .select(['id', 'source', 'file_name', 'reason', 'left_in_place', 'skipped', 'created_at'])
         .where('member_id', '=', p.memberId)
         .orderBy('created_at', 'desc')
         .orderBy('id')
@@ -290,7 +290,13 @@ export class WatchFolderService {
             reason,
             left_in_place: false,
             title: mailNoticeTitle(reason),
-            words: mailNoticeWords(reason, r.file_name, mailbox?.after ?? 'move'),
+            words: mailNoticeWords(
+              reason,
+              r.file_name,
+              mailbox?.after ?? 'move',
+              undefined,
+              r.skipped,
+            ),
             at: r.created_at.toISOString(),
           };
         }

@@ -1,115 +1,165 @@
 import { describe, expect, it } from 'vitest';
-import { aligned, authVerdict, parseAuthResults, withoutComments } from './mail-auth.js';
+import { authVerdict, parseAuthResults } from './mail-auth.js';
+import { filingOf } from './mailbox.js';
 
 /**
- * Whether the mailbox's provider vouched for a sender (S4): only the
- * topmost Authentication-Results of the provider set (FDV_MAIL_IN_AUTHSERV_ID)
- * is read; one of any other id — which anybody can write into their mail —
- * never is; and it passes on DMARC for the From's domain, or DKIM signed by
- * that domain or one above it.
+ * Whether the mailbox's provider vouched for a sender (S4, and the review's
+ * F2): only the first Authentication-Results of all is read, and it must be
+ * the provider's (FDV_MAIL_IN_AUTHSERV_ID); it is read strictly, so a
+ * sender's own words quoted into it are never taken for a result; a single
+ * DMARC result decides, for the From's own domain; without one, only a
+ * DKIM signature of exactly that domain.
  */
 
+const ID = 'mx.google.com';
 const line = (v: string) => ({
   key: 'authentication-results',
   line: `Authentication-Results: ${v}`,
 });
 const other = (k: string, v: string) => ({ key: k, line: `${k}: ${v}` });
+const verdict = (v: string, from = 'example.com') => authVerdict([line(v)], ID, from);
 
-describe('Authentication-Results, as the vault reads them (S4)', () => {
-  it('reads an id and its results, comments and quotes and all', () => {
-    expect(withoutComments('a (b (c) d) e "f (g)"')).toBe('a   e "f (g)"');
-    expect(
-      parseAuthResults(
-        ' mx.google.com (the provider);\r\n dkim=pass header.i=@example.com header.s=s1 header.b="ab;cd";\r\n spf=pass (google.com: domain of x@example.com) smtp.mailfrom=x@example.com;\r\n dmarc=pass (p=NONE) header.from=example.com',
-      ),
-    ).toEqual({
+/** What Gmail writes, as it writes it. */
+const GMAIL = `${ID};\r\n       dkim=pass header.i=@example.com header.s=20230601 header.b="dGh/pm+Q";\r\n       arc=pass (i=1 spf=pass spfdomain=example.com dkim=pass dkdomain=example.com dmarc=pass fromdomain=example.com);\r\n       spf=pass (google.com: domain of ann@example.com designates 209.85.220.41 as permitted sender) smtp.mailfrom=ann@example.com;\r\n       dmarc=pass (p=NONE sp=QUARANTINE dis=NONE) header.from=example.com`;
+
+describe('Authentication-Results, as the vault reads them (S4, F2)', () => {
+  it('reads what a provider writes: its id, each result, comments and quoted values', () => {
+    expect(parseAuthResults(GMAIL)).toEqual({
       authservId: 'mx.google.com',
       results: [
         {
           method: 'dkim',
           result: 'pass',
-          props: { 'header.i': '@example.com', 'header.s': 's1', 'header.b': 'ab;cd' },
+          props: { 'header.i': '@example.com', 'header.s': '20230601', 'header.b': 'dGh/pm+Q' },
         },
-        { method: 'spf', result: 'pass', props: { 'smtp.mailfrom': 'x@example.com' } },
+        { method: 'arc', result: 'pass', props: {} },
+        { method: 'spf', result: 'pass', props: { 'smtp.mailfrom': 'ann@example.com' } },
         { method: 'dmarc', result: 'pass', props: { 'header.from': 'example.com' } },
       ],
     });
-    // A value with no authserv-id (as some providers write it) is no word.
-    expect(
-      parseAuthResults(' spf=pass smtp.mailfrom=example.com; dkim=pass header.d=example.com'),
-    ).toBeNull();
+    expect(verdict(GMAIL)).toBe('pass');
+    expect(parseAuthResults(' example.net 1; none')).toEqual({
+      authservId: 'example.net',
+      results: [],
+    });
   });
 
-  it('passes on dmarc=pass for the From’s domain, or dkim=pass signed by it or a domain above it', () => {
-    const id = 'mx.example.net';
-    expect(
-      authVerdict([line(`${id}; dmarc=pass header.from=example.com`)], id, 'example.com'),
-    ).toBe('pass');
-    expect(authVerdict([line(`${id}; dmarc=pass`)], id, 'example.com')).toBe('pass');
-    // DMARC for another domain is not this one's.
-    expect(authVerdict([line(`${id}; dmarc=pass header.from=evil.test`)], id, 'example.com')).toBe(
-      'fail',
-    );
-    expect(authVerdict([line(`${id}; dkim=pass header.d=example.com`)], id, 'example.com')).toBe(
-      'pass',
-    );
-    expect(
-      authVerdict([line(`${id}; dkim=pass header.d=example.com`)], id, 'mail.example.com'),
-    ).toBe('pass');
-    expect(authVerdict([line(`${id}; dkim=pass header.i=@example.com`)], id, 'example.com')).toBe(
-      'pass',
-    );
-    // A signature of another domain, of one below it, or of a bare label, vouches for nothing here.
-    expect(authVerdict([line(`${id}; dkim=pass header.d=evil.test`)], id, 'example.com')).toBe(
-      'fail',
-    );
-    expect(
-      authVerdict([line(`${id}; dkim=pass header.d=mail.example.com`)], id, 'example.com'),
-    ).toBe('fail');
-    expect(authVerdict([line(`${id}; dkim=pass header.d=com`)], id, 'example.com')).toBe('fail');
-    // SPF alone, a failing DKIM, nothing at all: not vouched for.
-    expect(
-      authVerdict([line(`${id}; spf=pass smtp.mailfrom=example.com`)], id, 'example.com'),
-    ).toBe('fail');
-    expect(
-      authVerdict([line(`${id}; dkim=fail header.d=example.com; dmarc=fail`)], id, 'example.com'),
-    ).toBe('fail');
-    expect(authVerdict([], id, 'example.com')).toBe('fail');
-    expect(aligned('Example.COM.', 'example.com')).toBe(true);
+  it('reads nothing of a header out of the grammar: a stray ), an open quote or comment, a word out of place', () => {
+    for (const bad of [
+      `${ID}; dmarc=pass header.from=example.com)`,
+      `${ID}; dmarc=pass (unclosed header.from=example.com`,
+      `${ID}; spf=pass smtp.mailfrom="open; dmarc=pass header.from=example.com`,
+      `${ID}; dmarc=pass reason=ok header.from=example.com`,
+      `${ID}; dmarc=pass x-bits=2048 header.from=example.com`,
+      `${ID}; dmarc=pass reason.x=1 header.from=example.com`,
+      `${ID}; dmarc=pass header.from=example.com header.from=evil.test`,
+      `${ID}; dmarc pass header.from=example.com`,
+    ]) {
+      expect(parseAuthResults(bad), bad).toBeNull();
+      expect(verdict(bad), bad).toBe('fail');
+    }
   });
 
-  it('reads only the topmost header of the provider set: a forged one from another id, or below its own, counts for nothing', () => {
-    const id = 'mx.google.com';
-    // Forged by the sender with another provider's id: never read.
+  it('the quoted mailfrom injection: a sender’s own words quoted in by the provider are never a result', () => {
+    // A local part the sender chose, quoted: one value, not a dmarc result.
+    const quotedIn = `${ID}; spf=pass smtp.mailfrom="x;dmarc=pass header.from=example.com"@evil.test; dmarc=fail header.from=evil.test`;
+    expect(parseAuthResults(quotedIn)?.results.map((r) => r.method)).toEqual(['spf', 'dmarc']);
+    expect(authVerdict([line(quotedIn)], ID, 'evil.test')).toBe('fail');
+    expect(verdict(quotedIn)).toBe('fail');
+    // The same words with the quote placed mid-word, as a careless provider might copy them.
+    const midWord = `${ID}; spf=pass smtp.mailfrom=x"; dmarc=pass header.from=example.com"@evil.test`;
+    expect(parseAuthResults(midWord)).toBeNull();
+    expect(verdict(midWord)).toBe('fail');
+    // Inside a comment, a quote is a comment's character: the comment still ends where it ends.
+    const inComment = `${ID}; spf=pass (domain of "x(" designates) smtp.mailfrom=x@evil.test`;
+    expect(parseAuthResults(inComment)).toBeNull();
+  });
+
+  it('DMARC decides: one result, pass, header.from required and the From’s domain', () => {
+    expect(verdict(`${ID}; dmarc=pass header.from=example.com`)).toBe('pass');
+    // A missing header.from vouches for nothing.
+    expect(verdict(`${ID}; dmarc=pass`)).toBe('fail');
+    expect(verdict(`${ID}; dmarc=pass header.from=evil.test`)).toBe('fail');
+    // Two DMARC results: neither is believed.
+    expect(
+      verdict(`${ID}; dmarc=pass header.from=example.com; dmarc=fail header.from=example.com`),
+    ).toBe('fail');
+    // A DMARC fail is not saved by a DKIM pass.
+    expect(
+      verdict(`${ID}; dkim=pass header.d=example.com; dmarc=fail header.from=example.com`),
+    ).toBe('fail');
+  });
+
+  it('without DMARC, only a DKIM signature of exactly the From’s domain: never d=co.uk, nor a parent', () => {
+    expect(verdict(`${ID}; dkim=pass header.d=example.com`)).toBe('pass');
+    expect(verdict(`${ID}; dkim=pass header.d=Example.COM.`)).toBe('pass');
+    expect(verdict(`${ID}; dkim=pass header.d=example.com`, 'mail.example.com')).toBe('fail');
+    expect(verdict(`${ID}; dkim=pass header.d=co.uk`, 'bank.co.uk')).toBe('fail');
+    expect(verdict(`${ID}; dkim=pass header.d=mail.example.com`)).toBe('fail');
+    expect(verdict(`${ID}; dkim=pass header.i=@example.com`)).toBe('fail');
+    expect(verdict(`${ID}; spf=pass smtp.mailfrom=example.com`)).toBe('fail');
+    expect(verdict(`${ID}; dkim=fail header.d=example.com`)).toBe('fail');
+  });
+
+  it('only the first Authentication-Results of all is read, and it must be the provider’s', () => {
+    const pass = `${ID}; dmarc=pass header.from=example.com`;
+    // An id-less header on top: nothing passes, whatever is below.
     expect(
       authVerdict(
         [
-          line('mx.forger.test; dmarc=pass header.from=example.com'),
-          other('from', 'a@example.com'),
+          line('spf=pass smtp.mailfrom=example.com; dmarc=pass header.from=example.com'),
+          line(pass),
         ],
-        id,
+        ID,
         'example.com',
       ),
     ).toBe('fail');
-    // The provider's own says fail; a forged pass with its id sits below it, as the sender wrote it.
+    // Another provider's on top — a forged one — the same.
+    expect(
+      authVerdict(
+        [line('mx.forger.test; dmarc=pass header.from=example.com'), line(pass)],
+        ID,
+        'example.com',
+      ),
+    ).toBe('fail');
+    // The provider's own on top says fail; a forged pass below it is never read.
     expect(
       authVerdict(
         [
           other('received', 'from mx'),
-          line(`${id}; dkim=none; dmarc=fail header.from=example.com`),
+          line(`${ID}; dmarc=fail header.from=example.com`),
           other('from', 'a@example.com'),
-          line(`${id}; dkim=pass header.d=example.com; dmarc=pass header.from=example.com`),
+          line(pass),
         ],
-        id,
+        ID,
         'example.com',
       ),
     ).toBe('fail');
-    // The id is compared whole, in any case: a look-alike is another id.
-    expect(authVerdict([line('MX.Google.com; dmarc=pass')], id, 'example.com')).toBe('pass');
-    expect(authVerdict([line('mx.google.com.evil.test; dmarc=pass')], id, 'example.com')).toBe(
-      'fail',
-    );
-    // No id set: nothing passes.
-    expect(authVerdict([line(`${id}; dmarc=pass`)], '', 'example.com')).toBe('fail');
+    // The id compared whole, in any case.
+    expect(
+      authVerdict([line('MX.Google.com; dmarc=pass header.from=example.com')], ID, 'example.com'),
+    ).toBe('pass');
+    expect(
+      authVerdict(
+        [line('mx.google.com.evil.test; dmarc=pass header.from=example.com')],
+        ID,
+        'example.com',
+      ),
+    ).toBe('fail');
+    expect(authVerdict([line(pass)], '', 'example.com')).toBe('fail');
+    expect(authVerdict([], ID, 'example.com')).toBe('fail');
+  });
+});
+
+describe('what the vault asks of a mail server, by its capabilities (F10)', () => {
+  it('moves one mail only with MOVE and UIDPLUS, deletes one only with UIDPLUS: never COPY and EXPUNGE', () => {
+    const caps = (...c: string[]) => new Map(c.map((k) => [k, true]));
+    expect(filingOf(caps('IMAP4rev1', 'MOVE', 'UIDPLUS'))).toEqual({
+      canMove: true,
+      canDelete: true,
+    });
+    expect(filingOf(caps('IMAP4rev1', 'MOVE'))).toEqual({ canMove: false, canDelete: false });
+    expect(filingOf(caps('IMAP4rev1', 'UIDPLUS'))).toEqual({ canMove: false, canDelete: true });
+    expect(filingOf(caps('IMAP4rev1'))).toEqual({ canMove: false, canDelete: false });
   });
 });

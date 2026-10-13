@@ -792,6 +792,8 @@ const RULES: Record<string, Rule> = {
   'PUT /api/v1/mail-in': { who: 'owners', body: () => ({ enabled: false }) },
   'GET /api/v1/mail-in/me': { who: 'family' },
   'POST /api/v1/mail-in/me/code': { who: 'family', body: () => ({}) },
+  'POST /api/v1/mail-in/me/email-code': { who: 'family', body: () => ({}) },
+  'POST /api/v1/mail-in/me/confirm': { who: 'family', body: () => ({ code: 'ABCD-EFGH' }) },
 };
 
 /** Whether a role is among those a rule is for. */
@@ -1271,7 +1273,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
           member_id: ahmed.member_id,
           source: 'email',
           file_name: 'ahmed-mail-541.pdf',
-          reason: 'too_large',
+          reason: 'message_too_large',
           file_key: randomUUID(),
         })
         .execute(),

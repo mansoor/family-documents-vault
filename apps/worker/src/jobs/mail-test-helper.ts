@@ -131,6 +131,20 @@ export class FakeMailbox implements MailboxConnector {
   refuseFiling = 0;
   /** Folders made. */
   readonly made: string[] = [];
+  /** What the server can do: MOVE, UIDPLUS (F10). */
+  caps = { move: true, uidplus: true };
+  /** UIDs marked read. */
+  readonly seen: number[] = [];
+  /** Moves and deletes asked for, whatever came of them. */
+  readonly filings: Array<{ uid: number; how: 'move' | 'remove' }> = [];
+
+  /** Whole mails the server hands over in place of what was delivered: a header and a body that disagree. */
+  private readonly whole = new Map<number, Buffer>();
+
+  /** The whole mail of `uid`, as the server will hand it over: not what its header said. */
+  wholeAs(uid: number, raw: string): void {
+    this.whole.set(uid, Buffer.from(raw));
+  }
 
   /** A mail delivered to the folder; its UID. */
   deliver(raw: string | Buffer, opts: { folder?: string; size?: number } = {}): number {
@@ -165,6 +179,12 @@ export class FakeMailbox implements MailboxConnector {
     };
     return {
       uidValidity: this.uidValidity,
+      canMove: this.caps.move && this.caps.uidplus,
+      canDelete: this.caps.uidplus,
+      markSeen: async (uid) => {
+        this.seen.push(uid);
+        return find(uid) !== undefined;
+      },
       list: async (): Promise<MailboxEntry[]> =>
         box()
           .map((m) => ({ uid: m.uid, size: m.size }))
@@ -175,7 +195,8 @@ export class FakeMailbox implements MailboxConnector {
       },
       source: async (uid, maxBytes) => {
         this.sources.push(uid);
-        return find(uid)?.raw.subarray(0, maxBytes) ?? null;
+        const m = find(uid);
+        return m ? (this.whole.get(uid) ?? m.raw).subarray(0, maxBytes) : null;
       },
       ensureFolder: async (name) => {
         if (!this.folders.has(name)) {
@@ -184,6 +205,7 @@ export class FakeMailbox implements MailboxConnector {
         }
       },
       move: async (uid, to) => {
+        this.filings.push({ uid, how: 'move' });
         if (this.refuseFiling > 0) {
           this.refuseFiling -= 1;
           return false;
@@ -194,6 +216,7 @@ export class FakeMailbox implements MailboxConnector {
         return true;
       },
       remove: async (uid) => {
+        this.filings.push({ uid, how: 'remove' });
         if (this.refuseFiling > 0) {
           this.refuseFiling -= 1;
           return false;

@@ -4451,6 +4451,33 @@ expires_at }`, `cache-control: no-store`, lasting a day; the last one
     `mailInErrorWords`, `mailInCountWords`, `mailNoticeTitle` and
     `mailNoticeWords`. `@fdv/client`: `mailIn`, `setMailIn`, `myMailIn`,
     `newMailInCode`.
+    The review's findings on the above. **Changed:** an address is
+    confirmed only in a way that proves it: `POST /api/v1/mail-in/me/code`
+    only while the mailbox checks senders (`409 mail_in_no_sender_check`
+    otherwise), answering `{ code, expires_at, mailto }` with a mailto link
+    whose subject is the code; or, with the operator's mail server, **Added:**
+    `POST /api/v1/mail-in/me/email-code` emails a code to the caller's own
+    sign-in address (`{ sent_to, expires_at }`, `sent_to` masked; `409
+mail_in_no_operator_mail` without one) and `POST /api/v1/mail-in/me/confirm`
+    takes `{ code }`: `204` confirmed, `422 code_wrong` (one of five tries
+    spent), `410 code_gone` (expired, used, or tried five times). Both make
+    a code at most once a minute and five times a day (`429 rate_limited`,
+    with Retry-After). A viewer or a guest is `403` on all of them.
+    **Added:** `GET /mail-in/me` answers `code_kind` (`send` or `enter`),
+    `confirm: { send_from, emailed }` — how the caller may confirm — with
+    `confirm_words` when neither, and `held: { unverified, unconfirmed,
+last_at } | null`, the caller's own mail left in the mailbox. `GET
+/mail-in` answers `confirm`, `confirm_warning`, and in `server`,
+    `filing` (`move`, `delete` or `leave`: as the server allows) and
+    `filing_words`. **Changed:** an email's notice `reason` is one of
+    `message_too_large`, `unreadable`, `nothing_to_add` or `skipped` (no
+    longer `too_large`: attachments not added are one `skipped` notice, with
+    how many and why in its words), and **`file_name` is nullable** on every
+    notice — an email's notice names no file; a client that showed it must
+    allow for none. `@fdv/shared`: `MailInEmailed`, `MailInConfirmWays`,
+    `MailInFiling`, `MailSkippedCounts`, `MAIL_IN_EMAILED_CODE_PATTERN`,
+    `MAIL_IN_NO_CONFIRM`, `skippedWords`, `mailFilingWords`. `@fdv/client`:
+    `emailMailInCode`, `confirmMailIn`.
 
 ## Deprecations in effect
 

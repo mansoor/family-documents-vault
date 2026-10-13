@@ -20,9 +20,9 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { Worker, type WorkerOptions } from 'node:worker_threads';
-import type { MailHead, MailJob, MailPart, MailReply } from '../mail-parse-worker.js';
+import type { MailHead, MailJob, MailPart, MailReply, MailSkipped } from '../mail-parse-worker.js';
 
-export type { MailHead };
+export type { MailHead, MailSkipped };
 
 /** An attachment, as the worker has it: its bytes a Buffer. */
 export type ReadPart = Omit<MailPart, 'content'> & { content: Buffer | null };
@@ -56,7 +56,7 @@ function defaultEntry(): URL {
 
 /** What a mail came to. */
 export type MailAnswer =
-  | { state: 'done'; head: MailHead; parts: ReadPart[] }
+  | { state: 'done'; head: MailHead; parts: ReadPart[]; skipped: MailSkipped }
   /** The parser could not read it: broken MIME. */
   | { state: 'failed' }
   /** Longer than its deadline: the thread was ended. */
@@ -212,7 +212,12 @@ export class MailThread implements MailReader {
             ? Buffer.from(p.content.buffer, p.content.byteOffset, p.content.byteLength)
             : null,
         }));
-        running.done({ state: 'done', head: m.head, parts });
+        running.done({
+          state: 'done',
+          head: m.head,
+          parts,
+          skipped: m.skipped ?? { tooMany: 0, tooDeep: 0 },
+        });
       });
       const gone = () => {
         clearTimeout(slow);

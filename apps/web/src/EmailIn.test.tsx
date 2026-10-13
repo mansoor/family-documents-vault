@@ -115,6 +115,27 @@ describe('email in’s page (S4)', () => {
     await expectAccessible();
   });
 
+  it('says when nobody can confirm an address, and when the server makes mail be filed otherwise (F1, F10)', async () => {
+    at('/settings/email-in', {
+      mailIn: mailbox({
+        confirm: { send_from: false, emailed: false },
+        confirm_warning:
+          'Nobody can confirm their address yet: an owner needs to set FDV_MAIL_IN_AUTHSERV_ID or FDV_SMTP_URL.',
+        server: {
+          ...mailbox().server,
+          filing: 'leave',
+          filing_words:
+            'Your mail server can’t move or delete one email safely, so the vault leaves each email it has added where it is, marked as read.',
+        },
+      }),
+    });
+    expect(await screen.findByText(/Nobody can confirm their address yet/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/leaves each email it has added where it is, marked as read/),
+    ).toBeInTheDocument();
+    await expectAccessible();
+  });
+
   it('says what last went wrong, and what was left in the mailbox', async () => {
     at('/settings/email-in', {
       mailIn: mailbox({
@@ -148,16 +169,84 @@ describe('email in’s page (S4)', () => {
 });
 
 describe('where to email documents, on Add and Home (S4)', () => {
-  it('tells whoever adds documents where to send from where, and gives a code to confirm it', async () => {
+  it('without the sender check, confirms by a code emailed TO the address, typed in (F1)', async () => {
     const state = at('/add', { mailIn: mailbox({ enabled: true }) }, 'teen');
     const line = await screen.findByRole('region', { name: 'Email documents in' });
     expect(line).toHaveTextContent('Email documents to home@vault.test from you@example.test.');
-    expect(line).toHaveTextContent(/First, confirm your address/);
+    expect(line).toHaveTextContent(/First, confirm that the address is yours/);
+    // Sending a code from the address proves nothing without the check: not offered.
+    expect(screen.queryByRole('button', { name: /Get a code to send/ })).toBeNull();
     await expectAccessible();
-    fireEvent.click(screen.getByRole('button', { name: 'Get a code' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Email me a code' }));
+    const field = await screen.findByLabelText('Code from the email sent to y**@example.test');
+    await waitFor(() => expect(field).toHaveFocus());
+    await expectAccessible();
+    fireEvent.change(field, { target: { value: 'nope-nope' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(
+      await screen.findByText('That isn’t the code. Check it, and try again.'),
+    ).toBeInTheDocument();
+    fireEvent.change(field, { target: { value: 'k7qm-3xrp' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(
+      await screen.findByText(
+        'Your address is confirmed: emails from it now come into your Inbox.',
+      ),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole('region', { name: 'Email documents in' })).toHaveTextContent(
+        /Attachments go into your Inbox/,
+      ),
+    );
+    expect(state.calls.filter((c) => c.url === '/api/v1/mail-in/me/email-code')).toHaveLength(1);
+  });
+
+  it('with the sender check, gives a code to send FROM the address, and a link to write that email (F1)', async () => {
+    at(
+      '/add',
+      {
+        mailIn: mailbox({
+          enabled: true,
+          sender_warning: null,
+          server: { ...mailbox().server, sender_check: true },
+        }),
+      },
+      'adult',
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Get a code to send' }));
     const code = await screen.findByText('FDV-ABCD-EFGH-JKMN');
     await waitFor(() => expect(code.closest('p')).toHaveFocus());
-    expect(state.calls.filter((c) => c.url === '/api/v1/mail-in/me/code')).toHaveLength(1);
+    expect(screen.getByRole('link', { name: 'Write that email' })).toHaveAttribute(
+      'href',
+      'mailto:home%40vault.test?subject=FDV-ABCD-EFGH-JKMN',
+    );
+    await expectAccessible();
+  });
+
+  it('with no way to confirm, says why; and tells its person what of theirs waits in the mailbox (F1)', async () => {
+    at(
+      '/add',
+      {
+        mailIn: mailbox({ enabled: true }),
+        mailInMine: {
+          confirm: { send_from: false, emailed: false },
+          confirm_words:
+            'Nobody can confirm their address yet: an owner needs to set FDV_MAIL_IN_AUTHSERV_ID.',
+          held: { unverified: 1, unconfirmed: 2, last_at: '2026-10-12T08:00:00Z' },
+        },
+      },
+      'adult',
+    );
+    const line = await screen.findByRole('region', { name: 'Email documents in' });
+    expect(line).toHaveTextContent('Nobody can confirm their address yet');
+    expect(line).toHaveTextContent(
+      '2 emails from your address are waiting in the mailbox until your address is confirmed.',
+    );
+    expect(line).toHaveTextContent(
+      '1 email from your address didn’t pass the mailbox’s sender check',
+    );
+    expect(line).toHaveTextContent('The newest is from 12 Oct.');
+    expect(screen.queryByRole('button', { name: /code/ })).toBeNull();
     await expectAccessible();
   });
 

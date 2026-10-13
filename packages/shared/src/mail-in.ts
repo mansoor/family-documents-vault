@@ -72,8 +72,37 @@ export type MailInError =
   | 'no_storage'
   | 'unreadable';
 
-/** Why an email, or an attachment of one, could not be added: in its person's Needs attention. */
-export type MailNoticeReason = 'message_too_large' | 'too_large' | 'unreadable' | 'nothing_to_add';
+/**
+ * Why an email, or some of it, could not be added: in its person's Needs
+ * attention. `skipped`: attachments not added, counted by why (F5).
+ */
+export type MailNoticeReason = 'message_too_large' | 'unreadable' | 'nothing_to_add' | 'skipped';
+
+/** Attachments of one email not added, by why (F5). */
+export interface MailSkippedCounts {
+  /** Not a kind the vault keeps. */
+  unsupported?: number;
+  /** Larger than the vault takes in one file. */
+  too_large?: number;
+  /** Past the most taken of one email (100). */
+  too_many?: number;
+  /** In a forwarded email inside a forwarded email, too deep. */
+  too_deep?: number;
+}
+
+/**
+ * How mail is filed, as the server allows (F10): moved to Filed, deleted,
+ * or left in place and marked read (a server without MOVE and UIDPLUS).
+ */
+export type MailInFiling = 'move' | 'delete' | 'leave';
+
+/** How somebody may confirm their address (F1): from it, while senders are checked; or a code emailed to it. */
+export interface MailInConfirmWays {
+  /** Send a code FROM the address: only while FDV_MAIL_IN_AUTHSERV_ID is set. */
+  send_from: boolean;
+  /** Type in a code the vault emails TO the address: only with the operator's mail server (FDV_SMTP_URL). */
+  emailed: boolean;
+}
 
 /** GET /mail-in: an owner's view of email in. */
 export interface MailInView {
@@ -88,6 +117,10 @@ export interface MailInView {
     after: MailInAfter;
     /** FDV_MAIL_IN_AUTHSERV_ID is set: senders are checked by the mailbox's own word. */
     sender_check: boolean;
+    /** How mail is filed, as the server allows (F10); null until the worker has signed in. */
+    filing: MailInFiling | null;
+    /** While the server makes the vault file otherwise than it was told: why, and what happens. */
+    filing_words: string | null;
     poll_seconds: number | null;
     checked_at: string | null;
     /** What it means, in a sentence. */
@@ -105,6 +138,9 @@ export interface MailInView {
   counts: string[];
   /** While senders are not checked: what that means, and what to set. */
   sender_warning: string | null;
+  /** How the family may confirm their addresses; while there is no way, why (F1). */
+  confirm: MailInConfirmWays;
+  confirm_warning: string | null;
 }
 
 /** PUT /mail-in: on or off. */
@@ -122,17 +158,45 @@ export interface MailInMine {
   email: string;
   /** That address is confirmed: mail from it reaches the caller's Inbox. */
   confirmed: boolean;
-  /** A code made and not yet used: until when it lasts. */
+  /** A code made and not yet used: until when it lasts, and which kind. */
   code_expires_at: string | null;
+  code_kind: 'send' | 'enter' | null;
   /** Senders are not checked by the mailbox (each item says "sender not verified"). */
   sender_check: boolean;
+  /** How the caller may confirm their address (F1); neither, and `confirm_words` says why. */
+  confirm: MailInConfirmWays;
+  confirm_words: string | null;
+  /**
+   * Mail from the caller's address the vault left in the mailbox, as of its
+   * last look: failing the sender check, or waiting for the address to be
+   * confirmed — counts, and the newest one's date. Null for none.
+   */
+  held: { unverified: number; unconfirmed: number; last_at: string | null } | null;
 }
 
-/** POST /mail-in/me/code: a new code, shown once. */
+/**
+ * POST /mail-in/me/code: a new code to send FROM the address, shown once,
+ * and a mailto link with it in the subject (only while senders are checked).
+ */
 export interface MailInCode {
   code: string;
   expires_at: string;
+  mailto: string;
 }
+
+/** POST /mail-in/me/email-code: a code emailed TO the caller's address, to type in. */
+export interface MailInEmailed {
+  /** The address, masked. */
+  sent_to: string;
+  expires_at: string;
+}
+
+/** A code emailed to an address: eight letters and digits, in two fours. */
+export const MAIL_IN_EMAILED_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{4}-?[A-HJ-NP-Z2-9]{4}$/i;
+
+/** Said when nobody can confirm an address yet (F1). */
+export const MAIL_IN_NO_CONFIRM =
+  'Nobody can confirm their address yet: an owner needs to set FDV_MAIL_IN_AUTHSERV_ID (so the vault can tell an email really came from an address) or FDV_SMTP_URL (so the vault can email a code to it). The README’s “Emailing documents to the vault” says how.';
 
 /** The day an email is added, on the household's calendar, and its batch's name: "Email, 12 Oct". */
 export function emailDay(timezone: string, now: Date = new Date()): { day: string; name: string } {
@@ -234,8 +298,8 @@ export function mailNoticeTitle(reason: MailNoticeReason): string {
   switch (reason) {
     case 'nothing_to_add':
       return 'An email had nothing we could add';
-    case 'too_large':
-      return 'An attachment couldn’t be added';
+    case 'skipped':
+      return 'Some attachments couldn’t be added';
     case 'message_too_large':
     case 'unreadable':
       return 'An email couldn’t be added';
@@ -248,19 +312,70 @@ export function mailNoticeWords(
   fileName: string | null,
   after: MailInAfter,
   maxBytes?: number,
+  skipped?: MailSkippedCounts | null,
 ): string {
+  // Some providers keep what is "deleted" (Gmail archives it): said as taken out.
   const gone =
     after === 'delete'
-      ? 'The email was deleted from the household mailbox.'
+      ? 'The email was taken out of the household mailbox’s inbox.'
       : `The email was moved to the household mailbox’s ${MAIL_IN_FILED_FOLDER} folder.`;
+  // An email with anything not added is never deleted (F5): kept, filed or left where it was.
+  const kept = 'The email is kept in the household mailbox, so nothing is lost.';
   switch (reason) {
     case 'message_too_large':
-      return `An email you sent was larger than the vault takes (${sizeWords(MAIL_IN_MAX_MESSAGE_BYTES)}), so nothing in it was added. ${gone} Send the documents in smaller emails.`;
-    case 'too_large':
-      return `${fileName ?? 'An attachment'} is larger than the most the vault takes in one file${maxBytes ? ` (${sizeWords(maxBytes)})` : ''}, so it wasn’t added. Scan it in parts, or at a lower resolution.`;
+      return `An email you sent was larger than the vault takes (${sizeWords(MAIL_IN_MAX_MESSAGE_BYTES)}), so nothing in it was added. ${kept} Send the documents in smaller emails.`;
+    case 'skipped':
+      return `Some attachments of an email you sent weren’t added: ${skippedWords(skipped ?? {}, maxBytes)}. ${kept}`;
     case 'unreadable':
-      return `An email you sent couldn’t be read, so nothing in it was added. ${gone}`;
+      return `An email you sent couldn’t be read, so nothing in it was added. ${kept}`;
     case 'nothing_to_add':
       return `No PDF, photo, Word or Excel file was attached to an email you sent (pictures in a signature are left out). ${gone}`;
   }
+}
+
+/** Attachments not added, in words: "2 aren’t a kind the vault keeps, 1 is too large (100 MB)". */
+export function skippedWords(c: MailSkippedCounts, maxBytes?: number): string {
+  const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
+  const out: string[] = [];
+  if (c.unsupported)
+    out.push(
+      n(
+        c.unsupported,
+        'isn’t a kind of file the vault keeps',
+        'aren’t a kind of file the vault keeps',
+      ),
+    );
+  if (c.too_large) {
+    out.push(
+      `${n(c.too_large, 'is', 'are')} larger than the most the vault takes in one file${maxBytes ? ` (${sizeWords(maxBytes)})` : ''}`,
+    );
+  }
+  if (c.too_many)
+    out.push(
+      n(
+        c.too_many,
+        'was past the 100 the vault takes from one email',
+        'were past the 100 the vault takes from one email',
+      ),
+    );
+  if (c.too_deep)
+    out.push(
+      n(
+        c.too_deep,
+        'was in an email forwarded too many times over',
+        'were in emails forwarded too many times over',
+      ),
+    );
+  return out.length ? out.join('; ') : 'none';
+}
+
+/** Why the vault files mail otherwise than it was told (F10), to an owner; null when it files as told. */
+export function mailFilingWords(filing: MailInFiling | null, after: MailInAfter): string | null {
+  if (filing === 'leave') {
+    return 'Your mail server can’t move or delete one email safely (it lacks MOVE or UIDPLUS), so the vault leaves each email it has added where it is, marked as read. Clear them out now and then.';
+  }
+  if (filing === 'move' && after === 'delete') {
+    return 'FDV_MAIL_IN_AFTER is delete, but your mail server can’t delete one email safely (it lacks UIDPLUS), so emails are moved to the Filed folder instead.';
+  }
+  return null;
 }

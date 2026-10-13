@@ -36,4 +36,13 @@ export function registerMailIn(app: FastifyInstance, mail: MailInService): void 
     void reply.header('cache-control', 'no-store');
     return made;
   });
+
+  // A code emailed to the caller's own address, and that code typed in (F1).
+  app.post('/api/v1/mail-in/me/email-code', auth, async (req) => mail.emailCode(principal(req)));
+
+  app.post('/api/v1/mail-in/me/confirm', auth, async (req, reply) => {
+    const body = parse(z.object({ code: z.string().min(1).max(20) }).strict(), req.body);
+    await mail.confirm(principal(req), body.code);
+    return reply.status(204).send();
+  });
 }

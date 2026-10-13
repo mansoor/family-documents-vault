@@ -118,6 +118,7 @@ describe.skipIf(!testAdminUrl())('email in, in the worker (S4)', () => {
     await admin.query('delete from mail_in where household_id = $1', [hh]);
     await admin.query('delete from mail_in_address where household_id = $1', [hh]);
     await admin.query('delete from mail_in_server');
+    await admin.query('delete from mail_in_done where household_id = $1', [hh]);
     await admin.query(
       'update account_household set suspended_at = null, suspended_until = null, suspend_reason = null where household_id = $1',
       [hh],
@@ -330,48 +331,101 @@ describe.skipIf(!testAdminUrl())('email in, in the worker (S4)', () => {
     expect(box.heads.filter((u) => u === stranger)).toHaveLength(1);
   }, 60_000);
 
-  it('a member confirms their address with the code from their Add page, and their mail comes in from then on', async () => {
+  it('a code sent FROM an address confirms it only on the provider’s word (F1); without the check it confirms nothing, and its person is told what waits', async () => {
     await turnOn();
     const code = 'FDV-ABCD-EFGH-JKMN';
-    await admin.query(
-      `insert into mail_in_address (household_id, member_id, code_hash, code_expires_at)
-       values ($1, $2, $3, now() + interval '1 day')`,
-      [hh, people.adult.member, createHash('sha256').update(code).digest()],
-    );
+    const domain = from('adult').split('@')[1] as string;
+    const issue = (
+      who: keyof typeof people,
+      c: string,
+      kind = 'send',
+      until = "interval '1 day'",
+    ) =>
+      admin.query(
+        `insert into mail_in_address (household_id, member_id, code_hash, code_kind, code_expires_at)
+         values ($1, $2, $3, $4, now() + ${until})
+         on conflict (household_id, member_id) do update
+           set code_hash = $3, code_kind = $4, code_expires_at = now() + ${until}`,
+        [hh, people[who].member, createHash('sha256').update(c).digest(), kind],
+      );
+    const address = async (who: keyof typeof people) =>
+      (
+        await admin.query<{
+          email: string | null;
+          confirmed_at: Date | null;
+          code_hash: Buffer | null;
+          held_unconfirmed: number;
+          held_unverified: number;
+          held_last_at: Date | null;
+        }>(
+          `select email, confirmed_at, code_hash, held_unconfirmed, held_unverified, held_last_at
+             from mail_in_address where member_id = $1`,
+          [people[who].member],
+        )
+      ).rows[0];
+    await issue('adult', code);
     const box = new FakeMailbox();
-    // Somebody else's code, from their address: not theirs to use.
-    const wrong = box.deliver(doc('other', 'other-doc', { subject: code }));
+    // Senders not checked: the code, from their address, proves nothing.
+    const unchecked = box.deliver(mail({ from: from('adult'), subject: code, parts: [] }));
+    const r1 = runner(box);
+    expect((await r1.tick()).outcomes).toEqual([{ uid: unchecked, kind: 'unknown' }]);
+    expect((await address('adult'))?.confirmed_at).toBeNull();
+    // Told to them, by count and date, as waiting for the address to be confirmed.
+    expect(await address('adult')).toMatchObject({
+      held_unconfirmed: 1,
+      held_unverified: 0,
+      held_last_at: new Date('2026-10-13T09:00:00Z'),
+    });
+    await r1.stop();
+    box.inbox().splice(0);
+
+    // Senders checked: from the address, vouched for — confirmed, and filed.
+    const r = runner(box, { authservId: AUTHSERV });
+    // Somebody else's code, from their own address: not theirs to use.
+    const wrong = box.deliver(doc('other', 'other-doc', { subject: code, above: [PASS(domain)] }));
+    // The right code, the provider not vouching: not confirmed.
+    const forged = box.deliver(mail({ from: from('adult'), subject: code, parts: [] }));
     const theirs = box.deliver(
-      mail({ from: from('adult'), subject: `Re: ${code.toLowerCase()}`, parts: [] }),
+      mail({
+        from: from('adult'),
+        subject: `Re: ${code.toLowerCase()}`,
+        above: [PASS(domain)],
+        parts: [],
+      }),
     );
-    const r = runner(box);
     const round = await r.tick();
-    expect(round.outcomes.find((o) => o.uid === wrong)?.kind).toBe('unknown');
-    // Confirmed, and filed: nothing to add is not said of a confirmation.
-    expect(round.outcomes.find((o) => o.uid === theirs)?.kind).toBe('already');
-    const row = (
-      await admin.query<{ email: string; confirmed_at: Date | null; code_hash: Buffer | null }>(
-        'select email, confirmed_at, code_hash from mail_in_address where member_id = $1',
-        [people.adult.member],
-      )
-    ).rows[0];
+    expect(round.outcomes.map((o) => [o.uid, o.kind])).toEqual([
+      [wrong, 'unknown'],
+      [forged, 'unverified'],
+      // Confirmed, and filed: nothing to add is not said of a confirmation.
+      [theirs, 'already'],
+    ]);
+    const row = await address('adult');
     expect(row?.email).toBe(from('adult'));
     expect(row?.confirmed_at).not.toBeNull();
     expect(row?.code_hash).toBeNull();
+    // What waits of theirs now: the one that failed the check.
+    expect(row).toMatchObject({ held_unconfirmed: 0, held_unverified: 1 });
     expect(await notices()).toEqual([]);
-    box.deliver(doc('adult', 'after'));
+    box.deliver(doc('adult', 'after', { above: [PASS(domain)] }));
     await r.tick();
     expect((await items()).map((i) => i.original_name)).toEqual(['after.pdf']);
-    // A code past its day confirms nothing.
-    await admin.query(
-      `insert into mail_in_address (household_id, member_id, code_hash, code_expires_at)
-       values ($1, $2, $3, now() + interval '1 minute')`,
-      [hh, people.teen.member, createHash('sha256').update('FDV-AAAA-BBBB-CCCC').digest()],
-    );
+    // A code emailed TO an address (typed in) is never one to send from it.
+    await issue('teen', 'FDV-TEEN-CQDE-ABCD', 'enter');
+    // And a code past its day confirms nothing.
+    await issue('other', 'FDV-AAAA-BBBB-CCCC', 'send', "interval '1 minute'");
     clock += 2 * 60_000;
-    box.deliver(mail({ from: from('teen'), subject: 'FDV-AAAA-BBBB-CCCC' }));
+    const tdomain = from('teen').split('@')[1] as string;
+    box.deliver(
+      mail({ from: from('teen'), subject: 'FDV-TEEN-CQDE-ABCD', above: [PASS(tdomain)] }),
+    );
+    box.deliver(
+      mail({ from: from('other'), subject: 'FDV-AAAA-BBBB-CCCC', above: [PASS(domain)] }),
+    );
     const late = await r.tick();
-    expect(late.outcomes.at(-1)?.kind).toBe('unknown');
+    expect(late.outcomes.slice(-2).map((o) => o.kind)).toEqual(['unknown', 'unknown']);
+    expect((await address('teen'))?.confirmed_at).toBeNull();
+    expect((await address('other'))?.confirmed_at).toBeNull();
   }, 60_000);
 
   it('with an authserv-id set, only the provider’s own word lets mail in: a forged header of another id is ignored', async () => {
@@ -411,7 +465,7 @@ describe.skipIf(!testAdminUrl())('email in, in the worker (S4)', () => {
     ).toBe(true);
   }, 60_000);
 
-  it('a mail too large is never fetched; an attachment too large, or none to add, or a broken mail is told — and each filed', async () => {
+  it('a mail too large is never fetched; attachments not added are told, how many and why; nothing to add, or a broken mail, told — and each filed', async () => {
     await turnOn();
     await confirm('adult', 'other');
     const box = new FakeMailbox();
@@ -425,6 +479,7 @@ describe.skipIf(!testAdminUrl())('email in, in the worker (S4)', () => {
             type: 'application/pdf',
             content: Buffer.concat([pdf('big'), Buffer.alloc(70 * 1024, 32)]),
           },
+          { name: 'notes.txt', type: 'text/plain', content: Buffer.from('just words') },
           { name: 'small.pdf', type: 'application/pdf', content: pdf('small') },
         ],
       }),
@@ -432,10 +487,7 @@ describe.skipIf(!testAdminUrl())('email in, in the worker (S4)', () => {
     const nothing = box.deliver(
       mail({
         from: from('other'),
-        parts: [
-          { name: 'notes.txt', type: 'text/plain', content: Buffer.from('just words') },
-          { name: 'sig.png', type: 'image/png', content: png(2000), inline: true },
-        ],
+        parts: [{ name: 'sig.png', type: 'image/png', content: png(2000), inline: true }],
       }),
     );
     const broken = box.deliver(
@@ -451,34 +503,206 @@ describe.skipIf(!testAdminUrl())('email in, in the worker (S4)', () => {
     ]);
     expect(box.sources).not.toContain(huge);
     expect((await items()).map((i) => i.original_name)).toEqual(['small.pdf']);
-    expect(await notices()).toEqual([
+    const said = (
+      await admin.query<{ member_id: string; reason: string; skipped: unknown }>(
+        'select member_id, reason, skipped from watch_notice where household_id = $1 order by created_at',
+        [hh],
+      )
+    ).rows;
+    expect(said).toEqual([
+      { member_id: people.adult.member, reason: 'message_too_large', skipped: null },
+      // One note for the mail: what was not added, how many and why (F5).
       {
         member_id: people.adult.member,
-        reason: 'message_too_large',
-        file_name: null,
-        source: 'email',
+        reason: 'skipped',
+        skipped: { too_large: 1, unsupported: 1 },
       },
-      {
-        member_id: people.adult.member,
-        reason: 'too_large',
-        file_name: 'scan.pdf',
-        source: 'email',
-      },
-      {
-        member_id: people.other.member,
-        reason: 'nothing_to_add',
-        file_name: null,
-        source: 'email',
-      },
-      {
-        member_id: people.other.member,
-        reason: 'nothing_to_add',
-        file_name: null,
-        source: 'email',
-      },
+      // A signature's picture alone is nothing to add, and no attachment skipped.
+      { member_id: people.other.member, reason: 'nothing_to_add', skipped: null },
+      { member_id: people.other.member, reason: 'nothing_to_add', skipped: null },
     ]);
     expect(box.inbox()).toHaveLength(0);
     expect(box.inbox('Filed')).toHaveLength(4);
+  }, 60_000);
+
+  it('told to delete, deletes only a mail all of which was added: one with anything skipped, too large or unreadable is moved to Filed instead (F5)', async () => {
+    await turnOn();
+    await confirm('adult');
+    const box = new FakeMailbox();
+    const whole = box.deliver(doc('adult', 'whole'));
+    const partly = box.deliver(
+      mail({
+        from: from('adult'),
+        parts: [
+          { name: 'a.pdf', content: pdf('a') },
+          {
+            name: 'archive.zip',
+            type: 'application/zip',
+            content: Buffer.from('PK\u0003\u0004 not ours'),
+          },
+        ],
+      }),
+    );
+    const huge = box.deliver(doc('adult', 'huge'), { size: MAIL_IN_MAX_MESSAGE_BYTES + 1 });
+    await runner(box, { after: 'delete' }).tick();
+    expect(box.filings).toEqual([
+      { uid: whole, how: 'remove' },
+      { uid: partly, how: 'move' },
+      { uid: huge, how: 'move' },
+    ]);
+    expect(box.inbox()).toHaveLength(0);
+    expect(box.inbox('Filed')).toHaveLength(2);
+    expect((await items()).map((i) => i.original_name).sort()).toEqual(['a.pdf', 'whole.pdf']);
+  }, 60_000);
+
+  it('a mail that took too long to read, or broke the reader, is kept — moved, never deleted (F5)', async () => {
+    await turnOn();
+    await confirm('adult');
+    const box = new FakeMailbox();
+    const uid = box.deliver(doc('adult', 'slow'));
+    const slow = {
+      head: (b: Buffer, id: string | null) => reader.head(b, id),
+      message: async () => ({ state: 'too_slow' as const }),
+      close: async () => undefined,
+    };
+    await runner(box, { after: 'delete' }, { reader: slow }).tick();
+    expect(box.filings).toEqual([{ uid, how: 'move' }]);
+    expect((await notices()).map((n) => n.reason)).toEqual(['unreadable']);
+  }, 60_000);
+
+  it('a whole mail that does not say what its header said is nobody’s: untouched, counted, never fetched again (F3)', async () => {
+    await turnOn();
+    await confirm('adult');
+    const box = new FakeMailbox();
+    const uid = box.deliver(doc('adult', 'header-says'));
+    // The whole mail, as the server hands it, From somebody else.
+    box.wholeAs(uid, doc('other', 'body-says'));
+    const r = runner(box);
+    expect((await r.tick()).outcomes).toEqual([{ uid, kind: 'unknown' }]);
+    expect((await setting())?.unknown_senders).toBe(1);
+    expect(await r.tick()).toMatchObject({ outcomes: [{ uid, kind: 'unknown' }] });
+    expect(box.sources).toEqual([uid]);
+    expect(box.heads).toEqual([uid]);
+    expect(await items()).toEqual([]);
+    expect(box.inbox()).toHaveLength(1);
+  }, 60_000);
+
+  it('an address with anything but ASCII in it is nobody’s, however it folds (F6)', async () => {
+    await turnOn();
+    // A sign-in whose address folds to an ASCII one (the Kelvin sign is a k in lower case).
+    const member = (
+      await admin.query<{ id: string }>(
+        "insert into member (household_id, display_name) values ($1, 'kelvin') returning id",
+        [hh],
+      )
+    ).rows[0]?.id as string;
+    const folded = `marKus-${stamp}@family.test`;
+    const account = (
+      await admin.query<{ id: string }>('insert into account (email) values ($1) returning id', [
+        folded,
+      ])
+    ).rows[0]?.id as string;
+    await admin.query(
+      "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'adult')",
+      [account, hh, member],
+    );
+    await withSystem(db, hh, (trx) => keys.mintMemberKey(trx, hh, member, null));
+    await admin.query(
+      `insert into mail_in_address (household_id, member_id, email, confirmed_at) values ($1, $2, $3, now())`,
+      [hh, member, `markus-${stamp}@family.test`],
+    );
+    const box = new FakeMailbox();
+    const ascii = box.deliver(
+      mail({ from: `markus-${stamp}@family.test`, parts: [{ name: 'k.pdf', content: pdf('k') }] }),
+    );
+    const accented = box.deliver(
+      mail({
+        from: `=?utf-8?Q?x?= <anné@family.test>`,
+        parts: [{ name: 'e.pdf', content: pdf('e') }],
+      }),
+    );
+    try {
+      const round = await runner(box).tick();
+      expect(round.outcomes.map((o) => [o.uid, o.kind])).toEqual([
+        [ascii, 'unknown'],
+        [accented, 'unknown'],
+      ]);
+      expect(box.sources).toEqual([]);
+      expect(await items()).toEqual([]);
+    } finally {
+      await admin.query('delete from mail_in_address where member_id = $1', [member]);
+      await admin.query('delete from account_household where member_id = $1', [member]);
+      await admin.query('delete from account where id = $1', [account]);
+      await admin.query('delete from member where id = $1', [member]);
+    }
+  }, 60_000);
+
+  it('an item its person removed counts as taken: never added again while its mail waits to be filed (F8)', async () => {
+    await turnOn();
+    await confirm('adult');
+    const box = new FakeMailbox();
+    box.deliver(doc('adult', 'removed-later'));
+    box.refuseFiling = 1;
+    const r = runner(box);
+    expect((await r.tick()).outcomes[0]).toMatchObject({ kind: 'later' });
+    // Removed from the Inbox by its person, as the app does it.
+    await admin.query(
+      `update incoming_file set state = 'rejected', original_name = null, sha256 = null,
+              decided_at = now() where household_id = $1`,
+      [hh],
+    );
+    expect((await r.tick()).outcomes[0]?.kind).toBe('already');
+    expect((await items()).map((i) => i.state)).toEqual(['rejected']);
+    expect(box.inbox()).toHaveLength(0);
+  }, 60_000);
+
+  it('a server without MOVE and UIDPLUS: nothing moved or deleted, mail marked read and never fetched again; owners told (F10)', async () => {
+    await turnOn();
+    await confirm('adult');
+    const box = new FakeMailbox();
+    box.caps = { move: false, uidplus: false };
+    const uid = box.deliver(doc('adult', 'left'));
+    const r = runner(box, { after: 'delete' });
+    const first = await r.tick();
+    expect(first).toMatchObject({ filing: 'leave', outcomes: [{ uid, kind: 'added' }] });
+    expect(box.filings).toEqual([]);
+    expect(box.seen).toEqual([uid]);
+    expect(box.inbox()).toHaveLength(1);
+    expect((await admin.query('select filing from mail_in_server')).rows[0]).toEqual({
+      filing: 'leave',
+    });
+    // A new worker, nothing remembered: still never fetched again.
+    await r.stop();
+    const r2 = runner(box, { after: 'delete' });
+    const again = await r2.tick();
+    expect(again.outcomes).toEqual([{ uid, kind: 'done' }]);
+    expect(box.sources).toEqual([uid]);
+    expect(await items()).toHaveLength(1);
+    await r2.stop();
+    // MOVE but no UIDPLUS: no delete, no move (an EXPUNGE would take others too).
+    box.caps = { move: true, uidplus: false };
+    const r3 = runner(box, { after: 'delete' });
+    expect((await r3.tick()).filing).toBe('leave');
+    expect(box.filings).toEqual([]);
+    await r3.stop();
+    // UIDPLUS and MOVE, told to delete: deleted.
+    box.caps = { move: true, uidplus: true };
+    expect((await runner(box, { after: 'delete' }).tick()).filing).toBe('delete');
+  }, 60_000);
+
+  it('a worker without the mailbox never says so over one that has it, within its last two polls (F9)', async () => {
+    const box = new FakeMailbox();
+    await runner(box).tick();
+    await runner(null).tick();
+    expect((await admin.query('select configured from mail_in_server')).rows[0]).toEqual({
+      configured: true,
+    });
+    // Its word older than two polls: then the one without it is heard.
+    await admin.query("update mail_in_server set checked_at = now() - interval '11 minutes'");
+    await runner(null).tick();
+    expect((await admin.query('select configured from mail_in_server')).rows[0]).toEqual({
+      configured: false,
+    });
   }, 60_000);
 
   it('takes attachments from nested multiparts and forwarded mails; a picture in the body under 20 KB is left out, a larger one kept', async () => {
@@ -565,18 +789,6 @@ describe.skipIf(!testAdminUrl())('email in, in the worker (S4)', () => {
     expect((await setting())?.last_error).toBeNull();
   }, 60_000);
 
-  it('deletes instead of filing when told to', async () => {
-    await turnOn();
-    await confirm('adult');
-    const box = new FakeMailbox();
-    box.deliver(doc('adult', 'gone'));
-    await runner(box, { after: 'delete' }).tick();
-    expect(box.inbox()).toHaveLength(0);
-    expect(box.inbox('Filed')).toHaveLength(0);
-    expect(box.made).toEqual([]);
-    expect(await items()).toHaveLength(1);
-  }, 60_000);
-
   it('a full day: what fits is added, and the mail waits — unfiled — until the rest is in, the next day', async () => {
     await turnOn();
     await confirm('adult');
@@ -598,7 +810,7 @@ describe.skipIf(!testAdminUrl())('email in, in the worker (S4)', () => {
         where household_id = $1`,
       [hh, BATCH_MAX_FILES],
     );
-    box.deliver(
+    const fits = box.deliver(
       mail({
         from: from('adult'),
         messageId: '<full@family.test>',
@@ -608,22 +820,38 @@ describe.skipIf(!testAdminUrl())('email in, in the worker (S4)', () => {
         ],
       }),
     );
-    const full = await r.tick();
-    expect(full.outcomes.at(-1)).toMatchObject({ kind: 'waiting', why: 'day_full' });
-    expect(box.inbox()).toHaveLength(1);
-    expect((await setting())?.waiting).toBe(1);
+    const later = box.deliver(doc('adult', 'later'));
+    await confirm('other');
+    const others = box.deliver(doc('other', 'others'));
+    // Two mails a round: the one that waits for a full day is not one of them (F4).
+    const r2 = runner(box, { roundMax: 2 });
+    await r.stop();
+    const full = await r2.tick();
+    expect(full.outcomes.map((o) => [o.uid, o.kind])).toEqual([
+      [fits, 'waiting'],
+      [later, 'waiting'],
+      [others, 'added'],
+    ]);
+    // The day full once one was in: the rest of theirs never fetched this round.
+    expect(box.sources.filter((u) => u === later)).toEqual([]);
+    expect(box.inbox().map((m) => m.uid)).toEqual([fits, later]);
+    expect((await setting())?.waiting).toBe(2);
     const named = async () =>
       (
         await admin.query<{ original_name: string }>(
-          "select original_name from incoming_file where household_id = $1 and original_name in ('fits.pdf', 'waits.pdf') order by original_name",
+          "select original_name from incoming_file where household_id = $1 and original_name in ('fits.pdf', 'waits.pdf', 'later.pdf') order by original_name",
           [hh],
         )
       ).rows.map((x) => x.original_name);
     expect(await named()).toEqual(['fits.pdf']);
+    // Looked at again the same day: known full before anything is fetched.
+    const fetched = box.sources.length;
+    expect((await r2.tick()).outcomes.filter((o) => o.kind === 'waiting')).toHaveLength(2);
+    expect(box.sources).toHaveLength(fetched);
     // The next day: the rest, in that day's batch; the first never twice; then filed.
     clock += 864e5;
-    expect((await r.tick()).outcomes.at(-1)?.kind).toBe('added');
-    expect(await named()).toEqual(['fits.pdf', 'waits.pdf']);
+    expect((await r2.tick()).outcomes.map((o) => o.kind)).toEqual(['added', 'added']);
+    expect(await named()).toEqual(['fits.pdf', 'later.pdf', 'waits.pdf']);
     expect(box.inbox()).toHaveLength(0);
   }, 60_000);
 

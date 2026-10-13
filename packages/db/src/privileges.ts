@@ -212,7 +212,13 @@ begin
   -- Whether the household has email in on (0069): asked for whoever may
   -- add documents, who is told where to send.
   if to_regprocedure('public.mail_in_on()') is not null then
+    revoke execute on function public.mail_in_on() from public;
     grant execute on function public.mail_in_on() to fdv_app;
+    -- And a code to confirm an address, made and checked by the vault (F1).
+    revoke execute on function public.mail_in_issue_code(bytea, text) from public;
+    grant execute on function public.mail_in_issue_code(bytea, text) to fdv_app;
+    revoke execute on function public.mail_in_check_code(bytea) from public;
+    grant execute on function public.mail_in_check_code(bytea) to fdv_app;
   end if;
 end $$;
 

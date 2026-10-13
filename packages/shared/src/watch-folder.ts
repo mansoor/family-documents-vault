@@ -136,7 +136,7 @@ export interface WatchNoticeView {
   /** The file's name; an email's note may name none (the mail as a whole). */
   file_name: string | null;
   /** An email's are MailNoticeReason's (S4). */
-  reason: WatchRejectReason | 'message_too_large' | 'nothing_to_add';
+  reason: WatchRejectReason | 'message_too_large' | 'nothing_to_add' | 'skipped';
   /** It could not be moved to rejected/ either: it is still where the scanner saved it. */
   left_in_place: boolean;
   /** "A scanned file couldn't be added" */

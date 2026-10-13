@@ -11,7 +11,9 @@ import {
   WATCH_NOTICE_DAYS,
   type MailInAfter,
   type MailInError,
+  type MailInFiling,
   type MailNoticeReason,
+  type MailSkippedCounts,
   type Role,
 } from '@fdv/shared';
 import type pg from 'pg';
@@ -19,6 +21,7 @@ import {
   AdvisoryLock,
   arriveItem,
   clearStaleItem,
+  dayIsFull,
   discardItem,
   keyedUuid,
   placeItem,
@@ -55,7 +58,8 @@ import { watchKindOf } from './watch-folder.js';
  *    the folder's UIDVALIDITY stands.
  *  - Mail From the sign-in address of somebody of the family who may add
  *    documents (an owner, an adult, a teen; never a viewer, never a guest),
- *    confirmed by a code they sent from it (mail_in_address), is theirs.
+ *    confirmed (mail_in_address) by a code sent from it while the provider
+ *    vouches for senders, or one the vault emailed to it, is theirs.
  *    With FDV_MAIL_IN_AUTHSERV_ID set, only once the provider vouched for
  *    the sender (mail-auth.ts); without it, on the From alone, each item
  *    "sender not verified". Anything else is left as it is — unread, not
@@ -154,6 +158,8 @@ export type MailOutcome =
   | { kind: 'unknown' }
   | { kind: 'unverified' }
   | { kind: 'waiting'; why: string }
+  /** Dealt with before, and left in place (a server that cannot move or delete one mail). */
+  | { kind: 'done' }
   /** Not now: tried next round. */
   | { kind: 'later'; why: string };
 
@@ -163,6 +169,8 @@ export interface MailRound {
   error?: MailInError | null;
   /** Backing off: the mailbox was not tried. */
   waited?: boolean;
+  /** How mail is filed this round, as the server allows (F10). */
+  filing?: MailInFiling;
   outcomes: Array<{ uid: number } & MailOutcome>;
 }
 
@@ -175,13 +183,32 @@ interface Sender {
   suspended: boolean;
   confirmed: boolean;
   codeHash: Buffer | null;
+  codeKind: 'send' | 'enter' | null;
   codeExpires: Date | null;
 }
 
-/** A header read, kept for its UID while the folder's UIDVALIDITY stands. */
-type Known = { head: MailHead } | { unreadable: true };
+/**
+ * A header read, kept for its UID while the folder's UIDVALIDITY stands:
+ * what it says; or not readable; or a whole mail that did not say what its
+ * header said (F3) — nobody's, never fetched again.
+ */
+type Known = { head: MailHead } | { unreadable: true } | { mismatch: true };
+
+/** What a mail left in the mailbox from somebody of the family is, for them (F1). */
+interface Held {
+  unverified: number;
+  unconfirmed: number;
+  last: number | null;
+}
 
 const sha256 = (b: Buffer) => createHash('sha256').update(b).digest();
+
+/** An address the vault compares: printable ASCII alone (F6), lower case. */
+const asciiAddress = (s: string): string | null => {
+  // ASCII before anything is folded: a Kelvin sign lower-cased is a k.
+  const a = s.trim();
+  return /^[\x21-\x3f\x41-\x7e]+@[\x21-\x3f\x41-\x7e]+$/.test(a) ? a.toLowerCase() : null;
+};
 
 /** FDV_MAIL_IN_* as the worker has them. */
 export interface MailInConfig {
@@ -191,6 +218,16 @@ export interface MailInConfig {
   FDV_MAIL_IN_PASSWORD?: string | undefined;
   FDV_MAIL_IN_PASSWORD_FILE?: string | undefined;
   FDV_MAIL_IN_ADDRESS?: string | undefined;
+}
+
+/**
+ * The mailbox's password taken out of the environment once the settings
+ * are read (F7): what the worker starts — a tool, a thread — is never
+ * handed it. FDV_MAIL_IN_PASSWORD_FILE (a Docker secret) is better still:
+ * the password is never in the environment at all.
+ */
+export function takeMailInPassword(env: NodeJS.ProcessEnv): void {
+  delete env.FDV_MAIL_IN_PASSWORD;
 }
 
 /**
@@ -228,6 +265,12 @@ export async function mailboxFromConfig(
   };
 }
 
+/** Per round: the members whose mail waits (a full day, F4), and what was held of whose. */
+interface RoundState {
+  fullDay: Set<string>;
+  held: Map<string, Held>;
+}
+
 export class MailInRunner {
   private readonly now: () => number;
   private readonly lock: AdvisoryLock;
@@ -241,6 +284,10 @@ export class MailInRunner {
   /** While the mailbox cannot be had: how many times in a row, and not before when. */
   private failures = 0;
   private notBefore = 0;
+  /** How mail is filed in this session, as the server allows (F10). */
+  private filing: MailInFiling = 'move';
+  /** The Filed folder is there, this session: made the first time a mail is moved. */
+  private filedReady = false;
 
   constructor(
     private readonly deps: MailInDeps,
@@ -297,14 +344,16 @@ export class MailInRunner {
     if (this.stopped) return out;
     const o = this.opts;
     if (!o.connector) {
-      // Not set up here: said, unless a worker that has it said otherwise just now.
+      // Not set up here: said — but never over a worker that has it set up
+      // and said so within its last two polls (F9).
       await this.deps.admin.query(
-        `insert into mail_in_server (singleton, configured, address, folder, after, sender_check, poll_seconds, checked_at)
-         values (true, false, null, null, 'move', false, $1, now())
+        `insert into mail_in_server (singleton, configured, address, folder, after, sender_check, filing, poll_seconds, checked_at)
+         values (true, false, null, null, 'move', false, null, $1, now())
          on conflict (singleton) do update
            set configured = false, address = null, folder = null, after = 'move',
-               sender_check = false, poll_seconds = $1, checked_at = now()
-         where not mail_in_server.configured or mail_in_server.checked_at < now() - interval '1 minute'`,
+               sender_check = false, filing = null, poll_seconds = $1, checked_at = now()
+         where not mail_in_server.configured
+            or mail_in_server.checked_at < now() - make_interval(secs => mail_in_server.poll_seconds * 2)`,
         [Math.round(o.pollMs / 1000)],
       );
       return out;
@@ -351,6 +400,13 @@ export class MailInRunner {
     }
     this.failures = 0;
     this.notBefore = 0;
+    // How mail is filed, as the server allows (F10): a delete only where one
+    // mail is expunged alone (UIDPLUS); a move only by MOVE (never COPY and
+    // EXPUNGE); otherwise left in place, marked read. Said to the owners.
+    this.filing =
+      o.after === 'delete' && session.canDelete ? 'delete' : session.canMove ? 'move' : 'leave';
+    out.filing = this.filing;
+    await this.deps.admin.query('update mail_in_server set filing = $1', [this.filing]);
     try {
       return await this.look(hh, session, out);
     } finally {
@@ -380,11 +436,19 @@ export class MailInRunner {
 
     const senders = await this.senders(hh);
     const counts = { unknown: 0, unverified: 0, waiting: 0 };
+    const state: RoundState = { fullDay: new Set(), held: new Map() };
+    const hold = (memberId: string, kind: 'unverified' | 'unconfirmed', head: MailHead) => {
+      const h = state.held.get(memberId) ?? { unverified: 0, unconfirmed: 0, last: null };
+      h[kind] += 1;
+      const at = head.date ? Date.parse(head.date) : this.now();
+      if (Number.isFinite(at) && (h.last === null || at > h.last)) h.last = at;
+      state.held.set(memberId, h);
+    };
     let heads = 0;
     let handled = 0;
     let added = 0;
     let error: MailInError | null = null;
-    let filedReady = false;
+    this.filedReady = false;
     for (const e of entries) {
       if (this.stopped) break;
       let known = this.known.get(e.uid);
@@ -401,11 +465,26 @@ export class MailInRunner {
       const who = this.whose(known, senders);
       if (who.kind === 'unknown' || who.kind === 'unverified') {
         counts[who.kind] += 1;
+        if (who.kind === 'unverified' && 'head' in known)
+          hold(who.memberId, 'unverified', known.head);
         out.outcomes.push({ uid: e.uid, kind: who.kind });
         continue;
       }
+      if (who.kind === 'unconfirmed') {
+        counts.unknown += 1;
+        hold(who.sender.memberId, 'unconfirmed', who.head);
+        out.outcomes.push({ uid: e.uid, kind: 'unknown' });
+        continue;
+      }
+      const head = who.head;
+      // Dealt with before, and left in place (F10): never fetched again.
+      if (this.filing === 'leave' && (await this.isDone(hh, this.mailOf(session, e.uid, head)))) {
+        out.outcomes.push({ uid: e.uid, kind: 'done' });
+        continue;
+      }
       if (who.kind === 'confirm') {
-        // Their address, confirmed by the code they sent from it.
+        // Their address, confirmed by the code they sent from it — which the
+        // provider vouched was them (only while senders are checked, F1).
         await withSystem(this.deps.db, hh, (trx) =>
           trx
             .updateTable('mail_in_address')
@@ -413,19 +492,26 @@ export class MailInRunner {
               email: who.sender.email,
               confirmed_at: new Date(),
               code_hash: null,
+              code_kind: null,
               code_expires_at: null,
+              code_attempts: 0,
               updated_at: new Date(),
             })
             .where('member_id', '=', who.sender.memberId)
             .where('code_hash', '=', who.code)
+            .where('code_kind', '=', 'send')
             .execute(),
         );
         who.sender.confirmed = true;
         this.deps.log('info', 'an address was confirmed for email in', { household: hh });
       }
-      if (who.sender.suspended) {
+      // Waiting, before anything is fetched (F4): their sign-in paused, or
+      // their day full — and then the rest of theirs this round too. None of
+      // it counts towards the mails handled a round.
+      const waits = await this.waits(hh, who.sender, state);
+      if (waits) {
         counts.waiting += 1;
-        out.outcomes.push({ uid: e.uid, kind: 'waiting', why: 'their sign-in is paused' });
+        out.outcomes.push({ uid: e.uid, kind: 'waiting', why: waits });
         continue;
       }
       if (handled >= (o.roundMax ?? MAIL_ROUND_MAX)) continue;
@@ -433,28 +519,24 @@ export class MailInRunner {
       // one that is not says nothing more either.
       if (!(await this.lock.still())) return out;
       handled += 1;
-      if (!filedReady && o.after === 'move') {
-        try {
-          await session.ensureFolder(MAIL_IN_FILED_FOLDER);
-          filedReady = true;
-        } catch (err) {
-          this.deps.log('warn', 'the Filed folder could not be made', { err: whyOf(err) });
-          error = 'not_filed';
-          break;
-        }
-      }
-      const head = (known as { head: MailHead }).head;
-      const r = await this.take(hh, session, e, head, who.sender, who.kind === 'confirm').catch(
-        (err: unknown): MailOutcome & { error?: MailInError } => ({
-          kind: 'later',
-          why: whyOf(err),
-        }),
-      );
+      const r = await this.take(
+        hh,
+        session,
+        e,
+        head,
+        who.sender,
+        who.kind === 'confirm',
+        state,
+      ).catch((err: unknown): MailOutcome & { error?: MailInError } => ({
+        kind: 'later',
+        why: whyOf(err),
+      }));
       const { error: problem, ...outcome } = r;
       if (problem) error = problem;
       out.outcomes.push({ uid: e.uid, ...outcome });
       if (outcome.kind === 'added') added += outcome.items.length;
       if (outcome.kind === 'waiting') counts.waiting += 1;
+      if (outcome.kind === 'unknown') counts.unknown += 1;
       if (outcome.kind === 'later') {
         this.deps.log('warn', 'an email is to be tried again', { why: outcome.why.slice(0, 200) });
       }
@@ -467,6 +549,7 @@ export class MailInRunner {
       added: added > 0,
       counts,
     });
+    await this.tellHeld(hh, state.held);
     if (added > 0) {
       await this.deps
         .sendBatchPreviews(hh)
@@ -476,6 +559,23 @@ export class MailInRunner {
       this.deps.log('info', 'emailed files added', { household: hh, added });
     }
     return out;
+  }
+
+  /**
+   * Why a member's mail waits now, before anything of it is fetched (F4):
+   * their sign-in paused, or their day full — or null. A full day is
+   * remembered for the rest of the round.
+   */
+  private async waits(hh: string, sender: Sender, state: RoundState): Promise<string | null> {
+    if (sender.suspended) return 'their sign-in is paused';
+    if (state.fullDay.has(sender.memberId)) return 'day_full';
+    const target = await whoseInbox(this.deps.db, hh, sender.memberId, this.now());
+    if ('pause' in target) return target.pause;
+    if (await dayIsFull(this.deps.db, target, 'email', this.now())) {
+      state.fullDay.add(sender.memberId);
+      return 'day_full';
+    }
+    return null;
   }
 
   /** What the worker says of a household's email in: read by Settings. */
@@ -516,7 +616,40 @@ export class MailInRunner {
     });
   }
 
-  /** Everybody of the household with a sign-in, by its address (lower case). */
+  /**
+   * What was left in the mailbox from each member's address, told to them
+   * alone (F1): failing the check, or waiting for the address to be
+   * confirmed — counts, and the newest one's date. Everybody else's, none.
+   */
+  private async tellHeld(hh: string, held: Map<string, Held>): Promise<void> {
+    await withSystem(this.deps.db, hh, async (trx) => {
+      const quiet = trx
+        .updateTable('mail_in_address')
+        .set({ held_unverified: 0, held_unconfirmed: 0, held_last_at: null })
+        .where((eb) => eb.or([eb('held_unverified', '>', 0), eb('held_unconfirmed', '>', 0)]));
+      await (
+        held.size > 0 ? quiet.where('member_id', 'not in', [...held.keys()]) : quiet
+      ).execute();
+      for (const [memberId, h] of held) {
+        const values = {
+          held_unverified: h.unverified,
+          held_unconfirmed: h.unconfirmed,
+          held_last_at: h.last === null ? null : new Date(h.last),
+        };
+        await trx
+          .insertInto('mail_in_address')
+          .values({ household_id: hh, member_id: memberId, ...values })
+          .onConflict((oc) => oc.columns(['household_id', 'member_id']).doUpdateSet(values))
+          .execute();
+      }
+    });
+  }
+
+  /**
+   * Everybody of the household with a sign-in, by its address: printable
+   * ASCII alone, lower case (F6). An address two people share (a look-alike
+   * after folding) is neither's: both are left out.
+   */
   private async senders(hh: string): Promise<Map<string, Sender>> {
     const rows = await withSystem(this.deps.db, hh, (trx) =>
       trx
@@ -541,6 +674,7 @@ export class MailInRunner {
           'ad.email as confirmed_email',
           'ad.confirmed_at',
           'ad.code_hash',
+          'ad.code_kind',
           'ad.code_expires_at',
         ])
         .where('a.household_id', '=', hh)
@@ -548,51 +682,71 @@ export class MailInRunner {
     );
     const now = this.now();
     const out = new Map<string, Sender>();
+    const twice = new Set<string>();
     for (const r of rows) {
-      const email = r.email.trim().toLowerCase();
+      const email = asciiAddress(r.email);
+      if (!email) continue;
+      if (out.has(email)) twice.add(email);
+      const confirmedAs =
+        typeof r.confirmed_email === 'string' ? asciiAddress(r.confirmed_email) : null;
       out.set(email, {
         memberId: r.member_id,
         role: r.role,
         kind: r.kind,
         email,
         suspended: r.disabled_at !== null || suspensionInEffect(r, now),
-        confirmed:
-          r.confirmed_at !== null &&
-          typeof r.confirmed_email === 'string' &&
-          r.confirmed_email.trim().toLowerCase() === email,
+        confirmed: r.confirmed_at !== null && confirmedAs === email,
         codeHash: r.code_hash,
+        codeKind: r.code_kind,
         codeExpires: r.code_expires_at,
       });
     }
+    for (const email of twice) out.delete(email);
     return out;
   }
 
   /**
    * Whose a mail is, from its header: theirs (confirmed), theirs by the
-   * code it carries (`confirm`), or left alone — from nobody of the family
-   * who may add documents, or an address not confirmed (`unknown`), or not
-   * vouched for by the provider while senders are checked (`unverified`).
+   * code it carries (`confirm`: only while the provider vouches for
+   * senders), or left alone — from nobody of the family who may add
+   * documents (`unknown`), from a family address not confirmed
+   * (`unconfirmed`), or not vouched for while senders are checked
+   * (`unverified`).
    */
   private whose(
     known: Known,
     senders: Map<string, Sender>,
   ):
     | { kind: 'unknown' }
-    | { kind: 'unverified' }
-    | { kind: 'theirs'; sender: Sender }
-    | { kind: 'confirm'; sender: Sender; code: Buffer } {
-    if ('unreadable' in known || !known.head.from) return { kind: 'unknown' };
-    const sender = senders.get(known.head.from);
+    | { kind: 'unverified'; memberId: string }
+    | { kind: 'unconfirmed'; sender: Sender; head: MailHead }
+    | { kind: 'theirs'; sender: Sender; head: MailHead }
+    | { kind: 'confirm'; sender: Sender; head: MailHead; code: Buffer } {
+    if (!('head' in known) || !known.head.from) return { kind: 'unknown' };
+    const head = known.head;
+    const from = asciiAddress(head.from as string);
+    const sender = from ? senders.get(from) : undefined;
     if (!sender || !mayFillFromScanner(sender.role, sender.kind)) return { kind: 'unknown' };
-    if (this.opts.authservId && known.head.auth !== 'pass') return { kind: 'unverified' };
-    if (sender.confirmed) return { kind: 'theirs', sender };
-    if (sender.codeHash && sender.codeExpires && sender.codeExpires.getTime() > this.now()) {
-      for (const c of known.head.codes) {
+    if (this.opts.authservId && head.auth !== 'pass') {
+      return { kind: 'unverified', memberId: sender.memberId };
+    }
+    if (sender.confirmed) return { kind: 'theirs', sender, head };
+    // A code sent FROM the address proves it only on the provider's word (F1).
+    if (
+      this.opts.authservId &&
+      sender.codeKind === 'send' &&
+      sender.codeHash &&
+      sender.codeExpires &&
+      sender.codeExpires.getTime() > this.now()
+    ) {
+      for (const c of head.codes) {
         const h = sha256(Buffer.from(c, 'utf8'));
-        if (h.equals(sender.codeHash)) return { kind: 'confirm', sender, code: sender.codeHash };
+        if (h.equals(sender.codeHash)) {
+          return { kind: 'confirm', sender, head, code: sender.codeHash };
+        }
       }
     }
-    return { kind: 'unknown' };
+    return { kind: 'unconfirmed', sender, head };
   }
 
   /** The notes' and items' keys for a mail: by its Message-ID where it has one, by its UID otherwise. */
@@ -600,13 +754,25 @@ export class MailInRunner {
     return head.messageId ? `mid\0${head.messageId}` : `uid\0${session.uidValidity}\0${uid}`;
   }
 
-  /** A note to its person, once a mail and reason (and attachment). */
+  /** A mail left in place has been dealt with (F10). */
+  private async isDone(hh: string, mail: string): Promise<boolean> {
+    const key = keyedUuid(this.deps.itemKey, ['done', hh, mail]);
+    const row = await withSystem(this.deps.db, hh, (trx) =>
+      trx
+        .selectFrom('mail_in_done')
+        .select('mail_key')
+        .where('mail_key', '=', key)
+        .executeTakeFirst(),
+    );
+    return row !== undefined;
+  }
+
+  /** A note to its person, once a mail and reason. */
   private async tell(
     t: { householdId: string; memberId: string },
     mail: string,
     reason: MailNoticeReason,
-    fileName: string | null,
-    part = -1,
+    skipped: MailSkippedCounts | null = null,
   ): Promise<void> {
     await withSystem(this.deps.db, t.householdId, (trx) =>
       trx
@@ -615,15 +781,15 @@ export class MailInRunner {
           household_id: t.householdId,
           member_id: t.memberId,
           source: 'email',
-          file_name: fileName ? [...fileName].slice(0, 255).join('') : null,
+          file_name: null,
           reason,
+          ...(skipped ? { skipped: skipped as Record<string, number> } : {}),
           file_key: keyedUuid(this.deps.itemKey, [
             'notice',
             t.householdId,
             t.memberId,
             mail,
             reason,
-            String(part),
           ]),
         })
         .onConflict((oc) => oc.columns(['household_id', 'member_id', 'file_key']).doNothing())
@@ -631,13 +797,43 @@ export class MailInRunner {
     );
   }
 
-  /** The mail moved to Filed, or deleted: only once all of it is in. */
-  private async file(session: MailboxSession, uid: number): Promise<boolean> {
+  /**
+   * The mail filed, once all of it is in: moved to Filed, or deleted — but a
+   * mail with anything not added (`keep`) is never deleted (F5): moved even
+   * in delete mode. Where the server can do neither safely (F10), it is
+   * left in place, marked read, and remembered as dealt with.
+   */
+  private async file(
+    hh: string,
+    session: MailboxSession,
+    uid: number,
+    mail: string,
+    keep: boolean,
+  ): Promise<boolean> {
     await this.opts.beforeFile?.(uid);
-    const done =
-      this.opts.after === 'delete'
-        ? await session.remove(uid)
-        : await session.move(uid, MAIL_IN_FILED_FOLDER);
+    let done: boolean;
+    if (this.filing === 'leave') {
+      await withSystem(this.deps.db, hh, (trx) =>
+        trx
+          .insertInto('mail_in_done')
+          .values({ household_id: hh, mail_key: keyedUuid(this.deps.itemKey, ['done', hh, mail]) })
+          .onConflict((oc) => oc.columns(['household_id', 'mail_key']).doNothing())
+          .execute(),
+      );
+      await session.markSeen(uid).catch(() => false);
+      done = true;
+    } else if (this.filing === 'delete' && !keep) {
+      done = await session.remove(uid);
+    } else {
+      if (!this.filedReady) {
+        await session.ensureFolder(MAIL_IN_FILED_FOLDER).catch((err: unknown) => {
+          this.deps.log('warn', 'the Filed folder could not be made', { err: whyOf(err) });
+          throw err;
+        });
+        this.filedReady = true;
+      }
+      done = await session.move(uid, MAIL_IN_FILED_FOLDER);
+    }
     if (done) this.known.delete(uid);
     return done;
   }
@@ -650,54 +846,66 @@ export class MailInRunner {
     head: MailHead,
     sender: Sender,
     confirming: boolean,
+    state: RoundState,
   ): Promise<MailOutcome & { error?: MailInError }> {
     const o = this.opts;
     const target = await whoseInbox(this.deps.db, hh, sender.memberId, this.now());
     if ('pause' in target) return { kind: 'waiting', why: target.pause };
     const mail = this.mailOf(session, e.uid, head);
-    const filed = async (outcome: MailOutcome): Promise<MailOutcome & { error?: MailInError }> => {
-      if (await this.file(session, e.uid).catch(() => false)) return outcome;
+    const filed = async (
+      outcome: MailOutcome,
+      keep: boolean,
+    ): Promise<MailOutcome & { error?: MailInError }> => {
+      if (await this.file(hh, session, e.uid, mail, keep).catch(() => false)) return outcome;
       return { kind: 'later', why: 'not filed', error: 'not_filed' };
     };
 
-    // Too large to fetch: told, and filed.
+    // Too large to fetch: told, and kept.
     if (e.size > MAIL_IN_MAX_MESSAGE_BYTES) {
-      await this.tell(target, mail, 'message_too_large', null);
-      return filed({ kind: 'told', reasons: ['message_too_large'] });
+      await this.tell(target, mail, 'message_too_large');
+      return filed({ kind: 'told', reasons: ['message_too_large'] }, true);
     }
     const source = await session.source(e.uid, MAIL_IN_MAX_MESSAGE_BYTES + 1);
     if (!source) return { kind: 'later', why: 'gone' };
     if (source.length > MAIL_IN_MAX_MESSAGE_BYTES) {
-      await this.tell(target, mail, 'message_too_large', null);
-      return filed({ kind: 'told', reasons: ['message_too_large'] });
+      await this.tell(target, mail, 'message_too_large');
+      return filed({ kind: 'told', reasons: ['message_too_large'] }, true);
     }
     const a = await this.deps.reader.message(source, o.authservId, this.deps.maxBytes);
     if (a.state === 'unavailable') return { kind: 'later', why: 'the mail thread is not there' };
     if (a.state !== 'done') {
-      await this.tell(target, mail, 'unreadable', null);
-      return filed({ kind: 'told', reasons: ['unreadable'] });
+      // Broken, too slow or fatal to read: told, and kept — never deleted (F5).
+      await this.tell(target, mail, 'unreadable');
+      return filed({ kind: 'told', reasons: ['unreadable'] }, true);
     }
-    // The whole mail must say what its header said: the same sender, vouched for as before.
+    // The whole mail must say what its header said: the same sender,
+    // vouched for as before. One that does not is nobody's, for good (F3).
     if (a.head.from !== head.from || (o.authservId && a.head.auth !== 'pass')) {
-      this.known.delete(e.uid);
-      return { kind: 'later', why: 'the mail is not as its header said' };
+      this.known.set(e.uid, { mismatch: true });
+      return { kind: 'unknown' };
     }
 
-    const reasons: MailNoticeReason[] = [];
+    const skipped: MailSkippedCounts = {};
+    const skip = (k: keyof MailSkippedCounts, n = 1) => {
+      if (n > 0) skipped[k] = (skipped[k] ?? 0) + n;
+    };
+    skip('too_many', a.skipped.tooMany);
+    skip('too_deep', a.skipped.tooDeep);
     const usable: Array<{ index: number; name: string; mime: string; content: Buffer }> = [];
     for (const [index, p] of a.parts.entries()) {
       if (p.tooLarge) {
-        const name = p.name ? dropFileName(p.name) : null;
-        await this.tell(target, mail, 'too_large', name || null, index);
-        reasons.push('too_large');
+        skip('too_large');
         continue;
       }
       if (!p.content || p.content.length === 0) continue;
       const content = p.content;
       const raw = p.name ? dropFileName(p.name).slice(0, 255) : '';
       const kind = watchKindOf(content.subarray(0, SNIFF_BYTES), raw);
-      if (!kind) continue;
-      // A picture in the body, small: a signature, a logo.
+      if (!kind) {
+        skip('unsupported');
+        continue;
+      }
+      // A picture in the body, small: a signature, a logo — left out on purpose.
       if (
         p.inline &&
         kind.mime.startsWith('image/') &&
@@ -708,12 +916,18 @@ export class MailInRunner {
       const name = raw || `Email attachment ${index + 1}.${kind.ext}`;
       usable.push({ index, name, mime: kind.mime, content });
     }
+    const keep = Object.keys(skipped).length > 0;
+    const reasons: MailNoticeReason[] = [];
+    if (keep) {
+      await this.tell(target, mail, 'skipped', skipped);
+      reasons.push('skipped');
+    }
     if (usable.length === 0) {
-      if (reasons.length === 0 && !confirming) {
-        await this.tell(target, mail, 'nothing_to_add', null);
+      if (!keep && !confirming) {
+        await this.tell(target, mail, 'nothing_to_add');
         reasons.push('nothing_to_add');
       }
-      return filed(reasons.length ? { kind: 'told', reasons } : { kind: 'already' });
+      return filed(reasons.length ? { kind: 'told', reasons } : { kind: 'already' }, keep);
     }
 
     const items: string[] = [];
@@ -723,11 +937,13 @@ export class MailInRunner {
       const r = await this.add(target, session, e.uid, head, u);
       if (r === 'already') continue;
       if ('id' in r) items.push(r.id);
-      else if ('waiting' in r) return { kind: 'waiting', why: r.waiting };
-      else if ('error' in r) return { kind: 'later', why: r.error, error: r.error };
+      else if ('waiting' in r) {
+        if (r.waiting === 'day_full') state.fullDay.add(sender.memberId);
+        return { kind: 'waiting', why: r.waiting };
+      } else if ('error' in r) return { kind: 'later', why: r.error, error: r.error };
       else return { kind: 'later', why: r.later };
     }
-    return filed(items.length > 0 ? { kind: 'added', items } : { kind: 'already' });
+    return filed(items.length > 0 ? { kind: 'added', items } : { kind: 'already' }, keep);
   }
 
   /** One attachment: added, found added already, or why not now. */
@@ -759,14 +975,15 @@ export class MailInRunner {
           sha.toString('hex'),
         ])
       : null;
-    // Taken before, and waiting or accepted: by its UID's key, or — the
-    // mailbox's UIDs having changed since — its Message-ID's.
+    // Taken before — waiting, accepted, or removed by its person since (F8:
+    // never added again while its mail waits to be filed) — by its UID's
+    // key, or, the mailbox's UIDs having changed since, its Message-ID's.
     const prior = await withSystem(this.deps.db, hh, (trx) =>
       trx
         .selectFrom('incoming_file')
         .select('id')
         .where('requester_member_id', '=', t.memberId)
-        .where('state', 'in', ['received', 'accepted'])
+        .where('state', 'in', ['received', 'accepted', 'rejected'])
         .where((eb) =>
           mailKey
             ? eb.or([eb('idempotency_key', '=', key), eb('mail_key', '=', mailKey)])
@@ -776,18 +993,7 @@ export class MailInRunner {
     );
     if (prior) return 'already';
     // On its way when a worker stopped: removed, and added again.
-    await clearStaleItem(this.deps, hh, key, mailKey);
-    if (mailKey) {
-      // A removed one keeps no key a new one would match.
-      await withSystem(this.deps.db, hh, (trx) =>
-        trx
-          .updateTable('incoming_file')
-          .set({ mail_key: null })
-          .where('mail_key', '=', mailKey)
-          .where('state', '=', 'rejected')
-          .execute(),
-      );
-    }
+    await clearStaleItem(this.deps, hh, key, mailKey, { keepRemoved: true });
 
     const placed = await withSystem(this.deps.db, hh, async (trx) => {
       // Still on, held as it is placed: an owner who turns it off mid-round stops it here.

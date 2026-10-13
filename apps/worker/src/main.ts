@@ -41,7 +41,12 @@ import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import { resumeBatchItems, sendBatchPreviews, workBatchPreviews } from './jobs/batches.js';
 import { ProposalThread } from './jobs/proposal-thread.js';
 import { WATCH_KEY_PURPOSE, WatchRunner } from './jobs/watch-folder.js';
-import { MAIL_KEY_PURPOSE, MailInRunner, mailboxFromConfig } from './jobs/mail-in.js';
+import {
+  MAIL_KEY_PURPOSE,
+  MailInRunner,
+  mailboxFromConfig,
+  takeMailInPassword,
+} from './jobs/mail-in.js';
 import { MailThread } from './jobs/mail-thread.js';
 import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
@@ -56,6 +61,9 @@ const log = (level: string, msg: string, extra: Record<string, unknown> = {}) =>
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  // The mailbox's password, read: out of the environment at once, so no
+  // tool or thread started from here is ever handed it (the S4 review, F7).
+  takeMailInPassword(process.env);
   logLevel = config.LOG_LEVEL;
   const adminUrl = config.DATABASE_ADMIN_URL ?? config.DATABASE_URL;
   if (!(await masterKeyOpensVault(adminUrl, await resolveMasterSecret(config), log))) {
@@ -479,6 +487,8 @@ async function main(): Promise<void> {
   // lock; each mail read on a thread of its own; what it adds is drawn and
   // read above. The password goes to the mailbox's connector alone.
   const mailbox = await mailboxFromConfig(config, log, (p) => readFile(p, 'utf8'));
+  // Held by the mailbox's connector alone from here on.
+  delete config.FDV_MAIL_IN_PASSWORD;
   const mailReader = new MailThread();
   const mailIn = new MailInRunner(
     {

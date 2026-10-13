@@ -43,6 +43,14 @@ export interface MailboxEntry {
 export interface MailboxSession {
   /** The folder's UIDVALIDITY: a UID means the same mail only while this is the same. */
   readonly uidValidity: string;
+  /**
+   * The server moves one mail by its UID, and expunges no other (MOVE and
+   * UIDPLUS, the review's F10): never COPY, \Deleted and an EXPUNGE that
+   * would take every other mail marked deleted with it.
+   */
+  readonly canMove: boolean;
+  /** The server expunges one mail by its UID (UIDPLUS): a delete removes that one alone. */
+  readonly canDelete: boolean;
   /** Every mail in the folder, by UID, oldest first. */
   list(): Promise<MailboxEntry[]>;
   /** A mail's first `maxBytes` bytes (its header, and maybe more): null when it has gone. */
@@ -55,6 +63,8 @@ export interface MailboxSession {
   move(uid: number, folder: string): Promise<boolean>;
   /** Deleted (and expunged): false when it was not. */
   remove(uid: number): Promise<boolean>;
+  /** Marked read, where it is left in place (a server without MOVE and UIDPLUS). */
+  markSeen(uid: number): Promise<boolean>;
   close(): Promise<void>;
 }
 
@@ -82,6 +92,20 @@ export function problemOf(err: unknown): MailboxProblem {
   const c = typeof e?.code === 'string' ? e.code : '';
   if (CERT.test(c)) return 'certificate';
   return 'unreachable';
+}
+
+/**
+ * What a server can do to one mail by its UID, from its capabilities (F10):
+ * delete it alone with UIDPLUS (UID EXPUNGE), move it alone with MOVE and
+ * UIDPLUS. Without them imapflow would COPY, mark \Deleted and EXPUNGE —
+ * taking every other mail marked deleted with it — so the vault never asks.
+ */
+export function filingOf(caps: ReadonlyMap<string, unknown>): {
+  canMove: boolean;
+  canDelete: boolean;
+} {
+  const uidplus = caps.has('UIDPLUS');
+  return { canMove: caps.has('MOVE') && uidplus, canDelete: uidplus };
 }
 
 /** A server's reply this much larger than the largest mail is refused. */
@@ -135,8 +159,11 @@ export class ImapMailbox implements MailboxConnector {
     }
     const box = client.mailbox;
     const uidValidity = box ? String(box.uidValidity) : '0';
+    const { canMove, canDelete: uidplus } = filingOf(client.capabilities);
     return {
       uidValidity,
+      canMove,
+      canDelete: uidplus,
       async list() {
         if (!client.mailbox || client.mailbox.exists === 0) return [];
         const out: MailboxEntry[] = [];
@@ -174,11 +201,18 @@ export class ImapMailbox implements MailboxConnector {
         });
       },
       async move(uid, to) {
+        // imapflow falls back to COPY and EXPUNGE without MOVE: never asked then.
+        if (!canMove) return false;
         const r = await client.messageMove(String(uid), to, { uid: true });
         return r !== false;
       },
       async remove(uid) {
+        // Without UIDPLUS an EXPUNGE takes every mail marked deleted: never asked then.
+        if (!uidplus) return false;
         return client.messageDelete(String(uid), { uid: true });
+      },
+      async markSeen(uid) {
+        return client.messageFlagsAdd(String(uid), ['\\Seen'], { uid: true });
       },
       async close() {
         lock.release();

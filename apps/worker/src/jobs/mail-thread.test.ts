@@ -38,7 +38,7 @@ describe('the mail thread (S4)', () => {
         subject: 'Confirm fdv-abcd-efgh-jkmn please',
         messageId: '<m1@example.test>',
       });
-      const a = await t.head(Buffer.from(raw).subarray(0, 300), ID);
+      const a = await t.head(Buffer.from(raw).subarray(0, 400), ID);
       expect(a).toEqual({
         state: 'done',
         head: {
@@ -46,8 +46,10 @@ describe('the mail thread (S4)', () => {
           messageId: '<m1@example.test>',
           codes: ['FDV-ABCD-EFGH-JKMN'],
           auth: 'pass',
+          date: '2026-10-13T09:00:00.000Z',
         },
         parts: [],
+        skipped: { tooMany: 0, tooDeep: 0 },
       });
       // Nothing else of it comes back: not the subject, not the body.
       expect(JSON.stringify(a)).not.toContain('please');
@@ -73,6 +75,9 @@ describe('the mail thread (S4)', () => {
         'ann@example.test, bob@example.test',
         'family: ann@example.test;',
         'not an address',
+        // Anything but ASCII in the address (F6): an accent, a Kelvin sign that folds to a k.
+        'anné@example.test',
+        'marKus@example.test',
       ]) {
         const a = await t.head(Buffer.from(mail({ from })), null);
         expect(a.state === 'done' && a.head.from).toBeNull();
@@ -131,6 +136,21 @@ describe('the mail thread (S4)', () => {
       );
       // Its sender is the outer mail's, never a forwarded one's.
       expect(a.head.from).toBe('ann@example.test');
+      // Nothing skipped but the one too large, which is said of its part.
+      expect(a.skipped).toEqual({ tooMany: 0, tooDeep: 0 });
+      // Forwarded four deep: the fourth is not read, and said to be skipped (F5).
+      let deep = mail({ from: 'x@x.test', parts: [{ name: 'deepest.pdf', content: pdf('d') }] });
+      for (let i = 0; i < 3; i++)
+        deep = mail({ from: 'x@x.test', parts: [{ forwarded: deep, name: `f${i}.eml` }] });
+      const d = await t.message(
+        Buffer.from(
+          mail({ from: 'ann@example.test', parts: [{ forwarded: deep, name: 'top.eml' }] }),
+        ),
+        null,
+        4000,
+      );
+      expect(d.state === 'done' && d.skipped).toEqual({ tooMany: 0, tooDeep: 1 });
+      expect(d.state === 'done' && d.parts).toEqual([]);
     } finally {
       await t.close();
     }

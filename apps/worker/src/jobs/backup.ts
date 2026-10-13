@@ -4,6 +4,7 @@ import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { EncryptStream } from '@fdv/crypto';
+import { childEnv, LIBPQ } from './child-env.js';
 import { libpqConnection } from './libpq.js';
 import { masterKeyOpensVault } from '../master-key-check.js';
 
@@ -54,7 +55,8 @@ export async function backupDatabase(deps: BackupDeps): Promise<{ file: string; 
 
   const conn = libpqConnection(deps.adminUrl);
   const dump = spawn('pg_dump', ['--no-owner', '--no-privileges', '--format=plain', ...conn.args], {
-    env: { ...process.env, ...conn.env },
+    // libpq's own settings and the connection: nothing else of the worker's (F7).
+    env: childEnv(conn.env, LIBPQ),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stderr = '';

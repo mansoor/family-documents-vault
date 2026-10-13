@@ -110,6 +110,7 @@ import type {
   Visibility,
   VisibilityChange,
   MailInCode,
+  MailInEmailed,
   MailInInput,
   MailInMine,
   MailInView,
@@ -1371,6 +1372,12 @@ export function createApi(http: Http) {
     /** A new code to confirm the caller's address, shown once; lasts a day. */
     newMailInCode: (token: string) =>
       request<MailInCode>('/api/v1/mail-in/me/code', { method: 'POST', token }),
+    /** A code emailed to the caller's own address (with the operator's mail server), to type in. */
+    emailMailInCode: (token: string) =>
+      request<MailInEmailed>('/api/v1/mail-in/me/email-code', { method: 'POST', token }),
+    /** That code, typed in: the address confirmed (`204`); `422` wrong, `410` expired or used up. */
+    confirmMailIn: (token: string, code: string) =>
+      request<void>('/api/v1/mail-in/me/confirm', { method: 'POST', body: { code }, token }),
   };
 }
 

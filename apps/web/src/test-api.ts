@@ -357,6 +357,8 @@ export interface FakeState {
    */
   mailInMine?: Record<string, unknown>;
   mailInCode?: string;
+  /** The code POST /mail-in/me/confirm takes (one emailed to the reader); left out, K7QM-3XRP. */
+  mailInEmailedCode?: string;
   /**
    * The household's time zone, as GET /profile gives it: reminders fall due
    * on its calendar. Left out, 'UTC', the vault's default.
@@ -1220,7 +1222,7 @@ export function installFakeApi(state: FakeState) {
       }
       return json(mail);
     }
-    if (path === '/api/v1/mail-in/me' || path === '/api/v1/mail-in/me/code') {
+    if (path.startsWith('/api/v1/mail-in/me')) {
       if (storedRole() === 'viewer') {
         return refuse(
           403,
@@ -1229,19 +1231,44 @@ export function installFakeApi(state: FakeState) {
         );
       }
       const on = state.mailIn?.available === true && state.mailIn.enabled;
-      const mine = state.mailInMine ?? {
+      const check = (state.mailIn?.server as { sender_check?: boolean } | undefined)?.sender_check;
+      const mine = {
         on,
         address: on ? 'home@vault.test' : null,
         email: 'you@example.test',
         confirmed: false,
         code_expires_at: null,
-        sender_check: false,
-      };
+        code_kind: null,
+        sender_check: check === true,
+        confirm: { send_from: on && check === true, emailed: on },
+        confirm_words: null,
+        held: null,
+        ...state.mailInMine,
+      } as Record<string, unknown> & { on: boolean; address: string | null };
       if (path.endsWith('/code') && method === 'POST') {
         if (!mine.on) return refuse(409, 'mail_in_unavailable', 'Email in isn’t turned on.');
         const expires = new Date(Date.now() + 864e5).toISOString();
-        state.mailInMine = { ...mine, code_expires_at: expires };
-        return json({ code: state.mailInCode ?? 'FDV-ABCD-EFGH-JKMN', expires_at: expires });
+        state.mailInMine = { ...mine, code_expires_at: expires, code_kind: 'send' };
+        const code = state.mailInCode ?? 'FDV-ABCD-EFGH-JKMN';
+        return json({
+          code,
+          expires_at: expires,
+          mailto: `mailto:${encodeURIComponent(mine.address ?? '')}?subject=${encodeURIComponent(code)}`,
+        });
+      }
+      if (path.endsWith('/email-code') && method === 'POST') {
+        if (!mine.on) return refuse(409, 'mail_in_unavailable', 'Email in isn’t turned on.');
+        const expires = new Date(Date.now() + 864e5).toISOString();
+        state.mailInMine = { ...mine, code_expires_at: expires, code_kind: 'enter' };
+        return json({ sent_to: 'y**@example.test', expires_at: expires });
+      }
+      if (path.endsWith('/confirm') && method === 'POST') {
+        const typed = (body as { code?: string }).code ?? '';
+        if (typed.trim().toUpperCase() !== (state.mailInEmailedCode ?? 'K7QM-3XRP')) {
+          return refuse(422, 'code_wrong', 'That isn’t the code. Check it, and try again.');
+        }
+        state.mailInMine = { ...mine, confirmed: true, code_expires_at: null, code_kind: null };
+        return Promise.resolve(new Response(null, { status: 204 }));
       }
       return json(mine);
     }
