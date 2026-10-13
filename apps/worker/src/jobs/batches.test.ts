@@ -595,6 +595,28 @@ describe.skipIf(!testAdminUrl())('a batch’s items, in the worker', () => {
     expect(await sweepBatches(deps, homes.b.hh, new Date())).toEqual({ batches: 0, items: 0 });
   });
 
+  it('what an Undo of an added version needed is let go once its minutes have passed, and kept until then (0067)', async () => {
+    const open = await batch('b', 5);
+    const late = await item('b', open, { state: 'accepted' });
+    const soon = await item('b', open, { state: 'accepted' });
+    await admin.query(
+      `update incoming_file set as_version = true, prior_sealed = '\\x0102',
+              undo_until = case when id = $1 then now() - interval '1 second'
+                                else now() + interval '4 minutes' end
+        where id = any($2::uuid[])`,
+      [late.id, [late.id, soon.id]],
+    );
+    await sweepBatches(deps, homes.b.hh, new Date());
+    const rows = await admin.query<{ id: string; sealed: boolean }>(
+      'select id, prior_sealed is not null as sealed from incoming_file where id = any($1::uuid[])',
+      [[late.id, soon.id]],
+    );
+    expect(Object.fromEntries(rows.rows.map((r) => [r.id, r.sealed]))).toEqual({
+      [late.id]: false,
+      [soon.id]: true,
+    });
+  });
+
   it('items left undrawn by a lost job are sent again by the sweep, one job for the household', async () => {
     const b = await batch('a');
     await item('a', b, { arrived: new Date(Date.now() - 3_600_000).toISOString() });

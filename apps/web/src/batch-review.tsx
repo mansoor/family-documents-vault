@@ -143,16 +143,19 @@ export function Toast({
   box,
   onUndo,
   onDismiss,
+  inline = false,
 }: {
   toast: ReviewToast;
   box: RefObject<HTMLDivElement | null>;
   onUndo: () => void;
   onDismiss: () => void;
+  /** In the page's own flow, never over it (S1: on a file's card, above the card). */
+  inline?: boolean;
 }) {
   return (
     <div
       ref={box}
-      className="toast"
+      className={inline ? 'toast toast-inline' : 'toast'}
       role="region"
       aria-label="What was just done"
       tabIndex={-1}
@@ -194,6 +197,156 @@ export function Toast({
       </button>
     </div>
   );
+}
+
+/**
+ * A file just added as a new version of a document (0.8.0, S1), while it
+ * may be taken back: kept here, outside any one screen, so the card it was
+ * added from and the next one — or the queue — show the same toast with
+ * its Undo. One at a time: the next one added takes its place.
+ */
+export interface VersionUndo {
+  batchId: string;
+  itemId: string;
+  /** The file's name, and the document's: what the toast says. */
+  name: string;
+  title: string;
+  until: string | null;
+}
+
+let versionUndo: VersionUndo | null = null;
+const versionUndoHeard = new Set<() => void>();
+
+export const versionUndoStore = {
+  get: () => versionUndo,
+  set: (v: VersionUndo | null) => {
+    versionUndo = v;
+    for (const f of versionUndoHeard) f();
+  },
+  subscribe: (f: () => void) => {
+    versionUndoHeard.add(f);
+    return () => {
+      versionUndoHeard.delete(f);
+    };
+  },
+};
+
+/** What adding as a new version did, in words, with how long it may be taken back. */
+export const versionAddedWords = (v: Pick<VersionUndo, 'name' | 'title'>) =>
+  `“${v.name}” is now the newest copy of ${v.title}. You can undo this for ${ACCEPT_UNDO_MINUTES} minutes.`;
+
+/**
+ * The toast for a file added as a new version of a document (S1), on the
+ * batch's pages: what was done, and Undo while it may be — which takes the
+ * version back, puts the document's dates and number back, and puts the
+ * file back in the queue. `changed` is called once the vault has answered.
+ */
+export function useVersionUndo(
+  batchId: string | undefined,
+  changed: () => Promise<unknown> | void,
+  opts: {
+    /** In the page's flow (a file's card): it covers nothing, and keeps no room under the page. */
+    inline?: boolean;
+    /**
+     * Where the focus goes when the toast is put away (× or Escape), as
+     * Accept all Ready's goes (W-I3-4): the page's status line, or its
+     * heading (the review, W1).
+     */
+    fallback?: () => HTMLElement | null;
+    /** Taken back: the item is waiting again (the review, W3: the card's run counts it so). */
+    undone?: (itemId: string) => void;
+  } = {},
+): { element: ReactNode; shown: boolean } {
+  const { inline = false, fallback, undone } = opts;
+  const { withToken } = useApp();
+  const [, uploads] = useUploads();
+  const [held, setHeld] = useState(versionUndoStore.get());
+  // What Undo did, once it has answered; and why it could not, meanwhile.
+  const [done, setDone] = useState<ReviewToast | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const [heard, setHeard] = useState('');
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(
+    () =>
+      versionUndoStore.subscribe(() => {
+        const now = versionUndoStore.get();
+        setHeld(now);
+        // Another added since: its toast, not what the last Undo said.
+        if (now) {
+          setDone(null);
+          // Heard politely as it comes, as Accept all Ready's toast is.
+          setHeard(versionAddedWords(now));
+        }
+      }),
+    [],
+  );
+  const mine = held && held.batchId === batchId ? held : null;
+
+  const undo = async () => {
+    if (!mine || busy) return;
+    setBusy(true);
+    setFailed(null);
+    try {
+      const r = await withToken((t) => api.undoAcceptReady(t, mine.batchId, [mine.itemId]));
+      if (!r) return;
+      uploads.changed();
+      const words =
+        r.restored.length > 0
+          ? {
+              text: `Undone: “${mine.name}” is back in the queue, and ${mine.title} is as it was.`,
+              more: [],
+            }
+          : { text: 'Nothing was taken back.', more: r.kept.map((k) => k.message) };
+      // The page told first, in the same turn as the words: nothing done on
+      // it after them goes by what it was before (W3).
+      if (r.restored.length > 0) undone?.(mine.itemId);
+      versionUndoStore.set(null);
+      setDone({ ...words, undo: null, busy: false });
+      setHeard([words.text, ...words.more].join(' '));
+      box.current?.focus();
+      await changed();
+    } catch (err) {
+      // Nothing known to be taken back: Undo is still there to try again.
+      setFailed(describeError(err));
+      setHeard(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toast: ReviewToast | null =
+    done ??
+    (mine
+      ? {
+          text: versionAddedWords(mine),
+          more: failed ? [failed] : [],
+          undo: { batchId: mine.batchId, itemIds: [mine.itemId], until: mine.until },
+          busy,
+        }
+      : null);
+  const element = (
+    <>
+      {toast && (
+        <Toast
+          toast={toast}
+          box={box}
+          inline={inline}
+          onUndo={() => void undo()}
+          onDismiss={() => {
+            versionUndoStore.set(null);
+            setDone(null);
+            // The toast gone: never nowhere (W1).
+            fallback?.()?.focus();
+          }}
+        />
+      )}
+      <p className="visually-hidden" role="status" aria-live="polite">
+        {heard}
+      </p>
+    </>
+  );
+  return { element, shown: toast !== null };
 }
 
 /** What a page asks Accept all Ready to take: the files it showed Ready, by id and name. */

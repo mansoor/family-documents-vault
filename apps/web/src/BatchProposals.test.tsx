@@ -233,9 +233,10 @@ describe('the batch page, read (I2)', () => {
     expect(row('blank.pdf')).toHaveTextContent('Problem');
     expect(row('blank.pdf')).toHaveTextContent('Couldn’t read the pages');
     expect(row('copy.pdf')).toHaveTextContent('Problem');
+    // Said as the queue says it (0.8.0, S1): the same file as that document.
     expect(
       within(row('copy.pdf')).getByRole('link', {
-        name: "Already in the vault: Mansoor's passport",
+        name: "Same as Mansoor's passport",
       }),
     ).toHaveAttribute('href', '/documents/doc-1');
     expect(row('later.pdf')).toHaveTextContent('Waiting to be read');

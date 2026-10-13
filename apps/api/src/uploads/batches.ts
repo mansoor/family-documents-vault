@@ -5,9 +5,11 @@ import { pipeline } from 'node:stream/promises';
 import {
   DecryptStream,
   EncryptStream,
+  itemPriorBinding,
   itemProposalsBinding,
   newKey,
   openBytes,
+  sealBytes,
   unwrapKey,
   wrapKey,
   type ScopeKeys,
@@ -39,9 +41,16 @@ import {
   refusalFor,
   seesLocation,
   isLearned,
+  issuerMatchKey,
+  NUMBER_SEPARATORS,
+  numberKey,
+  RENEWALS_MAX,
   storedLearnedClash,
   storedProposal,
+  VERSION_ACCEPT_FIELDS,
   type BatchAccepted,
+  type BatchRenewal,
+  type DateValue,
   type BatchAcceptInput,
   type BatchCounts,
   type BatchDefaults,
@@ -77,7 +86,7 @@ import {
   type DocumentService,
   type Enqueue,
 } from '../documents/service.js';
-import { holdDocumentRows, ownedObjects } from '../documents/purge.js';
+import { holdDocumentRows, ownedObjects, versionObjects } from '../documents/purge.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import { incomingPreviewKey } from './incoming.js';
@@ -119,6 +128,18 @@ import { forgetLearned, learnedOf, learnFromAccept, unlearnAccept } from './lear
  * they are now — so a default or a kind changed re-levels every item, and
  * nothing is read again. An accept takes what it is sent, and the batch's
  * defaults for what is not: never a proposal nobody chose.
+ *
+ * Duplicates as versions (0.8.0, S1): an item the same file as a document
+ * the uploader can see says so, and is most likely discarded. One that is
+ * probably the same paper, or its renewal — judged on what its pages
+ * proposed alone, under the uploader's own rules, as it is asked: the same
+ * kind and number, or the same kind, person and issuer — names the
+ * documents of theirs they may change (`renewals`), and may be added to one
+ * as its new version (`into_document_id`): through the commit every
+ * version goes through (DocumentService.fileIncoming), its dates and number
+ * through the edit every change goes through, and taken back as Accept all
+ * Ready's are — the version, never the document (0067). Nothing of a match
+ * is stored; only what an Undo needs, sealed (`prior_sealed`).
  *
  * The order every decision takes its locks in, as a file sent in does
  * (incoming.ts): the uploader's own membership (shared), the batch, the
@@ -217,6 +238,44 @@ const UNDO_KEPT: Readonly<Record<UndoKept, string>> = {
   not_found: 'That file is not in this batch.',
   failed: 'It could not be taken back just then, so it is still a document. Try again.',
 };
+
+/** Why a version added from a batch is kept, in words (S1): the document was there before. */
+const VERSION_KEPT: Readonly<Record<UndoKept, string>> = {
+  too_late: `More than ${ACCEPT_UNDO_MINUTES} minutes have passed, so it stays the document’s newest version.`,
+  not_undoable: UNDO_KEPT.not_undoable,
+  changed:
+    'It stays the document’s newest version: since it was added, somebody changed the document, added another version, used a link to it or moved it to the Trash.',
+  not_found: UNDO_KEPT.not_found,
+  failed:
+    'It could not be taken back just then, so it is still a version of the document. Try again.',
+};
+
+/**
+ * An item taken back (I3, S1): waiting again, its decision gone, undrawn and
+ * unread — to be drawn and read again by the worker (its new object is set
+ * beside this).
+ */
+const WAITING_AGAIN = {
+  state: 'received',
+  decided_by: null,
+  decided_at: null,
+  document_id: null,
+  version_id: null,
+  undo_until: null,
+  object_removed_at: null,
+  preview_state: 'none',
+  preview_requested_at: null,
+  preview_pages: null,
+  read_state: 'waiting',
+  read_failure: null,
+  read_started_at: null,
+  read_attempts: 0,
+  read_not_before: null,
+  // Its waits on the vault, from an earlier read, go too: counted from
+  // nought, it is not given up as not reachable early (I2's rules).
+  read_waits: 0,
+  read_waited_since: null,
+} as const;
 
 /** Every page there could be of an item: PREVIEW_MAX_PAGES of them, drawn or not. */
 const pageKeys = (storageKey: string) =>
@@ -883,6 +942,18 @@ export class BatchService {
     meta: RequestMeta,
   ): Promise<BatchAccepted> {
     this.mayAdd(p);
+    const { into_document_id: into, ...details } = input;
+    if (into !== undefined) {
+      const other = Object.keys(details).filter(
+        (k) => !(VERSION_ACCEPT_FIELDS as readonly string[]).includes(k),
+      );
+      if (other.length > 0) {
+        throw invalid(
+          'Add it to a document, or make a new one with these details: not both.',
+          other.join(','),
+        );
+      }
+    }
     const placed: Placed = { key: null, vaultId: null };
     let out: Filed;
     try {
@@ -892,10 +963,11 @@ export class BatchService {
         const f = await this.waiting(trx, batchId, itemId, true);
         // What its card started from, at this moment: what the accept is compared with (I4).
         const [item] = (await this.itemsOf(trx, p, [b.id], f.id)).filter((i) => i.id === f.id);
-        return this.file(trx, p, b, f, input, meta, placed, false, {
-          read: item?.reading === 'read',
-          proposals: item?.proposals ?? null,
-        });
+        const learn = { read: item?.reading === 'read', proposals: item?.proposals ?? null };
+        if (into !== undefined) {
+          return this.fileAsVersion(trx, p, f, into, details, meta, placed, learn);
+        }
+        return this.file(trx, p, b, f, details, meta, placed, false, learn);
       });
     } catch (err) {
       await this.dropPlaced(p, itemId, placed);
@@ -906,6 +978,214 @@ export class BatchService {
       document_id: out.documentId,
       version_id: out.versionId,
       ...(out.warnings.length > 0 ? { warnings: out.warnings } : {}),
+      ...(into !== undefined && out.undoUntil ? { undo_until: out.undoUntil.toISOString() } : {}),
+    };
+  }
+
+  /**
+   * One held item added as a new version of a document (0.8.0, S1): one
+   * the uploader may see (404 otherwise, as anything else about it) and may
+   * change (403: a teen's documents are their own). Held first, then
+   * through the commit every version goes through — its key rewrapped for
+   * the document, its bytes copied, the document's open reminders resolved
+   * as a renewal's are (REM-08) — and then what was accepted with it (its
+   * dates and number) through the edit every change goes through: only
+   * what differs, so the activity log says what changed. What that changed,
+   * and the reminders it resolved, are sealed under the item's own key for
+   * an Undo (0067), which works as Accept all Ready's, for
+   * ACCEPT_UNDO_MINUTES. It teaches as an accept does (I4): the document's
+   * kind, person and issuer, confirmed or corrected.
+   */
+  private async fileAsVersion(
+    trx: Db,
+    p: Principal,
+    f: WaitingRow,
+    into: string,
+    sent: Pick<BatchAcceptInput, (typeof VERSION_ACCEPT_FIELDS)[number]>,
+    meta: RequestMeta,
+    placed: Placed,
+    learn: LearnFrom,
+  ): Promise<Filed> {
+    const doc = await trx
+      .selectFrom('document as d')
+      .select([
+        'd.id',
+        'd.owner_member_id',
+        'd.type_key',
+        'd.issued_by',
+        'd.identifier',
+        'd.issued_on',
+        'd.issued_precision',
+        'd.expires_on',
+        'd.expires_precision',
+      ])
+      .where('d.id', '=', into)
+      .where('d.deleted_at', 'is', null)
+      .where(seenDocument(p))
+      .forUpdate()
+      .executeTakeFirst();
+    if (!doc) throw new ApiError(404, 'not_found', 'That document is not in the vault.');
+    if (p.role === 'teen' && doc.owner_member_id !== p.memberId) {
+      throw new ApiError(403, 'forbidden', 'You can only change your own documents.');
+    }
+    // Its reminders still open: those a new version resolves (REM-08), for an Undo.
+    const open = await trx
+      .selectFrom('reminder')
+      .select(['id', 'status'])
+      .where('document_id', '=', doc.id)
+      .where('status', 'in', ['scheduled', 'due', 'snoozed'])
+      .orderBy('id')
+      .execute();
+    // And its derived ones as they are, by what each reminds of (the review,
+    // M1): an expiry changed below makes them again under new ids, and an
+    // Undo puts each back as it was — acknowledged, snoozed, or neither.
+    const derived = (
+      await trx
+        .selectFrom('reminder')
+        .select([
+          sql<string>`source || ':' || lead_days || ':' || to_char(fire_at, 'YYYY-MM-DD')`.as(
+            'key',
+          ),
+          'status',
+          sql<string | null>`to_char(snoozed_until, 'YYYY-MM-DD')`.as('snoozed_until'),
+          'acknowledged_by',
+          'acknowledged_at',
+        ])
+        .where('document_id', '=', doc.id)
+        .where('kind', '=', 'derived')
+        .orderBy('id')
+        .execute()
+    ).map((r) => ({
+      key: r.key,
+      status: r.status,
+      snoozed_until: r.snoozed_until,
+      acknowledged_by: r.acknowledged_by,
+      acknowledged_at: r.acknowledged_at ? r.acknowledged_at.toISOString() : null,
+    }));
+    placed.vaultId = f.vault_id;
+    const scopeKey = await this.keys.unwrapById(trx, f.wrapped_by_scope);
+    const fileKey = unwrapKey(f.file_key_wrapped, scopeKey, `incoming:${f.id}`);
+    const mime = f.mime ?? 'application/octet-stream';
+    const version = await this.documents.fileIncoming(
+      trx,
+      p,
+      {
+        target: { kind: 'version', documentId: doc.id },
+        file: {
+          filename: incomingFileName(f.original_name ?? 'file', mime),
+          mime,
+          bytes: Number(f.byte_size ?? 0),
+          sha256: f.sha256 as Buffer,
+          cipherBytes: Number(f.cipher_bytes ?? 0),
+          cipherSha256: f.cipher_sha256 as Buffer,
+          storageKey: f.storage_key,
+          vaultId: f.vault_id,
+          fileKey,
+        },
+        placed,
+      },
+      meta,
+    );
+    // What the document holds now, and what the new paper says: only a change is made.
+    const was: PriorFields = {
+      identifier: doc.identifier,
+      issued: dateOf(doc.issued_on, doc.issued_precision),
+      expires: dateOf(doc.expires_on, doc.expires_precision),
+    };
+    const edit: PriorFields = {};
+    const before: PriorFields = {};
+    if (sent.identifier !== undefined) {
+      const v = sent.identifier?.trim() || null;
+      if (v !== was.identifier) {
+        edit.identifier = v;
+        before.identifier = was.identifier ?? null;
+      }
+    }
+    for (const k of ['issued', 'expires'] as const) {
+      const v = sent[k];
+      if (v === undefined) continue;
+      if (!sameDay(v ?? null, was[k] ?? null)) {
+        edit[k] = v ?? null;
+        before[k] = was[k] ?? null;
+      }
+    }
+    if (Object.keys(edit).length > 0) {
+      await this.documents.editWithin(trx, p, doc.id, edit, meta);
+    }
+    // The last line this accept wrote about the document (the log is held
+    // to its commit): anything after it is since (the review, L3).
+    const line = await trx
+      .selectFrom('audit_event')
+      .select((eb) => eb.fn.max('id').as('id'))
+      .where('household_id', '=', p.householdId)
+      .where('object_type', '=', 'document')
+      .where('object_id', '=', doc.id)
+      .executeTakeFirst();
+    const prior: Prior = {
+      v: 1,
+      fields: before,
+      // Resolved by this version only when it is not the document's first (REM-08).
+      reminders: version.version_no > 1 ? open : [],
+      derived,
+      line: line?.id === null || line?.id === undefined ? null : String(line.id),
+    };
+    const decided = await trx
+      .updateTable('incoming_file')
+      .set({
+        state: 'accepted',
+        decided_by: p.accountId,
+        // On the database's clock (the review, L3): what is compared with it is too.
+        decided_at: sql<Date>`now()`,
+        document_id: version.document_id,
+        version_id: version.id,
+        proposals_sealed: null,
+        text_sealed: null,
+        as_version: true,
+        prior_sealed: sealBytes(
+          fileKey,
+          Buffer.from(JSON.stringify(prior)),
+          itemPriorBinding(f.id, version.id),
+        ),
+        // On the database's clock, as the rule that holds it (0064).
+        undo_until: sql<Date>`now() + make_interval(mins => ${ACCEPT_UNDO_MINUTES})`,
+      })
+      .where('id', '=', f.id)
+      .where('state', '=', 'received')
+      .returning('undo_until')
+      .executeTakeFirst();
+    if (!decided) throw decidedAlready();
+    // A confirmation of what the pages proposed, as an accept is (I4): the
+    // document's kind and person, and only what the card sent of the rest
+    // (the review, L4) — a date left blank, which keeps the document's, and
+    // the document's own issuer are not the person correcting the pages.
+    const pages = learn.proposals;
+    await learnFromAccept(
+      trx,
+      p,
+      {
+        itemId: f.id,
+        read: learn.read,
+        proposals: pages,
+        filed: {
+          type_key: doc.type_key,
+          owner_member_id: doc.owner_member_id,
+          issued_by: pages?.issued_by?.value ?? null,
+          identifier:
+            sent.identifier !== undefined
+              ? sent.identifier?.trim() || null
+              : (pages?.identifier?.value ?? null),
+          issued: sent.issued !== undefined ? sent.issued : (pages?.issued?.value ?? null),
+          expires: sent.expires !== undefined ? sent.expires : (pages?.expires?.value ?? null),
+        },
+      },
+      this.opts.learnTaught ? { taught: this.opts.learnTaught } : {},
+    );
+    return {
+      file: f,
+      documentId: version.document_id,
+      versionId: version.id,
+      warnings: [],
+      undoUntil: decided.undo_until,
     };
   }
 
@@ -1268,9 +1548,21 @@ export class BatchService {
     const out: BatchUndoResult = { restored: [], kept: [] };
     let restored = false;
     for (const itemId of ids) {
-      const kept = await this.undoOne(p, batchId, itemId, meta).catch(() => 'failed' as const);
-      if (kept) out.kept.push({ item_id: itemId, reason: kept, message: UNDO_KEPT[kept] });
-      else {
+      // Added as a version (S1): said as a version, not a document.
+      const asVersion = { is: false };
+      // Refused as not theirs to change (a teen's rule): not to be taken back
+      // by them, never "try again" (the review, L1).
+      const kept = await this.undoOne(p, batchId, itemId, meta, asVersion).catch(
+        (err: unknown): UndoKept =>
+          err instanceof ApiError && err.status === 403 ? 'not_undoable' : 'failed',
+      );
+      if (kept) {
+        out.kept.push({
+          item_id: itemId,
+          reason: kept,
+          message: (asVersion.is ? VERSION_KEPT : UNDO_KEPT)[kept],
+        });
+      } else {
         out.restored.push(itemId);
         restored = true;
       }
@@ -1292,12 +1584,13 @@ export class BatchService {
     return out;
   }
 
-  /** One item taken back, or why it is kept. */
+  /** One item taken back, or why it is kept; `asVersion` says whether it was added as a version. */
   private async undoOne(
     p: Principal,
     batchId: string,
     itemId: string,
     meta: RequestMeta,
+    asVersion: { is: boolean } = { is: false },
   ): Promise<UndoKept | null> {
     // Where its file is now: the version's own copy, the same encrypted bytes.
     const found = await withPrincipal(this.db, p, async (trx) => {
@@ -1313,6 +1606,7 @@ export class BatchService {
           'f.version_id',
           'f.vault_id',
           'f.cipher_sha256',
+          'f.as_version',
           'v.storage_key as version_key',
           'v.vault_id as version_vault',
           sql<boolean>`f.undo_until > now()`.as('in_time'),
@@ -1321,6 +1615,7 @@ export class BatchService {
         .where('f.batch_id', '=', batchId)
         .executeTakeFirst();
       if (!f || f.state === 'uploading') return { kept: 'not_found' as const };
+      asVersion.is = f.as_version;
       if (f.state !== 'accepted' || f.in_time === null || f.decided_by !== p.accountId) {
         return { kept: 'not_undoable' as const };
       }
@@ -1362,6 +1657,11 @@ export class BatchService {
             'storage_key',
             'vault_id',
             'object_removed_at',
+            'as_version',
+            'decided_at',
+            'prior_sealed',
+            'file_key_wrapped',
+            'wrapped_by_scope',
             sql<boolean>`undo_until > now()`.as('in_time'),
           ])
           .where('id', '=', itemId)
@@ -1373,6 +1673,8 @@ export class BatchService {
         if (!held.in_time || b.ends_at.getTime() <= Date.now()) return 'too_late';
         const docId = held.document_id;
         if (!docId || docId !== f.document_id) return 'changed';
+        // Added as a version (S1): the version taken back, the document kept.
+        if (held.as_version) return this.versionBack(trx, p, batchId, docId, held, key, meta);
         // Held as a removal for good holds them (purge.ts): its links'
         // sessions, its links, the pages links drew; the document; its versions.
         await holdDocumentRows(trx, docId);
@@ -1431,28 +1733,7 @@ export class BatchService {
         // removal would take the row with it, 0047).
         await trx
           .updateTable('incoming_file')
-          .set({
-            state: 'received',
-            decided_by: null,
-            decided_at: null,
-            document_id: null,
-            version_id: null,
-            undo_until: null,
-            object_removed_at: null,
-            storage_key: key,
-            preview_state: 'none',
-            preview_requested_at: null,
-            preview_pages: null,
-            read_state: 'waiting',
-            read_failure: null,
-            read_started_at: null,
-            read_attempts: 0,
-            read_not_before: null,
-            // Its waits on the vault, from an earlier read, go too: counted from
-            // nought, it is not given up as not reachable early (I2's rules).
-            read_waits: 0,
-            read_waited_since: null,
-          })
+          .set({ ...WAITING_AGAIN, storage_key: key })
           .where('id', '=', held.id)
           .execute();
         const gone = await trx.deleteFrom('document').where('id', '=', docId).executeTakeFirst();
@@ -1477,6 +1758,215 @@ export class BatchService {
     }
     if (kept) await found.to.delete(key).catch(() => undefined);
     return kept;
+  }
+
+  /**
+   * A version added from a batch taken back (S1), in the Undo's transaction
+   * with the item held and in time: held as a removal of the document holds
+   * its rows (its links' sessions, its links, the pages links drew), then
+   * the document, then its versions. Kept, and said so, if since it was
+   * added the document was changed by anybody (or moved to the Trash),
+   * another version came after it, or it reached anybody else
+   * (`incoming_file_version_reached`). Otherwise: that version's own
+   * objects written down to be deleted, the item waiting again at its new
+   * object, the version removed, and what its accept changed put back —
+   * the document's number and dates through the edit every change goes
+   * through, the reminders it resolved open again as they were — and what
+   * it taught taken back.
+   */
+  private async versionBack(
+    trx: Db,
+    p: Principal,
+    batchId: string,
+    docId: string,
+    held: {
+      id: string;
+      version_id: string | null;
+      decided_at: Date | null;
+      prior_sealed: Buffer | null;
+      file_key_wrapped: Buffer;
+      wrapped_by_scope: string;
+      storage_key: string;
+      vault_id: string;
+      object_removed_at: Date | null;
+    },
+    key: string,
+    meta: RequestMeta,
+  ): Promise<UndoKept | null> {
+    const versionId = held.version_id;
+    if (!versionId || !held.prior_sealed) return 'changed';
+    await holdDocumentRows(trx, docId);
+    const doc = await trx
+      .selectFrom('document as d')
+      .select(['d.id', 'd.deleted_at', 'd.updated_by', 'd.owner_member_id'])
+      .where('d.id', '=', docId)
+      .where(seenDocument(p))
+      .forUpdate()
+      .executeTakeFirst();
+    if (!doc) return 'changed';
+    // A teen's documents are their own, as adding a version asks (the review,
+    // L1): somebody made a teen since takes back nothing of anybody else's.
+    // Refused as adding it would be; undo() says it is not theirs to take back.
+    if (p.role === 'teen' && doc.owner_member_id !== p.memberId) {
+      throw new ApiError(403, 'forbidden', 'You can only change your own documents.');
+    }
+    await this.opts.undoHeld?.(held.id);
+    const versions = await trx
+      .selectFrom('document_version')
+      .select(['id', 'version_no', 'storage_key', 'thumbnail_key', 'vault_id'])
+      .where('document_id', '=', docId)
+      .orderBy('id')
+      .forUpdate()
+      .execute();
+    const newest = versions.reduce<(typeof versions)[number] | null>(
+      (n, v) => (!n || v.version_no > n.version_no ? v : n),
+      null,
+    );
+    const ours = versions.find((v) => v.id === versionId);
+    if (
+      !ours ||
+      newest?.id !== versionId ||
+      doc.deleted_at !== null ||
+      doc.updated_by !== p.accountId
+    ) {
+      return 'changed';
+    }
+    const fileKey = unwrapKey(
+      held.file_key_wrapped,
+      await this.keys.unwrapById(trx, held.wrapped_by_scope),
+      `incoming:${held.id}`,
+    );
+    const prior = storedPrior(
+      JSON.parse(
+        openBytes(fileKey, held.prior_sealed, itemPriorBinding(held.id, versionId)).toString(
+          'utf8',
+        ),
+      ),
+    );
+    if (!prior) throw new Error('what an added version changed could not be read');
+    // Changed since by its uploader too — every change to a document is a
+    // line in the log, and the log's own order says what came after the
+    // accept, never a clock (the review, L3); and anybody else's, asked of
+    // the database — first, as it holds the log until this commits.
+    if (await this.versionReached(trx, versionId)) return 'changed';
+    const since = prior.line
+      ? await trx
+          .selectFrom('audit_event')
+          .select('id')
+          .where('household_id', '=', p.householdId)
+          .where('object_type', '=', 'document')
+          .where('object_id', '=', docId)
+          .where(sql<boolean>`id > ${prior.line}::bigint`)
+          .where('action', 'not in', LOOKS)
+          .limit(1)
+          .executeTakeFirst()
+      : { id: 'unknown' };
+    if (since) return 'changed';
+    // That version's own objects, and the item's old object should its
+    // removal after the accept have failed: written down to be deleted.
+    const leftovers = (await versionObjects(trx, docId, ours)).map((k) => ({
+      household_id: p.householdId,
+      vault_id: ours.vault_id,
+      object_key: k,
+      removed_document: docId,
+    }));
+    if (!held.object_removed_at) {
+      for (const k of [held.storage_key, ...pageKeys(held.storage_key)]) {
+        leftovers.push({
+          household_id: p.householdId,
+          vault_id: held.vault_id,
+          object_key: k,
+          removed_document: docId,
+        });
+      }
+    }
+    for (let at = 0; at < leftovers.length; at += 2000) {
+      await trx
+        .insertInto('purge_leftover')
+        .values(leftovers.slice(at, at + 2000))
+        .onConflict((oc) => oc.columns(['vault_id', 'object_key']).doNothing())
+        .execute();
+    }
+    // Waiting again, at its new object, to be drawn and read again; it lets
+    // go of the version before the version goes (its removal would take
+    // the row with it, 0047).
+    await trx
+      .updateTable('incoming_file')
+      .set({
+        ...WAITING_AGAIN,
+        storage_key: key,
+        as_version: false,
+        prior_sealed: null,
+      })
+      .where('id', '=', held.id)
+      .execute();
+    const gone = await trx
+      .deleteFrom('document_version')
+      .where('id', '=', versionId)
+      .executeTakeFirst();
+    if (Number(gone.numDeletedRows) !== 1) throw new Error('a held version was not removed');
+    // What its accept changed on the document, put back as an edit puts it.
+    if (Object.keys(prior.fields).length > 0) {
+      await this.documents.editWithin(trx, p, docId, prior.fields, meta);
+    }
+    // The reminders it resolved, open again as they were, where nobody has
+    // touched them since (one the edit above made again is a new one).
+    for (const r of prior.reminders) {
+      await trx
+        .updateTable('reminder')
+        .set({
+          status: r.status as 'scheduled' | 'due' | 'snoozed',
+          acknowledged_by: null,
+          acknowledged_at: null,
+        })
+        .where('id', '=', r.id)
+        .where('document_id', '=', docId)
+        .where('status', '=', 'resolved')
+        .where('acknowledged_by', '=', p.accountId)
+        .execute();
+    }
+    // Its derived reminders, each as it was before the accept — the edit
+    // above may have made them again, under new ids — by what each reminds
+    // of: acknowledged, snoozed, or open (the review, M1).
+    for (const d of prior.derived) {
+      await trx
+        .updateTable('reminder')
+        .set({
+          status: d.status as 'scheduled' | 'due' | 'snoozed' | 'acknowledged' | 'resolved',
+          snoozed_until: d.snoozed_until,
+          acknowledged_by: d.acknowledged_by,
+          acknowledged_at: d.acknowledged_at ? new Date(d.acknowledged_at) : null,
+        })
+        .where('document_id', '=', docId)
+        .where('kind', '=', 'derived')
+        .where(
+          sql<boolean>`source || ':' || lead_days || ':' || to_char(fire_at, 'YYYY-MM-DD') = ${d.key}`,
+        )
+        .execute();
+    }
+    // What its accept taught is taken back with it, and it is not counted (I4).
+    await unlearnAccept(trx, p, held.id);
+    await appendAudit(trx, {
+      householdId: p.householdId,
+      actorAccountId: p.accountId,
+      action: 'batch.version_undone',
+      objectType: 'document',
+      objectId: docId,
+      detail: { batch_id: batchId, version_no: ours.version_no },
+      ip: meta.ip,
+    });
+    return null;
+  }
+
+  /**
+   * Whether a version added from a batch has reached anybody but its
+   * uploader since (S1): asked of the database with its owner's rights
+   * (0067), as `reachedOthers` asks of a document. Not to be asked: kept.
+   */
+  private async versionReached(trx: Db, versionId: string): Promise<boolean> {
+    const r = await sql<{ reached: boolean | null }>`
+      select incoming_file_version_reached(${versionId}::uuid) as reached`.execute(trx);
+    return r.rows[0]?.reached !== false;
   }
 
   /**
@@ -1891,6 +2381,18 @@ export class BatchService {
         proposed.set(r.id, await levelling.open(r));
       }
     }
+    // Near matches (S1): for each item read, and not the same file as a
+    // document they can see, from what its pages proposed.
+    const renewals = await this.renewalsOf(
+      trx,
+      p,
+      rows.flatMap((r) => {
+        const opened = proposed.get(r.id);
+        const seen = r.sha256 ? docs.has(r.sha256.toString('hex')) : false;
+        return opened && !seen ? [{ id: r.id, proposal: opened.proposal }] : [];
+      }),
+      levelling,
+    );
     return rows.map((r) => {
       const sha = r.sha256 ? r.sha256.toString('hex') : '';
       let duplicate: BatchDuplicate | null = null;
@@ -1934,6 +2436,8 @@ export class BatchService {
         proposal: proposed.get(r.id)?.proposal ?? null,
         learnedClash: proposed.get(r.id)?.clash ?? null,
         duplicate,
+        // A near match makes it Check (S1): Accept all Ready leaves it.
+        renewal: renewals.get(r.id)?.[0] ?? null,
         defaults: levelling.defaults(r.batch_id as string),
         types: levelling.types,
         people: levelling.people,
@@ -1959,8 +2463,90 @@ export class BatchService {
         tags: levelled.tags,
         proposals: levelled.proposals,
         clashes: levelled.clashes,
+        renewals: state === 'waiting' ? (renewals.get(r.id) ?? []) : [],
       };
     });
+  }
+
+  /**
+   * Near matches (0.8.0, S1): for each item, the documents the uploader may
+   * change that it is probably the same paper as, or a renewal of — judged
+   * on what its pages proposed alone (never the batch's defaults), as the
+   * database gives the uploader documents: out of the Trash, ones they can
+   * see, and a teen's own only. The same kind and number (spaces, dashes and
+   * case aside: `numberKey`, and the same in SQL), first; or the same kind,
+   * person and issuer. A kind they are not given, or a person they may not
+   * choose, matches nothing. Best first: by number, then the one that runs
+   * out last, the most recently changed; RENEWALS_MAX each. Worked out as it
+   * is asked, in one query; nothing of it is kept.
+   */
+  private async renewalsOf(
+    trx: Db,
+    p: Principal,
+    items: Array<{ id: string; proposal: DetailProposal }>,
+    levelling: { types: readonly LevelKind[]; people: ReadonlyArray<{ id: string }> },
+  ): Promise<Map<string, BatchRenewal[]>> {
+    const out = new Map<string, BatchRenewal[]>();
+    const asked: Array<{
+      id: string;
+      kind: string;
+      number: string | null;
+      person: string | null;
+      issuer: string | null;
+    }> = [];
+    for (const { id, proposal: pages } of items) {
+      const kind = pages.type_key?.value;
+      if (!kind || !levelling.types.some((t) => t.key === kind)) continue;
+      const number = pages.identifier ? numberKey(pages.identifier.value) || null : null;
+      const who = pages.owner_member_id?.value;
+      const person =
+        who &&
+        levelling.people.some((m) => m.id === who) &&
+        (p.role !== 'teen' || who === p.memberId)
+          ? who
+          : null;
+      const issuer = pages.issued_by ? issuerMatchKey(pages.issued_by.value) || null : null;
+      if (!number && !(person && issuer)) continue;
+      asked.push({ id, kind, number, person, issuer });
+    }
+    if (asked.length === 0) return out;
+    const strip = `[${NUMBER_SEPARATORS}]`;
+    const found = await sql<{
+      item_id: string;
+      id: string;
+      title: string | null;
+      by_number: boolean;
+    }>`
+      select c.item_id, d.id, d.title,
+             (c.number is not null and d.identifier is not null
+              and lower(regexp_replace(d.identifier, ${strip}, '', 'g')) = c.number) as by_number
+        from unnest(${asked.map((a) => a.id)}::uuid[],
+                    ${asked.map((a) => a.kind)}::text[],
+                    ${asked.map((a) => a.number)}::text[],
+                    ${asked.map((a) => a.person)}::uuid[],
+                    ${asked.map((a) => a.issuer)}::text[])
+               as c(item_id, kind, number, person, issuer)
+        join document d on d.type_key = c.kind
+       where d.household_id = ${p.householdId}::uuid
+         and d.deleted_at is null
+         and ${seenDocument(p)}
+         ${p.role === 'teen' ? sql`and d.owner_member_id = ${p.memberId}::uuid` : sql``}
+         and ((c.number is not null and d.identifier is not null
+               and lower(regexp_replace(d.identifier, ${strip}, '', 'g')) = c.number)
+              or (c.person is not null and c.issuer is not null
+                  and d.owner_member_id = c.person
+                  and d.issued_by is not null
+                  and lower(btrim(regexp_replace(d.issued_by, '[[:space:]]+', ' ', 'g'))) = c.issuer))
+       order by c.item_id, by_number desc, d.expires_on desc nulls last, d.updated_at desc, d.id`.execute(
+      trx,
+    );
+    for (const r of found.rows) {
+      const list = out.get(r.item_id) ?? [];
+      if (list.length >= RENEWALS_MAX) continue;
+      list.push({ document_id: r.id, title: r.title, by: r.by_number ? 'number' : 'details' });
+      out.set(r.item_id, list);
+    }
+    return out;
   }
 
   /**
@@ -2160,6 +2746,112 @@ function nameOf(v: string | null | undefined): string | null {
     throw invalid(`A batch’s name is too long: ${BATCH_NAME_MAX} characters at most.`, 'name');
   }
   return tidy || null;
+}
+
+/** What a version added from a batch changed on its document: each as it was (S1). */
+type PriorFields = {
+  identifier?: string | null;
+  issued?: DateValue | null;
+  expires?: DateValue | null;
+};
+
+/** Sealed beside an item added as a version (0067), for its Undo. */
+interface Prior {
+  v: 1;
+  fields: PriorFields;
+  /** The document's reminders the new version resolved, and what each was. */
+  reminders: Array<{ id: string; status: string }>;
+  /**
+   * Its derived reminders as they were, by what each reminds of
+   * (source:lead:fire_at): an expiry put back makes them again, and each is
+   * put back to this (the review, M1).
+   */
+  derived: Array<{
+    key: string;
+    status: string;
+    snoozed_until: string | null;
+    acknowledged_by: string | null;
+    acknowledged_at: string | null;
+  }>;
+  /** The last line of the log the accept wrote about the document: what came after is since (L3). */
+  line: string | null;
+}
+
+const REMINDER_OPEN = new Set(['scheduled', 'due', 'snoozed']);
+const REMINDER_STATES = new Set(['scheduled', 'due', 'snoozed', 'acknowledged', 'resolved']);
+
+/** A look at a document, or a phone keeping it: not a change to it. */
+const LOOKS = [
+  'document.viewed',
+  'document.downloaded',
+  'document.cached_offline',
+  'document.opened_offline',
+];
+
+/** What an item's sealed `prior_sealed` says, well formed, or null. */
+function storedPrior(raw: unknown): Prior | null {
+  if (!raw || typeof raw !== 'object' || (raw as { v?: unknown }).v !== 1) return null;
+  const r = raw as { fields?: unknown; reminders?: unknown };
+  if (!r.fields || typeof r.fields !== 'object' || !Array.isArray(r.reminders)) return null;
+  const f = r.fields as Record<string, unknown>;
+  const fields: PriorFields = {};
+  if ('identifier' in f) {
+    if (f.identifier !== null && typeof f.identifier !== 'string') return null;
+    fields.identifier = f.identifier;
+  }
+  for (const k of ['issued', 'expires'] as const) {
+    if (!(k in f)) continue;
+    const d = f[k] as { date?: unknown; precision?: unknown } | null;
+    if (d === null) fields[k] = null;
+    else if (
+      d &&
+      typeof d.date === 'string' &&
+      /^\d{4}-\d{2}-\d{2}$/.test(d.date) &&
+      ['day', 'month', 'year'].includes(String(d.precision))
+    ) {
+      fields[k] = { date: d.date, precision: d.precision as DateValue['precision'] };
+    } else return null;
+  }
+  const reminders = (r.reminders as unknown[]).filter(
+    (m): m is { id: string; status: string } =>
+      !!m &&
+      typeof (m as { id?: unknown }).id === 'string' &&
+      REMINDER_OPEN.has(String((m as { status?: unknown }).status)),
+  );
+  const str = (v: unknown) => (typeof v === 'string' ? v : null);
+  const derived = (
+    Array.isArray((raw as { derived?: unknown }).derived)
+      ? ((raw as { derived: unknown[] }).derived as Array<Record<string, unknown>>)
+      : []
+  ).flatMap((d) =>
+    d && typeof d.key === 'string' && REMINDER_STATES.has(String(d.status))
+      ? [
+          {
+            key: d.key,
+            status: String(d.status),
+            snoozed_until: str(d.snoozed_until),
+            acknowledged_by: str(d.acknowledged_by),
+            acknowledged_at: str(d.acknowledged_at),
+          },
+        ]
+      : [],
+  );
+  const line = str((raw as { line?: unknown }).line);
+  return { v: 1, fields, reminders, derived, line: line && /^\d+$/.test(line) ? line : null };
+}
+
+/** A document's date as its columns hold it. */
+function dateOf(on: string | null, precision: string | null): DateValue | null {
+  return on
+    ? { date: on.slice(0, 10), precision: (precision ?? 'day') as DateValue['precision'] }
+    : null;
+}
+
+/** The same date, as a document keeps it. */
+function sameDay(a: DateValue | null, b: DateValue | null): boolean {
+  return a === null || b === null
+    ? a === b
+    : a.date.slice(0, 10) === b.date.slice(0, 10) && a.precision === b.precision;
 }
 
 /** Its pages as the uploader is told: being drawn until they are, or why there are none. */

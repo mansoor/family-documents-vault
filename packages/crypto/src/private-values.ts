@@ -97,6 +97,15 @@ export const alertLinkBinding = (householdId: string) => `alert.send:url:${house
  */
 export const itemTextBinding = (itemId: string) => `item-text:${itemId}`;
 export const itemProposalsBinding = (itemId: string) => `item-proposals:${itemId}`;
+/**
+ * And, once an item is filed as a new version of a document that was there
+ * before (0.8.0, S1, 0067), what that changed on the document — its number
+ * and dates as they were, and the reminders it resolved — for an Undo: sealed
+ * so, under the item's key, never plain; and bound to the version it added,
+ * so it opens for no other.
+ */
+export const itemPriorBinding = (itemId: string, versionId: string) =>
+  `item-prior:${itemId}:${versionId}`;
 
 /** What sealing adds to the bytes sealed: the nonce before them, the tag after. */
 export const SEAL_OVERHEAD = IV_BYTES + TAG_BYTES;

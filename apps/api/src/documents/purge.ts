@@ -554,6 +554,33 @@ export async function ownedObjects(
 }
 
 /**
+ * One version's own objects, as `ownedObjects` names a document's (0.8.0,
+ * S1): its file, its thumbnail, its pages, and the pages any view-only link
+ * of the document could have drawn of it — every one beside its file, and
+ * nothing of another version's, nor the document's own. What taking back a
+ * version added from a batch writes down to be deleted.
+ */
+export async function versionObjects(
+  trx: Db,
+  documentId: string,
+  version: { storage_key: string; thumbnail_key: string | null },
+): Promise<string[]> {
+  const viewLinks = await sql<{ id: string }>`
+    select l.id from share_link l
+     where l.permission = 'view'
+       and (l.document_id = ${documentId}
+            or exists (select 1 from share_link_item t
+                        where t.share_id = l.id and t.document_id = ${documentId}))`.execute(trx);
+  const keys = new Set<string>([version.storage_key, thumbnailKey(version.storage_key)]);
+  if (version.thumbnail_key) keys.add(version.thumbnail_key);
+  for (let n = 1; n <= PREVIEW_MAX_PAGES; n += 1) {
+    keys.add(previewKey(version.storage_key, n));
+    for (const l of viewLinks.rows) keys.add(sharePageKey(version.storage_key, l.id, n));
+  }
+  return [...keys];
+}
+
+/**
  * The rows a removal of a document waits on, held before the document is,
  * in the order the writers of each hold them (see the top of this file):
  * its links' sessions, its links, the pages links drew of it. Taking back a

@@ -133,6 +133,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       batch_review: true,
       // I4: each person's rules learned from their corrections, and the count.
       batch_learning: true,
+      // S1 (0.8.0): an item's near matches, and adding it as a new version of one.
+      batch_versions: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

@@ -135,6 +135,18 @@ describe('an item’s level', () => {
     });
   });
 
+  it('Check, never Ready: a near match, a renewal of a document of theirs (0.8.0, S1)', () => {
+    const l = level({ renewal: { title: "Sara's passport" } });
+    expect(l.level).toBe('check');
+    expect(l.tags).toEqual([
+      { code: 'renewal', kind: 'check', words: "New version of Sara's passport?" },
+    ]);
+    // A Problem stays a Problem.
+    expect(level({ renewal: { title: 'x' }, reading: 'failed', failure: 'blank' }).level).toBe(
+      'problem',
+    );
+  });
+
   it('not read yet: no level, and the card starts from the defaults alone', () => {
     for (const reading of ['waiting', 'reading'] as const) {
       const l = level({ reading, defaults: { ...NO_DEFAULTS, owner_member_id: 'm-zain' } });

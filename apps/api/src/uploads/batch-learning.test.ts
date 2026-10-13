@@ -174,6 +174,23 @@ describe.skipIf(!testAdminUrl())('learning from corrections (I4)', () => {
     const res = await call(who, 'DELETE', '/api/v1/batches/learned');
     expect(res.statusCode, res.body).toBe(204);
   };
+  /**
+   * Their letters from the dentist filed so far, to the Trash: another of the
+   * same kind, person and issuer would be a near match — Check, never Ready
+   * (0.8.0, S1) — and these tests are about what Accept all Ready teaches.
+   */
+  const binDentist = async (who: Tokens) => {
+    const filed = await admin.query<{ id: string }>(
+      `select id from document
+        where owner_member_id = $1 and type_key = 'medical_record'
+          and lower(issued_by) = 'northgate dental' and deleted_at is null`,
+      [who.member_id],
+    );
+    for (const { id } of filed.rows) {
+      const res = await call(who, 'DELETE', `/api/v1/documents/${id}`);
+      expect(res.statusCode, res.body).toBe(204);
+    }
+  };
   const rulesOf = async (who: Tokens) =>
     (await learned(who)).rules.map(
       (r) => `${r.issuer} ${r.field}=${r.label ?? r.value} ${r.confirmed}/${r.contradicted}`,
@@ -610,6 +627,7 @@ describe.skipIf(!testAdminUrl())('learning from corrections (I4)', () => {
       type_key: 'medical_record',
       issued_by: 'Northgate Dental',
     });
+    await binDentist(adult);
     const at = await readItem(adult, {
       type_key: { value: 'medical_record', confidence: 0.97, cue: 'kind_words' },
       owner_member_id: { value: adult.member_id, confidence: 0.95, cue: 'name_labelled' },
@@ -647,6 +665,7 @@ describe.skipIf(!testAdminUrl())('learning from corrections (I4)', () => {
     const [ahmed] = (await plantRule(adult, 'northgate dental', { person: other.member_id }, 1, 1))
       .rows as Array<{ id: string }>;
     await plantRule(adult, 'northgate dental', { person: adult.member_id }, 1, 1);
+    await binDentist(adult);
     const at = await readItem(adult, {
       type_key: { value: 'medical_record', confidence: 0.97, cue: 'kind_words' },
       owner_member_id: { value: adult.member_id, confidence: 0.95, cue: 'name_labelled' },

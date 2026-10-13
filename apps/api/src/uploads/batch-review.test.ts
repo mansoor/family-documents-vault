@@ -178,13 +178,16 @@ describe.skipIf(!testAdminUrl())('the review queue: Accept all Ready and Undo (I
     who: string,
     c = 0.9,
     number = `P-${randomUUID().slice(0, 8)}`,
+    // An issuer of its own: two of one person's passports from one issuer are
+    // a renewal, Check and never Ready (0.8.0, S1), and these are not that.
+    issuer = `United Kingdom ${randomUUID().slice(0, 8)}`,
   ): DetailProposal => ({
     type_key: { value: 'passport', confidence: 0.97, cue: 'kind_words' },
     owner_member_id: { value: who, confidence: c, cue: 'name_labelled' },
     issued: { value: day('2021-03-14'), confidence: 0.89, cue: 'issue_label' },
     expires: { value: day('2031-03-14'), confidence: 0.94, cue: 'machine_lines' },
     identifier: { value: number, confidence: 0.95, cue: 'machine_lines' },
-    issued_by: { value: 'United Kingdom', confidence: 0.9, cue: 'machine_lines' },
+    issued_by: { value: issuer, confidence: 0.9, cue: 'machine_lines' },
   });
 
   /** An item sent and read as Ready, for `who`'s batch. */
@@ -286,7 +289,11 @@ describe.skipIf(!testAdminUrl())('the review queue: Accept all Ready and Undo (I
         physical_location: 'The blue folder',
       },
     });
-    const it = await readyItem(adult, b.id, passport(adult.member_id, 0.9, 'P-533401872'));
+    const it = await readyItem(
+      adult,
+      b.id,
+      passport(adult.member_id, 0.9, 'P-533401872', 'United Kingdom'),
+    );
     const before = await itemOf(adult, b.id, it.id);
     expect(before.level).toBe('ready');
     const card = untouchedAccept({

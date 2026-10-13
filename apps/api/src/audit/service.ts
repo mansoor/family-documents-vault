@@ -237,6 +237,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // document's line, for whoever may see the document.
   ['document.notes_changed', BY_TYPE],
   ['document.version_added', BY_TYPE],
+  // 0.8.0 (S1): a copy added from a batch and taken back: the document's
+  // line, for whoever may see the document, as its adding was.
+  ['batch.version_undone', BY_TYPE],
   ['document.downloaded', BY_TYPE],
   ['document.viewed', BY_TYPE],
   ['document.cached_offline', BY_TYPE],

@@ -1,3 +1,4 @@
+import { sql } from 'kysely';
 import { withSystem } from '@fdv/db';
 import type { PgBoss } from 'pg-boss';
 import { adapterOf, drawIncoming, removeObjects, undrawn, type IncomingDeps } from './incoming.js';
@@ -228,6 +229,16 @@ export async function sweepBatches(
   hh: string,
   now: Date,
 ): Promise<{ batches: number; items: number }> {
+  // What an Undo of a version added from a batch needed, sealed (0067, S1):
+  // let go once that Undo can no longer be asked, on the database's clock.
+  await withSystem(deps.db, hh, (trx) =>
+    trx
+      .updateTable('incoming_file')
+      .set({ prior_sealed: null })
+      .where('prior_sealed', 'is not', null)
+      .where(sql<boolean>`undo_until <= now()`)
+      .execute(),
+  );
   const ended = await withSystem(deps.db, hh, (trx) =>
     trx.selectFrom('intake_batch').select('id').where('ends_at', '<=', now).orderBy('id').execute(),
   );

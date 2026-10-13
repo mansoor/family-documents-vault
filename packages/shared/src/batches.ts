@@ -113,6 +113,46 @@ export type BatchDuplicate =
       same_batch: boolean;
     };
 
+/** The most near matches an item names (0.8.0, S1): the best first, "or another…" for the rest. */
+export const RENEWALS_MAX = 5;
+
+/**
+ * A near match (0.8.0, S1): a document the uploader may change that an item
+ * is probably the same paper as, or a renewal of. Judged on what its pages
+ * proposed — never its bytes — under the uploader's own rules, as it is
+ * asked: the same kind and the same number (spaces, dashes and case aside),
+ * or the same kind, person and issuer. Nothing of it is stored.
+ */
+export interface BatchRenewal {
+  document_id: string;
+  title: string | null;
+  /** How it matched: its number, or its kind, person and issuer. */
+  by: 'number' | 'details';
+}
+
+/**
+ * The separators a document number is written with, which say nothing of
+ * it: white space and every kind of dash. The vault strips the same ones in
+ * SQL, so the two always agree.
+ */
+export const NUMBER_SEPARATORS = ' \t\n\r\f\v ‐‑‒–—―−-';
+
+const separators = new RegExp(`[${NUMBER_SEPARATORS}]`, 'g');
+
+/** A document number as a near match compares it: "548 721-093" and "548721093" are one. */
+export const numberKey = (n: string): string => n.replace(separators, '').toLowerCase();
+
+/** An issuer as a near match compares it: its words, spaced once, in lower case. */
+export const issuerMatchKey = (s: string): string => s.trim().replace(/\s+/g, ' ').toLowerCase();
+
+/** "New version of Aisha's passport?": a near match, as the batch's page says it. */
+export const renewalWords = (r: Pick<BatchRenewal, 'title'>): string =>
+  `New version of ${r.title ?? 'a document with no name'}?`;
+
+/** "Same as Aisha's passport": a file already in the vault, as the batch's page says it. */
+export const sameAsWords = (d: { title: string | null }): string =>
+  `Same as ${d.title ?? 'a document with no name'}`;
+
 /** An item's own state: waiting for its uploader, or filed as a document. Removed ones are gone. */
 export type BatchItemState = 'waiting' | 'accepted';
 
@@ -161,6 +201,14 @@ export interface BatchItemView {
   preview_state: IncomingPreviewState | 'none';
   preview_pages: number | null;
   duplicate: BatchDuplicate | null;
+  /**
+   * Near matches (0.8.0, S1): documents the uploader may change that it is
+   * probably a new version of, best first, RENEWALS_MAX at most — each to be
+   * added to with `into_document_id`. Empty while it is not read, once it is
+   * accepted, and when it is the same file as a document they can see.
+   * Absent from a vault before 0.8.0.
+   */
+  renewals?: BatchRenewal[];
   /** Accepted: the document it became, while the uploader can still see it. */
   document_id: string | null;
 }
@@ -178,6 +226,15 @@ export interface BatchDetail extends BatchView {
  */
 export interface BatchAcceptInput extends CaptureMetadata {
   collection_id?: string | null;
+  /**
+   * Added as a new version of this document instead (0.8.0, S1): one the
+   * uploader may see and change (403 for one they may see but not change, a
+   * teen's not their own; 404 for one they cannot see). With it, only
+   * `issued`, `expires` and `identifier` may be sent — what the document
+   * takes from the new paper, as an edit would — and anything else is 422.
+   * Its Undo is Accept all Ready's, for ACCEPT_UNDO_MINUTES.
+   */
+  into_document_id?: string;
 }
 
 /** What an accepted item became; and who else will now see it, as a collection says (5.33). */
@@ -185,7 +242,15 @@ export interface BatchAccepted {
   document_id: string;
   version_id: string;
   warnings?: string[];
+  /**
+   * Added as a new version (0.8.0, S1): until when it may be taken back,
+   * with POST …/accept-ready/undo naming the item.
+   */
+  undo_until?: string;
 }
+
+/** What may be sent with `into_document_id`: what the document takes from the new paper. */
+export const VERSION_ACCEPT_FIELDS = ['issued', 'expires', 'identifier'] as const;
 
 /** The narrowest first: Only me, Adults only, Everyone. */
 const NARROW: Record<Visibility, number> = { private: 0, adults: 1, household: 2 };

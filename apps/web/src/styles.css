@@ -4433,6 +4433,23 @@ a.item-name:focus-visible {
   padding-bottom: 180px;
 }
 
+/* On a file's card (0.8.0, S1): the toast in the page's flow, above the
+   card, so it covers nothing the focus moves to. */
+.toast.toast-inline,
+.shell-phone .toast.toast-inline {
+  position: static;
+  width: auto;
+  max-height: none;
+  margin-bottom: 12px;
+  box-shadow: none;
+  flex-wrap: wrap;
+}
+
+/* Its words a line of their own when the card is narrow, the buttons under them. */
+.toast-inline .toast-words {
+  flex-basis: 14em;
+}
+
 html:has(.has-toast) {
   scroll-padding-bottom: 180px;
 }
@@ -4550,6 +4567,28 @@ html:has(.shell-phone):has(.has-toast) {
 
 .review-actions .spacer {
   flex: 1 1 auto;
+}
+
+/* A file that is probably a renewal (0.8.0, S1): the other documents it
+   may be added to, a button each, in the actions' row. */
+.other-versions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.other-versions .btn,
+.review-actions .btn-version {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.problem-box .row {
+  margin-top: 4px;
 }
 
 .btn .key-hint {

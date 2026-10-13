@@ -1278,7 +1278,11 @@ export function createApi(http: Http) {
       }),
     /**
      * Filed as a new document with every detail a capture takes, and a
-     * collection; a detail left out takes the batch's default.
+     * collection; a detail left out takes the batch's default. Or (0.8.0,
+     * `features.batch_versions`) with `into_document_id`, added as a new
+     * version of that document, with only its `issued`, `expires` and
+     * `identifier`: answered with `undo_until`, taken back by
+     * `undoAcceptReady`.
      */
     acceptBatchItem: (token: string, batchId: string, itemId: string, body: BatchAcceptInput) =>
       request<BatchAccepted>(`/api/v1/batches/${enc(batchId)}/items/${enc(itemId)}/accept`, {
@@ -1302,7 +1306,9 @@ export function createApi(http: Http) {
     /**
      * Undo of Accept all Ready, for ACCEPT_UNDO_MINUTES: each document removed
      * for good and its item waiting again; kept, with why, when it is too
-     * late or somebody has changed it since.
+     * late or somebody has changed it since. An item added as a new version
+     * (0.8.0) is taken back the same way: the version removed, the
+     * document's dates and number as they were, and the document kept.
      */
     undoAcceptReady: (token: string, batchId: string, itemIds: string[]) =>
       request<BatchUndoResult>(`/api/v1/batches/${enc(batchId)}/accept-ready/undo`, {
