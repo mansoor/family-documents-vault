@@ -579,7 +579,12 @@ describe.skipIf(!testAdminUrl())('the D1 review (0.8.0)', () => {
   it('F8: a day’s room for a computer, refused once full as device_day_full', async () => {
     const d = await pair(ahmed, 'Daily room');
     expect(d.key.length).toBe(43);
-    expect((await me(d)).json<DeviceMe>().limits.daily_bytes).toBe(3000);
+    const limits = (await me(d)).json<DeviceMe>().limits;
+    expect(limits.daily_bytes).toBe(3000);
+    // The household is on UTC: its day starts again at the next UTC midnight.
+    const midnight = new Date();
+    midnight.setUTCHours(24, 0, 0, 0);
+    expect(limits.day_resets_at).toBe(midnight.toISOString());
     expect((await upload(d, PDF('ONE', 1500))).statusCode).toBe(201);
     // Past the room: refused as it arrives, and nothing kept.
     const over = await upload(d, PDF('TWO', 1500));

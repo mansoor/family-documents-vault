@@ -1418,7 +1418,12 @@ export function createApi(http: Http) {
      */
     pairDevice: (body: DevicePairInput) =>
       request<DevicePaired>('/api/v1/devices/pair', { method: 'POST', body }),
-    /** What a computer's key is: its name, its person, and why its files are refused if they are. */
+    /**
+     * What a computer's key is: its name, its person, why its files are
+     * refused if they are, and its limits — `day_resets_at` the next
+     * midnight on the household's clock, when its day's batch and its
+     * room in bytes start again.
+     */
     deviceMe: (device: DeviceKey) =>
       request<DeviceMe>('/api/v1/devices/me', { headers: deviceHeaders(device) }),
     /**

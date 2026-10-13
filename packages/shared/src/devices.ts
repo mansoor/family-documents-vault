@@ -13,6 +13,9 @@
  * MIT, with the rest of @fdv/shared: the uploader app reads these too.
  */
 
+import { localToday } from './reminders.js';
+import { zonedTime } from './shares.js';
+
 /** The letters and digits a code is made of: none that reads as another (no 0/O, 1/I/L, 2/Z, 5/S, 8/B, U/V). */
 export const PAIRING_ALPHABET = 'ACDEFGHJKMNPQRTWXY34679';
 
@@ -102,6 +105,18 @@ export function deviceBatchName(device: string, day: string): string {
   return `From ${device}, ${date} ${MONTH_NAMES[month - 1] ?? ''} ${year}`;
 }
 
+/**
+ * The next midnight on the household's clock (0.8.0, D1): when a
+ * computer's day — its batch for the day and its room in bytes — starts
+ * again. Through a change of the clocks too: the moment the household's
+ * calendar turns to tomorrow's date.
+ */
+export function nextLocalMidnight(timezone: string, now: Date = new Date()): Date {
+  const [y = 1970, m = 1, d = 1] = localToday(timezone, now).split('-').map(Number);
+  const tomorrow = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+  return zonedTime(tomorrow, '00:00', timezone) ?? new Date(Date.UTC(y, m - 1, d + 1));
+}
+
 /** `POST /api/v1/device-pairings`: a code, shown once. */
 export interface DevicePairingCode {
   /** As it is shown and typed: KX7P-2M9Q. */
@@ -154,6 +169,11 @@ export interface DeviceMe {
     batch_max_files: number;
     /** The most this computer may send in a day, in bytes (FDV_DEVICE_DAILY_BYTES). */
     daily_bytes: number;
+    /**
+     * When its day starts again (ISO): the next midnight on the household's
+     * clock — a new batch for the day, and its room in bytes again.
+     */
+    day_resets_at: string;
     /** The kinds of file it takes, by media type. */
     accepted_types: string[];
   };

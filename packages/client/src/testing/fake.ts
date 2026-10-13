@@ -3,6 +3,7 @@ import {
   DEVICE_REFUSALS,
   deviceBatchName,
   deviceName,
+  nextLocalMidnight,
   normalisePairingCode,
   relativePathProblem,
   PAIRING_ALPHABET,
@@ -1674,6 +1675,7 @@ export function createFakeVault(): {
             max_upload_bytes: 104_857_600,
             batch_max_files: BATCH_MAX_FILES,
             daily_bytes: 2 * 1024 ** 3,
+            day_resets_at: nextLocalMidnight(state.timezone).toISOString(),
             accepted_types: ['application/pdf', 'image/jpeg', 'image/png'],
           },
         };

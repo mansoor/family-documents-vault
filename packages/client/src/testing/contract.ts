@@ -3041,12 +3041,17 @@ export const contractScenarios: Scenario[] = [
       });
       expect(paired.key.length).toBeGreaterThanOrEqual(43);
       const device = { device_id: paired.device_id, key: paired.key };
-      expect(await api.deviceMe(device)).toMatchObject({
+      const about = await api.deviceMe(device);
+      expect(about).toMatchObject({
         device_id: paired.device_id,
         device_name: 'Contract laptop',
         active: true,
         paused: null,
       });
+      // Its day starts again at the next midnight, within a day.
+      const resets = Date.parse(about.limits.day_resets_at) - Date.now();
+      expect(resets).toBeGreaterThan(0);
+      expect(resets).toBeLessThanOrEqual(25 * 3_600_000);
       // A code closed before it is used is ended.
       const closed = await api.createDevicePairing(token);
       await api.endDevicePairing(token);

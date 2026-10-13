@@ -13,6 +13,7 @@ import {
   DEVICE_REFUSALS,
   localToday,
   lockInEffect,
+  nextLocalMidnight,
   normalisePairingCode,
   PAIRING_ALPHABET,
   PAIRING_ATTEMPTS,
@@ -107,6 +108,8 @@ export interface DeviceCaller {
   role: Role;
   name: string;
   memberName: string;
+  /** The household's time zone: where its computers' days begin. */
+  timezone: string;
   paused: DevicePausedReason | null;
 }
 
@@ -422,6 +425,7 @@ export class DeviceService {
             .onRef('a.account_id', '=', 'd.account_id')
             .onRef('a.household_id', '=', 'd.household_id'),
         )
+        .innerJoin('household as h', 'h.id', 'd.household_id')
         .select([
           'd.id',
           'd.name',
@@ -429,6 +433,7 @@ export class DeviceService {
           'd.member_id',
           'd.revoked_at',
           'm.display_name',
+          'h.timezone',
           'a.role',
           'a.suspended_at',
           'a.suspended_until',
@@ -446,6 +451,7 @@ export class DeviceService {
         role,
         name: row.name,
         memberName: row.display_name,
+        timezone: row.timezone,
         paused: pausedFor({
           role,
           suspend_reason: row.suspend_reason ?? null,
@@ -468,6 +474,7 @@ export class DeviceService {
         max_upload_bytes: this.opts.maxUploadBytes,
         batch_max_files: BATCH_MAX_FILES,
         daily_bytes: this.opts.dailyBytes,
+        day_resets_at: nextLocalMidnight(c.timezone).toISOString(),
         accepted_types: Object.keys(UPLOAD_KINDS),
       },
     };

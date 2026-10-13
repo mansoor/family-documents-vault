@@ -4613,7 +4613,10 @@ name, platform, member_id, member_name, mine, added_at, last_used_at
     `FDV_DEVICE_DAILY_BYTES` (2 GB unless set): past it, `POST
 /api/v1/device-uploads` is `422 device_day_full` (refused before a byte
     is kept once the day is full, and as a file arrives that would pass
-    it); `GET /devices/me`'s `limits` carries `daily_bytes`. **Changed:**
+    it); `GET /devices/me`'s `limits` carries `daily_bytes`, and
+    `day_resets_at` — the next midnight on the household's clock (ISO), when
+    the day's batch and its room in bytes start again. `@fdv/shared`:
+    `nextLocalMidnight`. **Changed:**
     signing somebody out everywhere (`DELETE /members/{id}/sessions`), an
     owner's reset with `stop_now`, and a password changed (`POST
 /auth/password/change`) or reset (`POST /password-resets/complete`)
