@@ -109,6 +109,9 @@ import type {
   VersionView,
   Visibility,
   VisibilityChange,
+  WatchFolderInput,
+  WatchFolderView,
+  WatchNoticeView,
 } from '@fdv/shared';
 import type { Http, ResponseLike, UploadBody } from './http.js';
 import {
@@ -1328,6 +1331,26 @@ export function createApi(http: Http) {
     /** The caller's rules and count, forgotten. */
     forgetBatchLearning: (token: string) =>
       request<void>('/api/v1/batches/learned', { method: 'DELETE', token }),
+
+    // ------------------------------------------- the scanner folder (S3)
+    /**
+     * An owner's view of the scanner folder (`features.watch_folder`, or to
+     * say why it is not offered): the folder as the worker found it, on or
+     * off, whose Inbox it fills, and whether it is paused and why.
+     */
+    watchFolder: (token: string) => request<WatchFolderView>('/api/v1/watch-folder', { token }),
+    /** On or off, and whose Inbox: an owner's. `409 watch_folder_unavailable` while it is not offered. */
+    setWatchFolder: (token: string, body: WatchFolderInput) =>
+      request<WatchFolderView>('/api/v1/watch-folder', { method: 'PUT', body, token }),
+    /** "A scanned file couldn't be added": the caller's own. */
+    watchNotices: (token: string) =>
+      request<{ items: WatchNoticeView[] }>('/api/v1/watch-folder/notices', { token }),
+    /** One of those, dismissed (`204`). */
+    dismissWatchNotice: (token: string, id: string) =>
+      request<void>(`/api/v1/watch-folder/notices/${enc(id)}/dismiss`, {
+        method: 'POST',
+        token,
+      }),
   };
 }
 

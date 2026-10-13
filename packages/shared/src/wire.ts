@@ -454,6 +454,24 @@ export function lockInEffect(
   return s.suspend_reason === 'locked' && suspensionInEffect(s, now);
 }
 
+/**
+ * The kinds of file the vault keeps, and the extension each is stored
+ * under: what a single add, a batch's item and the scanner folder (S3) take,
+ * told from the file's own first bytes (a Word or Excel file, a zip inside,
+ * by what it says it is).
+ */
+export const UPLOAD_KINDS: Readonly<Record<string, string>> = {
+  'application/pdf': 'pdf',
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/heic': 'heic',
+  'image/heif': 'heic',
+  'image/tiff': 'tiff',
+  'image/webp': 'webp',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+};
+
 /** The largest photo a person's picture is made from (5.17c): 20 MiB. */
 export const PHOTO_MAX_BYTES = 20 * 1024 * 1024;
 

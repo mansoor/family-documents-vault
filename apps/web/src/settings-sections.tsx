@@ -73,6 +73,13 @@ export const OWNER_ROWS: SettingsRow[] = [
     title: 'Where email comes from',
     note: 'The mail server reminders and invitations are sent through',
   },
+  // The scanner folder (S3): offered to every owner, so its page can say why
+  // it is off when the folder is not set up.
+  {
+    to: '/settings/scanner',
+    title: 'Scanner folder',
+    note: 'Scan straight into someone’s Inbox',
+  },
 ];
 
 /** The household's rule for Only me documents and links (5.41): read by owners and adults. */
@@ -132,8 +139,8 @@ export function settingsSections(
       key: 'owners',
       to: '/settings/owners',
       label: 'For owners',
-      note: 'Where files are kept, where email comes from',
-      holds: at('/settings/owners', '/settings/storage', '/settings/email'),
+      note: 'Where files are kept, where email comes from, the scanner folder',
+      holds: at('/settings/owners', '/settings/storage', '/settings/email', '/settings/scanner'),
     });
   }
   return out;

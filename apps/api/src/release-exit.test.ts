@@ -166,7 +166,9 @@ type Kind =
   | 'deviceEndpoint'
   /** A batch of many documents, and a file in it (Phase 6, I1): their uploader's alone. */
   | 'batch'
-  | 'batchItem';
+  | 'batchItem'
+  /** A note that the scanner folder could not add a file (S3): its person's alone. */
+  | 'watchNotice';
 
 /** The ids one request is made with: the thing of each kind the attacker is after. */
 type Fill = Record<Kind, string>;
@@ -206,6 +208,7 @@ const PARAM_KINDS: Record<string, Kind> = {
   'files/:id': 'dropFile',
   'batches/:id': 'batch',
   'items/:itemId': 'batchItem',
+  'notices/:id': 'watchNotice',
 };
 
 /** The kinds that name a thing of somebody's: another's id here is refused unless the rule says. */
@@ -232,6 +235,7 @@ const OBJECT_KINDS: ReadonlySet<Kind> = new Set<Kind>([
   'dropFile',
   'batch',
   'batchItem',
+  'watchNotice',
 ]);
 
 interface Rule {
@@ -774,6 +778,13 @@ const RULES: Record<string, Rule> = {
   // alone, read and forgotten — never anybody else's, an owner's included.
   'GET /api/v1/batches/learned': { who: 'family' },
   'DELETE /api/v1/batches/learned': { who: 'family' },
+
+  // The scanner folder (0.8.0, S3): an owner's setting; and the notes it
+  // leaves, each its person's alone — an owner's too.
+  'GET /api/v1/watch-folder': { who: 'owners' },
+  'PUT /api/v1/watch-folder': { who: 'owners', body: () => ({ enabled: false }) },
+  'GET /api/v1/watch-folder/notices': { who: 'family' },
+  'POST /api/v1/watch-folder/notices/:id/dismiss': { who: 'family', body: () => ({}) },
 };
 
 /** Whether a role is among those a rule is for. */
@@ -1224,6 +1235,24 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
         .execute();
     });
     expect((await ok(send(ahmed, 'GET', '/api/v1/batches/learned'))).body).toContain(AHMED_LEARNED);
+    // A scan the scanner folder could not add to his Inbox (0.8.0, S3): its
+    // note, by name, his alone — an owner's too.
+    ids.watchNotice = await withSystem(h.db, olivia.household_id, async (trx) => {
+      const n = await trx
+        .insertInto('watch_notice')
+        .values({
+          household_id: olivia.household_id,
+          member_id: ahmed.member_id,
+          file_name: 'ahmed-scan-541.zip',
+          reason: 'unsupported',
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      return n.id;
+    });
+    expect((await ok(send(ahmed, 'GET', '/api/v1/watch-folder/notices'))).body).toContain(
+      'ahmed-scan-541',
+    );
 
     // Ahmed's own: a reminder, an export, a phone.
     const reminder = await ok(
@@ -2552,6 +2581,9 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       // A tag on his Only me document, and his batch's default tag (the Phase 6 exit).
       AHMED_TAG,
       BATCH_TAG,
+      // A note that the scanner folder could not add his file (S3).
+      ids.watchNotice as string,
+      'ahmed-scan-541',
     ];
     const outsideGrant = [
       ...secretsOf('will', 'deed', 'carInsurance'),
@@ -2583,6 +2615,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       deviceEndpoint: [ids.deviceEndpoint as string],
       batch: [ids.batch as string],
       batchItem: [ids.batchItem as string],
+      watchNotice: [ids.watchNotice as string],
     };
     const viewerLike = (name: Attacker, tokens: Tokens, stale = false): AttackerDef => ({
       name,
@@ -2883,6 +2916,7 @@ const PARAM_KIND_DEFAULTS: Record<Kind, true> = {
   deviceEndpoint: true,
   batch: true,
   batchItem: true,
+  watchNotice: true,
 };
 
 function kindOf(before: string, param: string): Kind | null {

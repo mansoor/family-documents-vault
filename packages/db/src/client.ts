@@ -723,6 +723,12 @@ export interface Schema {
     default_essential: Generated<boolean>;
     created_at: GeneratedTimestamp;
     ends_at: Timestamp;
+    /**
+     * A scanner's batch (0068, S3): the day it is for, on the household's
+     * calendar (YYYY-MM-DD), one a person a day. Set by the vault alone;
+     * null for a batch somebody made.
+     */
+    watch_day: ColumnType<string | null, string | null | undefined, string | null>;
   };
 
   /** A person's rule, learned from their corrections (0065, Phase 6 I4): theirs alone. */
@@ -1215,6 +1221,52 @@ export interface Schema {
   instance: {
     singleton: Generated<boolean>;
     instance_id: Generated<string>;
+    created_at: GeneratedTimestamp;
+  };
+
+  /**
+   * The scanner folder as the worker last found it (0068, S3): the
+   * installation's, one row. Written by the owning role alone.
+   */
+  watch_dir: {
+    singleton: Generated<boolean>;
+    dir: string | null;
+    state: 'off' | 'ready' | 'missing' | 'not_a_folder' | 'not_writable';
+    checked_at: GeneratedTimestamp;
+  };
+
+  /**
+   * A household's scanner folder (0068, S3): on or off, and whose Inbox it
+   * fills; why the worker has paused it, and when it last added a file.
+   * An owner's alone.
+   */
+  watch_folder: {
+    household_id: string;
+    enabled: Generated<boolean>;
+    member_id: string | null;
+    updated_by: string | null;
+    updated_at: GeneratedTimestamp;
+    paused_reason:
+      | 'removed'
+      | 'no_sign_in'
+      | 'cannot_add'
+      | 'locked'
+      | 'restored'
+      | 'sealed'
+      | 'no_storage'
+      | 'day_full'
+      | null;
+    paused_at: Timestamp | null;
+    last_added_at: Timestamp | null;
+  };
+
+  /** "A scanned file couldn't be added" (0068, S3): its person's alone. */
+  watch_notice: {
+    id: Generated<string>;
+    household_id: string;
+    member_id: string;
+    file_name: string;
+    reason: 'unsupported' | 'too_large' | 'unreadable' | 'empty';
     created_at: GeneratedTimestamp;
   };
 

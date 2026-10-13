@@ -317,7 +317,8 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_MASTER_KEY`                                | generated                                 | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost.                                                                                                           |
 | `FDV_DB_PASSWORD`                               | generated                                 | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                                                                                                    |
 | `FDV_DB_APP_PASSWORD`                           | generated                                 | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query.                                                                      |
-| `FDV_MAX_UPLOAD_BYTES`                          | `104857600`                               | Largest single file the vault accepts (100 MB).                                                                                                                                                                         |
+| `FDV_MAX_UPLOAD_BYTES`                          | `104857600`                               | Largest single file the vault accepts (100 MB), uploaded or from the scanner folder.                                                                                                                                    |
+| `FDV_WATCH_DIR`                                 | unset                                     | A folder a scanner saves into, inside the worker: `/watch`, with the compose file's mount. Unset: none. See [Scanning straight into the vault](#scanning-straight-into-the-vault).                                      |
 | `FDV_OFFLINE_MAX_DAYS`                          | `90`                                      | How many days a phone may show the Essentials it keeps without reaching the vault (1 to 365). See [Essentials on a phone](#essentials-on-a-phone).                                                                      |
 | `FDV_RATE_LIMIT_PER_MINUTE`                     | `300`                                     | How many requests one address may make in a minute, beyond the tighter limits on signing in and opening links (60 to 100000). Raise it when many devices share one address.                                             |
 | `FDV_DISPLAY_NAME`                              | `Our family vault`                        | The vault's name until it is set up. From then on every screen, and the phone app, shows the family's name, given at setup.                                                                                             |
@@ -632,6 +633,60 @@ only takes away. Such a link lasts 30 days at most. Sharing a collection
 always asks you to confirm it is you; a teen cannot share one; and deleting the
 collection, or making it Only me, ends its links. Every link, to a document or a
 collection, is in **Sharing**, to take back.
+
+### Scanning straight into the vault
+
+A network scanner, or a printer's "scan to folder", can save straight into a
+folder on the server. Each scan then lands in one person's Inbox to look over,
+as if they had added it.
+
+1. **Make the folder**, beside your `docker-compose.yml`, and give it to the
+   containers' user (uid 1000), which must be able to write in it:
+
+   ```bash
+   mkdir scanner && sudo chown 1000:1000 scanner
+   ```
+
+2. **Mount it into the worker.** In `docker-compose.yml`, uncomment
+   `# - ./scanner:/watch` under the worker's `volumes`, add `FDV_WATCH_DIR=/watch`
+   to `.env`, and run `docker compose up -d`. Only the worker needs it.
+3. **Point the scanner at it.** Share the host's `scanner` folder on your home
+   network, over SMB (a Samba share, or a shared folder on Windows or a NAS) or
+   FTP, with a password, and set it as the scanner's network folder. Most
+   scanners name each file by the date and time, so no two are alike.
+4. **Turn it on.** An owner, in **Settings → For owners → Scanner folder**,
+   chooses whose Inbox it fills: themselves, or anyone in the family who signs
+   in and adds documents, never a viewer. The page says whether the folder is
+   ready and, if not, why: not set, not there, or not writable.
+
+What happens to each file:
+
+- The worker looks every 15 seconds, and takes a file once its size and time
+  haven't changed for 10 seconds, so a scan still being saved is left alone.
+  It polls rather than waiting for the system to say a file changed, which
+  bind mounts on Docker Desktop never do. One worker watches, however many
+  run.
+- Files in folders inside it are taken too. Hidden files (a name starting with
+  `.`), names a program uses while it saves (`~…`, `….tmp`, `….part`) and the
+  `rejected` folder are left alone.
+- It is encrypted into that person's batch of the day, "Scanner, 12 Oct" on the
+  household's calendar, read and proposed for like anything they upload, and
+  only then deleted from the folder. Until they accept it nobody else sees
+  it, not even an owner.
+- A file the vault can't take is moved to `rejected/`, with a note beside it
+  (`<name>.txt`) saying why. That happens when it isn't a PDF, JPEG, PNG,
+  TIFF, HEIC, WebP, Word or Excel file, is larger than `FDV_MAX_UPLOAD_BYTES`,
+  is empty, or can't be read. That person sees "A scanned file couldn't be
+  added" in Needs attention. Delete the file and its note once you have dealt
+  with them.
+- It pauses while that person's sign-in is locked or waiting after a restore,
+  while they can no longer add documents, while the vault can't open their key
+  (the wrong `FDV_MASTER_KEY`) or has nowhere to keep files, and once the
+  day's batch is full (200 files). Settings says why. Scans wait in the folder
+  meanwhile.
+
+Nothing in the folder is encrypted, and the folder is not backed up: a scan
+sits there only until it is stored, or until you deal with what was rejected.
 
 ### When a new device signs in
 

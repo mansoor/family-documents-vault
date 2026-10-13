@@ -91,6 +91,12 @@ export const SCREEN_RULES = {
   owners: { may: owner, title: 'For owners', why: refusalFor('storage.manage') },
   storage: { may: owner, title: 'Where your files are kept', why: refusalFor('storage.manage') },
   email: { may: owner, title: 'Where email comes from', why: refusalFor('notifications.manage') },
+  // The scanner folder (S3): an owner's.
+  scanner: {
+    may: owner,
+    title: 'Scanner folder',
+    why: 'Only an owner can set up the scanner folder.',
+  },
 } satisfies Record<string, ScreenRule>;
 
 /** "This isn't something you can open": the screen's name, and who it is for. */

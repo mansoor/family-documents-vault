@@ -74,6 +74,20 @@ const schema = z.object({
     .describe(
       "Pages of a PDF that are read, by the PDF's own text or by OCR where a page has none; the rest are stored but not searchable.",
     ),
+  FDV_WATCH_DIR: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'A folder a network scanner saves into (S3): mounted into the worker, it fills one ' +
+        "person's Inbox once an owner turns it on. Unset: there is no scanner folder.",
+    ),
+  FDV_MAX_UPLOAD_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(100 * 1024 * 1024)
+    .describe('Largest single file the vault accepts: from the scanner folder as from an upload.'),
   DATABASE_ADMIN_URL: z
     .string()
     .min(1)

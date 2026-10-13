@@ -6,6 +6,20 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Scanning straight into the vault.** Point a network scanner at a folder on the server, and each scan goes into one person's Inbox to look over, as if they had added it.
+  - **The server:** mount a folder into the worker and set `FDV_WATCH_DIR` (README, "Scanning straight into the vault"). The compose file has the mount, commented out.
+  - **The app:** an owner turns it on in **Settings → For owners → Scanner folder** and chooses whose Inbox it fills: themselves, or anyone in the family who signs in and adds documents, never a viewer. The page says when the folder isn't ready, and why.
+  - **Each file** is taken once the scanner has finished saving it, encrypted into that person's batch of the day ("Scanner, 12 Oct"), read and proposed for as anything they upload, and then deleted from the folder. Files in folders inside it are taken too.
+  - **A file the vault can't take** (not a PDF, photo, Word or Excel file, too large, empty or unreadable) is moved to `rejected/`, with a note beside it saying why, and that person sees "A scanned file couldn't be added" in Needs attention.
+  - **It pauses**, and Settings says why, while that person is locked, waits after a restore or can no longer add documents, while the vault can't open their key or has nowhere to keep files, and once the day's batch is full. Files wait in the folder until then.
+  - **API:** `features.watch_folder`; `GET` and `PUT /api/v1/watch-folder` (owners); `GET /api/v1/watch-folder/notices` and `POST …/notices/{id}/dismiss` (the person's own).
+
+### Database
+
+- **Migration 0068** adds the scanner folder: the folder as the worker last found it, each household's setting (an owner's alone), the notes of files it couldn't add (their person's alone), and the day a scanner's batch is for.
+
 ## [0.8.0-dev.3] - 2026-10-13 — duplicates and renewals as new versions
 
 ### Added

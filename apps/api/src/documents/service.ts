@@ -63,6 +63,7 @@ import {
   type Status,
   type TypeField,
   type VersionView,
+  UPLOAD_KINDS,
   withSealed,
 } from '@fdv/shared';
 import { objectKey, readAll, type StorageAdapter } from '@fdv/storage';
@@ -3367,18 +3368,11 @@ function decodeCursor(s: string): { k: string; id: string } {
   }
 }
 
-/** CAP-03: the formats the vault accepts. Detected from the bytes, not the name. */
-const ACCEPTED: Record<string, string> = {
-  'application/pdf': 'pdf',
-  'image/jpeg': 'jpg',
-  'image/png': 'png',
-  'image/heic': 'heic',
-  'image/heif': 'heic',
-  'image/tiff': 'tiff',
-  'image/webp': 'webp',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
-};
+/**
+ * CAP-03: the formats the vault accepts. Detected from the bytes, not the
+ * name. The scanner folder (S3) takes the same, from @fdv/shared.
+ */
+const ACCEPTED: Readonly<Record<string, string>> = UPLOAD_KINDS;
 
 /**
  * A pass-through that inspects the first bytes as they flow and resolves

@@ -54,6 +54,8 @@ import { DROP_COOKIE_PATH, type UploadRequestService } from './uploads/requests.
 import type { IncomingService } from './uploads/incoming.js';
 import type { BatchService } from './uploads/batches.js';
 import { registerVaults } from './vaults/routes.js';
+import { registerWatchFolder } from './watch-folder/routes.js';
+import type { WatchFolderService } from './watch-folder/service.js';
 import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
 import { ownNetworks, trustProxyFor } from './client-address.js';
@@ -114,6 +116,8 @@ export interface AppDeps {
   passwords: PasswordService;
   /** Essentials a phone may keep (0.4.13). */
   offline: OfflineService;
+  /** The scanner folder (0.8.0, S3): the owners' setting, and the notes it leaves. */
+  watchFolder?: WatchFolderService;
   logger?: boolean | object;
   /**
    * The networks this process is on, for `FDV_TRUST_PROXY=network` (5.30):
@@ -377,6 +381,14 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
       shareMaxDays: config.FDV_SHARE_MAX_DAYS,
       operatorMail: Boolean(config.FDV_SMTP_URL),
+      // The scanner folder (S3): only while the worker has it, there and
+      // writable, and said so lately. Not known is not offered.
+      watchFolder: await (deps.watchFolder?.available() ?? Promise.resolve(false)).catch(
+        (err: unknown) => {
+          req.log.warn({ err }, 'the scanner folder could not be asked about');
+          return false;
+        },
+      ),
       setupRequired,
       pushEnabled: Boolean(config.FDV_VAPID_PUBLIC_KEY),
       // Without it the document is still true, only less specific; say
@@ -440,6 +452,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerUploads(app, deps.uploads);
   registerIncoming(app, deps.incoming);
   registerBatches(app, deps.batches);
+  if (deps.watchFolder) registerWatchFolder(app, deps.watchFolder);
 
   return app;
 }
