@@ -813,6 +813,8 @@ const RULES: Record<string, Rule> = {
   // sign-in; the key's own two routes, which nothing else opens; and the
   // computers listed and revoked — their person's, and any by an owner.
   'POST /api/v1/device-pairings': { who: 'family', body: () => ({}) },
+  // And the caller's own code ended, as its dialog closes (the D1 review): nobody else's.
+  'DELETE /api/v1/device-pairings': { who: 'family' },
   'POST /api/v1/devices/pair': {
     who: 'public',
     bodies: () => [

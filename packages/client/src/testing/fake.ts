@@ -1593,6 +1593,14 @@ export function createFakeVault(): {
       };
       return ok(made, 201);
     }
+    if (path === '/api/v1/device-pairings' && init.method === 'DELETE') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!can(who.role, 'document.add')) return fail(403, 'forbidden', refusalFor('document.add'));
+      state.pairings = pairings.filter((p) => p.member_id !== who.memberId);
+      return empty();
+    }
     if (path === '/api/v1/devices/pair' && init.method === 'POST') {
       const name = typeof body.device_name === 'string' ? deviceName(body.device_name) : null;
       if (!name) return fail(422, 'validation_failed', 'Give the computer a name.');
@@ -1665,6 +1673,7 @@ export function createFakeVault(): {
           limits: {
             max_upload_bytes: 104_857_600,
             batch_max_files: BATCH_MAX_FILES,
+            daily_bytes: 2 * 1024 ** 3,
             accepted_types: ['application/pdf', 'image/jpeg', 'image/png'],
           },
         };

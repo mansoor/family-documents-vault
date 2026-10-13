@@ -11,6 +11,7 @@ import {
   BATCH_MAX_FILES,
   can,
   DEVICE_REFUSALS,
+  localToday,
   lockInEffect,
   normalisePairingCode,
   PAIRING_ALPHABET,
@@ -19,6 +20,7 @@ import {
   PAIRING_MINUTES,
   refusalFor,
   seesAdults,
+  shareEndWords,
   showPairingCode,
   suspensionInEffect,
   UPLOAD_KINDS,
@@ -90,6 +92,8 @@ export interface DeviceOptions {
   downloadUrl: string | null;
   /** FDV_MAX_UPLOAD_BYTES. */
   maxUploadBytes: number;
+  /** FDV_DEVICE_DAILY_BYTES: the most one computer may send in a day. */
+  dailyBytes: number;
   /** The person told a computer was added (the alert's mail path). */
   alert: (a: AlertRequest) => Promise<void>;
 }
@@ -121,6 +125,23 @@ const unknownKey = () =>
 const revoked = () => new ApiError(401, 'device_revoked', DEVICE_REFUSALS.device_revoked);
 const cannotPair = () => new ApiError(403, 'forbidden', refusalFor('document.add'));
 const notHere = () => new ApiError(404, 'not_found', 'That computer is not here.');
+const dayFull = () =>
+  new ApiError(
+    422,
+    'device_day_full',
+    'This computer has sent as much as it may today. The rest can wait until tomorrow.',
+  );
+
+/** A computer's platform, as an email says it. */
+const PLATFORM_WORDS: Readonly<Record<string, string>> = {
+  windows: 'Windows',
+  macos: 'Mac',
+  linux: 'Linux',
+  other: 'a computer',
+};
+
+/** Work a miss does, so that it takes as long as a code found: an HMAC compared, a row asked for. */
+const NOBODY = '00000000-0000-4000-8000-000000000000';
 
 /** A refusal for a computer whose person may not add documents just now. */
 function pausedRefusal(reason: DevicePausedReason): ApiError {
@@ -231,13 +252,66 @@ export class DeviceService {
     const found = await sql<{ household_id: string; pairing_id: string }>`
       select household_id, pairing_id from device_pairing_find(${handle})`.execute(this.db);
     const at = found.rows[0];
-    if (!at) throw wrongCode();
+    if (!at) {
+      // A first half that names no code takes the time one that does would:
+      // a transaction, a row asked for and held, an HMAC compared, a write.
+      await withSystem(this.db, NOBODY, async (trx) => {
+        await trx
+          .selectFrom('device_pairing')
+          .select('id')
+          .where('id', '=', NOBODY)
+          .forUpdate()
+          .executeTakeFirst();
+        timingSafeEqual(proof, this.hmac('code', 'nobody'));
+        await trx
+          .updateTable('device_pairing')
+          .set({ attempts: sql<number>`attempts` })
+          .where('id', '=', NOBODY)
+          .execute();
+      });
+      throw wrongCode();
+    }
 
     type Outcome =
       | { kind: 'wrong' }
       | { kind: 'refused'; error: ApiError }
-      | { kind: 'paired'; answer: DevicePaired; accountId: string; name: string };
+      | {
+          kind: 'paired';
+          answer: DevicePaired;
+          accountId: string;
+          name: string;
+          platform: string;
+          timezone: string;
+        };
     const outcome: Outcome = await withSystem(this.db, at.household_id, async (trx) => {
+      // In the order every change to a person takes its locks: read first,
+      // unheld, to know whose it is; then the person's membership, shared;
+      // then the code itself, held, and looked at again.
+      const seen = await trx
+        .selectFrom('device_pairing')
+        .select(['account_id', 'member_id'])
+        .where('id', '=', at.pairing_id)
+        .executeTakeFirst();
+      if (!seen) return { kind: 'wrong' };
+      // Its person as they are now, held until the key is made: a role
+      // changed or a sign-in taken away waits for it, and it for them.
+      const person = await trx
+        .selectFrom('account_household as a')
+        .innerJoin('member as m', (j) =>
+          j.onRef('m.id', '=', 'a.member_id').onRef('m.household_id', '=', 'a.household_id'),
+        )
+        .select([
+          'a.role',
+          'a.suspended_at',
+          'a.suspended_until',
+          'a.suspend_reason',
+          'a.member_id',
+          'm.display_name',
+        ])
+        .where('a.account_id', '=', seen.account_id)
+        .where('a.member_id', '=', seen.member_id)
+        .forShare('a')
+        .executeTakeFirst();
       const row = await trx
         .selectFrom('device_pairing')
         .selectAll()
@@ -255,32 +329,16 @@ export class DeviceService {
           .execute();
         return { kind: 'wrong' };
       }
-      // Its person as they are now, held until the key is made: a role
-      // changed or a sign-in taken away waits for it, and it for them.
-      const person = await trx
-        .selectFrom('account_household as a')
-        .innerJoin('member as m', (j) =>
-          j.onRef('m.id', '=', 'a.member_id').onRef('m.household_id', '=', 'a.household_id'),
-        )
-        .select([
-          'a.role',
-          'a.suspended_at',
-          'a.suspended_until',
-          'a.suspend_reason',
-          'a.member_id',
-          'm.display_name',
-        ])
-        .where('a.account_id', '=', row.account_id)
-        .where('a.member_id', '=', row.member_id)
-        .forShare('a')
-        .executeTakeFirst();
       // Spent, whatever comes of it: a code is used once.
       await trx.deleteFrom('device_pairing').where('id', '=', row.id).execute();
       const paused = person ? pausedFor(person) : 'cannot_add';
       if (!person || paused !== null) {
         return { kind: 'refused', error: pausedRefusal(paused ?? 'cannot_add') };
       }
-      const household = await trx.selectFrom('household').select('name').executeTakeFirstOrThrow();
+      const household = await trx
+        .selectFrom('household')
+        .select(['name', 'timezone'])
+        .executeTakeFirstOrThrow();
       const deviceId = randomUUID();
       const key = randomBytes(KEY_BYTES).toString('base64url');
       await trx
@@ -308,6 +366,8 @@ export class DeviceService {
         kind: 'paired',
         accountId: row.account_id,
         name: input.device_name,
+        platform: input.platform,
+        timezone: household.timezone,
         answer: {
           device_id: deviceId,
           key,
@@ -325,7 +385,7 @@ export class DeviceService {
         householdId: at.household_id,
         accountIds: [outcome.accountId],
         subject: 'A computer was added to your sign-in',
-        body: `A computer was added to your sign-in: ${outcome.name}. It can send scans into your uploads, and nothing else. If this wasn't you, remove it in Settings → Your computers.`,
+        body: `A computer was added to your sign-in: ${outcome.name} (${PLATFORM_WORDS[outcome.platform] ?? 'a computer'}), on ${shareEndWords(new Date(), outcome.timezone)} (${outcome.timezone}). It can send scans into your uploads, and nothing else. If this wasn't you, remove it in Settings → Your computers.`,
         emailOnly: true,
       })
       .catch(() => undefined);
@@ -337,8 +397,8 @@ export class DeviceService {
   /**
    * Whoever `Authorization: Device <id>.<key>` is: its computer and its
    * person, as they are now. A key the vault does not know is `401
-   * unauthenticated`; one revoked, `401 device_revoked`. Its last use is
-   * noted.
+   * unauthenticated`; one revoked, `401 device_revoked`. (When it last sent
+   * something is noted as a file arrives, never as it asks.)
    */
   async authenticate(header: string | undefined): Promise<DeviceCaller> {
     const m = /^Device ([^.\s]+)\.(\S+)$/.exec(header ?? '');
@@ -377,11 +437,6 @@ export class DeviceService {
         .where('d.id', '=', id)
         .executeTakeFirst();
       if (!row || row.revoked_at !== null || !row.role) throw revoked();
-      await trx
-        .updateTable('upload_device')
-        .set({ last_used_at: sql<Date>`now()` })
-        .where('id', '=', row.id)
-        .execute();
       const role = row.role;
       return {
         deviceId: row.id,
@@ -412,6 +467,7 @@ export class DeviceService {
       limits: {
         max_upload_bytes: this.opts.maxUploadBytes,
         batch_max_files: BATCH_MAX_FILES,
+        daily_bytes: this.opts.dailyBytes,
         accepted_types: Object.keys(UPLOAD_KINDS),
       },
     };
@@ -441,31 +497,89 @@ export class DeviceService {
   ): Promise<{ answer: DeviceUploaded; replayed: boolean }> {
     if (c.paused) throw pausedRefusal(c.paused);
     const p = this.principalOf(c);
+    // A day already full is refused before a byte is kept, or a batch made.
+    if ((await this.sentToday(p, c.deviceId)) >= this.opts.dailyBytes) throw dayFull();
     const batchId = await this.batches.deviceBatch(
       p,
       { id: c.deviceId, name: c.name },
       upload.idempotencyKey,
     );
-    const { item, replayed } = await this.batches.addItem(
-      p,
-      batchId,
-      {
-        ...upload,
-        // The key still live, held while the file's row is made.
-        stillAllowed: async (trx) => {
-          const live = await trx
-            .selectFrom('upload_device')
-            .select('id')
-            .where('id', '=', c.deviceId)
-            .where('revoked_at', 'is', null)
-            .forShare()
-            .executeTakeFirst();
-          if (!live) throw revoked();
+    // The key still live, held while the file's row is made and as it is
+    // finished: one revoked meanwhile lands nothing.
+    const live = async (trx: Db) => {
+      const row = await trx
+        .selectFrom('upload_device')
+        .select('id')
+        .where('id', '=', c.deviceId)
+        .where('revoked_at', 'is', null)
+        .forShare()
+        .executeTakeFirst();
+      if (!row) throw revoked();
+    };
+    try {
+      const { item, replayed } = await this.batches.addItem(
+        p,
+        batchId,
+        {
+          ...upload,
+          stillAllowed: live,
+          // Arrived whole: within the day's room, counted with the batch
+          // held, so two files at once never pass it together; and its
+          // computer's last sending noted, now.
+          arrived: async (trx, bytes) => {
+            await trx
+              .selectFrom('intake_batch')
+              .select('id')
+              .where('id', '=', batchId)
+              .forUpdate()
+              .executeTakeFirst();
+            const sent = await trx
+              .selectFrom('incoming_file')
+              .select((eb) => eb.fn.sum<string | number | null>('byte_size').as('n'))
+              .where('batch_id', '=', batchId)
+              .executeTakeFirstOrThrow();
+            if (Number(sent.n ?? 0) + bytes > this.opts.dailyBytes) throw dayFull();
+            await trx
+              .updateTable('upload_device')
+              .set({ last_used_at: sql<Date>`now()` })
+              .where('id', '=', c.deviceId)
+              .execute();
+          },
         },
-      },
-      meta,
+        meta,
+      );
+      return { answer: { item_id: item.id, status: item.state }, replayed };
+    } catch (err) {
+      // A day's batch its first file never reached is not left empty.
+      await this.batches.dropIfEmpty(p, batchId).catch(() => undefined);
+      throw err;
+    }
+  }
+
+  /** How many bytes a computer has sent today, on the household's calendar. */
+  private async sentToday(p: Principal, deviceId: string): Promise<number> {
+    return withPrincipal(this.db, p, async (trx) => {
+      const household = await trx
+        .selectFrom('household')
+        .select('timezone')
+        .executeTakeFirstOrThrow();
+      const sent = await trx
+        .selectFrom('incoming_file as f')
+        .innerJoin('intake_batch as b', 'b.id', 'f.batch_id')
+        .select((eb) => eb.fn.sum<string | number | null>('f.byte_size').as('n'))
+        .where('b.device_id', '=', deviceId)
+        .where('b.device_day', '=', localToday(household.timezone))
+        .executeTakeFirstOrThrow();
+      return Number(sent.n ?? 0);
+    });
+  }
+
+  /** DELETE /device-pairings: the caller's own code, if one is waiting, ended now. */
+  async endPairing(p: Principal): Promise<void> {
+    this.mayAdd(p);
+    await withPrincipal(this.db, p, (trx) =>
+      trx.deleteFrom('device_pairing').where('member_id', '=', p.memberId).execute(),
     );
-    return { answer: { item_id: item.id, status: item.state }, replayed };
   }
 
   // --------------------------------------------------------- managing them
@@ -584,3 +698,40 @@ export async function logDevicesEnded(
   }
   return ended.length;
 }
+
+/**
+ * The emergency controls (0.8.0, D1, the review's F2): every computer of
+ * somebody's here stopped at once, and any code of theirs forgotten, by
+ * the database's own `upload_devices_revoke_for()` — signed out everywhere,
+ * or their password stopped by an owner (`signed_out`); their password
+ * changed or reset (`password_changed`) — with a line in the activity log
+ * for each. Inside the caller's transaction; how many it stopped.
+ */
+export async function stopDevicesOf(
+  trx: Db,
+  by: { householdId: string; actorAccountId: string },
+  accountId: string,
+  reason: 'signed_out' | 'password_changed',
+  meta: RequestMeta,
+): Promise<number> {
+  const stopped = await sql<{ member_id: string; name: string; platform: string }>`
+    select member_id, name, platform from upload_devices_revoke_for(${accountId}::uuid, ${reason})`.execute(
+    trx,
+  );
+  for (const d of stopped.rows) {
+    await appendAudit(trx, {
+      householdId: by.householdId,
+      actorAccountId: by.actorAccountId,
+      action: 'computer.revoked',
+      objectType: 'member',
+      objectId: d.member_id,
+      detail: { name: d.name, platform: d.platform, reason },
+      ip: meta.ip,
+    });
+  }
+  return stopped.rows.length;
+}
+
+/** Said to somebody whose computers stopped with their password or their sign-ins. */
+export const COMPUTERS_STOPPED =
+  'Your computers that send scans have stopped too: pair each again in Settings → Your computers.';

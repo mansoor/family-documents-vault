@@ -3047,6 +3047,13 @@ export const contractScenarios: Scenario[] = [
         active: true,
         paused: null,
       });
+      // A code closed before it is used is ended.
+      const closed = await api.createDevicePairing(token);
+      await api.endDevicePairing(token);
+      const ended = await refusal(
+        api.pairDevice({ code: closed.code, device_name: 'Closed', platform: 'linux' }),
+      );
+      expect(ended.code).toBe('pairing_code_invalid');
       // A code is used once.
       const again = await refusal(
         api.pairDevice({ code: pairing.code, device_name: 'Another', platform: 'macos' }),

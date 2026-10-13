@@ -20,9 +20,19 @@ export interface FilePart {
   bytes: Uint8Array;
 }
 
+/**
+ * A multipart boundary nobody can guess (the D1 review): one a file's bytes
+ * could hold by chance or design would cut the file short. From Web
+ * Crypto's random numbers, which every platform this runs on has.
+ */
+export function newBoundary(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(18));
+  return `fdv-${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+}
+
 export function multipartBody(
   parts: Array<FieldPart | FilePart>,
-  boundary = `fdv-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`,
+  boundary = newBoundary(),
 ): { bytes: Uint8Array; contentType: string } {
   const enc = new TextEncoder();
   const chunks: Uint8Array[] = [];
@@ -214,7 +224,7 @@ function streamedMultipart(
 ): UploadBody {
   const Stream = (globalThis as { ReadableStream?: StreamCtor }).ReadableStream;
   if (!Stream) throw new Error('No ReadableStream on this platform: send the file as a Blob.');
-  const boundary = `fdv-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+  const boundary = newBoundary();
   const enc = new TextEncoder();
   const head = enc.encode(
     fields

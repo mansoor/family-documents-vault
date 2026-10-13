@@ -511,6 +511,19 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
             : line(
                 `${who} changed ${possessive(personOf(e))} role, so their ${it} can no longer send scans`,
               );
+        // The emergency controls (the D1 review, F2).
+        case 'signed_out':
+          return isOwn(e)
+            ? line(`${who} signed out everywhere, so their ${it} can no longer send scans`, true)
+            : line(
+                `${who} signed ${personOf(e)} out everywhere, so their ${it} can no longer send scans`,
+                true,
+              );
+        case 'password_changed':
+          return line(
+            `${who} changed their password, so their ${it} can no longer send scans`,
+            true,
+          );
         case 'owner':
           return line(`${who} removed ${possessive(personOf(e))} ${it}`, true);
         default:

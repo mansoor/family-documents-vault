@@ -1933,6 +1933,38 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it('notices a computer’s rules for what is written gone (0070, D1, the review’s F7)', async () => {
+    const rules: Array<[table: string, name: string, cmd: string, words: RegExp]> = [
+      ['upload_device', 'upload_device_actor_insert', 'insert', /who makes a computer’s key/],
+      ['upload_device', 'upload_device_actor_delete', 'delete', /who removes a computer’s key/],
+      ['device_pairing', 'device_pairing_actor_insert', 'insert', /who makes a code to pair/],
+      ['device_pairing', 'device_pairing_actor_update', 'update', /who counts the tries/],
+      ['intake_batch', 'intake_batch_device_insert', 'insert', /which computer a day’s batch/],
+    ];
+    for (const [table, name, cmd, words] of rules) {
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as qual, pg_get_expr(polwithcheck, polrelid) as chk
+           from pg_policy where polname = '${name}'`,
+      );
+      const qual = rows[0]?.qual as string | null;
+      const chk = rows[0]?.chk as string | null;
+      expect(qual ?? chk, name).toBeTruthy();
+      await sql(vault.adminUrl, `drop policy ${name} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), name).rejects.toThrow(words);
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${name} on public.${table} as restrictive for ${cmd}` +
+            (qual ? ` using (${qual})` : '') +
+            (chk ? ` with check (${chk})` : ''),
+        );
+      }
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it('notices an audit log that can be changed', async () => {
     await sql(vault.adminUrl, 'grant update on public.audit_event to fdv_app');
     await expect(checkRestored(target())).rejects.toThrow(/no longer append-only/);

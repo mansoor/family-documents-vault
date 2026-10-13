@@ -37,6 +37,9 @@ const ALLOWED = [
   // for its person and their role, and its last use noted. Everything the
   // key then does, it does as its person (BatchService), never as the vault.
   'devices/service.ts DeviceService.pair',
+  // And a first half that names no code does the same work, in a household
+  // that is nobody's, so that it takes as long (the D1 review, F4).
+  'devices/service.ts DeviceService.pair',
   'devices/service.ts DeviceService.authenticate',
 ];
 

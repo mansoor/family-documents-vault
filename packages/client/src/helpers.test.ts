@@ -2,7 +2,7 @@ import type { Capabilities } from '@fdv/shared';
 import { describe, expect, it } from 'vitest';
 import { ApiRequestError, isRetriableStatus, NetworkError, parseRetryAfter } from './errors.js';
 import { createHttp } from './http.js';
-import { multipartBody } from './multipart.js';
+import { deviceUploadBody, multipartBody, newBoundary } from './multipart.js';
 import { negotiate } from './negotiate.js';
 import { isPrivateHost, serverOriginFrom } from './origin.js';
 import { MAX_RETRY_SECONDS, retryDelay } from './retry.js';
@@ -282,5 +282,33 @@ describe('multipart bodies from bytes', () => {
       'filename="scan %221%22.pdf"\r\nContent-Type: application/pdf\r\n\r\n%PDF\r\n',
     );
     expect(text.endsWith('--B--\r\n')).toBe(true);
+  });
+});
+
+describe('a multipart boundary (the D1 review)', () => {
+  it('comes from Web Crypto: 144 random bits, never Math.random', () => {
+    const original = Math.random;
+    Math.random = () => 0.5;
+    try {
+      const a = newBoundary();
+      const b = newBoundary();
+      expect(a).toMatch(/^fdv-[0-9a-f]{36}$/);
+      expect(a).not.toBe(b);
+      const body = multipartBody([{ name: 'x', value: 'y' }]);
+      expect(body.contentType).toMatch(/boundary=fdv-[0-9a-f]{36}$/);
+      const streamed = deviceUploadBody({
+        kind: 'stream',
+        filename: 'a.pdf',
+        contentType: 'application/pdf',
+        stream: (async function* () {
+          yield new Uint8Array([1]);
+        })(),
+      });
+      expect(streamed.kind === 'stream' && streamed.contentType).toMatch(
+        /boundary=fdv-[0-9a-f]{36}$/,
+      );
+    } finally {
+      Math.random = original;
+    }
   });
 });

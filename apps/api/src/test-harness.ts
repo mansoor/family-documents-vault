@@ -115,6 +115,8 @@ export interface Harness {
    * which leaves the check to the worker, as in production.
    */
   dns: Map<string, string[]>;
+  /** The batches, for a test that sends a file as a stream it holds (the D1 review). */
+  batches: BatchService;
 }
 
 export interface JoinRequest {
@@ -175,6 +177,8 @@ export interface HarnessOptions {
   proposals?: Proposals;
   /** FDV_DESKTOP_DOWNLOAD_URL (0.8.0, D1): where the uploader app for computers is downloaded. */
   desktopDownloadUrl?: string;
+  /** FDV_DEVICE_DAILY_BYTES (0.8.0, D1): the most one computer may send in a day. */
+  deviceDailyBytes?: number;
 }
 
 /** The key the harness's `mail.to_address` jobs are sealed under, as the worker's are. */
@@ -378,6 +382,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       baseUrl: config.FDV_BASE_URL,
       downloadUrl: opts.desktopDownloadUrl ?? null,
       maxUploadBytes: 5 * 1024 * 1024,
+      dailyBytes: opts.deviceDailyBytes ?? config.FDV_DEVICE_DAILY_BYTES,
       alert,
     }),
     audit: new AuditService(db),
@@ -421,6 +426,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     vaultDir,
     jobs,
     dns,
+    batches,
     async close() {
       await app.close();
       await admin?.end();

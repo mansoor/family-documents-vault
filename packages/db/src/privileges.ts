@@ -228,6 +228,9 @@ begin
     grant execute on function public.device_pairing_find(bytea) to fdv_app;
     revoke execute on function public.upload_device_find(uuid, bytea) from public;
     grant execute on function public.upload_device_find(uuid, bytea) to fdv_app;
+    -- And a person's computers stopped by the emergency controls.
+    revoke execute on function public.upload_devices_revoke_for(uuid, text) from public;
+    grant execute on function public.upload_devices_revoke_for(uuid, text) to fdv_app;
   end if;
 end $$;
 

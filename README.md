@@ -319,8 +319,9 @@ It needs a vault of **0.8.0 or later**.
 guest — opens _Settings → Your computers_ in the browser and chooses **Add a computer**.
 The vault asks for their password again, then shows a code like `KX7P-3M9Q` and the
 vault's address. They type both into the uploader on the computer. The code works once,
-for 10 minutes; five wrong tries end it, and a new code replaces the last. The person is
-emailed "A computer was added to your sign-in", and it is in the activity log.
+for 10 minutes; five wrong tries end it, a new code replaces the last, and closing the
+dialog ends it. The person is emailed "A computer was added to your sign-in", with the
+computer's name, what it runs and when, and it is in the activity log.
 
 Set `FDV_DESKTOP_DOWNLOAD_URL` to where your family downloads the uploader, and the
 pairing dialog links to it. Unset, it says to ask whoever runs the vault for it.
@@ -334,15 +335,17 @@ another adult, not an owner.
 
 **What it cannot do.** It cannot open, list, search or download anything, sign in, or
 change anything; every other part of the vault refuses it. A file is refused while its
-person is locked, or waiting after a restore; when the day's batch is full (200 files);
+person is locked, or waiting after a restore; when the day's batch is full (200 files)
+or the computer has sent `FDV_DEVICE_DAILY_BYTES` that day (2 GB unless you change it);
 and when it is too large or of a kind the vault does not keep — and the uploader says so.
 
 **Removing one.** _Settings → Your computers_ lists each computer by name, with when it
 was added and last sent something; **Remove** stops its key at once. Owners also see
 every computer in the household, by name and person — never what one sent — and can
 remove any. A computer is removed by itself when its person's sign-in is taken away or
-they can no longer add documents (made a viewer), and a restore removes every one: each
-person pairs again.
+they can no longer add documents (made a viewer); when they are signed out everywhere,
+or an owner stops their password; and when their password is changed or reset — each
+email says so. A restore removes every one too. Each person then pairs again.
 
 ## Configuration
 
@@ -378,6 +381,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_PUBLIC_URL`                                | unset                                     | The public-only site's `https://` address, which share links start with. See [Links for people outside the family](#links-for-people-outside-the-family).                                                               |
 | `FDV_SHARE_MAX_DAYS`                            | `90`                                      | The longest a share link may last, in days (1 to 90). A link always ends; this only shortens the longest end the vault accepts.                                                                                         |
 | `FDV_DESKTOP_DOWNLOAD_URL`                      | unset                                     | Where your family downloads the uploader app that sends scans from a computer. See [Sending scans from a computer](#sending-scans-from-a-computer).                                                                     |
+| `FDV_DEVICE_DAILY_BYTES`                        | `2147483648`                              | The most one paired computer may send in a day, in bytes (2 GB). Past it, its files are refused until the next day.                                                                                                     |
 | `FDV_PUBLIC_HOSTNAME`                           | unset                                     | The public-only site's name, for its certificate (profile `public-only`).                                                                                                                                               |
 | `FDV_PUBLIC_HTTPS_PORT`                         | `8443`                                    | The port the public-only site listens on for `https://`; forward the router's 443 to it.                                                                                                                                |
 | `FDV_PUBLIC_HTTP_PORT`                          | `8081`                                    | The port it listens on for `http://` (certificates, and the redirect); forward the router's 80 to it.                                                                                                                   |

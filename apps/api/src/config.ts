@@ -160,6 +160,16 @@ const schema = z.object({
         'as a computer is paired; otherwise it says to ask whoever runs the vault.',
     ),
 
+  FDV_DEVICE_DAILY_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1024 * 1024)
+    .default(2 * 1024 ** 3)
+    .describe(
+      'The most one paired computer may send in a day, in bytes (2 GB unless changed). ' +
+        'Past it, its files are refused until the next day on the household\u2019s calendar.',
+    ),
+
   FDV_SMTP_URL: z
     .string()
     .regex(/^smtps?:[/][/]/, 'Use smtp://… or smtps://…')

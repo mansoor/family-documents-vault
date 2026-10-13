@@ -85,12 +85,24 @@ export function registerDevices(
     },
   );
 
+  /** The caller's own code, if one is waiting, ended: the dialog showing it was closed. */
+  app.delete(
+    '/api/v1/device-pairings',
+    { preHandler: [app.requireAuth, needs('document.add')] },
+    async (req, reply) => {
+      await devices.endPairing(principal(req));
+      return reply.status(204).send();
+    },
+  );
+
   /**
    * The code traded for a key: unauthenticated, and limited for each
    * address as signing in is. The key is answered once.
    */
   app.post(
     '/api/v1/devices/pair',
+    // For each address — an IPv6 one by the /64 it is in, as the limiter
+    // keys every address (the D1 review, F4).
     { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
     async (req, reply) => {
       const body = parse(pairBody, req.body ?? {});
@@ -122,10 +134,15 @@ export function registerDevices(
     }
     const parts = req
       .parts({
+        // Room for one more of each than is taken, so that what is past it
+        // arrives as a part and is refused here, in words — a part past
+        // the parser's own limits ends the file's stream before it is read
+        // (the D1 review, F1).
         limits: {
           fileSize: maxUploadBytes,
           files: 2,
-          fields: 1,
+          fields: 2,
+          parts: 4,
           fieldSize: DEVICE_RELATIVE_PATH_MAX * 4,
         },
       })

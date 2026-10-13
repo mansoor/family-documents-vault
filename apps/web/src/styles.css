@@ -2001,6 +2001,10 @@ fieldset.ask-items {
   user-select: all;
 }
 
+.pairing-code-box {
+  display: block;
+}
+
 .pairing-code {
   display: block;
   margin-top: 6px;

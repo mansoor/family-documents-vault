@@ -646,6 +646,8 @@ export interface FakeState {
   pairing?: Partial<DevicePairingCode>;
   /** How many codes were asked for. */
   pairings?: number;
+  /** How many times a code was ended as its dialog closed. */
+  pairingsEnded?: number;
   /** Computers paired by the app while a code is shown: added to the list as it is next asked. */
   pairedMeanwhile?: PairedDevice[];
 }
@@ -1138,6 +1140,10 @@ export function installFakeApi(state: FakeState) {
         },
         201,
       );
+    }
+    if (path === '/api/v1/device-pairings' && method === 'DELETE' && state.computers) {
+      state.pairingsEnded = (state.pairingsEnded ?? 0) + 1;
+      return Promise.resolve(new Response(null, { status: 204 }));
     }
     if (path === '/api/v1/paired-devices' && method === 'GET' && state.computers) {
       if (state.pairedMeanwhile && state.pairings) {

@@ -4606,6 +4606,33 @@ name, platform, member_id, member_name, mine, added_at, last_used_at
     kind `stream`, sent half-duplex), `listDevices`, `revokeDevice`,
     `deviceHeaders`; the fake answers every one, and refuses a key
     elsewhere.
+  - The D1 review's findings. **Added:** `DELETE /api/v1/device-pairings`
+    (owner, adult or teen; `204`) ends the caller's own code if one is
+    waiting; the web calls it as the pairing dialog closes. `@fdv/client`:
+    `endDevicePairing`. **Added:** a computer's day has room for
+    `FDV_DEVICE_DAILY_BYTES` (2 GB unless set): past it, `POST
+/api/v1/device-uploads` is `422 device_day_full` (refused before a byte
+    is kept once the day is full, and as a file arrives that would pass
+    it); `GET /devices/me`'s `limits` carries `daily_bytes`. **Changed:**
+    signing somebody out everywhere (`DELETE /members/{id}/sessions`), an
+    owner's reset with `stop_now`, and a password changed (`POST
+/auth/password/change`) or reset (`POST /password-resets/complete`)
+    revoke every key of that person's and end their code; `computer.revoked`
+    lines say `signed_out` or `password_changed`, and the person's email
+    says the computers must be paired again. **Changed:** a key revoked, or
+    a sign-in taken away, while a file arrives lands nothing (`401
+device_revoked`, `403 forbidden`). A file whose sender went away part
+    way, or whose part ended early, keeps nothing — no row, no object —
+    on this route and on `POST /batches/{id}/items`; a stream already ended
+    is `400 upload_incomplete`. A second `relative_path` is `422
+validation_failed` at once. **Changed:** `last_used_at` is when a
+    computer last sent a file, never when it asked `GET /devices/me`. A
+    day's batch whose first file was refused is not left empty. The pairing
+    limit counts an IPv6 /64 as one address, and a first half that names
+    no code is answered after the same work as one that does. The
+    pairing email names the computer's platform and the time, on the
+    household's clock. `@fdv/client`: multipart boundaries come from
+    `crypto.getRandomValues` (`newBoundary`).
 
 ## Deprecations in effect
 

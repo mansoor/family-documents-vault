@@ -15,6 +15,9 @@ All notable changes to Family Document Vault. The format follows
   - A computer's key can only send files. It cannot open, list or download anything.
   - Each person sees and removes their own computers. Owners also see everybody's, by name and person only, and can remove any. A computer is removed by itself when its person's sign-in is taken away or they can no longer add documents.
   - `FDV_DESKTOP_DOWNLOAD_URL` (optional): where the family downloads the uploader; the pairing dialog links to it.
+  - `FDV_DEVICE_DAILY_BYTES` (optional, 2 GB): the most one computer may send in a day.
+  - **The emergency controls stop computers too.** Signing somebody out everywhere, an owner stopping their password, and a password changed or reset each remove all of that person's computers, with a line in the activity log; the email says to pair them again.
+  - Closing the pairing dialog ends its code.
 
 ### Changed
 

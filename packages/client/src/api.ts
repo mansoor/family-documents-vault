@@ -1407,6 +1407,9 @@ export function createApi(http: Http) {
      */
     createDevicePairing: (token: string) =>
       request<DevicePairingCode>('/api/v1/device-pairings', { method: 'POST', body: {}, token }),
+    /** The caller's own code, if one is waiting, ended: the dialog showing it was closed. `204`. */
+    endDevicePairing: (token: string) =>
+      request<void>('/api/v1/device-pairings', { method: 'DELETE', token }),
     /**
      * The code traded for a key, by the app on the computer: no sign-in.
      * `401 pairing_code_invalid` for a code that is wrong, run out, used or

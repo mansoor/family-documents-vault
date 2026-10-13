@@ -287,6 +287,7 @@ async function main(): Promise<void> {
       baseUrl: config.FDV_BASE_URL,
       downloadUrl: config.FDV_DESKTOP_DOWNLOAD_URL ?? null,
       maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
+      dailyBytes: config.FDV_DEVICE_DAILY_BYTES,
       alert,
     }),
     audit: new AuditService(db),

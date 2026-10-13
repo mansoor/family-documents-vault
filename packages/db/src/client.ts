@@ -769,7 +769,15 @@ export interface Schema {
     last_used_at: Timestamp | null;
     revoked_at: Timestamp | null;
     revoked_by: string | null;
-    revoked_reason: 'member' | 'owner' | 'sign_in_removed' | 'cannot_add' | 'restored' | null;
+    revoked_reason:
+      | 'member'
+      | 'owner'
+      | 'sign_in_removed'
+      | 'cannot_add'
+      | 'signed_out'
+      | 'password_changed'
+      | 'restored'
+      | null;
   };
 
   /** A one-time code for pairing a computer (0070, D1): ten minutes, five tries, one a person. */

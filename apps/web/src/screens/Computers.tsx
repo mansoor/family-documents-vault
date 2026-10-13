@@ -44,7 +44,7 @@ export function addressToType(vaultAddress: string, here: string = window.locati
 }
 
 export function ComputersScreen() {
-  const { guarded, authVersion } = useApp();
+  const { guarded, withToken, authVersion } = useApp();
   const owner = storedRole() === 'owner';
   const {
     data,
@@ -185,7 +185,11 @@ export function ComputersScreen() {
           onNew={() => void add()}
           onClose={() => {
             setPairing(null);
-            void reload();
+            // A code nobody used is ended as its dialog closes (the D1
+            // review, F8): it is not left to work for the rest of its minutes.
+            void withToken((t) => api.endDevicePairing(t))
+              .catch(() => undefined)
+              .then(() => reload());
           }}
         />
       )}
@@ -233,7 +237,15 @@ function PairingDialog(props: {
   const { withToken } = useApp();
   const box = useRef<HTMLElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  const codeBox = useRef<HTMLSpanElement>(null);
+  /** Make a new code was pressed: focus goes to the new code, not to nowhere. */
+  const renewing = useRef(false);
   useSheetFocus(box, { start: heading, onEscape: props.onClose, returnFocus: props.returnFocus });
+  useEffect(() => {
+    if (!renewing.current) return;
+    renewing.current = false;
+    codeBox.current?.focus();
+  }, [props.pairing]);
   const ends = Date.parse(props.pairing.expires_at);
   const [now, setNow] = useState(() => Date.now());
   const [paired, setPaired] = useState<PairedDevice | null>(null);
@@ -295,11 +307,17 @@ function PairingDialog(props: {
               </li>
               <li>
                 Then this code:
-                <span
-                  className={ran ? 'pairing-code pairing-code-ran' : 'pairing-code'}
-                  aria-label={`Code: ${code.replace('-', '').split('').join(' ')}`}
-                >
-                  {code}
+                <span ref={codeBox} tabIndex={-1} className="pairing-code-box">
+                  {/* Read a character at a time; the large code itself is for the eye. */}
+                  <span className="visually-hidden">
+                    {`Code: ${code.replace('-', '').split('').join(' ')}`}
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    className={ran ? 'pairing-code pairing-code-ran' : 'pairing-code'}
+                  >
+                    {code}
+                  </span>
                 </span>
               </li>
             </ol>
@@ -316,7 +334,16 @@ function PairingDialog(props: {
           </>
         )}
         <div className="row">
-          {ran && !paired && <Button onClick={props.onNew}>Make a new code</Button>}
+          {ran && !paired && (
+            <Button
+              onClick={() => {
+                renewing.current = true;
+                props.onNew();
+              }}
+            >
+              Make a new code
+            </Button>
+          )}
           <Button kind={ran || paired ? 'quiet' : 'primary'} onClick={props.onClose}>
             {paired ? 'Done' : 'Close'}
           </Button>

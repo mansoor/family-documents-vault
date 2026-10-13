@@ -42,12 +42,15 @@ create table upload_device (
   last_used_at   timestamptz,
   -- Revoked: by its person ('member'), an owner ('owner'), the vault as a
   -- sign-in went ('sign_in_removed') or a role that cannot add came
-  -- ('cannot_add'), or a restore ('restored'). Once, and for good.
+  -- ('cannot_add'), as its person was signed out everywhere or their
+  -- password stopped by an owner ('signed_out'), as their password was
+  -- changed or reset ('password_changed'), or a restore ('restored'). Once,
+  -- and for good.
   revoked_at     timestamptz,
   revoked_by     uuid references account(id) on delete set null,
   revoked_reason text constraint upload_device_revoked_reason
                    check (revoked_reason in ('member', 'owner', 'sign_in_removed', 'cannot_add',
-                                             'restored')),
+                                             'signed_out', 'password_changed', 'restored')),
   constraint upload_device_revoked_says_why check ((revoked_at is null) = (revoked_reason is null)),
   constraint upload_device_household_key unique (id, household_id),
   foreign key (member_id, household_id) references member (id, household_id) on delete cascade
@@ -78,30 +81,53 @@ create policy upload_device_actor_insert on upload_device as restrictive for ins
 create policy upload_device_actor_delete on upload_device as restrictive for delete
   using (app_actor() = 'system');
 
--- What somebody signed in may change: a key revoked, once, now, as
--- themselves — 'member' for their own, 'owner' for anybody else's. Inside
--- account_household's own trigger (a sign-in taken away, a role that
+-- Whoever asks, the vault and the owning role included: a key revoked is
+-- never changed again, and nothing of a key ever changes but when it last
+-- sent something and its revocation — never its hash, whose it is, its
+-- name or its platform. Somebody signed in changes less still: their own
+-- computer's last sending, now; or a key revoked, once, now, as themselves
+-- — 'member' for their own, 'owner' for anybody else's, 'signed_out' or
+-- 'password_changed' as upload_devices_revoke_for() writes them — and,
+-- inside account_household's own trigger (a sign-in taken away, a role that
 -- cannot add), the vault's revocation with no one named. A rule cannot say
 -- which columns change, so a trigger does.
 create function upload_device_writes() returns trigger
   language plpgsql set search_path = pg_catalog, public, pg_temp as $$
 declare
-  revoke_cols constant text[] := array['revoked_at', 'revoked_by', 'revoked_reason'];
+  movable constant text[] := array['last_used_at', 'revoked_at', 'revoked_by', 'revoked_reason'];
 begin
+  -- Who revoked it, gone with their account (the foreign key's own SET NULL).
+  if pg_trigger_depth() > 1
+     and old.revoked_by is not null and new.revoked_by is null
+     and (to_jsonb(new) - 'revoked_by') = (to_jsonb(old) - 'revoked_by') then
+    return new;
+  end if;
+  if old.revoked_at is not null then
+    raise exception 'a revoked computer''s key never changes'
+      using errcode = 'insufficient_privilege';
+  end if;
+  if (to_jsonb(new) - movable) is distinct from (to_jsonb(old) - movable) then
+    raise exception 'only when a computer last sent something, and its revocation, change'
+      using errcode = 'insufficient_privilege';
+  end if;
   if app_actor() is distinct from 'account' then
     return new;
   end if;
-  if old.revoked_at is null and new.revoked_at is not null
-     and (to_jsonb(new) - revoke_cols) = (to_jsonb(old) - revoke_cols)
-     and (
-       (new.revoked_at = now()
-        and new.revoked_by is not distinct from app_account()
-        and new.revoked_reason = case when old.account_id = app_account() then 'member'
-                                      else 'owner' end)
-       or (pg_trigger_depth() > 1
-           and new.revoked_by is null
-           and new.revoked_reason in ('sign_in_removed', 'cannot_add'))
-     ) then
+  if new.revoked_at is null then
+    if new.last_used_at = now() and old.member_id = app_member() then
+      return new;
+    end if;
+  elsif new.last_used_at is not distinct from old.last_used_at
+        and (
+          (new.revoked_at = now()
+           and new.revoked_by is not distinct from app_account()
+           and (new.revoked_reason = case when old.account_id = app_account() then 'member'
+                                          else 'owner' end
+                or new.revoked_reason in ('signed_out', 'password_changed')))
+          or (pg_trigger_depth() > 1
+              and new.revoked_by is null
+              and new.revoked_reason in ('sign_in_removed', 'cannot_add'))
+        ) then
     return new;
   end if;
   raise exception 'a computer''s key may only be revoked, once'
@@ -212,6 +238,45 @@ end $$;
 create trigger upload_devices_leave_with_role
   after delete or update of role on account_household
   for each row execute function upload_devices_leave_with_role();
+
+-- --------------------------------------------- the emergency controls
+
+-- Its person signed out everywhere, or their password stopped by an owner
+-- ('signed_out'); their password changed or reset ('password_changed'):
+-- every computer of theirs here stops at once, and any code waiting is
+-- forgotten. Asked by its person, an owner, or — signed out, with only the
+-- account named — the reset being spent; with the owner's rights, since a
+-- reset's page is nobody signed in. Answers what it revoked, for the
+-- activity log's lines.
+create function upload_devices_revoke_for(p_account uuid, p_reason text)
+  returns table (member_id uuid, name text, platform text)
+  language plpgsql volatile security definer
+  set search_path = pg_catalog, public, pg_temp as $$
+#variable_conflict use_column
+begin
+  if p_reason is null or p_reason not in ('signed_out', 'password_changed') then
+    raise exception 'not a reason a computer is stopped for'
+      using errcode = 'insufficient_privilege';
+  end if;
+  if not coalesce((app_actor() = 'account'
+                   and (app_account() = p_account or app_role() = 'owner'))
+                  or (app_actor() = 'anonymous' and app_account() = p_account), false) then
+    raise exception 'only its person, an owner, or their reset stops somebody''s computers'
+      using errcode = 'insufficient_privilege';
+  end if;
+  delete from device_pairing p
+   where p.household_id = app_household() and p.account_id = p_account;
+  return query
+    update upload_device d
+       set revoked_at = now(),
+           revoked_by = case when app_actor() = 'account' then app_account() end,
+           revoked_reason = p_reason
+     where d.household_id = app_household() and d.account_id = p_account
+       and d.revoked_at is null
+    returning d.member_id, d.name, d.platform;
+end $$;
+revoke execute on function upload_devices_revoke_for(uuid, text) from public;
+grant execute on function upload_devices_revoke_for(uuid, text) to fdv_app;
 
 -- ------------------------------------------------- a batch a day
 

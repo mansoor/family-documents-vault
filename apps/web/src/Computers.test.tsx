@@ -105,7 +105,11 @@ describe('Your computers (0.8.0, D1)', () => {
     // The code, once and large, read out a character at a time.
     const code = within(dialog).getByText('KX7P-3M9Q');
     expect(code).toHaveClass('pairing-code');
-    expect(code).toHaveAttribute('aria-label', 'Code: K X 7 P 3 M 9 Q');
+    // Read a character at a time, as text a screen reader is given; the
+    // large code is for the eye.
+    expect(code).toHaveAttribute('aria-hidden', 'true');
+    expect(code).not.toHaveAttribute('aria-label');
+    expect(within(dialog).getByText('Code: K X 7 P 3 M 9 Q')).toHaveClass('visually-hidden');
     expect(within(dialog).getByText('https://vault.example.test')).toBeInTheDocument();
     expect(
       within(dialog).getByText(
@@ -122,6 +126,8 @@ describe('Your computers (0.8.0, D1)', () => {
     await expectAccessible();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    // The code nobody used is ended as the dialog closes.
+    await waitFor(() => expect(state.pairingsEnded).toBe(1));
   });
 
   it('links to the uploader when the vault says where it is', async () => {
@@ -155,6 +161,11 @@ describe('Your computers (0.8.0, D1)', () => {
     state.pairing = {};
     fireEvent.click(within(dialog).getByRole('button', { name: 'Make a new code' }));
     await waitFor(() => expect(state.pairings).toBe(2));
+    // Focus goes to the new code, never to nowhere.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(within(dialog).getByText('KX7P-3M9Q').parentElement),
+    );
+    expect(within(dialog).queryByText('This code has run out. Make a new one.')).toBeNull();
     await expectAccessible();
   });
 

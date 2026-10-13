@@ -9,6 +9,9 @@
  */
 
 declare function setTimeout(handler: () => void, ms?: number): number;
+
+/** Web Crypto's random numbers: a browser's, Hermes' (its polyfill), Node's. */
+declare const crypto: { getRandomValues<T extends Uint8Array>(array: T): T };
 declare function clearTimeout(handle: number | undefined): void;
 
 declare class AbortController {

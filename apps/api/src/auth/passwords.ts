@@ -1,3 +1,4 @@
+import { COMPUTERS_STOPPED, stopDevicesOf } from '../devices/service.js';
 import { createHash, randomBytes } from 'node:crypto';
 import type { ScopeKeys } from '@fdv/crypto';
 import { ANONYMOUS, appendAudit, withPrincipal, withScope, type Db } from '@fdv/db';
@@ -177,6 +178,7 @@ export class PasswordService {
     const hash = await argon2.hash(input.new_password, ARGON2);
     let removed: SinceHandover = { since: null, passkeys: 0, twoStep: false };
     let links: EndedLink[] = [];
+    let computers = 0;
     await withPrincipal(this.db, p, async (trx) => {
       // The person's membership first, FOR NO KEY UPDATE, as a reset, a
       // stopped password and a lock take it (5.29): a passkey, two-step
@@ -248,6 +250,15 @@ export class PasswordService {
         ip: meta.ip,
       });
       await auditEndedLinks(trx, p.householdId, p.accountId, links, meta);
+      // And every computer of theirs that sends scans (0.8.0, D1, F2): a
+      // password changed is a password somebody else may have had.
+      computers = await stopDevicesOf(
+        trx,
+        { householdId: p.householdId, actorAccountId: p.accountId },
+        p.accountId,
+        'password_changed',
+        meta,
+      );
     });
     // The other devices' phones: "you were signed out" (4.13).
     if (phones.length > 0)
@@ -258,7 +269,7 @@ export class PasswordService {
       householdId: p.householdId,
       accountIds: [p.accountId],
       subject: 'Your vault password was changed',
-      body: 'If that was you, there is nothing to do. If it was not, whoever did it is signed in — ask another owner to take away that sign-in, and tell them to look at the activity log.',
+      body: `If that was you, there is nothing to do. If it was not, whoever did it is signed in — ask another owner to take away that sign-in, and tell them to look at the activity log.${computers > 0 ? ` ${COMPUTERS_STOPPED}` : ''}`,
       emailOnly: true,
     });
   }
@@ -448,6 +459,7 @@ export class PasswordService {
     let handedOver = false;
     let handedBy: string | null = null;
     let endedLinks: EndedLink[] = [];
+    let computers = 0;
     // A reset signs nobody in, so it is not the account asking even now; the
     // account it is for is named, for what the database asks of it (0052).
     const scope = {
@@ -554,6 +566,14 @@ export class PasswordService {
         ip: meta.ip,
       });
       await auditEndedLinks(trx, membership.household_id, account.id, endedLinks, meta);
+      // And every computer of theirs that sends scans (0.8.0, D1, F2).
+      computers = await stopDevicesOf(
+        trx,
+        { householdId: membership.household_id, actorAccountId: account.id },
+        account.id,
+        'password_changed',
+        meta,
+      );
       return 'done' as const;
     });
     // A link used up because they keep something private now commits as
@@ -574,9 +594,11 @@ export class PasswordService {
       subject: 'Your vault password was reset',
       // A link an owner was handed (5.29) never went by email: whoever spent
       // it had it from the owner, so the person is told that, and what to do.
-      body: handedOver
-        ? `${handedBy ?? 'An owner'}, an owner of your family vault, was given a one-time link for your sign-in, and it has been used to set a new password. Every device has been signed out and every passkey removed. If you did not choose that password yourself, set one of your own in Settings → Your account when you next sign in — that also removes any passkey or two-step sign-in added since — and talk to them.`
-        : 'Somebody used a reset link to set a new password, and every device has been signed out. If that was not you, whoever did it can read your email — deal with that first.',
+      body:
+        (handedOver
+          ? `${handedBy ?? 'An owner'}, an owner of your family vault, was given a one-time link for your sign-in, and it has been used to set a new password. Every device has been signed out and every passkey removed. If you did not choose that password yourself, set one of your own in Settings → Your account when you next sign in — that also removes any passkey or two-step sign-in added since — and talk to them.`
+          : 'Somebody used a reset link to set a new password, and every device has been signed out. If that was not you, whoever did it can read your email — deal with that first.') +
+        (computers > 0 ? ` ${COMPUTERS_STOPPED}` : ''),
       emailOnly: true,
     });
     return { email: account.email };

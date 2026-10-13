@@ -152,6 +152,8 @@ export interface DeviceMe {
     max_upload_bytes: number;
     /** A day's batch holds this many files. */
     batch_max_files: number;
+    /** The most this computer may send in a day, in bytes (FDV_DEVICE_DAILY_BYTES). */
+    daily_bytes: number;
     /** The kinds of file it takes, by media type. */
     accepted_types: string[];
   };

@@ -1469,6 +1469,40 @@ const CHANGED_BY_ROLE = [
  * other people's details. Each is also tried below, where trying is cheap.
  */
 const REQUIRED_RULES = [
+  // A computer that sends scans (0070, D1, the review's F7): made by the
+  // vault alone and never removed but with its person; its code made
+  // untried by its person, counted by the vault alone; and a day's batch
+  // naming only a live computer of its own member.
+  {
+    table: 'upload_device',
+    name: 'upload_device_actor_insert',
+    cmd: 'a',
+    what: 'who makes a computer’s key',
+  },
+  {
+    table: 'upload_device',
+    name: 'upload_device_actor_delete',
+    cmd: 'd',
+    what: 'who removes a computer’s key',
+  },
+  {
+    table: 'device_pairing',
+    name: 'device_pairing_actor_insert',
+    cmd: 'a',
+    what: 'who makes a code to pair a computer',
+  },
+  {
+    table: 'device_pairing',
+    name: 'device_pairing_actor_update',
+    cmd: 'w',
+    what: 'who counts the tries at a code',
+  },
+  {
+    table: 'intake_batch',
+    name: 'intake_batch_device_insert',
+    cmd: 'a',
+    what: 'which computer a day’s batch names',
+  },
   // A person's Only me identity details are theirs alone, whoever asks (0050, A33).
   {
     table: 'member_identity',

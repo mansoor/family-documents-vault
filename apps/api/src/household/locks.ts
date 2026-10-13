@@ -1,3 +1,4 @@
+import { COMPUTERS_STOPPED, stopDevicesOf } from '../devices/service.js';
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   can,
@@ -559,7 +560,8 @@ export class LockService {
       phones: PushTarget[];
       told: { accountId: string; owner: boolean; by: string; household: string } | null;
       result: SignedOutEverywhere | null;
-    } = { phones: [], told: null, result: null };
+      computers: number;
+    } = { phones: [], told: null, result: null, computers: 0 };
     await withPrincipal(this.db, p, async (trx) => {
       // 1. The household, then the person.
       await holdHousehold(trx);
@@ -592,6 +594,15 @@ export class LockService {
         detail: { sessions: ended, ...(self ? { self: true } : {}) },
         ip: meta.ip,
       });
+      // And every computer of theirs that sends scans (0.8.0, D1, the
+      // review's F2): an emergency stops them too, each with its line.
+      after.computers = await stopDevicesOf(
+        trx,
+        { householdId: p.householdId, actorAccountId: p.accountId },
+        target.account_id,
+        'signed_out',
+        meta,
+      );
       // Told, unless locked or paused: they could not sign in again as the
       // email says, and their sessions ended with the lock already.
       if (!self && !suspensionInEffect(target)) {
@@ -623,7 +634,8 @@ export class LockService {
           'with your own password, and your documents are as you left them. If you did not ' +
           (after.told.owner
             ? `expect this, talk to ${by}, and look at the activity log.`
-            : `expect this, talk to ${by}.`),
+            : `expect this, talk to ${by}.`) +
+          (after.computers > 0 ? ` ${COMPUTERS_STOPPED}` : ''),
         emailOnly: true,
       });
     }

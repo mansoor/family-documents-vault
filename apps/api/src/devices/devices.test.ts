@@ -219,7 +219,7 @@ describe.skipIf(!testAdminUrl())('a computer that sends scans (0.8.0, D1)', () =
       email_only: true,
     });
     expect(String(told[0]?.body)).toContain(
-      'A computer was added to your sign-in: Ahmed’s laptop.',
+      'A computer was added to your sign-in: Ahmed’s laptop (Windows), on ',
     );
     expect(String(told[0]?.body)).toContain("If this wasn't you, remove it in Settings");
     // And a line in the activity log: theirs, the owners', nobody else's.
