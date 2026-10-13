@@ -262,7 +262,7 @@ export class OwnerResetService {
           trx,
           { householdId: p.householdId, actorAccountId: p.accountId },
           target.account_id,
-          'signed_out',
+          'owner_stopped',
           meta,
         );
       }

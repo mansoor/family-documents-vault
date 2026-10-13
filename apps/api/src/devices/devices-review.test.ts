@@ -383,13 +383,21 @@ describe.skipIf(!testAdminUrl())('the D1 review (0.8.0)', () => {
     );
     expect(Object.fromEntries(rows.rows.map((r) => [r.id, r.revoked_reason]))).toEqual({
       [linas.device_id]: 'signed_out',
-      [omars.device_id]: 'signed_out',
+      [omars.device_id]: 'owner_stopped',
     });
     const lines = await admin.query<{ object_id: string; detail: { reason: string } }>(
       "select object_id, detail from audit_event where action = 'computer.revoked' and object_id = any($1)",
       [[lina.member_id, omar.member_id]],
     );
-    expect(lines.rows.map((l) => l.detail.reason).sort()).toEqual(['signed_out', 'signed_out']);
+    expect(lines.rows.map((l) => l.detail.reason).sort()).toEqual(['owner_stopped', 'signed_out']);
+    // Each in words of its own, to an owner.
+    const log = (await send(owner, 'GET', '/api/v1/audit?limit=100')).body;
+    expect(log).toContain(
+      'signed Lina out everywhere, so their computer “Lina laptop” can no longer send scans',
+    );
+    expect(log).toContain(
+      'stopped Omar’s password, so their computer “Omar laptop” can no longer send scans',
+    );
     // The reset's link, by email: spent, it stops nothing more, and says so.
     const link = alertsSent(h)
       .map((a) => a.url)

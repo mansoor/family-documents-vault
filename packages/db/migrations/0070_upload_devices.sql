@@ -42,15 +42,16 @@ create table upload_device (
   last_used_at   timestamptz,
   -- Revoked: by its person ('member'), an owner ('owner'), the vault as a
   -- sign-in went ('sign_in_removed') or a role that cannot add came
-  -- ('cannot_add'), as its person was signed out everywhere or their
-  -- password stopped by an owner ('signed_out'), as their password was
-  -- changed or reset ('password_changed'), or a restore ('restored'). Once,
+  -- ('cannot_add'), as its person was signed out everywhere ('signed_out'),
+  -- as an owner stopped their password ('owner_stopped'), as their password
+  -- was changed or reset ('password_changed'), or a restore ('restored'). Once,
   -- and for good.
   revoked_at     timestamptz,
   revoked_by     uuid references account(id) on delete set null,
   revoked_reason text constraint upload_device_revoked_reason
                    check (revoked_reason in ('member', 'owner', 'sign_in_removed', 'cannot_add',
-                                             'signed_out', 'password_changed', 'restored')),
+                                             'signed_out', 'owner_stopped', 'password_changed',
+                                             'restored')),
   constraint upload_device_revoked_says_why check ((revoked_at is null) = (revoked_reason is null)),
   constraint upload_device_household_key unique (id, household_id),
   foreign key (member_id, household_id) references member (id, household_id) on delete cascade
@@ -86,8 +87,9 @@ create policy upload_device_actor_delete on upload_device as restrictive for del
 -- sent something and its revocation — never its hash, whose it is, its
 -- name or its platform. Somebody signed in changes less still: their own
 -- computer's last sending, now; or a key revoked, once, now, as themselves
--- — 'member' for their own, 'owner' for anybody else's, 'signed_out' or
--- 'password_changed' as upload_devices_revoke_for() writes them — and,
+-- — 'member' for their own, 'owner' for anybody else's, 'signed_out',
+-- 'owner_stopped' or 'password_changed' as upload_devices_revoke_for()
+-- writes them — and,
 -- inside account_household's own trigger (a sign-in taken away, a role that
 -- cannot add), the vault's revocation with no one named. A rule cannot say
 -- which columns change, so a trigger does.
@@ -123,7 +125,7 @@ begin
            and new.revoked_by is not distinct from app_account()
            and (new.revoked_reason = case when old.account_id = app_account() then 'member'
                                           else 'owner' end
-                or new.revoked_reason in ('signed_out', 'password_changed')))
+                or new.revoked_reason in ('signed_out', 'owner_stopped', 'password_changed')))
           or (pg_trigger_depth() > 1
               and new.revoked_by is null
               and new.revoked_reason in ('sign_in_removed', 'cannot_add'))
@@ -241,8 +243,9 @@ create trigger upload_devices_leave_with_role
 
 -- --------------------------------------------- the emergency controls
 
--- Its person signed out everywhere, or their password stopped by an owner
--- ('signed_out'); their password changed or reset ('password_changed'):
+-- Its person signed out everywhere ('signed_out'); their password stopped
+-- by an owner ('owner_stopped'); their password changed or reset
+-- ('password_changed'):
 -- every computer of theirs here stops at once, and any code waiting is
 -- forgotten. Asked by its person, an owner, or — signed out, with only the
 -- account named — the reset being spent; with the owner's rights, since a
@@ -254,7 +257,7 @@ create function upload_devices_revoke_for(p_account uuid, p_reason text)
   set search_path = pg_catalog, public, pg_temp as $$
 #variable_conflict use_column
 begin
-  if p_reason is null or p_reason not in ('signed_out', 'password_changed') then
+  if p_reason is null or p_reason not in ('signed_out', 'owner_stopped', 'password_changed') then
     raise exception 'not a reason a computer is stopped for'
       using errcode = 'insufficient_privilege';
   end if;

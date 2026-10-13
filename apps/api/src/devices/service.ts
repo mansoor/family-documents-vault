@@ -702,16 +702,16 @@ export async function logDevicesEnded(
 /**
  * The emergency controls (0.8.0, D1, the review's F2): every computer of
  * somebody's here stopped at once, and any code of theirs forgotten, by
- * the database's own `upload_devices_revoke_for()` — signed out everywhere,
- * or their password stopped by an owner (`signed_out`); their password
- * changed or reset (`password_changed`) — with a line in the activity log
+ * the database's own `upload_devices_revoke_for()` — signed out everywhere
+ * (`signed_out`), their password stopped by an owner (`owner_stopped`),
+ * their password changed or reset (`password_changed`) — with a line in the activity log
  * for each. Inside the caller's transaction; how many it stopped.
  */
 export async function stopDevicesOf(
   trx: Db,
   by: { householdId: string; actorAccountId: string },
   accountId: string,
-  reason: 'signed_out' | 'password_changed',
+  reason: 'signed_out' | 'owner_stopped' | 'password_changed',
   meta: RequestMeta,
 ): Promise<number> {
   const stopped = await sql<{ member_id: string; name: string; platform: string }>`

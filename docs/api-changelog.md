@@ -4618,7 +4618,8 @@ name, platform, member_id, member_name, mine, added_at, last_used_at
     owner's reset with `stop_now`, and a password changed (`POST
 /auth/password/change`) or reset (`POST /password-resets/complete`)
     revoke every key of that person's and end their code; `computer.revoked`
-    lines say `signed_out` or `password_changed`, and the person's email
+    lines say `signed_out` (signed out everywhere), `owner_stopped` (an
+    owner's reset with `stop_now`) or `password_changed`, and the person's email
     says the computers must be paired again. **Changed:** a key revoked, or
     a sign-in taken away, while a file arrives lands nothing (`401
 device_revoked`, `403 forbidden`). A file whose sender went away part

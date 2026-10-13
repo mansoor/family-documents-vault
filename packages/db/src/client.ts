@@ -775,6 +775,7 @@ export interface Schema {
       | 'sign_in_removed'
       | 'cannot_add'
       | 'signed_out'
+      | 'owner_stopped'
       | 'password_changed'
       | 'restored'
       | null;

@@ -519,6 +519,11 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
                 `${who} signed ${personOf(e)} out everywhere, so their ${it} can no longer send scans`,
                 true,
               );
+        case 'owner_stopped':
+          return line(
+            `${who} stopped ${possessive(personOf(e))} password, so their ${it} can no longer send scans`,
+            true,
+          );
         case 'password_changed':
           return line(
             `${who} changed their password, so their ${it} can no longer send scans`,
