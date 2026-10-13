@@ -6,6 +6,8 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.8.0-dev.4] - 2026-10-13 — a watched folder for network scanners
+
 ### Added
 
 - **Scanning straight into the vault.** Point a network scanner at a folder on the server, and each scan goes into one person's Inbox to look over, as if they had added it.
