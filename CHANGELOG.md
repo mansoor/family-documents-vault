@@ -6,6 +6,8 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.8.0-dev.5] - 2026-10-13 — email documents to the vault
+
 ## [0.8.0-dev.4] - 2026-10-13 — a watched folder for network scanners
 
 ### Added
