@@ -317,10 +317,19 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_MASTER_KEY`                                | generated                                 | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost.                                                                                                           |
 | `FDV_DB_PASSWORD`                               | generated                                 | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                                                                                                    |
 | `FDV_DB_APP_PASSWORD`                           | generated                                 | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query.                                                                      |
-| `FDV_MAX_UPLOAD_BYTES`                          | `104857600`                               | Largest single file the vault accepts (100 MB), uploaded or from the scanner folder.                                                                                                                                    |
+| `FDV_MAX_UPLOAD_BYTES`                          | `104857600`                               | Largest single file the vault accepts (100 MB), uploaded, from the scanner folder or attached to an email.                                                                                                              |
 | `FDV_WATCH_DIR`                                 | unset                                     | A folder a scanner saves into, inside the worker: `/watch`, with the compose file's mount. Unset: none. See [Scanning straight into the vault](#scanning-straight-into-the-vault).                                      |
 | `FDV_WATCH_STABLE_SECONDS`                      | `10`                                      | How long a scan must stop changing before the worker takes it (2 to 3600); raise it for a slow scanner.                                                                                                                 |
 | `FDV_WATCH_INCOMPLETE_GRACE_SECONDS`            | `120`                                     | How long a scan that has stopped changing but looks unfinished waits before it is taken anyway (0 to 86400).                                                                                                            |
+| `FDV_MAIL_IN_HOST`                              | unset                                     | The household mailbox's IMAP server, e.g. `imap.gmail.com`. With `FDV_MAIL_IN_USER` and a password, email in can be turned on. See [Emailing documents to the vault](#emailing-documents-to-the-vault).                 |
+| `FDV_MAIL_IN_PORT`                              | `993`                                     | Its IMAP port: TLS from the first byte, the certificate verified.                                                                                                                                                       |
+| `FDV_MAIL_IN_USER`                              | unset                                     | The mailbox's sign-in, usually its address.                                                                                                                                                                             |
+| `FDV_MAIL_IN_PASSWORD`                          | unset                                     | Its app password; better, `FDV_MAIL_IN_PASSWORD_FILE`, a file holding it (a Docker secret). Worker only; never logged, shown or stored.                                                                                 |
+| `FDV_MAIL_IN_ADDRESS`                           | the user                                  | The address the family sends to, shown on Add, when `FDV_MAIL_IN_USER` isn't one.                                                                                                                                       |
+| `FDV_MAIL_IN_FOLDER`                            | `INBOX`                                   | The folder checked.                                                                                                                                                                                                     |
+| `FDV_MAIL_IN_POLL_SECONDS`                      | `300`                                     | How often the mailbox is checked (30 to 86400).                                                                                                                                                                         |
+| `FDV_MAIL_IN_AFTER`                             | `move`                                    | What happens to an email once its attachments are in: `move` to a `Filed` folder, or `delete`.                                                                                                                          |
+| `FDV_MAIL_IN_AUTHSERV_ID`                       | unset                                     | Your provider's `Authentication-Results` name (`mx.google.com` for Gmail): set, only mail it vouched for is taken, and an address may be confirmed from itself. Unset, items say "sender not verified".                 |
 | `FDV_OFFLINE_MAX_DAYS`                          | `90`                                      | How many days a phone may show the Essentials it keeps without reaching the vault (1 to 365). See [Essentials on a phone](#essentials-on-a-phone).                                                                      |
 | `FDV_RATE_LIMIT_PER_MINUTE`                     | `300`                                     | How many requests one address may make in a minute, beyond the tighter limits on signing in and opening links (60 to 100000). Raise it when many devices share one address.                                             |
 | `FDV_DISPLAY_NAME`                              | `Our family vault`                        | The vault's name until it is set up. From then on every screen, and the phone app, shows the family's name, given at setup.                                                                                             |
@@ -733,6 +742,172 @@ What happens to each file:
 
 Nothing in the folder is encrypted, and the folder is not backed up: a scan
 sits there only until it is stored, or until you deal with what was rejected.
+
+### Emailing documents to the vault
+
+The family can email documents to a mailbox of the household's own. The
+worker checks it every few minutes, and each attachment from someone in the
+family goes into their Inbox to look over, as if they had added it.
+
+1. **Make a dedicated mailbox**, used for nothing else: say a new Gmail
+   address, `smith.vault@gmail.com`. Everything sent to it is read by the
+   vault, and its password is given to the worker, so never use anybody's own
+   mailbox. The vault signs in with an app password over IMAP, so the
+   provider must offer both. These do:
+   - **Gmail** (`imap.gmail.com`): turn on 2-Step Verification for the new
+     account, then make an app password at
+     [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords),
+     giving it any name. IMAP is always on.
+   - **Fastmail** (`imap.fastmail.com`): **Settings → Privacy & Security →
+     Manage app passwords**, with access to mail (IMAP).
+   - **iCloud Mail** (`imap.mail.me.com`): an app-specific password, from
+     **Apple Account → Sign-In and Security**.
+   - **A mail server of your own** (Dovecot, say), on port 993 with a
+     certificate for its name.
+
+   **Outlook.com and Hotmail don't work**: Microsoft no longer lets other apps
+   sign in to them with a password or an app password, only by its own
+   sign-in (OAuth), which the vault doesn't do.
+
+2. **On Gmail, keep the family's mail out of Spam**: in Gmail's **Settings →
+   See all settings → Filters and Blocked Addresses → Create a new filter**,
+   put the family's addresses in **From** (separated by `OR`), then **Create
+   filter → Never send it to Spam**. The vault only looks in the folder you
+   set.
+3. **Tell the worker.** Put the password in a file the worker reads, a Docker
+   secret, rather than in `.env`: it is then never in the environment of
+   anything. In `.env`:
+
+   ```bash
+   FDV_MAIL_IN_HOST=imap.gmail.com
+   FDV_MAIL_IN_USER=smith.vault@gmail.com
+   FDV_MAIL_IN_PASSWORD_FILE=/run/secrets/mail_in_password  # or FDV_MAIL_IN_PASSWORD=…
+   FDV_MAIL_IN_AUTHSERV_ID=mx.google.com                    # Gmail's: see "a forged sender" below
+   ```
+
+   and give the worker the secret in a `docker-compose.override.yml`:
+
+   ```yaml
+   services:
+     worker:
+       secrets: [mail_in_password]
+   secrets:
+     mail_in_password:
+       file: ./mail_in_password.txt
+   ```
+
+   (the file holding the app password alone, readable by you alone). Then run
+   `docker compose up -d`. Only the worker is given these. The password is
+   never logged, never sent to the browser or the phone, never stored in the
+   database, and taken out of the worker's environment as soon as it is read,
+   so no tool the worker runs is handed it.
+
+4. **Turn it on.** An owner, in **Settings → For owners → Email in**. The page
+   says whether the mailbox is set up and when the worker last checked it,
+   the last problem it had (a refused sign-in, an unreachable server, a
+   certificate it couldn't verify), how much mail it left alone, and whether
+   the family can confirm their addresses.
+5. **Each person confirms their address once**, on **Add** (and Home), where
+   anyone who adds documents sees "Email documents to <the mailbox> from
+   <their sign-in email>". Confirming proves the address is theirs, in one of
+   two ways:
+   - **With the sender check on** (`FDV_MAIL_IN_AUTHSERV_ID`, below): they get
+     a code, and send an email from their address to the mailbox with the code
+     as its subject (the page has a link that writes it). The vault confirms
+     the address only if your provider vouches that the email really came from
+     it.
+   - **With the vault's own mail server** (`FDV_SMTP_URL`, see
+     [Passwords](#passwords)): the vault emails a code to their address, and
+     they type it in. A code lasts a day and works once; five wrong tries and
+     it is spent; a code a minute, and five a day.
+
+   With neither set, nobody can confirm an address, and both pages say why.
+   An address is confirmed only while it is still that person's sign-in.
+
+The vault connects over TLS on port 993 (`FDV_MAIL_IN_PORT`), and checks the
+server's certificate and name: there is no setting to turn that off.
+
+What it takes, and from whom:
+
+- **Only mail From the confirmed sign-in address of someone in the family who
+  adds documents** (an owner, an adult or a teen), and only into **that
+  person's** Inbox. A teen's mail goes to the teen alone. A viewer's or a
+  guest's is never taken. An address with anything but plain ASCII in it is
+  never matched, so a look-alike address can't pass for a family one.
+  **Without the sender check, "From" is only what the email says**: anyone
+  who knows the mailbox's address can send an email that says it is from a
+  family member, and its attachments land in that person's Inbox, marked
+  "sender not verified" (see "a forged sender" below).
+- **Attachments the vault keeps**, told by their bytes, not their names: PDF,
+  JPEG, PNG, TIFF, HEIC, WebP, Word and Excel. Pictures in the body under
+  20 KB (signatures, logos) are left out on purpose. Attachments of an email
+  forwarded as an attachment are taken too.
+- Each goes into that person's batch of the day, "Email, 13 Oct", read and
+  proposed for like anything they upload. Nothing is filed until they accept
+  it.
+- **The email's text and subject are not kept.** Its MIME is read in a
+  sandboxed thread of the worker, with a deadline and a memory limit, never on
+  the API.
+- An email larger than 50 MB is not downloaded at all. Attachments not added
+  — not a kind the vault keeps, larger than `FDV_MAX_UPLOAD_BYTES`, more than
+  100 in one email, or in an email forwarded too many times over — are told to
+  their person in Needs attention, how many and why, as is an email with
+  nothing to add or one that couldn't be read.
+
+What happens to the mail afterwards:
+
+- Once every attachment of an email is in the vault, the email is **moved to
+  a folder called `Filed`**, which the vault makes in the mailbox, or
+  **deleted** with `FDV_MAIL_IN_AFTER=delete`. (Gmail's "deleted" depends on
+  its IMAP settings: by default it archives.) An email with anything not
+  added — too large, an attachment skipped, unreadable — is never deleted:
+  it is moved to `Filed` even then, so nothing is lost. A worker that stops
+  halfway adds nothing twice and loses nothing: the email stays where it was
+  until it is filed, and an attachment its person removed meanwhile is not
+  added again.
+- The vault moves or deletes one email only where the server can do just
+  that (IMAP's MOVE and UIDPLUS, which Gmail, Fastmail, iCloud and Dovecot
+  have). A server without them could take other emails with it, so then the
+  vault leaves each email it has added where it is, marked as read, never
+  fetches it again, and says so in Settings; without UIDPLUS, `delete` falls
+  back to moving.
+- **Everything else is left exactly where it was, unread**: mail from
+  strangers, from an address not confirmed yet, or that fails the sender
+  check below. Settings counts it, so you can clear it out now and then, and
+  each person sees, on Add, how many of their own wait and from when.
+- While someone's sign-in is locked, or waits after a restore, or their day's
+  batch is full (200), their email waits in the mailbox too, and comes in
+  once it can.
+
+**The risk: a forged sender.** Anyone can write anybody's address in an
+email's From. Without a check, a stranger who learns the mailbox's address
+could put files in a family member's Inbox: they would see them there, and
+remove them, but should not have to. So:
+
+- **Set `FDV_MAIL_IN_AUTHSERV_ID`** to the name your provider puts first in
+  its `Authentication-Results` header: `mx.google.com` for Gmail (open any
+  email's original headers to see it). The vault then reads only the first
+  `Authentication-Results` header of an email, which your provider adds as
+  the email arrives, and only if it carries that name; it reads it strictly,
+  and accepts the email only if it says the sender passed DMARC for the
+  From's own domain, or, with no DMARC result, carries a DKIM signature of
+  exactly that domain. Anything a sender wrote is ignored. It works with any
+  provider that puts its own `Authentication-Results`, under its own name, on
+  top of every email it receives (Gmail, Fastmail, iCloud, most others):
+  look at a few emails' headers to find the name, and check it is always the
+  same. A provider whose header is out of the standard's grammar, or carries
+  no name, is never trusted: its email then counts as not verified.
+- Without it, the vault goes by the From alone, warns owners in Settings, and
+  marks every item from an email **"sender not verified"** on its card.
+- Either way, nothing emailed in is ever filed without its person accepting
+  it.
+
+`FDV_MAIL_IN_FOLDER` (`INBOX`) is the folder checked, and
+`FDV_MAIL_IN_POLL_SECONDS` (300) how often. If the mailbox refuses the
+sign-in, the vault tries less and less often, up to an hour apart, so the
+provider doesn't lock the account; Settings says so. One worker checks the
+mailbox however many run, as for the scanner folder: `DATABASE_URL` must
+reach Postgres directly.
 
 ### When a new device signs in
 

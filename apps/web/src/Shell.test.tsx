@@ -982,12 +982,14 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
     main = await go('Your data', 'Your data');
     expect(within(main).getByRole('button', { name: 'Make an export' })).toBeVisible();
     await expectAccessible();
-    // For owners: where files are kept, where email comes from, the scanner folder (S3).
+    // For owners: where files are kept, where email comes from, the scanner
+    // folder (S3), email in (S4).
     main = await go('For owners', 'For owners');
     expect(rows(main)).toEqual([
       'Where your files are kept',
       'Where email comes from',
       'Scanner folder',
+      'Email in',
     ]);
     await expectAccessible();
     // What has a place of its own is said beside the sections, never here.

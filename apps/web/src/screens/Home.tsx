@@ -34,6 +34,7 @@ import { AfterRestoreBanner } from './AfterRestore.js';
 import { OnlyYou, useMayBatch } from './Batches.js';
 import { mayBringBack, purgeAskedWords } from './Trash.js';
 import { loadScannerNotices, ScannerNotices } from '../watch-folder.js';
+import { EmailInLine } from '../mail-in.js';
 
 /**
  * Home is the whole product in one view: the needs-attention strip (the
@@ -338,6 +339,8 @@ export function HomeScreen() {
           </div>
           <div className="dash-col dash-side">
             <UploadsWaiting />
+            {/* Email documents in (S4): where, from where, and confirming it. */}
+            <EmailInLine className="dash-card" />
             {people}
             {collections}
           </div>
@@ -345,6 +348,7 @@ export function HomeScreen() {
       ) : (
         <>
           {attention}
+          <EmailInLine />
           {people}
           {cats}
           {collections}

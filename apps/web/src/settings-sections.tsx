@@ -80,6 +80,13 @@ export const OWNER_ROWS: SettingsRow[] = [
     title: 'Scanner folder',
     note: 'Scan straight into someone’s Inbox',
   },
+  // Email in (S4): offered to every owner, so its page can say why it is
+  // off when the mailbox is not set up.
+  {
+    to: '/settings/email-in',
+    title: 'Email in',
+    note: 'The family emails documents to their Inbox',
+  },
 ];
 
 /** The household's rule for Only me documents and links (5.41): read by owners and adults. */
@@ -139,8 +146,14 @@ export function settingsSections(
       key: 'owners',
       to: '/settings/owners',
       label: 'For owners',
-      note: 'Where files are kept, where email comes from, the scanner folder',
-      holds: at('/settings/owners', '/settings/storage', '/settings/email', '/settings/scanner'),
+      note: 'Where files are kept, where email comes from, the scanner folder, email in',
+      holds: at(
+        '/settings/owners',
+        '/settings/storage',
+        '/settings/email',
+        '/settings/scanner',
+        '/settings/email-in',
+      ),
     });
   }
   return out;

@@ -2,8 +2,30 @@ import { execFile } from 'node:child_process';
 import { access, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { childEnv } from './child-env.js';
 
-const run = promisify(execFile);
+const execFileAsync = promisify(execFile);
+
+/**
+ * A tool run: its arguments never through a shell, and its environment the
+ * few names it needs (childEnv, the S4 review's F7), never the worker's —
+ * no master key, no database address — with what a call adds.
+ */
+function run(
+  bin: string,
+  args: string[],
+  opts: {
+    timeout?: number;
+    signal?: AbortSignal | undefined;
+    maxBuffer?: number;
+    env?: Record<string, string>;
+  } = {},
+): Promise<{ stdout: string; stderr: string }> {
+  return execFileAsync(bin, args, { ...opts, env: childEnv(opts.env) });
+}
+
+/** The same, for the tests: what a tool is handed. */
+export const runTool = run;
 
 /**
  * The three command-line tools the worker image ships: poppler
@@ -562,7 +584,7 @@ export async function squarePhoto(
   if (!coder) throw new Error(`a photo is not made from ${mime}`);
   const bin = await MAGICK();
   const src = `${coder}:${input}[0]`;
-  const env = { ...process.env, MAGICK_TEMPORARY_PATH: path.dirname(output) };
+  const env = { MAGICK_TEMPORARY_PATH: path.dirname(output) };
   const { stdout } = await run(
     bin,
     [...MAGICK_LIMITS, '-ping', src, '-format', '%w %h %[orientation]', 'info:'],

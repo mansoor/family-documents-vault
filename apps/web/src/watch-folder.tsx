@@ -197,9 +197,9 @@ function whenWords(at: string): string {
 }
 
 /**
- * "A scanned file couldn't be added" (S3), in Needs attention: the
- * reader's own, each with its name and why, and Dismiss. Nothing when there
- * are none.
+ * "A scanned file couldn't be added" (S3), and "An email couldn't be added"
+ * (S4), in Needs attention: the reader's own, each with its name (where it
+ * has one) and why, and Dismiss. Nothing when there are none.
  */
 export function ScannerNotices(props: {
   items: WatchNoticeView[];
@@ -222,9 +222,11 @@ export function ScannerNotices(props: {
       if (done !== null) {
         await props.onDismissed();
         setSaid(
-          n.left_in_place
-            ? `Dismissed. ${n.file_name} is still where the scanner saved it.`
-            : `Dismissed. ${n.file_name} is still in the scanner folder’s rejected folder.`,
+          n.source === 'email'
+            ? 'Dismissed.'
+            : n.left_in_place
+              ? `Dismissed. ${n.file_name ?? 'The file'} is still where the scanner saved it.`
+              : `Dismissed. ${n.file_name ?? 'The file'} is still in the scanner folder’s rejected folder.`,
         );
       }
     } catch (err) {
@@ -249,7 +251,11 @@ export function ScannerNotices(props: {
             <Button
               kind="quiet"
               disabled={busy !== null}
-              ariaLabel={`Dismiss the note about ${n.file_name}`}
+              ariaLabel={
+                n.file_name
+                  ? `Dismiss the note about ${n.file_name}`
+                  : 'Dismiss the note about an email'
+              }
               onClick={() => void dismiss(n)}
             >
               Dismiss

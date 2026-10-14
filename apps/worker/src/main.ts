@@ -41,6 +41,13 @@ import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import { resumeBatchItems, sendBatchPreviews, workBatchPreviews } from './jobs/batches.js';
 import { ProposalThread } from './jobs/proposal-thread.js';
 import { WATCH_KEY_PURPOSE, WatchRunner } from './jobs/watch-folder.js';
+import {
+  MAIL_KEY_PURPOSE,
+  MailInRunner,
+  mailboxFromConfig,
+  takeMailInPassword,
+} from './jobs/mail-in.js';
+import { MailThread } from './jobs/mail-thread.js';
 import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
 import { masterKeyOpensVault, resolveMasterSecret } from './master-key-check.js';
@@ -54,6 +61,9 @@ const log = (level: string, msg: string, extra: Record<string, unknown> = {}) =>
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  // The mailbox's password, read: out of the environment at once, so no
+  // tool or thread started from here is ever handed it (the S4 review, F7).
+  takeMailInPassword(process.env);
   logLevel = config.LOG_LEVEL;
   const adminUrl = config.DATABASE_ADMIN_URL ?? config.DATABASE_URL;
   if (!(await masterKeyOpensVault(adminUrl, await resolveMasterSecret(config), log))) {
@@ -472,6 +482,44 @@ async function main(): Promise<void> {
   );
   watch.start();
   if (config.FDV_WATCH_DIR) log('info', 'scanner folder set', { dir: config.FDV_WATCH_DIR });
+  // Email in (S4): the household mailbox checked every
+  // FDV_MAIL_IN_POLL_SECONDS by one worker, the one holding its advisory
+  // lock; each mail read on a thread of its own; what it adds is drawn and
+  // read above. The password goes to the mailbox's connector alone.
+  const mailbox = await mailboxFromConfig(config, log, (p) => readFile(p, 'utf8'));
+  // Held by the mailbox's connector alone from here on.
+  delete config.FDV_MAIL_IN_PASSWORD;
+  const mailReader = new MailThread();
+  const mailIn = new MailInRunner(
+    {
+      admin: dbs.admin,
+      db: dbs.app,
+      keys: processDeps.keys,
+      credentialsKey: processDeps.credentialsKey,
+      localRoot: processDeps.localRoot,
+      log,
+      itemKey: deriveKey(masterSecret, MAIL_KEY_PURPOSE),
+      maxBytes: config.FDV_MAX_UPLOAD_BYTES,
+      sendBatchPreviews: (hh) => sendBatchPreviews(boss, hh),
+      reader: mailReader,
+    },
+    {
+      connector: mailbox?.connector ?? null,
+      address: mailbox?.address ?? null,
+      folder: config.FDV_MAIL_IN_FOLDER,
+      after: config.FDV_MAIL_IN_AFTER,
+      authservId: config.FDV_MAIL_IN_AUTHSERV_ID ?? null,
+      pollMs: config.FDV_MAIL_IN_POLL_SECONDS * 1000,
+      lockUrl: config.DATABASE_URL,
+    },
+  );
+  mailIn.start();
+  if (mailbox) {
+    log('info', 'household mailbox set', {
+      folder: config.FDV_MAIL_IN_FOLDER,
+      senders_checked: Boolean(config.FDV_MAIL_IN_AUTHSERV_ID),
+    });
+  }
   await boss.createQueue(JOBS.remindersWeekly);
   await boss.work(JOBS.remindersWeekly, async () => {
     const r = await weekly(reminderDeps);
@@ -485,8 +533,10 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     log('info', 'shutting down', { signal });
     await watch.stop();
+    await mailIn.stop();
     await boss.stop({ graceful: true, timeout: 10_000 });
     await proposals.close();
+    await mailReader.close();
     await dbs.close();
     process.exit(0);
   };

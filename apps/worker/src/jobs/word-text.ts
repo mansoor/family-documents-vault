@@ -88,6 +88,8 @@ function textInThread(parts: string[], deadlineMs: number): Promise<string[]> {
     const thread = new Worker(source, {
       eval: true,
       workerData: { parts },
+      // Nothing of the worker's environment: no master key (the S4 review, F7).
+      env: {},
       resourceLimits: { maxOldGenerationSizeMb: THREAD_HEAP_MB },
     });
     let settled = false;

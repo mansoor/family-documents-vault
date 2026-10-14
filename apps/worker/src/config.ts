@@ -105,7 +105,78 @@ const schema = z.object({
     .int()
     .positive()
     .default(100 * 1024 * 1024)
-    .describe('Largest single file the vault accepts: from the scanner folder as from an upload.'),
+    .describe(
+      'Largest single file the vault accepts: from the scanner folder, or attached to an email, as from an upload.',
+    ),
+  FDV_MAIL_IN_HOST: z
+    .string()
+    .min(1)
+    .max(253)
+    .regex(/^[A-Za-z0-9.-]+$/, 'a host name, such as imap.gmail.com')
+    .optional()
+    .describe(
+      "The household mailbox's IMAP server (S4): with FDV_MAIL_IN_USER and a password, email in can be turned on.",
+    ),
+  FDV_MAIL_IN_PORT: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(65535)
+    .default(993)
+    .describe('Its IMAP port: TLS from the start, the certificate verified (993).'),
+  FDV_MAIL_IN_USER: z
+    .string()
+    .min(1)
+    .max(320)
+    .optional()
+    .describe('The sign-in of the household mailbox: usually its address.'),
+  FDV_MAIL_IN_PASSWORD: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Its password (an app password): never logged, sent to the web, or stored.'),
+  FDV_MAIL_IN_PASSWORD_FILE: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Or a file holding it (a Docker secret).'),
+  FDV_MAIL_IN_ADDRESS: z
+    .string()
+    .min(3)
+    .max(320)
+    .regex(/^[^\s@]+@[^\s@]+$/, 'an email address')
+    .optional()
+    .describe(
+      'Where the family sends documents, shown to them; by default FDV_MAIL_IN_USER, when that is an address.',
+    ),
+  FDV_MAIL_IN_FOLDER: z
+    .string()
+    .min(1)
+    .max(200)
+    .default('INBOX')
+    .describe('The folder checked for mail.'),
+  FDV_MAIL_IN_POLL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(30)
+    .max(86400)
+    .default(300)
+    .describe('How often the mailbox is checked.'),
+  FDV_MAIL_IN_AFTER: z
+    .enum(['move', 'delete'])
+    .default('move')
+    .describe(
+      'What is done with an email once its attachments are in: moved to "Filed", or deleted.',
+    ),
+  FDV_MAIL_IN_AUTHSERV_ID: z
+    .string()
+    .min(1)
+    .max(253)
+    .regex(/^[A-Za-z0-9.-]+$/, 'an authserv-id, such as mx.google.com')
+    .optional()
+    .describe(
+      "The mailbox provider's Authentication-Results id (mx.google.com): set, a sender is accepted only on its word.",
+    ),
   DATABASE_ADMIN_URL: z
     .string()
     .min(1)

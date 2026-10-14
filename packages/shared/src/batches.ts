@@ -211,6 +211,12 @@ export interface BatchItemView {
   renewals?: BatchRenewal[];
   /** Accepted: the document it became, while the uploader can still see it. */
   document_id: string | null;
+  /**
+   * From an email whose sender the mailbox's provider could not vouch for
+   * (S4, FDV_MAIL_IN_AUTHSERV_ID unset): true, and "Sender not verified" on
+   * its card. Absent otherwise, and from older vaults.
+   */
+  sender_unverified?: boolean;
 }
 
 /** `GET /api/v1/batches/{id}`: a batch, and every item not removed, oldest first. */

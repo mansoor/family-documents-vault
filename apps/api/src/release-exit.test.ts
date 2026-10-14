@@ -785,6 +785,15 @@ const RULES: Record<string, Rule> = {
   'PUT /api/v1/watch-folder': { who: 'owners', body: () => ({ enabled: false }) },
   'GET /api/v1/watch-folder/notices': { who: 'family' },
   'POST /api/v1/watch-folder/notices/:id/dismiss': { who: 'family', body: () => ({}) },
+
+  // Email in (0.8.0, S4): an owner's setting; and each person's own address
+  // and code — never a viewer's or a guest's, and nobody else's.
+  'GET /api/v1/mail-in': { who: 'owners' },
+  'PUT /api/v1/mail-in': { who: 'owners', body: () => ({ enabled: false }) },
+  'GET /api/v1/mail-in/me': { who: 'family' },
+  'POST /api/v1/mail-in/me/code': { who: 'family', body: () => ({}) },
+  'POST /api/v1/mail-in/me/email-code': { who: 'family', body: () => ({}) },
+  'POST /api/v1/mail-in/me/confirm': { who: 'family', body: () => ({ code: 'ABCD-EFGH' }) },
 };
 
 /** Whether a role is among those a rule is for. */
@@ -1253,6 +1262,24 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     });
     expect((await ok(send(ahmed, 'GET', '/api/v1/watch-folder/notices'))).body).toContain(
       'ahmed-scan-541',
+    );
+    // And an attachment of his email the vault could not add (0.8.0, S4):
+    // its note, by name, his alone too.
+    await withSystem(h.db, olivia.household_id, (trx) =>
+      trx
+        .insertInto('watch_notice')
+        .values({
+          household_id: olivia.household_id,
+          member_id: ahmed.member_id,
+          source: 'email',
+          file_name: 'ahmed-mail-541.pdf',
+          reason: 'message_too_large',
+          file_key: randomUUID(),
+        })
+        .execute(),
+    );
+    expect((await ok(send(ahmed, 'GET', '/api/v1/watch-folder/notices'))).body).toContain(
+      'ahmed-mail-541',
     );
 
     // Ahmed's own: a reminder, an export, a phone.
@@ -2585,6 +2612,8 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       // A note that the scanner folder could not add his file (S3).
       ids.watchNotice as string,
       'ahmed-scan-541',
+      // A note that an attachment of his email could not be added (S4).
+      'ahmed-mail-541',
     ];
     const outsideGrant = [
       ...secretsOf('will', 'deed', 'carInsurance'),

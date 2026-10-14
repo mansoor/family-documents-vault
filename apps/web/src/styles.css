@@ -831,6 +831,27 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+/* Email in (S4): where to send, and the code to confirm an address. */
+.mail-in-line p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.mail-in-code code {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+}
+
+/* Email in's page: what was left in the mailbox, a plain list. */
+.mail-in-counts {
+  margin: 0;
+  padding-left: 1.25em;
+  display: grid;
+  gap: 6px;
+}
+
 /* The scanner folder's page: what happens to each file, a plain list. */
 .scanner-what {
   margin: 0;

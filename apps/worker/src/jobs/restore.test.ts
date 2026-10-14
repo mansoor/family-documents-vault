@@ -485,6 +485,30 @@ async function seed(url: string): Promise<string> {
               [hh],
             );
           }
+          // And, where the schema has them (0069), email in on, that
+          // person's address confirmed, and a note of an email it could not add.
+          const mailed = await c.query<{ has: boolean }>(
+            "select to_regclass('public.mail_in') is not null as has",
+          );
+          if (mailed.rows[0]?.has) {
+            await c.query(
+              `insert into mail_in (household_id, enabled, unknown_senders)
+               values ($1, not exists (select 1 from mail_in where enabled), 2)`,
+              [hh],
+            );
+            await c.query(
+              `insert into mail_in_address (household_id, member_id, email, confirmed_at)
+               select $1, b.member_id, 'seeded@example.test', now()
+                 from intake_batch b where b.household_id = $1 limit 1`,
+              [hh],
+            );
+            await c.query(
+              `insert into watch_notice (household_id, member_id, source, reason, file_key)
+               select $1, b.member_id, 'email', 'nothing_to_add', gen_random_uuid()
+                 from intake_batch b where b.household_id = $1`,
+              [hh],
+            );
+          }
         }
       }
     }
@@ -1530,7 +1554,7 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
   it('notices the scanner folder open to anybody but the owners, or its notes to anybody but their person (0068, S3)', async () => {
     const seeded = await sql(
       vault.adminUrl,
-      'select (select count(*)::int from watch_folder) as folders, (select count(*)::int from watch_notice) as notes',
+      "select (select count(*)::int from watch_folder) as folders, (select count(*)::int from watch_notice where source = 'scanner') as notes",
     );
     expect(seeded.rows[0]).toEqual({ folders: 1, notes: 1 });
     const ruleOf = async (name: string) =>
@@ -1665,6 +1689,132 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         'intake_batch_watch_day_idx',
         'intake_batch',
         '(household_id, member_id, watch_day) where watch_day is not null',
+      ],
+    ] as const) {
+      await sql(vault.adminUrl, `drop index public.${index}`);
+      try {
+        await expect(checkRestored(target()), index).rejects.toThrow(
+          new RegExp(`unique index the vault relies on is missing: .*${index}`),
+        );
+      } finally {
+        await sql(vault.adminUrl, `create unique index ${index} on public.${table} ${columns}`);
+      }
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
+  it('notices email in open to anybody but the owners, or an address to anybody but its person (0069, S4)', async () => {
+    const seeded = await sql(
+      vault.adminUrl,
+      `select (select count(*)::int from mail_in) as settings,
+              (select count(*)::int from mail_in_address) as addresses`,
+    );
+    expect(seeded.rows[0]).toEqual({ settings: 1, addresses: 1 });
+    const ruleOf = async (name: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${name}'`,
+        )
+      ).rows[0]?.rule as string;
+    /** The rule changed for a moment: the check refuses the vault, saying `why`. */
+    const refusedWith = async (policy: string, table: string, using: string, why: RegExp) => {
+      const was = await ruleOf(policy);
+      await sql(vault.adminUrl, `alter policy ${policy} on public.${table} using (${using})`);
+      try {
+        await expect(checkRestored(target()), policy).rejects.toThrow(why);
+      } finally {
+        await sql(vault.adminUrl, `alter policy ${policy} on public.${table} using (${was})`);
+      }
+    };
+
+    // The setting: its rule gone; an adult given it; or no owner asked for.
+    const setting = await ruleOf('mail_in_actor');
+    expect(setting).toMatch(/'owner'/);
+    await sql(vault.adminUrl, 'drop policy mail_in_actor on public.mail_in');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on mail_in/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy mail_in_actor on public.mail_in as restrictive using (${setting})`,
+      );
+    }
+    await refusedWith(
+      'mail_in_actor',
+      'mail_in',
+      `case app_actor() when 'account' then app_role() in ('owner', 'adult')
+                        when 'system' then true else false end`,
+      /email in is open to an adult/,
+    );
+    await refusedWith(
+      'mail_in_actor',
+      'mail_in',
+      `case app_actor() when 'account' then true when 'system' then true else false end`,
+      /no rule keeps .*email in to the owners/,
+    );
+    // Somebody's address: theirs alone, an owner's too.
+    await refusedWith(
+      'mail_in_address_actor',
+      'mail_in_address',
+      `case app_actor() when 'account' then app_role() = 'owner' or member_id = app_member()
+                        when 'system' then true else false end`,
+      /address for email in is open to an owner who is not them/,
+    );
+    await refusedWith(
+      'mail_in_address_actor',
+      'mail_in_address',
+      `case app_actor() when 'account' then true when 'system' then true else false end`,
+      /no rule keeps a member's own to them on .*mail_in_address/,
+    );
+    // The guards that keep each to what is theirs to write.
+    for (const [table, trigger] of [
+      ['mail_in', 'mail_in_account_writes'],
+      ['mail_in_address', 'mail_in_address_account_writes'],
+    ] as const) {
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        await expect(checkRestored(target()), trigger).rejects.toThrow(
+          /guard the vault relies on is missing/,
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    for (const [table, policy] of [
+      ['intake_batch', 'intake_batch_mail_insert'],
+      ['incoming_file', 'incoming_file_mail_insert'],
+      ['mail_in_address', 'mail_in_address_actor_delete'],
+    ] as const) {
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as q, pg_get_expr(polwithcheck, polrelid) as c,
+                polcmd from pg_policy where polname = '${policy}'`,
+      );
+      const was = rows[0] as { q: string | null; c: string | null; polcmd: string };
+      await sql(vault.adminUrl, `drop policy ${policy} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), policy).rejects.toThrow(new RegExp(policy));
+      } finally {
+        const cmd = { a: 'insert', w: 'update', d: 'delete' }[was.polcmd] as string;
+        await sql(
+          vault.adminUrl,
+          `create policy ${policy} on public.${table} as restrictive for ${cmd}` +
+            (was.q ? ` using (${was.q})` : '') +
+            (was.c ? ` with check (${was.c})` : ''),
+        );
+      }
+    }
+    // And the unique indexes its rules rest on: one household on, one
+    // email batch a person a day.
+    for (const [index, table, columns] of [
+      ['mail_in_one_on', 'mail_in', '((true)) where enabled'],
+      [
+        'intake_batch_mail_day_idx',
+        'intake_batch',
+        '(household_id, member_id, mail_day) where mail_day is not null',
       ],
     ] as const) {
       await sql(vault.adminUrl, `drop index public.${index}`);

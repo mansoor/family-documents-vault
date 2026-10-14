@@ -42,6 +42,10 @@ begin
   if to_regclass('public.watch_dir') is not null then
     revoke insert, update, delete on public.watch_dir from fdv_app;
   end if;
+  -- The household mailbox as the worker last had it (0069): the same.
+  if to_regclass('public.mail_in_server') is not null then
+    revoke insert, update, delete on public.mail_in_server from fdv_app;
+  end if;
   if to_regprocedure('public.invitation_household(bytea)') is not null then
     grant execute on function public.invitation_household(bytea) to fdv_app;
   end if;
@@ -204,6 +208,17 @@ begin
   if to_regprocedure('public.incoming_file_version_reached(uuid)') is not null then
     revoke execute on function public.incoming_file_version_reached(uuid) from public;
     grant execute on function public.incoming_file_version_reached(uuid) to fdv_app;
+  end if;
+  -- Whether the household has email in on (0069): asked for whoever may
+  -- add documents, who is told where to send.
+  if to_regprocedure('public.mail_in_on()') is not null then
+    revoke execute on function public.mail_in_on() from public;
+    grant execute on function public.mail_in_on() to fdv_app;
+    -- And a code to confirm an address, made and checked by the vault (F1).
+    revoke execute on function public.mail_in_issue_code(bytea, text) from public;
+    grant execute on function public.mail_in_issue_code(bytea, text) to fdv_app;
+    revoke execute on function public.mail_in_check_code(bytea) from public;
+    grant execute on function public.mail_in_check_code(bytea) to fdv_app;
   end if;
 end $$;
 

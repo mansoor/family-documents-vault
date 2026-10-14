@@ -67,6 +67,7 @@ import { alertJob, type AlertRequest } from './alert-job.js';
 import { pushJob, type PushRequest } from './push-job.js';
 import { instanceIdReader } from './instance.js';
 import { WatchFolderService } from './watch-folder/service.js';
+import { MAIL_IN_CODE_KEY_PURPOSE, MailInService } from './mail-in/service.js';
 import { serverVersion } from './version.js';
 
 /**
@@ -313,6 +314,10 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     serverVersion: await serverVersion(),
     instanceId: instanceIdReader(db),
     watchFolder: new WatchFolderService(db),
+    mailIn: new MailInService(db, {
+      mail: config.FDV_SMTP_URL ? (opts.mail ?? operatorMail) : null,
+      codeKey: deriveKey(TEST_MASTER, MAIL_IN_CODE_KEY_PURPOSE),
+    }),
     pingDatabase: async () => undefined,
     auth,
     totp,

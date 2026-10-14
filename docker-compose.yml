@@ -95,6 +95,19 @@ services:
       FDV_WATCH_STABLE_SECONDS: ${FDV_WATCH_STABLE_SECONDS:-}
       FDV_WATCH_INCOMPLETE_GRACE_SECONDS: ${FDV_WATCH_INCOMPLETE_GRACE_SECONDS:-}
       FDV_MAX_UPLOAD_BYTES: ${FDV_MAX_UPLOAD_BYTES:-}
+      # Email in (README, "Emailing documents to the vault"): the household
+      # mailbox, checked over IMAP. The worker's alone: never give these to
+      # the API or the web.
+      FDV_MAIL_IN_HOST: ${FDV_MAIL_IN_HOST:-}
+      FDV_MAIL_IN_PORT: ${FDV_MAIL_IN_PORT:-}
+      FDV_MAIL_IN_USER: ${FDV_MAIL_IN_USER:-}
+      FDV_MAIL_IN_PASSWORD: ${FDV_MAIL_IN_PASSWORD:-}
+      FDV_MAIL_IN_PASSWORD_FILE: ${FDV_MAIL_IN_PASSWORD_FILE:-}
+      FDV_MAIL_IN_ADDRESS: ${FDV_MAIL_IN_ADDRESS:-}
+      FDV_MAIL_IN_FOLDER: ${FDV_MAIL_IN_FOLDER:-}
+      FDV_MAIL_IN_POLL_SECONDS: ${FDV_MAIL_IN_POLL_SECONDS:-}
+      FDV_MAIL_IN_AFTER: ${FDV_MAIL_IN_AFTER:-}
+      FDV_MAIL_IN_AUTHSERV_ID: ${FDV_MAIL_IN_AUTHSERV_ID:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - vault-data:/data

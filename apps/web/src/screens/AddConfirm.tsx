@@ -73,6 +73,7 @@ import {
 } from '../ui.js';
 import { LinksChoiceDialog, linksAsk, type LinksAsk } from './Visibility.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
+import { EmailInLine } from '../mail-in.js';
 
 /**
  * Said under the date an Only me document is reminded from (5.16b): the
@@ -334,6 +335,8 @@ export function AddScreen() {
         Take a photo or choose a file
       </Button>
       <p className="muted">PDFs, photos and scans (JPEG, PNG, HEIC, TIFF), Word and Excel files.</p>
+      {/* Or by email (S4): where, from where, and confirming it. */}
+      <EmailInLine />
     </main>
   );
 }

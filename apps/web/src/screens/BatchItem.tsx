@@ -4,6 +4,7 @@ import {
   can,
   formatDate,
   LEVEL_WORDS,
+  SENDER_NOT_VERIFIED,
   untouchedAccept,
   type BatchAcceptInput,
   type BatchDetail,
@@ -484,6 +485,16 @@ export function BatchItemScreen() {
             )}
             <OnlyYou>Only you can see this until you accept it.</OnlyYou>
           </div>
+          {/* From an email whose sender the household mailbox could not check (S4). */}
+          {item.sender_unverified && (
+            <div className="problem-box problem-box-calm" role="note">
+              <strong>{SENDER_NOT_VERIFIED}</strong>
+              <span>
+                This was emailed in from your address, but the household mailbox couldn’t check that
+                you sent it. If you didn’t, remove it.
+              </span>
+            </div>
+          )}
           {dup && (
             <div className="problem-box" role="note">
               <strong>
