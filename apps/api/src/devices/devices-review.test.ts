@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 import { createPool } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
+  pairingAddressCheck,
   PAIRING_ALPHABET,
   type DeviceMe,
   type DevicePaired,
@@ -601,6 +602,19 @@ describe.skipIf(!testAdminUrl())('the D1 review (0.8.0)', () => {
     );
     const full = await upload(d, PDF('THREE'));
     expect(codeOf(full)).toBe('device_day_full');
+  });
+
+  it('a code is taken with its address’s check or without it, and the vault never checks it', async () => {
+    const shown = await newCode(ahmed);
+    const withCheck = `${shown.code}-${pairingAddressCheck(shown.vault_address)}`;
+    expect(withCheck).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{3}$/);
+    expect((await trade(withCheck, 'With check')).statusCode).toBe(201);
+    // A check of another address is the app's to refuse, not the vault's.
+    const other = await newCode(ahmed);
+    const wrongCheck = `${other.code}-${pairingAddressCheck('https://not-this-vault.example')}`;
+    expect((await trade(wrongCheck, 'Other check')).statusCode).toBe(201);
+    // And older apps, with the eight alone, as ever.
+    expect((await trade((await newCode(ahmed)).code, 'Eight alone')).statusCode).toBe(201);
   });
 
   it('F8: a code is ended when its dialog closes, and the email says which computer, and when', async () => {

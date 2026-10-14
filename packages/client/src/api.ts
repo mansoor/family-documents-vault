@@ -1412,6 +1412,11 @@ export function createApi(http: Http) {
       request<void>('/api/v1/device-pairings', { method: 'DELETE', token }),
     /**
      * The code traded for a key, by the app on the computer: no sign-in.
+     * The dialog shows it with three characters more (`KX7P-3M9Q-R4T`): the
+     * check of the address it shows (`pairingAddressCheck` in
+     * `@fdv/shared`). The app works them out from the address it was given
+     * and refuses to pair when they differ, before it sends anything; the
+     * vault takes the code with them or without, and never checks them.
      * `401 pairing_code_invalid` for a code that is wrong, run out, used or
      * ended (five wrong tries end one); `429` past the address's limit. The
      * key is answered once: keep it, with `device_id`.

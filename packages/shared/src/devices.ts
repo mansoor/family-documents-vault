@@ -59,9 +59,11 @@ export function relativePathProblem(path: string): string | null {
  */
 export function normalisePairingCode(typed: string): string | null {
   const plain = typed.toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (plain.length !== PAIRING_CODE_LENGTH) return null;
+  // With its address's three-character check or without (pairing-address.ts):
+  // the check is the app's to verify, never the vault's, so it is let go.
+  if (plain.length !== PAIRING_CODE_LENGTH && plain.length !== PAIRING_CODE_LENGTH + 3) return null;
   for (const c of plain) if (!PAIRING_ALPHABET.includes(c)) return null;
-  return plain;
+  return plain.slice(0, PAIRING_CODE_LENGTH);
 }
 
 /** A code as it is shown: KX7P-2M9Q. */

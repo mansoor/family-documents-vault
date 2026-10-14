@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
-import type { DevicePairingCode, DevicePlatform, PairedDevice } from '@fdv/shared';
+import {
+  showPairingCodeFor,
+  type DevicePairingCode,
+  type DevicePlatform,
+  type PairedDevice,
+} from '@fdv/shared';
 import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
@@ -268,7 +273,11 @@ function PairingDialog(props: {
     return () => clearInterval(t);
   }, [paired, ran, withToken]);
   const address = addressToType(props.pairing.vault_address);
-  const code = props.pairing.code;
+  // The vault's code, and three characters more from the very address shown
+  // above it: the uploader works them out from the address its person
+  // typed, and refuses a look-alike or a mistyped one before it sends
+  // anything (pairing-address.ts).
+  const code = showPairingCodeFor(props.pairing.code, address);
   return (
     <div className="scrim" role="presentation">
       <section
@@ -310,7 +319,7 @@ function PairingDialog(props: {
                 <span ref={codeBox} tabIndex={-1} className="pairing-code-box">
                   {/* Read a character at a time; the large code itself is for the eye. */}
                   <span className="visually-hidden">
-                    {`Code: ${code.replace('-', '').split('').join(' ')}`}
+                    {`Code: ${code.replace(/-/g, '').split('').join(' ')}`}
                   </span>
                   <span
                     aria-hidden="true"

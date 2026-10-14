@@ -1830,7 +1830,7 @@ export function createFakeVault(): {
     if (path === '/api/v1/capabilities') {
       const caps: Capabilities = {
         product: 'family-document-vault',
-        server_version: '0.4.13',
+        server_version: FAKE_SERVER_VERSION,
         api_version: 1,
         min_client_version: '0.0.1',
         edition: 'self_hosted',
@@ -5280,6 +5280,14 @@ export function createFakeVault(): {
 
   return { fetch, state, pauseSignIns };
 }
+
+/**
+ * The version the fake says it is: the release this package is, so that an
+ * app that checks the vault's version (the desktop uploader does) works
+ * against it. apps/api/src/fake-version.test.ts holds it to the repository's
+ * version, so it moves with each release.
+ */
+export const FAKE_SERVER_VERSION = '0.8.0';
 
 /**
  * A moment as the real vault takes one for a lock's end: ISO, with its

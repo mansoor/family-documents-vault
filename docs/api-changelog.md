@@ -4616,7 +4616,18 @@ name, platform, member_id, member_name, mine, added_at, last_used_at
     it); `GET /devices/me`'s `limits` carries `daily_bytes`, and
     `day_resets_at` — the next midnight on the household's clock (ISO), when
     the day's batch and its room in bytes start again. `@fdv/shared`:
-    `nextLocalMidnight`. **Changed:**
+    `nextLocalMidnight`. **Changed:** `POST /api/v1/devices/pair` takes
+    the code with three characters more (`KX7P-3M9Q-R4T`), as the web's
+    pairing dialog now shows it: the check of the address the dialog shows
+    (SHA-256 of the address normalised — scheme and host in lower case, an
+    IDN host as punycode, no default port, no trailing slash, no query or
+    fragment — its first three bytes each `% 23` into the pairing
+    alphabet). The vault lets the three go and never checks them: the
+    uploader app works them out from the address it was given and refuses
+    to pair, before it sends anything, when they differ. The eight alone
+    are taken as ever. `@fdv/shared`: `pairingAddressCheck`,
+    `normalisePairingAddress`, `showPairingCodeFor`, with published test
+    vectors (`pairing-address.test.ts`). **Changed:**
     signing somebody out everywhere (`DELETE /members/{id}/sessions`), an
     owner's reset with `stop_now`, and a password changed (`POST
 /auth/password/change`) or reset (`POST /password-resets/complete`)

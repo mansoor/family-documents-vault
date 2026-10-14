@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from './App.js';
+import { pairingAddressCheck } from '@fdv/shared';
 import { addressToType } from './screens/Computers.js';
 import { fresh, installFakeApi, signedIn, type FakeState } from './test-api.js';
 
@@ -103,13 +104,18 @@ describe('Your computers (0.8.0, D1)', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Add a computer' });
     expect(state.pairings).toBe(1);
     // The code, once and large, read out a character at a time.
-    const code = within(dialog).getByText('KX7P-3M9Q');
+    // The vault's code, and the check of the address the dialog shows.
+    const check = pairingAddressCheck('https://vault.example.test');
+    expect(check).toMatch(/^[A-Z0-9]{3}$/);
+    const code = within(dialog).getByText(`KX7P-3M9Q-${check}`);
     expect(code).toHaveClass('pairing-code');
     // Read a character at a time, as text a screen reader is given; the
     // large code is for the eye.
     expect(code).toHaveAttribute('aria-hidden', 'true');
     expect(code).not.toHaveAttribute('aria-label');
-    expect(within(dialog).getByText('Code: K X 7 P 3 M 9 Q')).toHaveClass('visually-hidden');
+    expect(
+      within(dialog).getByText(`Code: K X 7 P 3 M 9 Q ${check.split('').join(' ')}`),
+    ).toHaveClass('visually-hidden');
     expect(within(dialog).getByText('https://vault.example.test')).toBeInTheDocument();
     expect(
       within(dialog).getByText(
@@ -157,13 +163,16 @@ describe('Your computers (0.8.0, D1)', () => {
         timeout: 4000,
       }),
     ).toBeInTheDocument();
-    expect(within(dialog).getByText('KX7P-3M9Q')).toHaveClass('pairing-code-ran');
+    const check = pairingAddressCheck('https://vault.example.test');
+    expect(within(dialog).getByText(`KX7P-3M9Q-${check}`)).toHaveClass('pairing-code-ran');
     state.pairing = {};
     fireEvent.click(within(dialog).getByRole('button', { name: 'Make a new code' }));
     await waitFor(() => expect(state.pairings).toBe(2));
     // Focus goes to the new code, never to nowhere.
     await waitFor(() =>
-      expect(document.activeElement).toBe(within(dialog).getByText('KX7P-3M9Q').parentElement),
+      expect(document.activeElement).toBe(
+        within(dialog).getByText(`KX7P-3M9Q-${check}`).parentElement,
+      ),
     );
     expect(within(dialog).queryByText('This code has run out. Make a new one.')).toBeNull();
     await expectAccessible();
