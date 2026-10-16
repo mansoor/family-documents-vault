@@ -1269,11 +1269,23 @@ export function createApi(http: Http) {
      * the file until it arrives, a file sent again after its answer was lost
      * is answered with the item it made (`idempotent-replayed`), never a
      * second; `409 upload_in_progress` while the first try is on its way.
+     * With `relativePath` (0.8.0, `features.folder_suggestions` only: an
+     * older vault refuses it), the folders it was in under the folder chosen
+     * — folders only, "Passports/Ahmed", 4,096 bytes at most (a last
+     * segment equal to the file's name is dropped): kept sealed, given back
+     * to the uploader as the item's `folder`, and read for what it suggests
+     * (`from: 'folder'`).
      */
-    addBatchItem: (token: string, batchId: string, file: CaptureFile, idempotencyKey?: string) =>
+    addBatchItem: (
+      token: string,
+      batchId: string,
+      file: CaptureFile,
+      idempotencyKey?: string,
+      opts: { relativePath?: string | null } = {},
+    ) =>
       request<BatchItemView>(`/api/v1/batches/${enc(batchId)}/items`, {
         method: 'POST',
-        upload: batchItemUpload(file),
+        upload: batchItemUpload(file, opts.relativePath),
         token,
         ...(idempotencyKey ? { headers: { 'idempotency-key': idempotencyKey } } : {}),
       }),

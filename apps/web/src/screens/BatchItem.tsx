@@ -34,6 +34,7 @@ import {
   batchLabel,
   dupWords,
   inQueue,
+  ItemFolder,
   ItemTags,
   LevelBadge,
   OnlyYou,
@@ -463,6 +464,7 @@ export function BatchItemScreen() {
               {item.name} · {sizeWords(item.byte_size)}
               {pages > 0 ? ` · ${pages === 1 ? '1 page' : `${pages} pages`}` : ''}
             </p>
+            <ItemFolder item={item} />
             {item.level !== undefined && (
               <div className="batch-card-level">
                 {item.level ? (
@@ -613,10 +615,27 @@ export function BatchItemScreen() {
                   clashes: item.clashes ?? [],
                 }
               : {})}
+            folder={
+              item.folder
+                ? {
+                    path: item.folder,
+                    ticked: (p?.tags ?? []).filter((t) => t.ticked).map((t) => t.value),
+                    offered: (p?.tags ?? [])
+                      .filter((t) => !t.ticked)
+                      .map((t) => ({ value: t.value, existing: t.existing })),
+                  }
+                : null
+            }
             extras={{
               collections: addable(data.collections, role),
               collectionId: d.collection_id ?? '',
-              tags: d.tags.join(', '),
+              // The batch's tags; where it chose none, the folder's the vault
+              // ticks — used already, at least as widely as this would be (S2).
+              // Accept all Ready files none of the folder's.
+              tags: (d.tags.length > 0
+                ? d.tags
+                : (p?.tags ?? []).filter((t) => t.ticked).map((t) => t.value)
+              ).join(', '),
               essential: d.is_essential,
             }}
             submitLabel={dup ? 'Accept anyway' : 'Accept and next'}

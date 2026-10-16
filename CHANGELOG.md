@@ -6,19 +6,26 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
-## [0.8.0-dev.5] - 2026-10-13 — email documents to the vault
-
-## [0.8.0-dev.4] - 2026-10-13 — a watched folder for network scanners
+## [0.8.0-dev.6] - 2026-10-15 — folder names suggest the details
 
 ### Added
 
-- **Scanning straight into the vault.** Point a network scanner at a folder on the server, and each scan goes into one person's Inbox to look over, as if they had added it.
-  - **The server:** mount a folder into the worker and set `FDV_WATCH_DIR` (README, "Scanning straight into the vault"). The compose file has the mount, commented out.
-  - **The app:** an owner turns it on in **Settings → For owners → Scanner folder** and chooses whose Inbox it fills: themselves, or anyone in the family who signs in and adds documents, never a viewer. The page says when the folder isn't ready, and why.
-  - **Each file** is taken once it has stopped changing (`FDV_WATCH_STABLE_SECONDS`, 10 by default) and looks complete for its kind (or has waited `FDV_WATCH_INCOMPLETE_GRACE_SECONDS`, 120 by default), encrypted into that person's batch of the day ("Scanner, 12 Oct"), read and proposed for as anything they upload, and then deleted from the folder. Files in folders inside it are taken too. A link, to a file or a folder, is never followed, and a file is read, moved or deleted only once it is checked, just before, to be the file listed with its real path inside the folder.
-  - **A file the vault can't take** (not a PDF, photo, Word or Excel file, too large, empty, unreadable, or a hard link to a file elsewhere) is moved to `rejected/` (private to the vault), with a note beside it saying why, and that person sees "A scanned file couldn't be added" in Needs attention. One that can't be moved either is left in place, and its person told so. Owners are told how many scans are still in the folder though dealt with: stored but not deleted, or not moved.
-  - **It pauses**, and Settings says why, while that person is locked, waits after a restore or can no longer add documents, while the vault can't open their key or has nowhere to keep files, and once the day's batch is full. Files wait in the folder until then.
-  - **API:** `features.watch_folder`; `GET` and `PUT /api/v1/watch-folder` (owners); `GET /api/v1/watch-folder/notices` and `POST …/notices/{id}/dismiss` (the person's own).
+- **Folder names suggest the kind, whose it is and tags.** Choose or drop a folder on **Add → Many documents**, and where each file was goes with it: "Passports/Ahmed" suggests a passport, and Ahmed's. A scanner folder's subfolders do the same.
+  - **What it reads:** the household’s kinds by their names ("Passports", "Bank statements", "Insurance", "Tax", "Medical", "Bills" and other common words that say one kind only, never "Statements" or "Licences"), with a specific kind under its general one winning ("Tax/P60" is a tax form); the family you can choose by name or first name (a teen only themselves; a name two people share says nobody); and tags you already use. "Car insurance" is an insurance policy, with the tag "car". Any other folder name is offered as a new tag ("new tag from the folder name"), made only if you accept the file with it. Years, dates, the household’s own name and folders like "Scans" or "Documents" are ignored, and the top folder’s name is dropped when it is only a container like those.
+  - **How it weighs it:** the folder alone is a suggestion to check, never Ready. When the pages and the folder agree, the vault is surer: a file can be Ready on both together where the pages alone were nearly sure, and an earlier choice of yours that isn’t sure yet never becomes Ready that way. When they disagree, the pages win and the file is Check: "The folder says Passport; the pages look like a driver’s licence". What you chose for the whole batch wins over the folder, which fills only what you left blank. Accepting what the folder suggested counts as needing no change, as accepting the pages’ does.
+  - **Tags from the folder** are never added by **Accept all Ready**. On a file’s card, a tag you already use starts ticked only if it is on papers seen at least as widely as this file will be, so a tag from your Only me papers never appears on one everybody sees unless you add it.
+  - **Where it shows:** under each file's name on the batch's page ("From the folder ‘Passports/Ahmed’"), and beside each detail on its card ("suggested from the folder ‘Passports/Ahmed’", or "and the folder" where it agrees with the pages).
+  - **Private:** the folder is kept encrypted with the file, is never written in the clear to the database or a log, and only the person who uploaded it sees it. It goes when the file is removed.
+  - **API:** `features.folder_suggestions`; `relative_path` on `POST /api/v1/batches/{id}/items`; each item's `folder`; `from: "folder"`, `folder: true`, `proposals.tags` and the tag `clash_folder`.
+
+### Database
+
+- **Migration 0071** keeps the folder each upload came from, sealed with it.
+
+## [0.8.0-dev.5] - 2026-10-13 — email documents to the vault
+
+### Added
+
 - **Emailing documents to the vault.** The family emails documents to a mailbox of the household's own, and each attachment goes into the sender's Inbox to look over.
   - **The server:** a dedicated mailbox with an app password (Gmail, Fastmail, iCloud Mail or your own IMAP server; not Outlook.com, which no longer takes app passwords) given to the worker with `FDV_MAIL_IN_HOST`, `FDV_MAIL_IN_USER` and `FDV_MAIL_IN_PASSWORD_FILE` (or `FDV_MAIL_IN_PASSWORD`) (README, "Emailing documents to the vault"). IMAP over TLS on 993, the certificate verified. The password is never logged, sent to a browser or phone, or stored in the database, and leaves the worker's environment once it is read.
   - **The app:** an owner turns it on in **Settings → For owners → Email in**, which says whether the mailbox is set up, when it was last checked, the last problem in plain words, and how much mail was left alone. Everyone who adds documents sees on **Add** and Home where to email from which address, and confirms that address once: by sending a code from it while the mailbox checks senders, or by typing in a code the vault emails to it (`FDV_SMTP_URL`). With neither, nobody can confirm, and both pages say why. Each person sees how many of their emails wait in the mailbox, and from when.
@@ -31,8 +38,23 @@ All notable changes to Family Document Vault. The format follows
 
 ### Database
 
-- **Migration 0068** adds the scanner folder: the folder as the worker last found it, each household's setting (an owner's alone), the notes of files it couldn't add (their person's alone), and the day a scanner's batch is for.
 - **Migration 0069** adds email in: the mailbox as the worker last had it (never its password), each household's setting (an owner's alone), each person's confirmed address and code (theirs alone, written only by the vault's own functions), the day an email batch is for, and on an item, its mail's key and whether its sender was verified. A note may now be an email's. Mail dealt with but left in place is remembered by a keyed hash.
+
+## [0.8.0-dev.4] - 2026-10-13 — a watched folder for network scanners
+
+### Added
+
+- **Scanning straight into the vault.** Point a network scanner at a folder on the server, and each scan goes into one person's Inbox to look over, as if they had added it.
+  - **The server:** mount a folder into the worker and set `FDV_WATCH_DIR` (README, "Scanning straight into the vault"). The compose file has the mount, commented out.
+  - **The app:** an owner turns it on in **Settings → For owners → Scanner folder** and chooses whose Inbox it fills: themselves, or anyone in the family who signs in and adds documents, never a viewer. The page says when the folder isn't ready, and why.
+  - **Each file** is taken once it has stopped changing (`FDV_WATCH_STABLE_SECONDS`, 10 by default) and looks complete for its kind (or has waited `FDV_WATCH_INCOMPLETE_GRACE_SECONDS`, 120 by default), encrypted into that person's batch of the day ("Scanner, 12 Oct"), read and proposed for as anything they upload, and then deleted from the folder. Files in folders inside it are taken too. A link, to a file or a folder, is never followed, and a file is read, moved or deleted only once it is checked, just before, to be the file listed with its real path inside the folder.
+  - **A file the vault can't take** (not a PDF, photo, Word or Excel file, too large, empty, unreadable, or a hard link to a file elsewhere) is moved to `rejected/` (private to the vault), with a note beside it saying why, and that person sees "A scanned file couldn't be added" in Needs attention. One that can't be moved either is left in place, and its person told so. Owners are told how many scans are still in the folder though dealt with: stored but not deleted, or not moved.
+  - **It pauses**, and Settings says why, while that person is locked, waits after a restore or can no longer add documents, while the vault can't open their key or has nowhere to keep files, and once the day's batch is full. Files wait in the folder until then.
+  - **API:** `features.watch_folder`; `GET` and `PUT /api/v1/watch-folder` (owners); `GET /api/v1/watch-folder/notices` and `POST …/notices/{id}/dismiss` (the person's own).
+
+### Database
+
+- **Migration 0068** adds the scanner folder: the folder as the worker last found it, each household's setting (an owner's alone), the notes of files it couldn't add (their person's alone), and the day a scanner's batch is for.
 
 ## [0.8.0-dev.3] - 2026-10-13 — duplicates and renewals as new versions
 

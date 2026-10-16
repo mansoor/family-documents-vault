@@ -5,6 +5,7 @@ import { pipeline } from 'node:stream/promises';
 import {
   DecryptStream,
   EncryptStream,
+  itemFolderBinding,
   itemPriorBinding,
   itemProposalsBinding,
   newKey,
@@ -34,7 +35,10 @@ import {
   dropFileName,
   INCOMING_KEEP_DAYS,
   incomingFileName,
+  itemFolder,
   levelItem,
+  folderMatcher,
+  type FolderSuggestion,
   lockInEffect,
   PREVIEW_MAX_PAGES,
   PRIVATE_TO_THEM,
@@ -196,6 +200,16 @@ export interface BatchUpload {
   truncated: () => boolean;
   /** Once the file has arrived: the route's last chance to refuse (anything sent after it). */
   finished: () => Promise<void>;
+  /**
+   * Where the file was under the folder it was added from (0.8.0, S2): the
+   * web's `relative_path`, a scanner folder's subfolder, a computer's
+   * watched folder (D1's `relative_path`). Its folders are kept — the file's
+   * own name dropped when it is the last segment, each segment tidied, at
+   * most FOLDER_SEGMENTS_MAX of them (`itemFolder`) — sealed under the
+   * item's own key with its row, and suggest its details to its uploader
+   * alone. Null or absent: it came from no folder.
+   */
+  relativePath?: string | null;
 }
 
 const notHere = () => new ApiError(404, 'not_found', 'That batch is not here.');
@@ -309,6 +323,7 @@ interface ItemRow {
   read_state: string | null;
   read_failure: string | null;
   proposals_sealed: Buffer | null;
+  folder_sealed: Buffer | null;
   file_key_wrapped: Buffer;
   wrapped_by_scope: string;
   preview_state: string;
@@ -662,6 +677,7 @@ export class BatchService {
         sha256: null,
         proposals_sealed: null,
         text_sealed: null,
+        folder_sealed: null,
       })
       .where('batch_id', '=', batchId)
       .where('state', '=', 'received')
@@ -780,10 +796,21 @@ export class BatchService {
       });
       const fileKey = newKey();
       const fileId = randomUUID();
+      // Where it came from (S2): sealed under its own key, bound to it, with its row.
+      const folder = itemFolder(upload.relativePath, { fileName: upload.filename });
       const row = await trx
         .insertInto('incoming_file')
         .values({
           id: fileId,
+          ...(folder
+            ? {
+                folder_sealed: sealBytes(
+                  fileKey,
+                  Buffer.from(folder, 'utf8'),
+                  itemFolderBinding(fileId),
+                ),
+              }
+            : {}),
           household_id: p.householdId,
           request_id: null,
           batch_id: b.id,
@@ -914,6 +941,7 @@ export class BatchService {
           sha256: null,
           proposals_sealed: null,
           text_sealed: null,
+          folder_sealed: null,
         })
         .where('id', '=', f.id)
         .where('state', '=', 'received')
@@ -2307,6 +2335,8 @@ export class BatchService {
         sql<Buffer | null>`case when f.state = 'received' then f.proposals_sealed end`.as(
           'proposals_sealed',
         ),
+        // Where it came from (S2), opened below for the uploader: waiting or accepted.
+        'f.folder_sealed',
         'f.file_key_wrapped',
         'f.wrapped_by_scope',
         'f.preview_state',
@@ -2384,6 +2414,15 @@ export class BatchService {
         proposed.set(r.id, await levelling.open(r));
       }
     }
+    // Where each came from (S2), and what that suggests to the uploader now:
+    // only for the items answered, as their proposals are.
+    const folders = new Map<string, string>();
+    for (const r of rows) {
+      if (!r.folder_sealed || (only && r.id !== only)) continue;
+      const path = await levelling.folder(r);
+      if (path) folders.set(r.id, path);
+    }
+    const suggests = folders.size > 0 ? await levelling.folderMatcher() : null;
     // Near matches (S1): for each item read, and not the same file as a
     // document they can see, from what its pages proposed.
     const renewals = await this.renewalsOf(
@@ -2432,6 +2471,9 @@ export class BatchService {
       const reading = (r.read_state ?? 'waiting') as BatchReadState;
       const failure =
         reading === 'failed' ? ((r.read_failure ?? 'unreadable') as BatchReadFailure) : null;
+      const path = folders.get(r.id) ?? null;
+      const fromFolder: FolderSuggestion | null =
+        path && suggests && state === 'waiting' ? suggests(path) : null;
       const levelled = levelItem({
         state,
         reading,
@@ -2441,6 +2483,7 @@ export class BatchService {
         duplicate,
         // A near match makes it Check (S1): Accept all Ready leaves it.
         renewal: renewals.get(r.id)?.[0] ?? null,
+        folder: fromFolder,
         defaults: levelling.defaults(r.batch_id as string),
         types: levelling.types,
         people: levelling.people,
@@ -2469,6 +2512,7 @@ export class BatchService {
         renewals: state === 'waiting' ? (renewals.get(r.id) ?? []) : [],
         // From an email whose sender was not verified (S4): said on its card.
         ...(r.sender_unverified ? { sender_unverified: true } : {}),
+        folder: path,
       };
     });
   }
@@ -2628,6 +2672,58 @@ export class BatchService {
         } catch {
           return null;
         }
+      },
+      /** Where an item came from (S2), opened for its uploader; one that does not open is none. */
+      folder: async (r: ItemRow): Promise<string | null> => {
+        if (!r.folder_sealed) return null;
+        try {
+          const fileKey = unwrapKey(
+            r.file_key_wrapped,
+            await scopeKey(r.wrapped_by_scope),
+            `incoming:${r.id}`,
+          );
+          return itemFolder(
+            openBytes(fileKey, r.folder_sealed, itemFolderBinding(r.id)).toString('utf8'),
+          );
+        } catch {
+          return null;
+        }
+      },
+      /**
+       * A matcher for folders (S2), built once for these items: the kinds and
+       * the family as above — a teen choosing themselves alone — the
+       * household's name, and the tags on documents the uploader can see, as
+       * GET /tags gives them, each with the widest any of those documents is
+       * seen: a tag only on their Only me papers is never ticked onto one
+       * everybody sees.
+       */
+      folderMatcher: async () => {
+        const tags = await sql<{ tag: string; widest: number }>`
+          select t as tag,
+                 max(case d.visibility when 'household' then 2 when 'adults' then 1 else 0 end)
+                   as widest
+            from document d, unnest(d.tags) as t
+           where d.household_id = ${p.householdId}::uuid
+             and d.deleted_at is null
+             and ${seenDocument(p)}
+           group by t
+           limit 5000`.execute(trx);
+        const home = await trx
+          .selectFrom('household')
+          .select('name')
+          .where('id', '=', p.householdId)
+          .executeTakeFirst();
+        const WIDEST: Visibility[] = ['private', 'adults', 'household'];
+        return folderMatcher({
+          types: kinds.map(typeView),
+          people: family.map((m) => ({ id: m.id, name: m.display_name })),
+          choosable: (id: string) => p.role !== 'teen' || id === p.memberId,
+          tags: tags.rows.map((r) => ({
+            value: r.tag,
+            visibility: WIDEST[Number(r.widest)] ?? 'private',
+          })),
+          household: home?.name ?? null,
+        });
       },
     };
   }

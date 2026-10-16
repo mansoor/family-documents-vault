@@ -4,7 +4,7 @@ import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { EnvKeyProvider, ScopeKeys, unwrapKey } from '@fdv/crypto';
+import { EnvKeyProvider, itemFolderBinding, openBytes, ScopeKeys, unwrapKey } from '@fdv/crypto';
 import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import { BATCH_MAX_FILES, scannerDay, watchIgnored } from '@fdv/shared';
@@ -241,15 +241,25 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
         scope: string;
         review_by: string;
         idempotency_key: string;
+        folder_sealed: Buffer | null;
+        row_text: string;
       }>(
         `select f.id, f.state, f.requester_member_id, f.original_name, b.name as batch_name,
                 b.watch_day::text, f.mime, f.storage_key, f.file_key_wrapped, f.wrapped_by_scope,
-                f.read_state, f.scope, f.review_by, f.idempotency_key
+                f.read_state, f.scope, f.review_by, f.idempotency_key, f.folder_sealed,
+                row_to_json(f)::text as row_text
            from incoming_file f join intake_batch b on b.id = f.batch_id
           where f.household_id = $1 order by f.created_at, f.id`,
         [hh],
       )
     ).rows;
+  /** Where an item came from (S2), opened as its uploader's API opens it: under its key, bound to it. */
+  const folderOf = async (i: Awaited<ReturnType<typeof items>>[number] | undefined) => {
+    if (!i?.folder_sealed) return null;
+    const scope = await withSystem(db, hh, (trx) => keys.unwrapById(trx, i.wrapped_by_scope));
+    const fileKey = unwrapKey(i.file_key_wrapped, scope, `incoming:${i.id}`);
+    return openBytes(fileKey, i.folder_sealed, itemFolderBinding(i.id)).toString('utf8');
+  };
   const setting = async () =>
     (
       await admin.query<{ paused_reason: string | null; stuck_files: number }>(
@@ -473,8 +483,19 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     expect(round.outcomes).toMatchObject([{ rel: 'Letters/2026/bill.pdf', kind: 'added' }]);
     for (const rel of left) expect(await there(path.join(dir, rel)), rel).toBe(true);
     expect(await there(path.join(dir, 'Letters/2026/bill.pdf'))).toBe(false);
-    // Only its name is kept: the folders it was in are not.
-    expect((await items()).map((i) => i.original_name)).toEqual(['bill.pdf']);
+    // Its name is kept as any item's; the folders it was in (0.8.0, S2)
+    // sealed under its own key, bound to it — never plain.
+    const [bill] = await items();
+    expect(bill?.original_name).toBe('bill.pdf');
+    expect(await folderOf(bill)).toBe('Letters/2026');
+    for (const plain of ['Letters', Buffer.from('Letters').toString('hex')]) {
+      expect(bill?.row_text).not.toContain(plain);
+    }
+    // A file at the folder's top came from no folder.
+    await write(dir, 'top.pdf', PDF('top'));
+    await settle(r);
+    const top = (await items()).find((i) => i.original_name === 'top.pdf');
+    expect(top?.folder_sealed).toBeNull();
     // The rule itself, word by word.
     expect(left.map(watchIgnored)).toEqual(left.map(() => true));
     expect(['scan.pdf', 'Letters/bill.pdf', 'rejectedness/x.pdf'].map(watchIgnored)).toEqual([

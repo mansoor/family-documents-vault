@@ -10,6 +10,7 @@ import { testAdminUrl } from '@fdv/db/testing';
 import {
   issuerKey,
   proposeDetails,
+  suggestFromFolder,
   type DocumentTypeView,
   type ProposalPerson,
   type Tokens,
@@ -110,19 +111,24 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs', () => {
     const collections = await get<{ items: Array<{ name: string }> }>('/api/v1/collections');
     expect(collections.items.map((c) => c.name)).toContain('For the attorney');
 
-    // The files: each a PDF, and those the queue is shown with.
-    const names = (await readdir(out)).sort();
+    // The files: each a PDF, and those the queue is shown with — in the
+    // folders a family keeps (0.8.0, S2).
+    const names = (await readdir(out, { recursive: true }))
+      .map((n) => String(n).split(path.sep).join('/'))
+      .filter((n) => n.endsWith('.pdf'))
+      .sort();
     expect(names).toEqual([
+      'Ahmed/Passport/passport-scan.pdf',
+      'Bills/2026/electricity-bill.pdf',
+      'Insurance/car-insurance-again.pdf',
+      'Letters/clinic-letter-1.pdf',
+      'Letters/clinic-letter-2.pdf',
+      'Letters/clinic-letter-3.pdf',
+      'Letters/clinic-letter-4.pdf',
+      'Tariq/Passport/tariq-passport.pdf',
       'blank-page.pdf',
-      'car-insurance-again.pdf',
-      'clinic-letter-1.pdf',
-      'clinic-letter-2.pdf',
-      'clinic-letter-3.pdf',
-      'clinic-letter-4.pdf',
-      'passport-scan.pdf',
-      'tariq-passport.pdf',
     ]);
-    const file = (name: string) => readFile(path.join(out, name));
+    const file = (name: string) => readFile(path.join(out, ...name.split('/')));
     for (const name of names) expect((await file(name)).subarray(0, 5).toString()).toBe('%PDF-');
     expect(linesOf(await file('blank-page.pdf'))).toEqual([]);
 
@@ -140,7 +146,12 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs', () => {
     const add = async (name: string) => {
       const form = new FormData();
       const bytes = await file(name);
-      form.append('file', bytes, { filename: name, contentType: 'application/pdf' });
+      // Where it was, as Choose a folder sends it (S2).
+      form.append('relative_path', name);
+      form.append('file', bytes, {
+        filename: path.posix.basename(name),
+        contentType: 'application/pdf',
+      });
       const item = await h.app.inject({
         method: 'POST',
         url: `/api/v1/batches/${batch.id}/items`,
@@ -148,20 +159,24 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs', () => {
         payload: form.getBuffer(),
       });
       expect(item.statusCode, item.body).toBe(201);
-      const got = item.json<{ sha256: string; duplicate: unknown }>();
+      const got = item.json<{ sha256: string; duplicate: unknown; folder: string | null }>();
       expect(got.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
-      return got.duplicate;
+      return got;
     };
     const idOf = (title: string) => docs.items.find((d) => d.title === title)?.id;
-    expect(await add('car-insurance-again.pdf')).toMatchObject({
+    expect((await add('Insurance/car-insurance-again.pdf')).duplicate).toMatchObject({
       of: 'document',
       document_id: idOf('Car insurance'),
     });
-    expect(await add('passport-scan.pdf')).toMatchObject({
+    expect((await add('Ahmed/Passport/passport-scan.pdf')).duplicate).toMatchObject({
       of: 'document',
       document_id: idOf('A scan from the printer'),
     });
-    expect(await add('tariq-passport.pdf')).toBeNull();
+    const tariqItem = await add('Tariq/Passport/tariq-passport.pdf');
+    expect(tariqItem.duplicate).toBeNull();
+    // Where it came from is kept with it, for the uploader (S2).
+    expect(tariqItem.folder).toBe('Tariq/Passport');
+    expect((await add('Bills/2026/electricity-bill.pdf')).folder).toBe('Bills/2026');
 
     // What the worker reads off them, as it proposes (I2).
     const types = await get<{ items: DocumentTypeView[] }>('/api/v1/document-types');
@@ -175,21 +190,43 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs', () => {
       });
     // Tariq's passport: what it is and whose, its dates and number — Ready.
     const tariq = people.items.find((m) => m.display_name === 'Tariq');
-    expect(await propose('tariq-passport.pdf')).toMatchObject({
+    expect(await propose('Tariq/Passport/tariq-passport.pdf')).toMatchObject({
       type_key: { value: 'passport' },
       owner_member_id: { value: tariq?.id },
       issued: { value: { date: '2022-08-02' } },
       expires: { value: { date: '2027-08-02' } },
       identifier: { value: '548812306' },
     });
+    // And its folder says the same (S2).
+    const folderSays = (name: string) =>
+      suggestFromFolder(path.posix.dirname(name), { types: types.items, people: family });
+    expect(folderSays('Tariq/Passport/tariq-passport.pdf')).toMatchObject({
+      type_key: 'passport',
+      owner_member_id: tariq?.id,
+    });
+    // The bill: its folder says what it is, its pages whose.
+    const olivia = people.items.find((m) => m.display_name === 'Olivia');
+    expect(folderSays('Bills/2026/electricity-bill.pdf')).toMatchObject({
+      type_key: 'utility_bill',
+      owner_member_id: null,
+    });
+    expect(await propose('Bills/2026/electricity-bill.pdf')).toMatchObject({
+      owner_member_id: { value: olivia?.id },
+    });
     // The four letters: the same sender read off each, and nothing else,
     // so what and whose they are is the uploader's to say, and the vault's
-    // to learn.
-    const read = await Promise.all([1, 2, 3, 4].map((n) => propose(`clinic-letter-${n}.pdf`)));
+    // to learn — their folder says neither.
+    const read = await Promise.all(
+      [1, 2, 3, 4].map((n) => propose(`Letters/clinic-letter-${n}.pdf`)),
+    );
     for (const p of read) {
       expect(p.type_key).toBeUndefined();
       expect(p.owner_member_id).toBeUndefined();
       expect(issuerKey(p.issued_by?.value ?? '')).toBe(issuerKey('Northfield Medical Centre'));
     }
+    expect(folderSays('Letters/clinic-letter-1.pdf')).toMatchObject({
+      type_key: null,
+      owner_member_id: null,
+    });
   }, 180_000);
 });

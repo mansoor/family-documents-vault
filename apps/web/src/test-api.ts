@@ -603,6 +603,8 @@ export interface FakeState {
   batchReview?: boolean;
   /** False: a vault from before 0.8.0 (S1), which adds no item as a new version of a document. */
   batchVersions?: boolean;
+  /** False: a vault from before 0.8.0 (S2), which keeps no folder and refuses `relative_path`. */
+  folderSuggestions?: boolean;
   /** Every item accept that arrived, with what it sent (I3: the card's body, untouched or not). */
   batchAccepts?: Array<{ item: string; body: Record<string, unknown> }>;
   /** An item whose accept is refused, as the vault would refuse it (I3: the error stays on the card). */
@@ -1005,6 +1007,10 @@ export function installFakeApi(state: FakeState) {
           ...(state.batches && state.batchReview !== false ? { batch_review: true } : {}),
           // Duplicates as versions (S1): said unless a test is an older vault.
           ...(state.batches && state.batchVersions !== false ? { batch_versions: true } : {}),
+          // Folder names → suggested details (S2): said unless a test is an older vault.
+          ...(state.batches && state.folderSuggestions !== false
+            ? { folder_suggestions: true }
+            : {}),
           // Learning from corrections (I4): said when a test gives what was learned.
           ...(state.learned ? { batch_learning: true } : {}),
           // The scanner folder (S3): said while a test's folder is ready.
@@ -2632,8 +2638,14 @@ export function installFakeApi(state: FakeState) {
         return json(detail(b));
       }
       if (!itemId && method === 'POST') {
-        const file = (init?.body as FormData | undefined)?.get('file') as File | null;
+        const form = init?.body as FormData | undefined;
+        const file = form?.get('file') as File | null;
         if (!file) return refuse(422, 'validation_failed', 'Choose a file to send.');
+        // Where it was under the folder chosen (S2): only a vault that says it takes it.
+        const path = form?.get('relative_path');
+        if (path !== null && path !== undefined && state.folderSuggestions === false) {
+          return refuse(422, 'validation_failed', 'Send one file, named file, and nothing else.');
+        }
         // Sent again with the key of one that arrived: that item (the I1 review).
         const key = (init?.headers as Record<string, string> | undefined)?.['idempotency-key'];
         const before = key ? b.items.find((i) => i.key === key) : undefined;
@@ -2672,6 +2684,7 @@ export function installFakeApi(state: FakeState) {
                 }
               : null,
             document_id: null,
+            folder: typeof path === 'string' ? path : null,
           };
           b.items.push({ ...item, ...(key ? { key } : {}) });
           return json(item, 201);

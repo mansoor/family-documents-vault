@@ -101,6 +101,8 @@ describe('buildCapabilities', () => {
       batch_versions: true,
       // S3: the scanner folder, only while the worker has it ready.
       watch_folder: false,
+      // S2: an item's folder, and what its names suggest.
+      folder_suggestions: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     // S4: email in, reserved as email_ingest since 1.0, only while the worker

@@ -7,8 +7,11 @@ import {
   LEARNING_OUTCOMES_KEPT,
   LEARNING_WINDOW,
   isLearned,
+  itemFolder,
   levelItem,
+  RELATIVE_PATH_MAX,
   ruleTrusted,
+  suggestFromFolder,
   teach,
   can,
   canEditIdentity,
@@ -194,6 +197,8 @@ interface FakeSession {
 
 export interface FakeVaultState {
   setupRequired: boolean;
+  /** The household's name, as set up: a container in a folder's name (S2). */
+  householdName?: string | null;
   email: string | null;
   password: string | null;
   sessions: FakeSession[];
@@ -496,6 +501,8 @@ export interface FakeBatchItem {
   learned_clash?: LearnedClash | null;
   /** Filed by Accept all Ready (I3): until when Undo takes it back. */
   undo_until?: string;
+  /** Where it was under the folder chosen (S2), as the vault keeps it, sealed. */
+  folder?: string;
 }
 
 /** A collection of documents, as the fake keeps one (0.5.12). */
@@ -1588,6 +1595,8 @@ export function createFakeVault(): {
           batch_proposals: true,
           batch_review: true,
           batch_learning: true,
+          // An item's folder, and what its names suggest (0.8.0, S2).
+          folder_suggestions: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -1605,6 +1614,7 @@ export function createFakeVault(): {
     if (path === '/api/v1/setup' && init.method === 'POST') {
       if (!state.setupRequired) return fail(409, 'already_set_up', 'This vault is already set up.');
       state.setupRequired = false;
+      state.householdName = typeof body.household_name === 'string' ? body.household_name : null;
       state.email = String(body.email).toLowerCase();
       state.password = String(body.password);
       return ok(open(init.headers['x-fdv-installation'] ?? null), 201);
@@ -3380,6 +3390,36 @@ export function createFakeVault(): {
         const reading = it.reading ?? 'waiting';
         const failure = reading === 'failed' ? (it.read_failure ?? 'unreadable') : null;
         const duplicate = duplicateOf(b, it);
+        const people = state.members
+          .filter((m) => (m.kind ?? 'family') === 'family')
+          .map((m) => ({ id: m.id, name: m.display_name }));
+        // What its folder suggests to its uploader now (S2): the kinds, the
+        // family (a teen themselves alone) and the tags they can see.
+        const folder =
+          it.folder && itemState === 'waiting'
+            ? suggestFromFolder(it.folder, {
+                types: cardTypes,
+                people,
+                choosable: (id) => who.role !== 'teen' || id === who.memberId,
+                // Each tag with the widest a document it is on is seen, as the vault gives it.
+                tags: state.documents
+                  .filter(
+                    (d) =>
+                      !d.deleted_at &&
+                      canSee(reader, {
+                        visibility: d.visibility ?? 'household',
+                        owner_member_id: d.owner_member_id ?? null,
+                      }),
+                  )
+                  .flatMap((d) =>
+                    (d.tags ?? []).map((t) => ({
+                      value: t,
+                      visibility: d.visibility ?? 'household',
+                    })),
+                  ),
+                household: state.householdName ?? null,
+              })
+            : null;
         // Levelled as the vault levels it (I2): the pages, the defaults and the kinds now.
         const levelled = levelItem({
           state: itemState,
@@ -3388,11 +3428,10 @@ export function createFakeVault(): {
           proposal: reading === 'read' ? (it.proposal ?? null) : null,
           learnedClash: reading === 'read' ? (it.learned_clash ?? null) : null,
           duplicate,
+          folder,
           defaults: b.defaults,
           types: cardTypes,
-          people: state.members
-            .filter((m) => (m.kind ?? 'family') === 'family')
-            .map((m) => ({ id: m.id, name: m.display_name })),
+          people,
           role: who.role,
           me: who.memberId,
         });
@@ -3416,6 +3455,7 @@ export function createFakeVault(): {
           tags: levelled.tags,
           proposals: levelled.proposals,
           clashes: levelled.clashes,
+          folder: it.folder ?? null,
         };
       };
       const batchView = (b: FakeBatch, withItems: boolean, withLevels = false) => {
@@ -3689,13 +3729,33 @@ export function createFakeVault(): {
         const parts = partsOf(init.body) ?? [];
         const files = parts.filter((p) => p.value === null);
         const file = files[0];
-        if (!file || files.length > 1 || parts.length !== files.length) {
-          return fail(422, 'validation_failed', 'Send one file, named file, and nothing else.');
+        // Where it was under the folder chosen (S2): one field, before the file.
+        const fields = parts.filter((p) => p.value !== null);
+        const path = fields[0];
+        if (
+          !file ||
+          files.length > 1 ||
+          fields.length > 1 ||
+          (path && (path.name !== 'relative_path' || parts[0] !== path))
+        ) {
+          return fail(
+            422,
+            'validation_failed',
+            'Send one file, named file, and nothing else but a relative_path before it.',
+          );
+        }
+        if (path && new TextEncoder().encode(path.value ?? '').length > RELATIVE_PATH_MAX) {
+          return fail(
+            422,
+            'validation_failed',
+            `A relative_path is ${RELATIVE_PATH_MAX} bytes at most.`,
+          );
         }
         const type = (file.type ?? '').split(';')[0] ?? '';
         if (!/^(application\/pdf|image\/(jpeg|png|heic|heif|tiff|webp))$/.test(type)) {
           return fail(415, 'unsupported_type', 'That kind of file cannot be stored here.');
         }
+        const folder = itemFolder(path?.value ?? null, { fileName: file.filename ?? null });
         const it: FakeBatchItem = {
           id: next('item'),
           name: file.filename ?? 'file',
@@ -3706,6 +3766,7 @@ export function createFakeVault(): {
           state: 'waiting',
           document_id: null,
           ...(key ? { key } : {}),
+          ...(folder ? { folder } : {}),
         };
         b.items.push(it);
         return ok(itemView(b, it), 201);

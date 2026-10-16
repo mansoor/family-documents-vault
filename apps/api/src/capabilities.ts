@@ -144,6 +144,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.8.0 (S3): a watched folder for network scanners, only while the
       // folder is set, there and writable.
       watch_folder: config.watchFolder === true,
+      // 0.8.0 (S2): an item's folder, kept sealed, and what its names suggest.
+      folder_suggestions: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

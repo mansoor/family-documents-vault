@@ -27,7 +27,11 @@
 // "A scan from the printer" was filed from, and a copy of the car insurance
 // already filed, each a duplicate; a blank page, which reads as nothing;
 // and four letters from one clinic that name nobody, for the vault to
-// learn whose and what kind they are from the first three.
+// learn whose and what kind they are from the first three; and an electricity
+// bill. They are written in folders a family might keep — Ahmed/Passport,
+// Tariq/Passport, Insurance, Bills/2026, Letters — so that Add → Many
+// documents → Choose a folder sends where each was, and the vault suggests
+// from the folder's names (0.8.0, S2).
 //
 // A vault that has not been set up is set up with the owner's details. One
 // that has is signed in to; run it once, as a second run adds a second set.
@@ -233,16 +237,44 @@ const clinicLetter = (n, date, what) =>
     `Letter ${n} of 4. This is a made-up document for a demonstration.`,
   ]);
 
-/** What --out writes: each file's name, and its bytes. */
+/**
+ * An electricity bill for the owner, in Bills/: its folder says what it is
+ * (0.8.0, S2), and its pages say whose.
+ */
+const electricityBill = textPdf([
+  'NORTHERN POWER',
+  'Your electricity bill',
+  `Account holder: ${ownerName.toUpperCase()} ${SURNAME}`,
+  '14 Elm Street',
+  'Bill date: 2 September 2026',
+  'Payment due: 30 September 2026',
+  'This is a made-up document for a demonstration.',
+]);
+
+/**
+ * What --out writes: each file's place, and its bytes — in the folders a
+ * family keeps (0.8.0, S2), so Add → Many documents → Choose a folder sends
+ * where each was: "Ahmed/Passport", "Bills/2026".
+ */
 const samples = () => [
-  ['passport-scan.pdf', passportScan],
-  ['tariq-passport.pdf', tariqPassport],
-  ['car-insurance-again.pdf', carInsurance],
+  ['Ahmed/Passport/passport-scan.pdf', passportScan],
+  ['Tariq/Passport/tariq-passport.pdf', tariqPassport],
+  ['Insurance/car-insurance-again.pdf', carInsurance],
+  ['Bills/2026/electricity-bill.pdf', electricityBill],
   ['blank-page.pdf', textPdf([])],
-  ['clinic-letter-1.pdf', clinicLetter(1, '3 March 2026', 'Your blood test results are normal.')],
-  ['clinic-letter-2.pdf', clinicLetter(2, '14 April 2026', 'Your vaccination record is enclosed.')],
-  ['clinic-letter-3.pdf', clinicLetter(3, '2 June 2026', 'Your referral to the hospital is made.')],
-  ['clinic-letter-4.pdf', clinicLetter(4, '9 September 2026', 'Your annual check is due.')],
+  [
+    'Letters/clinic-letter-1.pdf',
+    clinicLetter(1, '3 March 2026', 'Your blood test results are normal.'),
+  ],
+  [
+    'Letters/clinic-letter-2.pdf',
+    clinicLetter(2, '14 April 2026', 'Your vaccination record is enclosed.'),
+  ],
+  [
+    'Letters/clinic-letter-3.pdf',
+    clinicLetter(3, '2 June 2026', 'Your referral to the hospital is made.'),
+  ],
+  ['Letters/clinic-letter-4.pdf', clinicLetter(4, '9 September 2026', 'Your annual check is due.')],
 ];
 
 // ------------------------------------------------------------------ seeding
@@ -426,7 +458,11 @@ async function main() {
   console.log('  filed "A scan from the printer"');
   if (out) {
     mkdirSync(out, { recursive: true });
-    for (const [name, bytes] of samples()) writeFileSync(path.join(out, name), bytes);
+    for (const [name, bytes] of samples()) {
+      const to = path.join(out, ...name.split('/'));
+      mkdirSync(path.dirname(to), { recursive: true });
+      writeFileSync(to, bytes);
+    }
     console.log(
       `  wrote ${samples().length} made-up files to ${out}, to add with Add → Many documents`,
     );
