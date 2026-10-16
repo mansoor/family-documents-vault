@@ -6,6 +6,22 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The Smart exit, measured.** We tested how well the vault reads documents on two hundred made-up papers of one family, kept as a family keeps them: tidy folders, a flat `Scans` folder and a few misfiled papers. About four in ten are scans only OCR can read.
+  - **The result:** no item the vault called Ready was wrong. With folder names, 26 of the 200 still needed something typed or chosen, against a target of fewer than ten; without folder names, 41. `docs/smart-exit.md` has the numbers, what is left, and how to run it again.
+  - **Try it yourself:** `node scripts/smart-corpus.mjs --out <folder>` writes the papers and a manifest of what each one is. `scripts/demo-seed.mjs --out <folder> --corpus` writes them for a demo vault it has just filled.
+
+### Changed
+
+- **The vault reads more papers right.**
+  - A GP's letter is now recognised as a medical record, an official copy of a register of title as a deed, and a GCSE certificate as a diploma.
+  - A bill paid by Direct Debit is due on the day it is collected.
+  - A name with a stray hyphen from OCR is still read.
+  - A sentence about "the policyholder" above a list of named drivers no longer counts as a label for whose the paper is.
+- **Safer dates:** where a card has a row of more dates than labels above it, as when OCR misreads one label, none of those dates is offered.
+- **Grainy scans read again:** a scanned page Tesseract reads almost no words of is enlarged, cleaned of speckle, and read a second time.
+
 ## [0.8.0-dev.7] - 2026-10-16 — pair a computer to send scans
 
 ### Added

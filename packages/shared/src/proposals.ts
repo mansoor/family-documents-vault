@@ -390,8 +390,13 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
       /immuni[sz]ation|vaccination (?:record|certificate|history)|certificate of vaccination|discharge summary|medical record|clinic letter|childhood vaccin/,
     ],
     [2, /\bmmr\b|\bdtap\b|\btdap\b|\bbooster\b|\bvaccines?\b|\bhpv\b|\bmenacwy\b/],
-    [2, /nhs number|\bgp\b|\bsurgery\b|\bhospital\b|\bclinic\b|\bconsultant\b|medical practice/],
-    [1, /\bpatient\b|\bprovider\b|\bdiagnosis\b|date of service/],
+    [2, /\bgp\b|\bsurgery\b|\bhospital\b|\bclinic\b|\bconsultant\b|medical practice/],
+    // A patient's own number: a GP's letter is its practice, this, and what it is about (S5).
+    [2, /nhs (?:number|no\b)|hospital (?:number|no\b)|patient (?:number|id)\b/],
+    [
+      1,
+      /\bpatient\b|\bprovider\b|\bdiagnosis\b|date of service|blood tests?|\breferr(?:al|ed)\b|\binhaler\b|physiotherapy|\bvaccinations?\b/,
+    ],
   ],
   employment_contract: [
     [
@@ -408,7 +413,7 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
   property_deed: [
     [
       3,
-      /warranty deed|quitclaim deed|\bthis deed\b|title deed|tenancy agreement|lease agreement|assured shorthold|rental agreement|deed of transfer/,
+      /warranty deed|quitclaim deed|\bthis deed\b|title deed|tenancy agreement|lease agreement|assured shorthold|rental agreement|deed of transfer|register of title|title register/,
     ],
     [3, /\bgrantor\b|\bgrantee\b|\blandlord\b|\btenants?\b|\blessor\b|\blessee\b/],
     [2, /\bconsideration\b|land registry|title number|\brent\b|\bdeposit\b/],
@@ -426,7 +431,7 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
   diploma: [
     [
       3,
-      /bachelor of|master of|doctor of|\bdiploma\b|degree of|\btranscript\b|certificate of (?:achievement|completion)|\bgcse\b/,
+      /bachelor of|master of|doctor of|\bdiploma\b|degree of|\btranscript\b|certificate of (?:achievement|completion)|\bgcse\b|certificate of secondary education/,
     ],
     [
       2,
@@ -978,7 +983,8 @@ const KIND_LABELS: Readonly<Record<string, readonly LabelSpec[]>> = {
       'expires',
       3,
       'due_label',
-      /payment due|due date|due by|due on|pay by|payable by|please pay|amount due by|instal?ments?/,
+      // "We'll collect £84.21 by Direct Debit on or just after 1 October" (S5).
+      /payment due|due date|due by|due on|pay by|payable by|please pay|amount due by|instal?ments?|by direct debit on(?: or (?:just )?after)?/,
     ),
   ],
   bank_statement: [label('issued', 3, 'issue_label', /statement date|date of statement/)],
@@ -1179,6 +1185,16 @@ function claimDates(
       // from the line above, only a label that ends that line.
       if (sameLine ? d.at - l.end > 160 : d.line - l.line !== 1 || d.at - l.end > 80) continue;
       if (!sameLine && proseRun(body.slice(l.end, lines.end(l.line))) >= 4) continue;
+      // Over a row of more dates than its line has labels — a card's "Valid
+      // from  Valid until" with one label misread — a label above says
+      // nothing of which is its (S5).
+      if (
+        !sameLine &&
+        (datesBy.get(d.line)?.length ?? 0) > 1 &&
+        (byLine.get(l.line)?.length ?? 0) < (datesBy.get(d.line)?.length ?? 0)
+      ) {
+        continue;
+      }
       // A label only in its form: its date right after it, or below it alone.
       if (l.spec.form && (sameLine ? l.dateAt !== d.at : !l.below)) continue;
       // Another date between the label and this one is the label's.
@@ -1389,7 +1405,13 @@ const NAME_LABEL =
   /\b(?:name|names|full name|given names?|forenames?(?: or initials)?|first names?|surname|holder|policy ?holder|account (?:holder|name)|patient|insured|named insured|employee|tenants?|dear|re|mr|mrs|ms|miss|mx|master|ln|fn)\b(?:\(s\))?[ .:,/-]*((?:[a-z'-]+[ ,]+){0,2})$/;
 /** The same, on the line above a name on a line of its own. */
 const NAME_LABEL_ABOVE =
-  /\b(?:name|names|given names?|forenames?|holder|policy ?holder|insured|tenants?|patient|service for|bill(?:ed)? to|sold to|customer)\b/;
+  /\b(?:name|names|given names?|forenames?|holder|policy ?holder|insured|tenants?|patient|service for|bill(?:ed)? to|sold to|customer|registered keeper)\b/;
+/**
+ * A line that is a sentence, not a label: it ends a word with a full stop,
+ * and has no colon — "The policyholder." over the drivers a motor
+ * certificate lists says nothing of whose the next line's name is (S5).
+ */
+const SENTENCE_LINE = /^[^:]*[a-z]{2}\. *$/;
 /** A UK or EU licence's given names, by their field number: 2. */
 const NAME_FIELD = /^ *2\. *$/;
 /** A label for a surname, or a licence's surname field (1.). */
@@ -1486,7 +1508,8 @@ function followingWords(text: string): Array<{ word: string; capital: boolean }>
     const m = /^ +([A-Za-z][A-Za-z'’-]*)\.?/.exec(rest);
     if (!m) break;
     rest = rest.slice(m[0].length);
-    const word = m[1] as string;
+    // A hyphen or an apostrophe OCR left at its end ("Khan-") is not the name's (S5).
+    const word = (m[1] as string).replace(/[-'’]+$/, '');
     if (word.length === 1) continue; // an initial: "Jennifer A Carter"
     out.push({ word, capital: /^[A-Z]/.test(word) });
   }
@@ -1559,7 +1582,8 @@ function namesSeen(
     // address: only for the whole name.
     if (!labelled && full && leading) {
       labelled =
-        lines.is('name-above', NAME_LABEL_ABOVE, line - 1) ||
+        (lines.is('name-above', NAME_LABEL_ABOVE, line - 1) &&
+          !lines.is('sentence', SENTENCE_LINE, line - 1)) ||
         [1, 2, 3].some((k) => lines.is('address', ADDRESS, line + k));
     }
     const score = full ? (labelled ? 0.9 : line < HEAD_LINES ? 0.8 : 0.6) : labelled ? 0.7 : 0.5;

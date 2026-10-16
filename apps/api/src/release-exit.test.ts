@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import {
   EnvKeyProvider,
   itemProposalsBinding,
@@ -3098,3 +3099,79 @@ function routeTable(h: Harness): Array<{ method: string; url: string }> {
   }
   return out;
 }
+
+/**
+ * The Smart exit, as measured (0.8.0, S5): docs/smart-exit.md records what
+ * apps/api/src/smart-exit.test.ts found on the 200-paper corpus. This holds
+ * the record to itself and to the exit — no Ready item wrong, and no more
+ * papers needing typing than were measured — so a worse number written
+ * there fails here, and the record says whether the target is met.
+ */
+describe('the Smart exit, as recorded (0.8.0, S5)', () => {
+  interface Counts {
+    files: number;
+    ready: number;
+    check: number;
+    unrecognised: number;
+    problem: number;
+    manual: number;
+    wrong_ready: number;
+  }
+  interface Run {
+    all: Counts;
+    tune: Counts;
+    held_out: Counts;
+  }
+  interface Recorded {
+    files: number;
+    target_met: boolean;
+    with_folders: Run;
+    without_folders: Run;
+  }
+  /** Needing typing, with folders, as measured on 16 October 2026: the ceiling until it is measured again. */
+  const MEASURED_MANUAL = 26;
+  const md = readFileSync(new URL('../../../docs/smart-exit.md', import.meta.url), 'utf8');
+  const block = /```json\n([\s\S]*?)\n```/.exec(md)?.[1];
+  const recorded = JSON.parse(block ?? 'null') as Recorded;
+
+  it('no Ready item is wrong, with folders or without, in either set', () => {
+    for (const run of [recorded.with_folders, recorded.without_folders]) {
+      for (const counts of [run.all, run.tune, run.held_out]) {
+        expect(counts.wrong_ready).toBe(0);
+      }
+    }
+  });
+
+  it('every paper is counted once, and the sets make up the whole', () => {
+    expect(recorded.files).toBe(200);
+    for (const run of [recorded.with_folders, recorded.without_folders]) {
+      for (const c of [run.all, run.tune, run.held_out]) {
+        expect(c.ready + c.check + c.unrecognised + c.problem).toBe(c.files);
+      }
+      expect(run.tune.files + run.held_out.files).toBe(run.all.files);
+      expect(run.tune.manual + run.held_out.manual).toBe(run.all.manual);
+      expect(run.all.files).toBe(recorded.files);
+    }
+  });
+
+  it('no more papers need typing than were measured, and the record says whether the target is met', () => {
+    const manual = recorded.with_folders.all.manual;
+    expect(manual).toBeLessThanOrEqual(MEASURED_MANUAL);
+    // Folders never make it worse.
+    expect(manual).toBeLessThanOrEqual(recorded.without_folders.all.manual);
+    expect(recorded.target_met).toBe(manual < 10);
+    // The table says what the record does.
+    const row = (run: string, set: string, c: Counts) =>
+      new RegExp(
+        `\\| ${run} +\\| ${set} +\\| +${c.files} \\| +${c.ready} \\| +${c.check} \\| +${c.unrecognised} \\| +${c.problem} \\| +${c.manual} \\| +${c.wrong_ready} \\|`,
+      );
+    for (const [name, run] of [
+      ['With folders', recorded.with_folders],
+      ['Without folders', recorded.without_folders],
+    ] as const) {
+      expect(md).toMatch(row(name, 'All', run.all));
+      expect(md).toMatch(row(name, 'Tune', run.tune));
+      expect(md).toMatch(row(name, 'Held out', run.held_out));
+    }
+  });
+});

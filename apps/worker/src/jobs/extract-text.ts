@@ -1,4 +1,5 @@
 import {
+  cleanForOcr,
   detectTools,
   ocrImage,
   pdfImageCoverage,
@@ -24,7 +25,9 @@ import { WORD_MIME, wordText } from './word-text.js';
  *   printed header line had its scan dropped). Such a page keeps both
  *   texts, so nothing searched before 5.37 is lost. A page with more text
  *   of its own — a text PDF's, an illustrated brochure's, a searchable
- *   scan's own text layer — never reaches Tesseract (N537E-02).
+ *   scan's own text layer — never reaches Tesseract (N537E-02). A drawn page
+ *   Tesseract reads next to no words of is cleaned of its speckle and read
+ *   again (0.8.0, S5).
  * - A photo or a scan is OCR'd.
  * - A Word file gives the words in its XML.
  * - Anything else (an Excel workbook) gives none.
@@ -43,6 +46,8 @@ export interface ExtractOptions {
   tools?: Tools;
   /** Reads one drawn page or photo: Tesseract, in English, unless a test stands in for it. */
   ocr?: (image: string) => Promise<string>;
+  /** Cleans a drawn page for a second reading: `cleanForOcr`, unless a test stands in for it. */
+  clean?: (image: string, output: string, signal?: AbortSignal) => Promise<void>;
   /**
    * Ends the reading when aborted (Phase 6, I2: an item's read has a
    * deadline): every tool still running is killed, and it throws.
@@ -92,6 +97,18 @@ const IMAGES = new Set([
 ]);
 
 const letters = (s: string) => (s.match(/[\p{L}\p{N}]/gu) ?? []).length;
+
+/**
+ * Fewer words than this from a scanned page's OCR, and it is cleaned
+ * (`cleanForOcr`) and read again (0.8.0, S5). A page Tesseract reads at all
+ * gives dozens; a blank page none, either way; a short line of a page, a
+ * few.
+ */
+export const OCR_AGAIN_WORDS = 3;
+
+/** The words OCR read: four letters or more, with a vowel — not the specks it took for letters. */
+export const wordsIn = (s: string): number =>
+  (s.match(/\b[A-Za-z]{4,}\b/g) ?? []).filter((w) => /[aeiouy]/i.test(w)).length;
 const kept = (s: string) => s.trim().slice(0, MAX_TEXT_CHARS);
 
 /**
@@ -138,6 +155,25 @@ async function readPdf(
     );
   }
   const pages = total !== null ? Math.min(total, opts.maxPages) : own.length;
+  /**
+   * A drawn page read; and where that gives next to no words — a grainy,
+   * low-resolution scan Tesseract cannot see the letters of — cleaned and
+   * read again, the reading with more words kept (0.8.0, S5).
+   */
+  const ocrPage = async (image: string): Promise<string> => {
+    const first = (await ocr(image)).trim();
+    if (!tools.magick || wordsIn(first) >= OCR_AGAIN_WORDS) return first;
+    signal?.throwIfAborted();
+    const cleaned = `${image.replace(/\.png$/, '')}-clean.png`;
+    try {
+      await (opts.clean ?? cleanForOcr)(image, cleaned, signal);
+    } catch {
+      signal?.throwIfAborted();
+      return first;
+    }
+    const second = (await ocr(cleaned)).trim();
+    return wordsIn(second) > wordsIn(first) ? second : first;
+  };
   // How much of each page is a picture: none of a text page's, all of a scan's.
   const coverage =
     tools.pdfimages && pages > 0 ? await pdfImageCoverage(file, pages, signal) : null;
@@ -146,7 +182,7 @@ async function readPdf(
     if (!canOcr) return null;
     const drawn = await renderPdfPages(file, opts.workDir, opts.maxPages, 150, signal);
     const texts: string[] = [];
-    for (const page of drawn) texts.push(await ocr(page));
+    for (const page of drawn) texts.push(await ocrPage(page));
     return { text: kept(texts.join('\n\n')), source: 'ocr', textPages: 0, ocrPages: drawn.length };
   }
   const texts: string[] = [];
@@ -164,7 +200,7 @@ async function readPdf(
     }
     // A scan, drawn and read; with any text of its own kept beside it.
     signal?.throwIfAborted();
-    const read = (await ocr(await renderPdfPage(file, opts.workDir, n, 150, signal))).trim();
+    const read = await ocrPage(await renderPdfPage(file, opts.workDir, n, 150, signal));
     texts.push(count > 0 ? `${words.trim()}\n${read}` : read);
     ocrPages += 1;
   }

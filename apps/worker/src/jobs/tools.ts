@@ -255,6 +255,34 @@ export async function renderPdfPage(
 }
 
 /**
+ * A drawn page (a PNG of `renderPdfPage`'s) cleaned for OCR to read again
+ * (0.8.0, S5): twice the size, each pixel the median of its 3×3 neighbours,
+ * which takes a grainy scan's speckle out and leaves its letters. Under
+ * MAGICK_LIMITS, as every ImageMagick call is.
+ */
+export async function cleanForOcr(
+  input: string,
+  output: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const bin = await MAGICK();
+  await run(
+    bin,
+    [
+      ...MAGICK_LIMITS,
+      `png:${input}`,
+      '-resize',
+      '200%',
+      '-statistic',
+      'Median',
+      '3x3',
+      `png:${output}`,
+    ],
+    { timeout: 120_000, signal },
+  );
+}
+
+/**
  * A JPEG thumbnail, longest side `size`. PDFs go through poppler for the
  * first page (ImageMagick would need Ghostscript for that); images go
  * straight to ImageMagick, which also fixes camera orientation.
