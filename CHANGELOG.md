@@ -6,6 +6,8 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.8.0-dev.7] - 2026-10-16 — pair a computer to send scans
+
 ### Added
 
 - **Send scans from a computer.** _Settings → Your computers_ pairs a family member's own computer with the Family Documents Vault uploader (coming separately), so a scanner that saves to a folder there sends each new scan straight into their uploads — no network share to set up on the server.
