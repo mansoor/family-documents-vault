@@ -78,17 +78,17 @@ test('a car added with its plate and VIN is found by its VIN', async () => {
 
   await addCard('car.pdf');
   await page.getByLabel('What it is').selectOption('vehicle_registration');
-  // The plate is required (A9), and a car's expiry as the vault counts it:
-  // Save waits, and says what for, in the card's order.
+  // The plate is required (A9). A logbook never runs out, so its expiry is
+  // the family's to add or not (0.8.0): Save waits for the plate alone.
   const plate = page.getByLabel(/^Registration plate/);
   const expires = page.getByLabel(/^Expires/);
   await expect(plate).toHaveAttribute('aria-required', 'true');
-  await expect(expires).toHaveAttribute('aria-required', 'true');
+  await expect(expires).not.toHaveAttribute('aria-required', 'true');
   await page.getByRole('button', { name: 'Save to the vault' }).click();
   await expect(page.getByRole('alert')).toHaveText(
-    'Still needed: Expires and Registration plate. Fill them in, or skip for now.',
+    'Still needed: Registration plate. Fill it in, or skip for now.',
   );
-  await expect(expires).toBeFocused();
+  await expect(plate).toBeFocused();
   await expect(plate).toHaveAttribute('aria-invalid', 'true');
 
   await plate.fill('KX19 ZLT');

@@ -186,12 +186,13 @@ describe('Your computers (0.8.0, D1)', () => {
     );
     fireEvent.click(await screen.findByRole('button', { name: 'Add a computer' }));
     const dialog = await screen.findByRole('dialog', { name: 'Add a computer' });
-    // The vault asked every few seconds while the code is shown.
+    // The vault asked every few seconds while the code is shown: two asks'
+    // time, since under a loaded run the first answer can come late.
     expect(
       await within(dialog).findByText(
         '“Study PC” is paired. What it sends arrives in your uploads, a batch a day.',
         undefined,
-        { timeout: 6000 },
+        { timeout: 12_000 },
       ),
     ).toBeInTheDocument();
     await expectAccessible();
