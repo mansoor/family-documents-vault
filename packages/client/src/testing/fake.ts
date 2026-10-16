@@ -669,6 +669,38 @@ const FAKE_TYPES: DocumentTypeView[] = [
     short_label: 'Bill',
     issuer_noun: 'bill',
   }),
+  // 0.8.0 (S5, 0072): kinds a client a release older than these has never seen.
+  builtin(
+    {
+      key: 'credit_card_statement',
+      label: 'Credit card statement',
+      category: 'financial',
+      fields: [
+        { key: 'account_last4', label: 'Card (last 4)', kind: 'text', required: false },
+        { key: 'amount', label: 'Amount', kind: 'text', required: false },
+      ],
+      expiry_driver: 'expires_on',
+      reminder_leads: [7, 1],
+      usually_essential: false,
+      default_visibility: 'adults',
+      issued_by_label: 'Card issuer',
+      short_label: 'Credit card statement',
+      issuer_noun: 'statement',
+    },
+    { expires: { label: 'Payment due' } },
+  ),
+  builtin({
+    key: 'school_report',
+    label: 'School report',
+    category: 'education',
+    fields: [{ key: 'year', label: 'Year', kind: 'year', required: false }],
+    expiry_driver: null,
+    reminder_leads: [],
+    usually_essential: false,
+    default_visibility: 'household',
+    issued_by_label: 'School',
+    short_label: 'School report',
+  }),
 ];
 
 /** What GET /document-attributes answers: some of the library the real vault starts with. */

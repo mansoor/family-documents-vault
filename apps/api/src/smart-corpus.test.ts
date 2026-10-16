@@ -25,7 +25,7 @@ interface Corpus {
 const load = async () =>
   (await import(
     /* @vite-ignore */ pathToFileURL(path.join(ROOT, 'scripts/smart-corpus.mjs')).href
-  )) as { smartCorpus: (o: { seed: number }) => Corpus };
+  )) as { smartCorpus: (o: { seed: number; corpus?: 'first' | 'second' }) => Corpus };
 
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 
@@ -93,4 +93,31 @@ describe('the Smart exit’s corpus (S5)', () => {
     const ours = files.map((f) => f.truth.number?.replace(/\s/g, '')).filter(Boolean);
     expect(ours.filter((n) => theirs.includes(n as string))).toEqual([]);
   });
+
+  it('a second set, held out: its own seed, layouts and issuers, the same bytes each time', async () => {
+    const { smartCorpus } = await load();
+    const second = smartCorpus({ seed: 2, corpus: 'second' });
+    const again = smartCorpus({ seed: 2, corpus: 'second' });
+    expect(again.files.map((f) => sha(f.bytes))).toEqual(second.files.map((f) => sha(f.bytes)));
+    const files = second.files.map((f) => f.entry);
+    expect(files.length).toBeGreaterThanOrEqual(100);
+    expect(files.every((f) => f.set === 'held-out')).toBe(true);
+    const scans = files.filter((f) => f.mode === 'scan').length / files.length;
+    expect(scans).toBeGreaterThan(0.3);
+    expect(scans).toBeLessThan(0.5);
+    // Not one layout of the first set.
+    const firstPapers = new Set(first.files.map((f) => f.entry.paper));
+    expect(files.filter((f) => f.paper !== 'blank' && firstPapers.has(f.paper))).toEqual([]);
+    // Nor one of its issuers, but the offices a paper is from wherever it is kept.
+    const offices = new Set(['United Kingdom', 'DVLA', 'HMRC']);
+    const firstIssuers = new Set(first.files.map((f) => f.entry.truth.issuer));
+    expect(
+      files
+        .map((f) => f.truth.issuer)
+        .filter((i): i is string => !!i && !offices.has(i) && firstIssuers.has(i)),
+    ).toEqual([]);
+    // The kinds 0072 adds are among its papers.
+    expect(files.some((f) => f.truth.kind === 'credit_card_statement')).toBe(true);
+    expect(files.some((f) => f.truth.kind === 'school_report')).toBe(true);
+  }, 180_000);
 });

@@ -274,7 +274,8 @@ describe.skipIf(!testAdminUrl())('migration 0038: reminders from any date', () =
   it("every existing kind's view row and etag are exactly as before 0038", async () => {
     for (const hh of [plain, changed]) {
       const was = before.get(hh) as EffectiveType[];
-      const now = await kinds(hh);
+      // The kinds there were: later releases add their own (0072).
+      const now = (await kinds(hh)).filter((t) => was.some((w) => w.key === t.key));
       // The columns 0038 appends aside, every row is as it was, byte for byte…
       const old = (t: EffectiveType) =>
         Object.fromEntries(

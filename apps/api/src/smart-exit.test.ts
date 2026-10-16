@@ -32,18 +32,28 @@ import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
  * each — the PDF's own text, Tesseract for a scan — and proposes; and each
  * item's card, as GET /batches/{id} gives it, is scored against what a
  * person would fill in (@fdv/shared/testdata, smart-exit.ts). Then the same
- * again with no folders, to show what the folders add.
+ * again with no folders, to show what the folders add. Both corpora: the
+ * first 200, which the rules were adjusted on, and a second set written
+ * after and held out (FDV_SMART_EXIT_CORPORA, default "first,second").
  *
- * Only with FDV_SMART_EXIT=1: OCR on eighty-odd scans takes minutes. Run it
- * where the worker's tools are — node:22-alpine with poppler, ImageMagick
- * and Tesseract, as the restore tests run (docs/smart-exit.md says how).
- * It writes what it found to FDV_SMART_EXIT_OUT (a JSON file), and fails
- * where the exit does: ten or more papers needing typing with folders, or
- * any Ready item wrong either way.
+ * Only with FDV_SMART_EXIT=1: OCR on the scans takes minutes. Run it where
+ * the worker's tools are — node:22-alpine with poppler, ImageMagick and
+ * Tesseract, as the restore tests run (docs/smart-exit.md says how). It
+ * writes what it found to FDV_SMART_EXIT_OUT (a JSON file), and fails on
+ * any Ready item wrong; how many need typing it records.
  */
 
 const RUN = process.env.FDV_SMART_EXIT === '1';
-const SEED = Number(process.env.FDV_SMART_EXIT_SEED ?? '1');
+/**
+ * The corpora measured: `first`, the 200 the rules were adjusted on (seed
+ * 1), and `second`, the held-out set written after them and frozen before
+ * the vault read any of it (seed 2; 0.8.0 S5, the owner's decision).
+ */
+const CORPORA = (process.env.FDV_SMART_EXIT_CORPORA ?? 'first,second')
+  .split(',')
+  .map((c) => c.trim())
+  .filter((c): c is 'first' | 'second' => c === 'first' || c === 'second');
+const SEED_OF = { first: 1, second: 2 } as const;
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const OUT = process.env.FDV_SMART_EXIT_OUT ?? path.join(tmpdir(), 'fdv-smart-exit.json');
 /** The folder chosen on Add → Many documents: a container, so the web drops it (folderOfChosen). */
@@ -55,7 +65,7 @@ interface CorpusFile {
   entry: SmartEntry;
 }
 interface CorpusModule {
-  smartCorpus(o: { seed: number }): {
+  smartCorpus(o: { seed: number; corpus: 'first' | 'second' }): {
     household: { name: string; people: Array<{ key: string; name: string; role: string | null }> };
     files: CorpusFile[];
   };
@@ -88,13 +98,17 @@ describe.runIf(RUN && testAdminUrl())('the Smart exit, measured (S5)', () => {
   let admin: ReturnType<typeof createPool>;
   let w: WorkerModules;
   let thread: { close(): Promise<void> };
-  let corpus: ReturnType<CorpusModule['smartCorpus']>;
+  let corpora: Record<string, ReturnType<CorpusModule['smartCorpus']>>;
   /** A member's id → their key in the corpus ("ahmed"). */
   const keyOf = new Map<string, string>();
   let expiring: Set<string>;
 
   beforeAll(async () => {
-    corpus = (await load<CorpusModule>('scripts/smart-corpus.mjs')).smartCorpus({ seed: SEED });
+    const made = await load<CorpusModule>('scripts/smart-corpus.mjs');
+    corpora = Object.fromEntries(
+      CORPORA.map((c) => [c, made.smartCorpus({ seed: SEED_OF[c], corpus: c })]),
+    );
+    const corpus = corpora[CORPORA[0] as string] as ReturnType<CorpusModule['smartCorpus']>;
     w = {
       ...(await load<Pick<WorkerModules, 'drawNextBatchItem'>>('apps/worker/src/jobs/batches.ts')),
       ...(await load<Pick<WorkerModules, 'readNextBatchItem'>>(
@@ -194,7 +208,8 @@ describe.runIf(RUN && testAdminUrl())('the Smart exit, measured (S5)', () => {
   };
 
   /** One run: every file added to a batch of its own (with its folder, or none), read, and scored. */
-  const run = async (withFolders: boolean) => {
+  const run = async (name: string, withFolders: boolean) => {
+    const corpus = corpora[name] as ReturnType<CorpusModule['smartCorpus']>;
     const started = Date.now();
     let as = await fresh();
     const made = await h.app.inject({
@@ -280,15 +295,13 @@ describe.runIf(RUN && testAdminUrl())('the Smart exit, measured (S5)', () => {
   };
 
   it(
-    'two hundred mixed papers: fewer than ten need typing, and no Ready one is wrong',
+    'each corpus, with folders and without: no Ready one is wrong, and how many need typing',
     async () => {
-      const withFolders = await run(true);
-      const without = await run(false);
-      const results = { seed: SEED, with_folders: withFolders, without_folders: without };
-      mkdirSync(path.dirname(OUT), { recursive: true });
-      writeFileSync(OUT, `${JSON.stringify(results, null, 2)}\n`);
+      const results: Record<string, unknown> = {};
+      const lines: string[] = [];
       const line = (name: string, s: SmartSummary) =>
-        `${name.padEnd(16)} ${[
+        `${name.padEnd(24)} ${[
+          'files',
           'ready',
           'check',
           'unrecognised',
@@ -300,20 +313,30 @@ describe.runIf(RUN && testAdminUrl())('the Smart exit, measured (S5)', () => {
           'expiry_not_on_paper',
         ]
           .map((k) => `${k}=${s.all[k as keyof SmartSummary['all']]}`)
-          .join(
-            ' ',
-          )} | held-out manual=${s.held_out.manual}/${s.held_out.files} wrong_ready=${s.held_out.wrong_ready}`;
-      console.log(
-        [
-          line('with folders', withFolders.summary),
-          line('without folders', without.summary),
-          `seconds: with ${JSON.stringify(withFolders.seconds)}, without ${JSON.stringify(without.seconds)}`,
-          `written to ${OUT}`,
-        ].join('\n'),
-      );
-      expect(withFolders.summary.all.wrong_ready).toBe(0);
-      expect(without.summary.all.wrong_ready).toBe(0);
-      expect(withFolders.summary.all.manual).toBeLessThan(10);
+          .join(' ')}`;
+      const wrong: number[] = [];
+      for (const name of CORPORA) {
+        const withFolders = await run(name, true);
+        const without = await run(name, false);
+        results[name] = {
+          seed: SEED_OF[name],
+          target_met: withFolders.summary.all.manual < 10,
+          with_folders: withFolders,
+          without_folders: without,
+        };
+        lines.push(
+          line(`${name}, with folders`, withFolders.summary),
+          line(`${name}, without folders`, without.summary),
+          `${name} seconds: with ${JSON.stringify(withFolders.seconds)}, without ${JSON.stringify(without.seconds)}`,
+        );
+        wrong.push(withFolders.summary.all.wrong_ready, without.summary.all.wrong_ready);
+      }
+      mkdirSync(path.dirname(OUT), { recursive: true });
+      writeFileSync(OUT, `${JSON.stringify(results, null, 2)}\n`);
+      console.log([...lines, `written to ${OUT}`].join('\n'));
+      // The rule that matters most. How many need typing is recorded, not
+      // asserted: the release records whatever it reaches (docs/smart-exit.md).
+      expect(wrong.every((n) => n === 0)).toBe(true);
     },
     3 * 60 * 60_000,
   );

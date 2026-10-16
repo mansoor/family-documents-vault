@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { extractText, OCR_AGAIN_WORDS, wordsIn } from './extract-text.js';
+import { columnsApart, extractText, OCR_AGAIN_WORDS, wordsIn } from './extract-text.js';
 import { detectTools, ocrImage, renderPdfPage } from './tools.js';
 
 /**
@@ -165,5 +165,80 @@ describe('a scan read again, cleaned (S5)', () => {
       expect(got?.text).toMatch(/Certificate/);
     },
     120_000,
+  );
+});
+
+/**
+ * A form read column by column, read again row by row (0.8.0, S5): a
+ * scanned card statement or insurance schedule that Tesseract read as a
+ * run of labels and then, far below, a run of values. Only such a page is
+ * read again (--psm 6), and the row-by-row reading is kept where its
+ * labels and values are no longer apart.
+ */
+describe('a form read column by column, read again by rows (S5)', () => {
+  const APART = [
+    'Lantern Card',
+    'Statement date',
+    'Card number ending',
+    'Previous balance',
+    'Payment due',
+    'Credit limit',
+    '18 August 2026',
+    '4929',
+    '£429.79',
+    '12 September 2026',
+  ].join('\n');
+  const ROWS = [
+    'Lantern Card',
+    'Statement date 18 August 2026',
+    'Card number ending 4929',
+    'Previous balance £429.79',
+    'Payment due 12 September 2026',
+    'Credit limit £4,500.00',
+  ].join('\n');
+
+  it('tells a form read by columns from one read by rows, or a letter', () => {
+    expect(columnsApart(APART)).toBe(true);
+    expect(columnsApart(ROWS)).toBe(false);
+    expect(
+      columnsApart('Dear Mrs Khan,\nYour results are normal.\nYours sincerely,\nDr H Marsh'),
+    ).toBe(false);
+  });
+
+  let dir: string;
+  beforeAll(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'fdv-ocr-rows-'));
+  });
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it.skipIf(!tools.pdftoppm)(
+    'only a page read by columns is read again, and the rows kept where they read better',
+    async () => {
+      const file = path.join(dir, 'card.pdf');
+      await writeFile(file, await certificate({ ...GRAINY, dpi: 200, noise: 0.01, specks: 0 }));
+      const opts = (first: string, rows: string, asked: string[]) => ({
+        maxPages: 5,
+        workDir: dir,
+        tools: { ...tools, magick: false, tesseract: true },
+        ocr: () => Promise.resolve(first),
+        ocrRows: (image: string) => {
+          asked.push(path.basename(image));
+          return Promise.resolve(rows);
+        },
+      });
+      const asked: string[] = [];
+      const read = await extractText(file, 'application/pdf', opts(APART, ROWS, asked));
+      expect(asked).toEqual(['page-1.png']);
+      expect(read?.text).toBe(ROWS);
+      // Still apart by rows: the first reading stands.
+      const still = await extractText(file, 'application/pdf', opts(APART, APART, []));
+      expect(still?.text).toBe(APART);
+      // Read by rows already: never read again.
+      const none: string[] = [];
+      await extractText(file, 'application/pdf', opts(ROWS, APART, none));
+      expect(none).toEqual([]);
+    },
   );
 });

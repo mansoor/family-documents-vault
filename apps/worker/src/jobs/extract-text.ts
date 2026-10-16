@@ -46,6 +46,8 @@ export interface ExtractOptions {
   tools?: Tools;
   /** Reads one drawn page or photo: Tesseract, in English, unless a test stands in for it. */
   ocr?: (image: string) => Promise<string>;
+  /** Reads a drawn page row by row (Tesseract's --psm 6), unless a test stands in for it. */
+  ocrRows?: (image: string) => Promise<string>;
   /** Cleans a drawn page for a second reading: `cleanForOcr`, unless a test stands in for it. */
   clean?: (image: string, output: string, signal?: AbortSignal) => Promise<void>;
   /**
@@ -106,6 +108,35 @@ const letters = (s: string) => (s.match(/[\p{L}\p{N}]/gu) ?? []).length;
  */
 export const OCR_AGAIN_WORDS = 3;
 
+/**
+ * Whether OCR read a form column by column (S5): four or more short lines
+ * of labels in a row — a few words, no digits — and after them three or more
+ * short lines of values, each with a digit: "Statement date / Card number
+ * ending / Previous balance / Payment due", then "18 August 2026 / 4929 /
+ * £429.79". Its labels no longer stand beside their values.
+ */
+export function columnsApart(text: string): boolean {
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '');
+  const words = (l: string) => l.split(/\s+/).length;
+  const label = (l: string) =>
+    !/\d/.test(l) && words(l) <= 4 && !/[.,;:]$/.test(l) && /^[A-Za-z]/.test(l);
+  const value = (l: string) => /\d/.test(l) && words(l) <= 4;
+  let labelsEnd = -1;
+  for (let i = 0, run = 0; i < lines.length; i += 1) {
+    run = label(lines[i] as string) ? run + 1 : 0;
+    if (run >= 4) labelsEnd = i;
+  }
+  if (labelsEnd < 0) return false;
+  for (let i = labelsEnd + 1, run = 0; i < lines.length; i += 1) {
+    run = value(lines[i] as string) ? run + 1 : 0;
+    if (run >= 3) return true;
+  }
+  return false;
+}
+
 /** The words OCR read: four letters or more, with a vowel — not the specks it took for letters. */
 export const wordsIn = (s: string): number =>
   (s.match(/\b[A-Za-z]{4,}\b/g) ?? []).filter((w) => /[aeiouy]/i.test(w)).length;
@@ -161,6 +192,17 @@ async function readPdf(
    * read again, the reading with more words kept (0.8.0, S5).
    */
   const ocrPage = async (image: string): Promise<string> => {
+    const read = await ocrGrainy(image);
+    if (!columnsApart(read)) return read;
+    // A form read column by column — its labels, then its values far below
+    // them: read again row by row, kept where that is no longer so (S5).
+    signal?.throwIfAborted();
+    const rows = (
+      await (opts.ocrRows ?? ((i: string) => ocrImage(i, 'eng', signal, '6')))(image)
+    ).trim();
+    return !columnsApart(rows) && wordsIn(rows) >= wordsIn(read) * 0.8 ? rows : read;
+  };
+  const ocrGrainy = async (image: string): Promise<string> => {
     const first = (await ocr(image)).trim();
     if (!tools.magick || wordsIn(first) >= OCR_AGAIN_WORDS) return first;
     signal?.throwIfAborted();

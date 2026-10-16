@@ -28,11 +28,14 @@
 //   --seed <number>     FDV_CORPUS_SEED     which corpus (default 1)
 //   --owner <name>      FDV_CORPUS_OWNER    the owner's first name (default Olivia)
 //   --surname <name>    FDV_CORPUS_SURNAME  the family's surname (default Khan)
+//   --corpus <name>     FDV_CORPUS          first (the 200 the rules were tuned on) or
+//                                           second (the held-out set written after, 0.8.0 S5)
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PAPERS, addDays, addMonths } from './smart-corpus-papers.mjs';
+import { PAPERS_2, home2, plan2 } from './smart-corpus-papers-2.mjs';
 import { Page, randomFor, scanLook, scanPdf, textPdf } from './smart-corpus-render.mjs';
 
 /** The day the corpus is made as of: no clock is read. */
@@ -485,14 +488,22 @@ const sha256 = (b) => createHash('sha256').update(b).digest('hex');
  * The corpus for a seed: every file's place, bytes and truth, sorted by
  * place as a folder is read; and the household it is for.
  */
-export function smartCorpus({ seed = 1, owner = 'Olivia', surname = 'Khan' } = {}) {
+export function smartCorpus({
+  seed = 1,
+  owner = 'Olivia',
+  surname = 'Khan',
+  corpus = 'first',
+} = {}) {
+  const isSecond = corpus === 'second';
+  const papers = isSecond ? PAPERS_2 : PAPERS;
+  const homeOf = isSecond ? home2 : home;
   const people = corpusPeople({ owner, surname });
   const P = Object.fromEntries(people.map((p) => [p.key, p]));
   const h = household(surname);
   const pick = randomFor(seed, 'corpus');
   const items = [];
-  for (const entry of plan(P)) {
-    const tpl = PAPERS[entry.paper];
+  for (const entry of (isSecond ? plan2 : plan)(P)) {
+    const tpl = papers[entry.paper];
     const key = `${entry.paper}:${entry.who}:${JSON.stringify(entry.opts, (k, v) => (v && v.key ? v.key : v))}`;
     const r = randomFor(seed, key);
     const made = tpl.make(r, h, entry.who ? P[entry.who] : null, entry.opts);
@@ -535,7 +546,7 @@ export function smartCorpus({ seed = 1, owner = 'Olivia', surname = 'Khan' } = {
     return at;
   };
   for (const item of items) {
-    const [folder, name] = home(item, P);
+    const [folder, name] = homeOf(item, P);
     let where = `${folder}/${name}.pdf`;
     let misfiled = false;
     const roll = pick.next();
@@ -560,7 +571,7 @@ export function smartCorpus({ seed = 1, owner = 'Olivia', surname = 'Khan' } = {
       paper: 'blank',
       who: null,
       opts: {},
-      set: 'tune',
+      set: isSecond ? 'held-out' : 'tune',
       mode,
       pages: 1,
       family: 'sans',
@@ -633,6 +644,7 @@ export function smartCorpus({ seed = 1, owner = 'Olivia', surname = 'Khan' } = {
   });
   return {
     seed,
+    corpus,
     today: CORPUS_TODAY,
     household: {
       name: h.name,
@@ -645,6 +657,7 @@ export function smartCorpus({ seed = 1, owner = 'Olivia', surname = 'Khan' } = {
 /** The manifest of a corpus: everything but the bytes. */
 export const corpusManifest = (corpus) => ({
   seed: corpus.seed,
+  corpus: corpus.corpus,
   today: corpus.today,
   household: corpus.household,
   files: corpus.files.map((f) => f.entry),
@@ -682,6 +695,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     seed: Number(option('seed', 'FDV_CORPUS_SEED', '1')),
     owner: option('owner', 'FDV_CORPUS_OWNER', 'Olivia'),
     surname: option('surname', 'FDV_CORPUS_SURNAME', 'Khan'),
+    corpus: option('corpus', 'FDV_CORPUS', 'first'),
   });
   writeCorpus(out, corpus);
   const scans = corpus.files.filter((f) => f.entry.mode === 'scan').length;

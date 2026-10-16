@@ -220,6 +220,13 @@ export const FOLDER_KIND_WORDS: Readonly<Record<string, readonly string[]>> = {
     'savings',
     'brokerage',
   ],
+  // 0.8.0 (S5, 0072): a card's statements, kept under Bank or on their own.
+  credit_card_statement: [
+    'credit card',
+    'credit cards',
+    'credit card statement',
+    'credit card statements',
+  ],
   loan: ['loan', 'loans', 'mortgage', 'credit agreement'],
   medical_record: [
     'medical',
@@ -238,6 +245,8 @@ export const FOLDER_KIND_WORDS: Readonly<Record<string, readonly string[]>> = {
   ],
   prescription: ['prescription', 'prescriptions', 'rx'],
   diploma: ['diploma', 'transcript', 'degree', 'education', 'university', 'college'],
+  // Not "School" alone: a school's letters, trips and photos are kept there too.
+  school_report: ['school report', 'school reports'],
   employment_contract: ['employment', 'employment contract', 'job offer', 'offer letter'],
   utility_bill: [
     'bill',
@@ -267,6 +276,7 @@ export const FOLDER_KIND_PARENTS: Readonly<Record<string, string>> = {
   tax_form: 'tax_return',
   prescription: 'medical_record',
   loan: 'bank_statement',
+  credit_card_statement: 'bank_statement',
 };
 
 /** Kinds no folder suggests: "Something else" is no kind. */

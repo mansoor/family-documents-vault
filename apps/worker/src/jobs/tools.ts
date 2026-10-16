@@ -1120,8 +1120,14 @@ export async function watermarkPage(
 }
 
 /** OCR of one page image. Returns the text, possibly empty. */
-export async function ocrImage(file: string, lang = 'eng', signal?: AbortSignal): Promise<string> {
-  const { stdout } = await run('tesseract', [file, '-', '-l', lang, '--psm', '3'], {
+export async function ocrImage(
+  file: string,
+  lang = 'eng',
+  signal?: AbortSignal,
+  /** Tesseract's page segmentation: 3, found by itself; 6, one block read row by row (S5). */
+  psm: '3' | '6' = '3',
+): Promise<string> {
+  const { stdout } = await run('tesseract', [file, '-', '-l', lang, '--psm', psm], {
     timeout: 180_000,
     maxBuffer: 16 * 1024 * 1024,
     signal,

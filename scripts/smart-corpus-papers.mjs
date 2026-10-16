@@ -105,9 +105,9 @@ export function fmt(at, style) {
 }
 
 /** One of the styles a UK paper writes a date in. */
-const ukStyle = (r) => r.pick(['long', 'long', 'short', 'slash', 'longth', 'dashed']);
+export const ukStyle = (r) => r.pick(['long', 'long', 'short', 'slash', 'longth', 'dashed']);
 
-const money = (r, lo, hi) => {
+export const money = (r, lo, hi) => {
   const pence = r.int(lo * 100, hi * 100);
   const pounds = Math.floor(pence / 100)
     .toString()
@@ -139,7 +139,7 @@ const upper = (s) => s.toUpperCase();
 // ---- passports
 
 /** A passport's machine-readable lines (ICAO 9303, TD3), their check digits right. */
-function mrz(p, number, state, expires) {
+export function mrz(p, number, state, expires) {
   const value = (c) => {
     if (c >= '0' && c <= '9') return Number(c);
     if (c >= 'A' && c <= 'Z') return c.charCodeAt(0) - 55;
@@ -323,7 +323,7 @@ paper('passport-pk', 'passport', 'held-out', 0.9, (r, h, p, o) => {
 // ---- driving licences
 
 /** A UK licence's number: the surname, the date of birth (a woman's month plus 50), initials. */
-function licenceNumber(r, p) {
+export function licenceNumber(r, p) {
   const [y, m, d] = parts(p.born);
   const sur = upper(p.surname)
     .replace(/[^A-Z]/g, '')
@@ -725,7 +725,7 @@ paper('bank-savings', 'bank_statement', 'held-out', 0.2, (r, h, p, o) => {
   return { truth: { issued: end, expires: null, number, issuer: 'Kestrel Savings' }, pages: [pg] };
 });
 
-paper('credit-card', 'bank_statement', 'held-out', 0.15, (r, h, p, o) => {
+paper('credit-card', 'credit_card_statement', 'held-out', 0.15, (r, h, p, o) => {
   const issued = o.issued;
   const due = addDays(issued, 25);
   const pg = new Page({ size: 10 });
@@ -768,7 +768,7 @@ paper('credit-card', 'bank_statement', 'held-out', 0.15, (r, h, p, o) => {
     [220, '£4,500.00'],
   ]);
   pg.foot();
-  return { truth: { issued, expires: null, number: null, issuer: 'Lantern Card' }, pages: [pg] };
+  return { truth: { issued, expires: due, number: null, issuer: 'Lantern Card' }, pages: [pg] };
 });
 
 // ---- bills
@@ -1288,7 +1288,7 @@ paper('gcse-certificate', 'diploma', 'tune', 0.8, (r, h, p, o) => {
   };
 });
 
-paper('school-report', 'diploma', 'held-out', 0.5, (r, h, p, o) => {
+paper('school-report', 'school_report', 'held-out', 0.5, (r, h, p, o) => {
   const year = o.year;
   const school = p.age < 11 ? 'Larchwood Primary School' : 'Ashby Vale Academy';
   const pg = new Page({ size: 10 });

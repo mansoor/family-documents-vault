@@ -1,31 +1,43 @@
 # The Smart exit, measured (0.8.0)
 
-The Phase 6 "Smart" exit asks that a folder of two hundred mixed PDFs imports with fewer than ten needing manual typing, and that no item the vault calls Ready is wrong. This is what was measured on 16 October 2026, at `feat/8.s5-exit`.
+The Phase 6 "Smart" exit asks that a folder of two hundred mixed PDFs imports with fewer than ten needing manual typing, and that no item the vault calls Ready is wrong. This is what was measured on 16 October 2026, at `feat/8.s5-exit`, after the owner's second round. 0.8.0 ships with it as it stands.
 
-**Result: wrong Ready is 0; 26 of the 200 need typing with folder names, so the target of fewer than ten is not met.** Of the papers whose layouts the rules were adjusted on, 9 of 121 need typing; of the held-out layouts, 17 of 79.
+**Result:**
 
-## The corpus
+- **Wrong Ready is 0** in every run, on both sets, with folders and without.
+- **On the 200 papers the rules were adjusted on**, 6 need typing with folder names (16 without): the target is met there.
+- **On a second set written after them and held out**, 53 of 115 need typing with folder names (57 without): the target is **not** met on papers the rules have not seen.
 
-`node scripts/smart-corpus.mjs --out <folder> [--seed 1]` writes it, with `manifest.json` (the truth for each file). The same seed gives the same bytes. `scripts/demo-seed.mjs --out <folder> --corpus` writes it for a demo vault it has just filled, adding the two people the papers name who have no sign-in.
+The second number is the one to believe about a family's own papers. The rules read the layouts they were adjusted on well, and new layouts of the same kinds much less well.
 
-- **The household:** a made-up family of five (an owner, an adult, a teen, a child and a grandmother), plus a few unknown names, such as a previous occupant's post. Every company, bank, insurer, school and number is invented.
-- **Kinds:** 180 papers of 21 kinds: bank statements (30), bills (35), medical letters (18), insurance (14), warranties and receipts (14), passports (9), tax forms (9), pet records (7), prescriptions (6), school reports and certificates (6), and others. There are also 20 papers of no kind (menus, newsletters, letters).
-- **Mixed:**
-  - 118 PDFs carry their own words, in three typefaces and several layouts. Dates come in nine styles, including a UK passport's bilingual one.
-  - 82 are image-only scans, drawn by the generator from glyphs of the DejaVu fonts, skewed up to 2.5°, specked, grey or black-and-white, at 100–200 dpi.
-  - Six papers have more than one page, three are blank or nearly blank, two have the same bytes as another, and one is scanned again.
-- **The folder tree:** tidy folders (`Ahmed/Passport`, `Bills/2026`, `Medical/Granny Farida`), a flat `Scans/` folder of 44 files, a `Downloads/` folder, and six papers filed in the wrong folder.
-- **Sets:** each layout is in one set. **Tune** (121 papers) holds the layouts the rules could be adjusted to read. **Held out** (79 papers) was written the same way but never used to change a rule. No number or text is copied from 5.37's fixtures.
+## The corpora
+
+`node scripts/smart-corpus.mjs --out <folder> [--corpus first|second] [--seed n]` writes either, with `manifest.json` (the truth for each file). The same seed gives the same bytes. `scripts/demo-seed.mjs --out <folder> --corpus` writes the first for a demo vault it has just filled, adding the two people the papers name who have no sign-in.
+
+**Both:**
+
+- One made-up family of five: an owner, an adult, a teen, a child and a grandmother, plus a few unknown names. Every company, school and number is invented.
+- Kept as a family keeps them: tidy folders, a flat `Scans/` folder, `Downloads/`, and papers filed in the wrong folder.
+- About six in ten are PDFs with their own words. About four in ten are image-only scans: skewed, specked, grey or black-and-white, at 100–200 dpi.
+- A few are blank, or copies of another paper.
+
+**The first (seed 1), 200 papers:** 21 kinds; 118 text and 82 scans; 20 of no kind; six with more than one page. All of it may be used to adjust the rules: it is the **tune** set.
+
+**The second (seed 2), 115 papers:** held out.
+
+- **New layouts and new issuers** (`scripts/smart-corpus-papers-2.mjs`): none used in the first set but the offices a paper is from wherever it is kept (DVLA, HMRC, the passport's country). A test checks this.
+- **Its mix:** 19 kinds, including the two new ones; 69 text and 46 scans; 10 of no kind.
+- **Frozen before measuring:** written and generated, with the SHA-256 of its paths and truths recorded (`d8dd8c6c…`; formatting the generator since changed no paper), before the vault read any of it. No rule was changed after it was read.
 
 ## Method
 
-`apps/api/src/smart-exit.test.ts`, run with `FDV_SMART_EXIT=1` in `node:22-alpine` with poppler, ImageMagick and Tesseract (the worker's tools) against the test database:
+`apps/api/src/smart-exit.test.ts`, run with `FDV_SMART_EXIT=1` in `node:22-alpine` with poppler, ImageMagick and Tesseract (the worker's tools) against the test database. For each set, with its folders and then without:
 
 1. The household is set up through the API (country GB).
-2. All 200 files go into one batch with Add → Many documents, each with its `relative_path` as the web sends it.
+2. Every file goes into one batch with Add → Many documents, each with its `relative_path` as the web sends it.
 3. The worker's own jobs draw and read each item: the PDF's text, Tesseract for a scan, and the proposal thread.
 4. Each card, as `GET /batches/{id}` gives it, is scored against the truth (`@fdv/shared/testdata`, `smart-exit.ts`).
-5. The batch is removed, and the run is repeated without folders.
+5. The batch is removed before the next run.
 
 **Needing manual typing** means that, after accepting what the card offers, one of these is missing or wrong:
 
@@ -37,7 +49,10 @@ A kind with an expiry whose paper states none (a will's review date, a logbook) 
 
 **Wrong Ready** means Ready with the kind, person or expiry wrong.
 
-The whole run took 24 minutes on 8 cores. With folders, uploading took 37 s and drawing and reading 11 minutes. Without folders, uploading took 33 s and reading 11 minutes.
+The run took 46 minutes on 8 cores:
+
+- **First set:** uploading about 40 s a run; drawing and reading 16 minutes with folders, 12 without.
+- **Second set:** uploading about 20 s a run; drawing and reading 8 minutes each.
 
 To run it again, from a copy of the repository without `node_modules`, in a container that reaches the test database:
 
@@ -48,142 +63,159 @@ cd apps/api && DATABASE_ADMIN_URL=postgres://… FDV_SMART_EXIT=1 FDV_SMART_EXIT
   npx vitest run src/smart-exit.test.ts
 ```
 
-It fails while the target is not met. The JSON it writes has every paper's truth beside what its card offered.
+It fails on any wrong Ready, and records how many need typing. The JSON it writes has every paper's truth beside what its card offered.
 
 ## Numbers
 
-| Run             | Set      | Files | Ready | Check | Not recognised | Problem | Needs typing | Wrong Ready |
-| --------------- | -------- | ----: | ----: | ----: | -------------: | ------: | -----------: | ----------: |
-| With folders    | All      |   200 |    96 |    68 |             30 |       6 |           26 |           0 |
-| With folders    | Tune     |   121 |    69 |    39 |              8 |       5 |            9 |           0 |
-| With folders    | Held out |    79 |    27 |    29 |             22 |       1 |           17 |           0 |
-| Without folders | All      |   200 |    96 |    53 |             45 |       6 |           41 |           0 |
-| Without folders | Tune     |   121 |    70 |    38 |              8 |       5 |           12 |           0 |
-| Without folders | Held out |    79 |    26 |    15 |             37 |       1 |           29 |           0 |
+| Corpus            | Run             | Files | Ready | Check | Not recognised | Problem | Needs typing | Wrong Ready |
+| ----------------- | --------------- | ----: | ----: | ----: | -------------: | ------: | -----------: | ----------: |
+| First (tune)      | With folders    |   200 |   110 |    64 |             20 |       6 |            6 |           0 |
+| First (tune)      | Without folders |   200 |   108 |    60 |             26 |       6 |           16 |           0 |
+| Second (held out) | With folders    |   115 |    19 |    54 |             36 |       6 |           53 |           0 |
+| Second (held out) | Without folders |   115 |    22 |    30 |             57 |       6 |           57 |           0 |
 
-- **Text and scans, with folders:** 11 of the 118 text PDFs need typing, and 15 of the 82 scans.
-- **Ready with a lesser detail wrong:** 2, both driving licence numbers that OCR misread. The kind, person and expiry were right.
-- **Expiry not on the paper:** 10 with folders, 7 without.
+**Text and scans, with folders:**
 
-**By kind, with folders** (papers whose kind was offered right / needing no typing / all papers):
+- First: 0 of 118 text PDFs need typing, and 6 of 82 scans.
+- Second: 30 of 69 text PDFs, and 23 of 46 scans.
 
-- 100%: utility bills (35/35/35), passports (9/9/9), birth certificates, employment contracts, tax returns, wills, vehicle registrations, visas, marriage certificates, and papers of no kind (20/20/20).
-- Bank statements: 26/26/30.
-- Medical records: 17/17/18.
-- Insurance: 14/8/14.
-- Warranties: 14/13/14.
-- Tax forms: 9/8/9.
-- Pet records: 7/6/7.
-- Prescriptions: 6/5/6.
-- Diplomas and school reports: 3/3/6.
-- Driving licences: 4/2/4.
-- Loans: 3/0/4.
-- Deeds: 2/1/2.
-- National ID: 0/0/1.
+**By kind, with folders, on the second set** (papers whose kind was offered right / needing no typing / all papers):
 
-## What changed, and what it did
+- Every paper right: credit card statements 12/12/12, passports 4/4/4, tax forms 4/4/4, school reports 3/3/3, papers of no kind 10/10/10.
+- Partly right:
+  - bills 18/9/21;
+  - medical 6/6/11;
+  - bank statements 4/4/13;
+  - insurance 6/0/9;
+  - loans 2/0/2.
+- None right: warranties 0/0/5, prescriptions 0/0/6, pet records 0/0/3, a music certificate 0/0/2.
 
-Measured on the same corpus, with folders. The numbers in brackets are without folders.
+**Ready with a lesser detail wrong** (first set): 4, namely two driving licence numbers that OCR misread, and two travel policies whose issuer is read as the product's name.
 
-|                      |     All |    Tune | Held out |
-| -------------------- | ------: | ------: | -------: |
-| Before (0.8.0-dev.6) | 51 (74) | 27 (35) |  24 (39) |
-| After                | 26 (41) |  9 (12) |  17 (29) |
+## What changed
 
-The changes:
+**First round** (the first commit), with folders on the first set: 51 needing typing at dev.6 became 26.
 
-- **A name OCR left a hyphen on** ("Mr Ahmed Khan-") is still the whole name.
-- **A sentence above a name is not its label.** "The policyholder." over a motor certificate's named drivers no longer makes two people as sure as each other. "Registered keeper" above a name is a label.
-- **A bill paid by Direct Debit** is due on the day it is collected ("by Direct Debit on or just after …").
-- **New cues for kinds:**
-  - a GP's letter is a medical record: its practice, an NHS or hospital number, and what it is about;
-  - "Official copy of register of title" is a deed;
-  - "General Certificate of Secondary Education" is a diploma.
-- **A safety rule:** a label above a row of more dates than its line has labels claims none of them. With "Valid from" misread, "Valid until" had claimed the issue date, which in one OCR trial made a wrong Ready.
-- **A scanned page Tesseract reads fewer than three words of** is enlarged, median-filtered and read again. The reading with more words is kept. This made a grainy vet's certificate readable, but its dates still came out garbled, so it changed no count of papers needing typing.
+- A name with a stray hyphen from OCR is still read.
+- A sentence above a name ("The policyholder.") is not its label.
+- Direct Debit collection dates are read as bills' due dates.
+- GP letters, registers of title and GCSE certificates are recognised.
+- A label above a row of more dates than labels claims none of them.
+- A near-empty scanned page is cleaned and read again.
 
-Tried and not kept: cleaning every scan before OCR, which read fewer papers right and once gave a wrong Ready, and Tesseract's `--psm 4`, which was better on the tune set (7) but worse held out (18).
+**Second round** (the owner's decisions of 16 October), 26 → 6 on the first set (41 → 16 without):
 
-## What still needs typing (26, with folders)
+- **Two new kinds** (migration 0072):
+  - **Credit card statement:** Financial, kept for adults; its expiry is "Payment due", reminding 7 days and a day before, as a bill's does.
+  - **School report:** Education, with no expiry.
 
-- **10: kinds the rules don't recognise on these layouts (held out):**
-  - credit-card statements (3);
-  - school reports (3), as the vault has no school-report kind;
-  - a junior ISA statement;
-  - a dentist's recall letter;
-  - a hire-purchase agreement;
-  - an NI-number letter.
-- **6: OCR on scans:**
-  - two-column forms that Tesseract reads column by column, so a label lands far from its value (a P60, two home insurance schedules);
-  - a garbled date or label (a vet's certificate read "14703/2025"; a prescription's "Do not use after" read "Ou not use atter");
-  - a grainy typewriter receipt read as blank.
-- **4: papers of two people** (a joint mortgage, a register of title). The rules propose nobody for these by design.
-- **4: whose it is:**
-  - a policy naming "Mrs O Khan" by initial (2);
-  - a travel policy listing four travellers, whose "cover runs from … until …" dates are not read either (2).
-- **2: an expiry not read** on a downloaded licence summary ("Licence valid to", "Photocard expiry date" in a two-column table).
+  They have folder words of their own ("Credit cards", "Bank/Credit card", "School reports"). A statement with a card's marks and a bank's, or neither, is offered below sure (Check). A bill is never offered for a paper with a credit limit.
+
+- **Joint papers:** the first named of two named together is proposed, at 0.78 (Check). Until now nobody was.
+- **Initials:** "Mrs O Khan" or "O. Khan" proposes the one person of the family it can only mean, at 0.78 (Check). Where two could match, nobody is proposed.
+- **Everyday cues:**
+  - ISAs, junior ISAs and AER are bank statements;
+  - dental recalls are medical records;
+  - hire purchase and "amount of credit" are loans;
+  - a "your National Insurance number" letter is a national ID, issued by HMRC;
+  - "HM Revenue & Customs" spelled out is the tax office;
+  - the DVLA's full name means a driving licence;
+  - travel, home, car and pet insurance products are insurance;
+  - "lead traveller" and "pupil" are labels for whose a paper is;
+  - a "registered contact" is not.
+- **One cheap attempt at two-column OCR:** a scanned page read as a run of labels and then, below, a run of values is read again row by row (Tesseract `--psm 6`). The row reading is kept where its labels and values are no longer apart. On the first set it fixed two scans (a card statement and a home schedule); on a third, a home schedule, it found the expiry but lost whose it is.
+
+None of these makes anything Ready on its own: each joint or initials proposal, and each card-or-bank doubt, is offered for a click.
+
+## What still needs typing
+
+**First set, 6 with folders:** all on scans whose OCR is wrong.
+
+- A P60 read so that its name is far from its label.
+- "Mr Abmed Khan".
+- A vet's certificate read "14703/2025" and "Qlivia".
+- A prescription's "Ou not use atter".
+- A home schedule's holder lost when read by rows.
+- A grainy typewriter receipt read as blank.
+
+**Second set, 53 with folders,** almost all layouts and wording the rules have not seen.
+
+**36 with no kind offered, or the wrong one.** A wrong one is mostly the folder's, for a paper filed in the wrong folder, offered unsure:
+
+- a building society's quarterly "account summary" (9);
+- repeat prescription slips (6);
+- a health centre's letters (5);
+- order confirmations with a guarantee (5);
+- a breakdown membership card (3);
+- a vet's booster reminder (3);
+- a music exam certificate (2);
+- a phone invoice (2);
+- a water bill scan (1).
+
+**16 with the kind right but the expiry not read:**
+
+- a phone invoice's "Your Direct Debit payment date is …" (7);
+- a motor schedule's "from 00:01 hours on … to midnight on …" (4);
+- a renewal notice's "ends on …" in a sentence (2);
+- a loan's "Final repayment date" (2);
+- a water bill's "Due date" set apart from its date (1).
+
+**1 whose person is lost** on a scanned gas statement.
+
+## Anything to decide
+
+- **The target is met on what the rules were adjusted on, and far from met on new layouts.** Adjusting the rules on the second set would make it a tune set too. The next honest step is a third held-out set written by someone else, for example from real (redacted) family papers.
+- **Kinds that require an expiry the paper never states** (wills, logbooks, permanent contracts): 10 papers in the first set, counted apart.
+- **School reports are now their own kind.** Diplomas and certificates of achievement stay diplomas.
 
 ```json
 {
   "measured": "2026-10-16",
-  "seed": 1,
-  "files": 200,
+  "files": 315,
   "target_met": false,
-  "with_folders": {
-    "all": {
+  "first": {
+    "seed": 1,
+    "set": "tune",
+    "target_met": true,
+    "with_folders": {
       "files": 200,
-      "ready": 96,
-      "check": 68,
-      "unrecognised": 30,
+      "ready": 110,
+      "check": 64,
+      "unrecognised": 20,
       "problem": 6,
-      "manual": 26,
+      "manual": 6,
       "wrong_ready": 0
     },
-    "tune": {
-      "files": 121,
-      "ready": 69,
-      "check": 39,
-      "unrecognised": 8,
-      "problem": 5,
-      "manual": 9,
-      "wrong_ready": 0
-    },
-    "held_out": {
-      "files": 79,
-      "ready": 27,
-      "check": 29,
-      "unrecognised": 22,
-      "problem": 1,
-      "manual": 17,
+    "without_folders": {
+      "files": 200,
+      "ready": 108,
+      "check": 60,
+      "unrecognised": 26,
+      "problem": 6,
+      "manual": 16,
       "wrong_ready": 0
     }
   },
-  "without_folders": {
-    "all": {
-      "files": 200,
-      "ready": 96,
-      "check": 53,
-      "unrecognised": 45,
+  "second": {
+    "seed": 2,
+    "set": "held-out",
+    "target_met": false,
+    "with_folders": {
+      "files": 115,
+      "ready": 19,
+      "check": 54,
+      "unrecognised": 36,
       "problem": 6,
-      "manual": 41,
+      "manual": 53,
       "wrong_ready": 0
     },
-    "tune": {
-      "files": 121,
-      "ready": 70,
-      "check": 38,
-      "unrecognised": 8,
-      "problem": 5,
-      "manual": 12,
-      "wrong_ready": 0
-    },
-    "held_out": {
-      "files": 79,
-      "ready": 26,
-      "check": 15,
-      "unrecognised": 37,
-      "problem": 1,
-      "manual": 29,
+    "without_folders": {
+      "files": 115,
+      "ready": 22,
+      "check": 30,
+      "unrecognised": 57,
+      "problem": 6,
+      "manual": 57,
       "wrong_ready": 0
     }
   }

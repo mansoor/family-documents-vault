@@ -58,6 +58,8 @@ export const FIXTURE_KINDS: ProposalKind[] = (
     ['utility_bill', 'Utility / bill', 'expires_on', 'Provider'],
     ['warranty', 'Warranty / receipt', 'expires_on', 'Vendor'],
     ['pet_record', 'Pet records', 'expires_on', 'Vet'],
+    ['credit_card_statement', 'Credit card statement', 'expires_on', 'Card issuer'],
+    ['school_report', 'School report', null, 'School'],
     ['other', 'Something else', null, null],
   ] as const
 ).map(([key, label, driver, issuer]) => ({
@@ -275,7 +277,7 @@ export const TUNED: ProposalFixture[] = [
     ),
     truth: {
       type_key: 'insurance_policy',
-      owner: null,
+      owner: 'm-ahmed', // joint: the first named (0.8.0, S5)
       issued: '2026-09-01',
       expires: '2027-08-31',
       identifier: 'AHH77120345',
@@ -475,7 +477,7 @@ export const TUNED: ProposalFixture[] = [
     ),
     truth: {
       type_key: 'property_deed',
-      owner: null,
+      owner: 'm-sara', // joint: the first named (0.8.0, S5)
       issued: '2026-09-01',
       expires: '2027-08-31',
       identifier: null,
@@ -1120,7 +1122,7 @@ export const HELD_OUT: ProposalFixture[] = [
     ].join('\n'),
     truth: {
       type_key: 'property_deed',
-      owner: null,
+      owner: 'm-sara', // joint: the first named (0.8.0, S5)
       issued: '2026-09-01',
       expires: '2027-08-31',
       identifier: null,

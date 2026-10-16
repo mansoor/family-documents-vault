@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   PROPOSAL_CUES,
   PROPOSAL_FIELDS,
+  PERSON_CHECK_CONFIDENCE,
   PROPOSAL_THRESHOLDS,
   proposeDetails,
   type CurrentDetails,
@@ -155,10 +156,13 @@ describe('proposeDetails: no cue, no answer', () => {
     expect(q.expires?.cue).not.toBe('machine_lines');
   });
 
-  it('two of the family named together is a document of theirs together: nobody is proposed', () => {
+  it('two of the family named together is a document of theirs together: the first named, unsure (S5)', () => {
+    // Nobody until 0.8.0; the first named since the owner's decision (S5),
+    // never sure: Check, for the family to say.
+    const unsure = { cue: 'name_on_page', confidence: PERSON_CHECK_CONFIDENCE };
     const p = proposeFor(fixture('uk-home-schedule-joint'), 'dmy');
     expect(p.type_key?.value).toBe('insurance_policy');
-    expect(p.owner_member_id).toBeUndefined();
+    expect(p.owner_member_id).toEqual({ value: 'm-ahmed', ...unsure });
     // Named alone, as the holder, it is theirs.
     const alone = fixture('uk-home-schedule-joint').text.replace(
       'Mr Ahmed Khan and Mrs Sara Khan',
@@ -171,9 +175,18 @@ describe('proposeDetails: no cue, no answer', () => {
     // Named together where only the first is labelled: still theirs together.
     const tenancy = proposeFor(fixture('uk-tenancy-joint'), 'dmy');
     expect(tenancy.type_key?.value).toBe('property_deed');
-    expect(tenancy.owner_member_id).toBeUndefined();
+    expect(tenancy.owner_member_id).toEqual({ value: 'm-sara', ...unsure });
     expect(
       proposeDetails('Tenant: Sara Khan & Ahmed Khan\nRent: £1,150', ctx()).owner_member_id,
+    ).toEqual({ value: 'm-sara', ...unsure });
+    // The first named, whichever is: Ahmed first, Ahmed.
+    expect(
+      proposeDetails('Joint account holders: Mr Ahmed Khan, Mrs Sara Khan', ctx()).owner_member_id,
+    ).toEqual({ value: 'm-ahmed', ...unsure });
+    // Two named apart, as surely: nobody, as before.
+    expect(
+      proposeDetails('Mrs Sara Khan\n12 Acacia Avenue\nMr Ahmed Khan\n14 Elm Street', ctx())
+        .owner_member_id,
     ).toBeUndefined();
   });
 
@@ -399,15 +412,25 @@ describe('proposeDetails: whose it is, and nobody else (the 5.37 review)', () =>
         CARTERS,
       ],
       ['Bill Payment Confirmation\n742 Maple Ave\nColumbus OH 43215', CARTERS],
-      ['May 2025 Statement\nMrs S Thompson\n12 Elm Road\nLeeds LS6 2AB', THOMPSONS],
-      [
-        'Brown & Co\nMr D Thompson\n12 Elm Road\nLeeds LS6 2AB\nRe: Will and Lasting Power of Attorney',
-        THOMPSONS,
-      ],
-      ['Home insurance\nName of insured: Mr D Thompson\nWill-writing cover included', THOMPSONS],
       ['Dear Will,\nThanks for the lovely evening.', THOMPSONS],
     ] as const) {
       expect(proposeDetails(text, family).owner_member_id, text).toBeUndefined();
+    }
+    // Neither May nor Will is matched as a word: the initials beside them
+    // say, unsurely, the one of the family they can only mean (S5).
+    for (const [text, who] of [
+      ['May 2025 Statement\nMrs S Thompson\n12 Elm Road\nLeeds LS6 2AB', 'p-sarah'],
+      [
+        'Brown & Co\nMr D Thompson\n12 Elm Road\nLeeds LS6 2AB\nRe: Will and Lasting Power of Attorney',
+        'p-david',
+      ],
+      ['Home insurance\nName of insured: Mr D Thompson\nWill-writing cover included', 'p-david'],
+    ] as const) {
+      expect(proposeDetails(text, THOMPSONS).owner_member_id, text).toEqual({
+        value: who,
+        confidence: PERSON_CHECK_CONFIDENCE,
+        cue: 'name_on_page',
+      });
     }
     // With the surname beside it, Will is Will.
     expect(
@@ -427,13 +450,27 @@ describe('proposeDetails: whose it is, and nobody else (the 5.37 review)', () =>
       .replace('SARA AMINA', 'SARAH');
     expect(patel).toContain('P<GBRPATEL<<SARAH<');
     expect(proposeDetails(patel, THOMPSONS).owner_member_id).toBeUndefined();
-    for (const text of [
-      'Hyde Park Surgery\nRe: Mr D Thompson\nDear Mr Thompson,\nYour results are normal.\nYours sincerely,\nDr Sarah Jones',
-      'Clinic letter\nPatient: Mr D Thompson\nConsultant: Dr Will Hughes',
-      'Brown & Co Solicitors\nMrs S Thompson\n12 Elm Road\nYour matter is handled by Mr David Brown, partner.',
-      'Dear Sarah,\nThank you for your letter.',
-    ]) {
-      expect(proposeDetails(text, THOMPSONS).owner_member_id, text).toBeUndefined();
+    expect(
+      proposeDetails('Dear Sarah,\nThank you for your letter.', THOMPSONS).owner_member_id,
+    ).toBeUndefined();
+    // Sarah Jones, Will Hughes and David Brown are nobody of the family; the
+    // initials beside the family's surname are, unsurely (S5).
+    for (const [text, who] of [
+      [
+        'Hyde Park Surgery\nRe: Mr D Thompson\nDear Mr Thompson,\nYour results are normal.\nYours sincerely,\nDr Sarah Jones',
+        'p-david',
+      ],
+      ['Clinic letter\nPatient: Mr D Thompson\nConsultant: Dr Will Hughes', 'p-david'],
+      [
+        'Brown & Co Solicitors\nMrs S Thompson\n12 Elm Road\nYour matter is handled by Mr David Brown, partner.',
+        'p-sarah',
+      ],
+    ] as const) {
+      expect(proposeDetails(text, THOMPSONS).owner_member_id, text).toEqual({
+        value: who,
+        confidence: PERSON_CHECK_CONFIDENCE,
+        cue: 'name_on_page',
+      });
     }
     // A passport with the family's surname in its lines is theirs.
     const own = fixture('uk-passport-sara')
@@ -451,7 +488,12 @@ describe('proposeDetails: whose it is, and nobody else (the 5.37 review)', () =>
       'Your statement',
       '8 Aug Transfer to Sarah Thompson Ref: Holiday 200.00 954.80',
     );
-    expect(proposeDetails(uk, THOMPSONS).owner_member_id).toBeUndefined();
+    // Sarah is a payee; the statement is Mr D M Thompson's: David, unsurely (S5).
+    expect(proposeDetails(uk, THOMPSONS).owner_member_id).toEqual({
+      value: 'p-david',
+      confidence: PERSON_CHECK_CONFIDENCE,
+      cue: 'name_on_page',
+    });
     const us = lines(
       'Chase',
       'ACCOUNT HOLDER: J CARTER',
@@ -464,7 +506,7 @@ describe('proposeDetails: whose it is, and nobody else (the 5.37 review)', () =>
       'Mr D M Thompson',
       '08 Aug 2025      SARAH THOMPSON      FASTER PAYMENT      200.00',
     );
-    expect(proposeDetails(columns, THOMPSONS).owner_member_id).toBeUndefined();
+    expect(proposeDetails(columns, THOMPSONS).owner_member_id?.value).toBe('p-david');
   });
 
   it("a first name only takes the household's surname, never another member's (N537P-03)", () => {
@@ -530,8 +572,13 @@ describe('proposeDetails: whose it is, and nobody else (the 5.37 review)', () =>
       (_, i) => `${i + 1}. We will pay for loss or damage, and you will tell us of any change.`,
     );
     const schedule = 'Policy schedule\nPolicyholders: Mr Will Thompson and Mrs Sarah Thompson';
-    // 82 "will"s in the wording are not 82 Wills: the two of them, so nobody…
-    expect(proposeDetails(lines(...wording, schedule), THOMPSONS).owner_member_id).toBeUndefined();
+    // 82 "will"s in the wording are not 82 Wills: the two of them together,
+    // so the first named, unsurely (S5)…
+    expect(proposeDetails(lines(...wording, schedule), THOMPSONS).owner_member_id).toEqual({
+      value: 'p-will',
+      confidence: PERSON_CHECK_CONFIDENCE,
+      cue: 'name_on_page',
+    });
     // …and Will alone, after them, is still found.
     const his = 'Policy schedule\nPolicyholder: Mr Will Thompson\nNamed driver: Mrs Sarah Thompson';
     expect(proposeDetails(lines(...wording, his), THOMPSONS).owner_member_id?.value).toBe('p-will');
@@ -753,7 +800,8 @@ describe('proposeDetails: how it does on the fixtures', () => {
     // (State Farm, PG&E, the GP practice, California's DMV); and a school's
     // name offered as the issuer of a letter that is none of the kinds.
     expect(s.type_key).toMatchObject({ said: 12, right: 12, wrong: 0, quiet: 2 });
-    expect(s.owner).toMatchObject({ right: 10, wrong: 0 });
+    // 11 since the first named of a joint paper is proposed (0.8.0, S5).
+    expect(s.owner).toMatchObject({ right: 11, wrong: 0 });
     expect(s.issued).toMatchObject({ right: 11, wrong: 0 });
     expect(s.expires).toMatchObject({ right: 9, wrong: 0 });
     expect(s.identifier).toMatchObject({ right: 10, wrong: 0 });
