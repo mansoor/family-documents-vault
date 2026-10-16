@@ -552,6 +552,44 @@ describe.skipIf(!testAdminUrl())('the D1 review (0.8.0)', () => {
 
   // ------------------------------------------------------------------ F8
 
+  it('a computer’s relative_path is its item’s folder, for its uploader alone, and is kept sealed (with S2)', async () => {
+    const d = await pair(ahmed, 'Foldered');
+    const form = new FormData();
+    form.append('relative_path', 'Passports/Ahmed Seikh/passport.pdf');
+    form.append('file', PDF('FOLDERED'), {
+      filename: 'passport.pdf',
+      contentType: 'application/pdf',
+    });
+    const sent = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/device-uploads',
+      headers: { ...keyOf(d), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+      payload: form.getBuffer(),
+      ...peer(),
+    });
+    expect(sent.statusCode, sent.body).toBe(201);
+    const itemId = sent.json<{ item_id: string }>().item_id;
+    const batch = (
+      await admin.query<{ batch_id: string }>('select batch_id from incoming_file where id = $1', [
+        itemId,
+      ])
+    ).rows[0]?.batch_id as string;
+    // Folders only: a last segment that is the file's own name is dropped.
+    const detail = (await send(ahmed, 'GET', `/api/v1/batches/${batch}`)).json<{
+      items: Array<{ id: string; folder?: string | null }>;
+    }>();
+    expect(detail.items.find((i) => i.id === itemId)?.folder).toBe('Passports/Ahmed Seikh');
+    // Nobody else is given it: not the batch, not an owner.
+    expect((await send(owner, 'GET', `/api/v1/batches/${batch}`)).statusCode).toBe(404);
+    // And the database keeps it sealed, never in the clear.
+    const row = await admin.query<{ row: string }>(
+      'select to_jsonb(f)::text as row from incoming_file f where f.id = $1',
+      [itemId],
+    );
+    expect(row.rows[0]?.row).not.toContain('Passports');
+    expect(row.rows[0]?.row).not.toContain('Ahmed Seikh');
+  });
+
   it('F8: last used is when it last sent something, never when it asked', async () => {
     const d = await pair(ahmed, 'Last sent');
     expect((await me(d)).statusCode).toBe(200);
