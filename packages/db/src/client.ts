@@ -747,6 +747,51 @@ export interface Schema {
      * calendar, one a person a day. Set by the vault alone.
      */
     mail_day: ColumnType<string | null, string | null | undefined, string | null>;
+    /** A computer's batch for a day (0070, D1): which computer, and which day; fixed once made. */
+    device_id: Generated<string | null>;
+    /** A day: kept as the database's date, read as a string (YYYY-MM-DD). */
+    device_day: ColumnType<string | null, string | null | undefined, never>;
+  };
+
+  /**
+   * A computer that sends scans (0070, 0.8.0 D1): its person's, its key
+   * kept as its SHA-256, revoked once and never removed.
+   */
+  upload_device: {
+    id: Generated<string>;
+    household_id: string;
+    account_id: string;
+    member_id: string;
+    name: string;
+    platform: 'windows' | 'macos' | 'linux' | 'other';
+    key_hash: Buffer;
+    created_at: GeneratedTimestamp;
+    last_used_at: Timestamp | null;
+    revoked_at: Timestamp | null;
+    revoked_by: string | null;
+    revoked_reason:
+      | 'member'
+      | 'owner'
+      | 'sign_in_removed'
+      | 'cannot_add'
+      | 'signed_out'
+      | 'owner_stopped'
+      | 'password_changed'
+      | 'restored'
+      | null;
+  };
+
+  /** A one-time code for pairing a computer (0070, D1): ten minutes, five tries, one a person. */
+  device_pairing: {
+    id: Generated<string>;
+    household_id: string;
+    account_id: string;
+    member_id: string;
+    handle_hash: Buffer;
+    code_hash: Buffer;
+    created_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    attempts: Generated<number>;
   };
 
   /** A person's rule, learned from their corrections (0065, Phase 6 I4): theirs alone. */

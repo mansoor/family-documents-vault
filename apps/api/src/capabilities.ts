@@ -146,6 +146,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       watch_folder: config.watchFolder === true,
       // 0.8.0 (S2): an item's folder, kept sealed, and what its names suggest.
       folder_suggestions: true,
+      // D1 (0.8.0): a computer paired with a one-time code sends scans with
+      // an upload-only key, into its person's own uploads.
+      device_uploads: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

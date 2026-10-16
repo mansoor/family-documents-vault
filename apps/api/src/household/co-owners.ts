@@ -1,3 +1,4 @@
+import { logDevicesEnded } from '../devices/service.js';
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   can,
@@ -184,6 +185,9 @@ export class CoOwnerService {
         ip: meta.ip,
       });
       await logEffects(trx, p, target.member_id, effects, meta);
+      // And their computers, which the database stopped as the role changed
+      // (0070): a line each (0.8.0, D1).
+      await logDevicesEnded(trx, p, target, meta);
 
       if (to === 'owner') {
         // Promotion is immediate and everybody hears about it, because a
@@ -253,6 +257,7 @@ export class CoOwnerService {
         ip: meta.ip,
       });
       await logEffects(trx, p, p.memberId, effects, meta);
+      await logDevicesEnded(trx, p, { account_id: p.accountId, member_id: p.memberId }, meta);
       return {
         applied: true,
         role: to,
@@ -338,6 +343,9 @@ export class CoOwnerService {
         detail: { role: target.role, ...(suspended ? { kept: target.suspend_reason } : {}) },
         ip: meta.ip,
       });
+      // Their computers' keys, revoked by the database as the sign-in went
+      // (0070): a line each (0.8.0, D1).
+      await logDevicesEnded(trx, p, { account_id: target.account_id, member_id: memberId }, meta);
     });
     await this.filesMove(p.householdId);
     if (removedPhones.length > 0) {

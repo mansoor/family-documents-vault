@@ -4539,6 +4539,115 @@ last_at } | null`, the caller's own mail left in the mailbox. `GET
     `SeenTag`, `ItemTagSuggestion`. `@fdv/client`: `addBatchItem(…, {
 relativePath })`, `batchItemUpload(file, relativePath)`; the client fake
     keeps the folder and suggests from it.
+  - A computer that sends scans (D1, `features.device_uploads`). **Added:**
+    `POST /api/v1/device-pairings` (bearer; owner, adult or teen — a viewer
+    or a guest is `403 forbidden`; the step-up first, `403
+step_up_required`, action `change_sign_in`) answers `201 { code,
+expires_at, vault_address, download_url }`: `code` is two halves of four
+    from `ACDEFGHJKMNPQRTWXY34679` (`KX7P-3M9Q`), shown once, for 10
+    minutes; one live code a person, a new one ending the last.
+    `vault_address` is `FDV_BASE_URL`; `download_url` is
+    `FDV_DESKTOP_DOWNLOAD_URL` or `null`. **Added:** `POST
+/api/v1/devices/pair` (no sign-in; 10 a minute for each address, `429
+rate_limited` after) takes `{ code, device_name, platform }` — the code
+    as typed (case, the dash and spaces aside), a name of 1 to 60
+    characters once trimmed, `platform` one of `windows`, `macos`, `linux`,
+    `other` — and answers `201 { device_id, key, member_name, vault_name }`.
+    The key (43 base64url characters) is answered once. A code that is
+    wrong, run out, used or ended is `401 pairing_code_invalid`, whichever:
+    a wrong try at a live code counts on the code its first half names, and
+    five end it. Its person no longer able to add, or locked, or paused
+    after a restore is `403 cannot_add`, `403 member_locked` or `403
+member_paused`, and the code is spent. Its person is emailed (`A
+computer was added to your sign-in`, never to a lock screen) and the
+    activity log says so (`computer.paired`). **Added:** the key, sent as
+    `Authorization: Device <device_id>.<key>`, is taken by two routes
+    alone. `GET /api/v1/devices/me` answers `{ device_id, device_name,
+member_name, active, paused, limits: { max_upload_bytes,
+batch_max_files, accepted_types } }`; `paused` is `cannot_add`,
+    `locked`, `paused_after_restore` or `null`. `POST
+/api/v1/device-uploads` takes multipart: an optional `relative_path`
+    field (1024 characters at most; not kept yet), then one file as `file`;
+    an `Idempotency-Key` (a UUID) is required (`422 validation_failed`,
+    `detail: "idempotency-key"`). The file goes into its person's batch for
+    the day on the household's calendar, "From <name>, <date>" (made by the
+    first file that day, no defaults), as `POST /batches/{id}/items` puts it
+    — sniffed, sealed under the person's member key, read and proposed for
+    — and the answer is `201 { item_id, status }` (`waiting` or
+    `accepted`) and nothing more; a key sent before, on any day, answers
+    the item it made with `idempotent-replayed: true`. Refusals: `401
+unauthenticated` (a key the vault does not know), `401
+device_revoked`, `403 cannot_add`, `403 member_locked`, `403
+member_paused`, `422 batch_full` (200), `413 too_large`, `415
+unsupported_type`, `409 upload_in_progress`, `409 already_decided`.
+    **Changed:** every other route, a public one and one that is not there
+    included, answers a request carrying `Authorization: Device …` `401
+device_key_not_accepted` before anything else; and the two device
+    routes refuse a bearer (`401 unauthenticated`). **Added:** `GET
+/api/v1/paired-devices` (owner, adult or teen) answers `{ items: [{ id,
+name, platform, member_id, member_name, mine, added_at, last_used_at
+}] }`, the live ones, newest first: the caller's own, and to an owner
+    everybody's — `last_used_at` is `null` for anybody else's. `DELETE
+/api/v1/paired-devices/{id}` revokes one for good, `204`: the caller's
+    own, or an owner anybody's; anybody else's is `404`. A revoked key is
+    `401 device_revoked` on both device routes. A key is revoked by the
+    vault itself as its person's sign-in is taken away or their role can no
+    longer add (a viewer), and a restore revokes every key and forgets every
+    code (`devicesEnded` in its report). New activity lines, for the
+    owners, the person and whoever did it: `computer.paired` and
+    `computer.revoked` (`detail.reason`: `member`, `owner`,
+    `sign_in_removed`, `cannot_add`). `@fdv/shared`: `DevicePairingCode`,
+    `DevicePairInput`, `DevicePaired`, `DeviceMe`, `DevicePausedReason`,
+    `DeviceUploaded`, `PairedDevice`, `DEVICE_PLATFORMS`,
+    `DEVICE_REFUSALS`, `PAIRING_ALPHABET`, `normalisePairingCode`,
+    `showPairingCode`, `deviceName`, `deviceBatchName`. `@fdv/client`:
+    `createDevicePairing`, `pairDevice`, `deviceMe`, `deviceUpload` (a
+    file as bytes, a Blob, or a stream read as it is sent — `UploadBody`
+    kind `stream`, sent half-duplex), `listDevices`, `revokeDevice`,
+    `deviceHeaders`; the fake answers every one, and refuses a key
+    elsewhere.
+  - The D1 review's findings. **Added:** `DELETE /api/v1/device-pairings`
+    (owner, adult or teen; `204`) ends the caller's own code if one is
+    waiting; the web calls it as the pairing dialog closes. `@fdv/client`:
+    `endDevicePairing`. **Added:** a computer's day has room for
+    `FDV_DEVICE_DAILY_BYTES` (2 GB unless set): past it, `POST
+/api/v1/device-uploads` is `422 device_day_full` (refused before a byte
+    is kept once the day is full, and as a file arrives that would pass
+    it); `GET /devices/me`'s `limits` carries `daily_bytes`, and
+    `day_resets_at` — the next midnight on the household's clock (ISO), when
+    the day's batch and its room in bytes start again. `@fdv/shared`:
+    `nextLocalMidnight`. **Changed:** `POST /api/v1/devices/pair` takes
+    the code with three characters more (`KX7P-3M9Q-R4T`), as the web's
+    pairing dialog now shows it: the check of the address the dialog shows
+    (SHA-256 of the address normalised — scheme and host in lower case, an
+    IDN host as punycode, no default port, no trailing slash, no query or
+    fragment — its first three bytes each `% 23` into the pairing
+    alphabet). The vault lets the three go and never checks them: the
+    uploader app works them out from the address it was given and refuses
+    to pair, before it sends anything, when they differ. The eight alone
+    are taken as ever. `@fdv/shared`: `pairingAddressCheck`,
+    `normalisePairingAddress`, `showPairingCodeFor`, with published test
+    vectors (`pairing-address.test.ts`). **Changed:**
+    signing somebody out everywhere (`DELETE /members/{id}/sessions`), an
+    owner's reset with `stop_now`, and a password changed (`POST
+/auth/password/change`) or reset (`POST /password-resets/complete`)
+    revoke every key of that person's and end their code; `computer.revoked`
+    lines say `signed_out` (signed out everywhere), `owner_stopped` (an
+    owner's reset with `stop_now`) or `password_changed`, and the person's email
+    says the computers must be paired again. **Changed:** a key revoked, or
+    a sign-in taken away, while a file arrives lands nothing (`401
+device_revoked`, `403 forbidden`). A file whose sender went away part
+    way, or whose part ended early, keeps nothing — no row, no object —
+    on this route and on `POST /batches/{id}/items`; a stream already ended
+    is `400 upload_incomplete`. A second `relative_path` is `422
+validation_failed` at once. **Changed:** `last_used_at` is when a
+    computer last sent a file, never when it asked `GET /devices/me`. A
+    day's batch whose first file was refused is not left empty. The pairing
+    limit counts an IPv6 /64 as one address, and a first half that names
+    no code is answered after the same work as one that does. The
+    pairing email names the computer's platform and the time, on the
+    household's clock. `@fdv/client`: multipart boundaries come from
+    `crypto.getRandomValues` (`newBoundary`).
 
 ## Deprecations in effect
 

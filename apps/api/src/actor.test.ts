@@ -30,6 +30,17 @@ const ALLOWED = [
   // Accepting an invitation. The person is not anybody yet, and the check
   // that the member has never signed in reads the household's documents.
   'household/invitations.ts InvitationService.accept',
+  // A computer that sends scans (0.8.0, D1): a pairing code traded for a
+  // key, before anybody is known — the code found by its first half's HMAC
+  // (device_pairing_find), its tries counted, its person read and held, the
+  // key made; and a key, found by its id and hash (upload_device_find), read
+  // for its person and their role, and its last use noted. Everything the
+  // key then does, it does as its person (BatchService), never as the vault.
+  'devices/service.ts DeviceService.pair',
+  // And a first half that names no code does the same work, in a household
+  // that is nobody's, so that it takes as long (the D1 review, F4).
+  'devices/service.ts DeviceService.pair',
+  'devices/service.ts DeviceService.authenticate',
 ];
 
 const SRC = fileURLToPath(new URL('.', import.meta.url));

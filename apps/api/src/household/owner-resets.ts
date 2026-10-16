@@ -1,3 +1,4 @@
+import { COMPUTERS_STOPPED, stopDevicesOf } from '../devices/service.js';
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   RESET_LINK_MINUTES,
@@ -239,6 +240,7 @@ export class OwnerResetService {
 
       // 4. Their password stops now, and every session of theirs ends (A48).
       let sessions = 0;
+      let computers = 0;
       if (stopNow) {
         const cleared = await trx
           .updateTable('account')
@@ -255,6 +257,14 @@ export class OwnerResetService {
           .executeTakeFirst();
         sessions = Number(ended.numUpdatedRows);
         phones = await endDevices(trx, { accountId: target.account_id });
+        // And every computer of theirs that sends scans (0.8.0, D1, F2).
+        computers = await stopDevicesOf(
+          trx,
+          { householdId: p.householdId, actorAccountId: p.accountId },
+          target.account_id,
+          'owner_stopped',
+          meta,
+        );
       }
 
       // 5. The activity log, last: the way it went, never a link.
@@ -277,7 +287,7 @@ export class OwnerResetService {
         .executeTakeFirst();
       const by = me?.display_name ?? 'An owner';
       const stopped = stopNow
-        ? ' Your old password has stopped working, and every device you were signed in on has been signed out.'
+        ? ` Your old password has stopped working, and every device you were signed in on has been signed out.${computers > 0 ? ` ${COMPUTERS_STOPPED}` : ''}`
         : '';
       if (path === 'mail' && token) {
         // The link, to their own address, by the operator's mail server

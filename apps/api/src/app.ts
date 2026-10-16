@@ -53,6 +53,8 @@ import { registerBatches, registerIncoming, registerUploads } from './uploads/ro
 import { DROP_COOKIE_PATH, type UploadRequestService } from './uploads/requests.js';
 import type { IncomingService } from './uploads/incoming.js';
 import type { BatchService } from './uploads/batches.js';
+import { DEVICE_KEY_ROUTES, presentsDeviceKey, registerDevices } from './devices/routes.js';
+import type { DeviceService } from './devices/service.js';
 import { registerVaults } from './vaults/routes.js';
 import { registerWatchFolder } from './watch-folder/routes.js';
 import type { WatchFolderService } from './watch-folder/service.js';
@@ -114,6 +116,8 @@ export interface AppDeps {
   incoming: IncomingService;
   /** Many documents at once (Phase 6, I1): batches, and their items. */
   batches: BatchService;
+  /** A computer that sends scans (0.8.0, D1): pairing, and its upload-only key. */
+  devices: DeviceService;
   audit: AuditService;
   passwords: PasswordService;
   /** Essentials a phone may keep (0.4.13). */
@@ -209,6 +213,19 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     if (req.url.startsWith(`${SHARE_COOKIE_PATH}/`) || req.url.startsWith(`${DROP_COOKIE_PATH}/`)) {
       for (const [name, value] of Object.entries(PUBLIC_API_HEADERS)) reply.header(name, value);
     }
+  });
+
+  // A computer's key (0.8.0, D1) is taken by its two routes alone: every
+  // other — a read, a list, a download, a public route, one that is not
+  // there — answers it 401 before anything else is looked at.
+  app.addHook('onRequest', async (req) => {
+    if (!presentsDeviceKey(req)) return;
+    if (DEVICE_KEY_ROUTES.has(`${req.method} ${req.routeOptions.url ?? ''}`)) return;
+    throw new ApiError(
+      401,
+      'device_key_not_accepted',
+      "A computer's key can only send scans. Sign in to do anything else.",
+    );
   });
 
   // The session a share link's Open gives (5.16). Unsigned: its value is 32
@@ -464,6 +481,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerBatches(app, deps.batches);
   if (deps.watchFolder) registerWatchFolder(app, deps.watchFolder);
   if (deps.mailIn) registerMailIn(app, deps.mailIn);
+  registerDevices(app, deps.devices, deps.stepUp, config.FDV_MAX_UPLOAD_BYTES);
 
   return app;
 }

@@ -220,6 +220,18 @@ begin
     revoke execute on function public.mail_in_check_code(bytea) from public;
     grant execute on function public.mail_in_check_code(bytea) to fdv_app;
   end if;
+  -- A computer that sends scans (0070, D1): which household a code's first
+  -- half names, and which a key belongs to, before either is known — asked
+  -- by the pairing and by every request a key makes, and nobody else's.
+  if to_regprocedure('public.device_pairing_find(bytea)') is not null then
+    revoke execute on function public.device_pairing_find(bytea) from public;
+    grant execute on function public.device_pairing_find(bytea) to fdv_app;
+    revoke execute on function public.upload_device_find(uuid, bytea) from public;
+    grant execute on function public.upload_device_find(uuid, bytea) to fdv_app;
+    -- And a person's computers stopped by the emergency controls.
+    revoke execute on function public.upload_devices_revoke_for(uuid, text) from public;
+    grant execute on function public.upload_devices_revoke_for(uuid, text) to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

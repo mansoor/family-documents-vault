@@ -13,6 +13,7 @@ import type { DocumentView, Tokens } from '@fdv/shared';
 import type { LightMyRequestResponse } from 'fastify';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { deviceKeyHash } from './devices/service.js';
 import { alertsSent, createHarness, mailSent, TEST_MASTER, type Harness } from './test-harness.js';
 
 /**
@@ -73,6 +74,9 @@ const AHMED_LEARNED = 'ahmed learned issuer 541';
  * gives a document's tags (0.7.0-dev.13), so neither may reach anybody else.
  */
 const AHMED_TAG = 'ahmed-private-tag-541';
+
+/** Ahmed's computer (0.8.0, D1): his, and the owners' to see by name; nobody else's. */
+const AHMED_COMPUTER = 'ahmed-computer-541';
 const BATCH_TAG = 'ahmed-batch-tag-541';
 
 /**
@@ -121,7 +125,13 @@ type Who =
   /** Owners. */
   | 'owners'
   /** Owners with two-step sign-in or a passkey (A54): never one with only a password. */
-  | 'ownerPower';
+  | 'ownerPower'
+  /**
+   * Whoever holds a computer's key (0.8.0, D1), and nobody else: no
+   * attacker holds one, so every one is told to sign in (401), a sign-in
+   * as much as a cookie.
+   */
+  | 'device';
 
 /** The attackers. */
 type Attacker =
@@ -168,7 +178,9 @@ type Kind =
   | 'batch'
   | 'batchItem'
   /** A note that the scanner folder could not add a file (S3): its person's alone. */
-  | 'watchNotice';
+  | 'watchNotice'
+  /** A computer that sends scans (0.8.0, D1): its person's, and an owner's to revoke. */
+  | 'pairedDevice';
 
 /** The ids one request is made with: the thing of each kind the attacker is after. */
 type Fill = Record<Kind, string>;
@@ -209,6 +221,7 @@ const PARAM_KINDS: Record<string, Kind> = {
   'batches/:id': 'batch',
   'items/:itemId': 'batchItem',
   'notices/:id': 'watchNotice',
+  'paired-devices/:id': 'pairedDevice',
 };
 
 /** The kinds that name a thing of somebody's: another's id here is refused unless the rule says. */
@@ -236,6 +249,7 @@ const OBJECT_KINDS: ReadonlySet<Kind> = new Set<Kind>([
   'batch',
   'batchItem',
   'watchNotice',
+  'pairedDevice',
 ]);
 
 interface Rule {
@@ -794,6 +808,30 @@ const RULES: Record<string, Rule> = {
   'POST /api/v1/mail-in/me/code': { who: 'family', body: () => ({}) },
   'POST /api/v1/mail-in/me/email-code': { who: 'family', body: () => ({}) },
   'POST /api/v1/mail-in/me/confirm': { who: 'family', body: () => ({ code: 'ABCD-EFGH' }) },
+  // A computer that sends scans (0.8.0, D1): a code for whoever may add,
+  // after the step-up; the code traded for a key by anybody, with no
+  // sign-in; the key's own two routes, which nothing else opens; and the
+  // computers listed and revoked — their person's, and any by an owner.
+  'POST /api/v1/device-pairings': { who: 'family', body: () => ({}) },
+  // And the caller's own code ended, as its dialog closes (the D1 review): nobody else's.
+  'DELETE /api/v1/device-pairings': { who: 'family' },
+  'POST /api/v1/devices/pair': {
+    who: 'public',
+    bodies: () => [
+      { code: 'AAAA-AAAA', device_name: 'Attacker laptop', platform: 'other' },
+      { code: 'not a code', device_name: '', platform: 'amiga' },
+    ],
+  },
+  'GET /api/v1/devices/me': { who: 'device' },
+  'POST /api/v1/device-uploads': { who: 'device', file: 'pdf' },
+  'GET /api/v1/paired-devices': { who: 'family' },
+  'DELETE /api/v1/paired-devices/:id': {
+    who: 'family',
+    last: true,
+    theirs: {
+      passwordOnlyOwner: 'an owner may revoke any computer in the household (D1)',
+    },
+  },
 };
 
 /** Whether a role is among those a rule is for. */
@@ -1153,6 +1191,51 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       201,
     );
     ids.batch = json<{ id: string }>(batch).id;
+    // Ahmed's computer (0.8.0, D1): paired, and a file sent with its key.
+    await fresh(ahmed);
+    const pairing = json<{ code: string }>(
+      await ok(send(ahmed, 'POST', '/api/v1/device-pairings', {}), 201),
+    );
+    const computer = json<{ device_id: string; key: string }>(
+      await ok(
+        h.app.inject({
+          method: 'POST',
+          url: '/api/v1/devices/pair',
+          payload: { code: pairing.code, device_name: AHMED_COMPUTER, platform: 'windows' },
+          ...peer(),
+        }),
+        201,
+      ),
+    );
+    ids.pairedDevice = computer.device_id;
+    ids.deviceKey = computer.key;
+    const keyHash = deviceKeyHash(computer.device_id, computer.key);
+    ids.deviceKeyHex = keyHash.toString('hex');
+    ids.deviceKeyBase64 = keyHash.toString('base64');
+    const computerForm = new FormData();
+    computerForm.append('file', PDF('AHMED-COMPUTER-FILE'), {
+      filename: 'ahmed-computer-file-541.pdf',
+      contentType: 'application/pdf',
+    });
+    await ok(
+      h.app.inject({
+        method: 'POST',
+        url: '/api/v1/device-uploads',
+        headers: {
+          authorization: `Device ${computer.device_id}.${computer.key}`,
+          ...computerForm.getHeaders(),
+          'idempotency-key': randomUUID(),
+        },
+        payload: computerForm.getBuffer(),
+        ...peer(),
+      }),
+      201,
+    );
+    ids.deviceBatch = (
+      await admin.query<{ id: string }>('select id from intake_batch where device_id = $1', [
+        computer.device_id,
+      ])
+    ).rows[0]?.id as string;
     const batchForm = new FormData();
     // The folder it came from (0.8.0, S2): his alone, sealed.
     batchForm.append('relative_path', 'AHMED-FOLDER-541/Passports/ahmed-batch-file-541.pdf');
@@ -2622,7 +2705,16 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       'ahmed-scan-541',
       // A note that an attachment of his email could not be added (S4).
       'ahmed-mail-541',
+      // His computer's key, and what the vault keeps of it (0.8.0, D1): nobody's to see.
+      ids.deviceKey as string,
+      ids.deviceKeyHex as string,
+      ids.deviceKeyBase64 as string,
+      // And what it sent: its file's name and its day's batch (his alone).
+      'ahmed-computer-file-541',
+      ids.deviceBatch as string,
     ];
+    /** His computer's name: his, and the owners' (who see the household's computers by name). */
+    const computer = [AHMED_COMPUTER];
     const outsideGrant = [
       ...secretsOf('will', 'deed', 'carInsurance'),
       ids.attorney as string,
@@ -2654,6 +2746,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       batch: [ids.batch as string],
       batchItem: [ids.batchItem as string],
       watchNotice: [ids.watchNotice as string],
+      pairedDevice: [ids.pairedDevice as string],
     };
     const viewerLike = (name: Attacker, tokens: Tokens, stale = false): AttackerDef => ({
       name,
@@ -2666,7 +2759,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
         ...all(['ahmedPrivate', 'deed', 'will', 'oliviaPrivate', 'carInsurance']),
         collection: [ids.attorney as string, ids.ahmedOnly as string],
       },
-      forbidden: [...base, ...outsideGrant, LOCATION],
+      forbidden: [...base, ...outsideGrant, ...computer, LOCATION],
     });
     const list: AttackerDef[] = [
       viewerLike('restrictedViewer', vera),
@@ -2679,7 +2772,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
           ...all(['ahmedTax', 'ahmedPrivate', 'deed']),
           collection: [ids.attorney as string],
         },
-        forbidden: [...base, ...outsideGrant, ...secretsOf('ahmedTax'), LOCATION],
+        forbidden: [...base, ...outsideGrant, ...secretsOf('ahmedTax'), ...computer, LOCATION],
       },
       {
         name: 'linkRecipient',
@@ -2692,7 +2785,12 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
           ...all(['deed', 'ahmedPrivate', 'ahmedTax']),
           collection: [ids.attorney as string],
         },
-        forbidden: [...base, ...secretsOf('deed', 'carInsurance', 'ahmedTax'), LOCATION],
+        forbidden: [
+          ...base,
+          ...secretsOf('deed', 'carInsurance', 'ahmedTax'),
+          ...computer,
+          LOCATION,
+        ],
       },
       {
         name: 'uploadSender',
@@ -2706,7 +2804,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
           collection: [ids.attorney as string],
           dropFile: [ids.incomingFile as string],
         },
-        forbidden: [...base, ...outsideGrant, ...secretsOf('ahmedTax'), LOCATION],
+        forbidden: [...base, ...outsideGrant, ...secretsOf('ahmedTax'), ...computer, LOCATION],
       },
       {
         name: 'lockedMember',
@@ -2719,7 +2817,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
           ...all(['ahmedPrivate', 'ahmedTax']),
           collection: [ids.attorney as string],
         },
-        forbidden: [...base, ...outsideGrant, ...secretsOf('ahmedTax'), LOCATION],
+        forbidden: [...base, ...outsideGrant, ...secretsOf('ahmedTax'), ...computer, LOCATION],
       },
       {
         name: 'otherAdult',
@@ -2732,7 +2830,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
           ...all(['ahmedPrivate', 'oliviaPrivate']),
           collection: [ids.ahmedOnly as string],
         },
-        forbidden: base,
+        forbidden: [...base, ...computer],
       },
       {
         name: 'passwordOnlyOwner',
@@ -2840,6 +2938,8 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
         return a.name === 'linkRecipient' ? (objectParam ? 'refused' : 'answered') : 'refused';
       case 'drop':
         return a.name === 'uploadSender' ? (objectParam ? 'refused' : 'answered') : 'refused';
+      case 'device':
+        return 'unauthenticated';
       default:
         if (!a.tokens || a.stale) return 'unauthenticated';
         if (!roleAllowed(rule.who, a.role as string)) return 'refused';
@@ -2877,7 +2977,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     // sign-in: the sweep ended its session, and the route was not tried. (A
     // wrong password or passkey is 401 too, and is a refusal.)
     const signedIn = a.tokens !== null && !a.stale;
-    const sessionRoute = !['public', 'link', 'drop'].includes(rule.who);
+    const sessionRoute = !['public', 'link', 'drop', 'device'].includes(rule.who);
     if (s >= 500) r.problem = 'a server error';
     else if (s === 429) r.problem = 'rate limited: the route was not tried';
     else if (leaks.length > 0) r.problem = `leaks ${leaks.join(', ')}`;
@@ -2955,6 +3055,7 @@ const PARAM_KIND_DEFAULTS: Record<Kind, true> = {
   batch: true,
   batchItem: true,
   watchNotice: true,
+  pairedDevice: true,
 };
 
 function kindOf(before: string, param: string): Kind | null {

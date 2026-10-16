@@ -280,6 +280,15 @@ export interface CapabilityFeatures {
    * Absent from older vaults, which refuse the field: send the file alone.
    */
   folder_suggestions?: boolean;
+  /**
+   * A computer that sends scans (0.8.0, D1): POST /device-pairings (a
+   * one-time code, after the step-up), POST /devices/pair (the code traded
+   * for an upload-only key), POST /device-uploads and GET /devices/me (the
+   * only routes that take `Authorization: Device <id>.<key>`), and
+   * GET /paired-devices, DELETE /paired-devices/{id}. Absent from older
+   * vaults: there is no computer to pair.
+   */
+  device_uploads?: boolean;
 }
 
 export interface CapabilityLimits {

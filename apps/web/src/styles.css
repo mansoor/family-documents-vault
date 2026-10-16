@@ -1975,6 +1975,58 @@ fieldset.ask-items {
   margin: 0;
 }
 
+/* 0.8.0 (D1): pairing a computer — the address to type, and the code, large
+   enough to read across a desk, in two halves of four. */
+.pairing-steps {
+  margin: 0;
+  padding-left: 22px;
+  display: grid;
+  gap: 12px;
+}
+
+.pairing-steps a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.pairing-address {
+  display: block;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--bg);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.pairing-code-box {
+  display: block;
+}
+
+.pairing-code {
+  display: block;
+  margin-top: 6px;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: clamp(32px, 9vw, 44px);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--ink);
+  user-select: all;
+}
+
+.pairing-code-ran {
+  color: var(--ink-muted);
+  text-decoration: line-through;
+}
+
+.pairing-time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--ink);
+}
+
 .reset-notice-h {
   font-size: 16px;
   margin: 0;

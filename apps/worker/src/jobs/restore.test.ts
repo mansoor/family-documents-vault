@@ -509,6 +509,27 @@ async function seed(url: string): Promise<string> {
               [hh],
             );
           }
+          // And, where the schema has them (0070, D1), that person's
+          // computer, and a code to pair another: a backup is the past, and
+          // neither comes back live.
+          const computers = await c.query<{ has: boolean }>(
+            "select to_regclass('public.upload_device') is not null as has",
+          );
+          if (computers.rows[0]?.has) {
+            await c.query(
+              `insert into upload_device (household_id, account_id, member_id, name, platform, key_hash)
+               select $1, b.created_by, b.member_id, 'Kitchen laptop', 'windows', $2
+                 from intake_batch b where b.household_id = $1`,
+              [hh, randomBytes(32)],
+            );
+            await c.query(
+              `insert into device_pairing
+                 (household_id, account_id, member_id, handle_hash, code_hash, expires_at)
+               select $1, b.created_by, b.member_id, $2, $3, now() + interval '5 minutes'
+                 from intake_batch b where b.household_id = $1`,
+              [hh, randomBytes(32), randomBytes(32)],
+            );
+          }
         }
       }
     }
@@ -1829,6 +1850,121 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it('notices a computer’s rules gone: its person’s, an owner’s by name, a code its person’s alone, and its guards (0070, D1)', async () => {
+    const seeded = await sql(
+      vault.adminUrl,
+      `select (select count(*)::int from upload_device) as computers,
+              (select count(*)::int from device_pairing) as codes`,
+    );
+    expect(seeded.rows[0]).toEqual({ computers: 1, codes: 1 });
+    for (const table of ['upload_device', 'device_pairing']) {
+      const policy = `${table}_actor`;
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${policy}'`,
+      );
+      const rule = rows[0]?.rule as string;
+      expect(rule).toMatch(/app_member\(\)/);
+      await sql(vault.adminUrl, `drop policy ${policy} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(
+          new RegExp(`no rule for each kind of caller on ${table}`),
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${policy} on public.${table} as restrictive using (${rule})`,
+        );
+      }
+      // Everybody signed in given everybody's.
+      await sql(
+        vault.adminUrl,
+        `alter policy ${policy} on public.${table}
+           using (case app_actor() when 'account' then true when 'system' then true else false end)`,
+      );
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(
+          new RegExp(`no rule keeps a member's own to them on .*${table}`),
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter policy ${policy} on public.${table} using (${rule})`);
+      }
+    }
+    // A code given to an owner as a computer is: caught.
+    await sql(
+      vault.adminUrl,
+      `alter policy device_pairing_actor on public.device_pairing
+         using (case app_actor()
+                  when 'account' then app_role() = 'owner' or member_id = app_member()
+                  when 'system' then true else false end)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /code to pair a computer is open to an owner who is not them/,
+      );
+    } finally {
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'upload_device_actor'`,
+      );
+      expect(rows[0]?.rule).toMatch(/app_member\(\)/);
+      await sql(
+        vault.adminUrl,
+        `alter policy device_pairing_actor on public.device_pairing
+           using (case app_actor()
+                    when 'account' then app_role() in ('owner', 'adult', 'teen')
+                                        and member_id = app_member() and account_id = app_account()
+                    when 'system' then true else false end)`,
+      );
+    }
+    for (const [table, trigger] of [
+      ['upload_device', 'upload_device_writes'],
+      ['account_household', 'upload_devices_leave_with_role'],
+    ] as const) {
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        await expect(checkRestored(target()), trigger).rejects.toThrow(
+          /guard the vault relies on is missing/,
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
+  it('notices a computer’s rules for what is written gone (0070, D1, the review’s F7)', async () => {
+    const rules: Array<[table: string, name: string, cmd: string, words: RegExp]> = [
+      ['upload_device', 'upload_device_actor_insert', 'insert', /who makes a computer’s key/],
+      ['upload_device', 'upload_device_actor_delete', 'delete', /who removes a computer’s key/],
+      ['device_pairing', 'device_pairing_actor_insert', 'insert', /who makes a code to pair/],
+      ['device_pairing', 'device_pairing_actor_update', 'update', /who counts the tries/],
+      ['intake_batch', 'intake_batch_device_insert', 'insert', /which computer a day’s batch/],
+    ];
+    for (const [table, name, cmd, words] of rules) {
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as qual, pg_get_expr(polwithcheck, polrelid) as chk
+           from pg_policy where polname = '${name}'`,
+      );
+      const qual = rows[0]?.qual as string | null;
+      const chk = rows[0]?.chk as string | null;
+      expect(qual ?? chk, name).toBeTruthy();
+      await sql(vault.adminUrl, `drop policy ${name} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), name).rejects.toThrow(words);
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${name} on public.${table} as restrictive for ${cmd}` +
+            (qual ? ` using (${qual})` : '') +
+            (chk ? ` with check (${chk})` : ''),
+        );
+      }
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it('notices an audit log that can be changed', async () => {
     await sql(vault.adminUrl, 'grant update on public.audit_event to fdv_app');
     await expect(checkRestored(target())).rejects.toThrow(/no longer append-only/);
@@ -2789,6 +2925,16 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
               (select count(*)::int from intake_outcome where unchanged) as outcomes`,
     );
     expect(learned.rows[0]).toEqual({ rules: 1, outcomes: 1 });
+    // A computer's key comes back revoked, and no code to pair one (0070, D1):
+    // one revoked since the backup would otherwise send files again.
+    expect(report.devicesEnded).toBe(1);
+    const computers = await sql(
+      t.adminUrl,
+      `select (select count(*)::int from upload_device where revoked_at is null) as live,
+              (select count(*)::int from upload_device where revoked_reason = 'restored') as restored,
+              (select count(*)::int from device_pairing) as codes`,
+    );
+    expect(computers.rows[0]).toEqual({ live: 0, restored: 1, codes: 0 });
     // The job queue came back too, and the vault can use it.
     const jobs = await sql(
       t.appUrl,

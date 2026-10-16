@@ -139,6 +139,7 @@ export function activityKind(action: string): ActivityKind {
       return 'people';
     case 'auth':
     case 'credential':
+    case 'computer':
       return 'sign_in';
     default:
       return 'vault';
@@ -482,6 +483,57 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
         : line(
             `${who} changed ${possessive(personOf(e))} role, so their ${what} to send documents closed`,
           );
+    }
+    // A computer that sends scans (0.8.0, D1): paired, and its key revoked
+    // — by its person, an owner, or the vault as a sign-in went or a role
+    // that cannot add came. To the owners, the person and whoever did it.
+    // Its name is its person's own words; never anything it sent.
+    case 'computer.paired': {
+      const name = text(detail.name);
+      return line(
+        name
+          ? `${who} paired a computer to send scans: “${name}”`
+          : `${who} paired a computer to send scans`,
+        true,
+      );
+    }
+    case 'computer.revoked': {
+      const name = text(detail.name);
+      const it = name ? `computer “${name}”` : 'computer';
+      switch (detail.reason) {
+        case 'sign_in_removed':
+          return line(
+            `${who} took ${possessive(personOf(e))} sign-in away, so their ${it} can no longer send scans`,
+          );
+        case 'cannot_add':
+          return isOwn(e)
+            ? line(`${who} stepped down, so their ${it} can no longer send scans`)
+            : line(
+                `${who} changed ${possessive(personOf(e))} role, so their ${it} can no longer send scans`,
+              );
+        // The emergency controls (the D1 review, F2).
+        case 'signed_out':
+          return isOwn(e)
+            ? line(`${who} signed out everywhere, so their ${it} can no longer send scans`, true)
+            : line(
+                `${who} signed ${personOf(e)} out everywhere, so their ${it} can no longer send scans`,
+                true,
+              );
+        case 'owner_stopped':
+          return line(
+            `${who} stopped ${possessive(personOf(e))} password, so their ${it} can no longer send scans`,
+            true,
+          );
+        case 'password_changed':
+          return line(
+            `${who} changed their password, so their ${it} can no longer send scans`,
+            true,
+          );
+        case 'owner':
+          return line(`${who} removed ${possessive(personOf(e))} ${it}`, true);
+        default:
+          return line(`${who} removed their ${it}`, true);
+      }
     }
     // What a viewer can see, limited by an owner (5.33): to the owners, the
     // person and whoever did it. Never what it gives — whose, which kinds,

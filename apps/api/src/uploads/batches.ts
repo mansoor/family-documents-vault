@@ -32,8 +32,10 @@ import {
   BATCH_NAME_MAX,
   batchVisibility,
   can,
+  deviceBatchName,
   dropFileName,
   INCOMING_KEEP_DAYS,
+  localToday,
   incomingFileName,
   itemFolder,
   levelItem,
@@ -201,6 +203,18 @@ export interface BatchUpload {
   /** Once the file has arrived: the route's last chance to refuse (anything sent after it). */
   finished: () => Promise<void>;
   /**
+   * Asked inside the transaction that makes its row, after the uploader is
+   * held, and again in the one that finishes it: a computer's key still
+   * live (0.8.0, D1), held until each commits.
+   */
+  stillAllowed?: (trx: Db) => Promise<void>;
+  /**
+   * Asked in the transaction that finishes it, once its bytes are all here
+   * and before it is waiting: a computer's day's room, and its last sending
+   * noted (0.8.0, D1). A refusal here removes it as any other.
+   */
+  arrived?: (trx: Db, bytes: number) => Promise<void>;
+  /**
    * Where the file was under the folder it was added from (0.8.0, S2): the
    * web's `relative_path`, a scanner folder's subfolder, a computer's
    * watched folder (D1's `relative_path`). Its folders are kept — the file's
@@ -233,6 +247,11 @@ const busy = () =>
     retryAfter: 1,
   });
 const tooLarge = () => new ApiError(413, 'too_large', 'That file is too big for this vault.');
+/** The file's stream ended before the file did (the D1 review, F1): nothing is kept of it. */
+const incomplete = () =>
+  new ApiError(400, 'upload_incomplete', 'The file did not arrive whole. Send it again.', {
+    retriable: true,
+  });
 const storageUnreachable = (detail: string) =>
   new ApiError(
     503,
@@ -465,6 +484,95 @@ export class BatchService {
       return row.id;
     });
     return this.get(p, id);
+  }
+
+  /**
+   * A computer's batch for the day a file arrives (0.8.0, D1), on the
+   * household's calendar: "From <computer>, <date>", made by its first file
+   * that day, with no defaults — or, for an Idempotency-Key the computer
+   * sent with a file before, the batch that file went into, so a file sent
+   * again after midnight is still answered with the item it made. As its
+   * person, who must still be able to add documents; the database lets a
+   * batch name only a live computer of its own member (0070).
+   */
+  async deviceBatch(
+    p: Principal,
+    device: { id: string; name: string },
+    idempotencyKey: string,
+    now: Date = new Date(),
+  ): Promise<string> {
+    this.mayAdd(p);
+    return withPrincipal(this.db, p, async (trx) => {
+      await this.stillAdds(trx, p);
+      const prior = await trx
+        .selectFrom('incoming_file as f')
+        .innerJoin('intake_batch as b', 'b.id', 'f.batch_id')
+        .select('b.id')
+        .where('b.device_id', '=', device.id)
+        .where('f.idempotency_key', '=', idempotencyKey)
+        .executeTakeFirst();
+      if (prior) return prior.id;
+      const household = await trx
+        .selectFrom('household')
+        .select('timezone')
+        .executeTakeFirstOrThrow();
+      const day = localToday(household.timezone, now);
+      const today = () =>
+        trx
+          .selectFrom('intake_batch')
+          .select('id')
+          .where('device_id', '=', device.id)
+          .where('device_day', '=', day)
+          .executeTakeFirst();
+      const found = await today();
+      if (found) return found.id;
+      const made = await trx
+        .insertInto('intake_batch')
+        .values({
+          household_id: p.householdId,
+          created_by: p.accountId,
+          member_id: p.memberId,
+          name: nameOf(deviceBatchName(device.name, day)),
+          device_id: device.id,
+          device_day: day,
+          created_at: now,
+          ends_at: new Date(now.getTime() + INCOMING_KEEP_DAYS * DAY),
+        })
+        .onConflict((oc) => oc.constraint('intake_batch_device_day_key').doNothing())
+        .returning('id')
+        .executeTakeFirst();
+      if (made) return made.id;
+      // Made just now by another of its files, which committed first.
+      const meanwhile = await today();
+      if (!meanwhile) throw busy();
+      return meanwhile.id;
+    });
+  }
+
+  /**
+   * A computer's batch for the day, removed if nothing is in it — not even
+   * a file on its way (the D1 review, F8): its first file was refused. Held
+   * first, so a file another request is putting in it has committed, and is
+   * counted, before this looks.
+   */
+  async dropIfEmpty(p: Principal, batchId: string): Promise<void> {
+    await withPrincipal(this.db, p, async (trx) => {
+      const held = await trx
+        .selectFrom('intake_batch')
+        .select('id')
+        .where('id', '=', batchId)
+        .where('device_id', 'is not', null)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!held) return;
+      const any = await trx
+        .selectFrom('incoming_file')
+        .select('id')
+        .where('batch_id', '=', batchId)
+        .limit(1)
+        .executeTakeFirst();
+      if (!any) await trx.deleteFrom('intake_batch').where('id', '=', batchId).execute();
+    });
   }
 
   /**
@@ -735,6 +843,7 @@ export class BatchService {
     const dead: Array<{ id: string; storage_key: string; vault_id: string }> = [];
     const ctx = await withPrincipal(this.db, p, async (trx) => {
       await this.stillAdds(trx, p);
+      await upload.stillAllowed?.(trx);
       // Held: what is counted against the limit cannot change under it.
       const b = await this.batch(trx, batchId, true);
       const key = upload.idempotencyKey ?? null;
@@ -874,12 +983,27 @@ export class BatchService {
       await Promise.allSettled([storing, flowing]);
       await discard();
       if (err instanceof ApiError) throw err;
+      // Its stream ended before the file did — already, or part way: a
+      // sender gone, a part the parser ended (the D1 review, F1). The
+      // sender's, not the vault's; and nothing of it is kept.
+      if (
+        upload.stream.destroyed ||
+        (err as { code?: unknown }).code === 'ERR_STREAM_PREMATURE_CLOSE'
+      ) {
+        throw incomplete();
+      }
       throw storageUnreachable((err as Error).message);
     }
 
     let view: BatchItemView;
     try {
       view = await withPrincipal(this.db, p, async (trx) => {
+        // Still somebody who may add, and still allowed (a computer's key
+        // live), as it lands (the D1 review, F3): a sign-in taken away or a
+        // key revoked while the bytes arrived lands nothing.
+        await this.stillAdds(trx, p);
+        await upload.stillAllowed?.(trx);
+        await upload.arrived?.(trx, bytes);
         const now = new Date();
         const done = await trx
           .updateTable('incoming_file')

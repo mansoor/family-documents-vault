@@ -297,6 +297,12 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['member.signed_out_everywhere', ownersThePersonAndTheActor],
   ['member.offline_ended', ownersThePersonAndTheActor],
   ['member.requests_closed', ownersThePersonAndTheActor],
+  // 0.8.0 (D1): a computer paired to send scans, and its key revoked — by
+  // its person, an owner, or as their sign-in went or their role changed:
+  // for the owners, the person and whoever did it. Its name, never
+  // anything it sent.
+  ['computer.paired', ownersThePersonAndTheActor],
+  ['computer.revoked', ownersThePersonAndTheActor],
   // 5.33: what a viewer can see, limited, changed or let go — by an owner,
   // or by whoever invited them as they accepted: for the owners, the person
   // and whoever did it (the adult who invited them among them). Never what

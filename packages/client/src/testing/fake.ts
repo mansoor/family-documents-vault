@@ -1,4 +1,23 @@
 import {
+  DEVICE_PLATFORMS,
+  DEVICE_REFUSALS,
+  deviceBatchName,
+  deviceName,
+  nextLocalMidnight,
+  normalisePairingCode,
+  relativePathProblem,
+  PAIRING_ALPHABET,
+  PAIRING_ATTEMPTS,
+  PAIRING_CODE_LENGTH,
+  PAIRING_MINUTES,
+  showPairingCode,
+  type DeviceMe,
+  type DevicePaired,
+  type DevicePairingCode,
+  type DevicePausedReason,
+  type DevicePlatform,
+  type DeviceUploaded,
+  type PairedDevice,
   BATCH_MAX_FILES,
   batchVisibility,
   correctionsOf,
@@ -387,6 +406,13 @@ export interface FakeVaultState {
    * person may still be invited, in the real vault's words.
    */
   personReminders: Array<{ id: string; member_id: string; fire_at: string; dismissed: boolean }>;
+  /**
+   * Computers that send scans (0.8.0, D1), with their keys in the clear, as
+   * only a fake may keep them; a revoked one kept, as the vault keeps it.
+   */
+  devices?: FakeDevice[];
+  /** Pairing codes, one a person, as only a fake may keep them. */
+  pairings?: Array<{ code: string; member_id: string; expires_at: number; attempts: number }>;
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -451,10 +477,25 @@ type FakeDocument = {
   notes_updated_by?: string | null;
 } & Omit<CaptureMetadata, 'title'>;
 
+/** A computer that sends scans, as the fake keeps one (0.8.0, D1). */
+export interface FakeDevice {
+  id: string;
+  key: string;
+  name: string;
+  platform: DevicePlatform;
+  member_id: string;
+  added_at: string;
+  last_used_at: string | null;
+  revoked: boolean;
+}
+
 /** A batch, as the fake keeps one (Phase 6, I1): its uploader's alone. */
 export interface FakeBatch {
   id: string;
   member_id: string;
+  /** A computer's batch for a day (0.8.0, D1): which computer, and which day. */
+  device_id?: string;
+  device_day?: string;
   name: string | null;
   created_at: string;
   ends_at: string;
@@ -818,6 +859,8 @@ export function createFakeVault(): {
     batches: [],
     learned: {},
     personReminders: [],
+    devices: [],
+    pairings: [],
     calls: [],
     offline: false,
   };
@@ -1513,6 +1556,252 @@ export function createFakeVault(): {
     return ok(open(installation, member.id), 201);
   };
 
+  /** Computers that send scans (0.8.0, D1): their routes, or null for any other. */
+  const deviceRoutes = (
+    path: string,
+    init: Parameters<FetchLike>[1],
+    body: Record<string, unknown>,
+    sessionOf: () => FakeSession | ResponseLike,
+  ): ResponseLike | null => {
+    const devices = (state.devices ??= []);
+    const memberName = (id: string) =>
+      state.members.find((m) => m.id === id)?.display_name ?? 'Somebody';
+    const pairings = (state.pairings ??= []);
+    const keyed = /^Device ([^.\s]+)\.(\S+)$/.exec(init.headers.authorization ?? '');
+    const onlyDeviceRoutes =
+      (path === '/api/v1/device-uploads' && init.method === 'POST') ||
+      (path === '/api/v1/devices/me' && (init.method ?? 'GET') === 'GET');
+    if (/^device(\s|$)/i.test(init.headers.authorization ?? '') && !onlyDeviceRoutes) {
+      return fail(401, 'device_key_not_accepted', "A computer's key can only send scans.");
+    }
+    if (path === '/api/v1/device-pairings' && init.method === 'POST') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!can(who.role, 'document.add')) return fail(403, 'forbidden', refusalFor('document.add'));
+      const code = Array.from(
+        { length: PAIRING_CODE_LENGTH },
+        () => PAIRING_ALPHABET[Math.floor(Math.random() * PAIRING_ALPHABET.length)],
+      ).join('');
+      state.pairings = pairings.filter((p) => p.member_id !== who.memberId);
+      const expires = Date.now() + PAIRING_MINUTES * 60_000;
+      state.pairings.push({ code, member_id: who.memberId, expires_at: expires, attempts: 0 });
+      const made: DevicePairingCode = {
+        code: showPairingCode(code),
+        expires_at: new Date(expires).toISOString(),
+        vault_address: 'http://fake-vault.test',
+        download_url: null,
+      };
+      return ok(made, 201);
+    }
+    if (path === '/api/v1/device-pairings' && init.method === 'DELETE') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!can(who.role, 'document.add')) return fail(403, 'forbidden', refusalFor('document.add'));
+      state.pairings = pairings.filter((p) => p.member_id !== who.memberId);
+      return empty();
+    }
+    if (path === '/api/v1/devices/pair' && init.method === 'POST') {
+      const name = typeof body.device_name === 'string' ? deviceName(body.device_name) : null;
+      if (!name) return fail(422, 'validation_failed', 'Give the computer a name.');
+      const platform = body.platform as DevicePlatform;
+      if (!DEVICE_PLATFORMS.includes(platform)) {
+        return fail(422, 'validation_failed', 'Say what the computer runs.', 'platform');
+      }
+      const code = typeof body.code === 'string' ? normalisePairingCode(body.code) : null;
+      const wrong = () =>
+        fail(401, 'pairing_code_invalid', 'That code is not right, or it has run out.');
+      const live = pairings.find(
+        (p) =>
+          code !== null &&
+          p.code.slice(0, 4) === code.slice(0, 4) &&
+          p.expires_at > Date.now() &&
+          p.attempts < PAIRING_ATTEMPTS,
+      );
+      if (!code || !live) return wrong();
+      if (live.code !== code) {
+        live.attempts += 1;
+        return wrong();
+      }
+      state.pairings = pairings.filter((p) => p !== live);
+      const role = roleOfMember(live.member_id);
+      if (!role || !can(role, 'document.add')) {
+        return fail(403, 'cannot_add', DEVICE_REFUSALS.cannot_add);
+      }
+      const d: FakeDevice = {
+        id: next('device'),
+        key: `fakekey${Math.random().toString(36).slice(2)}`.padEnd(43, 'x').slice(0, 43),
+        name,
+        platform,
+        member_id: live.member_id,
+        added_at: new Date().toISOString(),
+        last_used_at: null,
+        revoked: false,
+      };
+      devices.push(d);
+      const paired: DevicePaired = {
+        device_id: d.id,
+        key: d.key,
+        member_name: memberName(live.member_id),
+        vault_name: 'A fake family',
+      };
+      return ok(paired, 201);
+    }
+    if (onlyDeviceRoutes) {
+      const d = devices.find((x) => keyed && x.id === keyed[1] && x.key === keyed[2]);
+      if (!d)
+        return fail(401, 'unauthenticated', 'This computer’s key is not one this vault knows.');
+      if (d.revoked) return fail(401, 'device_revoked', DEVICE_REFUSALS.device_revoked);
+      d.last_used_at = new Date().toISOString();
+      const role = roleOfMember(d.member_id);
+      const suspended = suspensionOf(d.member_id);
+      const paused: DevicePausedReason | null =
+        !role || !can(role, 'document.add')
+          ? 'cannot_add'
+          : suspended
+            ? suspended.reason === 'locked'
+              ? 'locked'
+              : 'paused_after_restore'
+            : null;
+      if (path === '/api/v1/devices/me') {
+        const me: DeviceMe = {
+          device_id: d.id,
+          device_name: d.name,
+          member_name: memberName(d.member_id),
+          active: paused === null,
+          paused,
+          limits: {
+            max_upload_bytes: 104_857_600,
+            batch_max_files: BATCH_MAX_FILES,
+            daily_bytes: 2 * 1024 ** 3,
+            day_resets_at: nextLocalMidnight(state.timezone).toISOString(),
+            accepted_types: ['application/pdf', 'image/jpeg', 'image/png'],
+          },
+        };
+        return ok(me);
+      }
+      if (paused === 'cannot_add') return fail(403, 'cannot_add', DEVICE_REFUSALS.cannot_add);
+      if (paused === 'locked') return fail(403, 'member_locked', DEVICE_REFUSALS.member_locked);
+      if (paused) return fail(403, 'member_paused', DEVICE_REFUSALS.member_paused);
+      const key = init.headers['idempotency-key'];
+      if (key === undefined || !UUID.test(key)) {
+        return fail(422, 'validation_failed', 'Send an Idempotency-Key.', 'idempotency-key');
+      }
+      for (const b of state.batches.filter((x) => x.device_id === d.id)) {
+        const before = b.items.find((x) => x.key === key);
+        if (before?.state === 'removed') {
+          return fail(409, 'already_decided', 'This file has been accepted or removed already.');
+        }
+        if (before) {
+          const replay: DeviceUploaded = {
+            item_id: before.id,
+            status: before.state === 'accepted' ? 'accepted' : 'waiting',
+          };
+          return ok(replay, 201);
+        }
+      }
+      const parts = partsOf(init.body) ?? [];
+      const files = parts.filter((p) => p.value === null);
+      const fields = parts.filter((p) => p.value !== null);
+      const file = files[0];
+      if (
+        !file ||
+        files.length > 1 ||
+        fields.length > 1 ||
+        (fields[0] !== undefined && fields[0].name !== 'relative_path')
+      ) {
+        return fail(422, 'validation_failed', 'Send an optional relative_path, then one file.');
+      }
+      const where = fields[0]?.value;
+      const problem = typeof where === 'string' ? relativePathProblem(where) : null;
+      if (problem) return fail(422, 'validation_failed', problem, 'relative_path');
+      const type = (file.type ?? '').split(';')[0] ?? '';
+      if (!/^(application\/pdf|image\/(jpeg|png|heic|heif|tiff|webp))$/.test(type)) {
+        return fail(415, 'unsupported_type', 'That kind of file cannot be stored here.');
+      }
+      const day = localToday(state.timezone);
+      let b = state.batches.find((x) => x.device_id === d.id && x.device_day === day);
+      if (!b) {
+        const now = new Date();
+        b = {
+          id: next('batch'),
+          member_id: d.member_id,
+          device_id: d.id,
+          device_day: day,
+          name: deviceBatchName(d.name, day),
+          created_at: now.toISOString(),
+          ends_at: new Date(now.getTime() + 30 * 864e5).toISOString(),
+          defaults: {
+            owner_member_id: null,
+            type_key: null,
+            visibility: null,
+            physical_location: null,
+            collection_id: null,
+            tags: [],
+            is_essential: false,
+          },
+          items: [],
+        };
+        state.batches.push(b);
+      }
+      if (b.items.filter((x) => x.state !== 'removed').length >= BATCH_MAX_FILES) {
+        return fail(422, 'batch_full', `A batch holds ${BATCH_MAX_FILES} files at most.`);
+      }
+      const it: FakeBatchItem = {
+        id: next('item'),
+        name: file.filename ?? 'file',
+        content_type: type,
+        byte_size: file.size ?? 0,
+        sha256: standInHash(file.bytes ?? new Uint8Array()),
+        arrived_at: new Date().toISOString(),
+        state: 'waiting',
+        document_id: null,
+        key,
+      };
+      b.items.push(it);
+      const sent: DeviceUploaded = { item_id: it.id, status: 'waiting' };
+      return ok(sent, 201);
+    }
+    if (path === '/api/v1/paired-devices' && (init.method ?? 'GET') === 'GET') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!can(who.role, 'document.add')) return fail(403, 'forbidden', refusalFor('document.add'));
+      const items: PairedDevice[] = devices
+        .filter((d) => !d.revoked && (who.role === 'owner' || d.member_id === who.memberId))
+        .reverse()
+        .map((d) => ({
+          id: d.id,
+          name: d.name,
+          platform: d.platform,
+          member_id: d.member_id,
+          member_name: memberName(d.member_id),
+          mine: d.member_id === who.memberId,
+          added_at: d.added_at,
+          last_used_at: d.member_id === who.memberId ? d.last_used_at : null,
+        }));
+      return ok({ items });
+    }
+    const revokeAt = /^\/api\/v1\/paired-devices\/([^/]+)$/.exec(path);
+    if (revokeAt && init.method === 'DELETE') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!can(who.role, 'document.add')) return fail(403, 'forbidden', refusalFor('document.add'));
+      const d = devices.find(
+        (x) =>
+          x.id === revokeAt[1] &&
+          !x.revoked &&
+          (who.role === 'owner' || x.member_id === who.memberId),
+      );
+      if (!d) return fail(404, 'not_found', 'That computer is not here.');
+      d.revoked = true;
+      return empty();
+    }
+    return null;
+  };
+
   const fetch: FetchLike = async (url, init) => {
     const path = url.replace(/^[a-z]+:\/\/[^/]+/i, '').split('?')[0] as string;
     state.calls.push({ method: init.method, path });
@@ -1532,11 +1821,16 @@ export function createFakeVault(): {
       if (guestEndOf(whoOf(s).memberId)) return ended('access_ended');
       return s;
     };
+    // A computer that sends scans (0.8.0, D1), as the real vault answers: a
+    // code for whoever may add, traded for a key that only uploads — and a
+    // key refused on every other route, first.
+    const deviceAnswer = deviceRoutes(path, init, body, session);
+    if (deviceAnswer) return deviceAnswer;
 
     if (path === '/api/v1/capabilities') {
       const caps: Capabilities = {
         product: 'family-document-vault',
-        server_version: '0.4.13',
+        server_version: FAKE_SERVER_VERSION,
         api_version: 1,
         min_client_version: '0.0.1',
         edition: 'self_hosted',
@@ -1597,6 +1891,8 @@ export function createFakeVault(): {
           batch_learning: true,
           // An item's folder, and what its names suggest (0.8.0, S2).
           folder_suggestions: true,
+          // A computer that sends scans (0.8.0, D1), as the vault says.
+          device_uploads: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -4984,6 +5280,14 @@ export function createFakeVault(): {
 
   return { fetch, state, pauseSignIns };
 }
+
+/**
+ * The version the fake says it is: the release this package is, so that an
+ * app that checks the vault's version (the desktop uploader does) works
+ * against it. apps/api/src/fake-version.test.ts holds it to the repository's
+ * version, so it moves with each release.
+ */
+export const FAKE_SERVER_VERSION = '0.8.0';
 
 /**
  * A moment as the real vault takes one for a lock's end: ISO, with its

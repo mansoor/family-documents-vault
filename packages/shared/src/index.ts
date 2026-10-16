@@ -32,3 +32,5 @@ export * from './sign-up.js';
 export * from './watch-folder.js';
 export * from './mail-in.js';
 export * from './folders.js';
+export * from './devices.js';
+export * from './pairing-address.js';

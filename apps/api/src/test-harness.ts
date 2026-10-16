@@ -53,6 +53,7 @@ import {
 import { PurgeService } from './documents/purge.js';
 import { IncomingService, type IncomingOptions } from './uploads/incoming.js';
 import { BatchService, type BatchOptions } from './uploads/batches.js';
+import { DEVICE_KEY_PURPOSE, DeviceService } from './devices/service.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
@@ -114,6 +115,8 @@ export interface Harness {
    * which leaves the check to the worker, as in production.
    */
   dns: Map<string, string[]>;
+  /** The batches, for a test that sends a file as a stream it holds (the D1 review). */
+  batches: BatchService;
 }
 
 export interface JoinRequest {
@@ -172,6 +175,10 @@ export interface HarnessOptions {
   trustProxy?: 'network' | 'private' | 'all' | 'none';
   /** Where pages are proposed for (5.37): the process's proposal thread, unless a test stands in. */
   proposals?: Proposals;
+  /** FDV_DESKTOP_DOWNLOAD_URL (0.8.0, D1): where the uploader app for computers is downloaded. */
+  desktopDownloadUrl?: string;
+  /** FDV_DEVICE_DAILY_BYTES (0.8.0, D1): the most one computer may send in a day. */
+  deviceDailyBytes?: number;
 }
 
 /** The key the harness's `mail.to_address` jobs are sealed under, as the worker's are. */
@@ -310,6 +317,21 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     opts.proposals,
   );
   const collections = new CollectionService(db, documents);
+  const batches = new BatchService(
+    db,
+    keys,
+    vaults,
+    documents,
+    collections,
+    5 * 1024 * 1024,
+    enqueue,
+    {
+      ...(opts.batchBetweenRemoval ? { betweenRemoval: opts.batchBetweenRemoval } : {}),
+      ...(opts.batchOpened ? { opened: opts.batchOpened } : {}),
+      ...(opts.batchUndoHeld ? { undoHeld: opts.batchUndoHeld } : {}),
+      ...(opts.batchLearnTaught ? { learnTaught: opts.batchLearnTaught } : {}),
+    },
+  );
   const app = await buildApp(config, {
     serverVersion: await serverVersion(),
     instanceId: instanceIdReader(db),
@@ -354,11 +376,14 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       enqueue,
       ...(opts.incomingBeforeCommit ? { beforeCommit: opts.incomingBeforeCommit } : {}),
     }),
-    batches: new BatchService(db, keys, vaults, documents, collections, 5 * 1024 * 1024, enqueue, {
-      ...(opts.batchBetweenRemoval ? { betweenRemoval: opts.batchBetweenRemoval } : {}),
-      ...(opts.batchOpened ? { opened: opts.batchOpened } : {}),
-      ...(opts.batchUndoHeld ? { undoHeld: opts.batchUndoHeld } : {}),
-      ...(opts.batchLearnTaught ? { learnTaught: opts.batchLearnTaught } : {}),
+    batches,
+    devices: new DeviceService(db, batches, {
+      hmacKey: deriveKey(TEST_MASTER, DEVICE_KEY_PURPOSE),
+      baseUrl: config.FDV_BASE_URL,
+      downloadUrl: opts.desktopDownloadUrl ?? null,
+      maxUploadBytes: 5 * 1024 * 1024,
+      dailyBytes: opts.deviceDailyBytes ?? config.FDV_DEVICE_DAILY_BYTES,
+      alert,
     }),
     audit: new AuditService(db),
     reminders,
@@ -401,6 +426,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     vaultDir,
     jobs,
     dns,
+    batches,
     async close() {
       await app.close();
       await admin?.end();

@@ -82,6 +82,11 @@ export const SCREEN_RULES = {
     title: 'After a restore',
     why: 'Links a restore paused are for those who share documents: the owners, and the adults for their own.',
   },
+  computers: {
+    may: (role, caps) => caps?.features.device_uploads === true && can(role, 'document.add'),
+    title: 'Your computers',
+    why: 'Only those who add documents can pair a computer to send scans.',
+  },
   data: {
     may: (role) => can(role, 'export.request'),
     title: 'Your data',

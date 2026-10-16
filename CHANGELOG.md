@@ -6,6 +6,29 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.8.0-dev.7] - 2026-10-16 — pair a computer to send scans
+
+### Added
+
+- **Send scans from a computer.** _Settings → Your computers_ pairs a family member's own computer with the Family Documents Vault uploader (coming separately), so a scanner that saves to a folder there sends each new scan straight into their uploads — no network share to set up on the server.
+  - **Add a computer** asks for your password again, then shows a one-time code and the vault's address to type into the uploader. The code works once, for 10 minutes; five wrong tries end it.
+  - You get an email: "A computer was added to your sign-in", and it is in the activity log.
+  - What a computer sends arrives in your uploads as a batch a day, "From _computer_, _date_", read and proposed for like any upload. Nobody else sees it until you accept it.
+  - A computer's key can only send files. It cannot open, list or download anything.
+  - Each person sees and removes their own computers. Owners also see everybody's, by name and person only, and can remove any. A computer is removed by itself when its person's sign-in is taken away or they can no longer add documents.
+  - `FDV_DESKTOP_DOWNLOAD_URL` (optional): where the family downloads the uploader; the pairing dialog links to it.
+  - `FDV_DEVICE_DAILY_BYTES` (optional, 2 GB): the most one computer may send in a day.
+  - **The emergency controls stop computers too.** Signing somebody out everywhere, an owner stopping their password, and a password changed or reset each remove all of that person's computers, with a line in the activity log; the email says to pair them again.
+  - Closing the pairing dialog ends its code.
+
+### Changed
+
+- **A restore removes every paired computer**, as it ends every session: a computer removed after the backup was made would otherwise send again. Each person pairs theirs again.
+
+### Database
+
+- **Migration 0070** adds paired computers and their one-time codes, each kept only as a hash, with the rules that keep them their person's.
+
 ## [0.8.0-dev.6] - 2026-10-15 — folder names suggest the details
 
 ### Added
