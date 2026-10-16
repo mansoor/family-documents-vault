@@ -363,12 +363,16 @@ describe('Invite → Family → “Who is it for?” (after 0.7.0)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Invite someone to sign in' }));
     expect(screen.queryByLabelText('Who is it for?')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Yes, family' }));
+    // The people come with the invitations; under load the list can be
+    // asked for before they are in.
+    await waitFor(() =>
+      expect(
+        within(screen.getByLabelText('Who is it for?'))
+          .getAllByRole('option')
+          .map((o) => o.textContent),
+      ).toEqual(['Someone new', 'Tom', 'Gita', 'Nadia']),
+    );
     const who = screen.getByLabelText('Who is it for?');
-    expect(
-      within(who)
-        .getAllByRole('option')
-        .map((o) => o.textContent),
-    ).toEqual(['Someone new', 'Tom', 'Gita', 'Nadia']);
     expect(who).toHaveValue('new');
     expect(who).toHaveAccessibleDescription(WHO_NOTE);
     // Somebody new: today's flow, with their name.
