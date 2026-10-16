@@ -6,6 +6,8 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.8.0-dev.8] - 2026-10-17 — the Smart exit, measured; credit-card statements and school reports
+
 ### Added
 
 - **Two new kinds: credit card statement and school report.**
