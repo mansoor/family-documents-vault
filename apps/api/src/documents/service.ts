@@ -363,6 +363,7 @@ export function statusOf(
       missing: missingFields(
         type
           ? {
+              key: type.key,
               expiry_driver: type.expiry_driver,
               core: type.core as RequiredRules['core'],
               fields: type.fields as RequiredRules['fields'],

@@ -73,14 +73,20 @@ describe('scoring the Smart exit', () => {
     expect(scoreItem(entry({ person: null }), seen({}), expiring).misses).toEqual(['person']);
   });
 
-  it('an expiry the paper does not give, and none offered, is counted apart', () => {
+  it('an expiry the paper does not give, and none offered, is no miss; counted apart only where the kind asks for it', () => {
+    // A passport always asks for its expiry: one whose page gives none is counted apart.
+    const passport = entry({ kind: 'passport', expires: null });
+    expect(
+      scoreItem(passport, seen({ kind: 'passport', expires: null, level: 'check' }), expiring),
+    ).toMatchObject({ manual: false, expiryNotOnPaper: true });
+    // A logbook's expiry is the family's to add (0.8.0): nothing to count.
     const logbook = entry({ kind: 'vehicle_registration', expires: null });
     const s = scoreItem(
       logbook,
-      seen({ kind: 'vehicle_registration', expires: null, level: 'check' }),
+      seen({ kind: 'vehicle_registration', expires: null, level: 'ready' }),
       expiring,
     );
-    expect(s).toMatchObject({ manual: false, expiryNotOnPaper: true });
+    expect(s).toMatchObject({ manual: false, wrongReady: false, expiryNotOnPaper: false });
     // One offered anyway is wrong.
     expect(
       scoreItem(logbook, seen({ kind: 'vehicle_registration', expires: '2030-01-01' }), expiring),

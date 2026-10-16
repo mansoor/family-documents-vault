@@ -783,8 +783,32 @@ export interface MissingField {
   label: string | null;
 }
 
+/**
+ * Kinds whose papers rarely state an expiry, so it is not asked for (0.8.0,
+ * S5, the owner's decision of 16 Oct 2026): a will (its review date is the
+ * family's to choose), a vehicle's logbook, an employment contract (most
+ * are permanent) and a deed (a title never runs out; a lease does). Each
+ * still shows Expires, and reminds from it once somebody fills it in; a
+ * document of one without it is not missing anything. Every other kind that
+ * expires still requires the date. A household's own kinds are never among
+ * them: their keys are their own (`h_…`).
+ */
+export const EXPIRY_OPTIONAL_KINDS: ReadonlySet<string> = new Set([
+  'will',
+  'vehicle_registration',
+  'employment_contract',
+  'property_deed',
+]);
+
+/** Whether a kind's expiry is the family's to add, never asked for (see EXPIRY_OPTIONAL_KINDS). */
+export const expiryOptional = (
+  type: { key?: string | null | undefined } | null | undefined,
+): boolean => !!type?.key && EXPIRY_OPTIONAL_KINDS.has(type.key);
+
 /** What `missingFields` reads of a type: how it asks for its fields. */
 export interface RequiredRules {
+  /** Which kind: a few never ask for their expiry (EXPIRY_OPTIONAL_KINDS). */
+  key?: string | undefined;
   expiry_driver: string | null;
   core?: Partial<Record<CoreField, Partial<CoreFieldRule>>> | null | undefined;
   fields?: ReadonlyArray<Pick<TypeField, 'key' | 'label' | 'required'>> | null | undefined;
@@ -812,8 +836,10 @@ const blank = (v: unknown): boolean =>
  * The fields a document's type requires that it has no value for, in the
  * order the card asks them: the fixed fields, then the type's own. A fixed
  * field is required only where the type shows it; an expiry date always is,
- * for a type that expires, as it has been from the start. A document is
- * never refused for any of these (A7): it is Needs info until they are given.
+ * for a type that expires, as it has been from the start — but for the few
+ * kinds whose papers rarely state one (EXPIRY_OPTIONAL_KINDS, 0.8.0). A
+ * document is never refused for any of these (A7): it is Needs info until
+ * they are given.
  */
 export function missingFields(
   type: RequiredRules | null | undefined,
@@ -825,7 +851,7 @@ export function missingFields(
     const rule = type.core?.[key];
     const required =
       key === 'expires'
-        ? type.expiry_driver !== null
+        ? type.expiry_driver !== null && !expiryOptional(type)
         : rule?.shown !== false && rule?.required === true;
     if (required && blank(doc[key])) out.push({ key, label: rule?.label ?? null });
   }
@@ -938,7 +964,8 @@ export function deriveStatus(doc: StatusInput, todayIso: string): Status {
   if (!doc.type) return { value: 'needs_info', label: 'Needs a name' };
   if (!doc.owner_member_id) return { value: 'needs_info', label: 'Needs a person' };
   const missing = [...(doc.missing ?? [])];
-  if (!doc.type.expiry_driver)
+  // No expiry, and none to have — or none asked for (EXPIRY_OPTIONAL_KINDS, 0.8.0).
+  if (!doc.type.expiry_driver || (!doc.expires && expiryOptional(doc.type)))
     return missing.length ? needsInfo(missing) : { value: 'valid', label: '' };
   if (!doc.expires) {
     if (!missing.some((m) => m.key === 'expires')) missing.push({ key: 'expires', label: null });

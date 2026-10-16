@@ -14,9 +14,11 @@
  *   receipt), or not the one it is;
  * - **the expiry**, for a kind that has one, where the paper says it: an
  *   expiry offered that is not the paper's is wrong wherever it is offered.
- *   Where a kind keeps an expiry and the paper gives none (a will's review
- *   date, a logbook's), nothing can be read: that is counted apart
- *   (`expiry_not_on_paper`), not as the reader's miss.
+ *   Where a kind keeps an expiry and the paper gives none, nothing can be
+ *   read: that is not the reader's miss, and is counted apart
+ *   (`expiry_not_on_paper`) only where the kind still asks for the date —
+ *   not a will's, a logbook's, a contract's or a deed's, which since 0.8.0
+ *   are the family's to add (EXPIRY_OPTIONAL_KINDS).
  *
  * A blank page and the later of two copies with the same bytes need nothing
  * typed when the vault says Problem (blank, duplicate): the person removes
@@ -29,6 +31,7 @@
  * (`ready_detail_wrong`): filed, but no field a person must have.
  */
 import type { BatchLevel } from '../batch-levels.js';
+import { expiryOptional } from '../documents.js';
 
 export interface SmartTruth {
   kind: string | null;
@@ -121,8 +124,12 @@ export function scoreItem(
     if (seen.person !== t.person) misses.push('person');
     if (expiring(t.kind) && seen.expires !== t.expires) misses.push('expiry');
   }
-  const expiryNotOnPaper =
+  // Nothing to read: a kind with an expiry, the paper giving none and none
+  // offered. Counted apart where the kind still asks for the date; nowhere
+  // where it is the family's to add (EXPIRY_OPTIONAL_KINDS, 0.8.0).
+  const nothingToRead =
     t.kind !== null && kindRight && expiring(t.kind) && t.expires === null && seen.expires === null;
+  const expiryNotOnPaper = nothingToRead && !expiryOptional({ key: t.kind });
   const readyDetailWrong: SmartScore['readyDetailWrong'] = [];
   if (seen.level === 'ready') {
     if (seen.issued !== null && seen.issued !== t.issued) readyDetailWrong.push('issued');
@@ -133,9 +140,8 @@ export function scoreItem(
       readyDetailWrong.push('issuer');
     }
   }
-  // A kind with an expiry, the paper giving none and none offered: not a
-  // reading's miss (see above).
-  const counted = expiryNotOnPaper ? misses.filter((m) => m !== 'expiry') : misses;
+  // Nothing to read is not a reading's miss (see above).
+  const counted = nothingToRead ? misses.filter((m) => m !== 'expiry') : misses;
   return {
     manual: counted.length > 0,
     misses: counted,

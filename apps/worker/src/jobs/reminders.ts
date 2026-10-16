@@ -652,6 +652,7 @@ export async function refreshStatus(
             expires,
             missing: missingFields(
               type && {
+                key: type.key,
                 expiry_driver: type.expiry_driver,
                 core: d.core as RequiredRules['core'],
                 fields: d.fields as RequiredRules['fields'],

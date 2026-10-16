@@ -4667,6 +4667,22 @@ validation_failed` at once. **Changed:** `last_used_at` is when a
     Khan") the one person it can only mean, each at 0.78 with the cue
     `name_on_page` (Check), where nobody was proposed before. No cue or
     field is new.
+  - An expiry the family adds (0.8.0, S5, the owner's decision of 16
+    October). **Changed:** for the built-in kinds `will`,
+    `vehicle_registration`, `employment_contract` and `property_deed`, a
+    document without an expiry no longer lacks one: its `status` is
+    `valid` (not `needs_info` "Needs an expiry date"), as the worker's
+    status refresh and `status=` filters count it, and a batch item's card
+    gains no `missing` tag for it, so a sure one is Ready. One with an
+    expiry given counts it as before: `expiring_soon`, `expired`, and
+    reminders at the kind's lead times. Every other kind that expires,
+    and every household kind, still needs its expiry. `@fdv/shared`:
+    `EXPIRY_OPTIONAL_KINDS`, `expiryOptional(type)`; `missingFields` and
+    `deriveStatus` read the kind's `key`. **Unchanged on the wire:** `GET
+/api/v1/document-types` still gives these kinds `core.expires.required:
+true`, as it says of every kind that expires, so a client released
+    before 0.8.0 reads what it read; a client that asks `missingFields`
+    gets the new answer. No migration: the rule is the vault's, not a row.
 
 ## Deprecations in effect
 

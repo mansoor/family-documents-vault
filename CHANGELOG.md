@@ -22,6 +22,7 @@ All notable changes to Family Document Vault. The format follows
 
 ### Changed
 
+- **An expiry only if you add one:** wills, vehicle logbooks, employment contracts and title deeds rarely state an expiry, so the vault no longer asks for one. Without one, such a document is complete: it is not in Needs attention, and the Add card does not wait for the date. Add a review or renewal date and it reminds you as before. Kinds of document show the date as optional for these kinds.
 - **Whose a paper is:**
   - **Joint papers:** a joint account, a mortgage or a title in two names now suggests the first person named, for you to check. Until now it suggested nobody.
   - **Initials:** a paper addressed to "Mrs O Khan" or "O. Khan" suggests the one person in the family the initial can only mean, for you to check; with two people it could mean, nobody.

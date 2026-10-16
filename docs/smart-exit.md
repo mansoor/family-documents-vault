@@ -1,6 +1,6 @@
 # The Smart exit, measured (0.8.0)
 
-The Phase 6 "Smart" exit asks that a folder of two hundred mixed PDFs imports with fewer than ten needing manual typing, and that no item the vault calls Ready is wrong. This is what was measured on 16 October 2026, at `feat/8.s5-exit`, after the owner's second round. 0.8.0 ships with it as it stands.
+The Phase 6 "Smart" exit asks that a folder of two hundred mixed PDFs imports with fewer than ten needing manual typing, and that no item the vault calls Ready is wrong. This is what was measured on 16 October 2026, at `feat/8.s5-exit`, after the owner's second and third rounds. 0.8.0 ships with it as it stands.
 
 **Result:**
 
@@ -45,11 +45,11 @@ The second number is the one to believe about a family's own papers. The rules r
 - **whose it is:** someone offered for a paper that names nobody is wrong too;
 - **the expiry,** for a kind that has one, where the paper states it.
 
-A kind with an expiry whose paper states none (a will's review date, a logbook) is counted apart, as `expiry_not_on_paper`. A blank page or a duplicate the vault calls a Problem needs nothing.
+A will, a logbook, an employment contract or a title deed asks for no expiry (the owner's decision of 16 October): one whose paper states none, and none offered, needs nothing. Any other kind with an expiry whose paper states none is counted apart, as `expiry_not_on_paper`. A blank page or a duplicate the vault calls a Problem needs nothing.
 
 **Wrong Ready** means Ready with the kind, person or expiry wrong.
 
-The run took 46 minutes on 8 cores:
+The second round's run took 46 minutes on 8 cores (the third's, below, an hour, with the test suite running beside it):
 
 - **First set:** uploading about 40 s a run; drawing and reading 16 minutes with folders, 12 without.
 - **Second set:** uploading about 20 s a run; drawing and reading 8 minutes each.
@@ -69,9 +69,9 @@ It fails on any wrong Ready, and records how many need typing. The JSON it write
 
 | Corpus            | Run             | Files | Ready | Check | Not recognised | Problem | Needs typing | Wrong Ready |
 | ----------------- | --------------- | ----: | ----: | ----: | -------------: | ------: | -----------: | ----------: |
-| First (tune)      | With folders    |   200 |   110 |    64 |             20 |       6 |            6 |           0 |
-| First (tune)      | Without folders |   200 |   108 |    60 |             26 |       6 |           16 |           0 |
-| Second (held out) | With folders    |   115 |    19 |    54 |             36 |       6 |           53 |           0 |
+| First (tune)      | With folders    |   200 |   111 |    63 |             20 |       6 |            6 |           0 |
+| First (tune)      | Without folders |   200 |   109 |    59 |             26 |       6 |           16 |           0 |
+| Second (held out) | With folders    |   115 |    20 |    53 |             36 |       6 |           53 |           0 |
 | Second (held out) | Without folders |   115 |    22 |    30 |             57 |       6 |           57 |           0 |
 
 **Text and scans, with folders:**
@@ -127,6 +127,12 @@ It fails on any wrong Ready, and records how many need typing. The JSON it write
 
 None of these makes anything Ready on its own: each joint or initials proposal, and each card-or-bank doubt, is offered for a click.
 
+**Third round** (the owner's decision of 16 October): **an expiry only if the family adds one** for wills, logbooks (`vehicle_registration`), employment contracts and title deeds (`property_deed`), whose papers rarely state one. Deeds were added to the owner's three as clearly the same: a title never runs out. Pet records stay as they are: a vaccination's due date is often on the paper.
+
+- **In the vault:** without an expiry such a document is complete (`valid`, not "Needs an expiry date"), so it is not in Needs attention, the Add card does not wait for the date, and a batch card gains no "missing" tag for it. One that is added is counted and reminded about as before. `GET /document-types` says what it said, for phones released before 0.8.0.
+- **In the scoring:** these papers no longer count as `expiry_not_on_paper` (10 → 3 on the first set with folders, the 3 left being vet invoices; 3 → 0 on the second).
+- **Measured again,** as it changes the levels: what needs typing is unchanged (6, 16, 53, 57), and wrong Ready is still 0. Three cards move from Check to Ready: an offer letter in both runs of the first set, and a contract with folders in the second. The other wills, logbooks and deeds stay at Check for other reasons, such as a logbook's registration plate, which the kind requires and the vault does not read.
+
 ## What still needs typing
 
 **First set, 6 with folders:** all on scans whose OCR is wrong.
@@ -164,8 +170,7 @@ None of these makes anything Ready on its own: each joint or initials proposal, 
 
 ## Anything to decide
 
-- **The target is met on what the rules were adjusted on, and far from met on new layouts.** Adjusting the rules on the second set would make it a tune set too. The next honest step is a third held-out set written by someone else, for example from real (redacted) family papers.
-- **Kinds that require an expiry the paper never states** (wills, logbooks, permanent contracts): 10 papers in the first set, counted apart.
+- **The target is met on what the rules were adjusted on, and far from met on new layouts.** Adjusting the rules on the second set would make it a tune set too. The next honest step, planned for 0.9, is a held-out set of real (redacted) family papers.
 - **School reports are now their own kind.** Diplomas and certificates of achievement stay diplomas.
 
 ```json
@@ -179,8 +184,8 @@ None of these makes anything Ready on its own: each joint or initials proposal, 
     "target_met": true,
     "with_folders": {
       "files": 200,
-      "ready": 110,
-      "check": 64,
+      "ready": 111,
+      "check": 63,
       "unrecognised": 20,
       "problem": 6,
       "manual": 6,
@@ -188,8 +193,8 @@ None of these makes anything Ready on its own: each joint or initials proposal, 
     },
     "without_folders": {
       "files": 200,
-      "ready": 108,
-      "check": 60,
+      "ready": 109,
+      "check": 59,
       "unrecognised": 26,
       "problem": 6,
       "manual": 16,
@@ -202,8 +207,8 @@ None of these makes anything Ready on its own: each joint or initials proposal, 
     "target_met": false,
     "with_folders": {
       "files": 115,
-      "ready": 19,
-      "check": 54,
+      "ready": 20,
+      "check": 53,
       "unrecognised": 36,
       "problem": 6,
       "manual": 53,
