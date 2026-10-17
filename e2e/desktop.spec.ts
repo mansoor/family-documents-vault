@@ -296,7 +296,10 @@ test('a detail tag added on a document’s page is found by its value (0.9.0, T1
   await box.fill(value);
   await box.press('Enter');
   await expect(page).toHaveURL(new RegExp(`/search\\?q=${value}$`));
-  await expect(page.getByRole('link', { name: new RegExp(`Tagged ${run}`) }).first()).toBeVisible();
+  // A search result is a button that opens the document, as in type-details.
+  await expect(
+    page.getByRole('button', { name: new RegExp(`^Tagged ${run}`) }).first(),
+  ).toBeVisible();
 });
 
 test('two files added at once are accepted one after the other through the queue', async () => {
