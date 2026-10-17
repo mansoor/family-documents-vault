@@ -1332,7 +1332,7 @@ give each the same `-f` files (and `--profile public-only`) you always use.
    two-step sign-in or a passkey for every owner, without which an owner cannot lock a
    sign-in, start a reset, sign somebody out everywhere, limit what a viewer sees, change
    another person's identity details, or decide whether Only me documents can be shared
-   outside the family (Settings → Household; on unless an owner turns it off). Making a
+   outside the family (Settings → Privacy; on unless an owner turns it off). Making a
    document Only me now asks what becomes of your own links to it: they end, unless you
    keep them. A viewer who already had a sign-in keeps seeing the family's documents until
    an owner limits them (People → their name → Account); no viewer sees birthdays, the
@@ -1373,8 +1373,8 @@ give each the same `-f` files (and `--profile public-only`) you always use.
    **The web app has a new layout**: a sidebar from 1024 px (icons alone from 768 px, and
    the bottom bar on a phone), with Documents as a table to sort, filter and act on many
    at once, Inbox, Sharing, Activity and Trash each a page of their own, and Settings in
-   sections (Your account, Your computers, Notifications, Household, Your data, For
-   owners). **Add → Many documents** sends up to 200 files at once into **Inbox → Your
+   sections (Your account, Your computers, Notifications, Privacy, Kinds of document,
+   Your data, For owners). **Add → Many documents** sends up to 200 files at once into **Inbox → Your
    uploads**, where the vault reads each, suggests what it is, and waits for you to accept
    it; nobody else sees them until you do. A file already in the vault says so, and a
    renewal can be added as a new version of the document it renews. Inviting somebody can

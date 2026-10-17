@@ -47,6 +47,7 @@ The release candidate for 0.8.0, the next release after 0.4.5. There is no 0.6.0
 - **With the TLS overlay, `:8080` answers this machine only,** and Caddy talks to the API directly. It needs Docker Compose 2.24.4 or later. A device that opened `http://<server>:8080` beside the Caddy name uses the `https://` address instead. _(Can break a 0.4.5 setup.)_
 - **`FDV_TRUST_PROXY` defaults to `network`:** the vault takes nobody's word for a visitor's address but its own web server's and Caddy's. A reverse proxy of your own in front of `:8080` is recorded as one address for everybody. _(Can break a 0.4.5 setup.)_
 - **After a restore,** every share link, request and sign-in but the owners' is paused until an owner turns it back on, in After a restore (from Home), which needs the owner's two-step sign-in or a passkey; every paired computer is removed.
+- **Settings → Household is now Settings → Privacy** (the Only me rule, and Family: who sees identity details), and **Kinds of document is a section of its own**, after it. `/settings/household` still opens Privacy.
 - **Age decides the role** of an invitation: nobody under 13 is given a sign-in, 13 to 17 only as a Teen.
 - **An expiry only if you add one** for wills, vehicle logbooks, employment contracts and title deeds: without one, they are complete.
 - **Reading pages is better:** a PDF that carries its own words is read directly and only scans are photo-read; Word files are read too; joint papers, initials, card statements, Direct Debit dates and hard-to-read scans are read better.

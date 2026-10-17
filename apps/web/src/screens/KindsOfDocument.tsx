@@ -32,6 +32,7 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
+import { useShellMode } from '../shell.js';
 import { coreRule } from '../details.js';
 import { Button, ConfirmDialog, ErrorNote, Field, Select, Switch, TopBar } from '../ui.js';
 
@@ -185,6 +186,10 @@ export function KindsScreen() {
   const location = useLocation();
   const navigate = useNavigate();
   const manage = can(storedRole(), 'types.manage');
+  // A section of its own since 0.8.0: Back to Settings on a phone, as every
+  // section has; from 768 px the Settings sections are beside it.
+  const backToSettings =
+    useShellMode() === 'phone' ? { back: '/settings', backLabel: 'Back to Settings' } : {};
   const { data, error, setData } = useLoad(
     async (t) => (manage ? (await api.documentTypes(t, { all: true })).items : []),
     [authVersion],
@@ -232,11 +237,7 @@ export function KindsScreen() {
   if (!manage) {
     return (
       <main className="page page-top has-nav">
-        <TopBar
-          title="Kinds of document"
-          back="/settings/household"
-          backLabel="Back to Household"
-        />
+        <TopBar title="Kinds of document" {...backToSettings} />
         <p className="status status-warn">{refusalFor('types.manage')}</p>
       </main>
     );
@@ -247,7 +248,7 @@ export function KindsScreen() {
 
   return (
     <main className="page page-top has-nav">
-      <TopBar title="Kinds of document" back="/settings/household" backLabel="Back to Household" />
+      <TopBar title="Kinds of document" {...backToSettings} />
       <p className="lede">
         What the family keeps, and what the card asks for each. Changes are for everyone in the
         household, and in the activity log.

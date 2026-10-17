@@ -121,7 +121,7 @@ export const ONLY_ME_NOT_SHARED =
 export const ONLY_ME_KEEP_REFUSED =
   "This household doesn't share Only me documents outside the family, so your links to it end as it becomes Only me.";
 
-/** The household's rule, each way, in one line (Settings → Household). */
+/** The household's rule, each way, in one line (Settings → Privacy). */
 export const ONLY_ME_SHARING_WORDS = {
   on: 'The owner of an Only me document can send it outside the family with a link; nobody else in the family sees it.',
   off: 'Nobody, owners included, can send an Only me document outside the family; links that sent one are paused.',

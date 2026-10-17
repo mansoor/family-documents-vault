@@ -205,16 +205,17 @@ const lastCall = (state: FakeState, method: string) =>
   [...state.calls].reverse().find((c) => c.method === method && c.url.includes('document-'));
 
 describe('Settings → Kinds of document (5.12)', () => {
-  it('is offered to owners and adults, and to nobody else', async () => {
+  it('is offered to owners and adults, and to nobody else: a section of Settings of its own (0.8.0)', async () => {
     for (const [role, offered] of [
       ['owner', true],
       ['adult', true],
       ['teen', false],
       ['viewer', false],
     ] as const) {
-      open('/settings/household', role);
-      await screen.findByRole('heading', { name: 'Household', level: 1 });
-      const link = screen.queryByRole('link', { name: /Kinds of document/ });
+      open('/settings', role);
+      await screen.findByRole('heading', { name: 'Settings', level: 1 });
+      const sections = screen.getByRole('navigation', { name: 'Settings sections' });
+      const link = within(sections).queryByRole('link', { name: /^Kinds of document/ });
       expect(link !== null, role).toBe(offered);
       if (link) expect(link).toHaveAttribute('href', '/settings/kinds');
       cleanup();

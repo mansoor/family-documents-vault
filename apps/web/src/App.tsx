@@ -24,7 +24,7 @@ import { CollectionScreen, CollectionsScreen } from './screens/Collections.js';
 import { ForgotPasswordScreen, ResetPasswordScreen } from './screens/Password.js';
 import { SharedScreen } from './screens/Shared.js';
 import { SharingScreen } from './screens/Sharing.js';
-import { HouseholdScreen } from './screens/Household.js';
+import { PrivacyScreen } from './screens/Household.js';
 import { EmailScreen, NotificationsScreen } from './screens/Notifications.js';
 import { ScannerScreen } from './watch-folder.js';
 import { EmailInScreen } from './mail-in.js';
@@ -101,6 +101,8 @@ const MOVED: ReadonlyArray<readonly [from: string, to: string]> = [
   ['/settings/sharing/ask', '/sharing/ask'],
   ['/settings/guests', '/people/outside'],
   ['/settings/after-restore', '/after-restore'],
+  // Household became Privacy in 0.8.0 (the owner's ask of 17 Oct 2026).
+  ['/settings/household', '/settings/privacy'],
   ['/incoming', '/inbox/sent'],
   ['/incoming/:id', '/inbox/:id'],
 ];
@@ -334,7 +336,7 @@ export function App() {
                   }
                 />
                 <Route path="notifications" element={<NotificationsScreen />} />
-                <Route path="household" element={<HouseholdScreen />} />
+                <Route path="privacy" element={<PrivacyScreen />} />
                 <Route path="family" element={<FamilyScreen />} />
                 <Route path="kinds" element={<KindsScreen />} />
                 <Route path="kinds/new" element={<KindScreen />} />

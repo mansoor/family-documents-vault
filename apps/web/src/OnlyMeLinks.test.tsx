@@ -8,7 +8,7 @@ import { fresh, installFakeApi, PASSPORT, signedIn, type FakeState } from './tes
 /**
  * Only me documents and links outside the family (5.41; the owner's
  * decision of 6 Oct 2026): what making one Only me asks about the links
- * that send it, the household's rule in Settings → Household, and what the
+ * that send it, the household's rule in Settings → Privacy, and what the
  * share sheet says of an Only me document.
  */
 
@@ -302,18 +302,18 @@ describe('the same choice, wherever Only me is chosen (the third round)', () => 
   });
 });
 
-describe('Settings → Household', () => {
+describe('Settings → Privacy (Household until 0.8.0)', () => {
   it('an owner turns sharing Only me documents off, with a code; the screen says what it did', async () => {
     const state = fresh({ accountStepUp: true });
     installFakeApi(state);
     signedIn();
     window.history.replaceState({}, '', '/settings');
     render(<App />);
-    // Settings' own row: the shell's bar on a phone says "Household" too (R1).
+    // Settings' own row, Privacy (Household until 0.8.0).
     const settings = (await screen.findByRole('heading', { name: 'Settings', level: 1 })).closest(
       'main',
     ) as HTMLElement;
-    fireEvent.click(await within(settings).findByRole('link', { name: /^Household/ }));
+    fireEvent.click(await within(settings).findByRole('link', { name: /^Privacy/ }));
     const toggle = await screen.findByRole('checkbox', {
       name: 'Only me documents can be shared outside the family',
     });
@@ -338,7 +338,7 @@ describe('Settings → Household', () => {
   it('an adult reads it, and changes nothing', async () => {
     installFakeApi(fresh({ onlyMeShareable: false }));
     signedIn('adult');
-    window.history.replaceState({}, '', '/settings/household');
+    window.history.replaceState({}, '', '/settings/privacy');
     render(<App />);
     await screen.findByText(/Nobody, owners included, can send an Only me document/);
     expect(screen.queryByRole('checkbox')).toBeNull();
