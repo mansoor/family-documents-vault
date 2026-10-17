@@ -15,11 +15,114 @@ against self-hosted servers that are months or years behind.
 4. The client declares its minimum server version; the server declares its
    minimum client version. Either side refusing says so in plain words.
 
+## 0.8.0
+
+The release on `main` after 0.4.5: there was no 0.6.0 and no 0.7.0. Their
+candidates (0.6.0-rc.1, 0.7.0-rc.1 and 0.7.0-rc.2) never went to `main`, and
+all of them is in 0.8.0, so a client moving from 0.4.5 reads the
+[0.7.0](#070) and [0.6.0](#060) summaries below as well as this one. This is
+what changed for API clients since 0.7.0-rc.2 (the 0.8.0-dev tags); each
+item is given in full under "After 0.7.0" in [Unreleased](#unreleased).
+Everything here is **additive** unless it says **breaking**: nothing a 0.4.x,
+0.6.0-rc.1 or 0.7.0 client calls is gone, and a call made as before is
+answered as before but where "Changed answers" says. `min_client_version`
+stays `0.0.1`. The phone app still needs a vault of 0.4.10 or later, and its
+0.3.x needs 0.7.0 or later for Send to my Inbox (`features.batches`); the
+uploader for computers, 0.1.0, needs 0.8.0 (`features.device_uploads`).
+
+- **New `features`**, each absent from older vaults: `batch_versions` and
+  `folder_suggestions` (`true` from 0.8.0); `device_uploads` (`true`);
+  `watch_folder` (`true` only while the worker has a scanner folder set up
+  and ready). **Changed:** `email_ingest`, reserved and `false` since 1.0,
+  is `true` only while the worker has a mailbox set up and has checked it
+  lately. A client asks for what each names only when it is `true`.
+- **New routes:**
+  - `GET /api/v1/batches/counts` — `{ waiting }`, the caller's own uploads
+    waiting (whoever adds documents).
+  - `GET /api/v1/reminders/people` and `POST
+/api/v1/reminders/people/{id}/dismiss` — an owner's reminders that
+    somebody of the family has turned 13 (`kind: "turned_13"`); `403` to
+    anybody else.
+  - The scanner folder (`watch_folder`): `GET` and `PUT
+/api/v1/watch-folder` (owners); `GET /api/v1/watch-folder/notices` and
+    `POST /api/v1/watch-folder/notices/{id}/dismiss` (the caller's own; an
+    email's notes come here too, with `source`).
+  - Email in (`email_ingest`): `GET` and `PUT /api/v1/mail-in` (owners);
+    `GET /api/v1/mail-in/me`, `POST /api/v1/mail-in/me/code`,
+    `/email-code` and `/confirm` (whoever adds documents).
+  - Computers (`device_uploads`): `POST` and `DELETE
+/api/v1/device-pairings` (whoever adds documents; the step-up first);
+    `POST /api/v1/devices/pair` (no sign-in); `GET /api/v1/devices/me` and
+    `POST /api/v1/device-uploads`, which take `Authorization: Device
+<id>.<key>` and nothing else; `GET /api/v1/paired-devices` and `DELETE
+/api/v1/paired-devices/{id}`.
+- **New fields:**
+  - on a batch item: `renewals` (`[{ document_id, title, by }]`, documents
+    the uploader may change that it probably renews), `folder` (the folders
+    it came from, its uploader's alone), and `sender_unverified: true` for
+    one from an email whose sender the mailbox's provider did not vouch for;
+    a proposal's `from` may be `folder`, and it may carry `folder: true`;
+    `proposals.tags`; item tags `renewal` and `clash_folder`;
+  - in a request: `relative_path` before the file on `POST
+/api/v1/batches/{id}/items` (send it only with `folder_suggestions`: an
+    older vault refuses it, `422`), and `into_document_id` on `POST
+…/items/{itemId}/accept`, which adds the item as that document's new
+    version and answers `undo_until`;
+  - two built-in kinds in `GET /api/v1/document-types`:
+    `credit_card_statement` and `school_report`.
+- **Changed answers:**
+  - an invitation for somebody under 13 by their date of birth is `422
+too_young`, and a role their age does not allow (from 13 to 17 `teen`
+    alone, from 18 any but `teen`) `422 role_not_for_age`; accepting one is
+    refused the same way once a changed date of birth says so. An
+    invitation run out or locked no longer stands in the way of a new one;
+  - `PATCH /api/v1/members/{id}` changing the date of birth of a child under
+    13 with no sign-in is `403 child_birthday_owners` to anybody but an
+    owner;
+  - an item with a near match is `check`, never `ready`: Accept all Ready
+    skips it (`not_ready`); `…/accept-ready/undo` also takes back an item
+    added as a new version, until `undo_until`;
+  - a will, a vehicle logbook, an employment contract or a title deed with
+    no expiry is `valid`, not `needs_info`; `GET /document-types` still says
+    `core.expires.required: true` of them, as before;
+  - what a batch item's pages propose is better at card statements, joint
+    papers and initials (no new field or cue);
+  - any route but the two device routes answers a request carrying
+    `Authorization: Device …` `401 device_key_not_accepted`; the two device
+    routes refuse a bearer (`401 unauthenticated`);
+  - signing somebody out everywhere, an owner's reset with `stop_now`, a
+    password changed or reset, and a restore each end that person's paired
+    computers (a restore, everybody's); their keys then answer `401
+device_revoked`;
+  - an upload whose stream ended early is `400 upload_incomplete`, and keeps
+    nothing, on `POST /batches/{id}/items` too.
+- **Breaking, only for a client written against a 0.8.0 development tag**
+  (none was on `main`, and none of this was in 0.7.0): a notice's
+  `file_name` on `GET /api/v1/watch-folder/notices` is **nullable** (an
+  email's notice names no file) since 0.8.0-dev.5; an email's notice
+  `reason` is `skipped` for attachments not added, no longer `too_large`;
+  `POST /api/v1/mail-in/me/code` is `409 mail_in_no_sender_check` unless the
+  mailbox checks senders, and answers a `mailto`. (Additive since
+  0.8.0-dev.7: `POST /api/v1/devices/pair` also takes the code with its
+  three address-check characters, `KX7P-3M9Q-R4T`, and still the eight
+  alone.)
+- **`@fdv/client`** gains `batchCounts`, `personReminders`,
+  `dismissPersonReminder`, the scanner folder's, email in's and the
+  computers' calls (`watchFolder`, `mailIn`, `createDevicePairing`,
+  `pairDevice`, `deviceUpload`, `listDevices`, `revokeDevice` and the
+  rest), and `addBatchItem(…, { relativePath })`. **Changed:**
+  `token({ wait: 'join' })` is answered at once (`offline`, `tooMany`) as
+  soon as the renewal it joined starts waiting out a 429.
+- **Nothing deprecated** since 0.7.0: the token-in-path routes are still
+  removed in 0.9.0, as below.
+
 ## 0.7.0
 
-The release on `main` after 0.4.5: there was no 0.6.0. Its candidate,
-0.6.0-rc.1, never went to `main`, and all of it is in 0.7.0, so a client
-moving from 0.4.5 reads the [0.6.0](#060) summary below as well as this one.
+The Phase 6 release candidate (0.7.0-rc.1 and rc.2), which never went to
+`main`: everything in it is in [0.8.0](#080), the first release on `main`
+since 0.4.5. The candidate before it, 0.6.0-rc.1, never went to `main`
+either, and all of it is in 0.7.0, so a client moving from 0.4.5 reads the
+[0.6.0](#060) summary below as well as this one.
 This is what changed for API clients since 0.6.0-rc.1 (the 0.7.0-dev tags,
 Phase 6); each item is given in full under "After 0.6.0 (Phase 6)" in
 [Unreleased](#unreleased). Everything here is **additive** unless it says
@@ -85,8 +188,8 @@ visibility|collections|location`, `direction=asc|desc`) takes
 ## 0.6.0
 
 The Phase 5 release candidate (0.6.0-rc.1), which never went to `main`:
-everything in it is in [0.7.0](#070), the first release on `main` since
-0.4.5 (0.5.x were development tags). This is the summary for client authors; each item is given in full
+everything in it is in [0.7.0](#070), and so in [0.8.0](#080), the first
+release on `main` since 0.4.5 (0.5.x were development tags). This is the summary for client authors; each item is given in full
 under "After 0.5.0 (Phase 5)" in [Unreleased](#unreleased). Nothing a 0.4.x
 client calls is gone: `min_client_version` stays `0.0.1`, and the phone app
 needs a vault of 0.4.10 or later.
