@@ -3959,14 +3959,20 @@ export function installFakeApi(state: FakeState) {
       }
       const kept = state.tagsNotMine?.[normaliseTag(fromTag)] ?? 0;
       let changed = 0;
-      for (const d of carries(from).slice(kept)) {
+      let inTrash = 0;
+      // The Trash too, as the vault reaches it (the T1 review, M2).
+      const all = state.documents.filter((d) =>
+        ((d.tags as string[] | undefined) ?? []).some((t) => tagKey(t) === from),
+      );
+      for (const d of all.slice(kept)) {
         const before = (d.tags as string[] | undefined) ?? [];
         d.tags = renaming
           ? normaliseTags(before.map((t) => (tagKey(t) === from ? to : t)))
           : before.filter((t) => tagKey(t) !== from);
         changed += 1;
+        if (d.deleted_at) inTrash += 1;
       }
-      return json({ changed, kept, merged });
+      return json({ changed, kept, merged, in_trash: inTrash });
     }
     if (path === '/api/v1/documents' && method === 'GET' && isDocumentSort(query.get('sort'))) {
       const answered = documentTable(state, query, storedRole() as Role);

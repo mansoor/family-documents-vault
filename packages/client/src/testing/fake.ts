@@ -5471,6 +5471,13 @@ function answerTags(
     can(who.role, 'document.edit') && (who.role !== 'teen' || d.owner_member_id === who.memberId);
   const carrying = (key: string) =>
     seen.filter((d) => (d.tags ?? []).some((t) => tagKey(t) === key));
+  // A rename or a delete reaches the Trash too, as the Trash list shows it (the T1 review, M2).
+  const seenAll = documents.filter((d) =>
+    canSee(who, {
+      visibility: d.visibility ?? 'household',
+      owner_member_id: d.owner_member_id ?? null,
+    }),
+  );
   if (path === '/api/v1/tags') {
     if (method !== 'GET') return fail(404, 'not_found', 'Not found.');
     const q = (param(url, 'q') ?? '').replace(/\s+/g, ' ').replace(/^ /, '').toLowerCase();
@@ -5529,7 +5536,8 @@ function answerTags(
   }
   let changed = 0;
   let kept = 0;
-  for (const d of carrying(from)) {
+  let inTrash = 0;
+  for (const d of seenAll.filter((x) => (x.tags ?? []).some((t) => tagKey(t) === from))) {
     if (!mayChange(d)) {
       kept += 1;
       continue;
@@ -5542,8 +5550,9 @@ function answerTags(
     d.tags = after;
     d.revision = (d.revision ?? 1) + 1;
     changed += 1;
+    if (d.deleted_at) inTrash += 1;
   }
-  return ok({ changed, kept, merged });
+  return ok({ changed, kept, merged, in_trash: inTrash });
 }
 
 /**

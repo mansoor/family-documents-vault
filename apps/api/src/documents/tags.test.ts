@@ -1,4 +1,4 @@
-import { createPool } from '@fdv/db';
+import { createPool, verifyAuditChain, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type {
   ActivityLine,
@@ -33,7 +33,7 @@ describe.skipIf(!testAdminUrl())('tags you can use (0.9.0, T1)', () => {
   const get = (who: Tokens, url: string) => h.app.inject({ url, headers: h.as(who) });
   const send = (
     who: Tokens,
-    method: 'POST' | 'PATCH' | 'PUT',
+    method: 'POST' | 'PATCH' | 'PUT' | 'DELETE',
     url: string,
     payload: unknown,
     headers: Record<string, string> = {},
@@ -256,7 +256,7 @@ describe.skipIf(!testAdminUrl())('tags you can use (0.9.0, T1)', () => {
     expect((await tagsOf(tariq, 'q=utilities'))[0]).toMatchObject({ count: 3, changeable: 1 });
 
     const done = result(await rename(owner, { from: 'Utilities', to: 'household bills' }));
-    expect(done).toEqual({ changed: 5, kept: 0, merged: false });
+    expect(done).toEqual({ changed: 5, kept: 0, merged: false, in_trash: 0 });
     expect((await read(owner, mine.id)).tags).toEqual(['household bills', 'paid']);
     expect((await read(owner, ownersOnlyMe.id)).tags).toEqual(['household bills']);
     // Sarah's Only me document is untouched: the owner has no more power over it than anybody.
@@ -294,7 +294,7 @@ describe.skipIf(!testAdminUrl())('tags you can use (0.9.0, T1)', () => {
   it('a teen renames on their own documents only, and is told how many they could not change', async () => {
     const done = result(await rename(tariq, { from: 'household bills', to: 'my bills' }));
     // His own; the family's two he can see but not change; nothing of the rest.
-    expect(done).toEqual({ changed: 1, kept: 2, merged: false });
+    expect(done).toEqual({ changed: 1, kept: 2, merged: false, in_trash: 0 });
     expect((await read(tariq, tariqs.id)).tags).toEqual(['my bills']);
     expect((await read(tariq, family.id)).tags).toEqual(['household bills']);
     expect((await read(owner, adultsOnly.id)).tags).toEqual(['household bills']);
@@ -313,7 +313,7 @@ describe.skipIf(!testAdminUrl())('tags you can use (0.9.0, T1)', () => {
     // Nothing changed for asking.
     expect((await read(owner, both.id)).tags).toEqual(['bills', 'household bills']);
     const done = result(await rename(owner, { from: 'household bills', to: 'bills', merge: true }));
-    expect(done).toEqual({ changed: 5, kept: 0, merged: true });
+    expect(done).toEqual({ changed: 5, kept: 0, merged: true, in_trash: 0 });
     expect((await read(owner, both.id)).tags).toEqual(['bills']);
     expect((await read(owner, family.id)).tags).toEqual(['bills']);
     expect(await activity(owner)).toContain('Owner merged two tags on “Both”');
@@ -322,7 +322,7 @@ describe.skipIf(!testAdminUrl())('tags you can use (0.9.0, T1)', () => {
   it('a tag only on somebody else’s Only me documents is no tag to merge into, and stays theirs', async () => {
     // "sarah secret label: 5512" is on Sarah's Only me document alone.
     const done = result(await rename(owner, { from: 'paid', to: 'Sarah secret label: 5512' }));
-    expect(done).toEqual({ changed: 1, kept: 0, merged: false });
+    expect(done).toEqual({ changed: 1, kept: 0, merged: false, in_trash: 0 });
     expect((await read(owner, mine.id)).tags).toEqual(['bills', 'sarah secret label: 5512']);
     expect((await read(sarah, sarahsOnlyMe.id)).tags).toEqual([
       'utilities',
@@ -333,6 +333,7 @@ describe.skipIf(!testAdminUrl())('tags you can use (0.9.0, T1)', () => {
       changed: 1,
       kept: 0,
       merged: false,
+      in_trash: 0,
     });
     expect((await read(sarah, sarahsOnlyMe.id)).tags).toEqual([
       'utilities',
@@ -355,11 +356,13 @@ describe.skipIf(!testAdminUrl())('tags you can use (0.9.0, T1)', () => {
         changed: 0,
         kept: 0,
         merged: false,
+        in_trash: 0,
       });
       expect(result(await remove(who, 'utilities'))).toEqual({
         changed: 0,
         kept: 0,
         merged: false,
+        in_trash: 0,
       });
     }
     expect((await read(sarah, sarahsOnlyMe.id)).tags).toEqual([
@@ -374,7 +377,7 @@ describe.skipIf(!testAdminUrl())('tags you can use (0.9.0, T1)', () => {
   it('deletes a tag everywhere the caller may, and says how many it stays on that they may not change', async () => {
     const done = result(await remove(tariq, 'sarah bills'));
     // Tariq changes none of the family's three he sees it on, and is told so.
-    expect(done).toEqual({ changed: 0, kept: 3, merged: false });
+    expect(done).toEqual({ changed: 0, kept: 3, merged: false, in_trash: 0 });
     const owners = result(await remove(owner, 'Sarah Bills'));
     expect(owners.changed).toBeGreaterThan(0);
     expect(owners.kept).toBe(0);
@@ -393,6 +396,167 @@ describe.skipIf(!testAdminUrl())('tags you can use (0.9.0, T1)', () => {
       expect((await rename(owner, body)).statusCode).toBe(422);
     }
     const long = await rename(owner, { from: 'bills', to: 'z'.repeat(41) });
+    expect(long.statusCode).toBe(422);
+    expect(json<{ error: { message: string } }>(long).error.message).toMatch(
+      /^A tag can be 40 characters at most/,
+    );
+  });
+  // ------------------------------------------------------- the review (T1)
+
+  it('keys a tag in the database on both sides: İstanbul, a final ς and a no-break space are found and renamed', async () => {
+    const city = await made(owner, { title: 'Istanbul flat', tags: ['city: İstanbul'] });
+    const street = await made(owner, { title: 'Greek letter', tags: ['ΟΔΟΣ: ΑΘΗΝΑΣ'] });
+    const spaced = await made(owner, { title: 'Spaced locker' });
+    // As an older release, or another client, could have kept it: a no-break space.
+    await admin.query('update document set tags = $1::text[] where id = $2', [
+      ['shelf:\u00a07'],
+      spaced.id,
+    ]);
+    expect(await titles(owner, `tag=${encodeURIComponent('city: İstanbul')}`)).toEqual([
+      'Istanbul flat',
+    ]);
+    expect(await titles(owner, `sort=title&tag=${encodeURIComponent('ΟΔΟΣ: ΑΘΗΝΑΣ')}`)).toEqual([
+      'Greek letter',
+    ]);
+    expect(await titles(owner, `sort=title&tag_label=${encodeURIComponent('ΟΔΟΣ')}`)).toEqual([
+      'Greek letter',
+    ]);
+    expect(await titles(owner, `sort=title&tag=${encodeURIComponent('shelf: 7')}`)).toEqual([
+      'Spaced locker',
+    ]);
+    expect(await titles(owner, 'sort=title&tag_label=shelf')).toEqual(['Spaced locker']);
+    expect((await tagsOf(owner, `q=${encodeURIComponent('city: İ')}`)).map((t) => t.tag)).toEqual([
+      'city: İstanbul',
+    ]);
+    expect(result(await rename(owner, { from: 'city: İstanbul', to: 'city: Ankara' }))).toEqual({
+      changed: 1,
+      kept: 0,
+      merged: false,
+      in_trash: 0,
+    });
+    expect((await read(owner, city.id)).tags).toEqual(['city: Ankara']);
+    expect(result(await remove(owner, 'ΟΔΟΣ: ΑΘΗΝΑΣ')).changed).toBe(1);
+    expect((await read(owner, street.id)).tags).toEqual([]);
+    expect(result(await remove(owner, 'shelf: 7')).changed).toBe(1);
+    expect((await read(owner, spaced.id)).tags).toEqual([]);
+  });
+
+  it('renames and deletes in the Trash too, and says how many there', async () => {
+    const binned = await made(owner, { title: 'Binned', tags: ['trash-secret'] });
+    const kept = await made(owner, { title: 'Kept', tags: ['trash-secret'] });
+    expect(
+      (await send(owner, 'DELETE', `/api/v1/documents/${binned.id}`, undefined)).statusCode,
+    ).toBe(204);
+    // Counted out of the Trash, as the list of tags always counted.
+    expect((await tagsOf(owner, 'q=trash-secret'))[0]).toMatchObject({ count: 1 });
+    expect(result(await remove(owner, 'trash-secret'))).toEqual({
+      changed: 2,
+      kept: 0,
+      merged: false,
+      in_trash: 1,
+    });
+    // Brought back, it does not bring the tag back.
+    expect(
+      (await send(owner, 'POST', `/api/v1/documents/${binned.id}/restore`, {})).statusCode,
+    ).toBe(200);
+    expect((await read(owner, binned.id)).tags).toEqual([]);
+    expect((await read(owner, kept.id)).tags).toEqual([]);
+    // Somebody else's Only me document in the Trash is still not the owner's to touch.
+    const hers = await made(sarah, {
+      title: 'Her binned',
+      visibility: 'private',
+      tags: ['her-trash'],
+    });
+    expect(
+      (await send(sarah, 'DELETE', `/api/v1/documents/${hers.id}`, undefined)).statusCode,
+    ).toBe(204);
+    expect(result(await remove(owner, 'her-trash'))).toEqual({
+      changed: 0,
+      kept: 0,
+      merged: false,
+      in_trash: 0,
+    });
+    const still = await admin.query<{ tags: string[] }>('select tags from document where id = $1', [
+      hers.id,
+    ]);
+    expect(still.rows[0]?.tags).toEqual(['her-trash']);
+  });
+
+  it('writes one line a document, all in one chain the nightly check reads whole', async () => {
+    for (let i = 0; i < 3; i++) await made(owner, { title: `Chain ${i}`, tags: ['chained'] });
+    expect(result(await rename(owner, { from: 'chained', to: 'chain-link' })).changed).toBe(3);
+    const lines = await admin.query<{ n: number }>(
+      `select count(*)::int as n from audit_event
+        where household_id = $1 and action = 'document.tags_changed' and detail = '{"change": "renamed"}'::jsonb`,
+      [owner.household_id],
+    );
+    expect(lines.rows[0]?.n).toBeGreaterThanOrEqual(3);
+    const chain = await withSystem(h.db, owner.household_id, (trx) =>
+      verifyAuditChain(trx, owner.household_id),
+    );
+    expect(chain).toMatchObject({ ok: true });
+  });
+
+  it('holds its documents before the log: an edit holding one meanwhile finishes, and so does it', async () => {
+    const one = await made(owner, { title: 'Held one', tags: ['held'] });
+    await made(owner, { title: 'Held two', tags: ['held'] });
+    const other = await admin.connect();
+    try {
+      await other.query('begin');
+      // An edit's order: its document, then the log.
+      await other.query('select id from document where id = $1 for update', [one.id]);
+      const renaming = rename(owner, { from: 'held', to: 'released' });
+      // The rename is waiting on that document, and holds nothing of the log.
+      await new Promise((r) => setTimeout(r, 300));
+      await other.query(`select pg_advisory_xact_lock(hashtext('audit:' || $1::uuid::text))`, [
+        owner.household_id,
+      ]);
+      await other.query('commit');
+      expect(result(await renaming).changed).toBe(2);
+    } finally {
+      other.release();
+    }
+  });
+
+  it('refuses one change past 5,000 documents, before holding any, and says to do it in parts', async () => {
+    await admin.query(
+      `insert into document (household_id, title, visibility, owner_member_id, tags)
+       select $1, 'Many ' || i, 'household', $2, array['many-541']
+         from generate_series(1, 5001) as i`,
+      [owner.household_id, owner.member_id],
+    );
+    const r = await rename(owner, { from: 'many-541', to: 'many-542' });
+    expect(r.statusCode).toBe(422);
+    const refused = json<{ error: { code: string; message: string } }>(r).error;
+    expect(refused.code).toBe('too_many_documents');
+    expect(refused.message).toMatch(
+      /^That tag is on 5,001 documents you can change, and one change reaches 5,000 at most\. Do it in parts/,
+    );
+    const left = await admin.query<{ n: number }>(
+      `select count(*)::int as n from document where household_id = $1 and tags = array['many-541']`,
+      [owner.household_id],
+    );
+    expect(left.rows[0]?.n).toBe(5001);
+    expect((await remove(owner, 'many-541')).statusCode).toBe(422);
+    await admin.query(`delete from document where household_id = $1 and title like 'Many %'`, [
+      owner.household_id,
+    ]);
+  });
+
+  it('tidies a batch’s tags before holding them to the caps, as a document’s (L3)', async () => {
+    const ok = await send(owner, 'POST', '/api/v1/batches', {
+      name: 'Tidied',
+      defaults: { tags: [`  ${'y'.repeat(40)}  `, 'Agent :  Sam  Lee'] },
+    });
+    expect(ok.statusCode, ok.body).toBe(201);
+    expect(json<{ defaults: { tags: string[] } }>(ok).defaults.tags).toEqual([
+      'y'.repeat(40),
+      'agent: Sam Lee',
+    ]);
+    const long = await send(owner, 'POST', '/api/v1/batches', {
+      name: 'Too long',
+      defaults: { tags: ['x'.repeat(41)] },
+    });
     expect(long.statusCode).toBe(422);
     expect(json<{ error: { message: string } }>(long).error.message).toMatch(
       /^A tag can be 40 characters at most/,

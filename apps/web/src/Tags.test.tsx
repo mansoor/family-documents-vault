@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
@@ -90,6 +90,12 @@ const SARAS = doc({
   tags: ['travel'],
 });
 
+/** The app again over the same vault, at the address now in the bar. */
+function installFakeApiAgain(state: FakeState) {
+  installFakeApi(state);
+  render(<App />);
+}
+
 function at(path: string, over: Partial<FakeState> = {}, role: Role = 'owner', px = WIDE) {
   atWidth(px);
   const state = fresh({
@@ -141,7 +147,17 @@ describe('a document’s tags on its page (0.9.0, T1)', () => {
     const state = at('/documents/doc-1');
     const section = await tags();
     const field = within(section).getByRole('textbox', { name: 'Add a tag' });
+    // Nothing asked of the vault's tags until the field has the focus (the review's H1)…
+    const tagCalls = () => state.calls.filter((c) => c.url.startsWith('/api/v1/tags'));
+    // Longer than the type-ahead waits for the typing to stop.
+    await act(() => new Promise((r) => setTimeout(r, 500)));
+    expect(tagCalls()).toEqual([]);
+    fireEvent.focus(field);
     fireEvent.change(field, { target: { value: 'locker: ' } });
+    // …and then only those starting with what is typed.
+    await waitFor(() =>
+      expect(tagCalls().map((c) => c.url)).toContain('/api/v1/tags?q=locker%3A%20&limit=50'),
+    );
     // Pool pass's locker: 7 is offered; this one's own 12 is not.
     const offered = await within(section).findByRole('group', { name: 'Tags already used' });
     expect(
@@ -192,7 +208,7 @@ describe('a document’s tags on its page (0.9.0, T1)', () => {
       ['/api/v1/documents/doc-1', { tags: ['locker: 12', 'travel', 'house', 'gym'] }, '"theirs"'],
     ]);
     expect(within(section).getByRole('status')).toHaveTextContent(
-      'Someone else changed this document meanwhile. Your change was made on top of theirs.',
+      'Someone else changed this document meanwhile. Your change was made on top of theirs: “gym” added.',
     );
   });
 
@@ -224,7 +240,39 @@ describe('a document’s tags on its page (0.9.0, T1)', () => {
     });
     fireEvent.click(within(section).getByRole('button', { name: 'Add' }));
     expect(await within(section).findByText(/^A tag can be 40 characters at most/)).toBeVisible();
+    // Heard with the field (the review's L7).
+    expect(within(section).getByRole('textbox', { name: 'Add a tag' })).toHaveAccessibleDescription(
+      /^A tag can be 40 characters at most/,
+    );
     expect(patches(state)).toEqual([]);
+  });
+
+  it('says a tag is there already, and spells one there in other letters as now typed (L5)', async () => {
+    const state = at('/documents', {
+      documents: [doc({ id: 'doc-1', title: 'Pension', tags: ['travel', 'agent: sam lee'] })],
+    });
+    window.history.replaceState({}, '', '/documents/doc-1');
+    cleanup();
+    installFakeApiAgain(state);
+    const section = await tags();
+    const field = within(section).getByRole('textbox', { name: 'Add a tag' });
+    fireEvent.change(field, { target: { value: 'Travel' } });
+    fireEvent.click(within(section).getByRole('button', { name: 'Add' }));
+    await waitFor(() =>
+      expect(within(section).getByRole('status')).toHaveTextContent(
+        '“travel” is already a tag here.',
+      ),
+    );
+    expect(patches(state)).toEqual([]);
+    fireEvent.change(field, { target: { value: 'Agent: Sam Lee' } });
+    fireEvent.click(within(section).getByRole('button', { name: 'Add' }));
+    await within(section).findByRole('link', { name: 'Documents tagged Agent: Sam Lee' });
+    expect(within(section).getByRole('status')).toHaveTextContent(
+      '“Agent: sam lee” is now spelt “Agent: Sam Lee”.',
+    );
+    expect(patches(state)).toEqual([
+      ['/api/v1/documents/doc-1', { tags: ['travel', 'agent: Sam Lee'] }, '"doc-1"'],
+    ]);
   });
 
   it('for whoever may not change it — a viewer, a teen on somebody else’s — chips only', async () => {
@@ -431,6 +479,76 @@ describe('Settings → Tags (0.9.0, T1)', () => {
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Rename Locker: 7' })).toBeNull(),
     );
+  });
+
+  it('finds a tag past the first 1,000 with Find a tag, and says the list stops there (L4)', async () => {
+    const many = Array.from({ length: 1000 }, (_, i) => `bulk-${String(i).padStart(4, '0')}`);
+    const state = at('/settings/tags', {
+      documents: [doc({ id: 'doc-1', title: 'Many', tags: many }), POOL],
+    });
+    // A thousand rows to draw: given time to.
+    const slow = { timeout: 15_000 };
+    await screen.findByRole('heading', { level: 1, name: 'Tags' });
+    const find = screen.getByRole('searchbox', { name: 'Find a tag' });
+    await waitFor(
+      () =>
+        expect(find).toHaveAccessibleDescription(
+          'Showing the 1,000 used most. Find a tag to see one further down.',
+        ),
+      slow,
+    );
+    fireEvent.change(find, { target: { value: 'Policy' } });
+    const details = await screen.findByRole('region', { name: 'Details' }, slow);
+    await waitFor(
+      () =>
+        expect(
+          within(details)
+            .getAllByRole('link')
+            .map((l) => l.textContent),
+        ).toEqual(['Policy holder', 'Policy holder · AhmedPolicy holder: Ahmed']),
+      slow,
+    );
+    expect(state.calls.some((c) => c.url === '/api/v1/tags?q=Policy&limit=1000')).toBe(true);
+    expect(screen.queryByRole('region', { name: 'Tags' })).toBeNull();
+    expect(find).toHaveAccessibleDescription('Those that start with what you type.');
+    await expectAccessible();
+  }, 60_000);
+
+  it('says a new name that looks like a secret before renaming to it (L2)', async () => {
+    const state = at('/settings/tags');
+    await screen.findByRole('button', { name: 'Rename travel' });
+    fireEvent.click(screen.getByRole('button', { name: 'Rename travel' }));
+    const sheet = screen.getByRole('dialog', { name: 'Rename “travel”' });
+    fireEvent.change(within(sheet).getByRole('textbox', { name: 'New name' }), {
+      target: { value: 'wifi_password: hunter2' },
+    });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Rename' }));
+    expect(await within(sheet).findByRole('alert')).toHaveTextContent(
+      '“Wifi_password” looks like a secret.',
+    );
+    expect(state.tagChanges ?? []).toEqual([]);
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Rename it anyway' }));
+    await screen.findByText(/is now “Wifi_password · hunter2”\. Changed on 2 documents\./);
+    expect(state.tagChanges?.map((c) => c.body)).toEqual([
+      { from: 'travel', to: 'wifi_password: hunter2' },
+    ]);
+  });
+
+  it('says how many it changed in the Trash (M2)', async () => {
+    const state = at('/settings/tags', {
+      documents: [GYM, POOL, { ...SARAS, deleted_at: '2026-10-01T10:00:00Z' }],
+    });
+    await screen.findByRole('button', { name: 'Delete travel' });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete travel' }));
+    fireEvent.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete it' }),
+    );
+    expect(
+      await screen.findByText(
+        '“travel” deleted. Changed on 2 documents, including 1 in the Trash.',
+      ),
+    ).toBeVisible();
+    expect((state.documents.find((d) => d.id === 'doc-3') as { tags: string[] }).tags).toEqual([]);
   });
 
   it('deletes a tag after asking, and says where it stays that the person cannot change', async () => {

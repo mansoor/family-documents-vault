@@ -6,8 +6,6 @@ import {
   mayChangeVisibilityAtAll,
   normaliseTags,
   notesPlainText,
-  tagKey,
-  tagLabelKey,
   tagsProblem,
   PRIVATE_BY_DEFAULT,
   PRIVATE_TO_THEM,
@@ -506,15 +504,17 @@ export const seenDocument = (p: Principal) => sql<boolean>`(d.visibility = 'hous
 
 /**
  * The filter by a tag, as SQL on the document table (0.9.0, T1): the tag
- * whatever its case and spacing, as 0073's `fdv_tag_keys` compares them. A
- * plain tag was kept in lower case already, so it finds what it always did.
+ * whatever its case and spacing, keyed by the database on both sides (0073:
+ * the stored `tag_keys`, and `fdv_tag_key` of what is asked) — never by
+ * JavaScript, whose lower case is not the database's. A plain tag was kept
+ * in lower case already, so it finds what it always did.
  */
-export const tagFilter = (tag: string, column = 'tags') =>
-  sql<boolean>`fdv_tag_keys(${sql.ref(column)}) @> array[${tagKey(tag)}]::text[]`;
+export const tagFilter = (tag: string, alias = '') =>
+  sql<boolean>`${sql.ref(`${alias}tag_keys`)} @> array[fdv_tag_key(${tag})]::text[]`;
 
 /** Every document with a detail tag of this label, any value (0.9.0, T1). */
-export const tagLabelFilter = (label: string, column = 'tags') =>
-  sql<boolean>`fdv_tag_labels(${sql.ref(column)}) @> array[${tagLabelKey(label)}]::text[]`;
+export const tagLabelFilter = (label: string, alias = '') =>
+  sql<boolean>`${sql.ref(`${alias}tag_labels`)} @> array[fdv_tag_label_key(${label})]::text[]`;
 
 /**
  * A document of kind `t` (a row called `t` with a `key`) the caller can

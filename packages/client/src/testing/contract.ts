@@ -3166,7 +3166,7 @@ export const contractScenarios: Scenario[] = [
       expect((await api.document(token, a.id)).tags).toContain('contract-plain');
       expect(
         await api.renameTag(token, { from: 'contract-plain', to: 'contract-other', merge: true }),
-      ).toEqual({ changed: 1, kept: 0, merged: true });
+      ).toEqual({ changed: 1, kept: 0, merged: true, in_trash: 0 });
       expect((await api.document(token, a.id)).tags).toEqual([
         'contract locker: C-12',
         'contract agent: Sam Lee',
@@ -3193,6 +3193,7 @@ export const contractScenarios: Scenario[] = [
         changed: 2,
         kept: 0,
         merged: false,
+        in_trash: 0,
       });
       expect((await api.document(token, b.id)).tags).toEqual([
         'contract locker: C-7',

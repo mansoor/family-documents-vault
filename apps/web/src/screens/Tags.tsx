@@ -1,8 +1,10 @@
 import {
   can,
   groupTags,
+  looksSecret,
   normaliseTag,
   refusalFor,
+  secretTagWarning,
   tagKey,
   tagsProblem,
   tagWords,
@@ -10,7 +12,7 @@ import {
   type TagChangeResult,
   type TagView,
 } from '@fdv/shared';
-import { useRef, useState, type FormEvent, type RefObject } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
 import { Link } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -34,21 +36,39 @@ import { Button, ConfirmDialog, ErrorNote, Field, Sheet, TopBar } from '../ui.js
 /** "1 document", "3 documents". */
 const docs = (n: number) => `${n} document${n === 1 ? '' : 's'}`;
 
-/** What a rename, a merge or a delete came to, in words. */
+/** What a rename, a merge or a delete came to, in words: the Trash's said too (the review's M2). */
 function outcomeWords(r: TagChangeResult, done: string): string {
-  const changed = r.changed > 0 ? `${done} Changed on ${docs(r.changed)}.` : 'Nothing changed.';
+  const trash = r.in_trash ?? 0;
+  const changed =
+    r.changed > 0
+      ? `${done} Changed on ${docs(r.changed)}${trash > 0 ? `, including ${trash} in the Trash` : ''}.`
+      : 'Nothing changed.';
   const kept = r.kept > 0 ? ` It stays on ${docs(r.kept)} you can see but can’t change.` : '';
   return `${changed}${kept}`;
 }
+
+/** The most tags the list is given at once: past it, a search finds the rest (the review's L4). */
+const LISTED = 1000;
+
+/** How long typing in Find a tag has to stop before the vault is asked. */
+const FIND_SETTLES_MS = 200;
 
 export function TagsScreen() {
   const { withToken, authVersion } = useApp();
   const mayChange = can(storedRole(), 'document.edit');
   const backToSettings =
     useShellMode() === 'phone' ? { back: '/settings', backLabel: 'Back to Settings' } : {};
+  // Those starting with what is typed in Find a tag, once the typing stops.
+  const [find, setFind] = useState('');
+  const [asked, setAsked] = useState('');
+  useEffect(() => {
+    const timer = window.setTimeout(() => setAsked(find.trim()), FIND_SETTLES_MS);
+    return () => window.clearTimeout(timer);
+  }, [find]);
   const { data, error, reload } = useLoad(
-    async (t) => (mayChange ? (await api.tags(t, undefined, { limit: 1000 })).items : []),
-    [authVersion],
+    async (t) =>
+      mayChange ? (await api.tags(t, asked || undefined, { limit: LISTED })).items : [],
+    [authVersion, asked],
   );
   const [said, setSaid] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -150,9 +170,28 @@ export function TagsScreen() {
         {said}
       </p>
       <ErrorNote message={problem ?? error} />
+      <div className="field tags-find">
+        <label htmlFor="tags-find">Find a tag</label>
+        <input
+          id="tags-find"
+          type="search"
+          value={find}
+          autoComplete="off"
+          placeholder="locker, or locker: 1"
+          aria-describedby="tags-find-note"
+          onChange={(e) => setFind(e.target.value)}
+        />
+        <span id="tags-find-note" className="muted">
+          {data !== null && data.length >= LISTED
+            ? `Showing the ${LISTED.toLocaleString('en-GB')} used most. Find a tag to see one further down.`
+            : 'Those that start with what you type.'}
+        </span>
+      </div>
       {data !== null && data.length === 0 && (
         <p className="muted">
-          No tags yet. Add them on a document’s page, or to many at once in Documents.
+          {asked
+            ? `No tag starts with “${asked}”.`
+            : 'No tags yet. Add them on a document’s page, or to many at once in Documents.'}
         </p>
       )}
       {groups.plain.length > 0 && (
@@ -294,6 +333,8 @@ function RenameSheet(props: {
 }) {
   const [to, setTo] = useState(props.tag.tag);
   const [problem, setProblem] = useState<string | null>(null);
+  // A new name that looks like a secret, said once: renamed on the second ask.
+  const [warned, setWarned] = useState<string | null>(null);
   const shown = tagWords(props.tag.tag).text;
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -312,9 +353,14 @@ function RenameSheet(props: {
       props.onCancel();
       return;
     }
+    if (looksSecret(next) && warned !== tagKey(next)) {
+      setWarned(tagKey(next));
+      return;
+    }
     setProblem(await props.onRename(next));
   };
   const same = tagKey(to) === tagKey(props.tag.tag);
+  const warning = warned !== null && warned === tagKey(to) ? secretTagWarning(to) : null;
   return (
     <Sheet
       label={`Rename “${shown}”`}
@@ -335,10 +381,15 @@ function RenameSheet(props: {
           maxLength={TAG_MAX * 4}
           hint={`It changes on the ${docs(props.tag.changeable ?? props.tag.count)} you can change. A tag that is there already is merged with it.`}
         />
+        {warning && (
+          <p className="status-warn tag-warn" role="alert">
+            {warning}
+          </p>
+        )}
         <ErrorNote message={problem} />
         <div className="row">
           <Button type="submit" disabled={props.busy || (same && to.trim() === props.tag.tag)}>
-            {props.busy ? 'Renaming…' : 'Rename'}
+            {props.busy ? 'Renaming…' : warning ? 'Rename it anyway' : 'Rename'}
           </Button>
           <Button kind="quiet" disabled={props.busy} onClick={props.onCancel}>
             Cancel

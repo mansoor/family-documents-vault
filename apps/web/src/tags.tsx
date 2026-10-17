@@ -11,10 +11,10 @@ import {
   type DocumentView,
   type TagView,
 } from '@fdv/shared';
-import { useId, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import { api, ApiRequestError } from './api.js';
-import { describeError, useApp, useLoad } from './app-context.js';
+import { describeError, useApp } from './app-context.js';
 import { heldNow } from './notes.js';
 import { ErrorNote } from './ui.js';
 
@@ -34,14 +34,35 @@ export function tagHref(tag: string): string {
   return `/documents?${new URLSearchParams({ tag }).toString()}`;
 }
 
-/** The tags this person can see, most used first: the type-ahead's words. None when not `wanted`. */
-export function useKnownTags(wanted = true): TagView[] {
-  const { authVersion } = useApp();
-  const { data } = useLoad(
-    async (t) => (wanted ? (await api.tags(t, undefined, { limit: 1000 })).items : []),
-    [authVersion, wanted],
-  );
-  return data ?? [];
+/** How long typing has to stop before the vault is asked what fits. */
+const TYPED_SETTLES_MS = 150;
+
+/**
+ * The tags offered as somebody types (the T1 review, H1): nothing is asked
+ * until the field is first given the focus; then the vault is asked for
+ * those that start with what is typed (`q`), a few at a time, once the
+ * typing stops — never the household's every tag.
+ */
+function useTypeAhead(typed: string, active: boolean): TagView[] {
+  const { withToken } = useApp();
+  const [found, setFound] = useState<{ q: string; items: TagView[] }>({ q: '', items: [] });
+  const q = typed.replace(/^\s+/, '');
+  useEffect(() => {
+    if (!active) return;
+    let stopped = false;
+    const timer = window.setTimeout(() => {
+      void withToken((t) => api.tags(t, q || undefined, { limit: 50 }))
+        .then((r) => {
+          if (!stopped && r) setFound({ q, items: r.items });
+        })
+        .catch(() => undefined);
+    }, TYPED_SETTLES_MS);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [q, active, withToken]);
+  return found.items;
 }
 
 /** A tag as a chip: "Locker · 12", heard as "Locker: 12". */
@@ -65,7 +86,6 @@ export function TagText({ tag }: { tag: string }) {
 export function TagField(props: {
   id: string;
   label: string;
-  known: readonly TagView[];
   /** The tags it already has: never offered again. */
   have: readonly string[];
   busy: boolean;
@@ -77,10 +97,14 @@ export function TagField(props: {
   const [problem, setProblem] = useState<string | null>(null);
   // A tag that looks like a secret, said once: added on the second ask.
   const [warned, setWarned] = useState<string | null>(null);
+  // Asked for only once the field has had the focus.
+  const [active, setActive] = useState(false);
+  const known = useTypeAhead(typed, active);
   const input = useRef<HTMLInputElement>(null);
   const noteId = `${props.id}-note`;
   const warnId = `${props.id}-warn`;
-  const offered = tagSuggestions(typed, props.known, props.have);
+  const errorId = `${props.id}-error`;
+  const offered = tagSuggestions(typed, known, props.have);
 
   const add = async (raw: string) => {
     const tag = normaliseTag(raw);
@@ -110,6 +134,10 @@ export function TagField(props: {
     if (!props.busy) void add(typed);
   };
   const warning = warned !== null && warned === tagKey(typed) ? secretTagWarning(typed) : null;
+  // What the field is described by: a refusal, the warning, and the note (the review's L7).
+  const describedBy = [problem ? errorId : null, warning ? warnId : null, noteId]
+    .filter(Boolean)
+    .join(' ');
 
   return (
     <form className="tag-add" onSubmit={submit} noValidate>
@@ -125,8 +153,9 @@ export function TagField(props: {
             autoCapitalize="none"
             placeholder="travel, or locker: 12"
             maxLength={TAG_MAX * 4}
-            aria-describedby={warning ? `${warnId} ${noteId}` : noteId}
+            aria-describedby={describedBy}
             aria-invalid={problem ? true : undefined}
+            onFocus={() => setActive(true)}
             onChange={(e) => {
               setTyped(e.target.value);
               setProblem(null);
@@ -145,7 +174,11 @@ export function TagField(props: {
           {warning}
         </p>
       )}
-      <ErrorNote message={problem} />
+      {problem && (
+        <p id={errorId} className="error" role="alert">
+          {problem}
+        </p>
+      )}
       {offered.length > 0 && (
         <div className="pills tag-offers" role="group" aria-label="Tags already used">
           {offered.map((t) => (
@@ -169,13 +202,25 @@ export function TagField(props: {
 /** One change to a document's tags, made again on what the vault holds now. */
 type TagChange = { add: string } | { remove: string };
 
-function applied(tags: readonly string[], change: TagChange): string[] | null {
+/**
+ * The tags once the change is made; or, nothing to send, why: the tag is
+ * there already, as typed, or it is not there to take off. A tag there in
+ * another spelling ("agent: sam lee", "agent: Sam Lee") is spelt as now
+ * typed, in its place (the review's L5).
+ */
+function applied(
+  tags: readonly string[],
+  change: TagChange,
+): { tags: string[]; respelt?: string } | { already: true } | { gone: true } {
   if ('add' in change) {
-    if (tags.some((t) => tagKey(t) === tagKey(change.add))) return null;
-    return [...tags, change.add];
+    const at = tags.findIndex((t) => tagKey(t) === tagKey(change.add));
+    if (at < 0) return { tags: [...tags, change.add] };
+    const was = tags[at] as string;
+    if (was === change.add) return { already: true };
+    return { tags: tags.map((t, i) => (i === at ? change.add : t)), respelt: was };
   }
-  if (!tags.some((t) => tagKey(t) === tagKey(change.remove))) return null;
-  return tags.filter((t) => tagKey(t) !== tagKey(change.remove));
+  if (!tags.includes(change.remove)) return { gone: true };
+  return { tags: tags.filter((t) => t !== change.remove) };
 }
 
 /**
@@ -191,7 +236,6 @@ export function TagSection(props: {
 }) {
   const { withToken } = useApp();
   const { doc } = props;
-  const known = useKnownTags(props.mayEdit);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -202,30 +246,46 @@ export function TagSection(props: {
   /**
    * The change, with the ETag the page has. Refused because the document
    * changed meanwhile (409), it is made again, once, on the document as the
-   * vault holds it now — so neither change is lost — and said so.
+   * vault holds it now — so neither change is lost — and said so. What it
+   * came to is said: added, respelt, there already, taken off.
    */
   const change = async (what: TagChange): Promise<boolean> => {
     setBusy(true);
     setSaid(null);
     setProblem(null);
     let base = doc;
+    const meanwhile = () => (base !== doc ? 'Someone else changed this document meanwhile. ' : '');
     try {
       for (let tries = 0; tries < 2; tries++) {
-        const tags = applied(base.tags, what);
-        if (tags === null) {
-          // Already so on the document as it is now: nothing to send.
+        const next = applied(base.tags, what);
+        if ('already' in next || 'gone' in next) {
           if (base !== doc) props.onSaved(base);
+          const spoken = tagWords('add' in what ? what.add : what.remove).spoken;
+          setSaid(
+            'already' in next
+              ? `${meanwhile()}“${spoken}” is already a tag here.`
+              : `${meanwhile()}“${spoken}” is no longer a tag here.`,
+          );
           return true;
         }
         try {
-          const saved = await withToken((t) => api.updateDocument(t, doc.id, { tags }, base.etag));
+          const saved = await withToken((t) =>
+            api.updateDocument(t, doc.id, { tags: next.tags }, base.etag),
+          );
           if (!saved) return false;
           props.onSaved(saved);
-          if (base !== doc) {
-            setSaid(
-              'Someone else changed this document meanwhile. Your change was made on top of theirs.',
-            );
-          }
+          const spoken = tagWords('add' in what ? what.add : what.remove).spoken;
+          const done =
+            'remove' in what
+              ? `“${spoken}” is no longer a tag here.`
+              : next.respelt
+                ? `“${tagWords(next.respelt).spoken}” is now spelt “${spoken}”.`
+                : `“${spoken}” added.`;
+          setSaid(
+            base !== doc
+              ? `Someone else changed this document meanwhile. Your change was made on top of theirs: ${done}`
+              : done,
+          );
           return true;
         } catch (err) {
           if (!(err instanceof ApiRequestError && err.status === 409)) throw err;
@@ -276,10 +336,7 @@ export function TagSection(props: {
                     aria-label={`Remove the tag ${words.spoken}`}
                     onClick={() => {
                       void change({ remove: tag }).then((done) => {
-                        if (done) {
-                          setSaid((s) => s ?? `“${words.spoken}” is no longer a tag here.`);
-                          heading.current?.focus();
-                        }
+                        if (done) heading.current?.focus();
                       });
                     }}
                   >
@@ -301,16 +358,10 @@ export function TagSection(props: {
         <TagField
           id={`${fieldId}-add`}
           label="Add a tag"
-          known={known}
           have={doc.tags}
           busy={busy}
           action="Add"
-          onAdd={(tag) =>
-            change({ add: tag }).then((done) => {
-              if (done) setSaid((s) => s ?? `“${tagWords(tag).spoken}” added.`);
-              return done;
-            })
-          }
+          onAdd={(tag) => change({ add: tag })}
         />
       )}
     </section>

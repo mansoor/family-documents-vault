@@ -4808,8 +4808,15 @@ true`, as it says of every kind that expires, so a client released
       characters at most and 50 a document, as always: past either,
       `422 validation_failed` says which, in words ("A tag can be 40
       characters at most: “…” is 41."), where it used to be zod's message;
-      the 40 and the 50 are counted once the tags are tidied. A capture's
-      check (`checkCaptureMetadata`) says the same.
+      the 40 and the 50 are counted once the tags are tidied — a batch's
+      `defaults` too. A capture's check (`checkCaptureMetadata`) says the
+      same.
+    - **Compared by the database.** Whatever is asked about a tag (`tag=`,
+      `tag_label=`, `q`, a rename's `from` and `to`, a delete's `tag`) is
+      keyed by the vault's database, as the tags themselves are (0073's
+      stored `tag_keys` and `tag_labels`): spaces tidied, the no-break ones
+      too; in lower case, a final "ς" as "σ" and "İ" as "i". A client need
+      not, and should not, key a tag itself.
     - **Search** finds a detail tag by its label, by its value or by the
       whole tag (`GET /search?q=`), as it found any tag's words.
     - **`GET /api/v1/documents`** (the older list and every column sort):
@@ -4821,7 +4828,7 @@ true`, as it says of every kind that expires, so a client released
       matches `q` against the tags whatever their case ("locker: " gives
       the values used for that label; `%` and `_` are themselves), counts
       a tag once for each document whatever its spellings, and gives the
-      spelling used most. Each item gains `label` and `value` (a detail
+      spelling used most. Past 1,000, ask with `q`. Each item gains `label` and `value` (a detail
       tag's halves, the label in lower case; `null` for a plain tag) and
       `changeable`: how many of the counted documents the caller may
       change. Only documents the caller can see, out of the Trash, are
@@ -4830,19 +4837,29 @@ true`, as it says of every kind that expires, so a client released
       (owners, adults and teens; a viewer or a guest is `403`):
       - `POST /api/v1/tags/rename` — `{ from, to, merge? }`. `from` becomes
         `to` on every document the caller may change (a teen, their own)
-        among those they can see, out of the Trash. Into a tag one of the
-        documents they can see carries already, it is a merge, asked first:
+        among those they can see, in the Trash too, as the Trash list gives
+        them: a tag deleted is not given back by a restore. Into a tag one
+        of the
+        documents they can see out of the Trash carries already, it is a
+        merge, asked first:
         without `merge: true`, `409 tag_exists` ("“…” is a tag already.
         Renaming “…” to it merges the two."); a document with both keeps
         one, the first. A tag only on documents they cannot see is no tag
         to merge into, and is never said to be there.
       - `POST /api/v1/tags/delete` — `{ tag }`. Taken off every document
         the caller may change.
-      - Each answers `{ changed, kept, merged }`: on how many documents it
-        changed, and on how many they can see but may not change it stays.
-        A document they cannot see is never touched and never counted. Each
-        document changed moves its `updated_at`, so its ETag: an edit made
-        against it as it was is `409 conflict`.
+      - Each answers `{ changed, kept, merged, in_trash }`: on how many
+        documents it changed, of those how many are in the Trash, and on
+        how many they can see but may not change it stays. A document they
+        cannot see is never touched and never counted. Each document changed
+        moves its `updated_at`, so its ETag: an edit made against it as it
+        was is `409 conflict`.
+      - One call changes 5,000 documents at most: past it, `422
+too_many_documents`, before any is held, says to do it in parts.
+        A call is one statement for its documents and one for their
+        activity lines (2,000 in about 2 s, 5,000 in about 4 s, measured
+        through the API); its documents are held in the order of their ids
+        before the household's activity log, as an edit holds its one.
     - **Activity:** each document a rename, a merge or a delete changes has
       its line, `document.tags_changed` (`detail.change`: `renamed`,
       `merged`, `removed`), for whoever may see the document, as an edit's

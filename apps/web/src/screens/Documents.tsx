@@ -86,7 +86,7 @@ import {
 } from '../ui.js';
 import { DocRow } from './Home.js';
 import { beside, mayChange, useTrashedNote } from '../DocActions.js';
-import { TagField, useKnownTags } from '../tags.js';
+import { TagField } from '../tags.js';
 import { useSelect } from './SearchPeople.js';
 import { LinksChoiceDialog, linksAsk, linksChoice, type LinksAsk } from './Visibility.js';
 
@@ -1938,7 +1938,6 @@ function TagsSheet(props: {
   onCancel: () => void;
 }) {
   const busy = props.progress !== null;
-  const known = useKnownTags(props.mode === 'add');
   const [picked, setPicked] = useState<string | null>(null);
   const n = props.mine.length;
   const what = documentsCount(n);
@@ -1973,7 +1972,6 @@ function TagsSheet(props: {
           <TagField
             id="bulk-tag"
             label="Tag"
-            known={known}
             have={[]}
             busy={busy}
             action={busyWords ?? `Add to ${what}`}

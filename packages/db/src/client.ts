@@ -1014,6 +1014,9 @@ export interface Schema {
     sealed_details: Generated<string[]>;
     status_cache: string | null;
     search_tsv: GeneratedAlways<string>;
+    /** Each tag as it is compared, in the order of `tags`; the labels of its detail tags (0073). */
+    tag_keys: GeneratedAlways<string[]>;
+    tag_labels: GeneratedAlways<string[]>;
     created_at: GeneratedTimestamp;
     created_by: string | null;
     updated_at: GeneratedTimestamp;

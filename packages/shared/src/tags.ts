@@ -145,20 +145,63 @@ export function tagWords(tag: string): TagWords {
   return { text: `${label} · ${d.value}`, spoken: `${label}: ${d.value}`, label, value: d.value };
 }
 
-/** Words in a label that holds a secret, each a word of its own. */
-const SECRET =
-  /(?:^|[\s-])(?:pass ?words?|passwd|pins?|pin (?:codes?|numbers?)|pass ?codes?|security (?:codes?|numbers?|questions?)|cvv|cvc)(?=[\s-]|$)/i;
+/**
+ * Words in a label that holds a secret, each a word of its own, once the
+ * label is in words (`secretWords`): a password, a PIN or a PUK, a passcode,
+ * a passphrase, a security code or answer, a card's CVV, a login, a
+ * recovery or backup code, a seed phrase, the alarm's, the door's or the
+ * gate's code, the safe's combination.
+ */
+const SECRET = new RegExp(
+  `(?:^| )(?:${[
+    'pass ?words?',
+    'passwd',
+    'pwd?',
+    'pass ?phrases?',
+    'pins?',
+    'pin (?:codes?|numbers?)',
+    'puks?',
+    'puk codes?',
+    'pass ?codes?',
+    'security (?:codes?|numbers?|questions?|answers?)',
+    'cvv',
+    'cvc',
+    'logins?',
+    'log ins?',
+    '(?:recovery|backup) (?:codes?|keys?|phrases?|words?)',
+    'seed (?:phrases?|words?)',
+    '(?:alarm|door|gate|garage|entry|lock|key ?safe|key ?box) (?:codes?|pins?|numbers?)',
+    'safe (?:combinations?|codes?)',
+    'combinations?',
+  ].join('|')})(?= |$)`,
+);
+
+/**
+ * A label as words: camelCase split ("wifiPassword"), `_`, `/`, `.`, `-`,
+ * `:` and `|` as spaces, in lower case; and "safety pin", which holds no PIN,
+ * left out.
+ */
+function secretWords(label: string): string {
+  return label
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_/\\.\-:|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+    .replace(/(?:^| )safety pins?(?= |$)/g, ' ')
+    .trim();
+}
 
 /**
  * Whether a tag looks like it holds a secret: a detail tag whose label
- * names a password, a PIN, a passcode or a security code ("wifi password:
- * …") — or a plain tag of more than one word that does ("pin 4821"). Said,
- * before it is saved; never refused.
+ * names a password, a PIN, a passcode, a login or a code ("wifi password:
+ * …", "alarm_code: …") — or a plain tag of more than one word that does
+ * ("pin 4821"). Said, before it is saved or renamed to; never refused.
  */
 export function looksSecret(tag: string): boolean {
   const d = tagDetail(tag);
-  const label = d ? d.label : tidy(tag);
-  return SECRET.test(label) && (d !== null || /\s\S/.test(label));
+  const words = secretWords(d ? d.label : tidy(tag));
+  return SECRET.test(words) && (d !== null || words.includes(' '));
 }
 
 /** What is said of a tag that looks like a secret, before it is saved. */
@@ -271,12 +314,14 @@ export interface TagView extends KnownTag {
 /**
  * What a rename, a merge or a delete of a tag came to (0.9.0,
  * `features.tag_management`): on how many documents it was changed — the
- * reader's to change — and on how many they can see but may not change it
- * stays. Documents they cannot see are never counted.
+ * reader's to change, in the Trash too — and on how many they can see but
+ * may not change it stays. Documents they cannot see are never counted.
  */
 export interface TagChangeResult {
   changed: number;
   kept: number;
   /** A rename into a tag the reader's documents carried already. */
   merged: boolean;
+  /** Of those changed, how many are in the Trash. */
+  in_trash?: number;
 }

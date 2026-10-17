@@ -95,10 +95,39 @@ describe('tags (0.9.0, T1)', () => {
       'wifi password: x',
       'card pin: 1',
       'pin 4821',
+      // The T1 review's (L2): more names, and labels written as code is.
+      'pw: x',
+      'PWD: x',
+      'passphrase: correct horse',
+      'PUK: 12345678',
+      'recovery codes: a1 b2',
+      'backup code: 1234',
+      'seed phrase: abandon',
+      'login: ahmed@example.test',
+      'alarm code: 1234',
+      'door code: 4321',
+      'gate code: 9',
+      'safe combination: 12-34-56',
+      'wifi_password: x',
+      'wifiPassword: x',
+      'bank/pin: 1',
+      'PIN:4821',
     ]) {
       expect(looksSecret(secret), secret).toBe(true);
     }
-    for (const fine of ['locker: 12', 'pinboard: hall', 'pin', 'passport', 'travel', 'pins']) {
+    for (const fine of [
+      'locker: 12',
+      'pinboard: hall',
+      'pin',
+      'passport',
+      'travel',
+      'pins',
+      'safety pins: drawer',
+      'sewing: safety pin',
+      'pinecone: x',
+      'spinner: x',
+      'gate: north',
+    ]) {
       expect(looksSecret(fine), fine).toBe(false);
     }
     expect(secretTagWarning('pin: 4821')).toMatch(/^“Pin” looks like a secret\./);
