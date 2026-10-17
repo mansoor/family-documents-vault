@@ -60,6 +60,8 @@ import { registerWatchFolder } from './watch-folder/routes.js';
 import type { WatchFolderService } from './watch-folder/service.js';
 import { registerMailIn } from './mail-in/routes.js';
 import type { MailInService } from './mail-in/service.js';
+import { registerReadingCheck } from './reading-check/routes.js';
+import type { ReadingCheckService } from './reading-check/service.js';
 import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
 import { ownNetworks, trustProxyFor } from './client-address.js';
@@ -126,6 +128,8 @@ export interface AppDeps {
   watchFolder?: WatchFolderService;
   /** Email in (0.8.0, S4): the owners' setting, and each person's address and code. */
   mailIn?: MailInService;
+  /** The Reading check (0.9.0, R0): an owner's. */
+  readingChecks?: ReadingCheckService;
   logger?: boolean | object;
   /**
    * The networks this process is on, for `FDV_TRUST_PROXY=network` (5.30):
@@ -481,6 +485,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerBatches(app, deps.batches);
   if (deps.watchFolder) registerWatchFolder(app, deps.watchFolder);
   if (deps.mailIn) registerMailIn(app, deps.mailIn);
+  if (deps.readingChecks) registerReadingCheck(app, deps.readingChecks);
   registerDevices(app, deps.devices, deps.stepUp, config.FDV_MAX_UPLOAD_BYTES);
 
   return app;

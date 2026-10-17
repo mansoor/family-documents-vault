@@ -52,6 +52,7 @@ const PAGES: ReadonlyArray<readonly [pattern: string, title: string]> = [
   ['/settings/storage', 'Where your files are kept'],
   ['/settings/scanner', 'Scanner folder'],
   ['/settings/email-in', 'Email in'],
+  ['/settings/reading-check', 'Reading check'],
   ['/settings/family', 'Family'],
   ['/settings/kinds', 'Settings: kinds of document'],
   ['/settings/kinds/new', 'Add a kind'],

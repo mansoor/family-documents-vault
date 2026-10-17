@@ -860,6 +860,68 @@ h3 {
   gap: 6px;
 }
 
+/* The Reading check (0.9.0, R0): how far it has got, its numbers, the checks. */
+.reading-progress {
+  width: 100%;
+  height: 12px;
+  accent-color: var(--accent);
+}
+
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.reading-table td {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Its headings in words that wrap, so a phone's width holds every column. */
+.data-table.reading-table thead th {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+@media (max-width: 480px) {
+  .data-table.reading-table th,
+  .data-table.reading-table td {
+    padding-right: 8px;
+    font-size: 15px;
+  }
+
+  .data-table.reading-table thead th {
+    font-size: 13px;
+  }
+}
+
+.data-table.reading-table th[scope='row'] {
+  font-size: inherit;
+  font-weight: 400;
+  color: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.reading-caption {
+  text-align: left;
+  font-weight: 700;
+  padding-bottom: 8px;
+}
+
+.reading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.reading-row > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
 /* 5.33: what a restricted viewer can see, on their Home. */
 .limits-told {
   margin: 0;

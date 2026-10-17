@@ -104,6 +104,12 @@ export const SCREEN_RULES = {
   },
   // Email in (S4): an owner's.
   emailIn: { may: owner, title: 'Email in', why: 'Only an owner can set up email in.' },
+  // The Reading check (0.9.0, R0): an owner's.
+  readingCheck: {
+    may: owner,
+    title: 'Reading check',
+    why: 'Only an owner can run the Reading check.',
+  },
 } satisfies Record<string, ScreenRule>;
 
 /** "This isn't something you can open": the screen's name, and who it is for. */

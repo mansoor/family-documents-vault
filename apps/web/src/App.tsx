@@ -28,6 +28,7 @@ import { PrivacyScreen } from './screens/Household.js';
 import { EmailScreen, NotificationsScreen } from './screens/Notifications.js';
 import { ScannerScreen } from './watch-folder.js';
 import { EmailInScreen } from './mail-in.js';
+import { ReadingCheckScreen } from './reading-check.js';
 import { PersonDocumentsScreen, ProfileScreen } from './screens/Person.js';
 import { PeopleScreen, RemindersScreen, SearchScreen } from './screens/SearchPeople.js';
 import {
@@ -386,6 +387,14 @@ export function App() {
                   element={
                     <Only rule={SCREEN_RULES.emailIn}>
                       <EmailInScreen />
+                    </Only>
+                  }
+                />
+                <Route
+                  path="reading-check"
+                  element={
+                    <Only rule={SCREEN_RULES.readingCheck}>
+                      <ReadingCheckScreen />
                     </Only>
                   }
                 />

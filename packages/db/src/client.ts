@@ -794,6 +794,51 @@ export interface Schema {
     attempts: Generated<number>;
   };
 
+  /**
+   * A version filed through review (0074, 0.9.0 R0): written by the
+   * database as an incoming file is accepted, kept after the file's row
+   * goes. The vault's; an owner reads those of documents they can see.
+   */
+  review_filing: {
+    version_id: string;
+    household_id: string;
+    document_id: string;
+    filed_by: string | null;
+    filed_at: GeneratedTimestamp;
+  };
+
+  /** A Reading check (0074, R0): an owner's, numbers only. */
+  reading_check: {
+    id: Generated<string>;
+    household_id: string;
+    requested_by: string | null;
+    member_id: string | null;
+    n: number;
+    include_edited: Generated<boolean>;
+    state: Generated<'waiting' | 'running' | 'done' | 'cancelled' | 'failed'>;
+    failure: 'stopped' | 'restored' | null;
+    total: Generated<number>;
+    done: Generated<number>;
+    created_at: GeneratedTimestamp;
+    started_at: Timestamp | null;
+    finished_at: Timestamp | null;
+    server_version: string | null;
+    rules_hash: string | null;
+    /** Numbers only (reading_numbers_only). */
+    summary: ColumnType<unknown, string | null | undefined, string | null>;
+  };
+
+  /** What a check has done, then its misses, sealed for the owner who asked (0074): theirs alone. */
+  reading_check_sealed: {
+    check_id: string;
+    household_id: string;
+    member_id: string;
+    wrapped_by_scope: string;
+    work_sealed: Buffer | null;
+    misses_sealed: Buffer | null;
+    expires_at: Timestamp;
+  };
+
   /** A person's rule, learned from their corrections (0065, Phase 6 I4): theirs alone. */
   intake_rule: {
     id: Generated<string>;

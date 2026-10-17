@@ -149,6 +149,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // D1 (0.8.0): a computer paired with a one-time code sends scans with
       // an upload-only key, into its person's own uploads.
       device_uploads: true,
+      // R0 (0.9.0): the Reading check, an owner's measure of the reader on
+      // the family's own papers, numbers only.
+      reading_check: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

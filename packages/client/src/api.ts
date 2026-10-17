@@ -120,6 +120,10 @@ import type {
   MailInInput,
   MailInMine,
   MailInView,
+  ReadingCheckDetail,
+  ReadingCheckInput,
+  ReadingCheckView,
+  ReadingChecksList,
   WatchFolderInput,
   WatchFolderView,
   WatchNoticeView,
@@ -1398,6 +1402,33 @@ export function createApi(http: Http) {
     /** That code, typed in: the address confirmed (`204`); `422` wrong, `410` expired or used up. */
     confirmMailIn: (token: string, code: string) =>
       request<void>('/api/v1/mail-in/me/confirm', { method: 'POST', body: { code }, token }),
+    // ------------------------------------------- the Reading check (0.9.0, R0)
+    /**
+     * The household's Reading checks, newest first (`features.reading_check`):
+     * an owner's alone (`403` for anybody else). Numbers only; `filed` is how
+     * many documents filed through review the caller can see.
+     */
+    readingChecks: (token: string) =>
+      request<ReadingChecksList>('/api/v1/reading-checks', { token }),
+    /**
+     * A check started (`202`), the last `n` (10 to 500, default 50) documents
+     * filed through review re-read by the worker; `409 reading_check_running`
+     * while the household's last one waits or runs.
+     */
+    startReadingCheck: (token: string, body: ReadingCheckInput = {}) =>
+      request<ReadingCheckView>('/api/v1/reading-checks', { method: 'POST', body, token }),
+    /** One check: its numbers, and — to the owner who ran it alone, for seven days — its misses. */
+    readingCheck: (token: string, id: string) =>
+      request<ReadingCheckDetail>(`/api/v1/reading-checks/${enc(id)}`, { token }),
+    /** A check waiting or running, stopped; `409 reading_check_not_running` once it has finished. */
+    cancelReadingCheck: (token: string, id: string) =>
+      request<ReadingCheckView>(`/api/v1/reading-checks/${enc(id)}/cancel`, {
+        method: 'POST',
+        token,
+      }),
+    /** A check removed, its numbers and misses with it (`204`). */
+    deleteReadingCheck: (token: string, id: string) =>
+      request<void>(`/api/v1/reading-checks/${enc(id)}`, { method: 'DELETE', token }),
     // ------------------------------------- computers that send scans (0.8.0, D1)
     /**
      * A one-time code for pairing a computer (`features.device_uploads`):

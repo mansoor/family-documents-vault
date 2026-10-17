@@ -289,6 +289,14 @@ export interface CapabilityFeatures {
    * vaults: there is no computer to pair.
    */
   device_uploads?: boolean;
+  /**
+   * The Reading check (0.9.0, R0): an owner's measure of the reader on the
+   * family's own papers, numbers only. POST and GET /reading-checks,
+   * GET /reading-checks/{id} (the summary, and the caller's own misses),
+   * POST /reading-checks/{id}/cancel and DELETE /reading-checks/{id}; an
+   * owner's alone. Absent from older vaults.
+   */
+  reading_check?: boolean;
 }
 
 export interface CapabilityLimits {

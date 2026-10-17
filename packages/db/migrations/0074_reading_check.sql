@@ -1,0 +1,248 @@
+-- The Reading check: the reader measured on a family's own papers (0.9.0, R0).
+--
+-- An owner asks the worker to re-read the last N documents filed through
+-- review — a batch's item or an Inbox file somebody accepted, so a person
+-- confirmed its details — with the reader as it is now, and to compare what
+-- it offers with the documents' details now. Nothing is written to a
+-- document, and no item, proposal or rule is made. Three tables:
+--
+--   review_filing  a version filed through review: which document, by whom,
+--                  when. Written by the database as an incoming file is
+--                  accepted (incoming_file_filed), and filled once from the
+--                  files accepted before; it outlives the incoming file,
+--                  whose row goes with its batch or request. It goes with
+--                  its version (an Undo) and its document. The vault's to
+--                  write; an owner reads only the rows of documents they can
+--                  see (never somebody else's Only me: asked in this one).
+--   reading_check  a check: who asked, how many, how far it is, the
+--                  reader's version, and its numbers — numbers only, held
+--                  by reading_numbers_only(). An owner's alone, read and
+--                  written: nobody else signed in, no link, no signed-out
+--                  page. One waiting or running a household. An owner makes
+--                  one as themselves, cancels one, or removes one; the rest
+--                  is the worker's.
+--   reading_check_sealed
+--                  what the worker has done so far, then which documents
+--                  needed typing and what: sealed under the key of the owner
+--                  who asked (their member key), kept READING_MISSES_KEEP_DAYS
+--                  (7) and theirs alone — never another owner's. Written by
+--                  the vault alone.
+--
+-- No document's words, no proposal and no detail is kept in any of them in
+-- the clear: the numbers say how many, and the sealed list says which
+-- documents (by id) and which fields (kind, person, expiry).
+
+-- ---------------------------------------------------- filed through review
+
+create table review_filing (
+  version_id   uuid primary key references document_version(id) on delete cascade,
+  household_id uuid not null references household(id) on delete cascade,
+  document_id  uuid not null references document(id) on delete cascade,
+  -- Who accepted it; gone with their account.
+  filed_by     uuid references account(id) on delete set null,
+  filed_at     timestamptz not null default now()
+);
+create index review_filing_recent_idx on review_filing (household_id, filed_at desc);
+create index review_filing_document_idx on review_filing (document_id);
+
+alter table review_filing enable row level security;
+create policy review_filing_tenant on review_filing
+  using (household_id = app_household()) with check (household_id = app_household());
+-- An owner, for a document they can see — everybody's and Adults only, and
+-- their own Only me, never somebody else's (the visibility rule an owner is
+-- given documents by); and the vault. Nobody else signed in, no link, no
+-- signed-out page.
+create policy review_filing_actor on review_filing as restrictive
+  using (case app_actor()
+           when 'account' then app_role() = 'owner'
+                               and exists (select 1 from document d
+                                            where d.id = review_filing.document_id
+                                              and (d.visibility <> 'private'
+                                                   or d.owner_member_id = app_member()))
+           when 'system' then true
+           else false
+         end);
+-- Written by the database alone (incoming_file_filed, as its owner), and
+-- removed with its version or document (their foreign keys' cascade).
+create policy review_filing_actor_insert on review_filing as restrictive for insert
+  with check (app_actor() = 'system');
+create policy review_filing_actor_update on review_filing as restrictive for update
+  using (app_actor() = 'system');
+create policy review_filing_actor_delete on review_filing as restrictive for delete
+  using (app_actor() = 'system');
+
+-- An incoming file accepted: the version it made was filed through review.
+create function incoming_file_filed() returns trigger
+  language plpgsql security definer set search_path = pg_catalog, public, pg_temp as $$
+begin
+  if new.state = 'accepted' and old.state is distinct from 'accepted'
+     and new.version_id is not null and new.document_id is not null then
+    insert into review_filing (version_id, household_id, document_id, filed_by, filed_at)
+    values (new.version_id, new.household_id, new.document_id, new.decided_by,
+            coalesce(new.decided_at, now()))
+    on conflict (version_id) do nothing;
+  end if;
+  return null;
+end $$;
+
+create trigger incoming_file_filed after update of state on incoming_file
+  for each row execute function incoming_file_filed();
+
+-- The files accepted before, while their rows are still here.
+insert into review_filing (version_id, household_id, document_id, filed_by, filed_at)
+select f.version_id, f.household_id, f.document_id, f.decided_by, coalesce(f.decided_at, f.created_at)
+  from incoming_file f
+  join document_version v on v.id = f.version_id and v.document_id = f.document_id
+ where f.state = 'accepted'
+on conflict (version_id) do nothing;
+
+-- ---------------------------------------------------------------- numbers
+
+-- Numbers only: an object whose keys are plain words (a kind's key, a
+-- count's name) and whose leaves are whole numbers, at most five deep;
+-- nothing else — no string, no list, no null. @fdv/shared's numbersOnly().
+create function reading_numbers_only(v jsonb, depth integer default 0) returns boolean
+  language plpgsql immutable parallel safe set search_path = pg_catalog, public, pg_temp as $$
+declare
+  k text;
+  x jsonb;
+  n numeric;
+begin
+  if jsonb_typeof(v) = 'number' then
+    n := (v #>> '{}')::numeric;
+    return n >= 0 and n = trunc(n) and n <= 9007199254740991;
+  end if;
+  if depth > 4 or jsonb_typeof(v) is distinct from 'object' then
+    return false;
+  end if;
+  for k, x in select e.key, e.value from jsonb_each(v) e loop
+    if k !~ '^[a-z0-9_()-]{1,64}$' or not reading_numbers_only(x, depth + 1) then
+      return false;
+    end if;
+  end loop;
+  return true;
+end $$;
+
+-- ------------------------------------------------------------------ a check
+
+create table reading_check (
+  id             uuid primary key default gen_random_uuid(),
+  household_id   uuid not null references household(id) on delete cascade,
+  -- Who asked: their sign-in, and the member they are (whose key seals the
+  -- misses). The check stays when they go; its misses go with them.
+  requested_by   uuid references account(id) on delete set null,
+  member_id      uuid,
+  n              integer not null constraint reading_check_n check (n between 10 and 500),
+  -- Documents changed by hand since they were filed are read too, their
+  -- details now the truth.
+  include_edited boolean not null default true,
+  state          text not null default 'waiting'
+                   constraint reading_check_state
+                   check (state in ('waiting', 'running', 'done', 'cancelled', 'failed')),
+  -- Why it failed: the worker stopped it, or a restore did.
+  failure        text constraint reading_check_failure check (failure in ('stopped', 'restored')),
+  total          integer not null default 0 constraint reading_check_total check (total between 0 and 500),
+  done           integer not null default 0,
+  created_at     timestamptz not null default now(),
+  started_at     timestamptz,
+  finished_at    timestamptz,
+  -- The reader it measured: the release, and a keyed hash of the rules.
+  server_version text constraint reading_check_version check (server_version ~ '^[0-9A-Za-z.+-]{1,64}$'),
+  rules_hash     text constraint reading_check_rules check (rules_hash ~ '^[0-9a-f]{12}$'),
+  summary        jsonb constraint reading_check_numbers_only
+                   check (summary is null or reading_numbers_only(summary)),
+  constraint reading_check_done_count check (done between 0 and total),
+  constraint reading_check_done_has_numbers check ((state = 'done') = (summary is not null)),
+  constraint reading_check_failed_says_why check ((state = 'failed') = (failure is not null)),
+  constraint reading_check_ended check ((state in ('done', 'cancelled', 'failed')) = (finished_at is not null)),
+  foreign key (member_id, household_id) references member (id, household_id)
+    on delete set null (member_id)
+);
+-- One waiting or running a household.
+create unique index reading_check_one_running on reading_check (household_id)
+  where state in ('waiting', 'running');
+create index reading_check_recent_idx on reading_check (household_id, created_at desc);
+
+alter table reading_check enable row level security;
+create policy reading_check_tenant on reading_check
+  using (household_id = app_household()) with check (household_id = app_household());
+-- An owner's alone, and the vault's: nobody else signed in, no link, no
+-- signed-out page.
+create policy reading_check_actor on reading_check as restrictive
+  using (case app_actor()
+           when 'account' then app_role() = 'owner'
+           when 'system' then true
+           else false
+         end);
+-- Made by an owner as themselves, waiting, with nothing of the worker's.
+create policy reading_check_actor_insert on reading_check as restrictive for insert
+  with check (case app_actor()
+                when 'account' then app_role() = 'owner'
+                                    and requested_by = app_account()
+                                    and member_id = app_member()
+                                    and state = 'waiting' and failure is null
+                                    and total = 0 and done = 0
+                                    and started_at is null and finished_at is null
+                                    and server_version is null and rules_hash is null
+                                    and summary is null
+                when 'system' then true
+                else false
+              end);
+
+-- What an owner changes: a check waiting or running, cancelled, now. Every
+-- column but those is compared, so a column added later is the worker's too.
+create function reading_check_account_writes() returns trigger
+  language plpgsql set search_path = pg_catalog, public, pg_temp as $$
+begin
+  if app_actor() is distinct from 'account' then
+    return new;
+  end if;
+  if old.state in ('waiting', 'running') and new.state = 'cancelled'
+     and new.finished_at = now()
+     and (to_jsonb(new) - array['state', 'finished_at'])
+         = (to_jsonb(old) - array['state', 'finished_at']) then
+    return new;
+  end if;
+  raise exception 'an owner may only cancel a check that is waiting or running'
+    using errcode = 'insufficient_privilege';
+end $$;
+
+create trigger reading_check_account_writes before update on reading_check
+  for each row execute function reading_check_account_writes();
+
+-- ------------------------------------------------------- sealed, the asker's
+
+create table reading_check_sealed (
+  check_id         uuid primary key references reading_check(id) on delete cascade,
+  household_id     uuid not null references household(id) on delete cascade,
+  -- Whose: the owner who asked, and the key it is sealed under (their member key).
+  member_id        uuid not null,
+  wrapped_by_scope uuid not null references scope_key(id) on delete cascade,
+  -- While it runs: the documents chosen and what each reading made of
+  -- those done. Once done: which needed typing, and what.
+  work_sealed      bytea,
+  misses_sealed    bytea,
+  -- When it goes (the worker's daily sweep; nobody is given it after).
+  expires_at       timestamptz not null,
+  constraint reading_check_sealed_one check ((work_sealed is null) <> (misses_sealed is null)),
+  foreign key (member_id, household_id) references member (id, household_id) on delete cascade
+);
+create index reading_check_sealed_expires_idx on reading_check_sealed (expires_at);
+
+alter table reading_check_sealed enable row level security;
+create policy reading_check_sealed_tenant on reading_check_sealed
+  using (household_id = app_household()) with check (household_id = app_household());
+-- The owner who asked, alone — never another owner — and the vault.
+create policy reading_check_sealed_actor on reading_check_sealed as restrictive
+  using (case app_actor()
+           when 'account' then app_role() = 'owner' and member_id = app_member()
+           when 'system' then true
+           else false
+         end);
+-- Written by the vault alone; removed with its check (the cascade), or by the vault.
+create policy reading_check_sealed_actor_insert on reading_check_sealed as restrictive for insert
+  with check (app_actor() = 'system');
+create policy reading_check_sealed_actor_update on reading_check_sealed as restrictive for update
+  using (app_actor() = 'system');
+create policy reading_check_sealed_actor_delete on reading_check_sealed as restrictive for delete
+  using (app_actor() = 'system');

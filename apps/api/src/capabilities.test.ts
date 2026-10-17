@@ -104,6 +104,8 @@ describe('buildCapabilities', () => {
       // S2: an item's folder, and what its names suggest.
       folder_suggestions: true,
       device_uploads: true,
+      // R0: the Reading check, an owner's.
+      reading_check: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     // S4: email in, reserved as email_ingest since 1.0, only while the worker

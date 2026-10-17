@@ -4787,6 +4787,57 @@ true`, as it says of every kind that expires, so a client released
     before 0.8.0 reads what it read; a client that asks `missingFields`
     gets the new answer. No migration: the rule is the vault's, not a row.
 
+- After 0.8.0:
+  - The Reading check (0.9.0, R0): an owner's measure of the reader on the
+    family's own papers, numbers only. **New feature:**
+    `features.reading_check` (`true`; absent from older vaults). **New
+    routes**, each an owner's alone (`403 forbidden` for an adult, a teen,
+    a viewer or a guest; the database's rule too, 0074):
+    - `GET /api/v1/reading-checks` — `{ items: ReadingCheckView[], filed }`:
+      the household's checks, newest first (the last 20 are kept), and how
+      many documents filed through review the caller can see, out of the
+      Trash (never somebody else's Only me).
+    - `POST /api/v1/reading-checks` — body `{ n?, include_edited? }` (`n`
+      a whole number from 10 to 500, default 50; `include_edited` default
+      `true`), answers `202` with the check `waiting`, and the worker reads
+      it in the background. `409 reading_check_running` while the
+      household's last one waits or runs; `422` for anything else in the
+      body.
+    - `GET /api/v1/reading-checks/{id}` — `ReadingCheckDetail`: the check,
+      and `misses` (`[{ document_id, title, type_key, fields, level,
+wrong_ready }]`, the documents that needed typing and which of `kind`,
+      `person`, `expiry`, read without the learned rules) with
+      `misses_until` — only to the owner who ran it (`mine: true`), only
+      for documents they can still see, and for seven days. Anybody else,
+      and afterwards, `misses: null`.
+    - `POST /api/v1/reading-checks/{id}/cancel` — a check `waiting` or
+      `running`, `cancelled`; `409 reading_check_not_running` otherwise.
+    - `DELETE /api/v1/reading-checks/{id}` — `204`, its misses with it.
+  - `ReadingCheckView`: `id`, `state` (`waiting`, `running`, `done`,
+    `cancelled`, `failed`), `failure` (`stopped` — its owner can no longer
+    run checks — or `restored`), `n`, `include_edited`, `requested_by` (`{
+member_id, name }`), `mine`, `created_at`, `started_at`, `finished_at`,
+    `progress` (`{ total, done }`), `reader` (`{ server_version, rules }`:
+    the release that read, and twelve hex characters of a keyed hash of the
+    learned rules it read with) and `summary`, `null` until `done`. The
+    summary is numbers only (the database refuses anything else): `chosen`,
+    `read`, `skipped`, `edited`, and `without_rules` and `with_rules` (the
+    second optimistic: the rules were learned from these papers), each
+    `{ all, text, scan, by_kind }` of `ReadingCounts` — `documents`,
+    `ready`, `check`, `unrecognised`, `problem`, `not_read`,
+    `needs_typing`, `wrong_ready`, `ready_detail_wrong`,
+    `expiry_not_on_paper`, `kind_typed`, `person_typed`, `expiry_typed` —
+    with `by_kind` keyed by a kind's key, `(none)` for Something else, and
+    `(only_me)` for the requester's own Only me documents, never by their
+    kind. Scored as the Smart exit scores (`@fdv/shared` reading-score.ts,
+    moved there from testdata, which re-exports it). `@fdv/shared`:
+    `ReadingCheckView`, `ReadingCheckDetail`, `ReadingChecksList`,
+    `ReadingCheckInput`, `ReadingCheckSummary`, `READING_CHECK_N`,
+    `numbersOnly`, `scoreReading`, `readingComparison`. `@fdv/client`:
+    `readingChecks`, `startReadingCheck`, `readingCheck`,
+    `cancelReadingCheck`, `deleteReadingCheck`; the client fake answers the
+    same, and reads a check on its second asking.
+
 ## Deprecations in effect
 
 - `GET /api/v1/shared/{token}`, `POST /api/v1/shared/{token}/open` and

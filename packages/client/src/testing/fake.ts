@@ -1,4 +1,14 @@
 import {
+  numbersOnly,
+  READING_CHECK_N,
+  READING_MISSES_KEEP_DAYS,
+  scoreReading,
+  type ReadingCheckDetail,
+  type ReadingCheckSummary,
+  type ReadingCheckView,
+  type ReadingChecksList,
+  type ReadingMiss,
+  type ReadingRow,
   DEVICE_PLATFORMS,
   DEVICE_REFUSALS,
   deviceBatchName,
@@ -413,6 +423,12 @@ export interface FakeVaultState {
   devices?: FakeDevice[];
   /** Pairing codes, one a person, as only a fake may keep them. */
   pairings?: Array<{ code: string; member_id: string; expires_at: number; attempts: number }>;
+  /**
+   * The Reading checks (0.9.0, R0), newest first: an owner's. A check the
+   * fake is asked for waits once, then is read as the fake's own reader
+   * reads — what each item's pages proposed, against the document now.
+   */
+  readingChecks?: FakeReadingCheck[];
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -487,6 +503,17 @@ export interface FakeDevice {
   added_at: string;
   last_used_at: string | null;
   revoked: boolean;
+}
+
+/** A Reading check, as the fake keeps one (0.9.0, R0). */
+export interface FakeReadingCheck {
+  view: ReadingCheckView;
+  /** Whose misses: the asking owner's member. */
+  member_id: string;
+  misses: ReadingMiss[] | null;
+  misses_until: string | null;
+  /** Asked for once while waiting: then it is read. */
+  asked: number;
 }
 
 /** A batch, as the fake keeps one (Phase 6, I1): its uploader's alone. */
@@ -1925,6 +1952,8 @@ export function createFakeVault(): {
           folder_suggestions: true,
           // A computer that sends scans (0.8.0, D1), as the vault says.
           device_uploads: true,
+          // The Reading check (0.9.0, R0): an owner's, numbers only.
+          reading_check: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -3592,6 +3621,177 @@ export function createFakeVault(): {
         .filter((b) => b.member_id === who.memberId)
         .reduce((n, b) => n + b.items.filter((it) => it.state === 'waiting').length, 0);
       return ok({ waiting });
+    }
+    // The Reading check (0.9.0, R0): an owner's, every route.
+    if (path === '/api/v1/reading-checks' || path.startsWith('/api/v1/reading-checks/')) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (who.role !== 'owner')
+        return fail(403, 'forbidden', 'Only an owner can run the Reading check.');
+      const checks = (state.readingChecks ??= []);
+      const seesDoc = (d: FakeDocument) =>
+        !d.deleted_at &&
+        canSee(
+          { role: who.role, memberId: who.memberId },
+          {
+            visibility: d.visibility ?? 'household',
+            owner_member_id: d.owner_member_id ?? null,
+          },
+        );
+      /** Documents filed through review the caller can see: an accepted item's, newest first. */
+      const filed = () =>
+        state.batches
+          .flatMap((b) => b.items)
+          .filter((it) => it.state === 'accepted' && it.document_id)
+          .reverse()
+          .flatMap((it) => {
+            const d = state.documents.find((x) => x.id === it.document_id);
+            return d && seesDoc(d) ? [{ d, it }] : [];
+          });
+      const shown = (c: FakeReadingCheck): ReadingCheckView => ({
+        ...c.view,
+        mine: c.member_id === who.memberId,
+      });
+      /** Read as the fake reads: what each item's pages proposed, Ready when it is all there. */
+      const run = (c: FakeReadingCheck) => {
+        const docs = filed().slice(0, c.view.n);
+        const rows: ReadingRow[] = docs.map(({ d, it }) => {
+          const p = it.proposal ?? null;
+          const kind = p?.type_key?.value ?? null;
+          const person = p?.owner_member_id?.value ?? null;
+          return {
+            document_id: d.id,
+            only_me: d.visibility === 'private',
+            mode: 'text',
+            truth: {
+              kind: d.type_key ?? null,
+              person: d.owner_member_id ?? null,
+              issued: d.issued?.date ?? null,
+              expires: d.expires?.date ?? null,
+              number: d.identifier ?? null,
+              issuer: d.issued_by ?? null,
+            },
+            seen: {
+              level: !p ? null : kind && person ? 'ready' : kind ? 'check' : 'unrecognised',
+              duplicate: false,
+              failure: p ? null : 'not_read',
+              kind,
+              person,
+              issued: p?.issued?.value.date ?? null,
+              expires: p?.expires?.value.date ?? null,
+              number: p?.identifier?.value ?? null,
+              issuer: p?.issued_by?.value ?? null,
+            },
+          };
+        });
+        const expiring = (k: string) =>
+          state.types.some((t) => t.key === k && t.expiry_driver !== null);
+        const scored = scoreReading(rows, expiring);
+        const summary: ReadingCheckSummary = {
+          chosen: rows.length,
+          read: rows.length,
+          skipped: 0,
+          edited: 0,
+          without_rules: scored.result,
+          with_rules: scored.result,
+        };
+        if (!numbersOnly(summary)) throw new Error('a check’s summary must be numbers only');
+        const now = new Date().toISOString();
+        c.view = {
+          ...c.view,
+          state: 'done',
+          started_at: now,
+          finished_at: now,
+          progress: { total: rows.length, done: rows.length },
+          reader: { server_version: FAKE_SERVER_VERSION, rules: '000000000000' },
+          summary,
+        };
+        c.misses = scored.misses;
+        c.misses_until = new Date(Date.now() + READING_MISSES_KEEP_DAYS * 86_400_000).toISOString();
+      };
+      const tick = () => {
+        for (const c of checks) {
+          if (c.view.state === 'waiting' && c.asked++ > 0) run(c);
+        }
+      };
+      if (path === '/api/v1/reading-checks') {
+        if (init.method === 'POST') {
+          const n = body.n === undefined ? READING_CHECK_N.default : body.n;
+          if (
+            typeof n !== 'number' ||
+            !Number.isInteger(n) ||
+            n < READING_CHECK_N.min ||
+            n > READING_CHECK_N.max
+          ) {
+            return fail(422, 'validation_failed', 'Read from 10 to 500 documents.');
+          }
+          if (checks.some((c) => c.view.state === 'waiting' || c.view.state === 'running')) {
+            return fail(
+              409,
+              'reading_check_running',
+              'A Reading check is already running for your household. Wait for it to finish, or cancel it.',
+            );
+          }
+          const me = state.members.find((m) => m.id === who.memberId);
+          const c: FakeReadingCheck = {
+            view: {
+              id: next('check'),
+              state: 'waiting',
+              failure: null,
+              n,
+              include_edited: body.include_edited !== false,
+              requested_by: { member_id: who.memberId, name: me?.display_name ?? null },
+              mine: true,
+              created_at: new Date().toISOString(),
+              started_at: null,
+              finished_at: null,
+              progress: { total: 0, done: 0 },
+              reader: { server_version: null, rules: null },
+              summary: null,
+            },
+            member_id: who.memberId,
+            misses: null,
+            misses_until: null,
+            asked: 0,
+          };
+          checks.unshift(c);
+          return ok(shown(c), 202);
+        }
+        tick();
+        const out: ReadingChecksList = { items: checks.map(shown), filed: filed().length };
+        return ok(out);
+      }
+      const at = /^\/api\/v1\/reading-checks\/([^/]+)(\/cancel)?$/.exec(path);
+      const c = at
+        ? checks.find((x) => x.view.id === decodeURIComponent(at[1] as string))
+        : undefined;
+      if (!at || !c) return fail(404, 'not_found', 'That check is not here.');
+      if (at[2] && init.method === 'POST') {
+        if (c.view.state !== 'waiting' && c.view.state !== 'running') {
+          return fail(409, 'reading_check_not_running', 'That check has already finished.');
+        }
+        c.view = { ...c.view, state: 'cancelled', finished_at: new Date().toISOString() };
+        return ok(shown(c));
+      }
+      if (init.method === 'DELETE') {
+        state.readingChecks = checks.filter((x) => x !== c);
+        return empty();
+      }
+      tick();
+      const mine = c.member_id === who.memberId && c.misses !== null;
+      const seen = new Map(state.documents.filter(seesDoc).map((d) => [d.id, d]));
+      const out: ReadingCheckDetail = {
+        ...shown(c),
+        misses: mine
+          ? (c.misses ?? []).flatMap((m) => {
+              const d = seen.get(m.document_id);
+              return d ? [{ ...m, title: d.title, type_key: d.type_key ?? null }] : [];
+            })
+          : null,
+        misses_until: mine ? c.misses_until : null,
+      };
+      return ok(out);
     }
     // What the vault learned from the caller's corrections (I4): theirs alone.
     if (path === '/api/v1/batches/learned') {
