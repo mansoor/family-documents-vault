@@ -33,6 +33,12 @@ import {
   suggestFromFolder,
   teach,
   can,
+  normaliseTag,
+  normaliseTags,
+  tagDetail,
+  tagKey,
+  tagLabelKey,
+  tagsProblem,
   canEditIdentity,
   canSee,
   canSeeCollection,
@@ -573,6 +579,7 @@ const FAKE_EDITABLE = [
   'issued',
   'expires',
   'notes',
+  'tags',
 ];
 
 /** A document's version, as an If-Match names it: changed by every edit. */
@@ -1925,6 +1932,9 @@ export function createFakeVault(): {
           folder_suggestions: true,
           // A computer that sends scans (0.8.0, D1), as the vault says.
           device_uploads: true,
+          // Detail tags, the label filter; rename, merge and delete (0.9.0, T1).
+          tag_details: true,
+          tag_management: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -2162,6 +2172,7 @@ export function createFakeVault(): {
       const memberId = param(url, 'member_id');
       const typeKey = param(url, 'type_key');
       const tag = param(url, 'tag');
+      const tagLabel = param(url, 'tag_label');
       const visibility = param(url, 'visibility');
       const collectionId = param(url, 'collection_id');
       const by = param(url, 'issued_by');
@@ -2184,7 +2195,16 @@ export function createFakeVault(): {
               : d.owner_member_id === memberId,
         )
         .filter((d) => typeKey === undefined || d.type_key === typeKey)
-        .filter((d) => tag === undefined || (d.tags ?? []).includes(tag))
+        // A tag whatever its case, and a detail tag's label (0.9.0, T1).
+        .filter((d) => tag === undefined || (d.tags ?? []).some((t) => tagKey(t) === tagKey(tag)))
+        .filter(
+          (d) =>
+            tagLabel === undefined ||
+            (d.tags ?? []).some((t) => {
+              const detail = tagDetail(t);
+              return detail !== null && tagLabelKey(detail.label) === tagLabelKey(tagLabel);
+            }),
+        )
         .filter((d) => visibility === undefined || (d.visibility ?? 'household') === visibility)
         .filter((d) => location === undefined || low(d.physical_location) === low(location))
         .filter((d) => {
@@ -2300,6 +2320,18 @@ export function createFakeVault(): {
       }
       return kept;
     };
+    // The tags on what the caller can see, and a tag renamed, merged or
+    // deleted on what they may change (0.9.0, T1), as the real vault does
+    // (apps/api/src/documents/tags.ts).
+    if (
+      path === '/api/v1/tags' ||
+      path === '/api/v1/tags/rename' ||
+      path === '/api/v1/tags/delete'
+    ) {
+      const s = session();
+      if (!('id' in s)) return s;
+      return answerTags(state.documents, whoOf(s), path, url, init.method, body);
+    }
     if (path === '/api/v1/documents') {
       const s = session();
       if (!('id' in s)) return s;
@@ -2310,6 +2342,8 @@ export function createFakeVault(): {
         }
         const extra = detailsFor(type_key, body.extra);
         if (isResponse(extra)) return extra;
+        const tagProblem = tagsProblem((body.tags as string[] | undefined) ?? []);
+        if (tagProblem) return fail(422, 'validation_failed', tagProblem, 'tags');
         // As the real vault: the type's default, when nothing is asked for,
         // and Only me — asked for or the default — only for your own (0.5.10).
         const visibility =
@@ -2485,7 +2519,12 @@ export function createFakeVault(): {
         if (isResponse(merged)) return merged;
         extra = merged;
       }
+      if (body.tags !== undefined) {
+        const tagProblem = tagsProblem(body.tags as string[]);
+        if (tagProblem) return fail(422, 'validation_failed', tagProblem, 'tags');
+      }
       Object.assign(doc, { type_key, extra });
+      if (body.tags !== undefined) doc.tags = tagsOf(body.tags as string[]);
       if (body.title !== undefined) doc.title = (body.title as string | null) ?? null;
       if (body.owner_member_id !== undefined) {
         doc.owner_member_id = body.owner_member_id as string | null;
@@ -5407,9 +5446,113 @@ function note(value: string | null | undefined): string | null {
   return value?.trim() || null;
 }
 
-/** Tags as the real vault keeps them: trimmed, lower case, each once, fifty at most. */
+/**
+ * GET /tags, POST /tags/rename and POST /tags/delete (0.9.0, T1), as the
+ * real vault answers them: of the documents the caller can see out of the
+ * Trash, and changing only those they may change.
+ */
+function answerTags(
+  documents: FakeDocument[],
+  who: { memberId: string; role: Role },
+  path: string,
+  url: string,
+  method: string,
+  body: Record<string, unknown>,
+): ResponseLike {
+  const seen = documents.filter(
+    (d) =>
+      !d.deleted_at &&
+      canSee(who, {
+        visibility: d.visibility ?? 'household',
+        owner_member_id: d.owner_member_id ?? null,
+      }),
+  );
+  const mayChange = (d: FakeDocument) =>
+    can(who.role, 'document.edit') && (who.role !== 'teen' || d.owner_member_id === who.memberId);
+  const carrying = (key: string) =>
+    seen.filter((d) => (d.tags ?? []).some((t) => tagKey(t) === key));
+  if (path === '/api/v1/tags') {
+    if (method !== 'GET') return fail(404, 'not_found', 'Not found.');
+    const q = (param(url, 'q') ?? '').replace(/\s+/g, ' ').replace(/^ /, '').toLowerCase();
+    const limit = Number(param(url, 'limit') ?? 50);
+    const byKey = new Map<
+      string,
+      { spellings: Map<string, number>; ids: Set<string>; mine: Set<string> }
+    >();
+    for (const d of seen) {
+      for (const t of d.tags ?? []) {
+        const key = tagKey(t);
+        if (!key.startsWith(q)) continue;
+        const g = byKey.get(key) ?? { spellings: new Map(), ids: new Set(), mine: new Set() };
+        g.spellings.set(t, (g.spellings.get(t) ?? 0) + 1);
+        g.ids.add(d.id);
+        if (mayChange(d)) g.mine.add(d.id);
+        byKey.set(key, g);
+      }
+    }
+    const items = [...byKey.values()].map((g) => {
+      const tag =
+        [...g.spellings].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? '';
+      const detail = tagDetail(tag);
+      return {
+        tag,
+        count: g.ids.size,
+        label: detail ? detail.label.toLowerCase() : null,
+        value: detail ? detail.value : null,
+        changeable: g.mine.size,
+      };
+    });
+    return ok({
+      items: items.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag)).slice(0, limit),
+    });
+  }
+  if (method !== 'POST') return fail(404, 'not_found', 'Not found.');
+  if (!can(who.role, 'document.edit')) return fail(403, 'forbidden', refusalFor('document.edit'));
+  const renaming = path === '/api/v1/tags/rename';
+  const text = (v: unknown) => (typeof v === 'string' ? v : '');
+  const from = tagKey(text(renaming ? body.from : body.tag));
+  if (!from) {
+    return fail(422, 'validation_failed', `Say which tag to ${renaming ? 'rename' : 'delete'}.`);
+  }
+  const to = renaming ? normaliseTag(text(body.to)) : '';
+  if (renaming && !to) return fail(422, 'validation_failed', 'Say what to rename it to.');
+  const problem = renaming ? tagsProblem([to]) : null;
+  if (problem) return fail(422, 'validation_failed', problem, 'to');
+  const toKey = to.toLowerCase();
+  const merged = renaming && toKey !== from && carrying(toKey).length > 0;
+  if (merged && body.merge !== true) {
+    return fail(
+      409,
+      'tag_exists',
+      `“${to}” is a tag already. Renaming “${normaliseTag(text(body.from))}” to it merges the two.`,
+    );
+  }
+  let changed = 0;
+  let kept = 0;
+  for (const d of carrying(from)) {
+    if (!mayChange(d)) {
+      kept += 1;
+      continue;
+    }
+    const before = d.tags ?? [];
+    const after = renaming
+      ? normaliseTags(before.map((t) => (tagKey(t) === from ? to : t)))
+      : before.filter((t) => tagKey(t) !== from);
+    if (after.length === before.length && after.every((t, i) => t === before[i])) continue;
+    d.tags = after;
+    d.revision = (d.revision ?? 1) + 1;
+    changed += 1;
+  }
+  return ok({ changed, kept, merged });
+}
+
+/**
+ * Tags as the real vault keeps them (0.9.0, T1): tidied, a plain tag in
+ * lower case and a detail tag's value as written, each once whatever its
+ * case; fifty at most (the vault refuses more, `tagsProblem`).
+ */
 function tagsOf(tags: ReadonlyArray<string> | null | undefined): string[] {
-  return [...new Set((tags ?? []).map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(0, 50);
+  return normaliseTags(tags ?? []).slice(0, 50);
 }
 
 /** One query parameter, decoded; the client's library has no URLSearchParams. */

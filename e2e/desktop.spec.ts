@@ -270,6 +270,35 @@ test('a document opens in two panes: its details on the left, its pages on the r
   await expect(page.getByRole('link', { name: "Mansoor's passport" }).first()).toBeFocused();
 });
 
+test('a detail tag added on a document’s page is found by its value (0.9.0, T1)', async () => {
+  const made = await page.request.post('/api/v1/documents', {
+    headers: { authorization: `Bearer ${token}` },
+    data: { title: `Tagged ${run}`, visibility: 'household' },
+  });
+  expect(made.ok()).toBe(true);
+  const { id } = (await made.json()) as { id: string };
+  const value = `bay${run}`;
+  await visit(page, `/documents/${id}`);
+  const tags = page.getByRole('region', { name: 'Tags' });
+  await tags.getByLabel('Add a tag').fill(`Locker :  ${value}`);
+  await tags.getByRole('button', { name: 'Add', exact: true }).click();
+  // Shown "Locker · bay…", read "Locker: bay…", and kept as "locker: bay…".
+  const chip = tags.getByRole('link', { name: `Documents tagged Locker: ${value}` });
+  await expect(chip).toBeVisible();
+  await expect(chip).toContainText(`Locker · ${value}`);
+  const kept = await page.request.get(`/api/v1/documents/${id}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  expect(((await kept.json()) as { tags: string[] }).tags).toEqual([`locker: ${value}`]);
+
+  // Found by its value alone, from the search box on top.
+  const box = page.getByRole('searchbox', { name: 'Search the vault' });
+  await box.fill(value);
+  await box.press('Enter');
+  await expect(page).toHaveURL(new RegExp(`/search\\?q=${value}$`));
+  await expect(page.getByRole('link', { name: new RegExp(`Tagged ${run}`) }).first()).toBeVisible();
+});
+
 test('two files added at once are accepted one after the other through the queue', async () => {
   // Add, with the keyboard: n, down, Many documents.
   await visit(page, '/');

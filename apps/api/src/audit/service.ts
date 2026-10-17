@@ -236,6 +236,10 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // 5.35: its note added, changed or taken off — never what it says: the
   // document's line, for whoever may see the document.
   ['document.notes_changed', BY_TYPE],
+  // 0.9.0 (T1): a tag renamed, merged or deleted from Settings → Tags, on
+  // each document it changed — never which tag: the document's line, for
+  // whoever may see the document, as an edit's is.
+  ['document.tags_changed', BY_TYPE],
   ['document.version_added', BY_TYPE],
   // 0.8.0 (S1): a copy added from a batch and taken back: the document's
   // line, for whoever may see the document, as its adding was.

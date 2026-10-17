@@ -56,6 +56,7 @@ const PAGES: ReadonlyArray<readonly [pattern: string, title: string]> = [
   ['/settings/kinds', 'Settings: kinds of document'],
   ['/settings/kinds/new', 'Add a kind'],
   ['/settings/kinds/:key', 'A kind of document'],
+  ['/settings/tags', 'Settings: tags'],
   ['/setup', 'Set up your family’s vault'],
   ['/welcome', 'Welcome'],
   ['/sign-in', 'Sign in'],

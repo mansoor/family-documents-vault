@@ -3099,6 +3099,112 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'tags you can use: a detail tag kept as label: value, filtered by its label and whatever its case; a tag renamed, merged after asking, and deleted (0.9.0, T1)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      const features = (await api.capabilities()).features;
+      expect(features.tag_details).toBe(true);
+      expect(features.tag_management).toBe(true);
+      const me = await api.me(token);
+      const a = await api.createDocument(token, {
+        title: 'Contract gym pass',
+        owner_member_id: me.member_id,
+        tags: ['Contract Locker :  C-12', 'contract agent: Sam Lee', 'Contract-Plain'],
+      });
+      expect(a.tags).toEqual([
+        'contract locker: C-12',
+        'contract agent: Sam Lee',
+        'contract-plain',
+      ]);
+      const b = await api.createDocument(token, {
+        title: 'Contract pool pass',
+        owner_member_id: me.member_id,
+        tags: ['contract locker: C-7', 'contract-other'],
+      });
+      // Too long, in words.
+      const long = await refusal(
+        api.createDocument(token, { title: 'Too long', tags: ['x'.repeat(41)] }),
+      );
+      expect(long.status).toBe(422);
+      expect(long.message).toMatch(/^A tag can be 40 characters at most/);
+
+      const titles = async (params: Record<string, string>) =>
+        (await api.documents(token, { sort: 'title', ...params })).items.map((d) => d.title);
+      expect(await titles({ tag_label: 'Contract Locker' })).toEqual([
+        'Contract gym pass',
+        'Contract pool pass',
+      ]);
+      expect(await titles({ tag: 'CONTRACT AGENT: sam lee' })).toEqual(['Contract gym pass']);
+      expect(await titles({ tag_label: 'contract locker', tag: 'contract locker: c-7' })).toEqual([
+        'Contract pool pass',
+      ]);
+
+      const listed = await api.tags(token, 'contract locker: ', { limit: 1000 });
+      expect(listed.items).toEqual([
+        {
+          tag: 'contract locker: C-12',
+          count: 1,
+          label: 'contract locker',
+          value: 'C-12',
+          changeable: 1,
+        },
+        {
+          tag: 'contract locker: C-7',
+          count: 1,
+          label: 'contract locker',
+          value: 'C-7',
+          changeable: 1,
+        },
+      ]);
+
+      // A merge is asked about first; asked, the two are one.
+      const asked = await refusal(
+        api.renameTag(token, { from: 'contract-plain', to: 'Contract-Other' }),
+      );
+      expect(asked.status).toBe(409);
+      expect(asked.code).toBe('tag_exists');
+      expect((await api.document(token, a.id)).tags).toContain('contract-plain');
+      expect(
+        await api.renameTag(token, { from: 'contract-plain', to: 'contract-other', merge: true }),
+      ).toEqual({ changed: 1, kept: 0, merged: true });
+      expect((await api.document(token, a.id)).tags).toEqual([
+        'contract locker: C-12',
+        'contract agent: Sam Lee',
+        'contract-other',
+      ]);
+      // Renamed: an edit against the document as it was is told so.
+      const stale = await refusal(api.updateDocument(token, a.id, { title: 'x' }, a.etag));
+      expect(stale.status).toBe(409);
+      // An edit of its tags with its ETag, as the document page makes it.
+      const now = await api.document(token, b.id);
+      const tagged = await api.updateDocument(
+        token,
+        b.id,
+        { tags: [...now.tags, 'Contract note: Blue folder'] },
+        now.etag,
+      );
+      expect(tagged.tags).toEqual([
+        'contract locker: C-7',
+        'contract-other',
+        'contract note: Blue folder',
+      ]);
+
+      expect(await api.deleteTag(token, 'Contract-Other')).toEqual({
+        changed: 2,
+        kept: 0,
+        merged: false,
+      });
+      expect((await api.document(token, b.id)).tags).toEqual([
+        'contract locker: C-7',
+        'contract note: Blue folder',
+      ]);
+      const viewerless = await refusal(api.renameTag(token, { from: ' ', to: 'x' }));
+      expect(viewerless.status).toBe(422);
+      await api.deleteDocument(token, a.id);
+      await api.deleteDocument(token, b.id);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

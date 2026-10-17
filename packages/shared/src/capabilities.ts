@@ -289,6 +289,24 @@ export interface CapabilityFeatures {
    * vaults: there is no computer to pair.
    */
   device_uploads?: boolean;
+  /**
+   * Detail tags (0.9.0, T1): a tag's first `: ` splits a label from a value
+   * ("locker: 12"), kept as written. The tag filter (`tag`) matches whatever
+   * the case; `tag_label` filters GET /documents by a label, any value; and
+   * GET /tags takes `limit` (up to 1,000) and gives each tag's `label`,
+   * `value` and `changeable`. Tags are 40 characters at most and 50 a
+   * document, as always, refused in words. Absent from older vaults, which
+   * keep a tag in lower case and match it exactly.
+   */
+  tag_details?: boolean;
+  /**
+   * A tag renamed, merged or deleted across documents (0.9.0, T1): POST
+   * /tags/rename (`from`, `to`, and `merge: true` into a tag that is there
+   * already, else `409 tag_exists`) and POST /tags/delete (`tag`), for
+   * whoever may change documents — on those they may change, and counted
+   * only on those they can see. Absent from older vaults.
+   */
+  tag_management?: boolean;
 }
 
 export interface CapabilityLimits {

@@ -21,6 +21,8 @@ import {
   kindGiven,
   rowStatus,
   seenDocument,
+  tagFilter,
+  tagLabelFilter,
   typeLookup,
   type DocRow,
   type ListQuery,
@@ -244,7 +246,9 @@ function whereOf(p: Principal, q: ListQuery): RawBuilder<boolean> {
       q.purge_requested ? sql`d.purge_requested_at is not null` : sql`d.purge_requested_at is null`,
     );
   }
-  if (q.tag) parts.push(sql`d.tags @> array[${q.tag}]::text[]`);
+  // A tag whatever its case, and a detail tag's label (0.9.0, T1, 0073).
+  if (q.tag) parts.push(tagFilter(q.tag, 'd.tags'));
+  if (q.tag_label) parts.push(tagLabelFilter(q.tag_label, 'd.tags'));
   if (q.issued_by) parts.push(sql`lower(d.issued_by) = lower(${q.issued_by.trim()})`);
   if (q.updated_since) parts.push(sql`d.updated_at > ${new Date(q.updated_since)}`);
   if (q.location !== undefined) {

@@ -104,6 +104,9 @@ describe('buildCapabilities', () => {
       // S2: an item's folder, and what its names suggest.
       folder_suggestions: true,
       device_uploads: true,
+      // T1 (0.9.0): detail tags and the label filter; rename, merge and delete.
+      tag_details: true,
+      tag_management: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     // S4: email in, reserved as email_ingest since 1.0, only while the worker

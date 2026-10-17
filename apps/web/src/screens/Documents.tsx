@@ -1,6 +1,10 @@
 import {
   seesLocation,
   shortName,
+  tagDetail,
+  tagKey,
+  tagLabelKey,
+  tagWords,
   type CollectionView,
   type DocumentSort,
   type DocumentTypeView,
@@ -79,7 +83,8 @@ import {
   TrashIcon,
 } from '../ui.js';
 import { DocRow } from './Home.js';
-import { useTrashedNote } from '../DocActions.js';
+import { mayChange, useTrashedNote } from '../DocActions.js';
+import { TagField, useKnownTags } from '../tags.js';
 import { useSelect } from './SearchPeople.js';
 import { LinksChoiceDialog, linksAsk, linksChoice, type LinksAsk } from './Visibility.js';
 
@@ -120,8 +125,9 @@ export function DocumentsScreen() {
     async (t) => (hasCollections ? (await api.collections(t)).items : []),
     [authVersion, hasCollections],
   );
+  // Every tag the reader can see, for the filters by a tag and by a detail's label (T1).
   const { data: tags } = useLoad(
-    async (t) => (await api.tags(t)).items.map((x) => x.tag),
+    async (t) => (await api.tags(t, undefined, { limit: 1000 })).items.map((x) => x.tag),
     [authVersion],
   );
   const known: Known = {
@@ -472,14 +478,35 @@ export function filterChoices(
         { value: 'none', label: 'In no collection' },
       ];
     case 'tag':
+      // A detail tag as it is shown: "Locker · 12" (0.9.0, T1).
       return [
         { value: '', label: 'All tags' },
         ...[...new Set([...known.tags, ...(view.tag ? [view.tag] : [])])].map((t) => ({
           value: t,
-          label: t,
+          label: tagWords(t).text,
         })),
       ];
+    case 'label':
+      // Every document with a detail of this label, whatever its value (T1).
+      return [{ value: '', label: 'Any detail' }, ...detailLabels(known.tags, view.label)];
   }
+}
+
+/** The labels of the detail tags the reader can see: "Locker", by "locker". */
+function detailLabels(
+  tags: readonly string[],
+  chosen: string,
+): Array<{ value: string; label: string }> {
+  const labels = new Map<string, string>();
+  for (const t of tags) {
+    const shown = tagWords(t).label;
+    const d = tagDetail(t);
+    if (shown && d) labels.set(tagLabelKey(d.label), shown);
+  }
+  if (chosen && !labels.has(tagLabelKey(chosen))) labels.set(tagLabelKey(chosen), chosen);
+  return [...labels]
+    .sort((a, b) => a[1].localeCompare(b[1]))
+    .map(([value, label]) => ({ value, label }));
 }
 
 export const FILTER_LABELS: Record<FilterKey, string> = {
@@ -489,6 +516,7 @@ export const FILTER_LABELS: Record<FilterKey, string> = {
   visibility: 'Who can see it',
   collection: 'Collection',
   tag: 'Tag',
+  label: 'Detail',
 };
 
 /** The filters there is something to choose in: no collections, no collection filter. */
@@ -496,7 +524,8 @@ function filtersFor(known: Known): FilterKey[] {
   return FILTER_KEYS.filter(
     (k) =>
       (k !== 'collection' || known.collections.length > 0) &&
-      (k !== 'tag' || known.tags.length > 0),
+      (k !== 'tag' || known.tags.length > 0) &&
+      (k !== 'label' || known.tags.some((t) => tagDetail(t) !== null)),
   );
 }
 
@@ -673,6 +702,7 @@ function TableDocuments(props: {
                 visibility: '',
                 collection: '',
                 tag: '',
+                label: '',
               })
             }
           >
@@ -1116,7 +1146,15 @@ function useClipTips(rows: readonly DocumentView[]) {
 // ------------------------------------------------------------- many at once
 
 type Acting =
-  'collect' | 'location' | 'visibility' | 'confirm-visibility' | 'links' | 'trash' | null;
+  | 'collect'
+  | 'location'
+  | 'tag-add'
+  | 'tag-remove'
+  | 'visibility'
+  | 'confirm-visibility'
+  | 'links'
+  | 'trash'
+  | null;
 
 /** What the vault says once a change is made: "Only you can open this" (SEC-19). */
 type Notice = { title: string; body: string };
@@ -1249,6 +1287,8 @@ function BulkBar(props: {
   const pending = useRef<Outcome | null>(null);
   const collectButton = useRef<HTMLButtonElement>(null);
   const locationButton = useRef<HTMLButtonElement>(null);
+  const tagAddButton = useRef<HTMLButtonElement>(null);
+  const tagRemoveButton = useRef<HTMLButtonElement>(null);
   const visibilityButton = useRef<HTMLButtonElement>(null);
   const trashButton = useRef<HTMLButtonElement>(null);
   const busy = progress !== null;
@@ -1335,6 +1375,56 @@ function BulkBar(props: {
         leftWords(r.done.length, r.untouched.length, 'changed', signedOut),
       ),
       failedHead: failedHead(r.failed.length, n, 'changed'),
+      failed: r.failed,
+      untouched: r.untouched.map((d) => d.id),
+    });
+  };
+
+  /**
+   * A tag added to, or taken off, the chosen documents the person may change
+   * (0.9.0, T1): each through its own edit, with its own ETag, so one changed
+   * meanwhile is refused alone and listed, and the rest go through. Those
+   * not theirs to change are left as they are, and named.
+   */
+  const tagged = async (mode: 'add' | 'remove', tag: string) => {
+    const mine = chosen.filter((d) => mayChange(who.role, who.memberId, d));
+    const notMine = chosen.filter((d) => !mayChange(who.role, who.memberId, d));
+    const key = tagKey(tag);
+    const asWas: DocumentView[] = [];
+    const r = await each(mine, (d) => {
+      const has = d.tags.some((t) => tagKey(t) === key);
+      if (mode === 'add' ? has : !has) {
+        asWas.push(d);
+        return Promise.resolve(true);
+      }
+      const tags = mode === 'add' ? [...d.tags, tag] : d.tags.filter((t) => tagKey(t) !== key);
+      return withToken((t) => api.updateDocument(t, d.id, { tags }, d.etag));
+    });
+    const changed = r.done.length - asWas.filter((d) => r.done.includes(d)).length;
+    const shown = `“${tagWords(tag).text}”`;
+    const already = asWas.length;
+    finish({
+      said: said(
+        changed > 0
+          ? mode === 'add'
+            ? `${shown} added to ${documentsCount(changed)}.`
+            : `${shown} taken off ${documentsCount(changed)}.`
+          : r.failed.length === 0 && r.untouched.length === 0
+            ? 'Nothing changed.'
+            : null,
+        already > 0
+          ? mode === 'add'
+            ? `${already} had it already.`
+            : `${already} did not have it.`
+          : null,
+        notMine.length > 0
+          ? `Left as ${notMine.length === 1 ? 'it was' : 'they were'}, not yours to change: ${notMine
+              .map((d) => `“${titleOf(d)}”`)
+              .join(', ')}.`
+          : null,
+        leftWords(changed, r.untouched.length, 'changed', signedOut),
+      ),
+      failedHead: failedHead(r.failed.length, mine.length, 'changed'),
       failed: r.failed,
       untouched: r.untouched.map((d) => d.id),
     });
@@ -1504,6 +1594,28 @@ function BulkBar(props: {
             Set where it’s kept
           </button>
         )}
+        {offer.tags && (
+          <>
+            <button
+              ref={tagAddButton}
+              type="button"
+              className="btn btn-bulk"
+              disabled={busy || tooMany}
+              onClick={() => setActing('tag-add')}
+            >
+              Add a tag…
+            </button>
+            <button
+              ref={tagRemoveButton}
+              type="button"
+              className="btn btn-bulk"
+              disabled={busy || tooMany}
+              onClick={() => setActing('tag-remove')}
+            >
+              Remove a tag…
+            </button>
+          </>
+        )}
         {offer.visibility.length > 0 && (
           <button
             ref={visibilityButton}
@@ -1561,6 +1673,17 @@ function BulkBar(props: {
           progress={progress}
           returnFocus={locationButton}
           onSet={(where) => void setLocation(where)}
+          onCancel={() => setActing(null)}
+        />
+      )}
+      {(acting === 'tag-add' || acting === 'tag-remove') && (
+        <TagsSheet
+          mode={acting === 'tag-add' ? 'add' : 'remove'}
+          chosen={chosen}
+          mine={chosen.filter((d) => mayChange(who.role, who.memberId, d))}
+          progress={progress}
+          returnFocus={acting === 'tag-add' ? tagAddButton : tagRemoveButton}
+          onRun={(mode, tag) => void tagged(mode, tag)}
           onCancel={() => setActing(null)}
         />
       )}
@@ -1708,6 +1831,98 @@ function CollectSheet(props: {
           said.current = news;
         }}
       />
+    </Sheet>
+  );
+}
+
+/**
+ * A tag for the chosen documents (0.9.0, T1): one to add, typed with the
+ * tags the person can see offered; or one of theirs to take off. Done to
+ * those the person may change; the rest are said to be left as they are.
+ */
+function TagsSheet(props: {
+  mode: 'add' | 'remove';
+  chosen: DocumentView[];
+  mine: DocumentView[];
+  progress: { done: number; of: number } | null;
+  returnFocus: RefObject<HTMLButtonElement | null>;
+  onRun: (mode: 'add' | 'remove', tag: string) => void;
+  onCancel: () => void;
+}) {
+  const busy = props.progress !== null;
+  const known = useKnownTags(props.mode === 'add');
+  const [picked, setPicked] = useState<string | null>(null);
+  const n = props.mine.length;
+  const what = documentsCount(n);
+  const notMine = props.chosen.length - n;
+  const heading = props.mode === 'add' ? `Add a tag to ${what}` : `Remove a tag from ${what}`;
+  // The tags on the documents the person may change, each once, most used first.
+  const theirs = new Map<string, { tag: string; count: number }>();
+  for (const d of props.mine) {
+    for (const t of d.tags) {
+      const had = theirs.get(tagKey(t));
+      theirs.set(tagKey(t), { tag: had?.tag ?? t, count: (had?.count ?? 0) + 1 });
+    }
+  }
+  const onThem = [...theirs.values()].sort(
+    (a, b) => b.count - a.count || a.tag.localeCompare(b.tag),
+  );
+  const busyWords = props.progress
+    ? `Changing ${props.progress.done + 1} of ${props.progress.of}…`
+    : null;
+  return (
+    <Sheet label={heading} busy={busy} returnFocus={props.returnFocus} onClose={props.onCancel}>
+      <div className="card stack">
+        <h2 style={{ fontSize: 20 }}>{heading}</h2>
+        {notMine > 0 && (
+          <p className="muted">
+            {notMine} of the {props.chosen.length} you chose {notMine === 1 ? 'isn’t' : 'aren’t'}{' '}
+            yours to change: {notMine === 1 ? 'it is' : 'they are'} left as{' '}
+            {notMine === 1 ? 'it is' : 'they are'}.
+          </p>
+        )}
+        {props.mode === 'add' ? (
+          <TagField
+            id="bulk-tag"
+            label="Tag"
+            known={known}
+            have={[]}
+            busy={busy}
+            action={busyWords ?? `Add to ${what}`}
+            onAdd={(tag) => {
+              props.onRun('add', tag);
+              return Promise.resolve(false);
+            }}
+          />
+        ) : onThem.length === 0 ? (
+          <p>None of them has a tag.</p>
+        ) : (
+          <Pills
+            label="Which tag"
+            value={picked}
+            options={onThem.map((t) => ({
+              value: t.tag,
+              label: `${tagWords(t.tag).text} (${t.count})`,
+            }))}
+            onChange={setPicked}
+          />
+        )}
+        <div className="row">
+          {props.mode === 'remove' && onThem.length > 0 && (
+            <Button
+              disabled={busy || picked === null}
+              onClick={() => {
+                if (picked) props.onRun('remove', picked);
+              }}
+            >
+              {busyWords ?? `Remove from ${what}`}
+            </Button>
+          )}
+          <Button kind="quiet" disabled={busy} onClick={props.onCancel}>
+            Cancel
+          </Button>
+        </div>
+      </div>
     </Sheet>
   );
 }
@@ -1930,6 +2145,7 @@ function PhoneDocuments(props: {
                       visibility: '',
                       collection: '',
                       tag: '',
+                      label: '',
                     })
                   }
                 >

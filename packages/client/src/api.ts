@@ -23,6 +23,8 @@ import type {
   PairedDevice,
   UploadStatus,
   IssuerCount,
+  TagChangeResult,
+  TagView,
   DetailSuggestions,
   IssuerSuggestions,
   CollectionAudience,
@@ -726,11 +728,25 @@ export function createApi(http: Http) {
     /**
      * The tags on the documents this person can see, most used first (50 at
      * most), or those starting with `q`: the Documents table's tag filter (R2).
+     * Since 0.9.0 (`features.tag_details`) whatever their case, up to
+     * `limit` (1,000 at most), each with a detail tag's `label` and `value`
+     * and how many of its documents this person may change (`changeable`).
      */
-    tags: (token: string, q?: string) =>
-      request<{ items: Array<{ tag: string; count: number }> }>(`/api/v1/tags${qs({ q })}`, {
+    tags: (token: string, q?: string, opts: { limit?: number } = {}) =>
+      request<{ items: TagView[] }>(`/api/v1/tags${qs({ q, limit: opts.limit })}`, {
         token,
       }),
+    /**
+     * A tag renamed on every document this person may change (0.9.0,
+     * `features.tag_management`). Into a tag their documents carry already
+     * it is a merge, asked first: without `merge: true`, `409 tag_exists`.
+     * What it came to counts only documents they can see.
+     */
+    renameTag: (token: string, body: { from: string; to: string; merge?: boolean }) =>
+      request<TagChangeResult>('/api/v1/tags/rename', { method: 'POST', body, token }),
+    /** A tag taken off every document this person may change (0.9.0, `features.tag_management`). */
+    deleteTag: (token: string, tag: string) =>
+      request<TagChangeResult>('/api/v1/tags/delete', { method: 'POST', body: { tag }, token }),
     /**
      * Who issued the household's documents, as far as this person can see
      * (0.4.10, `features.issued_by`): the filter chips, and with `type_key`

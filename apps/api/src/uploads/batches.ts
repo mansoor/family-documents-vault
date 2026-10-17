@@ -32,6 +32,7 @@ import {
   BATCH_NAME_MAX,
   batchVisibility,
   can,
+  normaliseTags,
   deviceBatchName,
   dropFileName,
   INCOMING_KEEP_DAYS,
@@ -2349,9 +2350,8 @@ export class BatchService {
       if (d.collection_id !== null) await this.collections.mayAddTo(trx, p, d.collection_id);
       out.default_collection_id = d.collection_id;
     }
-    if (d.tags !== undefined) {
-      out.default_tags = [...new Set(d.tags.map((t) => t.trim().toLowerCase()).filter(Boolean))];
-    }
+    // As a document's are kept (0.9.0, T1): a detail tag's value as written.
+    if (d.tags !== undefined) out.default_tags = normaliseTags(d.tags);
     if (d.is_essential !== undefined) out.default_essential = d.is_essential;
     return out as {
       default_owner_member_id?: string | null;

@@ -418,6 +418,9 @@ describe('the Documents table, from 768 px (R2)', () => {
     ).toEqual([
       'Add to a collection',
       'Set where it’s kept',
+      // A tag to many at once (0.9.0, T1).
+      'Add a tag…',
+      'Remove a tag…',
       'Who can see it',
       'Move to the Trash',
       'Clear selection',

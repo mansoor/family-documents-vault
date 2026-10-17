@@ -338,7 +338,10 @@ describe.skipIf(!testAdminUrl())('documents API', () => {
     const tags = json<{ items: Array<{ tag: string; count: number }> }>(
       await h.app.inject({ url: '/api/v1/tags?q=bi', headers: h.as(owner) }),
     );
-    expect(tags.items).toEqual([{ tag: 'bills', count: 3 }]);
+    // With, since 0.9.0 (T1), a detail tag's halves and what the caller may change.
+    expect(tags.items).toEqual([
+      { tag: 'bills', count: 3, label: null, value: null, changeable: 3 },
+    ]);
 
     const counts = json<{ by_category: Array<{ category: string | null; count: number }> }>(
       await h.app.inject({ url: '/api/v1/documents/counts', headers: h.as(owner) }),

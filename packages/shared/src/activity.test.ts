@@ -60,6 +60,14 @@ describe('the activity log, in sentences', () => {
     expect(said()).toBe('Sarah changed the note on “Home insurance policy”');
   });
 
+  it('says a tag was renamed, merged or taken off a document, never which (0.9.0, T1)', () => {
+    const said = (change: string) =>
+      describeEvent(ev({ action: 'document.tags_changed', detail: { change } }))?.text;
+    expect(said('renamed')).toBe('Sarah renamed a tag on “Home insurance policy”');
+    expect(said('merged')).toBe('Sarah merged two tags on “Home insurance policy”');
+    expect(said('removed')).toBe('Sarah took a tag off “Home insurance policy”');
+  });
+
   it('says who opened a shared link, since nobody signed in', () => {
     const line = describeEvent(
       ev({ action: 'share.opened', actor: null, actor_label: 'shared link (the letting agent)' }),

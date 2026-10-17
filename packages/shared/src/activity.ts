@@ -218,6 +218,14 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
         : detail.change === 'removed'
           ? line(`${who} took the note off ${doc}`)
           : line(`${who} changed the note on ${doc}`);
+    // 0.9.0 (T1): a tag renamed, merged or deleted across documents, on
+    // each it changed. The log never holds the tag's words.
+    case 'document.tags_changed':
+      return detail.change === 'merged'
+        ? line(`${who} merged two tags on ${doc}`)
+        : detail.change === 'removed'
+          ? line(`${who} took a tag off ${doc}`)
+          : line(`${who} renamed a tag on ${doc}`);
     case 'document.version_added':
       return line(`${who} uploaded a new copy of ${doc}`);
     // 0.8.0 (S1): a copy added from a batch, taken back within its minutes.

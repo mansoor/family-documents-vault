@@ -6,6 +6,14 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Tags you can use (0.9.0, T1).** A document's tags are chips on its page: add one there, with the tags already used offered as you type, take one off with its ×, and click one to see every document with it. A tag can be a detail too, written "label: value" — "locker: 12", "policy holder: Ahmed", "agent: Sam Lee" — for a one-off fact that does not deserve a field: it is shown "Locker · 12", found by its label, its value or the whole tag, and after "locker: " the field offers the values used before. Documents filters by a detail's label ("every document with a locker") as well as by a tag, and adds a tag to, or takes one off, the documents you choose — those you may change; the rest are left as they are, and named. **Settings → Tags**, after Kinds of document, lists every tag you can see with how many documents carry it, details grouped by their label, and renames (into one that is there already: merged, once you confirm) or deletes one on the documents you may change. Tags are seen and searched by everyone who can see their document, as they always were: the field says so, and a label that looks like a password or a PIN is pointed out before it is saved.
+
+### Changed
+
+- Tags are tidied as they are saved: trimmed, a run of spaces made one, and two that differ only in capitals kept once. A plain tag is still kept in lower case; a detail tag keeps its value as you wrote it ("Ahmed"). Tags already in your vault are unchanged, and one with ": " in it shows as a detail now. Too long a tag (more than 40 characters) or too many (more than 50 on a document) is refused in words. Migration 0073 adds two indexes for finding tags whatever their case, and by a detail's label; it copies nothing.
+
 ## [0.8.0-rc.1] - 2026-10-17 — the 0.8.0 exit, the release candidate for 0.8.0
 
 The release candidate for 0.8.0, the next release after 0.4.5. There is no 0.6.0 and no 0.7.0: their candidates (0.6.0-rc.1, 0.7.0-rc.1 and 0.7.0-rc.2, below) never became releases, and everything in them is here (the owner's decision of 17 Oct 2026: one demonstration, for 0.8.0). This entry gathers, for someone upgrading from 0.4.5, everything since: the phone release (0.5.0), Phase 5 (0.5.1 to 0.6.0-rc.1), Phase 6 (0.7.0-dev.1 to 0.7.0-rc.2) and 0.8.0 (0.8.0-dev.1 to dev.8). The entries below it are the history, release by release. Once the owner's demonstration passes, 0.8.0 goes to `main` and the `latest` images move to it.

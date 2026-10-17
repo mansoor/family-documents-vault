@@ -7,7 +7,7 @@ import { useShellMode } from './shell.js';
 /**
  * Settings in sections (Phase 6, the owner's ask): Your account,
  * Notifications, Privacy, Kinds of document, Your data and For owners (and
- * Your computers since 0.8.0), each with an address
+ * Your computers since 0.8.0, Tags since 0.9.0), each with an address
  * of its own. From 768 px a sub-menu, "Settings sections", down the left
  * of the Settings area, the chosen section beside it at a form's width; on
  * a phone, Settings is the list of the sections, each opening its page.
@@ -21,7 +21,7 @@ import { useShellMode } from './shell.js';
  * still opens Privacy.
  */
 export type SectionKey =
-  'account' | 'computers' | 'notifications' | 'privacy' | 'kinds' | 'data' | 'owners';
+  'account' | 'computers' | 'notifications' | 'privacy' | 'kinds' | 'tags' | 'data' | 'owners';
 
 export interface SettingsSection {
   key: SectionKey;
@@ -57,6 +57,13 @@ export function privacyRows(role: Role, caps: Capabilities | null): SettingsRow[
 /** Whether this reader manages the kinds of document (5.12): the Kinds of document section. */
 export const managesKinds = (role: Role, caps: Capabilities | null): boolean =>
   caps?.features.custom_types === true && can(role, 'types.manage');
+
+/**
+ * Whether this reader manages the household's tags (0.9.0, T1): whoever may
+ * change documents — owners, adults and teens; never a viewer or a guest.
+ */
+export const managesTags = (role: Role, caps: Capabilities | null): boolean =>
+  caps?.features.tag_management === true && can(role, 'document.edit');
 
 /** The For owners section's pages: an owner's. */
 export const OWNER_ROWS: SettingsRow[] = [
@@ -149,6 +156,16 @@ export function settingsSections(
       label: 'Kinds of document',
       note: 'What the family keeps, and what the card asks for each',
       holds: at('/settings/kinds'),
+    });
+  }
+  // Tags (0.9.0, T1), after Kinds of document: whoever may change documents.
+  if (managesTags(role, caps)) {
+    out.push({
+      key: 'tags',
+      to: '/settings/tags',
+      label: 'Tags',
+      note: 'Rename, merge and delete the tags on your documents',
+      holds: at('/settings/tags'),
     });
   }
   // Only to whoever may export (5.35): a viewer, a guest or a teen asking

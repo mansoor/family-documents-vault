@@ -20,6 +20,7 @@ import { HouseholdQuestionsScreen } from './screens/HouseholdQuestions.js';
 import { IncomingFileScreen } from './screens/Incoming.js';
 import { JoinScreen } from './screens/Join.js';
 import { KindScreen, KindsScreen } from './screens/KindsOfDocument.js';
+import { TagsScreen } from './screens/Tags.js';
 import { CollectionScreen, CollectionsScreen } from './screens/Collections.js';
 import { ForgotPasswordScreen, ResetPasswordScreen } from './screens/Password.js';
 import { SharedScreen } from './screens/Shared.js';
@@ -341,6 +342,7 @@ export function App() {
                 <Route path="kinds" element={<KindsScreen />} />
                 <Route path="kinds/new" element={<KindScreen />} />
                 <Route path="kinds/:key" element={<KindScreen />} />
+                <Route path="tags" element={<TagsScreen />} />
                 <Route
                   path="data"
                   element={

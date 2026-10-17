@@ -4787,6 +4787,77 @@ true`, as it says of every kind that expires, so a client released
     before 0.8.0 reads what it read; a client that asks `missingFields`
     gets the new answer. No migration: the rule is the vault's, not a row.
 
+- After 0.8.0 (for 0.9.0):
+  - Tags you can use (0.9.0, T1, migration 0073). Everything is
+    **additive**: nothing a 0.4.x, 0.8.0 or phone 0.3.x client sends or
+    reads changes meaning, and the older clients' contract runs
+    (`OLDER_CLIENT_REF`) are unchanged.
+    - **New `features`:** `tag_details` and `tag_management`, both `true`;
+      absent from older vaults.
+    - **Detail tags.** A tag whose first `: ` has text on both sides is a
+      detail tag, `label: value` ("locker: 12", "policy holder: Ahmed").
+      The vault keeps it as every tag — in `tags`, in plain text, searched
+      by whoever may see its document (an Only me one's by its owner
+      alone) — with its spaces tidied, its label in lower case and its
+      value as written. **Changed:** tags sent in a create, an edit, a
+      capture's `metadata` or a batch's `defaults` are tidied (trimmed, a
+      run of spaces one), and two that differ only in case are one, the
+      first spelling kept. A plain tag is still kept in lower case, so
+      everything a vault kept before reads exactly as it did, and one with
+      `: ` in it is a detail tag now with nothing rewritten. Tags are 40
+      characters at most and 50 a document, as always: past either,
+      `422 validation_failed` says which, in words ("A tag can be 40
+      characters at most: “…” is 41."), where it used to be zod's message;
+      the 40 and the 50 are counted once the tags are tidied. A capture's
+      check (`checkCaptureMetadata`) says the same.
+    - **Search** finds a detail tag by its label, by its value or by the
+      whole tag (`GET /search?q=`), as it found any tag's words.
+    - **`GET /api/v1/documents`** (the older list and every column sort):
+      `tag=` matches whatever the case and spacing ("Agent: sam lee" finds
+      "agent: Sam Lee"); new `tag_label=` gives every document with a
+      detail tag of that label, any value (`tag_label=locker`), and with
+      `tag=` a label and its value. Both narrow what the caller may see.
+    - **`GET /api/v1/tags`** takes `limit` (1 to 1,000; 50 unless said),
+      matches `q` against the tags whatever their case ("locker: " gives
+      the values used for that label; `%` and `_` are themselves), counts
+      a tag once for each document whatever its spellings, and gives the
+      spelling used most. Each item gains `label` and `value` (a detail
+      tag's halves, the label in lower case; `null` for a plain tag) and
+      `changeable`: how many of the counted documents the caller may
+      change. Only documents the caller can see, out of the Trash, are
+      counted, as before.
+    - **New routes** (`tag_management`), for whoever may change documents
+      (owners, adults and teens; a viewer or a guest is `403`):
+      - `POST /api/v1/tags/rename` — `{ from, to, merge? }`. `from` becomes
+        `to` on every document the caller may change (a teen, their own)
+        among those they can see, out of the Trash. Into a tag one of the
+        documents they can see carries already, it is a merge, asked first:
+        without `merge: true`, `409 tag_exists` ("“…” is a tag already.
+        Renaming “…” to it merges the two."); a document with both keeps
+        one, the first. A tag only on documents they cannot see is no tag
+        to merge into, and is never said to be there.
+      - `POST /api/v1/tags/delete` — `{ tag }`. Taken off every document
+        the caller may change.
+      - Each answers `{ changed, kept, merged }`: on how many documents it
+        changed, and on how many they can see but may not change it stays.
+        A document they cannot see is never touched and never counted. Each
+        document changed moves its `updated_at`, so its ETag: an edit made
+        against it as it was is `409 conflict`.
+    - **Activity:** each document a rename, a merge or a delete changes has
+      its line, `document.tags_changed` (`detail.change`: `renamed`,
+      `merged`, `removed`), for whoever may see the document, as an edit's
+      is: "Sarah renamed a tag on “Pension”". It never holds the tag's
+      words. Adding or taking off a tag in an edit (the document page's
+      chips, and Documents' Add a tag and Remove a tag, each a `PATCH` with
+      its document's ETag) is `document.updated`, as ever.
+    - `@fdv/shared`: `TAG_MAX`, `TAGS_MAX`, `TAGS_SEEN_NOTE`, `tagDetail`,
+      `normaliseTag`, `normaliseTags`, `tagKey`, `tagLabelKey`,
+      `tagsProblem`, `tagWords`, `looksSecret`, `secretTagWarning`,
+      `tagSuggestions`, `groupTags`, `TagView`, `TagChangeResult`;
+      `DocumentListParams.tag_label`. `@fdv/client`: `tags(token, q,
+{ limit })` (its items `TagView`), `renameTag`, `deleteTag`; the fake
+      answers every one, and keeps tags on an edit.
+
 ## Deprecations in effect
 
 - `GET /api/v1/shared/{token}`, `POST /api/v1/shared/{token}/open` and

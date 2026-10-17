@@ -4,7 +4,11 @@ import {
   householdDateOrder,
   issuerCandidates,
   mayChangeVisibilityAtAll,
+  normaliseTags,
   notesPlainText,
+  tagKey,
+  tagLabelKey,
+  tagsProblem,
   PRIVATE_BY_DEFAULT,
   PRIVATE_TO_THEM,
   sentThroughWords,
@@ -14,6 +18,8 @@ import {
   type IssuerSuggestions,
   type KnownIssuer,
   type CaptureMetadata,
+  type TagChangeResult,
+  type TagView,
   type ProposalContext,
   type UploadStatus,
   type SearchHit as WireSearchHit,
@@ -78,6 +84,7 @@ import { openSealedText } from './sealed-text.js';
 import { askerOf } from './visibility.js';
 import { removableAtOnce, signsInHere } from './purge-rule.js';
 import { documentTable } from './table.js';
+import { deleteTag, listTags, renameTag } from './tags.js';
 import { allows, requireCapability } from '../authz.js';
 import {
   canSee,
@@ -126,6 +133,8 @@ export interface ListQuery {
   issued_by?: string | undefined;
   type_key?: string | undefined;
   tag?: string | undefined;
+  /** A detail tag's label (0.9.0, T1): every document with a "locker: …". */
+  tag_label?: string | undefined;
   visibility?: Visibility | undefined;
   essential?: boolean | undefined;
   status?: string | undefined;
@@ -494,6 +503,18 @@ export function typeView(t: EffectiveType): DocumentTypeView {
 export const seenDocument = (p: Principal) => sql<boolean>`(d.visibility = 'household'
   or (d.visibility = 'adults' and ${p.seesAdults})
   or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))`;
+
+/**
+ * The filter by a tag, as SQL on the document table (0.9.0, T1): the tag
+ * whatever its case and spacing, as 0073's `fdv_tag_keys` compares them. A
+ * plain tag was kept in lower case already, so it finds what it always did.
+ */
+export const tagFilter = (tag: string, column = 'tags') =>
+  sql<boolean>`fdv_tag_keys(${sql.ref(column)}) @> array[${tagKey(tag)}]::text[]`;
+
+/** Every document with a detail tag of this label, any value (0.9.0, T1). */
+export const tagLabelFilter = (label: string, column = 'tags') =>
+  sql<boolean>`fdv_tag_labels(${sql.ref(column)}) @> array[${tagLabelKey(label)}]::text[]`;
 
 /**
  * A document of kind `t` (a row called `t` with a `key`) the caller can
@@ -1398,7 +1419,9 @@ export class DocumentService {
       if (q.purge_requested !== undefined) {
         query = query.where('purge_requested_at', q.purge_requested ? 'is not' : 'is', null);
       }
-      if (q.tag) query = query.where(sql<boolean>`${sql.ref('tags')} @> array[${q.tag}]::text[]`);
+      // A tag whatever its case, and a detail tag's label (0.9.0, T1, 0073).
+      if (q.tag) query = query.where(tagFilter(q.tag));
+      if (q.tag_label) query = query.where(tagLabelFilter(q.tag_label));
       if (q.issued_by) {
         query = query.where(sql<boolean>`lower(issued_by) = lower(${q.issued_by.trim()})`);
       }
@@ -1463,21 +1486,30 @@ export class DocumentService {
     );
   }
 
-  async tags(p: Principal, q: string | undefined): Promise<Array<{ tag: string; count: number }>> {
-    return withPrincipal(this.db, p, async (trx) => {
-      const r = await sql<{ tag: string; count: number }>`
-        select t as tag, count(*)::int as count
-        from document d, unnest(d.tags) as t
-        where d.deleted_at is null
-          -- Tags are words people write about their documents, as telling
-          -- as a title. Until 0.4.2 this was the one query with no rule.
-          and (d.visibility = 'household'
-            or (d.visibility = 'adults' and ${p.seesAdults})
-            or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))
-          ${q ? sql`and t ilike ${`${q}%`}` : sql``}
-        group by t order by count desc, t limit 50`.execute(trx);
-      return r.rows;
-    });
+  /** GET /tags (tags.ts): the tags on what the caller can see, each counted, most used first. */
+  async tags(
+    p: Principal,
+    q: { q?: string | undefined; limit?: number | undefined },
+  ): Promise<TagView[]> {
+    return listTags(this.db, p, q);
+  }
+
+  /** POST /tags/rename (0.9.0, T1, tags.ts): on the documents the caller may change. */
+  async renameTag(
+    p: Principal,
+    input: { from: string; to: string; merge?: boolean | undefined },
+    meta: RequestMeta,
+  ): Promise<TagChangeResult> {
+    return renameTag(this.db, p, input, meta);
+  }
+
+  /** POST /tags/delete (0.9.0, T1, tags.ts): off the documents the caller may change. */
+  async deleteTag(
+    p: Principal,
+    input: { tag: string },
+    meta: RequestMeta,
+  ): Promise<TagChangeResult> {
+    return deleteTag(this.db, p, input, meta);
   }
 
   /**
@@ -3159,11 +3191,12 @@ export class DocumentService {
     if (input.physical_location !== undefined)
       out.physical_location = input.physical_location?.trim() || null;
     if (input.is_essential !== undefined) out.is_essential = input.is_essential;
+    // Tidied, each once whatever its case, a detail tag's value as written
+    // (0.9.0, T1, @fdv/shared tags.ts); too long, or too many, said plainly.
     if (input.tags !== undefined) {
-      out.tags = [...new Set(input.tags.map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(
-        0,
-        50,
-      );
+      const problem = tagsProblem(input.tags);
+      if (problem) throw new ApiError(422, 'validation_failed', problem, { detail: 'tags' });
+      out.tags = normaliseTags(input.tags);
     }
     if (input.notes !== undefined) out.notes = input.notes?.trim() || null;
     if (input.extra !== undefined) {
