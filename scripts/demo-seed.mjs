@@ -25,14 +25,18 @@
 //   --seed <number>          FDV_CORPUS_SEED          which corpus (default 1)
 //   --i-mean-it                                       allow port 8080
 //
-// --corpus also adds the two of the family the corpus names who have no
-// sign-in — Maryam and Granny Farida — and sets the household's country to
-// the United Kingdom, as the corpus's dates are written (0.8.0, S5).
+// It also adds three of the family with no sign-in, for inviting (0.8.0):
+// Maryam, 9, too young for a sign-in; Granny Farida, who could have one as an
+// adult or a viewer; and Sara, who is 13 today. Maryam and Granny Farida are
+// as the Smart exit's papers name them. It sets the household's country to
+// the United Kingdom, as the papers' dates are written (S5).
 //
 // --out writes the files a demonstration of the review queue adds (Phase 6):
 // Tariq's passport page, which reads as his passport; the scanned page
 // "A scan from the printer" was filed from, and a copy of the car insurance
-// already filed, each a duplicate; a blank page, which reads as nothing;
+// already filed, each a duplicate; next year's car insurance, with the same
+// policy number, to add as a new version of it (0.8.0, S1); a blank page,
+// which reads as nothing;
 // and four letters from one clinic that name nobody, for the vault to
 // learn whose and what kind they are from the first three; and an electricity
 // bill. They are written in folders a family might keep — Ahmed/Passport,
@@ -230,6 +234,35 @@ const carInsurance = textPdf([
   'This is a made-up document for a demonstration.',
 ]);
 
+/** The car insurance's policy number, on the one filed and on its renewal. */
+const CAR_POLICY = 'EM-4471-0921';
+
+/** A date as a letter writes it: "2 December 2026". */
+const written = (offsetDays) =>
+  new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000).toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+
+/**
+ * Next year's car insurance (0.8.0, S1): the same kind and policy number as
+ * the one filed, with new dates, so its card offers "Add as a new version of
+ * Car insurance", and Undo puts the old dates back.
+ */
+const carInsuranceRenewal = () =>
+  textPdf([
+    'MOTOR INSURANCE CERTIFICATE',
+    'Your renewal',
+    'Insurer: Example Mutual',
+    `Policy number: ${CAR_POLICY}`,
+    `Policyholder: ${ownerName.toUpperCase()} ${SURNAME}`,
+    `Start date: ${written(60)}`,
+    `End date: ${written(425)}`,
+    'This is a made-up document for a demonstration.',
+  ]);
+
 /**
  * Four letters from one clinic, naming nobody: what the vault learns from
  * (I4). Accept the first three as the same kind and the same person, then
@@ -270,6 +303,7 @@ const samples = () => [
   ['Ahmed/Passport/passport-scan.pdf', passportScan],
   ['Tariq/Passport/tariq-passport.pdf', tariqPassport],
   ['Insurance/car-insurance-again.pdf', carInsurance],
+  ['Insurance/car-insurance-renewal.pdf', carInsuranceRenewal()],
   ['Bills/2026/electricity-bill.pdf', electricityBill],
   ['blank-page.pdf', textPdf([])],
   [
@@ -341,17 +375,30 @@ async function main() {
     await call('PUT', '/notifications/preferences', { token, body: { daily_email: true } });
   }
   console.log('  turned on the day’s reminders by email for the owner and Vera');
-  if (corpus) {
-    // The rest of the family the Smart exit's papers name, with no sign-in;
-    // and the country their dates are written for (S5).
-    for (const name of ['Maryam', 'Granny Farida']) {
-      await confirm(t, ownerPassword);
-      await call('POST', '/members', { token: t, body: { display_name: name } });
-      console.log(`  added ${name}, with no sign-in`);
-    }
-    await call('PUT', '/profile', { token: t, body: { country: 'GB' } });
-    console.log('  set the household’s country to the United Kingdom');
+  // The rest of the family, with no sign-in (0.8.0): Maryam, 9, too young
+  // for one; Granny Farida, who could be invited as an adult or a viewer;
+  // and Sara, 13 today, whom the owners are reminded about. Maryam and Granny
+  // Farida are as the Smart exit's papers name them (S5).
+  const thirteenToday = new Date();
+  thirteenToday.setUTCFullYear(thirteenToday.getUTCFullYear() - 13);
+  for (const [name, born, relationship] of [
+    ['Maryam', '2017-07-09', 'daughter'],
+    ['Granny Farida', '1953-08-30', 'grandmother'],
+    ['Sara', thirteenToday.toISOString().slice(0, 10), 'daughter'],
+  ]) {
+    await confirm(t, ownerPassword);
+    const added = await call('POST', '/members', {
+      token: t,
+      body: { display_name: name, date_of_birth: born, relationship },
+    });
+    people[name] = { name, role: null, born, member_id: added.id };
+    console.log(`  added ${name}, with no sign-in`);
   }
+  // The country its papers' dates are written for, and the Smart exit's
+  // (S5): always, so a corpus written by scripts/smart-corpus.mjs on its
+  // own is read as --corpus's is.
+  await call('PUT', '/profile', { token: t, body: { country: 'GB' } });
+  console.log('  set the household’s country to the United Kingdom');
 
   // The papers.
   const me = await call('GET', '/me', { token: t });
@@ -456,6 +503,7 @@ async function main() {
       owner_member_id: me.member_id,
       visibility: 'household',
       issued_by: 'Example Mutual',
+      identifier: CAR_POLICY,
       // Past its 45-day lead: nothing is due at seeding, so the household's
       // one daily digest is left for the demonstration's own reminders.
       expires: { date: day(60), precision: 'day' },
@@ -522,8 +570,12 @@ async function main() {
   const link = request.link_url ?? `${base}/drop#${request.link_token}`;
 
   console.log('\nThe made-up people (their passwords are shown this once):');
-  for (const p of Object.values(people)) {
+  for (const p of Object.values(people).filter((x) => x.password)) {
     console.log(`  ${p.name.padEnd(6)} ${p.role.padEnd(7)} ${p.email}  ${p.password}`);
+  }
+  console.log('\nWith no sign-in (to invite, or not):');
+  for (const p of Object.values(people).filter((x) => !x.password)) {
+    console.log(`  ${p.name.padEnd(13)} born ${p.born}`);
   }
   console.log('\nThe request to the accountant:');
   console.log(`  link      ${link}`);
