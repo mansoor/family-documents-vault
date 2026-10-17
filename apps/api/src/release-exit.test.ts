@@ -22,7 +22,9 @@ import { alertsSent, createHarness, mailSent, TEST_MASTER, type Harness } from '
  * Phase 5 exit (5.41, as phase5-exit.test.ts), and the gate of every
  * release since: for 0.7.0 (the Phase 6 exit) it holds the batches, the
  * review queue, the learned rules and the Documents table's sorts and
- * filters to the same rules, with their planted secrets.
+ * filters to the same rules, with their planted secrets; for 0.8.0 (the
+ * 0.8.0 exit) the scanner folder, email in, a paired computer and its key,
+ * the folder a file came from, and duplicates and renewals as versions.
  *
  * Phase 5 added kinds of caller the vault never had — a restricted viewer,
  * a guest, somebody holding a share link, somebody sending files to a
@@ -181,7 +183,9 @@ type Kind =
   /** A note that the scanner folder could not add a file (S3): its person's alone. */
   | 'watchNotice'
   /** A computer that sends scans (0.8.0, D1): its person's, and an owner's to revoke. */
-  | 'pairedDevice';
+  | 'pairedDevice'
+  /** Not a parameter: another person's code to confirm their address for email in (S4), sent in a body. */
+  | 'mailInCode';
 
 /** The ids one request is made with: the thing of each kind the attacker is after. */
 type Fill = Record<Kind, string>;
@@ -808,7 +812,12 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/mail-in/me': { who: 'family' },
   'POST /api/v1/mail-in/me/code': { who: 'family', body: () => ({}) },
   'POST /api/v1/mail-in/me/email-code': { who: 'family', body: () => ({}) },
-  'POST /api/v1/mail-in/me/confirm': { who: 'family', body: () => ({ code: 'ABCD-EFGH' }) },
+  // A code of nobody's, and Ahmed's own live one (the 0.8.0 exit): neither
+  // confirms the caller's address, and his stays his.
+  'POST /api/v1/mail-in/me/confirm': {
+    who: 'family',
+    bodies: (f) => [{ code: 'ABCD-EFGH' }, { code: f.mailInCode }],
+  },
   // A computer that sends scans (0.8.0, D1): a code for whoever may add,
   // after the step-up; the code traded for a key by anybody, with no
   // sign-in; the key's own two routes, which nothing else opens; and the
@@ -1368,6 +1377,32 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     expect((await ok(send(ahmed, 'GET', '/api/v1/watch-folder/notices'))).body).toContain(
       'ahmed-mail-541',
     );
+    // His live code to confirm his address for email in (S4, the 0.8.0
+    // exit): the mailbox as the worker says it, and the household's email
+    // in turned on by an owner; the code emailed to his own address through
+    // the operator's mail server, to be typed in. The vault keeps a keyed
+    // hash of it alone.
+    await admin.query(
+      `insert into mail_in_server (singleton, configured, address, folder, after, sender_check, poll_seconds, checked_at)
+       values (true, true, 'home-541@vault.test', 'INBOX', 'move', false, 300, now())
+       on conflict (singleton) do update set configured = true, sender_check = false, checked_at = now()`,
+    );
+    await ok(send(olivia, 'PUT', '/api/v1/mail-in', { enabled: true }));
+    const mailsBefore = mailSent(h).length;
+    await ok(send(ahmed, 'POST', '/api/v1/mail-in/me/email-code', {}));
+    const codeMail = mailSent(h).slice(mailsBefore);
+    expect(codeMail.map((m) => m.to)).toEqual(['ahmed-541@example.test']);
+    ids.mailInCode = /\b([A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})\b/.exec(
+      codeMail[0]?.text ?? '',
+    )?.[1] as string;
+    expect(ids.mailInCode).toBeTruthy();
+    const held = await admin.query<{ code_hash: Buffer; code_kind: string }>(
+      'select code_hash, code_kind from mail_in_address where member_id = $1',
+      [ahmed.member_id],
+    );
+    expect(held.rows[0]?.code_kind).toBe('enter');
+    ids.mailInCodeHex = held.rows[0]?.code_hash.toString('hex') as string;
+    ids.mailInCodeBase64 = held.rows[0]?.code_hash.toString('base64') as string;
 
     // Ahmed's own: a reminder, an export, a phone.
     const reminder = await ok(
@@ -2320,6 +2355,130 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     expect(got).toEqual(others.map(([name, , want]) => [name, want]));
   });
 
+  it('a duplicate or a renewal names, and is added to, only a document the uploader may change (0.8.0, S1)', async () => {
+    // Three passports of a boat's crew, each with a number: Ahmed's Only
+    // me; the family's, which an adult may change and a teen may not; and
+    // Tariq's own.
+    const ahmedBoat = await make('ahmedBoat', ahmed, {
+      title: 'Ahmed boat papers 541',
+      type_key: 'passport',
+      visibility: 'private',
+      owner_member_id: ahmed.member_id,
+      identifier: 'BOAT-541-AHMED',
+    });
+    const familyBoat = await make('familyBoat', olivia, {
+      title: 'Family boat licence 541',
+      type_key: 'passport',
+      visibility: 'household',
+      owner_member_id: olivia.member_id,
+      identifier: 'BOAT-541-FAMILY',
+    });
+    const tariqBoat = await make('tariqBoat', tariq, {
+      title: 'Tariq boat card 541',
+      type_key: 'passport',
+      visibility: 'household',
+      owner_member_id: tariq.member_id,
+      identifier: 'BOAT-541-TARIQ',
+    });
+    /** A file in the uploader's own batch, read as proposing a passport with this number. */
+    const item = async (who: Tokens, batch: string, bytes: Buffer, number: string) => {
+      const form = new FormData();
+      form.append('file', bytes, { filename: 'boat.pdf', contentType: 'application/pdf' });
+      const id = json<{ id: string }>(
+        await ok(
+          h.app.inject({
+            method: 'POST',
+            url: `/api/v1/batches/${batch}/items`,
+            headers: { ...h.as(who), ...form.getHeaders() },
+            payload: form.getBuffer(),
+            ...peer(),
+          }),
+          201,
+        ),
+      ).id;
+      await withSystem(h.db, olivia.household_id, async (trx) => {
+        const f = await trx
+          .selectFrom('incoming_file')
+          .select(['file_key_wrapped', 'wrapped_by_scope'])
+          .where('id', '=', id)
+          .executeTakeFirstOrThrow();
+        const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+        const fileKey = unwrapKey(
+          f.file_key_wrapped,
+          await keys.unwrapById(trx, f.wrapped_by_scope),
+          `incoming:${id}`,
+        );
+        const proposal = {
+          type_key: { value: 'passport', confidence: 0.97, cue: 'kind_words' },
+          identifier: { value: number, confidence: 0.95, cue: 'number_label' },
+        };
+        await trx
+          .updateTable('incoming_file')
+          .set({
+            read_state: 'read',
+            proposals_sealed: sealBytes(
+              fileKey,
+              Buffer.from(JSON.stringify({ v: 1, proposal })),
+              itemProposalsBinding(id),
+            ),
+          })
+          .where('id', '=', id)
+          .execute();
+      });
+      return id;
+    };
+    const batchOf = async (who: Tokens) =>
+      json<{ id: string }>(
+        await ok(send(who, 'POST', '/api/v1/batches', { name: 'The boat papers' }), 201),
+      ).id;
+    type Item = { id: string; duplicate: unknown; renewals: Array<{ document_id: string }> };
+    const items = async (who: Tokens, batch: string) => {
+      const res = await ok(send(who, 'GET', `/api/v1/batches/${batch}`));
+      return { body: res.body, items: json<{ items: Item[] }>(res).items };
+    };
+    const named = (list: Item[], id: string) =>
+      (list.find((i) => i.id === id)?.renewals ?? []).map((r) => r.document_id);
+
+    // Sara, another adult: a copy of Ahmed's Only me file, read as his
+    // number, and a renewal of the family's.
+    const saras = await batchOf(sara);
+    const copy = await item(sara, saras, PDF(ahmedBoat.marker), 'BOAT-541-AHMED');
+    const renewal = await item(sara, saras, PDF('SARA-BOAT-RENEWAL'), 'BOAT-541-FAMILY');
+    const seen = await items(sara, saras);
+    expect(seen.items.find((i) => i.id === copy)?.duplicate ?? null).toBeNull();
+    expect(named(seen.items, copy)).toEqual([]);
+    for (const secret of [ahmedBoat.id, ahmedBoat.title, ahmedBoat.version]) {
+      expect(seen.body.includes(secret), secret).toBe(false);
+    }
+    // The test of the test: the family's, which she may change, is named.
+    expect(named(seen.items, renewal)).toEqual([familyBoat.id]);
+    // Added as a new version of Ahmed's: not found, and nothing of his changed.
+    const into = await send(sara, 'POST', `/api/v1/batches/${saras}/items/${copy}/accept`, {
+      into_document_id: ahmedBoat.id,
+    });
+    expect([into.statusCode, into.body.includes(ahmedBoat.title)]).toEqual([404, false]);
+
+    // Tariq, a teen: the family's he can see but not change is never
+    // named, nor taken; his own is.
+    const his = await batchOf(tariq);
+    const notHis = await item(tariq, his, PDF('TARIQ-BOAT-1'), 'BOAT-541-FAMILY');
+    const own = await item(tariq, his, PDF('TARIQ-BOAT-2'), 'BOAT-541-TARIQ');
+    const teen = await items(tariq, his);
+    expect(named(teen.items, notHis)).toEqual([]);
+    expect(named(teen.items, own)).toEqual([tariqBoat.id]);
+    const refused = await send(tariq, 'POST', `/api/v1/batches/${his}/items/${notHis}/accept`, {
+      into_document_id: familyBoat.id,
+    });
+    expect(refused.statusCode).toBe(403);
+    // Nobody's document gained a version but by its own: one each still.
+    const versions = await admin.query<{ document_id: string; n: number }>(
+      `select document_id, count(*)::int as n from document_version
+        where document_id = any($1) group by document_id order by document_id`,
+      [[ahmedBoat.id, familyBoat.id, tariqBoat.id]],
+    );
+    expect(versions.rows.map((r) => r.n)).toEqual([1, 1, 1]);
+  });
+
   it('every route the router has has a rule, and every rule a route', () => {
     const routes = routeTable(h).map((r) => `${r.method} ${r.url}`);
     expect(routes.length).toBeGreaterThan(170);
@@ -2429,6 +2588,17 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       [ahmed.member_id],
     );
     expect(learned.rows[0]).toEqual({ rules: 2, outcomes: 1 });
+    // S4 (the 0.8.0 exit): every attacker sent Ahmed's code to confirm its
+    // own address, and nobody's address was confirmed by it; his code is
+    // his still, as it was made.
+    const addresses = await admin.query<{
+      member_id: string;
+      confirmed: boolean;
+      code_hash: Buffer | null;
+    }>('select member_id, confirmed_at is not null as confirmed, code_hash from mail_in_address');
+    expect(addresses.rows.filter((r) => r.confirmed)).toEqual([]);
+    const his = addresses.rows.find((r) => r.member_id === ahmed.member_id);
+    expect(his?.code_hash?.toString('hex')).toBe(ids.mailInCodeHex);
   }, 600_000);
 
   it('no identity value, note, detail, suggestion, page text or location reaches the activity log, a push or an email', async () => {
@@ -2713,6 +2883,10 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       // And what it sent: its file's name and its day's batch (his alone).
       'ahmed-computer-file-541',
       ids.deviceBatch as string,
+      // His code to confirm his address for email in, and what the vault keeps of it (S4).
+      ids.mailInCode as string,
+      ids.mailInCodeHex as string,
+      ids.mailInCodeBase64 as string,
     ];
     /** His computer's name: his, and the owners' (who see the household's computers by name). */
     const computer = [AHMED_COMPUTER];
@@ -2748,6 +2922,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       batchItem: [ids.batchItem as string],
       watchNotice: [ids.watchNotice as string],
       pairedDevice: [ids.pairedDevice as string],
+      mailInCode: [ids.mailInCode as string],
     };
     const viewerLike = (name: Attacker, tokens: Tokens, stale = false): AttackerDef => ({
       name,
@@ -3057,6 +3232,7 @@ const PARAM_KIND_DEFAULTS: Record<Kind, true> = {
   batchItem: true,
   watchNotice: true,
   pairedDevice: true,
+  mailInCode: true,
 };
 
 function kindOf(before: string, param: string): Kind | null {
