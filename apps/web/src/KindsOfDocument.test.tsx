@@ -8,6 +8,7 @@ import {
   ALWAYS_ASKED,
   DATES_HINT,
   EXPIRES_NOTE,
+  EXPIRES_OPTIONAL_NOTE,
   LIBRARY_AT_ONCE,
   NO_DATE,
   NO_LEAD,
@@ -740,8 +741,10 @@ describe('Kinds of document: Reminders, from any date (5.16b)', () => {
     expect(options()).toEqual(['Review by', 'Last reviewed', 'Due date']);
     show('Last reviewed');
     expect(options()).toEqual(['Review by', 'Due date']);
-    // The Will's Expires row points here, and still says Review by.
-    expect(within(group('Review by')).getByText(EXPIRES_NOTE)).toBeInTheDocument();
+    // The Will's Expires row points here, and still says Review by — and,
+    // since 0.8.0, that a Will's review date is the family's to add.
+    expect(within(group('Review by')).getByText(EXPIRES_OPTIONAL_NOTE)).toBeInTheDocument();
+    expect(within(group('Review by')).queryByText(EXPIRES_NOTE)).toBeNull();
     expect(within(group('Review by')).queryByRole('group', { name: /Remind us/ })).toBeNull();
   });
 

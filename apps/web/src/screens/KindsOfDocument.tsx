@@ -5,6 +5,7 @@ import {
   CORE_FIELDS,
   dateReminderSentence,
   deriveStatus,
+  expiryOptional,
   leadTimes,
   leadWords,
   nextReminder,
@@ -423,8 +424,16 @@ const tidy = (s: string | null) => s?.trim().replace(/\s+/g, ' ') || null;
 const sameLeads = (a: number[], b: number[]) =>
   [...new Set(a)].sort((x, y) => x - y).join() === [...new Set(b)].sort((x, y) => x - y).join();
 
-/** Asked for before the card saves: an expiry always is, for a kind that expires. */
-const needed = (f: CoreField, r: CoreFieldRule) => r.shown && (f === 'expires' || r.required);
+/**
+ * Asked for before the card saves: an expiry always is, for a kind that
+ * expires — but for the few whose papers rarely state one (0.8.0,
+ * EXPIRY_OPTIONAL_KINDS).
+ */
+const needed = (f: CoreField, r: CoreFieldRule, key?: string) =>
+  r.shown && ((f === 'expires' && !expiryOptional({ key })) || r.required);
+/** Expires's note on a kind whose papers rarely state one (0.8.0). */
+export const EXPIRES_OPTIONAL_NOTE =
+  'Optional for this kind: its papers rarely say. The vault asks for no date, and reminds once somebody adds one.';
 
 /** One fixed field's rule as the vault takes it: required only where shown. */
 function ruleOut(
@@ -1060,11 +1069,15 @@ function KindEditor(props: {
               )}
               {field === 'expires' &&
                 (dated ? (
-                  <p className="muted">{EXPIRES_NOTE}</p>
+                  <p className="muted">
+                    {expiryOptional(kind) ? EXPIRES_OPTIONAL_NOTE : EXPIRES_NOTE}
+                  </p>
                 ) : (
                   <>
                     <p className="muted">
-                      A document of a kind that expires always needs the date.
+                      {expiryOptional(kind)
+                        ? EXPIRES_OPTIONAL_NOTE
+                        : 'A document of a kind that expires always needs the date.'}
                     </p>
                     <LeadChips
                       id="k-leads-l"
@@ -1246,6 +1259,7 @@ function KindEditor(props: {
         fieldOf={fieldOf}
         reminder={dated ? cardPromise : expires.shown ? reminder : null}
         remindAt={dated ? reminds : null}
+        {...(kind ? { kindKey: kind.key } : {})}
       />
 
       <div className="kind-warnings" aria-live="polite">
@@ -1559,6 +1573,8 @@ function Preview(props: {
    * as the card says it. Null: said after the card, as before.
    */
   remindAt: string | null;
+  /** The kind's key: a few never ask for their expiry (0.8.0). */
+  kindKey?: string;
 }) {
   const { draft, remindAt } = props;
   const row = (key: string, name: string, required: boolean, about: string | null = null) => (
@@ -1581,7 +1597,12 @@ function Preview(props: {
       <ol>
         {LOCKED.slice(0, 3).map((l) => row(l.id, l.name, false))}
         {CARD_ORDER.filter((f) => draft.core[f].shown).map((f) =>
-          row(f, props.cardName(f), needed(f, draft.core[f]), remindAt === f ? f : null),
+          row(
+            f,
+            props.cardName(f),
+            needed(f, draft.core[f], props.kindKey),
+            remindAt === f ? f : null,
+          ),
         )}
         {asked(draft).map((f) =>
           row(
@@ -1593,7 +1614,7 @@ function Preview(props: {
         )}
         {(['tags', 'notes'] as const)
           .filter((f) => draft.core[f].shown)
-          .map((f) => row(f, props.cardName(f), needed(f, draft.core[f])))}
+          .map((f) => row(f, props.cardName(f), needed(f, draft.core[f], props.kindKey)))}
         <li>
           <span>Who can see it</span>
           <span className="muted">{visibilityWords(draft.visibility)}</span>
@@ -1675,7 +1696,11 @@ function warningsFor(
     const now = draft.core[f];
     const counts = impact.core[f];
     // Reminders coming from Expires say how many have it, below.
-    if (needed(f, now) && !needed(f, was) && !(f === 'expires' && moved === 'expires')) {
+    if (
+      needed(f, now, kind.key) &&
+      !needed(f, was, kind.key) &&
+      !(f === 'expires' && moved === 'expires')
+    ) {
       needsInfo(f, counts.without_value, savedName(f));
     }
     if (was.shown && !now.shown) kept(f, counts.with_value, savedName(f), 'on each of them');

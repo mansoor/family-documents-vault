@@ -17,7 +17,7 @@ import { testAdminUrl } from '@fdv/db/testing';
 import type { Tokens } from '@fdv/shared';
 import { LocalAdapter } from '@fdv/storage';
 import FormData from 'form-data';
-import { afterAll, beforeAll, describe, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { codeFor } from './auth/totp.js';
 import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
 
@@ -290,4 +290,63 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
   afterAll(() => h.close());
 
   for (const s of contractScenarios) it(s.name, () => s.run(api, ctx));
+});
+
+/**
+ * Kinds a client was released before (0.8.0, S5: 0072's credit card
+ * statement and school report). A client knows kinds only as the vault
+ * lists them: run with the phone's older client (scripts/older-client.mjs),
+ * this is that client listing them, filing a document of each and reading
+ * it back, as it does any other kind.
+ */
+describe.skipIf(!testAdminUrl())('kinds newer than the client (S5)', () => {
+  let h: Harness;
+  const fetch: FetchLike = async (url, init) => {
+    const res = await h.app.inject({
+      method: init.method as 'GET',
+      url: url.replace(/^https?:\/\/[^/]+/, ''),
+      headers: init.headers,
+      ...(typeof init.body === 'string' ? { payload: init.body } : {}),
+    });
+    return {
+      ok: res.statusCode < 400,
+      status: res.statusCode,
+      headers: {
+        get: (name) => {
+          const v = res.headers[name.toLowerCase()];
+          return v === undefined ? null : String(v);
+        },
+      },
+      json: async () => res.json(),
+      text: async () => res.body,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    };
+  };
+  const api = createApi(createHttp({ baseUrl: 'http://vault.test', fetch }));
+
+  beforeAll(async () => {
+    h = await createHarness();
+  }, 60_000);
+  afterAll(() => h.close());
+
+  it('lists them, files a document of each and reads it back', async () => {
+    const tokens = await api.setup({
+      household_name: 'The Kinds family',
+      display_name: 'Owner',
+      email: 'kinds@example.test',
+      password: 'a long enough password',
+    });
+    const token = tokens.access_token;
+    const kinds = (await api.documentTypes(token)).items;
+    for (const [key, label] of [
+      ['credit_card_statement', 'Credit card statement'],
+      ['school_report', 'School report'],
+    ] as const) {
+      expect(kinds.find((k) => k.key === key)?.label).toBe(label);
+      const made = await api.createDocument(token, { title: label, type_key: key });
+      const read = await api.document(token, made.id);
+      expect(read.type_key).toBe(key);
+      expect(read.title).toBe(label);
+    }
+  });
 });

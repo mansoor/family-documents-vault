@@ -4648,6 +4648,41 @@ validation_failed` at once. **Changed:** `last_used_at` is when a
     pairing email names the computer's platform and the time, on the
     household's clock. `@fdv/client`: multipart boundaries come from
     `crypto.getRandomValues` (`newBoundary`).
+  - The Smart exit's two kinds (0.8.0, S5, migration 0072). **Added:** two
+    built-in kinds in `GET /api/v1/document-types`, and as `type_key`
+    anywhere one is taken or given: `credit_card_statement` ("Credit card
+    statement", category `financial`, `default_visibility: "adults"`, an
+    expiry labelled "Payment due" that reminds 7 days and a day before, as
+    a bill's does; `issued_by_label: "Card issuer"`) and `school_report`
+    ("School report", category `education`, no expiry; `issued_by_label:
+"School"`). A client knows kinds only as the vault lists them, and
+    nothing it sends need change; one released before them lists, files
+    and reads them as any other (`client-contract.test.ts`, run with the
+    phone's older client). **Changed:** what a batch item's pages propose
+    (`proposals`): a credit card statement is proposed as its own kind, and
+    a statement with the marks of both a card's and a bank's, or of
+    neither, is offered below `ITEM_SURE` (Check); two of the family named
+    together — a joint account, a mortgage, a register of title — propose
+    the first named, and an initial with the family's surname ("Mrs O
+    Khan") the one person it can only mean, each at 0.78 with the cue
+    `name_on_page` (Check), where nobody was proposed before. No cue or
+    field is new.
+  - An expiry the family adds (0.8.0, S5, the owner's decision of 16
+    October). **Changed:** for the built-in kinds `will`,
+    `vehicle_registration`, `employment_contract` and `property_deed`, a
+    document without an expiry no longer lacks one: its `status` is
+    `valid` (not `needs_info` "Needs an expiry date"), as the worker's
+    status refresh and `status=` filters count it, and a batch item's card
+    gains no `missing` tag for it, so a sure one is Ready. One with an
+    expiry given counts it as before: `expiring_soon`, `expired`, and
+    reminders at the kind's lead times. Every other kind that expires,
+    and every household kind, still needs its expiry. `@fdv/shared`:
+    `EXPIRY_OPTIONAL_KINDS`, `expiryOptional(type)`; `missingFields` and
+    `deriveStatus` read the kind's `key`. **Unchanged on the wire:** `GET
+/api/v1/document-types` still gives these kinds `core.expires.required:
+true`, as it says of every kind that expires, so a client released
+    before 0.8.0 reads what it read; a client that asks `missingFields`
+    gets the new answer. No migration: the rule is the vault's, not a row.
 
 ## Deprecations in effect
 

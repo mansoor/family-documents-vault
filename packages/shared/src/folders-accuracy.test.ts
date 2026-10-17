@@ -78,10 +78,11 @@ const CORRELATED: Array<ProposalFixture & { folder: string }> = [
       'Card expiry date: 30 September 2029',
     ].join(LF),
     truth: {
-      type_key: 'bank_statement',
+      // A card's statement, its own kind since 0.8.0 (S5): due when its payment is.
+      type_key: 'credit_card_statement',
       owner: 'm-sara',
       issued: '2026-09-14',
-      expires: null,
+      expires: '2026-10-09',
       identifier: null,
       issued_by: 'Barclaycard',
     },
@@ -103,10 +104,10 @@ const CORRELATED: Array<ProposalFixture & { folder: string }> = [
       'Visa',
     ].join(LF),
     truth: {
-      type_key: 'bank_statement',
+      type_key: 'credit_card_statement',
       owner: 'm-ahmed',
       issued: '2026-09-25',
-      expires: null,
+      expires: '2026-10-22',
       identifier: null,
       issued_by: 'Chase',
     },

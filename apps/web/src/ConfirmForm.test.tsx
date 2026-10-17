@@ -235,27 +235,30 @@ describe('the card asks for a type’s details (5.10)', () => {
     expect(state.captures).toEqual([{ fields: ['file'], metadata: null }]);
   });
 
-  it('a car’s expiry is required as the vault counts it, so Save waits for it too', async () => {
-    const state = start('/add');
-    await addCard('vehicle_registration');
+  it('a kind that expires needs its expiry as the vault counts it, whatever its fixed fields say', () => {
     // The vault's own rule: a type that expires needs an expiry date,
-    // whatever its fixed fields say (0032 marks only three). A car saved
+    // whatever its fixed fields say (0032 marks only three). A boat saved
     // without one would read "Needs an expiry date" straight away.
-    expect(CAR_TYPE.core.expires).toMatchObject({ required: false });
-    expect(missingFields(CAR_TYPE, { extra: { plate: 'KX19 ZLT' } })).toEqual([
+    const boat = { ...CAR_TYPE, key: 'h_boat000000', label: 'Boat' };
+    expect(boat.core.expires).toMatchObject({ required: false });
+    expect(missingFields(boat, { extra: { plate: 'KX19 ZLT' } })).toEqual([
       { key: 'expires', label: null },
     ]);
-    const expires = screen.getByLabelText(/^Expires/);
-    expect(expires).toHaveAttribute('aria-required', 'true');
-    expect(expires).toHaveAccessibleName('Expires required');
+  });
 
-    type(/^Registration plate/, 'KX19 ZLT');
+  it('a car’s expiry is the family’s to add (0.8.0): not asked for, so Save waits only for the plate', async () => {
+    const state = start('/add');
+    await addCard('vehicle_registration');
+    expect(missingFields(CAR_TYPE, { extra: { plate: 'KX19 ZLT' } })).toEqual([]);
+    const expires = screen.getByLabelText(/^Expires/);
+    expect(expires).not.toHaveAttribute('aria-required');
+    expect(expires).toHaveAccessibleName('Expires');
+
     fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Still needed: Expires. Fill it in, or skip for now.',
+      'Still needed: Registration plate. Fill it in, or skip for now.',
     );
-    expect(expires).toHaveAttribute('aria-invalid', 'true');
-    expect(document.activeElement).toBe(expires);
+    expect(expires).not.toHaveAttribute('aria-invalid', 'true');
     expect(state.captures ?? []).toHaveLength(0);
   });
 

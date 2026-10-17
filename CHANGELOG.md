@@ -6,6 +6,46 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.8.0-dev.8] - 2026-10-17 — the Smart exit, measured; credit-card statements and school reports
+
+### Added
+
+- **Two new kinds: credit card statement and school report.**
+  - **Credit card statement:** kept for adults, like a bank statement. Its date is "Payment due", and it reminds you 7 days and a day before, as a bill does.
+  - **School report:** in Education, with no expiry. Diplomas and certificates stay diplomas.
+  - **Folders that suggest them:** "Credit cards", "Bank/Credit card" and "School reports".
+  - **Telling a card from a bank:** the vault tells a card's statement from a bank's by their own marks: a credit limit, a minimum payment and a date it is due, against a sort code, an account number and opening and closing balances. A statement with both, or neither, is offered for you to check.
+- **The Smart exit, measured.** We tested how well the vault reads documents on two sets of made-up papers of one family, kept as a family keeps them: tidy folders, a flat `Scans` folder and a few misfiled papers. About four in ten are scans only OCR can read.
+  - **No item the vault called Ready was wrong**, in either set, with folder names or without.
+  - **On the 200 papers the vault's rules were adjusted on,** 6 still needed something typed or chosen with folder names (16 without).
+  - **On a second set of 115, written afterwards with new layouts and kept out of the adjusting,** 53 did (57 without). The target, fewer than ten in two hundred, is met only on papers the rules have seen.
+  - `docs/smart-exit.md` has the numbers, what is left, and how to run it again.
+  - **Try it yourself:** `node scripts/smart-corpus.mjs --out <folder> [--corpus second]` writes the papers and a manifest of what each one is. `scripts/demo-seed.mjs --out <folder> --corpus` writes the first set for a demo vault it has just filled.
+
+### Changed
+
+- **An expiry only if you add one:** wills, vehicle logbooks, employment contracts and title deeds rarely state an expiry, so the vault no longer asks for one. Without one, such a document is complete: it is not in Needs attention, and the Add card does not wait for the date. Add a review or renewal date and it reminds you as before. Kinds of document show the date as optional for these kinds.
+- **Whose a paper is:**
+  - **Joint papers:** a joint account, a mortgage or a title in two names now suggests the first person named, for you to check. Until now it suggested nobody.
+  - **Initials:** a paper addressed to "Mrs O Khan" or "O. Khan" suggests the one person in the family the initial can only mean, for you to check; with two people it could mean, nobody.
+  - **Lead traveller and pupil** are read as whose a paper is; a registered contact is not.
+  - **A stray hyphen** from OCR after a name no longer hides it.
+  - **A sentence about "the policyholder"** above a list of named drivers no longer counts as saying whose the paper is.
+- **What a paper is:**
+  - GP letters, dental recalls, ISAs and junior ISAs, hire purchase agreements, letters giving a National Insurance number, registers of title, GCSE certificates, and travel, home, car and pet insurance are recognised.
+  - A bill is never suggested for a paper with a credit limit.
+- **Dates:**
+  - A bill paid by Direct Debit is due on the day it is collected.
+  - A card statement is due when its payment is, never when the card itself runs out.
+  - Where a card has a row of more dates than labels above it, as when OCR misreads one label, none of those dates is offered.
+- **Scans:**
+  - A scanned page Tesseract reads almost no words of is enlarged, cleaned of speckle, and read again.
+  - A form Tesseract reads as a column of labels and then a column of values is read again row by row.
+
+### Database
+
+- **Migration 0072** adds the two kinds: credit card statement and school report.
+
 ## [0.8.0-dev.7] - 2026-10-16 — pair a computer to send scans
 
 ### Added

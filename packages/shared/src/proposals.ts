@@ -277,7 +277,7 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
     [3, /\bdriv(?:ing|er'?s?)\s+licen[cs]e\b/],
     [
       3,
-      /\bdvla\b|department of motor vehicles|\bdmv\b|motor vehicles? (?:commission|division|administration)|driver services/,
+      /\bdvla\b|department of motor vehicles|\bdmv\b|motor vehicles? (?:commission|division|administration)|driver services|driver and vehicle licensing agency/,
     ],
     [2, /\bendorsements?\b/],
     [2, /\brestrictions?\b|\brstr\b/],
@@ -302,7 +302,7 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
   insurance_policy: [
     [
       3,
-      /\binsurance\b[^\n]{0,30}\b(?:policy|certificate|schedule)\b|certificate of (?:motor )?insurance|schedule of cover|policy schedule|declarations? page/,
+      /\binsurance\b[^\n]{0,30}\b(?:policy|certificate|schedule)\b|certificate of (?:motor )?insurance|schedule of cover|policy schedule|declarations? page|(?:travel|home|car|motor|pet|life|contents|buildings) insurance|policy summary|breakdown cover/,
     ],
     [2, /policy (?:number|no\b|period|ref)|period of (?:cover|insurance)|policy term/],
     [2, /\bpremium\b|\bdeductible\b|\bexcess\b/],
@@ -326,23 +326,36 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
   bank_statement: [
     [
       3,
-      /(?:bank|account|monthly|checking|current account|savings) statement|statement of account|your statement|(?:checking|savings) summary/,
+      // An ISA's statement too (S5).
+      /(?:bank|account|monthly|checking|current account|savings) statement|statement of account|your statement|(?:checking|savings) summary|(?:junior|cash|stocks and shares) isa\b|isa statement|individual savings account/,
     ],
     [
       2,
       /opening balance|closing balance|balance brought forward|balance carried forward|beginning balance|ending balance/,
     ],
     [2, /money in|money out|paid in|paid out|\bdeposits\b|\bwithdrawals\b/],
+    [2, /\baer\b|easy access|instant access/],
     [1, /sort code|routing number|statement period|interest (?:paid|earned)|\boverdraft\b/],
+  ],
+  // A card's own (S5): its limit, its minimum payment and the day it is due.
+  credit_card_statement: [
+    [3, /credit card statement|card statement|\bcredit card\b|credit limit/],
+    [
+      2,
+      /minimum (?:payment|repayment)|statement balance|new balance|available (?:credit|to spend)/,
+    ],
+    [2, /card (?:number )?ending|\bapr\b|cash advances?|balance transfers?/],
+    [1, /payment due|previous balance|\bpurchases\b|\bvisa\b|mastercard/],
   ],
   loan: [
     [
       3,
-      /mortgage statement|loan statement|mortgage offer|loan agreement|mortgage account|credit agreement/,
+      // Hire purchase, a car's finance (S5).
+      /mortgage statement|loan statement|mortgage offer|loan agreement|mortgage account|credit agreement|hire purchase|conditional sale|finance agreement/,
     ],
     [
       3,
-      /principal balance|outstanding balance|original principal|amount borrowed|loan amount|outstanding principal/,
+      /principal balance|outstanding balance|original principal|amount borrowed|loan amount|outstanding principal|amount of credit/,
     ],
     [2, /interest rate|maturity date|\bapr\b|monthly payment|term of (?:the )?loan/],
     [1, /\blender\b|\bescrow\b|\bborrower\b|loan (?:number|account)/],
@@ -364,7 +377,10 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
   ],
   tax_return: [
     [3, /income tax return|form 1040|\b1040\b|self assessment|\bsa100\b|tax return/],
-    [2, /adjusted gross income|total tax|taxable income|\bhmrc\b|internal revenue service/],
+    [
+      2,
+      /adjusted gross income|total tax|taxable income|\bhmrc\b|hm revenue (?:and|&) customs|internal revenue service/,
+    ],
     [1, /filing status|tax year|unique taxpayer reference|\butr\b/],
   ],
   tax_form: [
@@ -387,11 +403,20 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
   medical_record: [
     [
       3,
-      /immuni[sz]ation|vaccination (?:record|certificate|history)|certificate of vaccination|discharge summary|medical record|clinic letter|childhood vaccin/,
+      // A dentist's recall too (S5).
+      /immuni[sz]ation|vaccination (?:record|certificate|history)|certificate of vaccination|discharge summary|medical record|clinic letter|childhood vaccin|dental (?:check-?up|recall|examination|treatment)/,
     ],
     [2, /\bmmr\b|\bdtap\b|\btdap\b|\bbooster\b|\bvaccines?\b|\bhpv\b|\bmenacwy\b/],
-    [2, /nhs number|\bgp\b|\bsurgery\b|\bhospital\b|\bclinic\b|\bconsultant\b|medical practice/],
-    [1, /\bpatient\b|\bprovider\b|\bdiagnosis\b|date of service/],
+    [
+      2,
+      /\bgp\b|\bsurgery\b|\bhospital\b|\bclinic\b|\bconsultant\b|medical practice|dental (?:practice|care|surgery)|\bdentist\b/,
+    ],
+    // A patient's own number: a GP's letter is its practice, this, and what it is about (S5).
+    [2, /nhs (?:number|no\b)|hospital (?:number|no\b)|patient (?:number|id)\b/],
+    [
+      1,
+      /\bpatient\b|\bprovider\b|\bdiagnosis\b|date of service|blood tests?|\breferr(?:al|ed)\b|\binhaler\b|physiotherapy|\bvaccinations?\b/,
+    ],
   ],
   employment_contract: [
     [
@@ -408,7 +433,7 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
   property_deed: [
     [
       3,
-      /warranty deed|quitclaim deed|\bthis deed\b|title deed|tenancy agreement|lease agreement|assured shorthold|rental agreement|deed of transfer/,
+      /warranty deed|quitclaim deed|\bthis deed\b|title deed|tenancy agreement|lease agreement|assured shorthold|rental agreement|deed of transfer|register of title|title register/,
     ],
     [3, /\bgrantor\b|\bgrantee\b|\blandlord\b|\btenants?\b|\blessor\b|\blessee\b/],
     [2, /\bconsideration\b|land registry|title number|\brent\b|\bdeposit\b/],
@@ -426,7 +451,7 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
   diploma: [
     [
       3,
-      /bachelor of|master of|doctor of|\bdiploma\b|degree of|\btranscript\b|certificate of (?:achievement|completion)|\bgcse\b/,
+      /bachelor of|master of|doctor of|\bdiploma\b|degree of|\btranscript\b|certificate of (?:achievement|completion)|\bgcse\b|certificate of secondary education/,
     ],
     [
       2,
@@ -467,7 +492,19 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
       3,
       /national insurance (?:number|card)|social security (?:card|number|administration)|identity card|national identity|\bid card\b/,
     ],
+    // The letter that gives one (S5).
+    [2, /your (?:national insurance|social security) number\b/],
     [1, /date of birth|\bsex\b/],
+  ],
+  // A school's report on a pupil (S5): never a certificate of what was awarded.
+  school_report: [
+    [
+      3,
+      /school report|end of (?:year|term) report|(?:annual|interim) report to parents|pupil report|progress report|report card/,
+    ],
+    [2, /\bpupil\b|class teacher|form tutor|head ?teacher|headmaster|headmistress/],
+    [2, /expected standard|\battainment\b|\beffort\b|\battendance\b/],
+    [1, /\bterm\b|\byear \d{1,2}\b|\bschool\b/],
   ],
 };
 
@@ -479,7 +516,31 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
 const KIND_VETOES: Readonly<Record<string, RegExp>> = {
   medical_record:
     /\bveterinar(?:y|ian)\b|\bvet\b|\bmrcvs\b|\bdvm\b|pet'?s name|\bspecies\b|\bmicrochip|\bcanine\b|\bfeline\b|animal hospital|pet hospital|\bkennel cough\b/,
+  // A bill has no credit limit, nor a minimum payment: a card's statement does (S5).
+  utility_bill: /credit limit|minimum (?:payment|repayment)/,
 };
+
+/**
+ * What tells a bank's statement from a card's (S5): a card's limit, its
+ * minimum payment, the card it is for, its rate and the day it is due; a
+ * bank's sort code, account number and opening and closing balances. A
+ * statement proposed as either is sure only with marks of its own kind and
+ * none of the other's: with both, or neither, it is offered unsure
+ * (CARD_OR_BANK_UNSURE), never a wrong Ready between the two.
+ */
+const CARD_MARKS =
+  /credit limit|minimum (?:payment|repayment)|card (?:number )?ending|statement balance|\bapr\b|payment due/;
+const BANK_MARKS =
+  /sort code|account (?:number|no\b)|opening balance|closing balance|balance brought forward|balance carried forward/;
+const CARD_OR_BANK_UNSURE = 0.79;
+
+/** Whether a kind proposed may be sure, as far as telling a card's statement from a bank's goes. */
+function cardOrBankSure(key: string, hay: string): boolean {
+  if (key !== 'credit_card_statement' && key !== 'bank_statement') return true;
+  const card = CARD_MARKS.test(hay);
+  const bank = BANK_MARKS.test(hay);
+  return key === 'credit_card_statement' ? card && !bank : bank && !card;
+}
 
 /** Words in a field's or kind's name that say nothing of it. */
 const PLAIN_WORDS = new Set(['the', 'a', 'an', 'of', 'and', 'or', 'number', 'no', 'date', 'name']);
@@ -978,10 +1039,23 @@ const KIND_LABELS: Readonly<Record<string, readonly LabelSpec[]>> = {
       'expires',
       3,
       'due_label',
-      /payment due|due date|due by|due on|pay by|payable by|please pay|amount due by|instal?ments?/,
+      // "We'll collect £84.21 by Direct Debit on or just after 1 October" (S5).
+      /payment due|due date|due by|due on|pay by|payable by|please pay|amount due by|instal?ments?|by direct debit on(?: or (?:just )?after)?/,
     ),
   ],
   bank_statement: [label('issued', 3, 'issue_label', /statement date|date of statement/)],
+  // A card's statement is due on the day its payment is (S5); the card's own
+  // expiry, printed on it, says nothing of the statement.
+  credit_card_statement: [
+    label(
+      'none',
+      0,
+      'expiry_label',
+      /card (?:expiry(?: date)?|expires|valid (?:until|thru|through|to))/,
+    ),
+    label('issued', 3, 'issue_label', /statement (?:closing )?date|closing date|date of statement/),
+    label('expires', 4, 'due_label', /payment due(?: date)?|due date|due by|pay by/),
+  ],
   loan: [
     label('issued', 3, 'issue_label', /agreement date|date of (?:loan|agreement|offer)|loan date/),
     label('expires', 3, 'expiry_label', /maturity date|final payment|term ends/),
@@ -1179,6 +1253,16 @@ function claimDates(
       // from the line above, only a label that ends that line.
       if (sameLine ? d.at - l.end > 160 : d.line - l.line !== 1 || d.at - l.end > 80) continue;
       if (!sameLine && proseRun(body.slice(l.end, lines.end(l.line))) >= 4) continue;
+      // Over a row of more dates than its line has labels — a card's "Valid
+      // from  Valid until" with one label misread — a label above says
+      // nothing of which is its (S5).
+      if (
+        !sameLine &&
+        (datesBy.get(d.line)?.length ?? 0) > 1 &&
+        (byLine.get(l.line)?.length ?? 0) < (datesBy.get(d.line)?.length ?? 0)
+      ) {
+        continue;
+      }
       // A label only in its form: its date right after it, or below it alone.
       if (l.spec.form && (sameLine ? l.dateAt !== d.at : !l.below)) continue;
       // Another date between the label and this one is the label's.
@@ -1386,10 +1470,16 @@ const NOT_SURNAMES = new Set(['the', 'family', 'household', 'home', 'house', 'of
 
 /** A label right before a name that says it is the holder's, the payee's or the addressee's. */
 const NAME_LABEL =
-  /\b(?:name|names|full name|given names?|forenames?(?: or initials)?|first names?|surname|holder|policy ?holder|account (?:holder|name)|patient|insured|named insured|employee|tenants?|dear|re|mr|mrs|ms|miss|mx|master|ln|fn)\b(?:\(s\))?[ .:,/-]*((?:[a-z'-]+[ ,]+){0,2})$/;
+  /\b(?:name|names|full name|given names?|forenames?(?: or initials)?|first names?|surname|holder|policy ?holder|account (?:holder|name)|patient|pupil|student|lead (?:traveller|passenger)|insured|named insured|employee|tenants?|dear|re|mr|mrs|ms|miss|mx|master|ln|fn)\b(?:\(s\))?[ .:,/-]*((?:[a-z'-]+[ ,]+){0,2})$/;
 /** The same, on the line above a name on a line of its own. */
 const NAME_LABEL_ABOVE =
-  /\b(?:name|names|given names?|forenames?|holder|policy ?holder|insured|tenants?|patient|service for|bill(?:ed)? to|sold to|customer)\b/;
+  /\b(?:name|names|given names?|forenames?|holder|policy ?holder|insured|tenants?|patient|pupil|student|service for|bill(?:ed)? to|sold to|customer|registered keeper)\b/;
+/**
+ * A line that is a sentence, not a label: it ends a word with a full stop,
+ * and has no colon — "The policyholder." over the drivers a motor
+ * certificate lists says nothing of whose the next line's name is (S5).
+ */
+const SENTENCE_LINE = /^[^:]*[a-z]{2}\. *$/;
 /** A UK or EU licence's given names, by their field number: 2. */
 const NAME_FIELD = /^ *2\. *$/;
 /** A label for a surname, or a licence's surname field (1.). */
@@ -1399,7 +1489,7 @@ const SURNAME_LABEL = /\b(?:surname|last name|family name|ln)\b|^ *1\.(?= )/;
  * witness, a doctor, a solicitor, whoever signs a letter.
  */
 const NOT_THE_HOLDER =
-  /\b(?:father|mother|parents?|informant|spouse|guardians?|witness(?:es)?|next of kin|emergency contact|registrar|prescriber|landlord|agent|signed|signature|doctor|dr|consultant|gp|physician|surgeon|nurse|midwife|solicitor|partner|vet|veterinar(?:y|ian)|teacher|head ?teacher|headmistress|headmaster|yours (?:sincerely|faithfully|truly)|kind regards|named drivers?|executors?|attorneys?|beneficiar(?:y|ies)|referee|trustee|practice manager|adviser|advisor|representative)\b/;
+  /\b(?:father|mother|parents?|informant|spouse|guardians?|witness(?:es)?|next of kin|emergency contact|registered contact|registrar|prescriber|landlord|agent|signed|signature|doctor|dr|consultant|gp|physician|surgeon|nurse|midwife|solicitor|partner|vet|veterinar(?:y|ian)|teacher|head ?teacher|headmistress|headmaster|yours (?:sincerely|faithfully|truly)|kind regards|named drivers?|executors?|attorneys?|beneficiar(?:y|ies)|referee|trustee|practice manager|adviser|advisor|representative)\b/;
 /**
  * A transaction: an amount, a leading date, or a payment's words. A name
  * there is a payee's, not the holder's (the review: "Transfer to Sarah
@@ -1486,7 +1576,8 @@ function followingWords(text: string): Array<{ word: string; capital: boolean }>
     const m = /^ +([A-Za-z][A-Za-z'’-]*)\.?/.exec(rest);
     if (!m) break;
     rest = rest.slice(m[0].length);
-    const word = m[1] as string;
+    // A hyphen or an apostrophe OCR left at its end ("Khan-") is not the name's (S5).
+    const word = (m[1] as string).replace(/[-'’]+$/, '');
     if (word.length === 1) continue; // an initial: "Jennifer A Carter"
     out.push({ word, capital: /^[A-Z]/.test(word) });
   }
@@ -1559,7 +1650,8 @@ function namesSeen(
     // address: only for the whole name.
     if (!labelled && full && leading) {
       labelled =
-        lines.is('name-above', NAME_LABEL_ABOVE, line - 1) ||
+        (lines.is('name-above', NAME_LABEL_ABOVE, line - 1) &&
+          !lines.is('sentence', SENTENCE_LINE, line - 1)) ||
         [1, 2, 3].some((k) => lines.is('address', ADDRESS, line + k));
     }
     const score = full ? (labelled ? 0.9 : line < HEAD_LINES ? 0.8 : 0.6) : labelled ? 0.7 : 0.5;
@@ -1572,11 +1664,73 @@ function namesSeen(
 const PERSON_LEAD = 0.1 - 1e-9;
 
 /**
+ * How sure a paper's person is when the page names them only so far
+ * (0.8.0, S5, the owner's decision): the first named of two named together,
+ * or the one of the family an initial can only mean. Under ITEM_SURE
+ * (batch-levels.ts): Check, never Ready on the page's word alone.
+ */
+export const PERSON_CHECK_CONFIDENCE = 0.78;
+
+/** A title before an initial: "Mrs O Khan". */
+const TITLE_BEFORE = /\b(?:mr|mrs|ms|miss|mx|master)\.? *$/;
+
+/**
+ * Where the page names one of the family by initials and surname — "Mrs O
+ * Khan", "O. Khan", "Mr A R Khan" (S5): only with a title before or a full
+ * stop after an initial, never on a line about somebody else or in a
+ * transaction, and only where the first initial and the surname fit one of
+ * the family alone. Scored at PERSON_CHECK_CONFIDENCE where a whole name
+ * would be sure (labelled, or at the head of the page), 0.6 deeper in.
+ */
+function initialsSeen(
+  body: string,
+  hay: string,
+  keys: readonly PersonKey[],
+  lines: Lines,
+): Map<string, NameSeen[]> {
+  const out = new Map<string, NameSeen[]>();
+  const surnames = new Set(keys.flatMap((k) => [...k.surnames]));
+  for (const surname of surnames) {
+    const re = new RegExp(
+      `(?<![a-z'.])((?:[a-z]\\.? {1,3}){1,3})${escape(surname)}(?![a-z'])`,
+      'g',
+    );
+    let n = 0;
+    for (const m of hay.matchAll(re)) {
+      if (++n > MAX_NAME_MATCHES) break;
+      const at = m.index ?? 0;
+      const initials = m[1] as string;
+      // Written as an initial is: a capital.
+      if (!/[A-Z]/.test(body.charAt(at))) continue;
+      const line = lines.at(at);
+      const before = hay.slice(Math.max(lines.start(line), at - 80), at);
+      if (!initials.includes('.') && !TITLE_BEFORE.test(before)) continue;
+      if (lines.upTo('not-holder', NOT_THE_HOLDER, at)) continue;
+      if (lines.upTo('transaction', TRANSACTION, at)) continue;
+      const first = initials.charAt(0);
+      const fits = keys.filter((k) => k.first.startsWith(first) && k.surnames.has(surname));
+      if (fits.length !== 1) continue;
+      const labelled =
+        NAME_LABEL.test(before.replace(TITLE_BEFORE, '')) ||
+        (lines.is('name-above', NAME_LABEL_ABOVE, line - 1) &&
+          !lines.is('sentence', SENTENCE_LINE, line - 1));
+      const score = labelled || line < HEAD_LINES ? PERSON_CHECK_CONFIDENCE : 0.6;
+      const id = (fits[0] as PersonKey).id;
+      out.set(id, [...(out.get(id) ?? []), { at, end: at + m[0].length, line, score }]);
+    }
+  }
+  return out;
+}
+
+/**
  * Whose the document is, when the page says: the one person in the family
- * it names as its holder. Two named as surely, or two named together
- * ("Mr Ahmed Khan and Mrs Sara Khan"), is a document of theirs together,
- * and nobody is proposed. A passport's machine-readable lines name its
+ * it names as its holder. A passport's machine-readable lines name its
  * holder by surname and given name, and count only when both are theirs.
+ * Two named as surely, apart, is nobody. Two named together ("Mr Ahmed
+ * Khan and Mrs Sara Khan": a joint account, a mortgage, a register of
+ * title) is the first named, unsure (S5, the owner's decision; nobody
+ * before), and so is the one of the family only initials can mean ("Mrs S
+ * Khan"): Check, never Ready on the page's word alone.
  */
 function proposePerson(
   body: string,
@@ -1595,8 +1749,9 @@ function proposePerson(
     namesSeen(body, hay, k, new Set([...firsts].filter((f) => f !== k.first)), lines),
   );
   if (scans.some((s) => s.stopped)) return null;
+  const initials = initialsSeen(body, hay, keys, lines);
   const seen = keys.map((k, i) => {
-    const places = (scans[i] as { places: NameSeen[] }).places;
+    const places = [...(scans[i] as { places: NameSeen[] }).places, ...(initials.get(k.id) ?? [])];
     const best = places.reduce<NameSeen | null>((b, s) => (!b || s.score > b.score ? s : b), null);
     const inMrz =
       !!mrz &&
@@ -1610,18 +1765,41 @@ function proposePerson(
   const [top, next] = seen;
   const bar = PROPOSAL_THRESHOLDS.owner_member_id;
   if (!top || top.score < bar) return null;
-  if (next && next.score >= bar && top.score - next.score < PERSON_LEAD) return null;
-  const where = top.best;
-  if (where) {
-    for (const other of seen.slice(1)) {
-      for (const p of other.places) {
-        if (p.line !== where.line) continue;
-        const between = hay.slice(Math.min(where.end, p.end), Math.max(where.at, p.at));
-        if (/\band\b|&|[,;/]/.test(between)) return null;
+
+  // Two of the family named together on one line: a paper of theirs
+  // together, proposed as the first named's, unsure (S5).
+  const together = (a: NameSeen, b: NameSeen) =>
+    a.line === b.line &&
+    /\band\b|&|[,;/]/.test(hay.slice(Math.min(a.end, b.end), Math.max(a.at, b.at)));
+  type Seen = (typeof seen)[number];
+  /** The first named of `x` named together with one of `others`; undefined where none is. */
+  const jointFirst = (
+    x: Seen,
+    at: readonly NameSeen[],
+    others: readonly Seen[],
+  ): Proposed<string> | null | undefined => {
+    for (const p of at) {
+      for (const o of others) {
+        for (const q of o.places) {
+          if (!together(p, q)) continue;
+          const [id, place] = p.at < q.at ? [x.id, p] : [o.id, q];
+          const confidence = Math.min(PERSON_CHECK_CONFIDENCE, place.score);
+          return confidence >= bar ? { value: id, confidence, cue: 'name_on_page' } : null;
+        }
       }
     }
+    return undefined;
+  };
+  if (next && next.score >= bar && top.score - next.score < PERSON_LEAD) {
+    // Named as surely: theirs together if named together, otherwise nobody's.
+    return jointFirst(top, top.places, [next]) ?? null;
+  }
+  if (top.best) {
+    const joint = jointFirst(top, [top.best], seen.slice(1));
+    if (joint !== undefined) return joint;
   }
   const confidence = next && next.score >= 0.55 ? top.score - 0.05 : top.score;
+  if (confidence < bar) return null;
   return { value: top.id, confidence, cue: top.score >= 0.85 ? 'name_labelled' : 'name_on_page' };
 }
 
@@ -1639,6 +1817,8 @@ const ISSUING_BODIES: Readonly<Record<string, ReadonlyArray<readonly [RegExp, st
   vehicle_registration: [[/\bdvla\b|driver (?:and|&) vehicle licensing agency/, 'DVLA']],
   birth_certificate: [[/general register office/, 'General Register Office']],
   marriage_certificate: [[/general register office/, 'General Register Office']],
+  // The letter that gives a National Insurance number (S5).
+  national_id: [[/\bhmrc\b|hm revenue (?:and|&) customs/, 'HMRC']],
   tax_return: [
     [/\bhmrc\b|hm revenue (?:and|&) customs/, 'HMRC'],
     [/internal revenue service/, 'IRS'],
@@ -1815,7 +1995,9 @@ export function proposeWithTie(
         kindFactor = 0.6 + 0.4 * confidence;
         out.type_key = {
           value: best.kind.key,
-          confidence,
+          confidence: cardOrBankSure(best.kind.key, hay)
+            ? confidence
+            : Math.min(confidence, CARD_OR_BANK_UNSURE),
           cue: best.mrz ? 'machine_lines' : 'kind_words',
         };
       }

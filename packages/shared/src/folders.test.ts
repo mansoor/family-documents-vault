@@ -42,6 +42,8 @@ const KINDS: LevelKind[] = [
   ['employment_contract', 'Employment contract / offer', 'adults', 'expires_on', null],
   ['will', 'Will / trust / power of attorney', 'adults', 'review_on', null],
   ['marriage_certificate', 'Marriage / divorce certificate', 'adults', null, null],
+  ['credit_card_statement', 'Credit card statement', 'adults', 'expires_on', null],
+  ['school_report', 'School report', 'household', null, null],
   ['other', 'Something else', 'household', null, null],
 ].map(([key, label, vis, driver, short]) => ({
   key: key as string,
@@ -229,6 +231,25 @@ describe('what a folder’s segments say (S2)', () => {
     // Two kinds neither under the other say none.
     expect(suggestFromFolder('Passports/Insurance', ctx())?.type_key).toBeNull();
     expect(suggestFromFolder('Family/Passports', ctx())?.type_key).toBe('passport');
+  });
+
+  it('a card’s statements and school reports have folder words of their own (S5)', () => {
+    const kind = (folder: string) => suggestFromFolder(folder, ctx())?.type_key ?? null;
+    expect(kind('Credit cards')).toBe('credit_card_statement');
+    expect(kind('Credit card statements/2026')).toBe('credit_card_statement');
+    // The specific under the general: a card's statements kept under Bank.
+    expect(kind('Bank/Credit card')).toBe('credit_card_statement');
+    expect(kind('Bank statements')).toBe('bank_statement');
+    expect(kind('School reports')).toBe('school_report');
+    expect(suggestFromFolder('School reports/Zain', ctx())).toMatchObject({
+      type_key: 'school_report',
+      owner_member_id: 'm-zain',
+    });
+    // "School" alone keeps a school's letters too: no kind.
+    expect(kind('School/Zain')).toBeNull();
+    // Two kinds neither under the other still say none.
+    expect(kind('Credit cards/Passports')).toBeNull();
+    expect(kind('School reports/Insurance')).toBeNull();
   });
 
   it('names somebody the uploader can see, by their name or its first word', () => {

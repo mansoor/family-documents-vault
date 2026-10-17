@@ -20,7 +20,14 @@
 //   --domain <domain>        FDV_DEMO_EMAIL_DOMAIN    the made-up people's addresses (default example.test)
 //   --out <folder>           FDV_DEMO_OUT             also write made-up files there, to add by hand
 //                                                     with Add → Many documents (the review queue)
+//   --corpus                                          with --out: write the Smart exit's 200 papers
+//                                                     there instead (scripts/smart-corpus.mjs)
+//   --seed <number>          FDV_CORPUS_SEED          which corpus (default 1)
 //   --i-mean-it                                       allow port 8080
+//
+// --corpus also adds the two of the family the corpus names who have no
+// sign-in — Maryam and Granny Farida — and sets the household's country to
+// the United Kingdom, as the corpus's dates are written (0.8.0, S5).
 //
 // --out writes the files a demonstration of the review queue adds (Phase 6):
 // Tariq's passport page, which reads as his passport; the scanned page
@@ -60,6 +67,8 @@ const household = option('household', 'FDV_DEMO_HOUSEHOLD', 'The Khan family');
 const ownerName = option('name', 'FDV_DEMO_OWNER_NAME', 'Olivia');
 const domain = option('domain', 'FDV_DEMO_EMAIL_DOMAIN', 'example.test');
 const out = option('out', 'FDV_DEMO_OUT');
+const corpus = flag('corpus');
+const corpusSeed = Number(option('seed', 'FDV_CORPUS_SEED', '1'));
 
 function fail(message) {
   console.error(`demo-seed: ${message}`);
@@ -79,6 +88,7 @@ if (port === '8080' && !flag('i-mean-it')) {
       'This fills a vault with made-up people and documents; pass --i-mean-it if that is what you want.',
   );
 }
+if (corpus && !out) fail('--corpus writes the papers into a folder: give one with --out.');
 if (!ownerEmail || !ownerPassword) {
   fail(
     'give the owner’s sign-in with --email and --password (or FDV_DEMO_OWNER_EMAIL and FDV_DEMO_OWNER_PASSWORD).',
@@ -331,6 +341,17 @@ async function main() {
     await call('PUT', '/notifications/preferences', { token, body: { daily_email: true } });
   }
   console.log('  turned on the day’s reminders by email for the owner and Vera');
+  if (corpus) {
+    // The rest of the family the Smart exit's papers name, with no sign-in;
+    // and the country their dates are written for (S5).
+    for (const name of ['Maryam', 'Granny Farida']) {
+      await confirm(t, ownerPassword);
+      await call('POST', '/members', { token: t, body: { display_name: name } });
+      console.log(`  added ${name}, with no sign-in`);
+    }
+    await call('PUT', '/profile', { token: t, body: { country: 'GB' } });
+    console.log('  set the household’s country to the United Kingdom');
+  }
 
   // The papers.
   const me = await call('GET', '/me', { token: t });
@@ -456,7 +477,17 @@ async function main() {
     headers: { 'idempotency-key': randomUUID() },
   });
   console.log('  filed "A scan from the printer"');
-  if (out) {
+  if (out && corpus) {
+    // The Smart exit's papers (S5), for the people just made: the same
+    // names, the same surname.
+    const { smartCorpus, writeCorpus } = await import('./smart-corpus.mjs');
+    const papers = smartCorpus({ seed: corpusSeed, owner: ownerName, surname });
+    writeCorpus(out, papers);
+    console.log(
+      `  wrote the Smart exit's ${papers.files.length} made-up papers and manifest.json to ${out}, ` +
+        'to add with Add → Many documents → Choose a folder',
+    );
+  } else if (out) {
     mkdirSync(out, { recursive: true });
     for (const [name, bytes] of samples()) {
       const to = path.join(out, ...name.split('/'));

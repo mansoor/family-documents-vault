@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import {
   EnvKeyProvider,
   itemProposalsBinding,
@@ -3098,3 +3099,90 @@ function routeTable(h: Harness): Array<{ method: string; url: string }> {
   }
   return out;
 }
+
+/**
+ * The Smart exit, as measured (0.8.0, S5): docs/smart-exit.md records what
+ * apps/api/src/smart-exit.test.ts found on its two corpora — the first 200
+ * papers, which the rules were adjusted on, and a second set held out. This
+ * holds the record to itself and to the exit: no Ready item wrong, no more
+ * papers needing typing than were measured, and whether the target is met
+ * said as the numbers say it — so a worse number written there fails here.
+ */
+describe('the Smart exit, as recorded (0.8.0, S5)', () => {
+  interface Counts {
+    files: number;
+    ready: number;
+    check: number;
+    unrecognised: number;
+    problem: number;
+    manual: number;
+    wrong_ready: number;
+  }
+  interface Corpus {
+    seed: number;
+    set: 'tune' | 'held-out';
+    target_met: boolean;
+    with_folders: Counts;
+    without_folders: Counts;
+  }
+  interface Recorded {
+    files: number;
+    target_met: boolean;
+    first: Corpus;
+    second: Corpus;
+  }
+  /**
+   * Needing typing, with folders, as measured on 16 October 2026: the
+   * ceiling for each until it is measured again.
+   */
+  const MEASURED_MANUAL = { first: 6, second: 53 } as const;
+  const md = readFileSync(new URL('../../../docs/smart-exit.md', import.meta.url), 'utf8');
+  const block = /```json\n([\s\S]*?)\n```/.exec(md)?.[1];
+  const recorded = JSON.parse(block ?? 'null') as Recorded;
+  const corpora = [
+    ['first', 'First (tune)', recorded.first],
+    ['second', 'Second (held out)', recorded.second],
+  ] as const;
+
+  it('no Ready item is wrong, in either corpus, with folders or without', () => {
+    for (const [, , c] of corpora) {
+      expect(c.with_folders.wrong_ready).toBe(0);
+      expect(c.without_folders.wrong_ready).toBe(0);
+    }
+  });
+
+  it('every paper is counted once; the first corpus is the tune set and the second held out', () => {
+    expect(recorded.first.set).toBe('tune');
+    expect(recorded.second.set).toBe('held-out');
+    expect(recorded.first.with_folders.files).toBe(200);
+    expect(recorded.second.with_folders.files).toBeGreaterThanOrEqual(100);
+    for (const [, , c] of corpora) {
+      for (const run of [c.with_folders, c.without_folders]) {
+        expect(run.ready + run.check + run.unrecognised + run.problem).toBe(run.files);
+      }
+      expect(c.without_folders.files).toBe(c.with_folders.files);
+    }
+    expect(recorded.files).toBe(
+      recorded.first.with_folders.files + recorded.second.with_folders.files,
+    );
+  });
+
+  it('no more papers need typing than were measured, and the record says whether the target is met', () => {
+    for (const [key, name, c] of corpora) {
+      const manual = c.with_folders.manual;
+      expect(manual).toBeLessThanOrEqual(MEASURED_MANUAL[key]);
+      // Folders never make it worse.
+      expect(manual).toBeLessThanOrEqual(c.without_folders.manual);
+      expect(c.target_met).toBe(manual < 10);
+      // The table says what the record does.
+      const row = (run: string, n: Counts) =>
+        new RegExp(
+          `\\| ${name.replace(/[()]/g, '\\$&')} +\\| ${run} +\\| +${n.files} \\| +${n.ready} \\| +${n.check} \\| +${n.unrecognised} \\| +${n.problem} \\| +${n.manual} \\| +${n.wrong_ready} \\|`,
+        );
+      expect(md).toMatch(row('With folders', c.with_folders));
+      expect(md).toMatch(row('Without folders', c.without_folders));
+    }
+    // Met only where it is met on what the rules have not seen.
+    expect(recorded.target_met).toBe(recorded.second.target_met);
+  });
+});

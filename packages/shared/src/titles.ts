@@ -28,6 +28,9 @@ const SHORT_LABELS: Record<string, string> = {
   utility_bill: 'Bill',
   warranty: 'Warranty',
   pet_record: 'Pet record',
+  // 0.8.0 (S5, 0072).
+  credit_card_statement: 'Credit card statement',
+  school_report: 'School report',
 };
 
 /**
@@ -58,6 +61,7 @@ export function issuedByLabel(
  */
 const ISSUER_NOUNS: Record<string, string> = {
   bank_statement: 'statement',
+  credit_card_statement: 'statement',
   utility_bill: 'bill',
   insurance_policy: 'policy',
   tax_form: 'tax form',

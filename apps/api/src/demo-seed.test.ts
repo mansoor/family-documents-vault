@@ -230,3 +230,85 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs', () => {
     });
   }, 180_000);
 });
+
+/**
+ * demo-seed.mjs --corpus (0.8.0, S5): the Smart exit's two hundred papers
+ * (scripts/smart-corpus.mjs) written for the vault it has just filled, with
+ * everybody they name in the family. A vault of its own: a second run on
+ * one adds a second set.
+ */
+describe.skipIf(!testAdminUrl())('demo-seed.mjs --corpus', () => {
+  let h: Harness;
+  let port = 0;
+  const owner = { email: 'olivia-corpus@example.test', password: `${randomUUID()}-seed` };
+
+  beforeAll(async () => {
+    h = await createHarness();
+    await h.app.listen({ port: 0, host: '127.0.0.1' });
+    port = (h.app.server.address() as AddressInfo).port;
+  }, 120_000);
+  afterAll(async () => {
+    await h?.close();
+  });
+
+  it('writes the Smart exit’s 200 papers for the family it names', async () => {
+    const corpusOut = await mkdtemp(path.join(tmpdir(), 'fdv-demo-corpus-'));
+    try {
+      // Without a folder to write them to, it says so before touching the vault.
+      const refused = await run(
+        process.execPath,
+        [SCRIPT, '--url', 'http://127.0.0.1:1', '--corpus'],
+        { timeout: 30_000 },
+      ).then(
+        () => '',
+        (e: { stderr: string }) => e.stderr,
+      );
+      expect(refused).toContain('give one with --out');
+      const { stdout } = await run(
+        process.execPath,
+        [
+          SCRIPT,
+          '--url',
+          `http://127.0.0.1:${port}`,
+          '--email',
+          owner.email,
+          '--password',
+          owner.password,
+          '--out',
+          corpusOut,
+          '--corpus',
+        ],
+        { timeout: 170_000 },
+      );
+      expect(stdout).toContain('added Maryam, with no sign-in');
+      expect(stdout).toContain('added Granny Farida, with no sign-in');
+      expect(stdout).toContain("wrote the Smart exit's 200 made-up papers and manifest.json");
+      const manifest = JSON.parse(
+        await readFile(path.join(corpusOut, 'manifest.json'), 'utf8'),
+      ) as { household: { people: Array<{ name: string }> }; files: Array<{ path: string }> };
+      expect(manifest.files).toHaveLength(200);
+      const written = (await readdir(corpusOut, { recursive: true }))
+        .map((n) => String(n).split(path.sep).join('/'))
+        .filter((n) => n.endsWith('.pdf'))
+        .sort();
+      expect(written).toEqual(manifest.files.map((f) => f.path).sort());
+      // Everybody the papers name is in the family, as the papers name them.
+      const signedIn = (
+        await h.app.inject({ method: 'POST', url: '/api/v1/auth/password', payload: owner })
+      ).json<Tokens>();
+      const family = (
+        await h.app.inject({ url: '/api/v1/members', headers: h.as(signedIn) })
+      ).json<{ items: Array<{ display_name: string }> }>();
+      for (const p of manifest.household.people) {
+        expect(family.items.map((m) => m.display_name)).toContain(p.name);
+      }
+      // And their dates are read as the UK writes them.
+      const profile = (
+        await h.app.inject({ url: '/api/v1/profile', headers: h.as(signedIn) })
+      ).json<{ country: string | null }>();
+      expect(profile.country).toBe('GB');
+    } finally {
+      await rm(corpusOut, { recursive: true, force: true });
+    }
+  }, 180_000);
+});

@@ -494,3 +494,52 @@ describe.skipIf(!testAdminUrl())('documents API', () => {
     expect((await names(owner))[0]).toBe('Sam');
   });
 });
+
+/**
+ * An expiry the family adds, never one asked for (0.8.0, S5), in a household
+ * of its own so the lists above count what they made.
+ */
+describe.skipIf(!testAdminUrl())('documents API: an expiry the family adds (S5)', () => {
+  let h: Harness;
+  let owner: Tokens;
+
+  beforeAll(async () => {
+    h = await createHarness();
+    owner = await h.setup();
+  });
+  afterAll(() => h.close());
+
+  const json = <T>(r: { json: () => unknown }) => r.json() as T;
+
+  it('a will, a logbook, a contract or a deed without an expiry needs nothing; a passport does (0.8.0, S5)', async () => {
+    const file = async (type_key: string, title: string) => {
+      const res = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/documents',
+        headers: h.as(owner),
+        payload: { title, type_key, owner_member_id: owner.member_id },
+      });
+      expect(res.statusCode, res.body).toBe(201);
+      return json<DocumentView>(res);
+    };
+    for (const [key, title] of [
+      ['will', 'My will'],
+      ['employment_contract', 'Contract'],
+      ['property_deed', 'Title deed'],
+    ] as const) {
+      const made = await file(key, title);
+      expect(made.status.value, `${key}: ${made.status.label}`).not.toBe('needs_info');
+    }
+    // A logbook still needs its plate: never its expiry.
+    expect((await file('vehicle_registration', 'Logbook')).status.label).not.toMatch(/expiry/i);
+    const passport = await file('passport', 'Passport');
+    expect(passport.status.value).toBe('needs_info');
+    // The wire says what it said before 0.8.0, for the phones released then:
+    // whether the kind expires (typeView). Whether the date is asked for is
+    // missingFields', @fdv/shared (EXPIRY_OPTIONAL_KINDS).
+    const kinds = (
+      await h.app.inject({ url: '/api/v1/document-types', headers: h.as(owner) })
+    ).json<{ items: Array<{ key: string; core: { expires: { required: boolean } } }> }>().items;
+    expect(kinds.find((k) => k.key === 'will')?.core.expires.required).toBe(true);
+  });
+});
