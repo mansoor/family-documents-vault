@@ -89,8 +89,8 @@ describe('Settings when the vault can’t be reached', () => {
     await expectAccessible();
   });
 
-  it('Household: the Only me card says so, with Try again', async () => {
-    unreachable('/settings/household');
+  it('Privacy: the Only me card says so, with Try again', async () => {
+    unreachable('/settings/privacy');
     expect(await tryAgain('Only me documents')).toBeVisible();
     await expectAccessible();
   });

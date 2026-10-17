@@ -247,7 +247,7 @@ export function AfterRestoreScreen() {
             <>
               To let more people see them again, choose it in{' '}
               <Link to="/settings/family" className="quiet-link">
-                Settings → Household → Family
+                Settings → Privacy → Family
               </Link>
               : it waits 72 hours, while everyone is told.
             </>

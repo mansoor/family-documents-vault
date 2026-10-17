@@ -6,6 +6,75 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.8.0-rc.1] - 2026-10-17 — the 0.8.0 exit, the release candidate for 0.8.0
+
+The release candidate for 0.8.0, the next release after 0.4.5. There is no 0.6.0 and no 0.7.0: their candidates (0.6.0-rc.1, 0.7.0-rc.1 and 0.7.0-rc.2, below) never became releases, and everything in them is here (the owner's decision of 17 Oct 2026: one demonstration, for 0.8.0). This entry gathers, for someone upgrading from 0.4.5, everything since: the phone release (0.5.0), Phase 5 (0.5.1 to 0.6.0-rc.1), Phase 6 (0.7.0-dev.1 to 0.7.0-rc.2) and 0.8.0 (0.8.0-dev.1 to dev.8). The entries below it are the history, release by release. Once the owner's demonstration passes, 0.8.0 goes to `main` and the `latest` images move to it.
+
+**Upgrading:** read "From 0.4.5 to 0.8.0" in the README first, rehearsed on a real 0.4.5 vault and on a 0.5.35 one. Back up, bring the compose files and the `docker/` folder beside your `.env` up to the release, rehearse the restore, then pull and start. Migrations 0022 to 0072 run by themselves (17 of them, from 0056, on a 0.5.35 vault). Two changes can break a 0.4.5 setup that uses the TLS overlay or a proxy of its own (below, under Changed).
+
+### Added
+
+- **A new layout for the web app.** A sidebar from 1024 px wide (icons alone from 768 px, and the bottom bar on a phone), a top bar spanning the window with search, Add and your account, and pages of their own for Documents, People, Collections, Needs attention, Inbox, Sharing, Activity and the Trash. Every page has its own title, Back returns to where you were, `/` goes to search and `n` to Add. The sidebar can be resized, and collapsed to its icons.
+- **Documents as a table:** sort by any column, filter by person, kind, status, who can see it, collection and tag, and choose many to add to a collection, set where the originals are kept, change who can see them, or move them to the Trash. A document's page shows its details and its pages side by side.
+- **Many documents at once.** Add → Many documents sends up to 200 files, or a whole folder, into Inbox → Your uploads. The vault reads each file and suggests what it is, whose, its dates, number and issuer, and how sure it is; **Accept all Ready** files the sure ones, with Undo for 5 minutes, and **Accept and next** goes through the rest. Only you see your uploads until you accept them.
+- **The vault learns from your corrections** to your uploads, yours alone; **Forget all** removes what it learned.
+- **Folder names suggest the details:** "Passports/Ahmed" suggests a passport, and Ahmed's; a folder name you don't use yet is offered as a tag. The folder is kept encrypted, for you alone.
+- **Duplicates and renewals.** A file already in the vault says so, with **Discard this copy** first. A renewal — the same kind and number, or the same kind, person and issuer — can be added as a **new version** of the document it renews: the document keeps its history, its dates and number update, and Undo puts them back for 5 minutes.
+- **Three new ways in, each optional:**
+  - **the scanner folder:** a network scanner saves into a folder on the server, and each scan lands in one person's Inbox (`FDV_WATCH_DIR`; Settings → For owners → Scanner folder);
+  - **email in:** the family emails documents to a household mailbox, checked over IMAP, and each attachment from a confirmed family address lands in its sender's Inbox (`FDV_MAIL_IN_*`; Settings → For owners → Email in);
+  - **computers:** a family member pairs their own computer with the Family Documents Vault uploader (0.1.0), which sends each new scan from a folder there into their uploads; the computer's key can only send files (Settings → Your computers).
+- **Inviting the family:** invite somebody as you add them (13 or over), from their page, or from Invite → Who is it for?; the owners are reminded when a child turns 13.
+- **Two new kinds:** credit card statement (reminds you before the payment is due) and school report.
+- **Kinds of document of the family's own,** with the fields the card asks for each, and reminders from any date a kind has, such as a bill's due date.
+- **Notes** on every document, and **suggestions from a document's pages** for its empty details, one tap each.
+- **Collections**, and **links to a whole collection**, which can follow it.
+- **Share links that say more:** until a date and time, view only (each page marked with who it is for), a number of opens, and a second lock: a PIN, a password, a code emailed to them, or one browser only. Links keep their secret after `#`, out of every server's logs.
+- **A public-only site** for share links and requests (`--profile public-only`, `FDV_PUBLIC_URL`), so people outside your network can open them while the rest of the vault stays inside it.
+- **Ask someone for documents:** a write-only link through which the accountant or the solicitor sends files, which wait in Inbox → Files sent to you until you have filed or refused them.
+- **People:** a profile for each person with their photo, details, identity details (sealed, with an Only me part) and documents; recording that somebody has passed away.
+- **Guests:** someone outside the family, such as an attorney, can have a sign-in of their own, always limited and always with an end.
+- **Owner powers,** each asking for two-step sign-in or a passkey: the view of somebody's sign-in, locking it, starting a password reset, signing somebody out everywhere, limiting what a viewer sees, a guest's sign-in, who sees identity details, and whether Only me documents may be shared outside the family.
+- **Removing a document for good,** by an owner from the Trash, with a day's notice to whoever filed it.
+- **The phone app's side:** scans filed once however the connection behaves, Essentials kept on the phone for when there is no signal, pages the vault draws itself, and notifications through UnifiedPush that name nothing. The phone app's 0.3.x adds **Send to my Inbox**, which needs 0.7.0 or later.
+- **New settings,** none of them needed: `FDV_PUBLIC_URL`, `FDV_PUBLIC_HOSTNAME`, `FDV_PUBLIC_HTTPS_PORT`, `FDV_PUBLIC_HTTP_PORT`, `FDV_SHARE_MAX_DAYS`, `FDV_RATE_LIMIT_PER_MINUTE`, `FDV_OFFLINE_MAX_DAYS`, `FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS`; and in 0.8.0 `FDV_WATCH_DIR`, `FDV_WATCH_STABLE_SECONDS`, `FDV_WATCH_INCOMPLETE_GRACE_SECONDS`, the `FDV_MAIL_IN_*` settings, `FDV_DEVICE_DAILY_BYTES` and `FDV_DESKTOP_DOWNLOAD_URL`. The README lists every setting with its default.
+- **API:** the feature flags, routes and fields of all of the above; see the 0.8.0, 0.7.0 and 0.6.0 summaries in `docs/api-changelog.md`. Nothing an older app calls has gone.
+- **Trying it out:** `scripts/demo-seed.mjs` fills a running vault with a made-up household — now with three of the family who don't sign in yet (one too young, one 13 today) — and with `--out` writes made-up files in folders: a Ready passport, two duplicates, next year's car insurance to add as a new version, a blank page, a bill and four clinic letters; with `--corpus`, the Smart exit's 200 papers.
+- **The Smart exit, measured** (`docs/smart-exit.md`): no item the vault called Ready was wrong; on the 200 papers its rules were adjusted on, 6 needed something typed; on 115 held back, 53 did. The target, fewer than ten in two hundred, is met only on papers the rules have seen.
+
+### Changed
+
+- **With the TLS overlay, `:8080` answers this machine only,** and Caddy talks to the API directly. It needs Docker Compose 2.24.4 or later. A device that opened `http://<server>:8080` beside the Caddy name uses the `https://` address instead. _(Can break a 0.4.5 setup.)_
+- **`FDV_TRUST_PROXY` defaults to `network`:** the vault takes nobody's word for a visitor's address but its own web server's and Caddy's. A reverse proxy of your own in front of `:8080` is recorded as one address for everybody. _(Can break a 0.4.5 setup.)_
+- **After a restore,** every share link, request and sign-in but the owners' is paused until an owner turns it back on, in After a restore (from Home), which needs the owner's two-step sign-in or a passkey; every paired computer is removed.
+- **Settings → Household is now Settings → Privacy** (the Only me rule, and Family: who sees identity details), and **Kinds of document is a section of its own**, after it. `/settings/household` still opens Privacy.
+- **Age decides the role** of an invitation: nobody under 13 is given a sign-in, 13 to 17 only as a Teen.
+- **An expiry only if you add one** for wills, vehicle logbooks, employment contracts and title deeds: without one, they are complete.
+- **Reading pages is better:** a PDF that carries its own words is read directly and only scans are photo-read; Word files are read too; joint papers, initials, card statements, Direct Debit dates and hard-to-read scans are read better.
+- **Only me** goes further: an Only me document's notes and details are sealed under its owner's key; making a document Only me asks what becomes of your own links to it.
+- **Viewers** see documents, not the family: no birthdays, household answers, suggestions or where the originals are kept.
+- **Sessions last as long as they are used,** 30 days from the last use and 180 days at most. A session that ends says why.
+- **The emergency controls stop computers too:** signing somebody out everywhere, an owner stopping their password, and a password changed or reset remove that person's paired computers.
+- **Every answer** says `Cache-Control: no-store`, and nothing a link, a reset or an invitation carries is written to a log.
+- `FDV_DISPLAY_NAME` is the vault's name only until it is set up; then the family's name is shown.
+- `packages/shared` and `packages/client` are MIT, so any app may use them.
+
+### Fixed
+
+- Rotating the master key moves everything it protects, and the vault refuses to start on a key that does not open it (`repair-master-key` mends a vault an older rotation left half-moved).
+- A file over the size limit is no longer partly kept; a lost answer to an upload never makes a second copy; an upload cut short keeps nothing.
+- An invitation that has expired or been locked no longer stops a new one being made.
+- Races in Phase 6 settled: a file sent to a request whose answer was lost, and a share link's page asking for something just as the link ended.
+- The many smaller fixes listed in each release below.
+
+### Security
+
+- **The database answers each kind of caller by its own rule,** as a second wall: a share link, an upload request, a guest, a limited viewer and a paired computer each reach only what is theirs.
+- **A security test runs every kind of outside or limited caller against every API route** (`apps/api/src/release-exit.test.ts`), and fails for a route added without a rule. For 0.8.0 it covers the scanner folder, email in and computers' routes, and checks that no planted secret — a paired computer's key, the folder a file came from, a scan's or an email's note, a code to confirm an address for email in — reaches anybody else, and that a duplicate or a renewal names and is added to only a document the uploader may change.
+- **Email in is careful with what arrives:** only mail from a confirmed family address, an optional provider's check against a forged sender, MIME read in a sandboxed thread, and nothing filed without its person accepting it. Every tool the worker runs is given only the environment it needs, never the master key.
+- Password-reset links waiting to be emailed are sealed; a share link's code, a computer's key and an email-in code are kept only as hashes.
+- An older release refuses to start on a database a newer one has upgraded (from 0.5.5): going back means restoring the backup taken before the upgrade.
+
 ## [0.8.0-dev.8] - 2026-10-17 — the Smart exit, measured; credit-card statements and school reports
 
 ### Added

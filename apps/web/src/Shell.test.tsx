@@ -1,3 +1,4 @@
+import { refusalFor } from '@fdv/shared';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { existsSync, readFileSync } from 'node:fs';
@@ -806,8 +807,16 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
     [...main.querySelectorAll('a.rowbtn .doc-title')].map((t) => t.textContent);
 
   const SECTIONS: Record<Role, string[]> = {
-    owner: ['Your account', 'Notifications', 'Household', 'Your data', 'For owners'],
-    adult: ['Your account', 'Notifications', 'Household', 'Your data'],
+    // Household became Privacy, and Kinds of document a section of its own (0.8.0).
+    owner: [
+      'Your account',
+      'Notifications',
+      'Privacy',
+      'Kinds of document',
+      'Your data',
+      'For owners',
+    ],
+    adult: ['Your account', 'Notifications', 'Privacy', 'Kinds of document', 'Your data'],
     teen: ['Your account', 'Notifications'],
     viewer: ['Your account', 'Notifications'],
   };
@@ -876,14 +885,17 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
 
   it('a page under a section keeps its address; the sub-menu marks its section', async () => {
     for (const [path, section, heading] of [
-      ['/settings/family', 'Household', 'Family'],
-      ['/settings/kinds', 'Household', 'Kinds of document'],
+      ['/settings/family', 'Privacy', 'Family'],
+      ['/settings/kinds/new', 'Kinds of document', 'Add a kind'],
       ['/settings/storage', 'For owners', 'Where your files are kept'],
       ['/settings/email', 'For owners', 'Where email comes from'],
     ] as const) {
       at(path, { ...EVERYTHING, identities: {} });
       const nav = await subMenu();
-      expect(await screen.findByRole('heading', { level: 1, name: heading })).toBeVisible();
+      // A kind's editor draws its bar again once the kinds have loaded.
+      await waitFor(() =>
+        expect(screen.getByRole('heading', { level: 1, name: heading })).toBeVisible(),
+      );
       expect(window.location.pathname).toBe(path);
       const marked = within(nav)
         .getAllByRole('link')
@@ -908,7 +920,8 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
     await screen.findByRole('heading', { level: 1, name: 'Your account' });
     for (const [name, path, heading, title] of [
       ['Notifications', '/settings/notifications', 'Notifications', 'Settings: notifications'],
-      ['Household', '/settings/household', 'Household', 'Settings: household'],
+      ['Privacy', '/settings/privacy', 'Privacy', 'Settings: privacy'],
+      ['Kinds of document', '/settings/kinds', 'Kinds of document', 'Settings: kinds of document'],
       ['Your data', '/settings/data', 'Your data', 'Settings: your data'],
       ['For owners', '/settings/owners', 'For owners', 'Settings: for owners'],
       ['Your account', '/settings/account', 'Your account', 'Settings: your account'],
@@ -969,14 +982,20 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
     main = await go('Notifications', 'Notifications');
     expect(within(main).getByRole('heading', { name: 'What you want' })).toBeVisible();
     await expectAccessible();
-    // Household: the Only me rule, here; who sees identity details and the kinds, a page each.
-    main = await go('Household', 'Household');
+    // Privacy (Household until 0.8.0): the Only me rule, here; who sees
+    // identity details, a page of its own.
+    main = await go('Privacy', 'Privacy');
     expect(
       await within(main).findByRole('heading', {
         name: 'Only me documents and links outside the family',
       }),
     ).toBeVisible();
-    expect(rows(main)).toEqual(['Family', 'Kinds of document']);
+    expect(rows(main)).toEqual(['Family']);
+    expect(within(main).getByRole('list', { name: 'More about privacy' })).toBeVisible();
+    await expectAccessible();
+    // Kinds of document: a section of its own since 0.8.0, its editor in it.
+    main = await go('Kinds of document', 'Kinds of document');
+    expect(within(main).getByRole('link', { name: 'Add a kind' })).toBeVisible();
     await expectAccessible();
     // Your data: the export.
     main = await go('Your data', 'Your data');
@@ -1010,12 +1029,16 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
     expect(screen.queryByRole('button', { name: 'Sign out' })).toBeNull();
   });
 
-  it('an adult keeps the kinds of document and reads the Only me rule under Household; their data is theirs', async () => {
-    at('/settings/household', EVERYTHING, 'adult');
-    const main = (await screen.findByRole('heading', { level: 1, name: 'Household' })).closest(
+  it('an adult reads the Only me rule under Privacy and keeps the kinds of document, a section of their own; their data is theirs', async () => {
+    at('/settings/privacy', EVERYTHING, 'adult');
+    const main = (await screen.findByRole('heading', { level: 1, name: 'Privacy' })).closest(
       'main',
     ) as HTMLElement;
-    expect(rows(main)).toEqual(['Kinds of document']);
+    // Family is an owner's; the kinds are not under Privacy any more.
+    expect(rows(main)).toEqual([]);
+    expect(
+      within(await subMenu()).getByRole('link', { name: /^Kinds of document/ }),
+    ).toHaveAttribute('href', '/settings/kinds');
     expect(
       await within(main).findByRole('heading', {
         name: 'Only me documents and links outside the family',
@@ -1040,6 +1063,56 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
       expect(screen.queryByRole('link', { name: /Where your files are kept/ })).toBeNull();
     },
   );
+
+  it.each(['teen', 'viewer'] as const)(
+    'a %s, who does not manage the kinds of document, is not offered Kinds of document, nor Privacy (0.8.0)',
+    async (role) => {
+      at('/settings/account', EVERYTHING, role);
+      const nav = await subMenu();
+      await screen.findByRole('heading', { level: 1, name: 'Your account' });
+      expect(within(nav).queryByRole('link', { name: /^Kinds of document/ })).toBeNull();
+      expect(within(nav).queryByRole('link', { name: /^Privacy/ })).toBeNull();
+      cleanup();
+      // At 320 too, in the list of the sections.
+      at('/settings', EVERYTHING, role, 320);
+      const list = await screen.findByRole('navigation', { name: 'Settings sections' });
+      expect(within(list).queryByRole('link', { name: /^Kinds of document/ })).toBeNull();
+      cleanup();
+      // Its address refuses, as before, with the way back to Settings.
+      at('/settings/kinds', EVERYTHING, role, 320);
+      expect(await screen.findByText(refusalFor('types.manage'))).toBeVisible();
+      expect(screen.queryByRole('link', { name: 'Add a kind' })).toBeNull();
+      expect(screen.getByRole('link', { name: 'Back to Settings' })).toHaveAttribute(
+        'href',
+        '/settings',
+      );
+    },
+  );
+
+  it('on a phone, Kinds of document is a section: its Back goes to Settings; Family’s to Privacy (0.8.0)', async () => {
+    at('/settings/kinds', EVERYTHING, 'adult', 320);
+    await screen.findByRole('heading', { level: 1, name: 'Kinds of document' });
+    expect(screen.getByRole('link', { name: 'Back to Settings' })).toHaveAttribute(
+      'href',
+      '/settings',
+    );
+    expect(screen.queryByRole('link', { name: 'Back to Household' })).toBeNull();
+    cleanup();
+    at('/settings', EVERYTHING, 'owner', 320);
+    const list = await screen.findByRole('navigation', { name: 'Settings sections' });
+    expect(
+      within(list)
+        .getAllByRole('link')
+        .map((l) => l.querySelector('.doc-title')?.textContent),
+    ).toEqual(SECTIONS.owner);
+    cleanup();
+    at('/settings/family', { ...EVERYTHING, identities: {} }, 'owner', 320);
+    await screen.findByRole('heading', { level: 1, name: 'Family' });
+    expect(screen.getByRole('link', { name: 'Back to Privacy' })).toHaveAttribute(
+      'href',
+      '/settings/privacy',
+    );
+  });
 
   it('where email comes from is under For owners, an owner’s', async () => {
     at('/settings/owners', EVERYTHING);
@@ -1071,6 +1144,8 @@ describe('every address Settings had still works (R1)', () => {
     // to them, which the old address and its email were for, are a tab.
     ['/incoming', '/inbox/sent', 'Files sent to you'],
     ['/incoming/in-1', '/inbox/in-1', 'W-2 2025.pdf'],
+    // Household became Privacy in 0.8.0: old links and bookmarks land there.
+    ['/settings/household', '/settings/privacy', 'Privacy'],
   ])('%s is %s, in place of the old one', async (from, to, title) => {
     const before = window.history.length;
     at(from, EVERYTHING);

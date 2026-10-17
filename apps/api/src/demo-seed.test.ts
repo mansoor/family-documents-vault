@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   issuerKey,
+  numberKey,
   proposeDetails,
   suggestFromFolder,
   type DocumentTypeView,
@@ -87,18 +88,47 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs', () => {
     });
     const t = signedIn.json<Tokens>();
     const get = async <T>(url: string) => (await h.app.inject({ url, headers: h.as(t) })).json<T>();
-    const people = await get<{ items: Array<{ id: string; display_name: string }> }>(
-      '/api/v1/members',
-    );
+    const people = await get<{
+      items: Array<{
+        id: string;
+        display_name: string;
+        date_of_birth: string | null;
+        has_account: boolean;
+      }>;
+    }>('/api/v1/members');
     expect(people.items.map((m) => m.display_name).sort()).toEqual([
       'Ahmed',
+      'Granny Farida',
+      'Maryam',
       'Olivia',
+      'Sara',
       'Tariq',
       'Vera',
     ]);
-    const docs = await get<{ items: Array<{ id: string; title: string | null }> }>(
-      '/api/v1/documents?limit=200',
-    );
+    // The family with no sign-in, for inviting (the 0.8.0 exit): a child too
+    // young for one, a grandmother, and Sara, 13 today — whom the owners are
+    // reminded about, and who may be invited as a teen alone.
+    const born = (name: string) => people.items.find((m) => m.display_name === name);
+    const today = new Date();
+    const thirteen = `${today.getUTCFullYear() - 13}-${today.toISOString().slice(5, 10)}`;
+    expect(
+      ['Maryam', 'Granny Farida', 'Sara'].map((n) => [
+        n,
+        born(n)?.date_of_birth?.slice(0, 10),
+        born(n)?.has_account,
+      ]),
+    ).toEqual([
+      ['Maryam', '2017-07-09', false],
+      ['Granny Farida', '1953-08-30', false],
+      ['Sara', thirteen, false],
+    ]);
+    expect(stdout).toContain('With no sign-in (to invite, or not):');
+    // The country the papers' dates are written for, with --corpus or not,
+    // so scripts/smart-corpus.mjs's papers are read as the UK writes them.
+    expect((await get<{ country: string | null }>('/api/v1/profile')).country).toBe('GB');
+    const docs = await get<{
+      items: Array<{ id: string; title: string | null; identifier?: string | null }>;
+    }>('/api/v1/documents?limit=200');
     expect(docs.items.map((d) => d.title).sort()).toEqual([
       'A scan from the printer',
       'Ahmed passport',
@@ -121,6 +151,7 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs', () => {
       'Ahmed/Passport/passport-scan.pdf',
       'Bills/2026/electricity-bill.pdf',
       'Insurance/car-insurance-again.pdf',
+      'Insurance/car-insurance-renewal.pdf',
       'Letters/clinic-letter-1.pdf',
       'Letters/clinic-letter-2.pdf',
       'Letters/clinic-letter-3.pdf',
@@ -213,6 +244,20 @@ describe.skipIf(!testAdminUrl())('demo-seed.mjs', () => {
     expect(await propose('Bills/2026/electricity-bill.pdf')).toMatchObject({
       owner_member_id: { value: olivia?.id },
     });
+    // Next year's car insurance (0.8.0, S1): nobody's duplicate, and read as
+    // the same kind and policy number as the one filed — what makes its card
+    // offer "Add as a new version of Car insurance" — with new dates.
+    expect((await add('Insurance/car-insurance-renewal.pdf')).duplicate).toBeNull();
+    const car = await get<{ identifier: string | null; expires: { date: string } | null }>(
+      `/api/v1/documents/${idOf('Car insurance')}`,
+    );
+    const renewal = await propose('Insurance/car-insurance-renewal.pdf');
+    expect(renewal).toMatchObject({
+      type_key: { value: 'insurance_policy' },
+      owner_member_id: { value: olivia?.id },
+    });
+    expect(numberKey(renewal.identifier?.value ?? '')).toBe(numberKey(car.identifier ?? '-'));
+    expect((renewal.expires?.value.date ?? '') > (car.expires?.date ?? '9999')).toBe(true);
     // The four letters: the same sender read off each, and nothing else,
     // so what and whose they are is the uploader's to say, and the vault's
     // to learn — their folder says neither.

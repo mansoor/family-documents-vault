@@ -6,7 +6,7 @@ Passports, birth certificates, licences, insurance policies, tax returns, bills.
 
 Built for people whose whole skill floor is _scan, upload, download_. You should never have to see the words bucket, key, schema or encryption unless you go looking.
 
-> **Status: 0.7.0.** The vault, its web app and its Android app are built in small, tested iterations. The [changelog](CHANGELOG.md) says what each release does, and [Upgrading](#upgrading) how to move from one to the next.
+> **Status: 0.8.0.** The vault, its web app and its Android app are built in small, tested iterations. The [changelog](CHANGELOG.md) says what each release does, and [Upgrading](#upgrading) how to move from one to the next.
 
 ---
 
@@ -304,9 +304,10 @@ an older one is told so in both version numbers, with the way to [upgrade](#upgr
 The vault works with every version of the app released so far: a newer vault adds to
 what it answers and never takes away within the deprecation window (see
 [`docs/api-changelog.md`](docs/api-changelog.md)), so an app that has not been updated
-keeps working, without what came after it. The app's 0.3.0 adds **Send to my Inbox**
+keeps working, without what came after it. The app's 0.3.x adds **Send to my Inbox**
 (a scan goes to your uploads, for the vault to read and you to accept on the web), which
-needs a vault of **0.7.0 or later**; with an older vault, 0.3.0 is as 0.2.3 was.
+needs a vault of **0.7.0 or later**; with an older vault, 0.3.x is as 0.2.3 was. The
+uploader for computers (below) needs **0.8.0**.
 
 ## Sending scans from a computer
 
@@ -317,10 +318,13 @@ It needs a vault of **0.8.0 or later**.
 
 **Pairing a computer.** Whoever scans — an owner, an adult or a teen; never a viewer or a
 guest — opens _Settings → Your computers_ in the browser and chooses **Add a computer**.
-The vault asks for their password again, then shows a code like `KX7P-3M9Q` and the
-vault's address. They type both into the uploader on the computer. The code works once,
-for 10 minutes; five wrong tries end it, a new code replaces the last, and closing the
-dialog ends it. The person is emailed "A computer was added to your sign-in", with the
+The vault asks for their password again (unless they gave it in the last five minutes),
+then shows a code like `KX7P-3M9Q-R4T` and the vault's address. They type both into the
+uploader on the computer. The last three characters are a check of the address: the
+uploader works them out from the address typed, and refuses to pair, before it sends
+anything, when they differ — a mistyped address never gets the code. The code works
+once, for 10 minutes; five wrong tries end it, a new code replaces the last, and closing
+the dialog ends it. The person is emailed "A computer was added to your sign-in", with the
 computer's name, what it runs and when, and it is in the activity log.
 
 Set `FDV_DESKTOP_DOWNLOAD_URL` to where your family downloads the uploader, and the
@@ -451,8 +455,12 @@ Everybody in the household is a **member** — including a child or an elderly
 parent who never signs in and simply has documents. Giving someone a sign-in
 is a separate step, on the People screen:
 
-1. An adult chooses **Invite someone to sign in**, gives their name, an email
-   address (which becomes their sign-in) and a role.
+1. An adult chooses **Invite someone to sign in**, says whether they are
+   family, and under **Who is it for?** picks someone of the family who does
+   not sign in yet, or Someone new; then gives an email address (which becomes
+   their sign-in) and a role. Two other ways in: tick **Invite them to sign up
+   now** as you **Add someone** aged 13 or over, or press **Invite to sign up**
+   on their page (People → their name).
 2. The vault produces a **link** and an eight-character **code**, and shows
    them once. Send them separately — the link in a message, the code by phone
    or in person. Anyone holding both can sign in as that person.
@@ -461,9 +469,18 @@ is a separate step, on the People screen:
    password. That password also unlocks their own _Only me_ documents, so the
    vault cannot reset it for them.
 
+**Age decides the role**, by the date of birth on their page: nobody under 13
+is given a sign-in; from 13 to 17 only as a Teen; from 18 any role but Teen.
+With no date of birth, any role you may hand out. When a child of the family
+turns 13, the owners see "Sara is 13 today" on Home, with **Invite Sara to
+sign up** and **Dismiss**, and the day's email says only that someone can now
+have their own sign-in. Only an owner can change the date of birth of a child
+under 13 who does not sign in.
+
 The invitation lasts seven days and can be cancelled at any time. Five wrong
-codes and it stops working. Nothing is emailed — the vault does not need a
-mail server to bring somebody in, and you pass the invitation on yourself.
+codes and it stops working, and a new one can then be made. Nothing is
+emailed — the vault does not need a mail server to bring somebody in, and you
+pass the invitation on yourself.
 
 The link reads `https://vault.example/join#…`. What is after the `#` is its
 secret, and a browser sends that part to no server, the vault and anything in
@@ -704,11 +721,26 @@ scanner alone, on your home network, with a password of its own.
    ```
 
    It must be a bind mount of its own: never inside `vault-data` or any other
-   volume of the vault's.
+   volume of the vault's. On Docker Desktop (Windows or macOS) `mkdir scanner`
+   is all: a folder from your own disk is mounted as one every container user
+   can write, so there is nothing to `chown`, and the folder is as private as
+   your own account's files.
 
 2. **Mount it into the worker.** In `docker-compose.yml`, uncomment
    `# - ./scanner:/watch` under the worker's `volumes`, add `FDV_WATCH_DIR=/watch`
-   to `.env`, and run `docker compose up -d`. Only the worker needs it.
+   to `.env`, and run `docker compose up -d`. Only the worker needs it. The next
+   upgrade brings a new `docker-compose.yml`, which has the line commented out
+   again; to keep the mount through upgrades, put it in a
+   `docker-compose.override.yml` beside it instead (Compose reads that file by
+   itself when no `-f` is given; with `-f` files, add `-f docker-compose.override.yml`):
+
+   ```yaml
+   services:
+     worker:
+       volumes:
+         - ./scanner:/watch
+   ```
+
 3. **Point the scanner at it.** Share the host's `scanner` folder over SMB or
    FTP, with everything the scanner writes owned by the uid-1000 account and
    private to it, so the worker can delete the files and any folders the
@@ -1037,7 +1069,7 @@ docker compose run --rm --no-deps worker node apps/worker/dist/cli.mjs restore-b
 docker compose up -d
 ```
 
-To go further back, name a file instead of `latest`, such as `/data/backups/fdv-2026-09-20T02-30-00-000Z.sql.enc`. A backup made before you last [rotated the master key](#rotating-the-master-key) also needs the key it was made with: add `-e FDV_MASTER_KEY_PREVIOUS=<old key>` to the restore command.
+To go further back, name a file instead of `latest`, such as `/data/backups/fdv-2026-09-20T02-30-00-000Z.sql.enc` (in Git Bash on Windows, put `MSYS_NO_PATHCONV=1` in front of any command that names a path inside a container, or Git Bash rewrites it). A backup made before you last [rotated the master key](#rotating-the-master-key) also needs the key it was made with: add `-e FDV_MASTER_KEY_PREVIOUS=<old key>` to the restore command.
 
 **On a new machine**, start from the three things above. Put your `.env` beside `docker-compose.yml`, and put your copy of the files back into the `fdv_vault-data` volume, owned by the container's user:
 
@@ -1147,15 +1179,16 @@ If you ran that README's command exactly as written, it made the new key inside 
 
 Images are version-tagged, and `latest` is the newest release (a milestone or a fix to one — never a development build or a release candidate); set `FDV_VERSION` in your `.env` to stay on one version until you choose to move. Database migrations run automatically on start, and only forward: the way back from an upgrade is the image you had and the backup taken before it, restored with that image. An older release will not start on a database a newer one has upgraded (from 0.5.5; it says so in the API's and the worker's logs), because it would not see the documents in it. So take a backup first — `docker compose exec worker node apps/worker/dist/cli.mjs backup-now` — and if you ever need it, restore it as [above](#restoring). Breaking API changes are announced in [`docs/api-changelog.md`](docs/api-changelog.md) with a deprecation window of four minor releases, so an older mobile app keeps working against a newer server and vice versa.
 
-### From 0.4.5 to 0.7.0
+### From 0.4.5 to 0.8.0
 
-0.7.0 follows 0.4.5 as the release `latest` points to. There was no 0.6.0: its release
-candidate, 0.6.0-rc.1, never became a release, and everything in it is in 0.7.0. The
-0.5.x and 0.7.0-dev tags between were development builds; from any of those, or from
-0.6.0-rc.1, the same steps apply. Its migrations (`0022` to `0065`) run by themselves the
-first time the new API starts, in one go; nothing needs doing by hand. 0.4.5 has no guard
-against a database a newer release has upgraded, so **never start the 0.4.5 images on it
-again**: going back means restoring the backup below with them.
+0.8.0 follows 0.4.5 as the release `latest` points to. There was no 0.6.0 and no 0.7.0:
+their release candidates (0.6.0-rc.1, 0.7.0-rc.1 and 0.7.0-rc.2) never became releases,
+and everything in them is in 0.8.0. The 0.5.x, 0.7.0-dev and 0.8.0-dev tags between were
+development builds; from any of those, or from a release candidate, the same steps apply,
+and the notes for a 0.5.x vault are in step 6. Its migrations (`0022` to `0072`) run by
+themselves the first time the new API starts, in one go; nothing needs doing by hand.
+0.4.5 has no guard against a database a newer release has upgraded, so **never start the
+0.4.5 images on it again**: going back means restoring the backup below with them.
 
 Run every command from the folder that holds your `docker-compose.yml` and `.env`, and
 give each the same `-f` files (and `--profile public-only`) you always use.
@@ -1189,9 +1222,10 @@ give each the same `-f` files (and `--profile public-only`) you always use.
      `:8080`.
 
    Nothing else needs preparing: no setting was removed or renamed, and nothing an app or
-   a script of yours calls has gone (see the 0.7.0 and 0.6.0 summaries in
-   [`docs/api-changelog.md`](docs/api-changelog.md)). Bookmarks to the old Settings pages
-   (`/settings/sharing`, `/settings/trash` and the rest) still open, at their new places.
+   a script of yours calls has gone (see the 0.8.0 summary in
+   [`docs/api-changelog.md`](docs/api-changelog.md), which says what answers differently).
+   Bookmarks to the old Settings pages (`/settings/sharing`, `/settings/trash` and the
+   rest) still open, at their new places.
 
 3. **Bring the files beside `.env` up to the release.** The images are not all of it:
    `docker-compose.yml`, `docker-compose.tls.yml` and the `docker/` folder (the Caddy
@@ -1200,12 +1234,15 @@ give each the same `-f` files (and `--profile public-only`) you always use.
    and `./backups` are not in git, and stay):
 
    ```bash
-   git fetch --tags && git checkout v0.7.0
+   git fetch --tags && git checkout v0.8.0
    ```
 
    Otherwise download `docker-compose.yml`, `docker-compose.tls.yml`,
-   `docker-compose.dev.yml` and the `docker/` folder from the v0.7.0 release into the
-   folder, keeping `.env`. The TLS overlay now needs Docker Compose 2.24.4 or later
+   `docker-compose.dev.yml` and the `docker/` folder from the v0.8.0 release into the
+   folder, keeping `.env` and any `docker-compose.override.yml` of yours. A line you
+   changed in `docker-compose.yml` itself (the scanner folder's mount, say) is lost, and
+   in a clone `git checkout` refuses until it is undone: move it into the override file
+   first. The TLS overlay now needs Docker Compose 2.24.4 or later
    (`docker compose version`), for its `!override`. If you run the public-only site, every
    `docker compose` command from here on takes `--profile public-only` too, with the
    overlay's `-f` files.
@@ -1222,22 +1259,25 @@ give each the same `-f` files (and `--profile public-only`) you always use.
    `.env`. Name your backup's file in place of `fdv-<time>.sql.enc`:
 
    ```bash
-   FDV_VERSION=0.7.0 docker compose -p fdvrehearse -f docker-compose.yml pull api worker
-   FDV_VERSION=0.7.0 docker compose -p fdvrehearse -f docker-compose.yml up -d --wait postgres
-   FDV_VERSION=0.7.0 docker compose -p fdvrehearse -f docker-compose.yml run --rm --no-deps -v "$PWD/backups/fdv-<time>.sql.enc:/restore.sql.enc:ro" worker node apps/worker/dist/cli.mjs restore-backup /restore.sql.enc
+   FDV_VERSION=0.8.0 docker compose -p fdvrehearse -f docker-compose.yml pull api worker
+   FDV_VERSION=0.8.0 docker compose -p fdvrehearse -f docker-compose.yml up -d --wait postgres
+   FDV_VERSION=0.8.0 docker compose -p fdvrehearse -f docker-compose.yml run --rm --no-deps -v "$PWD/backups/fdv-<time>.sql.enc:/restore.sql.enc:ro" worker node apps/worker/dist/cli.mjs restore-backup /restore.sql.enc
    docker compose -p fdvrehearse -f docker-compose.yml down -v
    ```
 
-   It brings the 0.4.5 backup up to date (`backup brought up to date`, with 44 migrations),
+   It brings the 0.4.5 backup up to date (`backup brought up to date`, with 51 migrations),
    and ends by saying what it restored — households, people, documents, `database schema
-65` — and what a restore leaves to do. As the rehearsal has none of your files, it also
+72` — and what a restore leaves to do. As the rehearsal has none of your files, it also
    says they could not be looked for. Its last line says to start the vault: in a
-   rehearsal, don't. On Windows, in PowerShell, set the version first (`$env:FDV_VERSION = "0.7.0"`), leave
-   `FDV_VERSION=0.7.0` off each line and write `${PWD}` for `$PWD`; then
-   `Remove-Item Env:FDV_VERSION`. Start no worker in a rehearsal (it would send real
+   rehearsal, don't. On Windows, in PowerShell, set the version first (`$env:FDV_VERSION = "0.8.0"`), leave
+   `FDV_VERSION=0.8.0` off each line and write `${PWD}` for `$PWD`; then
+   `Remove-Item Env:FDV_VERSION`. In Git Bash on Windows, put `MSYS_NO_PATHCONV=1` in
+   front of the restore line too, or Git Bash turns `/restore.sql.enc` into a Windows
+   path and the restore says it cannot read `C:/Program Files/Git/restore.sql.enc`.
+   Start no worker in a rehearsal (it would send real
    reminders from restored data), and only ever use `down -v` with `-p fdvrehearse`.
 
-5. **Upgrade.** Set `FDV_VERSION=0.7.0` in `.env`, then:
+5. **Upgrade.** Set `FDV_VERSION=0.8.0` in `.env`, then:
 
    ```bash
    docker compose pull
@@ -1257,7 +1297,7 @@ give each the same `-f` files (and `--profile public-only`) you always use.
    With the public-only site, add `--profile public-only` and name `caddy-public` after
    `caddy`.
 
-6. **Check that it took.** The API's log says how many migrations it ran (44, from 0.4.5),
+6. **Check that it took.** The API's log says how many migrations it ran (51, from 0.4.5),
    and the vault says which version it is:
 
    ```bash
@@ -1265,14 +1305,23 @@ give each the same `-f` files (and `--profile public-only`) you always use.
    curl -s http://localhost:8080/api/v1/capabilities   # or your FDV_PORT
    ```
 
-   The first says `[migrate] 44 applied` (and `up to date` on every start after), and the
-   second starts `{"product":"family-document-vault","server_version":"0.7.0"`. Sign in:
+   The first says `[migrate] 51 applied` (and `up to date` on every start after), and the
+   second starts `{"product":"family-document-vault","server_version":"0.8.0"`. Sign in:
    every person, document, reminder and Only me document is as it was. A share link made
    on 0.4.5 still opens, with its PIN, until it ends (its address is the old kind,
    `/shared/…`, which 0.9.0 will stop answering). If you ever restore the backup from
-   step 1 on 0.7.0, as [Restoring](#restoring) says, everybody but the owners is paused
+   step 1 on 0.8.0, as [Restoring](#restoring) says, everybody but the owners is paused
    until an owner turns them back on, which needs that owner's two-step sign-in or a
    passkey: an owner from 0.4.5 without either turns it on first.
+
+   **From a 0.5.x development build** (or a 0.7.0 release candidate) the steps are the
+   same, with fewer migrations: from 0.5.35, the restore drill says `schema=55`, the
+   rehearsal `backup brought up to date` with 17, and the API `[migrate] 17 applied`
+   (`0056` to `0072`). The two changes in step 2 came in 0.5.33: from 0.5.33 or later
+   there is nothing to prepare. Step 3 still matters: 0.8.0's `docker-compose.yml` passes
+   the settings for the scanner folder, email in and computers, which no earlier one
+   does. A share link
+   made since 0.5.14 is the new kind (`/s#…`) and opens as it did.
 
 7. **What to look at afterwards.** What is new needs no setting, with three exceptions
    worth a minute: `FDV_SMTP_URL` (a mail server of yours, for password-reset links and
@@ -1283,34 +1332,60 @@ give each the same `-f` files (and `--profile public-only`) you always use.
    two-step sign-in or a passkey for every owner, without which an owner cannot lock a
    sign-in, start a reset, sign somebody out everywhere, limit what a viewer sees, change
    another person's identity details, or decide whether Only me documents can be shared
-   outside the family (Settings → Household; on unless an owner turns it off). Making a
+   outside the family (Settings → Privacy; on unless an owner turns it off). Making a
    document Only me now asks what becomes of your own links to it: they end, unless you
    keep them. A viewer who already had a sign-in keeps seeing the family's documents until
    an owner limits them (People → their name → Account); no viewer sees birthdays, the
-   household's answers, or where the paper originals are kept.
+   household's answers, or where the paper originals are kept. A will, a vehicle logbook,
+   an employment contract or a title deed with no expiry no longer needs one: such a
+   document that said "Needs an expiry date" is complete now.
 
    **The settings that are new or changed since 0.4.5** (each is in
    [Configuration](#configuration), with its default; none is needed):
    - changed: `FDV_TRUST_PROXY` defaults to `network` (was `private`; step 2);
-     `FDV_SMTP_URL` also carries the codes a share link can ask for; the worker takes
-     every `LOG_LEVEL` the API does (`trace` and `fatal` too);
+     `FDV_SMTP_URL` also carries the codes a share link can ask for, and the codes that
+     confirm an address for email in; the worker takes every `LOG_LEVEL` the API does
+     (`trace` and `fatal` too); `FDV_MAX_UPLOAD_BYTES` is also the largest file the
+     scanner folder and email in take (0.8.0's compose file passes it from `.env` to the
+     worker too);
    - new: `FDV_PUBLIC_URL`, `FDV_PUBLIC_HOSTNAME`, `FDV_PUBLIC_HTTPS_PORT` and
      `FDV_PUBLIC_HTTP_PORT` (the public-only site), `FDV_SHARE_MAX_DAYS`,
      `FDV_RATE_LIMIT_PER_MINUTE`, `FDV_OFFLINE_MAX_DAYS` and
      `FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS` (the phone app), and `FDV_MASTER_KEY_PREVIOUS`
-     (given to a restore, never kept in `.env`).
+     (given to a restore, never kept in `.env`);
+   - new in 0.8.0: `FDV_WATCH_DIR`, `FDV_WATCH_STABLE_SECONDS` and
+     `FDV_WATCH_INCOMPLETE_GRACE_SECONDS` (the scanner folder); `FDV_MAIL_IN_HOST`,
+     `FDV_MAIL_IN_PORT`, `FDV_MAIL_IN_USER`, `FDV_MAIL_IN_PASSWORD` or
+     `FDV_MAIL_IN_PASSWORD_FILE`, `FDV_MAIL_IN_ADDRESS`, `FDV_MAIL_IN_FOLDER`,
+     `FDV_MAIL_IN_POLL_SECONDS`, `FDV_MAIL_IN_AFTER` and `FDV_MAIL_IN_AUTHSERV_ID` (email
+     in); `FDV_DEVICE_DAILY_BYTES` and `FDV_DESKTOP_DOWNLOAD_URL` (computers).
+
+   **Three new pieces, each optional and each off until you set it up:**
+   - **the scanner folder**, a folder on the server a network scanner saves into
+     (`FDV_WATCH_DIR`): see [Scanning straight into the vault](#scanning-straight-into-the-vault);
+   - **email in**, a household mailbox the family sends documents to (`FDV_MAIL_IN_*`):
+     see [Emailing documents to the vault](#emailing-documents-to-the-vault);
+   - **computers**, the family's own computers sending scans with the uploader app
+     (`FDV_DEVICE_DAILY_BYTES`, `FDV_DESKTOP_DOWNLOAD_URL`): see
+     [Sending scans from a computer](#sending-scans-from-a-computer). This one is on
+     already: anybody who adds documents finds it in _Settings → Your computers_.
 
    **The web app has a new layout**: a sidebar from 1024 px (icons alone from 768 px, and
    the bottom bar on a phone), with Documents as a table to sort, filter and act on many
    at once, Inbox, Sharing, Activity and Trash each a page of their own, and Settings in
-   sections (Your account, Notifications, Household, Your data, For owners). **Add → Many
-   documents** sends up to 200 files at once into **Inbox → Your uploads**, where the vault
-   reads each, suggests what it is, and waits for you to accept it; nobody else sees them
-   until you do.
+   sections (Your account, Your computers, Notifications, Privacy, Kinds of document,
+   Your data, For owners). **Add → Many documents** sends up to 200 files at once into **Inbox → Your
+   uploads**, where the vault reads each, suggests what it is, and waits for you to accept
+   it; nobody else sees them until you do. A file already in the vault says so, and a
+   renewal can be added as a new version of the document it renews. Inviting somebody can
+   start as you add them (see [Inviting the rest of the family](#inviting-the-rest-of-the-family)).
 
-   **The phone app.** Every version of the app works with 0.7.0. The app's 0.3.0 adds
-   **Send to my Inbox**, which needs a vault of 0.7.0 or later; with an older vault, 0.3.0
-   works as 0.2.3 did.
+   **Which apps need which vault.** Every app released so far works with 0.8.0, without
+   what came after it:
+   - the phone app's **0.3.x** adds **Send to my Inbox**, which needs a vault of **0.7.0
+     or later** (0.8.0 here); with an older vault it works as 0.2.3 did;
+   - the **uploader for computers, 0.1.0**, needs a vault of **0.8.0 or later**;
+   - an older phone app, and any script written against 0.4.5's API, keep working.
 
 ## Developing
 

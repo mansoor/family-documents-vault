@@ -1392,9 +1392,9 @@ describe('who can see identity details (5.27, A34)', () => {
     for (const role of ['adult', 'teen', 'viewer'] as const) {
       installFakeApi(fresh({ members: [{ ...ME, role }], identities: {} }));
       signedIn(role);
-      at('/settings/household');
+      at('/settings/privacy');
       const r = render(<App />);
-      await screen.findByRole('heading', { name: 'Household', level: 1 });
+      await screen.findByRole('heading', { name: 'Privacy', level: 1 });
       expect(screen.queryByRole('link', { name: /Family/ }), role).not.toBeInTheDocument();
       r.unmount();
       at('/settings/family');
@@ -1412,7 +1412,7 @@ describe('who can see identity details (5.27, A34)', () => {
     const state = fresh({ members: [ME], identities: {}, stepUpNeeded: true, timezone: 'UTC' });
     installFakeApi(state);
     signedIn();
-    at('/settings/household');
+    at('/settings/privacy');
     render(<App />);
     fireEvent.click(await screen.findByRole('link', { name: /Family/ }));
     await screen.findByRole('heading', { name: 'Who can see identity details' });

@@ -6,19 +6,22 @@ import { useShellMode } from './shell.js';
 
 /**
  * Settings in sections (Phase 6, the owner's ask): Your account,
- * Notifications, Household, Your data and For owners, each with an address
+ * Notifications, Privacy, Kinds of document, Your data and For owners (and
+ * Your computers since 0.8.0), each with an address
  * of its own. From 768 px a sub-menu, "Settings sections", down the left
  * of the Settings area, the chosen section beside it at a form's width; on
  * a phone, Settings is the list of the sections, each opening its page.
  *
  * Each section shows what that role was shown before, and nothing more: a
  * role with nothing in a section is not offered the section. The pages that
- * had addresses of their own keep them, each under its section: Family and
- * Kinds of document under Household, Where your files are kept and Where
- * email comes from under For owners.
+ * had addresses of their own keep them, each under its section: Family
+ * under Privacy, Where your files are kept and Where email comes from under
+ * For owners. Household became Privacy, and Kinds of document a section of
+ * its own, for 0.8.0 (the owner's ask of 17 Oct 2026); /settings/household
+ * still opens Privacy.
  */
 export type SectionKey =
-  'account' | 'computers' | 'notifications' | 'household' | 'data' | 'owners';
+  'account' | 'computers' | 'notifications' | 'privacy' | 'kinds' | 'data' | 'owners';
 
 export interface SettingsSection {
   key: SectionKey;
@@ -43,24 +46,17 @@ const at =
   (path: string) =>
     bases.some((b) => path === b || path.startsWith(`${b}/`));
 
-/** The Household section's pages, for this reader: each where it was shown before. */
-export function householdRows(role: Role, caps: Capabilities | null): SettingsRow[] {
-  return [
-    // Who sees the identity details on each profile (5.27, A34): an owner's.
-    ...(caps?.features.member_identity && can(role, 'identity.audience')
-      ? [{ to: '/settings/family', title: 'Family', note: 'Who can see identity details' }]
-      : []),
-    ...(caps?.features.custom_types && can(role, 'types.manage')
-      ? [
-          {
-            to: '/settings/kinds',
-            title: 'Kinds of document',
-            note: 'What the family keeps, and what the card asks for each',
-          },
-        ]
-      : []),
-  ];
+/** The Privacy section's pages, for this reader: each where it was shown before. */
+export function privacyRows(role: Role, caps: Capabilities | null): SettingsRow[] {
+  // Who sees the identity details on each profile (5.27, A34): an owner's.
+  return caps?.features.member_identity && can(role, 'identity.audience')
+    ? [{ to: '/settings/family', title: 'Family', note: 'Who can see identity details' }]
+    : [];
 }
+
+/** Whether this reader manages the kinds of document (5.12): the Kinds of document section. */
+export const managesKinds = (role: Role, caps: Capabilities | null): boolean =>
+  caps?.features.custom_types === true && can(role, 'types.manage');
 
 /** The For owners section's pages: an owner's. */
 export const OWNER_ROWS: SettingsRow[] = [
@@ -129,20 +125,30 @@ export function settingsSections(
       holds: at('/settings/notifications'),
     },
   ];
-  const household = householdRows(role, caps);
-  if (readsOnlyMeRule(role) || household.length > 0) {
+  const privacy = privacyRows(role, caps);
+  if (readsOnlyMeRule(role) || privacy.length > 0) {
     out.push({
-      key: 'household',
-      to: '/settings/household',
-      label: 'Household',
+      key: 'privacy',
+      to: '/settings/privacy',
+      label: 'Privacy',
       note: [
-        readsOnlyMeRule(role) ? 'Only me documents' : null,
-        ...household.map((r) => (r.title === 'Family' ? 'identity details' : 'kinds of document')),
+        readsOnlyMeRule(role) ? 'Only me documents outside the family' : null,
+        privacy.length > 0 ? 'who sees identity details' : null,
       ]
         .filter(Boolean)
-        .join(', ')
+        .join('; ')
         .replace(/^./, (c) => c.toUpperCase()),
-      holds: at('/settings/household', '/settings/family', '/settings/kinds'),
+      holds: at('/settings/privacy', '/settings/family'),
+    });
+  }
+  // Kinds of document (5.12), a section of its own since 0.8.0: whoever manages them.
+  if (managesKinds(role, caps)) {
+    out.push({
+      key: 'kinds',
+      to: '/settings/kinds',
+      label: 'Kinds of document',
+      note: 'What the family keeps, and what the card asks for each',
+      holds: at('/settings/kinds'),
     });
   }
   // Only to whoever may export (5.35): a viewer, a guest or a teen asking
