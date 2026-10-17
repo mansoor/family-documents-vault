@@ -5529,6 +5529,12 @@ html:has(.shell-phone):has(.has-toast) {
   font-weight: 600;
 }
 
+/* The bar for the chosen's Tags menu: drawn inside the dark bar, in the page's ink. */
+.menu-box.tags-box {
+  color: var(--ink);
+  font-weight: 600;
+}
+
 .tag-group + .tag-group {
   margin-top: 18px;
 }

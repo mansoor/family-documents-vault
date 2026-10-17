@@ -293,7 +293,8 @@ describe('Documents: by a detail’s label, and a tag to many at once (0.9.0, T1
     // My old card is changed somewhere else after the table was drawn.
     (state.documents.find((d) => d.id === 'doc-c') as Record<string, unknown>).etag = '"moved"';
     const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
-    fireEvent.click(within(bar).getByRole('button', { name: 'Add a tag…' }));
+    fireEvent.click(within(bar).getByRole('button', { name: 'Tags' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Add a tag…' }));
     const sheet = screen.getByRole('dialog', { name: 'Add a tag to 3 documents' });
     expect(sheet).toHaveTextContent(
       '1 of the 4 you chose isn’t yours to change: it is left as it is.',
@@ -317,6 +318,50 @@ describe('Documents: by a detail’s label, and a tag to many at once (0.9.0, T1
     ]);
   });
 
+  it('keeps Add a tag and Remove a tag behind one Tags menu button, by keyboard too', async () => {
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(rows(t)).toHaveLength(3));
+    fireEvent.click(within(t).getByRole('checkbox', { name: 'Select “Gym membership”' }));
+    const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
+    const tags = within(bar).getByRole('button', { name: 'Tags' });
+    expect(tags).toHaveAttribute('aria-haspopup', 'menu');
+    expect(tags).toHaveAttribute('aria-expanded', 'false');
+    // Neither is in the bar itself: one button for both.
+    expect(within(bar).queryByRole('button', { name: /a tag/ })).toBeNull();
+    // Down opens it at the first item; the arrows move, round from the end.
+    tags.focus();
+    fireEvent.keyDown(tags, { key: 'ArrowDown' });
+    const menu = await screen.findByRole('menu', { name: 'Tags' });
+    expect(tags).toHaveAttribute('aria-expanded', 'true');
+    expect(tags).toHaveAttribute('aria-controls', menu.id);
+    const [add, remove] = within(menu).getAllByRole('menuitem') as [HTMLElement, HTMLElement];
+    expect([add.textContent, remove.textContent]).toEqual(['Add a tag…', 'Remove a tag…']);
+    await waitFor(() => expect(add).toHaveFocus());
+    fireEvent.keyDown(add, { key: 'ArrowDown' });
+    expect(remove).toHaveFocus();
+    fireEvent.keyDown(remove, { key: 'ArrowDown' });
+    expect(add).toHaveFocus();
+    fireEvent.keyDown(add, { key: 'End' });
+    expect(remove).toHaveFocus();
+    await expectAccessible();
+    // Escape shuts it, the focus back on Tags.
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    await waitFor(() => expect(tags).toHaveFocus());
+    expect(tags).toHaveAttribute('aria-expanded', 'false');
+    // Up opens it at the last; chosen, its sheet; put away, the focus on Tags again.
+    fireEvent.keyDown(tags, { key: 'ArrowUp' });
+    const again = await screen.findByRole('menu', { name: 'Tags' });
+    const last = within(again).getByRole('menuitem', { name: 'Remove a tag…' });
+    await waitFor(() => expect(last).toHaveFocus());
+    fireEvent.click(last);
+    const sheet = await screen.findByRole('dialog', { name: 'Remove a tag from 1 document' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(tags).toHaveFocus());
+  });
+
   it('takes a tag off the chosen documents that carry it', async () => {
     const state = at('/documents');
     const t = await table();
@@ -324,7 +369,8 @@ describe('Documents: by a detail’s label, and a tag to many at once (0.9.0, T1
     for (const name of ['Gym membership', 'Pool pass', "Sara's visa"]) {
       fireEvent.click(within(t).getByRole('checkbox', { name: `Select “${name}”` }));
     }
-    fireEvent.click(screen.getByRole('button', { name: 'Remove a tag…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Tags' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove a tag…' }));
     const sheet = screen.getByRole('dialog', { name: 'Remove a tag from 3 documents' });
     fireEvent.click(within(sheet).getByRole('button', { name: 'travel (2)' }));
     fireEvent.click(within(sheet).getByRole('button', { name: 'Remove from 3 documents' }));

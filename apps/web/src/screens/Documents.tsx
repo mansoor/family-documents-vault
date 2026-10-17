@@ -25,6 +25,7 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type CSSProperties,
   type ReactNode,
   type RefObject,
 } from 'react';
@@ -67,7 +68,7 @@ import {
   type TableView,
 } from '../documents-table.js';
 import { storedRole } from '../session.js';
-import { useShellMode } from '../shell.js';
+import { moveInMenu, useShellMode } from '../shell.js';
 import { FilterSelect, None, OutcomeNote, PickAll, useGrid, type Outcome } from '../table-grid.js';
 import {
   Button,
@@ -81,9 +82,10 @@ import {
   StatusBadge,
   TopBar,
   TrashIcon,
+  useSheetFocus,
 } from '../ui.js';
 import { DocRow } from './Home.js';
-import { mayChange, useTrashedNote } from '../DocActions.js';
+import { beside, mayChange, useTrashedNote } from '../DocActions.js';
 import { TagField, useKnownTags } from '../tags.js';
 import { useSelect } from './SearchPeople.js';
 import { LinksChoiceDialog, linksAsk, linksChoice, type LinksAsk } from './Visibility.js';
@@ -1287,8 +1289,7 @@ function BulkBar(props: {
   const pending = useRef<Outcome | null>(null);
   const collectButton = useRef<HTMLButtonElement>(null);
   const locationButton = useRef<HTMLButtonElement>(null);
-  const tagAddButton = useRef<HTMLButtonElement>(null);
-  const tagRemoveButton = useRef<HTMLButtonElement>(null);
+  const tagsButton = useRef<HTMLButtonElement>(null);
   const visibilityButton = useRef<HTMLButtonElement>(null);
   const trashButton = useRef<HTMLButtonElement>(null);
   const busy = progress !== null;
@@ -1595,26 +1596,11 @@ function BulkBar(props: {
           </button>
         )}
         {offer.tags && (
-          <>
-            <button
-              ref={tagAddButton}
-              type="button"
-              className="btn btn-bulk"
-              disabled={busy || tooMany}
-              onClick={() => setActing('tag-add')}
-            >
-              Add a tag…
-            </button>
-            <button
-              ref={tagRemoveButton}
-              type="button"
-              className="btn btn-bulk"
-              disabled={busy || tooMany}
-              onClick={() => setActing('tag-remove')}
-            >
-              Remove a tag…
-            </button>
-          </>
+          <TagsMenu
+            button={tagsButton}
+            disabled={busy || tooMany}
+            onChoose={(mode) => setActing(mode === 'add' ? 'tag-add' : 'tag-remove')}
+          />
         )}
         {offer.visibility.length > 0 && (
           <button
@@ -1682,7 +1668,7 @@ function BulkBar(props: {
           chosen={chosen}
           mine={chosen.filter((d) => mayChange(who.role, who.memberId, d))}
           progress={progress}
-          returnFocus={acting === 'tag-add' ? tagAddButton : tagRemoveButton}
+          returnFocus={tagsButton}
           onRun={(mode, tag) => void tagged(mode, tag)}
           onCancel={() => setActing(null)}
         />
@@ -1832,6 +1818,108 @@ function CollectSheet(props: {
         }}
       />
     </Sheet>
+  );
+}
+
+/**
+ * Tags, in the bar for the chosen (0.9.0, T1): one menu button, so the bar
+ * keeps to one line — Add a tag… and Remove a tag… in its menu. Down or Up
+ * opens it at its first or last item, the arrows, Home and End move in it,
+ * and Escape shuts it with the focus back on Tags, as the Add menu does.
+ */
+function TagsMenu(props: {
+  button: RefObject<HTMLButtonElement | null>;
+  disabled: boolean;
+  onChoose: (mode: 'add' | 'remove') => void;
+}) {
+  const { button, disabled, onChoose } = props;
+  const [menu, setMenu] = useState<{ start: 'first' | 'last'; at: CSSProperties } | null>(null);
+  const id = useId();
+  const open = (start: 'first' | 'last') => setMenu({ start, at: beside(button.current) });
+  return (
+    <>
+      <button
+        ref={button}
+        type="button"
+        className="btn btn-bulk"
+        disabled={disabled}
+        aria-haspopup="menu"
+        aria-expanded={menu !== null}
+        aria-controls={menu ? id : undefined}
+        onClick={() => (menu ? setMenu(null) : open('first'))}
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+          e.preventDefault();
+          open(e.key === 'ArrowUp' ? 'last' : 'first');
+        }}
+      >
+        Tags
+        <span aria-hidden="true">▾</span>
+      </button>
+      {menu && (
+        <TagsMenuBox
+          id={id}
+          start={menu.start}
+          at={menu.at}
+          returnFocus={button}
+          onChoose={(mode) => {
+            setMenu(null);
+            onChoose(mode);
+          }}
+          onClose={() => setMenu(null)}
+        />
+      )}
+    </>
+  );
+}
+
+function TagsMenuBox(props: {
+  id: string;
+  start: 'first' | 'last';
+  at: CSSProperties;
+  returnFocus: RefObject<HTMLElement | null>;
+  onChoose: (mode: 'add' | 'remove') => void;
+  onClose: () => void;
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  const first = useRef<HTMLButtonElement>(null);
+  const last = useRef<HTMLButtonElement>(null);
+  useSheetFocus(box, {
+    start: props.start === 'last' ? last : first,
+    onEscape: props.onClose,
+    returnFocus: props.returnFocus,
+  });
+  return (
+    <div
+      className="menu-layer"
+      role="presentation"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) props.onClose();
+      }}
+    >
+      <div ref={box} className="menu-box tags-box" style={props.at}>
+        <div id={props.id} role="menu" aria-label="Tags" onKeyDown={moveInMenu}>
+          <button
+            ref={first}
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            onClick={() => props.onChoose('add')}
+          >
+            Add a tag…
+          </button>
+          <button
+            ref={last}
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            onClick={() => props.onChoose('remove')}
+          >
+            Remove a tag…
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
