@@ -1,6 +1,7 @@
 import {
   sharedOutsideWords,
   shortName,
+  tagKey,
   type CollectionView,
   type DateValue,
   type DocumentTypeView,
@@ -120,6 +121,7 @@ function viewOf(a: Asked): TableView {
     visibility: '',
     collection: '',
     tag: a.tag,
+    label: '',
   };
 }
 
@@ -133,7 +135,7 @@ function kept(a: Asked, h: SearchHit): boolean {
     (a.person !== 'none' || !h.owner_member_id) &&
     (!a.kind || h.type_key === a.kind) &&
     (!a.status || h.status.value === a.status) &&
-    (!a.tag || (h.tags ?? []).includes(a.tag))
+    (!a.tag || (h.tags ?? []).some((t) => tagKey(t) === tagKey(a.tag)))
   );
 }
 

@@ -157,6 +157,81 @@ export async function appendAudit(trx: Db, input: AuditInput): Promise<void> {
     .execute();
 }
 
+/**
+ * Appends many events of one household at once (0.9.0, T1: a tag renamed
+ * on 20,000 documents): one line each, as `appendAudit` writes them, hashed
+ * one after another in their order under the one lock, and inserted a
+ * thousand rows a statement. Each line is the one `appendAudit` would have
+ * written, at the one time the log was held at.
+ */
+export async function appendAuditMany(trx: Db, inputs: readonly AuditInput[]): Promise<void> {
+  const first = inputs[0];
+  if (!first) return;
+  if (inputs.some((i) => i.householdId !== first.householdId)) {
+    throw new Error('appendAuditMany writes one household’s lines');
+  }
+  const details = inputs.map((i) => JSON.stringify(i.detail ?? {}));
+  const held = await sql<{ household_id: string; chained: boolean }>`
+    select pg_advisory_xact_lock(hashtext('audit:' || ${first.householdId}::uuid::text)),
+           ${first.householdId}::uuid::text as household_id,
+           to_regprocedure('public.audit_chain_head(uuid)') is not null as chained`.execute(trx);
+  const canon = held.rows[0] as { household_id: string; chained: boolean };
+  // Each value as the table will hold it: ids through `uuid`, details through `jsonb`.
+  const stored = await sql<{ actor: string | null; object_id: string | null; detail: unknown }>`
+    select a::uuid::text as actor, o::uuid::text as object_id, d::jsonb as detail
+      from unnest(${inputs.map((i) => i.actorAccountId ?? null)}::text[],
+                  ${inputs.map((i) => i.objectId ?? null)}::text[],
+                  ${details}::text[]) with ordinality as u(a, o, d, n)
+     order by n`.execute(trx);
+  const head = canon.chained
+    ? await sql<{ hash: Buffer | null; at: Date }>`
+        select audit_chain_head(${canon.household_id}::uuid) as hash,
+               date_trunc('milliseconds', clock_timestamp()) as at`.execute(trx)
+    : await sql<{ hash: Buffer | null; at: Date }>`
+        select (select e.hash from audit_event e
+                 where e.household_id = ${canon.household_id}::uuid
+                 order by e.id desc limit 1) as hash,
+               date_trunc('milliseconds', clock_timestamp()) as at`.execute(trx);
+  let prev: Buffer | null = head.rows[0]?.hash ?? null;
+  const at = head.rows[0]?.at ?? new Date();
+  const rows = inputs.map((input, i) => {
+    const s = stored.rows[i] as { actor: string | null; object_id: string | null; detail: unknown };
+    const row = {
+      household_id: canon.household_id,
+      actor_account_id: s.actor,
+      actor_label: input.actorLabel ?? null,
+      action: input.action,
+      object_type: input.objectType ?? null,
+      object_id: s.object_id,
+      detail: s.detail,
+      at,
+      prev_hash: prev,
+    };
+    const hash = computeHash(row);
+    prev = hash;
+    return {
+      household_id: row.household_id,
+      actor_account_id: row.actor_account_id,
+      actor_label: row.actor_label,
+      action: row.action,
+      object_type: row.object_type,
+      object_id: row.object_id,
+      detail: details[i] as string,
+      ip: input.ip ?? null,
+      at,
+      prev_hash: row.prev_hash,
+      hash,
+    };
+  });
+  // In their order: a statement's rows take their ids as they are listed.
+  for (let i = 0; i < rows.length; i += 1000) {
+    await trx
+      .insertInto('audit_event')
+      .values(rows.slice(i, i + 1000))
+      .execute();
+  }
+}
+
 export interface ChainVerification {
   ok: boolean;
   checked: number;

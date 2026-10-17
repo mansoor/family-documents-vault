@@ -34,3 +34,4 @@ export * from './mail-in.js';
 export * from './folders.js';
 export * from './devices.js';
 export * from './pairing-address.js';
+export * from './tags.js';

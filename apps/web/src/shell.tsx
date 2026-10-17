@@ -873,7 +873,7 @@ function AddControl({
 }
 
 /** Up and down a menu's items, round from the end, and Home and End (the account's, the Add's). */
-function moveInMenu(e: ReactKeyboardEvent<HTMLDivElement>) {
+export function moveInMenu(e: ReactKeyboardEvent<HTMLDivElement>) {
   const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
   const now = items.findIndex((item) => item === document.activeElement);
   const end = items.length - 1;

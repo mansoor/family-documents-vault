@@ -8,6 +8,7 @@ import {
 } from './documents.js';
 import { NOTES_MAX } from './notes.js';
 import { can, type Role } from './roles.js';
+import { tagsProblem } from './tags.js';
 import { issuerNoun, monthYear } from './titles.js';
 
 /**
@@ -159,9 +160,9 @@ export function checkCaptureMetadata(
       return { field, message: `That is too long: ${max} characters at most.`, status: 422 };
     }
   }
-  if (meta.tags && (meta.tags.length > 50 || meta.tags.some((t) => t.length > 40))) {
-    return { field: 'tags', message: 'At most 50 tags, of 40 characters each.', status: 422 };
-  }
+  // As a document's tags are kept (0.9.0, T1): normalised, then checked.
+  const tagProblem = meta.tags ? tagsProblem(meta.tags) : null;
+  if (tagProblem) return { field: 'tags', message: tagProblem, status: 422 };
   // A type queued with no fields to hand leaves its details to the server.
   if (meta.extra != null && (!type || type.fields !== undefined)) {
     const checked = checkExtra(meta.extra, type?.fields ?? []);

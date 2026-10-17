@@ -78,6 +78,16 @@ const AHMED_LEARNED = 'ahmed learned issuer 541';
  */
 const AHMED_TAG = 'ahmed-private-tag-541';
 
+/**
+ * A detail tag on the same Only me document (0.9.0, T1): its label and its
+ * value, each a secret of his. Tags are renamed, merged and deleted across
+ * documents, filtered by a label, offered as somebody types and counted:
+ * none of it may reach anybody else, an owner included, nor change it.
+ */
+const AHMED_LABEL = 'ahmed locker 541';
+const AHMED_VALUE = 'ahmed-locker-value-541';
+const AHMED_DETAIL_TAG = `${AHMED_LABEL}: ${AHMED_VALUE}`;
+
 /** Ahmed's computer (0.8.0, D1): his, and the owners' to see by name; nobody else's. */
 const AHMED_COMPUTER = 'ahmed-computer-541';
 const BATCH_TAG = 'ahmed-batch-tag-541';
@@ -100,6 +110,11 @@ const TABLE_QUERIES = (f: Fill): string[] => [
   `sort=title&location=${encodeURIComponent(LOCATION)}`,
   `sort=title&tag=${AHMED_TAG}`,
   `sort=title&tag=${BATCH_TAG}`,
+  // A detail tag whatever its case, and its label alone (0.9.0, T1).
+  `sort=title&tag=${encodeURIComponent(AHMED_DETAIL_TAG.toUpperCase())}`,
+  `sort=title&tag_label=${encodeURIComponent(AHMED_LABEL)}`,
+  `tag_label=${encodeURIComponent(AHMED_LABEL)}`,
+  `tag=${encodeURIComponent(AHMED_DETAIL_TAG)}`,
   `sort=title&collection_id=${f.collection}`,
   'sort=title&collection_id=none',
   `sort=expires&member_id=${f.member}`,
@@ -455,13 +470,47 @@ const RULES: Record<string, Rule> = {
   // A hit gives its document's tags and expiry (0.7.0-dev.13).
   'GET /api/v1/search': {
     who: 'signedIn',
-    queries: () => [`q=${PAGE_WORD}`, `q=${AHMED_TAG}`, 'q=ahmed'],
+    queries: () => [
+      `q=${PAGE_WORD}`,
+      `q=${AHMED_TAG}`,
+      'q=ahmed',
+      `q=${encodeURIComponent(AHMED_VALUE)}`,
+      `q=${encodeURIComponent(AHMED_LABEL)}`,
+    ],
   },
   'GET /api/v1/search/sealed': {
     who: 'signedIn',
     queries: () => [`token=${PAGE_WORD}`, `token=${AHMED_TAG}`],
   },
-  'GET /api/v1/tags': { who: 'signedIn', queries: () => ['', 'q=ahmed'] },
+  // The list of tags counts, and offers as somebody types, only what the
+  // caller can see (0.9.0, T1): after "ahmed locker 541: ", never his value.
+  'GET /api/v1/tags': {
+    who: 'signedIn',
+    queries: () => [
+      '',
+      'q=ahmed',
+      'limit=1000',
+      `q=${encodeURIComponent(`${AHMED_LABEL}: `)}`,
+      `q=${encodeURIComponent(AHMED_LABEL.toUpperCase())}`,
+    ],
+  },
+  // A tag renamed, merged or deleted (0.9.0, T1): on what the caller may
+  // change, and only that — his Only me document's tags neither changed
+  // (checked after the sweep) nor told of: renamed into one of them is no
+  // merge to ask about, and no count says they are there.
+  'POST /api/v1/tags/rename': {
+    who: 'family',
+    bodies: () => [
+      { from: AHMED_TAG, to: 'stolen-541' },
+      { from: AHMED_DETAIL_TAG, to: 'stolen-541', merge: true },
+      { from: 'nothing-of-theirs-541', to: AHMED_TAG },
+      { from: 'nothing-of-theirs-541', to: AHMED_DETAIL_TAG.toUpperCase() },
+    ],
+  },
+  'POST /api/v1/tags/delete': {
+    who: 'family',
+    bodies: () => [{ tag: AHMED_TAG }, { tag: AHMED_DETAIL_TAG }, { tag: AHMED_LABEL }],
+  },
   'GET /api/v1/issuers': { who: 'signedIn' },
   'GET /api/v1/document-types': { who: 'signedIn' },
   'GET /api/v1/document-attributes': { who: 'signedIn' },
@@ -1043,7 +1092,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
         owner_member_id: ahmed.member_id,
         notes: NOTE,
         extra: { vin: DETAIL },
-        tags: [AHMED_TAG],
+        tags: [AHMED_TAG, AHMED_DETAIL_TAG],
       },
       ids.uploadKey,
     );
@@ -2286,6 +2335,13 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       ids: [priv.id],
       total: 1,
     });
+    // …and by his detail tag's label, and the whole tag in other letters (0.9.0, T1).
+    for (const q of [
+      `sort=title&tag_label=${encodeURIComponent(AHMED_LABEL.toUpperCase())}`,
+      `sort=title&tag=${encodeURIComponent(AHMED_DETAIL_TAG.toUpperCase())}`,
+    ]) {
+      expect(await table(ahmed, q)).toEqual({ status: 200, ids: [priv.id], total: 1 });
+    }
     // …and the family finds the tax return by where it is kept.
     expect(
       (await table(olivia, `sort=title&location=${encodeURIComponent(LOCATION)}`)).ids,
@@ -2305,6 +2361,8 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       for (const q of [
         `sort=title&tag=${AHMED_TAG}`,
         `sort=title&tag=${BATCH_TAG}`,
+        `sort=title&tag_label=${encodeURIComponent(AHMED_LABEL)}`,
+        `sort=title&tag=${encodeURIComponent(AHMED_DETAIL_TAG)}`,
         `sort=title&collection_id=${ids.ahmedOnly as string}`,
       ]) {
         const got = await table(who, q);
@@ -2601,6 +2659,25 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     expect(his?.code_hash?.toString('hex')).toBe(ids.mailInCodeHex);
   }, 600_000);
 
+  it('after the sweep, his Only me document carries its tags still, unrenamed and undeleted (0.9.0, T1)', async () => {
+    const priv = doc.ahmedPrivate as { id: string };
+    const mine = await send(ahmed, 'GET', `/api/v1/documents/${priv.id}`);
+    expect(mine.statusCode).toBe(200);
+    expect(json<DocumentView>(mine).tags).toEqual([AHMED_TAG, AHMED_DETAIL_TAG]);
+    // Nobody's rename or delete wrote a line about it.
+    const lines = await admin.query<{ n: number }>(
+      `select count(*)::int as n from audit_event
+        where action = 'document.tags_changed' and object_id = $1`,
+      [priv.id],
+    );
+    expect(lines.rows[0]?.n).toBe(0);
+    // And his own list of tags still has them, with his label and value.
+    const listed = await send(ahmed, 'GET', `/api/v1/tags?q=${encodeURIComponent(AHMED_LABEL)}`);
+    expect(json<{ items: unknown[] }>(listed).items).toEqual([
+      { tag: AHMED_DETAIL_TAG, count: 1, label: AHMED_LABEL, value: AHMED_VALUE, changeable: 1 },
+    ]);
+  });
+
   it('no identity value, note, detail, suggestion, page text or location reaches the activity log, a push or an email', async () => {
     // On top of everything above, a scenario that touches each of them.
     const FAMILY_NOTE = 'Filed with the green folder of receipts, ask Ahmed first.';
@@ -2871,6 +2948,9 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       // A tag on his Only me document, and his batch's default tag (the Phase 6 exit).
       AHMED_TAG,
       BATCH_TAG,
+      // A detail tag's label and value on it (0.9.0, T1).
+      AHMED_LABEL,
+      AHMED_VALUE,
       // A note that the scanner folder could not add his file (S3).
       ids.watchNotice as string,
       'ahmed-scan-541',

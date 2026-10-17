@@ -32,6 +32,7 @@ import {
 import { storedRole } from '../session.js';
 import { PagesSuggest, useSuggestionsOffered } from '../suggestions.js';
 import { SharePanel } from './Share.js';
+import { TagSection } from '../tags.js';
 import { VisibilityControl } from './Visibility.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 
@@ -307,12 +308,6 @@ export function DocumentScreen() {
                 <dd>{doc.physical_location}</dd>
               </>
             )}
-            {doc.tags.length > 0 && (
-              <>
-                <dt>Tags</dt>
-                <dd>{doc.tags.join(', ')}</dd>
-              </>
-            )}
           </dl>
 
           {/* On a phone, the pages within reach: right after the facts, before
@@ -320,6 +315,15 @@ export function DocumentScreen() {
           {!panes && (
             <PhonePages documentId={doc.id} title={title} docTitle={doc.title} version={latest} />
           )}
+
+          {/* Its tags as chips, each a way to the others like it; added and
+          taken off here by whoever may change it (0.9.0, T1). */}
+          <TagSection
+            key={`tags-${doc.id}`}
+            doc={doc}
+            mayEdit={mayChangeIt}
+            onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
+          />
 
           {others.length > 0 && (
             <section aria-labelledby="other-h">

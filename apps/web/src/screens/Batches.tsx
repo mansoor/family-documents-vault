@@ -10,6 +10,7 @@ import {
   sameAsWords,
   seesLocation,
   SENDER_NOT_VERIFIED,
+  TAGS_SEEN_NOTE,
   untouchedAccept,
   type BatchDefaults,
   type BatchItemView,
@@ -737,6 +738,7 @@ function AddMany({ visit }: { visit: string }) {
                 required={false}
                 placeholder="house, old papers"
                 hint="A comma between tags."
+                note={TAGS_SEEN_NOTE}
               />
               <Switch
                 id="b-essential"

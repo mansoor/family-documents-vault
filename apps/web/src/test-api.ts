@@ -61,6 +61,11 @@ import {
   type ActivityKind,
   type DevicePairingCode,
   type PairedDevice,
+  normaliseTag,
+  normaliseTags,
+  tagDetail,
+  tagKey,
+  tagsProblem,
 } from '@fdv/shared';
 import { sha256Of } from './batch-upload.js';
 import { vi } from 'vitest';
@@ -642,6 +647,19 @@ export interface FakeState {
    * vault pairs them (`features.device_uploads`); DELETE revokes one.
    */
   computers?: PairedDevice[];
+  /**
+   * Tags you can use (0.9.0, T1): said when a test gives it — Settings →
+   * Tags, rename, merge and delete (`features.tag_management`).
+   */
+  tagManagement?: boolean;
+  /**
+   * How many of a tag's documents the signed-in person may not change (a
+   * teen's of the family's), by tag: GET /tags's `changeable` is the rest,
+   * and a rename or a delete keeps it on them.
+   */
+  tagsNotMine?: Record<string, number>;
+  /** Each rename and delete of a tag asked for (T1), as sent. */
+  tagChanges?: Array<{ path: string; body: Record<string, unknown> }>;
   /** What POST /device-pairings answers: its code, and where the uploader comes from. */
   pairing?: Partial<DevicePairingCode>;
   /** How many codes were asked for. */
@@ -1035,6 +1053,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.mailIn?.available ? { email_ingest: true } : {}),
           // A computer that sends scans (0.8.0, D1): said when a test gives computers.
           ...(state.computers ? { device_uploads: true } : {}),
+          // Tags you can use (0.9.0, T1): said when a test gives them.
+          ...(state.tagManagement ? { tag_details: true, tag_management: true } : {}),
         },
         limits: {
           ...(state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {}),
@@ -3889,18 +3909,70 @@ export function installFakeApi(state: FakeState) {
       });
     }
     if (path === '/api/v1/tags' && method === 'GET') {
-      // The tags on what is out of the Trash, most used first, as the vault counts them.
-      const counts = new Map<string, number>();
+      // The tags on what is out of the Trash, most used first, as the vault
+      // counts them: whatever their case, those starting with `q`, with a
+      // detail tag's halves and how many the person may change (T1).
+      const q = (query.get('q') ?? '').replace(/\s+/g, ' ').replace(/^ /, '').toLowerCase();
+      const counts = new Map<string, { tag: string; count: number }>();
       for (const d of state.documents.filter((x) => !x.deleted_at)) {
         for (const t of (d.tags as string[] | undefined) ?? []) {
-          counts.set(t, (counts.get(t) ?? 0) + 1);
+          if (!tagKey(t).startsWith(q)) continue;
+          const had = counts.get(tagKey(t));
+          counts.set(tagKey(t), { tag: had?.tag ?? t, count: (had?.count ?? 0) + 1 });
         }
       }
       return json({
-        items: [...counts]
-          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-          .map(([tag, count]) => ({ tag, count })),
+        items: [...counts.values()]
+          .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+          .slice(0, Number(query.get('limit') ?? 50))
+          .map(({ tag, count }) => {
+            const detail = tagDetail(tag);
+            return {
+              tag,
+              count,
+              label: detail ? detail.label.toLowerCase() : null,
+              value: detail ? detail.value : null,
+              changeable: count - (state.tagsNotMine?.[tag] ?? 0),
+            };
+          }),
       });
+    }
+    if ((path === '/api/v1/tags/rename' || path === '/api/v1/tags/delete') && method === 'POST') {
+      // On the documents the person may change, as the vault does (T1): here
+      // every one the fake holds, but those `tagsNotMine` keeps.
+      const b = body as { from?: string; to?: string; merge?: boolean; tag?: string };
+      state.tagChanges = [...(state.tagChanges ?? []), { path, body: b }];
+      const renaming = path === '/api/v1/tags/rename';
+      const fromTag = (renaming ? b.from : b.tag) ?? '';
+      const from = tagKey(fromTag);
+      const to = renaming ? normaliseTag(b.to ?? '') : '';
+      const live = state.documents.filter((d) => !d.deleted_at);
+      const carries = (key: string) =>
+        live.filter((d) => ((d.tags as string[] | undefined) ?? []).some((t) => tagKey(t) === key));
+      const merged = renaming && tagKey(to) !== from && carries(tagKey(to)).length > 0;
+      if (merged && b.merge !== true) {
+        return refuse(
+          409,
+          'tag_exists',
+          `“${to}” is a tag already. Renaming “${normaliseTag(fromTag)}” to it merges the two.`,
+        );
+      }
+      const kept = state.tagsNotMine?.[normaliseTag(fromTag)] ?? 0;
+      let changed = 0;
+      let inTrash = 0;
+      // The Trash too, as the vault reaches it (the T1 review, M2).
+      const all = state.documents.filter((d) =>
+        ((d.tags as string[] | undefined) ?? []).some((t) => tagKey(t) === from),
+      );
+      for (const d of all.slice(kept)) {
+        const before = (d.tags as string[] | undefined) ?? [];
+        d.tags = renaming
+          ? normaliseTags(before.map((t) => (tagKey(t) === from ? to : t)))
+          : before.filter((t) => tagKey(t) !== from);
+        changed += 1;
+        if (d.deleted_at) inTrash += 1;
+      }
+      return json({ changed, kept, merged, in_trash: inTrash });
     }
     if (path === '/api/v1/documents' && method === 'GET' && isDocumentSort(query.get('sort'))) {
       const answered = documentTable(state, query, storedRole() as Role);
@@ -4143,6 +4215,12 @@ export function installFakeApi(state: FakeState) {
             },
             409,
           );
+        }
+        // Tags as the vault keeps them, refused as it refuses them (T1).
+        if (Array.isArray(edit.tags)) {
+          const problem = tagsProblem(edit.tags as string[]);
+          if (problem) return refuse(422, 'validation_failed', problem);
+          edit.tags = normaliseTags(edit.tags as string[]);
         }
         // Details merge, and null takes one away (0.5.7).
         const change = { ...edit };
@@ -4882,8 +4960,20 @@ function documentTable(
     .filter((d) => !want('type_key') || d.type_key === want('type_key'))
     .filter((d) => !want('status') || (d.status as { value: string }).value === want('status'))
     .filter((d) => !want('visibility') || d.visibility === want('visibility'))
+    // A tag whatever its case, and a detail tag's label (0.9.0, T1).
     .filter(
-      (d) => !want('tag') || ((d.tags as string[] | undefined) ?? []).includes(want('tag') ?? ''),
+      (d) =>
+        !want('tag') ||
+        ((d.tags as string[] | undefined) ?? []).some(
+          (t) => tagKey(t) === tagKey(want('tag') ?? ''),
+        ),
+    )
+    .filter(
+      (d) =>
+        !want('tag_label') ||
+        ((d.tags as string[] | undefined) ?? []).some(
+          (t) => tagDetail(t)?.label.toLowerCase() === (want('tag_label') ?? '').toLowerCase(),
+        ),
     )
     .filter((d) => location === null || low(d.physical_location) === low(location))
     .filter((d) => {

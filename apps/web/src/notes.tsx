@@ -341,7 +341,7 @@ const countOf = (n: number) =>
   `${n.toLocaleString('en-GB')} of ${NOTES_MAX.toLocaleString('en-GB')} characters`;
 
 /** The document as the vault holds it now: it sends it with a 409. */
-function heldNow(err: ApiRequestError): DocumentView | null {
+export function heldNow(err: ApiRequestError): DocumentView | null {
   try {
     const doc = JSON.parse(err.detail ?? '') as Partial<DocumentView> | null;
     return doc && typeof doc.id === 'string' && typeof doc.etag === 'string'

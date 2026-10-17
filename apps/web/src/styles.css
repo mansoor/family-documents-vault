@@ -5442,3 +5442,104 @@ html:has(.shell-phone):has(.has-toast) {
     flex: 1 1 auto;
   }
 }
+
+/* ---- tags you can use (0.9.0, T1): chips, the field that adds one ---- */
+
+.tag-chips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: stretch;
+  min-height: var(--tap);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-m);
+  background: var(--accent-soft);
+  max-width: 100%;
+}
+
+.tag-chip-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 14px;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 14px;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+  border-radius: var(--radius-m);
+}
+
+.tag-chip-link:hover {
+  text-decoration: underline;
+}
+
+.tag-chip-remove {
+  font: inherit;
+  font-size: 20px;
+  line-height: 1;
+  min-width: var(--tap);
+  border: 0;
+  border-left: 1px solid var(--border-strong);
+  border-radius: 0 var(--radius-m) var(--radius-m) 0;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.tag-chip-remove:hover {
+  background: var(--surface);
+}
+
+.tag-chip-remove:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.tag-add {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.tag-add-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.tag-add-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tag-add-row .btn {
+  flex: none;
+}
+
+.tag-warn {
+  margin: 0;
+  font-weight: 600;
+}
+
+/* The bar for the chosen's Tags menu: drawn inside the dark bar, in the page's ink. */
+.menu-box.tags-box {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.tag-group + .tag-group {
+  margin-top: 18px;
+}
+
+.tag-group-h {
+  font-size: 16px;
+  margin: 0 0 6px;
+}

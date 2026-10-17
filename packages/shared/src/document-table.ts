@@ -98,7 +98,10 @@ export type DocumentListParams = {
   type_key?: string | undefined;
   category?: string | undefined;
   issued_by?: string | undefined;
+  /** A tag, whatever its case since 0.9.0 (`features.tag_details`). */
   tag?: string | undefined;
+  /** A detail tag's label, any value: "locker" (0.9.0, `features.tag_details`). */
+  tag_label?: string | undefined;
   visibility?: Visibility | undefined;
   /** With a column sort, every page holds only this status, and `total` counts them. */
   status?: StatusValue | undefined;

@@ -101,9 +101,19 @@ export interface TableView {
   /** A collection's id, or `none`. */
   collection: string;
   tag: string;
+  /** A detail tag's label, any value (0.9.0, T1): "locker". */
+  label: string;
 }
 
-export const FILTER_KEYS = ['person', 'kind', 'status', 'visibility', 'collection', 'tag'] as const;
+export const FILTER_KEYS = [
+  'person',
+  'kind',
+  'status',
+  'visibility',
+  'collection',
+  'tag',
+  'label',
+] as const;
 export type FilterKey = (typeof FILTER_KEYS)[number];
 
 const STATUSES: readonly string[] = ['expired', 'expiring_soon', 'needs_info', 'active', 'valid'];
@@ -129,6 +139,7 @@ export function viewFrom(params: URLSearchParams, role: Role): TableView {
     visibility: pick('visibility', VISIBILITIES),
     collection: pick('collection'),
     tag: pick('tag'),
+    label: pick('label'),
   };
 }
 
@@ -155,6 +166,7 @@ export function queryOf(
     visibility: (view.visibility || undefined) as Visibility | undefined,
     collection_id: view.collection || undefined,
     tag: view.tag || undefined,
+    tag_label: view.label || undefined,
     limit: opts.limit ?? PAGE_SIZE,
     cursor: opts.cursor ?? undefined,
   };
@@ -222,6 +234,11 @@ export interface BulkOffer {
   /** Who-can-see choices every one may be given (or has): each changes at least one. */
   visibility: Visibility[];
   trash: boolean;
+  /**
+   * Add a tag, remove a tag (0.9.0, T1): offered when the person may change
+   * any of them — and done to those, the rest left as they are and named.
+   */
+  tags: boolean;
   notes: string[];
 }
 
@@ -266,6 +283,7 @@ export function bulkOffer(who: Chooser, docs: readonly DocumentView[]): BulkOffe
     location: n > 0 && changeAll && seesLocation(who.role),
     visibility: n > 0 ? visibility : [],
     trash: n > 0 && changeAll,
+    tags: n > 0 && editor && notMine < n,
     notes,
   };
 }

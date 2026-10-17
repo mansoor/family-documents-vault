@@ -9,6 +9,9 @@ import {
   issuerKey,
   ITEM_SURE,
   folderWords,
+  looksSecret,
+  secretTagWarning,
+  TAGS_SEEN_NOTE,
   missingFields,
   NOTES_MAX,
   parseDateInput,
@@ -1639,6 +1642,16 @@ export function ConfirmForm(props: {
                 return props.folder && still.length > 0
                   ? `A comma between tags. ${still.join(', ')}: ${folderWords(props.folder.path)}.`
                   : 'A comma between tags.';
+              })()}
+              // Who sees them, and a tag that looks like a secret, said (0.9.0, T1).
+              note={(() => {
+                const secret = tags.split(',').find((t) => looksSecret(t));
+                return (
+                  <>
+                    <p>{TAGS_SEEN_NOTE}</p>
+                    {secret && <p className="status-warn">{secretTagWarning(secret)}</p>}
+                  </>
+                );
               })()}
             />
             {(() => {

@@ -136,6 +136,8 @@ const EVERYTHING: Partial<FakeState> = {
   guests: [],
   collections: [],
   identities: {},
+  // Settings → Tags (0.9.0, T1).
+  tagManagement: true,
 };
 
 /** The app at `path`, `px` wide, signed in as `role`. */
@@ -808,16 +810,18 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
 
   const SECTIONS: Record<Role, string[]> = {
     // Household became Privacy, and Kinds of document a section of its own (0.8.0).
+    // Tags after Kinds of document (0.9.0, T1): whoever may change documents.
     owner: [
       'Your account',
       'Notifications',
       'Privacy',
       'Kinds of document',
+      'Tags',
       'Your data',
       'For owners',
     ],
-    adult: ['Your account', 'Notifications', 'Privacy', 'Kinds of document', 'Your data'],
-    teen: ['Your account', 'Notifications'],
+    adult: ['Your account', 'Notifications', 'Privacy', 'Kinds of document', 'Tags', 'Your data'],
+    teen: ['Your account', 'Notifications', 'Tags'],
     viewer: ['Your account', 'Notifications'],
   };
 
@@ -922,6 +926,7 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
       ['Notifications', '/settings/notifications', 'Notifications', 'Settings: notifications'],
       ['Privacy', '/settings/privacy', 'Privacy', 'Settings: privacy'],
       ['Kinds of document', '/settings/kinds', 'Kinds of document', 'Settings: kinds of document'],
+      ['Tags', '/settings/tags', 'Tags', 'Settings: tags'],
       ['Your data', '/settings/data', 'Your data', 'Settings: your data'],
       ['For owners', '/settings/owners', 'For owners', 'Settings: for owners'],
       ['Your account', '/settings/account', 'Your account', 'Settings: your account'],

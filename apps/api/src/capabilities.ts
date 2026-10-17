@@ -149,6 +149,10 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // D1 (0.8.0): a computer paired with a one-time code sends scans with
       // an upload-only key, into its person's own uploads.
       device_uploads: true,
+      // 0.9.0 (T1): detail tags, tags whatever their case, the label filter;
+      // and tags renamed, merged and deleted across the caller's documents.
+      tag_details: true,
+      tag_management: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

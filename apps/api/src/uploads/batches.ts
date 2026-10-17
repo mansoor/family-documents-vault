@@ -32,6 +32,8 @@ import {
   BATCH_NAME_MAX,
   batchVisibility,
   can,
+  normaliseTags,
+  tagsProblem,
   deviceBatchName,
   dropFileName,
   INCOMING_KEEP_DAYS,
@@ -173,7 +175,8 @@ const defaultsBody = z
     visibility: z.enum(['household', 'adults', 'private']).nullable(),
     physical_location: z.string().max(500).nullable(),
     collection_id: z.string().uuid().nullable(),
-    tags: z.array(z.string().max(40)).max(50),
+    // Tidied first, then held to a document's caps, in words (T1 review, L3).
+    tags: z.array(z.string().max(400)).max(500),
     is_essential: z.boolean(),
   })
   .partial()
@@ -2349,8 +2352,11 @@ export class BatchService {
       if (d.collection_id !== null) await this.collections.mayAddTo(trx, p, d.collection_id);
       out.default_collection_id = d.collection_id;
     }
+    // As a document's are kept (0.9.0, T1): a detail tag's value as written.
     if (d.tags !== undefined) {
-      out.default_tags = [...new Set(d.tags.map((t) => t.trim().toLowerCase()).filter(Boolean))];
+      const problem = tagsProblem(d.tags);
+      if (problem) throw new ApiError(422, 'validation_failed', problem, { detail: 'tags' });
+      out.default_tags = normaliseTags(d.tags);
     }
     if (d.is_essential !== undefined) out.default_essential = d.is_essential;
     return out as {

@@ -21,6 +21,7 @@ import type { StepUpService } from '../auth/step-up.js';
 import type { PurgeService } from './purge.js';
 import type { LockService } from '../household/locks.js';
 import type { DocumentService } from './service.js';
+import { TAG_LIST_MAX } from './tags.js';
 import type { VisibilityService } from './visibility.js';
 import type { UploadRequestService } from '../uploads/requests.js';
 import {
@@ -60,7 +61,10 @@ const documentBody = z
     issued_by: z.string().max(200).nullable(),
     physical_location: z.string().max(500).nullable(),
     is_essential: z.boolean(),
-    tags: z.array(z.string().max(40)).max(50),
+    // Checked once tidied, in words (0.9.0, T1: @fdv/shared tagsProblem):
+    // 40 characters each and 50 a document, as always; this only stops a
+    // body far past either before it is read.
+    tags: z.array(z.string().max(400)).max(500),
     // 5.35: a note in the small Markdown of @fdv/shared's notes.ts; its
     // limit is unchanged.
     notes: z.string().max(NOTES_MAX).nullable(),
@@ -157,6 +161,8 @@ const listQuery = z.object({
   issued_by: z.string().trim().min(1).max(200).optional(),
   type_key: z.string().optional(),
   tag: z.string().optional(),
+  // A detail tag's label, any value (0.9.0, T1): every document with a locker.
+  tag_label: z.string().trim().min(1).max(200).optional(),
   visibility: z.enum(['household', 'adults', 'private']).optional(),
   essential: z
     .enum(['true', 'false'])
@@ -239,9 +245,41 @@ export function registerDocuments(
     items: await docs.attributes(principal(req)),
   }));
 
-  app.get<{ Querystring: { q?: string } }>('/api/v1/tags', auth, async (req) => ({
-    items: await docs.tags(principal(req), req.query.q),
+  /**
+   * The tags on what the caller can see, most used first (50 unless
+   * `limit` says, up to 1,000), or those that start with `q`: since 0.9.0
+   * (T1) whatever their case, with a detail tag's label and value, and how
+   * many of its documents the caller may change.
+   */
+  const tagsQuery = z.object({
+    q: z.string().max(200).optional(),
+    limit: z.coerce.number().int().min(1).max(TAG_LIST_MAX).optional(),
+  });
+  app.get('/api/v1/tags', auth, async (req) => ({
+    items: await docs.tags(principal(req), parse(tagsQuery, req.query)),
   }));
+
+  /**
+   * A tag renamed — or, into one the caller's documents carry already,
+   * merged, with `merge: true` — or deleted (0.9.0, T1): on the documents
+   * the caller may change, and only those; each its own edit, with its
+   * line in the activity log. What it came to counts only documents the
+   * caller can see.
+   */
+  const renameBody = z
+    .object({
+      from: z.string().min(1).max(400),
+      to: z.string().min(1).max(400),
+      merge: z.boolean().optional(),
+    })
+    .strict();
+  app.post('/api/v1/tags/rename', auth, async (req) =>
+    docs.renameTag(principal(req), parse(renameBody, req.body ?? {}), metaOf(req)),
+  );
+  const deleteBody = z.object({ tag: z.string().min(1).max(400) }).strict();
+  app.post('/api/v1/tags/delete', auth, async (req) =>
+    docs.deleteTag(principal(req), parse(deleteBody, req.body ?? {}), metaOf(req)),
+  );
 
   app.get('/api/v1/documents/counts', auth, async (req) => docs.counts(principal(req)));
 
