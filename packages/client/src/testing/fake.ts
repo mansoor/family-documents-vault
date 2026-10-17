@@ -5358,7 +5358,7 @@ export function createFakeVault(): {
  * against it. apps/api/src/fake-version.test.ts holds it to the repository's
  * version, so it moves with each release.
  */
-export const FAKE_SERVER_VERSION = '0.8.0';
+export const FAKE_SERVER_VERSION = '0.9.0';
 
 /**
  * A moment as the real vault takes one for a lock's end: ISO, with its

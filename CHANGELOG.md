@@ -6,6 +6,8 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.1] - 2026-10-18 — tags you can use
+
 ### Added
 
 - **Tags you can use (0.9.0, T1).** A document's tags are chips on its page: add one there, with the tags already used offered as you type, take one off with its ×, and click one to see every document with it. A tag can be a detail too, written "label: value" — "locker: 12", "policy holder: Ahmed", "agent: Sam Lee" — for a one-off fact that does not deserve a field: it is shown "Locker · 12", found by its label, its value or the whole tag, and after "locker: " the field offers the values used before. Documents filters by a detail's label ("every document with a locker") as well as by a tag, and adds a tag to, or takes one off, the documents you choose — those you may change; the rest are left as they are, and named. **Settings → Tags**, after Kinds of document, lists every tag you can see with how many documents carry it, details grouped by their label, finds one as you type, and renames (into one that is there already: merged, once you confirm) or deletes one on the documents you may change, those in the Trash too, so that a deleted tag does not come back with a restore (5,000 documents at a time). Tags are seen and searched by everyone who can see their document, as they always were: the field says so, and a label that looks like a password or a PIN is pointed out before it is saved.
