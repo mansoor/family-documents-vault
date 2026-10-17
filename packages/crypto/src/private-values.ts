@@ -113,6 +113,15 @@ export const itemPriorBinding = (itemId: string, versionId: string) =>
  * key where its row is made, bound to the item, never plain.
  */
 export const itemFolderBinding = (itemId: string) => `item-folder:${itemId}`;
+/**
+ * A Reading check (0.9.0, R0, 0074): what the worker has done so far, and
+ * then which documents needed typing and what, each sealed under the member
+ * key of the owner who asked, bound to the check and to which it is.
+ */
+export const readingWorkBinding = (checkId: string) => `reading-work:${checkId}`;
+export const readingMissesBinding = (checkId: string) => `reading-misses:${checkId}`;
+/** The key the hash of a check's rules is keyed with: the hash says nothing of them. */
+export const READING_RULES_KEY_PURPOSE = 'reading-check-rules';
 
 /** What sealing adds to the bytes sealed: the nonce before them, the tag after. */
 export const SEAL_OVERHEAD = IV_BYTES + TAG_BYTES;

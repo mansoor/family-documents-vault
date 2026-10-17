@@ -117,6 +117,13 @@ export function restoreSummary(file: string, r: RestoreReport): string {
       '    Settings → Your computers.',
     );
   }
+  if (r.readingChecksStopped > 0) {
+    lines.push(
+      `  - ${plural(r.readingChecksStopped, 'Reading check')} that had not finished ` +
+        `${r.readingChecksStopped === 1 ? 'was' : 'were'} stopped. An owner starts another`,
+      '    in Settings → For owners → Reading check.',
+    );
+  }
   if (r.filesRemoved.length > 0) {
     const documents = [...new Set(r.filesRemoved.map((f) => f.document_id))];
     lines.push(

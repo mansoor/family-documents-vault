@@ -61,6 +61,7 @@ import { alertJob, type AlertRequest } from './alert-job.js';
 import { pushJob, type PushRequest } from './push-job.js';
 import { instanceIdReader } from './instance.js';
 import { WatchFolderService } from './watch-folder/service.js';
+import { ReadingCheckService } from './reading-check/service.js';
 import { MAIL_IN_CODE_KEY_PURPOSE, MailInService } from './mail-in/service.js';
 import { serverVersion } from './version.js';
 import { masterKeyOpensVault } from './master-key-check.js';
@@ -213,6 +214,7 @@ async function main(): Promise<void> {
     serverVersion: version,
     instanceId: instanceIdReader(db),
     watchFolder: new WatchFolderService(db),
+    readingChecks: new ReadingCheckService(db, keys, enqueue),
     mailIn: new MailInService(db, {
       // A code emailed to an address only through the operator's mail server (F1).
       mail: config.FDV_SMTP_URL ? operatorMail : null,

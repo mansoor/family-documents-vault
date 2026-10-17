@@ -153,6 +153,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // and tags renamed, merged and deleted across the caller's documents.
       tag_details: true,
       tag_management: true,
+      // R0 (0.9.0): the Reading check, an owner's measure of the reader on
+      // the family's own papers, numbers only.
+      reading_check: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

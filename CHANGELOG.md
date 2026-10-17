@@ -6,6 +6,11 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The Reading check** (0.9.0, R0), in Settings → For owners: see how well the vault reads your family's own papers. It reads again the last 10 to 500 documents someone filed through review (from Many documents or the Inbox, where a person checked the details) with the reader as it is now, in the background and behind everything else, and counts how many it would have got right: Ready, Check, Not recognised, how many needed typing and how many were Ready but wrong, by kind — once without the rules it learned from your corrections, the honest number, and once with them, which is optimistic. Each check is compared with the one before ("Since 0.9.0-dev.2: needs typing 18 → 11"). Only the numbers are kept: no word of a document, no suggestion and no detail. Which documents needed typing is shown only to the owner who ran it, only for documents they can still see, and goes after seven days. Nothing is changed on any document, and nothing is learned. For comparing releases on a test vault: `node apps/worker/dist/cli.mjs reading-check --household <id> [--n 50]` prints the same numbers, and nothing else.
+- A restore stops a Reading check that had not finished (an owner starts another).
+
 ## [0.9.0-dev.1] - 2026-10-18 — tags you can use
 
 ### Added

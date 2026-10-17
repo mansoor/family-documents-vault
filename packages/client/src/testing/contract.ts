@@ -2882,6 +2882,40 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'the Reading check: an owner starts one, one at a time, cancels and removes it; numbers only (0.9.0, R0)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.reading_check).toBe(true);
+      const before = await api.readingChecks(token);
+      expect(typeof before.filed).toBe('number');
+      const c = await api.startReadingCheck(token, { n: 20 });
+      expect(c).toMatchObject({
+        state: 'waiting',
+        n: 20,
+        include_edited: true,
+        mine: true,
+        summary: null,
+        failure: null,
+        progress: { total: 0, done: 0 },
+      });
+      // One at a time.
+      expect((await refusal(api.startReadingCheck(token))).code).toBe('reading_check_running');
+      // From 10 to 500.
+      expect((await refusal(api.startReadingCheck(token, { n: 9 }))).status).toBe(422);
+      const cancelled = await api.cancelReadingCheck(token, c.id);
+      expect(cancelled).toMatchObject({ id: c.id, state: 'cancelled', summary: null });
+      expect(cancelled.finished_at).not.toBeNull();
+      expect((await refusal(api.cancelReadingCheck(token, c.id))).code).toBe(
+        'reading_check_not_running',
+      );
+      const one = await api.readingCheck(token, c.id);
+      expect(one).toMatchObject({ state: 'cancelled', misses: null, misses_until: null });
+      expect((await api.readingChecks(token)).items.map((i) => i.id)).toContain(c.id);
+      await api.deleteReadingCheck(token, c.id);
+      expect((await refusal(api.readingCheck(token, c.id))).status).toBe(404);
+    },
+  },
+  {
     name: 'how many of your uploads wait, in one count: the list’s sum, your own alone, an owner’s too; a viewer refused',
     run: async (api, ctx) => {
       const { access_token: token } = await signIn(api, ctx);

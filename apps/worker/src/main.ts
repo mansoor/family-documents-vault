@@ -4,6 +4,7 @@ import {
   deriveKey,
   EnvKeyProvider,
   OPERATOR_MAIL_KEY_PURPOSE,
+  READING_RULES_KEY_PURPOSE,
   ScopeKeys,
 } from '@fdv/crypto';
 import { assertSchemaKnown, createPool } from '@fdv/db';
@@ -40,6 +41,17 @@ import {
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import { resumeBatchItems, sendBatchPreviews, workBatchPreviews } from './jobs/batches.js';
 import { ProposalThread } from './jobs/proposal-thread.js';
+import {
+  READING_CHECK_JOB,
+  READING_CHECK_SWEEP_JOB,
+  READING_JOB_EXPIRE_SECONDS,
+  readingCheckKey,
+  resumeReadingChecks,
+  sweepReadingChecks,
+  workReadingCheck,
+  type ReadingCheckJob,
+} from './jobs/reading-check.js';
+import { workerVersion } from './version.js';
 import { WATCH_KEY_PURPOSE, WatchRunner } from './jobs/watch-folder.js';
 import {
   MAIL_KEY_PURPOSE,
@@ -455,6 +467,52 @@ async function main(): Promise<void> {
   await workBatchPreviews(boss, incomingDeps, {
     read: { maxPages: config.FDV_OCR_MAX_PAGES, proposer: proposals },
   });
+  // The Reading check (0.9.0, R0): one household's check read a document
+  // at a time, on the same thread and tools, behind its batch items, and
+  // sent again while it has documents left — one queued and one running a
+  // household (`stately`). Its misses go after seven days, swept daily.
+  const readingDeps = {
+    db: dbs.app,
+    keys: processDeps.keys,
+    credentialsKey: processDeps.credentialsKey,
+    localRoot: processDeps.localRoot,
+    log,
+    rulesKey: deriveKey(masterSecret, READING_RULES_KEY_PURPOSE),
+    serverVersion: await workerVersion(),
+  };
+  const readingSettings = {
+    retryLimit: 2,
+    retryDelay: 60,
+    expireInSeconds: READING_JOB_EXPIRE_SECONDS,
+  };
+  await boss.createQueue(READING_CHECK_JOB, { policy: 'stately', ...readingSettings });
+  const sendCheck = (job: ReadingCheckJob, after?: Date) =>
+    boss.send(
+      READING_CHECK_JOB,
+      { ...job },
+      after
+        ? { singletonKey: `${readingCheckKey(job.household_id)}:later`, startAfter: after }
+        : { singletonKey: readingCheckKey(job.household_id) },
+    );
+  await boss.work<ReadingCheckJob>(READING_CHECK_JOB, { batchSize: 1 }, async (jobs) => {
+    for (const job of jobs) {
+      const r = await workReadingCheck(readingDeps, job.data, {
+        maxPages: config.FDV_OCR_MAX_PAGES,
+        proposer: proposals,
+      });
+      if (r.next === 'now') await sendCheck(job.data);
+      else if (r.next) await sendCheck(job.data, r.next);
+    }
+  });
+  await boss.createQueue(READING_CHECK_SWEEP_JOB, { retryLimit: 2, retryDelay: 300 });
+  await boss.work(READING_CHECK_SWEEP_JOB, async () => {
+    await sweepReadingChecks(dbs.admin);
+  });
+  await boss.schedule(READING_CHECK_SWEEP_JOB, '55 4 * * *');
+  const checks = await resumeReadingChecks(dbs.admin, async (job) => {
+    await sendCheck(job);
+  });
+  if (checks > 0) log('info', 'reading checks to go on with, sent again', { checks });
   // A read a worker that stopped left taken, read again; and nothing left
   // waiting for the nightly sweep.
   const resumed = await resumeBatchItems(incomingDeps, (hh) => sendBatchPreviews(boss, hh));
