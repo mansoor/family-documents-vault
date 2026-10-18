@@ -252,8 +252,8 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the API (R0)', () => {
     // The owner who asked: the check, its misses, and the filings she can see —
     // never Sara's Only me.
     expect(await seenAs('owner', owner.member_id)).toEqual({ checks: 1, sealed: 1, filings: 3 });
-    // Another owner: the check, never its misses; their own filings.
-    expect(await seenAs('owner', second.member_id)).toEqual({ checks: 1, sealed: 0, filings: 2 });
+    // Another owner: neither the check nor its misses (R0 review); their own filings.
+    expect(await seenAs('owner', second.member_id)).toEqual({ checks: 0, sealed: 0, filings: 2 });
   });
 
   it('starts a check, waiting for the worker, at a low priority, one a household', async () => {
@@ -293,7 +293,7 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the API (R0)', () => {
     expect((await start(owner)).n).toBe(50);
   });
 
-  it('the numbers are every owner’s; the misses the asking owner’s alone, for documents she can still see', async () => {
+  it('the numbers and the misses are the asking owner’s alone, the misses for documents she can still see', async () => {
     const c = await start(owner);
     await finish(c.id, [
       { document_id: docs.everybody as string, fields: ['kind', 'person'] },
@@ -313,16 +313,34 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the API (R0)', () => {
     expect(d.misses?.[0]?.title).toBe('Filed');
     expect(d.misses_until).not.toBeNull();
     expect(mine.body).not.toContain(docs.saras as string);
-    // Another owner: the numbers, never the misses.
+    // Another owner: not there for them (R0 review)...
     const theirs = await call(second, 'GET', `/api/v1/reading-checks/${c.id}`);
-    expect(theirs.statusCode).toBe(200);
-    expect(theirs.json<ReadingCheckDetail>()).toMatchObject({
-      mine: false,
-      summary: SUMMARY,
-      misses: null,
-      misses_until: null,
-    });
+    expect(theirs.statusCode).toBe(404);
     expect(theirs.body).not.toContain(docs.everybody as string);
+    // ...but in their list, that it is there, whose and when; never its numbers.
+    const listed = await call(second, 'GET', '/api/v1/reading-checks');
+    expect(listed.json<ReadingChecksList>()).toMatchObject({
+      items: [],
+      others: [
+        {
+          id: c.id,
+          state: 'done',
+          requested_by: { member_id: owner.member_id },
+          finished_at: expect.any(String) as unknown,
+        },
+      ],
+    });
+    expect(Object.keys(listed.json<ReadingChecksList>().others[0] ?? {}).sort()).toEqual([
+      'created_at',
+      'finished_at',
+      'id',
+      'requested_by',
+      'state',
+    ]);
+    for (const secret of ['"chosen"', '"summary"', '"n"', 'abcdef012345', '0.9.0-dev.2']) {
+      expect(listed.body.includes(secret), secret).toBe(false);
+    }
+    expect(listed.body).not.toContain(docs.everybody as string);
     // A document she can no longer see — moved to the Trash — goes from her list.
     await admin.query('update document set deleted_at = now() where id = $1', [docs.everybody]);
     try {
@@ -353,22 +371,39 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the API (R0)', () => {
     expect(d.misses).toBeNull();
   });
 
-  it('lists the household’s checks with the newest first, to compare one with another', async () => {
+  it('lists her own checks with the newest first, to compare one with another; the others’ only as there', async () => {
     const a = await start(owner);
     await finish(a.id, []);
     const b = await start(second);
     const list = (await call(owner, 'GET', '/api/v1/reading-checks')).json<ReadingChecksList>();
-    expect(list.items.map((i) => i.id)).toEqual([b.id, a.id]);
-    expect(list.items[0]).toMatchObject({ state: 'waiting', mine: false });
-    expect(list.items[1]).toMatchObject({ state: 'done', mine: true, summary: SUMMARY });
+    expect(list.items.map((i) => i.id)).toEqual([a.id]);
+    expect(list.items[0]).toMatchObject({ state: 'done', mine: true, summary: SUMMARY });
+    expect(list.others).toEqual([
+      {
+        id: b.id,
+        state: 'waiting',
+        requested_by: { member_id: second.member_id, name: 'Omar' },
+        created_at: expect.any(String) as unknown,
+        finished_at: null,
+      },
+    ]);
     // Numbers only, whatever is asked.
     expect(JSON.stringify(list)).not.toContain(docs.everybody as string);
   });
 
   it('cancels a check waiting or running; one finished is not cancelled', async () => {
     const c = await start(owner);
-    // Any owner may cancel the household's check.
-    const res = await call(second, 'POST', `/api/v1/reading-checks/${c.id}/cancel`);
+    // Another owner may neither cancel nor remove it (R0 review): not there for them.
+    expect((await call(second, 'POST', `/api/v1/reading-checks/${c.id}/cancel`)).statusCode).toBe(
+      404,
+    );
+    expect((await call(second, 'DELETE', `/api/v1/reading-checks/${c.id}`)).statusCode).toBe(404);
+    const still = await admin.query<{ state: string }>(
+      'select state from reading_check where id = $1',
+      [c.id],
+    );
+    expect(still.rows).toEqual([{ state: 'waiting' }]);
+    const res = await call(owner, 'POST', `/api/v1/reading-checks/${c.id}/cancel`);
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json<ReadingCheckView>()).toMatchObject({ state: 'cancelled' });
     expect(res.json<ReadingCheckView>().finished_at).not.toBeNull();

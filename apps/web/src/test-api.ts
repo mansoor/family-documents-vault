@@ -1281,10 +1281,26 @@ export function installFakeApi(state: FakeState) {
           checks.unshift(made);
           return json(made, 202);
         }
-        return json({ items: checks, filed: state.readingFiled ?? 0 });
+        // The caller's own; the others' only as there, whose and when (R0 review).
+        return json({
+          items: checks.filter((c) => c.mine),
+          others: checks
+            .filter((c) => !c.mine)
+            .map((c) => ({
+              id: c.id,
+              state: c.state,
+              requested_by: c.requested_by,
+              created_at: c.created_at,
+              finished_at: c.finished_at ?? null,
+            })),
+          filed: state.readingFiled ?? 0,
+        });
       }
       const at = /^\/api\/v1\/reading-checks\/([^/]+)(\/cancel)?$/.exec(path);
-      const c = at ? checks.find((x) => x.id === decodeURIComponent(at[1] as string)) : undefined;
+      // Another owner's check is not there for the caller.
+      const c = at
+        ? checks.find((x) => x.id === decodeURIComponent(at[1] as string) && x.mine)
+        : undefined;
       if (!at || !c) return refuse(404, 'not_found', 'That check is not here.');
       if (at[2] && method === 'POST') {
         if (c.state !== 'waiting' && c.state !== 'running') {
@@ -1298,7 +1314,7 @@ export function installFakeApi(state: FakeState) {
         state.readingChecks = checks.filter((x) => x !== c);
         return Promise.resolve(new Response(null, { status: 204 }));
       }
-      const misses = c.mine ? (state.readingMisses?.[c.id] ?? null) : null;
+      const misses = state.readingMisses?.[c.id] ?? null;
       return json({
         ...c,
         misses,

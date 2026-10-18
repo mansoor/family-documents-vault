@@ -2888,6 +2888,8 @@ export const contractScenarios: Scenario[] = [
       expect((await api.capabilities()).features.reading_check).toBe(true);
       const before = await api.readingChecks(token);
       expect(typeof before.filed).toBe('number');
+      // Another owner's checks, without their numbers (R0 review): none here.
+      expect(before.others).toEqual([]);
       const c = await api.startReadingCheck(token, { n: 20 });
       expect(c).toMatchObject({
         state: 'waiting',

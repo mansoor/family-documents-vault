@@ -5,8 +5,9 @@ import { numbersOnly, READING_CHECK_N, type ReadingCheckSummary } from '@fdv/sha
  * (0.9.0, R0): the Reading check's numbers for one household, printed as
  * JSON, for comparing one release's reader with another's on a test vault.
  *
- * It runs as the vault itself — every document filed through review, Only
- * me included — so what it prints is held to numbers only: the summary
+ * It runs as the vault itself, so it reads no Only me document, anybody's,
+ * and no learned rules — the general reader alone, as its note on standard
+ * error says — and what it prints is held to numbers only: the summary
  * passes `numbersOnly` or nothing is printed, nothing else is ever written
  * to standard output, the reading's own log goes nowhere, and a failure is
  * said in words of its own, never with an error's message (which could
@@ -14,6 +15,10 @@ import { numbersOnly, READING_CHECK_N, type ReadingCheckSummary } from '@fdv/sha
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** What the CLI's summary leaves out, said with it (the owner's decision, R0 review). */
+export const READING_CHECK_CLI_NOTE =
+  'Only me documents are not included, and no learned rules are used: the general reader alone.';
 
 export const READING_CHECK_USAGE =
   'usage: cli.mjs reading-check --household <household id> [--n <10-500, default 50>]';
@@ -79,6 +84,8 @@ export async function readingCheckCommand(
     out.stderr('The reading check’s summary was not numbers only, so nothing was printed.');
     return 1;
   }
+  // Said beside the numbers, never in them: standard output stays numbers only.
+  out.stderr(READING_CHECK_CLI_NOTE);
   out.stdout(JSON.stringify(summary, null, 2));
   return 0;
 }

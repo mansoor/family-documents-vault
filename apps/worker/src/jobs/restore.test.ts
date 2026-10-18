@@ -2005,7 +2005,7 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
            using (case app_actor() when 'account' then member_id is not null or true
                                    when 'system' then true else false end)`.replace(
           'member_id is not null or true',
-          table === 'reading_check_sealed' ? 'member_id = app_member() or true' : 'true',
+          table === 'review_filing' ? 'true' : 'member_id = app_member() or true',
         ),
       );
       try {
@@ -2014,24 +2014,25 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         await sql(vault.adminUrl, `alter policy ${policy} on public.${table} using (${rule})`);
       }
     }
-    // The misses given to every owner, not only their asker: caught.
-    const sealedRule = await ruleOf('reading_check_sealed_actor');
-    await sql(
-      vault.adminUrl,
-      `alter policy reading_check_sealed_actor on public.reading_check_sealed
-         using (case app_actor()
-                  when 'account' then app_role() = 'owner' and (member_id = app_member() or true)
-                  when 'system' then true else false end)`,
-    );
-    try {
-      await expect(checkRestored(target())).rejects.toThrow(
-        /a Reading check’s misses is open to an owner who is not them/,
-      );
-    } finally {
+    // A check, or its misses, given to every owner, not only their asker: caught.
+    for (const [table, words] of [
+      ['reading_check', /a Reading check is open to an owner who is not them/],
+      ['reading_check_sealed', /a Reading check’s misses is open to an owner who is not them/],
+    ] as const) {
+      const policy = `${table}_actor`;
+      const rule = await ruleOf(policy);
       await sql(
         vault.adminUrl,
-        `alter policy reading_check_sealed_actor on public.reading_check_sealed using (${sealedRule})`,
+        `alter policy ${policy} on public.${table}
+           using (case app_actor()
+                    when 'account' then app_role() = 'owner' and (member_id = app_member() or true)
+                    when 'system' then true else false end)`,
       );
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(words);
+      } finally {
+        await sql(vault.adminUrl, `alter policy ${policy} on public.${table} using (${rule})`);
+      }
     }
     // Its guards, its one at a time, and its numbers only.
     for (const [table, trigger] of [
@@ -2116,7 +2117,8 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
       }
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
-  });
+    // About twenty checks of the whole vault, each a few hundred milliseconds.
+  }, 120_000);
 
   it('notices a computer’s rules for what is written gone (0070, D1, the review’s F7)', async () => {
     const rules: Array<[table: string, name: string, cmd: string, words: RegExp]> = [

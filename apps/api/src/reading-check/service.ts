@@ -6,6 +6,7 @@ import {
   type ReadingCheckDetail,
   type ReadingCheckFailure,
   type ReadingCheckInput,
+  type ReadingCheckOther,
   type ReadingCheckState,
   type ReadingCheckSummary,
   type ReadingCheckView,
@@ -23,15 +24,17 @@ import { ApiError } from '../errors.js';
  * family's own papers (@fdv/shared reading-check.ts; the worker's
  * jobs/reading-check.ts reads them).
  *
- * An owner's alone, here and in the database (0074's reading_check_actor):
- * anybody else is refused before anything is read. Every owner sees the
- * household's checks and their numbers — numbers only, held so by the
- * database and again here — and whether one is running; one runs at a time
- * (the database's unique index: 409 reading_check_running). The documents
- * that needed typing, and what, are given to the owner who ran the check
- * alone (reading_check_sealed's rule, and their own member key), only for
- * documents they can still see, and only for seven days. Nothing here reads
- * a document's words or details.
+ * An owner's alone: anybody else is refused before anything is read. And a
+ * check is its asker's alone (the owner's decision, R0 review), here and in
+ * the database (0074's reading_check_actor asks the member): its numbers —
+ * numbers only, held so by the database and again here — and its misses.
+ * Another owner is told only that one of somebody else's is waiting,
+ * running or finished, whose, and when (reading_checks_of_others()), since
+ * one runs at a time (the database's unique index: 409
+ * reading_check_running); they can neither read, cancel nor remove it (404).
+ * The documents that needed typing, and what, are given only for documents
+ * the asker can still see, and only for seven days. Nothing here reads a
+ * document's words or details.
  */
 
 /** The job's name: the worker's READING_CHECK_JOB. */
@@ -141,7 +144,44 @@ export class ReadingCheckService {
         .orderBy('c.id')
         .limit(READING_CHECKS_KEPT)
         .execute()) as CheckRow[];
-      return { items: rows.map((r) => this.view(p, r)), filed: await this.filed(trx, p) };
+      // The others' checks: that each is there, whose and when; nothing more.
+      const others = await sql<{
+        id: string;
+        state: ReadingCheckState;
+        member_id: string | null;
+        created_at: Date;
+        finished_at: Date | null;
+      }>`select o.id, o.state, o.member_id, o.created_at, o.finished_at
+           from reading_checks_of_others() o`.execute(trx);
+      const names = new Map(
+        (
+          await trx
+            .selectFrom('member')
+            .select(['id', 'display_name'])
+            .where(
+              'id',
+              'in',
+              [...new Set(others.rows.map((o) => o.member_id))]
+                .filter((m): m is string => m !== null)
+                .concat(['00000000-0000-0000-0000-000000000000']),
+            )
+            .execute()
+        ).map((m) => [m.id, m.display_name]),
+      );
+      return {
+        items: rows.map((r) => this.view(p, r)),
+        others: others.rows.map((o): ReadingCheckOther => ({
+          id: o.id,
+          state: o.state,
+          requested_by: {
+            member_id: o.member_id,
+            name: o.member_id ? (names.get(o.member_id) ?? null) : null,
+          },
+          created_at: o.created_at.toISOString(),
+          finished_at: iso(o.finished_at),
+        })),
+        filed: await this.filed(trx, p),
+      };
     });
   }
 

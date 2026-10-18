@@ -152,7 +152,7 @@ describe('the Reading check’s page (R0)', () => {
     await expectAccessible();
   });
 
-  it('a running check shows its progress, and anybody of the owners may cancel it', async () => {
+  it('her running check shows its progress, and she may cancel it', async () => {
     at('/settings/reading-check', {
       readingChecks: [
         check({
@@ -161,8 +161,6 @@ describe('the Reading check’s page (R0)', () => {
           finished_at: null,
           progress: { total: 50, done: 12 },
           summary: null,
-          mine: false,
-          requested_by: { member_id: 'm-olivia', name: 'Olivia' },
         }),
       ],
       readingFiled: 50,
@@ -172,8 +170,40 @@ describe('the Reading check’s page (R0)', () => {
     const bar = screen.getByRole('progressbar', { name: 'Documents read' });
     expect(bar).toHaveAttribute('value', '12');
     expect(bar).toHaveAttribute('max', '50');
-    expect(within(now).getByText(/by Olivia/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cancel the check' })).toBeEnabled();
+    await expectAccessible();
+  });
+
+  it('another owner’s check running: said, with whose, and none can start; never cancelled from here', async () => {
+    const state = at('/settings/reading-check', {
+      readingChecks: [
+        check({
+          id: 'check-o',
+          state: 'running',
+          finished_at: null,
+          progress: { total: 50, done: 12 },
+          summary: null,
+          mine: false,
+          requested_by: { member_id: 'm-o', name: 'Olivia' },
+        }),
+      ],
+      readingFiled: 50,
+    });
+    const now = await screen.findByRole('region', { name: 'Reading now' });
+    expect(
+      within(now).getByText(
+        'Olivia’s check is running. One check runs at a time: you can start yours once it has finished.',
+      ),
+    ).toBeInTheDocument();
+    // Nothing of how far it has got, and no way to stop it.
+    expect(within(now).queryByRole('progressbar')).toBeNull();
+    expect(screen.queryByText(/12 of 50/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cancel the check' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Start the check' })).toBeNull();
+    expect(
+      screen.getByText('by Olivia · Running: only they see what it found'),
+    ).toBeInTheDocument();
+    expect(state.calls.some((c) => c.url === '/api/v1/reading-checks/check-o')).toBe(false);
     await expectAccessible();
   });
 
@@ -205,7 +235,12 @@ describe('the Reading check’s page (R0)', () => {
         .getAllByRole('cell')
         .map((c) => c.textContent),
     ).toEqual(['11', '6']);
-    expect(screen.getByText(/With learned rules is optimistic/)).toBeInTheDocument();
+    expect(within(table).getByRole('columnheader', { name: 'With your learning' })).toBeTruthy();
+    expect(
+      screen.getByText(
+        /the rules the vault learned from your corrections, on the documents you filed/,
+      ),
+    ).toBeInTheDocument();
     const byKind = screen.getByRole('table', { name: 'By kind, without learned rules' });
     expect(within(byKind).getByRole('rowheader', { name: 'Your Only me documents' })).toBeTruthy();
     expect(screen.getByText(/1 left out/)).toBeInTheDocument();
@@ -227,7 +262,7 @@ describe('the Reading check’s page (R0)', () => {
     ).toHaveTextContent('18');
   });
 
-  it('another owner’s check: the numbers, never its misses', async () => {
+  it('another owner’s finished check: that it is there, and whose; never its numbers or misses', async () => {
     const state = at('/settings/reading-check', {
       readingChecks: [
         check({ id: 'check-o', mine: false, requested_by: { member_id: 'm-o', name: 'Olivia' } }),
@@ -236,8 +271,12 @@ describe('the Reading check’s page (R0)', () => {
       readingMisses: { 'check-o': [{ document_id: 'd-x', title: 'Olivia private letter' }] },
     });
     expect(
-      await screen.findByText('Only Olivia, who ran it, sees which documents needed typing.'),
+      await screen.findByText('by Olivia · Finished: only they see what it found'),
     ).toBeInTheDocument();
+    // Hers to start: none of Olivia's is running.
+    expect(screen.getByRole('button', { name: 'Start the check' })).toBeEnabled();
+    expect(screen.queryByRole('heading', { name: /^Checked / })).toBeNull();
+    expect(screen.queryByRole('table')).toBeNull();
     expect(screen.queryByText('Olivia private letter')).toBeNull();
     // Not even asked for.
     expect(state.calls.some((c) => c.url === '/api/v1/reading-checks/check-o')).toBe(false);

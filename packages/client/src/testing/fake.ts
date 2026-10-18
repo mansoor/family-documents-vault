@@ -3798,12 +3798,29 @@ export function createFakeVault(): {
           return ok(shown(c), 202);
         }
         tick();
-        const out: ReadingChecksList = { items: checks.map(shown), filed: filed().length };
+        // The caller's own; the others' only as there, whose and when (R0 review).
+        const out: ReadingChecksList = {
+          items: checks.filter((c) => c.member_id === who.memberId).map(shown),
+          others: checks
+            .filter((c) => c.member_id !== who.memberId)
+            .map((c) => ({
+              id: c.view.id,
+              state: c.view.state,
+              requested_by: c.view.requested_by,
+              created_at: c.view.created_at,
+              finished_at: c.view.finished_at,
+            })),
+          filed: filed().length,
+        };
         return ok(out);
       }
       const at = /^\/api\/v1\/reading-checks\/([^/]+)(\/cancel)?$/.exec(path);
+      // Another owner's check is not there for the caller.
       const c = at
-        ? checks.find((x) => x.view.id === decodeURIComponent(at[1] as string))
+        ? checks.find(
+            (x) =>
+              x.view.id === decodeURIComponent(at[1] as string) && x.member_id === who.memberId,
+          )
         : undefined;
       if (!at || !c) return fail(404, 'not_found', 'That check is not here.');
       if (at[2] && init.method === 'POST') {

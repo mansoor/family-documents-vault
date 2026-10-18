@@ -64,9 +64,11 @@ import { WORD_MIME } from './word-text.js';
  * a page with none, on the same tools and limits), proposed for on the
  * proposal thread (`proposeDetails`) and levelled (`levelItem`) for the
  * owner, with no folder names, no defaults and no current details. Twice:
- * without the learned rules (I4) — the honest number — and with the rules
- * of whoever filed it, read as them, which is optimistic, as those rules
- * were learned from these same papers.
+ * without the learned rules (I4) — the honest number — and with the
+ * asking owner's own rules on the documents they filed themselves, which is
+ * optimistic, as those rules were learned from these same papers (the
+ * owner's decision, R0 review): on a document somebody else filed, "with"
+ * is "without", so no owner's numbers reflect another person's rules.
  *
  * What it offered is scored against the document's details now by the
  * Smart exit's own scorer (@fdv/shared reading-score.ts, through
@@ -181,8 +183,9 @@ const letters = (s: string) => (s.match(/[\p{L}\p{N}]/gu) ?? []).length;
 
 /**
  * The last `n` documents filed through review, newest first, as `reader`
- * is given them (or every one, for the vault's own CLI): out of the Trash,
- * and, without `includeEdited`, none changed by hand since it was filed.
+ * is given them — or, for the vault's own CLI, every one but the Only me
+ * documents, anybody's: out of the Trash, and, without `includeEdited`,
+ * none changed by hand since it was filed.
  */
 export async function chooseDocuments(
   trx: Db,
@@ -198,7 +201,7 @@ export async function chooseDocuments(
         from review_filing rf
         join document d on d.id = rf.document_id
        where d.deleted_at is null
-         and ${reader ? seenBy(reader) : sql<boolean>`true`}
+         and ${reader ? seenBy(reader) : sql<boolean>`d.visibility <> 'private'`}
        group by rf.document_id
        order by max(rf.filed_at) desc, rf.document_id
        limit 500`.execute(t);
@@ -265,52 +268,50 @@ async function levelKinds(trx: Db): Promise<LevelKind[]> {
   });
 }
 
-/** What a run reads against: the reader's context, the kinds, the family, and each filer's rules. */
+/**
+ * What a run reads against: the reader's context, the kinds, the family;
+ * and the asking owner's own rules, used only on the documents they filed
+ * themselves (`rulesFor`). The CLI has none.
+ */
 interface RunContext {
   proposal: ProposalContext;
   kinds: LevelKind[];
   people: Array<{ id: string; name: string }>;
   role: Role;
   me: string;
-  rules: Map<string, LearnedContext | null>;
+  /** The account whose own filings the rules are used on; null, none. */
+  rulesFor: string | null;
+  rules: LearnedContext | null;
 }
 
-async function runContext(trx: Db, hh: string, reader: Reader): Promise<RunContext> {
-  const proposal = await proposalContext(trx, hh, reader.memberId);
+/**
+ * `withRules`: the asking owner's — read as them (readAs, inside
+ * learnedContext), so the database gives theirs and nobody else's. The CLI
+ * reads with the general reader alone: no rules, and no issuer seen only on
+ * somebody's Only me document.
+ */
+async function runContext(
+  trx: Db,
+  hh: string,
+  reader: Reader,
+  withRules: boolean,
+): Promise<RunContext> {
+  const proposal = await proposalContext(trx, hh, reader.memberId, { onlyMe: withRules });
   return {
     proposal,
     kinds: await levelKinds(trx),
     people: proposal.people.map((p) => ({ id: p.id, name: p.name })),
     role: reader.role,
     me: reader.memberId,
-    rules: new Map(),
+    rulesFor: withRules ? reader.accountId : null,
+    rules: withRules ? await learnedContext(trx, hh, reader.memberId) : null,
   };
 }
 
-/** A filer's own rules (I4), read as them: none for somebody gone, or who no longer adds. */
-async function rulesOf(
-  trx: Db,
-  hh: string,
-  ctx: RunContext,
-  accountId: string | null,
-): Promise<LearnedContext | null> {
-  if (!accountId) return null;
-  if (ctx.rules.has(accountId)) return ctx.rules.get(accountId) ?? null;
-  const who = await trx
-    .selectFrom('account_household')
-    .select('member_id')
-    .where('household_id', '=', hh)
-    .where('account_id', '=', accountId)
-    .executeTakeFirst();
-  const rules = who ? await learnedContext(trx, hh, who.member_id) : null;
-  ctx.rules.set(accountId, rules);
-  return rules;
-}
-
 /**
- * A keyed hash of the rules a check reads with, each filer's own: the same
- * rules give the same twelve characters, and the characters say nothing of
- * them to anybody without the vault's key.
+ * A keyed hash of the rules a check reads with, the asking owner's own: the
+ * same rules give the same twelve characters, and the characters say nothing
+ * of them to anybody without the vault's key.
  */
 export function rulesHash(key: Buffer, sets: ReadonlyArray<LearnedContext | null>): string {
   const canon = sets
@@ -387,6 +388,8 @@ async function readDocument(
         .where('id', '=', chosen.id)
         .executeTakeFirst();
       if (!doc || doc.deleted_at) return null;
+      // The vault's own CLI reads no Only me document, anybody's.
+      if (!reader && doc.visibility === 'private') return null;
       // Still the reader's to see, now: out of the Trash, and theirs by the visibility rule.
       if (reader) {
         const seen = await readAs(trx, reader, (t) =>
@@ -410,7 +413,8 @@ async function readDocument(
         version,
         fileKey: unwrapKey(version.file_key_wrapped, scopeKey, `version:${doc.id}`),
         adapter: await adapterOf(trx, deps, version.vault_id),
-        learned: await rulesOf(trx, hh, ctx, chosen.filed_by),
+        // The asker's own rules, on a document they filed themselves alone.
+        learned: ctx.rulesFor !== null && chosen.filed_by === ctx.rulesFor ? ctx.rules : null,
       };
     });
   } catch (err) {
@@ -650,11 +654,7 @@ export async function workReadingCheck(
     if (check.state === 'waiting') {
       const begun = await withSystem(deps.db, hh, async (trx) => {
         const docs = await chooseDocuments(trx, reader, check.n, check.include_edited);
-        const context = await runContext(trx, hh, reader);
-        const sets: Array<LearnedContext | null> = [];
-        for (const filer of new Set(docs.map((d) => d.filed_by))) {
-          sets.push(await rulesOf(trx, hh, context, filer));
-        }
+        const context = await runContext(trx, hh, reader, true);
         const fresh: Work = { v: 1, docs, rows: [], skipped: 0, tries: 0 };
         const taken = await trx
           .updateTable('reading_check')
@@ -664,7 +664,7 @@ export async function workReadingCheck(
             total: docs.length,
             done: 0,
             server_version: deps.serverVersion,
-            rules_hash: rulesHash(deps.rulesKey, sets),
+            rules_hash: rulesHash(deps.rulesKey, [context.rules]),
           })
           .where('id', '=', check.id)
           .where('state', '=', 'waiting')
@@ -696,7 +696,7 @@ export async function workReadingCheck(
           .where('check_id', '=', check.id)
           .executeTakeFirst();
         return row?.work_sealed
-          ? { sealed: row.work_sealed, context: await runContext(trx, hh, reader) }
+          ? { sealed: row.work_sealed, context: await runContext(trx, hh, reader, true) }
           : null;
       });
       if (!kept) {
@@ -825,9 +825,11 @@ export async function workReadingCheck(
 
 /**
  * The vault's own measure, for the operator's CLI: the last `n` documents
- * filed through review, every one (it is the vault itself asking), read as
- * the household's first owner would read them, scored, and the numbers
- * given — kept nowhere, and nothing but numbers.
+ * filed through review but the Only me ones, anybody's (the owner's
+ * decision, R0 review), read by the general reader alone — no learned
+ * rules, and the household's first owner's kinds and family without any
+ * Only me issuer — scored, and the numbers given: kept nowhere, and nothing
+ * but numbers. With rules is without.
  */
 export async function readingCheckNow(
   deps: ReadingCheckDeps,
@@ -852,7 +854,7 @@ export async function readingCheckNow(
     };
     return {
       docs: await chooseDocuments(trx, null, n, true),
-      ctx: await runContext(trx, hh, reader),
+      ctx: await runContext(trx, hh, reader, false),
     };
   });
   const work: Work = { v: 1, docs: prepared.docs, rows: [], skipped: 0, tries: 0 };

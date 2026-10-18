@@ -340,10 +340,6 @@ const FAMILY_SUGGESTIONS = {
 const OWNERS_SHARED_IDENTITY =
   "owners read everybody's shared part, its numbers masked (A33); never an Only me part";
 
-/** The household's Reading checks are its owners' (R0): their numbers, never another owner's misses. */
-const READING_CHECKS_OWNERS =
-  'every owner sees, cancels and removes the household’s checks: numbers only, never another owner’s misses (R0)';
-
 /**
  * Every route's rule. A route the router has and this does not fails the
  * sweep; so does a rule for a route the router no longer has.
@@ -901,25 +897,15 @@ const RULES: Record<string, Rule> = {
       passwordOnlyOwner: 'an owner may revoke any computer in the household (D1)',
     },
   },
-  // The Reading check (0.9.0, R0): an owner's, every route. Every owner sees
-  // the household's checks — numbers only — and may cancel or remove one;
-  // the misses are its asker's alone (Olivia's, planted: never Peter's).
+  // The Reading check (0.9.0, R0): an owner's, every route; and a check, its
+  // numbers and its misses its asker's alone (the owner's decision, R0
+  // review). Olivia's, planted: Peter, another owner, may neither read,
+  // cancel nor remove it — he is told only that it is there, and whose.
   'GET /api/v1/reading-checks': { who: 'owners' },
   'POST /api/v1/reading-checks': { who: 'owners', bodies: () => [{}, { n: 9 }, { n: 'all' }] },
-  'GET /api/v1/reading-checks/:id': {
-    who: 'owners',
-    theirs: { passwordOnlyOwner: READING_CHECKS_OWNERS },
-  },
-  'POST /api/v1/reading-checks/:id/cancel': {
-    who: 'owners',
-    body: () => ({}),
-    theirs: { passwordOnlyOwner: READING_CHECKS_OWNERS },
-  },
-  'DELETE /api/v1/reading-checks/:id': {
-    who: 'owners',
-    last: true,
-    theirs: { passwordOnlyOwner: READING_CHECKS_OWNERS },
-  },
+  'GET /api/v1/reading-checks/:id': { who: 'owners' },
+  'POST /api/v1/reading-checks/:id/cancel': { who: 'owners', body: () => ({}) },
+  'DELETE /api/v1/reading-checks/:id': { who: 'owners', last: true },
 };
 
 /** Whether a role is among those a rule is for. */
@@ -2632,11 +2618,31 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     expect(mine.body).toContain(her.id);
     expect(mine.body).toContain(her.title);
     expect(mine.body).not.toContain(his.id);
-    // Peter, another owner: the numbers, and nothing of either.
+    // Peter, another owner: that it is there, and whose — not its numbers,
+    // and nothing of either document. He may neither read it, cancel it nor
+    // remove it.
     await fresh(peter);
+    const listed = await send(peter, 'GET', '/api/v1/reading-checks');
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json<{ others: Array<{ id: string; state: string }> }>().others).toContainEqual(
+      expect.objectContaining({ id, state: 'done' }),
+    );
+    expect(listed.body).not.toContain('"chosen"');
+    expect(listed.body).not.toContain('abcdef012345');
+    for (const [method, url] of [
+      ['GET', `/api/v1/reading-checks/${id}`],
+      ['POST', `/api/v1/reading-checks/${id}/cancel`],
+      ['DELETE', `/api/v1/reading-checks/${id}`],
+    ] as const) {
+      expect((await send(peter, method, url, method === 'POST' ? {} : undefined)).statusCode).toBe(
+        404,
+      );
+    }
+    expect((await ok(send(olivia, 'GET', `/api/v1/reading-checks/${id}`))).body).toContain(
+      '"chosen":2',
+    );
     for (const url of ['/api/v1/reading-checks', `/api/v1/reading-checks/${id}`]) {
       const res = await send(peter, 'GET', url);
-      expect(res.statusCode, url).toBe(200);
       for (const secret of [
         her.id,
         her.title,
@@ -2651,7 +2657,6 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       ]) {
         expect(res.body.includes(secret), `${url} holds ${secret}`).toBe(false);
       }
-      expect(res.body).toContain('"chosen":2');
     }
     // Nobody else is given the check at all.
     for (const who of [ahmed, sara, vera, tariq]) {

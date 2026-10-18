@@ -16,11 +16,15 @@
 --                  see (never somebody else's Only me: asked in this one).
 --   reading_check  a check: who asked, how many, how far it is, the
 --                  reader's version, and its numbers — numbers only, held
---                  by reading_numbers_only(). An owner's alone, read and
---                  written: nobody else signed in, no link, no signed-out
---                  page. One waiting or running a household. An owner makes
---                  one as themselves, cancels one, or removes one; the rest
---                  is the worker's.
+--                  by reading_numbers_only(). The owner's who asked, alone,
+--                  read and written: not another owner, nobody else signed
+--                  in, no link, no signed-out page. One waiting or running a
+--                  household. An owner makes one as themselves, cancels or
+--                  removes their own; the rest is the worker's. Another
+--                  owner is told only that one of somebody else's is
+--                  waiting, running or finished, and whose — never its
+--                  numbers (reading_checks_of_others()), so that one at a
+--                  time makes sense to them.
 --   reading_check_sealed
 --                  what the worker has done so far, then which documents
 --                  needed typing and what: sealed under the key of the owner
@@ -166,14 +170,32 @@ create index reading_check_recent_idx on reading_check (household_id, created_at
 alter table reading_check enable row level security;
 create policy reading_check_tenant on reading_check
   using (household_id = app_household()) with check (household_id = app_household());
--- An owner's alone, and the vault's: nobody else signed in, no link, no
--- signed-out page.
+-- The owner who asked, alone, and the vault's: not another owner, nobody
+-- else signed in, no link, no signed-out page.
 create policy reading_check_actor on reading_check as restrictive
   using (case app_actor()
-           when 'account' then app_role() = 'owner'
+           when 'account' then app_role() = 'owner' and member_id = app_member()
            when 'system' then true
            else false
          end);
+
+-- What another owner is told of the household's checks that are not theirs:
+-- that one is waiting, running or finished, whose, and when — nothing of
+-- what it read or counted. An owner's alone.
+create function reading_checks_of_others()
+  returns table (id uuid, state text, member_id uuid, created_at timestamptz,
+                 finished_at timestamptz)
+  language sql stable security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select c.id, c.state, c.member_id, c.created_at, c.finished_at
+       from reading_check c
+      where c.household_id = app_household()
+        and app_actor() = 'account' and app_role() = 'owner'
+        and c.member_id is distinct from app_member()
+      order by c.created_at desc, c.id
+      limit 20 $$;
+revoke execute on function reading_checks_of_others() from public;
+grant execute on function reading_checks_of_others() to fdv_app;
 -- Made by an owner as themselves, waiting, with nothing of the worker's.
 create policy reading_check_actor_insert on reading_check as restrictive for insert
   with check (case app_actor()

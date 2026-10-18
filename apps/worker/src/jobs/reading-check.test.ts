@@ -208,6 +208,13 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the worker (R0)', () => 
               ($1, $2, 'northgate dental', null, $3, 5, 0)`,
       [hh, m.Ahmed, m.Zain],
     );
+    // And Olivia's own for the same dentist: hers, on what she filed.
+    await admin.query(
+      `insert into intake_rule (household_id, member_id, issuer_key, type_key, person_id, confirmed, contradicted)
+       values ($1, $2, 'northgate dental', 'medical_record', null, 5, 0),
+              ($1, $2, 'northgate dental', null, $2, 5, 0)`,
+      [hh, m.Olivia],
+    );
   }, 120_000);
 
   const logged: string[] = [];
@@ -389,8 +396,10 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the worker (R0)', () => 
     expect(extracted).not.toContain(doc.saras);
     expect(extracted).not.toContain(doc.trashed);
     expect(extracted).not.toContain(doc.byHand);
-    // The passport reads Ready and right; the dentist's kind and person need typing without
-    // Ahmed's rules, and not with them; the OCR failure is not read.
+    // The passport reads Ready and right; the OCR failure is not read. The
+    // dentist's letter Ahmed filed needs its kind and person typed both ways:
+    // with rules is Olivia's own learning, on what she filed, never Ahmed's.
+    // Her own letter needs typing without her rules, and not with them.
     expect(s.without_rules.all).toMatchObject({
       documents: 4,
       not_read: 1,
@@ -402,14 +411,19 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the worker (R0)', () => 
       kind_right: 0,
       no_typing: 0,
     });
-    expect(s.with_rules.by_kind.medical_record).toEqual({
+    expect(s.with_rules.by_kind.medical_record).toEqual(s.without_rules.by_kind.medical_record);
+    expect(s.with_rules.all.needs_typing).toBe(s.without_rules.all.needs_typing - 1);
+    // Her own Only me is counted, never by its kind.
+    expect(s.without_rules.by_kind[ONLY_ME_KIND]).toEqual({
+      documents: 1,
+      kind_right: 0,
+      no_typing: 0,
+    });
+    expect(s.with_rules.by_kind[ONLY_ME_KIND]).toEqual({
       documents: 1,
       kind_right: 1,
       no_typing: 1,
     });
-    expect(s.with_rules.all.needs_typing).toBe(s.without_rules.all.needs_typing - 1);
-    // Her own Only me is counted, never by its kind.
-    expect(s.without_rules.by_kind[ONLY_ME_KIND]?.documents).toBe(1);
     expect(Object.keys(s.without_rules.by_kind)).not.toContain('(none)');
     expect(row?.server_version).toBe('0.9.0-dev.1');
     expect(row?.rules_hash).toMatch(/^[0-9a-f]{12}$/);
@@ -655,7 +669,14 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the worker (R0)', () => 
     expect(all).not.toContain(SECRET_WORDS);
   }, 120_000);
 
-  it('the CLI prints numbers only, as the vault itself — even with an Only me document read', async () => {
+  it('the CLI prints numbers only, as the vault itself, without any Only me document or learned rule', async () => {
+    // A letter Olivia filed for everybody, which her rules would read: not here.
+    const hers = await filed({
+      words: DENTIST,
+      by: 'Olivia',
+      type_key: 'medical_record',
+      owner: 'Olivia',
+    });
     const out: string[] = [];
     const err: string[] = [];
     const code = await readingCheckCommand(
@@ -664,13 +685,23 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the worker (R0)', () => 
       { stdout: (l) => out.push(l), stderr: (l) => err.push(l) },
     );
     expect(code).toBe(0);
-    expect(err).toEqual([]);
-    // As the vault: every document filed through review out of the Trash, Sara's too.
-    expect(extracted).toContain(doc.saras);
+    // Said beside the numbers: what is left out.
+    expect(err).toEqual([
+      'Only me documents are not included, and no learned rules are used: the general reader alone.',
+    ]);
+    // As the vault: every document filed through review out of the Trash
+    // but the Only me ones, anybody's.
+    expect(extracted).not.toContain(doc.saras);
+    expect(extracted).not.toContain(doc.olivias);
     const printed = out.join('\n');
     const parsed = JSON.parse(printed) as ReadingCheckSummary;
     expect(numbersOnly(parsed)).toBe(true);
-    expect(parsed.chosen).toBe(5);
+    await admin.query('delete from document where id = $1', [hers]);
+    expect(extracted).toContain(hers);
+    expect(parsed.chosen).toBe(4);
+    expect(parsed.without_rules.by_kind[ONLY_ME_KIND]).toBeUndefined();
+    // The general reader alone: no learned rules, anybody's.
+    expect(parsed.with_rules).toEqual(parsed.without_rules);
     for (const id of Object.values(doc)) expect(printed).not.toContain(id);
     expect(printed).not.toContain(SECRET_WORDS);
     expect(printed).not.toContain(SECRET_NUMBER);

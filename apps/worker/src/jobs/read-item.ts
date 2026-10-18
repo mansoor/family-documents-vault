@@ -502,7 +502,10 @@ export async function proposalContext(
   trx: Db,
   hh: string,
   memberId: string,
+  /** `onlyMe: false`: no issuer from an Only me document, the member's own included (R0's CLI). */
+  opts: { onlyMe?: boolean } = {},
 ): Promise<ProposalContext> {
+  const ownOnlyMe = opts.onlyMe !== false;
   const me = await trx
     .selectFrom('account_household')
     .select('role')
@@ -540,7 +543,7 @@ export async function proposalContext(
        and d.issued_by is not null
        and (d.visibility = 'household'
          or (d.visibility = 'adults' and ${seesAdults})
-         or (d.visibility = 'private' and d.owner_member_id = ${memberId}::uuid))
+         or (d.visibility = 'private' and ${ownOnlyMe} and d.owner_member_id = ${memberId}::uuid))
      group by lower(btrim(d.issued_by))
      order by count desc, value
      limit 50`.execute(trx);

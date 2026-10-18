@@ -1421,7 +1421,9 @@ const MAKER_ONLY = [
   // A computer that sends scans, and a code to pair one (0070, D1).
   { table: 'upload_device', where: 'true', what: "somebody's computer" },
   { table: 'device_pairing', where: 'true', what: "somebody's code to pair a computer" },
-  // Which documents of a Reading check needed typing (0074, R0): its asker's.
+  // A Reading check, its numbers, and which documents needed typing (0074,
+  // R0): its asker's alone.
+  { table: 'reading_check', where: 'true', what: 'a Reading check' },
   { table: 'reading_check_sealed', where: 'true', what: 'a Reading check’s misses' },
   // A person's Only me identity details: theirs alone, whoever else asks (0050, A33).
   {
@@ -1448,7 +1450,10 @@ const NOT_EVEN_OWNERS = [
   { table: 'mail_in_address', what: "somebody's address for email in" },
   // A code is a way in for whoever holds it: its person's alone (0070, D1).
   { table: 'device_pairing', what: "somebody's code to pair a computer" },
-  // A check's misses may name its asker's Only me documents: theirs alone (0074, R0).
+  // A check, its numbers and its misses: its asker's alone, not another
+  // owner's (0074, R0; the owner's decision): the misses may name their
+  // Only me documents, the numbers their own learning.
+  { table: 'reading_check', what: 'a Reading check' },
   { table: 'reading_check_sealed', what: 'a Reading check’s misses' },
 ];
 

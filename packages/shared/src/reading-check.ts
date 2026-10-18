@@ -19,9 +19,10 @@ import {
  * that the owner can see out of the Trash: never somebody else's Only me.
  * Each is read as a batch's item would be (its current version's words,
  * `proposeDetails`, `levelItem`, with no folder names), twice: without the
- * household's learned rules (I4), the honest number, and with each filer's
- * own rules, which is optimistic, since the rules were learned from these
- * same papers. What it offered is scored against the document's details
+ * learned rules (I4), the honest number, and with the asking owner's own
+ * rules on the documents they filed themselves ("your learning, on the
+ * documents you filed"), which is optimistic, since the rules were learned
+ * from these same papers; on anybody else's, with is without. What it offered is scored against the document's details
  * now (kind, whose, and the expiry where the kind keeps one) by the Smart
  * exit's own scorer (reading-score.ts: `scoreItem`, `summarise`).
  *
@@ -29,10 +30,13 @@ import {
  * or not read, how many need typing and how many are a wrong Ready, by
  * kind, both readings, with the reader's version (the server's, and a keyed
  * hash of the rules) — so a later check can be compared with an earlier
- * one. Which documents needed typing, and which field, is kept sealed under
- * the owner's own key for READING_MISSES_KEEP_DAYS, shown to them alone and
- * only for documents they can still see. Nothing is written to a document,
- * and no item, proposal or rule is made.
+ * one. A check, its numbers and its misses are the asking owner's alone
+ * (the owner's decision, R0 review): another owner is told only that one of
+ * theirs is waiting, running or finished, and whose (ReadingCheckOther).
+ * Which documents needed typing, and which field, is kept sealed under the
+ * owner's own key for READING_MISSES_KEEP_DAYS, and shown only for documents
+ * they can still see. Nothing is written to a document, and no item,
+ * proposal or rule is made.
  */
 
 /** How many documents a check re-reads: the last N filed through review. */
@@ -85,8 +89,7 @@ export interface ReadingKindRow {
 /**
  * One reading of the check's documents: all of them, those read from a
  * PDF's own text and those that needed OCR, and by kind. Only me documents
- * are counted by kind as `(only_me)`, never by their kind: a check's
- * numbers are every owner's to see.
+ * are counted by kind as `(only_me)`, never by their kind.
  */
 export interface ReadingResult {
   all: ReadingCounts;
@@ -110,7 +113,12 @@ export interface ReadingCheckSummary {
   edited: number;
   /** Read without the learned rules: the honest number. */
   without_rules: ReadingResult;
-  /** Read with each filer's own learned rules: optimistic, learned from these same papers. */
+  /**
+   * Read with the asking owner's own learned rules on the documents they
+   * filed themselves — optimistic, learned from these same papers. On a
+   * document somebody else filed it is the reading without: no owner's
+   * numbers reflect another person's rules.
+   */
   with_rules: ReadingResult;
 }
 
@@ -121,7 +129,7 @@ export interface ReadingReader {
   rules: string | null;
 }
 
-/** GET /reading-checks: a check, as every owner sees it. */
+/** GET /reading-checks: a check, as the owner who asked sees it (theirs alone). */
 export interface ReadingCheckView {
   id: string;
   state: ReadingCheckState;
@@ -131,7 +139,7 @@ export interface ReadingCheckView {
   include_edited: boolean;
   /** Who started it, by the name the household knows them by. */
   requested_by: { member_id: string | null; name: string | null };
-  /** Started by the caller: only they are given its misses. */
+  /** Started by the caller: always, since 0.9.0's review (a check is its asker's alone). */
   mine: boolean;
   created_at: string;
   started_at: string | null;
@@ -161,9 +169,26 @@ export interface ReadingCheckDetail extends ReadingCheckView {
   misses_until: string | null;
 }
 
+/**
+ * Another owner's check, as an owner is told of it (the owner's decision,
+ * R0 review): that it is waiting, running or finished, whose, and when —
+ * never its numbers. One runs at a time, so this says why another can't
+ * start. Only its owner cancels or removes it.
+ */
+export interface ReadingCheckOther {
+  id: string;
+  state: ReadingCheckState;
+  requested_by: { member_id: string | null; name: string | null };
+  created_at: string;
+  finished_at: string | null;
+}
+
 /** GET /reading-checks. */
 export interface ReadingChecksList {
+  /** The caller's own checks, newest first. */
   items: ReadingCheckView[];
+  /** The household's other owners' checks, without their numbers. */
+  others: ReadingCheckOther[];
   /** Documents filed through review the caller can see, out of the Trash: the most a check can read. */
   filed: number;
 }

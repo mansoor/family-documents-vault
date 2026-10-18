@@ -22,16 +22,19 @@ import { Button, Check, ConfirmDialog, ErrorNote, Field, LoadFailed, TopBar } fr
  * the worker reads them again in the background, and the page shows how far
  * it has got (a progress bar, polled while it runs) and lets any owner
  * cancel it. A finished check shows its numbers — read without the learned
- * rules, and with them, which is optimistic — by kind, and against the
- * check before it ("Since 0.9.0-dev.2: needs typing 18 → 11"). To the owner
- * who ran it, and only to them, it lists the documents that needed typing
- * and what, for seven days. Every other owner sees the numbers alone.
+ * rules, and with "your learning, on the documents you filed", which is
+ * optimistic — by kind, and against the check before it ("Since
+ * 0.9.0-dev.2: needs typing 18 → 11"), and lists the documents that needed
+ * typing and what, for seven days. A check is its owner's alone: another
+ * owner is told only that one of theirs is running or finished, and whose
+ * — so that one at a time makes sense — never its numbers.
  */
 
 /** How often the page asks again while a check waits or runs. */
 export const READING_POLL_MS = 3_000;
 
-const running = (c: ReadingCheckView) => c.state === 'waiting' || c.state === 'running';
+const running = (c: Pick<ReadingCheckView, 'state'>) =>
+  c.state === 'waiting' || c.state === 'running';
 
 /** "17 Oct, 14:03", in this browser's time. */
 function whenWords(at: string): string {
@@ -85,16 +88,20 @@ export function ReadingCheckScreen() {
   const line = useRef<HTMLParagraphElement>(null);
 
   const items = data?.items ?? [];
+  const others = data?.others ?? [];
   const current = items.find(running) ?? null;
+  // Somebody else's, waiting or running: one at a time, so none can start.
+  const theirs = current ? null : (others.find(running) ?? null);
   const done = items.filter((c) => c.state === 'done');
   const shown = items.find((c) => c.id === shownId && c.state === 'done') ?? done[0] ?? null;
 
-  // While one waits or runs, asked again now and then.
+  // While one waits or runs, theirs or somebody else's, asked again now and then.
+  const busyNow = current ?? theirs;
   useEffect(() => {
-    if (!current) return;
+    if (!busyNow) return;
     const t = setTimeout(() => void reload(), READING_POLL_MS);
     return () => clearTimeout(t);
-  }, [current, data, reload]);
+  }, [busyNow, data, reload]);
   useEffect(() => {
     if (said) line.current?.focus();
   }, [said]);
@@ -195,17 +202,25 @@ export function ReadingCheckScreen() {
                 value={current.progress.done}
               />
               <p className="muted">
-                Started {whenWords(current.created_at)}
-                {current.requested_by.name && !current.mine
-                  ? ` by ${current.requested_by.name}`
-                  : ''}
-                . It runs behind everything else the vault is doing, so it can take a while.
+                Started {whenWords(current.created_at)}. It runs behind everything else the vault is
+                doing, so it can take a while.
               </p>
               <div className="row">
                 <Button kind="quiet" disabled={busy} onClick={() => void cancel(current)}>
                   Cancel the check
                 </Button>
               </div>
+            </section>
+          ) : theirs ? (
+            <section aria-labelledby="reading-now-h" className="stack">
+              <h2 id="reading-now-h" className="section-h">
+                Reading now
+              </h2>
+              <p role="status">
+                {`${theirs.requested_by.name ?? 'Another owner'}’s check is ${
+                  theirs.state === 'waiting' ? 'waiting to start' : 'running'
+                }. One check runs at a time: you can start yours once it has finished.`}
+              </p>
             </section>
           ) : (
             <form
@@ -266,7 +281,7 @@ export function ReadingCheckScreen() {
               busy={busy}
             />
           )}
-          {items.length > 0 && (
+          {items.length + others.length > 0 && (
             <section aria-labelledby="reading-all-h" className="stack">
               <h2 id="reading-all-h" className="section-h">
                 Checks
@@ -295,6 +310,18 @@ export function ReadingCheckScreen() {
                         Show
                       </Button>
                     )}
+                  </li>
+                ))}
+                {others.map((o) => (
+                  <li key={o.id} className="reading-row">
+                    <span>
+                      <span className="doc-title">{whenWords(o.created_at)}</span>
+                      <span className="muted">
+                        {`by ${o.requested_by.name ?? 'another owner'} · ${
+                          running(o) ? 'Running' : o.state === 'done' ? 'Finished' : 'Stopped'
+                        }: only they see what it found`}
+                      </span>
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -371,7 +398,7 @@ function Result(props: {
             <tr>
               <th scope="col">Documents</th>
               <th scope="col">Without learned rules</th>
-              <th scope="col">With learned rules</th>
+              <th scope="col">With your learning</th>
             </tr>
           </thead>
           <tbody>
@@ -386,8 +413,9 @@ function Result(props: {
         </table>
       </div>
       <p className="muted">
-        With learned rules is optimistic: the vault learned those rules from these same papers.
-        Without them is the honest number.
+        With your learning: the rules the vault learned from your corrections, on the documents you
+        filed; on anybody else’s it is the same as without. It is optimistic, since the rules were
+        learned from these same papers. Without them is the honest number.
       </p>
       <ByKind result={s.without_rules} labelOf={props.labelOf} />
       {check.mine ? (
