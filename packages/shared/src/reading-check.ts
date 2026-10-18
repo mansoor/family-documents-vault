@@ -111,6 +111,12 @@ export interface ReadingCheckSummary {
   skipped: number;
   /** Changed by hand since they were filed: their details now are the truth. */
   edited: number;
+  /**
+   * Read with some detail not confirmed by a person — an Inbox file, or a
+   * version added to a document already there, confirms only what its
+   * accept set — and so not scored: never a miss.
+   */
+  partly_confirmed: number;
   /** Read without the learned rules: the honest number. */
   without_rules: ReadingResult;
   /**
@@ -176,11 +182,8 @@ export interface ReadingCheckDetail extends ReadingCheckView {
  * start. Only its owner cancels or removes it.
  */
 export interface ReadingCheckOther {
-  id: string;
   state: ReadingCheckState;
   requested_by: { member_id: string | null; name: string | null };
-  created_at: string;
-  finished_at: string | null;
 }
 
 /** GET /reading-checks. */
@@ -226,6 +229,50 @@ export interface ReadingRow {
   mode: 'text' | 'scan';
   truth: ReadingTruth;
   seen: SmartSeen;
+  /**
+   * The details a person confirmed: as it was filed through review, and
+   * since by hand. Left out, every one. A detail not confirmed is not
+   * scored: what was offered for it is taken as right.
+   */
+  confirmed?: readonly ReadingField[];
+}
+
+/** A detail a person may have confirmed, as the scorer names them. */
+export type ReadingField = 'kind' | 'person' | 'expiry' | 'issued' | 'number' | 'issuer';
+export const READING_FIELDS: readonly ReadingField[] = [
+  'kind',
+  'person',
+  'expiry',
+  'issued',
+  'number',
+  'issuer',
+];
+/** The details whose miss is typing: a document with none of them confirmed is not read. */
+export const READING_SCORED_FIELDS: readonly ReadingField[] = ['kind', 'person', 'expiry'];
+
+/** The seen value of each field, by the scorer's name for the truth's. */
+const SEEN_OF: Readonly<Record<ReadingField, keyof SmartSeen & keyof ReadingTruth>> = {
+  kind: 'kind',
+  person: 'person',
+  expiry: 'expires',
+  issued: 'issued',
+  number: 'number',
+  issuer: 'issuer',
+};
+
+/**
+ * What was offered, with every detail a person did not confirm taken as
+ * the document's: not scored, never a miss.
+ */
+export function confirmedOnly(row: Pick<ReadingRow, 'truth' | 'seen' | 'confirmed'>): SmartSeen {
+  if (!row.confirmed) return row.seen;
+  const seen = { ...row.seen };
+  for (const f of READING_FIELDS) {
+    if (row.confirmed.includes(f)) continue;
+    const k = SEEN_OF[f];
+    (seen as Record<string, unknown>)[k] = row.truth[k];
+  }
+  return seen;
 }
 
 /** A document as the Smart exit's scorer takes a corpus file: the truth is its details now. */
@@ -272,7 +319,8 @@ export function scoreReading(
 ): { result: ReadingResult; misses: ReadingMiss[] } {
   const scored = rows.map((r) => {
     const entry = readingEntry(r);
-    return { row: r, entry, seen: r.seen, score: scoreItem(entry, r.seen, expiring) };
+    const seen = confirmedOnly(r);
+    return { row: r, entry, seen, score: scoreItem(entry, seen, expiring) };
   });
   const s = summarise(scored);
   const typedIn = (want: (r: (typeof scored)[number]) => boolean) => {

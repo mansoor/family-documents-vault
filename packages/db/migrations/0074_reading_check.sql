@@ -7,13 +7,17 @@
 -- document, and no item, proposal or rule is made. Three tables:
 --
 --   review_filing  a version filed through review: which document, by whom,
---                  when. Written by the database as an incoming file is
---                  accepted (incoming_file_filed), and filled once from the
---                  files accepted before; it outlives the incoming file,
---                  whose row goes with its batch or request. It goes with
---                  its version (an Undo) and its document. The vault's to
---                  write; an owner reads only the rows of documents they can
---                  see (never somebody else's Only me: asked in this one).
+--                  when, from where (a batch, or the Inbox), which of its
+--                  details the person confirmed as they accepted it, and the
+--                  activity log's last line then (what is changed by hand
+--                  after is after it). Written by the database as an
+--                  incoming file is accepted (incoming_file_filed), and
+--                  filled once from the files accepted before; it outlives
+--                  the incoming file, whose row goes with its batch or
+--                  request. It goes with its version (an Undo) and its
+--                  document. The vault's to write; an owner reads only the
+--                  rows of documents they can see (never somebody else's
+--                  Only me: asked in this one).
 --   reading_check  a check: who asked, how many, how far it is, the
 --                  reader's version, and its numbers — numbers only, held
 --                  by reading_numbers_only(). The owner's who asked, alone,
@@ -21,10 +25,10 @@
 --                  in, no link, no signed-out page. One waiting or running a
 --                  household. An owner makes one as themselves, cancels or
 --                  removes their own; the rest is the worker's. Another
---                  owner is told only that one of somebody else's is
---                  waiting, running or finished, and whose — never its
---                  numbers (reading_checks_of_others()), so that one at a
---                  time makes sense to them.
+--                  owner is told only whose checks there are, and the state
+--                  of each — never its numbers, nor when
+--                  (reading_checks_of_others()), so that one at a time
+--                  makes sense to them.
 --   reading_check_sealed
 --                  what the worker has done so far, then which documents
 --                  needed typing and what: sealed under the key of the owner
@@ -44,7 +48,20 @@ create table review_filing (
   document_id  uuid not null references document(id) on delete cascade,
   -- Who accepted it; gone with their account.
   filed_by     uuid references account(id) on delete set null,
-  filed_at     timestamptz not null default now()
+  filed_at     timestamptz not null default now(),
+  -- From a batch (Many documents, the scanner folder, email in, a
+  -- computer), or the Inbox (a file sent through a request).
+  source       text not null constraint review_filing_source check (source in ('batch', 'inbox')),
+  -- The details the person confirmed as they accepted it: a batch's card
+  -- shows and files every one; an Inbox file, or a version added to a
+  -- document already there, only those the accept set. What was not
+  -- confirmed is never scored.
+  confirmed    text[] not null default '{}'
+                 constraint review_filing_confirmed
+                 check (confirmed <@ array['kind', 'person', 'expiry', 'issued', 'number', 'issuer']),
+  -- The activity log's last line when it was filed: a change by hand is a
+  -- line after it (an accept's own lines, as a version's changes, before).
+  filed_audit_id bigint not null default 0
 );
 create index review_filing_recent_idx on review_filing (household_id, filed_at desc);
 create index review_filing_document_idx on review_filing (document_id);
@@ -76,15 +93,31 @@ create policy review_filing_actor_delete on review_filing as restrictive for del
   using (app_actor() = 'system');
 
 -- An incoming file accepted: the version it made was filed through review.
+-- What the person confirmed: what the accept says it set
+-- (fdv.review_confirmed, set in the accept's own transaction by the API:
+-- an Inbox file's, and a version's added to a document already there), or
+-- else, for a batch's item filed as a document of its own, every detail its
+-- card filed; else none. Said once, then let go.
 create function incoming_file_filed() returns trigger
   language plpgsql security definer set search_path = pg_catalog, public, pg_temp as $$
+declare
+  said text := nullif(current_setting('fdv.review_confirmed', true), '');
 begin
   if new.state = 'accepted' and old.state is distinct from 'accepted'
      and new.version_id is not null and new.document_id is not null then
-    insert into review_filing (version_id, household_id, document_id, filed_by, filed_at)
+    insert into review_filing (version_id, household_id, document_id, filed_by, filed_at,
+                               source, confirmed, filed_audit_id)
     values (new.version_id, new.household_id, new.document_id, new.decided_by,
-            coalesce(new.decided_at, now()))
+            coalesce(new.decided_at, now()),
+            case when new.batch_id is not null then 'batch' else 'inbox' end,
+            case when said is not null then string_to_array(said, ',')
+                 when new.batch_id is not null and not new.as_version
+                   then array['kind', 'person', 'expiry', 'issued', 'number', 'issuer']
+                 else '{}'::text[] end,
+            coalesce((select max(a.id) from audit_event a
+                       where a.household_id = new.household_id), 0))
     on conflict (version_id) do nothing;
+    perform set_config('fdv.review_confirmed', '', true);
   end if;
   return null;
 end $$;
@@ -92,13 +125,29 @@ end $$;
 create trigger incoming_file_filed after update of state on incoming_file
   for each row execute function incoming_file_filed();
 
--- The files accepted before, while their rows are still here.
-insert into review_filing (version_id, household_id, document_id, filed_by, filed_at)
-select f.version_id, f.household_id, f.document_id, f.decided_by, coalesce(f.decided_at, f.created_at)
+-- The files accepted before, while their rows are still here: a batch's
+-- item filed as a document of its own confirmed its card's every detail;
+-- what anything else confirmed is not known, so nothing of it is scored.
+insert into review_filing (version_id, household_id, document_id, filed_by, filed_at,
+                           source, confirmed, filed_audit_id)
+select f.version_id, f.household_id, f.document_id, f.decided_by,
+       coalesce(f.decided_at, f.created_at),
+       case when f.batch_id is not null then 'batch' else 'inbox' end,
+       case when f.batch_id is not null and not f.as_version
+            then array['kind', 'person', 'expiry', 'issued', 'number', 'issuer']
+            else '{}'::text[] end,
+       coalesce((select max(a.id) from audit_event a
+                  where a.household_id = f.household_id
+                    and a.at <= coalesce(f.decided_at, f.created_at)), 0)
   from incoming_file f
   join document_version v on v.id = f.version_id and v.document_id = f.document_id
  where f.state = 'accepted'
 on conflict (version_id) do nothing;
+
+-- What was changed by hand since: a document's lines in the activity log
+-- after its filing's.
+create index audit_event_document_idx on audit_event (object_id, id)
+  where object_type = 'document';
 
 -- ---------------------------------------------------------------- numbers
 
@@ -155,6 +204,10 @@ create table reading_check (
   rules_hash     text constraint reading_check_rules check (rules_hash ~ '^[0-9a-f]{12}$'),
   summary        jsonb constraint reading_check_numbers_only
                    check (summary is null or reading_numbers_only(summary)),
+  -- The worker's: how many times it had trouble (it gives up at a few), and
+  -- until when a run holds the check (one run at a time).
+  errors         integer not null default 0 constraint reading_check_errors check (errors between 0 and 1000),
+  lease_until    timestamptz,
   constraint reading_check_done_count check (done between 0 and total),
   constraint reading_check_done_has_numbers check ((state = 'done') = (summary is not null)),
   constraint reading_check_failed_says_why check ((state = 'failed') = (failure is not null)),
@@ -180,14 +233,13 @@ create policy reading_check_actor on reading_check as restrictive
          end);
 
 -- What another owner is told of the household's checks that are not theirs:
--- that one is waiting, running or finished, whose, and when — nothing of
--- what it read or counted. An owner's alone.
+-- whose each is, and its state — nothing of what it read or counted, nor
+-- when. An owner's alone.
 create function reading_checks_of_others()
-  returns table (id uuid, state text, member_id uuid, created_at timestamptz,
-                 finished_at timestamptz)
+  returns table (state text, member_id uuid)
   language sql stable security definer
   set search_path = pg_catalog, public, pg_temp as
-  $$ select c.id, c.state, c.member_id, c.created_at, c.finished_at
+  $$ select c.state, c.member_id
        from reading_check c
       where c.household_id = app_household()
         and app_actor() = 'account' and app_role() = 'owner'
@@ -204,6 +256,7 @@ create policy reading_check_actor_insert on reading_check as restrictive for ins
                                     and member_id = app_member()
                                     and state = 'waiting' and failure is null
                                     and total = 0 and done = 0
+                                    and errors = 0 and lease_until is null
                                     and started_at is null and finished_at is null
                                     and server_version is null and rules_hash is null
                                     and summary is null
@@ -261,10 +314,16 @@ create policy reading_check_sealed_actor on reading_check_sealed as restrictive
            when 'system' then true
            else false
          end);
--- Written by the vault alone; removed with its check (the cascade), or by the vault.
+-- Written by the vault alone; removed with its check (the cascade), by the
+-- vault, or by the owner who asked as they cancel it (what it read so far
+-- goes at once).
 create policy reading_check_sealed_actor_insert on reading_check_sealed as restrictive for insert
   with check (app_actor() = 'system');
 create policy reading_check_sealed_actor_update on reading_check_sealed as restrictive for update
   using (app_actor() = 'system');
 create policy reading_check_sealed_actor_delete on reading_check_sealed as restrictive for delete
-  using (app_actor() = 'system');
+  using (case app_actor()
+           when 'account' then app_role() = 'owner' and member_id = app_member()
+           when 'system' then true
+           else false
+         end);

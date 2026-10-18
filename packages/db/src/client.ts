@@ -805,6 +805,11 @@ export interface Schema {
     document_id: string;
     filed_by: string | null;
     filed_at: GeneratedTimestamp;
+    source: 'batch' | 'inbox';
+    /** What the person confirmed: kind, person, expiry, issued, number, issuer. */
+    confirmed: Generated<string[]>;
+    /** The activity log's last line when it was filed (a bigint, read as a string). */
+    filed_audit_id: ColumnType<string, string | number | undefined, string | number>;
   };
 
   /** A Reading check (0074, R0): an owner's, numbers only. */
@@ -826,6 +831,9 @@ export interface Schema {
     rules_hash: string | null;
     /** Numbers only (reading_numbers_only). */
     summary: ColumnType<unknown, string | null | undefined, string | null>;
+    /** The worker's: trouble had, and until when a run holds it. */
+    errors: Generated<number>;
+    lease_until: Timestamp | null;
   };
 
   /** What a check has done, then its misses, sealed for the owner who asked (0074): theirs alone. */

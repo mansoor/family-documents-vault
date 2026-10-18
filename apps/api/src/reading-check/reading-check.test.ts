@@ -15,6 +15,7 @@ import {
 import FormData from 'form-data';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
+import { ReadingCheckService } from './service.js';
 
 /**
  * The Reading check in the API (0.9.0, R0): an owner's alone, at the route
@@ -47,6 +48,7 @@ const SUMMARY: ReadingCheckSummary = {
   read: 2,
   skipped: 0,
   edited: 0,
+  partly_confirmed: 0,
   without_rules: {
     all: counts,
     text: counts,
@@ -99,7 +101,8 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the API (R0)', () => {
     expect(sent.statusCode, sent.body).toBe(201);
     const item = sent.json<BatchItemView>();
     const done = await call(who, 'POST', `/api/v1/batches/${batchId}/items/${item.id}/accept`, {
-      title: 'Filed',
+      // A version added to a document there takes no new details of its own.
+      ...(details.into_document_id ? {} : { title: 'Filed' }),
       ...details,
     });
     expect(done.statusCode, done.body).toBe(201);
@@ -278,7 +281,8 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the API (R0)', () => {
     expect(h.jobs).toContainEqual({
       name: 'reading.check',
       data: { household_id: hh, check_id: c.id },
-      options: { singletonKey: `reading-check:${hh}` },
+      // Keyed by the check (R-1), below every other job (R-3).
+      options: { singletonKey: `reading-check:${c.id}`, priority: -10 },
     });
     // One at a time: another owner too.
     const again = await call(second, 'POST', '/api/v1/reading-checks', {});
@@ -317,26 +321,17 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the API (R0)', () => {
     const theirs = await call(second, 'GET', `/api/v1/reading-checks/${c.id}`);
     expect(theirs.statusCode).toBe(404);
     expect(theirs.body).not.toContain(docs.everybody as string);
-    // ...but in their list, that it is there, whose and when; never its numbers.
+    // ...but in their list, whose and its state alone (P-1); never its numbers, nor when.
     const listed = await call(second, 'GET', '/api/v1/reading-checks');
     expect(listed.json<ReadingChecksList>()).toMatchObject({
       items: [],
-      others: [
-        {
-          id: c.id,
-          state: 'done',
-          requested_by: { member_id: owner.member_id },
-          finished_at: expect.any(String) as unknown,
-        },
-      ],
+      others: [{ state: 'done', requested_by: { member_id: owner.member_id } }],
     });
     expect(Object.keys(listed.json<ReadingChecksList>().others[0] ?? {}).sort()).toEqual([
-      'created_at',
-      'finished_at',
-      'id',
       'requested_by',
       'state',
     ]);
+    expect(listed.body).not.toContain(c.id);
     for (const secret of ['"chosen"', '"summary"', '"n"', 'abcdef012345', '0.9.0-dev.2']) {
       expect(listed.body.includes(secret), secret).toBe(false);
     }
@@ -379,14 +374,9 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the API (R0)', () => {
     expect(list.items.map((i) => i.id)).toEqual([a.id]);
     expect(list.items[0]).toMatchObject({ state: 'done', mine: true, summary: SUMMARY });
     expect(list.others).toEqual([
-      {
-        id: b.id,
-        state: 'waiting',
-        requested_by: { member_id: second.member_id, name: 'Omar' },
-        created_at: expect.any(String) as unknown,
-        finished_at: null,
-      },
+      { state: 'waiting', requested_by: { member_id: second.member_id, name: 'Omar' } },
     ]);
+    expect(JSON.stringify(list)).not.toContain(b.id);
     // Numbers only, whatever is asked.
     expect(JSON.stringify(list)).not.toContain(docs.everybody as string);
   });
@@ -403,8 +393,22 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the API (R0)', () => {
       [c.id],
     );
     expect(still.rows).toEqual([{ state: 'waiting' }]);
+    // What the worker had read so far, as it seals it: gone with the cancel (P-2).
+    const key = await withSystem(h.db, hh, (trx) =>
+      keys.unwrap(trx, { householdId: hh, kind: 'member', memberId: owner.member_id }),
+    );
+    await admin.query("update reading_check set state = 'running' where id = $1", [c.id]);
+    await admin.query(
+      `insert into reading_check_sealed (check_id, household_id, member_id, wrapped_by_scope,
+                                         work_sealed, expires_at)
+       values ($1, $2, $3, $4, '\\x01', now() + interval '7 days')`,
+      [c.id, hh, owner.member_id, key.id],
+    );
     const res = await call(owner, 'POST', `/api/v1/reading-checks/${c.id}/cancel`);
     expect(res.statusCode, res.body).toBe(200);
+    expect(
+      (await admin.query('select 1 from reading_check_sealed where check_id = $1', [c.id])).rows,
+    ).toEqual([]);
     expect(res.json<ReadingCheckView>()).toMatchObject({ state: 'cancelled' });
     expect(res.json<ReadingCheckView>().finished_at).not.toBeNull();
     const twice = await call(owner, 'POST', `/api/v1/reading-checks/${c.id}/cancel`);
@@ -492,6 +496,67 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the API (R0)', () => {
     expect(rows).toEqual([]);
     expect((await call(owner, 'DELETE', `/api/v1/reading-checks/${c.id}`)).statusCode).toBe(404);
     expect((await call(owner, 'GET', '/api/v1/reading-checks/not-a-uuid')).statusCode).toBe(404);
+  });
+
+  it('a document’s lines in the activity log are found by an index of their own (A-4)', async () => {
+    const { rows } = await admin.query<{ indexdef: string }>(
+      "select indexdef from pg_indexes where tablename = 'audit_event' and indexname = 'audit_event_document_idx'",
+    );
+    expect(rows[0]?.indexdef).toMatch(/\(object_id, id\) WHERE \(object_type = 'document'::text\)/);
+  });
+
+  it('a job that cannot be sent: the check is not started, and its row is gone (R-4)', async () => {
+    const principal = {
+      accountId: acct.owner as string,
+      sessionId: randomUUID(),
+      householdId: hh,
+      memberId: owner.member_id,
+      role: 'owner' as const,
+      seesAdults: true,
+    };
+    const broken = new ReadingCheckService(h.db, keys, async () => {
+      throw new Error('the queue is away');
+    });
+    await expect(broken.start(principal, {})).rejects.toMatchObject({
+      status: 503,
+      code: 'reading_check_not_started',
+    });
+    const { rows } = await admin.query('select 1 from reading_check where household_id = $1', [hh]);
+    expect(rows).toEqual([]);
+    // And one may start at once.
+    expect((await start(owner)).state).toBe('waiting');
+  });
+
+  it('what a version added to a document there confirms: the details its card sent alone (A-2)', async () => {
+    const into = await throughReview(owner, {
+      visibility: 'household',
+      type_key: 'passport',
+      owner_member_id: owner.member_id,
+    });
+    const confirmed = async (doc: string) =>
+      (
+        await admin.query<{ source: string; confirmed: string[] }>(
+          'select source, confirmed from review_filing where document_id = $1 order by filed_at',
+          [doc],
+        )
+      ).rows;
+    // Filed from a batch as a document of its own: every detail its card filed.
+    expect(await confirmed(into)).toEqual([
+      { source: 'batch', confirmed: ['kind', 'person', 'expiry', 'issued', 'number', 'issuer'] },
+    ]);
+    // A version with its expiry sent: that alone.
+    await throughReview(owner, {
+      into_document_id: into,
+      expires: { date: '2031-03-14', precision: 'day' },
+    });
+    // A version with nothing sent: nothing.
+    await throughReview(owner, { into_document_id: into });
+    expect((await confirmed(into)).map((r) => r.confirmed)).toEqual([
+      ['kind', 'person', 'expiry', 'issued', 'number', 'issuer'],
+      ['expiry'],
+      [],
+    ]);
+    await admin.query('delete from document where id = $1', [into]);
   });
 
   it('a filing goes with its document, and an Undo of Accept all Ready takes it back', async () => {

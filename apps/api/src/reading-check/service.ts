@@ -28,8 +28,8 @@ import { ApiError } from '../errors.js';
  * check is its asker's alone (the owner's decision, R0 review), here and in
  * the database (0074's reading_check_actor asks the member): its numbers —
  * numbers only, held so by the database and again here — and its misses.
- * Another owner is told only that one of somebody else's is waiting,
- * running or finished, whose, and when (reading_checks_of_others()), since
+ * Another owner is told only whose checks there are and the state of each
+ * — not when, nor anything it found (reading_checks_of_others()), since
  * one runs at a time (the database's unique index: 409
  * reading_check_running); they can neither read, cancel nor remove it (404).
  * The documents that needed typing, and what, are given only for documents
@@ -39,8 +39,10 @@ import { ApiError } from '../errors.js';
 
 /** The job's name: the worker's READING_CHECK_JOB. */
 export const READING_CHECK_JOB = 'reading.check';
-/** One queued and one running a household: the worker's readingCheckKey. */
-export const readingCheckKey = (householdId: string) => `reading-check:${householdId}`;
+/** One queued and one running a check (the R0 review, R-1): the worker's readingCheckKey. */
+export const readingCheckKey = (checkId: string) => `reading-check:${checkId}`;
+/** Below every other job: the worker's READING_CHECK_PRIORITY. */
+export const READING_CHECK_PRIORITY = -10;
 /** The checks a household keeps: the newest, the rest let go as a new one starts. */
 export const READING_CHECKS_KEPT = 20;
 
@@ -58,6 +60,13 @@ const running = () =>
     409,
     'reading_check_running',
     'A Reading check is already running for your household. Wait for it to finish, or cancel it.',
+  );
+const notStarted = () =>
+  new ApiError(
+    503,
+    'reading_check_not_started',
+    'The vault could not start the check just now. Try again in a moment.',
+    { retriable: true },
   );
 const notRunning = () =>
   new ApiError(409, 'reading_check_not_running', 'That check has already finished.');
@@ -144,15 +153,11 @@ export class ReadingCheckService {
         .orderBy('c.id')
         .limit(READING_CHECKS_KEPT)
         .execute()) as CheckRow[];
-      // The others' checks: that each is there, whose and when; nothing more.
+      // The others' checks: whose, and the state of each; nothing more (P-1).
       const others = await sql<{
-        id: string;
         state: ReadingCheckState;
         member_id: string | null;
-        created_at: Date;
-        finished_at: Date | null;
-      }>`select o.id, o.state, o.member_id, o.created_at, o.finished_at
-           from reading_checks_of_others() o`.execute(trx);
+      }>`select o.state, o.member_id from reading_checks_of_others() o`.execute(trx);
       const names = new Map(
         (
           await trx
@@ -171,27 +176,29 @@ export class ReadingCheckService {
       return {
         items: rows.map((r) => this.view(p, r)),
         others: others.rows.map((o): ReadingCheckOther => ({
-          id: o.id,
           state: o.state,
           requested_by: {
             member_id: o.member_id,
             name: o.member_id ? (names.get(o.member_id) ?? null) : null,
           },
-          created_at: o.created_at.toISOString(),
-          finished_at: iso(o.finished_at),
         })),
         filed: await this.filed(trx, p),
       };
     });
   }
 
-  /** Documents filed through review the caller can see, out of the Trash (review_filing's rule, and the visibility rule). */
+  /**
+   * Documents filed through review the caller can see, out of the Trash
+   * (review_filing's rule, and the visibility rule), with a scored detail a
+   * person confirmed as they filed it.
+   */
   private async filed(trx: Db, p: Principal): Promise<number> {
     const row = await trx
       .selectFrom('review_filing as rf')
       .innerJoin('document as d', 'd.id', 'rf.document_id')
       .where('d.deleted_at', 'is', null)
       .where(seenDocument(p))
+      .where(sql<boolean>`rf.confirmed && array['kind', 'person', 'expiry']::text[]`)
       .select(sql<number>`count(distinct rf.document_id)::int`.as('n'))
       .executeTakeFirstOrThrow();
     return row.n;
@@ -235,11 +242,20 @@ export class ReadingCheckService {
       if ((err as { code?: string }).code === '23505') throw running();
       throw err;
     }
-    await this.enqueue(
-      READING_CHECK_JOB,
-      { household_id: p.householdId, check_id: made.id },
-      { singletonKey: readingCheckKey(p.householdId) },
-    );
+    try {
+      await this.enqueue(
+        READING_CHECK_JOB,
+        { household_id: p.householdId, check_id: made.id },
+        { singletonKey: readingCheckKey(made.id), priority: READING_CHECK_PRIORITY },
+      );
+    } catch {
+      // Not sent: not started, and nothing left to wait for a job that
+      // will never come (R-4).
+      await withPrincipal(this.db, p, (trx) =>
+        trx.deleteFrom('reading_check').where('id', '=', made.id).execute(),
+      ).catch(() => undefined);
+      throw notStarted();
+    }
     return this.view(p, made);
   }
 
@@ -315,7 +331,7 @@ export class ReadingCheckService {
     });
   }
 
-  /** POST /reading-checks/{id}/cancel: a check waiting or running, stopped before its next document. */
+  /** POST /reading-checks/{id}/cancel: a check waiting or running, stopped — its document let go at once — and what it read so far removed. */
   async cancel(p: Principal, id: string): Promise<ReadingCheckView> {
     ownerOnly(p);
     if (!UUID.test(id)) throw notFound();
@@ -333,6 +349,8 @@ export class ReadingCheckService {
         .set({ state: 'cancelled', finished_at: sql<Date>`now()` })
         .where('id', '=', id)
         .execute();
+      // What it read so far, let go at once (P-2): "nothing it read was kept".
+      await trx.deleteFrom('reading_check_sealed').where('check_id', '=', id).execute();
       return this.view(p, await this.rows(trx).where('c.id', '=', id).executeTakeFirstOrThrow());
     });
   }

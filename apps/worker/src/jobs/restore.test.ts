@@ -727,7 +727,10 @@ describe.skipIf(!testAdminUrl())("the application role's privileges", () => {
   }, 30_000);
 });
 
-describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
+// Each test asks the whole check of a restored vault several times, and the
+// check grows with every guard list a release adds (0074 the latest): a
+// minute each, not the default fifteen seconds, on a machine others share.
+describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 }, () => {
   let vault: TestDatabase;
   const target = () => ({ adminUrl: vault.adminUrl, appUrl: vault.appUrl });
 
@@ -2091,10 +2094,28 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         /who changes a Reading check’s misses/,
       ],
       [
+        'reading_check_sealed',
+        'reading_check_sealed_actor_delete',
+        'delete',
+        /who removes a Reading check’s misses/,
+      ],
+      [
         'review_filing',
         'review_filing_actor_insert',
         'insert',
         /who says a document was filed through review/,
+      ],
+      [
+        'review_filing',
+        'review_filing_actor_update',
+        'update',
+        /who changes what was filed through review/,
+      ],
+      [
+        'review_filing',
+        'review_filing_actor_delete',
+        'delete',
+        /who removes what was filed through review/,
       ],
     ] as const) {
       const { rows } = await sql(

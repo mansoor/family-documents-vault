@@ -2624,9 +2624,15 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     await fresh(peter);
     const listed = await send(peter, 'GET', '/api/v1/reading-checks');
     expect(listed.statusCode).toBe(200);
-    expect(listed.json<{ others: Array<{ id: string; state: string }> }>().others).toContainEqual(
-      expect.objectContaining({ id, state: 'done' }),
-    );
+    expect(
+      listed.json<{ others: Array<{ state: string; requested_by: { member_id: string } }> }>()
+        .others,
+    ).toContainEqual({
+      state: 'done',
+      requested_by: { member_id: olivia.member_id, name: 'Olivia' },
+    });
+    // Not even its id, nor when (P-1).
+    expect(listed.body).not.toContain(id);
     expect(listed.body).not.toContain('"chosen"');
     expect(listed.body).not.toContain('abcdef012345');
     for (const [method, url] of [

@@ -138,6 +138,27 @@ describe('the Reading check scores as the Smart exit does', () => {
   });
 });
 
+describe('only what a person confirmed is scored (the R0 review, A-2)', () => {
+  const base = rows[0] as ReadingRow;
+  const wrongPerson: ReadingRow = {
+    ...base,
+    seen: { ...base.seen, level: 'ready', person: 'somebody-else' },
+  };
+  it('an Inbox file whose accept set its kind alone: whose it is, offered wrong, is no miss', () => {
+    // Every detail confirmed (a batch's): the wrong person needs typing.
+    expect(scoreReading([wrongPerson], expiring).misses.map((m) => m.fields)).toEqual([['person']]);
+    // Its kind alone confirmed: the person is not scored.
+    const inbox: ReadingRow = { ...wrongPerson, confirmed: ['kind'] };
+    expect(scoreReading([inbox], expiring).misses).toEqual([]);
+    // A wrong kind is still a miss.
+    const wrongKind: ReadingRow = {
+      ...inbox,
+      seen: { ...inbox.seen, kind: 'warranty' },
+    };
+    expect(scoreReading([wrongKind], expiring).misses.map((m) => m.fields)).toEqual([['kind']]);
+  });
+});
+
 describe('numbers only', () => {
   it('a summary is numbers only; a name, a value, a list or a null is not', () => {
     const { result } = scoreReading(rows, expiring);
@@ -146,6 +167,7 @@ describe('numbers only', () => {
       read: 20,
       skipped: 0,
       edited: 0,
+      partly_confirmed: 0,
       without_rules: result,
       with_rules: result,
     };

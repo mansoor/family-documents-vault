@@ -96,6 +96,7 @@ import {
 } from '../documents/service.js';
 import { holdDocumentRows, ownedObjects, versionObjects } from '../documents/purge.js';
 import { ApiError } from '../errors.js';
+import { confirmedByAccept } from '../reading-check/filing.js';
 import type { VaultService } from '../vaults/service.js';
 import { incomingPreviewKey } from './incoming.js';
 import { forgetLearned, learnedOf, learnFromAccept, unlearnAccept } from './learning.js';
@@ -1286,6 +1287,14 @@ export class BatchService {
       derived,
       line: line?.id === null || line?.id === undefined ? null : String(line.id),
     };
+    // What this accept confirmed of the document's details, for the Reading
+    // check (0074, R0, the review's A-2): what the card sent of its number
+    // and dates — never its kind or whose, which the document already had.
+    await confirmedByAccept(trx, [
+      ...(sent.identifier !== undefined ? (['number'] as const) : []),
+      ...(sent.issued !== undefined ? (['issued'] as const) : []),
+      ...(sent.expires !== undefined ? (['expiry'] as const) : []),
+    ]);
     const decided = await trx
       .updateTable('incoming_file')
       .set({

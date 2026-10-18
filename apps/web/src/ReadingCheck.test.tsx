@@ -152,6 +152,39 @@ describe('the Reading check’s page (R0)', () => {
     await expectAccessible();
   });
 
+  it('one status region, said only as the check’s state changes: never as each poll moves the count on', async () => {
+    const state = at('/settings/reading-check', {
+      readingChecks: [
+        check({
+          id: 'check-2',
+          state: 'running',
+          finished_at: null,
+          progress: { total: 50, done: 12 },
+          summary: null,
+        }),
+      ],
+      readingFiled: 50,
+    });
+    const now = await screen.findByRole('region', { name: 'Reading now' });
+    expect(within(now).getByText('Reading 12 of 50…')).toBeInTheDocument();
+    // Its count is no live region: only the one status line is.
+    expect(within(now).queryAllByRole('status')).toEqual([]);
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+    const said = () => screen.getByRole('status').textContent ?? '';
+    // The next poll: further on, and nothing said.
+    const row = state.readingChecks?.[0] as Record<string, unknown>;
+    row.progress = { total: 50, done: 30 };
+    await waitFor(() => expect(within(now).getByText('Reading 30 of 50…')).toBeInTheDocument(), {
+      timeout: 6000,
+    });
+    expect(said()).toBe('');
+    // Finished: said, once.
+    Object.assign(row, check({ id: 'check-2' }));
+    await waitFor(() => expect(said()).toBe('The check has finished: 11 of 50 needed typing.'), {
+      timeout: 6000,
+    });
+  }, 20_000);
+
   it('her running check shows its progress, and she may cancel it', async () => {
     at('/settings/reading-check', {
       readingChecks: [
@@ -200,9 +233,7 @@ describe('the Reading check’s page (R0)', () => {
     expect(screen.queryByText(/12 of 50/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Cancel the check' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Start the check' })).toBeNull();
-    expect(
-      screen.getByText('by Olivia · Running: only they see what it found'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Running · only they see what it found')).toBeInTheDocument();
     expect(state.calls.some((c) => c.url === '/api/v1/reading-checks/check-o')).toBe(false);
     await expectAccessible();
   });
@@ -270,9 +301,7 @@ describe('the Reading check’s page (R0)', () => {
       readingFiled: 50,
       readingMisses: { 'check-o': [{ document_id: 'd-x', title: 'Olivia private letter' }] },
     });
-    expect(
-      await screen.findByText('by Olivia · Finished: only they see what it found'),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('Finished · only they see what it found')).toBeInTheDocument();
     // Hers to start: none of Olivia's is running.
     expect(screen.getByRole('button', { name: 'Start the check' })).toBeEnabled();
     expect(screen.queryByRole('heading', { name: /^Checked / })).toBeNull();

@@ -1286,13 +1286,7 @@ export function installFakeApi(state: FakeState) {
           items: checks.filter((c) => c.mine),
           others: checks
             .filter((c) => !c.mine)
-            .map((c) => ({
-              id: c.id,
-              state: c.state,
-              requested_by: c.requested_by,
-              created_at: c.created_at,
-              finished_at: c.finished_at ?? null,
-            })),
+            .map((c) => ({ state: c.state, requested_by: c.requested_by })),
           filed: state.readingFiled ?? 0,
         });
       }

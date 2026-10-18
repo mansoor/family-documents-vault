@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -14,14 +14,18 @@ import {
   can,
   levelItem,
   numbersOnly,
+  READING_FIELDS,
   READING_MISSES_KEEP_DAYS,
+  READING_SCORED_FIELDS,
   scoreReading,
+  suspensionInEffect,
   type BatchDefaults,
   type ItemLevel,
   type LearnedContext,
   type LevelKind,
   type ProposalContext,
   type ReadingCheckSummary,
+  type ReadingField,
   type ReadingMiss,
   type ReadingTruth,
   type Role,
@@ -45,7 +49,7 @@ import {
   unread,
   type ReadItemDeps,
 } from './read-item.js';
-import { detectTools, pdfLocked, type Tools } from './tools.js';
+import { atLowPriority, detectTools, pdfLocked, type Tools } from './tools.js';
 import { WORD_MIME } from './word-text.js';
 
 /**
@@ -58,17 +62,26 @@ import { WORD_MIME } from './word-text.js';
  * as the owner who asked — through `readAs`, and the visibility rule every
  * list keeps (`seenBy`) — so only documents they can see, out of the Trash:
  * never somebody else's Only me. Each is asked again as it is read.
- * Then, one at a time and behind the household's own batch items, each is
- * read as a batch's item would be (read-item.ts): its current version
- * opened here, its words taken by `extractText` (a PDF's own text, OCR for
- * a page with none, on the same tools and limits), proposed for on the
- * proposal thread (`proposeDetails`) and levelled (`levelItem`) for the
- * owner, with no folder names, no defaults and no current details. Twice:
- * without the learned rules (I4) — the honest number — and with the
- * asking owner's own rules on the documents they filed themselves, which is
- * optimistic, as those rules were learned from these same papers (the
- * owner's decision, R0 review): on a document somebody else filed, "with"
- * is "without", so no owner's numbers reflect another person's rules.
+ *
+ * Only what a person confirmed is the truth (the R0 review, A-2): a batch's
+ * item filed as a document of its own confirmed every detail its card
+ * filed; an Inbox file, or a version added to a document already there,
+ * only what its accept set; and a detail changed by hand since — after the
+ * filing's line in the activity log, a scored detail only (A-1) — is
+ * confirmed by that. A detail not confirmed is not scored; a document with
+ * none of kind, person and expiry confirmed is not read.
+ *
+ * Then, one at a time and behind anything else waiting to be read or drawn
+ * (R-3), each is read as a batch's item would be (read-item.ts): its
+ * current version opened here, its words taken by `extractText` — its tools
+ * niced, one thread — proposed for on the proposal thread
+ * (`proposeDetails`) and levelled (`levelItem`) for the owner, with no
+ * folder names, no defaults and no current details. Twice: without the
+ * learned rules (I4) — the honest number — and with the asking owner's own
+ * rules on the documents they filed themselves, which is optimistic, as
+ * those rules were learned from these same papers: on a document somebody
+ * else filed, "with" is "without", so no owner's numbers reflect another
+ * person's rules.
  *
  * What it offered is scored against the document's details now by the
  * Smart exit's own scorer (@fdv/shared reading-score.ts, through
@@ -76,40 +89,86 @@ import { WORD_MIME } from './word-text.js';
  * numbers only, held by the database too), and which documents needed
  * typing and what, sealed under the asking owner's member key for
  * READING_MISSES_KEEP_DAYS. While it runs, what it has done so far is
- * sealed the same way. Nothing is written to a document, no item, no
- * proposal and no rule is made, and the log says counts, never a document,
- * a word or a value.
+ * sealed the same way, and let go at once as it finishes or is cancelled.
+ * Nothing is written to a document, no item, no proposal and no rule is
+ * made, and the log says counts, never a document, a word or a value.
  *
  * A document removed, moved to the Trash or no longer the owner's to see
  * as it runs is skipped. Pages that give no words — a password, a scan OCR
  * cannot read, a file the vault does not read, the thread ending on it —
- * are "not read", never a crash. The vault's own trouble (its storage, a
- * key, the thread not to be had) is tried again later, READING_DOC_TRIES
- * times, and then the document is skipped. One check a household at a
- * time (the database's unique index); cancelled or removed by an owner, it
- * stops before the next document.
+ * are "not read", never a crash. Any trouble with one document is tried
+ * again later, READING_DOC_TRIES times, and then the document is skipped;
+ * READING_CHECK_ERRORS_MAX in all, and the check stops (R-2). One check a
+ * household at a time (the database's unique index), one run of it at a
+ * time (its lease); cancelled or removed by an owner, the document being
+ * read is let go at once, its tools killed. Its owner no longer an owner,
+ * locked or paused, and it stops (P-3).
  */
 
 /** The job's name, as the API sends it (its READING_CHECK_JOB). */
 export const READING_CHECK_JOB = 'reading.check';
 /** Each night: a check's misses past their seven days removed. */
 export const READING_CHECK_SWEEP_JOB = 'reading.check.sweep';
-/** One queued and one running a household: the API's readingCheckKey. */
-export const readingCheckKey = (householdId: string) => `reading-check:${householdId}`;
+/**
+ * One queued and one running a check (the R0 review, R-1): keyed by the
+ * check, never the household, so a check started after another was
+ * cancelled is never left waiting behind the cancelled one's job.
+ */
+export const readingCheckKey = (checkId: string) => `reading-check:${checkId}`;
+/** And a later run of it, waiting its time, under a key of its own. */
+export const readingCheckLaterKey = (checkId: string) => `${readingCheckKey(checkId)}:later`;
+/** Below every other job (pg-boss takes the highest first). */
+export const READING_CHECK_PRIORITY = -10;
 /** How long one run reads before it lets the queue go round. */
 export const READING_RUN_MS = 60_000;
-/** Behind a household's batch items waiting to be read: looked at again after this. */
+/** Behind other work waiting to be read or drawn: looked at again after this. */
 export const READING_YIELD_MS = 30_000;
-/** After the vault's own trouble with a document, tried again after this. */
+/** After trouble with a document, tried again after this. */
 export const READING_AGAIN_MS = 60_000;
-/** The vault's own trouble with one document this many times, and it is skipped. */
+/** Trouble with one document this many times, and it is skipped. */
 export const READING_DOC_TRIES = 3;
+/** Trouble this many times in all, and the check stops. */
+export const READING_CHECK_ERRORS_MAX = 10;
+/** How often, while a document is read, the worker looks whether the check was cancelled. */
+export const READING_CANCEL_POLL_MS = 2_000;
 /** A run may take this long before the queue takes it as lost: a document's read, with room. */
 export const READING_JOB_EXPIRE_SECONDS = 14 * 60;
+/** A run holds its check this long at most: its job's expiry. */
+const LEASE_SECONDS = READING_JOB_EXPIRE_SECONDS;
+/** The folders a document's read is written to, removed as it ends — or at the worker's start. */
+export const READING_TEMP_PREFIX = 'fdv-check-';
 
 export interface ReadingCheckJob {
   household_id: string;
   check_id: string;
+}
+
+/** The queue, as much of it as sending a check's job needs. */
+export interface ReadingCheckQueue {
+  send(
+    name: string,
+    data: object,
+    options: { singletonKey: string; priority: number; startAfter?: Date },
+  ): Promise<unknown>;
+}
+
+/** A check's job sent: now, or later — keyed by the check, at the lowest priority. */
+export async function sendReadingCheck(
+  boss: ReadingCheckQueue,
+  job: ReadingCheckJob,
+  after?: Date,
+): Promise<void> {
+  await boss.send(
+    READING_CHECK_JOB,
+    { ...job },
+    after
+      ? {
+          singletonKey: readingCheckLaterKey(job.check_id),
+          startAfter: after,
+          priority: READING_CHECK_PRIORITY,
+        }
+      : { singletonKey: readingCheckKey(job.check_id), priority: READING_CHECK_PRIORITY },
+  );
 }
 
 export interface ReadingCheckDeps extends ReadItemDeps {
@@ -129,6 +188,8 @@ export interface ReadingOptions {
   deadlineMs?: number;
   /** How long one run reads: READING_RUN_MS, unless a test says. */
   runMs?: number;
+  /** How often a read looks whether it was cancelled: READING_CANCEL_POLL_MS, unless a test says. */
+  cancelPollMs?: number;
 }
 
 /** Whom a check reads as: the owner who asked. */
@@ -138,11 +199,12 @@ export interface Reader {
   role: Role;
 }
 
-/** A document chosen: who last filed it through review, and whether it was changed by hand since. */
+/** A document chosen: who last filed it through review, what a person confirmed, and whether by hand since. */
 interface Chosen {
   id: string;
   filed_by: string | null;
   edited: boolean;
+  confirmed: ReadingField[];
 }
 
 /** One document read: its details now, and what each reading made of it. Sealed, never plain. */
@@ -154,15 +216,16 @@ interface WorkRow {
   without: SmartSeen;
   with: SmartSeen;
   edited: boolean;
+  confirmed: ReadingField[];
 }
 
 /** What a running check keeps between runs, sealed under the asking owner's key. */
 interface Work {
-  v: 1;
+  v: 2;
   docs: Chosen[];
   rows: WorkRow[];
   skipped: number;
-  /** The vault's own trouble with the next document so far. */
+  /** Trouble with the next document so far. */
   tries: number;
 }
 
@@ -184,8 +247,10 @@ const letters = (s: string) => (s.match(/[\p{L}\p{N}]/gu) ?? []).length;
 /**
  * The last `n` documents filed through review, newest first, as `reader`
  * is given them — or, for the vault's own CLI, every one but the Only me
- * documents, anybody's: out of the Trash, and, without `includeEdited`,
- * none changed by hand since it was filed.
+ * documents, anybody's: out of the Trash, with a scored detail a person
+ * confirmed, and, without `includeEdited`, none whose scored details were
+ * changed by hand since it was filed — all of that asked before the last
+ * `n` are taken (A-3).
  */
 export async function chooseDocuments(
   trx: Db,
@@ -193,44 +258,85 @@ export async function chooseDocuments(
   n: number,
   includeEdited: boolean,
 ): Promise<Chosen[]> {
+  const scored = sql`array['kind', 'person', 'expiry']::text[]`;
   const pick = (t: Db) =>
-    sql<{ document_id: string; filed_at: Date; filed_by: string | null }>`
-      select rf.document_id,
-             max(rf.filed_at) as filed_at,
-             (array_agg(rf.filed_by order by rf.filed_at desc))[1] as filed_by
-        from review_filing rf
-        join document d on d.id = rf.document_id
-       where d.deleted_at is null
-         and ${reader ? seenBy(reader) : sql<boolean>`d.visibility <> 'private'`}
-       group by rf.document_id
-       order by max(rf.filed_at) desc, rf.document_id
-       limit 500`.execute(t);
+    sql<{
+      document_id: string;
+      filed_by: string | null;
+      confirmed: string[];
+      by_hand: string[];
+    }>`
+      with filed as (
+        select rf.document_id,
+               max(rf.filed_at) as filed_at,
+               (array_agg(rf.filed_by order by rf.filed_at desc))[1] as filed_by,
+               min(rf.filed_audit_id) as since
+          from review_filing rf
+          join document d on d.id = rf.document_id
+         where d.deleted_at is null
+           and ${reader ? seenBy(reader) : sql<boolean>`d.visibility <> 'private'`}
+         group by rf.document_id
+      ), facts as (
+        select f.*,
+               array(select distinct c from review_filing r2, unnest(r2.confirmed) c
+                      where r2.document_id = f.document_id) as confirmed,
+               -- Changed by hand since it was filed: its scored or detail
+               -- fields, in lines after the filing's (an accept's own lines,
+               -- as a version's changes, are before it).
+               array(select distinct m.field
+                       from audit_event a
+                       cross join lateral jsonb_array_elements_text(
+                         case when jsonb_typeof(a.detail -> 'fields') = 'array'
+                              then a.detail -> 'fields' else '[]'::jsonb end) e(name)
+                       join (values ('type_key', 'kind'), ('owner_member_id', 'person'),
+                                    ('expires', 'expiry'), ('issued', 'issued'),
+                                    ('identifier', 'number'), ('issued_by', 'issuer'))
+                            as m(name, field) on m.name = e.name
+                      where a.object_type = 'document' and a.object_id = f.document_id
+                        and a.id > f.since and a.action = 'document.updated') as by_hand
+          from filed f
+      )
+      select document_id, filed_by, confirmed, by_hand
+        from facts
+       where (confirmed || by_hand) && ${scored}
+         and (${includeEdited} or not (by_hand && ${scored}))
+       order by filed_at desc, document_id
+       limit ${n}`.execute(t);
   const { rows } = reader ? await readAs(trx, reader, pick) : await pick(trx);
-  if (rows.length === 0) return [];
-  // Changed by hand since it was filed: a change of its details, after.
-  const { rows: changed } = await sql<{ id: string }>`
-    select distinct f.id::text as id
-      from unnest(${rows.map((r) => r.document_id)}::uuid[],
-                  ${rows.map((r) => r.filed_at)}::timestamptz[]) as f(id, at)
-      join audit_event a on a.object_type = 'document' and a.object_id = f.id
-     where a.action = 'document.updated' and a.at > f.at`.execute(trx);
-  const edited = new Set(changed.map((c) => c.id));
-  return rows
-    .map((r) => ({ id: r.document_id, filed_by: r.filed_by, edited: edited.has(r.document_id) }))
-    .filter((r) => includeEdited || !r.edited)
-    .slice(0, n);
+  return rows.map((r) => {
+    const byHand = r.by_hand as ReadingField[];
+    return {
+      id: r.document_id,
+      filed_by: r.filed_by,
+      edited: byHand.some((f) => READING_SCORED_FIELDS.includes(f)),
+      confirmed: READING_FIELDS.filter((f) => r.confirmed.includes(f) || byHand.includes(f)),
+    };
+  });
 }
 
 /**
  * "The reader may see document `d`": the visibility rule every list keeps
- * (the API's seenDocument) — everybody's, Adults only for whoever sees
- * them, and their own Only me, never somebody else's. The database gives a
+ * (the API's seenDocument; held to @fdv/shared's canSee by the API's
+ * visibility-rule test) — everybody's, Adults only for whoever sees them,
+ * and their own Only me, never somebody else's. The database gives a
  * signed-in caller every row, and leaves this to the vault; so it is asked
  * here, on top of what readAs gives, every time a document is chosen or read.
  */
-const seenBy = (reader: Reader) => sql<boolean>`(d.visibility = 'household'
+export const seenBy = (
+  reader: Pick<Reader, 'memberId' | 'role'>,
+) => sql<boolean>`(d.visibility = 'household'
   or (d.visibility = 'adults' and ${can(reader.role, 'document.see_adults')})
   or (d.visibility = 'private' and d.owner_member_id = ${reader.memberId}::uuid))`;
+
+/** The documents `seenBy` gives a reader, out of the Trash or not: for the parity test. */
+export async function seenByIds(
+  trx: Db,
+  reader: Pick<Reader, 'memberId' | 'role'>,
+): Promise<string[]> {
+  const { rows } = await sql<{ id: string }>`select d.id::text as id from document d
+    where ${seenBy(reader)} order by d.id`.execute(trx);
+  return rows.map((r) => r.id);
+}
 
 /** The kinds as a card is levelled against them: GET /document-types' view, as much as levelling needs. */
 async function levelKinds(trx: Db): Promise<LevelKind[]> {
@@ -351,15 +457,18 @@ const seenOf = (lv: ItemLevel): SmartSeen => ({
   issuer: lv.proposals?.issued_by?.value ?? null,
 });
 
-/** The vault's own trouble: tried again later, not the document's doing. */
+/** Trouble with a document that is not its own doing: tried again later. */
 class Again extends Error {}
+/** The check was cancelled or removed while a document was being read. */
+class Cancelled extends Error {}
 
 type Outcome = { kind: 'gone' } | { kind: 'read'; row: WorkRow };
 
 /**
  * One document read, both ways, for the reader: or `gone` — removed, in
  * the Trash, no longer theirs to see, or with no version. Throws Again for
- * the vault's own trouble. Writes nothing.
+ * the vault's own trouble, and Cancelled once `cancel` aborts (its tools
+ * killed). Writes nothing.
  */
 async function readDocument(
   deps: ReadItemDeps,
@@ -368,6 +477,7 @@ async function readDocument(
   reader: Reader | null,
   ctx: RunContext,
   opts: ReadingOptions,
+  cancel?: AbortSignal,
 ): Promise<Outcome> {
   let had;
   try {
@@ -441,6 +551,7 @@ async function readDocument(
       without,
       with: withRules,
       edited: chosen.edited,
+      confirmed: chosen.confirmed,
     },
   });
   const unreadAs = mime.startsWith('image/') ? 'scan' : 'text';
@@ -454,30 +565,35 @@ async function readDocument(
     return row(unreadAs, notRead, notRead);
   }
   const deadline = AbortSignal.timeout(opts.deadlineMs ?? READ_DEADLINE_MS);
+  const signal = cancel ? AbortSignal.any([deadline, cancel]) : deadline;
   let dir: string | null = null;
   try {
-    dir = await mkdtemp(path.join(tmpdir(), 'fdv-check-'));
+    dir = await mkdtemp(path.join(tmpdir(), READING_TEMP_PREFIX));
     const ext = mime === 'application/pdf' ? 'pdf' : mime === WORD_MIME ? 'docx' : 'img';
     const source = path.join(dir, `source.${ext}`);
     await writeFile(source, plain);
+    const workDir = dir;
     const tools = opts.tools ?? (await detectTools());
     let text: string;
     let mode: 'text' | 'scan' = unreadAs;
     try {
-      if (mime === 'application/pdf' && (await pdfLocked(source, deadline))) {
-        return row(unreadAs, notRead, notRead);
-      }
-      const got = await (opts.extract ?? extractText)(source, mime, {
-        maxPages: opts.maxPages,
-        workDir: dir,
-        tools,
-        signal: deadline,
+      // Its tools niced, one thread: nobody is waiting on this (R-3).
+      const got = await atLowPriority(async () => {
+        if (mime === 'application/pdf' && (await pdfLocked(source, signal))) return 'locked';
+        return (opts.extract ?? extractText)(source, mime, {
+          maxPages: opts.maxPages,
+          workDir,
+          tools,
+          signal,
+        });
       });
+      if (cancel?.aborted) throw new Cancelled();
       deadline.throwIfAborted();
-      if (!got) return row(unreadAs, notRead, notRead);
+      if (got === 'locked' || !got) return row(unreadAs, notRead, notRead);
       mode = got.ocrPages > 0 || got.source === 'ocr' ? 'scan' : 'text';
       text = got.text.slice(0, PROPOSAL_TEXT_MAX);
-    } catch {
+    } catch (err) {
+      if (err instanceof Cancelled || cancel?.aborted) throw new Cancelled();
       // OCR that failed, a tool killed at the deadline, a file not what it
       // says: not read. Never a word of it logged.
       return row(unreadAs, notRead, notRead);
@@ -509,14 +625,30 @@ async function readDocument(
       had.learned && had.learned.rules.length > 0
         ? level(await opts.proposer.propose(text, ctx.proposal, had.learned))
         : without;
+    if (cancel?.aborted) throw new Cancelled();
     return row(mode, without, withRules);
   } finally {
     if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
-/** Whether the household's own batch items wait to be read: they go first. */
-async function batchReadsWaiting(deps: ReadItemDeps, hh: string): Promise<boolean> {
+/** The queues of reading and drawing the family waits on: a check goes behind them (R-3). */
+const FAMILY_QUEUES = [
+  'version.process',
+  'version.previews',
+  'batch.previews',
+  'incoming.scan',
+  'share.pages',
+  'member.photo',
+];
+
+/**
+ * Whether anything else is waiting to be read or drawn: the household's
+ * batch items (from Many documents, the scanner folder, email in or a
+ * computer) to read, or, in any household, a version to process, pages to
+ * draw, files sent in to scan.
+ */
+export async function otherWorkWaiting(deps: ReadItemDeps, hh: string): Promise<boolean> {
   const row = await withSystem(deps.db, hh, (trx) =>
     trx
       .selectFrom('incoming_file')
@@ -528,7 +660,19 @@ async function batchReadsWaiting(deps: ReadItemDeps, hh: string): Promise<boolea
       .limit(1)
       .executeTakeFirst(),
   );
-  return row !== undefined;
+  if (row !== undefined) return true;
+  const queue = await sql<{
+    has: boolean;
+  }>`select to_regclass('pgboss.job') is not null as has`.execute(deps.db);
+  if (queue.rows[0]?.has !== true) return false;
+  const { rows } = await sql<{ n: number }>`
+    select count(*)::int as n from (
+      select 1 from pgboss.job
+       where name = any(${FAMILY_QUEUES}::text[])
+         and state in ('created', 'retry', 'active')
+         and start_after <= now()
+       limit 1) j`.execute(deps.db);
+  return (rows[0]?.n ?? 0) > 0;
 }
 
 /** The documents read, scored both ways: the numbers, and the honest reading's misses. */
@@ -544,6 +688,7 @@ export function scoreWork(
         mode: r.mode,
         truth: r.truth,
         seen: r[which],
+        confirmed: r.confirmed,
       })),
       expiring,
     );
@@ -554,6 +699,7 @@ export function scoreWork(
     read: work.rows.length,
     skipped: work.skipped,
     edited: work.rows.filter((r) => r.edited).length,
+    partly_confirmed: work.rows.filter((r) => r.confirmed.length < READING_FIELDS.length).length,
     without_rules: without.result,
     with_rules: withRules.result,
   };
@@ -571,7 +717,7 @@ async function expiringKinds(trx: Db): Promise<(kind: string) => boolean> {
   return (k) => set.has(k);
 }
 
-/** The owner who asked, as they are now: none once they are no owner, or gone. */
+/** The owner who asked, as they are now: none once they are no owner, gone, locked or paused (P-3). */
 async function readerOf(
   trx: Db,
   hh: string,
@@ -580,22 +726,23 @@ async function readerOf(
   if (!check.requested_by || !check.member_id) return null;
   const who = await trx
     .selectFrom('account_household')
-    .select(['account_id', 'member_id', 'role'])
+    .select(['account_id', 'member_id', 'role', 'suspended_at', 'suspended_until'])
     .where('household_id', '=', hh)
     .where('account_id', '=', check.requested_by)
     .where('member_id', '=', check.member_id)
     .executeTakeFirst();
-  if (!who || who.role !== 'owner') return null;
+  if (!who || who.role !== 'owner' || suspensionInEffect(who)) return null;
   return { accountId: who.account_id, memberId: who.member_id, role: who.role };
 }
 
 /**
- * One run of a check: started if it is waiting (its documents chosen as
- * its owner, sealed), then documents read one after another until the run
- * has had READING_RUN_MS, the household's batch items wait to be read, the
- * vault has trouble, or none are left — then its numbers kept and its
- * misses sealed. Answers when to run again. Never throws: what it cannot
- * finish it says in its row (`failed`, `stopped`).
+ * One run of a check: its lease taken (one run at a time), started if it
+ * is waiting (its documents chosen as its owner, sealed), then documents
+ * read one after another until the run has had READING_RUN_MS, other work
+ * waits to be read or drawn, there is trouble, or none are left — then its
+ * numbers kept, its misses sealed and what it did let go. Answers when to
+ * run again. Never throws: what it cannot finish it says in its row
+ * (`failed`, `stopped`).
  */
 export async function workReadingCheck(
   deps: ReadingCheckDeps,
@@ -610,35 +757,76 @@ export async function workReadingCheck(
     withSystem(deps.db, hh, async (trx) => {
       await trx
         .updateTable('reading_check')
-        .set({ state: 'failed', failure: 'stopped', finished_at: new Date() })
+        .set({ state: 'failed', failure: 'stopped', finished_at: new Date(), lease_until: null })
         .where('id', '=', job.check_id)
         .where('state', 'in', ['waiting', 'running'])
         .execute();
       await trx.deleteFrom('reading_check_sealed').where('check_id', '=', job.check_id).execute();
     }).catch(() => undefined);
+  /** Trouble, counted against the check: too much, and it stops (R-2). */
+  const trouble = async (): Promise<boolean> => {
+    const n = await withSystem(deps.db, hh, (trx) =>
+      trx
+        .updateTable('reading_check')
+        .set({ errors: sql<number>`least(errors + 1, 1000)` })
+        .where('id', '=', job.check_id)
+        .returning('errors')
+        .executeTakeFirst(),
+    ).catch(() => undefined);
+    if (n && n.errors >= READING_CHECK_ERRORS_MAX) {
+      await stop();
+      log('a reading check stopped: too much trouble');
+      return true;
+    }
+    return false;
+  };
+  let leased = false;
+  const release = () =>
+    withSystem(deps.db, hh, (trx) =>
+      trx
+        .updateTable('reading_check')
+        .set({ lease_until: null })
+        .where('id', '=', job.check_id)
+        .execute(),
+    ).catch(() => undefined);
   try {
     const start = await withSystem(deps.db, hh, async (trx) => {
+      // One run at a time: its lease, or nothing.
       const check = await trx
-        .selectFrom('reading_check')
-        .selectAll()
+        .updateTable('reading_check')
+        .set({ lease_until: sql<Date>`now() + make_interval(secs => ${LEASE_SECONDS})` })
         .where('id', '=', job.check_id)
+        .where('state', 'in', ['waiting', 'running'])
+        .where((eb) => eb.or([eb('lease_until', 'is', null), eb('lease_until', '<', new Date())]))
+        .returningAll()
         .executeTakeFirst();
-      if (!check) return null;
-      if (check.state !== 'waiting' && check.state !== 'running') {
-        // Cancelled: what it had done so far let go.
+      if (!check) {
+        // Cancelled, finished or removed: what it had done so far let go.
         await trx
           .deleteFrom('reading_check_sealed')
-          .where('check_id', '=', check.id)
+          .where('check_id', '=', job.check_id)
           .where('work_sealed', 'is not', null)
+          .where((eb) =>
+            eb.not(
+              eb.exists(
+                eb
+                  .selectFrom('reading_check as c')
+                  .select('c.id')
+                  .whereRef('c.id', '=', 'reading_check_sealed.check_id')
+                  .where('c.state', 'in', ['waiting', 'running']),
+              ),
+            ),
+          )
           .execute();
         return null;
       }
       return { check, reader: await readerOf(trx, hh, check) };
     });
     if (!start) return { next: null };
+    leased = true;
     const { check, reader } = start;
     if (!reader) {
-      // Its owner is no owner now, or gone: nobody to read as.
+      // Its owner is no owner now, gone, locked or paused: nobody to read as.
       await stop();
       log('a reading check stopped: its owner can no longer have it');
       return { next: null };
@@ -655,7 +843,7 @@ export async function workReadingCheck(
       const begun = await withSystem(deps.db, hh, async (trx) => {
         const docs = await chooseDocuments(trx, reader, check.n, check.include_edited);
         const context = await runContext(trx, hh, reader, true);
-        const fresh: Work = { v: 1, docs, rows: [], skipped: 0, tries: 0 };
+        const fresh: Work = { v: 2, docs, rows: [], skipped: 0, tries: 0 };
         const taken = await trx
           .updateTable('reading_check')
           .set({
@@ -707,15 +895,19 @@ export async function workReadingCheck(
         work = JSON.parse(
           openBytes(scope.key, kept.sealed, readingWorkBinding(check.id)).toString('utf8'),
         ) as Work;
+        if (work.v !== 2) throw new Error('an older run');
       } catch {
-        // Not to be opened (a key changed since): it cannot go on.
+        // Not to be opened (a key changed since), or of an older run: it cannot go on.
         await stop();
         return { next: null };
       }
       ctx = kept.context;
     }
 
-    /** What is done so far kept: only while it is still running (not cancelled or removed). */
+    /**
+     * What is done so far kept, and kept another seven days (R-5): only
+     * while it is still running (not cancelled or removed).
+     */
     const save = async () =>
       withSystem(deps.db, hh, async (trx) => {
         const still = await trx
@@ -727,7 +919,10 @@ export async function workReadingCheck(
         if (Number(still.numUpdatedRows) !== 1) return false;
         await trx
           .updateTable('reading_check_sealed')
-          .set({ work_sealed: seal(work) })
+          .set({
+            work_sealed: seal(work),
+            expires_at: sql<Date>`now() + make_interval(days => ${READING_MISSES_KEEP_DAYS})`,
+          })
           .where('check_id', '=', check.id)
           .execute();
         return true;
@@ -746,22 +941,34 @@ export async function workReadingCheck(
     while (work.rows.length + work.skipped < work.docs.length) {
       if (Date.now() - began >= (opts.runMs ?? READING_RUN_MS)) return { next: 'now' };
       if (!(await running())) return { next: null };
-      if (await batchReadsWaiting(deps, hh)) {
+      if (await otherWorkWaiting(deps, hh)) {
         return { next: new Date(Date.now() + READING_YIELD_MS) };
       }
       const next = work.docs[work.rows.length + work.skipped] as Chosen;
+      // Cancelled or removed while it reads: let go at once, its tools killed.
+      const cancel = new AbortController();
+      const watch = setInterval(() => {
+        void running().then(
+          (still) => {
+            if (!still) cancel.abort();
+          },
+          () => undefined,
+        );
+      }, opts.cancelPollMs ?? READING_CANCEL_POLL_MS);
       try {
-        const out = await readDocument(deps, hh, next, reader, ctx, opts);
+        const out = await readDocument(deps, hh, next, reader, ctx, opts, cancel.signal);
         if (out.kind === 'gone') work.skipped += 1;
         else work.rows.push(out.row);
         work.tries = 0;
       } catch (err) {
-        if (!(err instanceof Again)) throw err;
+        if (err instanceof Cancelled) return { next: null };
+        // Any trouble with a document, counted (R-2).
         work.tries += 1;
         deps.log('warn', 'a reading check could not read a document just now', {
           check: check.id,
           tries: work.tries,
         });
+        if (await trouble()) return { next: null };
         if (work.tries >= READING_DOC_TRIES) {
           work.skipped += 1;
           work.tries = 0;
@@ -769,11 +976,13 @@ export async function workReadingCheck(
           if (!(await save())) return { next: null };
           return { next: new Date(Date.now() + READING_AGAIN_MS) };
         }
+      } finally {
+        clearInterval(watch);
       }
       if (!(await save())) return { next: null };
     }
 
-    // All read: the numbers kept, the misses sealed, what it did let go.
+    // All read: the numbers kept, the misses sealed, what it did let go at once.
     const done = await withSystem(deps.db, hh, async (trx) => {
       const { summary, misses } = scoreWork(work, await expiringKinds(trx));
       const finished = await trx
@@ -813,13 +1022,16 @@ export async function workReadingCheck(
     }
     return { next: null };
   } catch (err) {
-    // Anything else — the database a moment away — later, as the vault's.
+    // Anything else — the database a moment away — counted, and later (R-2).
     deps.log('warn', 'a reading check could not go on just now', {
       check: job.check_id,
       // Its kind alone: a database's message can carry a value.
       err: (err as Error).name,
     });
+    if (await trouble()) return { next: null };
     return { next: new Date(Date.now() + READING_AGAIN_MS) };
+  } finally {
+    if (leased) await release();
   }
 }
 
@@ -857,7 +1069,7 @@ export async function readingCheckNow(
       ctx: await runContext(trx, hh, reader, false),
     };
   });
-  const work: Work = { v: 1, docs: prepared.docs, rows: [], skipped: 0, tries: 0 };
+  const work: Work = { v: 2, docs: prepared.docs, rows: [], skipped: 0, tries: 0 };
   for (const d of work.docs) {
     let out: Outcome | null = null;
     for (let tries = 0; tries < READING_DOC_TRIES && out === null; tries++) {
@@ -875,10 +1087,19 @@ export async function readingCheckNow(
 }
 
 /**
- * Each night: misses past their seven days removed, and what a check that
- * no longer runs had done so far (the owning role, every household at once).
+ * Each night: misses past their seven days removed; what a check that no
+ * longer runs had done so far; and the checks of an owner who is one no
+ * longer — gone, or made an adult, a teen or a viewer — whom nobody can
+ * ask for (M-2). The owning role, every household at once.
  */
 export async function sweepReadingChecks(admin: pg.Pool): Promise<number> {
+  const orphans = await admin.query(
+    `delete from reading_check c
+      where c.member_id is null
+         or not exists (select 1 from account_household a
+                         where a.household_id = c.household_id and a.member_id = c.member_id
+                           and a.account_id = c.requested_by and a.role = 'owner')`,
+  );
   const r = await admin.query(
     `delete from reading_check_sealed s
       where s.expires_at <= now()
@@ -886,12 +1107,13 @@ export async function sweepReadingChecks(admin: pg.Pool): Promise<number> {
              and not exists (select 1 from reading_check c
                               where c.id = s.check_id and c.state in ('waiting', 'running')))`,
   );
-  return r.rowCount ?? 0;
+  return (orphans.rowCount ?? 0) + (r.rowCount ?? 0);
 }
 
 /**
- * On the worker's start: checks waiting or running whose job was lost, sent
- * again. Answers how many.
+ * On the worker's start: checks waiting or running whose job was lost —
+ * a check never sent, or one a stopped worker held — sent again (R-4).
+ * Answers how many.
  */
 export async function resumeReadingChecks(
   admin: pg.Pool,
@@ -902,4 +1124,22 @@ export async function resumeReadingChecks(
   );
   for (const r of rows) await send({ household_id: r.household_id, check_id: r.id });
   return rows.length;
+}
+
+/**
+ * On the worker's start: the folders documents were read into by a worker
+ * that stopped mid-read (P-5), removed — a document's plain bytes, never
+ * left behind. Answers how many.
+ */
+export async function sweepReadingTemp(dir: string = tmpdir()): Promise<number> {
+  const names = await readdir(dir).catch(() => [] as string[]);
+  let n = 0;
+  for (const name of names) {
+    if (!name.startsWith(READING_TEMP_PREFIX)) continue;
+    await rm(path.join(dir, name), { recursive: true, force: true }).then(
+      () => (n += 1),
+      () => undefined,
+    );
+  }
+  return n;
 }

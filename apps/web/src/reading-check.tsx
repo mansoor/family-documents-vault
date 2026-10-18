@@ -4,6 +4,7 @@ import {
   readingComparison,
   type DocumentTypeView,
   type ReadingCheckDetail,
+  type ReadingCheckOther,
   type ReadingCheckView,
   type ReadingCounts,
   type ReadingResult,
@@ -83,6 +84,12 @@ export function ReadingCheckScreen() {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [said, setSaid] = useState<string | null>(null);
+  /** The one status region takes focus only after something the reader did. */
+  const focusSaid = useRef(false);
+  const say = (words: string | null, focus = false) => {
+    focusSaid.current = focus;
+    setSaid(words);
+  };
   const [shownId, setShownId] = useState<string | null>(null);
   const [removing, setRemoving] = useState<ReadingCheckView | null>(null);
   const line = useRef<HTMLParagraphElement>(null);
@@ -103,8 +110,37 @@ export function ReadingCheckScreen() {
     return () => clearTimeout(t);
   }, [busyNow, data, reload]);
   useEffect(() => {
-    if (said) line.current?.focus();
+    if (said && focusSaid.current) line.current?.focus();
   }, [said]);
+  // Said in the one status region as its state changes — never as each
+  // poll moves the count on (the R0 review).
+  const was = useRef<{ mine: ReadingCheckView | null; theirs: ReadingCheckOther | null } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!data) return;
+    const before = was.current;
+    was.current = { mine: current, theirs };
+    if (!before) return;
+    if (before.mine && before.mine.id !== current?.id) {
+      const now = items.find((c) => c.id === before.mine?.id);
+      if (now?.state === 'done' && now.summary) {
+        say(
+          `The check has finished: ${now.summary.without_rules.all.needs_typing} of ${now.summary.read} needed typing.`,
+        );
+      } else if (now?.state === 'failed') {
+        say('The check stopped before it finished.');
+      }
+    } else if (before.mine?.state === 'waiting' && current?.state === 'running') {
+      say('The vault has started reading.');
+    } else if (before.theirs && !theirs && !current) {
+      say(
+        `${before.theirs.requested_by.name ?? 'The other'}’s check has finished. You can start yours.`,
+      );
+    }
+    // Only what changed is said: the poll's own data, and nothing else.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
 
   const number = Number(n);
   const nValid =
@@ -115,14 +151,16 @@ export function ReadingCheckScreen() {
     if (busy || !nValid) return;
     setBusy(true);
     setActionError(null);
-    setSaid(null);
+    say(null);
     try {
       const made = await guarded((t) =>
         api.startReadingCheck(t, { n: number, include_edited: edited }),
       );
       if (made !== null) {
+        // Said by this, not again by the poll.
+        was.current = { mine: made, theirs: null };
         await reload();
-        setSaid('Started. The vault reads them in the background; you can leave this page.');
+        say('Started. The vault reads them in the background; you can leave this page.', true);
       }
     } catch (err) {
       setActionError(describeError(err));
@@ -134,12 +172,13 @@ export function ReadingCheckScreen() {
     if (busy) return;
     setBusy(true);
     setActionError(null);
-    setSaid(null);
+    say(null);
     try {
       const gone = await guarded((t) => api.cancelReadingCheck(t, c.id));
       if (gone !== null) {
+        was.current = { mine: null, theirs: null };
         await reload();
-        setSaid('Cancelled. Nothing it read was kept.');
+        say('Cancelled. Nothing it read was kept.', true);
       }
     } catch (err) {
       setActionError(describeError(err));
@@ -156,7 +195,7 @@ export function ReadingCheckScreen() {
       if (gone !== null) {
         setRemoving(null);
         await reload();
-        setSaid('Removed.');
+        say('Removed.', true);
       }
     } catch (err) {
       setActionError(describeError(err));
@@ -194,7 +233,7 @@ export function ReadingCheckScreen() {
               <h2 id="reading-now-h" className="section-h">
                 Reading now
               </h2>
-              <p role="status">{stateWords(current)}</p>
+              <p>{stateWords(current)}</p>
               <progress
                 className="reading-progress"
                 aria-label="Documents read"
@@ -216,7 +255,7 @@ export function ReadingCheckScreen() {
               <h2 id="reading-now-h" className="section-h">
                 Reading now
               </h2>
-              <p role="status">
+              <p>
                 {`${theirs.requested_by.name ?? 'Another owner'}’s check is ${
                   theirs.state === 'waiting' ? 'waiting to start' : 'running'
                 }. One check runs at a time: you can start yours once it has finished.`}
@@ -232,7 +271,7 @@ export function ReadingCheckScreen() {
                 Start a check
               </h2>
               {data.filed === 0 ? (
-                <p className="attention" role="status">
+                <p className="attention">
                   No documents have been filed through review yet. Add some with{' '}
                   <Link to="/add/many">Many documents</Link>, check their details and accept them,
                   then come back.
@@ -312,14 +351,16 @@ export function ReadingCheckScreen() {
                     )}
                   </li>
                 ))}
-                {others.map((o) => (
-                  <li key={o.id} className="reading-row">
+                {others.map((o, i) => (
+                  <li key={`other-${i}`} className="reading-row">
                     <span>
-                      <span className="doc-title">{whenWords(o.created_at)}</span>
+                      <span className="doc-title">
+                        {`${o.requested_by.name ?? 'Another owner'}’s check`}
+                      </span>
                       <span className="muted">
-                        {`by ${o.requested_by.name ?? 'another owner'} · ${
+                        {`${
                           running(o) ? 'Running' : o.state === 'done' ? 'Finished' : 'Stopped'
-                        }: only they see what it found`}
+                        } · only they see what it found`}
                       </span>
                     </span>
                   </li>

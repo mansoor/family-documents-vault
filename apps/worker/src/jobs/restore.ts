@@ -1551,10 +1551,28 @@ const REQUIRED_RULES = [
     what: 'who changes a Reading check’s misses',
   },
   {
+    table: 'reading_check_sealed',
+    name: 'reading_check_sealed_actor_delete',
+    cmd: 'd',
+    what: 'who removes a Reading check’s misses',
+  },
+  {
     table: 'review_filing',
     name: 'review_filing_actor_insert',
     cmd: 'a',
     what: 'who says a document was filed through review',
+  },
+  {
+    table: 'review_filing',
+    name: 'review_filing_actor_update',
+    cmd: 'w',
+    what: 'who changes what was filed through review',
+  },
+  {
+    table: 'review_filing',
+    name: 'review_filing_actor_delete',
+    cmd: 'd',
+    what: 'who removes what was filed through review',
   },
   // A computer that sends scans (0070, D1, the review's F7): made by the
   // vault alone and never removed but with its person; its code made

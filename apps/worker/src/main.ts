@@ -45,8 +45,9 @@ import {
   READING_CHECK_JOB,
   READING_CHECK_SWEEP_JOB,
   READING_JOB_EXPIRE_SECONDS,
-  readingCheckKey,
   resumeReadingChecks,
+  sendReadingCheck,
+  sweepReadingTemp,
   sweepReadingChecks,
   workReadingCheck,
   type ReadingCheckJob,
@@ -486,14 +487,8 @@ async function main(): Promise<void> {
     expireInSeconds: READING_JOB_EXPIRE_SECONDS,
   };
   await boss.createQueue(READING_CHECK_JOB, { policy: 'stately', ...readingSettings });
-  const sendCheck = (job: ReadingCheckJob, after?: Date) =>
-    boss.send(
-      READING_CHECK_JOB,
-      { ...job },
-      after
-        ? { singletonKey: `${readingCheckKey(job.household_id)}:later`, startAfter: after }
-        : { singletonKey: readingCheckKey(job.household_id) },
-    );
+  // Keyed by the check, at the lowest priority (the R0 review, R-1, R-3).
+  const sendCheck = (job: ReadingCheckJob, after?: Date) => sendReadingCheck(boss, job, after);
   await boss.work<ReadingCheckJob>(READING_CHECK_JOB, { batchSize: 1 }, async (jobs) => {
     for (const job of jobs) {
       const r = await workReadingCheck(readingDeps, job.data, {
@@ -509,6 +504,10 @@ async function main(): Promise<void> {
     await sweepReadingChecks(dbs.admin);
   });
   await boss.schedule(READING_CHECK_SWEEP_JOB, '55 4 * * *');
+  // What a worker that stopped mid-read left of a document's bytes, removed (P-5).
+  const leftOver = await sweepReadingTemp();
+  if (leftOver > 0)
+    log('info', 'reading check folders left by a stopped worker removed', { leftOver });
   const checks = await resumeReadingChecks(dbs.admin, async (job) => {
     await sendCheck(job);
   });

@@ -4881,17 +4881,18 @@ too_many_documents`, before any is held, says to do it in parts.
     a viewer or a guest; the database's rule too, 0074):
     - `GET /api/v1/reading-checks` — `{ items: ReadingCheckView[], others,
 filed }`: the caller's own checks, newest first (the last 20 are kept);
-      `others`, the other owners' checks as `{ id, state, requested_by,
-created_at, finished_at }` — that each is there, whose and when, never
-      its numbers (a check is its asker's alone, in the database too); and
-      how many documents filed through review the caller can see, out of
-      the Trash (never somebody else's Only me).
+      `others`, the other owners' checks as `{ state, requested_by }` —
+      whose each is and its state, never its numbers nor when (a check is
+      its asker's alone, in the database too); and how many documents filed
+      through review the caller can see, out of the Trash (never somebody
+      else's Only me), with a scored detail a person confirmed.
     - `POST /api/v1/reading-checks` — body `{ n?, include_edited? }` (`n`
       a whole number from 10 to 500, default 50; `include_edited` default
       `true`), answers `202` with the check `waiting`, and the worker reads
       it in the background. `409 reading_check_running` while the
       household's last one waits or runs; `422` for anything else in the
-      body.
+      body; `503 reading_check_not_started` (retriable) when its job could
+      not be sent, and nothing is left behind.
     - `GET /api/v1/reading-checks/{id}` — `ReadingCheckDetail`: the
       caller's own check, and `misses` (`[{ document_id, title, type_key,
 fields, level, wrong_ready }]`, the documents that needed typing and
@@ -4900,7 +4901,8 @@ fields, level, wrong_ready }]`, the documents that needed typing and
       seven days; afterwards `misses: null`. Another owner's check is `404`.
     - `POST /api/v1/reading-checks/{id}/cancel` — the caller's own check
       `waiting` or `running`, `cancelled`; `409 reading_check_not_running`
-      otherwise; another owner's, `404`.
+      otherwise; another owner's, `404`. What it had read so far goes at
+      once, and the document it was reading is let go.
     - `DELETE /api/v1/reading-checks/{id}` — the caller's own, `204`, its
       misses with it; another owner's, `404`.
   - `ReadingCheckView`: `id`, `state` (`waiting`, `running`, `done`,
@@ -4911,7 +4913,13 @@ member_id, name }`), `mine`, `created_at`, `started_at`, `finished_at`,
     the release that read, and twelve hex characters of a keyed hash of the
     learned rules it read with) and `summary`, `null` until `done`. The
     summary is numbers only (the database refuses anything else): `chosen`,
-    `read`, `skipped`, `edited`, and `without_rules` and `with_rules` (the
+    `read`, `skipped`, `edited` (a scored detail changed by hand since it
+    was filed: kind, whose, the expiry; a title or tags is not),
+    `partly_confirmed` (read with a detail a person did not confirm — an
+    Inbox file, or a version added to a document there, confirms only what
+    its accept set — which is not scored, never a miss; a document with
+    none of kind, whose and the expiry confirmed is not read), and
+    `without_rules` and `with_rules` (the
     asking owner's own rules on the documents they filed themselves,
     optimistic, since the rules were learned from these papers; on a
     document anybody else filed it equals `without_rules`), each

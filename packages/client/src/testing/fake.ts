@@ -3732,6 +3732,7 @@ export function createFakeVault(): {
           read: rows.length,
           skipped: 0,
           edited: 0,
+          partly_confirmed: 0,
           without_rules: scored.result,
           with_rules: scored.result,
         };
@@ -3803,13 +3804,7 @@ export function createFakeVault(): {
           items: checks.filter((c) => c.member_id === who.memberId).map(shown),
           others: checks
             .filter((c) => c.member_id !== who.memberId)
-            .map((c) => ({
-              id: c.view.id,
-              state: c.view.state,
-              requested_by: c.view.requested_by,
-              created_at: c.view.created_at,
-              finished_at: c.view.finished_at,
-            })),
+            .map((c) => ({ state: c.view.state, requested_by: c.view.requested_by })),
           filed: filed().length,
         };
         return ok(out);
