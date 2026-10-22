@@ -6,6 +6,7 @@ import {
   alertLinkBinding,
   deriveKey,
   EnvKeyProvider,
+  MAILBOX_PASSWORD_PURPOSE,
   OPERATOR_MAIL_KEY_PURPOSE,
   openBytes,
   operatorMailBinding,
@@ -70,6 +71,7 @@ import { instanceIdReader } from './instance.js';
 import { WatchFolderService } from './watch-folder/service.js';
 import { ReadingCheckService } from './reading-check/service.js';
 import { MAIL_IN_CODE_KEY_PURPOSE, MailInService } from './mail-in/service.js';
+import { SettingsCheckService } from './settings-checks.js';
 import { serverVersion } from './version.js';
 
 /**
@@ -180,6 +182,8 @@ export interface HarnessOptions {
   desktopDownloadUrl?: string;
   /** FDV_DEVICE_DAILY_BYTES (0.8.0, D1): the most one computer may send in a day. */
   deviceDailyBytes?: number;
+  /** The clock of the scanner folder's, email in's and the Settings checks' services (O1). */
+  now?: () => number;
 }
 
 /** The key the harness's `mail.to_address` jobs are sealed under, as the worker's are. */
@@ -333,15 +337,25 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       ...(opts.batchLearnTaught ? { learnTaught: opts.batchLearnTaught } : {}),
     },
   );
+  // What an owner asks the worker from Settings (O1): the job is in h.jobs,
+  // and a test answers it as the worker would.
+  const settingsChecks = new SettingsCheckService(db, enqueue, opts.now);
   const app = await buildApp(config, {
     serverVersion: await serverVersion(),
     instanceId: instanceIdReader(db),
-    watchFolder: new WatchFolderService(db),
+    watchFolder: new WatchFolderService(db, {
+      checks: settingsChecks,
+      ...(opts.now ? { now: opts.now } : {}),
+    }),
     readingChecks: new ReadingCheckService(db, keys, enqueue),
     mailIn: new MailInService(db, {
       mail: config.FDV_SMTP_URL ? (opts.mail ?? operatorMail) : null,
       codeKey: deriveKey(TEST_MASTER, MAIL_IN_CODE_KEY_PURPOSE),
+      mailboxKey: deriveKey(TEST_MASTER, MAILBOX_PASSWORD_PURPOSE),
+      checks: settingsChecks,
+      ...(opts.now ? { now: opts.now } : {}),
     }),
+    settingsChecks,
     pingDatabase: async () => undefined,
     auth,
     totp,

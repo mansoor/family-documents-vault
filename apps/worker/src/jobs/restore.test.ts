@@ -15,11 +15,13 @@ import {
   EnvKeyProvider,
   HEADER_BYTES,
   KEK_PURPOSE,
+  MAILBOX_PASSWORD_PURPOSE,
   newKey,
   openIdentity,
   openPrivate,
   ScopeKeys,
   sealIdentity,
+  sealMailboxPassword,
   wrapKey,
 } from '@fdv/crypto';
 import {
@@ -506,6 +508,36 @@ async function seed(url: string): Promise<string> {
               `insert into watch_notice (household_id, member_id, source, reason, file_key)
                select $1, b.member_id, 'email', 'nothing_to_add', gen_random_uuid()
                  from intake_batch b where b.household_id = $1`,
+              [hh],
+            );
+          }
+          // And, where the schema has them (0076, O1), the household mailbox
+          // set up in Settings, and a Verify the worker answered.
+          const settings = await c.query<{ has: boolean }>(
+            "select to_regclass('public.mail_in_mailbox') is not null as has",
+          );
+          if (settings.rows[0]?.has) {
+            await c.query(
+              `insert into mail_in_mailbox (household_id, host, username, password_encrypted)
+               values ($1, 'imap.seeded.test', 'seeded@example.test', $2)`,
+              [
+                hh,
+                sealMailboxPassword(deriveKey(MASTER, MAILBOX_PASSWORD_PURPOSE), 'seeded', hh, {
+                  host: 'imap.seeded.test',
+                  port: 993,
+                  username: 'seeded@example.test',
+                }),
+              ],
+            );
+            await c.query(
+              `insert into settings_check (household_id, kind, path, result, done_at)
+               values ($1, 'folder', '/watch', '{"path":"/watch","steps":[],"free_bytes":null}', now())`,
+              [hh],
+            );
+            // A scan the vault kept, by the name the family gave it.
+            await c.query(
+              `insert into watch_kept (household_id, dir, rel, file_id, born)
+               values ($1, '/watch', 'processed/2026-10-18/tax-2026.pdf', '1:2:3:4', '5')`,
               [hh],
             );
           }
@@ -1761,7 +1793,7 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
       }
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
-  });
+  }, 60_000);
 
   it('notices email in open to anybody but the owners, or an address to anybody but its person (0069, S4)', async () => {
     const seeded = await sql(
@@ -1887,7 +1919,135 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
       }
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
-  });
+  }, 60_000);
+
+  it('notices the household mailbox or a Settings check open to anybody but the owners, or their guards gone (0076, O1)', async () => {
+    const seeded = await sql(
+      vault.adminUrl,
+      `select (select count(*)::int from mail_in_mailbox) as mailboxes,
+              (select count(*)::int from settings_check) as checks`,
+    );
+    expect(seeded.rows[0]).toEqual({ mailboxes: 1, checks: 1 });
+    // The scans the vault kept: the vault's alone, an owner given none (the O1 re-check, 3).
+    expect(
+      (await sql(vault.adminUrl, 'select count(*)::int as n from watch_kept')).rows[0],
+    ).toEqual({ n: 1 });
+    const kept = (
+      await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'watch_kept_actor'`,
+      )
+    ).rows[0]?.rule as string;
+    expect(kept).not.toMatch(/owner|account/);
+    for (const [using, why] of [
+      [
+        `case app_actor() when 'account' then app_role() = 'owner' when 'system' then true else false end`,
+        /no rule keeps the scans the vault kept to the vault alone/,
+      ],
+      [
+        // Open to anybody signed in, written so no word gives it away.
+        `app_actor() = 'system' or app_actor() = chr(97) || 'ccount'`,
+        /the scans the vault kept is open to an owner/,
+      ],
+    ] as const) {
+      await sql(
+        vault.adminUrl,
+        `alter policy watch_kept_actor on public.watch_kept using (${using})`,
+      );
+      try {
+        await expect(checkRestored(target()), using).rejects.toThrow(why);
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `alter policy watch_kept_actor on public.watch_kept using (${kept})`,
+        );
+      }
+    }
+    const ruleOf = async (name: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${name}'`,
+        )
+      ).rows[0]?.rule as string;
+    for (const [policy, table, what] of [
+      ['mail_in_mailbox_actor', 'mail_in_mailbox', 'the household mailbox'],
+      ['settings_check_actor', 'settings_check', 'a check of the scanner folder or the mailbox'],
+    ] as const) {
+      const was = await ruleOf(policy);
+      expect(was).toMatch(/'owner'/);
+      // Gone: no rule for each kind of caller.
+      await sql(vault.adminUrl, `drop policy ${policy} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), policy).rejects.toThrow(
+          new RegExp(`no rule for each kind of caller on ${table}`),
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${policy} on public.${table} as restrictive using (${was})`,
+        );
+      }
+      // Open to an adult, or to anybody signed in.
+      for (const [using, why] of [
+        [
+          `case app_actor() when 'account' then app_role() in ('owner', 'adult')
+                            when 'system' then true else false end`,
+          new RegExp(`${what} is open to an adult`),
+        ],
+        [
+          `case app_actor() when 'account' then true when 'system' then true else false end`,
+          new RegExp(`no rule keeps .*${what} to the owners`),
+        ],
+      ] as const) {
+        await sql(vault.adminUrl, `alter policy ${policy} on public.${table} using (${using})`);
+        try {
+          await expect(checkRestored(target()), `${policy}: ${using}`).rejects.toThrow(why);
+        } finally {
+          await sql(vault.adminUrl, `alter policy ${policy} on public.${table} using (${was})`);
+        }
+      }
+    }
+    // An owner writes the mailbox as themselves.
+    await sql(
+      vault.adminUrl,
+      'alter table public.mail_in_mailbox disable trigger mail_in_mailbox_account_writes',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.mail_in_mailbox enable trigger mail_in_mailbox_account_writes',
+      );
+    }
+    // A check is asked for by an owner, answered and cleared away by the vault alone.
+    for (const policy of [
+      'settings_check_actor_insert',
+      'settings_check_actor_update',
+      'settings_check_actor_delete',
+    ]) {
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as q, pg_get_expr(polwithcheck, polrelid) as c,
+                polcmd from pg_policy where polname = '${policy}'`,
+      );
+      const was = rows[0] as { q: string | null; c: string | null; polcmd: string };
+      await sql(vault.adminUrl, `drop policy ${policy} on public.settings_check`);
+      try {
+        await expect(checkRestored(target()), policy).rejects.toThrow(new RegExp(policy));
+      } finally {
+        const cmd = { a: 'insert', w: 'update', d: 'delete' }[was.polcmd] as string;
+        await sql(
+          vault.adminUrl,
+          `create policy ${policy} on public.settings_check as restrictive for ${cmd}` +
+            (was.q ? ` using (${was.q})` : '') +
+            (was.c ? ` with check (${was.c})` : ''),
+        );
+      }
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  }, 60_000);
 
   it('notices a computer’s rules gone: its person’s, an owner’s by name, a code its person’s alone, and its guards (0070, D1)', async () => {
     const seeded = await sql(
@@ -3085,6 +3245,18 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     await vault?.drop();
     if (dir) await rm(dir, { recursive: true, force: true });
   });
+
+  it('asks the worker to count the scans kept since the backup, which it never deletes (the O1 re-check, 2)', async () => {
+    const t = await empty();
+    await restoreBackup(file, KEY, into(t), quiet, KEYS);
+    const { rows } = await sql(
+      t.adminUrl,
+      `select count(*)::int as folders, count(*) filter (where kept_reconcile)::int as asked
+         from watch_folder`,
+    );
+    expect(rows[0]?.folders).toBeGreaterThan(0);
+    expect(rows[0]).toEqual({ folders: rows[0]?.folders, asked: rows[0]?.folders });
+  }, 120_000);
 
   it('comes back exactly as the vault had it, and nothing ended since is live again', async () => {
     const t = await empty();

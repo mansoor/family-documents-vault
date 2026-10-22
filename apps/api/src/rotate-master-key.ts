@@ -54,6 +54,7 @@ const SEALED_LABEL: Record<SealedName, [one: string, many: string]> = {
   totpSecrets: ['two-step sign-in secret', 'two-step sign-in secrets'],
   vaultCredentials: ['storage (S3) credential', 'storage (S3) credentials'],
   smtpPasswords: ['mail (SMTP) password', 'mail (SMTP) passwords'],
+  mailInPasswords: ['household mailbox (IMAP) password', 'household mailbox (IMAP) passwords'],
 };
 
 export interface CommandOptions {

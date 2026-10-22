@@ -227,6 +227,8 @@ export async function restoreBackup(
       // A backup older than 0.5.14 has nothing to pause links with until
       // the migrations have run: its links are paused now.
       undone.linksPaused += await pauseLinks(admin);
+      // The scans kept since the backup: counted by the worker, never deleted.
+      await admin.query(RECONCILE_KEPT);
       // Nor one older than 0.5.30 its sign-ins (0051): paused now, and then
       // counted, every one checked (5.28). A restore fails closed: a sign-in
       // left open, or a household left with no owner who can sign in, fails it.
@@ -1133,6 +1135,12 @@ const GUARDS = [
     table: 'mail_in_address',
     fn: 'mail_in_address_account_writes',
   },
+  // An owner sets up the household mailbox as themselves (0076, O1).
+  {
+    name: 'mail_in_mailbox_account_writes',
+    table: 'mail_in_mailbox',
+    fn: 'mail_in_mailbox_account_writes',
+  },
   // A computer's key is only ever revoked, once, by its person or an owner
   // as themselves; and the database revokes it, and forgets its person's
   // code, as their sign-in goes or their role can no longer add (0070, D1).
@@ -1165,7 +1173,26 @@ const OWNERS_SETTINGS = [
   { table: 'reading_check', what: 'the Reading check' },
   { table: 'reading_check_sealed', what: 'a Reading check’s misses' },
   { table: 'review_filing', what: 'which documents were filed through review' },
+  // The household mailbox set up in Settings, its password sealed; and what
+  // an owner asks the worker from Settings, and its answers (0076, O1).
+  { table: 'mail_in_mailbox', what: 'the household mailbox' },
+  { table: 'settings_check', what: 'a check of the scanner folder or the mailbox' },
 ];
+
+/**
+ * What the vault alone reads (0076, the O1 re-check, 3): the scans it kept
+ * in processed/, by the names the family gave them — the only files it
+ * deletes there. Nobody signed in, an owner included, is given any.
+ */
+const VAULTS_OWN = [{ table: 'watch_kept', what: 'the scans the vault kept' }];
+
+/**
+ * A restore puts back the record of kept scans as it was when the backup was
+ * made (the O1 re-check, 2): scans kept since are in processed/ with no
+ * record, never to be deleted by the vault. The worker counts them for the
+ * owners at its next look.
+ */
+const RECONCILE_KEPT = `update watch_folder set kept_reconcile = true`;
 
 /**
  * Unique indexes the vault relies on for a rule, not for speed (0068, S3):
@@ -1320,6 +1347,12 @@ const ACTOR_GUARDED = [
   'mail_in_address',
   // A mail dealt with but left in place, the vault's alone (0069, F10).
   'mail_in_done',
+  // The household mailbox set up in Settings, and what an owner asks the
+  // worker: the owners' (0076, O1).
+  'mail_in_mailbox',
+  'settings_check',
+  // The scans the vault kept (the O1 review, M2): the owners'.
+  'watch_kept',
   // Computers that send scans, and their pairing codes (0070, D1): their
   // person's, an owner's by name; nobody else's.
   'upload_device',
@@ -1705,6 +1738,45 @@ const REQUIRED_RULES = [
     name: 'mail_in_address_actor_delete',
     cmd: 'd',
     what: "who removes somebody's address for email in",
+  },
+  // A check is asked for by an owner as themselves, unanswered; answered,
+  // and cleared away, by the vault alone (0076, O1).
+  {
+    table: 'settings_check',
+    name: 'settings_check_actor_insert',
+    cmd: 'a',
+    what: 'who asks the worker for a check',
+  },
+  {
+    table: 'settings_check',
+    name: 'settings_check_actor_update',
+    cmd: 'w',
+    what: 'who answers a check',
+  },
+  {
+    table: 'settings_check',
+    name: 'settings_check_actor_delete',
+    cmd: 'd',
+    what: 'who clears a check away',
+  },
+  // A kept scan is recorded, and let go, by the vault alone (the O1 review, M2).
+  {
+    table: 'watch_kept',
+    name: 'watch_kept_actor_insert',
+    cmd: 'a',
+    what: 'who records a kept scan',
+  },
+  {
+    table: 'watch_kept',
+    name: 'watch_kept_actor_update',
+    cmd: 'w',
+    what: 'who changes a kept scan’s record',
+  },
+  {
+    table: 'watch_kept',
+    name: 'watch_kept_actor_delete',
+    cmd: 'd',
+    what: 'who lets a kept scan go',
   },
   // A restriction, and what it names, are written by an owner or the vault:
   // the person reads theirs and changes none of it (0054).
@@ -2207,6 +2279,24 @@ export async function checkRestored(
       const what = OWNERS_SETTINGS.filter((o) => unsettled.some((u) => u.name === o.table));
       throw new Error(`no rule keeps ${what.map((o) => o.what).join(', ')} to the owners`);
     }
+    // And what the vault alone reads (the O1 re-check, 3): a rule that governs
+    // what is read, asks who is asking, and lets the vault alone.
+    const { rows: notVaults } = await admin.query<{ name: string }>(
+      `select t as name from unnest($1::text[]) as t
+        where not exists (select 1 from pg_policy p
+                           where p.polrelid = to_regclass('public.' || t)
+                             and not p.polpermissive
+                             and p.polcmd in ('*', 'r')
+                             and pg_get_expr(p.polqual, p.polrelid) like '%app_actor()%'
+                             and pg_get_expr(p.polqual, p.polrelid) like '%''system''%'
+                             and pg_get_expr(p.polqual, p.polrelid) not like '%''account''%'
+                             and pg_get_expr(p.polqual, p.polrelid) not like '%app_role()%')`,
+      [VAULTS_OWN.map((o) => o.table)],
+    );
+    if (notVaults.length) {
+      const what = VAULTS_OWN.filter((o) => notVaults.some((u) => u.name === o.table));
+      throw new Error(`no rule keeps ${what.map((o) => o.what).join(', ')} to the vault alone`);
+    }
     // And the rules the vault relies on by name (0050, the 5.26 review).
     const { rows: unnamed } = await admin.query<{ name: string }>(
       `select r.name from unnest($1::text[], $2::text[], $3::text[]) as r(tbl, name, cmd)
@@ -2468,6 +2558,27 @@ export async function checkRestored(
             throw new Error(
               `household ${h.id}: what was moved to the owners (${o.table}) is open to an adult`,
             );
+          }
+        } finally {
+          client.release();
+        }
+      }
+      // And what the vault alone reads: an owner is given none (the O1 re-check, 3).
+      for (const o of VAULTS_OWN) {
+        const client = await app.connect();
+        try {
+          await client.query('begin');
+          await client.query(
+            `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                    set_config('app.role', 'owner', true)`,
+            [h.id],
+          );
+          const { rows: shown } = await client.query<{ n: number }>(
+            `select count(*)::int as n from ${o.table}`,
+          );
+          await client.query('commit');
+          if ((shown[0]?.n ?? 0) > 0) {
+            throw new Error(`household ${h.id}: ${o.what} is open to an owner`);
           }
         } finally {
           client.release();

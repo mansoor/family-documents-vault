@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { type ScopeKeys } from '@fdv/crypto';
+import { openMailboxPassword, type ScopeKeys } from '@fdv/crypto';
 import { withSystem, type Db } from '@fdv/db';
 import {
   dropFileName,
@@ -33,9 +33,11 @@ import {
 import {
   ImapMailbox,
   MailboxError,
+  type ImapSettings,
   type MailboxConnector,
   type MailboxSession,
 } from './mailbox.js';
+import { mailHostAddress, type MailHostRules } from './mail-address.js';
 import type { MailHead, MailReader } from './mail-thread.js';
 import { watchKindOf } from './watch-folder.js';
 
@@ -127,7 +129,42 @@ export interface MailInDeps {
   sendBatchPreviews: (householdId: string) => Promise<void>;
   /** The mail thread: where a mail's MIME is read. */
   reader: MailReader;
+  /**
+   * The key a mailbox set up in Settings has its password opened with
+   * (deriveKey(master, MAILBOX_PASSWORD_PURPOSE), 0.9.0, O1). Absent: no
+   * such mailbox is checked here, and without FDV_MAIL_IN_* the runner
+   * looks at nothing.
+   */
+  mailKey?: Buffer;
+  /** A mailbox set up in Settings, signed in to: over IMAP, or the tests' own. */
+  connect?: (s: ImapSettings) => MailboxConnector;
+  /**
+   * Where a mailbox set up in Settings may be (the O1 review, M3):
+   * FDV_MAIL_IN_ALLOWED_PORTS and FDV_MAIL_IN_ALLOW_PRIVATE; 993 alone and
+   * nothing inside the server's network unless said.
+   */
+  mailHosts?: MailHostRules;
 }
+
+/**
+ * The mailbox checked this round (O1): the one an owner set up in
+ * Settings, which overrides FDV_MAIL_IN_*, or the server's own. Its
+ * password is inside its connector, and nowhere else.
+ */
+interface Box {
+  source: 'settings' | 'server';
+  connector: MailboxConnector;
+  address: string | null;
+  folder: string;
+  after: MailInAfter;
+  authservId: string | null;
+  pollMs: number;
+  /** Which mailbox, as set up when: another, and nothing known of the last one counts. */
+  identity: string;
+}
+
+/** A sign-in that is an address: where the family sends mail. */
+const ADDRESS = /^[^\s@]+@[^\s@]+$/;
 
 export interface MailInOptions {
   /** The mailbox, signed in to; null when FDV_MAIL_IN_* is not set. */
@@ -288,6 +325,11 @@ export class MailInRunner {
   private filing: MailInFiling = 'move';
   /** The Filed folder is there, this session: made the first time a mail is moved. */
   private filedReady = false;
+  /** The mailbox of this round (O1); and which one was last checked. */
+  private box: Box | null = null;
+  private boxOf = '';
+  /** A mailbox password that would not open: said once. */
+  private sealedSaid = false;
 
   constructor(
     private readonly deps: MailInDeps,
@@ -313,7 +355,7 @@ export class MailInRunner {
             }),
           )
           .finally(next);
-      }, this.opts.pollMs);
+      }, this.box?.pollMs ?? this.opts.pollMs);
       this.timer.unref?.();
     };
     void this.tick()
@@ -356,18 +398,31 @@ export class MailInRunner {
             or mail_in_server.checked_at < now() - make_interval(secs => mail_in_server.poll_seconds * 2)`,
         [Math.round(o.pollMs / 1000)],
       );
-      return out;
+      // Nor can it check a mailbox set up in Settings (O1): nothing to look at.
+      if (!this.deps.mailKey) return out;
     }
     if (!(await this.lock.hold(this.stopped))) return out;
     out.ran = true;
-    await this.deps.admin.query(
-      `insert into mail_in_server (singleton, configured, address, folder, after, sender_check, poll_seconds, checked_at)
-       values (true, true, $1, $2, $3, $4, $5, now())
-       on conflict (singleton) do update
-         set configured = true, address = $1, folder = $2, after = $3, sender_check = $4,
-             poll_seconds = $5, checked_at = now()`,
-      [o.address, o.folder, o.after, o.authservId !== null, Math.round(o.pollMs / 1000)],
-    );
+    if (o.connector) {
+      await this.deps.admin.query(
+        `insert into mail_in_server (singleton, configured, address, folder, after, sender_check, poll_seconds, checked_at)
+         values (true, true, $1, $2, $3, $4, $5, now())
+         on conflict (singleton) do update
+           set configured = true, address = $1, folder = $2, after = $3, sender_check = $4,
+               poll_seconds = $5, checked_at = now()`,
+        [o.address, o.folder, o.after, o.authservId !== null, Math.round(o.pollMs / 1000)],
+      );
+    }
+    if (this.deps.mailKey) {
+      // How many households set up a mailbox of their own (O1): email in is
+      // offered with one. A count, no household named.
+      await this.deps.admin.query(
+        `update mail_in_server set mailboxes =
+           (select count(*) from mail_in_mailbox where password_encrypted is not null),
+           allowed_ports = $1, allow_private = $2`,
+        [[...this.mailHosts.allowedPorts], this.mailHosts.allowPrivate],
+      );
+    }
     // What nobody dismissed in WATCH_NOTICE_DAYS goes, as the scanner's does.
     await this.deps.admin.query(
       `delete from watch_notice where source = 'email' and created_at < now() - make_interval(days => $1)`,
@@ -379,8 +434,35 @@ export class MailInRunner {
     const hh = rows[0]?.household_id;
     if (!hh) {
       this.known.clear();
+      this.box = null;
       return out;
     }
+    const box = await this.mailbox(hh);
+    if ('sealed' in box) {
+      out.error = 'password_sealed';
+      await this.said(hh, { error: 'password_sealed' });
+      return out;
+    }
+    if ('refused' in box || 'unresolved' in box) {
+      const problem: MailInError = 'refused' in box ? 'address_refused' : 'unreachable';
+      out.error = problem;
+      await this.said(hh, { error: problem });
+      return out;
+    }
+    if ('none' in box) {
+      this.box = null;
+      return out;
+    }
+    if (box.identity !== this.boxOf) {
+      // Another mailbox, or the same set up anew: nothing of the last counts,
+      // and a sign-in refused before is tried again at once.
+      this.boxOf = box.identity;
+      this.known.clear();
+      this.knownOf = '';
+      this.failures = 0;
+      this.notBefore = 0;
+    }
+    this.box = box;
     if (this.now() < this.notBefore) {
       out.waited = true;
       return out;
@@ -388,11 +470,11 @@ export class MailInRunner {
 
     let session: MailboxSession;
     try {
-      session = await o.connector.open(o.folder);
+      session = await box.connector.open(box.folder);
     } catch (err) {
       const problem: MailInError = err instanceof MailboxError ? err.problem : 'unreachable';
       this.failures += 1;
-      this.notBefore = this.now() + Math.min(BACKOFF_MAX_MS, o.pollMs * 2 ** (this.failures - 1));
+      this.notBefore = this.now() + Math.min(BACKOFF_MAX_MS, box.pollMs * 2 ** (this.failures - 1));
       this.deps.log('warn', 'the household mailbox could not be opened', { why: problem });
       out.error = problem;
       await this.said(hh, { error: problem });
@@ -404,9 +486,15 @@ export class MailInRunner {
     // mail is expunged alone (UIDPLUS); a move only by MOVE (never COPY and
     // EXPUNGE); otherwise left in place, marked read. Said to the owners.
     this.filing =
-      o.after === 'delete' && session.canDelete ? 'delete' : session.canMove ? 'move' : 'leave';
+      box.after === 'delete' && session.canDelete ? 'delete' : session.canMove ? 'move' : 'leave';
     out.filing = this.filing;
-    await this.deps.admin.query('update mail_in_server set filing = $1', [this.filing]);
+    if (box.source === 'server') {
+      await this.deps.admin.query('update mail_in_server set filing = $1', [this.filing]);
+    }
+    const filing = this.filing;
+    await withSystem(this.deps.db, hh, (trx) =>
+      trx.updateTable('mail_in').set({ filing }).where('household_id', '=', hh).execute(),
+    );
     try {
       return await this.look(hh, session, out);
     } finally {
@@ -414,10 +502,98 @@ export class MailInRunner {
     }
   }
 
+  /**
+   * The mailbox to check for a household (O1): the one an owner set up in
+   * Settings — its password opened here and handed to its connector alone —
+   * else FDV_MAIL_IN_*'s; `none` for neither (or one set up with no
+   * password yet), `sealed` for a password this master key does not open.
+   */
+  private async mailbox(
+    hh: string,
+  ): Promise<Box | { none: true } | { sealed: true } | { refused: true } | { unresolved: true }> {
+    const o = this.opts;
+    const key = this.deps.mailKey;
+    if (key) {
+      const row = await withSystem(this.deps.db, hh, (trx) =>
+        trx
+          .selectFrom('mail_in_mailbox')
+          .selectAll()
+          .where('household_id', '=', hh)
+          .executeTakeFirst(),
+      );
+      if (row) {
+        if (!row.password_encrypted) return { none: true };
+        let password: string;
+        try {
+          // Opens for the server, port and sign-in it was typed for alone (H1).
+          password = openMailboxPassword(key, row.password_encrypted, hh, {
+            host: row.host,
+            port: row.port,
+            username: row.username,
+          });
+        } catch {
+          if (!this.sealedSaid) {
+            this.sealedSaid = true;
+            this.deps.log(
+              'warn',
+              'the household mailbox’s password does not open with this master key',
+            );
+          }
+          return { sealed: true };
+        }
+        this.sealedSaid = false;
+        // A server an owner typed: a port and an address the worker may
+        // connect to, resolved once and connected to as checked (M3).
+        const at = await mailHostAddress(row.host, row.port, this.mailHosts);
+        if ('refused' in at) return { refused: true };
+        if ('unresolved' in at) return { unresolved: true };
+        const connect = this.deps.connect ?? ((s: ImapSettings) => new ImapMailbox(s));
+        return {
+          source: 'settings',
+          connector: connect({
+            host: row.host,
+            port: row.port,
+            user: row.username,
+            password,
+            address: at.address,
+          }),
+          address: ADDRESS.test(row.username) ? row.username : null,
+          folder: row.folder,
+          after: row.after,
+          authservId: row.authserv_id,
+          pollMs: row.poll_seconds * 1000,
+          identity: `settings\0${row.updated_at.toISOString()}`,
+        };
+      }
+    }
+    if (!o.connector) return { none: true };
+    return {
+      source: 'server',
+      connector: o.connector,
+      address: o.address,
+      folder: o.folder,
+      after: o.after,
+      authservId: o.authservId,
+      pollMs: o.pollMs,
+      identity: 'server',
+    };
+  }
+
+  /** The mailbox of this round: set before anything is looked at. */
+  private get mailHosts(): MailHostRules {
+    return this.deps.mailHosts ?? { allowedPorts: [993], allowPrivate: false };
+  }
+
+  private get cur(): Box {
+    if (!this.box) throw new Error('no mailbox this round');
+    return this.box;
+  }
+
   /** The folder, open: every mail looked at, theirs added and filed, the rest counted. */
   private async look(hh: string, session: MailboxSession, out: MailRound): Promise<MailRound> {
     const o = this.opts;
-    const of = `${hh}\0${session.uidValidity}`;
+    const box = this.cur;
+    const of = `${hh}\0${box.identity}\0${session.uidValidity}`;
     if (of !== this.knownOf) {
       this.known.clear();
       this.knownOf = of;
@@ -457,7 +633,7 @@ export class MailInRunner {
         heads += 1;
         const bytes = await session.head(e.uid, MAIL_HEAD_BYTES);
         if (!bytes) continue;
-        const a = await this.deps.reader.head(bytes, o.authservId);
+        const a = await this.deps.reader.head(bytes, box.authservId);
         if (a.state === 'unavailable') continue;
         known = a.state === 'done' ? { head: a.head } : { unreadable: true };
         this.known.set(e.uid, known);
@@ -727,13 +903,13 @@ export class MailInRunner {
     const from = asciiAddress(head.from as string);
     const sender = from ? senders.get(from) : undefined;
     if (!sender || !mayFillFromScanner(sender.role, sender.kind)) return { kind: 'unknown' };
-    if (this.opts.authservId && head.auth !== 'pass') {
+    if (this.cur.authservId && head.auth !== 'pass') {
       return { kind: 'unverified', memberId: sender.memberId };
     }
     if (sender.confirmed) return { kind: 'theirs', sender, head };
     // A code sent FROM the address proves it only on the provider's word (F1).
     if (
-      this.opts.authservId &&
+      this.cur.authservId &&
       sender.codeKind === 'send' &&
       sender.codeHash &&
       sender.codeExpires &&
@@ -848,7 +1024,7 @@ export class MailInRunner {
     confirming: boolean,
     state: RoundState,
   ): Promise<MailOutcome & { error?: MailInError }> {
-    const o = this.opts;
+    const o = this.cur;
     const target = await whoseInbox(this.deps.db, hh, sender.memberId, this.now());
     if ('pause' in target) return { kind: 'waiting', why: target.pause };
     const mail = this.mailOf(session, e.uid, head);
@@ -1008,7 +1184,7 @@ export class MailInRunner {
         name: u.name,
         key,
         mailKey,
-        senderUnverified: this.opts.authservId === null,
+        senderUnverified: this.cur.authservId === null,
       });
     });
     if ('later' in placed) return { later: placed.later };

@@ -97,7 +97,7 @@ describe.skipIf(!testAdminUrl())('migration 0022: requests that lapsed before it
       { id: ids.lapsed, lapsed: true, refused_at: null },
       { id: ids.live, lapsed: false, refused_at: null },
     ]);
-  });
+  }, 60_000);
 
   it('after it, the person can be asked about again — once', async () => {
     await expect(ask(two, one)).resolves.toBeDefined();

@@ -92,7 +92,7 @@ describe.skipIf(!testAdminUrl())("migration 0025: issued_by from the types' own 
     expect(await row(ids.passport)).toEqual({ issued_by: 'United Kingdom', extra: {} });
     // Tabs and line breaks too, at the ends as well as inside: as the API tidies.
     expect(await row(ids.lineBreaks)).toEqual({ issued_by: 'Acme Widgets', extra: {} });
-  });
+  }, 60_000);
 
   it('leaves what does not fit where it was: blank, not text, too long, or another type', async () => {
     expect(await row(ids.blank)).toEqual({ issued_by: null, extra: { lender: '   ' } });

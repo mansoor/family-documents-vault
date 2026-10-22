@@ -68,22 +68,65 @@ export interface MailboxSession {
   close(): Promise<void>;
 }
 
+/**
+ * What "Test the mailbox" finds (0.9.0, O1): how many messages the folder
+ * has, what the server can do to one mail alone, and the Authentication-
+ * Results header lines of the newest messages (three at most, the O1
+ * review's L3) — nothing else of any mail.
+ */
+export interface MailboxInspection {
+  exists: number;
+  move: boolean;
+  uidplus: boolean;
+  /** The newest messages' Authentication-Results lines, newest first, as the server sent them. */
+  newestHeaders: Buffer[];
+}
+
+/** How many of the newest messages' Authentication-Results Test the mailbox reads. */
+export const INSPECT_NEWEST = 3;
+
 export interface MailboxConnector {
   /** Signed in, and the folder open — or a MailboxError. */
   open(folder: string): Promise<MailboxSession>;
+  /**
+   * Signed in, the folder opened read-only (EXAMINE), and the newest
+   * messages' Authentication-Results asked for with BODY.PEEK — no flag
+   * set, nothing moved, copied, expunged or fetched besides — then signed
+   * out (O1). Or a MailboxError. Aborted (`signal`, the O1 re-check, 4):
+   * its connection closed at once, whatever it was doing.
+   */
+  inspect(folder: string, signal?: AbortSignal): Promise<MailboxInspection>;
 }
 
-/** FDV_MAIL_IN_*: where, and as whom. The password never leaves here but to imapflow. */
+/** FDV_MAIL_IN_*, or the mailbox an owner set up: where, and as whom. The password never leaves here but to imapflow. */
 export interface ImapSettings {
   host: string;
   port: number;
   user: string;
   password: string;
+  /**
+   * Certificates to trust instead of the system's: the tests' own server
+   * alone. The certificate is verified, and its name, all the same.
+   */
+  ca?: string;
+  /**
+   * The address `host` was resolved to and checked at (the O1 review, M3):
+   * connected to as it is, so the name is never looked up again (no DNS
+   * rebinding), while `host` stays the name the certificate must carry.
+   */
+  address?: string;
+  /** Short timeouts, for Test the mailbox (L6): an owner waits for it. */
+  quick?: boolean;
 }
 
-/** Node's and OpenSSL's words for a certificate that could not be verified. */
+/**
+ * Node's and OpenSSL's words for a certificate that could not be verified,
+ * and nothing else: any other failure of the connection or the protocol —
+ * a port that speaks no TLS, a reset, a stray reply — is `unreachable`, so
+ * an answer tells nothing of what listens at an address (the O1 review, M3).
+ */
 const CERT =
-  /CERT|SELF_SIGNED|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER|ALTNAME|HOSTNAME|EPROTO|ERR_SSL|ERR_TLS/i;
+  /^(CERT_|UNABLE_TO_GET_ISSUER_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_DECRYPT_CERT_SIGNATURE|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|ERR_TLS_CERT_ALTNAME_INVALID|HOSTNAME_MISMATCH)/;
 
 /** An imapflow error, as a word. */
 export function problemOf(err: unknown): MailboxProblem {
@@ -111,15 +154,20 @@ export function filingOf(caps: ReadonlyMap<string, unknown>): {
 /** A server's reply this much larger than the largest mail is refused. */
 const SLACK = 4 * 1024 * 1024;
 
+/** The most of a header Test the mailbox takes: Authentication-Results lines alone. */
+const INSPECT_HEADER_BYTES = 64 * 1024;
+
 export class ImapMailbox implements MailboxConnector {
   constructor(private readonly settings: ImapSettings) {}
 
-  async open(folder: string): Promise<MailboxSession> {
-    const { host, port, user, password } = this.settings;
+  /** Signed in: TLS from the first byte, the certificate verified — or a MailboxError. */
+  private async connect(signal?: AbortSignal): Promise<ImapFlow> {
+    const { host, port, user, password, ca, address, quick } = this.settings;
     // The name the certificate must carry (an address carries none: SNI takes names alone).
     const name = isIP(host) ? undefined : host;
     const options: ImapFlowOptions = {
-      host,
+      // The address checked, connected to as it is (M3); the name kept for SNI and the certificate.
+      host: address ?? host,
       port,
       secure: true,
       ...(name ? { servername: name } : {}),
@@ -132,10 +180,11 @@ export class ImapMailbox implements MailboxConnector {
         rejectUnauthorized: true,
         minVersion: 'TLSv1.2',
         ...(name ? { servername: name } : {}),
+        ...(ca ? { ca } : {}),
       },
-      connectionTimeout: 30_000,
-      greetingTimeout: 16_000,
-      socketTimeout: 120_000,
+      connectionTimeout: quick ? 10_000 : 30_000,
+      greetingTimeout: quick ? 10_000 : 16_000,
+      socketTimeout: quick ? 15_000 : 120_000,
       maxLiteralSize: MAIL_IN_MAX_MESSAGE_BYTES + SLACK,
       maxResponseSize: MAIL_IN_MAX_MESSAGE_BYTES + 2 * SLACK,
       maxLineLength: SLACK,
@@ -144,12 +193,65 @@ export class ImapMailbox implements MailboxConnector {
     // An error after the sign-in (the connection dropped) ends the session;
     // the next command says so.
     client.on('error', () => undefined);
+    // Given up on (Test the mailbox's 15 seconds): closed, not left to time out.
+    if (signal) {
+      if (signal.aborted) {
+        client.close();
+        throw new MailboxError('unreachable');
+      }
+      signal.addEventListener('abort', () => client.close(), { once: true });
+    }
     try {
       await client.connect();
     } catch (err) {
       client.close();
       throw new MailboxError(problemOf(err));
     }
+    return client;
+  }
+
+  async inspect(folder: string, signal?: AbortSignal): Promise<MailboxInspection> {
+    const client = await this.connect(signal);
+    try {
+      let lock: MailboxLockObject;
+      try {
+        // EXAMINE: the folder opened read-only — not even \Recent is cleared.
+        lock = await client.getMailboxLock(folder, { readOnly: true });
+      } catch {
+        throw new MailboxError('no_folder');
+      }
+      try {
+        const exists = client.mailbox ? client.mailbox.exists : 0;
+        const caps = client.capabilities;
+        const found: Array<{ seq: number; header: Buffer }> = [];
+        if (exists > 0) {
+          // The newest messages' Authentication-Results alone, in one FETCH:
+          // BODY.PEEK[HEADER.FIELDS (AUTHENTICATION-RESULTS)], never marked read.
+          const from = Math.max(1, exists - INSPECT_NEWEST + 1);
+          for await (const m of client.fetch(`${from}:*`, {
+            uid: true,
+            headers: ['authentication-results'],
+          })) {
+            const h = m.headers;
+            if (h && h.length > 0)
+              found.push({ seq: m.seq, header: h.subarray(0, INSPECT_HEADER_BYTES) });
+          }
+        }
+        const newestHeaders = found
+          .sort((a, b) => b.seq - a.seq)
+          .slice(0, INSPECT_NEWEST)
+          .map((f) => f.header);
+        return { exists, move: caps.has('MOVE'), uidplus: caps.has('UIDPLUS'), newestHeaders };
+      } finally {
+        lock.release();
+      }
+    } finally {
+      await client.logout().catch(() => client.close());
+    }
+  }
+
+  async open(folder: string): Promise<MailboxSession> {
+    const client = await this.connect();
     let lock: MailboxLockObject;
     try {
       lock = await client.getMailboxLock(folder);

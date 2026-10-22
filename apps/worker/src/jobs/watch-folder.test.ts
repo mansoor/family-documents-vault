@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, type BigIntStats } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -156,10 +156,12 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     dirs.push(d);
     return d;
   };
+  // Scans deleted at once once stored, as before 0.9.0 (kept scans are
+  // watch-kept.test.ts's).
   const turnOn = (who: keyof typeof people = 'adult') =>
     admin.query(
-      `insert into watch_folder (household_id, enabled, member_id) values ($1, true, $2)
-       on conflict (household_id) do update set enabled = true, member_id = $2`,
+      `insert into watch_folder (household_id, enabled, member_id, keep_days) values ($1, true, $2, 0)
+       on conflict (household_id) do update set enabled = true, member_id = $2, keep_days = 0`,
       [hh, people[who].member],
     );
   const deps = (over: Partial<WatchDeps> = {}): WatchDeps => ({
@@ -1446,6 +1448,46 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
   );
 
   // ------------------------------------------------------------ whose it is
+
+  it.skipIf(!LINUX)(
+    'a file given the very inode of the one listed is never taken for it: not deleted, not moved aside (0.9.0, O1)',
+    async () => {
+      const dir = await folder();
+      await turnOn('adult');
+      // Once a file is opened, its name answers as another file would that
+      // the system gave the same inode: same device and inode, its own
+      // change time. Linux reuses a freed inode at once.
+      const reused = new Set<string>();
+      const fsx = fsWith({
+        open: (async (p: string, ...rest: unknown[]) => {
+          reused.add(String(p));
+          return (fsp.open as (...a: unknown[]) => Promise<unknown>)(p, ...rest);
+        }) as typeof fsp.open,
+        lstat: (async (p: string, o?: { bigint?: boolean }) => {
+          const st = await fsp.lstat(p, o as never);
+          if (!reused.has(String(p)) || !o?.bigint) return st;
+          const b = st as unknown as BigIntStats;
+          return Object.assign(Object.create(Object.getPrototypeOf(b) as object) as object, b, {
+            ctimeNs: b.ctimeNs + 1n,
+          });
+        }) as typeof fsp.lstat,
+      });
+      const r = runner(dir, {}, fsx);
+      const scan = await write(dir, 'scan.pdf', PDF('stored'));
+      const odd = await write(dir, 'odd.zip', Buffer.from('PK not a scan'));
+      const round = await settle(r);
+      expect(round.outcomes.map((o) => [o.rel, o.kind])).toEqual([
+        ['odd.zip', 'later'],
+        ['scan.pdf', 'added'],
+      ]);
+      // Stored, but the name is not the file stored now: never deleted.
+      expect(await there(scan)).toBe(true);
+      // Not to be added, but not the file listed now: never moved aside, nor named.
+      expect(await there(odd)).toBe(true);
+      expect(await there(path.join(dir, 'rejected', 'odd.zip'))).toBe(false);
+      expect(await notes()).toEqual([]);
+    },
+  );
 
   it('what it adds is its person’s alone: nobody else is given the batch, the item or the note', async () => {
     const dir = await folder();

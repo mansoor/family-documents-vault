@@ -350,8 +350,14 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // The scanner folder turned on or off, and whose Inbox it fills (S3): for
   // the owners, and the person whose Inbox it is.
   ['watch_folder.changed', ownersAndThePerson],
+  // Which folder it is and how long scans are kept (0.9.0, O1): about the
+  // household, so for the owners alone.
+  ['watch_folder.folder_changed', ownersAndThePerson],
   // Email in turned on or off (S4): about the household, so for the owners alone.
   ['mail_in.changed', ownersAndThePerson],
+  // The household mailbox set up in Settings, or taken away (O1): the owners'.
+  ['mail_in.mailbox_saved', ownersAndThePerson],
+  ['mail_in.mailbox_removed', ownersAndThePerson],
   ['export.requested', BY_TYPE],
   ['export.downloaded', BY_TYPE],
   // signing in

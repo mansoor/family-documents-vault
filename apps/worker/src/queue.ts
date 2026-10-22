@@ -117,6 +117,13 @@ export const JOBS = {
    * the name matches its BATCH_PREVIEWS_JOB.
    */
   batchPreviews: 'batch.previews',
+  /**
+   * What an owner asks the worker from Settings (0.9.0, O1): Verify a
+   * scanner folder, the folders inside one, or Test the mailbox — the
+   * worker alone has the folders and the mailbox's password. Sent by the
+   * API with the question's row; the name matches its SETTINGS_CHECK_JOB.
+   */
+  settingsCheck: 'settings.check',
 } as const;
 
 export type JobName = (typeof JOBS)[keyof typeof JOBS];

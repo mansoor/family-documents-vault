@@ -96,6 +96,8 @@ services:
       # FDV_WATCH_DIR=/watch in .env and uncomment the mount below. The
       # largest file it takes is the same as for an upload.
       FDV_WATCH_DIR: ${FDV_WATCH_DIR:-}
+      # The folders an owner may choose the scanner folder inside, in Settings.
+      FDV_WATCH_ROOTS: ${FDV_WATCH_ROOTS:-}
       FDV_WATCH_STABLE_SECONDS: ${FDV_WATCH_STABLE_SECONDS:-}
       FDV_WATCH_INCOMPLETE_GRACE_SECONDS: ${FDV_WATCH_INCOMPLETE_GRACE_SECONDS:-}
       FDV_MAX_UPLOAD_BYTES: ${FDV_MAX_UPLOAD_BYTES:-}
@@ -112,6 +114,10 @@ services:
       FDV_MAIL_IN_POLL_SECONDS: ${FDV_MAIL_IN_POLL_SECONDS:-}
       FDV_MAIL_IN_AFTER: ${FDV_MAIL_IN_AFTER:-}
       FDV_MAIL_IN_AUTHSERV_ID: ${FDV_MAIL_IN_AUTHSERV_ID:-}
+      # Where a mailbox an owner sets up in Settings may be: 993, outside
+      # your own network, unless these allow more.
+      FDV_MAIL_IN_ALLOWED_PORTS: ${FDV_MAIL_IN_ALLOWED_PORTS:-}
+      FDV_MAIL_IN_ALLOW_PRIVATE: ${FDV_MAIL_IN_ALLOW_PRIVATE:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - vault-data:/data

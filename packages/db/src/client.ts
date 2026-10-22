@@ -1350,8 +1350,13 @@ export interface Schema {
   watch_dir: {
     singleton: Generated<boolean>;
     dir: string | null;
-    state: 'off' | 'ready' | 'missing' | 'not_a_folder' | 'not_writable';
+    state: 'off' | 'ready' | 'missing' | 'not_a_folder' | 'not_writable' | 'refused';
     checked_at: GeneratedTimestamp;
+    /** FDV_WATCH_ROOTS (and FDV_WATCH_DIR) as the worker has them; the vault's own folders (0076, O1). */
+    roots: Generated<string[]>;
+    own_dirs: Generated<string[]>;
+    /** FDV_WATCH_ROOTS refused: `/`, or holding one of the vault's own (the O1 review, M4). */
+    refused_roots: Generated<string[]>;
   };
 
   /**
@@ -1379,6 +1384,31 @@ export interface Schema {
     last_added_at: Timestamp | null;
     /** Files stored that the worker could not then delete from the folder. */
     stuck_files: Generated<number>;
+    /** The folder an owner chose (null: FDV_WATCH_DIR), and how many days scans are kept (0076, O1). */
+    dir: string | null;
+    keep_days: Generated<number>;
+    /** What the worker last found of the folder chosen, which, and when: the worker's. */
+    dir_state: 'ready' | 'missing' | 'not_a_folder' | 'not_writable' | 'refused' | null;
+    dir_seen: string | null;
+    dir_checked_at: Timestamp | null;
+    /** A processed/ there the vault did not make; scans kept in a folder it may no longer use (the O1 review). */
+    processed_foreign: Generated<boolean>;
+    kept_left: Generated<number>;
+    kept_changed: Generated<number>;
+    kept_untracked: Generated<number>;
+    kept_reconcile: Generated<boolean>;
+  };
+
+  /** Each scan the vault kept in a scanner folder's processed/ (the O1 review, M2): the only files it deletes there. */
+  watch_kept: {
+    id: Generated<string>;
+    household_id: string;
+    dir: string;
+    rel: string;
+    file_id: string;
+    /** Its birth time (ns) where the file system gives one; null where not (the O1 re-check). */
+    born: string | null;
+    kept_at: GeneratedTimestamp;
   };
 
   /**
@@ -1427,6 +1457,11 @@ export interface Schema {
     filing: 'move' | 'delete' | 'leave' | null;
     poll_seconds: number;
     checked_at: GeneratedTimestamp;
+    /** Households' own mailboxes with a password set, as the worker counted (0076, O1). */
+    mailboxes: Generated<number>;
+    /** What a mailbox set up in Settings may be: its ports, and an address inside the network (the O1 review, M3). */
+    allowed_ports: Generated<number[]>;
+    allow_private: Generated<boolean>;
   };
 
   /**
@@ -1448,12 +1483,47 @@ export interface Schema {
       | 'sealed'
       | 'no_storage'
       | 'unreadable'
+      | 'password_sealed'
+      | 'address_refused'
       | null;
     last_error_at: Timestamp | null;
     last_added_at: Timestamp | null;
     unknown_senders: Generated<number>;
     unverified: Generated<number>;
     waiting: Generated<number>;
+    /** How the household's own mailbox's mail is filed, as its server allows (0076, O1). */
+    filing: 'move' | 'delete' | 'leave' | null;
+  };
+
+  /**
+   * The household mailbox as an owner set it up (0076, O1): it overrides
+   * FDV_MAIL_IN_*. Its app password sealed under a master-derived key,
+   * never returned. An owner's alone.
+   */
+  mail_in_mailbox: {
+    household_id: string;
+    host: string;
+    port: Generated<number>;
+    username: string;
+    password_encrypted: Buffer | null;
+    folder: Generated<string>;
+    after: Generated<'move' | 'delete'>;
+    authserv_id: string | null;
+    poll_seconds: Generated<number>;
+    updated_by: string | null;
+    updated_at: GeneratedTimestamp;
+  };
+
+  /** A Verify, a folder browsed or a Test of the mailbox (0076, O1): asked by an owner, answered by the worker. */
+  settings_check: {
+    id: Generated<string>;
+    household_id: string;
+    kind: 'folder' | 'browse' | 'mailbox';
+    path: string | null;
+    requested_by: string | null;
+    requested_at: GeneratedTimestamp;
+    done_at: Timestamp | null;
+    result: Record<string, unknown> | null;
   };
 
   /**

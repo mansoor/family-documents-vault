@@ -238,6 +238,15 @@ begin
     revoke execute on function public.reading_checks_of_others() from public;
     grant execute on function public.reading_checks_of_others() to fdv_app;
   end if;
+  -- What whoever may add documents is told of the household's own mailbox
+  -- (0076, O1): set up, where to send, whether senders are checked.
+  if to_regprocedure('public.mail_in_box()') is not null then
+    revoke execute on function public.mail_in_box() from public;
+    grant execute on function public.mail_in_box() to fdv_app;
+    -- Whether another household uses a scanner folder (the O1 review, L2).
+    revoke execute on function public.watch_dir_used_elsewhere(text, boolean) from public;
+    grant execute on function public.watch_dir_used_elsewhere(text, boolean) to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

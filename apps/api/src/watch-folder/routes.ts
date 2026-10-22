@@ -1,3 +1,4 @@
+import { WATCH_KEEP_DAYS_MAX } from '@fdv/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
@@ -27,11 +28,26 @@ export function registerWatchFolder(app: FastifyInstance, watch: WatchFolderServ
         .object({
           enabled: z.boolean(),
           member_id: z.string().uuid().nullable().optional(),
+          // Which folder (0.9.0, O1): null for the server's own, FDV_WATCH_DIR.
+          dir: z.string().min(1).max(1024).nullable().optional(),
+          keep_days: z.number().int().min(0).max(WATCH_KEEP_DAYS_MAX).optional(),
         })
         .strict(),
       req.body,
     );
     return watch.put(p, body, metaOf(req));
+  });
+
+  // Verify a folder, and the folders inside one (O1): answered by the
+  // worker, asked after at GET /settings-checks/{id}.
+  const pathBody = z.object({ path: z.string().min(1).max(1024) }).strict();
+  app.post('/api/v1/watch-folder/verify', owners, async (req, reply) => {
+    const { path } = parse(pathBody, req.body);
+    return reply.status(202).send(await watch.verify(principal(req), path));
+  });
+  app.post('/api/v1/watch-folder/browse', owners, async (req, reply) => {
+    const { path } = parse(pathBody, req.body);
+    return reply.status(202).send(await watch.browse(principal(req), path));
   });
 
   app.get('/api/v1/watch-folder/notices', auth, async (req) => ({

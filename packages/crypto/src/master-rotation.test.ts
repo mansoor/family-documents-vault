@@ -8,6 +8,8 @@ import {
   checkMasterKey,
   ensureMasterKey,
   MASTER_SEALED,
+  sealedAad,
+  sealedBinds,
   MasterKeyMismatch,
   openBound,
   sealBound,
@@ -25,6 +27,8 @@ import { newKey, unwrapKey, wrapKey } from './wrap.js';
 
 const OLD = 'old-master-secret-with-at-least-32-bytes!!';
 const NEW = 'new-master-secret-with-at-least-32-bytes!!';
+/** The household mailbox's server and sign-in, as seeded: bound into its password. */
+const BOX = { host: 'imap.example.test', port: '993', username: 'home@example.test' };
 const OTHER = 'a-master-secret-nobody-here-has-32-bytes!!';
 
 describe.skipIf(!testAdminUrl())('a restored database and the master key', () => {
@@ -72,12 +76,22 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
       "insert into smtp_settings (household_id, host, from_email) values ($1, 'smtp.example.test', 'v@example.test')",
       [h],
     );
-    const ids = { account: a.rows[0]?.id, vault: v.rows[0]?.id, smtp_settings: h };
+    // The household mailbox set up in Settings (0.9.0, O1).
+    await admin.query(
+      "insert into mail_in_mailbox (household_id, host, username) values ($1, 'imap.example.test', 'home@example.test')",
+      [h],
+    );
+    const ids = {
+      account: a.rows[0]?.id,
+      vault: v.rows[0]?.id,
+      smtp_settings: h,
+      mail_in_mailbox: h,
+    };
     for (const s of MASTER_SEALED) {
       const id = ids[s.table] as string;
       const value = Buffer.from(`${s.name} of ${id}`);
       await admin.query(`update ${s.table} set ${s.column} = $1 where ${s.key} = $2`, [
-        sealBound(deriveKey(secret, s.purpose), value, s.aad(id)),
+        sealBound(deriveKey(secret, s.purpose), value, sealedAad(s, id, BOX)),
         id,
       ]);
       plain.set(`${s.table}:${id}`, value);
@@ -102,11 +116,17 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
       );
     }
     for (const s of MASTER_SEALED) {
-      const { rows } = await admin.query<{ id: string; v: Buffer }>(
-        `select ${s.key}::text as id, ${s.column} as v from ${s.table} where ${s.column} is not null`,
+      const binds = sealedBinds(s)
+        .map((b) => `, ${b}::text as ${b}`)
+        .join('');
+      const { rows } = await admin.query<{ id: string; v: Buffer } & Record<string, string>>(
+        `select ${s.key}::text as id, ${s.column} as v${binds} from ${s.table} where ${s.column} is not null`,
       );
       for (const r of rows) {
-        out.set(`${s.table}:${r.id}`, openBound(deriveKey(secret, s.purpose), r.v, s.aad(r.id)));
+        out.set(
+          `${s.table}:${r.id}`,
+          openBound(deriveKey(secret, s.purpose), r.v, sealedAad(s, r.id, r)),
+        );
       }
     }
     return out;
@@ -150,7 +170,7 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
     const moved = await ensureMasterKey(admin, NEW, OLD);
     expect(moved).toEqual({
       rewrapped: 6,
-      resealed: { totpSecrets: 2, vaultCredentials: 2, smtpPasswords: 2 },
+      resealed: { totpSecrets: 2, vaultCredentials: 2, smtpPasswords: 2, mailInPasswords: 2 },
       unchanged: 0,
     });
     expect(await openAll(NEW)).toEqual(plain);
@@ -192,11 +212,11 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
     const moved = await ensureMasterKey(admin, NEW, OLD);
     expect(moved).toEqual({
       rewrapped: 0,
-      resealed: { totpSecrets: 1, vaultCredentials: 1, smtpPasswords: 1 },
+      resealed: { totpSecrets: 1, vaultCredentials: 1, smtpPasswords: 1, mailInPasswords: 1 },
       unchanged: 3,
     });
     expect(await openAll(NEW)).toEqual(plain);
-    expect(await checkMasterKey(admin, NEW)).toEqual({ checked: 6 });
+    expect(await checkMasterKey(admin, NEW)).toEqual({ checked: 7 });
   });
 
   it('refuses whole, naming it, a value that opens with neither key, and moves nothing', async () => {
@@ -216,7 +236,7 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
       `smtp_settings.password_encrypted of ${h}`,
     ]);
     // Everything else opened, with one key or the other.
-    expect((refused as MasterKeyMismatch).opened).toBe(5);
+    expect((refused as MasterKeyMismatch).opened).toBe(6);
     expect(await bytes()).toBe(before);
   });
 
@@ -248,12 +268,12 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
 
   it('the check reads only, and names what does not open and whether the rest does', async () => {
     await seed(OLD);
-    expect(await checkMasterKey(admin, OLD)).toEqual({ checked: 6 });
+    expect(await checkMasterKey(admin, OLD)).toEqual({ checked: 7 });
     const wrong = await checkMasterKey(admin, NEW).catch((e: unknown) => e);
     expect(wrong).toBeInstanceOf(MasterKeyMismatch);
-    expect((wrong as MasterKeyMismatch).unopened).toHaveLength(6);
+    expect((wrong as MasterKeyMismatch).unopened).toHaveLength(7);
     expect((wrong as MasterKeyMismatch).opened).toBe(0);
-    expect((wrong as MasterKeyMismatch).message).toMatch(/scope key .* and 3 more do not open/);
+    expect((wrong as MasterKeyMismatch).message).toMatch(/scope key .* and 4 more do not open/);
   });
 
   it('refuses a connection row-level security applies to, which would see one household at most', async () => {

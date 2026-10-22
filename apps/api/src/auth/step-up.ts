@@ -42,7 +42,8 @@ export type StepUpAction =
   | 'identity_audience'
   | 'limit_access'
   | 'renew_guest'
-  | 'only_me_sharing';
+  | 'only_me_sharing'
+  | 'change_mailbox';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -100,6 +101,10 @@ const WHY: Record<StepUpAction, string> = {
   // Whether the household's Only me documents can be shared outside the
   // family at all (5.41): an owner power (A54).
   only_me_sharing: 'to change whether Only me documents can be shared outside the family',
+  // The household mailbox set up in Settings (0.9.0, the O1 review, H1): a
+  // session picked up from an unlocked device could otherwise point the
+  // vault's sign-in at a server of its own.
+  change_mailbox: 'to change the household mailbox',
 };
 
 /**

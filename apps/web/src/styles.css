@@ -922,6 +922,59 @@ h3 {
   min-width: 0;
 }
 
+/* 0.9.0, O1: what Verify and Test the mailbox found, a line a check. */
+.verify-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+/* The mark in a column of its own, so a long line wraps under its words. */
+.verify-steps li {
+  display: grid;
+  grid-template-columns: 1.25em minmax(0, 1fr);
+}
+
+.verify-steps .step-mark {
+  font-weight: 700;
+}
+
+.verify-steps .step-ok .step-mark {
+  color: var(--ok);
+}
+
+.verify-steps .step-bad .step-mark {
+  color: var(--danger);
+}
+
+.verify-steps .step-skip {
+  color: var(--ink-soft);
+}
+
+/* The folders inside one, to choose the scanner folder from. */
+.browse-list ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+
+.browse-list p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The household mailbox's form: its two short fields side by side where there is room. */
+.mailbox-pair {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+}
+
 /* 5.33: what a restricted viewer can see, on their Home. */
 .limits-told {
   margin: 0;

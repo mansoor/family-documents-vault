@@ -9,11 +9,13 @@ import {
   deriveKey,
   EncryptStream,
   EnvKeyProvider,
+  MAILBOX_PASSWORD_PURPOSE,
   memberPhotoBinding,
   newKey,
   ScopeKeys,
   sealBytes,
   sealIdentity,
+  sealMailboxPassword,
   sealPrivate,
   unwrapKey,
   wrapKey,
@@ -259,6 +261,21 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     await addDoc('Home insurance', 'adults', ownerMember, 'POLICY BYTES', 'insurance');
     await addDoc('My private note', 'private', ownerMember, 'PRIVATE BYTES', 'legal');
     await addDoc("Sana's private note", 'private', otherMember, 'NOT FOR OWNER', 'legal');
+    // The household mailbox set up in Settings (0.9.0, O1): its app password
+    // is never in an export, plain or sealed, nor its server or sign-in.
+    const mailboxPassword = `export-pw-${randomUUID()}`;
+    const sealedPassword = sealMailboxPassword(
+      deriveKey(MASTER, MAILBOX_PASSWORD_PURPOSE),
+      mailboxPassword,
+      hh,
+      { host: 'imap.export.test', port: 993, username: 'mailbox-signin@export.test' },
+    );
+    await admin.query(
+      `insert into mail_in_mailbox (household_id, host, username, password_encrypted)
+       values ($1, 'imap.export.test', 'mailbox-signin@export.test', $2)
+       on conflict (household_id) do update set password_encrypted = $2`,
+      [hh, sealedPassword],
+    );
 
     const exportId = await withSystem(db, hh, (trx) =>
       trx
@@ -315,6 +332,16 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     );
     const all = Buffer.concat([...entries.values()]);
     expect(all.includes(Buffer.from('NOT FOR OWNER'))).toBe(false);
+    for (const secret of [
+      Buffer.from(mailboxPassword),
+      sealedPassword,
+      Buffer.from(sealedPassword.toString('hex')),
+      Buffer.from(sealedPassword.toString('base64')),
+      Buffer.from('mailbox-signin@export.test'),
+      Buffer.from('imap.export.test'),
+    ]) {
+      expect(all.includes(secret)).toBe(false);
+    }
     expect(entries.get('legal/My private note.pdf')?.toString()).toBe('PRIVATE BYTES');
     expect(entries.get("identity/Mansoor's passport.pdf")?.toString()).toBe('PASSPORT BYTES');
     // The indexes carry the facts a person would need without the app.

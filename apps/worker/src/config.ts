@@ -82,6 +82,22 @@ const schema = z.object({
       'A folder a network scanner saves into (S3): mounted into the worker, it fills one ' +
         "person's Inbox once an owner turns it on. Unset: there is no scanner folder.",
     ),
+  FDV_WATCH_ROOTS: z
+    .string()
+    .min(1)
+    .max(4000)
+    .default('/watch')
+    .transform((s) =>
+      s
+        .split(',')
+        .map((r) => r.trim())
+        .filter((r) => r.length > 0),
+    )
+    .refine((roots) => roots.length > 0 && roots.length <= 20, 'one to twenty folders')
+    .describe(
+      'The folders mounted into the worker that an owner may choose the scanner folder inside, ' +
+        'in Settings (0.9.0), comma-separated. FDV_WATCH_DIR may always be chosen too.',
+    ),
   FDV_WATCH_STABLE_SECONDS: z.coerce
     .number()
     .int()
@@ -176,6 +192,34 @@ const schema = z.object({
     .optional()
     .describe(
       "The mailbox provider's Authentication-Results id (mx.google.com): set, a sender is accepted only on its word.",
+    ),
+  FDV_MAIL_IN_ALLOWED_PORTS: z
+    .string()
+    .min(1)
+    .max(200)
+    .default('993')
+    .transform((s) =>
+      s
+        .split(',')
+        .map((p) => p.trim())
+        .filter((p) => p.length > 0)
+        .map(Number),
+    )
+    .refine(
+      (ports) =>
+        ports.length > 0 &&
+        ports.length <= 20 &&
+        ports.every((p) => Number.isInteger(p) && p >= 1 && p <= 65535),
+      'one to twenty port numbers',
+    )
+    .describe(
+      'The ports a household mailbox set up in Settings may be on (0.9.0), comma-separated: 993 by default. FDV_MAIL_IN_PORT is the operator’s own, and not limited.',
+    ),
+  FDV_MAIL_IN_ALLOW_PRIVATE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .describe(
+      'Let a household mailbox set up in Settings be on an address inside your own network (a mail server on the LAN). Off by default: an owner types the server, and must not be able to point the vault at its own network.',
     ),
   DATABASE_ADMIN_URL: z
     .string()

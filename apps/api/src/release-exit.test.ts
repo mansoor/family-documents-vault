@@ -57,6 +57,8 @@ const PDF = (marker: string) =>
 
 /** What is planted, and must reach nobody it is not for. */
 const PASSPORT = 'X9F2K7Q41';
+/** The household mailbox's app password, set in Settings (0.9.0, O1): nobody is ever answered it. */
+const MAILBOX_PASSWORD = 'MAILBOX-APP-PW-541-zq8';
 const LICENCE = 'KHANA7712049ZZ';
 const NOTE = 'The spare key is under the blue flowerpot by the shed.';
 const DETAIL = 'VIN-SECRET-7741-QX';
@@ -204,7 +206,9 @@ type Kind =
   /** Not a parameter: another person's code to confirm their address for email in (S4), sent in a body. */
   | 'mailInCode'
   /** A Reading check (0.9.0, R0): the household's owners', its misses its asker's alone. */
-  | 'readingCheck';
+  | 'readingCheck'
+  /** A Verify, a browse or a Test of the mailbox asked of the worker (0.9.0, O1): the owners'. */
+  | 'settingsCheck';
 
 /** The ids one request is made with: the thing of each kind the attacker is after. */
 type Fill = Record<Kind, string>;
@@ -247,6 +251,7 @@ const PARAM_KINDS: Record<string, Kind> = {
   'notices/:id': 'watchNotice',
   'paired-devices/:id': 'pairedDevice',
   'reading-checks/:id': 'readingCheck',
+  'settings-checks/:id': 'settingsCheck',
 };
 
 /** The kinds that name a thing of somebody's: another's id here is refused unless the rule says. */
@@ -276,6 +281,7 @@ const OBJECT_KINDS: ReadonlySet<Kind> = new Set<Kind>([
   'watchNotice',
   'pairedDevice',
   'readingCheck',
+  'settingsCheck',
 ]);
 
 interface Rule {
@@ -867,6 +873,32 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/mail-in/me': { who: 'family' },
   'POST /api/v1/mail-in/me/code': { who: 'family', body: () => ({}) },
   'POST /api/v1/mail-in/me/email-code': { who: 'family', body: () => ({}) },
+  // The household mailbox set up in Settings, and Test the mailbox; Verify
+  // and browse a scanner folder; and the worker's answer (0.9.0, O1): the
+  // owners' alone. A mailbox an attacker writes would be checked for the
+  // household's mail; so last, and with a password nobody is answered.
+  'PUT /api/v1/mail-in/mailbox': {
+    who: 'owners',
+    last: true,
+    body: () => ({
+      host: 'imap.attacker.test',
+      port: 993,
+      username: 'attacker@attacker.test',
+      password: 'attacker-pw',
+      folder: 'INBOX',
+      after: 'delete',
+      authserv_id: null,
+      poll_seconds: 30,
+    }),
+  },
+  'DELETE /api/v1/mail-in/mailbox': { who: 'owners', last: true },
+  'POST /api/v1/mail-in/mailbox/test': { who: 'owners', body: () => ({}) },
+  'POST /api/v1/watch-folder/verify': { who: 'owners', body: () => ({ path: '/watch' }) },
+  'POST /api/v1/watch-folder/browse': { who: 'owners', body: () => ({ path: '/watch' }) },
+  'GET /api/v1/settings-checks/:id': {
+    who: 'owners',
+    theirs: { passwordOnlyOwner: 'a check asked of the worker is the household owners’ (O1)' },
+  },
   // A code of nobody's, and Ahmed's own live one (the 0.8.0 exit): neither
   // confirms the caller's address, and his stays his.
   'POST /api/v1/mail-in/me/confirm': {
@@ -1467,6 +1499,36 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     expect(held.rows[0]?.code_kind).toBe('enter');
     ids.mailInCodeHex = held.rows[0]?.code_hash.toString('hex') as string;
     ids.mailInCodeBase64 = held.rows[0]?.code_hash.toString('base64') as string;
+    // The household mailbox an owner set up in Settings (0.9.0, O1), with its
+    // app password; and a Verify of a scanner folder the owner asked the
+    // worker for: the owners' alone, and the password nobody's to see.
+    await fresh(olivia);
+    await ok(
+      send(olivia, 'PUT', '/api/v1/mail-in/mailbox', {
+        host: 'imap.household-541.test',
+        port: 993,
+        username: 'home-541@vault.test',
+        password: MAILBOX_PASSWORD,
+        folder: 'INBOX',
+        after: 'move',
+        authserv_id: null,
+        poll_seconds: 300,
+      }),
+    );
+    const boxRow = await admin.query<{ p: Buffer }>(
+      'select password_encrypted as p from mail_in_mailbox where household_id = $1',
+      [olivia.household_id],
+    );
+    ids.mailboxSealedHex = boxRow.rows[0]?.p.toString('hex') as string;
+    ids.mailboxSealedBase64 = boxRow.rows[0]?.p.toString('base64') as string;
+    await admin.query(
+      `insert into watch_dir (singleton, dir, state, roots, own_dirs, checked_at)
+       values (true, '/watch', 'ready', '{/watch}', '{/data/vault}', now())
+       on conflict (singleton) do update set roots = '{/watch}', checked_at = now()`,
+    );
+    ids.settingsCheck = json<{ id: string }>(
+      await ok(send(olivia, 'POST', '/api/v1/watch-folder/verify', { path: '/watch/541' }), 202),
+    ).id;
 
     // Olivia's Reading check (0.9.0, R0), as the worker leaves one done: its
     // numbers, every owner's; and its misses sealed under her key alone —
@@ -3054,6 +3116,10 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       NOTE,
       DETAIL,
       PAGE_WORD,
+      // The household mailbox's app password, plain or sealed (0.9.0, O1): nobody's to see, an owner's neither.
+      MAILBOX_PASSWORD,
+      ids.mailboxSealedHex as string,
+      ids.mailboxSealedBase64 as string,
       ...secretsOf('ahmedPrivate', 'oliviaPrivate'),
       ids.ahmedOnly as string,
       'Ahmed only',
@@ -3138,6 +3204,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       pairedDevice: [ids.pairedDevice as string],
       mailInCode: [ids.mailInCode as string],
       readingCheck: [ids.readingCheck as string],
+      settingsCheck: [ids.settingsCheck as string],
     };
     const viewerLike = (name: Attacker, tokens: Tokens, stale = false): AttackerDef => ({
       name,
@@ -3449,6 +3516,7 @@ const PARAM_KIND_DEFAULTS: Record<Kind, true> = {
   pairedDevice: true,
   mailInCode: true,
   readingCheck: true,
+  settingsCheck: true,
 };
 
 function kindOf(before: string, param: string): Kind | null {

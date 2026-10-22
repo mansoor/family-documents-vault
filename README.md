@@ -362,6 +362,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_DB_APP_PASSWORD`                           | generated                                 | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query.                                                                      |
 | `FDV_MAX_UPLOAD_BYTES`                          | `104857600`                               | Largest single file the vault accepts (100 MB), uploaded, from the scanner folder or attached to an email.                                                                                                              |
 | `FDV_WATCH_DIR`                                 | unset                                     | A folder a scanner saves into, inside the worker: `/watch`, with the compose file's mount. Unset: none. See [Scanning straight into the vault](#scanning-straight-into-the-vault).                                      |
+| `FDV_WATCH_ROOTS`                               | `/watch`                                  | The folders mounted into the worker an owner may choose the scanner folder inside, comma-separated. `/`, or a folder holding the vault's own, is refused.                                                               |
 | `FDV_WATCH_STABLE_SECONDS`                      | `10`                                      | How long a scan must stop changing before the worker takes it (2 to 3600); raise it for a slow scanner.                                                                                                                 |
 | `FDV_WATCH_INCOMPLETE_GRACE_SECONDS`            | `120`                                     | How long a scan that has stopped changing but looks unfinished waits before it is taken anyway (0 to 86400).                                                                                                            |
 | `FDV_MAIL_IN_HOST`                              | unset                                     | The household mailbox's IMAP server, e.g. `imap.gmail.com`. With `FDV_MAIL_IN_USER` and a password, email in can be turned on. See [Emailing documents to the vault](#emailing-documents-to-the-vault).                 |
@@ -373,6 +374,8 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_MAIL_IN_POLL_SECONDS`                      | `300`                                     | How often the mailbox is checked (30 to 86400).                                                                                                                                                                         |
 | `FDV_MAIL_IN_AFTER`                             | `move`                                    | What happens to an email once its attachments are in: `move` to a `Filed` folder, or `delete`.                                                                                                                          |
 | `FDV_MAIL_IN_AUTHSERV_ID`                       | unset                                     | Your provider's `Authentication-Results` name (`mx.google.com` for Gmail): set, only mail it vouched for is taken, and an address may be confirmed from itself. Unset, items say "sender not verified".                 |
+| `FDV_MAIL_IN_ALLOWED_PORTS`                     | `993`                                     | The ports a mailbox set up in Settings may be on, comma-separated. `FDV_MAIL_IN_PORT` is yours, and not limited.                                                                                                        |
+| `FDV_MAIL_IN_ALLOW_PRIVATE`                     | `false`                                   | `true` lets a mailbox set up in Settings be at an address inside your own network (a mail server on the LAN). Off, the worker never connects to one for a household.                                                    |
 | `FDV_OFFLINE_MAX_DAYS`                          | `90`                                      | How many days a phone may show the Essentials it keeps without reaching the vault (1 to 365). See [Essentials on a phone](#essentials-on-a-phone).                                                                      |
 | `FDV_RATE_LIMIT_PER_MINUTE`                     | `300`                                     | How many requests one address may make in a minute, beyond the tighter limits on signing in and opening links (60 to 100000). Raise it when many devices share one address.                                             |
 | `FDV_DISPLAY_NAME`                              | `Our family vault`                        | The vault's name until it is set up. From then on every screen, and the phone app, shows the family's name, given at setup.                                                                                             |
@@ -758,7 +761,24 @@ scanner alone, on your home network, with a password of its own.
 
 2. **Mount it into the worker.** In `docker-compose.yml`, uncomment
    `# - ./scanner:/watch` under the worker's `volumes`, add `FDV_WATCH_DIR=/watch`
-   to `.env`, and run `docker compose up -d`. Only the worker needs it. The next
+   to `.env`, and run `docker compose up -d`. Only the worker needs it.
+   `FDV_WATCH_DIR` is the folder used until an owner chooses another in
+   Settings; it may be left out, and the folder chosen there instead. An owner
+   may choose any folder inside `/watch` (one per scanner, say:
+   `/watch/office`), or inside the folders you name in `FDV_WATCH_ROOTS`
+   (comma-separated, `/watch` by default) and mount there too. None of the
+   vault's own folders, nor a folder above one — `/data`, where it keeps
+   files and backups, `/tmp`, `/app`, `/run/secrets` — can be chosen, nor
+   anything reached through a link out of those folders: the API refuses it,
+   and the worker refuses it again every time it looks. **`/data` is the
+   vault's own volume, so a scanner folder can never be under it**: mount
+   the scanner folder at `/watch` (or a root of your own), never at, say,
+   `/data/scanner`. **Never mount a folder above the vault's data volume**
+   (the host folder that holds `vault-data`, or `/`) into the worker as a
+   root: the worker refuses a root that is `/` or holds one of its own
+   folders, says so in its log and in Settings, and compares folders by
+   device and inode as well as by name, so a bind mount of its own data
+   inside a scanner folder is never walked. The next
    upgrade brings a new `docker-compose.yml`, which has the line commented out
    again; to keep the mount through upgrades, put it in a
    `docker-compose.override.yml` beside it instead (Compose reads that file by
@@ -795,7 +815,15 @@ scanner alone, on your home network, with a password of its own.
 4. **Turn it on.** An owner, in **Settings → For owners → Scanner folder**,
    chooses whose Inbox it fills: themselves, or anyone in the family who signs
    in and adds documents, never a viewer. The page says whether the folder is
-   ready and, if not, why: not set, not there, or not writable.
+   ready and, if not, why: not set, not there, not writable, or not a folder
+   the vault may use. Under **Which folder**, an owner can keep the server's
+   own (`FDV_WATCH_DIR`) or choose another, typed or browsed to, and
+   **Verify** it first: the worker says, check by check, whether it is there
+   and is a folder, is inside the folders it may use with no link out of
+   them, is none of the vault's own, whether the vault can see into it, make,
+   move and delete a file in it (a hidden test file, removed afterwards), and
+   how much room is left. Under **Kept scans**, how many days a scan is kept
+   once it is in the vault (below).
 
 What happens to each file:
 
@@ -816,7 +844,7 @@ What happens to each file:
   in transaction mode, which would let two workers watch at once.
 - Files in folders inside it are taken too. Hidden files (a name starting with
   `.`), names a program uses while it saves (`~…`, `….tmp`, `….part`) and the
-  `rejected` folder are left alone. The worker never follows a link, to a
+  `rejected` and `processed` folders are left alone. The worker never follows a link, to a
   file or a folder. Just before it reads, moves or deletes a file it checks
   that the file is the one it listed and that its real path is inside the
   folder; on Linux, the worker's own system, it checks the open file itself.
@@ -826,9 +854,31 @@ What happens to each file:
   Add → Many documents does for a folder chosen there. The folder's name is
   kept encrypted with the file, for that person alone.
 - It is encrypted into that person's batch of the day, "Scanner, 12 Oct" on the
-  household's calendar, read and proposed for like anything they upload, and
-  only then deleted from the folder. Until they accept it nobody else sees
-  it, not even an owner.
+  household's calendar, read and proposed for like anything they upload.
+  Until they accept it nobody else sees it, not even an owner.
+- **Only once it is safely stored is it moved out of the way**, to
+  `processed/<date>/` in the folder (the household's date, the folders it was
+  in kept under it; a name already there becomes "scan (2).pdf"), and
+  **deleted after the number of days an owner sets: 7 unless they change it**,
+  up to 365. 0 deletes it at once instead. **Scans kept there are not
+  encrypted until they're deleted; anyone who can open the server's folder
+  can read them**: keep the folder private (step 1), or set 0 days. The
+  worker deletes only the scans it kept, each recorded as it moved it
+  there, and only while it is still that very file: one put in its place is
+  left alone, and **anything else saved into `processed` is never touched,
+  nor added**. The vault's own `processed` has a `.fdv-processed` file in
+  it; one it didn't make is never used (Settings says so: rename it), and
+  scans are deleted once stored instead. Scans kept in a folder chosen
+  before are deleted in time while the vault may still use that folder;
+  otherwise Settings says how many are left there, to delete by hand. A kept
+  scan is known by its birth time where the file system has one, so a
+  change to its permissions or attributes (Samba's DOS attributes, an
+  antivirus) doesn't hide it; where there is none and it changed, it is
+  left in place and counted in Settings, never deleted. After a
+  [restore](#restoring), scans kept since the backup was made are counted in
+  Settings and never deleted by the vault: delete them by hand. A household that had the
+  scanner folder set up before 0.9.0 keeps 0 days after the upgrade, so its
+  scans are still deleted at once until an owner chooses to keep them.
 - A file the vault can't take is moved to `rejected/` (only uid 1000 can open
   it), with a note beside it (`<name>.txt`) saying why. That happens when it
   isn't a PDF, JPEG, PNG, TIFF, HEIC, WebP, Word or Excel file, is larger
@@ -848,7 +898,8 @@ What happens to each file:
   meanwhile.
 
 Nothing in the folder is encrypted, and the folder is not backed up: a scan
-sits there only until it is stored, or until you deal with what was rejected.
+sits there until it is stored, then in `processed/` for the days kept, and
+what was rejected until you deal with it.
 
 ### Emailing documents to the vault
 
@@ -908,6 +959,36 @@ family goes into their Inbox to look over, as if they had added it.
    never logged, never sent to the browser or the phone, never stored in the
    database, and taken out of the worker's environment as soon as it is read,
    so no tool the worker runs is handed it.
+
+   **Or set it up in Settings**, with nothing on the server: an owner, in
+   **Settings → For owners → Email in → Set up the mailbox**, fills in the
+   IMAP server and port (993), the sign-in and its app password, the folder
+   (INBOX), what happens to an email once its attachments are in, the
+   provider's authserv-id ("Gmail: mx.google.com") and how often it is
+   checked, and saves. That mailbox is the one checked for the household,
+   whatever `FDV_MAIL_IN_*` says; **Remove this mailbox** goes back to the
+   server's own. The app password is stored encrypted, under a key of its own
+   derived from the master key with the household bound in: it is never shown
+   again (only that one is set), never logged, never in an export, and the
+   worker hands it to the IMAP connection alone — and only to the server,
+   port and sign-in it was typed for: change any of them and type the app
+   password again. Saving the mailbox asks you to confirm it is you. The
+   server must be on port 993 and at an address outside your server's own
+   network: set `FDV_MAIL_IN_ALLOWED_PORTS` or `FDV_MAIL_IN_ALLOW_PRIVATE=true`
+   in `.env` (the worker's) to allow another port, or a mail server on your
+   LAN. **Test the mailbox** signs in to what is saved, opens the folder
+   read-only and says how many messages are there, whether the server can
+   move and delete one email alone (MOVE, UIDPLUS), and — when the newest
+   three emails' Authentication-Results all name the same server — a hint at
+   the authserv-id; check it against your provider's documentation before
+   you copy it, as anybody can write that header into an email. Those
+   headers are all it reads: no email is moved or marked. After a
+   [restore](#restoring) the mailbox comes back with its password, which opens
+   as before with the same master key; a backup made before you
+   [rotated the master key](#rotating-the-master-key) is moved onto the new
+   one by the restore, with `FDV_MASTER_KEY_PREVIOUS`, as the other secrets
+   are. If it ever does not open, Settings says so: type the app password in
+   again.
 
 4. **Turn it on.** An owner, in **Settings → For owners → Email in**. The page
    says whether the mailbox is set up and when the worker last checked it,
@@ -1149,7 +1230,7 @@ A photo chosen for a person rests for a few seconds in `<household>/members/<per
 
 ### Rotating the master key
 
-Rotation moves everything the master key protects onto a new key, in one database transaction: it rewraps the small per-household keys, and seals again the secrets the vault keeps for you — each person's two-step sign-in, an S3 bucket's credentials, the household's mail password. The encrypted files themselves are never rewritten, so it takes seconds regardless of how much you store.
+Rotation moves everything the master key protects onto a new key, in one database transaction: it rewraps the small per-household keys, and seals again the secrets the vault keeps for you — each person's two-step sign-in, an S3 bucket's credentials, the household's mail password, and the household mailbox's app password set in Settings. The encrypted files themselves are never rewritten, so it takes seconds regardless of how much you store.
 
 First make the new key, and put it somewhere safe before you use it — beside your copy of `.env`, or in a password manager. After the rotation, nothing opens without it. This works in any shell, PowerShell and the Windows command prompt included:
 

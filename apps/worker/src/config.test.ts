@@ -69,3 +69,23 @@ describe("the worker's email in settings", () => {
     expect(said).not.toContain(password);
   });
 });
+
+/**
+ * FDV_WATCH_ROOTS (0.9.0, O1): the folders an owner may choose the scanner
+ * folder inside, in Settings. /watch unless said; compose's empty value is
+ * the default too.
+ */
+describe("the worker's FDV_WATCH_ROOTS", () => {
+  const env = { DATABASE_URL: 'postgres://localhost/fdv', FDV_MASTER_KEY: 'k'.repeat(43) };
+
+  it('is /watch by default, and a comma-separated list otherwise', () => {
+    expect(loadConfig(env).FDV_WATCH_ROOTS).toEqual(['/watch']);
+    expect(loadConfig({ ...env, FDV_WATCH_ROOTS: '' }).FDV_WATCH_ROOTS).toEqual(['/watch']);
+    expect(
+      loadConfig({ ...env, FDV_WATCH_ROOTS: ' /watch , /scans/office,,' }).FDV_WATCH_ROOTS,
+    ).toEqual(['/watch', '/scans/office']);
+    expect(() => loadConfig({ ...env, FDV_WATCH_ROOTS: ',' })).toThrow(/FDV_WATCH_ROOTS/);
+    const many = Array.from({ length: 21 }, (_, i) => `/r${i}`).join(',');
+    expect(() => loadConfig({ ...env, FDV_WATCH_ROOTS: many })).toThrow(/FDV_WATCH_ROOTS/);
+  });
+});

@@ -70,7 +70,15 @@ export type MailInError =
   | 'not_filed'
   | 'sealed'
   | 'no_storage'
-  | 'unreadable';
+  | 'unreadable'
+  /** The app password set in Settings does not open with this master key, or for this server (0.9.0, O1). */
+  | 'password_sealed'
+  /**
+   * A mailbox set up in Settings whose server is a port, or an address
+   * inside the server's own network, the vault does not connect to (the O1
+   * review, M3: FDV_MAIL_IN_ALLOWED_PORTS, FDV_MAIL_IN_ALLOW_PRIVATE).
+   */
+  | 'address_refused';
 
 /**
  * Why an email, or some of it, could not be added: in its person's Needs
@@ -141,6 +149,197 @@ export interface MailInView {
   /** How the family may confirm their addresses; while there is no way, why (F1). */
   confirm: MailInConfirmWays;
   confirm_warning: string | null;
+  /**
+   * Which mailbox is checked (0.9.0, O1): the one an owner set up in
+   * Settings (`settings`), which overrides FDV_MAIL_IN_*; the server's own
+   * (`server`); or none. Absent from a vault before 0.9.0.
+   */
+  source?: MailInSource;
+  /** The one set up in Settings, without its password: null when there is none. */
+  mailbox?: MailInMailboxView | null;
+}
+
+/** Which mailbox is checked: set up in Settings, the server's FDV_MAIL_IN_*, or none. */
+export type MailInSource = 'settings' | 'server' | 'none';
+
+/**
+ * GET /mail-in's `mailbox` (0.9.0, O1): the household mailbox as an owner
+ * set it up. Its app password is never returned: only whether one is set.
+ */
+export interface MailInMailboxView {
+  host: string;
+  port: number;
+  username: string;
+  password: 'set' | 'not_set';
+  folder: string;
+  after: MailInAfter;
+  /** The provider's Authentication-Results id (mx.google.com for Gmail): set, a sender is accepted only on its word. */
+  authserv_id: string | null;
+  poll_seconds: number;
+  updated_at: string;
+}
+
+/**
+ * PUT /mail-in/mailbox: the household mailbox. `password` left out keeps
+ * the one set; it is stored sealed, and never returned or logged.
+ */
+export interface MailInMailboxInput {
+  host: string;
+  port: number;
+  username: string;
+  password?: string | undefined;
+  folder: string;
+  after: MailInAfter;
+  authserv_id: string | null;
+  poll_seconds: number;
+}
+
+/** The IMAP port a mailbox is set up with by default: TLS from the first byte. */
+export const MAIL_IN_PORT_DEFAULT = 993;
+
+/** What Gmail's Authentication-Results say they are: the hint beside the field. */
+export const MAIL_IN_AUTHSERV_HINT = 'Gmail: mx.google.com';
+
+/**
+ * Why "Test the mailbox" could not finish (0.9.0, O1): no mailbox is set up
+ * (`not_set_up`), or one of the mailbox's own problems, as a word.
+ */
+export type MailInTestProblem =
+  | 'not_set_up'
+  | 'login_failed'
+  | 'unreachable'
+  | 'certificate'
+  | 'no_folder'
+  /** The app password does not open: another master key, or kept for another server (the O1 review). */
+  | 'password_sealed'
+  /** A port or an address the vault does not connect to for a mailbox set up in Settings (M3). */
+  | 'address_refused'
+  /** Another Test of this household's mailbox is running just now (the O1 re-check, 4). */
+  | 'busy';
+
+/** Said of a server the vault does not connect to for a mailbox set up in Settings (the O1 review, M3). */
+export function mailInAddressRefused(ports: readonly number[] = [993]): string {
+  const allowed = ports.length ? [...ports] : [993];
+  const list =
+    allowed.length === 1
+      ? `port ${allowed[0]}`
+      : `port ${allowed.slice(0, -1).join(', ')} or ${allowed[allowed.length - 1]}`;
+  const isnt = allowed.length === 1 ? `isn’t ${allowed[0]}` : `isn’t one of ${allowed.join(', ')}`;
+  return `The vault doesn’t connect to that mail server for a mailbox set up here: its port ${isnt}, or its address is inside this server’s own network (a private, loopback or link-local address). Use your provider’s IMAP server on ${list}. The server’s operator can allow others (FDV_MAIL_IN_ALLOWED_PORTS, FDV_MAIL_IN_ALLOW_PRIVATE).`;
+}
+
+/** Said with the ports allowed by default, 993 alone. */
+export const MAIL_IN_ADDRESS_REFUSED = mailInAddressRefused([993]);
+
+/** How many of the newest messages' Authentication-Results must agree before an authserv-id is suggested. */
+export const MAIL_IN_AUTHSERV_AGREE = 3;
+
+/**
+ * What "Test the mailbox" found, as it is kept (0.9.0, O1): it signs in,
+ * opens the folder read-only, and asks for the headers of the newest
+ * message alone, with BODY.PEEK — no mail is marked, moved or fetched.
+ */
+export interface MailInTestFound {
+  source: MailInSource;
+  problem: MailInTestProblem | null;
+  /** How many messages are in the folder. */
+  messages: number | null;
+  /** The server's MOVE and UIDPLUS: whether it can move, and delete, one mail alone. */
+  move: boolean | null;
+  uidplus: boolean | null;
+  /**
+   * The authserv-id on the topmost Authentication-Results of each of the
+   * newest three messages, when all three name the same one (the O1
+   * review, L3): only a hint. Null otherwise.
+   */
+  authserv_id_seen: string | null;
+  /** How many of the newest messages' Authentication-Results headers were read (three at most). */
+  headers_read?: number;
+  /** The ports a mailbox set up here may be on (FDV_MAIL_IN_ALLOWED_PORTS), said with `address_refused`. */
+  allowed_ports?: number[];
+  /** The authserv-id the vault is set to believe; null for none. */
+  authserv_id_set: string | null;
+}
+
+/** "Test the mailbox", answered: what was found, and each part of it in words. */
+export interface MailInTestResult extends MailInTestFound {
+  ok: boolean;
+  lines: string[];
+}
+
+/** What a Test found, in words. */
+export function mailInTestResult(f: MailInTestFound, folder: string | null): MailInTestResult {
+  const lines: string[] = [];
+  if (f.problem === 'not_set_up') {
+    lines.push('No mailbox is set up yet: fill in the mailbox above and save it first.');
+    return { ...f, ok: false, lines };
+  }
+  if (f.problem) {
+    lines.push(testProblemWords(f.problem, folder, f.allowed_ports));
+    return { ...f, ok: false, lines };
+  }
+  const n = f.messages ?? 0;
+  lines.push(
+    `Signed in, and opened ${folder ?? 'the folder'}: ${n === 1 ? '1 message is' : `${n} messages are`} there. Only the newest emails’ Authentication-Results headers were read (three at most); nothing was moved or marked.`,
+  );
+  if (f.move && f.uidplus) {
+    lines.push('The server can move and delete one email alone (MOVE and UIDPLUS).');
+  } else if (f.uidplus) {
+    lines.push(
+      'The server can delete one email alone (UIDPLUS), but not move one (no MOVE): “Move to Filed” works as delete.',
+    );
+  } else {
+    lines.push(
+      'The server can’t move or delete one email alone (no MOVE or UIDPLUS), so the vault would leave each email it adds where it is, marked as read.',
+    );
+  }
+  const caution =
+    'It is only a hint: anybody can write that header into an email, so check it against your provider’s own documentation.';
+  if (n < MAIL_IN_AUTHSERV_AGREE || (f.headers_read ?? 0) < MAIL_IN_AUTHSERV_AGREE) {
+    lines.push(
+      'There are fewer than three messages to read an authserv-id from, so none is suggested. Send a few to the mailbox from different accounts, and test again.',
+    );
+  } else if (!f.authserv_id_seen) {
+    lines.push(
+      'The newest three messages’ Authentication-Results don’t all name the same server, so no authserv-id is suggested. Your provider’s documentation names it.',
+    );
+  } else if (!f.authserv_id_set) {
+    lines.push(
+      `The newest three messages’ Authentication-Results all name ${f.authserv_id_seen}, which may be your provider’s authserv-id. ${caution}`,
+    );
+  } else if (f.authserv_id_seen === f.authserv_id_set.toLowerCase()) {
+    lines.push(
+      `The newest three messages’ Authentication-Results all name ${f.authserv_id_seen}, as set.`,
+    );
+  } else {
+    lines.push(
+      `The newest three messages’ Authentication-Results all name ${f.authserv_id_seen}, not ${f.authserv_id_set} as set: if that is your provider’s, every sender fails the check now. ${caution}`,
+    );
+  }
+  return { ...f, ok: true, lines };
+}
+
+function testProblemWords(
+  p: Exclude<MailInTestProblem, 'not_set_up'>,
+  folder: string | null,
+  ports?: readonly number[],
+) {
+  switch (p) {
+    case 'login_failed':
+      return 'The mailbox refused the sign-in. Check the sign-in and the app password (an app password, not the account’s own).';
+    case 'unreachable':
+      return 'The vault couldn’t reach the mail server. Check the server’s name and port, and the server’s internet connection.';
+    case 'certificate':
+      return 'The mail server’s certificate couldn’t be verified, so the vault didn’t sign in. Check that the server is your provider’s IMAP server name.';
+    case 'no_folder':
+      return `Signed in, but the mailbox has no folder called ${folder ?? 'that'}. Check the folder.`;
+    case 'password_sealed':
+      return 'The vault can’t open the saved app password for this server: type the app password again and save.';
+    case 'address_refused':
+      return mailInAddressRefused(ports);
+    case 'busy':
+      return 'The mailbox is being tested just now. Wait for that answer, then test it again.';
+  }
 }
 
 /** PUT /mail-in: on or off. */
@@ -227,28 +426,46 @@ export function mailServerWords(
   state: MailInView['server']['state'],
   address: string | null,
   folder: string | null,
+  source: MailInSource = 'server',
 ): string {
   switch (state) {
     case 'ready':
       return `The vault checks ${address ?? 'the household mailbox'}${folder ? `, in its ${folder} folder` : ''}.`;
     case 'not_configured':
-      return 'Email in isn’t set up on this server: FDV_MAIL_IN_HOST, FDV_MAIL_IN_USER and a password aren’t all set on the worker. The README’s “Emailing documents to the vault” says how.';
+      return source === 'settings'
+        ? 'The household mailbox below has no app password yet. Type it in and save.'
+        : 'No household mailbox is set up yet. Set one up below, or on the server (FDV_MAIL_IN_HOST, FDV_MAIL_IN_USER and a password on the worker). The README’s “Emailing documents to the vault” says how.';
     case 'unknown':
       return 'The worker hasn’t checked the mailbox lately. Check that it is running.';
   }
 }
 
-/** What last went wrong, to an owner: never a secret, always what to do. */
-export function mailInErrorWords(code: MailInError, folder?: string | null): string {
+/**
+ * What last went wrong, to an owner: never a secret, always what to do —
+ * in Settings' words for a mailbox set up there (`source`, 0.9.0), in the
+ * server's settings' for FDV_MAIL_IN_*.
+ */
+export function mailInErrorWords(
+  code: MailInError,
+  folder?: string | null,
+  source: MailInSource = 'server',
+  /** FDV_MAIL_IN_ALLOWED_PORTS, as the worker said: named for `address_refused`. */
+  ports?: readonly number[],
+): string {
+  const here = source === 'settings';
   switch (code) {
     case 'login_failed':
-      return 'The mailbox refused the vault’s sign-in. Check FDV_MAIL_IN_USER and the app password. The vault tries less often until it works, so the provider doesn’t lock the mailbox.';
+      return `The mailbox refused the vault’s sign-in. Check ${here ? 'the sign-in' : 'FDV_MAIL_IN_USER'} and the app password. The vault tries less often until it works, so the provider doesn’t lock the mailbox.`;
     case 'unreachable':
-      return 'The vault couldn’t reach the mail server. Check FDV_MAIL_IN_HOST and FDV_MAIL_IN_PORT, and the server’s internet connection.';
+      return `The vault couldn’t reach the mail server. Check ${here ? 'the server’s name and port' : 'FDV_MAIL_IN_HOST and FDV_MAIL_IN_PORT'}, and the server’s internet connection.`;
     case 'certificate':
-      return 'The mail server’s certificate couldn’t be verified, so the vault didn’t sign in. Check that FDV_MAIL_IN_HOST is your provider’s IMAP server name.';
+      return `The mail server’s certificate couldn’t be verified, so the vault didn’t sign in. Check that ${here ? 'the server' : 'FDV_MAIL_IN_HOST'} is your provider’s IMAP server name.`;
     case 'no_folder':
-      return `The mailbox has no folder called ${folder ?? 'that'}. Check FDV_MAIL_IN_FOLDER.`;
+      return `The mailbox has no folder called ${folder ?? 'that'}. Check ${here ? 'the folder' : 'FDV_MAIL_IN_FOLDER'}.`;
+    case 'password_sealed':
+      return 'The vault can’t open the mailbox’s app password with this master key, so it can’t sign in. Type the app password in again and save, or check FDV_MASTER_KEY.';
+    case 'address_refused':
+      return mailInAddressRefused(ports);
     case 'not_filed':
       return 'An email’s attachments were added, but the email couldn’t be moved to Filed or deleted. The vault tries again; check that the mailbox lets it make folders.';
     case 'sealed':
@@ -370,12 +587,23 @@ export function skippedWords(c: MailSkippedCounts, maxBytes?: number): string {
 }
 
 /** Why the vault files mail otherwise than it was told (F10), to an owner; null when it files as told. */
-export function mailFilingWords(filing: MailInFiling | null, after: MailInAfter): string | null {
+export function mailFilingWords(
+  filing: MailInFiling | null,
+  after: MailInAfter,
+  source: MailInSource = 'server',
+): string | null {
   if (filing === 'leave') {
     return 'Your mail server can’t move or delete one email safely (it lacks MOVE or UIDPLUS), so the vault leaves each email it has added where it is, marked as read. Clear them out now and then.';
   }
   if (filing === 'move' && after === 'delete') {
-    return 'FDV_MAIL_IN_AFTER is delete, but your mail server can’t delete one email safely (it lacks UIDPLUS), so emails are moved to the Filed folder instead.';
+    return `${source === 'settings' ? 'The mailbox is set to delete emails' : 'FDV_MAIL_IN_AFTER is delete'}, but your mail server can’t delete one email safely (it lacks UIDPLUS), so emails are moved to the Filed folder instead.`;
   }
   return null;
+}
+
+/** Said to owners while senders are not checked: what to set, where it is set (0.9.0: Settings, or the server). */
+export function mailInSenderWarning(source: MailInSource = 'server'): string {
+  return source === 'settings'
+    ? `Senders aren’t verified. Anyone who knows the mailbox’s address can send an email that looks as if it came from someone in the family. Fill in the provider’s authserv-id below (${MAIL_IN_AUTHSERV_HINT}) so the vault accepts only email your provider checked; “Test the mailbox” shows what your provider calls itself. Until then, every item from an email says “sender not verified”.`
+    : MAIL_IN_SENDER_WARNING;
 }

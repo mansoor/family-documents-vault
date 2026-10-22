@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type pg from 'pg';
 import { deriveKey, KEK_PURPOSE } from './master.js';
+import { mailboxPasswordAad } from './mailbox-password.js';
 import { binding, type ScopeKind } from './scope-keys.js';
 import { unwrapKey, wrapKey } from './wrap.js';
 
@@ -63,7 +64,39 @@ export const MASTER_SEALED = [
     column: 'password_encrypted',
     aad: (id: string) => `smtp:${id}`,
   },
+  // packages/crypto/src/mailbox-password.ts (sealMailboxPassword, used by the
+  // API's MailInService): the household mailbox's app password, set in
+  // Settings (0.9.0, O1)
+  {
+    name: 'mailInPasswords',
+    purpose: 'mail-in-credentials',
+    table: 'mail_in_mailbox',
+    key: 'household_id',
+    column: 'password_encrypted',
+    // The server, port and sign-in it was typed for are bound in too: a
+    // password kept for one server never opens for another (the O1 review, H1).
+    bind: ['host', 'port', 'username'],
+    aad: (id: string, row: Readonly<Record<string, string>>) =>
+      mailboxPasswordAad(id, row.host ?? '', Number(row.port), row.username ?? ''),
+  },
 ] as const;
+
+/**
+ * What a MASTER_SEALED value is bound to: its row's key, and the columns it
+ * names in `bind` (as text). The one way to ask, for every kind.
+ */
+export function sealedAad(
+  s: (typeof MASTER_SEALED)[number],
+  id: string,
+  row: Readonly<Record<string, string>> = {},
+): string {
+  return s.aad(id, row);
+}
+
+/** The columns a MASTER_SEALED value is bound to besides its key. */
+export function sealedBinds(s: (typeof MASTER_SEALED)[number]): readonly string[] {
+  return 'bind' in s ? s.bind : [];
+}
 
 export type SealedName = (typeof MASTER_SEALED)[number]['name'];
 
@@ -372,18 +405,21 @@ async function rekey(
     totpSecrets: 0,
     vaultCredentials: 0,
     smtpPasswords: 0,
+    mailInPasswords: 0,
   };
   for (const s of MASTER_SEALED) {
     // A backup can be older than the column; a restore brings it up to date
     // afterwards, with nothing in it to move.
     if (!(await hasColumn(client, s.table, s.column))) continue;
     const keys = secrets.map((secret) => deriveKey(secret, s.purpose));
-    const { rows } = await client.query<{ id: string; value: Buffer }>(
-      `select ${s.key}::text as id, ${s.column} as value from ${s.table}
+    const binds = sealedBinds(s);
+    const { rows } = await client.query<{ id: string; value: Buffer } & Record<string, string>>(
+      `select ${s.key}::text as id, ${s.column} as value${binds.map((b) => `, ${b}::text as ${b}`).join('')}
+         from ${s.table}
         where ${s.column} is not null order by 1${lock}`,
     );
     for (const r of rows) {
-      const aad = s.aad(r.id);
+      const aad = sealedAad(s, r.id, r);
       const found = firstOpening(keys, (key) => openBound(key, r.value, aad));
       if (!found) {
         unopened.push(`${s.table}.${s.column} of ${r.id}`);
