@@ -293,6 +293,36 @@ describe.skipIf(!testAdminUrl())('the folder an item came from, for its uploader
     ).toEqual([agree.id]);
   });
 
+  it('never a note’s kind, from the folder or the pages, even with a note the uploader can see (the N1 review)', async () => {
+    // A note of the family's, so the kind of a note is listed to her (types()).
+    const note = await call(adult, 'POST', '/api/v1/documents', {
+      type_key: 'note',
+      title: 'Kitchen notes',
+      notes: 'The fuse box is behind the door',
+      visibility: 'household',
+      owner_member_id: adult.member_id,
+    });
+    expect(note.statusCode, note.body).toBe(201);
+    const kinds = (await call(adult, 'GET', '/api/v1/document-types')).json<{
+      items: DocumentTypeView[];
+    }>();
+    expect(kinds.items.map((k) => k.key)).toContain('note');
+    const b = await made(adult);
+    const fromFolder = await sent(adult, b.id, 'Notes/scan.pdf');
+    const fromPages = await sent(adult, b.id, 'Scans/scan.pdf');
+    await plant(fromFolder.id, {});
+    await plant(fromPages.id, {
+      type_key: { value: 'note', confidence: 0.97, cue: 'kind_words' },
+    });
+    for (const id of [fromFolder.id, fromPages.id]) {
+      const item = await itemOf(adult, b.id, id);
+      expect(item.proposals?.type_key?.value ?? null, JSON.stringify(item.proposals)).not.toBe(
+        'note',
+      );
+      expect(item.level).not.toBe('ready');
+    }
+  });
+
   it('the batch’s defaults win over the folder, which fills only what they leave blank', async () => {
     const b = await made(adult, { defaults: { type_key: 'insurance_policy', tags: ['scanned'] } });
     const item = await sent(adult, b.id, 'Olivia/Passports/Holidays/scan.pdf');

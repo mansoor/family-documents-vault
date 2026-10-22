@@ -222,6 +222,19 @@ describe('Settings → Kinds of document (5.12)', () => {
     }
   });
 
+  it('the kind of a note is never listed, nor opened, to change (the N1 review)', async () => {
+    const noteKind = { ...PASSPORT, key: 'note', label: 'Note', builtin: true, hidden: false };
+    open('/settings/kinds', 'owner', { types: [{ ...PASSPORT }, noteKind] });
+    await screen.findByRole('switch', { name: 'Hide Passport' });
+    expect(screen.queryByRole('switch', { name: 'Hide Note' })).toBeNull();
+    expect(screen.queryByRole('link', { name: /^Note/ })).toBeNull();
+    cleanup();
+    open('/settings/kinds/note', 'owner', { types: [{ ...PASSPORT }, { ...noteKind }] });
+    expect(
+      await screen.findByText('That kind of document is not on the list.'),
+    ).toBeInTheDocument();
+  });
+
   it('says who may, to a teen who finds their way there', async () => {
     open('/settings/kinds', 'teen');
     expect(

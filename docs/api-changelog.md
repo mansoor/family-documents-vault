@@ -5318,6 +5318,89 @@ visibility, issued, added_at, ticked, chosen, in_collection, note }`,
       tag, and it is not Check for that. `duplicate` is unchanged: the same
       file as a document is still `{ of: "document" }`. Adding an item as a
       version (`into_document_id`) is still allowed for any kind.
+  - Notes kept on their own (0.9.0, N1, migration 0078). Everything is
+    **additive**: a client from before notes lists, reads, finds and
+    changes a note as the document with no file it is (tested with the
+    phone's clients of v0.5.0-rc.1 and v0.5.11).
+    - **New `features`:** `notes`, `true`; absent from older vaults.
+    - **`note_name`** (new, optional) on `DocumentView` and `SearchHit`:
+      a note with no title, named by its first line of words (80
+      characters at most), wherever the reader is given its words — never
+      an Only me note's in a list or the first pass of a search; its
+      owner's `GET /documents/{id}` names it. A note's `title` is only ever
+      what was typed: a client making a note sends `null` for none.
+    - **A note is a document** of the built-in kind `note` ("Note",
+      category `other`, no details, dates, number or place kept) with no
+      version: its words are its `notes`, in the small Markdown it always
+      was, kept plain for Everyone and Adults only and sealed under its
+      owner's key for Only me, exactly as a document's note. It is made
+      with `POST /api/v1/documents` (`type_key: "note"`, `title`,
+      `notes`, `visibility`, `owner_member_id` — Only me is the caller's
+      own, as for any document), read with `GET /api/v1/documents/{id}`
+      and changed with `PATCH`, `If-Match` and all: a save from an older
+      copy is `409 conflict` with the note as it is now in `detail`, as
+      for any document. It is in `GET /api/v1/documents`, the Documents
+      table, search (the sealed pass for its owner's Only me), counts,
+      collections, tags, the activity log and the Trash, as any document.
+    - **The kind `note`** is `hidden: true`, and listed by `GET
+/api/v1/document-types` — with `?all=true` or not — only where a
+      note the caller can see uses it, so a client finds it by key; it is
+      never proposed for a paper (not by the pages, a folder's name or an
+      Inbox item's kinds). `PATCH /api/v1/document-types/note` (and
+      archiving or removing it) is `422 note_kind_fixed`.
+    - **A note keeps no file:** `POST /api/v1/documents/{id}/versions` on
+      a note, `POST /api/v1/capture` with `type_key: "note"`, and filing an
+      Inbox item or a request's file as or into a note are `422
+note_has_no_file`. Its kind is fixed: `PATCH` with another `type_key`,
+      or any document's with `type_key: "note"`, is `422 note_kind_fixed`.
+      The database holds both whoever writes (0078).
+    - **New route** `GET /api/v1/notes` — `NotesList` `{ items, truncated
+}`: the caller's notes, newest first, 500 at most, each a
+      `NoteSummary` `{ id, title, preview, visibility, owner_member_id,
+tags, updated_at, notes_updated_at, deleted_at }`; `preview` is the
+      note's first words as plain text, its owner's Only me notes opened
+      for them alone (nobody else's is ever listed). `q` (200 characters
+      at most) finds within names and words, whatever the case, the
+      marks ("ann first" finds `**Ann** first`) and no-break spaces
+      (matched as spaces); `deleted=true` lists
+      those in the Trash; `limit` (1 to 500).
+    - **A note's link** (`POST /api/v1/documents/{id}/share`): a link to
+      view, said or not (`permission: "download"` is `422
+note_read_on_the_page`), with no pages drawn (`pages: null`). The
+      page's `POST /api/v1/shared/preview` says `note: true` (once there
+      is nothing to unlock first: a link with a PIN or a code says nothing
+      of what it gives until then); the
+      session's item says `note: true`, `content_type: "text/markdown"`,
+      `byte_size: 0`, `pages: null`; **new route** `GET
+/api/v1/shared/items/{id}/note` gives `SharedNote` `{ id, title,
+body, updated_at }` for the note the link gives (any other id `404`),
+      an Only me note's words opened for that link alone; the first read
+      a session makes is `share.viewed`, once. Its `…/content` is `404
+not_found` ("A note has no file") and `…/pages/{n}` `404 no_preview`.
+      **A collection's link gives its notes** the same way, to read on the
+      page (with `download` too), and never anybody's Only me note but
+      the sharer's own: the preview counts them as items it gives
+      (`has_file` and `viewable` true), and a collection of nothing but
+      notes may be shared (migration 0078 lets a link's documents be notes).
+    - **Export:** each note the caller may see is `Notes/<title>.md` (its
+      title as a heading, then its words), listed in the indexes with that
+      `file`, no `version_no` and no `sha256`. What a Markdown viewer would
+      draw as HTML (`<` before a letter, `/`, `!` or `?`; `&` before what
+      reads as an entity) is written with a backslash before it, any run
+      of the note's own backslashes just before a `<` or `&` doubled first.
+    - **What a note may say** (`@fdv/shared` notes.ts): also `# ` and
+      `## ` headings (a heading block's new `level`: 1, 2 or 3; a note
+      from before has only 3), a `quote` block (`> ` lines), and `strike`
+      (`~~words~~`) and `underline` (`++words++`) inline nodes; `~` and
+      `>` are escapable. A drawer of notes switches on the new types; an
+      older one shows their characters. New: `NOTE_KIND`,
+      `notePreview`, `noteMatchWords`, `NOTE_MARK_CHARACTERS`,
+      `tidyNoteTree`, `noteTreeToMarkdown` (a tree written out, always
+      reading back as nothing but what was written), `NoteSummary`,
+      `NotesList`, `SharedNote`, `SharedItem.note`,
+      `ShareLinkPreview.note`. `@fdv/client`: `notes`, `linkItemNote`; the
+      fake answers `GET /notes`, has the kind, refuses a file on a note,
+      and answers a `409` with the document as it is now.
 
 ## Deprecations in effect
 

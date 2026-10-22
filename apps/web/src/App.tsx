@@ -22,6 +22,7 @@ import { JoinScreen } from './screens/Join.js';
 import { KindScreen, KindsScreen } from './screens/KindsOfDocument.js';
 import { TagsScreen } from './screens/Tags.js';
 import { CollectionScreen, CollectionsScreen } from './screens/Collections.js';
+import { NotesScreen } from './screens/Notes.js';
 import { ForgotPasswordScreen, ResetPasswordScreen } from './screens/Password.js';
 import { SharedScreen } from './screens/Shared.js';
 import { SharingScreen } from './screens/Sharing.js';
@@ -238,6 +239,10 @@ export function App() {
                 documents, from Home (A64). */}
               <Route path="/people/:id" element={<ProfileScreen />} />
               <Route path="/people/:id/documents" element={<PersonDocumentsScreen />} />
+              {/* Notes kept on their own (0.9.0, N1). */}
+              <Route path="/notes" element={<NotesScreen />} />
+              <Route path="/notes/new" element={<NotesScreen />} />
+              <Route path="/notes/:id" element={<NotesScreen />} />
               <Route path="/collections" element={<CollectionsScreen />} />
               <Route path="/collections/:id" element={<CollectionScreen />} />
               {/* What was sent through a request, looked at before it is filed

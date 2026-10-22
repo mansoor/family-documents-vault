@@ -23,6 +23,7 @@ import {
   type DocumentTypeView,
   type Member,
   type Role,
+  NOTE_KIND,
 } from '@fdv/shared';
 import { useEffect, useRef, useState, type Ref, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
@@ -396,7 +397,8 @@ export function ChecklistSheet(props: {
     });
   };
 
-  const kinds = props.types.filter((t) => !t.hidden && t.key !== 'other');
+  // Nor a note: written, never a paper asked for (the N1 review).
+  const kinds = props.types.filter((t) => !t.hidden && t.key !== 'other' && t.key !== NOTE_KIND);
   return (
     <Sheet
       label={`Fill “${name}” from a checklist`}

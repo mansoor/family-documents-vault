@@ -111,6 +111,8 @@ describe('buildCapabilities', () => {
       reading_check: true,
       // C1 (0.9.0): a collection from a checklist.
       collection_checklist: true,
+      // N1 (0.9.0): notes kept on their own.
+      notes: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     // S4: email in, reserved as email_ingest since 1.0, only while the worker

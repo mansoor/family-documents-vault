@@ -74,6 +74,10 @@ import {
   tagDetail,
   tagKey,
   tagsProblem,
+  noteFirstWords,
+  NOTE_KIND,
+  noteMatchWords,
+  notePreview,
 } from '@fdv/shared';
 import { sha256Of } from './batch-upload.js';
 import { vi } from 'vitest';
@@ -297,6 +301,14 @@ export interface FakeState {
   /** Answer the next this-many asks of /api/v1/shared/items with a 503. */
   shareItemsFailing?: number;
   documents: Array<Record<string, unknown>>;
+  /**
+   * Notes kept on their own (0.9.0, N1): `features.notes` when true, and
+   * GET /notes, POST /documents for a note, and a link's note answered.
+   * Left out, a vault from before them.
+   */
+  notes?: boolean;
+  /** The link the page at /s opens is to a note (0.9.0, N1): its words. */
+  shareNote?: { id: string; title: string; body: string };
   /** Hold a document's DELETE until this settles (5.1). */
   holdDelete?: Promise<void>;
   /**
@@ -1063,6 +1075,7 @@ export function installFakeApi(state: FakeState) {
           custom_types: true,
           // R2: GET /documents sorted by a column, filtered and paged.
           document_table: true,
+          ...(state.notes ? { notes: true } : {}),
           ...(state.collections ? { collections: true } : {}),
           ...(state.collections && state.collectionChecklist !== false
             ? { collection_checklist: true }
@@ -3525,11 +3538,25 @@ export function installFakeApi(state: FakeState) {
       shared_by: 'Mansoor Seikh',
       expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
       session_expires_at: new Date(Date.now() + 4 * 3600e3).toISOString(),
-      items: state.shareCollection
-        ? state.shareCollection.items.map((i) => sharedItem(i.id, i.title, i.filename))
-        : [sharedItem('doc-shared', 'Flat 3 tenancy agreement', 'tenancy.pdf')],
-      permission: state.sharePermission ?? 'download',
-      downloads_left: view ? null : (state.shareDownloadsLeft ?? null),
+      items: state.shareNote
+        ? [
+            {
+              id: state.shareNote.id,
+              title: state.shareNote.title,
+              type_label: 'Note',
+              filename: `${state.shareNote.title}.md`,
+              content_type: 'text/markdown',
+              byte_size: 0,
+              pages: null,
+              downloaded: false,
+              note: true,
+            },
+          ]
+        : state.shareCollection
+          ? state.shareCollection.items.map((i) => sharedItem(i.id, i.title, i.filename))
+          : [sharedItem('doc-shared', 'Flat 3 tenancy agreement', 'tenancy.pdf')],
+      permission: state.shareNote ? 'view' : (state.sharePermission ?? 'download'),
+      downloads_left: view || state.shareNote ? null : (state.shareDownloadsLeft ?? null),
       ...(state.shareCollection
         ? { kind: 'collection', collection_name: state.shareCollection.name }
         : { kind: 'document' }),
@@ -3561,9 +3588,13 @@ export function installFakeApi(state: FakeState) {
         shared_by: 'Mansoor Seikh',
         protection,
         expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
-        document_title: withheld || state.shareCollection ? null : 'Flat 3 tenancy agreement',
-        permission: state.sharePermission ?? 'download',
+        document_title:
+          withheld || state.shareCollection
+            ? null
+            : (state.shareNote?.title ?? 'Flat 3 tenancy agreement'),
+        permission: state.shareNote ? 'view' : (state.sharePermission ?? 'download'),
         opens_left: state.shareOpensLeft ?? null,
+        ...(state.shareNote ? { note: true } : {}),
         ...(state.shareCollection
           ? {
               kind: 'collection',
@@ -3625,6 +3656,20 @@ export function installFakeApi(state: FakeState) {
       state.shareSession = true;
       if (typeof state.shareOpensLeft === 'number') state.shareOpensLeft -= 1;
       return json(linkSession());
+    }
+    // A note's words, on the link's page (0.9.0, N1): only the note it gives.
+    const noteAt = /^\/api\/v1\/shared\/items\/([^/]+)\/note$/.exec(path);
+    if (noteAt && method === 'GET') {
+      if (!state.shareValid) return linkGone();
+      if (!state.shareSession || !state.shareNote || noteAt[1] !== state.shareNote.id) {
+        return refuse(404, 'not_found', 'That note is not there.');
+      }
+      return json({
+        id: state.shareNote.id,
+        title: state.shareNote.title,
+        body: state.shareNote.body,
+        updated_at: '2026-09-26T10:05:00Z',
+      });
     }
     if (path === '/api/v1/shared/items' && method === 'GET') {
       state.shareItemsAsked = (state.shareItemsAsked ?? 0) + 1;
@@ -4192,6 +4237,75 @@ export function installFakeApi(state: FakeState) {
       }
       return json({ changed, kept, merged, in_trash: inTrash });
     }
+    // Notes kept on their own (0.9.0, N1), as the vault lists them: the
+    // signed-in person's, newest first, each with its first words; nobody
+    // else's Only me; `q` within their names and words.
+    if (path === '/api/v1/notes' && method === 'GET' && state.notes) {
+      const inTrash = query.get('deleted') === 'true';
+      const q = noteMatchWords(query.get('q'));
+      const me = (state.members.find((m) => m.is_me)?.id as string | undefined) ?? 'me';
+      const items = state.documents
+        .filter((d) => d.type_key === NOTE_KIND && Boolean(d.deleted_at) === inTrash)
+        .filter((d) => d.visibility !== 'private' || d.owner_member_id === me)
+        .filter(
+          (d) =>
+            !q ||
+            noteMatchWords(d.title as string | null).includes(q) ||
+            noteMatchWords(d.notes as string | null).includes(q),
+        )
+        .sort((a, b) =>
+          ((b.updated_at as string | undefined) ?? '').localeCompare(
+            (a.updated_at as string | undefined) ?? '',
+          ),
+        )
+        .map((d) => ({
+          id: d.id,
+          title: d.title ?? null,
+          preview: notePreview(d.notes as string | null),
+          visibility: d.visibility ?? 'household',
+          owner_member_id: d.owner_member_id ?? null,
+          tags: d.tags ?? [],
+          updated_at: d.updated_at ?? '2026-09-26T10:05:00Z',
+          notes_updated_at: d.notes_updated_at ?? null,
+          deleted_at: d.deleted_at ?? null,
+        }));
+      return json({ items, truncated: false });
+    }
+    // A note made (0.9.0, N1): the only document the web makes without a file.
+    if (path === '/api/v1/documents' && method === 'POST' && state.notes) {
+      const sent = body as Record<string, unknown>;
+      if (sent.type_key !== NOTE_KIND) {
+        return refuse(422, 'validation_failed', 'The fake makes notes only.');
+      }
+      const id = `note-${state.documents.length + 1}`;
+      const made: Record<string, unknown> = {
+        ...PASSPORT,
+        id,
+        type_key: NOTE_KIND,
+        category: 'other',
+        title: sent.title ?? null,
+        notes: sent.notes ?? null,
+        visibility: sent.visibility ?? 'household',
+        owner_member_id: sent.owner_member_id ?? null,
+        tags: [],
+        identifier: null,
+        issued: null,
+        expires: null,
+        issued_by: null,
+        physical_location: null,
+        is_essential: false,
+        latest_version_id: null,
+        versions: 0,
+        status: { value: 'none', label: 'No expiry' },
+        notes_updated_at: sent.notes ? '2026-09-26T10:05:00Z' : null,
+        notes_updated_by_name: sent.notes ? 'Mansoor Seikh' : null,
+        updated_at: '2026-09-26T10:05:00Z',
+        filed_by_me: true,
+        etag: `"${id}"`,
+      };
+      state.documents.unshift(made);
+      return json(made, 201);
+    }
     if (path === '/api/v1/documents' && method === 'GET' && isDocumentSort(query.get('sort'))) {
       const answered = documentTable(state, query, storedRole() as Role);
       return 'refused' in answered
@@ -4576,13 +4690,16 @@ export function installFakeApi(state: FakeState) {
       // Documents whose name or issuer has the words, as the index would.
       const named = state.documents
         .filter((d) =>
-          [d.title, d.issued_by].some(
-            (v) => typeof v === 'string' && needle !== '' && v.toLowerCase().includes(needle),
-          ),
+          [
+            d.title,
+            d.issued_by,
+            d.type_key === NOTE_KIND && d.visibility !== 'private' ? d.notes : null,
+          ].some((v) => typeof v === 'string' && needle !== '' && v.toLowerCase().includes(needle)),
         )
         .map((d) => ({
           document_id: d.id,
           title: d.title,
+          ...noteNamed(d),
           type_key: d.type_key,
           category: d.category,
           owner_member_id: d.owner_member_id,
@@ -5371,8 +5488,19 @@ function documentTable(
  * are sealed, opened only in its owner's own request for it (0.5.8).
  */
 function listed(d: Record<string, unknown>): Record<string, unknown> {
-  if (d.visibility !== 'private') return d;
+  if (d.visibility !== 'private') return { ...d, ...noteNamed(d) };
   return { ...d, notes: null, has_notes: d.notes != null, extra: {} };
+}
+
+/**
+ * A note with no title, named by its first words where they are given
+ * (the N1 re-check), as the vault names it: never an Only me one's here.
+ */
+function noteNamed(d: Record<string, unknown>): { note_name?: string } {
+  if (d.type_key !== NOTE_KIND || (typeof d.title === 'string' && d.title.trim())) return {};
+  if (d.visibility === 'private') return {};
+  const name = noteFirstWords(typeof d.notes === 'string' ? d.notes : null);
+  return name ? { note_name: name } : {};
 }
 
 /**

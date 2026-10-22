@@ -27,13 +27,16 @@ function seeded(seed: number) {
 
 const BLOCK_KEYS: Record<NoteBlock['type'], string[]> = {
   paragraph: ['blankBefore', 'children', 'type'],
-  heading: ['blankBefore', 'children', 'type'],
+  heading: ['blankBefore', 'children', 'level', 'type'],
+  quote: ['blankBefore', 'children', 'type'],
   list: ['blankBefore', 'items', 'ordered', 'start', 'type'],
 };
 const INLINE_KEYS: Record<NoteInline['type'], string[]> = {
   text: ['text', 'type'],
   strong: ['children', 'type'],
   em: ['children', 'type'],
+  strike: ['children', 'type'],
+  underline: ['children', 'type'],
   link: ['children', 'href', 'type'],
   break: ['type'],
 };
@@ -65,7 +68,9 @@ function outsideAllowed(tree: NoteTree): string[] {
         }
         inline(n.children, true);
       }
-      if (n.type === 'strong' || n.type === 'em') inline(n.children, inLink);
+      if (n.type === 'strong' || n.type === 'em' || n.type === 'strike' || n.type === 'underline') {
+        inline(n.children, inLink);
+      }
     }
   };
   for (const b of tree.blocks) {
@@ -76,6 +81,7 @@ function outsideAllowed(tree: NoteTree): string[] {
     }
     if (keys(b) !== allowed.join(',')) wrong.push(`a ${b.type} with ${keys(b)}`);
     if (!Number.isInteger(b.blankBefore) || b.blankBefore < 0) wrong.push('a blank count');
+    if (b.type === 'heading' && ![1, 2, 3].includes(b.level)) wrong.push(`a level ${b.level}`);
     if (b.type === 'list') {
       if (b.items.length === 0) wrong.push('an empty list');
       for (const item of b.items) {
@@ -161,7 +167,7 @@ describe('notes you can write (5.35)', () => {
       '### Before the trip\n- passports\n* the **visas**\n  (both of them)\n- [ ] insurance\n- [x] tickets\n\n3. first\n4. second\nAfterwards',
     );
     expect(tree.blocks).toEqual([
-      { type: 'heading', blankBefore: 0, children: [text('Before the trip')] },
+      { type: 'heading', blankBefore: 0, level: 3, children: [text('Before the trip')] },
       {
         type: 'list',
         blankBefore: 0,
@@ -195,20 +201,15 @@ describe('notes you can write (5.35)', () => {
       },
       { type: 'paragraph', blankBefore: 0, children: [text('Afterwards')] },
     ]);
-    // Only level 3: the others are text, as is a heading with no words.
+    // Since 0.9.0 (N1) three levels; a fourth is text, as is a heading
+    // with no words.
     expect(parseNotes('# One\n## Two\n#### Four\n### ').blocks).toEqual([
+      { type: 'heading', blankBefore: 0, level: 1, children: [text('One')] },
+      { type: 'heading', blankBefore: 0, level: 2, children: [text('Two')] },
       {
         type: 'paragraph',
         blankBefore: 0,
-        children: [
-          text('# One'),
-          { type: 'break' },
-          text('## Two'),
-          { type: 'break' },
-          text('#### Four'),
-          { type: 'break' },
-          text('### '),
-        ],
+        children: [text('#### Four'), { type: 'break' }, text('### ')],
       },
     ]);
   });

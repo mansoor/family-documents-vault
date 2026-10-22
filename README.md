@@ -17,6 +17,7 @@ Built for people whose whole skill floor is _scan, upload, download_. You should
 - **Reminders that lead.** A passport reminds you nine and six months before it expires; a car registration 45 and 7 days before. Renewing a document — uploading the new one — resolves its reminder automatically. Everything due lands in one message a day at 9 am your time, and a server that was switched off for a fortnight sends one summary, not fourteen.
 - **It tells you what you do not have.** From a handful of questions at setup — do you own or rent, how many cars, is there a child in the family — the vault draws an outline for the documents that are missing: _No birth certificate for Aisha_, _No deed or title on file_. Each one says why it is there, and "Not for us" makes it go away for good (and can be undone).
 - **Browse by person and by category**, with counts and status roll-ups, and full-text search across titles, tags, notes and the text inside the document.
+- **Notes for what the family knows.** Where the stopcock is, how the boiler resets, who to call when the alarm goes off: kept in **Notes** with the documents, seen, shared and found as they are — and sent to somebody outside the family by a link, more safely than in an email. A note is not a to-do list or a chat, and not a password manager.
 - **A household, not a user.** Members with or without their own sign-in (children, elderly parents), four simple roles, and three plain visibility levels per document: _Everyone in the family_, _Adults only_, _Only me_.
 - **"Only me" is cryptographic.** Private documents are encrypted so that no other account — including the household owner — can open them. Their text is never indexed either, so searching them happens in two passes: everything shareable first, then your own sealed documents, opened inside your own session. One date is the exception: the one a kind of document reminds from, such as a bill's due date, which the vault can read as it can an expiry date, so it can remind the document's owner; everything else in its details stays sealed.
 - **Your storage.** Local disk by default; any S3-compatible bucket (AWS, MinIO, Backblaze B2, Wasabi, Cloudflare R2, DigitalOcean Spaces, Ceph, Storj …). Change later with a verified background migration; add a second location as a mirror.
@@ -735,6 +736,25 @@ only takes away. Such a link lasts 30 days at most. Sharing a collection
 always asks you to confirm it is you; a teen cannot share one; and deleting the
 collection, or making it Only me, ends its links. Every link, to a document or a
 collection, is in **Sharing**, to take back.
+
+### Notes
+
+**Notes**, in the left bar, keep what the family knows and keeps nowhere else:
+where things are, how things work, who to call. Each is written with a
+formatting toolbar — headings, lists and checklists, links, quotes — and read
+as it was written. A note is a document without a file: it has the same
+_Everyone in the family_, _Adults only_ and _Only me_ (an Only me note is
+encrypted as an Only me document is), tags, collections, search, the Trash, and
+a place in every export as a Markdown file in `Notes/`. **Share a link** on a
+note sends it to somebody outside the family to read on the page, with the same
+end date, PIN, password, emailed code and one-browser options as a document's
+link: safer than pasting it into an email, which stays in their inbox, and
+yours, for ever.
+
+A note is not a password manager. Everyone who can see a note can read and
+search it, and the vault says so when a note looks as if it holds a password
+or a PIN: keep those in a password manager, or at the very least in an Only me
+note. Notes need no setting of their own.
 
 ### Scanning straight into the vault
 

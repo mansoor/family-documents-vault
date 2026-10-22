@@ -3372,6 +3372,59 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'a note kept on its own: made, listed with its preview, found, changed one editor at a time, and never given a file (0.9.0, N1)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.notes).toBe(true);
+      const me = await api.me(token);
+      const made = await api.createDocument(token, {
+        type_key: 'note',
+        title: 'Contract boiler',
+        owner_member_id: me.member_id,
+        visibility: 'household',
+        notes: '# Boiler\nRing **Ann** first',
+      });
+      expect(made.type_key).toBe('note');
+      expect((await api.versions(token, made.id)).items).toEqual([]);
+      const listed = (await api.notes(token)).items.find((n) => n.id === made.id);
+      expect(listed).toMatchObject({ title: 'Contract boiler', preview: 'Boiler Ring Ann first' });
+      expect((await api.notes(token, { q: 'ann first' })).items.map((n) => n.id)).toEqual([
+        made.id,
+      ]);
+      expect((await api.notes(token, { q: 'no such words anywhere' })).items).toEqual([]);
+      // Its kind is listed once a note uses it, for a client to look it up.
+      expect((await api.documentTypes(token)).items.find((t) => t.key === 'note')).toMatchObject({
+        label: 'Note',
+        hidden: true,
+      });
+      // One editor at a time: a save from the copy before is refused, with the note now.
+      const saved = await api.updateDocument(token, made.id, { notes: 'Ring Bob' }, made.etag);
+      expect(saved.notes).toBe('Ring Bob');
+      const stale = await refusal(
+        api.updateDocument(token, made.id, { notes: 'Ring Cal' }, made.etag),
+      );
+      expect(stale.status).toBe(409);
+      expect((JSON.parse(stale.detail ?? '{}') as { notes?: string }).notes).toBe('Ring Bob');
+      // No file, whatever would give it one; and it stays a note.
+      const form = multipartBody([
+        { name: 'file', filename: 'scan.pdf', contentType: 'application/pdf', bytes: PDF },
+      ]);
+      const body = { kind: 'bytes' as const, bytes: form.bytes, contentType: form.contentType };
+      const upload = await refusal(
+        api.upload(token, made.id, body, '7d3c2b1a-0f9e-4d8c-b7a6-5e4d3c2b1a0f'),
+      );
+      expect([upload.status, upload.code]).toEqual([422, 'note_has_no_file']);
+      const kind = await refusal(api.updateDocument(token, made.id, { type_key: 'warranty' }));
+      expect([kind.status, kind.code]).toEqual([422, 'note_kind_fixed']);
+      // To the Trash: listed there, not in the notes.
+      await api.deleteDocument(token, made.id);
+      expect((await api.notes(token)).items.map((n) => n.id)).not.toContain(made.id);
+      expect((await api.notes(token, { deleted: 'true' })).items.map((n) => n.id)).toContain(
+        made.id,
+      );
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

@@ -32,6 +32,7 @@ import {
   type RequiredValues,
   type Role,
   type Visibility,
+  NOTE_KIND,
 } from '@fdv/shared';
 import {
   useEffect,
@@ -415,7 +416,9 @@ export function ConfirmScreen() {
       </main>
     );
   const { doc, types, members } = data;
-  const suggestedType = types.find((t) => t.key === params.get('type') && !t.hidden);
+  const suggestedType = types.find(
+    (t) => t.key === params.get('type') && !t.hidden && t.key !== NOTE_KIND,
+  );
   const suggestedOwner = members.find((m) => m.id === params.get('member'));
   /** A document as the card holds it: its dates as a person writes them ("June 2027"). */
   const cardFor = (d: DocumentView): CardValues => {
@@ -1439,6 +1442,8 @@ export function ConfirmForm(props: {
             // A kind hidden or archived is not offered for a new document;
             // one already filed under it keeps it (the 5.12 review).
             ...types
+              // A note is written, not filed: never a kind to choose (the N1 review).
+              .filter((t) => t.key !== NOTE_KIND)
               .filter((t) => !t.hidden || t.key === base.typeKey || t.key === typeKey)
               .map((t) => ({ value: t.key, label: t.label })),
           ]}

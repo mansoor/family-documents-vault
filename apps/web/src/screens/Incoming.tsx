@@ -9,6 +9,7 @@ import {
   type IncomingFileView,
   type Member,
   type Visibility,
+  NOTE_KIND,
 } from '@fdv/shared';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
@@ -308,7 +309,8 @@ function IncomingFile(props: {
   const [problem, setProblem] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
   const refuseButton = useRef<HTMLButtonElement>(null);
-  const shown = types.filter((t) => !t.hidden || t.key === typeKey);
+  // A note is written, not filed: never a kind to choose (the N1 review).
+  const shown = types.filter((t) => t.key !== NOTE_KIND && (!t.hidden || t.key === typeKey));
   const people = members.filter((m) => !m.is_deceased);
 
   const saveCopy = async () => {
@@ -639,7 +641,8 @@ function VersionPicker(props: {
   const seen = new Set<string>();
   const hits = q.length >= 2 && found.q === q ? found.items : [];
   for (const d of [...(chosen ? [chosen] : []), ...near, ...hits]) {
-    if (seen.has(d.id)) continue;
+    // A note has no file: never one a paper is a new version of (the N1 review).
+    if (seen.has(d.id) || d.type_key === NOTE_KIND) continue;
     seen.add(d.id);
     options.push(d);
   }

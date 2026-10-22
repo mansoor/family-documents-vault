@@ -769,6 +769,8 @@ export interface ShareLinkPreview {
   kind?: 'document' | 'collection';
   /** A collection's name, withheld while a protection is on, as a title is (5.19). */
   collection_name?: string | null;
+  /** A note kept on its own (0.9.0, N1): read on the page. Absent for a file, and from older vaults. */
+  note?: boolean;
   /**
    * Where an emailed code goes, masked (`j•••@e•••.com`), when Open asks for
    * one (5.20). The recipient never types an address.
@@ -802,6 +804,45 @@ export interface SharedItem {
    * here is free, even once the link's downloads are used up.
    */
   downloaded?: boolean;
+  /**
+   * A note kept on its own (0.9.0, N1): no file and no pages — its words
+   * are read with `GET /shared/items/{id}/note`. Absent for a file, and
+   * from older vaults.
+   */
+  note?: boolean;
+}
+
+/** A shared note's words (0.9.0, N1): `GET /shared/items/{id}/note`. */
+export interface SharedNote {
+  id: string;
+  title: string | null;
+  /** The note, in @fdv/shared's small Markdown (notes.ts): drawn, never as HTML. */
+  body: string;
+  updated_at: string;
+}
+
+/**
+ * A note kept on its own, as a list of them shows it (0.9.0, N1): `GET
+ * /notes`. Its preview is its first words as plain text; an Only me note's
+ * only for its owner, whose own list this is — nobody else's list has it.
+ */
+export interface NoteSummary {
+  id: string;
+  title: string | null;
+  preview: string;
+  visibility: 'household' | 'adults' | 'private';
+  owner_member_id: string | null;
+  tags: string[];
+  updated_at: string;
+  /** When its words last changed (0057); null for a note never written in. */
+  notes_updated_at: string | null;
+  deleted_at: string | null;
+}
+
+export interface NotesList {
+  items: NoteSummary[];
+  /** More than the list's limit matched: the newest are given. */
+  truncated: boolean;
 }
 
 /**
@@ -957,6 +998,8 @@ export interface SearchHit {
    */
   expires?: DocumentView['expires'];
   tags?: string[];
+  /** A note with no title, named by its first words as `DocumentView.note_name` (0.9.0, N1). */
+  note_name?: string;
   /** Server-highlighted with `<em>`; clients escape everything else. */
   snippet: string;
   matched_in: 'title' | 'content';

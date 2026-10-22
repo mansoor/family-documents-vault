@@ -1,6 +1,8 @@
 import {
+  looksSecret,
   noteLinkAllowed,
   NOTES_MAX,
+  notesPlainText,
   noteTreeText,
   parseNotes,
   whenExactly,
@@ -16,17 +18,18 @@ import {
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent,
   type ReactNode,
 } from 'react';
 import { api, ApiRequestError } from './api.js';
 import { describeError, useApp } from './app-context.js';
 import { draftOf, forgetDraft, keepDraft, type DraftOwner, type NoteDraft } from './note-drafts.js';
+import { RichTextEditor } from './rich-text.js';
 import { Button, ErrorNote } from './ui.js';
 
 /**
- * A document's note on the web (5.35, A30): read by whoever sees the
- * document, written by whoever may change it. One note a document.
+ * A note on the web (5.35, A30; 0.9.0, N1): a document's note, or a note
+ * kept on its own — read by whoever sees it, written by whoever may change
+ * it, in the one editor (rich-text.tsx).
  *
  * A note is drawn from the tree `@fdv/shared` reads it into, as React
  * elements, and never as an HTML string: whatever somebody types — a
@@ -39,24 +42,34 @@ import { Button, ErrorNote } from './ui.js';
 
 // ---------------------------------------------------------------- reading
 
-/** A note, drawn. */
-export function NoteText({ source }: { source: string }) {
+/**
+ * A note, drawn. Its headings are each a heading of the section it is in
+ * (`headingLevel`, h3 under a page's h2; h2 where the page has only an h1,
+ * a link's): their size says their level, so the page's outline never
+ * skips one.
+ */
+export function NoteText({ source, headingLevel = 3 }: { source: string; headingLevel?: 2 | 3 }) {
   const tree = useMemo(() => parseNotes(source), [source]);
   return (
     <div className="note">
       {tree.blocks.map((b, i) => (
-        <Block key={i} block={b} />
+        <Block key={i} block={b} headingLevel={headingLevel} />
       ))}
     </div>
   );
 }
 
-function Block({ block }: { block: NoteBlock }) {
+function Block({ block, headingLevel }: { block: NoteBlock; headingLevel: 2 | 3 }) {
   switch (block.type) {
-    case 'heading':
-      return <h3 className="note-h">{inline(block.children)}</h3>;
+    case 'heading': {
+      // Level 3 is drawn as a note's only heading always was (5.35).
+      const H = headingLevel === 2 ? 'h2' : 'h3';
+      return <H className={`note-h note-h${block.level}`}>{inline(block.children)}</H>;
+    }
     case 'paragraph':
       return <p>{inline(block.children)}</p>;
+    case 'quote':
+      return <blockquote className="note-quote">{inline(block.children)}</blockquote>;
     case 'list': {
       const checklist = block.items.some((item) => item.checked !== null);
       const items = block.items.map((item, i) => (
@@ -111,6 +124,10 @@ function inline(nodes: NoteInline[]): ReactNode[] {
         return <strong key={i}>{inline(node.children)}</strong>;
       case 'em':
         return <em key={i}>{inline(node.children)}</em>;
+      case 'underline':
+        return <u key={i}>{inline(node.children)}</u>;
+      case 'strike':
+        return <s key={i}>{inline(node.children)}</s>;
       case 'link': {
         // The parser makes no other link; asked again where it is drawn.
         const address = noteAddress(node.href);
@@ -142,199 +159,12 @@ function inline(nodes: NoteInline[]): ReactNode[] {
 
 // ---------------------------------------------------------------- writing
 
-export type NoteFormat = 'bold' | 'italic' | 'list' | 'numbered' | 'checklist' | 'link';
-
-/** A link's address until the person types theirs over it: one the parser takes as a link. */
-export const LINK_PLACEHOLDER = 'https://example.com';
-
-/** A list's or a heading's marker at the start of a line, and the spaces before it. */
-const BLOCK_MARK = /^[ \t]*(?:[-*+] \[[ xX]\] |[-*+] |\d{1,9}\. |### )?/;
-/** Any list marker a line already has, which a list button replaces. */
-const LIST_MARK = /^[ \t]*(?:[-*+] \[[ xX]\] |[-*+] |\d{1,9}\. )?/;
-/** A checklist item's marker and box, which Checklist keeps as it is. */
-const CHECKBOX_MARK = /^[ \t]*[-*+] \[[ xX]\] /;
-
-const isWordChar = (c: string | undefined) => c !== undefined && /[\p{L}\p{N}]/u.test(c);
-
-/** The word the caret is in or beside, as its start and end; the caret itself when in none. */
-function wordAround(text: string, at: number): [number, number] {
-  let a = at;
-  let b = at;
-  while (a > 0 && isWordChar(text[a - 1])) a -= 1;
-  while (b < text.length && isWordChar(text[b])) b += 1;
-  return [a, b];
-}
-
 /**
- * One line's part of a choice, split into what stays outside the marks —
- * the spaces round it, and a list's or heading's marker when the part
- * starts its line — and the words the marks go round.
+ * Beside an Only me note's title (the N1 review): its words are sealed, its
+ * title is not — so nothing of them is ever put in it unasked.
  */
-function partsOf(text: string, from: number, to: number) {
-  const part = text.slice(from, to);
-  const atLineStart = from === 0 || text[from - 1] === '\n';
-  const lead = atLineStart
-    ? (BLOCK_MARK.exec(part)?.[0] ?? '')
-    : part.slice(0, part.length - part.trimStart().length);
-  const rest = part.slice(lead.length);
-  const words = rest.trimEnd();
-  return { lead, words, trail: rest.slice(words.length) };
-}
-
-/** How many `*` run back from `at` (exclusive), and forward from `at`. */
-function starsBefore(text: string, at: number): number {
-  let n = 0;
-  while (at - n > 0 && text[at - n - 1] === '*') n += 1;
-  return n;
-}
-function starsFrom(text: string, at: number): number {
-  let n = 0;
-  while (text[at + n] === '*') n += 1;
-  return n;
-}
-
-/**
- * What a toolbar button does to what is being written, so the note reads
- * as the button meant (the 5.35 review, W535-05): the words chosen made
- * bold or italic — the spaces round them, and a line's list marker, left
- * outside the marks; each line on its own, since marks do not run across
- * lines; with `*`, which works inside a word; with nothing chosen, the word
- * the caret is in, or a word to type over. Words that have the mark
- * already — written in the choice, or just round it — have it taken off
- * instead, as pressing Bold again does in any editor (the second round,
- * N535W-01); a `**` is bold, never italic, and `***` is both. A mark that
- * would make a run of more than three, which reads as asterisks, is not
- * made. Or the words made a link to an address to type over; or the lines
- * chosen made a list, any marker they had replaced (a checklist's box kept
- * as it is, done or not: N535W-03) and blank lines left blank. Answers the
- * new text and what to choose in it next.
- */
-export function formatNote(
-  text: string,
-  start: number,
-  end: number,
-  format: NoteFormat,
-): { text: string; start: number; end: number } {
-  let s = Math.min(start, end);
-  let e = Math.max(start, end);
-  if (format === 'bold' || format === 'italic') {
-    const size = format === 'bold' ? 2 : 1;
-    const mark = '*'.repeat(size);
-    if (s === e) [s, e] = wordAround(text, s);
-    if (s === e) {
-      // Nothing to mark: a word to type over, chosen.
-      const word = format;
-      return {
-        text: `${text.slice(0, s)}${mark}${word}${mark}${text.slice(e)}`,
-        start: s + mark.length,
-        end: s + mark.length + word.length,
-      };
-    }
-    // Each line's words, and the `*` round them: written in the choice,
-    // and just outside it.
-    const parts: Array<{ from: number; to: number; core: string; a: number; b: number }> = [];
-    let from = s;
-    for (;;) {
-      const nl = text.indexOf('\n', from);
-      const to = nl === -1 || nl > e ? e : nl;
-      const { lead, words } = partsOf(text, from, to);
-      const wordsAt = from + lead.length;
-      const wordsEnd = wordsAt + words.length;
-      const inA = starsFrom(words, 0);
-      const inB = inA < words.length ? starsBefore(words, words.length) : 0;
-      const core = words.slice(inA, words.length - inB);
-      if (core) {
-        const outA = starsBefore(text, wordsAt);
-        const outB = starsFrom(text, wordsEnd);
-        parts.push({
-          from: wordsAt - outA,
-          to: wordsEnd + outB,
-          core,
-          a: outA + inA,
-          b: inB + outB,
-        });
-      }
-      if (to === e) break;
-      from = to + 1;
-    }
-    if (parts.length === 0) return { text, start: s, end: e };
-    // Bold is two `*` or three; italic one or three.
-    const has = (p: { a: number; b: number }) => {
-      const m = Math.min(p.a, p.b);
-      return size === 2 ? m >= 2 : m === 1 || m >= 3;
-    };
-    const off = parts.every(has);
-    const next = parts.map((p) => {
-      const d = off ? -size : has(p) ? 0 : size;
-      return { ...p, a: p.a + d, b: p.b + d };
-    });
-    if (next.some((p) => p.a > 3 || p.b > 3)) return { text, start: s, end: e };
-    // Each line's words and their marks written anew, in place of the old.
-    let out = '';
-    let at = 0;
-    let first: [number, number] | null = null;
-    for (const p of next) {
-      out += text.slice(at, p.from);
-      const coreAt = out.length + p.a;
-      first ??= [coreAt, coreAt + p.core.length];
-      out += `${'*'.repeat(p.a)}${p.core}${'*'.repeat(p.b)}`;
-      at = p.to;
-    }
-    const lastEnd = out.length;
-    out += text.slice(at);
-    // One line: its words chosen, to press again. Several: all of them.
-    if (next.length === 1 && first) return { text: out, start: first[0], end: first[1] };
-    return { text: out, start: Math.min(s, next[0]?.from ?? s), end: lastEnd };
-  }
-  if (format === 'link') {
-    // One link: the first line of what is chosen, or the word at the caret.
-    if (s === e) [s, e] = wordAround(text, s);
-    const nl = text.indexOf('\n', s);
-    if (nl !== -1 && nl < e) e = nl;
-    const { lead, words, trail } = partsOf(text, s, e);
-    // A bracket would end the link's words early: shown as the parenthesis it reads as.
-    const label = (words || 'link').replace(/\[/g, '(').replace(/\]/g, ')');
-    const linked = `${lead}[${label}](${LINK_PLACEHOLDER})${trail}`;
-    const address = s + lead.length + label.length + 3;
-    return {
-      text: `${text.slice(0, s)}${linked}${text.slice(e)}`,
-      start: address,
-      end: address + LINK_PLACEHOLDER.length,
-    };
-  }
-  // A list: every line the choice touches. Blank ones in a choice of
-  // several stay blank; a blank line the caret is on becomes an empty item.
-  const from = s === 0 ? 0 : text.lastIndexOf('\n', s - 1) + 1;
-  const last = e > s && text[e - 1] === '\n' ? e - 1 : e;
-  const found = text.indexOf('\n', last);
-  const to = found === -1 ? text.length : found;
-  const lines = text.slice(from, to).split('\n');
-  let n = 0;
-  const marked = lines
-    .map((line) => {
-      if (lines.length > 1 && line.trim() === '') return line;
-      n += 1;
-      // A checklist item stays as it is: done stays done (N535W-03).
-      if (format === 'checklist' && CHECKBOX_MARK.test(line)) return line;
-      const mark = format === 'numbered' ? `${n}. ` : format === 'checklist' ? '- [ ] ' : '- ';
-      return mark + line.replace(LIST_MARK, '');
-    })
-    .join('\n');
-  return {
-    text: `${text.slice(0, from)}${marked}${text.slice(to)}`,
-    start: from + marked.length,
-    end: from + marked.length,
-  };
-}
-
-const TOOLS: Array<{ format: NoteFormat; label: string; keys?: string }> = [
-  { format: 'bold', label: 'Bold', keys: 'Control+B' },
-  { format: 'italic', label: 'Italic', keys: 'Control+I' },
-  { format: 'list', label: 'List' },
-  { format: 'numbered', label: 'Numbered' },
-  { format: 'checklist', label: 'Checklist' },
-  { format: 'link', label: 'Link' },
-];
+export const ONLY_ME_TITLE =
+  'Only the words of an Only me note are sealed, not its title: keep anything secret out of the title.';
 
 /** "4,212 of 10,000 characters". */
 const countOf = (n: number) =>
@@ -352,6 +182,25 @@ export function heldNow(err: ApiRequestError): DocumentView | null {
   }
 }
 
+/**
+ * What a note that looks as if it holds a password says, before it is
+ * saved (0.9.0, N1): never refused — a note is not a password manager, and
+ * the family can read and search one that is not Only me. The words of a
+ * line are looked at as a tag's are (`looksSecret`): "wifi password: …",
+ * "the PIN is 4821".
+ */
+export function secretNoteWarning(
+  markdown: string,
+  visibility: DocumentView['visibility'],
+): string | null {
+  const lines = notesPlainText(markdown.slice(0, 4_000)).split('\n').slice(0, 200);
+  const found = lines.some((line) => looksSecret(line.slice(0, 80)));
+  if (!found) return null;
+  return visibility === 'private'
+    ? 'This looks like a password or a PIN. A note is not a password manager: keep them in one if you can.'
+    : 'This looks like a password or a PIN. Everyone who can see this note can read and search it: keep passwords and PINs in a password manager, or make the note Only me.';
+}
+
 /** A note being written. */
 interface Editing extends NoteDraft {
   /**
@@ -364,10 +213,24 @@ interface Editing extends NoteDraft {
   restored: boolean;
   /** Their note, shown once the vault's is found to differ from the one this edit began from. */
   theirs: DocumentView | null;
+  /** Whether anything was written since it began: a draft brought back was. */
+  changed: boolean;
 }
 
 /** The note's words as the vault keeps them: '' for none. */
 const wordsNow = (doc: Pick<DocumentView, 'notes'>) => doc.notes ?? '';
+
+/** Whether this edit changed a note's title (one kept on its own): only then is it sent. */
+const titleChanged = (e: Pick<NoteDraft, 'title' | 'baseTitle'>) =>
+  e.title !== undefined && e.title.trim() !== (e.baseTitle ?? '').trim();
+
+/**
+ * Somebody else's change met: their note's words, or — when this edit
+ * changed the title too — its title, no longer what the edit began from
+ * (the N1 review). Saving over either is a choice of its own.
+ */
+const changedMeanwhile = (doc: Pick<DocumentView, 'notes' | 'title'>, e: NoteDraft) =>
+  wordsNow(doc) !== e.baseText || (titleChanged(e) && (doc.title ?? '') !== (e.baseTitle ?? ''));
 
 /**
  * A draft brought back, held to the document as it is now: its note still
@@ -376,14 +239,25 @@ const wordsNow = (doc: Pick<DocumentView, 'notes'>) => doc.notes ?? '';
  * review, W535-03).
  */
 function fromDraft(doc: DocumentView, kept: NoteDraft): Editing {
-  const same = doc.etag === kept.baseEtag || wordsNow(doc) === kept.baseText;
-  return { ...kept, sendEtag: doc.etag, restored: true, theirs: same ? null : doc };
+  const same = doc.etag === kept.baseEtag || !changedMeanwhile(doc, kept);
+  return {
+    ...kept,
+    sendEtag: doc.etag,
+    restored: true,
+    theirs: same ? null : doc,
+    changed: true,
+  };
 }
 
 /**
- * A document's Notes section: the note as it reads, who last changed it and
- * when (on the household's clock), and — for whoever may change the
- * document — Add a note or Edit note.
+ * A note's section: the note as it reads, who last changed it and when (on
+ * the household's clock), and — for whoever may change it — Edit, the
+ * editor, Save and Cancel.
+ *
+ * As a document's (`variant: 'document'`, 5.35): under its own heading,
+ * "Add a note" or "Edit note". As a note kept on its own (`'note'`, 0.9.0,
+ * N1): the note itself, its title written with its words, under the
+ * screen's own heading (`labelledBy`).
  *
  * Saving is made from the note the edit began from (the 5.35 review, A535-01,
  * W535-01, W535-03, W535-04). The document's ETag moves whenever anything
@@ -396,7 +270,7 @@ function fromDraft(doc: DocumentView, kept: NoteDraft): Editing {
  */
 export function NotesSection(props: {
   doc: DocumentView;
-  /** The type's own word for notes, or "Notes". */
+  /** The type's own word for notes, or "Notes"; for a note kept on its own, "Note". */
   label: string;
   /** Whoever may change the document: never a viewer or a guest; a teen, their own. */
   mayEdit: boolean;
@@ -405,8 +279,16 @@ export function NotesSection(props: {
   onSaved: (doc: DocumentView) => void;
   /** A save was refused (409): the document as the vault holds it now. */
   onRefreshed: (doc: DocumentView) => void;
+  /** A document's note (5.35), or a note kept on its own (0.9.0, N1). */
+  variant?: 'document' | 'note';
+  /** A note kept on its own: the heading its section is named by. */
+  labelledBy?: string;
+  /** Told whether there is anything unsaved, as it changes. */
+  onDirty?: (dirty: boolean) => void;
 }) {
   const { doc, mayEdit } = props;
+  const variant = props.variant ?? 'document';
+  const own = variant === 'note';
   const { withToken, session } = useApp();
   const info = session.info;
   const householdId = info?.household_id ?? null;
@@ -419,14 +301,10 @@ export function NotesSection(props: {
     const kept = mayEdit && who ? draftOf(doc, who) : null;
     return kept ? fromDraft(doc, kept) : null;
   });
-  const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const box = useRef<HTMLTextAreaElement>(null);
   const opener = useRef<HTMLButtonElement>(null);
   const conflict = useRef<HTMLParagraphElement>(null);
-  /** What to choose in the box once React has put the new text in it. */
-  const choose = useRef<[number, number] | null>(null);
   /** Where focus goes once the editor has gone. */
   const back = useRef(false);
   /** The newest the page knows of the document: what a draft is kept for. */
@@ -443,7 +321,7 @@ export function NotesSection(props: {
       setEditing({
         ...editing,
         sendEtag: doc.etag,
-        theirs: wordsNow(doc) === editing.baseText ? editing.theirs : doc,
+        theirs: changedMeanwhile(doc, editing) ? doc : editing.theirs,
       });
     }
   }
@@ -452,6 +330,24 @@ export function NotesSection(props: {
     known.current = doc;
   });
 
+  // Anything unsaved, said to the page as it changes.
+  const dirty = editing !== null && editing.changed;
+  const { onDirty } = props;
+  useEffect(() => {
+    onDirty?.(dirty);
+  }, [dirty, onDirty]);
+  useEffect(() => () => onDirty?.(false), [onDirty]);
+  // A tab closed or reloaded with something unsaved is asked about first.
+  useEffect(() => {
+    if (!dirty) return;
+    const ask = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', ask);
+    return () => window.removeEventListener('beforeunload', ask);
+  }, [dirty]);
+
   // A document no longer for everyone keeps no draft (A32), however that
   // is learnt: the page, or a refused save (the 5.35 review, W535-02).
   useEffect(() => {
@@ -459,14 +355,6 @@ export function NotesSection(props: {
       forgetDraft(doc.id, { household_id: householdId, member_id: memberId });
     }
   }, [doc.id, doc.visibility, householdId, memberId]);
-
-  useLayoutEffect(() => {
-    const at = choose.current;
-    if (!at || !box.current) return;
-    choose.current = null;
-    box.current.focus();
-    box.current.setSelectionRange(at[0], at[1]);
-  });
 
   useEffect(() => {
     if (editing || !back.current) return;
@@ -488,30 +376,33 @@ export function NotesSection(props: {
       baseText: e.baseText,
       baseEtag: e.baseEtag,
       baseStamp: e.baseStamp,
+      ...(e.title !== undefined ? { title: e.title, baseTitle: e.baseTitle ?? '' } : {}),
     });
   };
 
-  const write = (text: string) => {
-    if (!editing) return;
-    const next = { ...editing, text };
-    setEditing(next);
-    persist(next);
+  const write = (change: { text?: string; title?: string }) => {
+    setEditing((was) => {
+      if (!was) return was;
+      const next = { ...was, ...change, changed: true };
+      persist(next);
+      return next;
+    });
   };
 
   const start = () => {
     setError(null);
-    setPreview(false);
     const text = wordsNow(doc);
     setEditing({
       text,
       baseText: text,
       baseEtag: doc.etag,
       baseStamp: doc.notes_updated_at ?? null,
+      ...(own ? { title: doc.title ?? '', baseTitle: doc.title ?? '' } : {}),
       sendEtag: doc.etag,
       restored: false,
       theirs: null,
+      changed: false,
     });
-    choose.current = [text.length, text.length];
   };
 
   const close = () => {
@@ -521,36 +412,28 @@ export function NotesSection(props: {
     back.current = true;
   };
 
-  const format = (f: NoteFormat) => {
-    if (!editing || !box.current) return;
-    const { selectionStart, selectionEnd } = box.current;
-    const next = formatNote(editing.text, selectionStart, selectionEnd, f);
-    // Over the limit, it is not done: the box would cut the note short.
-    if (next.text.length > NOTES_MAX) return;
-    choose.current = [next.start, next.end];
-    write(next.text);
-  };
-
-  const keys = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
-    const k = e.key.toLowerCase();
-    if (k !== 'b' && k !== 'i') return;
-    e.preventDefault();
-    format(k === 'b' ? 'bold' : 'italic');
-  };
-
   const save = async () => {
     if (!editing || busy) return;
     const began = editing;
-    // What is sent is what the preview shows.
+    // What is sent is what the page shows: the words as they read back.
     const notes = began.text.trim() || null;
+    // The title only when this edit changed it: never somebody else's,
+    // renamed meanwhile, put back by a save of the words (the N1 review).
+    const title = own && titleChanged(began) ? (began.title ?? '').trim() || null : undefined;
     setBusy(true);
     setError(null);
     let etag = began.sendEtag;
     try {
       for (let tries = 0; tries < 2; tries++) {
         try {
-          const saved = await withToken((t) => api.updateDocument(t, doc.id, { notes }, etag));
+          const saved = await withToken((t) =>
+            api.updateDocument(
+              t,
+              doc.id,
+              { notes, ...(title !== undefined ? { title } : {}) },
+              etag,
+            ),
+          );
           if (!saved) return;
           close();
           props.onSaved(saved);
@@ -560,7 +443,7 @@ export function NotesSection(props: {
           const now = heldNow(err);
           if (!now) {
             setError(
-              'Someone else changed this document while you were writing. Your draft is still here: copy it, then reload the page to see theirs.',
+              'Someone else changed this note while you were writing. Your draft is still here: copy it, then reload the page to see theirs.',
             );
             return;
           }
@@ -570,7 +453,7 @@ export function NotesSection(props: {
           known.current = now;
           props.onRefreshed(now);
           if (who && now.visibility !== 'household') forgetDraft(doc.id, who);
-          if (wordsNow(now) !== began.baseText) {
+          if (changedMeanwhile(now, began)) {
             setEditing((e) => e && { ...e, sendEtag: now.etag, theirs: now });
             return;
           }
@@ -579,7 +462,7 @@ export function NotesSection(props: {
           setEditing((e) => e && { ...e, sendEtag: now.etag });
         }
       }
-      setError('This document changed again as the note was saved. Save it once more.');
+      setError('This note changed again as it was saved. Save it once more.');
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -603,20 +486,28 @@ export function NotesSection(props: {
     theirs.notes_updated_by_name
       ? theirs.notes_updated_by_name
       : 'Someone else';
+  const tooLong = editing !== null && editing.text.length > NOTES_MAX;
+  const secret = editing ? secretNoteWarning(editing.text, doc.visibility) : null;
 
   return (
-    <section aria-labelledby={headingId} className="notes">
+    <section
+      aria-labelledby={own ? props.labelledBy : headingId}
+      className={own ? 'notes notes-own' : 'notes'}
+    >
       <div className="notes-head">
-        <h2 id={headingId} className="section-h">
-          {props.label}
-        </h2>
+        {!own && (
+          <h2 id={headingId} className="section-h">
+            {props.label}
+          </h2>
+        )}
         {mayEdit && !editing && (
-          <Button kind="quiet" ref={opener} onClick={start}>
-            {doc.notes ? 'Edit note' : 'Add a note'}
+          <Button kind={own ? 'primary' : 'quiet'} ref={opener} onClick={start}>
+            {own ? 'Edit' : doc.notes ? 'Edit note' : 'Add a note'}
           </Button>
         )}
       </div>
       {!editing && doc.notes && <NoteText source={doc.notes} />}
+      {!editing && own && !doc.notes && <p className="muted">Nothing written in it yet.</p>}
       {!editing && stamp && <p className="muted note-stamp">{stamp}</p>}
       {editing && (
         <div className="note-editor">
@@ -631,13 +522,18 @@ export function NotesSection(props: {
                 {changedBy} changed this note while you were writing. Your draft is still here, and
                 theirs is below.
               </p>
+              {own && (theirs.title ?? '') !== (editing.baseTitle ?? '') && (
+                <p>
+                  Their title: <strong>{theirs.title ?? 'none'}</strong>
+                </p>
+              )}
               {theirs.notes ? (
                 <NoteText source={theirs.notes} />
               ) : (
                 <p className="muted">They took the note off.</p>
               )}
               <div className="row">
-                <Button onClick={() => void save()} disabled={busy}>
+                <Button onClick={() => void save()} disabled={busy || tooLong}>
                   {busy ? 'Saving…' : 'Save mine over theirs'}
                 </Button>
                 <Button kind="quiet" onClick={close} disabled={busy}>
@@ -646,72 +542,51 @@ export function NotesSection(props: {
               </div>
             </div>
           )}
-          <div className="pills" role="group" aria-label="Write or preview">
-            {[false, true].map((p) => (
-              <button
-                key={String(p)}
-                type="button"
-                className={`pill${preview === p ? ' pill-on' : ''}`}
-                aria-pressed={preview === p}
-                onClick={() => setPreview(p)}
-              >
-                {p ? 'Preview' : 'Write'}
-              </button>
-            ))}
-          </div>
-          {preview ? (
-            <div className="note-preview" role="region" aria-label="Preview of the note">
-              {/* What Save sends: the note trimmed (the 5.35 review, W535-08). */}
-              {editing.text.trim() ? (
-                <NoteText source={editing.text.trim()} />
-              ) : (
-                <p className="muted">Nothing written yet.</p>
+          {own && (
+            <div className="field">
+              <label htmlFor={`${id}-title`}>Title</label>
+              <input
+                id={`${id}-title`}
+                type="text"
+                value={editing.title ?? ''}
+                maxLength={200}
+                aria-describedby={doc.visibility === 'private' ? `${id}-title-note` : undefined}
+                onChange={(e) => write({ title: e.target.value })}
+              />
+              {doc.visibility === 'private' && (
+                <span id={`${id}-title-note`} className="muted field-note">
+                  {ONLY_ME_TITLE}
+                </span>
               )}
             </div>
-          ) : (
-            <>
-              <div className="note-tools" role="group" aria-label="Formatting">
-                {TOOLS.map((t) => (
-                  <button
-                    key={t.format}
-                    type="button"
-                    className="btn btn-quiet note-tool"
-                    aria-keyshortcuts={t.keys}
-                    onClick={() => format(t.format)}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-              <label htmlFor={`${id}-text`} className="visually-hidden">
-                {props.label}
-              </label>
-              <textarea
-                id={`${id}-text`}
-                ref={box}
-                className="note-input"
-                value={editing.text}
-                rows={8}
-                maxLength={NOTES_MAX}
-                aria-describedby={`${id}-help ${id}-count`}
-                onKeyDown={keys}
-                onChange={(e) => write(e.target.value)}
-              />
-              <p id={`${id}-help`} className="muted note-help">
-                **bold**, *italic*, “- ” a list, “1. ” numbered, “- [ ] ” a checklist, “### ” a
-                heading, [words](https://…) a link.
-              </p>
-            </>
           )}
-          <p id={`${id}-count`} className="muted note-count">
-            {countOf(editing.text.length)}
+          <RichTextEditor
+            label={props.label}
+            initial={editing.text}
+            autoFocus={!own}
+            describedBy={`${id}-count${secret ? ` ${id}-secret` : ''}`}
+            onChange={(text) => write({ text })}
+          />
+          <p
+            id={`${id}-count`}
+            className={`note-count ${tooLong ? 'field-error' : 'muted'}`}
+            {...(tooLong ? { role: 'alert' } : {})}
+          >
+            {tooLong
+              ? `Too long to save: ${countOf(editing.text.length)}.`
+              : countOf(editing.text.length)}
           </p>
+          {secret && (
+            <p id={`${id}-secret`} className="note-secret" role="status">
+              {secret}
+            </p>
+          )}
           <ErrorNote message={error} />
           {/* Saving over somebody else's note is the choice above, not this. */}
           {!theirs && (
             <div className="row">
-              <Button onClick={() => void save()} disabled={busy}>
-                {busy ? 'Saving…' : 'Save note'}
+              <Button onClick={() => void save()} disabled={busy || tooLong}>
+                {busy ? 'Saving…' : own ? 'Save' : 'Save note'}
               </Button>
               <Button kind="quiet" onClick={close} disabled={busy}>
                 Cancel

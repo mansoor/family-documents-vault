@@ -357,3 +357,87 @@ describe.skipIf(!testAdminUrl())('kinds newer than the client (S5)', () => {
     }
   });
 });
+
+/**
+ * A note kept on its own (0.9.0, N1): a document with no file, of a kind
+ * newer than the client. Run with the phone's older client
+ * (scripts/older-client.mjs, at v0.5.0-rc.1 and v0.5.11), this is that
+ * client listing it, reading it, looking up its kind, searching for it,
+ * changing its words and keeping its Essentials — none of which expects a
+ * document to have a file.
+ */
+describe.skipIf(!testAdminUrl())('a note, newer than the client (N1)', () => {
+  let h: Harness;
+  const fetch: FetchLike = async (url, init) => {
+    const res = await h.app.inject({
+      method: init.method as 'GET',
+      url: url.replace(/^https?:\/\/[^/]+/, ''),
+      headers: init.headers,
+      ...(typeof init.body === 'string' ? { payload: init.body } : {}),
+    });
+    return {
+      ok: res.statusCode < 400,
+      status: res.statusCode,
+      headers: {
+        get: (name) => {
+          const v = res.headers[name.toLowerCase()];
+          return v === undefined ? null : String(v);
+        },
+      },
+      json: async () => res.json(),
+      text: async () => res.body,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    };
+  };
+  const api = createApi(createHttp({ baseUrl: 'http://vault.test', fetch }));
+
+  beforeAll(async () => {
+    h = await createHarness();
+  }, 60_000);
+  afterAll(() => h.close());
+
+  it('lists it, reads it, finds its kind and its words, changes them, and keeps Essentials as before', async () => {
+    const tokens = await api.setup({
+      household_name: 'The Notes family',
+      display_name: 'Owner',
+      email: 'notes-older@example.test',
+      password: 'a long enough password',
+    });
+    const token = tokens.access_token;
+    // Made as the web makes it: through the routes every client has.
+    const made = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/documents',
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        type_key: 'note',
+        title: 'Where the stopcock is',
+        visibility: 'household',
+        notes: 'Under the **sink**, quokkanote',
+        is_essential: true,
+      },
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    const id = made.json<{ id: string }>().id;
+
+    const listed = (await api.documents(token)).items.find((d) => d.id === id);
+    expect(listed).toMatchObject({ type_key: 'note', title: 'Where the stopcock is' });
+    expect(listed?.latest_version_id ?? null).toBeNull();
+    const read = await api.document(token, id);
+    expect(read.notes).toBe('Under the **sink**, quokkanote');
+    expect((await api.versions(token, id)).items).toEqual([]);
+    // Its kind, by key, as the client looks every document's up.
+    expect((await api.documentTypes(token)).items.find((t) => t.key === 'note')).toMatchObject({
+      label: 'Note',
+    });
+    // Found by its words.
+    const hits = await api.search(token, 'quokkanote');
+    expect(hits.items.map((i) => i.document_id)).toContain(id);
+    // Its words changed, as any document's note.
+    const changed = await api.updateDocument(token, id, { notes: 'In the garage' }, read.etag);
+    expect(changed.notes).toBe('In the garage');
+    // An Essential with no file is not kept on the phone, and nothing fails.
+    const kept = await api.offlineEssentials(token);
+    expect(kept.items.map((i) => i.document.id)).not.toContain(id);
+  });
+});

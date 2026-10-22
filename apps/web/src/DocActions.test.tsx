@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
-import { beside } from './DocActions.js';
+import { actionsFor, beside } from './DocActions.js';
 import {
   fresh,
   installFakeApi,
@@ -97,6 +97,20 @@ async function confirmItsMe() {
 }
 
 describe('quick actions on every document (5.4)', () => {
+  it('a note is offered no new version: it has no file (the N1 review)', () => {
+    const doc = {
+      owner_member_id: 'm-1',
+      visibility: 'household' as const,
+      latest_version_id: null,
+      filed_by_me: true,
+      file_removed: false,
+    };
+    expect(actionsFor('owner', 'm-1', { ...doc, type_key: 'passport' })).toContain('version');
+    const offered = actionsFor('owner', 'm-1', { ...doc, type_key: 'note' });
+    expect(offered).not.toContain('version');
+    expect(offered).toEqual(expect.arrayContaining(['open', 'edit', 'trash']));
+  });
+
   it('the menu button is a sibling of the row button', async () => {
     home([{ ...PASSPORT }]);
     const more = await screen.findByRole('button', { name: PASSPORT_MENU });

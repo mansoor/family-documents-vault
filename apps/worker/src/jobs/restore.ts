@@ -1160,6 +1160,19 @@ const GUARDS = [
     fn: 'reading_check_account_writes',
   },
   { name: 'incoming_file_filed', table: 'incoming_file', fn: 'incoming_file_filed' },
+  // A note keeps no file, a document with one never becomes a note, and the
+  // kind of a note is the vault's, not a household's to change (0078, N1).
+  {
+    name: 'document_version_not_on_note',
+    table: 'document_version',
+    fn: 'document_version_not_on_note',
+  },
+  { name: 'document_note_has_no_file', table: 'document', fn: 'document_note_has_no_file' },
+  {
+    name: 'document_type_setting_not_note',
+    table: 'document_type_setting',
+    fn: 'document_type_setting_not_note',
+  },
 ];
 
 /**

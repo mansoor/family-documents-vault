@@ -1,9 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { parseNotes, type NoteBlock, type NoteInline } from '@fdv/shared';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
-import { formatNote, type NoteFormat } from './notes.js';
+import { writeInto, writtenIn } from './note-editor-testing.js';
 import { Session } from './session.js';
 import { fresh, installFakeApi, PASSPORT, signedIn, type FakeState } from './test-api.js';
 
@@ -11,9 +10,10 @@ import { fresh, installFakeApi, PASSPORT, signedIn, type FakeState } from './tes
  * Notes you can write, the review round (5.35): a refusal (409) told apart
  * from somebody changing the note; a draft that remembers the note it began
  * from, and is each person's own; no draft once a document is no longer for
- * everyone; a preview of what is saved; toolbar marks that read as meant; a
- * link's address as the browser will reach it; and the household's
- * questions on their own.
+ * everyone; what is saved is what the page shows (since 0.9.0, N1, the
+ * editor shows the note as it reads: no preview, no marks typed); a link's
+ * address as the browser will reach it; and the household's questions on
+ * their own.
  */
 
 beforeEach(() => {
@@ -80,7 +80,7 @@ async function writeNote(text: string) {
   const section = await notes();
   fireEvent.click(within(section).getByRole('button', { name: /Edit note|Add a note/ }));
   const box = within(section).getByRole('textbox', { name: 'Notes' });
-  fireEvent.change(box, { target: { value: text } });
+  writeInto(box, text);
   return { section, box };
 }
 
@@ -117,7 +117,9 @@ describe('a save the vault refuses (409), told apart (the 5.35 review)', () => {
         state.calls.filter((c) => c.method === 'GET' && c.url === '/api/v1/documents/doc-1'),
       ).toHaveLength(2),
     );
-    expect(within(section).getByRole('textbox', { name: 'Notes' })).toHaveValue('Renew in March');
+    expect(writtenIn(within(section).getByRole('textbox', { name: 'Notes' }))).toBe(
+      'Renew in March',
+    );
     fireEvent.click(within(section).getByRole('button', { name: 'Save note' }));
     await waitFor(() => expect(within(section).queryByRole('textbox')).not.toBeInTheDocument());
     expect(ifMatches(state)).toEqual(['"new-version"']);
@@ -139,7 +141,7 @@ describe('a save the vault refuses (409), told apart (the 5.35 review)', () => {
     expect(drafts()).toEqual([]);
     // Editing again begins from theirs, and is not refused.
     const { box } = await writeNote('Theirs: renew in March, or April');
-    expect(box).toHaveValue('Theirs: renew in March, or April');
+    expect(writtenIn(box)).toBe('Theirs: renew in March, or April');
     fireEvent.click(within(section).getByRole('button', { name: 'Save note' }));
     await waitFor(() => expect(within(section).queryByRole('textbox')).not.toBeInTheDocument());
     expect(ifMatches(state)).toEqual(['"abc"', '"theirs"']);
@@ -185,7 +187,7 @@ describe('a draft remembers the note it began from (the 5.35 review)', () => {
     shown.unmount();
     shown = await reopen(state);
     section = await notes();
-    expect(within(section).getByRole('textbox', { name: 'Notes' })).toHaveValue('Mine');
+    expect(writtenIn(within(section).getByRole('textbox', { name: 'Notes' }))).toBe('Mine');
     const said = await within(section).findByRole('group', { name: /changed this note/ });
     expect(said).toHaveTextContent('Sarah changed this note while you were writing.');
     expect(said).toHaveTextContent('Theirs: renew in March');
@@ -229,7 +231,7 @@ describe('no draft of a note on a document no longer for everyone (the 5.35 revi
     fireEvent.click(within(section).getByRole('button', { name: 'Save note' }));
     await within(section).findByRole('group', { name: /changed this note/ });
     expect(drafts()).toEqual([]);
-    fireEvent.change(box, { target: { value: 'Now an Adults only note: the safe code is 4471' } });
+    writeInto(box, 'Now an Adults only note: the safe code is 4471');
     expect(drafts()).toEqual([]);
   });
 
@@ -254,7 +256,7 @@ describe('drafts are each person’s own (the 5.35 review, W535-07)', () => {
     await openDocument(fresh({ documents: [{ ...PASSPORT }] }));
     const section = await notes();
     expect(within(section).queryByRole('textbox')).not.toBeInTheDocument();
-    expect(screen.queryByDisplayValue('Not yours')).not.toBeInTheDocument();
+    expect(screen.queryByText('Not yours')).not.toBeInTheDocument();
     expect(drafts()).toEqual([]);
   });
 
@@ -281,139 +283,20 @@ describe('drafts are each person’s own (the 5.35 review, W535-07)', () => {
   });
 });
 
-describe('the preview shows what Save stores (the 5.35 review, W535-08)', () => {
-  it('trimmed, as it is sent', async () => {
+describe('what Save stores is what the page shows (the 5.35 review, W535-08; 0.9.0, N1)', () => {
+  it('trimmed, as it reads: a heading and a line, the note the editor shows', async () => {
     const state = fresh({ documents: [{ ...PASSPORT }] });
     await openDocument(state);
-    const { section } = await writeNote(' ### Renewing\nonline\n');
-    fireEvent.click(within(section).getByRole('button', { name: 'Preview' }));
-    const preview = within(section).getByRole('region', { name: 'Preview of the note' });
-    expect(within(preview).getByRole('heading', { level: 3, name: 'Renewing' })).toBeVisible();
+    const { section } = await writeNote('\n### Renewing\nonline\n');
+    // No preview to ask for: the words are shown as they will read.
+    expect(within(section).queryByRole('button', { name: 'Preview' })).not.toBeInTheDocument();
+    const box = within(section).getByRole('textbox', { name: 'Notes' });
+    expect(within(box).getByRole('heading', { level: 3, name: 'Renewing' })).toBeVisible();
     fireEvent.click(within(section).getByRole('button', { name: 'Save note' }));
     await waitFor(() => expect(within(section).queryByRole('textbox')).not.toBeInTheDocument());
     const patch = state.calls.find((c) => c.method === 'PATCH');
-    expect(patch?.body).toEqual({ notes: '### Renewing\nonline' });
+    expect(patch?.body).toEqual({ notes: '### Renewing\n\nonline' });
     expect(within(section).getByRole('heading', { level: 3, name: 'Renewing' })).toBeVisible();
-  });
-});
-
-/** Each block of a note as [its kind, its plain words], inline nodes by kind. */
-function shape(text: string) {
-  const inline = (nodes: NoteInline[]): string =>
-    nodes
-      .map((n) =>
-        n.type === 'text'
-          ? n.text
-          : n.type === 'break'
-            ? '/'
-            : n.type === 'link'
-              ? `link(${inline(n.children)} -> ${n.href})`
-              : `${n.type}(${inline(n.children)})`,
-      )
-      .join('');
-  return parseNotes(text).blocks.map((b: NoteBlock) =>
-    b.type === 'list'
-      ? `${b.ordered ? 'ol' : 'ul'}[${b.items
-          .map((i) => `${i.checked === null ? '' : i.checked ? '[x]' : '[ ]'}${inline(i.children)}`)
-          .join('|')}]`
-      : `${b.type === 'heading' ? 'h3' : 'p'}(${inline(b.children)})`,
-  );
-}
-/** The toolbar's `format` on [start, end) of `text`: the note it leaves, as it reads. */
-const after = (text: string, start: number, end: number, format: NoteFormat) =>
-  shape(formatNote(text, start, end, format).text);
-
-describe('the toolbar’s marks read as the button meant (the 5.35 review, W535-05)', () => {
-  it('bold and italic: spaces left outside, each line on its own, inside a word, and with nothing chosen', () => {
-    // A word chosen with the space after it, as a double-click on Windows does.
-    expect(after('Spare key', 0, 6, 'bold')).toEqual(['p(strong(Spare) key)']);
-    expect(after('Spare key', 5, 9, 'italic')).toEqual(['p(Spare em(key))']);
-    expect(after('  Spare key  ', 0, 13, 'bold')).toEqual(['p(  strong(Spare key)  )']);
-    // At either end of the note.
-    expect(after('Spare', 0, 5, 'bold')).toEqual(['p(strong(Spare))']);
-    // Across lines: each line marked, a blank one left blank.
-    expect(after('one\n\ntwo', 0, 8, 'bold')).toEqual(['p(strong(one))', 'p(strong(two))']);
-    expect(after('one\ntwo', 1, 6, 'italic')).toEqual(['p(oem(ne)/em(tw)o)']);
-    // A list's marker stays the list's.
-    expect(after('- milk\n- eggs', 0, 13, 'bold')).toEqual(['ul[strong(milk)|strong(eggs)]']);
-    // Inside a word.
-    expect(after('Sparekey', 0, 5, 'bold')).toEqual(['p(strong(Spare)key)']);
-    expect(after('snake_case', 6, 10, 'italic')).toEqual(['p(snake_em(case))']);
-    // Nothing chosen: the word the caret is in, or a word to type over.
-    expect(after('Spare key', 2, 2, 'bold')).toEqual(['p(strong(Spare) key)']);
-    expect(formatNote('Spare ', 6, 6, 'italic')).toEqual({
-      text: 'Spare *italic*',
-      start: 7,
-      end: 13,
-    });
-    expect(after('', 0, 0, 'bold')).toEqual(['p(strong(bold))']);
-  });
-
-  it('a link: its words, one line, an address to type over', () => {
-    expect(after('see the rota ', 4, 13, 'link')).toEqual([
-      'p(see link(the rota -> https://example.com) )',
-    ]);
-    expect(after('rota', 0, 0, 'link')).toEqual(['p(link(rota -> https://example.com))']);
-    expect(after('', 0, 0, 'link')).toEqual(['p(link(link -> https://example.com))']);
-    // Across lines: the first line only.
-    expect(after('one\ntwo', 0, 7, 'link')).toEqual(['p(link(one -> https://example.com)/two)']);
-    // A bracket in the words would end them early: read as a parenthesis.
-    expect(after('a [draft]', 0, 9, 'link')).toEqual(['p(link(a (draft) -> https://example.com))']);
-  });
-
-  it('lists: every line touched, a marker replaced, blank lines left blank, the first line found', () => {
-    expect(after('milk\neggs', 0, 9, 'list')).toEqual(['ul[milk|eggs]']);
-    expect(after('milk\n\neggs', 0, 10, 'numbered')).toEqual(['ol[milk]', 'ol[eggs]']);
-    expect(formatNote('milk\n\neggs', 0, 10, 'numbered').text).toBe('1. milk\n\n2. eggs');
-    expect(after('milk\neggs', 2, 7, 'checklist')).toEqual(['ul[[ ]milk|[ ]eggs]']);
-    expect(after('1. milk\n2. eggs', 0, 15, 'list')).toEqual(['ul[milk|eggs]']);
-    expect(after('- [ ] milk', 0, 0, 'numbered')).toEqual(['ol[milk]']);
-    // The caret on a note's first line, which is blank: an item there.
-    expect(formatNote('\nfoo', 0, 0, 'list').text).toBe('- \nfoo');
-    // A choice that ends at the start of a line leaves that line alone.
-    expect(formatNote('one\ntwo', 0, 4, 'list').text).toBe('- one\ntwo');
-    // Indented, as pasted: the item is the words.
-    expect(after('   milk', 0, 0, 'list')).toEqual(['ul[milk]']);
-  });
-
-  it('Bold or Italic pressed again takes the mark off (the second round, N535W-01)', () => {
-    // Bold twice: the words, still chosen, lose the marks they were given.
-    const bold = formatNote('Spare key', 0, 5, 'bold');
-    expect(bold).toEqual({ text: '**Spare** key', start: 2, end: 7 });
-    expect(formatNote(bold.text, bold.start, bold.end, 'bold')).toEqual({
-      text: 'Spare key',
-      start: 0,
-      end: 5,
-    });
-    // Italic twice.
-    const italic = formatNote('Spare key', 0, 5, 'italic');
-    expect(shape(italic.text)).toEqual(['p(em(Spare) key)']);
-    expect(formatNote(italic.text, italic.start, italic.end, 'italic').text).toBe('Spare key');
-    // Bold with the caret inside a bold word, or with its marks chosen too.
-    expect(formatNote('**Spare** key', 4, 4, 'bold').text).toBe('Spare key');
-    expect(formatNote('**Spare** key', 0, 9, 'bold').text).toBe('Spare key');
-    // A `**` is bold, never italic: Italic on a bold word makes it both, and
-    // pressed again leaves it bold; Bold on both leaves it italic.
-    const both = formatNote('**Spare** key', 4, 4, 'italic');
-    expect(shape(both.text)).toEqual(['p(em(strong(Spare)) key)']);
-    expect(formatNote(both.text, both.start, both.end, 'italic').text).toBe('**Spare** key');
-    expect(formatNote(both.text, both.start, both.end, 'bold').text).toBe('*Spare* key');
-    // Several lines, all bold: all lose it. Some: the rest gain it.
-    expect(formatNote('**one**\n**two**', 0, 15, 'bold').text).toBe('one\ntwo');
-    expect(formatNote('**one**\ntwo', 0, 11, 'bold').text).toBe('**one**\n**two**');
-    // Never a run of four, which reads as asterisks: part of a bold run is left as it is.
-    expect(formatNote('**Spare key**', 2, 7, 'bold').text).toBe('**Spare key**');
-  });
-
-  it('Checklist keeps a box as it is: done stays done (the second round, N535W-03)', () => {
-    expect(after('- [x] a\nb', 0, 9, 'checklist')).toEqual(['ul[[x]a|[ ]b]']);
-    expect(formatNote('- [x] paid\n- [ ] send\n- book', 0, 27, 'checklist').text).toBe(
-      '- [x] paid\n- [ ] send\n- [ ] book',
-    );
-    expect(formatNote('1. call\n- [x] paid', 0, 18, 'checklist').text).toBe(
-      '- [ ] call\n- [x] paid',
-    );
-    expect(formatNote('- [x] paid', 0, 0, 'checklist').text).toBe('- [x] paid');
   });
 });
 

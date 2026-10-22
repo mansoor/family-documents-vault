@@ -2,6 +2,7 @@ import {
   FILE_REMOVED,
   formatDate,
   issuedByLabel,
+  NOTE_KIND,
   PREVIEW_MAX_PAGES,
   seesLocation,
   whenExactly,
@@ -9,7 +10,7 @@ import {
   type VersionView,
 } from '@fdv/shared';
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router';
+import { Link, Navigate, useNavigate, useParams } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { AddToCollection, audienceLabel, collectionsOffered } from '../collections.js';
@@ -194,6 +195,9 @@ export function DocumentScreen() {
     );
 
   const { doc, versions, members, types } = data;
+  // A note kept on its own (0.9.0, N1) is read and written on Notes: a
+  // search hit or a row in the table that opens it goes there.
+  if (doc.type_key === NOTE_KIND) return <Navigate to={`/notes/${doc.id}`} replace />;
   // Who may change it — move it to the Trash, remove a detail: the same
   // rule as its row's ⋯ (5.1, 5.4).
   const mayChangeIt = mayChange(storedRole(), session.info?.member_id, doc);
@@ -490,7 +494,7 @@ export function DocumentScreen() {
  * The collections this document is in, of those the reader may see, and "Add to
  * a collection" (5.15). A collection the reader may not see is not mentioned at all.
  */
-function DocumentCollections(props: { documentId: string; title: string }) {
+export function DocumentCollections(props: { documentId: string; title: string }) {
   const { authVersion } = useApp();
   const { data, error, reload } = useLoad(
     async (t) => (await api.documentCollections(t, props.documentId)).items,

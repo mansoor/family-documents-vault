@@ -49,6 +49,12 @@ export interface DocumentView {
   /** Whether it has notes, wherever `notes` is null for being sealed (0.5.8). Absent from older vaults. */
   has_notes?: boolean;
   /**
+   * A note with no title (0.9.0, N1, the re-check): its first words, to
+   * name it by wherever it is listed, when the reader is given its words
+   * (`noteFirstWords`). Absent for anything else, and from older vaults.
+   */
+  note_name?: string;
+  /**
    * When its note's words last changed — written, changed or taken away
    * (5.35, A30). Only the words move it: an edit to anything else, or the
    * same words saved again, leaves it as it was. Null when nobody has

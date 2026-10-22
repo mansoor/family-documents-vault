@@ -3,7 +3,7 @@ import axe from 'axe-core';
 import { useLayoutEffect, useRef } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
-import { formatNote } from './notes.js';
+import { writeInto, writtenIn } from './note-editor-testing.js';
 import { fresh, installFakeApi, PASSPORT, signedIn, type FakeState } from './test-api.js';
 import { Sheet } from './ui.js';
 
@@ -111,50 +111,63 @@ describe('notes you can write, on the web (5.35)', () => {
     expect(section.querySelector('a[href^="javascript"], a[href^="data"]')).toBeNull();
   });
 
-  it('an owner writes a note with the toolbar, the keys and a preview, and it is saved as the copy they began from', async () => {
+  it('an owner writes a note in the one editor, with its toolbar and its keys, and it is saved as the copy they began from (0.9.0, N1)', async () => {
+    // jsdom has no editing of its own: the browser's commands are asked for.
+    const exec = vi.fn(() => true);
+    Object.defineProperty(document, 'execCommand', { value: exec, configurable: true });
     const state = fresh({ documents: [{ ...PASSPORT }], timezone: 'Europe/London' });
     await openDocument(state);
     const section = await notes();
     expect(within(section).queryByText(/^edited/)).not.toBeInTheDocument();
     fireEvent.click(within(section).getByRole('button', { name: 'Add a note' }));
     const box = within(section).getByRole('textbox', { name: 'Notes' });
+    expect(box).toHaveAttribute('aria-multiline', 'true');
+    expect(box).toHaveAttribute('contenteditable', 'true');
     await waitFor(() => expect(box).toHaveFocus());
     expect(section).toHaveTextContent('0 of 10,000 characters');
+    // The toolbar is one, over the words: no Preview, no Markdown to type.
+    expect(within(section).getByRole('toolbar', { name: 'Formatting' })).toBeVisible();
+    expect(within(section).queryByRole('button', { name: 'Preview' })).not.toBeInTheDocument();
 
-    fireEvent.change(box, { target: { value: 'Spare key' } });
-    (box as HTMLTextAreaElement).setSelectionRange(0, 9);
+    // Bold from the toolbar, italic from the keys: the browser's own commands.
+    writeInto(box, 'Spare key');
+    const words = box.querySelector('p')?.firstChild as Text;
+    const choose = (node: Node, from: number, to: number, end: Node = node) => {
+      const r = document.createRange();
+      r.setStart(node, from);
+      r.setEnd(end, to);
+      const sel = document.getSelection() as Selection;
+      sel.removeAllRanges();
+      sel.addRange(r);
+      document.dispatchEvent(new Event('selectionchange'));
+    };
+    choose(words, 0, 9);
     fireEvent.click(within(section).getByRole('button', { name: 'Bold' }));
-    expect(box).toHaveValue('**Spare key**');
-    // Ctrl+I on "Spare", and Cmd+B is bold too.
-    (box as HTMLTextAreaElement).setSelectionRange(2, 7);
-    fireEvent.keyDown(box, { key: 'i', ctrlKey: true });
-    expect(box).toHaveValue('***Spare* key**');
-    fireEvent.change(box, { target: { value: '***Spare* key**\nunder the pot\nbin day' } });
-    (box as HTMLTextAreaElement).setSelectionRange(16, 37);
-    fireEvent.click(within(section).getByRole('button', { name: 'Checklist' }));
-    expect(box).toHaveValue('***Spare* key**\n- [ ] under the pot\n- [ ] bin day');
-    expect(section).toHaveTextContent('49 of 10,000 characters');
-    await expectAccessible();
+    expect(exec).toHaveBeenCalledWith('bold', false, undefined);
+    fireEvent.keyDown(box, { key: 'i', code: 'KeyI', ctrlKey: true });
+    expect(exec).toHaveBeenCalledWith('italic', false, undefined);
 
-    // The preview draws it as it will read.
-    fireEvent.click(within(section).getByRole('button', { name: 'Preview' }));
-    const preview = within(section).getByRole('region', { name: 'Preview of the note' });
-    expect(within(preview).getByText('Spare').tagName).toBe('EM');
-    expect(within(preview).getByText('Spare').closest('strong')).not.toBeNull();
-    expect(
-      within(preview)
-        .getAllByRole('listitem')
-        .map((li) => li.textContent),
-    ).toEqual(['☐To do: under the pot', '☐To do: bin day']);
+    // A checklist from two lines: made by the editor itself.
+    writeInto(box, 'Spare key\n\nunder the pot\n\nbin day');
+    const [, second, third] = Array.from(box.querySelectorAll('p'));
+    choose(second?.firstChild as Node, 0, 7, third?.firstChild as Node);
+    fireEvent.click(within(section).getByRole('button', { name: 'Checklist' }));
+    expect(writtenIn(box)).toBe('Spare key\n\n- [ ] under the pot\n- [ ] bin day');
+    expect(section).toHaveTextContent('44 of 10,000 characters');
     await expectAccessible();
-    fireEvent.click(within(section).getByRole('button', { name: 'Write' }));
 
     fireEvent.click(within(section).getByRole('button', { name: 'Save note' }));
     await waitFor(() => expect(within(section).queryByRole('textbox')).not.toBeInTheDocument());
     const patch = state.calls.find((c) => c.method === 'PATCH');
     expect(patch?.url).toBe('/api/v1/documents/doc-1');
-    expect(patch?.body).toEqual({ notes: '***Spare* key**\n- [ ] under the pot\n- [ ] bin day' });
+    expect(patch?.body).toEqual({ notes: 'Spare key\n\n- [ ] under the pot\n- [ ] bin day' });
     expect(patch?.headers?.['if-match']).toBe('"abc"');
+    // Drawn as it reads, the same note.
+    expect(
+      within(section)
+        .getAllByRole('listitem')
+        .map((li) => li.textContent),
+    ).toEqual(['☐To do: under the pot', '☐To do: bin day']);
     // Who, and when: on the household's clock (10:05 UTC is 11:05am in London).
     expect(section).toHaveTextContent('edited 26 Sept 2026, 11:05am by Mansoor Seikh');
     // Focus back on what opened the editor.
@@ -162,6 +175,23 @@ describe('notes you can write, on the web (5.35)', () => {
       expect(within(section).getByRole('button', { name: 'Edit note' })).toHaveFocus(),
     );
     expect(kept()).toEqual([]);
+  });
+
+  it('a note opened and closed, or saved unchanged, is not changed: the words it began from are sent as they were (0.9.0, N1)', async () => {
+    // Written before 0.9.0, in a way the editor would write otherwise.
+    const old = '### Bins\n**Blue** on *Mondays*\n* green on Fridays';
+    const state = fresh({ documents: [{ ...PASSPORT, notes: old }] });
+    await openDocument(state);
+    const section = await notes();
+    fireEvent.click(within(section).getByRole('button', { name: 'Edit note' }));
+    fireEvent.click(within(section).getByRole('button', { name: 'Save note' }));
+    await waitFor(() => expect(within(section).queryByRole('textbox')).not.toBeInTheDocument());
+    expect(state.calls.find((c) => c.method === 'PATCH')?.body).toEqual({ notes: old });
+    // And it reads exactly as it did: a level-3 heading, bold, italic, a list.
+    expect(within(section).getByRole('heading', { level: 3, name: 'Bins' })).toBeVisible();
+    expect(within(section).getByText('Blue').tagName).toBe('STRONG');
+    expect(within(section).getByText('Mondays').tagName).toBe('EM');
+    expect(within(section).getByRole('listitem')).toHaveTextContent('green on Fridays');
   });
 
   it('a note changed meanwhile is not saved over: the editor says so, keeps the draft, and shows theirs', async () => {
@@ -179,7 +209,7 @@ describe('notes you can write, on the web (5.35)', () => {
     const section = await notes();
     fireEvent.click(within(section).getByRole('button', { name: 'Edit note' }));
     const box = within(section).getByRole('textbox', { name: 'Notes' });
-    fireEvent.change(box, { target: { value: 'Mine: renew in February' } });
+    writeInto(box, 'Mine: renew in February');
     // Sarah saves first.
     Object.assign(state.documents[0] as object, theirs);
 
@@ -190,7 +220,7 @@ describe('notes you can write, on the web (5.35)', () => {
     // Focus on what says so, and no plain Save left to press twice.
     await waitFor(() => expect(within(said).getByText(/changed this note/)).toHaveFocus());
     expect(within(section).queryByRole('button', { name: 'Save note' })).not.toBeInTheDocument();
-    expect(box).toHaveValue('Mine: renew in February');
+    expect(writtenIn(box)).toBe('Mine: renew in February');
     expect((state.documents[0] as { notes: string }).notes).toBe('Theirs: renew in March');
     await expectAccessible();
 
@@ -208,9 +238,10 @@ describe('notes you can write, on the web (5.35)', () => {
       let shown = await openDocument(state);
       const section = await notes();
       fireEvent.click(within(section).getByRole('button', { name: 'Add a note' }));
-      fireEvent.change(within(section).getByRole('textbox', { name: 'Notes' }), {
-        target: { value: `Not to be left behind (${visibility})` },
-      });
+      writeInto(
+        within(section).getByRole('textbox', { name: 'Notes' }),
+        `Not to be left behind (${visibility})`,
+      );
       expect(kept(), visibility).toEqual([]);
       // Back again: nothing was kept to bring back.
       shown.unmount();
@@ -227,7 +258,7 @@ describe('notes you can write, on the web (5.35)', () => {
       shown = await reopen(state);
       await notes();
       await waitFor(() => expect(kept(), visibility).toEqual([]));
-      expect(screen.queryByDisplayValue('From before')).not.toBeInTheDocument();
+      expect(screen.queryByText('From before')).not.toBeInTheDocument();
       shown.unmount();
     }
 
@@ -236,15 +267,13 @@ describe('notes you can write, on the web (5.35)', () => {
     const shown = await openDocument(state);
     let section = await notes();
     fireEvent.click(within(section).getByRole('button', { name: 'Add a note' }));
-    fireEvent.change(within(section).getByRole('textbox', { name: 'Notes' }), {
-      target: { value: 'Half-written' },
-    });
+    writeInto(within(section).getByRole('textbox', { name: 'Notes' }), 'Half-written');
     // Kept for whoever wrote it, in their household (the 5.35 review, W535-07).
     expect(kept()).toEqual(['fdv.note-draft.hh.me.doc-1']);
     shown.unmount();
     await reopen(state);
     section = await notes();
-    expect(within(section).getByRole('textbox', { name: 'Notes' })).toHaveValue('Half-written');
+    expect(writtenIn(within(section).getByRole('textbox', { name: 'Notes' }))).toBe('Half-written');
     expect(section).toHaveTextContent('Your unsaved draft of this note is back.');
     await expectAccessible();
 
@@ -310,22 +339,6 @@ describe('notes you can write, on the web (5.35)', () => {
     const section = await notes();
     expect(section).toHaveTextContent('edited 25 Sept 2026, 8:12am');
     expect(section).not.toHaveTextContent(' by ');
-  });
-
-  it('the toolbar marks what is chosen, and every line it touches', () => {
-    expect(formatNote('a word here', 2, 6, 'bold')).toEqual({
-      text: 'a **word** here',
-      start: 4,
-      end: 8,
-    });
-    expect(formatNote('', 0, 0, 'italic')).toEqual({ text: '*italic*', start: 1, end: 7 });
-    expect(formatNote('see the rota', 4, 12, 'link')).toEqual({
-      text: 'see [the rota](https://example.com)',
-      start: 15,
-      end: 34,
-    });
-    expect(formatNote('one\ntwo\nthree', 1, 6, 'numbered').text).toBe('1. one\n2. two\nthree');
-    expect(formatNote('one\ntwo', 5, 5, 'list').text).toBe('one\n- two');
   });
 });
 

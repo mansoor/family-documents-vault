@@ -13,6 +13,7 @@ import {
   type ShareLinkPreview,
 } from '../api.js';
 import { describeError } from '../app-context.js';
+import { NoteText } from '../notes.js';
 import { useFixedTitle } from '../page-title.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
 
@@ -240,7 +241,9 @@ function Preview({
       : 'a collection of documents'
     : preview.document_title
       ? 'this'
-      : 'a document';
+      : preview.note
+        ? 'a note'
+        : 'a document';
   // An emailed code (5.20): sent when they ask, to the address the sharer
   // typed, which this page only ever shows masked.
   const sendCode = async () => {
@@ -279,7 +282,7 @@ function Preview({
       <h1 id="share-h" style={{ fontSize: 26 }} tabIndex={-1} ref={heading}>
         {collection
           ? (preview.collection_name ?? 'Shared documents')
-          : (preview.document_title ?? 'A shared document')}
+          : (preview.document_title ?? (preview.note ? 'A shared note' : 'A shared document'))}
       </h1>
       <form
         className="card stack"
@@ -295,9 +298,12 @@ function Preview({
           preview.opens_left != null ||
           preview.this_device_only) && (
           <ul className="share-terms">
-            {preview.permission === 'view' && (
-              <li>You can look at its pages here. It is not shared to download.</li>
-            )}
+            {preview.permission === 'view' &&
+              (preview.note ? (
+                <li>You can read it here.</li>
+              ) : (
+                <li>You can look at its pages here. It is not shared to download.</li>
+              ))}
             {preview.opens_left != null && (
               <li>
                 It can be opened {moreTimes(preview.opens_left)}. Each press of Open counts;
@@ -443,6 +449,8 @@ function Opened({
   const collection = session.kind === 'collection';
   const single = !collection && session.items.length === 1 ? session.items[0] : undefined;
   const viewOnly = session.permission === 'view';
+  // A note kept on its own (0.9.0, N1): its words, on the page; no pages drawn.
+  const notesOnly = session.items.length > 0 && session.items.every((i) => i.note === true);
   const drawing = session.items.some((i) => i.pages?.state === 'drawing');
   const [asked, setAsked] = useState(0);
   const [since, setSince] = useState(() => Date.now());
@@ -509,7 +517,7 @@ function Opened({
             something.
           </p>
         )}
-        {viewOnly && (
+        {viewOnly && !notesOnly && (
           <p className="status status-warn" role="note">
             This page cannot stop screenshots or photos of the screen. Every page shows who it was
             shared with and when.
@@ -529,7 +537,9 @@ function Opened({
             <li key={item.id} className="place">
               {!single && <strong>{item.title ?? 'A document'}</strong>}
               {item.type_label && <span className="muted">{item.type_label}</span>}
-              {viewOnly ? (
+              {item.note ? (
+                <SharedNote item={item} onOver={onOver} />
+              ) : viewOnly ? (
                 <SharedPages item={item} gaveUp={gaveUp} onTryAgain={tryAgain} />
               ) : session.downloads_left === 0 && !item.downloaded ? null : (
                 <>
@@ -556,6 +566,42 @@ function Opened({
         </p>
       </section>
     </>
+  );
+}
+
+/**
+ * A note kept on its own, read on the page (0.9.0, N1): its words as the
+ * vault holds them when the page asks, drawn as the family's app draws a
+ * note — from its tree, as elements, never as HTML. Asked once a page; the
+ * first look is written down in the family's activity log.
+ */
+function SharedNote({ item, onOver }: { item: SharedItem; onOver: (message: string) => void }) {
+  const [note, setNote] = useState<{ body: string } | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  useEffect(() => {
+    let stopped = false;
+    void api.linkItemNote(item.id).then(
+      (n) => {
+        if (!stopped) setNote({ body: n.body });
+      },
+      (err: unknown) => {
+        if (stopped) return;
+        if (err instanceof ApiRequestError && OVER.has(err.code)) onOver(err.message);
+        else setProblem(describeError(err));
+      },
+    );
+    return () => {
+      stopped = true;
+    };
+  }, [item.id, onOver]);
+  if (problem) return <ErrorNote message={problem} />;
+  if (!note) return <p className="muted">Opening the note…</p>;
+  return note.body ? (
+    <div className="shared-note">
+      <NoteText source={note.body} headingLevel={2} />
+    </div>
+  ) : (
+    <p className="muted">Nothing is written in it.</p>
   );
 }
 

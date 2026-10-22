@@ -27,6 +27,7 @@ import {
   IDENTITY_LISTS,
   identityFilled,
   maskIdentity,
+  NOTE_KIND,
   seesAdults,
   wellFormedDate,
   type DateValue,
@@ -144,6 +145,25 @@ const safe = (s: string) =>
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 80) || 'untitled';
+
+/**
+ * A note's Markdown as a file any Markdown viewer may open (the N1 review):
+ * what would read there as HTML — `<` before a letter, `/`, `!` or `?`,
+ * and `&` before what reads as an entity — is written with a backslash,
+ * which such a viewer shows as the character, and a person reads past. The
+ * rest is the note as it was written.
+ *
+ * Backslashes the note already has just before a `<` or an `&` are doubled
+ * first (the N1 re-check): a viewer reads each pair as one backslash, so
+ * none of them can take the escape added after them for itself — `\<img>`
+ * stays the text `\<img>`, never a backslash and then HTML.
+ */
+export function markdownText(md: string): string {
+  return md
+    .replace(/\\+(?=[<&])/g, (run) => run + run)
+    .replace(/<(?=[A-Za-z/!?])/g, '\\<')
+    .replace(/&(?=#?[A-Za-z0-9]+;)/g, '\\&');
+}
 
 /** What an export says of a file not where the files are kept as it was built (5.24). */
 export const FILE_NOT_THERE = 'The file was not where your files are kept when this was made.';
@@ -315,6 +335,19 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
       const v = latestOf.get(d.id);
       let file: string | null = null;
       let fileNote: string | null = null;
+      // A note kept on its own (0.9.0, N1) has no file: its words go in as
+      // one, a Markdown file anything opens, in Notes/ — an Only me one's
+      // opened for its owner, as its words always are in their export.
+      if (d.type_key === NOTE_KIND) {
+        const base = `Notes/${safe(d.title ?? 'Note')}`;
+        let name = `${base}.md`;
+        for (let i = 2; used.has(name); i++) name = `${base} (${i}).md`;
+        used.add(name);
+        const words = valuesOf(d.id).notes ?? '';
+        const md = `${d.title ? `# ${d.title}\n\n` : ''}${words}\n`;
+        archive.append(markdownText(md), { name });
+        file = name;
+      }
       // Its record came back with a restore, its file did not (5.24): listed,
       // with no file and why, rather than failing everybody's export.
       if (v?.file_removed_at) fileNote = FILE_REMOVED;
@@ -832,6 +865,7 @@ const README = `This folder is a complete export from Family Document Vault.
 - index.html opens in any browser and lists every document with its details.
 - index.csv is the same list for a spreadsheet; index.json is the same list for software.
 - A document listed with no file says why (file_note): its file was removed for good.
+- Notes/ holds each note kept on its own, as a Markdown file: plain text any editor opens.
 - people/ holds each person's photo you can see; identity/ holds the identity details
   you can see, a file for each person. Yours are all there, Only me included; other
   people's ID numbers and hidden details are not: the vault shows those only when you

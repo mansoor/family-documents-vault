@@ -323,6 +323,15 @@ export interface CapabilityFeatures {
    * ticks them. Absent from older vaults.
    */
   collection_checklist?: boolean;
+  /**
+   * Notes kept on their own (0.9.0, N1): a document of the built-in kind
+   * `note` with no file, whose words are its `notes`, written with POST
+   * and PATCH /documents as any document's are; GET /notes lists the
+   * caller's, each with a preview, and finds within them (`q`). A note
+   * takes no file (`422 note_has_no_file`), and its link is read on the
+   * page (GET /shared/items/{id}/note). Absent from older vaults.
+   */
+  notes?: boolean;
 }
 
 export interface CapabilityLimits {

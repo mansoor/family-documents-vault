@@ -26,6 +26,7 @@ import {
   type Reminding,
   type ReminderWords,
   type Visibility,
+  NOTE_KIND,
 } from '@fdv/shared';
 import { Children, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
@@ -244,7 +245,8 @@ export function KindsScreen() {
   }
 
   const own = (data ?? []).filter((k) => k.builtin === false);
-  const builtins = (data ?? []).filter((k) => k.builtin !== false);
+  // The kind of a note is the vault's own, and not one to change (the N1 review).
+  const builtins = (data ?? []).filter((k) => k.builtin !== false && k.key !== NOTE_KIND);
 
   return (
     <main className="page page-top has-nav">
@@ -542,7 +544,13 @@ export function KindScreen() {
   );
   // How many times "Load the latest" has started the editor again.
   const [reloads, setReloads] = useState(0);
-  const kind = key === undefined ? null : data?.types.find((k) => k.key === key);
+  // The kind of a note is not on the list to change (the N1 review).
+  const kind =
+    key === undefined
+      ? null
+      : key === NOTE_KIND
+        ? undefined
+        : data?.types.find((k) => k.key === key);
 
   if (!manage || error || !data || kind === undefined) {
     return (

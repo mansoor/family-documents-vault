@@ -9,7 +9,7 @@ import {
 import { isIPv6 } from 'node:net';
 import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { unwrapKey, type ScopeKeys } from '@fdv/crypto';
+import { openPrivate, unwrapKey, type ScopeKeys } from '@fdv/crypto';
 import {
   appendAudit,
   withPrincipal,
@@ -49,6 +49,7 @@ import {
   FOLLOW_MAX_DAYS,
   isShareAddress,
   maskEmail,
+  NOTE_KIND,
   ONLY_ME_NOT_SHARED,
   PREVIEW_MAX_PAGES,
   readShareCode,
@@ -77,6 +78,7 @@ import {
   type SharePages,
   type SharePermission,
   type SharedItem,
+  type SharedNote,
   type SharedSession,
   type ShareProtection,
   type ShareSecretKind,
@@ -893,14 +895,13 @@ export class ShareService {
   ): Promise<CreatedShare> {
     requireCapability(p, 'document.share');
     const expiresAt = this.endOf(input);
-    const permission = this.permissionOf(input);
     const secrets = await this.secrets(input);
     const { token, pinHash } = secrets;
 
-    const { id, versionId } = await withPrincipal(this.db, p, async (trx) => {
+    const { id, versionId, permission } = await withPrincipal(this.db, p, async (trx) => {
       const doc = await trx
         .selectFrom('document')
-        .select(['id', 'title', 'visibility', 'owner_member_id'])
+        .select(['id', 'title', 'visibility', 'owner_member_id', 'type_key'])
         .where('id', '=', documentId)
         .where('deleted_at', 'is', null)
         // Held for share until the link is made: a document taken away
@@ -918,12 +919,25 @@ export class ShareService {
       if (doc.visibility === 'private' && !(await onlyMeShareable(trx))) {
         throw new ApiError(409, 'only_me_not_shared', ONLY_ME_NOT_SHARED);
       }
-      const newest = await trx
-        .selectFrom('document_version')
-        .select(['id', 'mime', 'file_removed_at'])
-        .where('document_id', '=', documentId)
-        .orderBy('version_no', 'desc')
-        .executeTakeFirst();
+      // A note (0.9.0, N1): read on the page, with no file to send. Its
+      // link is one to view, said or not; one to download is refused.
+      const note = doc.type_key === NOTE_KIND;
+      if (note && input.permission === 'download') {
+        throw new ApiError(
+          422,
+          'note_read_on_the_page',
+          'A note is shared to be read on the page: it has no file to download.',
+        );
+      }
+      const permission = this.permissionOf(note ? { ...input, permission: 'view' } : input);
+      const newest = note
+        ? { id: null, mime: 'text/markdown', file_removed_at: null }
+        : await trx
+            .selectFrom('document_version')
+            .select(['id', 'mime', 'file_removed_at'])
+            .where('document_id', '=', documentId)
+            .orderBy('version_no', 'desc')
+            .executeTakeFirst();
       if (!newest) {
         throw new ApiError(
           422,
@@ -931,6 +945,7 @@ export class ShareService {
           'There is no file on this document yet, so there is nothing to send.',
         );
       }
+      const versionId: string | null = newest.id;
       // A restore found its file removed for good (5.24): a link to it would
       // open on nothing (the review, W524-7).
       if (newest.file_removed_at) {
@@ -938,7 +953,7 @@ export class ShareService {
       }
       // To view is to see the pages the vault draws, and it draws PDFs and
       // photos; a Word or an Excel file can only go as itself (A22).
-      if (permission === 'view' && !canShareToView(newest.mime)) {
+      if (permission === 'view' && !note && !canShareToView(newest.mime)) {
         throw new ApiError(
           422,
           'view_not_possible',
@@ -984,12 +999,13 @@ export class ShareService {
         },
         ip: meta.ip,
       });
-      return { id: row.id, versionId: newest.id };
+      return { id: row.id, versionId, permission };
     });
 
     // A link to view shows the pages the worker draws for it, with whom it
     // is for across each: asked for now, so they are there when it opens.
-    if (permission === 'view') await this.drawPages(p.householdId, id, versionId);
+    // A note has none: its words are read as they are.
+    if (permission === 'view' && versionId) await this.drawPages(p.householdId, id, versionId);
     return this.handOver(p, id, token, secrets);
   }
 
@@ -1036,11 +1052,13 @@ export class ShareService {
         collection_name: c.name,
         audience: c.audience,
         items: rows.map((r) => {
-          // A file removed for good is no file to send (5.24, W524-7).
+          // A file removed for good is no file to send (5.24, W524-7). A
+          // note has none, and goes as its words (0.9.0, N1).
+          const note = r.type_key === NOTE_KIND;
           const removed = r.mime !== null && r.file_removed === true;
           const offer = collectionShareItem(c.audience, {
             visibility: r.visibility,
-            has_file: r.mime !== null && !removed,
+            has_file: note || (r.mime !== null && !removed),
           });
           return {
             document_id: r.id,
@@ -1053,7 +1071,7 @@ export class ShareService {
               : offer.lock
                 ? COLLECTION_SHARE_REASONS[offer.lock]
                 : null,
-            viewable: canShareToView(r.mime),
+            viewable: note || canShareToView(r.mime),
           };
         }),
       };
@@ -1075,6 +1093,7 @@ export class ShareService {
         'd.title',
         'd.visibility',
         'd.owner_member_id',
+        'd.type_key',
         'i.position',
         't.label as type_label',
       ])
@@ -1186,7 +1205,8 @@ export class ShareService {
           `The file on “${gone.title ?? 'a document'}” was removed for good, so there is nothing to send. Untick it.`,
         );
       }
-      const empty = found.find((d) => d.mime === null);
+      // A note goes as its words (0.9.0, N1): it has no file to want.
+      const empty = found.find((d) => d.mime === null && d.type_key !== NOTE_KIND);
       if (empty) {
         throw new ApiError(
           422,
@@ -1194,7 +1214,7 @@ export class ShareService {
           `There is no file on “${empty.title ?? 'a document'}” yet, so there is nothing to send. Untick it.`,
         );
       }
-      const unviewable = found.find((d) => !canShareToView(d.mime));
+      const unviewable = found.find((d) => d.type_key !== NOTE_KIND && !canShareToView(d.mime));
       if (permission === 'view' && unviewable) {
         throw new ApiError(
           422,
@@ -1465,6 +1485,7 @@ export class ShareService {
           'document.title',
           'document.visibility',
           'document.owner_member_id',
+          'document.type_key',
           'doc_collection.name as collection_name',
           'doc_collection.audience as collection_audience',
           'doc_collection.owner_member_id as collection_owner',
@@ -1574,8 +1595,9 @@ export class ShareService {
           downloads_used: r.downloads_used,
           // A live link's pages still to be drawn are asked for here too.
           // A collection's are asked for as its recipient's page is looked at.
+          // A note's link has no pages: its words are read as they are.
           pages:
-            r.permission === 'view' && r.document_id !== null
+            r.permission === 'view' && r.document_id !== null && r.type_key !== NOTE_KIND
               ? await this.pagesOf(
                   trx,
                   { id: r.id, document_id: r.document_id },
@@ -2028,8 +2050,9 @@ export class ShareService {
       // wanted a second lock on exactly that. A collection's name too — and
       // both, in a browser a link for one device will not open in.
       const withheld = protection.length > 0 || elsewhere;
-      const title =
-        link.document_id !== null ? (await this.documentWords(trx, link.document_id)).title : null;
+      const words =
+        link.document_id !== null ? await this.documentWords(trx, link.document_id) : null;
+      const title = words?.title ?? null;
       return {
         household_name: from.household_name,
         shared_by: from.shared_by,
@@ -2040,6 +2063,10 @@ export class ShareService {
         opens_left: link.max_opens === null ? null : link.max_opens - link.open_count,
         kind: link.collection ? 'collection' : 'document',
         ...(link.collection ? { collection_name: withheld ? null : link.collection.name } : {}),
+        // A note, read on the page (0.9.0, N1): so the page says so, not "its pages".
+        // Withheld with the title: behind a PIN, a code or another browser,
+        // even that it is a note waits (the N1 review).
+        ...(words?.type_key === NOTE_KIND && !withheld ? { note: true } : {}),
         // Which inbox its code goes to, masked: the recipient never types it.
         code_to: link.code_email && !elsewhere ? maskEmail(link.code_email) : null,
         this_device_only: link.this_device_only,
@@ -2346,6 +2373,10 @@ export class ShareService {
   ): Promise<{ stream: Readable; total: number; contentType: string; filename: string }> {
     const found = await this.inSession(cookie, devices, async (trx, link, session) => {
       if (!(await this.gives(trx, link, documentId))) return null;
+      // A note has no file: its words are read on the page (0.9.0, N1).
+      if ((await this.documentWords(trx, documentId)).type_key === NOTE_KIND) {
+        throw new ApiError(404, 'not_found', 'A note has no file: its words are on the page.');
+      }
       if (link.permission !== 'download') {
         throw new ApiError(
           403,
@@ -2401,6 +2432,68 @@ export class ShareService {
   }
 
   /**
+   * A note's words, inside a session (0.9.0, N1): only a note the link
+   * gives — any other id, or a document with a file, is not there for it.
+   * The first look a session has is written down (`share.viewed`), once,
+   * as a first page looked at is. An Only me note's words are opened with
+   * its owner's key, as an Only me document's file is, for its link alone.
+   */
+  async sessionNote(
+    cookie: string | undefined,
+    documentId: string,
+    meta: RequestMeta,
+    devices: readonly DeviceCookie[] = [],
+  ): Promise<SharedNote> {
+    const found = await this.inSession(cookie, devices, async (trx, link, session) => {
+      if (!(await this.gives(trx, link, documentId))) return null;
+      const doc = await trx
+        .selectFrom('document')
+        .select([
+          'id',
+          'title',
+          'type_key',
+          'visibility',
+          'owner_member_id',
+          'notes',
+          'notes_sealed',
+          'updated_at',
+        ])
+        .where('id', '=', documentId)
+        .executeTakeFirst();
+      if (!doc || doc.type_key !== NOTE_KIND) return null;
+      if (await this.used(trx, link, session.id, documentId, 'viewed')) {
+        await this.record(trx, link.household_id, link, 'share.viewed', meta, documentId);
+      }
+      return { doc, householdId: link.household_id };
+    });
+    if (!found) throw notFound('That note');
+    const { doc } = found;
+    let body = doc.notes;
+    if (doc.notes_sealed) {
+      // Its owner's key, unwrapped as the vault: a link is given the keys of
+      // its files alone (0042), and a note has none. Asked only now, of the
+      // one note the link was found to give above.
+      const key = await withSystem(this.db, found.householdId, (trx) =>
+        this.keys.unwrap(trx, {
+          householdId: found.householdId,
+          kind: 'member',
+          memberId: doc.owner_member_id,
+        }),
+      );
+      body = openPrivate(key.key, doc.id, {
+        notes_sealed: doc.notes_sealed,
+        extra_sealed: null,
+      }).notes;
+    }
+    return {
+      id: doc.id,
+      title: doc.title,
+      body: body ?? '',
+      updated_at: doc.updated_at.toISOString(),
+    };
+  }
+
+  /**
    * One page of a view-only link's document, inside a session: the page the
    * worker drew for this link, with whom it is for across it, and never the
    * vault's own preview or the file. The first page a session looks at is
@@ -2417,6 +2510,10 @@ export class ShareService {
   ): Promise<Buffer> {
     const outcome = await this.inSession(cookie, devices, async (trx, link, session) => {
       if (!(await this.gives(trx, link, documentId))) return { kind: 'missing' } as const;
+      // A note has no pages: its words are read as they are (0.9.0, N1).
+      if ((await this.documentWords(trx, documentId)).type_key === NOTE_KIND) {
+        throw new ApiError(404, 'no_preview', 'A note has no pages: its words are on the page.');
+      }
       if (link.permission !== 'view') {
         throw new ApiError(
           404,
@@ -2668,6 +2765,21 @@ export class ShareService {
     const items: SharedItem[] = [];
     for (const id of ids) {
       const words = await this.documentWords(trx, id);
+      // A note (0.9.0, N1): no file, no pages; its words are asked for.
+      if (words.type_key === NOTE_KIND) {
+        items.push({
+          id,
+          title: words.title,
+          type_label: words.type_label,
+          filename: `${(words.title ?? 'Note').slice(0, 80)}.md`,
+          content_type: 'text/markdown',
+          byte_size: 0,
+          pages: null,
+          downloaded: false,
+          note: true,
+        });
+        continue;
+      }
       const v = await this.newestVersion(trx, id);
       items.push({
         id,
@@ -3166,7 +3278,7 @@ export class ShareService {
     const rows = await trx
       .selectFrom('doc_collection_item as i')
       .innerJoin('document as d', 'd.id', 'i.document_id')
-      .select(['d.id', 'd.visibility', 'd.owner_member_id', 'd.deleted_at'])
+      .select(['d.id', 'd.visibility', 'd.owner_member_id', 'd.deleted_at', 'd.type_key'])
       // A file to give: its newest version, unless a restore found that
       // file removed for good (5.24; the check's N524S-01). It is given again
       // once recheck-files finds it back.
@@ -3190,7 +3302,9 @@ export class ShareService {
     return rows
       .filter((d) => {
         const kind = snapshot.get(d.id);
-        if (!kind || d.deleted_at !== null || !d.has_file || !canSee(sharer, d)) return false;
+        // A note has no file, and is given as its words (0.9.0, N1).
+        const gives = d.has_file === true || d.type_key === NOTE_KIND;
+        if (!kind || d.deleted_at !== null || !gives || !canSee(sharer, d)) return false;
         return (
           kind === 'ticked' ||
           (link.follow_audience !== null &&
@@ -3234,11 +3348,11 @@ export class ShareService {
     const doc = await trx
       .selectFrom('document')
       .leftJoin('document_type', 'document_type.key', 'document.type_key')
-      .select(['document.title', 'document_type.label as type_label'])
+      .select(['document.title', 'document.type_key', 'document_type.label as type_label'])
       .where('document.id', '=', documentId)
       .executeTakeFirst();
     if (!doc) throw gone();
-    return { title: doc.title, type_label: doc.type_label };
+    return { title: doc.title, type_label: doc.type_label, type_key: doc.type_key };
   }
 
   private async newestVersion(trx: Db, documentId: string) {

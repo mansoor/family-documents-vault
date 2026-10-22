@@ -54,6 +54,11 @@ export function SharePanel(props: {
    */
   onlyMe?: boolean;
   /**
+   * A note kept on its own (0.9.0, N1): its link is read on the page, with
+   * no file to download — what they can do is not asked.
+   */
+  note?: boolean;
+  /**
    * Opened from a row's ⋯ (5.4): it starts at the form, and Cancel or Done
    * closes the sheet it is in.
    */
@@ -138,8 +143,10 @@ export function SharePanel(props: {
     if (!read.body) return;
     working('making');
     setError(null);
+    // A note's link is read on the page (0.9.0, N1).
+    const body: ShareInput = props.note ? { ...read.body, permission: 'view' } : read.body;
     try {
-      const created = await guarded((t) => api.share(t, props.documentId, read.body as ShareInput));
+      const created = await guarded((t) => api.share(t, props.documentId, body));
       if (created) {
         setMade(created);
         setOpen(false);
@@ -229,6 +236,7 @@ export function SharePanel(props: {
             read={read}
             timezone={timezone}
             viewable={viewable}
+            note={props.note === true}
             notViewable="Word and Excel files can only be shared with download: the vault cannot draw their pages."
             viewNote={
               long !== null
@@ -458,6 +466,8 @@ export function LinkOptions(props: {
   viewNote?: string | null;
   /** Said under the end, after it ("A link that keeps up … lasts 30 days at most."). */
   endNote?: ReactNode;
+  /** A note kept on its own (0.9.0, N1): read on the page, nothing to choose. */
+  note?: boolean;
 }) {
   const { options, read, timezone, viewable } = props;
   const { value } = options;
@@ -481,40 +491,50 @@ export function LinkOptions(props: {
         endNote={props.endNote}
       />
 
-      <div className="field" role="group" aria-labelledby="share-can-h">
-        <span id="share-can-h" className="field-label">
-          What they can do
-        </span>
-        <div className="pills">
-          <button
-            type="button"
-            className={`pill${value.permission === 'view' && viewable ? ' pill-on' : ''}`}
-            aria-pressed={value.permission === 'view' && viewable}
-            disabled={!viewable}
-            onClick={() => options.set({ permission: 'view' })}
-          >
-            View
-          </button>
-          <button
-            type="button"
-            className={`pill${value.permission === 'download' || !viewable ? ' pill-on' : ''}`}
-            aria-pressed={value.permission === 'download' || !viewable}
-            onClick={() => options.set({ permission: 'download' })}
-          >
-            View and download
-          </button>
+      {props.note ? (
+        <div className="field">
+          <span className="field-label">What they can do</span>
+          <span className="muted">
+            They read the note on the page, as it is when they open it. They can copy its words:
+            nothing can stop that.
+          </span>
         </div>
-        <span className="muted">
-          {!viewable
-            ? props.notViewable
-            : value.permission === 'view'
-              ? 'They see its pages, with who it is for written across each, and cannot save the file. They can keep pictures of the pages, each marked; nothing can stop a screenshot.'
-              : 'They can save the file itself.'}
-        </span>
-        {viewable && value.permission === 'view' && props.viewNote && (
-          <span className="muted">{props.viewNote}</span>
-        )}
-      </div>
+      ) : (
+        <div className="field" role="group" aria-labelledby="share-can-h">
+          <span id="share-can-h" className="field-label">
+            What they can do
+          </span>
+          <div className="pills">
+            <button
+              type="button"
+              className={`pill${value.permission === 'view' && viewable ? ' pill-on' : ''}`}
+              aria-pressed={value.permission === 'view' && viewable}
+              disabled={!viewable}
+              onClick={() => options.set({ permission: 'view' })}
+            >
+              View
+            </button>
+            <button
+              type="button"
+              className={`pill${value.permission === 'download' || !viewable ? ' pill-on' : ''}`}
+              aria-pressed={value.permission === 'download' || !viewable}
+              onClick={() => options.set({ permission: 'download' })}
+            >
+              View and download
+            </button>
+          </div>
+          <span className="muted">
+            {!viewable
+              ? props.notViewable
+              : value.permission === 'view'
+                ? 'They see its pages, with who it is for written across each, and cannot save the file. They can keep pictures of the pages, each marked; nothing can stop a screenshot.'
+                : 'They can save the file itself.'}
+          </span>
+          {viewable && value.permission === 'view' && props.viewNote && (
+            <span className="muted">{props.viewNote}</span>
+          )}
+        </div>
+      )}
 
       <div className="field">
         <label htmlFor="share-opens">Can be opened</label>
