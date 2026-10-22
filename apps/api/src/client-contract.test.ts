@@ -289,7 +289,8 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
   }, 60_000);
   afterAll(() => h.close());
 
-  for (const s of contractScenarios) it(s.name, () => s.run(api, ctx));
+  // Each a scenario of many calls: more than 15 s on a machine running other suites beside it.
+  for (const s of contractScenarios) it(s.name, () => s.run(api, ctx), 60_000);
 });
 
 /**

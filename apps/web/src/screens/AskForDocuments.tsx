@@ -24,7 +24,7 @@ import {
   type UploadReviewBy,
 } from '@fdv/shared';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
@@ -205,9 +205,35 @@ export function AskForDocumentsScreen() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const fromPerson = params.get('person');
+  // Asked for from a collection's checklist (0.9.0, C1): what it is
+  // missing, as the things to send, and back to the collection.
+  const location = useLocation();
+  const [fromList] = useState(() => {
+    const ask = (
+      location.state as { ask?: { title?: unknown; items?: unknown; back?: unknown } } | null
+    )?.ask;
+    if (!ask) return null;
+    const items = Array.isArray(ask.items)
+      ? ask.items
+          .filter((i): i is string => typeof i === 'string' && i.trim() !== '')
+          .slice(0, UPLOAD_REQUEST_ITEMS_MAX)
+      : [];
+    return {
+      title: typeof ask.title === 'string' ? ask.title : '',
+      items,
+      back: typeof ask.back === 'string' && ask.back.startsWith('/collections/') ? ask.back : null,
+    };
+  });
   const mayAsk = can(storedRole(), 'upload_request.create');
-  const back = fromPerson ? `/people/${encodeURIComponent(fromPerson)}` : '/sharing';
-  const [value, setValue] = useState<AskValue>(() => ({ ...START, person: fromPerson ?? '' }));
+  const back =
+    fromList?.back ?? (fromPerson ? `/people/${encodeURIComponent(fromPerson)}` : '/sharing');
+  const [value, setValue] = useState<AskValue>(() => ({
+    ...START,
+    person: fromPerson ?? '',
+    ...(fromList
+      ? { title: fromList.title, items: fromList.items.length ? fromList.items : [''] }
+      : {}),
+  }));
   const set = (change: Partial<AskValue>) => setValue((v) => ({ ...v, ...change }));
   const [made, setMade] = useState<CreatedUploadRequest | null>(null);
   const [busy, setBusy] = useState(false);

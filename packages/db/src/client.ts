@@ -1224,6 +1224,20 @@ export interface Schema {
     deleted_at: Timestamp | null;
   };
 
+  /**
+   * A collection's checklist (0077, 0.9.0 C1): the items its maker saved,
+   * as @fdv/shared's checklist.ts keeps them. The collection's audience's,
+   * of the family alone (never a viewer, a guest or a link); its maker's to
+   * write.
+   */
+  collection_checklist: {
+    collection_id: string;
+    household_id: string;
+    items: GeneratedJson;
+    updated_at: GeneratedTimestamp;
+    updated_by: string | null;
+  };
+
   /** A document in a collection, in the order they were put there. */
   doc_collection_item: {
     collection_id: string;

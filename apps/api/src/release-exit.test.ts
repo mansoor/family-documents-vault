@@ -9,7 +9,7 @@ import {
   sealBytes,
   unwrapKey,
 } from '@fdv/crypto';
-import { createPool, withSystem } from '@fdv/db';
+import { createPool, withScope, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView, Tokens } from '@fdv/shared';
 import type { LightMyRequestResponse } from 'fastify';
@@ -91,6 +91,15 @@ const AHMED_TAG = 'ahmed-private-tag-541';
 const AHMED_LABEL = 'ahmed locker 541';
 const AHMED_VALUE = 'ahmed-locker-value-541';
 const AHMED_DETAIL_TAG = `${AHMED_LABEL}: ${AHMED_VALUE}`;
+
+/**
+ * A collection's checklist (0.9.0, C1): the words of a line kept on Ahmed's
+ * Only me collection, his alone; and on the attorney's collection, the
+ * adults' who see it — never a viewer's, a guest's, a link's or a sender's,
+ * whatever they are given of the collection itself.
+ */
+const AHMED_CHECKLIST = 'AHMED-CHECKLIST-541 papers for the boat loan';
+const ATTORNEY_CHECKLIST = 'ATTORNEY-CHECKLIST-541 papers for probate';
 
 /** Ahmed's computer (0.8.0, D1): his, and the owners' to see by name; nobody else's. */
 const AHMED_COMPUTER = 'ahmed-computer-541';
@@ -569,6 +578,36 @@ const RULES: Record<string, Rule> = {
   },
   'DELETE /api/v1/collections/:id/items/:documentId': { who: 'family' },
   'GET /api/v1/collections/:id/share-preview': { who: 'adults' },
+  // A collection's checklist (0.9.0, C1): the family who see the collection
+  // read it; its maker changes it and adds from it.
+  'GET /api/v1/collections/:id/checklist': { who: 'family' },
+  'POST /api/v1/collections/:id/checklist': {
+    who: 'family',
+    bodies: () => [
+      { text: 'Documents for Ahmed\nVehicle registration\nLast 3 pay statements' },
+      {
+        items: [
+          {
+            line: 'Vehicle registration',
+            heading: null,
+            type_key: 'vehicle_registration',
+            member_id: null,
+            count: 3,
+            months: null,
+            years: [],
+            current: false,
+            form: null,
+            skipped: false,
+          },
+        ],
+      },
+    ],
+  },
+  'PUT /api/v1/collections/:id/checklist': { who: 'family', body: () => ({ items: [] }) },
+  'POST /api/v1/collections/:id/checklist/add': {
+    who: 'family',
+    body: (f) => ({ document_ids: [f.document] }),
+  },
   'POST /api/v1/collections/:id/shares': {
     who: 'adults',
     body: (f) => ({ document_ids: [f.document], follow_collection: false }),
@@ -1203,6 +1242,30 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     );
     shareCookie = unlocked.cookies.find((c) => c.name === 'fdv_share')?.value ?? '';
     expect(shareCookie).not.toBe('');
+
+    // Checklists kept on both collections (0.9.0, C1), each line's words planted.
+    const line = (words: string, type_key: string) => ({
+      line: words,
+      heading: 'Documents for Ahmed',
+      type_key,
+      member_id: ahmed.member_id,
+      count: null,
+      months: null,
+      years: [],
+      current: false,
+      form: null,
+      skipped: false,
+    });
+    await ok(
+      send(ahmed, 'PUT', `/api/v1/collections/${ids.ahmedOnly}/checklist`, {
+        items: [line(AHMED_CHECKLIST, 'vehicle_registration')],
+      }),
+    );
+    await ok(
+      send(olivia, 'PUT', `/api/v1/collections/${ids.attorney}/checklist`, {
+        items: [line(ATTORNEY_CHECKLIST, 'will')],
+      }),
+    );
 
     // Identity: Olivia fills Ahmed's shared part; Ahmed keeps his passport Only me.
     await fresh(olivia);
@@ -2733,6 +2796,90 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     }
   });
 
+  it("somebody else's Only me document is never in another's checklist, its matches or its counts (0.9.0, C1)", async () => {
+    const priv = doc.ahmedPrivate as { id: string; version: string; title: string; marker: string };
+    const list = 'Documents for Ahmed\nVehicle registration\nThe last 3 vehicle registrations';
+    const asked = async (who: Tokens) => {
+      const made = await ok(
+        send(who, 'POST', '/api/v1/collections', { name: 'Checklist test', audience: 'only_me' }),
+        201,
+      );
+      const id = json<{ id: string }>(made).id;
+      const read = await send(who, 'POST', `/api/v1/collections/${id}/checklist`, { text: list });
+      return { id, read };
+    };
+    // The test of the test: to Ahmed himself, it is found, and counted.
+    const his = await asked(ahmed);
+    expect(his.read.statusCode, his.read.body).toBe(200);
+    const theirs = json<{
+      items: Array<{ found: number; matches: Array<{ document_id: string }> }>;
+    }>(his.read);
+    expect(theirs.items[0]?.matches.map((m) => m.document_id)).toContain(priv.id);
+    // It has no date, so it is offered, never counted as found — for
+    // anybody (the C1 review): what is offered is what is counted here.
+    const offered = theirs.items.map((i) => i.matches.length);
+    expect(offered.every((n) => n > 0)).toBe(true);
+    const found = theirs.items.map((i) => i.found);
+    // To everybody else who may fill a collection from a checklist: never.
+    for (const [name, who] of [
+      ['an owner', olivia],
+      ['a password-only owner', peter],
+      ['another adult', sara],
+      ['a teen', tariq],
+    ] as const) {
+      const { id, read } = await asked(who);
+      expect(read.statusCode, `${name}: ${read.body}`).toBe(200);
+      for (const secret of [priv.id, priv.version, priv.title, priv.marker]) {
+        expect(read.body, name).not.toContain(secret);
+      }
+      const got = json<{ items: Array<{ found: number; matches: unknown[] }> }>(read);
+      // One fewer offered than Ahmed is, and no more found: never his.
+      got.items.forEach((i, k) => {
+        expect(i.matches.length, name).toBeLessThan(offered[k] ?? 0);
+        expect(i.found, name).toBeLessThanOrEqual(found[k] ?? 0);
+      });
+      // Nor can it be added by its id: skipped as one that is not there.
+      const add = await send(who, 'POST', `/api/v1/collections/${id}/checklist/add`, {
+        document_ids: [priv.id],
+      });
+      expect(add.statusCode, `${name}: ${add.body}`).toBe(200);
+      expect(json<{ added: string[]; skipped: unknown[] }>(add)).toMatchObject({
+        added: [],
+        skipped: [{ document_id: priv.id, why: 'not_found' }],
+      });
+    }
+  });
+
+  it('a link outside the family is never given a checklist, nor is a viewer or a guest (0.9.0, C1)', async () => {
+    // The attorney's link, opened: its items, and the page, carry no line of it.
+    for (const url of ['/api/v1/shared/items']) {
+      const r = await h.app.inject({ url, cookies: { fdv_share: shareCookie }, ...peer() });
+      expect(r.statusCode, r.body).toBe(200);
+      expect(r.body).not.toContain('ATTORNEY-CHECKLIST-541');
+    }
+    // The link's own session, at the database: no row of any checklist,
+    // where the vault itself has both.
+    const count = async (trx: Parameters<Parameters<typeof withSystem>[2]>[0]) =>
+      (await trx.selectFrom('collection_checklist').select('collection_id').execute()).length;
+    const asLink = await withScope(
+      h.db,
+      { householdId: olivia.household_id, actor: { kind: 'link', shareId: ids.share as string } },
+      count,
+    );
+    expect(asLink).toBe(0);
+    expect(await withSystem(h.db, olivia.household_id, count)).toBeGreaterThanOrEqual(2);
+    // A viewer and a guest, granted the collection, are refused its checklist.
+    for (const who of [vera, jane]) {
+      const r = await send(who, 'GET', `/api/v1/collections/${ids.attorney}/checklist`);
+      expect(r.statusCode, r.body).toBe(403);
+      expect(r.body).not.toContain('ATTORNEY-CHECKLIST-541');
+    }
+    // While an adult who sees the collection reads it.
+    const adult = await send(sara, 'GET', `/api/v1/collections/${ids.attorney}/checklist`);
+    expect(adult.statusCode, adult.body).toBe(200);
+    expect(adult.body).toContain('ATTORNEY-CHECKLIST-541');
+  });
+
   it('every route the router has has a rule, and every rule a route', () => {
     const routes = routeTable(h).map((r) => `${r.method} ${r.url}`);
     expect(routes.length).toBeGreaterThan(170);
@@ -3167,7 +3314,11 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       ids.mailInCode as string,
       ids.mailInCodeHex as string,
       ids.mailInCodeBase64 as string,
+      // The checklist kept on his Only me collection (0.9.0, C1).
+      AHMED_CHECKLIST,
     ];
+    /** The attorney's collection's checklist: never a viewer's, a guest's, a link's or a sender's (C1). */
+    const checklists = [ATTORNEY_CHECKLIST];
     /** His computer's name: his, and the owners' (who see the household's computers by name). */
     const computer = [AHMED_COMPUTER];
     const outsideGrant = [
@@ -3217,7 +3368,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
         ...all(['ahmedPrivate', 'deed', 'will', 'oliviaPrivate', 'carInsurance']),
         collection: [ids.attorney as string, ids.ahmedOnly as string],
       },
-      forbidden: [...base, ...outsideGrant, ...computer, LOCATION],
+      forbidden: [...base, ...outsideGrant, ...computer, LOCATION, ...checklists],
     });
     const list: AttackerDef[] = [
       viewerLike('restrictedViewer', vera),
@@ -3230,7 +3381,14 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
           ...all(['ahmedTax', 'ahmedPrivate', 'deed']),
           collection: [ids.attorney as string],
         },
-        forbidden: [...base, ...outsideGrant, ...secretsOf('ahmedTax'), ...computer, LOCATION],
+        forbidden: [
+          ...base,
+          ...outsideGrant,
+          ...secretsOf('ahmedTax'),
+          ...computer,
+          LOCATION,
+          ...checklists,
+        ],
       },
       {
         name: 'linkRecipient',
@@ -3248,6 +3406,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
           ...secretsOf('deed', 'carInsurance', 'ahmedTax'),
           ...computer,
           LOCATION,
+          ...checklists,
         ],
       },
       {
@@ -3262,7 +3421,14 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
           collection: [ids.attorney as string],
           dropFile: [ids.incomingFile as string],
         },
-        forbidden: [...base, ...outsideGrant, ...secretsOf('ahmedTax'), ...computer, LOCATION],
+        forbidden: [
+          ...base,
+          ...outsideGrant,
+          ...secretsOf('ahmedTax'),
+          ...computer,
+          LOCATION,
+          ...checklists,
+        ],
       },
       {
         name: 'lockedMember',
@@ -3275,7 +3441,14 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
           ...all(['ahmedPrivate', 'ahmedTax']),
           collection: [ids.attorney as string],
         },
-        forbidden: [...base, ...outsideGrant, ...secretsOf('ahmedTax'), ...computer, LOCATION],
+        forbidden: [
+          ...base,
+          ...outsideGrant,
+          ...secretsOf('ahmedTax'),
+          ...computer,
+          LOCATION,
+          ...checklists,
+        ],
       },
       {
         name: 'otherAdult',

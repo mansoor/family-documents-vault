@@ -2,6 +2,7 @@ import {
   can,
   COLLECTION_DESCRIPTION_MAX,
   COLLECTION_NAME_MAX,
+  CHECKLIST_TEXT_MAX,
   inCollectionAudience,
   sharedOutsideWords,
   type Capabilities,
@@ -177,6 +178,11 @@ export interface CollectionFields {
   audience: CollectionAudience;
   /** Undefined where the form does not ask for it (the ⋯'s quick "Make a new collection"). */
   description?: string | null;
+  /**
+   * A checklist to start it from (0.9.0, C1): read once the collection is
+   * made, its matches shown to choose from. Never sent with the collection.
+   */
+  checklist?: string;
 }
 
 /**
@@ -189,12 +195,16 @@ export function CollectionForm(props: {
   /** The collection as it is, when it is being changed. */
   initial?: { name: string; description: string | null; audience: CollectionAudience };
   withDescription: boolean;
+  /** "Start from a checklist (optional)" (0.9.0, C1): only as a collection is made. */
+  withChecklist?: boolean;
   submitLabel: string;
   busyLabel: string;
   onSubmit: (fields: CollectionFields) => Promise<void>;
   onCancel: () => void;
 }) {
   const role = storedRole();
+  const [listOpen, setListOpen] = useState(false);
+  const [list, setList] = useState('');
   const [name, setName] = useState(props.initial?.name ?? '');
   const [description, setDescription] = useState(props.initial?.description ?? '');
   // Nothing is chosen for a new collection: who may know a collection is there is the
@@ -228,6 +238,7 @@ export function CollectionForm(props: {
         name,
         audience,
         ...(props.withDescription ? { description: description.trim() || null } : {}),
+        ...(props.withChecklist && listOpen && list.trim() ? { checklist: list } : {}),
       });
     } catch (err) {
       setError({ message: describeError(err), field: null });
@@ -260,6 +271,23 @@ export function CollectionForm(props: {
         />
       )}
       <AudiencePicker value={audience} role={role} onChange={setAudience} />
+      {props.withChecklist &&
+        (listOpen ? (
+          <TextArea
+            id={`${props.id}-checklist`}
+            label="Start from a checklist (optional)"
+            value={list}
+            maxLength={CHECKLIST_TEXT_MAX}
+            hint="Paste the list you were given, one thing a line. Once the collection is made you see what was found, and choose what to add."
+            onChange={setList}
+          />
+        ) : (
+          <div className="row">
+            <Button kind="link" onClick={() => setListOpen(true)}>
+              Start from a checklist (optional)
+            </Button>
+          </div>
+        ))}
       <ErrorNote message={error?.message ?? null} />
       <div className="row">
         <Button type="submit" disabled={busy}>

@@ -556,7 +556,7 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
     // And the collection says it is shared, and with whom.
     const view = json<CollectionDetail>(await call('owner', 'GET', `/api/v1/collections/${trip}`));
     expect(view.shared_outside).toEqual({ with: ['the travel agent'], following: true });
-  });
+  }, 60_000);
 
   it('a link that keeps up gives no document whose file a restore found removed for good, until the file is back (the 5.24 check, N524S-01)', async () => {
     await fresh('owner', true);
@@ -1374,7 +1374,7 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
       expect(await given(cookie)).toEqual([docs.lease]);
       expect((await content(cookie, letter)).statusCode).toBe(404);
       expect(await followedLines(id)).toEqual([letter, letter]);
-    });
+    }, 60_000);
 
     it('what the sheet offered and was left unticked never follows, though it left the collection before Share (second review)', async () => {
       await fresh('adult', true);

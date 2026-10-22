@@ -273,14 +273,26 @@ describe.skipIf(!testAdminUrl())('migration 0038: reminders from any date', () =
 
   it("every existing kind's view row and etag are exactly as before 0038", async () => {
     for (const hh of [plain, changed]) {
-      const was = before.get(hh) as EffectiveType[];
-      // The kinds there were: later releases add their own (0072).
-      const now = (await kinds(hh)).filter((t) => was.some((w) => w.key === t.key));
+      let was = before.get(hh) as EffectiveType[];
+      // The kinds there were: later releases add their own (0072, 0077).
+      const all = (await kinds(hh)).filter((t) => was.some((w) => w.key === t.key));
       // The columns 0038 appends aside, every row is as it was, byte for byte…
       const old = (t: EffectiveType) =>
         Object.fromEntries(
           Object.entries(t).filter(([k]) => k !== 'remind_from' && k !== 'remind_leads'),
         );
+      // …but the bank's own kind, which 0077 calls what it is ("Bank
+      // statement", investment statements being their own): its label and
+      // when it changed, and so its ETag, and nothing else.
+      const bank = (rows: EffectiveType[]) => rows.find((t) => t.key === 'bank_statement');
+      const wasBank = bank(was) as EffectiveType;
+      const nowBank = bank(all) as EffectiveType;
+      expect(nowBank.label).toBe('Bank statement');
+      expect({ ...old(nowBank), label: wasBank.label, updated_at: wasBank.updated_at }).toEqual(
+        wasBank,
+      );
+      const now = all.filter((t) => t.key !== 'bank_statement');
+      was = was.filter((t) => t.key !== 'bank_statement');
       expect(now.map(old)).toEqual(was);
       expect(Object.keys(now[0] ?? {})).toEqual([
         ...Object.keys(was[0] ?? {}),

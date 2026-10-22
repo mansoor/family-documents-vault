@@ -315,6 +315,14 @@ export interface CapabilityFeatures {
    * owner's alone. Absent from older vaults.
    */
   reading_check?: boolean;
+  /**
+   * A collection from a checklist (0.9.0, C1): GET, POST and PUT
+   * /collections/{id}/checklist and POST /collections/{id}/checklist/add —
+   * a list read with plain rules, matched against what the reader may see,
+   * kept on the collection, and its documents added only as its maker
+   * ticks them. Absent from older vaults.
+   */
+  collection_checklist?: boolean;
 }
 
 export interface CapabilityLimits {

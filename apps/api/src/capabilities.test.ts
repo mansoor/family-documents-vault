@@ -109,6 +109,8 @@ describe('buildCapabilities', () => {
       tag_management: true,
       // R0: the Reading check, an owner's.
       reading_check: true,
+      // C1 (0.9.0): a collection from a checklist.
+      collection_checklist: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     // S4: email in, reserved as email_ingest since 1.0, only while the worker

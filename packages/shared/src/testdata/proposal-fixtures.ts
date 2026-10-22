@@ -60,6 +60,9 @@ export const FIXTURE_KINDS: ProposalKind[] = (
     ['pet_record', 'Pet records', 'expires_on', 'Vet'],
     ['credit_card_statement', 'Credit card statement', 'expires_on', 'Card issuer'],
     ['school_report', 'School report', null, 'School'],
+    // 0.9.0 (C1, 0077).
+    ['investment_statement', 'Investment statement', null, 'Institution'],
+    ['pay_statement', 'Pay statement / payslip', null, 'Employer'],
     ['other', 'Something else', null, null],
   ] as const
 ).map(([key, label, driver, issuer]) => ({

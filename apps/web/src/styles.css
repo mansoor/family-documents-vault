@@ -5658,3 +5658,107 @@ html:has(.shell-phone):has(.has-toast) {
   font-size: 16px;
   margin: 0 0 6px;
 }
+
+/* A collection from a checklist (0.9.0, C1): each line, how it stands, and
+   what was found for it, ticked to add. */
+.checklist-lines,
+.checklist-items {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.checklist-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.checklist-lines > .checklist-line {
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.checklist-what {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.checklist-heading {
+  font-size: 13px;
+}
+
+.checklist-item {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.checklist-edit {
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+}
+
+.checklist-edit .field {
+  margin: 0;
+  min-width: min(220px, 100%);
+}
+
+.checklist-skip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--tap);
+}
+
+.checklist-matches {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.checklist-match {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: var(--tap);
+  padding: 6px 0;
+  overflow-wrap: anywhere;
+}
+
+.checklist-match input {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+}
+
+.checklist-note {
+  display: block;
+  color: var(--warn);
+  font-size: 14px;
+}
+
+.checklist-foot {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+
+.checklist-skip input {
+  width: 20px;
+  height: 20px;
+}
+
+/* On a phone the review is read to its end, where its buttons are: kept
+   at the foot of the screen, four of them would hide a third of it. */
+@media (max-width: 767px) {
+  .sheet.picker.checklist-sheet .picker-foot {
+    position: static;
+    margin-top: 8px;
+  }
+}

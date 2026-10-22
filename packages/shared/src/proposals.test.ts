@@ -27,6 +27,8 @@ import {
   TUNED,
   type ProposalFixture,
 } from './testdata/proposal-fixtures.js';
+import { ITEM_SURE } from './batch-levels.js';
+import { C1_FIXTURES } from './testdata/c1-fixtures.js';
 
 const ctx = (over: Partial<ProposalContext> = {}): ProposalContext => ({
   types: FIXTURE_KINDS,
@@ -807,6 +809,25 @@ describe('proposeDetails: how it does on the fixtures', () => {
     expect(s.identifier).toMatchObject({ right: 10, wrong: 0 });
     expect(s.issued_by.right).toBeGreaterThanOrEqual(8);
     expect(total(s).wrong).toBeLessThanOrEqual(1);
+  });
+
+  it("on C1's payslips and investment statements, and a contract that names its pay (0.9.0)", () => {
+    const s = score(C1_FIXTURES, 'dmy');
+    expect(s.type_key).toMatchObject({ said: 5, right: 5, wrong: 0 });
+    expect(s.owner).toMatchObject({ said: 5, right: 5, wrong: 0 });
+    expect(s.issued).toMatchObject({ said: 5, right: 5, wrong: 0 });
+    expect(s.issued_by).toMatchObject({ right: 3, wrong: 0 });
+    expect(total(s).wrong).toBe(0);
+    // No Ready kind is wrong: the contract is never a payslip, sure or not.
+    for (const f of C1_FIXTURES) {
+      const kind = proposeFor(f, 'dmy').type_key;
+      if (kind && kind.confidence >= ITEM_SURE.type_key) {
+        expect(kind.value, f.name).toBe(f.truth.type_key);
+      }
+      if (f.truth.type_key === 'employment_contract') {
+        expect(kind?.value, f.name).not.toBe('pay_statement');
+      }
+    }
   });
 
   it('a page made to be slow is not: each of these is proposed for in well under 250 ms', () => {

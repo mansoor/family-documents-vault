@@ -25,6 +25,8 @@ import { ApiError } from '../errors.js';
 import { seenDocument, type DocumentService } from '../documents/service.js';
 import { madeWith } from '../documents/made-with.js';
 import { endSessions } from '../documents/share-sessions.js';
+import { proposalPool, type ChecklistReader } from '../documents/proposal-pool.js';
+import { ChecklistService } from './checklist.js';
 import { seenCollection } from './seen.js';
 
 /**
@@ -208,10 +210,16 @@ export function viewerWillSee(
 }
 
 export class CollectionService {
+  /** A collection's checklist (0.9.0, C1): read on the proposal thread. */
+  readonly checklists: ChecklistService;
+
   constructor(
     private readonly db: Db,
     private readonly documents: DocumentService,
-  ) {}
+    reader: ChecklistReader = proposalPool,
+  ) {
+    this.checklists = new ChecklistService(db, this, reader, documents);
+  }
 
   // ---------------------------------------------------------------- reading
 
@@ -467,6 +475,26 @@ export class CollectionService {
   async mayAddTo(trx: Db, p: Principal, id: string): Promise<void> {
     requireCapability(p, 'collection.manage');
     await this.mine(trx, p, id);
+  }
+
+  /**
+   * A collection the caller may see, for its checklist (0.9.0, C1): its id,
+   * audience and maker, or 404 as one that never was. With `held`, one the
+   * caller may change, held until the transaction ends, or refused as a
+   * change to it would be.
+   */
+  async checklistOf(
+    trx: Db,
+    p: Principal,
+    id: string,
+    held: boolean,
+  ): Promise<{ id: string; audience: CollectionAudience; mine: boolean }> {
+    const row = held ? await this.mine(trx, p, id) : await this.find(trx, p, id);
+    return {
+      id: row.id,
+      audience: row.audience,
+      mine: isMaker(p, row) && inCollectionAudience(p.role, row.audience),
+    };
   }
 
   private async addIn(

@@ -1,4 +1,12 @@
 import {
+  checkItem,
+  checklistMissing,
+  itemAgain,
+  readChecklist,
+  savedItem,
+  type ChecklistContext,
+  type ChecklistDoc,
+  type ChecklistItem,
   can,
   canChangeDetails,
   canEditIdentity,
@@ -189,6 +197,8 @@ export interface FakeCollection {
   items: string[];
   /** Shared outside by a link that still works (5.19); left out, it is not. */
   shared_outside?: { with: string[]; following: boolean } | null;
+  /** Its checklist (0.9.0, C1), as its maker kept it. */
+  checklist?: { items: ChecklistItem[]; saved_at: string } | null;
 }
 
 export interface FakeState {
@@ -503,6 +513,14 @@ export interface FakeState {
   collections?: FakeCollection[];
   /** Answer GET /collections/{id} in pages of this many, with a cursor. */
   collectionPageSize?: number;
+  /**
+   * A collection from a checklist (0.9.0, C1): `features.collection_checklist`
+   * unless false; `unavailable`, every list is answered 503 as one the vault
+   * could not read in time; and each POST .../checklist/add, as it came.
+   */
+  collectionChecklist?: boolean;
+  checklistUnavailable?: boolean;
+  checklistAdds?: string[][];
   /**
    * People's photos (5.17c): how many GET /members a photo on its way waits
    * for before it is made (1: the next), whether the vault refuses it
@@ -1046,6 +1064,9 @@ export function installFakeApi(state: FakeState) {
           // R2: GET /documents sorted by a column, filtered and paged.
           document_table: true,
           ...(state.collections ? { collections: true } : {}),
+          ...(state.collections && state.collectionChecklist !== false
+            ? { collection_checklist: true }
+            : {}),
           ...(state.collections && state.collectionShares !== false
             ? { collection_shares: true }
             : {}),
@@ -4999,6 +5020,118 @@ function answerCollections(
         },
         201,
       );
+    }
+  }
+  // A collection from a checklist (0.9.0, C1), as the vault reads and
+  // matches it (@fdv/shared's own rules), against what the reader may see.
+  const checklistAt = /^\/api\/v1\/collections\/([^/]+)\/checklist(\/add)?$/.exec(path);
+  if (checklistAt) {
+    if (!['owner', 'adult', 'teen'].includes(role)) {
+      return refuse(403, 'forbidden', 'A collection’s checklist is for the family who see it.');
+    }
+    const l = all.find((x) => x.id === checklistAt[1]);
+    if (!l || !seesCollection(l)) return noCollection();
+    const changing = method !== 'GET';
+    const mine = l.owner_member_id === 'me' && inCollectionAudience(role, l.audience);
+    if (changing && !mine) {
+      return refuse(
+        403,
+        'forbidden',
+        'Only the person who made this collection can fill it from a checklist.',
+      );
+    }
+    const ctx: ChecklistContext = {
+      types: state.types.map((t) => ({
+        key: String(t.key),
+        label: String(t.label),
+        short_label: (t.short_label as string | null | undefined) ?? null,
+        hidden: Boolean(t.hidden),
+      })),
+      people: state.members
+        .filter((m) => m.kind !== 'guest')
+        .filter((m) => role !== 'teen' || m.id === 'me')
+        .map((m) => ({ id: String(m.id), name: String(m.display_name) })),
+      me: 'me',
+      today: new Date().toISOString().slice(0, 10),
+    };
+    const answer = (items: ChecklistItem[], savedAt: string | null, leftOut = 0) => {
+      const docs: ChecklistDoc[] = state.documents.filter(seesDoc).map((d) => ({
+        id: String(d.id),
+        title: (d.title as string | null) ?? null,
+        type_key: (d.type_key as string | null) ?? null,
+        owner_member_id: (d.owner_member_id as string | null) ?? null,
+        visibility: (d.visibility as Visibility) ?? 'household',
+        issued: (d.issued as ChecklistDoc['issued']) ?? null,
+        expires: (d.expires as ChecklistDoc['expires']) ?? null,
+        created_at: (d.created_at as string | undefined) ?? '2026-01-01T00:00:00Z',
+        tax_year:
+          d.visibility !== 'private' && (d.extra as Record<string, unknown> | undefined)?.tax_year
+            ? String((d.extra as Record<string, unknown>).tax_year)
+            : null,
+        in_collection: l.items.includes(String(d.id)),
+      }));
+      const checked = items.map((i) =>
+        checkItem(itemAgain(i, ctx), docs, {
+          today: ctx.today,
+          audience: l.audience,
+          people: ctx.people,
+          types: ctx.types,
+        }),
+      );
+      const ticked = new Set(
+        checked.flatMap((i) => i.matches.filter((m) => m.ticked).map((m) => m.document_id)),
+      );
+      return {
+        saved_at: savedAt,
+        items: checked,
+        missing: checklistMissing(checked),
+        to_add: ticked.size,
+        left_out: leftOut,
+        mine,
+      };
+    };
+    const b = (body ?? {}) as { text?: string; items?: ChecklistItem[]; document_ids?: string[] };
+    if (!checklistAt[2] && method === 'GET') {
+      return json(l.checklist ? answer(l.checklist.items, l.checklist.saved_at) : answer([], null));
+    }
+    if (!checklistAt[2] && method === 'POST') {
+      if (state.checklistUnavailable) {
+        return refuse(
+          503,
+          'checklist_unavailable',
+          'The list could not be read just now. Try again in a moment.',
+        );
+      }
+      if (typeof b.text === 'string') {
+        const read = readChecklist(b.text, ctx);
+        return json(answer(read.items, null, read.left_out));
+      }
+      return json(answer(b.items ?? [], null));
+    }
+    if (!checklistAt[2] && method === 'PUT') {
+      const items = (b.items ?? []).map((i) => savedItem(itemAgain(i, ctx)));
+      const kept = { items, saved_at: '2026-10-18T09:00:00Z' };
+      state.collections = all.map((x) => (x.id === l.id ? { ...x, checklist: kept } : x));
+      return json(answer(items, kept.saved_at));
+    }
+    if (checklistAt[2] && method === 'POST') {
+      // As the vault's route takes them: at most 200 at once.
+      if ((b.document_ids ?? []).length > 200) {
+        return refuse(422, 'validation_failed', 'Too big: expected array to have <=200 items');
+      }
+      const asked = [...new Set(b.document_ids ?? [])];
+      state.checklistAdds = [...(state.checklistAdds ?? []), asked];
+      const added: string[] = [];
+      const skipped: Array<{ document_id: string; why: 'in_collection' | 'not_found' }> = [];
+      for (const id of asked) {
+        if (!seesDoc(state.documents.find((d) => d.id === id))) {
+          skipped.push({ document_id: id, why: 'not_found' });
+        } else if (l.items.includes(id)) skipped.push({ document_id: id, why: 'in_collection' });
+        else added.push(id);
+      }
+      const next = { ...l, items: [...l.items, ...added] };
+      state.collections = all.map((x) => (x.id === l.id ? next : x));
+      return json({ added, skipped, warnings: [], collection: detail(next) });
     }
   }
   const at = /^\/api\/v1\/collections\/([^/]+)(\/items(?:\/([^/]+))?)?$/.exec(path);

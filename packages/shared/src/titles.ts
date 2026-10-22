@@ -31,10 +31,13 @@ const SHORT_LABELS: Record<string, string> = {
   // 0.8.0 (S5, 0072).
   credit_card_statement: 'Credit card statement',
   school_report: 'School report',
+  // 0.9.0 (C1, 0077).
+  pay_statement: 'Pay statement',
+  investment_statement: 'Investment statement',
 };
 
 /**
- * "Bank statement" for 'Bank / investment statement': the type's own short
+ * "Bank statement" for 'Bank / investment statement' (before 0.9.0): the type's own short
  * name, then the built-in's, then the label as it is.
  */
 export function shortTypeLabel(
@@ -62,6 +65,8 @@ export function issuedByLabel(
 const ISSUER_NOUNS: Record<string, string> = {
   bank_statement: 'statement',
   credit_card_statement: 'statement',
+  investment_statement: 'statement',
+  pay_statement: 'pay statement',
   utility_bill: 'bill',
   insurance_policy: 'policy',
   tax_form: 'tax form',

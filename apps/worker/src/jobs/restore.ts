@@ -1309,6 +1309,9 @@ const ACTOR_GUARDED = [
   // Collections of documents, and what is in them (0036).
   'doc_collection',
   'doc_collection_item',
+  // A collection's checklist (0077, C1): the family's who see the
+  // collection — never a viewer's, a guest's or a link's.
+  'collection_checklist',
   // What a share link's Open gives a browser (0037).
   'share_session',
   // People's photos: the family's, and a viewer's own (0040).
@@ -1606,6 +1609,39 @@ const REQUIRED_RULES = [
     name: 'review_filing_actor_delete',
     cmd: 'd',
     what: 'who removes what was filed through review',
+  },
+  // A collection's checklist is the family's who see the collection, read
+  // through the collection's own rules (Only me among them), and written by
+  // its maker alone (0077, C1).
+  {
+    table: 'collection_checklist',
+    name: 'collection_checklist_actor',
+    cmd: '*',
+    what: 'who reads a collection’s checklist',
+  },
+  {
+    table: 'collection_checklist',
+    name: 'collection_checklist_collection',
+    cmd: '*',
+    what: 'whose collection a checklist is read through',
+  },
+  {
+    table: 'collection_checklist',
+    name: 'collection_checklist_maker_insert',
+    cmd: 'a',
+    what: 'who saves a collection’s checklist',
+  },
+  {
+    table: 'collection_checklist',
+    name: 'collection_checklist_maker_update',
+    cmd: 'w',
+    what: 'who changes a collection’s checklist',
+  },
+  {
+    table: 'collection_checklist',
+    name: 'collection_checklist_maker_delete',
+    cmd: 'd',
+    what: 'who removes a collection’s checklist',
   },
   // A computer that sends scans (0070, D1, the review's F7): made by the
   // vault alone and never removed but with its person; its code made
@@ -2536,6 +2572,44 @@ export async function checkRestored(
           if ((shown[0]?.n ?? 0) > 0) {
             throw new Error(`household ${h.id}: ${o.what} is open to an owner who is not them`);
           }
+        } finally {
+          client.release();
+        }
+      }
+      // A collection's checklist (0077, C1): a viewer is given none of
+      // them, and an owner who is nobody's member none of an Only me
+      // collection's — each tried as that caller.
+      // The Only me collections' ids, read as the database's owner: the
+      // caller tried is given none of them to name.
+      const onlyMe = (
+        await admin.query<{ id: string }>(
+          `select id from doc_collection where household_id = $1 and audience = 'only_me'`,
+          [h.id],
+        )
+      ).rows.map((r) => r.id);
+      for (const [role, ids, what] of [
+        ['viewer', null, 'a collection’s checklist is open to a viewer'],
+        [
+          'owner',
+          onlyMe,
+          'an Only me collection’s checklist is open to somebody who did not make it',
+        ],
+      ] as const) {
+        const client = await app.connect();
+        try {
+          await client.query('begin');
+          await client.query(
+            `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                    set_config('app.role', $2, true), set_config('app.member_id', $3, true)`,
+            [h.id, role, randomUUID()],
+          );
+          const { rows: shown } = await client.query<{ n: number }>(
+            `select count(*)::int as n from collection_checklist
+              where $1::uuid[] is null or collection_id = any($1::uuid[])`,
+            [ids],
+          );
+          await client.query('commit');
+          if ((shown[0]?.n ?? 0) > 0) throw new Error(`household ${h.id}: ${what}`);
         } finally {
           client.release();
         }

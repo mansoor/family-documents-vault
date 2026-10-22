@@ -22,7 +22,7 @@ import { AuthService, type Tokens } from './auth/service.js';
 import { codeFor, TotpService } from './auth/totp.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { loadConfig } from './config.js';
-import type { Proposals } from './documents/proposal-pool.js';
+import type { ChecklistReader, Proposals } from './documents/proposal-pool.js';
 import { DocumentService, type Enqueue } from './documents/service.js';
 import { VisibilityService } from './documents/visibility.js';
 import { TypeService } from './documents/types.js';
@@ -178,6 +178,8 @@ export interface HarnessOptions {
   trustProxy?: 'network' | 'private' | 'all' | 'none';
   /** Where pages are proposed for (5.37): the process's proposal thread, unless a test stands in. */
   proposals?: Proposals;
+  /** Where a collection's checklist is read (0.9.0, C1): the same thread, unless a test stands in. */
+  checklistReader?: ChecklistReader;
   /** FDV_DESKTOP_DOWNLOAD_URL (0.8.0, D1): where the uploader app for computers is downloaded. */
   desktopDownloadUrl?: string;
   /** FDV_DEVICE_DAILY_BYTES (0.8.0, D1): the most one computer may send in a day. */
@@ -321,7 +323,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     deriveCursorKey(TEST_MASTER),
     opts.proposals,
   );
-  const collections = new CollectionService(db, documents);
+  const collections = new CollectionService(db, documents, opts.checklistReader);
   const batches = new BatchService(
     db,
     keys,

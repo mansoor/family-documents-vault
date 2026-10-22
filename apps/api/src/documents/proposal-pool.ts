@@ -21,7 +21,12 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { Worker, type WorkerOptions } from 'node:worker_threads';
-import type { DetailProposal, ProposalContext } from '@fdv/shared';
+import type {
+  ChecklistContext,
+  ChecklistReading,
+  DetailProposal,
+  ProposalContext,
+} from '@fdv/shared';
 import type { ProposalJob, ProposalReply } from './proposal-worker.js';
 
 /** How long one page may take on the thread before the thread is ended. */
@@ -73,14 +78,23 @@ export interface Proposals {
   propose(text: string, ctx: ProposalContext): Promise<DetailProposal | null>;
 }
 
+/**
+ * A checklist read on the same thread (0.9.0, C1): what the family types is
+ * read off the event loop too, as a page is, and given the same deadline.
+ */
+export interface ChecklistReader {
+  readChecklist(text: string, ctx: ChecklistContext): Promise<ChecklistReading | null>;
+}
+
 interface Waiting {
   id: number;
   text: string;
-  ctx: ProposalContext;
-  done: (proposal: DetailProposal | null) => void;
+  job: ProposalJob['job'];
+  ctx: ProposalContext | ChecklistContext;
+  done: (answer: unknown) => void;
 }
 
-export class ProposalPool implements Proposals {
+export class ProposalPool implements Proposals, ChecklistReader {
   private worker: Worker | null = null;
   private ready = false;
   private waiting: Waiting[] = [];
@@ -99,10 +113,29 @@ export class ProposalPool implements Proposals {
    * the thread failed or could not be made. Never rejects.
    */
   propose(text: string, ctx: ProposalContext): Promise<DetailProposal | null> {
+    return this.ask<DetailProposal>(text, ctx, undefined);
+  }
+
+  /** A checklist read (C1); null as a proposal is. Never rejects. */
+  readChecklist(text: string, ctx: ChecklistContext): Promise<ChecklistReading | null> {
+    return this.ask<ChecklistReading>(text, ctx, 'checklist');
+  }
+
+  private ask<T>(
+    text: string,
+    ctx: ProposalContext | ChecklistContext,
+    job: ProposalJob['job'],
+  ): Promise<T | null> {
     if (this.closed || Date.now() < this.restUntil) return Promise.resolve(null);
     if (this.waiting.length >= (this.opts.queue ?? PROPOSAL_QUEUE)) return Promise.resolve(null);
     return new Promise((done) => {
-      this.waiting.push({ id: this.nextId++, text, ctx, done });
+      this.waiting.push({
+        id: this.nextId++,
+        text,
+        ctx,
+        job,
+        done: (answer) => done((answer ?? null) as T | null),
+      });
       this.pump();
     });
   }
@@ -134,7 +167,12 @@ export class ProposalPool implements Proposals {
     timer.unref();
     this.running = { job, timer };
     try {
-      this.worker.postMessage({ id: job.id, text: job.text, ctx: job.ctx } satisfies ProposalJob);
+      this.worker.postMessage({
+        id: job.id,
+        text: job.text,
+        ctx: job.ctx,
+        ...(job.job ? { job: job.job } : {}),
+      } satisfies ProposalJob);
     } catch {
       // A page that cannot be sent is answered with none; the next may be.
       clearTimeout(timer);

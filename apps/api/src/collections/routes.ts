@@ -1,4 +1,14 @@
-import { COLLECTION_AUDIENCES, COLLECTION_ITEMS_PAGE_MAX } from '@fdv/shared';
+import {
+  CHECKLIST_COUNT_MAX,
+  CHECKLIST_ITEMS_MAX,
+  CHECKLIST_LINE_MAX,
+  CHECKLIST_MONTH_NAMES_MAX,
+  CHECKLIST_MONTHS_MAX,
+  CHECKLIST_TEXT_MAX,
+  CHECKLIST_YEARS_MAX,
+  COLLECTION_AUDIENCES,
+  COLLECTION_ITEMS_PAGE_MAX,
+} from '@fdv/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
@@ -26,6 +36,43 @@ const collectionBody = z
   .strict();
 
 const itemsBody = z.object({ document_ids: z.array(z.string().uuid()).min(1).max(200) }).strict();
+
+/** A checklist's item, as the API gives it back and the person changes it (0.9.0, C1). */
+const checklistItem = z
+  .object({
+    line: z.string().max(CHECKLIST_LINE_MAX * 2),
+    heading: z
+      .string()
+      .max(CHECKLIST_LINE_MAX * 2)
+      .nullable(),
+    type_key: z.string().max(64).nullable(),
+    member_id: z.string().uuid().nullable(),
+    count: z.number().int().min(1).max(CHECKLIST_COUNT_MAX).nullable(),
+    months: z.number().int().min(1).max(CHECKLIST_MONTHS_MAX).nullable(),
+    years: z.array(z.number().int().min(1900).max(2100)).max(CHECKLIST_YEARS_MAX),
+    current: z.boolean(),
+    form: z.string().max(16).nullable(),
+    skipped: z.boolean(),
+    unresolved: z.enum(['person_unknown', 'person_shared']).nullable().optional(),
+    in_months: z
+      .array(z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/))
+      .max(CHECKLIST_MONTH_NAMES_MAX)
+      .optional(),
+    within: z.number().int().min(1).max(CHECKLIST_MONTHS_MAX).nullable().optional(),
+    person_choices: z.array(z.string().uuid()).max(20).optional(),
+  })
+  // What the API answers with beside it (its summary, its matches) is let go.
+  .strip();
+
+/** POST /collections/{id}/checklist: a list to read, or items to match again. */
+const checklistBody = z.union([
+  z.object({ text: z.string().max(CHECKLIST_TEXT_MAX) }).strict(),
+  z.object({ items: z.array(checklistItem).max(CHECKLIST_ITEMS_MAX) }).strict(),
+]);
+const checklistSave = z.object({ items: z.array(checklistItem).max(CHECKLIST_ITEMS_MAX) }).strict();
+const checklistAdd = z
+  .object({ document_ids: z.array(z.string().uuid()).min(1).max(200) })
+  .strict();
 
 const idParam = z.object({ id: z.string().uuid() });
 const itemParam = z.object({ id: z.string().uuid(), documentId: z.string().uuid() });
@@ -108,4 +155,36 @@ export function registerCollections(app: FastifyInstance, collections: Collectio
   app.get('/api/v1/documents/:id/collections', auth, async (req) => ({
     items: await collections.ofDocument(principal(req), idOf(req)),
   }));
+
+  // ------------------------------------------------- a checklist (0.9.0, C1)
+
+  /** The checklist kept on it, matched again for the reader: the family who see it. */
+  app.get('/api/v1/collections/:id/checklist', auth, async (req) =>
+    collections.checklists.get(principal(req), idOf(req)),
+  );
+
+  /** A list read, or items as the person set them, and matched: nothing is written. */
+  app.post('/api/v1/collections/:id/checklist', manage, async (req) =>
+    collections.checklists.check(principal(req), idOf(req), parse(checklistBody, req.body ?? {})),
+  );
+
+  /** The checklist kept, by the collection's maker. */
+  app.put('/api/v1/collections/:id/checklist', manage, async (req) =>
+    collections.checklists.save(
+      principal(req),
+      idOf(req),
+      parse(checklistSave, req.body ?? {}).items,
+      metaOf(req),
+    ),
+  );
+
+  /** The documents ticked, put in by the collection's own rules: what was, and what was not. */
+  app.post('/api/v1/collections/:id/checklist/add', manage, async (req) =>
+    collections.checklists.add(
+      principal(req),
+      idOf(req),
+      parse(checklistAdd, req.body ?? {}).document_ids,
+      metaOf(req),
+    ),
+  );
 }
