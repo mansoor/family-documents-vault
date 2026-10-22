@@ -533,6 +533,42 @@ async function seed(url: string): Promise<string> {
         }
       }
     }
+    // The Reading check, where the schema has it (0074, R0): one the owner
+    // ran, done, its misses sealed for them (they stay); and one running,
+    // what it had read so far sealed — the restore stops it, and lets that go.
+    const reading = await c.query<{ has: boolean }>(
+      "select to_regclass('public.reading_check') is not null as has",
+    );
+    if (reading.rows[0]?.has) {
+      const scope = await c.query<{ id: string }>(
+        `insert into scope_key (household_id, kind, member_id, key_wrapped)
+         values ($1, 'member', $2, '\\x00') returning id`,
+        [hh, m.rows[1]?.id],
+      );
+      const checks = await c.query<{ id: string; state: string }>(
+        `insert into reading_check (household_id, requested_by, member_id, n, state, total, done,
+                                    started_at, finished_at, summary)
+         values ($1, $2, $3, 50, 'done', 2, 2, now(), now(), '{"chosen": 2}'),
+                ($1, $2, $3, 50, 'running', 2, 1, now(), null, null)
+         returning id, state`,
+        [hh, account, m.rows[1]?.id],
+      );
+      for (const ch of checks.rows) {
+        await c.query(
+          `insert into reading_check_sealed (check_id, household_id, member_id, wrapped_by_scope,
+                                             work_sealed, misses_sealed, expires_at)
+           values ($1, $2, $3, $4, $5, $6, now() + interval '7 days')`,
+          [
+            ch.id,
+            hh,
+            m.rows[1]?.id,
+            scope.rows[0]?.id,
+            ch.state === 'running' ? randomBytes(40) : null,
+            ch.state === 'done' ? randomBytes(40) : null,
+          ],
+        );
+      }
+    }
     // People's identity details, where the schema has them (0050): the
     // first person's shared part under the household's identity key, their
     // Only me part under their own member key, each sealed as the API seals
@@ -691,7 +727,10 @@ describe.skipIf(!testAdminUrl())("the application role's privileges", () => {
   }, 30_000);
 });
 
-describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
+// Each test asks the whole check of a restored vault several times, and the
+// check grows with every guard list a release adds (0074 the latest): a
+// minute each, not the default fifteen seconds, on a machine others share.
+describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 }, () => {
   let vault: TestDatabase;
   const target = () => ({ adminUrl: vault.adminUrl, appUrl: vault.appUrl });
 
@@ -1933,6 +1972,175 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it('notices the Reading check’s rules gone: an owner’s alone, its misses its asker’s, numbers only, one at a time (0074, R0)', async () => {
+    const seeded = await sql(
+      vault.adminUrl,
+      `select (select count(*)::int from reading_check) as checks,
+              (select count(*)::int from reading_check_sealed) as sealed`,
+    );
+    expect(seeded.rows[0]).toEqual({ checks: 2, sealed: 2 });
+    const ruleOf = async (policy: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${policy}'`,
+        )
+      ).rows[0]?.rule as string;
+    for (const table of ['reading_check', 'reading_check_sealed', 'review_filing']) {
+      const policy = `${table}_actor`;
+      const rule = await ruleOf(policy);
+      expect(rule).toMatch(/'owner'/);
+      await sql(vault.adminUrl, `drop policy ${policy} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(
+          new RegExp(`no rule for each kind of caller on .*${table}`),
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${policy} on public.${table} as restrictive using (${rule})`,
+        );
+      }
+      // Everybody signed in given it: not the owners' any more.
+      await sql(
+        vault.adminUrl,
+        `alter policy ${policy} on public.${table}
+           using (case app_actor() when 'account' then member_id is not null or true
+                                   when 'system' then true else false end)`.replace(
+          'member_id is not null or true',
+          table === 'review_filing' ? 'true' : 'member_id = app_member() or true',
+        ),
+      );
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(/to the owners/);
+      } finally {
+        await sql(vault.adminUrl, `alter policy ${policy} on public.${table} using (${rule})`);
+      }
+    }
+    // A check, or its misses, given to every owner, not only their asker: caught.
+    for (const [table, words] of [
+      ['reading_check', /a Reading check is open to an owner who is not them/],
+      ['reading_check_sealed', /a Reading check’s misses is open to an owner who is not them/],
+    ] as const) {
+      const policy = `${table}_actor`;
+      const rule = await ruleOf(policy);
+      await sql(
+        vault.adminUrl,
+        `alter policy ${policy} on public.${table}
+           using (case app_actor()
+                    when 'account' then app_role() = 'owner' and (member_id = app_member() or true)
+                    when 'system' then true else false end)`,
+      );
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(words);
+      } finally {
+        await sql(vault.adminUrl, `alter policy ${policy} on public.${table} using (${rule})`);
+      }
+    }
+    // Its guards, its one at a time, and its numbers only.
+    for (const [table, trigger] of [
+      ['reading_check', 'reading_check_account_writes'],
+      ['incoming_file', 'incoming_file_filed'],
+    ] as const) {
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        await expect(checkRestored(target()), trigger).rejects.toThrow(
+          /guard the vault relies on is missing/,
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    await sql(vault.adminUrl, 'drop index public.reading_check_one_running');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /unique index the vault relies on is missing: one Reading check a household at a time/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create unique index reading_check_one_running on public.reading_check (household_id)
+           where state in ('waiting', 'running')`,
+      );
+    }
+    await sql(
+      vault.adminUrl,
+      'alter table public.reading_check drop constraint reading_check_numbers_only',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a check the vault relies on is missing: a Reading check’s numbers, numbers only/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter table public.reading_check add constraint reading_check_numbers_only
+           check (summary is null or reading_numbers_only(summary))`,
+      );
+    }
+    // And who writes what (REQUIRED_RULES).
+    for (const [table, name, cmd, words] of [
+      ['reading_check', 'reading_check_actor_insert', 'insert', /who starts a Reading check/],
+      [
+        'reading_check_sealed',
+        'reading_check_sealed_actor_insert',
+        'insert',
+        /who writes a Reading check’s misses/,
+      ],
+      [
+        'reading_check_sealed',
+        'reading_check_sealed_actor_update',
+        'update',
+        /who changes a Reading check’s misses/,
+      ],
+      [
+        'reading_check_sealed',
+        'reading_check_sealed_actor_delete',
+        'delete',
+        /who removes a Reading check’s misses/,
+      ],
+      [
+        'review_filing',
+        'review_filing_actor_insert',
+        'insert',
+        /who says a document was filed through review/,
+      ],
+      [
+        'review_filing',
+        'review_filing_actor_update',
+        'update',
+        /who changes what was filed through review/,
+      ],
+      [
+        'review_filing',
+        'review_filing_actor_delete',
+        'delete',
+        /who removes what was filed through review/,
+      ],
+    ] as const) {
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as qual, pg_get_expr(polwithcheck, polrelid) as chk
+           from pg_policy where polname = '${name}'`,
+      );
+      const qual = rows[0]?.qual as string | null;
+      const chk = rows[0]?.chk as string | null;
+      await sql(vault.adminUrl, `drop policy ${name} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), name).rejects.toThrow(words);
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${name} on public.${table} as restrictive for ${cmd}` +
+            (qual ? ` using (${qual})` : '') +
+            (chk ? ` with check (${chk})` : ''),
+        );
+      }
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+    // About twenty checks of the whole vault, each a few hundred milliseconds.
+  }, 120_000);
+
   it('notices a computer’s rules for what is written gone (0070, D1, the review’s F7)', async () => {
     const rules: Array<[table: string, name: string, cmd: string, words: RegExp]> = [
       ['upload_device', 'upload_device_actor_insert', 'insert', /who makes a computer’s key/],
@@ -2935,6 +3143,21 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
               (select count(*)::int from device_pairing) as codes`,
     );
     expect(computers.rows[0]).toEqual({ live: 0, restored: 1, codes: 0 });
+    // A Reading check that had not finished is stopped, what it had read let
+    // go; one done keeps its numbers and its owner's misses (0074, R0).
+    expect(report.readingChecksStopped).toBe(1);
+    const reading = await sql(
+      t.adminUrl,
+      `select c.state, c.failure, c.summary is not null as numbers,
+              s.work_sealed is not null as work, s.misses_sealed is not null as misses
+         from reading_check c left join reading_check_sealed s on s.check_id = c.id
+        order by c.state`,
+    );
+    expect(reading.rows).toEqual([
+      { state: 'done', failure: null, numbers: true, work: false, misses: true },
+      // Its sealed row gone: neither is there.
+      { state: 'failed', failure: 'restored', numbers: false, work: false, misses: false },
+    ]);
     // The job queue came back too, and the vault can use it.
     const jobs = await sql(
       t.appUrl,

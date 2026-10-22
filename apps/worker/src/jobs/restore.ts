@@ -134,6 +134,12 @@ export interface RestoreReport {
    */
   devicesEnded: number;
   /**
+   * Reading checks stopped (0.9.0, R0): one waiting or running when the
+   * backup was made has no job here to finish it, and what it had read so
+   * far is let go. Its owner starts another, in Settings → For owners.
+   */
+  readingChecksStopped: number;
+  /**
    * Sign-ins waiting for an owner to turn them back on (5.28, A55): every
    * one but the owners', since a backup cannot know of a lock made after it,
    * nor of a sign-in taken away since. Each is turned back on, one tap
@@ -280,6 +286,7 @@ interface Undone {
   identityAudiences: Array<{ household_id: string; was: string }>;
   exportsExpired: number;
   devicesEnded: number;
+  readingChecksStopped: number;
 }
 
 interface StillOpen {
@@ -709,6 +716,7 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
     noticesWithdrawn: counted('notices_withdrawn'),
     exportsExpired: counted('exports_expired'),
     devicesEnded: counted('devices_ended'),
+    readingChecksStopped: counted('reading_checks_stopped'),
     identityAudiences: [...stdout.matchAll(/fdv-restore-audience:([0-9a-f-]{36})=([a-z_]+)/g)].map(
       (m) => ({ household_id: m[1] as string, was: m[2] as string }),
     ),
@@ -865,6 +873,13 @@ begin
     get diagnostics n = row_count;
     insert into pg_temp.fdv_restore_undone values ('devices_ended', n);
     delete from public.device_pairing;
+  end if;
+  if to_regclass('public.reading_check') is not null then
+    update public.reading_check set state = 'failed', failure = 'restored', finished_at = now()
+     where state in ('waiting', 'running');
+    get diagnostics n = row_count;
+    insert into pg_temp.fdv_restore_undone values ('reading_checks_stopped', n);
+    delete from public.reading_check_sealed where work_sealed is not null;
   end if;
 end $undo$;
 select 'fdv-restore:' || what || '=' || n from pg_temp.fdv_restore_undone;
@@ -1127,6 +1142,14 @@ const GUARDS = [
     table: 'account_household',
     fn: 'upload_devices_leave_with_role',
   },
+  // A Reading check: an owner only cancels one (0074, R0); and an accepted
+  // incoming file says which version was filed through review.
+  {
+    name: 'reading_check_account_writes',
+    table: 'reading_check',
+    fn: 'reading_check_account_writes',
+  },
+  { name: 'incoming_file_filed', table: 'incoming_file', fn: 'incoming_file_filed' },
 ];
 
 /**
@@ -1137,6 +1160,11 @@ const OWNERS_SETTINGS = [
   { table: 'watch_folder', what: 'the scanner folder' },
   // Email in, and what the worker says of it (0069, S4).
   { table: 'mail_in', what: 'email in' },
+  // The Reading check (0074, R0): an owner's alone — its numbers, its
+  // asker's sealed misses, and which documents were filed through review.
+  { table: 'reading_check', what: 'the Reading check' },
+  { table: 'reading_check_sealed', what: 'a Reading check’s misses' },
+  { table: 'review_filing', what: 'which documents were filed through review' },
 ];
 
 /**
@@ -1174,6 +1202,25 @@ const UNIQUE_INDEXES = [
     name: 'intake_batch_device_day_key',
     table: 'intake_batch',
     what: 'one batch a computer a day',
+  },
+  // One Reading check waiting or running a household (0074, R0).
+  {
+    name: 'reading_check_one_running',
+    table: 'reading_check',
+    what: 'one Reading check a household at a time',
+  },
+];
+
+/**
+ * Check constraints the vault relies on for what it keeps (0074, R0): a
+ * Reading check's summary is numbers only, whoever writes it. Each must be
+ * there, on its own table, and validated.
+ */
+const REQUIRED_CHECKS = [
+  {
+    name: 'reading_check_numbers_only',
+    table: 'reading_check',
+    what: 'a Reading check’s numbers, numbers only',
   },
 ];
 
@@ -1277,6 +1324,11 @@ const ACTOR_GUARDED = [
   // person's, an owner's by name; nobody else's.
   'upload_device',
   'device_pairing',
+  // The Reading check (0074, R0): an owner's; its misses its asker's alone;
+  // and what was filed through review, the vault's.
+  'reading_check',
+  'reading_check_sealed',
+  'review_filing',
   // What a document removed for good leaves behind: who could see it, and
   // the files still to be deleted (0045).
   'document_tombstone',
@@ -1369,6 +1421,10 @@ const MAKER_ONLY = [
   // A computer that sends scans, and a code to pair one (0070, D1).
   { table: 'upload_device', where: 'true', what: "somebody's computer" },
   { table: 'device_pairing', where: 'true', what: "somebody's code to pair a computer" },
+  // A Reading check, its numbers, and which documents needed typing (0074,
+  // R0): its asker's alone.
+  { table: 'reading_check', where: 'true', what: 'a Reading check' },
+  { table: 'reading_check_sealed', where: 'true', what: 'a Reading check’s misses' },
   // A person's Only me identity details: theirs alone, whoever else asks (0050, A33).
   {
     table: 'member_identity',
@@ -1394,6 +1450,11 @@ const NOT_EVEN_OWNERS = [
   { table: 'mail_in_address', what: "somebody's address for email in" },
   // A code is a way in for whoever holds it: its person's alone (0070, D1).
   { table: 'device_pairing', what: "somebody's code to pair a computer" },
+  // A check, its numbers and its misses: its asker's alone, not another
+  // owner's (0074, R0; the owner's decision): the misses may name their
+  // Only me documents, the numbers their own learning.
+  { table: 'reading_check', what: 'a Reading check' },
+  { table: 'reading_check_sealed', what: 'a Reading check’s misses' },
 ];
 
 /**
@@ -1469,6 +1530,50 @@ const CHANGED_BY_ROLE = [
  * other people's details. Each is also tried below, where trying is cheap.
  */
 const REQUIRED_RULES = [
+  // The Reading check (0074, R0): made by an owner as themselves, waiting;
+  // its misses, and what was filed through review, written by the vault alone.
+  {
+    table: 'reading_check',
+    name: 'reading_check_actor_insert',
+    cmd: 'a',
+    what: 'who starts a Reading check',
+  },
+  {
+    table: 'reading_check_sealed',
+    name: 'reading_check_sealed_actor_insert',
+    cmd: 'a',
+    what: 'who writes a Reading check’s misses',
+  },
+  {
+    table: 'reading_check_sealed',
+    name: 'reading_check_sealed_actor_update',
+    cmd: 'w',
+    what: 'who changes a Reading check’s misses',
+  },
+  {
+    table: 'reading_check_sealed',
+    name: 'reading_check_sealed_actor_delete',
+    cmd: 'd',
+    what: 'who removes a Reading check’s misses',
+  },
+  {
+    table: 'review_filing',
+    name: 'review_filing_actor_insert',
+    cmd: 'a',
+    what: 'who says a document was filed through review',
+  },
+  {
+    table: 'review_filing',
+    name: 'review_filing_actor_update',
+    cmd: 'w',
+    what: 'who changes what was filed through review',
+  },
+  {
+    table: 'review_filing',
+    name: 'review_filing_actor_delete',
+    cmd: 'd',
+    what: 'who removes what was filed through review',
+  },
   // A computer that sends scans (0070, D1, the review's F7): made by the
   // vault alone and never removed but with its person; its code made
   // untried by its person, counted by the vault alone; and a day's batch
@@ -1964,6 +2069,22 @@ export async function checkRestored(
       const missing = UNIQUE_INDEXES.filter((u) => !uniques.some((f) => f.name === u.name));
       throw new Error(
         `a unique index the vault relies on is missing: ${missing.map((m) => `${m.what} (${m.name})`).join(', ')}`,
+      );
+    }
+    // And the check constraints it relies on for what it keeps (0074).
+    const { rows: checks } = await admin.query<{ name: string }>(
+      `select k.conname as name
+         from pg_constraint k
+         join pg_class t on t.oid = k.conrelid
+         join pg_namespace n on n.oid = t.relnamespace and n.nspname = 'public'
+         join unnest($1::text[], $2::text[]) as u(name, tbl) on u.name = k.conname and u.tbl = t.relname
+        where k.contype = 'c' and k.convalidated`,
+      [REQUIRED_CHECKS.map((c) => c.name), REQUIRED_CHECKS.map((c) => c.table)],
+    );
+    if (checks.length !== REQUIRED_CHECKS.length) {
+      const missing = REQUIRED_CHECKS.filter((c) => !checks.some((f) => f.name === c.name));
+      throw new Error(
+        `a check the vault relies on is missing: ${missing.map((m) => `${m.what} (${m.name})`).join(', ')}`,
       );
     }
     // And the second wall (0030): a rule for each kind of caller on the

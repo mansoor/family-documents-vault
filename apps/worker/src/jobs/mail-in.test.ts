@@ -896,7 +896,9 @@ describe.skipIf(!testAdminUrl())('email in, in the worker (S4)', () => {
     const none = runner(null);
     expect((await none.tick()).ran).toBe(false);
     const held = await admin.query<{ n: number }>(
-      `select count(*)::int as n from pg_locks where locktype = 'advisory' and objid = $1`,
+      `select count(*)::int as n from pg_locks
+        where locktype = 'advisory' and objid = $1
+          and database = (select oid from pg_database where datname = current_database())`,
       [MAIL_IN_LOCK_KEY],
     );
     expect(held.rows[0]?.n).toBe(1);

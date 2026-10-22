@@ -4,6 +4,7 @@ import {
   EnvKeyProvider,
   itemProposalsBinding,
   itemTextBinding,
+  readingMissesBinding,
   ScopeKeys,
   sealBytes,
   unwrapKey,
@@ -24,7 +25,8 @@ import { alertsSent, createHarness, mailSent, TEST_MASTER, type Harness } from '
  * review queue, the learned rules and the Documents table's sorts and
  * filters to the same rules, with their planted secrets; for 0.8.0 (the
  * 0.8.0 exit) the scanner folder, email in, a paired computer and its key,
- * the folder a file came from, and duplicates and renewals as versions.
+ * the folder a file came from, and duplicates and renewals as versions;
+ * for 0.9.0 the Reading check, its numbers and its sealed misses.
  *
  * Phase 5 added kinds of caller the vault never had — a restricted viewer,
  * a guest, somebody holding a share link, somebody sending files to a
@@ -200,7 +202,9 @@ type Kind =
   /** A computer that sends scans (0.8.0, D1): its person's, and an owner's to revoke. */
   | 'pairedDevice'
   /** Not a parameter: another person's code to confirm their address for email in (S4), sent in a body. */
-  | 'mailInCode';
+  | 'mailInCode'
+  /** A Reading check (0.9.0, R0): the household's owners', its misses its asker's alone. */
+  | 'readingCheck';
 
 /** The ids one request is made with: the thing of each kind the attacker is after. */
 type Fill = Record<Kind, string>;
@@ -242,6 +246,7 @@ const PARAM_KINDS: Record<string, Kind> = {
   'items/:itemId': 'batchItem',
   'notices/:id': 'watchNotice',
   'paired-devices/:id': 'pairedDevice',
+  'reading-checks/:id': 'readingCheck',
 };
 
 /** The kinds that name a thing of somebody's: another's id here is refused unless the rule says. */
@@ -270,6 +275,7 @@ const OBJECT_KINDS: ReadonlySet<Kind> = new Set<Kind>([
   'batchItem',
   'watchNotice',
   'pairedDevice',
+  'readingCheck',
 ]);
 
 interface Rule {
@@ -891,6 +897,15 @@ const RULES: Record<string, Rule> = {
       passwordOnlyOwner: 'an owner may revoke any computer in the household (D1)',
     },
   },
+  // The Reading check (0.9.0, R0): an owner's, every route; and a check, its
+  // numbers and its misses its asker's alone (the owner's decision, R0
+  // review). Olivia's, planted: Peter, another owner, may neither read,
+  // cancel nor remove it — he is told only that it is there, and whose.
+  'GET /api/v1/reading-checks': { who: 'owners' },
+  'POST /api/v1/reading-checks': { who: 'owners', bodies: () => [{}, { n: 9 }, { n: 'all' }] },
+  'GET /api/v1/reading-checks/:id': { who: 'owners' },
+  'POST /api/v1/reading-checks/:id/cancel': { who: 'owners', body: () => ({}) },
+  'DELETE /api/v1/reading-checks/:id': { who: 'owners', last: true },
 };
 
 /** Whether a role is among those a rule is for. */
@@ -1452,6 +1467,62 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     expect(held.rows[0]?.code_kind).toBe('enter');
     ids.mailInCodeHex = held.rows[0]?.code_hash.toString('hex') as string;
     ids.mailInCodeBase64 = held.rows[0]?.code_hash.toString('base64') as string;
+
+    // Olivia's Reading check (0.9.0, R0), as the worker leaves one done: its
+    // numbers, every owner's; and its misses sealed under her key alone —
+    // naming her Only me letter, and Ahmed's Only me papers as a check of the
+    // vault's own would. Neither reaches anybody else, another owner included.
+    ids.readingCheck = (
+      await admin.query<{ id: string }>(
+        `insert into reading_check (household_id, requested_by, member_id, n, state, total, done,
+                                    started_at, finished_at, server_version, rules_hash, summary)
+         select $1, a.account_id, a.member_id, 50, 'done', 2, 2, now(), now(), '0.9.0-dev.1',
+                'abcdef012345', $3
+           from account_household a where a.member_id = $2
+         returning id`,
+        [
+          olivia.household_id,
+          olivia.member_id,
+          JSON.stringify({ chosen: 2, read: 2, skipped: 0, edited: 0 }),
+        ],
+      )
+    ).rows[0]?.id as string;
+    const oliviaKey = await withSystem(h.db, olivia.household_id, (trx) =>
+      new ScopeKeys(new EnvKeyProvider(TEST_MASTER)).unwrap(trx, {
+        householdId: olivia.household_id,
+        kind: 'member',
+        memberId: olivia.member_id,
+      }),
+    );
+    await admin.query(
+      `insert into reading_check_sealed (check_id, household_id, member_id, wrapped_by_scope,
+                                         misses_sealed, expires_at)
+       values ($1, $2, $3, $4, $5, now() + interval '7 days')`,
+      [
+        ids.readingCheck,
+        olivia.household_id,
+        olivia.member_id,
+        oliviaKey.id,
+        sealBytes(
+          oliviaKey.key,
+          Buffer.from(
+            JSON.stringify({
+              v: 1,
+              misses: [
+                {
+                  document_id: (doc.oliviaPrivate as { id: string }).id,
+                  fields: ['kind'],
+                  level: 'check',
+                  wrong_ready: false,
+                },
+                { document_id: priv.id, fields: ['person'], level: 'check', wrong_ready: false },
+              ],
+            }),
+          ),
+          readingMissesBinding(ids.readingCheck),
+        ),
+      ],
+    );
 
     // Ahmed's own: a reminder, an export, a phone.
     const reminder = await ok(
@@ -2537,6 +2608,69 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     expect(versions.rows.map((r) => r.n)).toEqual([1, 1, 1]);
   });
 
+  it('an Only me document never reaches a Reading check’s answer for another owner (R0)', async () => {
+    const id = ids.readingCheck as string;
+    const her = doc.oliviaPrivate as { id: string; title: string; marker: string };
+    const his = doc.ahmedPrivate as { id: string; title: string; marker: string };
+    // The plant is real: Olivia, who ran it, is shown her own letter, and
+    // not Ahmed's papers, which are no document of hers to see.
+    const mine = await ok(send(olivia, 'GET', `/api/v1/reading-checks/${id}`));
+    expect(mine.body).toContain(her.id);
+    expect(mine.body).toContain(her.title);
+    expect(mine.body).not.toContain(his.id);
+    // Peter, another owner: that it is there, and whose — not its numbers,
+    // and nothing of either document. He may neither read it, cancel it nor
+    // remove it.
+    await fresh(peter);
+    const listed = await send(peter, 'GET', '/api/v1/reading-checks');
+    expect(listed.statusCode).toBe(200);
+    expect(
+      listed.json<{ others: Array<{ state: string; requested_by: { member_id: string } }> }>()
+        .others,
+    ).toContainEqual({
+      state: 'done',
+      requested_by: { member_id: olivia.member_id, name: 'Olivia' },
+    });
+    // Not even its id, nor when (P-1).
+    expect(listed.body).not.toContain(id);
+    expect(listed.body).not.toContain('"chosen"');
+    expect(listed.body).not.toContain('abcdef012345');
+    for (const [method, url] of [
+      ['GET', `/api/v1/reading-checks/${id}`],
+      ['POST', `/api/v1/reading-checks/${id}/cancel`],
+      ['DELETE', `/api/v1/reading-checks/${id}`],
+    ] as const) {
+      expect((await send(peter, method, url, method === 'POST' ? {} : undefined)).statusCode).toBe(
+        404,
+      );
+    }
+    expect((await ok(send(olivia, 'GET', `/api/v1/reading-checks/${id}`))).body).toContain(
+      '"chosen":2',
+    );
+    for (const url of ['/api/v1/reading-checks', `/api/v1/reading-checks/${id}`]) {
+      const res = await send(peter, 'GET', url);
+      for (const secret of [
+        her.id,
+        her.title,
+        her.marker,
+        his.id,
+        his.title,
+        his.marker,
+        PASSPORT,
+        NOTE,
+        DETAIL,
+        PAGE_WORD,
+      ]) {
+        expect(res.body.includes(secret), `${url} holds ${secret}`).toBe(false);
+      }
+    }
+    // Nobody else is given the check at all.
+    for (const who of [ahmed, sara, vera, tariq]) {
+      await fresh(who);
+      expect((await send(who, 'GET', `/api/v1/reading-checks/${id}`)).statusCode).toBe(403);
+    }
+  });
+
   it('every route the router has has a rule, and every rule a route', () => {
     const routes = routeTable(h).map((r) => `${r.method} ${r.url}`);
     expect(routes.length).toBeGreaterThan(170);
@@ -3003,6 +3137,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       watchNotice: [ids.watchNotice as string],
       pairedDevice: [ids.pairedDevice as string],
       mailInCode: [ids.mailInCode as string],
+      readingCheck: [ids.readingCheck as string],
     };
     const viewerLike = (name: Attacker, tokens: Tokens, stale = false): AttackerDef => ({
       name,
@@ -3313,6 +3448,7 @@ const PARAM_KIND_DEFAULTS: Record<Kind, true> = {
   watchNotice: true,
   pairedDevice: true,
   mailInCode: true,
+  readingCheck: true,
 };
 
 function kindOf(before: string, param: string): Kind | null {

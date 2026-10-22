@@ -351,6 +351,17 @@ export interface FakeState {
   /** "A scanned file couldn't be added", the reader's own (WatchNoticeView); left out, none. */
   watchNotices?: Array<Record<string, unknown> & { id: string }>;
   /**
+   * The Reading check (0.9.0, R0), as GET /reading-checks gives them to an
+   * owner (ReadingCheckView), newest first; and how many documents filed
+   * through review they can see. POST adds one waiting (409 while one waits
+   * or runs), cancel and DELETE as the vault; GET /reading-checks/{id}
+   * answers `readingMisses[id]` to the check's own owner. Left out, the
+   * feature is not said.
+   */
+  readingChecks?: Array<Record<string, unknown> & { id: string; state: string; mine: boolean }>;
+  readingFiled?: number;
+  readingMisses?: Record<string, Array<Record<string, unknown>>>;
+  /**
    * Email in (S4), as GET /mail-in gives it to an owner (MailInView);
    * `available` says /capabilities' mail_in too. A PUT sets `enabled` (409
    * while it is not available). Left out, no mailbox: GET answers it
@@ -1055,6 +1066,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.computers ? { device_uploads: true } : {}),
           // Tags you can use (0.9.0, T1): said when a test gives them.
           ...(state.tagManagement ? { tag_details: true, tag_management: true } : {}),
+          // The Reading check (0.9.0, R0): said when a test gives checks.
+          ...(state.readingChecks ? { reading_check: true } : {}),
         },
         limits: {
           ...(state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {}),
@@ -1239,6 +1252,69 @@ export function installFakeApi(state: FakeState) {
     }
     if (path === '/api/v1/auth/step-up') return json({ verified_at: null, expires_in: 0 });
     if (path === '/api/v1/exports') return json({ items: [] });
+    if (path === '/api/v1/reading-checks' || path.startsWith('/api/v1/reading-checks/')) {
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner can run the Reading check.');
+      }
+      const checks = (state.readingChecks ??= []);
+      if (path === '/api/v1/reading-checks') {
+        if (method === 'POST') {
+          if (checks.some((c) => c.state === 'waiting' || c.state === 'running')) {
+            return refuse(409, 'reading_check_running', 'A Reading check is already running.');
+          }
+          const b = body as { n?: number; include_edited?: boolean };
+          const made = {
+            id: `check-${checks.length + 1}`,
+            state: 'waiting',
+            failure: null,
+            n: b.n ?? 50,
+            include_edited: b.include_edited !== false,
+            requested_by: { member_id: 'me', name: 'Mansoor' },
+            mine: true,
+            created_at: new Date().toISOString(),
+            started_at: null,
+            finished_at: null,
+            progress: { total: 0, done: 0 },
+            reader: { server_version: null, rules: null },
+            summary: null,
+          };
+          checks.unshift(made);
+          return json(made, 202);
+        }
+        // The caller's own; the others' only as there, whose and when (R0 review).
+        return json({
+          items: checks.filter((c) => c.mine),
+          others: checks
+            .filter((c) => !c.mine)
+            .map((c) => ({ state: c.state, requested_by: c.requested_by })),
+          filed: state.readingFiled ?? 0,
+        });
+      }
+      const at = /^\/api\/v1\/reading-checks\/([^/]+)(\/cancel)?$/.exec(path);
+      // Another owner's check is not there for the caller.
+      const c = at
+        ? checks.find((x) => x.id === decodeURIComponent(at[1] as string) && x.mine)
+        : undefined;
+      if (!at || !c) return refuse(404, 'not_found', 'That check is not here.');
+      if (at[2] && method === 'POST') {
+        if (c.state !== 'waiting' && c.state !== 'running') {
+          return refuse(409, 'reading_check_not_running', 'That check has already finished.');
+        }
+        c.state = 'cancelled';
+        c.finished_at = new Date().toISOString();
+        return json(c);
+      }
+      if (method === 'DELETE') {
+        state.readingChecks = checks.filter((x) => x !== c);
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      const misses = state.readingMisses?.[c.id] ?? null;
+      return json({
+        ...c,
+        misses,
+        misses_until: misses ? new Date(Date.now() + 6 * 86_400_000).toISOString() : null,
+      });
+    }
     if (path === '/api/v1/watch-folder') {
       if (storedRole() !== 'owner') {
         return refuse(403, 'forbidden', 'Only an owner can set up the scanner folder.');

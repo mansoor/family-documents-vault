@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { EnvKeyProvider, ScopeKeys, sealIdentity } from '@fdv/crypto';
 import { createPool, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
@@ -229,6 +231,28 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
       .sort();
     expect(ids).toEqual(expected(role));
   });
+
+  // The worker's own copy, for the Reading check (0.9.0, R0, the review's P-4).
+  it.each(roles)(
+    'the Reading check’s rule (the worker’s seenBy) agrees with canSee for a %s',
+    async (role) => {
+      const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+      const worker = (await import(
+        /* @vite-ignore */ pathToFileURL(path.join(root, 'apps/worker/src/jobs/reading-check.ts'))
+          .href
+      )) as {
+        seenByIds(trx: unknown, reader: { memberId: string; role: Role }): Promise<string[]>;
+      };
+      const ids = (
+        await withSystem(h.db, people[role].household_id, (trx) =>
+          worker.seenByIds(trx, { memberId: people[role].member_id, role }),
+        )
+      )
+        .filter((id) => docs.some((d) => d.id === id))
+        .sort();
+      expect(ids).toEqual(expected(role));
+    },
+  );
 
   it.each(roles)('the pages endpoint agrees with canSee for a %s', async (role) => {
     const seen: string[] = [];

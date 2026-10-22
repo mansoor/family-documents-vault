@@ -61,6 +61,8 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
         'share_page',
         'share_link_item',
         'share_page_failure',
+        // A version filed through review (0074, R0): goes with its document.
+        'review_filing',
       ]),
     );
     // 'c': on delete cascade, every one.

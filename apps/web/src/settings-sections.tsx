@@ -91,6 +91,12 @@ export const OWNER_ROWS: SettingsRow[] = [
     title: 'Email in',
     note: 'The family emails documents to their Inbox',
   },
+  // The Reading check (0.9.0, R0): how well the vault reads the family's papers.
+  {
+    to: '/settings/reading-check',
+    title: 'Reading check',
+    note: 'How well the vault reads your own papers',
+  },
 ];
 
 /** The household's rule for Only me documents and links (5.41): read by owners and adults. */
@@ -184,13 +190,14 @@ export function settingsSections(
       key: 'owners',
       to: '/settings/owners',
       label: 'For owners',
-      note: 'Where files are kept, where email comes from, the scanner folder, email in',
+      note: 'Where files are kept, where email comes from, the scanner folder, email in, the Reading check',
       holds: at(
         '/settings/owners',
         '/settings/storage',
         '/settings/email',
         '/settings/scanner',
         '/settings/email-in',
+        '/settings/reading-check',
       ),
     });
   }

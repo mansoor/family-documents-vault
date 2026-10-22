@@ -19,6 +19,7 @@ import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import type { DocumentService, Enqueue } from '../documents/service.js';
 import { ApiError } from '../errors.js';
+import { confirmedByAccept } from '../reading-check/filing.js';
 import type { VaultService } from '../vaults/service.js';
 
 /**
@@ -484,6 +485,18 @@ export class IncomingService {
           }
           throw err;
         }
+        // What this accept confirmed of the document's details, for the
+        // Reading check (0074, R0, the review's A-2): what it set — the kind
+        // and whose, as a new document; nothing, as a version of one there.
+        await confirmedByAccept(
+          trx,
+          into
+            ? []
+            : [
+                ...(input.type_key !== undefined ? (['kind'] as const) : []),
+                ...(input.owner_member_id !== undefined ? (['person'] as const) : []),
+              ],
+        );
         const decided = await trx
           .updateTable('incoming_file')
           .set({

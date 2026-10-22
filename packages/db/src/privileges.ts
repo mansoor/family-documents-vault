@@ -232,6 +232,12 @@ begin
     revoke execute on function public.upload_devices_revoke_for(uuid, text) from public;
     grant execute on function public.upload_devices_revoke_for(uuid, text) to fdv_app;
   end if;
+  -- The Reading check (0074, R0): what another owner is told of a check not
+  -- theirs — that it is there, whose, and when; never its numbers.
+  if to_regprocedure('public.reading_checks_of_others()') is not null then
+    revoke execute on function public.reading_checks_of_others() from public;
+    grant execute on function public.reading_checks_of_others() to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

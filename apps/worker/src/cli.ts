@@ -1,9 +1,18 @@
 import { readFile } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
-import { DecryptStream, deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
-import { createPool } from '@fdv/db';
+import {
+  DecryptStream,
+  deriveKey,
+  EnvKeyProvider,
+  READING_RULES_KEY_PURPOSE,
+  ScopeKeys,
+} from '@fdv/crypto';
+import { createDb, createPool } from '@fdv/db';
 import { loadConfig } from './config.js';
+import { ProposalThread } from './jobs/proposal-thread.js';
+import { readingCheckNow } from './jobs/reading-check.js';
+import { readingCheckCommand } from './reading-check-cli.js';
 import { backupDatabase } from './jobs/backup.js';
 import { recheckRemovedFiles } from './jobs/removed-files.js';
 import {
@@ -25,6 +34,7 @@ import { restoreSummary } from './restore-summary.js';
  *   node apps/worker/dist/cli.mjs restore-backup <file.sql.enc | latest>
  *   node apps/worker/dist/cli.mjs decrypt-backup <in.sql.enc> <out.sql>
  *   node apps/worker/dist/cli.mjs recheck-files
+ *   node apps/worker/dist/cli.mjs reading-check --household <id> [--n 50]
  *
  * All of them need only the normal configuration (the master key and the
  * database). The README's "Restoring" section says when to use which. A
@@ -208,9 +218,43 @@ async function main() {
     }
     return;
   }
+  // The Reading check's numbers for a household (0.9.0, R0): nothing kept,
+  // and nothing but numbers printed (reading-check-cli.ts).
+  if (command === 'reading-check') {
+    const pool = createPool(config.DATABASE_URL, 2);
+    const proposer = new ProposalThread();
+    try {
+      process.exitCode = await readingCheckCommand(
+        process.argv.slice(3),
+        (household, n) =>
+          readingCheckNow(
+            {
+              db: createDb(pool),
+              keys,
+              credentialsKey: deriveKey(masterSecret, 'vault-credentials'),
+              localRoot: config.FDV_LOCAL_VAULT_DIR,
+              // The reading's own log goes nowhere: standard output is the numbers'.
+              log: () => undefined,
+              rulesKey: deriveKey(masterSecret, READING_RULES_KEY_PURPOSE),
+              serverVersion: '',
+            },
+            household,
+            n,
+            { maxPages: config.FDV_OCR_MAX_PAGES, proposer },
+          ),
+        { stdout: (l) => console.log(l), stderr: (l) => console.error(l) },
+      );
+    } finally {
+      await proposer.close();
+      await pool.end();
+    }
+    return;
+  }
+
   console.error(
     'usage: cli.mjs backup-now | restore-drill [<file>] | restore-backup <file|latest> | ' +
-      'decrypt-backup <in.sql.enc> <out.sql> | recheck-files',
+      'decrypt-backup <in.sql.enc> <out.sql> | recheck-files | ' +
+      'reading-check --household <id> [--n 50]',
   );
   process.exitCode = 2;
 }

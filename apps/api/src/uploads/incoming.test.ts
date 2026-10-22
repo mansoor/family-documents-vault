@@ -1344,4 +1344,37 @@ describe.skipIf(!testAdminUrl())('incoming: look before it is filed', () => {
     );
     expect(rows.rows[0]?.n).toBe(0);
   });
+
+  it('the Reading check is told what an accept confirmed: the kind and whose it is, as the accept set them (0074, R0, A-2)', async () => {
+    const { files } = await arrive(owner, {}, [
+      { name: 'a.pdf', bytes: PDF('confirmed-a') },
+      { name: 'b.pdf', bytes: PDF('confirmed-b') },
+      { name: 'c.pdf', bytes: PDF('confirmed-c') },
+    ]);
+    const [a, b, c] = files as [DropFile, DropFile, DropFile];
+    for (const f of files) await ready(f.id);
+    const filedA = await accept(owner, a.id, {
+      title: 'A passport',
+      type_key: 'passport',
+      owner_member_id: owner.member_id,
+    });
+    expect(filedA.statusCode, filedA.body).toBe(201);
+    const filedB = await accept(owner, b.id, { title: 'A letter' });
+    expect(filedB.statusCode, filedB.body).toBe(201);
+    // Into the first: a version, its details the document's already.
+    const docA = (await fileRow(a.id))?.document_id as string;
+    const filedC = await accept(owner, c.id, { into_document_id: docA });
+    expect(filedC.statusCode, filedC.body).toBe(201);
+    const told = async (id: string) =>
+      (
+        await admin<{ source: string; confirmed: string[] }>(
+          `select r.source, r.confirmed from review_filing r
+             join incoming_file f on f.version_id = r.version_id where f.id = $1`,
+          [id],
+        )
+      )[0];
+    expect(await told(a.id)).toEqual({ source: 'inbox', confirmed: ['kind', 'person'] });
+    expect(await told(b.id)).toEqual({ source: 'inbox', confirmed: [] });
+    expect(await told(c.id)).toEqual({ source: 'inbox', confirmed: [] });
+  });
 });

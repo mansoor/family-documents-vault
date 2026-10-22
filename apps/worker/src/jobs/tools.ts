@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFile } from 'node:child_process';
 import { access, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -5,6 +6,31 @@ import { promisify } from 'node:util';
 import { childEnv } from './child-env.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Tools run for work nobody is waiting on (the Reading check, 0.9.0 R0):
+ * inside `atLowPriority`, each tool runs under `nice -n 19` (where there is
+ * one: not on Windows) and with OMP_THREAD_LIMIT=1, so Tesseract takes one
+ * core, gently, and never crowds out a family's own uploads.
+ */
+const lowPriority = new AsyncLocalStorage<boolean>();
+
+/** `fn`, its tools run at the lowest priority. */
+export const atLowPriority = <T>(fn: () => Promise<T>): Promise<T> => lowPriority.run(true, fn);
+
+/** How a tool is run now: as it is, or niced, one thread. */
+export function lowPriorityCommand(
+  bin: string,
+  args: string[],
+  env: Record<string, string> | undefined,
+  platform: NodeJS.Platform = process.platform,
+): { bin: string; args: string[]; env: Record<string, string> | undefined } {
+  if (!lowPriority.getStore()) return { bin, args, env };
+  const one = { ...env, OMP_THREAD_LIMIT: '1' };
+  return platform === 'win32'
+    ? { bin, args, env: one }
+    : { bin: 'nice', args: ['-n', '19', bin, ...args], env: one };
+}
 
 /**
  * A tool run: its arguments never through a shell, and its environment the
@@ -21,7 +47,8 @@ function run(
     env?: Record<string, string>;
   } = {},
 ): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync(bin, args, { ...opts, env: childEnv(opts.env) });
+  const how = lowPriorityCommand(bin, args, opts.env);
+  return execFileAsync(how.bin, how.args, { ...opts, env: childEnv(how.env) });
 }
 
 /** The same, for the tests: what a tool is handed. */

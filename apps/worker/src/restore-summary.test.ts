@@ -21,6 +21,7 @@ function report(over: Partial<RestoreReport> = {}): RestoreReport {
     identityAudiences: [],
     exportsExpired: 0,
     devicesEnded: 0,
+    readingChecksStopped: 0,
     signInsPaused: 0,
     locksKept: 0,
     openInvitations: 0,

@@ -644,6 +644,36 @@ Opening an Essential, or anything marked Only me, asks you to confirm it is
 you if you have not done so in the last five minutes — for its pages as for
 its file.
 
+### How well the vault reads your papers
+
+**Settings → For owners → Reading check** measures the vault's reader on
+your own papers. It reads again the last documents somebody filed through
+review — accepted from Many documents or the Inbox, so a person checked the
+details — that you can see, and counts how often it would have got the kind,
+whose it is and the expiry right: once without the rules it learned from
+corrections, and once with your learning, on the documents you filed
+(optimistic, since the rules were learned from the same papers; on anybody
+else's it is the same as without). The worker does it in the background,
+behind everything else, on the same tools that read new uploads; a few
+hundred documents can take a while. Nothing is changed and nothing is
+learned. Only the numbers are kept, and a check is its owner's alone:
+another owner sees only that one is running or finished, and whose. Which
+documents needed typing is kept for seven days.
+
+Documents filed through review before upgrading to 0.9.0 are counted only
+if their batch or request was still in the vault then (a batch goes 30
+days after it was made); those whose batch had already gone are not.
+
+To compare one release's reader with another's on a test vault, the worker
+prints the same numbers, and nothing else, for a household:
+
+```bash
+docker compose exec worker node apps/worker/dist/cli.mjs reading-check --household <household id> --n 50
+```
+
+It reads with the general reader alone: no Only me document, anybody's,
+and no learned rules (it says so beside the numbers). It keeps nothing.
+
 ### Essentials on a phone
 
 The phone app can keep the household's Essentials — passports, policies, the

@@ -4874,6 +4874,70 @@ too_many_documents`, before any is held, says to do it in parts.
       `DocumentListParams.tag_label`. `@fdv/client`: `tags(token, q,
 { limit })` (its items `TagView`), `renameTag`, `deleteTag`; the fake
       answers every one, and keeps tags on an edit.
+  - The Reading check (0.9.0, R0): an owner's measure of the reader on the
+    family's own papers, numbers only. **New feature:**
+    `features.reading_check` (`true`; absent from older vaults). **New
+    routes**, each an owner's alone (`403 forbidden` for an adult, a teen,
+    a viewer or a guest; the database's rule too, 0074):
+    - `GET /api/v1/reading-checks` — `{ items: ReadingCheckView[], others,
+filed }`: the caller's own checks, newest first (the last 20 are kept);
+      `others`, the other owners' checks as `{ state, requested_by }` —
+      whose each is and its state, never its numbers nor when (a check is
+      its asker's alone, in the database too); and how many documents filed
+      through review the caller can see, out of the Trash (never somebody
+      else's Only me), with a scored detail a person confirmed.
+    - `POST /api/v1/reading-checks` — body `{ n?, include_edited? }` (`n`
+      a whole number from 10 to 500, default 50; `include_edited` default
+      `true`), answers `202` with the check `waiting`, and the worker reads
+      it in the background. `409 reading_check_running` while the
+      household's last one waits or runs; `422` for anything else in the
+      body; `503 reading_check_not_started` (retriable) when its job could
+      not be sent, and nothing is left behind.
+    - `GET /api/v1/reading-checks/{id}` — `ReadingCheckDetail`: the
+      caller's own check, and `misses` (`[{ document_id, title, type_key,
+fields, level, wrong_ready }]`, the documents that needed typing and
+      which of `kind`, `person`, `expiry`, read without the learned rules)
+      with `misses_until` — only for documents they can still see, and for
+      seven days; afterwards `misses: null`. Another owner's check is `404`.
+    - `POST /api/v1/reading-checks/{id}/cancel` — the caller's own check
+      `waiting` or `running`, `cancelled`; `409 reading_check_not_running`
+      otherwise; another owner's, `404`. What it had read so far goes at
+      once, and the document it was reading is let go.
+    - `DELETE /api/v1/reading-checks/{id}` — the caller's own, `204`, its
+      misses with it; another owner's, `404`.
+  - `ReadingCheckView`: `id`, `state` (`waiting`, `running`, `done`,
+    `cancelled`, `failed`), `failure` (`stopped` — its owner can no longer
+    run checks — or `restored`), `n`, `include_edited`, `requested_by` (`{
+member_id, name }`), `mine`, `created_at`, `started_at`, `finished_at`,
+    `progress` (`{ total, done }`), `reader` (`{ server_version, rules }`:
+    the release that read, and twelve hex characters of a keyed hash of the
+    learned rules it read with) and `summary`, `null` until `done`. The
+    summary is numbers only (the database refuses anything else): `chosen`,
+    `read`, `skipped`, `edited` (a scored detail changed by hand since it
+    was filed: kind, whose, the expiry; a title or tags is not),
+    `partly_confirmed` (read with a detail a person did not confirm — an
+    Inbox file, or a version added to a document there, confirms only what
+    its accept set — which is not scored, never a miss; a document with
+    none of kind, whose and the expiry confirmed is not read), and
+    `without_rules` and `with_rules` (the
+    asking owner's own rules on the documents they filed themselves,
+    optimistic, since the rules were learned from these papers; on a
+    document anybody else filed it equals `without_rules`), each
+    `{ all, text, scan, by_kind }` of `ReadingCounts` — `documents`,
+    `ready`, `check`, `unrecognised`, `problem`, `not_read`,
+    `needs_typing`, `wrong_ready`, `ready_detail_wrong`,
+    `expiry_not_on_paper`, `kind_typed`, `person_typed`, `expiry_typed` —
+    with `by_kind` keyed by a kind's key, `(none)` for Something else, and
+    `(only_me)` for the requester's own Only me documents, never by their
+    kind. Scored as the Smart exit scores (`@fdv/shared` reading-score.ts,
+    moved there from testdata, which re-exports it). `@fdv/shared`:
+    `ReadingCheckView`, `ReadingCheckDetail`, `ReadingChecksList`,
+    `ReadingCheckOther`, `ReadingCheckInput`, `ReadingCheckSummary`,
+    `READING_CHECK_N`,
+    `numbersOnly`, `scoreReading`, `readingComparison`. `@fdv/client`:
+    `readingChecks`, `startReadingCheck`, `readingCheck`,
+    `cancelReadingCheck`, `deleteReadingCheck`; the client fake answers the
+    same, and reads a check on its second asking.
 
 ## Deprecations in effect
 

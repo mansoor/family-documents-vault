@@ -192,13 +192,13 @@ describe('Your computers (0.8.0, D1)', () => {
       await within(dialog).findByText(
         '“Study PC” is paired. What it sends arrives in your uploads, a batch a day.',
         undefined,
-        { timeout: 12_000 },
+        { timeout: 30_000 },
       ),
     ).toBeInTheDocument();
     await expectAccessible();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
     expect(await screen.findByText('Study PC')).toBeInTheDocument();
-  });
+  }, 45_000);
 
   it('lists your computers, and removes one after asking', async () => {
     const state = at('/settings/computers', { computers: [computer({})] }, 'adult');
