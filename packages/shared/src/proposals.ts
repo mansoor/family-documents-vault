@@ -105,6 +105,12 @@ export interface Proposed<T> {
   learned?: true;
   /** And how sure the pages alone were, before (the I4 review, I4-4). */
   page_confidence?: number;
+  /**
+   * Proposed, or made surer, by the uploader's earlier papers of this
+   * sender's layout (0.9.0, R1, shapes.ts): with the cue `learned` for one
+   * the shape alone proposed.
+   */
+  shape?: true;
 }
 
 /** What the pages propose: only the fields above their threshold, and only empty ones. */
@@ -160,6 +166,11 @@ export interface ProposalContext {
   types: readonly ProposalKind[];
   /** The family, never a guest: whose a document is, matched by name. */
   people: readonly ProposalPerson[];
+  /**
+   * The household's guests, by name (0.9.0, R1): never whose a document is,
+   * but their names are kept out of a paper's shape as the family's are.
+   */
+  guests?: readonly ProposalPerson[] | undefined;
   /** The issuers the household has used (GET /issuers). */
   issuers?: readonly KnownIssuer[] | undefined;
   /** The household's own name: never an issuer, never a person. */
@@ -2012,6 +2023,39 @@ function proposeIssuer(
     value: top.value,
     confidence,
     cue: top.source === 'known' ? 'known_issuer' : 'letterhead',
+  };
+}
+
+// ------------------------------------------------------------- the page
+
+/** The page as the proposals read it, for a paper's shape (0.9.0, R1, shapes.ts). */
+export interface PageText {
+  /** Each line as written (normalised: `normalise`). */
+  lines: string[];
+  /** The same lines folded (`fold`): lower case, one character for each. */
+  folded: string[];
+  /** Every date written out on it (`findDates`), by line and place on that line. */
+  dates: Array<{ line: number; col: number; end: number; value: DateValue }>;
+}
+
+/**
+ * The page's lines and dates, read exactly as `proposeDetails` reads them —
+ * the same bounds (`normalise`, MAX_DATES) and the same dates, in the
+ * household's date order where the page does not say its own.
+ */
+export function pageText(text: string, order?: 'dmy' | 'mdy'): PageText {
+  const body = normalise(text);
+  const hay = fold(body);
+  const lines = new Lines(hay);
+  return {
+    lines: body.split('\n'),
+    folded: hay.split('\n'),
+    dates: findDates(hay, order, lines).map((d) => ({
+      line: d.line,
+      col: d.at - lines.start(d.line),
+      end: d.end - lines.start(d.line),
+      value: d.value,
+    })),
   };
 }
 

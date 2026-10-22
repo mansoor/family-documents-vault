@@ -242,10 +242,11 @@ describe('a rule used (I4)', () => {
     expect(proposal.type_key).toBeUndefined();
     expect([...tie].sort()).toEqual(['medical_record', 'tax_return']);
     expect(proposal.issued_by).toMatchObject({ value: 'Northgate Dental' });
-    // With no rules, exactly what the pages say.
+    // With no rules, exactly what the pages say (and the page's shape, R1).
     expect(proposeLearned(text, ctx, { rules: [], role: 'adult', me: AHMED })).toEqual({
       proposal,
       clash: {},
+      paper: expect.objectContaining({ words: expect.any(Array) as unknown }) as unknown,
     });
     // A sure rule for one of them chooses it.
     const chosen = proposeLearned(text, ctx, {

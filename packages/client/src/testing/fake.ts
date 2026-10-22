@@ -50,9 +50,16 @@ import {
   itemFolder,
   levelItem,
   RELATIVE_PATH_MAX,
+  learnedIssuerKey,
+  periodic,
+  lessonTrusted,
   ruleTrusted,
+  shapeLessonOf,
+  SHAPES_MAX,
   suggestFromFolder,
   teach,
+  teachShape,
+  unteachShape,
   can,
   normaliseTag,
   normaliseTags,
@@ -145,6 +152,9 @@ import {
   type ItemProposals,
   type Proposed,
   type KeptRule,
+  type KeptShape,
+  type PaperReading,
+  type ShapeTaught,
   type LearnedClash,
   type Capabilities,
   isLoopbackName,
@@ -563,6 +573,8 @@ export interface FakeBatch {
 /** One person's rules and count (I4), as the fake keeps them. */
 export interface FakeLearning {
   rules: KeptRule[];
+  /** The layouts of senders' papers learned (0.9.0, R1), as the vault keeps them, sealed. */
+  shapes?: KeptShape[];
   /** Newest first: each accepted item read, whether it needed no change, and what it taught. */
   outcomes: Array<{
     item_id: string;
@@ -571,6 +583,8 @@ export interface FakeLearning {
     contradicted: string[];
     /** The rules it removed, as they were, for an Undo to put back (I4-3). */
     removed: KeptRule[];
+    /** What it taught a shape (R1), for an Undo to take back. */
+    shape?: ShapeTaught;
     accepted_at: number;
   }>;
 }
@@ -597,6 +611,11 @@ export interface FakeBatchItem {
   proposal?: DetailProposal | null;
   /** Where a sure rule of the uploader's disagreed with the pages, as the worker sealed it (I4). */
   learned_clash?: LearnedClash | null;
+  /**
+   * The page's shape and its labelled dates and numbers, as the worker seals
+   * them beside the proposal (0.9.0, R1): what an accept teaches a shape.
+   */
+  paper?: PaperReading | null;
   /** Filed by Accept all Ready (I3): until when Undo takes it back. */
   undo_until?: string;
   /** Where it was under the folder chosen (S2), as the vault keeps it, sealed. */
@@ -1027,6 +1046,8 @@ export function createFakeVault(): {
             },
           }
         : {}),
+      // Each paper its own document, never a renewal of the last (0.9.0).
+      periodic: periodic(t),
       etag: typeTag(t),
     };
   };
@@ -4177,6 +4198,7 @@ export function createFakeVault(): {
               it.reading = 'waiting';
               it.proposal = null;
               it.learned_clash = null;
+              it.paper = null;
             }
           }
         }
@@ -4210,6 +4232,31 @@ export function createFakeVault(): {
             last_used: r.last_used,
           })),
         rules_max: LEARNED_RULES_MAX,
+        // The layouts of senders' papers (R1), newest first.
+        shapes: [...(mine.shapes ?? [])]
+          .sort(
+            (a, b) => b.last_used.localeCompare(a.last_used) || a.issuer.localeCompare(b.issuer),
+          )
+          .map((sh) => ({
+            id: sh.id,
+            issuer: sh.issuer,
+            words: sh.words.length,
+            lessons: sh.lessons.map((l) => ({
+              field: l.field,
+              value: l.value,
+              label:
+                l.field === 'type_key'
+                  ? (state.types.find((t) => t.key === l.value)?.label ?? null)
+                  : l.field === 'owner_member_id'
+                    ? (state.members.find((m) => m.id === l.value)?.display_name ?? null)
+                    : l.value,
+              confirmed: l.confirmed,
+              contradicted: l.contradicted,
+              sure: lessonTrusted(l, sh),
+            })),
+            last_used: sh.last_used,
+          })),
+        shapes_max: SHAPES_MAX,
       };
       return ok(out);
     }
@@ -4522,6 +4569,9 @@ export function createFakeVault(): {
           const res = fileOne(b, x, card, who, {
             read: view.reading === 'read',
             proposals: view.proposals,
+            paper: view.reading === 'read' ? (x.paper ?? null) : null,
+            reviewed: false,
+            level: view.level ?? null,
           });
           const answer = (await res.json()) as {
             document_id?: string;
@@ -4687,6 +4737,9 @@ export function createFakeVault(): {
         return fileOne(b, it, body, who, {
           read: view.reading === 'read',
           proposals: view.proposals ?? null,
+          paper: view.reading === 'read' ? (it.paper ?? null) : null,
+          reviewed: true,
+          level: view.level ?? null,
         });
       }
     }
@@ -4697,7 +4750,14 @@ export function createFakeVault(): {
       it: FakeBatchItem,
       sent: BatchAcceptInput,
       who: { role: Role; memberId: string },
-      learn: { read: boolean; proposals: ItemProposals | null },
+      learn: {
+        read: boolean;
+        proposals: ItemProposals | null;
+        paper?: PaperReading | null;
+        /** Looked at and accepted: never Accept all Ready (R1, W2). */
+        reviewed?: boolean;
+        level?: string | null;
+      },
     ): ResponseLike {
       {
         const { collection_id: sentCollection, ...rest } = sent;
@@ -4806,26 +4866,59 @@ export function createFakeVault(): {
     function learnFrom(
       who: { role: Role; memberId: string },
       itemId: string,
-      learn: { read: boolean; proposals: ItemProposals | null },
+      learn: {
+        read: boolean;
+        proposals: ItemProposals | null;
+        paper?: PaperReading | null;
+        /** Looked at and accepted: never Accept all Ready (R1, W2). */
+        reviewed?: boolean;
+        level?: string | null;
+      },
       filed: CaptureMetadata,
       kind: DocumentTypeView | null,
     ): void {
       const mine = (state.learned[who.memberId] ??= { rules: [], outcomes: [] });
+      const today = new Date().toISOString().slice(0, 10);
       const taught = teach(
         mine.rules,
         learningOf({ proposals: learn.proposals, filed, role: who.role }),
-        { newId: () => next('rule'), today: new Date().toISOString().slice(0, 10) },
+        { newId: () => next('rule'), today },
       );
       mine.rules = taught.rules;
       if (!learn.read) return;
+      // And the sender's layout (R1), from the page's reading sealed with its
+      // proposal: only from a reviewed accept, vouched for by a correction or
+      // an item at Check (W2). The fake keeps no numbers' hashes (W1).
+      const unchanged = correctionsOf({ proposals: learn.proposals, filed, kind }).length === 0;
+      const lesson = kind
+        ? shapeLessonOf({
+            reviewed: learn.reviewed === true,
+            vouched: !unchanged || (!!learn.level && learn.level !== 'ready'),
+            card: learn.proposals,
+            paper: learn.paper ?? null,
+            filed,
+            issuer: learnedIssuerKey(filed.issued_by?.trim() || null),
+            role: who.role,
+            keeps: {
+              issued: kind.core?.issued?.shown !== false,
+              expires: kind.expiry_driver !== null && kind.core?.expires?.shown !== false,
+              identifier: kind.core?.identifier?.shown !== false,
+            },
+          })
+        : null;
+      const shaped = lesson
+        ? teachShape(mine.shapes ?? [], lesson, { newId: () => next('shape'), today })
+        : null;
+      if (shaped) mine.shapes = shaped.shapes;
       const now = Date.now();
       mine.outcomes = [
         {
           item_id: itemId,
-          unchanged: correctionsOf({ proposals: learn.proposals, filed, kind }).length === 0,
+          unchanged,
           confirmed: taught.confirmed,
           contradicted: taught.contradicted,
           removed: taught.removed,
+          ...(shaped ? { shape: shaped.taught } : {}),
           accepted_at: now,
         },
         ...mine.outcomes.filter((o) => o.item_id !== itemId),
@@ -4840,6 +4933,8 @@ export function createFakeVault(): {
       const o = mine?.outcomes.find((x) => x.item_id === itemId);
       if (!mine || !o) return;
       mine.outcomes = mine.outcomes.filter((x) => x !== o);
+      // What it taught a sender's layout (R1), taken back exactly.
+      if (o.shape) mine.shapes = unteachShape(mine.shapes ?? [], o.shape);
       // What it removed, put back as it was (I4-3).
       for (const r of o.removed) {
         if (!mine.rules.some((x) => x.id === r.id)) mine.rules.push({ ...r });

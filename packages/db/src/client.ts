@@ -872,6 +872,19 @@ export interface Schema {
     contradicted_rules: ColumnType<string[], string[] | undefined, string[]>;
     /** The rules its accept removed, as they were (JSON), for an Undo to put back. */
     removed_rules: ColumnType<unknown, string | undefined, string>;
+    /** What its accept taught a shape (0075, R1), sealed under its person's key; null for nothing. */
+    shape_taught: Buffer | null;
+  };
+
+  /** A sender's paper shape, learned from a person's papers (0075, 0.9.0 R1): theirs alone, sealed. */
+  intake_shape: {
+    id: Generated<string>;
+    household_id: string;
+    member_id: string;
+    /** { v: 1, issuer, words, lessons } (@fdv/shared shapes.ts), under the member's key. */
+    shape_sealed: Buffer;
+    /** A day: kept as the database's date, read as a string (YYYY-MM-DD). */
+    last_used: ColumnType<string, string | undefined, string>;
   };
 
   owner_change_request: {

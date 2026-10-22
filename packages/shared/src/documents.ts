@@ -248,7 +248,49 @@ export interface DocumentTypeView {
    * phones read it: `[]` while a date field reminds.
    */
   remind_leads?: number[];
+  /**
+   * Each paper of it is a document of its own, one after another — a
+   * month's statement, a quarter's bill, a year's P60, a letter (0.9.0,
+   * `PERIODIC_KINDS`): never a new version of the last one, so never
+   * suggested as a renewal. Absent from older vaults.
+   */
+  periodic?: boolean;
 }
+
+/**
+ * Kinds whose papers come one after another, each its own document (0.9.0,
+ * the owner's decision of 18 Oct 2026): a statement (a bank's, an
+ * investment's, a credit card's, a payslip), a bill, a tax form or a tax
+ * return (a year's), a letter or record from a surgery or a hospital and a
+ * school report. Not a prescription (the R1 review): a new one may well
+ * replace the last. This month's bank statement is not a new
+ * version of last month's: a paper of one of these is never suggested as
+ * the renewal of a document (0.8.0, S1), whether by its number — an
+ * account's, which every statement repeats — or by its kind, person and
+ * issuer. The same file twice is still a duplicate. Kinds whose paper
+ * replaces the one before — a passport, a licence, a visa, an insurance
+ * policy, a vehicle's papers, a will, a deed, a contract — are not here,
+ * and are renewed as before; nor are those that are either (a loan's
+ * agreement or its yearly statement; a pet's vaccination card or a vet's
+ * invoice; a warranty, one for each thing bought). A household's own
+ * kinds are never among them.
+ */
+export const PERIODIC_KINDS: ReadonlySet<string> = new Set([
+  'bank_statement',
+  'credit_card_statement',
+  // Kinds of their own since C1 (0077).
+  'investment_statement',
+  'pay_statement',
+  'utility_bill',
+  'tax_form',
+  'tax_return',
+  'medical_record',
+  'school_report',
+]);
+
+/** Whether each paper of a kind is a document of its own (see PERIODIC_KINDS). */
+export const periodic = (type: { key?: string | null | undefined } | null | undefined): boolean =>
+  !!type?.key && PERIODIC_KINDS.has(type.key);
 
 /** The longest a kind of document's name, or one of its fields' names, may be (0.5.10). */
 export const TYPE_LABEL_MAX = 80;

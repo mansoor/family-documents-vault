@@ -11,7 +11,7 @@ import {
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from './App.js';
-import { AISHA, fresh, installFakeApi, ME, signedIn, type FakeState } from './test-api.js';
+import { AISHA, fresh, installFakeApi, ME, signedIn, TYPES, type FakeState } from './test-api.js';
 
 /**
  * The vault learns from your corrections (Phase 6, I4), on the web: the
@@ -308,5 +308,171 @@ describe('learning from your corrections, on the web (I4)', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('What it is').closest('label')).toHaveTextContent('suggested · 97%');
     await expectAccessible();
+  });
+});
+
+/** What a sender's layout taught (0.9.0, R1), as GET /batches/learned gives it. */
+const SHAPED: BatchLearning = {
+  ...LEARNED,
+  shapes_max: 200,
+  shapes: [
+    {
+      id: 's1',
+      issuer: 'northgate water',
+      words: 14,
+      lessons: [
+        {
+          field: 'type_key',
+          value: 'utility_bill',
+          label: 'Utility / bill',
+          confirmed: 3,
+          contradicted: 0,
+          sure: true,
+        },
+        {
+          field: 'expires',
+          value: 'payment date',
+          label: 'payment date',
+          confirmed: 3,
+          contradicted: 0,
+          sure: true,
+        },
+        {
+          field: 'owner_member_id',
+          value: 'm-0',
+          label: 'Aisha',
+          confirmed: 2,
+          contradicted: 0,
+          sure: false,
+        },
+      ],
+      last_used: '2026-10-09',
+    },
+  ],
+};
+const WATER = { value: 'Northgate Water', confidence: 0.95, cue: 'known_issuer' } as const;
+/** A household that keeps bills, which run out on their due date. */
+const BILLS = {
+  types: [
+    ...TYPES,
+    {
+      key: 'utility_bill',
+      label: 'Utility / bill',
+      category: 'home',
+      fields: [],
+      expiry_driver: 'expires_on',
+      reminder_leads: [7, 1],
+      usually_essential: false,
+      default_visibility: 'household',
+      issued_by_label: 'Provider',
+    },
+  ],
+};
+
+describe('learning each sender’s papers, on the web (R1)', () => {
+  it('a suggestion a sender’s layout made is marked as learned from your earlier papers from them; unsure until trusted', async () => {
+    for (const width of [1280, 320]) {
+      at('/inbox/batches/batch-1/items/item-1', {
+        width,
+        learned: SHAPED,
+        over: BILLS,
+        items: (types) => [
+          item(
+            'item-1',
+            {
+              issued_by: WATER,
+              type_key: {
+                value: 'utility_bill',
+                confidence: 0.97,
+                cue: 'kind_words',
+                learned: true,
+                page_confidence: 0.97,
+                shape: true,
+              },
+              expires: {
+                value: { date: '2026-10-20', precision: 'day' },
+                confidence: 0.9,
+                cue: 'learned',
+                shape: true,
+              },
+              owner_member_id: { value: 'm-0', confidence: 0.78, cue: 'learned', shape: true },
+            },
+            types,
+          ),
+        ],
+      });
+      await screen.findByLabelText(/What it is/);
+      const marks = screen.getAllByText(/suggested · learned from your earlier papers from/);
+      expect(marks.map((m) => m.textContent)).toEqual([
+        'suggested · learned from your earlier papers from Northgate Water',
+        'suggested · learned from your earlier papers from Northgate Water',
+        'suggested · learned from your earlier papers from Northgate Water',
+      ]);
+      // The expiry trusted; whose it is not yet.
+      const expiry = marks.find((m) => m.closest('label')?.textContent?.includes('xpir'));
+      expect(expiry?.parentElement).not.toHaveTextContent('unsure');
+      const whose = screen.getByText('Person unsure');
+      expect(whose).toBeInTheDocument();
+      expect(screen.queryByText('suggested · learned from your earlier choices')).toBeNull();
+      await expectAccessible();
+      cleanup();
+    }
+  });
+
+  it('a sure layout that gives another date than the pages: the pages stand, and it says so', async () => {
+    at('/inbox/batches/batch-1/items/item-1', {
+      learned: SHAPED,
+      over: BILLS,
+      items: (types) => [
+        item(
+          'item-1',
+          {
+            issued_by: WATER,
+            type_key: { value: 'utility_bill', confidence: 0.97, cue: 'kind_words' },
+            owner_member_id: { value: 'me', confidence: 0.95, cue: 'name_labelled' },
+            expires: {
+              value: { date: '2026-10-25', precision: 'day' },
+              confidence: 0.9,
+              cue: 'due_label',
+            },
+          },
+          types,
+          { expires: '2026-10-20' },
+        ),
+      ],
+    });
+    expect(
+      await screen.findByText(
+        'The pages and your earlier papers from Northgate Water give different expiry dates',
+      ),
+    ).toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('the count stays, and the layouts it learned are listed with the rules', async () => {
+    for (const width of [1280, 320]) {
+      at('/inbox', { width, learned: SHAPED });
+      const box = await screen.findByRole('region', { name: 'What the vault learned from you' });
+      expect(box).toHaveTextContent('Of your last 50 accepted, 31 needed no change.');
+      const toggle = within(box).getByRole('button', {
+        name: 'What the vault has learned from you: 2 rules and 1 layout of a sender’s papers',
+      });
+      fireEvent.click(toggle);
+      const papers = within(box).getByRole('list', { name: 'Papers learned from you' });
+      expect(
+        within(papers)
+          .getAllByRole('listitem')
+          .map((li) => li.textContent),
+      ).toEqual([
+        'Papers like this from northgate waterkind Utility / bill (trusted); expiry or due date at “payment date” (trusted); whose Aisha',
+      ]);
+      expect(box).toHaveTextContent('never a name, a number or an address from the page');
+      await expectAccessible();
+      fireEvent.click(within(box).getByRole('button', { name: 'Forget all' }));
+      expect(await screen.findByRole('alertdialog')).toHaveTextContent(
+        'Its 2 rules and 1 layout of a sender’s papers and the count go.',
+      );
+      cleanup();
+    }
   });
 });

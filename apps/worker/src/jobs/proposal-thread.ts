@@ -22,7 +22,14 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { Worker, type WorkerOptions } from 'node:worker_threads';
-import type { DetailProposal, LearnedClash, LearnedContext, ProposalContext } from '@fdv/shared';
+import type {
+  DetailProposal,
+  LearnedClash,
+  LearnedContext,
+  PaperReading,
+  ProposalContext,
+  ThreadProposal,
+} from '@fdv/shared';
 import type { ProposalJob, ProposalReply } from '../proposal-worker.js';
 
 /**
@@ -57,8 +64,19 @@ function defaultEntry(): URL {
 
 /** What one item's words came to. */
 export type ThreadAnswer =
-  /** `clash`: where a sure rule of the uploader's disagreed with the pages (I4). */
-  | { state: 'done'; proposal: DetailProposal; clash?: LearnedClash }
+  /**
+   * `clash`: where a sure rule of the uploader's disagreed with the pages (I4);
+   * `paper`: the page's shape and its labelled dates and numbers (R1), for
+   * its accept to learn from.
+   */
+  | {
+      state: 'done';
+      proposal: DetailProposal;
+      clash?: LearnedClash;
+      paper?: PaperReading;
+      /** Where a shape matched, and the page's number at its label, to settle (N5). */
+      account?: ThreadProposal['account'];
+    }
   /** Longer than the deadline: the thread was ended, and nothing is proposed. */
   | { state: 'too_slow' }
   /** The rules failed on these words: nothing is proposed, and asking again would not help. */
@@ -219,6 +237,9 @@ export class ProposalThread implements ItemProposer {
                 proposal: m.proposal,
                 // Said only where a sure rule disagreed with the pages (I4).
                 ...(m.clash && Object.keys(m.clash).length > 0 ? { clash: m.clash } : {}),
+                // The page's shape (R1), for its accept to learn from.
+                ...(m.paper ? { paper: m.paper } : {}),
+                ...(m.account ? { account: m.account } : {}),
               },
         );
       });

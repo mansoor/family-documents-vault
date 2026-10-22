@@ -1021,6 +1021,8 @@ const GUARDS = [
     'intake_batch',
     // And so are the rules learned from their corrections (0065).
     'intake_rule',
+    // And the shapes learned from their papers (0075, R1).
+    'intake_shape',
     'export',
   ].map((table) => ({
     name: `${table}_private_gained`,
@@ -1337,9 +1339,10 @@ const ACTOR_GUARDED = [
   // are incoming files.
   'intake_batch',
   // What the vault learned from somebody's corrections, and their count
-  // (0065): theirs alone.
+  // (0065): theirs alone; and the shapes learned from their papers (0075).
   'intake_rule',
   'intake_outcome',
+  'intake_shape',
   // The scanner folder, the owners'; and what it could not add, its
   // person's alone (0068, S3).
   'watch_folder',
@@ -1450,6 +1453,8 @@ const MAKER_ONLY = [
   // The rules learned from somebody's corrections, and their count (0065, I4).
   { table: 'intake_rule', where: 'true', what: "the rules learned from somebody's corrections" },
   { table: 'intake_outcome', where: 'true', what: "somebody's count of corrections" },
+  // The shapes learned from somebody's papers (0075, R1).
+  { table: 'intake_shape', where: 'true', what: "the shapes learned from somebody's papers" },
   // A scanned file the scanner folder could not add (0068, S3).
   { table: 'watch_notice', where: 'true', what: "somebody's note of a scan not added" },
   // Somebody's address confirmed for email in, and their code (0069, S4).
@@ -1480,6 +1485,8 @@ const MAKER_ONLY = [
 const NOT_EVEN_OWNERS = [
   { table: 'intake_rule', what: "the rules learned from somebody's corrections" },
   { table: 'intake_outcome', what: "somebody's count of corrections" },
+  // A sender's layout may say what only their Only me papers taught (0075, R1).
+  { table: 'intake_shape', what: "the shapes learned from somebody's papers" },
   // Its file's name is of their own scanner's; an owner who is not them is told nothing (0068).
   { table: 'watch_notice', what: "somebody's note of a scan not added" },
   // Somebody's address, and the code they send from it (0069, S4).

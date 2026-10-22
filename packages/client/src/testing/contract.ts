@@ -10,6 +10,7 @@ import {
   type BatchReadFailure,
   type CreatedUploadRequest,
   type DetailProposal,
+  type PaperReading,
   type DocumentTypeInput,
   type Role,
   type Tokens,
@@ -89,11 +90,15 @@ export interface ContractContext {
    * the real API's run seals each one's words and what they propose under
    * the item's own key, as the worker does; the fake's keeps them on the
    * item. Optional: a context from before I2 has none, and its scenarios
-   * never ask.
+   * never ask. With `paper`, the page's shape sealed beside the proposal too,
+   * as the worker seals it since 0.9.0 (R1).
    */
   readBatchItems?: (
     batchId: string,
-    reads: Record<string, { proposal: DetailProposal } | { failure: BatchReadFailure }>,
+    reads: Record<
+      string,
+      { proposal: DetailProposal; paper?: PaperReading } | { failure: BatchReadFailure }
+    >,
   ) => Promise<void>;
   /**
    * Somebody's 13th birthday, today, as the vault's worker sees it (after
@@ -2915,6 +2920,64 @@ export const contractScenarios: Scenario[] = [
       expect((await api.readingChecks(token)).items.map((i) => i.id)).toContain(c.id);
       await api.deleteReadingCheck(token, c.id);
       expect((await refusal(api.readingCheck(token, c.id))).status).toBe(404);
+    },
+  },
+  {
+    name: 'learning a sender’s papers: three accepts of the same layout make its label for the due date trusted; forgetting takes it (R1)',
+    run: async (api, ctx) => {
+      if (!ctx.readBatchItems) return;
+      const { access_token: token } = await signIn(api, ctx);
+      await api.forgetBatchLearning(token);
+      expect((await api.batchLearning(token)).shapes ?? []).toEqual([]);
+      const b = await api.createBatch(token, { name: 'Bills' });
+      const words = ['account', 'charge', 'date', 'number', 'payment', 'total', 'water', 'your'];
+      for (const [n, day] of ['2026-03-20', '2026-04-20', '2026-05-20'].entries()) {
+        const it = await api.addBatchItem(token, b.id, {
+          kind: 'bytes',
+          filename: `bill-${n}.pdf`,
+          contentType: 'application/pdf',
+          bytes: new TextEncoder().encode(`%PDF-1.4\n% the contract's bill ${n}\n%%EOF\n`),
+        });
+        await ctx.readBatchItems(b.id, {
+          [it.id]: {
+            proposal: {
+              type_key: { value: 'utility_bill', confidence: 0.97, cue: 'kind_words' },
+              issued_by: { value: 'Northgate Water', confidence: 0.95, cue: 'letterhead' },
+            },
+            paper: {
+              words,
+              dates: [{ label: 'payment date', band: 4, value: { date: day, precision: 'day' } }],
+              numbers: [],
+            },
+          },
+        });
+        await api.acceptBatchItem(token, b.id, it.id, {
+          type_key: 'utility_bill',
+          issued_by: 'Northgate Water',
+          expires: { date: day, precision: 'day' },
+        });
+      }
+      const got = await api.batchLearning(token);
+      expect(got.shapes_max).toBe(200);
+      expect(
+        (got.shapes ?? []).map((s) => [
+          s.issuer,
+          s.words,
+          s.lessons.map((l) => [l.field, l.value, l.confirmed, l.contradicted, l.sure]),
+        ]),
+      ).toEqual([
+        [
+          'northgate water',
+          words.length,
+          [
+            ['type_key', 'utility_bill', 3, 0, true],
+            ['expires', 'payment date', 3, 0, true],
+          ],
+        ],
+      ]);
+      await api.forgetBatchLearning(token);
+      expect((await api.batchLearning(token)).shapes ?? []).toEqual([]);
+      await api.removeBatch(token, b.id);
     },
   },
   {

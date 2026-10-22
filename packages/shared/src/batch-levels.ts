@@ -192,6 +192,12 @@ export interface ItemSuggestion<T> {
    * surer for it. Only beside `pages` or `learned`.
    */
   folder?: true;
+  /**
+   * Proposed, or made surer, by the uploader's earlier papers of this
+   * sender's layout (0.9.0, R1): "learned from your earlier papers from
+   * Northgate". Only beside `learned`. Absent from a vault before 0.9.0.
+   */
+  shape?: true;
 }
 
 /**
@@ -422,6 +428,7 @@ export function levelItem(input: LevelInput): ItemLevel {
         from: isLearned(p) ? 'learned' : 'pages',
         confidence: p.confidence,
         cue: p.cue,
+        ...(p.shape ? { shape: true as const } : {}),
       };
       if (fromFolder === null) return said;
       if (fromFolder === p.value) {
@@ -478,11 +485,14 @@ export function levelItem(input: LevelInput): ItemLevel {
     for (const field of ['issued', 'expires', 'identifier', 'issued_by'] as const) {
       const p = pages[field];
       if (!p) continue;
+      // Read at a label the uploader's earlier papers of this layout taught
+      // (R1), or made surer by them: learned, not the pages' alone.
       (proposals as Record<string, ItemSuggestion<unknown>>)[field] = {
         value: p.value,
-        from: 'pages',
+        from: isLearned(p) ? 'learned' : 'pages',
         confidence: p.confidence,
         cue: p.cue,
+        ...(p.shape ? { shape: true as const } : {}),
       };
     }
   }
@@ -571,6 +581,24 @@ export function levelItem(input: LevelInput): ItemLevel {
       words: `The pages say ${nameOf(personS.value)}, your earlier choices say ${nameOf(lc.owner_member_id)}`,
     });
   }
+  // Where a sure lesson of a sender's layout gives another date or number
+  // than the pages do (R1): the pages' stands, and the item is Check.
+  const sender = pages.issued_by?.value ?? null;
+  for (const [field, what] of [
+    ['expires', 'expiry dates'],
+    ['issued', 'issue dates'],
+    ['identifier', 'numbers'],
+  ] as const) {
+    const said = proposals[field];
+    const other = lc?.[field];
+    if (!other || !said || said.from !== 'pages') continue;
+    if (field !== 'identifier' && (said.value as DateValue).date === other) continue;
+    check({
+      code: 'clash_learned',
+      kind: 'check',
+      words: `The pages and your earlier papers from ${sender ?? 'this sender'} give different ${what}`,
+    });
+  }
   // Where the folder it came from says otherwise (S2): the pages' (or the
   // rules') stands on the card, and both are said.
   for (const c of folderClashes) {
@@ -639,8 +667,8 @@ export function levelItem(input: LevelInput): ItemLevel {
     }
     const expires = proposals.expires;
     if (
-      expires?.from === 'pages' &&
-      (expires.confidence ?? 0) < ITEM_SURE.expires &&
+      guessed(expires) &&
+      (expires?.confidence ?? 0) < ITEM_SURE.expires &&
       !missing.some((m) => m.key === 'expires')
     ) {
       check({ code: 'expiry_unsure', kind: 'check', words: 'Expiry unsure' });
@@ -682,6 +710,12 @@ export function storedLearnedClash(raw: unknown): LearnedClash {
     const v = (c as Record<string, unknown>)[k];
     if (typeof v === 'string' && v.length > 0 && v.length <= 64) out[k] = v;
   }
+  // A sender's layout's (R1): a date, and that a number differs.
+  for (const k of ['issued', 'expires'] as const) {
+    const v = (c as Record<string, unknown>)[k];
+    if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) out[k] = v;
+  }
+  if ((c as Record<string, unknown>).identifier === 'differs') out.identifier = 'differs';
   return out;
 }
 
@@ -732,6 +766,7 @@ export function storedProposal(raw: unknown): DetailProposal {
       confidence: f.confidence,
       cue: f.cue,
       ...((f as { learned?: unknown }).learned === true ? { learned: true } : {}),
+      ...((f as { shape?: unknown }).shape === true ? { shape: true } : {}),
       ...(typeof (f as { page_confidence?: unknown }).page_confidence === 'number' &&
       (f as { page_confidence: number }).page_confidence >= 0 &&
       (f as { page_confidence: number }).page_confidence <= 1

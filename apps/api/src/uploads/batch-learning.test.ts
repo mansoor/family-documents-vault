@@ -316,6 +316,8 @@ describe.skipIf(!testAdminUrl())('learning from corrections (I4)', () => {
       'item_id',
       'member_id',
       'removed_rules',
+      // What it taught a sender's layout (0075, R1): sealed under their key.
+      'shape_taught',
       'unchanged',
     ]);
     // …and none of what was filed: not the number, the date, the name, the
