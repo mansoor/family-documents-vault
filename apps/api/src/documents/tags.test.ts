@@ -541,6 +541,8 @@ describe.skipIf(!testAdminUrl())('tags you can use (0.9.0, T1)', () => {
     await admin.query(`delete from document where household_id = $1 and title like 'Many %'`, [
       owner.household_id,
     ]);
+    // 5,001 documents written and counted: more than the default 15 s on a
+    // machine running other suites beside it (C1's gate).
   }, 60_000);
 
   it('tidies a batch’s tags before holding them to the caps, as a document’s (L3)', async () => {

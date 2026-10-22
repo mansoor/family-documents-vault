@@ -347,6 +347,40 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
     [2, /card (?:number )?ending|\bapr\b|cash advances?|balance transfers?/],
     [1, /payment due|previous balance|\bpurchases\b|\bvisa\b|mastercard/],
   ],
+  // An investment's statement (C1, 0077): what is held, and what it is worth.
+  // An ISA's stays a bank statement (S5), a stocks and shares one too.
+  investment_statement: [
+    [
+      3,
+      /investment (?:statement|account|summary|report)|portfolio (?:statement|summary|valuation|value)|brokerage (?:statement|account)|statement of (?:investments|holdings)|valuation statement|\b401\(?k\)?|retirement (?:account|plan|savings) statement|\bira (?:statement|account)\b/,
+    ],
+    [
+      2,
+      /market value|\bholdings\b|unreali[sz]ed (?:gain|loss)|cost basis|asset allocation|total (?:portfolio|account) value|fund value|units held|number of (?:shares|units)|price per (?:share|unit)/,
+    ],
+    [
+      2,
+      /\bdividends?\b|capital gains?|\bsecurities\b|mutual funds?|\betfs?\b|\bequities\b|index funds?/,
+    ],
+    // Not "funds" alone: a visa's "no recourse to public funds".
+    [1, /\binvestments?\b|\bportfolio\b|\bisin\b|\bticker\b/],
+  ],
+  // A payslip (C1, 0077): pay for a period, and what was taken from it.
+  pay_statement: [
+    [
+      3,
+      /\bpay ?slip\b|\bpay ?stub\b|pay statement|earnings statement|statement of earnings|pay advice|salary slip|wage slip|payroll statement/,
+    ],
+    [
+      2,
+      /\bnet pay\b|\bgross pay\b|take[- ]home pay|\bnet salary\b|\bgross salary\b|\b(?:net|gross) earnings\b/,
+    ],
+    [2, /\bpay period\b|\bpay date\b|\bperiod ending\b|\byear to date\b|\bytd\b|\bthis period\b/],
+    [
+      1,
+      /\bdeductions?\b|hours worked|\bovertime\b|\bfica\b|federal withholding|\b(?:pay|hourly) rate\b/,
+    ],
+  ],
   loan: [
     [
       3,
@@ -518,6 +552,10 @@ const KIND_VETOES: Readonly<Record<string, RegExp>> = {
     /\bveterinar(?:y|ian)\b|\bvet\b|\bmrcvs\b|\bdvm\b|pet'?s name|\bspecies\b|\bmicrochip|\bcanine\b|\bfeline\b|animal hospital|pet hospital|\bkennel cough\b/,
   // A bill has no credit limit, nor a minimum payment: a card's statement does (S5).
   utility_bill: /credit limit|minimum (?:payment|repayment)/,
+  // A year's certificate of pay is a tax form, never a payslip; nor is a
+  // contract that says what the pay will be (C1 and its review).
+  pay_statement:
+    /wage and tax statement|form w-?2\b|\bw-2\b|\bp60\b|\bp45\b|\bp11d\b|\b1099\b|end of year certificate|contract of employment|employment (?:contract|agreement)|statement of (?:main )?terms|terms and conditions(?: of employment)?|offer of employment|notice period|holiday entitlement/,
 };
 
 /**
@@ -540,6 +578,34 @@ function cardOrBankSure(key: string, hay: string): boolean {
   const card = CARD_MARKS.test(hay);
   const bank = BANK_MARKS.test(hay);
   return key === 'credit_card_statement' ? card && !bank : bank && !card;
+}
+
+/**
+ * The same care for the two kinds C1 adds (0077): an investment's
+ * statement is sure only with its own marks (what is held, and its value)
+ * and none of a bank account's or a card's, and a bank's statement is no
+ * longer sure with an investment's marks on it; a payslip is sure only with
+ * its pay for a period. Otherwise each is offered unsure (Check), never a
+ * wrong Ready.
+ */
+const INVESTMENT_MARKS =
+  /market value|\bholdings\b|unreali[sz]ed|cost basis|units held|number of (?:shares|units)|price per (?:share|unit)|total (?:portfolio|account) value/;
+const DEPOSIT_MARKS =
+  /sort code|routing number|money in|money out|paid in|paid out|\boverdraft\b|direct debit|standing order|card (?:number )?ending|credit limit/;
+/**
+ * A payslip's own mark: its pay for the period as an amount beside the
+ * words ("Net pay  2,619.00"), never the words alone — a contract says what
+ * the gross pay will be, too (the C1 review).
+ */
+const PAY_MARKS =
+  /\b(?:net|gross|take[- ]home) pay\b[^\n\d]{0,24}(?:[£$€] ?)?\d{1,3}(?:,\d{3})*\.\d\d\b/;
+
+/** Whether a kind proposed may be sure, as far as the kinds C1 adds go. */
+function statementSure(key: string, hay: string): boolean {
+  if (key === 'investment_statement') return INVESTMENT_MARKS.test(hay) && !DEPOSIT_MARKS.test(hay);
+  if (key === 'bank_statement') return !INVESTMENT_MARKS.test(hay);
+  if (key === 'pay_statement') return PAY_MARKS.test(hay);
+  return true;
 }
 
 /** Words in a field's or kind's name that say nothing of it. */
@@ -1044,6 +1110,18 @@ const KIND_LABELS: Readonly<Record<string, readonly LabelSpec[]>> = {
     ),
   ],
   bank_statement: [label('issued', 3, 'issue_label', /statement date|date of statement/)],
+  // C1 (0077): an investment's statement is dated as a bank's is; a payslip by the day it pays.
+  investment_statement: [
+    label(
+      'issued',
+      3,
+      'issue_label',
+      /statement date|date of statement|valuation date|valued as at/,
+    ),
+  ],
+  pay_statement: [
+    label('issued', 3, 'issue_label', /pay date|date paid|paid on|payment date|pay day/),
+  ],
   // A card's statement is due on the day its payment is (S5); the card's own
   // expiry, printed on it, says nothing of the statement.
   credit_card_statement: [
@@ -1316,6 +1394,7 @@ const NUMBER_LABELS: Readonly<Record<string, RegExp>> = {
   utility_bill:
     /account (?:no|number|ref(?:erence)?)\b\.?|customer (?:no|number|reference)\b\.?|reference (?:no|number)\b\.?/g,
   bank_statement: /account (?:no|number)\b\.?/g,
+  investment_statement: /account (?:no|number)\b\.?/g,
   loan: /(?:loan|mortgage) (?:account )?(?:no|number)\b\.?|account (?:no|number)\b\.?/g,
   // Not the registration mark: that is the kind's own Plate.
   vehicle_registration: /(?:title|document reference) (?:no|number)\b\.?/g,
@@ -1995,9 +2074,10 @@ export function proposeWithTie(
         kindFactor = 0.6 + 0.4 * confidence;
         out.type_key = {
           value: best.kind.key,
-          confidence: cardOrBankSure(best.kind.key, hay)
-            ? confidence
-            : Math.min(confidence, CARD_OR_BANK_UNSURE),
+          confidence:
+            cardOrBankSure(best.kind.key, hay) && statementSure(best.kind.key, hay)
+              ? confidence
+              : Math.min(confidence, CARD_OR_BANK_UNSURE),
           cue: best.mrz ? 'machine_lines' : 'kind_words',
         };
       }

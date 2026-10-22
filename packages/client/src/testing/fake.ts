@@ -9,6 +9,17 @@ import {
   type ReadingChecksList,
   type ReadingMiss,
   type ReadingRow,
+  CHECKLIST_TEXT_MAX,
+  checkItem,
+  checklistMissing,
+  itemAgain,
+  readChecklist,
+  savedItem,
+  type ChecklistAdded,
+  type ChecklistContext,
+  type ChecklistDoc,
+  type ChecklistItem,
+  type CollectionChecklist,
   DEVICE_PLATFORMS,
   DEVICE_REFUSALS,
   deviceBatchName,
@@ -606,6 +617,8 @@ export interface FakeCollection {
   deleted: boolean;
   /** In the order they were put in it. */
   items: Array<{ document_id: string; added_at: string }>;
+  /** Its checklist (0.9.0, C1), as its maker kept it; absent for none. */
+  checklist?: { items: ChecklistItem[]; saved_at: string } | null;
 }
 
 /** What the fake keeps from an edit; anything else it refuses to pretend to keep. */
@@ -672,7 +685,8 @@ const FAKE_TYPES: DocumentTypeView[] = [
   ),
   builtin({
     key: 'bank_statement',
-    label: 'Bank / investment statement',
+    // Called what it is since 0.9.0 (0077): investment statements are their own.
+    label: 'Bank statement',
     category: 'financial',
     fields: [
       { key: 'account_last4', label: 'Account (last 4)', kind: 'text', required: false },
@@ -736,6 +750,40 @@ const FAKE_TYPES: DocumentTypeView[] = [
     },
     { expires: { label: 'Payment due' } },
   ),
+  // 0.9.0 (C1, 0077): two more a client older than them has never seen.
+  builtin({
+    key: 'investment_statement',
+    label: 'Investment statement',
+    category: 'financial',
+    fields: [
+      { key: 'institution', label: 'Institution', kind: 'text', required: false },
+      { key: 'account_last4', label: 'Account (last 4)', kind: 'text', required: false },
+      { key: 'period', label: 'Period', kind: 'text', required: false },
+    ],
+    expiry_driver: null,
+    reminder_leads: [],
+    usually_essential: false,
+    default_visibility: 'adults',
+    issued_by_label: 'Institution',
+    short_label: 'Investment statement',
+    issuer_noun: 'statement',
+  }),
+  builtin({
+    key: 'pay_statement',
+    label: 'Pay statement / payslip',
+    category: 'financial',
+    fields: [
+      { key: 'period', label: 'Period', kind: 'text', required: false },
+      { key: 'amount', label: 'Amount', kind: 'text', required: false },
+    ],
+    expiry_driver: null,
+    reminder_leads: [],
+    usually_essential: false,
+    default_visibility: 'adults',
+    issued_by_label: 'Employer',
+    short_label: 'Pay statement',
+    issuer_noun: 'pay statement',
+  }),
   builtin({
     key: 'school_report',
     label: 'School report',
@@ -2096,6 +2144,8 @@ export function createFakeVault(): {
           tag_management: true,
           // The Reading check (0.9.0, R0): an owner's, numbers only.
           reading_check: true,
+          // A collection from a checklist (0.9.0, C1).
+          collection_checklist: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -3378,8 +3428,9 @@ export function createFakeVault(): {
     // one nobody may change any more.
     const me = { role: state.role, memberId: 'fake-member' };
     const collectionAt = /^\/api\/v1\/collections\/([^/]+)(\/items(?:\/([^/]+))?)?$/.exec(path);
+    const checklistAt = /^\/api\/v1\/collections\/([^/]+)\/checklist(\/add)?$/.exec(path);
     const docCollections = /^\/api\/v1\/documents\/([^/]+)\/collections$/.exec(path);
-    if (path === '/api/v1/collections' || collectionAt || docCollections) {
+    if (path === '/api/v1/collections' || collectionAt || docCollections || checklistAt) {
       const s = session();
       if (!('id' in s)) return s;
       const shown = (l: FakeCollection) => !l.deleted && canSeeCollection(me, l);
@@ -3521,6 +3572,136 @@ export function createFakeVault(): {
 
       if (path === '/api/v1/collections' && init.method === 'GET') {
         return ok({ items: state.collections.filter(shown).sort(byName).map(collectionView) });
+      }
+      // A collection from a checklist (0.9.0, C1), as the real vault reads
+      // and matches it (@fdv/shared's own rules), against the documents the
+      // one person the fake signs in as may see.
+      if (checklistAt) {
+        const found = state.collections.find(
+          (x) => x.id === decodeURIComponent(checklistAt[1] as string),
+        );
+        const l = found && shown(found) ? found : undefined;
+        if (!['owner', 'adult', 'teen'].includes(state.role)) {
+          return fail(403, 'forbidden', 'A collection’s checklist is for the family who see it.');
+        }
+        const changing = init.method !== 'GET';
+        const refused = changing ? manage() : null;
+        if (refused) return refused;
+        if (!l) return fail(404, 'not_found', 'That collection does not exist.');
+        const mine =
+          l.owner_member_id === me.memberId && inCollectionAudience(state.role, l.audience);
+        if (changing && !mine) {
+          return fail(
+            403,
+            'forbidden',
+            'Only the person who made this collection can fill it from a checklist.',
+          );
+        }
+        const ctx: ChecklistContext = {
+          types: state.types.map((t) => ({
+            key: t.key,
+            label: t.label,
+            short_label: t.short_label ?? null,
+            hidden: t.hidden ?? false,
+          })),
+          people: state.members
+            .filter((m) => m.kind !== 'guest')
+            .filter((m) => state.role !== 'teen' || m.id === me.memberId)
+            .map((m) => ({ id: m.id, name: m.display_name })),
+          me: me.memberId,
+          today: new Date().toISOString().slice(0, 10),
+        };
+        const answer = (items: ChecklistItem[], savedAt: string | null, leftOut = 0) => {
+          const docs: ChecklistDoc[] = state.documents
+            .filter((d) => !d.deleted_at)
+            .filter((d) =>
+              canSee(me, {
+                visibility: d.visibility ?? 'household',
+                owner_member_id: d.owner_member_id ?? null,
+              }),
+            )
+            .map((d) => ({
+              id: d.id,
+              title: d.title,
+              type_key: d.type_key ?? null,
+              owner_member_id: d.owner_member_id ?? null,
+              visibility: d.visibility ?? 'household',
+              issued: d.issued ?? null,
+              expires: d.expires ?? null,
+              created_at: (d as { created_at?: string }).created_at ?? '2026-01-01T00:00:00.000Z',
+              tax_year:
+                d.visibility !== 'private' && d.extra?.tax_year != null
+                  ? String(d.extra.tax_year as string | number)
+                  : null,
+              in_collection: l.items.some((i) => i.document_id === d.id),
+            }));
+          const checked = items
+            .map((i) => itemAgain(i, ctx))
+            .map((i) =>
+              checkItem(i, docs, {
+                today: ctx.today,
+                audience: l.audience,
+                people: ctx.people,
+                types: ctx.types,
+              }),
+            );
+          const ticked = new Set(
+            checked.flatMap((i) => i.matches.filter((m) => m.ticked).map((m) => m.document_id)),
+          );
+          const out: CollectionChecklist = {
+            saved_at: savedAt,
+            items: checked,
+            missing: checklistMissing(checked),
+            to_add: ticked.size,
+            left_out: leftOut,
+            mine,
+          };
+          return out;
+        };
+        if (!checklistAt[2] && init.method === 'GET') {
+          const kept = l.checklist;
+          return ok(kept ? answer(kept.items, kept.saved_at) : answer([], null));
+        }
+        if (!checklistAt[2] && init.method === 'POST') {
+          if (typeof body.text === 'string') {
+            if (body.text.length > CHECKLIST_TEXT_MAX) {
+              return fail(422, 'validation_failed', 'That list is too long to read.', 'text');
+            }
+            const read = readChecklist(body.text, ctx);
+            return ok(answer(read.items, null, read.left_out));
+          }
+          return ok(answer((body.items as ChecklistItem[] | undefined) ?? [], null));
+        }
+        if (!checklistAt[2] && init.method === 'PUT') {
+          const items = ((body.items as ChecklistItem[] | undefined) ?? []).map((i) =>
+            savedItem(itemAgain(i, ctx)),
+          );
+          l.checklist = { items, saved_at: new Date().toISOString() };
+          return ok(answer(items, l.checklist.saved_at));
+        }
+        if (checklistAt[2] && init.method === 'POST') {
+          const asked = [...new Set((body.document_ids as string[] | undefined) ?? [])];
+          const added: string[] = [];
+          const skipped: ChecklistAdded['skipped'] = [];
+          for (const id of asked) {
+            const d = state.documents.find((x) => x.id === id && !x.deleted_at);
+            const seen =
+              d !== undefined &&
+              canSee(me, {
+                visibility: d.visibility ?? 'household',
+                owner_member_id: d.owner_member_id ?? null,
+              });
+            if (!seen) skipped.push({ document_id: id, why: 'not_found' });
+            else if (l.items.some((i) => i.document_id === id)) {
+              skipped.push({ document_id: id, why: 'in_collection' });
+            } else {
+              l.items.push({ document_id: id, added_at: new Date().toISOString() });
+              added.push(id);
+            }
+          }
+          const result: ChecklistAdded = { added, skipped, warnings: [], collection: detail(l) };
+          return ok(result);
+        }
       }
       if (path === '/api/v1/collections' && init.method === 'POST') {
         const refused = manage();

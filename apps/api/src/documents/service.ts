@@ -813,6 +813,38 @@ export class DocumentService {
   }
 
   /**
+   * The details of the caller's own Only me documents, opened (0.9.0, C1: a
+   * checklist matches a tax form by the tax year it keeps, and its owner may
+   * see theirs): `sealed` is each one's `extra_sealed`, given only where the
+   * document is Only me and the caller's own. One key unwrapped for all.
+   */
+  async ownSealedDetails(
+    trx: Db,
+    p: Principal,
+    rows: ReadonlyArray<{ id: string; sealed: Buffer | null }>,
+  ): Promise<Map<string, Record<string, unknown>>> {
+    const out = new Map<string, Record<string, unknown>>();
+    const own = rows.filter((r) => r.sealed !== null);
+    if (own.length === 0) return out;
+    const key = await this.keys.unwrap(trx, {
+      householdId: p.householdId,
+      kind: 'member',
+      memberId: p.memberId,
+    });
+    for (const r of own) {
+      try {
+        out.set(
+          r.id,
+          openPrivate(key.key, r.id, { notes_sealed: null, extra_sealed: r.sealed }).extra,
+        );
+      } catch {
+        // One that does not open is matched as one with no tax year.
+      }
+    }
+    return out;
+  }
+
+  /**
    * What an Only me document's notes and details are: the sealed ones
    * opened, and any the private.seal job has not reached yet as they are.
    */

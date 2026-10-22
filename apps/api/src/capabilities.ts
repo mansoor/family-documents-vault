@@ -156,6 +156,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // R0 (0.9.0): the Reading check, an owner's measure of the reader on
       // the family's own papers, numbers only.
       reading_check: true,
+      // 0.9.0 (C1): a collection from a checklist, read, matched and kept.
+      collection_checklist: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

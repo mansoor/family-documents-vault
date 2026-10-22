@@ -646,7 +646,8 @@ describe.skipIf(!testAdminUrl())('collections of documents', () => {
 
     const caps = json<Capabilities>(await h.app.inject({ url: '/api/v1/capabilities' }));
     expect(caps.features.collections).toBe(true);
-    expect(Object.keys(caps.features).filter((k) => /list/i.test(k))).toEqual([]);
+    // A checklist (0.9.0, C1, `collection_checklist`) is no list of documents.
+    expect(Object.keys(caps.features).filter((k) => /(?<!check)list/i.test(k))).toEqual([]);
     // The capability is collection.manage, and says so when it refuses.
     for (const role of ['owner', 'adult', 'teen'] as const) {
       expect(capabilitiesFor(role), role).toContain('collection.manage');

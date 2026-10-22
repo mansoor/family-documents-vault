@@ -209,6 +209,18 @@ async function seed(url: string): Promise<string> {
           where c.household_id = $1`,
         [hh],
       );
+      // A checklist on each, where the schema has them (0077, C1).
+      const checklists = await c.query<{ has: boolean }>(
+        "select to_regclass('public.collection_checklist') is not null as has",
+      );
+      if (checklists.rows[0]?.has) {
+        await c.query(
+          `insert into collection_checklist (collection_id, household_id, items)
+           select c.id, $1, '[{"line": "Last 3 pay statements"}]' from doc_collection c
+            where c.household_id = $1`,
+          [hh],
+        );
+      }
     }
 
     // People's photos, where the schema has them (0040): the first member's
@@ -1072,6 +1084,71 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
         vault.adminUrl,
         'alter table public.doc_collection enable trigger doc_collection_owner_writes',
       );
+    }
+    expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+  });
+
+  it('notices a collection’s checklist open to a viewer, or an Only me one’s to another, or its rules gone (0077, C1)', async () => {
+    const ruleOf = async (name: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${name}'`,
+        )
+      ).rows[0]?.rule as string;
+    const actor = await ruleOf('collection_checklist_actor');
+    const through = await ruleOf('collection_checklist_collection');
+    expect(actor).toBeTruthy();
+    expect(through).toBeTruthy();
+    // A viewer let in.
+    await sql(
+      vault.adminUrl,
+      `alter policy collection_checklist_actor on public.collection_checklist
+         using ((${actor}) or app_role() = 'viewer')`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a collection’s checklist is open to a viewer/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy collection_checklist_actor on public.collection_checklist using (${actor})`,
+      );
+    }
+    // Read past the collection's own rules: an Only me one's open to others.
+    await sql(
+      vault.adminUrl,
+      'alter policy collection_checklist_collection on public.collection_checklist using (true)',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /an Only me collection’s checklist is open to somebody who did not make it/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy collection_checklist_collection on public.collection_checklist using (${through})`,
+      );
+    }
+    // Either rule gone.
+    for (const [name, rule] of [
+      ['collection_checklist_actor', actor],
+      ['collection_checklist_collection', through],
+    ] as const) {
+      await sql(vault.adminUrl, `drop policy ${name} on public.collection_checklist`);
+      try {
+        await expect(checkRestored(target()), name).rejects.toThrow(
+          name === 'collection_checklist_actor'
+            ? /no rule for each kind of caller on collection_checklist/
+            : /whose collection a checklist is read through/,
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${name} on public.collection_checklist as restrictive using (${rule})`,
+        );
+      }
     }
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
   });

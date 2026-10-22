@@ -30,6 +30,13 @@ import { AddDocumentsPicker } from '../collection-add.js';
 import { DocRow } from './Home.js';
 import { useTrashedNote } from '../DocActions.js';
 import { collectionShareOffered, ShareCollectionPanel } from './ShareCollection.js';
+import {
+  checklistOffered,
+  ChecklistSection,
+  ChecklistSheet,
+  type ChecklistDone,
+} from '../checklist.js';
+import type { CollectionChecklist } from '@fdv/shared';
 
 /**
  * Collections of documents (5.15): the Collections screen, and a collection's own page.
@@ -41,8 +48,11 @@ import { collectionShareOffered, ShareCollectionPanel } from './ShareCollection.
  * Only its maker changes a collection (A18), while they are in its audience.
  */
 
-/** Said once a collection has been made, changed or deleted: carried to the next screen. */
-type Arrived = { notice?: string } | null;
+/**
+ * Said once a collection has been made, changed or deleted: carried to the
+ * next screen. A collection made from a checklist (0.9.0, C1) carries the list too.
+ */
+type Arrived = { notice?: string; checklist?: string } | null;
 
 /**
  * News carried here takes the focus as soon as the line that says it is on
@@ -98,11 +108,15 @@ export function CollectionsScreen() {
   const makeButton = useRef<HTMLButtonElement>(null);
 
   const make = async (fields: CollectionFields) => {
-    const made = await withToken((t) => api.createCollection(t, fields));
+    const { checklist, ...asked } = fields;
+    const made = await withToken((t) => api.createCollection(t, asked));
     if (!made) return;
     void navigate(`/collections/${made.id}`, {
       state: {
-        notice: `“${made.name}” is made. Put documents in it with Add documents, above, or Add to a collection in the ⋯ beside any document.`,
+        notice: checklist?.trim()
+          ? `“${made.name}” is made. Here is what your checklist found: nothing is added until you choose.`
+          : `“${made.name}” is made. Put documents in it with Add documents, above, or Add to a collection in the ⋯ beside any document.`,
+        ...(checklist?.trim() ? { checklist } : {}),
       },
     });
   };
@@ -122,6 +136,7 @@ export function CollectionsScreen() {
           <CollectionForm
             id="new-collection"
             withDescription
+            withChecklist={checklistOffered(caps, role)}
             submitLabel="Make the collection"
             busyLabel="Making the collection…"
             onSubmit={make}
@@ -245,6 +260,23 @@ export function CollectionScreen() {
   const [added, setAdded] = useState<Outcome | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   const addedRef = useRef<HTMLDivElement>(null);
+  // Its checklist (0.9.0, C1): matched again as the page opens, and the
+  // sheet that fills it — opened at once with a list typed as it was made.
+  const location = useLocation();
+  const offered = checklistOffered(caps, role);
+  // Read once, then gone: kept here while its sheet is open, and out of the
+  // browser's history, which useArrivedNotice empties with the notice that
+  // always comes with it, so the pasted list is not kept there (the C1 review).
+  const [arrivedList, setArrivedList] = useState<string | null>(
+    () => (location.state as Arrived)?.checklist ?? null,
+  );
+  const kept = useLoad(
+    async (t): Promise<CollectionChecklist | null> =>
+      offered ? api.collectionChecklist(t, id as string) : null,
+    [id, authVersion, offered],
+  );
+  const [filling, setFilling] = useState<boolean>(arrivedList !== null);
+  const fillButton = useRef<HTMLButtonElement>(null);
 
   /**
    * Whether `err` says the collection is not there for the reader: then the
@@ -298,6 +330,17 @@ export function CollectionScreen() {
   // Whoever may put documents in it from a row's ⋯ (Add to a collection):
   // collections offered to them, and this one theirs to change (A18).
   const mayAdd = mayChange && collectionsOffered(caps, role);
+
+  /** Filled from the checklist: the sheet goes, what it did is said, and all is loaded again. */
+  const onFilled = (done: ChecklistDone) => {
+    flushSync(() => {
+      setFilling(false);
+      setAdded({ said: done.said, failedHead: null, failed: [], untouched: [] });
+    });
+    window.setTimeout(() => addedRef.current?.focus(), 0);
+    void again();
+    void kept.reload();
+  };
 
   /** In: the picker goes, what it came to is said and has the focus, and the list is loaded again. */
   const onAdded = (said: string) => {
@@ -486,6 +529,25 @@ export function CollectionScreen() {
           />
         </Sheet>
       )}
+      {filling && mayAdd && offered && (
+        <ChecklistSheet
+          collection={collection}
+          types={types}
+          members={members}
+          role={role}
+          kept={kept.data}
+          text={arrivedList}
+          returnFocus={fillButton}
+          onClose={() => {
+            setArrivedList(null);
+            setFilling(false);
+          }}
+          onDone={(done) => {
+            setArrivedList(null);
+            onFilled(done);
+          }}
+        />
+      )}
       {picking && mayAdd && (
         <AddDocumentsPicker
           collection={collection}
@@ -512,6 +574,19 @@ export function CollectionScreen() {
         />
       )}
       <ErrorNote message={problem ?? first.error} />
+      {offered && (
+        <ChecklistSection
+          collection={collection}
+          checklist={kept.data}
+          error={kept.error}
+          mayFill={mayAdd}
+          ref={fillButton}
+          onFill={() => {
+            setAdded(null);
+            setFilling(true);
+          }}
+        />
+      )}
       <section aria-labelledby="collection-items-h">
         <h2 id="collection-items-h" className="section-h">
           In this collection

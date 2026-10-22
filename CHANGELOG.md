@@ -6,6 +6,17 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.4] - 2026-10-21 — a collection from a checklist
+
+### Added
+
+- **A collection from a checklist (0.9.0, C1).** On a collection's page, **Fill from a checklist**, and on Make a collection, **Start from a checklist (optional)**: paste the list you were given — "Documents for Mansoor / W2 for 2025 and 2024 / Last 3 pay statements / Last 2 bank statements" — and the vault reads it with plain rules (no AI), says back what it understood of each line ("3 most recent pay statements, Mansoor’s"), and shows the documents it found, ticked, with their title, date and person, and what is missing ("Found 1 of 2"). A heading names whose a part is ("Documents for Richa", "Richa:", "Mansoor and Richa:" for either of them, "Joint" or "Family" for anyone's); a name two of the family share, or somebody who is not one of you ("my wife", "Grandma's passport"), is asked about, never guessed. It reads months ("for May and June", "Jan–Mar 2026"), "dated within 3 months", "2024/25", "W-2s" and "Two years of W-2s"; a run of ten years or more, or a count past 24, is said back rather than guessed. A line it cannot read says "Not understood": choose its kind, whose and how many, or skip it. A document with no date — or a tax form with no tax year, in its details or its title — is offered to check, never ticked. A line naming a form ticks only documents whose title names it. An investment line also offers your bank statements, unticked, since investments were filed as bank statements before 0.9.0. Nothing goes in until **Add all found**, and then only what is ticked; for a collection shared outside the family it says so and asks first. An Only me document is found but not added, nor counted as found, for a collection others see. **Ask for the missing ones** shows what the sender will see — the title "Documents we need" and each line, every name changeable — before Ask for documents opens with them. The checklist stays on the collection, for the family who see it (never a viewer, a guest or a link), and is matched again whenever the page opens, offering what newly matches without adding it.
+- **Two new kinds:** pay statement / payslip and investment statement, both Financial and Adults only. The vault suggests them from a document's own words only with their own marks (an amount of net or gross pay; holdings and their value), never a payslip for an employment contract, and is unsure — Check, never Ready — when the marks of a bank statement or a tax form are there too. A household that already made a kind of its own by one of these names keeps using it: the new built-in is hidden for it in Kinds of document, where it can be shown again.
+
+### Changed
+
+- The bank's own kind is called **Bank statement** (was "Bank / investment statement"): investment statements are a kind of their own now. Your documents of it are unchanged; move any investment statements yourself if you want. Migration 0077 adds the two kinds and the checklist.
+
 ## [0.9.0-dev.3] - 2026-10-21 — the scanner folder and the mailbox set from Settings, and kept scans
 
 ### Added

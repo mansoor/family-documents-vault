@@ -6,7 +6,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker, type WorkerOptions } from 'node:worker_threads';
 import { createPool } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
-import { proposeDetails, type DetailSuggestions, type ProposalContext } from '@fdv/shared';
+import {
+  proposeDetails,
+  readChecklist,
+  type DetailSuggestions,
+  type ProposalContext,
+} from '@fdv/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import { createHarness, type Harness } from '../test-harness.js';
@@ -131,6 +136,31 @@ describe('the proposal thread (5.37, N537P-01)', () => {
       // Again, on the same thread.
       expect(await pool.propose(PASSPORT, CTX)).toEqual(got);
       expect(pool.ended).toBe(0);
+    } finally {
+      await pool.close();
+    }
+  }, 60_000);
+
+  it('reads a checklist on the same thread, off the event loop, as readChecklist reads it (0.9.0, C1)', async () => {
+    const pool = new ProposalPool();
+    const list = 'Documents for Sara\nLast 3 pay statements\nW2 for 2025 and 2024';
+    const ctx = {
+      types: [
+        { key: 'pay_statement', label: 'Pay statement / payslip', short_label: 'Pay statement' },
+        { key: 'tax_form', label: 'W-2 / 1099 / tax form', short_label: 'Tax form' },
+      ],
+      people: [{ id: 'm-sara', name: 'Sara' }],
+      today: '2026-10-18',
+    };
+    try {
+      const got = await pool.readChecklist(list, ctx);
+      expect(got).toEqual(readChecklist(list, ctx));
+      expect(got?.items.map((i) => [i.type_key, i.member_id, i.count])).toEqual([
+        ['pay_statement', 'm-sara', 3],
+        ['tax_form', 'm-sara', null],
+      ]);
+      // And a page after it, as before.
+      expect(await pool.propose(PASSPORT, CTX)).toEqual(proposeDetails(PASSPORT, CTX));
     } finally {
       await pool.close();
     }

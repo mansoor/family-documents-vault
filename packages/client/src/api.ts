@@ -27,7 +27,11 @@ import type {
   TagView,
   DetailSuggestions,
   IssuerSuggestions,
+  ChecklistAdded,
+  ChecklistInput,
+  ChecklistItem,
   CollectionAudience,
+  CollectionChecklist,
   CollectionDetail,
   CollectionInput,
   CollectionSharePreview,
@@ -942,6 +946,45 @@ export function createApi(http: Http) {
     /** The collections a document is in, of those the caller may see. */
     documentCollections: (token: string, documentId: string) =>
       request<{ items: CollectionView[] }>(`/api/v1/documents/${enc(documentId)}/collections`, {
+        token,
+      }),
+
+    // ---------------------------------- a collection from a checklist (0.9.0, C1)
+    /**
+     * The checklist kept on a collection, matched again for the caller (when
+     * `features.collection_checklist`): `saved_at` null and no items when none
+     * is kept. The family who see the collection; a viewer or a guest is `403`.
+     */
+    collectionChecklist: (token: string, id: string) =>
+      request<CollectionChecklist>(`/api/v1/collections/${enc(id)}/checklist`, { token }),
+    /**
+     * A list read with plain rules, or items as the person set them, and
+     * matched against what the caller may see: nothing is written. The
+     * collection's maker only (`403` otherwise); `503 checklist_unavailable`
+     * when the list could not be read in time — try again.
+     */
+    checkChecklist: (token: string, id: string, body: ChecklistInput) =>
+      request<CollectionChecklist>(`/api/v1/collections/${enc(id)}/checklist`, {
+        method: 'POST',
+        body,
+        token,
+      }),
+    /** The checklist kept on the collection, by its maker: the answer is it, matched. */
+    saveChecklist: (token: string, id: string, items: ChecklistItem[]) =>
+      request<CollectionChecklist>(`/api/v1/collections/${enc(id)}/checklist`, {
+        method: 'PUT',
+        body: { items },
+        token,
+      }),
+    /**
+     * The documents ticked, put in by the collection's own rules: each the
+     * maker may see, out of the Trash and not in it already; the others in
+     * `skipped`, with why. Who else will now see them is `warnings`.
+     */
+    addFromChecklist: (token: string, id: string, documentIds: string[]) =>
+      request<ChecklistAdded>(`/api/v1/collections/${enc(id)}/checklist/add`, {
+        method: 'POST',
+        body: { document_ids: documentIds },
         token,
       }),
 

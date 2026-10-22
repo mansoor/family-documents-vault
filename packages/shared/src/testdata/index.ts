@@ -8,3 +8,6 @@
 export * from './proposal-fixtures.js';
 export * from './proposal-accuracy.js';
 export * from './smart-exit.js';
+export * from './c1-fixtures.js';
+// The reader before C1 (0.9.0), frozen: for the Smart exit's papers read both ways.
+export * as readerBeforeC1 from './proposals-before-c1.js';

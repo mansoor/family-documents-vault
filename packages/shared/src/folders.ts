@@ -13,8 +13,8 @@ import { shortTypeLabel } from './titles.js';
  * for what they say (`folderMatcher`, `suggestFromFolder`):
  *
  * - **A kind**: one of the household's kinds by its name, its short name, a
- *   part of its name of more than one word ("Bank / investment statement"
- *   is "investment statement" too, never "Offer" or "Registration"), or a
+ *   part of its name of more than one word ("Property deed / lease" is
+ *   "property deed" too, never "Offer" or "Registration"), or a
  *   short list of the words families use that say one kind and nothing else
  *   (`FOLDER_KIND_WORDS`). A kind's words beside other words still say it:
  *   "Car insurance" is an insurance policy, and the tag "Car". A specific
@@ -210,15 +210,35 @@ export const FOLDER_KIND_WORDS: Readonly<Record<string, readonly string[]>> = {
   insurance_policy: ['insurance', 'insurance policy', 'policy', 'policies'],
   tax_return: ['tax', 'taxes', 'tax return', 'tax returns', 'self assessment'],
   tax_form: ['tax form', 'tax forms', 'w2', 'w-2', 'p60', 'p45', 'p11d'],
-  bank_statement: [
-    'bank',
-    'banking',
-    'bank statement',
-    'bank statements',
-    'investment statement',
+  bank_statement: ['bank', 'banking', 'bank statement', 'bank statements', 'savings'],
+  // 0.9.0 (C1, 0077): an investment's statements are a kind of their own,
+  // kept under Bank or on their own; a payslip is one too.
+  investment_statement: [
+    'investment',
     'investments',
-    'savings',
+    'investment statement',
+    'investment statements',
     'brokerage',
+    'brokerage statement',
+    'stocks and shares',
+    '401k',
+    'retirement account',
+    'pension statement',
+  ],
+  pay_statement: [
+    'payslip',
+    'payslips',
+    'pay slip',
+    'pay slips',
+    'pay stub',
+    'pay stubs',
+    'paystub',
+    'paystubs',
+    'pay statement',
+    'pay statements',
+    'earnings statement',
+    'salary slip',
+    'wage slip',
   ],
   // 0.8.0 (S5, 0072): a card's statements, kept under Bank or on their own.
   credit_card_statement: [
@@ -277,6 +297,7 @@ export const FOLDER_KIND_PARENTS: Readonly<Record<string, string>> = {
   prescription: 'medical_record',
   loan: 'bank_statement',
   credit_card_statement: 'bank_statement',
+  investment_statement: 'bank_statement',
 };
 
 /** Kinds no folder suggests: "Something else" is no kind. */

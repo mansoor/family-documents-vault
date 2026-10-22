@@ -5103,6 +5103,89 @@ mailbox_address_refused` message, names the ports
         `WATCH_PROCESSED_MARKER`, `WATCH_PROCESSED_FOREIGN`,
         `watchKeptLeftWords`, `watchRefusedRootsWords`, `WatchPathRefusal`
         `used_elsewhere`, and the new `WatchFolderView` fields.
+  - A collection from a checklist (0.9.0, C1, migration 0077). Everything
+    is **additive** but one label (below): nothing an older client sends
+    or reads changes meaning.
+    - **New `features`:** `collection_checklist`, `true`; absent from older
+      vaults.
+    - **Two built-in kinds** in `GET /api/v1/document-types`:
+      `pay_statement` ("Pay statement / payslip", Financial, Adults only,
+      no expiry, issuer "Employer") and `investment_statement`
+      ("Investment statement", Financial, Adults only, no expiry, issuer
+      "Institution"). **Changed:** `bank_statement`'s label is now "Bank
+      statement" (was "Bank / investment statement"); its key, fields,
+      short label and documents are as they were, and its `etag` moves, so
+      a client holding it loads it again. What a page proposes may now be
+      either new kind (only with its own marks — a payslip's pay for a
+      period, an investment's holdings and value — and never a W-2 or a
+      P60 as a payslip; with another kind's marks too, it is offered below
+      sure). Folder words: "Payslips", "Pay stubs", "Investments",
+      "Brokerage" (no longer a bank statement's). A household that already
+      has a kind of its own by one of the new kinds' names ("Payslip",
+      "Pay statement", "Investment statements" …) has that built-in
+      hidden for it by 0077 (`hidden: true`, as if hidden in Kinds of
+      document); its own kind and documents are untouched.
+    - **New routes**, under `/api/v1/collections/{id}`, for the family who
+      see the collection (owners, adults and teens; a viewer or a guest is
+      `403`, a collection they do not see `404`); all but the `GET` for its
+      maker alone, while in its audience (`403` otherwise):
+      - `GET …/checklist` — the checklist kept on the collection, matched
+        again for the caller: `CollectionChecklist` `{ saved_at, items,
+missing, to_add, left_out, mine }`; `saved_at: null` and no items when
+        none is kept. Nothing is ever added by it.
+      - `POST …/checklist` — `{ text }` (10,000 characters at most; past
+        it `422`) read with plain rules, or `{ items }` (as the answer gave
+        them, changed by the person) read again, and matched: nothing is
+        written. A list is read on the API's proposal thread: when it
+        cannot be read in time, `503 checklist_unavailable` — try again.
+      - `PUT …/checklist` — `{ items }` (100 at most): kept on the
+        collection; the answer is the checklist, matched. Its activity line
+        is `collection.updated` (`detail.checklist: true`), as a
+        collection's words changed are. The same items again are no
+        change: nothing is written, no activity line, and `saved_at` is
+        the one kept before.
+      - `POST …/checklist/add` — `{ document_ids }` (1 to 200): each the
+        caller may see, out of the Trash and not in the collection
+        already, put in by the collection's own rules (its links, its
+        warnings, a `collection.item_added` line each); the answer is `{
+added, skipped: [{ document_id, why: "in_collection" | "not_found" }],
+warnings, collection }`. One that is somebody else's Only me, gone or
+        in the Trash is `not_found`, as one that never was — one taken to
+        the Trash while the add runs too: the rest still go in (`200`,
+        never `404`).
+    - **An item** (`ChecklistItemCheck`): `line` and `heading` as written;
+      what it asks for — `type_key`, `member_id` (null: anyone's), `count`
+      (the N most recent, 24 at most), `months` (each of the last N, 24 at
+      most), `in_months` (months named, `YYYY-MM`, 12 at most; optional),
+      `within` ("dated within N months", 1 to 24, or null; optional),
+      `years`, `current`, `form` ("W-2"; null unless the kind is a tax
+      form or a return), `skipped`, `unresolved`; how it was read —
+      `understood`, `problem` (`kind`, `person_unknown`, `person_shared`,
+      `years`: a run of ten years or more), `person_choices`, `note` (what
+      to know, in words: a count read as the most a line asks for, years
+      not read); and how it stands — `summary` ("3 most recent pay
+      statements, Mansoor’s"), `wanted`, `found` (in the collection or
+      ticked to go in), `found_not_added` (found, and will not go in: an
+      Only me one in a collection others see), `missing` (in words) and
+      `matches` (`{ document_id, title, type_key, owner_member_id,
+visibility, issued, added_at, ticked, chosen, in_collection, note }`,
+      newest first, those asked for then a few more). Only documents the
+      caller may see are ever matched or counted; an Only me one in a
+      collection others see is found and never ticked (its `note` says
+      why); a tax form or a return is matched by the tax year it keeps
+      (the caller's own Only me one's too), else the year its title names
+      — with neither it is never ticked, nor is any document with no date
+      (offered last, its `note` says to check). A line naming a form ticks
+      only documents whose title names it, offering the others unticked;
+      an investment line offers the person's bank statements unticked
+      (`note`: filed as a bank statement before 0.9.0).
+    - `@fdv/shared`: `readChecklist`, `checkItem`, `checkChecklist`,
+      `prepareChecklistDocs`, `checklistSummary`, `checklistMissing`,
+      `itemAgain`, `savedItem`, `sentItem`, `checklistReadersWords`,
+      `isTaxKind`, `CHECKLIST_*`, the
+      types above. `@fdv/client`: `collectionChecklist`, `checkChecklist`,
+      `saveChecklist`, `addFromChecklist`; the fake answers each, and has
+      the two kinds.
 
 ## Deprecations in effect
 

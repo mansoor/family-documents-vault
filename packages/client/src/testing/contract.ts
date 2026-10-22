@@ -3242,6 +3242,73 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'a collection from a checklist: read, matched, added as ticked, kept and matched again (0.9.0, C1)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.collection_checklist).toBe(true);
+      const me = await api.me(token);
+      const kinds = (await api.documentTypes(token)).items.map((t) => t.key);
+      expect(kinds).toEqual(expect.arrayContaining(['pay_statement', 'investment_statement']));
+      const slip = (title: string, date: string) =>
+        api.createDocument(token, {
+          title,
+          type_key: 'pay_statement',
+          owner_member_id: me.member_id,
+          visibility: 'adults',
+          issued: { date, precision: 'day' },
+        });
+      const jul = await slip('Contract payslip July', '2026-07-31');
+      const aug = await slip('Contract payslip August', '2026-08-31');
+      const sep = await slip('Contract payslip September', '2026-09-30');
+      const made = await api.createCollection(token, {
+        name: 'Contract refinance',
+        audience: 'everyone',
+      });
+      const read = await api.checkChecklist(token, made.id, {
+        text: 'Documents for me\nLast 2 pay statements\nLast 2 contract widgets',
+      });
+      expect(read.saved_at).toBeNull();
+      expect(read.mine).toBe(true);
+      expect(read.items.map((i) => [i.type_key, i.member_id, i.count, i.understood])).toEqual([
+        ['pay_statement', me.member_id, 2, true],
+        [null, me.member_id, 2, false],
+      ]);
+      const first = read.items[0];
+      expect(first?.matches.filter((m) => m.ticked).map((m) => m.document_id)).toEqual([
+        sep.id,
+        aug.id,
+      ]);
+      expect(first?.matches.find((m) => m.document_id === jul.id)?.ticked).toBe(false);
+      expect(first).toMatchObject({ wanted: 2, found: 2, missing: [] });
+      expect(read.to_add).toBe(2);
+      // Nothing is put in until it is asked for, and then only what is ticked.
+      expect((await api.getCollection(token, made.id)).item_count).toBe(0);
+      const added = await api.addFromChecklist(token, made.id, [sep.id, aug.id, sep.id]);
+      expect(added.added.sort()).toEqual([aug.id, sep.id].sort());
+      expect(added.skipped).toEqual([]);
+      expect(added.collection.item_count).toBe(2);
+      const again = await api.addFromChecklist(token, made.id, [sep.id]);
+      expect(again).toMatchObject({
+        added: [],
+        skipped: [{ document_id: sep.id, why: 'in_collection' }],
+      });
+      // Kept, and matched again as it is opened: none left to add.
+      const kept = await api.saveChecklist(token, made.id, read.items);
+      expect(kept.saved_at).not.toBeNull();
+      const opened = await api.collectionChecklist(token, made.id);
+      expect(opened.items.map((i) => i.line)).toEqual([
+        'Last 2 pay statements',
+        'Last 2 contract widgets',
+      ]);
+      expect(opened.to_add).toBe(0);
+      // A list longer than it reads is refused before it is read.
+      const long = await refusal(api.checkChecklist(token, made.id, { text: 'x'.repeat(10_001) }));
+      expect(long.status).toBe(422);
+      await api.deleteCollection(token, made.id);
+      for (const d of [jul, aug, sep]) await api.deleteDocument(token, d.id);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;
