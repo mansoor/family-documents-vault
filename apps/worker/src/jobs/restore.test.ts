@@ -478,6 +478,18 @@ async function seed(url: string): Promise<string> {
               [hh],
             );
           }
+          // And, where the schema has them (0075, R1), a shape learned from their papers.
+          const shaped = await c.query<{ has: boolean }>(
+            "select to_regclass('public.intake_shape') is not null as has",
+          );
+          if (shaped.rows[0]?.has) {
+            await c.query(
+              `insert into intake_shape (household_id, member_id, shape_sealed)
+               select $1, b.member_id, decode(repeat('00', 40), 'hex')
+                 from intake_batch b where b.household_id = $1`,
+              [hh],
+            );
+          }
           // And, where the schema has them (0068), the scanner folder on,
           // filling that person's Inbox, and a note of a scan it could not add.
           const watched = await c.query<{ has: boolean }>(
@@ -1650,13 +1662,13 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
-  it('notices the rules learned from somebody’s corrections open to anybody else, an owner included (0065, I4)', async () => {
+  it('notices the rules learned from somebody’s corrections, or the shapes from their papers, open to anybody else, an owner included (0065, I4; 0075, R1)', async () => {
     const seeded = await sql(
       vault.adminUrl,
-      'select (select count(*)::int from intake_rule) as rules, (select count(*)::int from intake_outcome) as outcomes',
+      'select (select count(*)::int from intake_rule) as rules, (select count(*)::int from intake_outcome) as outcomes, (select count(*)::int from intake_shape) as shapes',
     );
-    expect(seeded.rows[0]).toEqual({ rules: 1, outcomes: 1 });
-    for (const table of ['intake_rule', 'intake_outcome']) {
+    expect(seeded.rows[0]).toEqual({ rules: 1, outcomes: 1, shapes: 1 });
+    for (const table of ['intake_rule', 'intake_outcome', 'intake_shape']) {
       const policy = `${table}_actor`;
       const { rows } = await sql(
         vault.adminUrl,
@@ -1718,7 +1730,8 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
       );
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
-  });
+    // Ten checks of the whole vault, three tables of three each.
+  }, 60_000);
 
   it('notices the scanner folder open to anybody but the owners, or its notes to anybody but their person (0068, S3)', async () => {
     const seeded = await sql(
@@ -2686,6 +2699,8 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
       'incoming_file',
       'intake_batch',
       'intake_rule',
+      // A shape learned from somebody's papers (0075, R1).
+      'intake_shape',
       'export',
     ]) {
       const trigger = `${table}_private_gained`;
@@ -3379,9 +3394,12 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       `select (select count(*)::int from intake_rule r join intake_batch b on b.member_id = r.member_id
                 where r.issuer_key = 'northgate dental' and r.type_key = 'medical_record'
                   and r.confirmed = 3) as rules,
-              (select count(*)::int from intake_outcome where unchanged) as outcomes`,
+              (select count(*)::int from intake_outcome where unchanged) as outcomes,
+              (select count(*)::int from intake_shape s join intake_batch b on b.member_id = s.member_id
+                where octet_length(s.shape_sealed) = 40) as shapes`,
     );
-    expect(learned.rows[0]).toEqual({ rules: 1, outcomes: 1 });
+    // And the shapes learned from their papers, sealed as they were (0075, R1).
+    expect(learned.rows[0]).toEqual({ rules: 1, outcomes: 1, shapes: 1 });
     // A computer's key comes back revoked, and no code to pair one (0070, D1):
     // one revoked since the backup would otherwise send files again.
     expect(report.devicesEnded).toBe(1);

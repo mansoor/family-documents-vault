@@ -224,7 +224,13 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
               text_sealed: sealBytes(fileKey, Buffer.from('its words'), itemTextBinding(id)),
               proposals_sealed: sealBytes(
                 fileKey,
-                Buffer.from(JSON.stringify({ v: 1, proposal: read.proposal })),
+                Buffer.from(
+                  JSON.stringify({
+                    v: 1,
+                    proposal: read.proposal,
+                    ...(read.paper ? { paper: read.paper } : {}),
+                  }),
+                ),
                 itemProposalsBinding(id),
               ),
             })

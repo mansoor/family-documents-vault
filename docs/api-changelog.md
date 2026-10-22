@@ -5186,6 +5186,138 @@ visibility, issued, added_at, ticked, chosen, in_collection, note }`,
       types above. `@fdv/client`: `collectionChecklist`, `checkChecklist`,
       `saveChecklist`, `addFromChecklist`; the fake answers each, and has
       the two kinds.
+  - The vault learns each sender's papers from your corrections (0.9.0, R1,
+    migration 0075). Everything is **additive**: no route is new, nothing a
+    0.4.x, 0.8.0 or phone 0.3.x client sends changes meaning, and what such
+    a client reads is what it read, with fields it does not know beside it.
+    - **What it is.** Beside I4's issuer rules, the vault learns each
+      sender's paper _shape_ from the caller's own accepts of items it
+      read: the issuer filed, the page's heading and label words (only
+      words of a fixed list, `SHAPE_WORDS`, never the family's names), and
+      for the kind, whose it is, the issue date, the expiry and the number,
+      what was filed — for a date or the number, the _label_ it was under
+      on the page ("payment date"), never the value. Sure only once
+      confirmed 3 times and never contradicted, and only on a page whose
+      words match it at a Jaccard of 0.8 or more with the pages naming its
+      issuer; a near miss (0.5 or more) is shown unsure.
+    - **`GET /api/v1/batches`, `GET /api/v1/batches/{id}`** (each item's
+      `proposals`): a suggestion a shape proposed or made surer has
+      `from: "learned"` and the new `shape: true` — on the kind and whose
+      it is, as I4's, and now also on `issued`, `expires` and `identifier`,
+      whose `from` was only ever `pages` before. **Changed:** an expiry
+      read at a learned label below 0.8 is tagged `expiry_unsure`, as one
+      the pages read is. Where a sure shape gives another date or number
+      than a page reading, the pages' stands and the item is Check, with a
+      `clash_learned` tag: "The pages and your earlier papers from
+      Northgate Water give different expiry dates" (issue dates, numbers).
+      Ready still needs every check it needed.
+    - **`GET /api/v1/batches/learned`** gains `shapes` (newest first:
+      `id`, `issuer`, `words` — how many —, `lessons` each `field`,
+      `value`, `label`, `confirmed`, `contradicted`, `sure`, and
+      `last_used`) and `shapes_max` (200). The caller's own alone, as the
+      rules are; absent from older vaults. **`DELETE`** forgets them with
+      the rules and the count, and sends back to be read any waiting item
+      a shape spoke on. Being made a viewer removes them in the same
+      transaction. An Undo of an accept as a version takes back exactly
+      what it taught a shape.
+    - **Stored** sealed under the caller's own member key (`intake_shape`,
+      bound to its household, person and row): its row holds nothing in
+      the clear but whose it is and the day it was last taught. The page's
+      reading the worker seals beside an item's proposal (under the item's
+      key) gains `paper`: the shape's words, and each date and number with
+      its label and coarse place — what an accept learns from, so the API
+      never reads a page.
+    - **What teaches it, and when it is sure** (the R1 review). Only an
+      accept a person looked at teaches a shape: one item's accept
+      (`POST …/items/{itemId}/accept`, a version's included). **Accept all
+      Ready** (`POST …/accept-ready`) teaches no shape, and its Undo takes
+      back none. A lesson is sure only once it is confirmed 3 times, never
+      contradicted, and at least once _vouched for_: a field the person
+      changed, or the pages' own value confirmed on an item that was not
+      Ready. A value the batch's defaults gave, filed unchanged, teaches no
+      person; and a value a shape suggested itself (`shape: true` with
+      `cue: "learned"`), filed unchanged, teaches that field nothing at all
+      (the R1 re-check, N2). Whose it
+      is is sure only on a page whose number (read at the learned label)
+      is one that person's papers from that sender were filed with; the
+      lesson keeps a keyed hash of each (HMAC-SHA-256 under a key derived
+      from the caller's member key, 16 bytes, at most 8), never the
+      number, and anything else — a second account at the same bank, a
+      page with no number — is offered at 0.78 and Check. Where a shape
+      learned more than one person (one bank's statements for several of
+      the family), a page whose number one person's lesson alone holds is
+      proposed as that person's, and sure once that account was filed for
+      them on 3 papers, at least one vouched for, on a sure match, and no
+      other person lesson of the shape is full (8 accounts); a number no
+      lesson holds, or more than one does, is as before. Another account
+      filed for somebody else no longer contradicts a person's lesson —
+      only the same account filed for another, or a paper with no number
+      read. A lesson's `numbers` keeps each hash once for each paper, up to
+      3 times. **The R1 re-check:** the account rule is sure only of a
+      lesson never contradicted (N4); each 3 papers of other accounts filed
+      for somebody else weigh as one contradiction toward unlearning a
+      person's lesson, never toward whether it is sure (`drift`, N3), so a
+      lesson only ever misfiled is in time removed; and a person sure from
+      I4's rule or a shape is offered at 0.78 on a page whose number, at
+      the learned label, that person's lesson does not hold (N1). A match is sure
+      only when the page names its issuer exactly, and never when a second
+      shape within 0.1 of it says something else. And on a page that
+      matches one of the sender's shapes (a layout the vault has learned),
+      I4's issuer rule for the kind or the person is sure only if that
+      shape's own lesson for the value is trusted; otherwise it is offered
+      at 0.78, and still disagrees with the pages as a trusted rule does. A
+      page of a layout not learned yet is as in I4.
+    - **Words** (the R1 review). A line with no value that parts into
+      columns (`Payment method    Direct debit`) gives only its first
+      column; an addressee's block in the top 30 lines (a run of short
+      lines in one column starting with a house number or ending at a
+      postal code of any country, with the line above it) and a "Dear …"
+      or "To …" line give none; the names of the household, its members and its guests are
+      never words of a shape, and a stored shape loses a word, and any
+      lesson read at a label using it, once it is somebody's name. On a line set out with single spaces (`Account number NW 4417`), a number's value no longer carries its label's words (the R1 re-check).
+      `SHAPE_WORDS` (1,001 words) is frozen for 0.9.0, with its SHA-256 in
+      docs/smart-exit.md; words that are values (yes, no, male, single,
+      joint), name-like (cash, kit, bank) or a fact about somebody
+      (diagnosis, disability, blood, debt, arrears, probation) are not in
+      it. A shape may still hold words that say what kind of paper it was
+      (prescription, hospital, overdraft), sealed under its person's key.
+    - `@fdv/shared`: `shapes.ts` (`readPaper`, `matchShape`,
+      `applyShapeKind`, `applyShapeFields`, `shapeLessonOf`, `teachShape`,
+      `unteachShape`, `storedPaper`, `storedShape`, `storedShapeTaught`,
+      `lessonTrusted`, `SHAPE_*`, `SHAPES_MAX`, `LearnedShapeView`,
+      `PaperReading`, `withoutNames`, `plainNumber`, `ShapeNumberHash`),
+      `SHAPE_WORDS`, `pageText`; `ProposalContext.guests` (for `readPaper`; the worker never tells the proposal thread of a guest, and takes their names out of what it read with `paperWithoutNames`);
+      `LearnedContext.numberKey`; `layoutVouches`, and `applyLearned`'s
+      `layout`; `proposeOnThread` (what the proposal thread runs: no
+      number key and no account's hash in what it is given,
+      `withoutAccounts`, the R1 re-check, N5), `settleAccounts` (whose
+      account it is, settled by the worker from the number the thread read,
+      `ThreadProposal.account`), `shapeNumberOn`, `ShapeCard`, `SHAPE_DRIFT`,
+      `ShapeLesson.drift`; `proposeLearned(text, ctx, learned,
+{ number })`, which offers the pages' proposal alone should a shape
+      fail to be read; `ShapeLesson.vouched` and `numbers`. `@fdv/crypto`:
+      `shapeNumberKey`, `shapeNumberHash`; `Proposed.shape`,
+      `ItemSuggestion.shape`; `LearnedContext.shapes`; `LearnedClash`
+      gains `issued`, `expires` (a date) and `identifier` (`"differs"`);
+      `BatchLearning.shapes` and `shapes_max`; `proposeLearned` also
+      answers `paper`. `@fdv/client`: the fake learns shapes from an item's
+      `paper`, and its contract's `readBatchItems` may seal one.
+
+  - Periodic kinds are never renewals (0.9.0, the owner's decision of 18
+    Oct 2026). No migration: the rule is the vault's, not a row.
+    - **`GET /api/v1/document-types`**: each kind gains `periodic` (`true`
+      for `bank_statement`, `credit_card_statement`, `utility_bill`,
+      `tax_form`, `tax_return`, `medical_record` and `school_report`, and
+      for `investment_statement` and `pay_statement`, kinds the vault may
+      add later; `false` for every other, `prescription` and a household's
+      own included: a prescription is renewed). Absent from older vaults. `@fdv/shared`:
+      `PERIODIC_KINDS`, `periodic(type)`.
+    - **Changed:** a batch item whose pages propose a periodic kind has no
+      `renewals` (0.8.0, S1) — neither by number (an account's, which every
+      statement repeats) nor by kind, person and issuer — so no `renewal`
+      tag, and it is not Check for that. `duplicate` is unchanged: the same
+      file as a document is still `{ of: "document" }`. Adding an item as a
+      version (`into_document_id`) is still allowed for any kind.
 
 ## Deprecations in effect
 

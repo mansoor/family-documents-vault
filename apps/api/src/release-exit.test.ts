@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import {
   EnvKeyProvider,
+  intakeShapeBinding,
   itemProposalsBinding,
   itemTextBinding,
   readingMissesBinding,
@@ -25,8 +26,10 @@ import { alertsSent, createHarness, mailSent, TEST_MASTER, type Harness } from '
  * review queue, the learned rules and the Documents table's sorts and
  * filters to the same rules, with their planted secrets; for 0.8.0 (the
  * 0.8.0 exit) the scanner folder, email in, a paired computer and its key,
- * the folder a file came from, and duplicates and renewals as versions;
- * for 0.9.0 the Reading check, its numbers and its sealed misses.
+ * the folder a file came from, and duplicates and renewals as versions; for
+ * 0.9.0, detail tags (T1), the Reading check, its numbers and its sealed
+ * misses (R0), and the layouts of somebody's senders' papers, learned from
+ * their accepts and sealed under their key (R1).
  *
  * Phase 5 added kinds of caller the vault never had — a restricted viewer,
  * a guest, somebody holding a share link, somebody sending files to a
@@ -74,6 +77,8 @@ const LOCATION = 'Bedroom safe, top shelf, behind the shoebox';
 
 /** An issuer the vault learned from Ahmed's corrections (Phase 6, I4): his rules alone. */
 const AHMED_LEARNED = 'ahmed learned issuer 541';
+/** A sender whose layout the vault learned from Ahmed's papers (0.9.0, R1): his shapes alone. */
+const AHMED_SHAPE = 'ahmed shape sender 541';
 
 /**
  * A tag on Ahmed's Only me document, and one among his batch's defaults
@@ -1499,6 +1504,54 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
         .execute();
     });
     expect((await ok(send(ahmed, 'GET', '/api/v1/batches/learned'))).body).toContain(AHMED_LEARNED);
+    // What the vault learned from his papers (0.9.0, R1): a sender's layout,
+    // his alone, sealed under his own key as the API seals one — its issuer a
+    // secret of his.
+    await withSystem(h.db, olivia.household_id, async (trx) => {
+      const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+      const key = await keys.unwrap(trx, {
+        householdId: olivia.household_id,
+        kind: 'member',
+        memberId: ahmed.member_id,
+      });
+      const id = randomUUID();
+      await trx
+        .insertInto('intake_shape')
+        .values({
+          id,
+          household_id: olivia.household_id,
+          member_id: ahmed.member_id,
+          shape_sealed: sealBytes(
+            key.key,
+            Buffer.from(
+              JSON.stringify({
+                v: 1,
+                issuer: AHMED_SHAPE,
+                words: ['account', 'charge', 'date', 'number', 'payment', 'total', 'your', 'water'],
+                lessons: [
+                  {
+                    field: 'expires',
+                    value: 'payment date',
+                    band: 4,
+                    confirmed: 3,
+                    contradicted: 0,
+                  },
+                  {
+                    field: 'owner_member_id',
+                    value: ahmed.member_id,
+                    band: null,
+                    confirmed: 3,
+                    contradicted: 0,
+                  },
+                ],
+              }),
+            ),
+            intakeShapeBinding(olivia.household_id, ahmed.member_id, id),
+          ),
+        })
+        .execute();
+    });
+    expect((await ok(send(ahmed, 'GET', '/api/v1/batches/learned'))).body).toContain(AHMED_SHAPE);
     // A scan the scanner folder could not add to his Inbox (0.8.0, S3): its
     // note, by name, his alone — an owner's too.
     ids.watchNotice = await withSystem(h.db, olivia.household_id, async (trx) => {
@@ -2983,12 +3036,14 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     );
     expect(phone.rows).toEqual([{ member_id: ahmed.member_id, p256dh: 'ahmed-p256dh' }]);
     // I4: every attacker's forgetting forgot only its own: Ahmed's rules and count are his still.
-    const learned = await admin.query<{ rules: number; outcomes: number }>(
+    const learned = await admin.query<{ rules: number; outcomes: number; shapes: number }>(
       `select (select count(*)::int from intake_rule where member_id = $1) as rules,
-              (select count(*)::int from intake_outcome where member_id = $1) as outcomes`,
+              (select count(*)::int from intake_outcome where member_id = $1) as outcomes,
+              (select count(*)::int from intake_shape where member_id = $1) as shapes`,
       [ahmed.member_id],
     );
-    expect(learned.rows[0]).toEqual({ rules: 2, outcomes: 1 });
+    // And his shapes (0.9.0, R1).
+    expect(learned.rows[0]).toEqual({ rules: 2, outcomes: 1, shapes: 1 });
     // S4 (the 0.8.0 exit): every attacker sent Ahmed's code to confirm its
     // own address, and nobody's address was confirmed by it; his code is
     // his still, as it was made.
@@ -3289,9 +3344,10 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       // The folder his file came from (0.8.0, S2), and the tag it proposes.
       'AHMED-FOLDER-541',
       'ahmed folder',
-      // What the vault learned from his corrections (I4).
+      // What the vault learned from his corrections (I4), and from his papers (R1).
       AHMED_LEARNED,
       'boat_licence_541',
+      AHMED_SHAPE,
       // A tag on his Only me document, and his batch's default tag (the Phase 6 exit).
       AHMED_TAG,
       BATCH_TAG,

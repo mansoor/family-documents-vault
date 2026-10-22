@@ -1,15 +1,34 @@
+import { createHmac } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { itemProposalsBinding, itemTextBinding, sealBytes, unwrapKey } from '@fdv/crypto';
+import {
+  intakeShapeBinding,
+  itemProposalsBinding,
+  itemTextBinding,
+  openBytes,
+  sealBytes,
+  shapeNumberKey,
+  unwrapKey,
+  type ScopeKeys,
+} from '@fdv/crypto';
 import { readAs, withSystem, type Db, type Schema } from '@fdv/db';
 import {
   can,
   householdDateOrder,
   type BatchReadFailure,
   type KnownIssuer,
+  familyWords,
+  paperWithoutNames,
+  settleAccounts,
+  storedShape,
+  withoutAccounts,
+  withoutNames,
+  type ShapeNumberHash,
   type LearnedClash,
   type LearnedContext,
+  type LearnedShape,
+  type PaperReading,
   type ProposalContext,
   type ProposalKind,
 } from '@fdv/shared';
@@ -329,12 +348,14 @@ export async function readItem(
       fileKey: Buffer;
       ctx: ProposalContext;
       learned: LearnedContext | null;
+      guestNames: ReadonlySet<string>;
       plain: Buffer;
     };
     let got: {
       fileKey: Buffer;
       ctx: ProposalContext;
       learned: LearnedContext | null;
+      guestNames: ReadonlySet<string>;
       adapter: StorageAdapter;
     };
     try {
@@ -344,7 +365,8 @@ export async function readItem(
           fileKey: unwrapKey(f.file_key_wrapped, scopeKey, `incoming:${f.id}`),
           adapter: await adapterOf(trx, deps, f.vault_id),
           ctx: await proposalContext(trx, hh, f.requester_member_id),
-          learned: await learnedContext(trx, hh, f.requester_member_id),
+          learned: await learnedContext(trx, hh, f.requester_member_id, deps.keys),
+          guestNames: await guestNames(trx),
         };
       });
     } catch (err) {
@@ -403,7 +425,13 @@ export async function readItem(
       await failed('blank');
       return;
     }
-    const answer = await opts.proposer.propose(text, had.ctx, had.learned);
+    // The thread reads untrusted words: it is given no account's hash and
+    // no key to make one (the R1 re-check, N5).
+    const answer = await opts.proposer.propose(
+      text,
+      had.ctx,
+      had.learned ? withoutAccounts(had.learned) : had.learned,
+    );
     if (answer.state === 'unavailable') {
       throw new NotNow('the proposal thread could not be had', 'vault');
     }
@@ -418,6 +446,19 @@ export async function readItem(
       await failed('unreadable');
       return;
     }
+    // Whose account it is, here, where the hashes are (N5): W1, the account
+    // rule and N1, by the number the thread read at the shape's label.
+    const settled = settleAccounts(
+      {
+        proposal: answer.proposal,
+        clash: answer.clash ?? {},
+        ...(answer.paper ? { paper: answer.paper } : {}),
+        ...(answer.account ? { account: answer.account } : {}),
+      },
+      had.learned,
+      numberHashOf(had.learned?.numberKey),
+      had.ctx,
+    );
     await withSystem(deps.db, hh, (trx) =>
       ours(trx)
         .set({
@@ -426,7 +467,18 @@ export async function readItem(
           text_sealed: sealBytes(had.fileKey, Buffer.from(text, 'utf8'), itemTextBinding(f.id)),
           proposals_sealed: sealBytes(
             had.fileKey,
-            Buffer.from(JSON.stringify(sealedProposal(answer.proposal, answer.clash)), 'utf8'),
+            Buffer.from(
+              JSON.stringify(
+                sealedProposal(
+                  settled.proposal,
+                  settled.clash,
+                  // The guests' names out of the page's shape (the R1 review,
+                  // P2), here: the thread is never told of a guest (I2).
+                  settled.paper ? paperWithoutNames(settled.paper, had.guestNames) : undefined,
+                ),
+              ),
+              'utf8',
+            ),
             itemProposalsBinding(f.id),
           ),
         })
@@ -435,7 +487,7 @@ export async function readItem(
     deps.log('info', 'read a batch’s item', {
       item: f.id,
       // What was proposed, by field, never its value.
-      proposed: Object.keys(answer.proposal),
+      proposed: Object.keys(settled.proposal),
     });
   } catch (err) {
     // Anything else — the database a moment away, the disk full — the vault's.
@@ -446,23 +498,46 @@ export async function readItem(
   }
 }
 
-/** What is sealed: the proposal, and where a sure rule disagreed with the pages (I4). */
-const sealedProposal = (proposal: unknown, clash: LearnedClash | undefined) =>
-  clash && Object.keys(clash).length > 0
-    ? { v: 1, proposal, learned_clash: clash }
-    : { v: 1, proposal };
+/**
+ * The uploader's numbers hashed as @fdv/crypto `shapeNumberHash` hashes them
+ * (W1), under the key the worker derived for this alone; none without it.
+ */
+function numberHashOf(keyHex: string | undefined): ShapeNumberHash | undefined {
+  if (!keyHex) return undefined;
+  const key = Buffer.from(keyHex, 'hex');
+  return (plain) => createHmac('sha256', key).update(`number:${plain}`).digest('hex').slice(0, 32);
+}
+
+/**
+ * What is sealed: the proposal; where a sure rule, or a sure lesson of a
+ * sender's layout, disagreed with the pages (I4, R1); and the page's shape
+ * with its labelled dates and numbers (R1) — what its accept learns from, so
+ * the API never reads a page.
+ */
+const sealedProposal = (
+  proposal: unknown,
+  clash: LearnedClash | undefined,
+  paper: PaperReading | undefined,
+) => ({
+  v: 1,
+  proposal,
+  ...(clash && Object.keys(clash).length > 0 ? { learned_clash: clash } : {}),
+  ...(paper ? { paper } : {}),
+});
 
 /**
  * The uploader's own rules, learned from their corrections (I4), read as
  * them — the vault's own transaction narrowed to their sign-in (readAs), so
  * the database's rule for each caller (0065) gives their rules and nobody
  * else's. Somebody with no sign-in here, or none who adds documents, has
- * none.
+ * none. With `keys`, their shapes too (0.9.0, R1, 0075), read the same way
+ * and opened under their own member key; a shape that does not open is none.
  */
 export async function learnedContext(
   trx: Db,
   hh: string,
   memberId: string,
+  keys?: Pick<ScopeKeys, 'unwrap'>,
 ): Promise<LearnedContext | null> {
   const who = await trx
     .selectFrom('account_household')
@@ -471,13 +546,49 @@ export async function learnedContext(
     .where('member_id', '=', memberId)
     .executeTakeFirst();
   if (!who || !can(who.role, 'document.add')) return null;
-  const rows = await readAs(trx, { accountId: who.account_id, memberId, role: who.role }, (mine) =>
+  const as = { accountId: who.account_id, memberId, role: who.role };
+  const rows = await readAs(trx, as, (mine) =>
     mine
       .selectFrom('intake_rule')
       .select(['issuer_key', 'type_key', 'person_id', 'confirmed', 'contradicted'])
       .execute(),
   );
+  const shapes: LearnedShape[] = [];
+  let numberKey: string | undefined;
+  if (keys) {
+    const sealed = await readAs(trx, as, (mine) =>
+      mine.selectFrom('intake_shape').select(['id', 'shape_sealed']).orderBy('id').execute(),
+    );
+    if (sealed.length > 0) {
+      const key = (await keys.unwrap(trx, { householdId: hh, kind: 'member', memberId })).key;
+      // Numbers are hashed under a key of its own (W1), never the member key.
+      numberKey = shapeNumberKey(key).toString('hex');
+      // Anybody of the household's name, as it is now — somebody added since
+      // a shape was made too — is no word of a shape (the R1 review, P2).
+      const names = familyWords({
+        people: (await trx.selectFrom('member').select(['id', 'display_name']).execute()).map(
+          (m) => ({ id: m.id, name: m.display_name }),
+        ),
+        household:
+          (await trx.selectFrom('household').select('name').where('id', '=', hh).executeTakeFirst())
+            ?.name ?? null,
+      });
+      for (const s of sealed) {
+        try {
+          const raw: unknown = JSON.parse(
+            openBytes(key, s.shape_sealed, intakeShapeBinding(hh, memberId, s.id)).toString('utf8'),
+          );
+          const shape = storedShape(raw);
+          if (shape) shapes.push(withoutNames(shape, names));
+        } catch {
+          // Not to be opened: nothing it learned is used.
+        }
+      }
+    }
+  }
   return {
+    ...(keys ? { shapes } : {}),
+    ...(numberKey ? { numberKey } : {}),
     rules: rows.map((r) => ({
       issuer_key: r.issuer_key,
       field: r.type_key !== null ? ('type_key' as const) : ('owner_member_id' as const),
@@ -488,6 +599,23 @@ export async function learnedContext(
     role: who.role,
     me: memberId,
   };
+}
+
+/**
+ * The words of the guests' names (the R1 review, P2): kept out of a page's
+ * shape by the worker, after the thread has read it, as the family's are by
+ * the thread — which is never told of a guest.
+ */
+async function guestNames(trx: Db): Promise<ReadonlySet<string>> {
+  const guests = await trx
+    .selectFrom('member')
+    .select(['id', 'display_name'])
+    .where('kind', '=', 'guest')
+    .execute();
+  return familyWords({
+    people: guests.map((m) => ({ id: m.id, name: m.display_name })),
+    household: null,
+  });
 }
 
 /**

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { SHAPE_WORDS } from '@fdv/shared';
 import { HELD_OUT, TUNED, type SmartEntry } from '@fdv/shared/testdata';
 import { describe, expect, it } from 'vitest';
 
@@ -25,7 +26,7 @@ interface Corpus {
 const load = async () =>
   (await import(
     /* @vite-ignore */ pathToFileURL(path.join(ROOT, 'scripts/smart-corpus.mjs')).href
-  )) as { smartCorpus: (o: { seed: number; corpus?: 'first' | 'second' }) => Corpus };
+  )) as { smartCorpus: (o: { seed: number; corpus?: 'first' | 'second' | 'third' }) => Corpus };
 
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 
@@ -119,5 +120,56 @@ describe('the Smart exit’s corpus (S5)', () => {
     // The kinds 0072 adds are among its papers.
     expect(files.some((f) => f.truth.kind === 'credit_card_statement')).toBe(true);
     expect(files.some((f) => f.truth.kind === 'school_report')).toBe(true);
+  }, 180_000);
+
+  it('each set’s files, byte for byte, as recorded in docs/smart-exit.md (the R1 re-check)', async () => {
+    const { smartCorpus } = await load();
+    const bytesOf = (c: Corpus) =>
+      createHash('sha256')
+        .update(JSON.stringify(c.files.map((f) => [f.entry.path, sha(f.bytes)])))
+        .digest('hex');
+    expect({
+      first: bytesOf(smartCorpus({ seed: 1 })),
+      second: bytesOf(smartCorpus({ seed: 2, corpus: 'second' })),
+      third: bytesOf(smartCorpus({ seed: 3, corpus: 'third' })),
+    }).toEqual({
+      first: 'cdbb31af58cc382df42fb17cf594508ff90ee669f43c33eebf7e5f66c354a11f',
+      second: 'dba5d56a3e9dce97e0ff4e68a9703a4472c464e0a62df6373484b4e0e068394a',
+      third: '2263d0a95f2780071d968046e70c935a38a3dec0d6760075ac397bebf7893068',
+    });
+  }, 300_000);
+
+  it('SHAPE_WORDS is as it was frozen again for 0.9.0, after the R1 re-check, in a commit of its own (docs/smart-exit.md)', () => {
+    const words = [...SHAPE_WORDS].sort();
+    expect(words).toHaveLength(1001);
+    expect(createHash('sha256').update(words.join('\n')).digest('hex')).toBe(
+      '4fafd5b1787d59299d5ee5ce241e236c12d1a0c9333e2b51e7b14bfbdca64066',
+    );
+  });
+
+  it('a third set, held out (0.9.0, the R1 review): its own layouts and issuers, a bank three of the family share, and as it was frozen', async () => {
+    const { smartCorpus } = await load();
+    const third = smartCorpus({ seed: 3, corpus: 'third' });
+    const second = smartCorpus({ seed: 2, corpus: 'second' });
+    const files = third.files.map((f) => f.entry);
+    expect(files.every((f) => f.set === 'held-out')).toBe(true);
+    // Frozen before the vault read it: its paths and truths as recorded in docs/smart-exit.md.
+    expect(
+      createHash('sha256')
+        .update(JSON.stringify(third.files.map((f) => [f.entry.path, f.entry.truth])))
+        .digest('hex'),
+    ).toBe('60feec74d62935e2fc4e329b681561295aaf9faabecf4855ed568ea78998e344');
+    // Not one layout, nor one issuer, of either set before it.
+    const before = [...first.files, ...second.files].map((f) => f.entry);
+    const papers = new Set(before.map((f) => f.paper));
+    expect(files.filter((f) => f.paper !== 'blank' && papers.has(f.paper))).toEqual([]);
+    const issuers = new Set(before.map((f) => f.truth.issuer));
+    expect(files.filter((f) => f.truth.issuer && issuers.has(f.truth.issuer))).toEqual([]);
+    // One bank, three of the family: each their own account.
+    const bank = files.filter((f) => f.truth.issuer === 'Thornbury Bank');
+    expect(new Set(bank.map((f) => f.truth.person))).toEqual(
+      new Set(['olivia', 'ahmed', 'maryam']),
+    );
+    expect(new Set(bank.map((f) => f.truth.number)).size).toBe(3);
   }, 180_000);
 });

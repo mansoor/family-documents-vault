@@ -666,6 +666,8 @@ function CardMark(props: {
   mark: ItemSuggestion<unknown>;
   /** The folder the item came from (S2), for a mark that is the folder's. */
   folder?: string | null | undefined;
+  /** Who sent it, as the card says (R1), for a mark learned from their earlier papers. */
+  sender?: string | null | undefined;
 }) {
   const { mark } = props;
   // From the folder's name alone (S2): "suggested from the folder ‘Passports/Ahmed’", unsure.
@@ -704,6 +706,28 @@ function CardMark(props: {
         and the folder ‘<bdi>{props.folder}</bdi>’
       </span>
     ) : null;
+  if (mark.from === 'learned' && mark.shape === true) {
+    // Proposed, or made surer, by the uploader's earlier papers of this
+    // sender's layout (R1): "learned from your earlier papers from Northgate".
+    return (
+      <>
+        <span
+          className="mark-sugg mark-shape"
+          title="Learned from the papers like this one you accepted before, from the same sender"
+        >
+          {/* One run of text: the sender's name in it, wrapped as words are. */}
+          <span>
+            suggested · learned from your earlier papers from{' '}
+            {props.sender ? <bdi>{props.sender}</bdi> : 'this sender'}
+          </span>
+        </span>
+        {agrees}
+        {sure !== undefined && mark.confidence < sure && (
+          <span className="mark-unsure">unsure</span>
+        )}
+      </>
+    );
+  }
   if (mark.from === 'learned') {
     // Proposed, or made surer, by the uploader's own earlier choices (I4).
     return (
@@ -879,8 +903,15 @@ export function ConfirmForm(props: {
     setUnmarked((was) => (was.has(field) ? was : new Set([...was, field])));
   const markOf = (field: CardMarkField) => {
     const mark = props.marks?.[field];
+    // Who sent it, as the card starts: what a mark learned from their papers names (R1).
+    const sender = props.marks?.issued_by?.value;
     return mark && !unmarked.has(field) ? (
-      <CardMark field={field} mark={mark} folder={props.folder?.path} />
+      <CardMark
+        field={field}
+        mark={mark}
+        folder={props.folder?.path}
+        sender={typeof sender === 'string' ? sender : null}
+      />
     ) : undefined;
   };
   // The field Save could not read, marked until it is changed.

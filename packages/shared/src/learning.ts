@@ -13,6 +13,20 @@ import {
   type Proposed,
 } from './proposals.js';
 import type { Role } from './roles.js';
+import {
+  applyShapeFields,
+  applyShapeKind,
+  lessonTrusted,
+  matchShape,
+  shapeNumberOn,
+  readPaper,
+  type LearnedShape,
+  type LearnedShapeView,
+  type PaperReading,
+  type ShapeClash,
+  type ShapeMatch,
+  type ShapeNumberHash,
+} from './shapes.js';
 
 /**
  * The vault learns from your corrections (Phase 6, I4).
@@ -101,19 +115,31 @@ export interface LearnedRule {
 /** What the worker reads an item's words with: its uploader's rules, and who they are. */
 export interface LearnedContext {
   rules: readonly LearnedRule[];
+  /**
+   * The uploader's shapes, learned from their earlier papers (0.9.0, R1,
+   * shapes.ts), opened from under their own key; none before 0.9.0.
+   */
+  shapes?: readonly LearnedShape[];
+  /**
+   * The key the uploader's numbers are hashed under for their shapes (W1,
+   * @fdv/crypto `shapeNumberKey`), hex: the worker makes its
+   * `ShapeNumberHash` of it. Never the member key itself, and never sent
+   * to the proposal thread (`withoutAccounts`, N5). None, and a shape's
+   * person is never sure.
+   */
+  numberKey?: string;
   role: Role;
   /** The uploader's member. */
   me: string;
 }
 
 /**
- * Where a sure rule disagrees with what the pages propose (the pages' stands):
- * what the rule says, by field. The item is Check, with both said.
+ * Where a sure rule, or a sure lesson of a sender's paper shape (0.9.0, R1),
+ * disagrees with what the pages propose (the pages' stands): what the rule or
+ * the shape says, by field — for a date, the date its label gives; for the
+ * number, only that it differs. The item is Check, with both said.
  */
-export interface LearnedClash {
-  type_key?: string;
-  owner_member_id?: string;
-}
+export type LearnedClash = ShapeClash;
 
 /** `GET /api/v1/batches/learned`: one rule, as its person is shown it. */
 export interface LearnedRuleView {
@@ -142,6 +168,13 @@ export interface BatchLearning {
   window: number;
   rules: LearnedRuleView[];
   rules_max: number;
+  /**
+   * The layouts of the caller's senders' papers it learned (0.9.0, R1,
+   * shapes.ts), newest first; absent from a vault before 0.9.0.
+   */
+  shapes?: LearnedShapeView[];
+  /** The most it keeps (SHAPES_MAX). */
+  shapes_max?: number;
 }
 
 /** Whether a rule's own counts are enough: confirmed enough, and never contradicted. */
@@ -169,6 +202,27 @@ export function ruleTrusted(
         r.value !== rule.value &&
         r.confirmed > 0,
     )
+  );
+}
+
+/**
+ * Whether a page's layout lets an issuer's trusted rule be sure of a value
+ * (the R1 review's simulation). A page of a layout the vault has learned
+ * (it matches one of the sender's shapes): only if that layout's own lesson
+ * for the value is trusted. A rule is the sender's, and a sender may send
+ * more than one kind of paper — a surgery's letters and its repeat slips:
+ * one slip filed as a letter, carelessly, would otherwise make the letters'
+ * rule sure of every slip after it, whose layout the vault has seen once. A
+ * page of a layout not learned yet (no match): the rule as in I4.
+ */
+export function layoutVouches(
+  match: ShapeMatch | null,
+  field: LearnedField,
+  value: string,
+): boolean {
+  if (!match) return true;
+  return match.shape.lessons.some(
+    (l) => l.field === field && l.value === value && lessonTrusted(l, match.shape),
   );
 }
 
@@ -220,6 +274,12 @@ export function applyLearned(input: {
   learned: LearnedContext;
   types: readonly ProposalKind[];
   people: ReadonlyArray<{ id: string }>;
+  /**
+   * Whether this page's layout lets a trusted rule be sure of a value
+   * (`layoutVouches`); a rule it does not is offered unsure, and still
+   * makes a clash. None: every trusted rule is sure, as in I4.
+   */
+  layout?: (field: LearnedField, value: string) => boolean;
 }): { proposal: DetailProposal; clash: LearnedClash; learnedKind: string | null } {
   const { learned } = input;
   const out: DetailProposal = { ...input.proposal };
@@ -247,7 +307,8 @@ export function applyLearned(input: {
     input.types.some((t) => t.key === v && !t.hidden),
   );
   if (kindRule) {
-    const sure = ruleTrusted(kindRule, learned.rules);
+    const trusted = ruleTrusted(kindRule, learned.rules);
+    const sure = trusted && (input.layout?.('type_key', kindRule.value) ?? true);
     const page = out.type_key;
     if (!page) {
       // Where the pages could not choose, a rule for one of their kinds
@@ -261,7 +322,7 @@ export function applyLearned(input: {
       learnedKind = kindRule.value;
     } else if (page.value === kindRule.value) {
       out.type_key = raise(page, sure);
-    } else if (sure) {
+    } else if (trusted) {
       clash.type_key = kindRule.value;
     }
   }
@@ -273,7 +334,8 @@ export function applyLearned(input: {
       input.people.some((m) => m.id === v),
     );
     if (personRule) {
-      const sure = ruleTrusted(personRule, learned.rules);
+      const trusted = ruleTrusted(personRule, learned.rules);
+      const sure = trusted && (input.layout?.('owner_member_id', personRule.value) ?? true);
       const page = out.owner_member_id;
       if (!page) {
         out.owner_member_id = {
@@ -283,7 +345,7 @@ export function applyLearned(input: {
         };
       } else if (page.value === personRule.value) {
         out.owner_member_id = raise(page, sure);
-      } else if (sure) {
+      } else if (trusted) {
         clash.owner_member_id = personRule.value;
       }
     }
@@ -302,9 +364,174 @@ export function proposeLearned(
   text: string,
   ctx: ProposalContext,
   learned: LearnedContext | null | undefined,
-): { proposal: DetailProposal; clash: LearnedClash } {
+  hashes: { number?: ShapeNumberHash | undefined } = {},
+): { proposal: DetailProposal; clash: LearnedClash; paper?: PaperReading } {
+  // As the worker does it: the thread's part with no account in sight, then
+  // the accounts settled where the hashes are (N5).
+  const got = proposeOnThread(text, ctx, learned ? withoutAccounts(learned) : learned);
+  return settleAccounts(got, learned, hashes.number, ctx);
+}
+
+/**
+ * What the proposal thread answers (N5): the proposal, a clash, the page's
+ * shape, and where a shape matched — its place among the shapes it was
+ * given, whether surely, and the page's number at its label — for the
+ * worker to settle whose account it is (`settleAccounts`).
+ */
+export interface ThreadProposal {
+  proposal: DetailProposal;
+  clash: LearnedClash;
+  paper?: PaperReading;
+  account?: { shape: number; sure: boolean; number: string | null };
+}
+
+/**
+ * The uploader's context as the proposal thread may have it (the R1
+ * re-check, N5): no number key, and no account's hash in any lesson — the
+ * thread reads untrusted words, and needs neither to read them.
+ */
+export function withoutAccounts(learned: LearnedContext): LearnedContext {
+  const rest: LearnedContext = { ...learned };
+  delete rest.numberKey;
+  return {
+    ...rest,
+    ...(learned.shapes
+      ? {
+          shapes: learned.shapes.map((s) => ({
+            ...s,
+            lessons: s.lessons.map((l) => {
+              const kept = { ...l };
+              delete kept.numbers;
+              return kept;
+            }),
+          })),
+        }
+      : {}),
+  };
+}
+
+/**
+ * Whose account it is, settled off the thread (N5): the shape the thread
+ * matched, with its accounts' hashes, applied to the person it proposed —
+ * W1, the account rule, and N1 — by the page's number it read. Pure.
+ */
+export function settleAccounts(
+  got: ThreadProposal,
+  learned: LearnedContext | null | undefined,
+  numberHash: ShapeNumberHash | undefined,
+  ctx: Pick<ProposalContext, 'people'>,
+): { proposal: DetailProposal; clash: LearnedClash; paper?: PaperReading } {
+  const { account, ...rest } = got;
+  const at = account?.shape;
+  const shape =
+    account && typeof at === 'number' && Number.isInteger(at) && at >= 0
+      ? learned?.shapes?.[at]
+      : undefined;
+  if (!account || !shape || !learned) return rest;
+  const settled = applyShapeKind({
+    proposal: rest.proposal,
+    clash: rest.clash,
+    match: { shape, similarity: 1, sure: account.sure === true },
+    tie: [],
+    role: learned.role,
+    // The person alone: the kind was the thread's to say.
+    types: [],
+    people: ctx.people,
+    pageNumber: typeof account.number === 'string' ? account.number : null,
+    numberHash,
+  });
+  return { ...rest, proposal: settled.proposal, clash: settled.clash };
+}
+
+/** What the proposal thread runs (N5): `proposeLearned` with no hash and no account. */
+export function proposeOnThread(
+  text: string,
+  ctx: ProposalContext,
+  learned: LearnedContext | null | undefined,
+): ThreadProposal {
   const first = proposeWithTie(text, ctx);
-  if (!learned || learned.rules.length === 0) return { proposal: first.proposal, clash: {} };
+  if (!learned) return { proposal: first.proposal, clash: {} };
+  // The page's shape, and its labelled dates and numbers (R1): what this
+  // read is matched with, and what its accept will learn from. A page whose
+  // shape cannot be read still has its proposal (the R1 review, PERF1).
+  let paper: PaperReading;
+  try {
+    paper = readPaper(text, ctx);
+  } catch {
+    return applyRulesOnly(text, ctx, learned, first);
+  }
+  let proposal = first.proposal;
+  let clash: LearnedClash = {};
+  let learnedKind: string | null = null;
+  // The sender's layout (R1): matched on the issuer the pages name.
+  const match =
+    learned.shapes && learned.shapes.length > 0
+      ? matchShape(paper, learnedIssuerKey(proposal.issued_by?.value), learned.shapes)
+      : null;
+  if (learned.rules.length > 0) {
+    const applied = applyLearned({
+      proposal,
+      tie: first.tie,
+      learned,
+      types: ctx.types,
+      people: ctx.people,
+      layout: (field, value) => layoutVouches(match, field, value),
+    });
+    proposal = applied.proposal;
+    clash = applied.clash;
+    learnedKind = applied.learnedKind;
+  }
+  if (match) {
+    const kinded = applyShapeKind({
+      proposal,
+      clash,
+      match,
+      tie: first.tie,
+      role: learned.role,
+      types: ctx.types,
+      people: ctx.people,
+      paper,
+    });
+    proposal = kinded.proposal;
+    clash = kinded.clash;
+    learnedKind = kinded.learnedKind ?? learnedKind;
+  }
+  if (learnedKind && proposal.type_key?.value === learnedKind) {
+    const again = proposeDetails(text, {
+      ...ctx,
+      current: { ...ctx.current, type_key: learnedKind },
+    });
+    for (const f of ['issued', 'expires', 'identifier'] as const) {
+      const p = again[f];
+      if (p && p.confidence >= PROPOSAL_THRESHOLDS[f]) {
+        (proposal as Record<string, unknown>)[f] = p;
+      }
+    }
+  }
+  if (match) {
+    const fielded = applyShapeFields({ proposal, clash, match, paper, types: ctx.types });
+    proposal = fielded.proposal;
+    clash = fielded.clash;
+  }
+  const index = match ? (learned.shapes ?? []).indexOf(match.shape) : -1;
+  return {
+    proposal,
+    clash,
+    paper,
+    ...(match && index >= 0
+      ? { account: { shape: index, sure: match.sure, number: shapeNumberOn(match.shape, paper) } }
+      : {}),
+  };
+}
+
+/** I4's rules alone, as before R1: for a page whose shape could not be read. */
+function applyRulesOnly(
+  text: string,
+  ctx: ProposalContext,
+  learned: LearnedContext,
+  first: { proposal: DetailProposal; tie: string[] },
+): { proposal: DetailProposal; clash: LearnedClash } {
+  if (learned.rules.length === 0) return { proposal: first.proposal, clash: {} };
   const applied = applyLearned({
     proposal: first.proposal,
     tie: first.tie,

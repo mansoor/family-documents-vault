@@ -52,6 +52,7 @@ import {
   extraBytes,
   missingFields,
   OFFLINE_SET_MAX,
+  periodic,
   type DateValue,
   type DetailProblem,
   type DocumentAttributeView,
@@ -489,6 +490,8 @@ export function typeView(t: EffectiveType): DocumentTypeView {
     core,
     short_label: t.short_label,
     issuer_noun: t.issuer_noun,
+    // Each paper its own document, never a renewal of the last (0.9.0).
+    periodic: periodic(t),
     etag: typeEtag(t),
   };
 }

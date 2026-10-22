@@ -504,9 +504,18 @@ describe.skipIf(!testAdminUrl())("a person's photo (5.17c)", () => {
       }
     };
     await walk(h.vaultDir);
+    // What only a JPEG in the clear holds, never random bytes by chance: the
+    // photo's own start (its SOI, APP1 and Exif header) and 32 bytes of its
+    // body; and the header any JPEG made from it would carry (JFIF or Exif).
+    // Three bytes (FF D8 FF) turn up in megabytes of ciphertext now and then.
+    const clear = [
+      PHOTO.subarray(0, 12),
+      PHOTO.subarray(200, 232),
+      Buffer.from('JFIF\0', 'latin1'),
+      Buffer.from('Exif\0\0', 'latin1'),
+    ];
     for (const blob of [...all.map((r) => r.blob), ...files]) {
-      expect(blob.includes(Buffer.from([0xff, 0xd8, 0xff]))).toBe(false);
-      expect(blob.includes(Buffer.from('Exif'))).toBe(false);
+      for (const sign of clear) expect(blob.includes(sign)).toBe(false);
       expect(blob.includes(Buffer.from(GPS))).toBe(false);
       expect(blob.includes(Buffer.from('IMG_2041'))).toBe(false);
     }

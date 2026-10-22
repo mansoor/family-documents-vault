@@ -1,4 +1,9 @@
-import { LEARNED_SURE_CONFIRMATIONS, type BatchLearning, type LearnedRuleView } from '@fdv/shared';
+import {
+  LEARNED_SURE_CONFIRMATIONS,
+  type BatchLearning,
+  type LearnedRuleView,
+  type LearnedShapeView,
+} from '@fdv/shared';
 import { useRef, useState } from 'react';
 import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
@@ -12,6 +17,14 @@ import { ConfirmDialog, ErrorNote } from './ui.js';
  * else them, an owner included. Nothing at all until there is something to
  * say, and nothing from a vault that does not learn.
  */
+
+/** "2 rules", "2 rules and 1 sender’s papers": what was learned, in words. */
+function taughtWords(rules: number, shapes: number): string {
+  const r = `${rules} ${rules === 1 ? 'rule' : 'rules'}`;
+  if (shapes === 0) return r;
+  const p = `${shapes} ${shapes === 1 ? 'layout of a sender’s papers' : 'layouts of senders’ papers'}`;
+  return rules === 0 ? p : `${r} and ${p}`;
+}
 
 const times = (n: number) => (n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`);
 
@@ -46,6 +59,35 @@ function RuleLine({ rule }: { rule: LearnedRuleView }) {
   );
 }
 
+const FIELD_WORDS: Record<LearnedShapeView['lessons'][number]['field'], string> = {
+  type_key: 'kind',
+  owner_member_id: 'whose',
+  issued: 'issue date at',
+  expires: 'expiry or due date at',
+  identifier: 'number at',
+};
+
+/** One sender's layout (R1), as its person reads it: who sent it, and what it taught. */
+function ShapeLine({ shape }: { shape: LearnedShapeView }) {
+  const says = shape.lessons
+    .filter((l) => l.confirmed > 0)
+    .map((l) => {
+      const what =
+        l.field === 'type_key' || l.field === 'owner_member_id'
+          ? (l.label ?? (l.field === 'type_key' ? 'one no longer kept' : 'somebody no longer here'))
+          : `“${l.label ?? l.value}”`;
+      return `${FIELD_WORDS[l.field]} ${what}${l.sure ? ' (trusted)' : ''}`;
+    });
+  return (
+    <li className="learned-rule">
+      <span>
+        Papers like this from <strong>{shape.issuer}</strong>
+      </span>
+      <span className="muted">{says.length > 0 ? says.join('; ') : 'nothing yet'}</span>
+    </li>
+  );
+}
+
 export function LearnedFromYou() {
   const { caps, authVersion, withToken } = useApp();
   const on = caps?.features.batch_learning === true;
@@ -62,7 +104,10 @@ export function LearnedFromYou() {
   const status = useRef<HTMLParagraphElement>(null);
   if (!on) return null;
   if (error) return <ErrorNote message={`What the vault learned couldn’t be loaded: ${error}`} />;
-  const something = data && (data.counted > 0 || data.rules.length > 0);
+  // The layouts of senders' papers it learned (R1); none from a vault before 0.9.0.
+  const shapes = data?.shapes ?? [];
+  const taught = (data?.rules.length ?? 0) + shapes.length;
+  const something = data && (data.counted > 0 || taught > 0);
 
   const forget = async () => {
     setBusy(true);
@@ -91,7 +136,7 @@ export function LearnedFromYou() {
       {data && something && (
         <section className="notice-box learned-box" aria-label="What the vault learned from you">
           {data.counted > 0 && <p className="learned-count">{countWords(data)}</p>}
-          {data.rules.length > 0 && (
+          {taught > 0 && (
             <>
               <button
                 type="button"
@@ -100,8 +145,7 @@ export function LearnedFromYou() {
                 aria-controls="learned-rules"
                 onClick={() => setOpen((o) => !o)}
               >
-                What the vault has learned from you: {data.rules.length}{' '}
-                {data.rules.length === 1 ? 'rule' : 'rules'}
+                What the vault has learned from you: {taughtWords(data.rules.length, shapes.length)}
               </button>
               {open && (
                 <div id="learned-rules" className="stack learned-rules">
@@ -112,11 +156,27 @@ export function LearnedFromYou() {
                     chosen differently for that sender. What you’ve taught stays until you forget
                     it, even after the documents it came from are gone.
                   </p>
-                  <ul className="learned-list" aria-label="Rules learned from you">
-                    {data.rules.map((r) => (
-                      <RuleLine key={r.id} rule={r} />
-                    ))}
-                  </ul>
+                  {data.rules.length > 0 && (
+                    <ul className="learned-list" aria-label="Rules learned from you">
+                      {data.rules.map((r) => (
+                        <RuleLine key={r.id} rule={r} />
+                      ))}
+                    </ul>
+                  )}
+                  {shapes.length > 0 && (
+                    <>
+                      <p className="muted">
+                        And how your senders lay out their papers: their headings and labels, and
+                        which label carries a date or a number — never a name, a number or an
+                        address from the page.
+                      </p>
+                      <ul className="learned-list" aria-label="Papers learned from you">
+                        {shapes.map((s) => (
+                          <ShapeLine key={s.id} shape={s} />
+                        ))}
+                      </ul>
+                    </>
+                  )}
                   <div className="row">
                     <button
                       type="button"
@@ -131,7 +191,7 @@ export function LearnedFromYou() {
               )}
             </>
           )}
-          {data.rules.length === 0 && data.counted > 0 && (
+          {taught === 0 && data.counted > 0 && (
             <div className="row">
               <button
                 type="button"
@@ -160,8 +220,8 @@ export function LearnedFromYou() {
           }}
         >
           <p>
-            {data.rules.length > 0
-              ? `Its ${data.rules.length} ${data.rules.length === 1 ? 'rule' : 'rules'} and the count go. `
+            {taught > 0
+              ? `Its ${taughtWords(data.rules.length, shapes.length)} and the count go. `
               : 'The count goes. '}
             Your waiting files will be read again. It starts learning again from your next accepts.
             Your documents are not changed.

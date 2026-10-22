@@ -409,6 +409,58 @@ describe.skipIf(!testAdminUrl())('duplicates as versions (S1)', () => {
     expect((await itemOf(adult, b.id, unread.id)).renewals).toEqual([]);
   });
 
+  it('a periodic kind’s paper renews nothing — not by its account’s number, not by kind, person and issuer — and a policy still does (0.9.0)', async () => {
+    const kinds = (await call(adult, 'GET', '/api/v1/document-types')).json<{
+      items: Array<{ key: string; periodic?: boolean }>;
+    }>().items;
+    const periodicOf = (key: string) => kinds.find((k) => k.key === key)?.periodic;
+    for (const key of ['bank_statement', 'credit_card_statement', 'utility_bill', 'tax_form']) {
+      expect(periodicOf(key), key).toBe(true);
+    }
+    for (const key of ['passport', 'insurance_policy', 'drivers_licence', 'vehicle_registration']) {
+      expect(periodicOf(key), key).toBe(false);
+    }
+    const bank = `Harbourline ${randomUUID().slice(0, 6)}`;
+    const account = `41 ${randomUUID().slice(0, 4)}`;
+    const statement = (kind: string): DetailProposal => ({
+      type_key: { value: kind, confidence: 0.97, cue: 'kind_words' },
+      owner_member_id: { value: adult.member_id, confidence: 0.92, cue: 'name_labelled' },
+      identifier: { value: account, confidence: 0.85, cue: 'number_label' },
+      issued_by: { value: bank, confidence: 0.9, cue: 'letterhead' },
+    });
+    for (const kind of ['bank_statement', 'utility_bill', 'insurance_policy']) {
+      const bytes = PDF(`last month's ${kind}`);
+      await filed(
+        adult,
+        {
+          title: `Last month’s ${kind}`,
+          type_key: kind,
+          owner_member_id: adult.member_id,
+          identifier: account,
+          issued_by: bank,
+        },
+        bytes,
+      );
+      // This month's: the same account, person and issuer.
+      const x = await readItem(adult, statement(kind));
+      if (kind === 'insurance_policy') {
+        // A policy replaces the one before: still a renewal, by its number.
+        expect(x.item.renewals?.map((r) => r.by)).toEqual(['number']);
+        expect(x.item.tags?.map((t) => t.code)).toContain('renewal');
+      } else {
+        expect(x.item.renewals, kind).toEqual([]);
+        expect(
+          x.item.tags?.map((t) => t.code),
+          kind,
+        ).not.toContain('renewal');
+        // The same file twice is still a duplicate.
+        const again = await readItem(adult, statement(kind), bytes);
+        expect(again.item.duplicate?.of, kind).toBe('document');
+        expect(again.item.level, kind).toBe('problem');
+      }
+    }
+  });
+
   it('a near match is Check, never Ready: Accept all Ready leaves it, and files the rest', async () => {
     const issuer = `Ready Renewals ${randomUUID().slice(0, 6)}`;
     const docId = await filed(adult, {

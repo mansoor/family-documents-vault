@@ -54,6 +54,8 @@ import {
   numberKey,
   RENEWALS_MAX,
   storedLearnedClash,
+  periodic,
+  storedPaper,
   storedProposal,
   VERSION_ACCEPT_FIELDS,
   type BatchAccepted,
@@ -77,6 +79,7 @@ import {
   type Proposed,
   type BatchLearning,
   type LearnedClash,
+  type PaperReading,
   type LevelKind,
   type Visibility,
 } from '@fdv/shared';
@@ -375,10 +378,17 @@ interface WaitingRow {
   preview_pages: number | null;
 }
 
-/** What an accept learns from (I4): the card as it started, and whether its pages were read. */
+/**
+ * What an accept learns from (I4): the card as it started, and whether its
+ * pages were read; and the page's reading the worker sealed with its
+ * proposal (0.9.0, R1), for the sender's layout.
+ */
 interface LearnFrom {
   read: boolean;
   proposals: ItemProposals | null;
+  paper: PaperReading | null;
+  /** Its level as it was accepted: an item at Check was looked at (R1, W2). */
+  level: string | null;
 }
 
 /** Where a filing put its copy of the file: removed if its transaction fails. */
@@ -1121,7 +1131,12 @@ export class BatchService {
         const f = await this.waiting(trx, batchId, itemId, true);
         // What its card started from, at this moment: what the accept is compared with (I4).
         const [item] = (await this.itemsOf(trx, p, [b.id], f.id)).filter((i) => i.id === f.id);
-        const learn = { read: item?.reading === 'read', proposals: item?.proposals ?? null };
+        const learn = {
+          read: item?.reading === 'read',
+          proposals: item?.proposals ?? null,
+          paper: item?.reading === 'read' ? await this.paperOf(trx, f) : null,
+          level: item?.level ?? null,
+        };
         if (into !== undefined) {
           return this.fileAsVersion(trx, p, f, into, details, meta, placed, learn);
         }
@@ -1343,6 +1358,13 @@ export class BatchService {
           issued: sent.issued !== undefined ? sent.issued : (pages?.issued?.value ?? null),
           expires: sent.expires !== undefined ? sent.expires : (pages?.expires?.value ?? null),
         },
+        // Added as a version from its card: looked at (R1, W2).
+        shapes: {
+          store: { keys: this.keys },
+          paper: learn.paper,
+          reviewed: true,
+          level: learn.level,
+        },
       },
       this.opts.learnTaught ? { taught: this.opts.learnTaught } : {},
     );
@@ -1430,7 +1452,19 @@ export class BatchService {
     await learnFromAccept(
       trx,
       p,
-      { itemId: f.id, read: learn.read, proposals: learn.proposals, filed: metadata },
+      {
+        itemId: f.id,
+        read: learn.read,
+        proposals: learn.proposals,
+        filed: metadata,
+        // Accept all Ready files what the card said unseen: it teaches no shape (R1, W2).
+        shapes: {
+          store: { keys: this.keys },
+          paper: learn.paper,
+          reviewed: !undoable,
+          level: learn.level,
+        },
+      },
       this.opts.learnTaught ? { taught: this.opts.learnTaught } : {},
     );
     return {
@@ -1440,6 +1474,35 @@ export class BatchService {
       warnings,
       undoUntil: decided.undo_until,
     };
+  }
+
+  /**
+   * The page's reading an item's proposal was sealed with (0.9.0, R1): its
+   * shape, and its labelled dates and numbers, as the worker read them —
+   * opened under the item's own key; none for one read before 0.9.0, or that
+   * does not open.
+   */
+  private async paperOf(trx: Db, f: WaitingRow): Promise<PaperReading | null> {
+    const row = await trx
+      .selectFrom('incoming_file')
+      .select('proposals_sealed')
+      .where('id', '=', f.id)
+      .executeTakeFirst();
+    if (!row?.proposals_sealed) return null;
+    try {
+      const fileKey = unwrapKey(
+        f.file_key_wrapped,
+        await this.keys.unwrapById(trx, f.wrapped_by_scope),
+        `incoming:${f.id}`,
+      );
+      return storedPaper(
+        JSON.parse(
+          openBytes(fileKey, row.proposals_sealed, itemProposalsBinding(f.id)).toString('utf8'),
+        ),
+      );
+    } catch {
+      return null;
+    }
   }
 
   /** A filing's copy, when its transaction failed: only when it certainly did not happen. */
@@ -1471,7 +1534,7 @@ export class BatchService {
    */
   async learned(p: Principal): Promise<BatchLearning> {
     this.mayAdd(p);
-    return withPrincipal(this.db, p, (trx) => learnedOf(trx, p));
+    return withPrincipal(this.db, p, (trx) => learnedOf(trx, p, { keys: this.keys }));
   }
 
   /** DELETE /batches/learned: the caller's rules and count, forgotten. */
@@ -1638,6 +1701,8 @@ export class BatchService {
           return this.file(trx, p, b, f, body, meta, placed, true, {
             read: item.reading === 'read',
             proposals: item.proposals,
+            paper: item.reading === 'read' ? await this.paperOf(trx, f) : null,
+            level: item.level ?? null,
           });
         });
       } catch (err) {
@@ -1905,7 +1970,7 @@ export class BatchService {
         const gone = await trx.deleteFrom('document').where('id', '=', docId).executeTakeFirst();
         if (Number(gone.numDeletedRows) !== 1) throw new Error('a held document was not removed');
         // What its accept taught is taken back with it, and it is not counted (I4).
-        await unlearnAccept(trx, p, held.id);
+        await unlearnAccept(trx, p, held.id, { keys: this.keys });
         // Its lines, this one too, have no tombstone to be shown by: nobody's (0064).
         await appendAudit(trx, {
           householdId: p.householdId,
@@ -2111,7 +2176,7 @@ export class BatchService {
         .execute();
     }
     // What its accept taught is taken back with it, and it is not counted (I4).
-    await unlearnAccept(trx, p, held.id);
+    await unlearnAccept(trx, p, held.id, { keys: this.keys });
     await appendAudit(trx, {
       householdId: p.householdId,
       actorAccountId: p.accountId,
@@ -2664,9 +2729,11 @@ export class BatchService {
    * see, and a teen's own only. The same kind and number (spaces, dashes and
    * case aside: `numberKey`, and the same in SQL), first; or the same kind,
    * person and issuer. A kind they are not given, or a person they may not
-   * choose, matches nothing. Best first: by number, then the one that runs
-   * out last, the most recently changed; RENEWALS_MAX each. Worked out as it
-   * is asked, in one query; nothing of it is kept.
+   * choose, matches nothing; nor does a periodic kind's paper (0.9.0,
+   * `PERIODIC_KINDS`: a statement, a bill, a letter — each its own
+   * document). Best first: by number, then the one that runs out last, the
+   * most recently changed; RENEWALS_MAX each. Worked out as it is asked, in
+   * one query; nothing of it is kept.
    */
   private async renewalsOf(
     trx: Db,
@@ -2685,6 +2752,9 @@ export class BatchService {
     for (const { id, proposal: pages } of items) {
       const kind = pages.type_key?.value;
       if (!kind || !levelling.types.some((t) => t.key === kind)) continue;
+      // Each paper of a periodic kind is a document of its own (0.9.0): this
+      // month's statement renews nothing, by its account's number or else.
+      if (periodic({ key: kind })) continue;
       const number = pages.identifier ? numberKey(pages.identifier.value) || null : null;
       const who = pages.owner_member_id?.value;
       const person =

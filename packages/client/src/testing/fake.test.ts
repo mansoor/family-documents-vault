@@ -84,6 +84,7 @@ describe('the fake vault keeps the contract', () => {
         } else {
           it.reading = 'read';
           it.proposal = read.proposal;
+          it.paper = read.paper ?? null;
         }
       }
     },

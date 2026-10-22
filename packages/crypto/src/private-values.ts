@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
 
 /**
  * An Only me document's notes and details (0.5.8), sealed under its owner's
@@ -122,6 +122,32 @@ export const readingWorkBinding = (checkId: string) => `reading-work:${checkId}`
 export const readingMissesBinding = (checkId: string) => `reading-misses:${checkId}`;
 /** The key the hash of a check's rules is keyed with: the hash says nothing of them. */
 export const READING_RULES_KEY_PURPOSE = 'reading-check-rules';
+/**
+ * A sender's paper shape, learned from a person's papers (0.9.0, R1, 0075):
+ * its issuer, its words and its lessons, sealed under that person's own
+ * member key, and bound to its household, its person and its row — so one
+ * person's shape never opens as another's, nor on another row.
+ */
+export const intakeShapeBinding = (householdId: string, memberId: string, shapeId: string) =>
+  `intake-shape:${householdId}:${memberId}:${shapeId}`;
+/**
+ * The key a person's numbers are hashed under for their shapes (0.9.0, the
+ * R1 review, W1): derived from their member key, so only the vault can
+ * make it, and never that key itself — the worker hands it to the proposal
+ * thread, which reads untrusted pages.
+ */
+export const shapeNumberKey = (memberKey: Buffer): Buffer =>
+  createHmac('sha256', memberKey).update('fdv shape number key v1').digest();
+/**
+ * A number's keyed hash, as a shape's person keeps it: 128 bits, hex, of
+ * the number as @fdv/shared `plainNumber` makes it. The proposal thread
+ * (apps/worker proposal-worker.ts) makes the same, with node:crypto alone.
+ */
+export const shapeNumberHash = (key: Buffer, plain: string): string =>
+  createHmac('sha256', key).update(`number:${plain}`).digest('hex').slice(0, 32);
+/** And what an accept taught a shape, kept for an Undo: the same key, bound to the item. */
+export const intakeShapeTaughtBinding = (householdId: string, memberId: string, itemId: string) =>
+  `intake-shape-taught:${householdId}:${memberId}:${itemId}`;
 
 /** What sealing adds to the bytes sealed: the nonce before them, the tag after. */
 export const SEAL_OVERHEAD = IV_BYTES + TAG_BYTES;
