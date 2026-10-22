@@ -3,6 +3,7 @@ import {
   ALERT_LINK_KEY_PURPOSE,
   deriveKey,
   EnvKeyProvider,
+  MAILBOX_PASSWORD_PURPOSE,
   OPERATOR_MAIL_KEY_PURPOSE,
   ScopeKeys,
 } from '@fdv/crypto';
@@ -63,6 +64,7 @@ import { instanceIdReader } from './instance.js';
 import { WatchFolderService } from './watch-folder/service.js';
 import { ReadingCheckService } from './reading-check/service.js';
 import { MAIL_IN_CODE_KEY_PURPOSE, MailInService } from './mail-in/service.js';
+import { SettingsCheckService } from './settings-checks.js';
 import { serverVersion } from './version.js';
 import { masterKeyOpensVault } from './master-key-check.js';
 
@@ -210,16 +212,22 @@ async function main(): Promise<void> {
     config.FDV_MAX_UPLOAD_BYTES,
     enqueue,
   );
+  // What an owner asks the worker from Settings (0.9.0, O1): Verify, browse, Test the mailbox.
+  const settingsChecks = new SettingsCheckService(db, enqueue);
   const app = await buildApp(config, {
     serverVersion: version,
     instanceId: instanceIdReader(db),
-    watchFolder: new WatchFolderService(db),
+    watchFolder: new WatchFolderService(db, { checks: settingsChecks }),
     readingChecks: new ReadingCheckService(db, keys, enqueue),
     mailIn: new MailInService(db, {
       // A code emailed to an address only through the operator's mail server (F1).
       mail: config.FDV_SMTP_URL ? operatorMail : null,
       codeKey: deriveKey(masterSecret, MAIL_IN_CODE_KEY_PURPOSE),
+      // The household mailbox's app password, sealed as it is saved (O1).
+      mailboxKey: deriveKey(masterSecret, MAILBOX_PASSWORD_PURPOSE),
+      checks: settingsChecks,
     }),
+    settingsChecks,
     pingDatabase: async () => {
       await pool.query('select 1');
     },

@@ -4938,6 +4938,171 @@ member_id, name }`), `mine`, `created_at`, `started_at`, `finished_at`,
     `readingChecks`, `startReadingCheck`, `readingCheck`,
     `cancelReadingCheck`, `deleteReadingCheck`; the client fake answers the
     same, and reads a check on its second asking.
+  - The scanner folder and the email-in mailbox set from Settings, and
+    kept scans (0.9.0, O1, migration 0076). Everything is **additive**: a
+    client that sends what it sent before is answered as before, but where
+    "Changed" says; nothing an older client reads changes meaning.
+    - **The scanner folder chosen** (owners): `PUT /api/v1/watch-folder`
+      takes `dir` (a path inside the worker's container: `null` for the
+      server's own, `FDV_WATCH_DIR`; left out, as it was) and `keep_days`
+      (0 to 365; left out, as it was; 7 for a household that never said, 0 for
+      a setting made before 0.9.0).
+      A `dir` outside the folders the worker may use (`FDV_WATCH_ROOTS`,
+      and `FDV_WATCH_DIR`), written with `.`, `..`, `//` or a backslash,
+      or one of the vault's own folders, inside one or above one, is `422
+watch_folder_path_refused` with what to do in words; while the worker
+      has not said lately which folders it may use, `409
+watch_folder_unavailable`. Turning it on (`enabled: true`) with a
+      folder chosen needs the worker to have found that very folder ready
+      within the last two minutes, or a Verify of it to have passed in the
+      last ten: else `409 watch_folder_unavailable`. The worker refuses the
+      folder again every round, by its real path.
+    - **`GET /api/v1/watch-folder` gains** `choice: { dir, default_dir,
+roots }` (the folder chosen, `null` for the server's own; the server's
+      own; the folders one may be chosen inside, empty while the worker has
+      not said lately), `keep_days` and `kept_warning` (the sentence said
+      beside it). **Changed:** `folder` is the folder in use — the one
+      chosen, as the worker last found it, else `FDV_WATCH_DIR` — and its
+      `state` may be `refused` (one of the vault's own folders or above
+      one, outside the folders it may use, or a link out of them).
+    - **Verify, browse, Test** (owners; `403` to anybody else, before the
+      body is read): `POST /api/v1/watch-folder/verify` and `POST
+/api/v1/watch-folder/browse`, `{ path }`, refused first as a Save
+      would be (browse may go through a folder above one of the vault's
+      own, never into one); `POST /api/v1/mail-in/mailbox/test`, no body.
+      Each answers `202` with a `SettingsCheckView` — `{ id, kind, state:
+"waiting", requested_at, words }` — that the worker answers; `GET
+/api/v1/settings-checks/{id}` (owners, `cache-control: no-store`)
+      gives it, `state` `waiting`, `done` (with `folder`, `browse` or
+      `mailbox`) or `late` (no answer in a minute: `words` say so). Twenty
+      checks a minute a household; past it, `429 rate_limited`.
+      - `folder`: `{ path, ok, steps: [{ check, ok, words }], free_bytes,
+words }`, the checks `exists`, `folder`, `inside`, `not_vault`,
+        `read`, `create`, `move`, `delete`, `space` in order, each `true`,
+        `false`, or `null` (not tried, as one before it failed).
+      - `browse`: `{ path, folders, truncated, problem }` — folders by
+        name alone, at most 200; never a file, a link, a hidden folder, the
+        vault's own, `rejected` or `processed`.
+      - `mailbox`: `{ source, problem, messages, move, uidplus,
+authserv_id_seen, authserv_id_set, ok, lines }` — `problem` one of
+        `not_set_up`, `login_failed`, `unreachable`, `certificate`,
+        `no_folder`; `lines` say it in words. It touches no mail: a
+        sign-in, the folder opened with EXAMINE, and the newest message's
+        Authentication-Results asked for with BODY.PEEK.
+    - **The household mailbox set up in Settings** (owners): `PUT
+/api/v1/mail-in/mailbox` — `{ host, port, username, password?,
+folder, after, authserv_id, poll_seconds }` — and `DELETE
+/api/v1/mail-in/mailbox`, each answering the `MailInView`. It overrides
+      the worker's `FDV_MAIL_IN_*` for the household. `password` left out
+      keeps the one set; it is sealed under a key derived from the master
+      key with the household bound in, and never returned, logged, or put
+      in an export or the activity log (`mail_in.mailbox_saved` says only
+      `password_changed`). `422 validation_failed` for a server or an
+      authserv-id that is not a host name.
+    - **`GET /api/v1/mail-in` gains** `source` (`settings`, `server` or
+      `none`) and `mailbox` (`{ host, port, username, password: "set" |
+"not_set", folder, after, authserv_id, poll_seconds, updated_at }`, or
+      `null`). **Changed:** `server` describes the mailbox in use — the
+      household's own when it has one — and its `words`, `last_error.words`
+      and `sender_warning` name Settings' fields for it; `last_error.code`
+      may be `password_sealed` (the password does not open with this
+      master key). `GET /api/v1/mail-in/me` and an email's notes say the
+      household's own mailbox's address and filing too.
+    - **`/capabilities`:** `email_ingest` is `true` too while a household
+      has a mailbox of its own with a password, and the worker has said so
+      lately (it counts them, naming none).
+    - **Activity:** `watch_folder.folder_changed` (`detail: { dir_chosen,
+keep_days }`, never the path), `mail_in.mailbox_saved` and
+      `mail_in.mailbox_removed`: the owners'.
+    - `@fdv/shared`: `WatchFolderInput.dir`, `.keep_days`;
+      `WatchFolderView.choice`, `.keep_days`, `.kept_warning`;
+      `WatchDirState` `refused`; `watchPathRefusal`, `watchPathWords`,
+      `watchPathWithin`, `watchPathTidy`, `WATCH_SYSTEM_DIRS`,
+      `WatchVerifyCheck`, `WatchVerifyResult`, `watchVerifyResult`,
+      `watchVerifyWords`, `WatchBrowseResult`, `WATCH_PROCESSED_DIR`,
+      `WATCH_KEEP_DAYS_DEFAULT`, `WATCH_KEEP_DAYS_MAX`,
+      `WATCH_KEPT_WARNING`; `MailInSource`, `MailInMailboxView`,
+      `MailInMailboxInput`, `MailInTestFound`, `MailInTestResult`,
+      `mailInTestResult`, `mailInSenderWarning`, `MAIL_IN_AUTHSERV_HINT`,
+      `MAIL_IN_PORT_DEFAULT`; `SettingsCheckView`, `SETTINGS_CHECK_LATE_MS`.
+      `@fdv/client`: `verifyWatchFolder`, `browseWatchFolder`,
+      `settingsCheck`, `setMailInMailbox`, `removeMailInMailbox`,
+      `testMailInMailbox`; the fake answers each.
+    - **After the O1 review** (still additive, but where it says):
+      - **`PUT /api/v1/mail-in/mailbox` asks for the step-up**
+        (`403 step_up_required`, `action: "change_mailbox"`), and the app
+        password is sealed for its server, port and sign-in as well as the
+        household: one of them changed without a `password` is `422
+mailbox_password_needed` ("Type the app password again for the new
+        server."); a host's case is not a change. `mail_in.mailbox_saved`'s
+        `detail` gains `host_changed` (the server or the port) and
+        `user_changed`, never their values. A sign-in or a folder with a
+        control character in it is `422 validation_failed`.
+      - **Where a mailbox set up in Settings may be:** on a port in the
+        worker's `FDV_MAIL_IN_ALLOWED_PORTS` (993 alone by default), and
+        not at an address inside the server's own network (loopback,
+        link-local, private, carrier-grade NAT, the worker's own) unless
+        `FDV_MAIL_IN_ALLOW_PRIVATE=true`: else `422
+mailbox_address_refused` with what to do in words. The worker checks
+        every address the name resolves to each time it connects, and
+        connects to the one it checked; one refused there is
+        `last_error.code` `address_refused`. The server's own
+        `FDV_MAIL_IN_*` are not limited.
+      - **Test the mailbox:** `problem` may be `password_sealed` (the
+        password does not open with this master key, or for this server)
+        or `address_refused`; a failure that is not a certificate's is
+        `unreachable`, whatever the port answered. It reads the
+        Authentication-Results of the newest three messages, and
+        `authserv_id_seen` is set only when all three name the same one at
+        their top; a new `headers_read` says how many were read. Its
+        `lines` call it a hint, to check against the provider's own
+        documentation. One at a time a household: another asked while one
+        is under way (30 seconds) is `429 rate_limited`; the worker gives up
+        after 15 seconds (`unreachable`).
+      - **The scanner folder:** a `dir` another household on this server
+        uses — it, one inside it or one above it (browsing may go through
+        one above) — is `422 watch_folder_path_refused` for a Save, a
+        Verify and a browse, saying nothing of the other household. `GET`
+        gains `choice.refused_roots` and `choice.refused_words`
+        (`FDV_WATCH_ROOTS` the worker refuses: `/`, or one holding the
+        vault's own folders), `processed_words` (a `processed` folder the
+        vault didn't make is there: it keeps no scans in it), `kept_left`
+        and `kept_left_words` (scans kept in a folder it may no longer use,
+        left there). `kept_warning` says too that anything else saved into
+        `processed` is never touched, nor added: the worker deletes only
+        the scans it recorded keeping (`watch_kept`, which only the vault
+        reads: nobody signed in, an owner included, is given its file
+        names).
+      - **After the re-check:** `GET /api/v1/watch-folder` gains
+        `kept_changed` and `kept_changed_words` (kept scans whose change
+        time moved on a file system with no birth time to know them by:
+        left in place, never deleted) and `kept_untracked` and
+        `kept_untracked_words` (files in the vault's own `processed` it has
+        no record of after a restore: never deleted). Test the mailbox's
+        `problem` may be `busy` (another test of the household's mailbox is
+        running, on any worker), and with `address_refused` it carries
+        `allowed_ports`; every `address_refused` sentence, and the `422
+mailbox_address_refused` message, names the ports
+        `FDV_MAIL_IN_ALLOWED_PORTS` allows. The `@fdv/client` fake answers
+        `PUT` and `DELETE /api/v1/mail-in/mailbox`, with
+        `mailbox_address_refused` and `mailbox_password_needed` as the
+        vault refuses them (`state.mailInAllowedPorts`,
+        `state.mailInAllowPrivate`).
+      - **`/capabilities`' `email_ingest` is the installation's**, not a
+        household's: `true` while the server's own mailbox, or any
+        household's, is set up and checked. `/capabilities` is asked before
+        anybody signs in; `GET /api/v1/mail-in` says whether it is on for
+        the caller's household.
+      - `@fdv/shared`: `MAIL_IN_ADDRESS_REFUSED`, `mailInAddressRefused`,
+        `mailInErrorWords`' `ports`, `MailInTestFound.allowed_ports`,
+        `MailInTestProblem` `busy`, `watchKeptChangedWords`,
+        `watchKeptUntrackedWords`, `MAIL_IN_AUTHSERV_AGREE`,
+        `MailInTestFound.headers_read`, `MailInTestProblem`
+        `password_sealed` and `address_refused`, `MailInError`
+        `address_refused`; `WATCH_PROCESSED_UNTOUCHED`,
+        `WATCH_PROCESSED_MARKER`, `WATCH_PROCESSED_FOREIGN`,
+        `watchKeptLeftWords`, `watchRefusedRootsWords`, `WatchPathRefusal`
+        `used_elsewhere`, and the new `WatchFolderView` fields.
 
 ## Deprecations in effect
 

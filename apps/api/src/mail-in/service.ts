@@ -1,17 +1,23 @@
 import { createHash, createHmac, randomInt } from 'node:crypto';
+import { sealMailboxPassword } from '@fdv/crypto';
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import { isIP } from 'node:net';
 import { sql } from 'kysely';
 import {
   can,
+  isLoopbackName,
+  isPrivateAddress,
+  MAIL_IN_AUTHSERV_HINT,
   MAIL_IN_CODE_ALPHABET,
   MAIL_IN_EMAILED_CODE_PATTERN,
   MAIL_IN_NO_CONFIRM,
-  MAIL_IN_SENDER_WARNING,
   MAIL_IN_STALE_GRACE_MS,
   MAIL_IN_STALE_POLLS,
   mailFilingWords,
   mailInCountWords,
+  mailInAddressRefused,
   mailInErrorWords,
+  mailInSenderWarning,
   mailServerWords,
   maskEmail,
   mayFillFromScanner,
@@ -21,12 +27,16 @@ import {
   type MailInEmailed,
   type MailInFiling,
   type MailInInput,
+  type MailInMailboxInput,
   type MailInMine,
+  type MailInSource,
   type MailInView,
+  type SettingsCheckView,
 } from '@fdv/shared';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import type { MailRequest } from '../mail-job.js';
+import type { SettingsCheckService } from '../settings-checks.js';
 
 /**
  * Email documents to the vault (0.8.0, S4, CAP-09): the owners' setting,
@@ -94,7 +104,15 @@ interface ServerRow {
   filing: MailInFiling | null;
   poll_seconds: number;
   checked_at: Date;
+  /** Households' own mailboxes with a password set, as the worker counted them (0076, O1). */
+  mailboxes: number;
+  /** FDV_MAIL_IN_ALLOWED_PORTS and FDV_MAIL_IN_ALLOW_PRIVATE, as the worker said (the O1 review, M3). */
+  allowed_ports: number[];
+  allow_private: boolean;
 }
+
+/** A control character: never in a sign-in or a folder name (the O1 review, L4). */
+const CONTROL = /\p{Cc}/u;
 
 const letters = (n: number) =>
   Array.from({ length: n }, () => MAIL_IN_CODE_ALPHABET[randomInt(32)] as string).join('');
@@ -114,14 +132,51 @@ export interface MailInOptions {
   mail?: ((m: MailRequest) => Promise<void>) | null;
   /** The key an emailed code is HMACed under (deriveKey(master, MAIL_IN_CODE_KEY_PURPOSE)). */
   codeKey?: Buffer;
+  /**
+   * The key a mailbox's app password set in Settings is sealed under
+   * (deriveKey(master, MAILBOX_PASSWORD_PURPOSE), 0.9.0, O1). Without it
+   * none can be set.
+   */
+  mailboxKey?: Buffer;
+  /** The worker's queue, for Test the mailbox (O1). */
+  checks?: SettingsCheckService;
   /** The clock, for the tests. */
   now?: () => number;
 }
+
+/** The household's own mailbox, as the API reads it: never its password, only whether one is set. */
+interface BoxRow {
+  host: string;
+  port: number;
+  username: string;
+  has_password: boolean;
+  folder: string;
+  after: 'move' | 'delete';
+  authserv_id: string | null;
+  poll_seconds: number;
+  updated_at: Date;
+}
+
+/** The mailbox checked for a household: its own (O1), else the server's. */
+interface Effective {
+  source: MailInSource;
+  state: MailInView['server']['state'];
+  address: string | null;
+  folder: string | null;
+  after: 'move' | 'delete';
+  sender_check: boolean;
+  poll_seconds: number | null;
+}
+
+/** A mail server's name: letters, digits, dots and dashes (as 0076 checks). */
+const HOST = /^[A-Za-z0-9.-]{1,253}$/;
 
 export class MailInService {
   private readonly now: () => number;
   private readonly mail: ((m: MailRequest) => Promise<void>) | null;
   private readonly codeKey: Buffer;
+  private readonly mailboxKey: Buffer | null;
+  private readonly checks: SettingsCheckService | null;
 
   constructor(
     private readonly db: Db,
@@ -130,6 +185,8 @@ export class MailInService {
     this.now = opts.now ?? Date.now;
     this.mail = opts.mail ?? null;
     this.codeKey = opts.codeKey ?? Buffer.alloc(32);
+    this.mailboxKey = opts.mailboxKey ?? null;
+    this.checks = opts.checks ?? null;
   }
 
   private async serverRow(): Promise<ServerRow | null> {
@@ -145,37 +202,101 @@ export class MailInService {
         'filing',
         'poll_seconds',
         'checked_at',
+        'mailboxes',
+        'allowed_ports',
+        'allow_private',
       ])
       .executeTakeFirst();
     return row ?? null;
   }
 
+  /** The worker has said so within two polls and a minute: it is running and checking. */
+  private workerFresh(row: ServerRow | null, pollSeconds?: number): boolean {
+    if (!row) return false;
+    const poll = Math.max(row.poll_seconds, pollSeconds ?? 0);
+    const stale = poll * 1000 * MAIL_IN_STALE_POLLS + MAIL_IN_STALE_GRACE_MS;
+    return this.now() - row.checked_at.getTime() <= stale;
+  }
+
   /** The mailbox's state, as of the worker's word: stale after two polls, and a minute. */
   private state(row: ServerRow | null): MailInView['server']['state'] {
-    if (!row) return 'unknown';
-    const stale = row.poll_seconds * 1000 * MAIL_IN_STALE_POLLS + MAIL_IN_STALE_GRACE_MS;
-    if (this.now() - row.checked_at.getTime() > stale) return 'unknown';
+    if (!row || !this.workerFresh(row)) return 'unknown';
     return row.configured ? 'ready' : 'not_configured';
   }
 
-  /** How an address may be confirmed now (F1). */
-  private ways(row: ServerRow | null, ready: boolean): MailInConfirmWays {
-    return { send_from: ready && row?.sender_check === true, emailed: this.mail !== null };
+  /** The household's own mailbox (O1), as an owner reads it: never its password. */
+  private async boxRow(trx: Db): Promise<BoxRow | null> {
+    const row = await trx
+      .selectFrom('mail_in_mailbox')
+      .select([
+        'host',
+        'port',
+        'username',
+        'folder',
+        'after',
+        'authserv_id',
+        'poll_seconds',
+        'updated_at',
+        sql<boolean>`password_encrypted is not null`.as('has_password'),
+      ])
+      .executeTakeFirst();
+    return row ?? null;
   }
 
-  /** `/capabilities`' email_ingest: set up, and checked in the last two polls. */
+  /**
+   * Which mailbox is checked for the household, and how it is (O1): its
+   * own, set up in Settings, overriding FDV_MAIL_IN_* — ready once it has a
+   * password and the worker is running — else the server's.
+   */
+  private effective(server: ServerRow | null, own: BoxRow | null): Effective {
+    if (own) {
+      const fresh = this.workerFresh(server, own.poll_seconds);
+      return {
+        source: 'settings',
+        state: !fresh ? 'unknown' : own.has_password ? 'ready' : 'not_configured',
+        address: /^[^\s@]+@[^\s@]+$/.test(own.username) ? own.username : null,
+        folder: own.folder,
+        after: own.after,
+        sender_check: own.authserv_id !== null,
+        poll_seconds: own.poll_seconds,
+      };
+    }
+    const state = this.state(server);
+    return {
+      source: state === 'ready' ? 'server' : 'none',
+      state,
+      address: server?.address ?? null,
+      folder: server?.folder ?? null,
+      after: server?.after ?? 'move',
+      sender_check: server?.sender_check ?? false,
+      poll_seconds: server?.poll_seconds ?? null,
+    };
+  }
+
+  /** How an address may be confirmed now (F1). */
+  private ways(senderCheck: boolean, ready: boolean): MailInConfirmWays {
+    return { send_from: ready && senderCheck, emailed: this.mail !== null };
+  }
+
+  /**
+   * `/capabilities`' email_ingest: a mailbox set up — the server's, or one
+   * a household set up in Settings (O1, counted by the worker) — and
+   * checked in the last two polls.
+   */
   async available(): Promise<boolean> {
-    return this.state(await this.serverRow()) === 'ready';
+    const row = await this.serverRow();
+    return this.workerFresh(row) && row !== null && (row.configured || row.mailboxes > 0);
   }
 
   /** GET /mail-in: the setting, the mailbox, what the worker last said. An owner's. */
   async get(p: Principal): Promise<MailInView> {
     if (p.role !== 'owner') throw ownersOnly();
     const row = await this.serverRow();
-    const state = this.state(row);
-    const ready = state === 'ready' && row !== null;
-    const confirm = this.ways(row, ready);
     return withPrincipal(this.db, p, async (trx) => {
+      const own = await this.boxRow(trx);
+      const e = this.effective(row, own);
+      const ready = e.state === 'ready';
+      const confirm = this.ways(e.sender_check, ready);
       const s = await trx
         .selectFrom('mail_in')
         .selectAll()
@@ -186,19 +307,21 @@ export class MailInService {
         unverified: s?.unverified ?? 0,
         waiting: s?.waiting ?? 0,
       };
+      // How mail is filed, as the server of the mailbox in use allows.
+      const filing = ready ? (own ? (s?.filing ?? null) : (row?.filing ?? null)) : null;
       return {
         available: ready,
         server: {
-          state,
-          address: ready ? row.address : null,
-          folder: ready ? row.folder : null,
-          after: row?.after ?? 'move',
-          sender_check: ready ? row.sender_check : false,
-          filing: ready ? row.filing : null,
-          filing_words: ready ? mailFilingWords(row.filing, row.after) : null,
-          poll_seconds: row?.poll_seconds ?? null,
+          state: e.state,
+          address: ready ? e.address : null,
+          folder: ready ? e.folder : null,
+          after: e.after,
+          sender_check: ready ? e.sender_check : false,
+          filing,
+          filing_words: ready ? mailFilingWords(filing, e.after, e.source) : null,
+          poll_seconds: e.poll_seconds,
           checked_at: row ? row.checked_at.toISOString() : null,
-          words: mailServerWords(state, row?.address ?? null, row?.folder ?? null),
+          words: mailServerWords(e.state, e.address, e.folder, e.source),
         },
         enabled: s?.enabled ?? false,
         last_checked_at: s?.last_checked_at ? s.last_checked_at.toISOString() : null,
@@ -206,19 +329,187 @@ export class MailInService {
           s?.last_error && s.enabled
             ? {
                 code: s.last_error,
-                words: mailInErrorWords(s.last_error, row?.folder ?? null),
+                words: mailInErrorWords(
+                  s.last_error,
+                  e.folder,
+                  own ? 'settings' : 'server',
+                  row?.allowed_ports,
+                ),
                 at: (s.last_error_at ?? s.updated_at).toISOString(),
               }
             : null,
         last_added_at: s?.last_added_at ? s.last_added_at.toISOString() : null,
         ...counts,
         counts: s?.enabled ? mailInCountWords(counts) : [],
-        sender_warning: ready && !row.sender_check ? MAIL_IN_SENDER_WARNING : null,
+        sender_warning:
+          ready && !e.sender_check ? mailInSenderWarning(own ? 'settings' : 'server') : null,
         confirm,
         confirm_warning:
           ready && !confirm.send_from && !confirm.emailed ? MAIL_IN_NO_CONFIRM : null,
+        source: own ? 'settings' : e.source,
+        mailbox: own
+          ? {
+              host: own.host,
+              port: own.port,
+              username: own.username,
+              password: own.has_password ? 'set' : 'not_set',
+              folder: own.folder,
+              after: own.after,
+              authserv_id: own.authserv_id,
+              poll_seconds: own.poll_seconds,
+              updated_at: own.updated_at.toISOString(),
+            }
+          : null,
       };
     });
+  }
+
+  /**
+   * PUT /mail-in/mailbox (O1): the household mailbox, set up in Settings —
+   * it overrides FDV_MAIL_IN_*. The app password, when given, is sealed
+   * under a key derived from the master key with the household bound in;
+   * left out, the one set is kept. It is never returned, logged, or put in
+   * anything but its sealed column.
+   */
+  async putMailbox(
+    p: Principal,
+    input: MailInMailboxInput,
+    meta: RequestMeta,
+  ): Promise<MailInView> {
+    if (p.role !== 'owner') throw ownersOnly();
+    const host = input.host.trim();
+    const bad = (words: string) => new ApiError(422, 'validation_failed', words);
+    if (!HOST.test(host)) throw bad('Type the mail server’s name, such as imap.gmail.com.');
+    const authserv = input.authserv_id?.trim() || null;
+    if (authserv !== null && !HOST.test(authserv)) {
+      throw bad(`Type the authserv-id as your provider writes it (${MAIL_IN_AUTHSERV_HINT}).`);
+    }
+    const username = input.username.trim();
+    if (!username) throw bad('Type the mailbox’s sign-in: usually its address.');
+    if (CONTROL.test(username)) throw bad('The sign-in can’t have a line break or a tab in it.');
+    const folder = input.folder.trim() || 'INBOX';
+    if (CONTROL.test(folder)) throw bad('The folder can’t have a line break or a tab in it.');
+    // Where the worker may connect for a mailbox set up here (the O1 review,
+    // M3): said now where it can be, and checked again by the worker, by
+    // every address the name resolves to, each time it connects.
+    const server = await this.serverRow();
+    const ports = server?.allowed_ports?.length ? server.allowed_ports : [993];
+    const inside =
+      !(server?.allow_private ?? false) &&
+      (isLoopbackName(host) || (isIP(host) !== 0 && isPrivateAddress(host)));
+    if (!ports.includes(input.port) || inside) {
+      throw new ApiError(422, 'mailbox_address_refused', mailInAddressRefused(ports));
+    }
+    const key = this.mailboxKey;
+    if (input.password !== undefined && !key) {
+      throw new ApiError(503, 'unavailable', 'The vault can’t keep a password just now.');
+    }
+    await withPrincipal(this.db, p, async (trx) => {
+      const before = await trx
+        .selectFrom('mail_in_mailbox')
+        .select([
+          'household_id',
+          'host',
+          'port',
+          'username',
+          sql<boolean>`password_encrypted is not null`.as('has_password'),
+        ])
+        .forUpdate()
+        .executeTakeFirst();
+      // The password was kept for one server, port and sign-in alone (H1):
+      // any of them changed, it is typed again, for the new one.
+      const hostChanged =
+        before !== undefined &&
+        (before.host.toLowerCase() !== host.toLowerCase() || before.port !== input.port);
+      const userChanged = before !== undefined && before.username !== username;
+      if (before?.has_password && (hostChanged || userChanged) && input.password === undefined) {
+        throw new ApiError(
+          422,
+          'mailbox_password_needed',
+          'Type the app password again for the new server.',
+        );
+      }
+      const values = {
+        host,
+        port: input.port,
+        username,
+        folder,
+        after: input.after,
+        authserv_id: authserv,
+        poll_seconds: input.poll_seconds,
+        updated_by: p.accountId,
+        updated_at: new Date(),
+        ...(input.password !== undefined && key
+          ? {
+              password_encrypted: sealMailboxPassword(key, input.password, p.householdId, {
+                host,
+                port: input.port,
+                username,
+              }),
+            }
+          : {}),
+      };
+      if (before) {
+        await trx.updateTable('mail_in_mailbox').set(values).execute();
+      } else {
+        await trx
+          .insertInto('mail_in_mailbox')
+          .values({ household_id: p.householdId, ...values })
+          .execute();
+      }
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'mail_in.mailbox_saved',
+        objectType: 'household',
+        objectId: p.householdId,
+        // Whether the password, the server or the sign-in changed: never
+        // the password, the server or the sign-in themselves.
+        detail: {
+          password_changed: input.password !== undefined,
+          host_changed: hostChanged,
+          user_changed: userChanged,
+        },
+        ip: meta.ip,
+      });
+    });
+    return this.get(p);
+  }
+
+  /** DELETE /mail-in/mailbox (O1): the household's own mailbox gone, password and all; FDV_MAIL_IN_* again. */
+  async removeMailbox(p: Principal, meta: RequestMeta): Promise<MailInView> {
+    if (p.role !== 'owner') throw ownersOnly();
+    await withPrincipal(this.db, p, async (trx) => {
+      const gone = await trx.deleteFrom('mail_in_mailbox').returning('household_id').execute();
+      if (gone.length > 0) {
+        await appendAudit(trx, {
+          householdId: p.householdId,
+          actorAccountId: p.accountId,
+          action: 'mail_in.mailbox_removed',
+          objectType: 'household',
+          objectId: p.householdId,
+          detail: {},
+          ip: meta.ip,
+        });
+      }
+    });
+    return this.get(p);
+  }
+
+  /**
+   * POST /mail-in/mailbox/test (O1): Test the mailbox, in the worker —
+   * the one set up here, else the server's. Read-only: it signs in, opens
+   * the folder with EXAMINE and reads the newest three messages'
+   * Authentication-Results with BODY.PEEK. The answer is the check's.
+   */
+  async test(p: Principal): Promise<SettingsCheckView> {
+    if (p.role !== 'owner') throw ownersOnly();
+    if (!this.checks) {
+      throw new ApiError(503, 'unavailable', 'The worker can’t be asked just now.', {
+        retriable: true,
+      });
+    }
+    return this.checks.ask(p, 'mailbox', null);
   }
 
   /**
@@ -229,9 +520,11 @@ export class MailInService {
     if (p.role !== 'owner') throw ownersOnly();
     if (input.enabled) {
       const row = await this.serverRow();
-      const state = this.state(row);
-      if (state !== 'ready') {
-        throw notAvailable(mailServerWords(state, row?.address ?? null, row?.folder ?? null));
+      const e = await withPrincipal(this.db, p, async (trx) =>
+        this.effective(row, await this.boxRow(trx)),
+      );
+      if (e.state !== 'ready') {
+        throw notAvailable(mailServerWords(e.state, e.address, e.folder, e.source));
       }
     }
     await withPrincipal(this.db, p, async (trx) => {
@@ -289,10 +582,54 @@ export class MailInService {
    * in the mailbox. Off — not set up, or not turned on — says so (`on:
    * false`) and names no mailbox.
    */
+  /**
+   * Where the caller's household's mail goes, for whoever may add (O1): its
+   * own mailbox, of which only that much (mail_in_box, 0076) — else the
+   * server's.
+   */
+  private async publicBox(
+    p: Principal,
+    row: ServerRow | null,
+  ): Promise<{
+    ready: boolean;
+    address: string | null;
+    after: 'move' | 'delete';
+    sender_check: boolean;
+  }> {
+    const own = await withPrincipal(this.db, p, async (trx) => {
+      const { rows } = await sql<{
+        configured: boolean;
+        address: string | null;
+        after: 'move' | 'delete';
+        sender_check: boolean;
+      }>`select * from mail_in_box()`.execute(trx);
+      return rows[0] ?? null;
+    });
+    if (own) {
+      return {
+        ready: own.configured && this.workerFresh(row),
+        address: own.address,
+        after: own.after,
+        sender_check: own.sender_check,
+      };
+    }
+    return {
+      ready: this.state(row) === 'ready',
+      address: row?.address ?? null,
+      after: row?.after ?? 'move',
+      sender_check: row?.sender_check ?? false,
+    };
+  }
+
+  /** What is done with an email once it is dealt with, for the household (O1): its mailbox's word. */
+  async afterFor(p: Principal): Promise<'move' | 'delete'> {
+    return (await this.publicBox(p, await this.serverRow())).after;
+  }
+
   async mine(p: Principal): Promise<MailInMine> {
     await this.mustAdd(p);
-    const row = await this.serverRow();
-    const ready = this.state(row) === 'ready' && row !== null;
+    const box = await this.publicBox(p, await this.serverRow());
+    const ready = box.ready;
     // Whether the household has it on: of the owners' row, that one word
     // and nothing else (mail_in_on, 0069), asked as the caller.
     const on = ready
@@ -301,7 +638,7 @@ export class MailInService {
           return rows[0]?.on === true;
         })
       : false;
-    const confirm = this.ways(row, ready);
+    const confirm = this.ways(box.sender_check, ready);
     return withPrincipal(this.db, p, async (trx) => {
       const account = await trx
         .selectFrom('account')
@@ -339,12 +676,12 @@ export class MailInService {
           : null;
       return {
         on,
-        address: on && row ? row.address : null,
+        address: on ? box.address : null,
         email: account.email,
         confirmed,
         code_expires_at: on ? live : null,
         code_kind: on && live ? (mine?.code_kind ?? null) : null,
-        sender_check: on && row ? row.sender_check : false,
+        sender_check: on ? box.sender_check : false,
         confirm: on ? confirm : { send_from: false, emailed: false },
         confirm_words:
           on && !confirmed && !confirm.send_from && !confirm.emailed ? MAIL_IN_NO_CONFIRM : null,

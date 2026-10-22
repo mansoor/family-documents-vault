@@ -47,6 +47,8 @@ describe('the mail thread (S4)', () => {
           codes: ['FDV-ABCD-EFGH-JKMN'],
           auth: 'pass',
           date: '2026-10-13T09:00:00.000Z',
+          // Whose the topmost Authentication-Results is (0.9.0, O1: Test the mailbox).
+          authservTop: ID,
         },
         parts: [],
         skipped: { tooMany: 0, tooDeep: 0 },
@@ -59,6 +61,15 @@ describe('the mail thread (S4)', () => {
         ID,
       );
       expect(forged.state === 'done' && forged.head.auth).toBe('fail');
+      // The topmost is the one said, read as strictly as the check reads it.
+      expect(forged.state === 'done' && forged.head.authservTop).toBe('mx.other.test');
+      const broken = await t.head(
+        Buffer.from(mail({ above: [AR('mx.other.test; dmarc=pass (')], from: 'a@example.test' })),
+        null,
+      );
+      expect(broken.state === 'done' && broken.head.authservTop).toBeNull();
+      const none = await t.head(Buffer.from(mail({ from: 'a@example.test' })), null);
+      expect(none.state === 'done' && none.head.authservTop).toBeNull();
       // No authserv-id set: never `pass`.
       const unset = await t.head(Buffer.from(raw), null);
       expect(unset.state === 'done' && unset.head.auth).toBe('fail');

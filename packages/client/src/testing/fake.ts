@@ -136,6 +136,11 @@ import {
   type KeptRule,
   type LearnedClash,
   type Capabilities,
+  isLoopbackName,
+  isPrivateAddress,
+  mailInAddressRefused,
+  type MailInMailboxView,
+  type MailInView,
   type CaptureMetadata,
   type CollectionAudience,
   type CollectionDetail,
@@ -435,6 +440,14 @@ export interface FakeVaultState {
    * reads — what each item's pages proposed, against the document now.
    */
   readingChecks?: FakeReadingCheck[];
+  /**
+   * The household mailbox set up in Settings (0.9.0, O1), and the app
+   * password it was saved with, as only a fake may keep it; and where one may
+   * be, as the worker says (FDV_MAIL_IN_ALLOWED_PORTS, FDV_MAIL_IN_ALLOW_PRIVATE).
+   */
+  mailbox?: (MailInMailboxView & { secret: string | null }) | null;
+  mailInAllowedPorts?: number[];
+  mailInAllowPrivate?: boolean;
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -1622,6 +1635,123 @@ export function createFakeVault(): {
     return ok(open(installation, member.id), 201);
   };
 
+  /**
+   * The household mailbox set up in Settings (0.9.0, O1), as the real vault
+   * answers: an owner's; refused on a port or at an address the worker
+   * doesn't connect to (`mailbox_address_refused`, the O1 review M3), and
+   * with the server, port or sign-in changed but no password typed again
+   * (`mailbox_password_needed`, H1). Null for any other route.
+   */
+  const mailboxRoutes = (
+    path: string,
+    init: Parameters<FetchLike>[1],
+    body: Record<string, unknown>,
+    sessionOf: () => FakeSession | ResponseLike,
+  ): ResponseLike | null => {
+    if (path !== '/api/v1/mail-in/mailbox') return null;
+    const s = sessionOf();
+    if (!('id' in s)) return s;
+    if (whoOf(s).role !== 'owner') {
+      return fail(403, 'forbidden', 'Only an owner can set up email in.');
+    }
+    const view = (): MailInView => {
+      const box = state.mailbox ?? null;
+      const ready = box !== null && box.password === 'set';
+      return {
+        available: ready,
+        server: {
+          state: ready ? 'ready' : 'not_configured',
+          address: ready && box.username.includes('@') ? box.username : null,
+          folder: ready ? box.folder : null,
+          after: box?.after ?? 'move',
+          sender_check: ready && box.authserv_id !== null,
+          filing: null,
+          filing_words: null,
+          poll_seconds: box?.poll_seconds ?? null,
+          checked_at: null,
+          words: ready
+            ? 'The household mailbox is set up.'
+            : 'No household mailbox is set up yet. Set one up below, or on the server.',
+        },
+        enabled: false,
+        last_checked_at: null,
+        last_error: null,
+        last_added_at: null,
+        unknown_senders: 0,
+        unverified: 0,
+        waiting: 0,
+        counts: [],
+        sender_warning: null,
+        confirm: { send_from: false, emailed: false },
+        confirm_warning: null,
+        source: box ? 'settings' : 'none',
+        mailbox: box
+          ? {
+              host: box.host,
+              port: box.port,
+              username: box.username,
+              password: box.password,
+              folder: box.folder,
+              after: box.after,
+              authserv_id: box.authserv_id,
+              poll_seconds: box.poll_seconds,
+              updated_at: box.updated_at,
+            }
+          : null,
+      };
+    };
+    if (init.method === 'DELETE') {
+      state.mailbox = null;
+      return ok(view());
+    }
+    if (init.method !== 'PUT') return null;
+    const host = typeof body.host === 'string' ? body.host.trim() : '';
+    const port = typeof body.port === 'number' ? body.port : NaN;
+    const username = typeof body.username === 'string' ? body.username.trim() : '';
+    const password = typeof body.password === 'string' ? body.password : undefined;
+    if (!host || !username || !Number.isInteger(port)) {
+      return fail(422, 'validation_failed', 'Type the mail server and the sign-in.');
+    }
+    const ports = state.mailInAllowedPorts?.length ? state.mailInAllowedPorts : [993];
+    const literal = /^[0-9.]+$/.test(host) || host.includes(':');
+    const inside =
+      !(state.mailInAllowPrivate ?? false) &&
+      (isLoopbackName(host) || (literal && isPrivateAddress(host)));
+    if (!ports.includes(port) || inside) {
+      return fail(422, 'mailbox_address_refused', mailInAddressRefused(ports));
+    }
+    const before = state.mailbox ?? null;
+    const moved =
+      before !== null &&
+      (before.host.toLowerCase() !== host.toLowerCase() ||
+        before.port !== port ||
+        before.username !== username);
+    if (before?.password === 'set' && moved && password === undefined) {
+      return fail(
+        422,
+        'mailbox_password_needed',
+        'Type the app password again for the new server.',
+      );
+    }
+    const secret = password ?? before?.secret ?? null;
+    state.mailbox = {
+      host,
+      port,
+      username,
+      password: secret === null ? 'not_set' : 'set',
+      secret,
+      folder: typeof body.folder === 'string' && body.folder.trim() ? body.folder.trim() : 'INBOX',
+      after: body.after === 'delete' ? 'delete' : 'move',
+      authserv_id:
+        typeof body.authserv_id === 'string' && body.authserv_id.trim()
+          ? body.authserv_id.trim()
+          : null,
+      poll_seconds: typeof body.poll_seconds === 'number' ? body.poll_seconds : 300,
+      updated_at: new Date().toISOString(),
+    };
+    return ok(view());
+  };
+
   /** Computers that send scans (0.8.0, D1): their routes, or null for any other. */
   const deviceRoutes = (
     path: string,
@@ -1892,6 +2022,8 @@ export function createFakeVault(): {
     // key refused on every other route, first.
     const deviceAnswer = deviceRoutes(path, init, body, session);
     if (deviceAnswer) return deviceAnswer;
+    const mailboxAnswer = mailboxRoutes(path, init, body, session);
+    if (mailboxAnswer) return mailboxAnswer;
 
     if (path === '/api/v1/capabilities') {
       const caps: Capabilities = {

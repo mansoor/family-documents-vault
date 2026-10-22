@@ -62,6 +62,7 @@ import { registerMailIn } from './mail-in/routes.js';
 import type { MailInService } from './mail-in/service.js';
 import { registerReadingCheck } from './reading-check/routes.js';
 import type { ReadingCheckService } from './reading-check/service.js';
+import { registerSettingsChecks, type SettingsCheckService } from './settings-checks.js';
 import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
 import { ownNetworks, trustProxyFor } from './client-address.js';
@@ -130,6 +131,8 @@ export interface AppDeps {
   mailIn?: MailInService;
   /** The Reading check (0.9.0, R0): an owner's. */
   readingChecks?: ReadingCheckService;
+  /** What an owner asks the worker from Settings, and its answers (0.9.0, O1). */
+  settingsChecks?: SettingsCheckService;
   logger?: boolean | object;
   /**
    * The networks this process is on, for `FDV_TRUST_PROXY=network` (5.30):
@@ -484,8 +487,9 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerIncoming(app, deps.incoming);
   registerBatches(app, deps.batches);
   if (deps.watchFolder) registerWatchFolder(app, deps.watchFolder);
-  if (deps.mailIn) registerMailIn(app, deps.mailIn);
+  if (deps.mailIn) registerMailIn(app, deps.mailIn, deps.stepUp);
   if (deps.readingChecks) registerReadingCheck(app, deps.readingChecks);
+  if (deps.settingsChecks) registerSettingsChecks(app, deps.settingsChecks);
   registerDevices(app, deps.devices, deps.stepUp, config.FDV_MAX_UPLOAD_BYTES);
 
   return app;

@@ -9,7 +9,9 @@ import {
   deriveKey,
   EnvKeyProvider,
   KEK_PURPOSE,
+  MAILBOX_PASSWORD_PURPOSE,
   openIdentity,
+  openMailboxPassword,
   ScopeKeys,
   unwrapKey,
   wrapKey,
@@ -54,6 +56,8 @@ const NEWER = 'a-newer-master-key-that-is-long-enough-5555555555';
 const FOREIGN = 'a-master-key-from-some-other-vault-0123456789';
 const S3 = { accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'the-bucket-secret-key' };
 const MAIL_PASSWORD = 'the household mail password';
+/** The household mailbox's app password, set in Settings (0.9.0, O1). */
+const MAILBOX_PASSWORD = 'the household mailbox app password';
 /** What the owner keeps of themselves (5.26): each part opens after the rotation as it was. */
 const IDENTITY = {
   shared: { given_name: 'Rotated', ids: [{ id: 'p1', kind: 'passport', number: 'ROT-PASS-1' }] },
@@ -114,6 +118,7 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       ['account', 'totp_secret'],
       ['vault', 'credentials_encrypted'],
       ['smtp_settings', 'password_encrypted'],
+      ['mail_in_mailbox', 'password_encrypted'],
     ]) {
       const { rows } = await admin.query<{ v: string }>(
         `select encode(${column}, 'hex') as v from ${table} where ${column} is not null order by 1`,
@@ -205,6 +210,31 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       },
     });
     expect(smtp.statusCode).toBe(200);
+
+    // The household mailbox, set up in Settings with its app password (O1),
+    // the owner having just confirmed it is them.
+    await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/step-up',
+      headers: h.as(owner),
+      payload: { password: 'correct horse battery' },
+    });
+    const mailbox = await h.app.inject({
+      method: 'PUT',
+      url: '/api/v1/mail-in/mailbox',
+      headers: h.as(owner),
+      payload: {
+        host: 'imap.example.test',
+        port: 993,
+        username: 'home@example.test',
+        password: MAILBOX_PASSWORD,
+        folder: 'INBOX',
+        after: 'move',
+        authserv_id: null,
+        poll_seconds: 300,
+      },
+    });
+    expect(mailbox.statusCode, mailbox.body).toBe(200);
 
     // An S3 vault, its credentials sealed as VaultService.create seals them.
     vaultId = (
@@ -425,10 +455,43 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       expect(done.out).toContain('1 two-step sign-in secret sealed again');
       expect(done.out).toContain('1 storage (S3) credential sealed again');
       expect(done.out).toContain('1 mail (SMTP) password sealed again');
+      expect(done.out).toContain('1 household mailbox (IMAP) password sealed again');
       expect(done.out).toContain(`${sessions} session${sessions === 1 ? '' : 's'} ended`);
-      for (const secret of [NEW, TEST_MASTER, totpSecret, S3.secretAccessKey, MAIL_PASSWORD]) {
+      for (const secret of [
+        NEW,
+        TEST_MASTER,
+        totpSecret,
+        S3.secretAccessKey,
+        MAIL_PASSWORD,
+        MAILBOX_PASSWORD,
+      ]) {
         expect(done.out).not.toContain(secret);
       }
+    });
+
+    const BOX = { host: 'imap.example.test', port: 993, username: 'home@example.test' };
+    it('the household mailbox’s app password opens under the new key, as the worker opens it (O1)', async () => {
+      const box = await admin.query<{ p: Buffer }>(
+        'select password_encrypted as p from mail_in_mailbox where household_id = $1',
+        [owner.household_id],
+      );
+      const sealed = box.rows[0]?.p as Buffer;
+      expect(
+        openMailboxPassword(
+          deriveKey(NEW, MAILBOX_PASSWORD_PURPOSE),
+          sealed,
+          owner.household_id,
+          BOX,
+        ),
+      ).toBe(MAILBOX_PASSWORD);
+      expect(() =>
+        openMailboxPassword(
+          deriveKey(TEST_MASTER, MAILBOX_PASSWORD_PURPOSE),
+          sealed,
+          owner.household_id,
+          BOX,
+        ),
+      ).toThrow();
     });
 
     it("an owner's two-step sign-in code verifies under the new key, and the old opens nothing", async () => {
@@ -468,7 +531,7 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
 
     it('every scope key opens under the new key, and opens its files', async () => {
       // All of them: the one added while it waited too.
-      expect(await checkMasterKey(admin, NEW)).toEqual({ checked: scopeKeys + 3 });
+      expect(await checkMasterKey(admin, NEW)).toEqual({ checked: scopeKeys + 4 });
       const keys = new ScopeKeys(new EnvKeyProvider(NEW));
       // As the owning role, which every household's rows are open to.
       const db = createDb(createPool(h.adminUrl, 1));

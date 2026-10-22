@@ -1,13 +1,17 @@
 import { readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   ALERT_LINK_KEY_PURPOSE,
   deriveKey,
   EnvKeyProvider,
+  MAILBOX_PASSWORD_PURPOSE,
   OPERATOR_MAIL_KEY_PURPOSE,
   READING_RULES_KEY_PURPOSE,
   ScopeKeys,
 } from '@fdv/crypto';
 import { assertSchemaKnown, createPool } from '@fdv/db';
+import { WATCH_SYSTEM_DIRS } from '@fdv/shared';
 import { loadConfig, logs, type LogLevel } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
 import { buildExport, type ExportJob } from './jobs/export.js';
@@ -61,6 +65,7 @@ import {
   takeMailInPassword,
 } from './jobs/mail-in.js';
 import { MailThread } from './jobs/mail-thread.js';
+import { isSettingsCheckJob, runSettingsCheck } from './jobs/settings-check.js';
 import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
 import { masterKeyOpensVault, resolveMasterSecret } from './master-key-check.js';
@@ -518,6 +523,22 @@ async function main(): Promise<void> {
   if (resumed > 0) log('info', 'batch items to draw or read, sent again', { households: resumed });
   // The scanner folder (S3): looked in every 15 seconds by one worker, the
   // one holding its advisory lock; what it adds is drawn and read above.
+  // Since 0.9.0 (O1) an owner may choose it inside FDV_WATCH_ROOTS; never
+  // one of the vault's own folders, nor one above them.
+  const ownDirs = [
+    ...WATCH_SYSTEM_DIRS,
+    config.FDV_LOCAL_VAULT_DIR,
+    config.FDV_BACKUP_DIR,
+    tmpdir(),
+    process.cwd(),
+    ...[config.FDV_MASTER_KEY_FILE, config.FDV_MAIL_IN_PASSWORD_FILE]
+      .filter((f): f is string => typeof f === 'string')
+      .map((f) => path.dirname(path.resolve(f))),
+  ].filter((d, i, all) => all.indexOf(d) === i);
+  const watchRoots = [...config.FDV_WATCH_ROOTS];
+  if (config.FDV_WATCH_DIR && !watchRoots.includes(config.FDV_WATCH_DIR)) {
+    watchRoots.push(config.FDV_WATCH_DIR);
+  }
   const watch = new WatchRunner(
     {
       admin: dbs.admin,
@@ -532,6 +553,8 @@ async function main(): Promise<void> {
     },
     {
       dir: config.FDV_WATCH_DIR ?? null,
+      roots: config.FDV_WATCH_ROOTS,
+      ownDirs,
       lockUrl: config.DATABASE_URL,
       stableMs: config.FDV_WATCH_STABLE_SECONDS * 1000,
       incompleteGraceMs: config.FDV_WATCH_INCOMPLETE_GRACE_SECONDS * 1000,
@@ -547,6 +570,13 @@ async function main(): Promise<void> {
   // Held by the mailbox's connector alone from here on.
   delete config.FDV_MAIL_IN_PASSWORD;
   const mailReader = new MailThread();
+  const mailKey = deriveKey(masterSecret, MAILBOX_PASSWORD_PURPOSE);
+  // Where a mailbox set up in Settings may be (the O1 review, M3): the
+  // server's own FDV_MAIL_IN_* are the operator's, and not limited.
+  const mailHosts = {
+    allowedPorts: config.FDV_MAIL_IN_ALLOWED_PORTS,
+    allowPrivate: config.FDV_MAIL_IN_ALLOW_PRIVATE === 'true',
+  };
   const mailIn = new MailInRunner(
     {
       admin: dbs.admin,
@@ -559,6 +589,9 @@ async function main(): Promise<void> {
       maxBytes: config.FDV_MAX_UPLOAD_BYTES,
       sendBatchPreviews: (hh) => sendBatchPreviews(boss, hh),
       reader: mailReader,
+      // A mailbox set up in Settings (O1): its password opened here, for its connector alone.
+      mailKey,
+      mailHosts,
     },
     {
       connector: mailbox?.connector ?? null,
@@ -577,6 +610,36 @@ async function main(): Promise<void> {
       senders_checked: Boolean(config.FDV_MAIL_IN_AUTHSERV_ID),
     });
   }
+  // What an owner asks from Settings (O1): Verify a scanner folder, the
+  // folders inside one, Test the mailbox. Looked for every second, one at a
+  // time, so an owner waiting is answered soon.
+  const checkDeps = {
+    db: dbs.app,
+    log,
+    watch: { roots: watchRoots, ownDirs },
+    mail: {
+      env: mailbox
+        ? {
+            connector: mailbox.connector,
+            folder: config.FDV_MAIL_IN_FOLDER,
+            authservId: config.FDV_MAIL_IN_AUTHSERV_ID ?? null,
+          }
+        : null,
+      mailKey,
+      reader: mailReader,
+      hosts: mailHosts,
+    },
+  };
+  await boss.createQueue(JOBS.settingsCheck, { retryLimit: 0, expireInSeconds: 120 });
+  await boss.work(JOBS.settingsCheck, { batchSize: 1, pollingIntervalSeconds: 1 }, async (jobs) => {
+    for (const job of jobs) {
+      if (!isSettingsCheckJob(job.data)) {
+        log('warn', 'settings check job had the wrong shape', { id: job.id });
+        continue;
+      }
+      await runSettingsCheck(checkDeps, job.data);
+    }
+  });
   await boss.createQueue(JOBS.remindersWeekly);
   await boss.work(JOBS.remindersWeekly, async () => {
     const r = await weekly(reminderDeps);

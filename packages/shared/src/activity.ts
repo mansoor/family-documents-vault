@@ -737,11 +737,22 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return detail.enabled === true
         ? line(`${who} set the scanner folder to fill ${possessive(personOf(e))} Inbox`, true)
         : line(`${who} turned off the scanner folder`, true);
+    // Which folder the scanner folder is, and how long scans are kept (0.9.0, O1).
+    case 'watch_folder.folder_changed':
+      return line(
+        `${who} changed which folder the scanner saves into, or how long scans are kept`,
+        true,
+      );
     // Email in (S4): on or off.
     case 'mail_in.changed':
       return detail.enabled === true
         ? line(`${who} turned on email in`, true)
         : line(`${who} turned off email in`, true);
+    // The household mailbox set up in Settings, or taken away (0.9.0, O1).
+    case 'mail_in.mailbox_saved':
+      return line(`${who} changed the household mailbox email in checks`, true);
+    case 'mail_in.mailbox_removed':
+      return line(`${who} went back to the server’s own household mailbox for email in`, true);
     case 'export.requested':
       return line(`${who} asked for a copy of everything`, true);
     case 'export.downloaded':

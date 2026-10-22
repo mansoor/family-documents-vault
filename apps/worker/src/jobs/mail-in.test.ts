@@ -2,7 +2,13 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
+import {
+  deriveKey,
+  EnvKeyProvider,
+  MAILBOX_PASSWORD_PURPOSE,
+  ScopeKeys,
+  sealMailboxPassword,
+} from '@fdv/crypto';
 import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import { BATCH_MAX_FILES, emailDay, MAIL_IN_MAX_MESSAGE_BYTES } from '@fdv/shared';
@@ -19,6 +25,8 @@ import {
 } from './mail-in.js';
 import { MailThread } from './mail-thread.js';
 import { FakeMailbox, mail, pdf, png } from './mail-test-helper.js';
+import { childEnv } from './child-env.js';
+import type { ImapSettings } from './mailbox.js';
 
 /**
  * Email in (0.8.0, S4), in the worker: mail From a member's confirmed
@@ -165,6 +173,9 @@ describe.skipIf(!testAdminUrl())('email in, in the worker (S4)', () => {
       sent.push(h);
     },
     reader,
+    // A mailbox set up in Settings: its server's name resolved to a public
+    // address (TEST-NET-3), as DNS would, and on 993 (the O1 review, M3).
+    mailHosts: { allowedPorts: [993], allowPrivate: false, resolve: async () => ['203.0.113.7'] },
     ...over,
   });
   const runner = (
@@ -1001,4 +1012,279 @@ describe.skipIf(!testAdminUrl())('email in, in the worker (S4)', () => {
     expect((await items()).map((i) => i.original_name)).toEqual(['one.pdf']);
     expect(box.inbox()).toHaveLength(1);
   }, 60_000);
+
+  // ------------------------------------------------- set up in Settings (0.9.0, O1)
+
+  describe('the mailbox set up in Settings (O1)', () => {
+    const mailKey = deriveKey(MASTER, MAILBOX_PASSWORD_PURPOSE);
+    const PASSWORD = `settings-pw-${randomBytes(6).toString('hex')}`;
+    afterEach(async () => {
+      await admin.query('delete from mail_in_mailbox where household_id = $1', [hh]);
+    });
+    const setUp = (
+      o: { password?: string | null; after?: string; authserv?: string | null } = {},
+    ) =>
+      admin.query(
+        `insert into mail_in_mailbox (household_id, host, port, username, password_encrypted, folder, after, authserv_id, poll_seconds)
+         values ($1, 'imap.household.test', 993, 'family@household.test', $2, 'Docs', $3, $4, 60)
+         on conflict (household_id) do update set password_encrypted = $2, after = $3, authserv_id = $4,
+           updated_at = now()`,
+        [
+          hh,
+          o.password === null
+            ? null
+            : sealMailboxPassword(mailKey, o.password ?? PASSWORD, hh, {
+                host: 'imap.household.test',
+                port: 993,
+                username: 'family@household.test',
+              }),
+          o.after ?? 'move',
+          o.authserv === undefined ? null : o.authserv,
+        ],
+      );
+
+    it('is checked over FDV_MAIL_IN_*: its own server, folder and filing — its password to its connector alone', async () => {
+      await turnOn();
+      await confirm('adult');
+      const server = new FakeMailbox();
+      server.deliver(doc('adult', 'server-copy'));
+      const own = new FakeMailbox();
+      own.folders.set('Docs', []);
+      own.deliver(doc('adult', 'household-copy'), { folder: 'Docs' });
+      await setUp({ after: 'delete' });
+      const given: ImapSettings[] = [];
+      const before = JSON.stringify(process.env);
+      const r = runner(
+        server,
+        {},
+        {
+          mailKey,
+          connect: (s) => {
+            given.push(s);
+            return own;
+          },
+        },
+      );
+      const round = await r.tick();
+      expect(round.outcomes.map((o) => o.kind)).toEqual(['added']);
+      expect((await items()).map((i) => i.original_name)).toEqual(['household-copy.pdf']);
+      // Its server and sign-in; the password opened for its connector, and nothing else.
+      expect(given).toEqual([
+        {
+          host: 'imap.household.test',
+          port: 993,
+          user: 'family@household.test',
+          password: PASSWORD,
+          // Connected to at the address checked, the name kept for the certificate (M3).
+          address: '203.0.113.7',
+        },
+      ]);
+      // Its folder, and deleted as it is set: the server's own never opened.
+      expect(own.filings).toEqual([{ uid: 1, how: 'remove' }]);
+      expect(server.opens).toBe(0);
+      expect(server.inbox()).toHaveLength(1);
+      expect(
+        (await admin.query('select filing from mail_in where household_id = $1', [hh])).rows[0],
+      ).toEqual({ filing: 'delete' });
+      // Senders not checked (no authserv-id set here): each item says so.
+      expect((await items())[0]?.sender_unverified).toBe(true);
+      // Never in the environment, a tool's, the log or the database.
+      expect(JSON.stringify(process.env)).toBe(before);
+      expect(JSON.stringify(childEnv())).not.toContain(PASSWORD);
+      expect(logs.join('\n')).not.toContain(PASSWORD);
+      const dump = await admin.query<{ t: string }>(
+        `select string_agg(row_to_json(x)::text, ',') as t from
+           (select * from mail_in union all select * from mail_in where false) x`,
+      );
+      expect(dump.rows[0]?.t ?? '').not.toContain(PASSWORD);
+      // Counted for /capabilities: one household's own mailbox.
+      expect((await admin.query('select mailboxes from mail_in_server')).rows[0]).toEqual({
+        mailboxes: 1,
+      });
+    }, 60_000);
+
+    it('with its authserv-id, senders are checked by it; set up again, it is tried again at once', async () => {
+      await turnOn();
+      await confirm('adult');
+      const own = new FakeMailbox();
+      own.folders.set('Docs', []);
+      own.deliver(doc('adult', 'unvouched'), { folder: 'Docs' });
+      own.deliver(
+        doc('adult', 'vouched', { above: [PASS(from('adult').split('@')[1] as string)] }),
+        { folder: 'Docs' },
+      );
+      await setUp({ authserv: AUTHSERV });
+      own.failing = 'login_failed';
+      const r = runner(null, {}, { mailKey, connect: () => own });
+      expect((await r.tick()).error).toBe('login_failed');
+      // Backing off: not tried again this soon…
+      expect((await r.tick()).waited).toBe(true);
+      // …but an owner who sets it up anew is tried at once.
+      own.failing = null;
+      await setUp({ authserv: AUTHSERV, password: 'the-right-one' });
+      const round = await r.tick();
+      expect(round.error).toBeNull();
+      const kinds = round.outcomes.map((o) => o.kind).sort();
+      expect(kinds).toEqual(['added', 'unverified']);
+      expect((await items()).map((i) => [i.original_name, i.sender_unverified])).toEqual([
+        ['vouched.pdf', false],
+      ]);
+    }, 60_000);
+
+    it('a password this master key does not open is said, and nothing is signed in to; one with no password checks nothing', async () => {
+      await turnOn();
+      const own = new FakeMailbox();
+      await admin.query(
+        `insert into mail_in_mailbox (household_id, host, username, password_encrypted)
+         values ($1, 'imap.household.test', 'x@household.test', $2)`,
+        [
+          hh,
+          sealMailboxPassword(
+            deriveKey('another-master-key-entirely-32-bytes!!', MAILBOX_PASSWORD_PURPOSE),
+            'x',
+            hh,
+            { host: 'imap.household.test', port: 993, username: 'x@household.test' },
+          ),
+        ],
+      );
+      const server = new FakeMailbox();
+      const r = runner(server, {}, { mailKey, connect: () => own });
+      expect((await r.tick()).error).toBe('password_sealed');
+      expect((await setting())?.last_error).toBe('password_sealed');
+      expect(own.opens + server.opens).toBe(0);
+      await admin.query(
+        'update mail_in_mailbox set password_encrypted = null where household_id = $1',
+        [hh],
+      );
+      const round = await r.tick();
+      expect(round.outcomes).toEqual([]);
+      // Set up in Settings, it is the household's alone: the server's is never checked instead.
+      expect(own.opens + server.opens).toBe(0);
+    }, 60_000);
+
+    it('a password kept for one server is never sent to another: host, port or sign-in changed, it does not open (the O1 review, H1)', async () => {
+      await turnOn();
+      await setUp();
+      const given: ImapSettings[] = [];
+      const own = new FakeMailbox();
+      const r = runner(
+        null,
+        {},
+        {
+          mailKey,
+          connect: (s) => {
+            given.push(s);
+            return own;
+          },
+          mailHosts: {
+            allowedPorts: [993, 143],
+            allowPrivate: false,
+            resolve: async () => ['203.0.113.7'],
+          },
+        },
+      );
+      // The reviewer's PoC: the server changed under the sealed password (as
+      // an owner, or anybody writing the row, could), and it is checked.
+      for (const change of [
+        "host = 'imap.attacker.test'",
+        'port = 143',
+        "username = 'attacker@household.test'",
+      ]) {
+        await admin.query(
+          `update mail_in_mailbox set ${change}, updated_at = now() where household_id = $1`,
+          [hh],
+        );
+        clock += 10 * 60_000;
+        expect((await r.tick()).error, change).toBe('password_sealed');
+        expect((await setting())?.last_error).toBe('password_sealed');
+        await setUp();
+      }
+      expect(given).toEqual([]);
+      expect(own.opens).toBe(0);
+    }, 60_000);
+
+    it('a server set up in Settings is connected to only on an allowed port, and never inside the server’s own network (the O1 review, M3)', async () => {
+      await turnOn();
+      const sealFor = (host: string, port: number) =>
+        sealMailboxPassword(mailKey, PASSWORD, hh, {
+          host,
+          port,
+          username: 'family@household.test',
+        });
+      const at = (host: string, port = 993) =>
+        admin.query(
+          `insert into mail_in_mailbox (household_id, host, port, username, password_encrypted, folder)
+           values ($1, $2, $3, 'family@household.test', $4, 'Docs')
+           on conflict (household_id) do update set host = $2, port = $3, password_encrypted = $4,
+             updated_at = now()`,
+          [hh, host, port, sealFor(host, port)],
+        );
+      const given: ImapSettings[] = [];
+      const own = new FakeMailbox();
+      own.folders.set('Docs', []);
+      let resolved = ['203.0.113.7'];
+      let rules: { allowedPorts: number[]; allowPrivate: boolean } = {
+        allowedPorts: [993],
+        allowPrivate: false,
+      };
+      const mk = () =>
+        runner(
+          null,
+          {},
+          {
+            mailKey,
+            connect: (s) => {
+              given.push(s);
+              return own;
+            },
+            mailHosts: { ...rules, resolve: async () => resolved },
+          },
+        );
+      let r = mk();
+      const refused = async (why: string) => {
+        clock += 10 * 60_000;
+        expect((await r.tick()).error, why).toBe('address_refused');
+        expect((await setting())?.last_error, why).toBe('address_refused');
+      };
+      // A name that is this machine, an address that is, a name resolving
+      // inside the network (metadata, a private LAN, CGNAT, a Docker bridge's),
+      // and another port: refused, never connected to.
+      await at('localhost');
+      await refused('localhost');
+      await at('127.0.0.1');
+      await refused('127.0.0.1');
+      await at('imap.rebound.test');
+      for (const a of [
+        '169.254.169.254',
+        '10.0.0.5',
+        '192.168.1.20',
+        '100.64.0.1',
+        '172.17.0.1',
+        '::1',
+      ]) {
+        resolved = [a];
+        await refused(a);
+      }
+      // One address of several inside it is enough to refuse.
+      resolved = ['203.0.113.7', '10.0.0.5'];
+      await refused('mixed');
+      resolved = ['203.0.113.7'];
+      await at('imap.rebound.test', 143);
+      await refused('port 143');
+      expect(given).toEqual([]);
+      // The operator allows both: connected to, at the address checked.
+      rules = { allowedPorts: [993, 143], allowPrivate: true };
+      await r.stop();
+      r = mk();
+      resolved = ['10.0.0.5'];
+      clock += 10 * 60_000;
+      expect((await r.tick()).error).toBeNull();
+      expect(given.map((g) => [g.host, g.port, g.address])).toEqual([
+        ['imap.rebound.test', 143, '10.0.0.5'],
+      ]);
+      expect(
+        (await admin.query('select allowed_ports, allow_private from mail_in_server')).rows[0],
+      ).toEqual({ allowed_ports: [993, 143], allow_private: true });
+    }, 60_000);
+  });
 });

@@ -1,5 +1,11 @@
 import { randomBytes } from 'node:crypto';
-import type { MailboxConnector, MailboxEntry, MailboxProblem, MailboxSession } from './mailbox.js';
+import type {
+  MailboxConnector,
+  MailboxEntry,
+  MailboxInspection,
+  MailboxProblem,
+  MailboxSession,
+} from './mailbox.js';
 import { MailboxError } from './mailbox.js';
 
 /**
@@ -154,6 +160,45 @@ export class FakeMailbox implements MailboxConnector {
     if (!this.folders.has(f)) this.folders.set(f, []);
     this.folders.get(f)?.push({ uid, raw: buf, size: opts.size ?? buf.length });
     return uid;
+  }
+
+  /** Test the mailbox's looks (O1): the folder each was of. */
+  readonly inspections: string[] = [];
+  /** Looks given up on (the O1 re-check, 4): how many were aborted. */
+  aborted = 0;
+
+  /**
+   * Test the mailbox (O1), as the server would answer EXAMINE and a FETCH
+   * of BODY.PEEK[HEADER.FIELDS (AUTHENTICATION-RESULTS)] of the newest: its
+   * count, capabilities, and the newest mail's Authentication-Results lines.
+   */
+  async inspect(folder: string, signal?: AbortSignal): Promise<MailboxInspection> {
+    this.inspections.push(folder);
+    signal?.addEventListener('abort', () => {
+      this.aborted += 1;
+    });
+    if (this.failing) throw new MailboxError(this.failing);
+    const box = this.folders.get(folder);
+    if (!box) throw new MailboxError('no_folder');
+    const newestHeaders: Buffer[] = [];
+    for (const newest of box.slice(-3).reverse()) {
+      const raw = newest.raw.toString('latin1');
+      const end = raw.search(/\r?\n\r?\n/);
+      const lines = (end < 0 ? raw : raw.slice(0, end)).split(/\r?\n/);
+      const kept: string[] = [];
+      let on = false;
+      for (const l of lines) {
+        if (/^[ \t]/.test(l)) {
+          if (on) kept.push(l);
+          continue;
+        }
+        on = /^authentication-results:/i.test(l);
+        if (on) kept.push(l);
+      }
+      if (kept.length)
+        newestHeaders.push(Buffer.from(`${kept.join(CRLF)}${CRLF}${CRLF}`, 'latin1'));
+    }
+    return { exists: box.length, move: this.caps.move, uidplus: this.caps.uidplus, newestHeaders };
   }
 
   /** The mailbox rebuilt: a new UIDVALIDITY, every mail a new UID. */

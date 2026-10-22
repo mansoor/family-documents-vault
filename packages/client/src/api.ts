@@ -126,6 +126,8 @@ import type {
   ReadingCheckInput,
   ReadingCheckView,
   ReadingChecksList,
+  MailInMailboxInput,
+  SettingsCheckView,
   WatchFolderInput,
   WatchFolderView,
   WatchNoticeView,
@@ -1387,6 +1389,28 @@ export function createApi(http: Http) {
     /** On or off, and whose Inbox: an owner's. `409 watch_folder_unavailable` while it is not offered. */
     setWatchFolder: (token: string, body: WatchFolderInput) =>
       request<WatchFolderView>('/api/v1/watch-folder', { method: 'PUT', body, token }),
+    /**
+     * Verify a folder for the scanner (0.9.0, O1), in the worker: `202` and
+     * the check, asked after with `settingsCheck`. `422
+     * watch_folder_path_refused` outside the folders it may be chosen
+     * inside, or one of the vault's own.
+     */
+    verifyWatchFolder: (token: string, path: string) =>
+      request<SettingsCheckView>('/api/v1/watch-folder/verify', {
+        method: 'POST',
+        body: { path },
+        token,
+      }),
+    /** The folders inside one that may be chosen (O1), from the worker: `202` and the check. */
+    browseWatchFolder: (token: string, path: string) =>
+      request<SettingsCheckView>('/api/v1/watch-folder/browse', {
+        method: 'POST',
+        body: { path },
+        token,
+      }),
+    /** A Verify, a browse or a Test of the mailbox (O1), as the worker answered it: an owner's. */
+    settingsCheck: (token: string, id: string) =>
+      request<SettingsCheckView>(`/api/v1/settings-checks/${enc(id)}`, { token }),
     /** "A scanned file couldn't be added": the caller's own. */
     watchNotices: (token: string) =>
       request<{ items: WatchNoticeView[] }>('/api/v1/watch-folder/notices', { token }),
@@ -1407,6 +1431,19 @@ export function createApi(http: Http) {
     /** On or off: an owner's. `409 mail_in_unavailable` while it is not offered. */
     setMailIn: (token: string, body: MailInInput) =>
       request<MailInView>('/api/v1/mail-in', { method: 'PUT', body, token }),
+    /**
+     * The household mailbox, set up in Settings (0.9.0, O1): it overrides
+     * the server's FDV_MAIL_IN_*. `password` left out keeps the one set; it
+     * is never returned.
+     */
+    setMailInMailbox: (token: string, body: MailInMailboxInput) =>
+      request<MailInView>('/api/v1/mail-in/mailbox', { method: 'PUT', body, token }),
+    /** The household's own mailbox gone, password and all: the server's again (O1). */
+    removeMailInMailbox: (token: string) =>
+      request<MailInView>('/api/v1/mail-in/mailbox', { method: 'DELETE', token }),
+    /** Test the mailbox (O1), in the worker, read-only: `202` and the check, asked after with `settingsCheck`. */
+    testMailInMailbox: (token: string) =>
+      request<SettingsCheckView>('/api/v1/mail-in/mailbox/test', { method: 'POST', token }),
     /** Where the caller emails documents, from which address, and whether it is confirmed. */
     myMailIn: (token: string) => request<MailInMine>('/api/v1/mail-in/me', { token }),
     /** A new code to confirm the caller's address, shown once; lasts a day. */

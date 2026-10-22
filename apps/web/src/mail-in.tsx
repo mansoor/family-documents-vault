@@ -1,9 +1,18 @@
-import { can, type MailInCode, type MailInEmailed, type MailInMine } from '@fdv/shared';
+import {
+  can,
+  MAIL_IN_AUTHSERV_HINT,
+  MAIL_IN_PORT_DEFAULT,
+  type MailInCode,
+  type MailInEmailed,
+  type MailInMine,
+  type MailInView,
+} from '@fdv/shared';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { storedRole } from './session.js';
 import { Button, Check, ErrorNote, LoadFailed, TopBar } from './ui.js';
+import { useWorkerCheck } from './worker-check.js';
 
 /**
  * Email in (0.8.0, S4): an owner's page in Settings → For owners, and the
@@ -118,6 +127,15 @@ export function EmailInScreen() {
               </p>
             )}
           </section>
+          {data.source !== undefined && (
+            <MailboxForm
+              view={data}
+              onSaved={async () => {
+                await reload();
+                void reloadCaps?.();
+              }}
+            />
+          )}
           <form className="stack" onSubmit={(e) => void save(e)} aria-labelledby="mail-in-set-h">
             <h2 id="mail-in-set-h" className="section-h">
               Turn it on
@@ -174,6 +192,338 @@ export function EmailInScreen() {
         </>
       )}
     </main>
+  );
+}
+
+/** How often the mailbox may be checked, in the form: minutes, as seconds. */
+const POLLS = [60, 120, 300, 600, 900, 1800, 3600];
+
+/** "every 5 minutes", "every hour". */
+function pollWords(seconds: number): string {
+  if (seconds % 3600 === 0)
+    return seconds === 3600 ? 'Every hour' : `Every ${seconds / 3600} hours`;
+  if (seconds % 60 === 0) return seconds === 60 ? 'Every minute' : `Every ${seconds / 60} minutes`;
+  return `Every ${seconds} seconds`;
+}
+
+/**
+ * The household mailbox, set up here (0.9.0, O1): it overrides the
+ * server's FDV_MAIL_IN_*. The app password is sent once and kept sealed —
+ * never shown again, only whether one is set; left blank, the one set is
+ * kept. "Test the mailbox" asks the worker to sign in to what is saved and
+ * look without touching any mail.
+ */
+function MailboxForm(props: { view: MailInView; onSaved: () => Promise<void> }) {
+  const { guarded } = useApp();
+  const box = props.view.mailbox ?? null;
+  const [host, setHost] = useState('');
+  const [port, setPort] = useState(String(MAIL_IN_PORT_DEFAULT));
+  const [user, setUser] = useState('');
+  const [password, setPassword] = useState('');
+  const [folder, setFolder] = useState('INBOX');
+  const [after, setAfter] = useState<'move' | 'delete'>('move');
+  const [authserv, setAuthserv] = useState('');
+  const [poll, setPoll] = useState(300);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [said, setSaid] = useState<string | null>(null);
+  const test = useWorkerCheck();
+  const tested = useRef<HTMLDivElement>(null);
+  const line = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    // The form starts from what the vault has, each time it is loaded.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setHost(box?.host ?? '');
+    setPort(String(box?.port ?? MAIL_IN_PORT_DEFAULT));
+    setUser(box?.username ?? '');
+    setPassword('');
+    setFolder(box?.folder ?? 'INBOX');
+    setAfter(box?.after ?? 'move');
+    setAuthserv(box?.authserv_id ?? '');
+    setPoll(box?.poll_seconds ?? 300);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [box]);
+  useEffect(() => {
+    if (said) line.current?.focus();
+  }, [said]);
+  useEffect(() => {
+    if (test.view?.state === 'done' || test.view?.state === 'late') tested.current?.focus();
+  }, [test.view]);
+
+  // The app password was kept for this server, port and sign-in alone (the
+  // O1 review, H1): any of them changed, it is typed again.
+  const serverChanged =
+    box !== null &&
+    box.password === 'set' &&
+    (host.trim().toLowerCase() !== box.host.toLowerCase() ||
+      port !== String(box.port) ||
+      user.trim() !== box.username);
+  const passwordNeeded = serverChanged && password === '';
+  const changed =
+    host !== (box?.host ?? '') ||
+    port !== String(box?.port ?? MAIL_IN_PORT_DEFAULT) ||
+    user !== (box?.username ?? '') ||
+    password !== '' ||
+    folder !== (box?.folder ?? 'INBOX') ||
+    after !== (box?.after ?? 'move') ||
+    authserv !== (box?.authserv_id ?? '') ||
+    poll !== (box?.poll_seconds ?? 300);
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    const portN = Number(port);
+    if (!host.trim() || !user.trim()) {
+      setError('Type the mail server and the sign-in.');
+      return;
+    }
+    if (!Number.isInteger(portN) || portN < 1 || portN > 65535) {
+      setError('The port is a number from 1 to 65535: 993 for most.');
+      return;
+    }
+    if (passwordNeeded) {
+      setError('Type the app password again for the new server.');
+      document.getElementById('mailbox-password')?.focus();
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setSaid(null);
+    try {
+      const done = await guarded((t) =>
+        api.setMailInMailbox(t, {
+          host: host.trim(),
+          port: portN,
+          username: user.trim(),
+          ...(password !== '' ? { password } : {}),
+          folder: folder.trim() || 'INBOX',
+          after,
+          authserv_id: authserv.trim() || null,
+          poll_seconds: poll,
+        }),
+      );
+      if (done !== null) {
+        setPassword('');
+        test.clear();
+        await props.onSaved();
+        setSaid(
+          done.mailbox?.password === 'set'
+            ? 'Saved. The vault checks this mailbox from now on: test it to be sure.'
+            : 'Saved. Type the app password too, so the vault can sign in.',
+        );
+      }
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setSaid(null);
+    try {
+      const done = await guarded((t) => api.removeMailInMailbox(t));
+      if (done !== null) {
+        test.clear();
+        await props.onSaved();
+        setSaid(
+          done.source === 'server'
+            ? 'Removed. The vault checks the server’s own mailbox again.'
+            : 'Removed, with its password. No mailbox is set up now.',
+        );
+      }
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const result = test.view?.state === 'done' ? (test.view.mailbox ?? null) : null;
+  const pollChoices = POLLS.includes(poll) ? POLLS : [...POLLS, poll].sort((a, b) => a - b);
+  return (
+    <form
+      className="stack"
+      onSubmit={(e) => void save(e)}
+      aria-labelledby="mail-in-box-set-h"
+      noValidate
+    >
+      <h2 id="mail-in-box-set-h" className="section-h">
+        Set up the mailbox
+      </h2>
+      <p className="muted">
+        {props.view.source === 'settings'
+          ? 'The vault checks the mailbox set up here.'
+          : props.view.source === 'server'
+            ? 'The vault checks the server’s own mailbox (FDV_MAIL_IN_*). One set up here is used instead.'
+            : 'A mailbox of the household’s own, with an app password: Gmail, Fastmail, iCloud or your own server’s.'}
+      </p>
+      <div className="mailbox-pair">
+        <div className="field">
+          <label htmlFor="mailbox-host">Mail server (IMAP)</label>
+          <input
+            id="mailbox-host"
+            value={host}
+            placeholder="imap.gmail.com"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoComplete="off"
+            onChange={(e) => setHost(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="mailbox-port">Port</label>
+          <input
+            id="mailbox-port"
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={65535}
+            value={port}
+            aria-describedby="mailbox-port-note"
+            onChange={(e) => setPort(e.target.value)}
+          />
+          <p id="mailbox-port-note" className="muted field-note">
+            993: encrypted from the start. The server’s operator can allow others.
+          </p>
+        </div>
+      </div>
+      <div className="mailbox-pair">
+        <div className="field">
+          <label htmlFor="mailbox-user">Sign-in</label>
+          <input
+            id="mailbox-user"
+            value={user}
+            spellCheck={false}
+            autoCapitalize="off"
+            autoComplete="off"
+            aria-describedby="mailbox-user-note"
+            onChange={(e) => setUser(e.target.value)}
+          />
+          <p id="mailbox-user-note" className="muted field-note">
+            Usually the mailbox’s address: where the family sends documents.
+          </p>
+        </div>
+        <div className="field">
+          <label htmlFor="mailbox-password">App password</label>
+          <input
+            id="mailbox-password"
+            type="password"
+            value={password}
+            autoComplete="new-password"
+            aria-describedby="mailbox-password-note"
+            aria-invalid={passwordNeeded}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <p
+            id="mailbox-password-note"
+            className={passwordNeeded ? 'attention field-note' : 'muted field-note'}
+          >
+            {serverChanged
+              ? 'You changed the server or the sign-in: type the app password again for it. The one saved is only ever sent to the server it was typed for.'
+              : box?.password === 'set'
+                ? 'One is saved, and never shown. Leave this empty to keep it, or type a new one.'
+                : 'An app password made for the vault, not the account’s own. It is kept encrypted, and never shown again.'}
+          </p>
+        </div>
+      </div>
+      <div className="mailbox-pair">
+        <div className="field">
+          <label htmlFor="mailbox-folder">Folder</label>
+          <input
+            id="mailbox-folder"
+            value={folder}
+            spellCheck={false}
+            autoCapitalize="off"
+            onChange={(e) => setFolder(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="mailbox-after">Once its attachments are in</label>
+          <select
+            id="mailbox-after"
+            value={after}
+            onChange={(e) => setAfter(e.target.value === 'delete' ? 'delete' : 'move')}
+          >
+            <option value="move">Move the email to Filed</option>
+            <option value="delete">Delete the email</option>
+          </select>
+        </div>
+      </div>
+      <div className="mailbox-pair">
+        <div className="field">
+          <label htmlFor="mailbox-authserv">The provider’s authserv-id</label>
+          <input
+            id="mailbox-authserv"
+            value={authserv}
+            placeholder="mx.google.com"
+            spellCheck={false}
+            autoCapitalize="off"
+            aria-describedby="mailbox-authserv-note"
+            onChange={(e) => setAuthserv(e.target.value)}
+          />
+          <p id="mailbox-authserv-note" className="muted field-note">
+            {MAIL_IN_AUTHSERV_HINT}. Set, the vault takes only email your provider checked came from
+            its sender. Your provider’s documentation names it; Test the mailbox gives a hint.
+          </p>
+        </div>
+        <div className="field">
+          <label htmlFor="mailbox-poll">How often it is checked</label>
+          <select id="mailbox-poll" value={poll} onChange={(e) => setPoll(Number(e.target.value))}>
+            {pollChoices.map((s) => (
+              <option key={s} value={s}>
+                {pollWords(s)}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <ErrorNote message={error ?? test.error} />
+      <div className="row">
+        <Button kind="primary" type="submit" disabled={busy || !changed}>
+          Save the mailbox
+        </Button>
+        <Button
+          kind="quiet"
+          disabled={test.busy || busy || changed}
+          describedBy="mailbox-test-note"
+          onClick={() => void test.run((t) => api.testMailInMailbox(t))}
+        >
+          {test.busy ? 'Testing…' : 'Test the mailbox'}
+        </Button>
+        {box && (
+          <Button kind="quiet" disabled={busy} onClick={() => void remove()}>
+            {props.view.source === 'settings' ? 'Remove this mailbox' : 'Remove'}
+          </Button>
+        )}
+      </div>
+      <p id="mailbox-test-note" className="muted field-note">
+        Test signs in to the mailbox as saved and counts what is in its folder. Only the newest
+        emails’ Authentication-Results headers are read (three at most); nothing is moved or marked.
+        {changed ? ' Save first.' : ''}
+      </p>
+      <p ref={line} className="status-line" role="status" tabIndex={-1}>
+        {said}
+      </p>
+      <div ref={tested} tabIndex={-1} role="status" className="stack">
+        {test.view?.state === 'late' && <p className="attention">{test.view.words}</p>}
+        {result && (
+          <ul
+            className="verify-steps"
+            aria-label={result.ok ? 'What the test found' : 'Why the test failed'}
+          >
+            {result.lines.map((l, i) => (
+              <li key={i} className={result.ok ? 'step-ok' : 'step-bad'}>
+                <span className="step-mark" aria-hidden="true">
+                  {i === 0 ? (result.ok ? '✓' : '✗') : '·'}
+                </span>{' '}
+                {l}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </form>
   );
 }
 

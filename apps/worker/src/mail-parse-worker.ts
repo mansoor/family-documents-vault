@@ -23,7 +23,7 @@
 import { parentPort } from 'node:worker_threads';
 import { MailParser, type AddressObject, type HeaderLines, type Headers } from 'mailparser';
 import { mailInCodesIn } from '@fdv/shared';
-import { authVerdict, type AuthVerdict } from './jobs/mail-auth.js';
+import { authVerdict, topAuthservId, type AuthVerdict } from './jobs/mail-auth.js';
 
 /** What a mail's header says, as far as the vault asks. */
 export interface MailHead {
@@ -41,6 +41,12 @@ export interface MailHead {
   auth: AuthVerdict;
   /** Its Date, as an ISO time; null for none or one that is not a date. */
   date: string | null;
+  /**
+   * The authserv-id of its first Authentication-Results, read strictly
+   * (0.9.0, O1: what Test the mailbox says a provider calls itself); null
+   * for none.
+   */
+  authservTop: string | null;
 }
 
 /** Attachments not kept of a mail, by why (F5): past MAX_PARTS, or forwarded too deep. */
@@ -134,7 +140,8 @@ function headOf(headers: Headers, lines: HeaderLines, authservId: string | null)
       : 'fail';
   const when = headers.get('date');
   const date = when instanceof Date && !Number.isNaN(when.getTime()) ? when.toISOString() : null;
-  return { from, messageId, codes, auth, date };
+  const authservTop = topAuthservId(lines.map((l) => ({ key: l.key, line: l.line })));
+  return { from, messageId, codes, auth, date, authservTop };
 }
 
 /** What a whole mail's reading collects: its attachments, and what was not kept. */

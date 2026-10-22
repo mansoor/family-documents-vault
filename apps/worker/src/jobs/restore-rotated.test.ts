@@ -8,10 +8,13 @@ import {
   deriveKey,
   EnvKeyProvider,
   KEK_PURPOSE,
+  MAILBOX_PASSWORD_PURPOSE,
   newKey,
   openBound,
+  openMailboxPassword,
   ScopeKeys,
   sealBound,
+  sealMailboxPassword,
   unwrapKey,
   wrapKey,
   type ScopeRef,
@@ -45,6 +48,7 @@ const NEW = 'the-new-master-key-with-at-least-32-bytes-111';
 const S3 = { accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'the-bucket-secret-key' };
 const TOTP = 'JBSWY3DPEHPK3PXP';
 const MAIL = 'the household mail password';
+const MAILBOX = 'the household mailbox app password';
 const quiet = () => undefined;
 const backupKey = (secret: string) => deriveKey(secret, 'database-backup');
 
@@ -170,6 +174,17 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
          values ($1, 'smtp.example.test', 'vault', $2, 'vault@example.test')`,
         [household, sealPassword(deriveKey(secret, 'smtp-credentials'), MAIL, household)],
       );
+      // The household mailbox set up in Settings (0.9.0, O1): its app password
+      // moves with the rest, onto the vault's key, and opens after.
+      await query(
+        t.adminUrl,
+        `insert into mail_in_mailbox (household_id, host, username, password_encrypted)
+         values ($1, 'imap.example.test', 'home@example.test', $2)`,
+        [
+          household,
+          sealMailboxPassword(deriveKey(secret, MAILBOX_PASSWORD_PURPOSE), MAILBOX, household, BOX),
+        ],
+      );
       return { db: t, household, account: accountId, vault: vaultId };
     }
 
@@ -183,6 +198,9 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
           log: quiet,
         })
       ).file;
+
+    /** The server, port and sign-in the household mailbox's password was typed for. */
+    const BOX = { host: 'imap.example.test', port: 993, username: 'home@example.test' };
 
     /** Opens every key and secret of the restored household under `secret`, as the vault does. */
     async function opensUnder(t: TestDatabase, secret: string, v: Vault = old) {
@@ -220,9 +238,21 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
         ).toString(),
         s3: openCredentials(deriveKey(secret, 'vault-credentials'), c?.c as Buffer, v.vault),
         mail: openPassword(deriveKey(secret, 'smtp-credentials'), m?.p as Buffer, v.household),
+        mailbox: openMailboxPassword(
+          deriveKey(secret, MAILBOX_PASSWORD_PURPOSE),
+          (
+            await query<{ p: Buffer }>(
+              t.adminUrl,
+              'select password_encrypted as p from mail_in_mailbox where household_id = $1',
+              [v.household],
+            )
+          )[0]?.p as Buffer,
+          v.household,
+          BOX,
+        ),
       };
     }
-    const everything = { scopeKeys: 3, totp: TOTP, s3: S3, mail: MAIL };
+    const everything = { scopeKeys: 3, totp: TOTP, s3: S3, mail: MAIL, mailbox: MAILBOX };
 
     /** A restore as the command line runs it, in a vault whose master key is NEW. */
     const restore = (file: string, into: TestDatabase, master: RestoreTarget['master']) =>
@@ -257,7 +287,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
         households: 1,
         rekeyed: {
           rewrapped: 3,
-          resealed: { totpSecrets: 1, vaultCredentials: 1, smtpPasswords: 1 },
+          resealed: { totpSecrets: 1, vaultCredentials: 1, smtpPasswords: 1, mailInPasswords: 1 },
         },
       });
       expect(await opensUnder(t, NEW)).toEqual(everything);
@@ -295,7 +325,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
       const report = await restore(file, t, { current: NEW, previous: OLD });
       expect(report.rekeyed).toEqual({
         rewrapped: 0,
-        resealed: { totpSecrets: 1, vaultCredentials: 1, smtpPasswords: 1 },
+        resealed: { totpSecrets: 1, vaultCredentials: 1, smtpPasswords: 1, mailInPasswords: 1 },
         unchanged: 3,
       });
       expect(await opensUnder(t, NEW, mixed)).toEqual(everything);

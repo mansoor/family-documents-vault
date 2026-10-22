@@ -1,18 +1,35 @@
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import { sql } from 'kysely';
 import {
   can,
   mailNoticeTitle,
   mailNoticeWords,
   mayFillFromScanner,
   refusalFor,
+  WATCH_KEEP_DAYS_DEFAULT,
+  WATCH_KEEP_DAYS_MAX,
+  WATCH_KEPT_WARNING,
   WATCH_LEFT_IN_PLACE,
+  WATCH_PROCESSED_FOREIGN,
+  WATCH_PROCESSED_UNTOUCHED,
   WATCH_REJECTED_TITLE,
   WATCH_STALE_MS,
+  WATCH_SYSTEM_DIRS,
   watchDirWords,
+  watchKeptChangedWords,
+  watchKeptLeftWords,
+  watchKeptUntrackedWords,
+  watchPathRefusal,
+  watchPathTidy,
+  watchPathWithin,
+  watchPathWords,
   watchPauseOf,
   watchPauseWords,
+  watchRefusedRootsWords,
   watchStuckWords,
   watchRejectWords,
+  watchVerifyResult,
+  type SettingsCheckView,
   type WatchCandidate,
   type WatchDirState,
   type WatchFolderInput,
@@ -21,9 +38,11 @@ import {
   type MailNoticeReason,
   type WatchPause,
   type WatchRejectReason,
+  type WatchVerifyFound,
 } from '@fdv/shared';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
+import type { SettingsCheckService } from '../settings-checks.js';
 
 /**
  * A watched folder for network scanners (0.8.0, S3, CAP-10): the owners'
@@ -80,20 +99,50 @@ interface DirRow {
   dir: string | null;
   state: WatchDirState;
   checked_at: Date;
+  roots: string[];
+  own_dirs: string[];
+  /** FDV_WATCH_ROOTS the worker refused (the O1 review, M4). */
+  refused_roots: string[];
+}
+
+/** A household's folder chosen, as the worker last found it (0.9.0, O1). */
+interface ChosenRow {
+  dir: string | null;
+  dir_state: WatchDirState | null;
+  dir_seen: string | null;
+  dir_checked_at: Date | null;
+}
+
+/** A Verify of the very path, passed this recently, lets it be turned on before the worker's next look. */
+const VERIFIED_FOR_MS = 10 * 60_000;
+
+const refused = (words: string) => new ApiError(422, 'watch_folder_path_refused', words);
+
+export interface WatchFolderOptions {
+  /** The worker's queue, and the questions an owner asks it (Verify, browse; O1). */
+  checks?: SettingsCheckService;
+  /** The clock, for the tests. */
+  now?: () => number;
 }
 
 export class WatchFolderService {
+  private readonly now: () => number;
+  private readonly checks: SettingsCheckService | null;
+
   constructor(
     private readonly db: Db,
-    /** The clock, for the tests. */
-    private readonly now: () => number = Date.now,
-  ) {}
+    opts: WatchFolderOptions | (() => number) = {},
+  ) {
+    const o = typeof opts === 'function' ? { now: opts } : opts;
+    this.now = o.now ?? Date.now;
+    this.checks = o.checks ?? null;
+  }
 
   private async dirRow(): Promise<DirRow | null> {
     // Not tenant data (0068): the installation's, as instance is.
     const row = await this.db
       .selectFrom('watch_dir')
-      .select(['dir', 'state', 'checked_at'])
+      .select(['dir', 'state', 'checked_at', 'roots', 'own_dirs', 'refused_roots'])
       .executeTakeFirst();
     return row ?? null;
   }
@@ -101,6 +150,57 @@ export class WatchFolderService {
   private fresh(row: DirRow | null): WatchDirState | 'unknown' {
     if (!row) return 'unknown';
     return this.now() - row.checked_at.getTime() <= WATCH_STALE_MS ? row.state : 'unknown';
+  }
+
+  /** A folder chosen, as the worker found it: of that very path, and lately; else unknown. */
+  private chosenState(row: ChosenRow, dir: string): WatchDirState | 'unknown' {
+    if (row.dir_seen !== dir || !row.dir_state || !row.dir_checked_at) return 'unknown';
+    return this.now() - row.dir_checked_at.getTime() <= WATCH_STALE_MS ? row.dir_state : 'unknown';
+  }
+
+  /** The folders a folder may be chosen inside, as the worker said them lately: none when it has not. */
+  private roots(row: DirRow | null): string[] {
+    if (!row || this.fresh(row) === 'unknown') return [];
+    return row.roots;
+  }
+
+  /**
+   * Whether a path may be chosen (O1): inside the roots, and none of the
+   * vault's own folders nor above one — WATCH_SYSTEM_DIRS, and those the
+   * worker said are its own. Refused in plain words (422); the worker asks
+   * again, by the folder's real path, every round.
+   */
+  private checkPath(dir: string, row: DirRow | null, browsing = false): string {
+    if (!row || this.fresh(row) === 'unknown') {
+      throw new ApiError(
+        409,
+        'watch_folder_unavailable',
+        'The worker hasn’t looked at the scanner folders in the last few minutes, so a folder can’t be chosen now. Check that it is running.',
+      );
+    }
+    const tidy = watchPathTidy(dir.trim());
+    const own = [...WATCH_SYSTEM_DIRS, ...row.own_dirs];
+    // Browsing goes through a folder above one of the vault's own, never into one.
+    const r = browsing
+      ? (watchPathRefusal(tidy, row.roots, []) ??
+        (own.some((o) => o.startsWith('/') && watchPathWithin(o, tidy)) ? 'vault_folder' : null))
+      : watchPathRefusal(tidy, row.roots, own);
+    if (r) throw refused(watchPathWords(r, row.roots));
+    return tidy;
+  }
+
+  /**
+   * Whether another household on this server uses the folder (the O1
+   * review, L2): it, a folder inside it, or (unless only browsing through
+   * it) one above it. Refused, saying nothing of the other household.
+   */
+  private async notElsewhere(p: Principal, dir: string, browsing: boolean): Promise<void> {
+    const used = await withPrincipal(this.db, p, (trx) =>
+      sql<{ used: boolean }>`select watch_dir_used_elsewhere(${dir}, ${browsing}) as used`.execute(
+        trx,
+      ),
+    );
+    if (used.rows[0]?.used) throw refused(watchPathWords('used_elsewhere'));
   }
 
   /** `/capabilities`' watch_folder: set, there, writable, and said so lately. */
@@ -112,13 +212,31 @@ export class WatchFolderService {
   async get(p: Principal): Promise<WatchFolderView> {
     if (p.role !== 'owner') throw ownersOnly();
     const dir = await this.dirRow();
-    const state = this.fresh(dir);
+    const envState = this.fresh(dir);
     return withPrincipal(this.db, p, async (trx) => {
       const setting = await trx
         .selectFrom('watch_folder')
-        .select(['enabled', 'member_id', 'paused_reason', 'last_added_at', 'stuck_files'])
+        .select([
+          'enabled',
+          'member_id',
+          'paused_reason',
+          'last_added_at',
+          'stuck_files',
+          'dir',
+          'keep_days',
+          'dir_state',
+          'dir_seen',
+          'dir_checked_at',
+          'processed_foreign',
+          'kept_left',
+          'kept_changed',
+          'kept_untracked',
+        ])
         .where('household_id', '=', p.householdId)
         .executeTakeFirst();
+      // The folder in use: the one chosen, as the worker found it; else FDV_WATCH_DIR.
+      const inUse = setting?.dir ?? dir?.dir ?? null;
+      const state = setting?.dir ? this.chosenState(setting, setting.dir) : envState;
       const candidates = await this.candidates(trx);
       let name: string | null = null;
       let paused: WatchPause | null = null;
@@ -146,14 +264,32 @@ export class WatchFolderService {
       } else if (setting?.enabled) {
         paused = 'removed';
       }
+      const checkedAt = setting?.dir ? setting.dir_checked_at : (dir?.checked_at ?? null);
       return {
         available: state === 'ready',
         folder: {
           state,
-          dir: dir?.dir ?? null,
-          checked_at: dir ? dir.checked_at.toISOString() : null,
-          words: watchDirWords(state, dir?.dir ?? null),
+          dir: inUse,
+          checked_at: checkedAt ? checkedAt.toISOString() : null,
+          words: watchDirWords(state, inUse),
         },
+        choice: {
+          dir: setting?.dir ?? null,
+          default_dir: dir?.dir ?? null,
+          roots: this.roots(dir),
+          refused_roots: dir && this.fresh(dir) !== 'unknown' ? dir.refused_roots : [],
+          refused_words:
+            dir && this.fresh(dir) !== 'unknown' ? watchRefusedRootsWords(dir.refused_roots) : null,
+        },
+        processed_words: setting?.processed_foreign ? WATCH_PROCESSED_FOREIGN : null,
+        kept_left: setting?.kept_left ?? 0,
+        kept_left_words: watchKeptLeftWords(setting?.kept_left ?? 0),
+        kept_changed: setting?.kept_changed ?? 0,
+        kept_changed_words: watchKeptChangedWords(setting?.kept_changed ?? 0),
+        kept_untracked: setting?.kept_untracked ?? 0,
+        kept_untracked_words: watchKeptUntrackedWords(setting?.kept_untracked ?? 0),
+        keep_days: setting?.keep_days ?? WATCH_KEEP_DAYS_DEFAULT,
+        kept_warning: `${WATCH_KEPT_WARNING} ${WATCH_PROCESSED_UNTOUCHED}`,
         enabled: setting?.enabled ?? false,
         member_id: setting?.member_id ?? null,
         member_name: name,
@@ -191,18 +327,52 @@ export class WatchFolderService {
   async put(p: Principal, input: WatchFolderInput, meta: RequestMeta): Promise<WatchFolderView> {
     if (p.role !== 'owner') throw ownersOnly();
     if (input.member_id != null && !UUID.test(input.member_id)) throw notThem();
-    if (input.enabled) {
-      const dir = await this.dirRow();
-      const state = this.fresh(dir);
-      if (state !== 'ready') throw notAvailable(watchDirWords(state, dir?.dir ?? null));
+    if (
+      input.keep_days !== undefined &&
+      (!Number.isInteger(input.keep_days) ||
+        input.keep_days < 0 ||
+        input.keep_days > WATCH_KEEP_DAYS_MAX)
+    ) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        `Scans are kept from 0 to ${WATCH_KEEP_DAYS_MAX} days.`,
+      );
     }
+    const dirRow = await this.dirRow();
+    // A folder chosen (O1): refused here, before anything, outside the
+    // roots or the vault's own — and again by the worker every round.
+    const chosen =
+      input.dir === undefined || input.dir === null ? input.dir : this.checkPath(input.dir, dirRow);
+    if (typeof chosen === 'string') await this.notElsewhere(p, chosen, false);
     await withPrincipal(this.db, p, async (trx) => {
       const before = await trx
         .selectFrom('watch_folder')
-        .select(['enabled', 'member_id'])
+        .select([
+          'enabled',
+          'member_id',
+          'dir',
+          'keep_days',
+          'dir_state',
+          'dir_seen',
+          'dir_checked_at',
+        ])
         .where('household_id', '=', p.householdId)
         .forUpdate()
         .executeTakeFirst();
+      const dir = chosen === undefined ? (before?.dir ?? null) : chosen;
+      if (input.enabled) {
+        // Turned on only while the folder in use is ready: as the worker
+        // found that very folder lately, or as a Verify of it just said.
+        const state = dir
+          ? before
+            ? this.chosenState(before, dir)
+            : 'unknown'
+          : this.fresh(dirRow);
+        if (state !== 'ready' && !(dir && (await this.verified(trx, dir)))) {
+          throw notAvailable(watchDirWords(state, dir ?? dirRow?.dir ?? null));
+        }
+      }
       // Turned on: whoever is named, or the owner turning it on. Turned off:
       // whoever it filled stays named, for the next time.
       const member = input.enabled
@@ -224,6 +394,8 @@ export class WatchFolderService {
       const values = {
         enabled: input.enabled,
         member_id: member,
+        dir,
+        keep_days: input.keep_days ?? before?.keep_days ?? WATCH_KEEP_DAYS_DEFAULT,
         updated_by: p.accountId,
         updated_at: new Date(),
       };
@@ -256,8 +428,67 @@ export class WatchFolderService {
           ip: meta.ip,
         });
       }
+      // Which folder, and how long scans are kept (O1): the owners' to know.
+      if (
+        (before?.dir ?? null) !== dir ||
+        (before?.keep_days ?? WATCH_KEEP_DAYS_DEFAULT) !== values.keep_days
+      ) {
+        await appendAudit(trx, {
+          householdId: p.householdId,
+          actorAccountId: p.accountId,
+          action: 'watch_folder.folder_changed',
+          objectType: 'household',
+          objectId: p.householdId,
+          detail: { dir_chosen: dir !== null, keep_days: values.keep_days },
+          ip: meta.ip,
+        });
+      }
     });
     return this.get(p);
+  }
+
+  /** A Verify of the very path passed, lately (O1): it may be turned on before the worker's next look. */
+  private async verified(trx: Db, dir: string): Promise<boolean> {
+    const rows = await trx
+      .selectFrom('settings_check')
+      .select(['result'])
+      .where('kind', '=', 'folder')
+      .where('path', '=', dir)
+      .where('done_at', '>', new Date(this.now() - VERIFIED_FOR_MS))
+      .orderBy('done_at', 'desc')
+      .limit(1)
+      .execute();
+    const r = rows[0]?.result as unknown as WatchVerifyFound | undefined;
+    return r !== undefined && watchVerifyResult(r).ok;
+  }
+
+  /**
+   * POST /watch-folder/verify (O1): Verify a path, in the worker — refused
+   * here first, as a Save would refuse it. The answer is the check's
+   * (GET /settings-checks/{id}).
+   */
+  async verify(p: Principal, dir: string): Promise<SettingsCheckView> {
+    if (p.role !== 'owner') throw ownersOnly();
+    const path = this.checkPath(dir, await this.dirRow());
+    await this.notElsewhere(p, path, false);
+    return this.mustCheck().ask(p, 'folder', path);
+  }
+
+  /** POST /watch-folder/browse (O1): the folders inside a folder that may be chosen, from the worker. */
+  async browse(p: Principal, dir: string): Promise<SettingsCheckView> {
+    if (p.role !== 'owner') throw ownersOnly();
+    const path = this.checkPath(dir, await this.dirRow(), true);
+    await this.notElsewhere(p, path, true);
+    return this.mustCheck().ask(p, 'browse', path);
+  }
+
+  private mustCheck(): SettingsCheckService {
+    if (!this.checks) {
+      throw new ApiError(503, 'unavailable', 'The worker can’t be asked just now.', {
+        retriable: true,
+      });
+    }
+    return this.checks;
   }
 
   /**
@@ -269,9 +500,13 @@ export class WatchFolderService {
   async notices(p: Principal): Promise<WatchNoticeView[]> {
     if (!can(p.role, 'document.add'))
       throw new ApiError(403, 'forbidden', refusalFor('document.add'));
-    // What is done with an email once it is dealt with, as the worker says.
-    const mailbox = await this.db.selectFrom('mail_in_server').select('after').executeTakeFirst();
+    // What is done with an email once it is dealt with: as the household's
+    // own mailbox is set up (O1), else as the worker says of the server's.
+    const server = await this.db.selectFrom('mail_in_server').select('after').executeTakeFirst();
     return withPrincipal(this.db, p, async (trx) => {
+      const { rows: own } = await sql<{ after: 'move' | 'delete' }>`
+        select after from mail_in_box()`.execute(trx);
+      const mailbox = own[0] ?? server;
       const rows = await trx
         .selectFrom('watch_notice')
         .select(['id', 'source', 'file_name', 'reason', 'left_in_place', 'skipped', 'created_at'])

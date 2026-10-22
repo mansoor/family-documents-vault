@@ -232,6 +232,17 @@ export function parseAuthResults(header: string): AuthHeader | null {
   }
 }
 
+/**
+ * Whose the first Authentication-Results of all is (0.9.0, O1: Test the
+ * mailbox): its authserv-id, lower-cased, read as strictly as the check
+ * reads it — null when there is none, or it is out of the grammar.
+ */
+export function topAuthservId(lines: readonly HeaderLine[]): string | null {
+  const first = lines.find((h) => h.key === 'authentication-results');
+  if (!first) return null;
+  return parseAuthResults(valueOf(first.line))?.authservId ?? null;
+}
+
 /** A domain as it is compared: lower case, no dot at its end. */
 const domainOf = (d: string) => d.trim().toLowerCase().replace(/\.$/, '');
 

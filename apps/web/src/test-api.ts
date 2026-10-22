@@ -378,6 +378,21 @@ export interface FakeState {
   /** The code POST /mail-in/me/confirm takes (one emailed to the reader); left out, K7QM-3XRP. */
   mailInEmailedCode?: string;
   /**
+   * What the worker answers from Settings (0.9.0, O1), by kind, as GET
+   * /settings-checks/{id} gives it once done: a Verify's (WatchVerifyResult)
+   * by path, a browse's folders by path, a Test of the mailbox's
+   * (MailInTestResult). Asked for, a check waits `checkWaits` looks (1 by
+   * default) before it is answered; one with no answer here stays waiting.
+   */
+  verifyAnswers?: Record<string, Record<string, unknown>>;
+  browseAnswers?: Record<string, string[]>;
+  mailboxTestAnswer?: Record<string, unknown>;
+  checkWaits?: number;
+  /** What was asked of the worker, in order: kind and path. */
+  checksAsked?: Array<{ kind: string; path: string | null }>;
+  /** The bodies the mailbox was saved with (PUT /mail-in/mailbox), in order. */
+  mailboxSaves?: Array<Record<string, unknown>>;
+  /**
    * The household's time zone, as GET /profile gives it: reminders fall due
    * on its calendar. Left out, 'UTC', the vault's default.
    */
@@ -922,6 +937,8 @@ function withDetails(m: Record<string, unknown>) {
 
 export function installFakeApi(state: FakeState) {
   const json = (body: unknown, status = 200) => Promise.resolve(Response.json(body, { status }));
+  /** What was asked of the worker (O1), by id, and how often its answer was asked for. */
+  const checks = new Map<string, { kind: string; path: string | null; looks: number }>();
   const refuse = (status: number, code: string, message: string, more: object = {}) =>
     json({ error: { code, message, retriable: false, request_id: 'r', ...more } }, status);
   /** SEC-17, as the vault asks it, saying what the credential is for. */
@@ -1338,7 +1355,12 @@ export function installFakeApi(state: FakeState) {
         candidates: [],
       };
       if (method === 'PUT') {
-        const b = body as { enabled: boolean; member_id?: string | null };
+        const b = body as {
+          enabled: boolean;
+          member_id?: string | null;
+          dir?: string | null;
+          keep_days?: number;
+        };
         if (b.enabled && !folder.available) {
           return refuse(409, 'watch_folder_unavailable', 'The scanner folder can’t be turned on.');
         }
@@ -1347,15 +1369,114 @@ export function installFakeApi(state: FakeState) {
           member_id: string;
           display_name: string;
         }>;
+        const choice = (folder.choice ?? { dir: null, default_dir: null, roots: [] }) as {
+          dir: string | null;
+          default_dir: string | null;
+          roots: string[];
+        };
+        if (typeof b.dir === 'string' && !choice.roots.some((r) => b.dir?.startsWith(r))) {
+          return refuse(
+            422,
+            'watch_folder_path_refused',
+            'That folder isn’t one the vault may use. Choose a folder inside /watch.',
+          );
+        }
         state.watchFolder = {
           ...folder,
           enabled: b.enabled,
           member_id: member,
           member_name: candidates.find((c) => c.member_id === member)?.display_name ?? null,
+          choice: { ...choice, dir: b.dir === undefined ? choice.dir : b.dir },
+          ...(b.keep_days !== undefined ? { keep_days: b.keep_days } : {}),
         };
         return json(state.watchFolder);
       }
       return json(folder);
+    }
+    // What an owner asks the worker from Settings (O1): Verify, browse, Test the mailbox.
+    const askWorker = (kind: 'folder' | 'browse' | 'mailbox', p: string | null) => {
+      if (storedRole() !== 'owner') {
+        return refuse(
+          403,
+          'forbidden',
+          'Only an owner can check the scanner folder or the mailbox.',
+        );
+      }
+      (state.checksAsked ??= []).push({ kind, path: p });
+      const id = `check-${state.checksAsked.length}`;
+      checks.set(id, { kind, path: p, looks: 0 });
+      return json(
+        {
+          id,
+          kind,
+          state: 'waiting',
+          requested_at: new Date().toISOString(),
+          words: null,
+        },
+        202,
+      );
+    };
+    if (path === '/api/v1/watch-folder/verify' && method === 'POST') {
+      return askWorker('folder', (body as { path: string }).path);
+    }
+    if (path === '/api/v1/watch-folder/browse' && method === 'POST') {
+      return askWorker('browse', (body as { path: string }).path);
+    }
+    if (path === '/api/v1/mail-in/mailbox/test' && method === 'POST') {
+      return askWorker('mailbox', null);
+    }
+    const checkAt = /^\/api\/v1\/settings-checks\/([^/]+)$/.exec(path);
+    if (checkAt) {
+      const c = checks.get(checkAt[1] as string);
+      if (!c) return refuse(404, 'not_found', 'That check is not here.');
+      c.looks += 1;
+      const base = {
+        id: checkAt[1],
+        kind: c.kind,
+        requested_at: new Date().toISOString(),
+        words: null,
+      };
+      const answer =
+        c.kind === 'folder'
+          ? state.verifyAnswers?.[c.path ?? '']
+          : c.kind === 'browse'
+            ? state.browseAnswers?.[c.path ?? '']
+            : state.mailboxTestAnswer;
+      if (c.looks <= (state.checkWaits ?? 1) || answer === undefined) {
+        return json({ ...base, state: 'waiting' });
+      }
+      if (c.kind === 'browse') {
+        return json({
+          ...base,
+          state: 'done',
+          browse: { path: c.path, folders: answer, truncated: false, problem: null },
+        });
+      }
+      return json({ ...base, state: 'done', [c.kind]: answer });
+    }
+    if (path === '/api/v1/mail-in/mailbox') {
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner can set up email in.');
+      }
+      const mail = state.mailIn ?? { available: false, enabled: false };
+      if (method === 'DELETE') {
+        state.mailIn = { ...mail, mailbox: null, source: 'none' };
+        return json(state.mailIn);
+      }
+      const b = body as Record<string, unknown> & { password?: string };
+      (state.mailboxSaves ??= []).push(b);
+      const had = mail.mailbox as { password?: string } | null | undefined;
+      const { password, ...rest } = b;
+      state.mailIn = {
+        ...mail,
+        source: 'settings',
+        mailbox: {
+          ...rest,
+          password: password !== undefined || had?.password === 'set' ? 'set' : 'not_set',
+          updated_at: new Date().toISOString(),
+        },
+      };
+      return json(state.mailIn);
     }
     if (path === '/api/v1/mail-in') {
       if (storedRole() !== 'owner') {

@@ -1303,3 +1303,63 @@ describe('the fake vault, a password reset an owner starts (5.29)', () => {
     expect((await api.memberAccount(owner.access_token, 'sara')).reset_path).toBeNull();
   });
 });
+
+describe('the fake vault, the household mailbox set up in Settings (0.9.0, O1)', () => {
+  const refusal = (p: Promise<unknown>) =>
+    p.then(
+      () => null,
+      (err: { status?: number; code?: string; message?: string }) => err,
+    );
+  it('refuses a port or an address the worker never connects to, and a server changed without the password', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const owner = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const box = (over: Record<string, unknown> = {}) => ({
+      host: 'imap.gmail.com',
+      port: 993,
+      username: 'family@gmail.com',
+      password: 'app-password',
+      folder: 'INBOX',
+      after: 'move' as const,
+      authserv_id: null,
+      poll_seconds: 300,
+      ...over,
+    });
+    for (const over of [{ port: 143 }, { host: 'localhost' }, { host: '10.0.0.5' }]) {
+      expect(
+        await refusal(api.setMailInMailbox(owner.access_token, box(over))),
+        JSON.stringify(over),
+      ).toMatchObject({
+        status: 422,
+        code: 'mailbox_address_refused',
+        message: expect.stringMatching(/port isn’t 993/) as unknown,
+      });
+    }
+    // The ports the worker allows are named.
+    vault.state.mailInAllowedPorts = [993, 1143];
+    expect(
+      await refusal(api.setMailInMailbox(owner.access_token, box({ port: 143 }))),
+    ).toMatchObject({
+      message: expect.stringMatching(/isn’t one of 993, 1143/) as unknown,
+    });
+    expect((await api.setMailInMailbox(owner.access_token, box())).mailbox).toMatchObject({
+      host: 'imap.gmail.com',
+      password: 'set',
+    });
+    const moved: Record<string, unknown> = box({ host: 'imap.attacker.test' });
+    delete moved.password;
+    expect(await refusal(api.setMailInMailbox(owner.access_token, moved as never))).toMatchObject({
+      status: 422,
+      code: 'mailbox_password_needed',
+      message: 'Type the app password again for the new server.',
+    });
+    expect(
+      (await api.setMailInMailbox(owner.access_token, box({ host: 'imap.fastmail.com' }))).mailbox,
+    ).toMatchObject({ host: 'imap.fastmail.com', password: 'set' });
+  });
+});

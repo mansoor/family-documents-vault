@@ -159,6 +159,44 @@ describe('the scanner folder’s page (S3)', () => {
     await expectAccessible();
   });
 
+  it('says when processed is not the vault’s, when kept scans are left behind, and roots refused (the O1 review)', async () => {
+    at('/settings/scanner', {
+      watchFolder: folder({
+        choice: {
+          dir: '/watch/office',
+          default_dir: null,
+          roots: ['/watch'],
+          refused_roots: ['/'],
+          refused_words: 'The server names a folder for scanners that the vault refuses: /.',
+        },
+        keep_days: 7,
+        kept_warning:
+          'Scans kept here are not encrypted until they’re deleted; anyone who can open the server’s folder can read them. Anything else saved into processed is never touched, but isn’t added either.',
+        processed_words:
+          'The scanner folder has a folder called “processed” that the vault didn’t make.',
+        kept_left: 1,
+        kept_left_words: '1 kept scan is in a scanner folder the vault no longer uses.',
+        kept_changed: 2,
+        kept_changed_words: '2 kept scans changed since they were kept, left in place.',
+        kept_untracked: 1,
+        kept_untracked_words: '1 scan kept before a restore isn’t tracked.',
+      }),
+    });
+    expect(
+      await screen.findByText(/a folder called “processed” that the vault didn’t make/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/1 kept scan is in a scanner folder/)).toBeInTheDocument();
+    expect(screen.getByText(/2 kept scans changed since they were kept/)).toBeInTheDocument();
+    expect(screen.getByText(/1 scan kept before a restore isn’t tracked/)).toBeInTheDocument();
+    expect(screen.getByText(/that the vault refuses: \//)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Anything else saved into processed is never touched, but isn’t added either/,
+      ),
+    ).toBeInTheDocument();
+    await expectAccessible();
+  });
+
   it('is an owner’s: an adult is told so, and the vault is not asked', async () => {
     const state = at('/settings/scanner', { watchFolder: folder() }, 'adult');
     expect(

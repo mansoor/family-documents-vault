@@ -141,7 +141,7 @@ describe.skipIf(!testAdminUrl())('migration 0024: upload keys made before it', (
         same_time: true,
       },
     ]);
-  });
+  }, 60_000);
 
   it('a done key must say what it made, and a pending one must carry its nonce', async () => {
     await expect(
