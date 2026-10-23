@@ -6320,3 +6320,21 @@ html:has(.shell-phone):has(.has-toast) {
   background: var(--accent-soft);
   font-weight: 600;
 }
+
+/* Settings → Where your files are kept → Advanced: how a bucket is
+   addressed, each choice a radio with its words wrapping beside it. */
+.address-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: var(--tap);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.address-choice input {
+  flex: none;
+  margin-top: 3px;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}

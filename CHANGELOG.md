@@ -6,6 +6,13 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.12] - 2026-10-23 — storage keys named plainly, and path style under Advanced
+
+### Changed
+
+- **Adding a place for the files names a key's two halves as your provider does**: "Access key ID" and "Secret access key", or Backblaze's "Key ID (keyID)" and "Application key (applicationKey)", or MinIO's "Access key" and "Secret key". It also says which is which: the first names the key, like a user name; the second is its password, shown once when you make the key and kept encrypted.
+- **How the bucket is addressed is shown under Advanced** on the same form: path style (`address/bucket`, as MinIO and "Something else" use) or virtual-hosted style (`bucket.address`, as the hosted providers use). It follows the provider you pick unless you change it, for a MinIO set up with a domain for its buckets, or a provider that needs the other way.
+
 ## [0.9.0-dev.11] - 2026-10-23 — the family's time zone
 
 ### Added

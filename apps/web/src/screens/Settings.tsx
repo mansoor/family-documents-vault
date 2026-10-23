@@ -587,7 +587,18 @@ function hostOf(url: string): string {
   }
 }
 
-function AddPlace(props: {
+/**
+ * What a provider calls the two halves of a key (the owner, 23 Oct): the
+ * first names the key and is not secret, the second is its password.
+ */
+const KEY_WORDS: Record<string, { id: string; secret: string }> = {
+  b2: { id: 'Key ID (keyID)', secret: 'Application key (applicationKey)' },
+  minio: { id: 'Access key', secret: 'Secret key' },
+};
+const keyWords = (provider: string) =>
+  KEY_WORDS[provider] ?? { id: 'Access key ID', secret: 'Secret access key' };
+
+export function AddPlace(props: {
   providers: Provider[];
   onAdd: (body: NewVault) => Promise<{ ok: boolean; message: string } | null>;
 }) {
@@ -597,11 +608,17 @@ function AddPlace(props: {
   const [bucket, setBucket] = useState('');
   const [keyId, setKeyId] = useState('');
   const [secret, setSecret] = useState('');
+  // How the bucket is addressed: the provider's own way unless changed here.
+  const [pathStyle, setPathStyle] = useState<boolean | null>(null);
+  const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   const provider = props.providers.find((p) => p.key === providerKey);
   const needsEndpoint = providerKey !== 'aws';
+  const words = keyWords(providerKey);
+  const presetPathStyle = provider?.pathStyle ?? true;
+  const usePathStyle = pathStyle ?? presetPathStyle;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -615,9 +632,11 @@ function AddPlace(props: {
     };
     if (needsEndpoint) body.endpoint = endpoint || provider?.endpoint || null;
     if (region) body.region = region;
+    if (needsEndpoint) body.path_style = usePathStyle;
     const r = await props.onAdd(body);
     setResult(r);
     if (r?.ok) {
+      setPathStyle(null);
       setBucket('');
       setKeyId('');
       setSecret('');
@@ -637,6 +656,7 @@ function AddPlace(props: {
             onChange={(e) => {
               setProviderKey(e.target.value);
               setEndpoint('');
+              setPathStyle(null);
               setResult(null);
             }}
           >
@@ -665,15 +685,79 @@ function AddPlace(props: {
           required={false}
         />
         <Field id="s-bucket" label="Bucket name" value={bucket} onChange={setBucket} />
-        <Field id="s-key" label="Key ID" value={keyId} onChange={setKeyId} autoComplete="off" />
+        <Field
+          id="s-key"
+          label={words.id}
+          value={keyId}
+          onChange={setKeyId}
+          autoComplete="off"
+          note="Names the key, like a user name; it is not secret."
+        />
         <Field
           id="s-secret"
-          label="Application key"
+          label={words.secret}
           type="password"
           value={secret}
           onChange={setSecret}
           autoComplete="off"
+          note="The key's password, shown once when you make the key. The vault keeps it encrypted."
         />
+        {needsEndpoint && (
+          <div className={advanced ? 'disclosure disclosure-open' : 'disclosure'}>
+            <button
+              type="button"
+              className="disclosure-toggle"
+              aria-expanded={advanced}
+              aria-controls="s-advanced"
+              aria-labelledby="s-advanced-title"
+              aria-describedby="s-advanced-hint"
+              onClick={() => setAdvanced(!advanced)}
+            >
+              <span className="disclosure-words">
+                <span id="s-advanced-title" className="disclosure-title">
+                  Advanced
+                </span>
+                <span id="s-advanced-hint" className="disclosure-hint">
+                  How the bucket is addressed:{' '}
+                  {usePathStyle ? 'path style' : 'virtual-hosted style'}
+                  {pathStyle === null ? `, as ${provider?.name ?? 'this provider'} expects` : ''}.
+                </span>
+              </span>
+              <span aria-hidden="true" className="chevron">
+                {advanced ? '▾' : '▸'}
+              </span>
+            </button>
+            <div id="s-advanced" className="disclosure-body" hidden={!advanced}>
+              <fieldset className="plain stack">
+                <legend>How the bucket is addressed</legend>
+                <label className="address-choice">
+                  <input
+                    type="radio"
+                    name="s-path-style"
+                    checked={usePathStyle}
+                    onChange={() => setPathStyle(true)}
+                  />
+                  <span>
+                    Path style: <code>address/bucket</code>. MinIO and most servers you run
+                    yourself.
+                  </span>
+                </label>
+                <label className="address-choice">
+                  <input
+                    type="radio"
+                    name="s-path-style"
+                    checked={!usePathStyle}
+                    onChange={() => setPathStyle(false)}
+                  />
+                  <span>
+                    Virtual-hosted style: <code>bucket.address</code>. Most hosted providers; MinIO
+                    only when it is set up with a domain for its buckets.
+                  </span>
+                </label>
+              </fieldset>
+            </div>
+          </div>
+        )}
         {result && (
           <p className={result.ok ? 'status status-ok' : 'status status-danger'} role="status">
             {result.message}
