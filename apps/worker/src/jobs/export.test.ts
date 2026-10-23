@@ -26,7 +26,7 @@ import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/tes
 import { LocalAdapter } from '@fdv/storage';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildExport, csvCell, identityRecord } from './export.js';
+import { buildExport, csvCell, identityRecord, markdownText } from './export.js';
 import { decryptToBuffer } from './process-version.js';
 
 const MASTER = 'worker-test-master-key-with-32-bytes-or-more';
@@ -659,6 +659,83 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     expect(hers.index.documents.map((d) => d.title)).not.toContain('My sealed will');
   }, 60_000);
 
+  it('a note kept on its own goes in as a Markdown file in Notes/, an Only me one only for its owner (0.9.0, N1)', async () => {
+    /** A note: a document of the kind with no file, its words its note (sealed for Only me). */
+    const addNote = (
+      title: string,
+      visibility: 'household' | 'private',
+      owner: string,
+      words: string,
+    ) =>
+      withSystem(db, hh, async (trx) => {
+        const doc = await trx
+          .insertInto('document')
+          .values({
+            household_id: hh,
+            title,
+            owner_member_id: owner,
+            visibility,
+            category: 'other',
+            type_key: 'note',
+            notes: visibility === 'private' ? null : words,
+          })
+          .returning('id')
+          .executeTakeFirstOrThrow();
+        if (visibility === 'private') {
+          const scope = await keys.unwrap(trx, {
+            householdId: hh,
+            kind: 'member',
+            memberId: owner,
+          });
+          await trx
+            .updateTable('document')
+            .set({
+              ...sealPrivate(scope.key, doc.id, { notes: words, extra: {} }),
+              notes: null,
+            })
+            .where('id', '=', doc.id)
+            .execute();
+        }
+        return doc.id;
+      });
+    await addNote('Where the stopcock is', 'household', ownerMember, 'Under the **sink**');
+    await addNote('Where the stopcock is', 'household', ownerMember, 'Or the garage');
+    await addNote('Safe combination', 'private', ownerMember, 'Left 4, right 71, ostrich');
+    await addNote(
+      'Markup <b>',
+      'household',
+      ownerMember,
+      'Text <img src=x onerror=alert(1)> and </script> &amp; Tom & Jerry, 2 < 3',
+    );
+    await addNote('Sana’s own', 'private', otherMember, 'Kept to herself, pelican');
+
+    const mine = await exported(ownerAccount);
+    // Each a file of its own, named by its title, two of one name told apart.
+    expect(mine.entries.get('Notes/Where the stopcock is.md')?.toString()).toBe(
+      '# Where the stopcock is\n\nUnder the **sink**\n',
+    );
+    expect(mine.entries.get('Notes/Where the stopcock is (2).md')?.toString()).toContain(
+      'Or the garage',
+    );
+    // Its owner's Only me note, opened for them.
+    expect(mine.entries.get('Notes/Safe combination.md')?.toString()).toContain('ostrich');
+    // Listed in the index as a document with its file, no version and no hash.
+    expect(mine.index.documents.find((d) => d.title === 'Safe combination')).toMatchObject({
+      type_key: 'note',
+      file: 'Notes/Safe combination.md',
+      version_no: null,
+      sha256: null,
+    });
+    // What a Markdown viewer would draw as HTML is written so it shows as
+    // the characters it is (the N1 review); the rest reads as written.
+    expect(mine.entries.get('Notes/Markup _b_.md')?.toString()).toBe(
+      '# Markup \\<b>\n\nText \\<img src=x onerror=alert(1)> and \\</script> \\&amp; Tom & Jerry, 2 < 3\n',
+    );
+    // Nobody else's Only me note: not named, not opened.
+    expect(mine.all.includes(Buffer.from('pelican'))).toBe(false);
+    expect(mine.index.documents.map((d) => d.title)).not.toContain('Sana’s own');
+  }, 60_000);
+
   it('an export containing an Only me document cannot be unwrapped with the household key', async () => {
     const mine = await exported(ownerAccount);
     expect(mine.index.documents.map((d) => d.title)).toContain('My private note');
@@ -1112,4 +1189,43 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
       );
     }
   }, 60_000);
+});
+
+describe('a note as Markdown any viewer may open (the N1 re-check)', () => {
+  /**
+   * Whether a CommonMark viewer would start HTML anywhere in `md`: a `<`
+   * before a letter, `/`, `!` or `?`, or an `&` before an entity, that an
+   * even run of backslashes (none, or pairs each read as one backslash)
+   * leaves unescaped.
+   */
+  const drawsHtml = (md: string) =>
+    [...md.matchAll(/(\\*)(<(?=[A-Za-z/!?])|&(?=#?[A-Za-z0-9]+;))/g)].some(
+      (m) => (m[1] ?? '').length % 2 === 0,
+    );
+
+  it('a backslash of the note’s own never takes the escape for itself', () => {
+    const cases: Array<[string, string]> = [
+      ['\\<img src=x onerror=alert(1)>', '\\\\\\<img src=x onerror=alert(1)>'],
+      ['\\\\<b>bold</b>', '\\\\\\\\\\<b>bold\\</b>'],
+      ['\\&amp;', '\\\\\\&amp;'],
+      ['<script>x</script>', '\\<script>x\\</script>'],
+      // And what a family writes reads as they wrote it.
+      ['a < b', 'a < b'],
+      ['R&D', 'R&D'],
+      ['List<String>', 'List\\<String>'],
+      ['C:\\Users\\x', 'C:\\Users\\x'],
+      ['Tom & Jerry, 2 < 3', 'Tom & Jerry, 2 < 3'],
+    ];
+    for (const [note, written] of cases) {
+      expect(markdownText(note), note).toBe(written);
+      expect(drawsHtml(markdownText(note)), note).toBe(false);
+    }
+    // Every run of backslashes, before every kind of opening.
+    for (let n = 0; n <= 5; n++) {
+      for (const after of ['<img>', '</p>', '<!--', '<?x', '&amp;', '&#60;']) {
+        const note = `${'\\'.repeat(n)}${after}`;
+        expect(drawsHtml(markdownText(note)), note).toBe(false);
+      }
+    }
+  });
 });

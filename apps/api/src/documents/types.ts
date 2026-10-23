@@ -6,6 +6,7 @@ import {
   EXPIRY_ALWAYS_REQUIRED,
   libraryHasName,
   nextReminder,
+  NOTE_KIND,
   TYPE_IN_USE,
   TYPE_LABEL_MAX,
   UNSEEN_DOCUMENTS,
@@ -202,6 +203,15 @@ export class TypeService {
   private async hold(trx: Db, p: Principal, key: string): Promise<EffectiveType> {
     await lockType(trx, p.householdId, key);
     const t = await this.find(trx, key);
+    // The kind of a note is the vault's (0.9.0, N1, 0078): no household
+    // hides it, gives it fields, or takes it away.
+    if (t.builtin && t.key === NOTE_KIND) {
+      throw new ApiError(
+        422,
+        'note_kind_fixed',
+        'The kind of a note is the vault’s own: it is not changed here.',
+      );
+    }
     if (t.builtin) {
       await trx
         .selectFrom('document_type_setting')

@@ -1,3 +1,4 @@
+import { leaveThen } from './leave-guard.js';
 import { can, roleLabel, type Capabilities, type Role } from '@fdv/shared';
 import {
   startTransition,
@@ -83,6 +84,7 @@ type IconName =
   | 'documents'
   | 'people'
   | 'collections'
+  | 'notes'
   | 'attention'
   | 'inbox'
   | 'sharing'
@@ -122,6 +124,13 @@ const DRAWN: Record<IconName, ReactNode> = {
     </>
   ),
   collections: <path d="M3.5 6.5h6l2 2.5h9v10.5h-17z" />,
+  notes: (
+    <>
+      <path d="M5.5 3.5h13v12l-5 5h-8z" />
+      <path d="M13.5 20.5v-5h5" />
+      <path d="M8.5 8h7M8.5 11.5h7" />
+    </>
+  ),
   attention: (
     <>
       <path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 2h-14z" />
@@ -250,6 +259,11 @@ export function sectionsFor(who: {
       owns: (p) => under('/documents')(p) || (who.mode !== 'phone' && p === '/search'),
     },
   ];
+  // Notes kept on their own (0.9.0, N1): written by whoever files
+  // documents, and read by whoever is given them, a viewer included.
+  if (caps?.features.notes === true) {
+    out.push({ key: 'notes', label: 'Notes', to: '/notes', icon: 'notes', owns: under('/notes') });
+  }
   // The family's own details are for the family (5.3): a viewer is given documents.
   if (can(role, 'family.details')) {
     out.push({
@@ -492,7 +506,10 @@ export function AppShell() {
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 
-  const signOut = async () => {
+  // Something unsaved is asked about first (the N1 review: leave-guard.tsx).
+  const signOut = () =>
+    new Promise<void>((done) => leaveThen(() => void signOutNow().then(done), done));
+  const signOutNow = async () => {
     await session.signOut();
     // One render for both, the sign-in page and nobody signed in: apart,
     // the gate saw nobody signed in at the old address first (a move is a
@@ -780,10 +797,13 @@ function SearchBox({
       onSubmit={(e) => {
         e.preventDefault();
         const words = q.trim();
-        void navigate(
-          words ? `/search?${new URLSearchParams({ q: words }).toString()}` : '/search',
-        );
-        setQ('');
+        // Something unsaved is asked about first (the N1 review).
+        leaveThen(() => {
+          void navigate(
+            words ? `/search?${new URLSearchParams({ q: words }).toString()}` : '/search',
+          );
+          setQ('');
+        });
       }}
     >
       <Icon name="search" size={18} />
@@ -1062,7 +1082,8 @@ function AccountMenuBox(props: {
             onClick={() => {
               if (busy) return;
               setBusy(true);
-              void props.onSignOut();
+              // Kept writing instead (leave-guard.tsx): Sign out is there again.
+              void props.onSignOut().finally(() => setBusy(false));
             }}
           >
             <Icon name="signOut" />
@@ -1173,7 +1194,8 @@ function Drawer(props: {
             onClick={() => {
               if (busy) return;
               setBusy(true);
-              void props.onSignOut();
+              // Kept writing instead (leave-guard.tsx): Sign out is there again.
+              void props.onSignOut().finally(() => setBusy(false));
             }}
           >
             Sign out

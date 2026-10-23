@@ -20,6 +20,7 @@ import {
   type DocumentTypeView,
   type Role,
   type Visibility,
+  NOTE_KIND,
 } from '@fdv/shared';
 import {
   useEffect,
@@ -398,7 +399,10 @@ function AddMany({ visit }: { visit: string }) {
         ...(data?.members ?? []).filter((m) => m.is_deceased),
       ];
   const collections = data ? addable(data.collections, role) : [];
-  const shownTypes = (data?.types ?? []).filter((t) => !t.hidden || t.key === typeKey);
+  // A note is written, not filed: never a kind to choose (the N1 review).
+  const shownTypes = (data?.types ?? []).filter(
+    (t) => t.key !== NOTE_KIND && (!t.hidden || t.key === typeKey),
+  );
   const carrying = locked ? upload.carryOn : resumed !== null;
   const label = locked && batch ? batch.label : resumed ? batchLabel(resumed) : null;
 

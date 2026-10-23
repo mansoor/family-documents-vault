@@ -170,6 +170,13 @@ describe('what a folder’s segments say (S2)', () => {
     expect(kindOf('Bills/March 2024')).toBe('utility_bill');
     // "Something else" is no kind.
     expect(kindOf('Something else')).toBeNull();
+    // Nor a note, listed where one is seen: a note is written, never filed (the N1 review).
+    const withNote = ctx({
+      types: [...KINDS, { key: 'note', label: 'Note' }],
+    });
+    for (const folder of ['Notes', 'Note', 'notes/2024']) {
+      expect(suggestFromFolder(folder, withNote)?.type_key ?? null, folder).toBeNull();
+    }
     // A kind the uploader is not given is never suggested.
     expect(
       suggestFromFolder('Passports', ctx({ types: KINDS.filter((k) => k.key !== 'passport') }))

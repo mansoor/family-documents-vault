@@ -20,7 +20,7 @@ import type { SealedSearchService } from './sealed-search.js';
 import type { StepUpService } from '../auth/step-up.js';
 import type { PurgeService } from './purge.js';
 import type { LockService } from '../household/locks.js';
-import type { DocumentService } from './service.js';
+import { NOTES_LIST_MAX, type DocumentService } from './service.js';
 import { TAG_LIST_MAX } from './tags.js';
 import type { VisibilityService } from './visibility.js';
 import type { UploadRequestService } from '../uploads/requests.js';
@@ -388,6 +388,21 @@ export function registerDocuments(
       ? docs.table(principal(req), { ...q, sort })
       : docs.list(principal(req), { ...q, sort });
   });
+
+  // Notes kept on their own (0.9.0, N1): the caller's, newest first, each
+  // with its first words; `q` finds within them. A note is read, made and
+  // changed as any document is (GET, POST and PATCH /documents).
+  const notesQuery = z.object({
+    q: z.string().max(200).optional(),
+    deleted: z
+      .enum(['true', 'false'])
+      .transform((v) => v === 'true')
+      .optional(),
+    limit: z.coerce.number().int().min(1).max(NOTES_LIST_MAX).optional(),
+  });
+  app.get('/api/v1/notes', auth, async (req) =>
+    docs.notes(principal(req), parse(notesQuery, req.query)),
+  );
 
   app.post('/api/v1/documents', auth, async (req, reply) => {
     const created = await docs.create(
@@ -899,6 +914,13 @@ export function registerDocuments(
       return sendShared(reply, file);
     },
   );
+
+  // A note's words, read on the page (0.9.0, N1): only a note the link
+  // gives, as every item is.
+  app.get<{ Params: { doc: string } }>('/api/v1/shared/items/:doc/note', inSession, async (req) => {
+    const doc = parse(z.object({ doc: z.string().uuid() }), req.params).doc;
+    return shares.sessionNote(req.cookies[SHARE_COOKIE], doc, metaOf(req), devicesOf(req));
+  });
 
   // A view-only link's pages (5.18): the ones drawn for it, with whom it is
   // for across each, and never the file or the vault's own previews.

@@ -14,6 +14,7 @@ import {
   type ReminderView,
   type Role,
   type SuggestionView,
+  documentName,
 } from '@fdv/shared';
 import {
   Fragment,
@@ -561,7 +562,8 @@ function HitRow({
   /** Its ⋯ moved it to the Trash: the search says so (`useTrashedNote`). */
   onTrashed: (title: string) => void;
 }) {
-  const title = hit.title ?? 'Untitled';
+  // A note with no title by its first words (the N1 re-check).
+  const title = documentName(hit, 'Untitled');
   return (
     <li className="docrow">
       <RowMain title={title} pick={pick} onOpen={onOpen}>

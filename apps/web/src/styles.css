@@ -2372,6 +2372,24 @@ fieldset.identity-section {
   font-size: 18px;
   margin: 14px 0 6px;
 }
+/* 0.9.0 (N1): three levels of heading, each by its size (every one an h3
+   in the page's outline); a quote; underlined and struck words. */
+.note .note-h1 {
+  font-size: 24px;
+}
+.note .note-h2 {
+  font-size: 20px;
+}
+.note .note-quote,
+.rt-words blockquote {
+  margin: 0 0 10px;
+  padding: 2px 0 2px 14px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--ink-soft);
+}
+.note u {
+  text-underline-offset: 2px;
+}
 .note a {
   color: var(--accent);
   text-decoration: underline;
@@ -2402,41 +2420,274 @@ fieldset.identity-section {
   flex-direction: column;
   gap: 10px;
 }
-.note-tools {
+.note-count {
+  font-size: 14px;
+  margin: 0;
+}
+.note-secret {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-s);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 14px;
+}
+
+/* The note editor (0.9.0, N1, rich-text.tsx): a toolbar that looks like
+   one — small icon buttons in groups, a line between each group, a pressed
+   look for what the caret's words are — over the words themselves. Its
+   tips show under the toolbar, at its start, never past the page's edge. */
+.rt {
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+}
+.rt-toolbar {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: var(--radius-m) var(--radius-m) 0 0;
+}
+.rt-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.rt-sep {
+  display: block;
+  width: 1px;
+  height: 22px;
+  margin: 0 5px;
+  background: var(--border-strong);
+}
+.rt-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.rt-tool:hover {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+.rt-tool[aria-pressed='true'],
+.rt-tool[aria-expanded='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.rt-tool:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+/* A finger needs more room than a pointer (NFR-09). */
+@media (pointer: coarse) {
+  .rt-tool {
+    min-width: var(--tap);
+    height: var(--tap);
+  }
+}
+.rt-tip {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 6px;
+  max-width: calc(100% - 12px);
+  z-index: 6;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--ink);
+  color: var(--surface);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: normal;
+  pointer-events: none;
+}
+.rt-tool:hover .rt-tip,
+.rt-tool:focus-visible .rt-tip {
+  display: block;
+}
+.rt-style {
+  display: flex;
+}
+.rt-style-button {
+  min-width: 112px;
+  justify-content: space-between;
+}
+.rt-menu {
+  position: absolute;
+  top: calc(100% - 2px);
+  left: 6px;
+  z-index: 7;
+  min-width: 220px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  box-shadow: 0 8px 24px var(--scrim);
+}
+.rt-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 40px;
+  padding: 4px 10px 4px 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  position: relative;
+}
+.rt-menu-item[aria-checked='true']::before {
+  content: '✓';
+  position: absolute;
+  left: 9px;
+  color: var(--accent);
+  font-weight: 700;
+}
+.rt-menu-item:hover,
+.rt-menu-item:focus {
+  background: var(--accent-soft);
+}
+.rt-menu-item:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+.rt-menu-heading1 {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+}
+.rt-menu-heading2 {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 600;
+}
+.rt-menu-heading3 {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+}
+.rt-menu-keys {
+  color: var(--ink-muted);
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 400;
+}
+.rt-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.rt-link-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+.rt-link-input {
+  flex: 1 1 180px;
+  min-width: 0;
+  min-height: var(--tap);
+  padding: 0 12px;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-s);
+  font: inherit;
+  font-size: 16px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.rt-link-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.rt-link-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
-.note-tool {
-  padding: 0 12px;
-  font-size: 14px;
-}
-.note-input {
-  font: inherit;
-  font-size: 16px;
-  min-height: calc(var(--tap) * 4);
-  padding: 10px 14px;
-  border: 1px solid var(--border-input);
-  border-radius: var(--radius-m);
-  background: var(--surface);
-  color: var(--ink);
-  resize: vertical;
-  width: 100%;
-}
-.note-input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-.note-preview {
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-m);
-  padding: 10px 14px;
-  background: var(--surface);
-}
-.note-help,
-.note-count {
-  font-size: 14px;
+.rt-link .field-error {
+  flex-basis: 100%;
   margin: 0;
+}
+.rt-words {
+  min-height: 12rem;
+  padding: 12px 14px;
+  font-size: 16px;
+  white-space: pre-wrap;
+  outline: none;
+  border-radius: 0 0 var(--radius-m) var(--radius-m);
+}
+.rt-words:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.rt-words h1,
+.rt-words h2,
+.rt-words h3 {
+  margin: 14px 0 6px;
+}
+.rt-words h1 {
+  font-size: 24px;
+}
+.rt-words h2 {
+  font-size: 20px;
+}
+.rt-words h3 {
+  font-size: 18px;
+}
+.rt-words ul[data-checklist='true'] {
+  list-style: none;
+  padding-left: 0;
+}
+/* A plain item in a list of to-dos keeps its bullet (the N1 review). */
+.rt-words ul[data-checklist='true'] > li:not([data-checked]) {
+  list-style: disc;
+  margin-left: 24px;
+}
+/* Each to-do's box: the editor's own (role checkbox), never the words. */
+.rt-words .rt-box {
+  display: inline-block;
+  position: relative;
+  width: 16px;
+  height: 16px;
+  margin: 0 10px 0 2px;
+  vertical-align: -2px;
+  border: 1.5px solid var(--border-input);
+  border-radius: 4px;
+  background: var(--surface);
+  cursor: pointer;
+  user-select: none;
+}
+.rt-words .rt-box[aria-checked='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.rt-words .rt-box[aria-checked='true']::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 0;
+  width: 4px;
+  height: 9px;
+  border: solid var(--surface);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
 }
 .note-conflict {
   border-left: 3px solid var(--warn);
@@ -2446,6 +2697,191 @@ fieldset.identity-section {
 }
 .note-conflict > p:first-child {
   margin-top: 0;
+}
+
+/* ---- Notes (0.9.0, N1) ----
+   From 768 px the notes listed beside the one open, the list as wide as it
+   was dragged (the grid's columns are set on the element), a line between
+   them to drag; on a phone, one or the other. */
+.notes-split {
+  display: grid;
+  align-items: start;
+  min-height: 60vh;
+}
+.notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.shell-wide .notes-list,
+.shell-mid .notes-list {
+  position: sticky;
+  top: calc(var(--shell-top) + 12px);
+  max-height: calc(100dvh - var(--shell-top) - 24px);
+  overflow-y: auto;
+  padding: 2px 4px 2px 2px;
+}
+.notes-list-tools {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.notes-find {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.notes-find input {
+  width: 100%;
+  font: inherit;
+  font-size: 16px;
+  min-height: var(--tap);
+  padding: 0 12px;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--ink);
+}
+.notes-find input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.notes-new {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.notes-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.notes-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-m);
+  color: var(--ink);
+}
+.notes-item:hover {
+  background: var(--surface);
+  border-color: var(--border);
+}
+.notes-item[aria-current='page'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.notes-item:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.notes-item-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.notes-item-title {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.notes-item-when {
+  font-size: 14px;
+  white-space: nowrap;
+}
+.notes-item-preview {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.notes-item-who {
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+.notes-empty p {
+  margin: 0 0 8px;
+}
+.notes-none {
+  padding: 24px 16px;
+}
+.notes-resizer {
+  position: relative;
+  align-self: stretch;
+  min-height: 240px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.notes-resizer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 2px;
+  background: var(--border);
+}
+.notes-resizer:hover::before,
+.notes-resizer:focus-visible::before {
+  left: 4px;
+  width: 4px;
+  background: var(--accent);
+}
+.notes-resizer:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -1px;
+}
+.note-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.notes-split .note-pane,
+.notes-split .notes-none {
+  padding-left: 12px;
+}
+.note-pane-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.note-pane-title {
+  font-size: 28px;
+  overflow-wrap: anywhere;
+}
+.note-pane-meta {
+  margin: 0;
+  font-size: 14px;
+}
+.note-pane-actions {
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.notes-own .notes-head {
+  justify-content: flex-start;
+}
+.shared-note {
+  margin-top: 4px;
+  align-self: stretch;
+}
+/* A note's own lists inside a link's list of what was shared: a note's,
+   not the page's rows. */
+.list .note li {
+  display: list-item;
+  padding: 0;
+  border-bottom: 0;
+}
+.list .note li > span:first-child {
+  display: inline-block;
 }
 
 /* ---- Phase 6, R1: the app's shell ----

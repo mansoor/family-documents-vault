@@ -1,4 +1,7 @@
 import {
+  NOTE_KIND,
+  noteMatchWords,
+  notePreview,
   numbersOnly,
   READING_CHECK_N,
   READING_MISSES_KEEP_DAYS,
@@ -815,6 +818,33 @@ const FAKE_TYPES: DocumentTypeView[] = [
     issued_by_label: 'School',
     short_label: 'School report',
   }),
+  // 0.9.0 (N1, 0078): a note kept on its own — the vault's kind, hidden from
+  // the kinds to file a paper as, and listed where a note uses it.
+  {
+    ...builtin(
+      {
+        key: NOTE_KIND,
+        label: 'Note',
+        category: 'other',
+        fields: [],
+        expiry_driver: null,
+        reminder_leads: [],
+        usually_essential: false,
+        default_visibility: 'household',
+        issued_by_label: null,
+        short_label: 'Note',
+      },
+      {
+        identifier: { shown: false },
+        issued_by: { shown: false },
+        issued: { shown: false },
+        expires: { shown: false },
+        physical_location: { shown: false },
+        notes: { label: 'Note' },
+      },
+    ),
+    hidden: true,
+  },
 ];
 
 /** What GET /document-attributes answers: some of the library the real vault starts with. */
@@ -2167,6 +2197,8 @@ export function createFakeVault(): {
           reading_check: true,
           // A collection from a checklist (0.9.0, C1).
           collection_checklist: true,
+          // Notes kept on their own (0.9.0, N1).
+          notes: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -2564,6 +2596,35 @@ export function createFakeVault(): {
       if (!('id' in s)) return s;
       return answerTags(state.documents, whoOf(s), path, url, init.method, body);
     }
+    // Notes kept on their own (0.9.0, N1), as the real vault lists them:
+    // the caller's, newest words first, each with its preview; nobody else's
+    // Only me; `q` finds within their names and words.
+    if (path === '/api/v1/notes' && (init.method ?? 'GET') === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const me = whoOf(s).memberId;
+      const inTrash = param(url, 'deleted') === 'true';
+      const q = noteMatchWords(param(url, 'q'));
+      const items = state.documents
+        .filter((d) => d.type_key === NOTE_KIND && Boolean(d.deleted_at) === inTrash)
+        .filter((d) => d.visibility !== 'private' || d.owner_member_id === me)
+        .filter(
+          (d) => !q || noteMatchWords(d.title).includes(q) || noteMatchWords(d.notes).includes(q),
+        )
+        .sort((a, b) => (b.notes_updated_at ?? '').localeCompare(a.notes_updated_at ?? ''))
+        .map((d) => ({
+          id: d.id,
+          title: d.title,
+          preview: notePreview(d.notes),
+          visibility: d.visibility ?? 'household',
+          owner_member_id: d.owner_member_id ?? null,
+          tags: d.tags ?? [],
+          updated_at: d.notes_updated_at ?? new Date(0).toISOString(),
+          notes_updated_at: d.notes_updated_at ?? null,
+          deleted_at: d.deleted_at ?? null,
+        }));
+      return ok({ items, truncated: false });
+    }
     if (path === '/api/v1/documents') {
       const s = session();
       if (!('id' in s)) return s;
@@ -2728,7 +2789,13 @@ export function createFakeVault(): {
       // changed is refused, not laid over theirs.
       const ifMatch = init.headers['if-match'];
       if (ifMatch && ifMatch !== etagOf(doc)) {
-        return fail(409, 'conflict', 'Someone else changed this document. Reload and try again.');
+        // With the document as it is now, as the real vault sends it.
+        return fail(
+          409,
+          'conflict',
+          'Someone else changed this document. Reload and try again.',
+          JSON.stringify(viewOf(doc)),
+        );
       }
       // A field the fake does not keep fails loudly, so a client test never
       // passes against an edit the fake quietly dropped.
@@ -2742,6 +2809,18 @@ export function createFakeVault(): {
       }
       const type_key =
         body.type_key !== undefined ? (body.type_key as string | null) : (doc.type_key ?? null);
+      // As the real vault (0.9.0, N1): a note stays a note, and nothing becomes one.
+      if (
+        type_key !== (doc.type_key ?? null) &&
+        (type_key === NOTE_KIND || doc.type_key === NOTE_KIND)
+      ) {
+        return fail(
+          422,
+          'note_kind_fixed',
+          'A note stays a note, and a document does not become one: make a new note instead.',
+          'type_key',
+        );
+      }
       if (type_key !== null && !state.types.some((t) => t.key === type_key)) {
         return fail(422, 'validation_failed', 'That kind of document is not on the list.');
       }
@@ -2799,6 +2878,13 @@ export function createFakeVault(): {
       if (target !== undefined && !state.documents.some((d) => d.id === target)) {
         return fail(404, 'not_found', 'That document is not in the vault.');
       }
+      // As the real vault (0.9.0, N1): a note keeps no file.
+      if (
+        target !== undefined &&
+        state.documents.some((d) => d.id === target && d.type_key === NOTE_KIND)
+      ) {
+        return fail(422, 'note_has_no_file', NOTE_HAS_NO_FILE);
+      }
       const prior = state.captures.get(key.toLowerCase());
       if (prior) {
         if (prior.kind !== kind || (target !== undefined && prior.document_id !== target)) {
@@ -2826,6 +2912,9 @@ export function createFakeVault(): {
             metadata = JSON.parse(parts[meta]?.value ?? '') as CaptureMetadata;
           } catch {
             return fail(422, 'validation_failed', 'The details must be sent as JSON.');
+          }
+          if (metadata.type_key === NOTE_KIND) {
+            return fail(422, 'note_has_no_file', NOTE_HAS_NO_FILE);
           }
           // As the real vault (0.5.10): a kind it does not have — deleted
           // while the phone was offline — is not a refusal. The scan is filed
@@ -3168,7 +3257,11 @@ export function createFakeVault(): {
       const all = param(url, 'all') === 'true';
       const inUse = (key: string) => state.documents.some((d) => d.type_key === key);
       return ok({
-        items: state.types.filter((t) => all || !t.hidden || inUse(t.key)).map(typeAnswer),
+        // The kind of a note (0.9.0, N1) only where a note uses it, all or not.
+        items: state.types
+          .filter((t) => all || !t.hidden || inUse(t.key))
+          .filter((t) => t.key !== NOTE_KIND || inUse(t.key))
+          .map(typeAnswer),
       });
     }
     if (path === '/api/v1/document-attributes' && init.method === 'GET') {
@@ -6289,6 +6382,10 @@ function memberAnswer(m: FakeVaultState['members'][number]) {
     can_edit: m.can_edit ?? m.role !== 'viewer',
   };
 }
+
+/** A note keeps no file (0.9.0, N1), in the real vault's words. */
+const NOTE_HAS_NO_FILE =
+  'A note keeps no file. Add the file as a document of its own, and link them if you like.';
 
 /** A refusal the fake has already made, rather than a value to use. */
 const isResponse = (v: unknown): v is ResponseLike =>

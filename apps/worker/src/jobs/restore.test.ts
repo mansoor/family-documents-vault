@@ -176,6 +176,15 @@ async function seed(url: string): Promise<string> {
       [account, hh, randomBytes(32)],
     );
     await c.query('insert into document (household_id) select $1 from generate_series(1, 3)', [hh]);
+    // The last of them a note kept on its own, where the schema has its
+    // kind (0078, N1): no file, its words its note.
+    await c.query(
+      `update document set type_key = 'note', title = 'Where the stopcock is',
+              notes = 'Under the **sink**, behind the bleach'
+        where id = (select id from document where household_id = $1 order by id desc limit 1)
+          and exists (select 1 from document_type where key = 'note' and household_id is null)`,
+      [hh],
+    );
     // An export, made and still to be downloaded (5.27: a restore ends it);
     // and one that failed, which never could be (and is not counted).
     await c.query(
@@ -3169,6 +3178,28 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it('notices the guards that keep a note a note gone: no file on one, none made one, its kind the vault’s (0078, N1)', async () => {
+    for (const [table, trigger] of [
+      ['document_version', 'document_version_not_on_note'],
+      ['document', 'document_note_has_no_file'],
+      ['document_type_setting', 'document_type_setting_not_note'],
+    ] as const) {
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        const refused = await checkRestored(target()).then(
+          () => null,
+          (e: unknown) => (e as Error).message,
+        );
+        expect(refused, trigger).toMatch(/guard the vault relies on is missing/);
+        // The others are found: it is this one that is missing.
+        expect(refused, trigger).not.toMatch(new RegExp(trigger));
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it("notices the guard on a note's stamp gone (0057)", async () => {
     await sql(vault.adminUrl, 'alter table public.document disable trigger document_notes_stamp');
     try {
@@ -3424,6 +3455,17 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       { state: 'done', failure: null, numbers: true, work: false, misses: true },
       // Its sealed row gone: neither is there.
       { state: 'failed', failure: 'restored', numbers: false, work: false, misses: false },
+    ]);
+    // A note kept on its own comes back a note, with its words and no file
+    // (0078, N1), and its guard holds in the restored vault.
+    const notes = await sql(
+      t.adminUrl,
+      `select d.title, d.notes,
+              (select count(*)::int from document_version v where v.document_id = d.id) as files
+         from document d where d.type_key = 'note'`,
+    );
+    expect(notes.rows).toEqual([
+      { title: 'Where the stopcock is', notes: 'Under the **sink**, behind the bleach', files: 0 },
     ]);
     // The job queue came back too, and the vault can use it.
     const jobs = await sql(

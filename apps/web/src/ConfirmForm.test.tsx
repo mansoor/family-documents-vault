@@ -164,6 +164,17 @@ const type = (label: string | RegExp, value: string) =>
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 
 describe('the card asks for a type’s details (5.10)', () => {
+  it('never offers the kind of a note, listed where a note is seen: a note is written, not filed (the N1 review)', async () => {
+    const noteType = { ...PET_TYPE, key: 'note', label: 'Note', builtin: true, fields: [] };
+    start('/add', { types: [...DETAIL_TYPES, noteType] });
+    await addCard('passport');
+    const offered = Array.from(screen.getByLabelText<HTMLSelectElement>('What it is').options).map(
+      (o) => o.value,
+    );
+    expect(offered).toContain('passport');
+    expect(offered).not.toContain('note');
+  });
+
   it('a passport card asks for Passport number, marked required', async () => {
     start('/add');
     await addCard('passport');

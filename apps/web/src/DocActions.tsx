@@ -1,4 +1,4 @@
-import { can, visibilityChoices, type DocumentView, type Role } from '@fdv/shared';
+import { can, NOTE_KIND, visibilityChoices, type DocumentView, type Role } from '@fdv/shared';
 import {
   useCallback,
   useId,
@@ -84,10 +84,12 @@ export function mayChange(
 export function actionsFor(
   role: Role,
   memberId: string | null | undefined,
-  doc: Pick<
-    DocumentView,
-    'owner_member_id' | 'visibility' | 'latest_version_id' | 'filed_by_me' | 'file_removed'
-  > | null,
+  doc:
+    | (Pick<
+        DocumentView,
+        'owner_member_id' | 'visibility' | 'latest_version_id' | 'filed_by_me' | 'file_removed'
+      > & { type_key?: string | null })
+    | null,
   collections: { collections: boolean; uncollect: boolean } = {
     collections: false,
     uncollect: false,
@@ -120,7 +122,8 @@ export function actionsFor(
   if (collections.collections) actions.push('collect');
   if (collections.collections && collections.uncollect) actions.push('uncollect');
   if (changes) actions.push('essential');
-  if (changes && can(role, 'document.add')) actions.push('version');
+  // A note has no file, nor ever a version (the N1 review).
+  if (changes && can(role, 'document.add') && doc.type_key !== NOTE_KIND) actions.push('version');
   if (changes) actions.push('trash');
   return actions;
 }
@@ -496,6 +499,7 @@ export function DocActions(props: {
             current={doc.visibility}
             isMine={doc.owner_member_id !== null && doc.owner_member_id === memberId}
             filedByMe={doc.filed_by_me === true}
+            note={doc.type_key === NOTE_KIND}
             onChanged={async () => {
               changedInSheet.current = true;
             }}

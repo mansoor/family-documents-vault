@@ -5,6 +5,11 @@ import {
   issuerCandidates,
   mayChangeVisibilityAtAll,
   normaliseTags,
+  NOTE_KIND,
+  NOTE_MARK_CHARACTERS,
+  noteMatchWords,
+  noteFirstWords,
+  notePreview,
   notesPlainText,
   tagsProblem,
   PRIVATE_BY_DEFAULT,
@@ -21,6 +26,7 @@ import {
   type ProposalContext,
   type UploadStatus,
   type SearchHit as WireSearchHit,
+  type NotesList,
 } from '@fdv/shared';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { PassThrough, Readable } from 'node:stream';
@@ -278,6 +284,27 @@ const isoDate = (d: string | null): string | null => (d === null ? null : d.slic
 const today = () => new Date().toISOString().slice(0, 10);
 
 const notFound = () => new ApiError(404, 'not_found', 'That document is not in the vault.');
+
+/**
+ * A note keeps no file (0.9.0, N1, 0078): asked before a byte is read, and
+ * again as anything is filed, whatever files it — an upload, a capture, the
+ * Inbox, a request's files.
+ */
+export const noFileOnNote = () =>
+  new ApiError(
+    422,
+    'note_has_no_file',
+    'A note keeps no file. Add the file as a document of its own, and link them if you like.',
+  );
+
+/** A note is a note, and a document never one (0.9.0, N1): its kind is not changed. */
+const noteStaysNote = () =>
+  new ApiError(
+    422,
+    'note_kind_fixed',
+    'A note stays a note, and a document does not become one: make a new note instead.',
+    { detail: 'type_key' },
+  );
 
 /**
  * Changed when a migration changes what documents say without anyone
@@ -564,6 +591,11 @@ export async function holdForReading(trx: Db, documentId: string): Promise<void>
   if (!held) throw notFound();
 }
 
+/** The most notes GET /notes lists at once (0.9.0, N1): the newest. */
+export const NOTES_LIST_MAX = 500;
+/** The most of the caller's own Only me notes it opens to list or match. */
+const NOTES_OWN_MAX = 2_000;
+
 /** A version as a document's view counts them: newest first. */
 interface VersionBrief {
   id: string;
@@ -645,7 +677,11 @@ export class DocumentService {
       let q = trx
         .selectFrom('effective_document_type as t')
         .selectAll('t')
-        .where(kindGiven(p, sql<boolean>`t.builtin`));
+        .where(kindGiven(p, sql<boolean>`t.builtin`))
+        // The kind of a note (0.9.0, N1): the vault's, and never one to file a
+        // paper as — listed only where a note the caller can see uses it, so
+        // a client finds it by key, asked for all or not.
+        .where((eb) => eb.or([eb('t.key', '<>', NOTE_KIND), kindSeen(p, false)]));
       if (!opts.all) {
         q = q.where((eb) => eb.or([eb('t.hidden', '=', false), kindSeen(p, true)]));
       }
@@ -937,6 +973,9 @@ export class DocumentService {
       tags: row.tags,
       notes: onlyMe ? (opened?.notes ?? null) : row.notes,
       has_notes: row.notes !== null || row.notes_sealed !== null,
+      // A note with no title, named by its first words where its words are
+      // given (the N1 re-check): never an Only me one's in a list.
+      ...noteName(row.type_key, row.title, onlyMe ? (opened?.notes ?? null) : row.notes),
       // Who last changed its note's words, and when (5.35): the moment to
       // whoever sees the document, the name on the activity log's terms.
       notes_updated_at: row.notes_updated_at?.toISOString() ?? null,
@@ -1510,6 +1549,112 @@ export class DocumentService {
   }
 
   /**
+   * The caller's notes (0.9.0, N1, GET /notes): the notes they may see, as
+   * every list of documents gives them, newest first, each with its first
+   * words. An Only me note is in its owner's list alone — the rule every
+   * list keeps (`visibleTo`) — and its words, sealed (0033), are opened for
+   * its owner here, with one key for them all, as their own request for
+   * them: never for anybody else, who is never given the row.
+   *
+   * `q` finds within them, whatever its case: in a note's name, or its
+   * words as written. The family's are matched by the database; the
+   * caller's own Only me notes, whose words it cannot read, here, once
+   * opened. Nothing is parsed but the start of each note, for its preview.
+   */
+  async notes(
+    p: Principal,
+    q: { q?: string | undefined; deleted?: boolean | undefined; limit?: number | undefined },
+  ): Promise<NotesList> {
+    const limit = Math.min(Math.max(q.limit ?? NOTES_LIST_MAX, 1), NOTES_LIST_MAX);
+    const words = noteMatchWords(q.q);
+    return withPrincipal(this.db, p, async (trx) => {
+      let base = trx
+        .selectFrom('document')
+        .selectAll()
+        .where(this.visibleTo(p) as never)
+        .where('type_key', '=', NOTE_KIND);
+      base = q.deleted
+        ? base.where('deleted_at', 'is not', null)
+        : base.where('deleted_at', 'is', null);
+      // The family's: matched by the database.
+      let plain = base.where('visibility', '<>', 'private');
+      if (words) {
+        const like = `%${words.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+        // Its name, or its words without their marks: "ann first" finds
+        // `**Ann** first`, as the caller's own are matched below.
+        const flat = (column: 'title' | 'notes') =>
+          // A no-break space is a space here (the N1 re-check), as it is in
+          // the caller's own, matched in JavaScript: Chrome writes a run of
+          // typed spaces with them.
+          sql<string>`lower(regexp_replace(regexp_replace(coalesce(${sql.ref(column)}, ''), ${NOTE_MARK_CHARACTERS}, '', 'g'), '[\\s\\u00a0\\u2007\\u202f]+', ' ', 'g'))`;
+        plain = plain.where((eb) =>
+          eb.or([eb(flat('title'), 'like', like), eb(flat('notes'), 'like', like)]),
+        );
+      }
+      const shared = (await plain
+        .orderBy('updated_at', 'desc')
+        .orderBy('id')
+        .limit(limit + 1)
+        .execute()) as unknown as DocRow[];
+      // The caller's own Only me notes (`visibleTo` gives nobody else's):
+      // opened, with one key, and matched here.
+      const own = (await base
+        .where('visibility', '=', 'private')
+        .where('owner_member_id', '=', p.memberId)
+        .orderBy('updated_at', 'desc')
+        .orderBy('id')
+        .limit(NOTES_OWN_MAX)
+        .execute()) as unknown as DocRow[];
+      const opened = new Map<string, string | null>();
+      if (own.length > 0) {
+        const key = await this.keys.unwrap(trx, {
+          householdId: p.householdId,
+          kind: 'member',
+          memberId: p.memberId,
+        });
+        for (const r of own) {
+          let body = r.notes;
+          if (r.notes_sealed) {
+            try {
+              body = openPrivate(key.key, r.id, {
+                notes_sealed: r.notes_sealed,
+                extra_sealed: null,
+              }).notes;
+            } catch {
+              // One that does not open is listed with no words.
+              body = null;
+            }
+          }
+          opened.set(r.id, body);
+        }
+      }
+      const mine = own.filter(
+        (r) =>
+          !words ||
+          noteMatchWords(r.title).includes(words) ||
+          noteMatchWords(opened.get(r.id)).includes(words),
+      );
+      const all = [...shared, ...mine].sort(
+        (a, b) => b.updated_at.getTime() - a.updated_at.getTime() || (a.id < b.id ? -1 : 1),
+      );
+      return {
+        items: all.slice(0, limit).map((r) => ({
+          id: r.id,
+          title: r.title,
+          preview: notePreview(r.visibility === 'private' ? opened.get(r.id) : r.notes),
+          visibility: r.visibility,
+          owner_member_id: r.owner_member_id,
+          tags: r.tags,
+          updated_at: r.updated_at.toISOString(),
+          notes_updated_at: r.notes_updated_at?.toISOString() ?? null,
+          deleted_at: r.deleted_at?.toISOString() ?? null,
+        })),
+        truncated: all.length > limit || own.length >= NOTES_OWN_MAX,
+      };
+    });
+  }
+
+  /**
    * GET /documents sorted by a column (Phase 6, R2): the Documents table.
    * What the caller may see, as every list of documents gives it, filtered,
    * sorted and a page at a time (table.ts); with how many there are in all,
@@ -2052,6 +2197,8 @@ export class DocumentService {
       // no longer be allowed to see it at all. Ask again, under the lock.
       const now = await this.fetch(trx, p, f.documentId);
       this.mustOwnIfTeen(p, now);
+      // Made a note while the file came (it cannot be: 0078 holds it too).
+      if (now.type_key === NOTE_KIND) throw noFileOnNote();
       const is = scopeFor(now, p.householdId);
       if (f.scope.kind !== is.kind || f.scope.memberId !== is.memberId) {
         throw new ApiError(
@@ -2062,6 +2209,7 @@ export class DocumentService {
         );
       }
     } else {
+      if ((f.values as Record<string, unknown>).type_key === NOTE_KIND) throw noFileOnNote();
       // Filed with a note, plain or sealed: whoever filed it wrote it, as
       // this commit's clock has it (5.35) — the claim's ran earlier.
       const noted =
@@ -2200,6 +2348,7 @@ export class DocumentService {
       // takes no new version, as an upload's.
       const doc = await this.fetch(trx, p, target.documentId);
       this.mustOwnIfTeen(p, doc);
+      if (doc.type_key === NOTE_KIND) throw noFileOnNote();
       documentId = doc.id;
       scope = scopeFor(doc, p.householdId);
     } else {
@@ -2272,6 +2421,8 @@ export class DocumentService {
       await lockKey(trx, p.householdId, key);
       // A document the caller cannot see is not there, whatever the key.
       const doc = target.kind === 'version' ? await this.fetch(trx, p, target.documentId) : null;
+      // A note keeps no file (0.9.0, N1): refused before a byte is read.
+      if (doc?.type_key === NOTE_KIND) throw noFileOnNote();
       const row = await trx
         .selectFrom('upload_idempotency')
         .selectAll()
@@ -2411,6 +2562,8 @@ export class DocumentService {
     p: Principal,
     sent: CaptureMetadata,
   ): Promise<Record<string, never>> {
+    // A paper is never filed as a note (0.9.0, N1).
+    if (sent.type_key === NOTE_KIND) throw noFileOnNote();
     // Through the claim's own transaction: a second connection taken while
     // holding one could empty the pool under enough captures at once.
     // Whose it may be: somebody of the family — a guest owns no document
@@ -2702,6 +2855,7 @@ export class DocumentService {
         items.push({
           document_id: r.document_id,
           title: r.title,
+          ...noteName(r.type_key, r.title, r.words_shown ? r.notes : null),
           type_key: r.type_key,
           category: r.category,
           owner_member_id: r.owner_member_id,
@@ -3156,6 +3310,14 @@ export class DocumentService {
     const out: Record<string, unknown> = {};
     let type: EffectiveType | null = null;
     if (input.type_key !== undefined) {
+      // A note stays a note, and nothing else becomes one (0.9.0, N1).
+      if (
+        current &&
+        input.type_key !== current.type_key &&
+        (current.type_key === NOTE_KIND || input.type_key === NOTE_KIND)
+      ) {
+        throw noteStaysNote();
+      }
       if (input.type_key === null) {
         out.type_key = null;
       } else {
@@ -3562,3 +3724,17 @@ const storageUnreachable = (detail: string) =>
     "We can't reach where your files are kept. Your file was not saved; try again.",
     { detail, retriable: true, retryAfter: 30 },
   );
+
+/**
+ * `note_name` for a note with no title (0.9.0, N1, the re-check): its first
+ * words, from words the reader is given — nothing for anything else.
+ */
+function noteName(
+  typeKey: string | null,
+  title: string | null,
+  words: string | null,
+): { note_name?: string } {
+  if (typeKey !== NOTE_KIND || title?.trim()) return {};
+  const name = noteFirstWords(words);
+  return name ? { note_name: name } : {};
+}

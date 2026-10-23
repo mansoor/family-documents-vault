@@ -158,6 +158,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       reading_check: true,
       // 0.9.0 (C1): a collection from a checklist, read, matched and kept.
       collection_checklist: true,
+      // 0.9.0 (N1): notes kept on their own, a document with no file.
+      notes: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

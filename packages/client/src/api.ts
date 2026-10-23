@@ -103,7 +103,9 @@ import type {
   Share,
   ShareCodeSent,
   SharedDocument,
+  SharedNote,
   SharedSession,
+  NotesList,
   ShareInput,
   ShareLinkPreview,
   SharePreview,
@@ -775,6 +777,15 @@ export function createApi(http: Http) {
     detailSuggestions: (token: string, documentId: string) =>
       request<DetailSuggestions>(`/api/v1/documents/${documentId}/suggestions`, { token }),
     counts: (token: string) => request<Counts>('/api/v1/documents/counts', { token }),
+    /**
+     * The caller's notes kept on their own (0.9.0, `features.notes`):
+     * newest first, each with its first words; `q` finds within them,
+     * `deleted: 'true'` lists those in the Trash. A note is read, made and
+     * changed as any document is: `document`, `createDocument` with
+     * `type_key: 'note'` and its words in `notes`, and `updateDocument`.
+     */
+    notes: (token: string, params: Params = {}) =>
+      request<NotesList>(`/api/v1/notes${qs(params)}`, { token }),
     document: (token: string, id: string) =>
       request<DocumentView>(`/api/v1/documents/${id}`, { token }),
     createDocument: (token: string, body: DocumentInput) =>
@@ -1186,6 +1197,9 @@ export function createApi(http: Http) {
     linkItems: () => request<SharedSession>('/api/v1/shared/items'),
     linkItemContentUrl: (documentId: string) =>
       http.url(`/api/v1/shared/items/${enc(documentId)}/content`),
+    /** A note's words on a link's page (0.9.0, N1): an item with `note: true`. */
+    linkItemNote: (documentId: string) =>
+      request<SharedNote>(`/api/v1/shared/items/${enc(documentId)}/note`),
     /** A view-only link's page (5.18): a JPEG drawn with whom the link is for. */
     linkItemPageUrl: (documentId: string, n: number) =>
       http.url(`/api/v1/shared/items/${enc(documentId)}/pages/${n}`),

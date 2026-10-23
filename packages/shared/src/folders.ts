@@ -1,4 +1,5 @@
 import type { DocumentTypeView, Visibility } from './documents.js';
+import { NOTE_KIND } from './notes.js';
 import { shortTypeLabel } from './titles.js';
 
 /**
@@ -300,8 +301,11 @@ export const FOLDER_KIND_PARENTS: Readonly<Record<string, string>> = {
   investment_statement: 'bank_statement',
 };
 
-/** Kinds no folder suggests: "Something else" is no kind. */
-const NEVER_SUGGESTED = new Set(['other']);
+/**
+ * Kinds no folder suggests: "Something else" is no kind, and a note (0.9.0,
+ * N1) is never a paper's ("Notes", "Doctor notes").
+ */
+const NEVER_SUGGESTED = new Set(['other', NOTE_KIND]);
 
 /** Months and quarters: words of a date beside a year, or alone. */
 const MONTHS = new Set([

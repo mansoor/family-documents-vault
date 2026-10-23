@@ -14,6 +14,7 @@ import {
   type SortDirection,
   type Visibility,
   type VisibilityChange,
+  documentName,
 } from '@fdv/shared';
 import {
   useEffect,
@@ -427,8 +428,9 @@ const SORT_LABELS: Record<DocumentSort, string> = {
   location: 'Location',
 };
 
-function titleOf(doc: Pick<DocumentView, 'title'>): string {
-  return doc.title ?? 'Scan · needs a name';
+function titleOf(doc: Pick<DocumentView, 'title' | 'type_key' | 'note_name'>): string {
+  // A note with no title by its first words (the N1 re-check).
+  return documentName(doc, 'Scan · needs a name');
 }
 
 function countWords(pages: Pages, view: TableView): string {

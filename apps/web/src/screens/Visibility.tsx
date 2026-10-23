@@ -1,3 +1,4 @@
+import { ONLY_ME_TITLE } from '../notes.js';
 import {
   shareEndWords,
   visibilityChoices,
@@ -50,6 +51,12 @@ export function VisibilityControl(props: {
    * done: the vault says "Only you can open this" once, and only here.
    */
   onBusy?: (busy: boolean) => void;
+  /**
+   * A note (0.9.0, N1, the review): made Only me, its words are sealed and
+   * its title is not — said as Only me is chosen, so a title that says what
+   * the words do can be changed first.
+   */
+  note?: boolean;
 }) {
   const { guarded, withToken } = useApp();
   const [open, setOpen] = useState(Boolean(props.onClose));
@@ -177,6 +184,9 @@ export function VisibilityControl(props: {
         onChange={setChoice}
       />
       <p className="muted">{choices.find((c) => c.value === choice)?.hint}</p>
+      {props.note && choice === 'private' && props.current !== 'private' && (
+        <p className="status status-warn">{ONLY_ME_TITLE}</p>
+      )}
       <ErrorNote message={error} />
       {ask && (
         <LinksChoiceDialog

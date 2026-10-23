@@ -27,6 +27,11 @@ const ALLOWED = [
   // Which share a link's token names, found by its hash. Until it is found
   // there is no link to ask as; after, the link asks as itself.
   'documents/shares.ts ShareService.linkScope',
+  // An Only me note's words, read on its link's page (0.9.0, N1): its
+  // owner's key unwrapped as the vault, once the link was found, as itself,
+  // to give that note — a link is given the keys of its files alone (0042),
+  // and a note has none. The key, and nothing else, is read so.
+  'documents/shares.ts ShareService.sessionNote',
   // Accepting an invitation. The person is not anybody yet, and the check
   // that the member has never signed in reads the household's documents.
   'household/invitations.ts InvitationService.accept',

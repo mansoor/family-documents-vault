@@ -82,6 +82,7 @@ import {
   type PaperReading,
   type LevelKind,
   type Visibility,
+  NOTE_KIND,
 } from '@fdv/shared';
 import { deleteAll, readAll, StorageError, type StorageAdapter } from '@fdv/storage';
 import { sql } from 'kysely';
@@ -2830,6 +2831,8 @@ export class BatchService {
       .selectAll('t')
       .where(kindGiven(p, sql<boolean>`t.builtin`))
       .where((eb) => eb.or([eb('t.hidden', '=', false), kindSeen(p, true)]))
+      // Never a note's (0.9.0, N1): a paper is never filed as one.
+      .where('t.key', '<>', NOTE_KIND)
       .execute();
     const family = await trx
       .selectFrom('member')

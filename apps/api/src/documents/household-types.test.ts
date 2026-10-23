@@ -185,7 +185,8 @@ describe('document types belong to the household', () => {
     const keys = types.map((t) => t.key);
     expect(keys).toEqual(expect.arrayContaining(['passport', typeB, unusedB]));
     expect(keys).not.toContain(typeA);
-    expect(types.filter((t) => t.builtin)).toHaveLength(builtins);
+    // All but the kind of a note (0078), listed only where a note uses it.
+    expect(types.filter((t) => t.builtin)).toHaveLength(builtins - 1);
     expect(types.find((t) => t.key === typeB)).toMatchObject({
       builtin: false,
       hidden: false,

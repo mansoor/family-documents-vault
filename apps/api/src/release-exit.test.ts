@@ -104,6 +104,14 @@ const AHMED_DETAIL_TAG = `${AHMED_LABEL}: ${AHMED_VALUE}`;
  * whatever they are given of the collection itself.
  */
 const AHMED_CHECKLIST = 'AHMED-CHECKLIST-541 papers for the boat loan';
+
+/**
+ * Ahmed's Only me note, kept on its own (0.9.0, N1): a document with no
+ * file, its words sealed. Nobody else's list, search, count, preview,
+ * link or activity line has its name or its words.
+ */
+const AHMED_NOTE_TITLE = 'AHMED-NOTE-TITLE-541';
+const AHMED_NOTE_WORDS = 'ahmednotewords541 the safe is behind the mirror';
 const ATTORNEY_CHECKLIST = 'ATTORNEY-CHECKLIST-541 papers for probate';
 
 /** Ahmed's computer (0.8.0, D1): his, and the owners' to see by name; nobody else's. */
@@ -431,6 +439,8 @@ const RULES: Record<string, Rule> = {
   // Inside a share link's session.
   'GET /api/v1/shared/items': { who: 'link' },
   'GET /api/v1/shared/items/:doc/content': { who: 'link' },
+  // A note's words, read on a link's page (0.9.0, N1).
+  'GET /api/v1/shared/items/:doc/note': { who: 'link' },
   'GET /api/v1/shared/items/:doc/pages/:n': { who: 'link' },
 
   // Inside an upload request's session.
@@ -470,6 +480,18 @@ const RULES: Record<string, Rule> = {
     body: (f) => ({ title: 'Attacker’s document', owner_member_id: f.member }),
   },
   'GET /api/v1/documents/counts': { who: 'signedIn' },
+  // Notes kept on their own (0.9.0, N1): the caller's, and found within —
+  // never his Only me note, by its name or its words.
+  'GET /api/v1/notes': {
+    who: 'signedIn',
+    queries: () => [
+      '',
+      'deleted=true',
+      'q=ahmed',
+      `q=${AHMED_NOTE_WORDS.split(' ')[0] as string}`,
+      `q=${AHMED_NOTE_TITLE}`,
+    ],
+  },
   'GET /api/v1/documents/:id': { who: 'signedIn' },
   'PATCH /api/v1/documents/:id': {
     who: 'signedIn',
@@ -1198,6 +1220,18 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     await ok(
       send(ahmed, 'POST', `/api/v1/documents/${priv.id}/visibility`, { visibility: 'private' }),
     );
+    // And his Only me note (0.9.0, N1).
+    const kept = await ok(
+      send(ahmed, 'POST', '/api/v1/documents', {
+        type_key: 'note',
+        title: AHMED_NOTE_TITLE,
+        visibility: 'private',
+        owner_member_id: ahmed.member_id,
+        notes: `**${AHMED_NOTE_WORDS}**`,
+      }),
+      201,
+    );
+    ids.ahmedNote = json<{ id: string }>(kept).id;
 
     // Collections: one for the attorney, one only Ahmed's.
     await fresh(olivia);
@@ -3372,6 +3406,10 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       ids.mailInCodeBase64 as string,
       // The checklist kept on his Only me collection (0.9.0, C1).
       AHMED_CHECKLIST,
+      // His Only me note: its id, its name and its words (0.9.0, N1).
+      ids.ahmedNote as string,
+      AHMED_NOTE_TITLE,
+      AHMED_NOTE_WORDS.split(' ')[0] as string,
     ];
     /** The attorney's collection's checklist: never a viewer's, a guest's, a link's or a sender's (C1). */
     const checklists = [ATTORNEY_CHECKLIST];
@@ -3700,6 +3738,65 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       ...(res.statusCode === want ? {} : { problem: 'the sweep changed the attacker' }),
     };
   }
+
+  it("a collection's link gives exactly its notes, and never somebody's Only me note (0.9.0, N1)", async () => {
+    // Ahmed's collection for everyone: a note of the family's, and his Only me note.
+    const made = await ok(
+      send(ahmed, 'POST', '/api/v1/collections', {
+        name: 'Notes for the sitter',
+        audience: 'everyone',
+      }),
+      201,
+    );
+    const collection = json<{ id: string }>(made).id;
+    const family = json<{ id: string }>(
+      await ok(
+        send(ahmed, 'POST', '/api/v1/documents', {
+          type_key: 'note',
+          title: 'Bedtime',
+          visibility: 'household',
+          owner_member_id: ahmed.member_id,
+          notes: 'family-note-541: lights out at 8',
+        }),
+        201,
+      ),
+    ).id;
+    await ok(
+      send(ahmed, 'POST', `/api/v1/collections/${collection}/items`, {
+        document_ids: [family, ids.ahmedNote],
+      }),
+    );
+    // Olivia, an owner, shares it, keeping up with it: she cannot see his
+    // Only me note, and her link is never given it.
+    await fresh(olivia);
+    const shared = await ok(
+      send(olivia, 'POST', `/api/v1/collections/${collection}/shares`, {
+        document_ids: [family],
+        follow_collection: true,
+        permission: 'view',
+      }),
+      201,
+    );
+    const token = json<{ link_token: string }>(shared).link_token;
+    const unlocked = await ok(
+      h.app.inject({ method: 'POST', url: '/api/v1/shared/unlock', payload: { token }, ...peer() }),
+    );
+    expect(unlocked.body).not.toContain(AHMED_NOTE_TITLE);
+    const cookie = unlocked.cookies.find((c) => c.name === 'fdv_share')?.value ?? '';
+    const inLink = (url: string) =>
+      h.app.inject({ url, cookies: { fdv_share: cookie }, ...peer() });
+    const items = json<{ items: Array<{ id: string; note?: boolean }> }>(
+      await ok(inLink('/api/v1/shared/items')),
+    ).items;
+    expect(items.map((i) => [i.id, i.note])).toEqual([[family, true]]);
+    const words = await ok(inLink(`/api/v1/shared/items/${family}/note`));
+    expect(words.body).toContain('family-note-541');
+    const his = await inLink(`/api/v1/shared/items/${ids.ahmedNote}/note`);
+    expect(his.statusCode).toBe(404);
+    for (const secret of [AHMED_NOTE_TITLE, AHMED_NOTE_WORDS.split(' ')[0] as string]) {
+      expect(his.body).not.toContain(secret);
+    }
+  });
 });
 
 interface Route {

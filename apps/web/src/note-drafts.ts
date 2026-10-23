@@ -33,6 +33,10 @@ export interface NoteDraft {
   baseEtag: string;
   /** When the note had last changed then, to tell whether somebody changed it since. */
   baseStamp: string | null;
+  /** A note kept on its own (0.9.0, N1): its title as it is being written. */
+  title?: string;
+  /** And its title when the edit began: only a title changed is sent (the N1 review). */
+  baseTitle?: string;
 }
 
 /** Who is signed in: whose drafts these are. */
@@ -89,6 +93,8 @@ export function draftOf(doc: Whose, who: DraftOwner): NoteDraft | null {
           baseText: kept.baseText,
           baseEtag: kept.baseEtag,
           baseStamp: typeof kept.baseStamp === 'string' ? kept.baseStamp : null,
+          ...(typeof kept.title === 'string' ? { title: kept.title } : {}),
+          ...(typeof kept.baseTitle === 'string' ? { baseTitle: kept.baseTitle } : {}),
         }
       : null;
   } catch {
