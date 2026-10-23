@@ -5,6 +5,8 @@ import {
   CHECKLIST_MONTH_NAMES_MAX,
   CHECKLIST_MONTHS_MAX,
   CHECKLIST_TEXT_MAX,
+  CHECKLIST_TITLE_WORD_MAX,
+  CHECKLIST_TITLE_WORDS_MAX,
   CHECKLIST_YEARS_MAX,
   COLLECTION_AUDIENCES,
   COLLECTION_ITEMS_PAGE_MAX,
@@ -60,6 +62,12 @@ const checklistItem = z
       .optional(),
     within: z.number().int().min(1).max(CHECKLIST_MONTHS_MAX).nullable().optional(),
     person_choices: z.array(z.string().uuid()).max(20).optional(),
+    // What a line is looked for by in titles (0.9.0).
+    title_words: z
+      .array(z.string().min(1).max(CHECKLIST_TITLE_WORD_MAX))
+      .max(CHECKLIST_TITLE_WORDS_MAX)
+      .nullable()
+      .optional(),
   })
   // What the API answers with beside it (its summary, its matches) is let go.
   .strip();

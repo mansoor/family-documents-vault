@@ -5431,6 +5431,46 @@ not_found` ("A note has no file") and `…/pages/{n}` `404 no_preview`.
       were kept (searchable, and its text as ever). A picture refused for its
       size says `ocr: picture refused (…)`, as before.
 
+  - A checklist finds by title too (0.9.0, the owner's report of 23
+    October). No migration and no new route; everything is **additive**.
+    - **New on a checklist item** (`ChecklistItem`, in what `POST`, `PUT`
+      and `GET /api/v1/collections/{id}/checklist` answer, and in what
+      `POST` and `PUT` take): `title_words` (optional; up to 6 strings of
+      at most 40 characters each, or null): the words of the line left
+      once its person, how many, its years and its form are read. A
+      client sends it back as it was given (an item without it is never
+      looked for by its title). **New on `ChecklistItemCheck`:** `by_title`
+      (`true`, or absent): found by the words of its title.
+    - **Changed answers:** an item that names no kind (`problem: "kind"`),
+      or whose kind finds nothing at all, is looked for by its
+      `title_words` in the titles of the documents the caller may see (by
+      the one visibility rule, out of the Trash; the newest 2,000 with a
+      title; 20 items of a checklist at most), keeping to its `member_id`,
+      `years` and `current`. Found: `understood: true`, `problem: null`,
+      `by_title: true`. One, for an item that asks for one (`wanted` 1):
+      `summary` "Found by its title: <its title>" and the match ticked (by
+      the rules a match always has: never an Only me one in a collection
+      others see). Several, or one for an item that asks for more:
+      `summary` "Found by its title: N to choose from" (or its title, for
+      one), none ticked, `found` 0, and `missing` what its kind says is
+      missing (none for a line with no kind). Each such match's `note` is "Found by its
+      title" (or the Only me note). None found: the item is answered as
+      before. A line whose person is still to choose is never looked for.
+    - **Changed reading:** "mansoors passport" (a word that, less its last
+      "s", is somebody the caller may choose, and is nobody as it is) and
+      "james passport" (a name as it is, before the kind) now give the
+      item's `member_id`; "Mansoors documents" is a heading. EAD, EAD card,
+      employment authorization/authorisation, work authorization, I-94,
+      I94, I-797, I797, advance parole, permanent resident card and PR card
+      are read as `visa`, in a checklist and in a folder's name
+      (`folder_suggestions`).
+    - `@fdv/shared`: `CHECKLIST_BY_TITLE_NOTE`, `CHECKLIST_TITLE_LINES_MAX`,
+      `CHECKLIST_TITLE_WORDS_MAX`, `CHECKLIST_TITLE_WORD_MAX`,
+      `checklistLooksByTitle`, `US_IMMIGRATION_WORDS`; `checkChecklist` and
+      `prepareChecklistDocs` take the titled documents as a last, optional
+      argument. The fake looks for a line by its title in every document
+      the person may see.
+
 ## Deprecations in effect
 
 - `GET /api/v1/shared/{token}`, `POST /api/v1/shared/{token}/open` and

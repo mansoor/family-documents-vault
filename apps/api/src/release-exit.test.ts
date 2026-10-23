@@ -2937,6 +2937,57 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     }
   });
 
+  it("somebody else's Only me document is never found by its title, nor counted (0.9.0)", async () => {
+    const priv = doc.ahmedPrivate as { id: string; version: string; title: string; marker: string };
+    // A line with no kind, in the words of his Only me document's title.
+    const list = 'Motorbike papers\nmotorbike';
+    const asked = async (who: Tokens) => {
+      const made = await ok(
+        send(who, 'POST', '/api/v1/collections', { name: 'Title test', audience: 'only_me' }),
+        201,
+      );
+      const id = json<{ id: string }>(made).id;
+      return send(who, 'POST', `/api/v1/collections/${id}/checklist`, { text: list });
+    };
+    type Read = {
+      items: Array<{
+        understood: boolean;
+        found: number;
+        found_not_added: number;
+        by_title?: boolean;
+        matches: Array<{ document_id: string }>;
+      }>;
+      to_add: number;
+    };
+    // The test of the test: to Ahmed himself, it is found by its title, and counted.
+    const his = await asked(ahmed);
+    expect(his.statusCode, his.body).toBe(200);
+    for (const i of json<Read>(his).items) {
+      expect(i).toMatchObject({ understood: true, by_title: true, found: 1 });
+      expect(i.matches.map((m) => m.document_id)).toEqual([priv.id]);
+    }
+    // To everybody else who may fill a collection from a checklist: never
+    // found, offered or counted — the line is not understood.
+    for (const [name, who] of [
+      ['an owner', olivia],
+      ['a password-only owner', peter],
+      ['another adult', sara],
+      ['a teen', tariq],
+    ] as const) {
+      const read = await asked(who);
+      expect(read.statusCode, `${name}: ${read.body}`).toBe(200);
+      for (const secret of [priv.id, priv.version, priv.title, priv.marker]) {
+        expect(read.body, name).not.toContain(secret);
+      }
+      const got = json<Read>(read);
+      expect(got.to_add, name).toBe(0);
+      for (const i of got.items) {
+        expect(i, name).toMatchObject({ understood: false, found: 0, found_not_added: 0 });
+        expect(i.matches, name).toEqual([]);
+      }
+    }
+  });
+
   it('a link outside the family is never given a checklist, nor is a viewer or a guest (0.9.0, C1)', async () => {
     // The attorney's link, opened: its items, and the page, carry no line of it.
     for (const url of ['/api/v1/shared/items']) {

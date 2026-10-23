@@ -13,7 +13,7 @@ import {
   type ReadingMiss,
   type ReadingRow,
   CHECKLIST_TEXT_MAX,
-  checkItem,
+  checkChecklist,
   checklistMissing,
   itemAgain,
   readChecklist,
@@ -3749,16 +3749,18 @@ export function createFakeVault(): {
                   : null,
               in_collection: l.items.some((i) => i.document_id === d.id),
             }));
-          const checked = items
-            .map((i) => itemAgain(i, ctx))
-            .map((i) =>
-              checkItem(i, docs, {
-                today: ctx.today,
-                audience: l.audience,
-                people: ctx.people,
-                types: ctx.types,
-              }),
-            );
+          // Every document the one person may see, of any kind: a line is
+          // looked for by its title in them too (0.9.0).
+          const checked = checkChecklist(
+            items.map((i) => itemAgain(i, ctx)),
+            docs,
+            {
+              today: ctx.today,
+              audience: l.audience,
+              people: ctx.people,
+              types: ctx.types,
+            },
+          );
           const ticked = new Set(
             checked.flatMap((i) => i.matches.filter((m) => m.ticked).map((m) => m.document_id)),
           );
