@@ -5,6 +5,7 @@ import { api, type InvitationPreview } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
 import { heldLinkToken, linkSpent, markLinkSpent } from '../link-token.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
+import { browserZone, dayWordsOf } from '../family-time.js';
 
 /**
  * Accepting an invitation (SHR-02).
@@ -133,7 +134,7 @@ export function JoinScreen() {
   const guest = preview.kind === 'guest';
   // On the household's clock, named (the review's second round); a vault from
   // before says none, so then this browser's.
-  const zone = preview.timezone ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+  const zone = preview.timezone ?? browserZone();
   const end = guest && preview.access_expires_at ? preview.access_expires_at : null;
   const ended = end !== null && guestAccessEnded(end);
   const endWords = end ? `${guestEndWords(end, zone)} (${zone})` : '';
@@ -271,7 +272,7 @@ function JoinForm(props: {
         The link is out of the address bar and this tab's history now, but this browser's own
         history of pages visited may still have it. That is why it works only once, only with the
         code, and only until{' '}
-        {new Date(preview.expires_at).toLocaleDateString([], { dateStyle: 'long' })}.
+        {dayWordsOf(preview.expires_at, preview.timezone ?? browserZone(), { year: true })}.
       </p>
     </form>
   );

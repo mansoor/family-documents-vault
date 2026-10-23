@@ -154,9 +154,11 @@ async function installQueue(url: string): Promise<void> {
 async function seed(url: string): Promise<string> {
   const hh = randomUUID();
   await withClient(url, async (c) => {
-    await c.query("insert into household (id, name, timezone) values ($1, 'Restored', 'UTC')", [
-      hh,
-    ]);
+    // The family's own time zone, an owner's choice (0080, TZ): it comes back.
+    await c.query(
+      "insert into household (id, name, timezone) values ($1, 'Restored', 'Pacific/Auckland')",
+      [hh],
+    );
     const m = await c.query<{ id: string }>(
       "insert into member (household_id, display_name) values ($1, 'One'), ($1, 'Two') returning id",
       [hh],
@@ -3178,6 +3180,27 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it("notices the guard on the family's time zone gone: an owner's to change (0080, TZ)", async () => {
+    await sql(
+      vault.adminUrl,
+      'alter table public.household disable trigger household_timezone_rule',
+    );
+    try {
+      const refused = await checkRestored(target()).then(
+        () => null,
+        (e: unknown) => (e as Error).message,
+      );
+      expect(refused).toMatch(/guard the vault relies on is missing/);
+      expect(refused).not.toMatch(/household_timezone_rule/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.household enable trigger household_timezone_rule',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it('notices the guards that keep a note a note gone: no file on one, none made one, its kind the vault’s (0078, N1)', async () => {
     for (const [table, trigger] of [
       ['document_version', 'document_version_not_on_note'],
@@ -3467,6 +3490,9 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     expect(notes.rows).toEqual([
       { title: 'Where the stopcock is', notes: 'Under the **sink**, behind the bleach', files: 0 },
     ]);
+    // The family's own time zone comes back as it was chosen (0080, TZ).
+    const zone = await sql(t.adminUrl, 'select timezone from household');
+    expect(zone.rows).toEqual([{ timezone: 'Pacific/Auckland' }]);
     // The job queue came back too, and the vault can use it.
     const jobs = await sql(
       t.appUrl,

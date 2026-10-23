@@ -183,7 +183,7 @@ export function TagsScreen() {
         />
         <span id="tags-find-note" className="muted">
           {data !== null && data.length >= LISTED
-            ? `Showing the ${LISTED.toLocaleString('en-GB')} used most. Find a tag to see one further down.`
+            ? `Showing the ${new Intl.NumberFormat('en-GB').format(LISTED)} used most. Find a tag to see one further down.`
             : 'Those that start with what you type.'}
         </span>
       </div>

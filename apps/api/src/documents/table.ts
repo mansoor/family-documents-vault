@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { deriveKey } from '@fdv/crypto';
-import type { Db } from '@fdv/db';
+import { householdToday, type Db } from '@fdv/db';
 import {
   DOCUMENT_PAGE_MAX,
   LOCATION_SORT_REFUSAL,
@@ -413,6 +413,7 @@ async function withStatus<R extends StatusRow>(
 ): Promise<Array<Ranked<R>>> {
   // The kinds the rows have, looked up once each; then every row at once.
   const typeOf = typeLookup(trx);
+  const today = await householdToday(trx);
   const keys = [...new Set(rows.map((r) => r.type_key).filter((k): k is string => k !== null))];
   const types = new Map(await Promise.all(keys.map(async (k) => [k, await typeOf(k)] as const)));
   return rows.map((row) => {
@@ -424,6 +425,7 @@ async function withStatus<R extends StatusRow>(
         notes_sealed: row.has_sealed_notes ? SEALED_THERE : null,
       },
       location,
+      today,
     ).value;
     return { row, status, rank: statusRank(status) };
   });

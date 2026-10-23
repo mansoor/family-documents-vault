@@ -1,4 +1,25 @@
+import { canonicalZone, isTimeZone } from '@fdv/shared';
 import { z } from 'zod';
+
+/**
+ * FDV_TIMEZONE (0.9.0, TZ): the family's clock until an owner chooses one in
+ * Settings. The worker has the same setting, checked the same way.
+ */
+export const timeZoneSetting = z
+  .string()
+  .trim()
+  .refine(isTimeZone, {
+    message:
+      'not a time zone this server knows: give an IANA name such as Europe/London, America/New_York or UTC',
+  })
+  // As the runtime spells it: "europe/london" is "Europe/London" (the TZ review).
+  .transform((z) => canonicalZone(z) ?? z)
+  .default('UTC')
+  .describe(
+    'The family’s time zone until an owner chooses one in Settings: an IANA name such as ' +
+      'Europe/London. Every time the vault shows, and the hour reminders and digests arrive, ' +
+      'is on it. UTC unless set.',
+  );
 
 /** A URL, or null when it is not one. */
 function parsedUrl(value: string): URL | null {
@@ -62,6 +83,7 @@ const schema = z.object({
     ),
 
   FDV_DISPLAY_NAME: z.string().min(1).default('Our family vault'),
+  FDV_TIMEZONE: timeZoneSetting,
   FDV_EDITION: z.enum(['self_hosted', 'hosted']).default('self_hosted'),
   FDV_MAX_UPLOAD_BYTES: z.coerce
     .number()

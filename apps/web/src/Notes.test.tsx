@@ -168,8 +168,9 @@ describe('notes you can write, on the web (5.35)', () => {
         .getAllByRole('listitem')
         .map((li) => li.textContent),
     ).toEqual(['☐To do: under the pot', '☐To do: bin day']);
-    // Who, and when: on the household's clock (10:05 UTC is 11:05am in London).
-    expect(section).toHaveTextContent('edited 26 Sept 2026, 11:05am by Mansoor Seikh');
+    // Who, and when: on the household's clock (10:05 UTC is 11:05am in London),
+    // named, as this browser's clock is UTC's (0.9.0, TZ).
+    expect(section).toHaveTextContent('edited 26 Sept 2026, 11:05am BST by Mansoor Seikh');
     // Focus back on what opened the editor.
     await waitFor(() =>
       expect(within(section).getByRole('button', { name: 'Edit note' })).toHaveFocus(),
@@ -327,7 +328,7 @@ describe('notes you can write, on the web (5.35)', () => {
       notes_updated_by_name: 'Sarah',
     };
     const shown = await openDocument(fresh({ documents: [note], timezone: 'Europe/London' }));
-    expect(await notes()).toHaveTextContent('edited 25 Sept 2026, 4:12pm by Sarah');
+    expect(await notes()).toHaveTextContent('edited 25 Sept 2026, 4:12pm BST by Sarah');
     shown.unmount();
     await openDocument(
       fresh({
@@ -337,7 +338,7 @@ describe('notes you can write, on the web (5.35)', () => {
       'viewer',
     );
     const section = await notes();
-    expect(section).toHaveTextContent('edited 25 Sept 2026, 8:12am');
+    expect(section).toHaveTextContent('edited 25 Sept 2026, 8:12am PDT');
     expect(section).not.toHaveTextContent(' by ');
   });
 });

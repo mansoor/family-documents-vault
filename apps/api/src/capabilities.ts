@@ -160,6 +160,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       collection_checklist: true,
       // 0.9.0 (N1): notes kept on their own, a document with no file.
       notes: true,
+      // 0.9.0 (TZ): the family's time zone, set in Settings or by FDV_TIMEZONE.
+      household_timezone: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

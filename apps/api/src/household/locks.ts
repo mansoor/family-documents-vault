@@ -1,5 +1,5 @@
 import { COMPUTERS_STOPPED, stopDevicesOf } from '../devices/service.js';
-import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import { appendAudit, householdZone, withPrincipal, type Db } from '@fdv/db';
 import {
   can,
   LOCK_MAX_DAYS,
@@ -144,7 +144,11 @@ export class LockService {
 
   /** The household's name and clock, for what the person and the owners are told. */
   private async household(trx: Db): Promise<{ name: string; timezone: string }> {
-    return trx.selectFrom('household').select(['name', 'timezone']).executeTakeFirstOrThrow();
+    const hh = await trx
+      .selectFrom('household')
+      .select(['name', 'timezone'])
+      .executeTakeFirstOrThrow();
+    return { name: hh.name, timezone: householdZone(hh.timezone) };
   }
 
   /** Every owner but the one asking: told of a lock, and of its end. */

@@ -6,7 +6,7 @@ import {
   randomUUID,
   timingSafeEqual,
 } from 'node:crypto';
-import { appendAudit, withPrincipal, withSystem, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, withSystem, type Db, householdZone } from '@fdv/db';
 import {
   BATCH_MAX_FILES,
   can,
@@ -370,7 +370,7 @@ export class DeviceService {
         accountId: row.account_id,
         name: input.device_name,
         platform: input.platform,
-        timezone: household.timezone,
+        timezone: householdZone(household.timezone),
         answer: {
           device_id: deviceId,
           key,
@@ -451,7 +451,7 @@ export class DeviceService {
         role,
         name: row.name,
         memberName: row.display_name,
-        timezone: row.timezone,
+        timezone: householdZone(row.timezone),
         paused: pausedFor({
           role,
           suspend_reason: row.suspend_reason ?? null,
@@ -575,7 +575,7 @@ export class DeviceService {
         .innerJoin('intake_batch as b', 'b.id', 'f.batch_id')
         .select((eb) => eb.fn.sum<string | number | null>('f.byte_size').as('n'))
         .where('b.device_id', '=', deviceId)
-        .where('b.device_day', '=', localToday(household.timezone))
+        .where('b.device_day', '=', localToday(householdZone(household.timezone)))
         .executeTakeFirstOrThrow();
       return Number(sent.n ?? 0);
     });

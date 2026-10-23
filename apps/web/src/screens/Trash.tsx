@@ -1,4 +1,4 @@
-import { can, PURGE_NOTICE_HOURS, shortName, whenExactly, type DocumentView } from '@fdv/shared';
+import { can, PURGE_NOTICE_HOURS, shortName, type DocumentView } from '@fdv/shared';
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import { Link } from 'react-router';
@@ -9,6 +9,7 @@ import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { None, OutcomeNote, PickAll, useGrid, type Outcome } from '../table-grid.js';
 import { Button, ConfirmDialog, ErrorNote, TopBar, TrashIcon } from '../ui.js';
+import { exactWords } from '../family-time.js';
 
 /**
  * What its filer — and anybody else looking at the Trash — is told of an
@@ -22,7 +23,7 @@ export function purgeAskedWords(
   mayBringBack: boolean,
 ) {
   if (!d.purge_requested_at) return null;
-  const asked = `An owner asked to remove this for good on ${whenExactly(d.purge_requested_at)}.`;
+  const asked = `An owner asked to remove this for good on ${exactWords(d.purge_requested_at)}.`;
   if (!d.filed_by_me) return asked;
   return mayBringBack
     ? `${asked} Bring it back to keep it.`
@@ -162,7 +163,7 @@ export function TrashScreen() {
         const from = out.document.purge_allowed_from;
         await changed(
           `You asked to remove “${title}” for good. Whoever added it, if they still sign in here, ` +
-            `and the other owners have been told${from ? `. You can remove it from ${whenExactly(from)}.` : '.'}`,
+            `and the other owners have been told${from ? `. You can remove it from ${exactWords(from)}.` : '.'}`,
         );
       }
     } catch (err) {
@@ -216,7 +217,7 @@ export function TrashScreen() {
                 <span className="stack" style={{ gap: 2 }}>
                   <span className="doc-title">{d.title ?? 'Needs a name'}</span>
                   {d.deleted_at && (
-                    <span className="muted">Moved to the Trash {whenExactly(d.deleted_at)}</span>
+                    <span className="muted">Moved to the Trash {exactWords(d.deleted_at)}</span>
                   )}
                   {asked && <span className="trash-asked">{asked}</span>}
                 </span>
@@ -235,9 +236,9 @@ export function TrashScreen() {
                     <Button
                       kind="quiet"
                       disabled
-                      ariaLabel={`Remove for good from ${whenExactly(removal.from)}: ${title}`}
+                      ariaLabel={`Remove for good from ${exactWords(removal.from)}: ${title}`}
                     >
-                      Remove for good from {whenExactly(removal.from)}
+                      Remove for good from {exactWords(removal.from)}
                     </Button>
                   )}
                   {removal && removal.kind !== 'wait' && (
@@ -537,7 +538,7 @@ function TrashTable(props: {
                   </td>
                   <td>{kind ? <span className="clip">{kind}</span> : <None />}</td>
                   <td>{whose ? <span className="clip">{whose}</span> : <None />}</td>
-                  <td>{d.deleted_at ? whenExactly(d.deleted_at) : <None />}</td>
+                  <td>{d.deleted_at ? exactWords(d.deleted_at) : <None />}</td>
                   <td>
                     {asked ? (
                       <span className="trash-asked">{asked}</span>
@@ -563,7 +564,7 @@ function TrashTable(props: {
                   {owner && (
                     <td>
                       {removal?.kind === 'wait' ? (
-                        <span className="muted">From {whenExactly(removal.from)}</span>
+                        <span className="muted">From {exactWords(removal.from)}</span>
                       ) : removal ? (
                         <button
                           type="button"

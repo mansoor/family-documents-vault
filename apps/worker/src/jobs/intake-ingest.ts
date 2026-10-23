@@ -9,7 +9,7 @@ import {
   wrapKey,
   type ScopeKeys,
 } from '@fdv/crypto';
-import { withSystem, type Db } from '@fdv/db';
+import { householdZone, withSystem, type Db } from '@fdv/db';
 import {
   BATCH_MAX_FILES,
   emailDay,
@@ -198,7 +198,13 @@ export async function whoseInbox(
       .select('timezone')
       .where('id', '=', hh)
       .executeTakeFirstOrThrow();
-    return { householdId: hh, memberId, accountId: signIn.account_id, timezone: home.timezone };
+    return {
+      householdId: hh,
+      memberId,
+      accountId: signIn.account_id,
+      // The household's clock in effect: its own, else FDV_TIMEZONE (0.9.0, TZ).
+      timezone: householdZone(home.timezone),
+    };
   });
 }
 

@@ -1,4 +1,4 @@
-import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db, householdZone } from '@fdv/db';
 import {
   conditionHolds,
   localToday,
@@ -81,7 +81,7 @@ export class SuggestionService {
         has_business: profileRow?.has_business ?? null,
         country: profileRow?.country ?? null,
       };
-      const today = localToday(household.timezone);
+      const today = localToday(householdZone(household.timezone));
 
       // A built-in the household has hidden is one it has said it does not
       // keep (5.11): nothing suggests it is missing.

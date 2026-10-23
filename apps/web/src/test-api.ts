@@ -10,6 +10,7 @@ import {
   can,
   canChangeDetails,
   canEditIdentity,
+  canonicalZone,
   canSee,
   canSeeIdentity,
   IDENTITY_EDIT_REFUSAL,
@@ -419,6 +420,18 @@ export interface FakeState {
    * on its calendar. Left out, 'UTC', the vault's default.
    */
   timezone?: string;
+  /**
+   * Whether `timezone` is an owner's choice or the server's default (0.9.0,
+   * TZ), and that default (FDV_TIMEZONE): left out, the default, UTC.
+   */
+  timezoneSource?: 'household' | 'server_default';
+  serverTimezone?: string;
+  /** What PUT /household/timezone was sent, in order (0.9.0, TZ). */
+  timezoneSaves?: Array<string | null>;
+  /** GET /profile is answered only once this settles: a slow vault (the TZ review). */
+  holdProfile?: Promise<void>;
+  /** GET /profile answered 500, as a vault that fails to (the TZ review). */
+  failProfile?: boolean;
   /** When a note saved here was written (5.35); left out, 26 Sept 2026, 10:05 UTC. */
   noteSavedAt?: string;
   /** Whether the household answered the wizard's questions, as GET /suggestions says; left out, yes. */
@@ -1075,6 +1088,8 @@ export function installFakeApi(state: FakeState) {
           custom_types: true,
           // R2: GET /documents sorted by a column, filtered and paged.
           document_table: true,
+          // The family's time zone (0.9.0, TZ).
+          household_timezone: true,
           ...(state.notes ? { notes: true } : {}),
           ...(state.collections ? { collections: true } : {}),
           ...(state.collections && state.collectionChecklist !== false
@@ -1688,20 +1703,55 @@ export function installFakeApi(state: FakeState) {
     if (path === '/api/v1/notifications/smtp/providers') return json([]);
     if (path === '/api/v1/profile' && method === 'PUT')
       return json({ household_name: state.displayName, ...(body as object) });
-    if (path === '/api/v1/profile') {
-      // Every role reads the household's name and time zone.
-      return json({
-        household_name: state.displayName,
+    // The family's time zone (0.9.0, TZ): every role reads it; an owner
+    // chooses it, or clears it back to the server's default (null).
+    if (path === '/api/v1/household/timezone') {
+      const view = () => ({
         timezone: state.timezone ?? 'UTC',
-        owns_home: null,
-        rents_home: null,
-        vehicle_count: null,
-        has_pets: null,
-        has_business: null,
-        country: null,
-        answered_at: null,
-        ...(state.profile ?? {}),
+        timezone_source: state.timezoneSource ?? 'server_default',
+        server_timezone: state.serverTimezone ?? 'UTC',
+        can_change: storedRole() === 'owner',
       });
+      if (method === 'GET') return json(view());
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner can change the family’s time zone.');
+      }
+      const to = (body as { timezone?: string | null }).timezone ?? null;
+      (state.timezoneSaves ??= []).push(to);
+      const canon = to === null ? null : canonicalZone(to);
+      if (to !== null && !canon) {
+        return refuse(
+          422,
+          'validation_failed',
+          'That time zone is not recognised. Choose one from the list, such as Europe/London.',
+        );
+      }
+      state.timezone = canon ?? state.serverTimezone ?? 'UTC';
+      state.timezoneSource = to === null ? 'server_default' : 'household';
+      return json(view());
+    }
+    if (path === '/api/v1/profile') {
+      // Every role reads the household's name and time zone. A slow vault's
+      // answer is held back until `holdProfile` settles (the TZ review).
+      const answer = () =>
+        Response.json({
+          household_name: state.displayName,
+          timezone: state.timezone ?? 'UTC',
+          timezone_source: state.timezoneSource ?? 'server_default',
+          server_timezone: state.serverTimezone ?? 'UTC',
+          owns_home: null,
+          rents_home: null,
+          vehicle_count: null,
+          has_pets: null,
+          has_business: null,
+          country: null,
+          answered_at: null,
+          ...(state.profile ?? {}),
+        });
+      if (state.failProfile) {
+        return refuse(500, 'internal', 'Something went wrong on the vault. Try again in a moment.');
+      }
+      return state.holdProfile ? state.holdProfile.then(answer) : Promise.resolve(answer());
     }
     // The people outside the family (5.34): an owner's to list.
     if (path === '/api/v1/members' && method === 'GET' && query.get('kind') === 'guest') {

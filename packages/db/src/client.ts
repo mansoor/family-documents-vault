@@ -51,7 +51,12 @@ export interface Schema {
     plan_state: Generated<'active' | 'read_only' | 'export_only'>;
     plan_state_since: Timestamp | null;
     settings: GeneratedJson;
-    timezone: Generated<string>;
+    /**
+     * The household's own time zone, an IANA name, when an owner chose one
+     * (0009; 0080, TZ): null leaves it to the server's default
+     * (FDV_TIMEZONE, else UTC). Read it through `householdZone`, never alone.
+     */
+    timezone: string | null;
     created_at: GeneratedTimestamp;
     deleted_at: Timestamp | null;
     /**

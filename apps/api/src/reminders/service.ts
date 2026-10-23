@@ -7,6 +7,7 @@ import {
   withPrincipal,
   type Db,
   type RegenerateOptions,
+  householdZone,
 } from '@fdv/db';
 import {
   aboutDate,
@@ -71,7 +72,7 @@ export class ReminderService {
       .select('timezone')
       .where('id', '=', householdId)
       .executeTakeFirstOrThrow();
-    return localToday(hh.timezone);
+    return localToday(householdZone(hh.timezone));
   }
 
   /**

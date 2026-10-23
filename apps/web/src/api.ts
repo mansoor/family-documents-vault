@@ -1,4 +1,5 @@
 import { createApi, createHttp, type ResponseLike, type UploadBody } from '@fdv/client';
+import { heardFamilyZone } from './family-zone-store.js';
 import type { CaptureMetadata, PhotoCrop } from '@fdv/shared';
 import type {
   PublicKeyCredentialCreationOptionsJSON,
@@ -74,8 +75,23 @@ function fileForm(file: File): UploadBody {
 const blobOf = async (res: Promise<ResponseLike>): Promise<Blob> =>
   ((await res) as unknown as Response).blob();
 
+/** An answer that says the family's zone, heard on its way past (family-zone-store.ts). */
+const hearZone = async <T extends { timezone?: string | null }>(answer: Promise<T>): Promise<T> => {
+  const got = await answer;
+  heardFamilyZone(got?.timezone);
+  return got;
+};
+
 export const api = {
   ...client,
+  // The family's zone, whichever answer says it (the TZ review): every
+  // screen moves to the newest the tab has had.
+  profile: (token: string) => hearZone(client.profile(token)),
+  updateProfile: (token: string, body: Parameters<typeof client.updateProfile>[1]) =>
+    hearZone(client.updateProfile(token, body)),
+  householdTimezone: (token: string) => hearZone(client.householdTimezone(token)),
+  setHouseholdTimezone: (token: string, timezone: string | null) =>
+    hearZone(client.setHouseholdTimezone(token, timezone)),
   upload: (token: string, documentId: string, file: File, idempotencyKey: string) =>
     client.upload(token, documentId, fileForm(file), idempotencyKey),
   /** One file and, since 0.4.9, the card's details, sent ahead of it. */

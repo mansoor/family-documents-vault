@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createPool } from '@fdv/db';
+import { createPool, householdZone } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   BATCH_MAX_FILES,
@@ -378,8 +378,10 @@ describe.skipIf(!testAdminUrl())('a computer that sends scans (0.8.0, D1)', () =
     expect(again.headers['idempotent-replayed']).toBe('true');
     expect(again.json()).toEqual(sent);
     // Into Ahmed's own uploads, a batch for the day on the household's calendar.
-    const tz = (await admin.query<{ timezone: string }>('select timezone from household')).rows[0]
-      ?.timezone as string;
+    const tz = householdZone(
+      (await admin.query<{ timezone: string | null }>('select timezone from household')).rows[0]
+        ?.timezone,
+    );
     const name = deviceBatchName('Ahmed scanner', localToday(tz));
     const day = (await batchesOf(ahmed)).find((b) => b.name === name);
     expect(day?.counts).toMatchObject({ items: 1, waiting: 1 });

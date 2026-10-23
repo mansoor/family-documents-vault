@@ -23,6 +23,7 @@ import {
   type BatchSending,
 } from './batch-upload.js';
 import { sizeWords } from './screens/Incoming.js';
+import { dayWordsOf, familyZoneNow } from './family-time.js';
 
 /**
  * The upload of many documents, held beside the app rather than its page
@@ -506,7 +507,7 @@ const UNREACHABLE_WORDS =
 
 /** "Upload of 6 Oct": a batch with no name, called by the day it was made. */
 export const labelOfDay = (iso: string) =>
-  `Upload of ${new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
+  `Upload of ${dayWordsOf(iso, familyZoneNow(), { month: 'short' })}`;
 
 const Ctx = createContext<BatchUploads | null>(null);
 

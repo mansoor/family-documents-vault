@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { refusalFor, whenWords, type DeviceRow } from '@fdv/shared';
+import { refusalFor, type DeviceRow } from '@fdv/shared';
 import { Link } from 'react-router';
 import { api, type SmtpProvider, type SmtpView } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import * as push from '../push.js';
 import { Button, ErrorNote, Field, LoadFailed, TopBar } from '../ui.js';
 import { SettingsPage } from './Settings.js';
+import { relativeWords } from '../family-time.js';
 
 /**
  * Settings → Notifications, "how you hear about things": notifications on
@@ -455,7 +456,7 @@ function Devices() {
                 !d.working && (
                   <span className="status status-warn">
                     {' '}
-                    Not working{d.failed_at ? ` — last tried ${whenWords(d.failed_at)}` : ''}
+                    Not working{d.failed_at ? ` — last tried ${relativeWords(d.failed_at)}` : ''}
                   </span>
                 )
               )}

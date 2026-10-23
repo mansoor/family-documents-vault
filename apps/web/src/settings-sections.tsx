@@ -21,7 +21,15 @@ import { useShellMode } from './shell.js';
  * still opens Privacy.
  */
 export type SectionKey =
-  'account' | 'computers' | 'notifications' | 'privacy' | 'kinds' | 'tags' | 'data' | 'owners';
+  | 'account'
+  | 'computers'
+  | 'notifications'
+  | 'timezone'
+  | 'privacy'
+  | 'kinds'
+  | 'tags'
+  | 'data'
+  | 'owners';
 
 export interface SettingsSection {
   key: SectionKey;
@@ -137,6 +145,21 @@ export function settingsSections(
       note: 'How you hear about things',
       holds: at('/settings/notifications'),
     },
+    // The family's clock (0.9.0, TZ): everybody's times are on it, so everybody
+    // reads it here; an owner changes it.
+    ...(caps?.features.household_timezone === true
+      ? [
+          {
+            key: 'timezone' as const,
+            to: '/settings/time-zone',
+            label: 'Time zone',
+            note: owner
+              ? 'The family’s clock: times, reminders and link ends'
+              : 'The family’s clock, that every time is shown on',
+            holds: at('/settings/time-zone'),
+          },
+        ]
+      : []),
   ];
   const privacy = privacyRows(role, caps);
   if (readsOnlyMeRule(role) || privacy.length > 0) {

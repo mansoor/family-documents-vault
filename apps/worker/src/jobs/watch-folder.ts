@@ -1836,7 +1836,8 @@ export class WatchRunner {
       `${WATCH_REJECTED_TITLE}.`,
       '',
       `File: ${shown}${where !== shown ? ` (it was ${where})` : ''}`,
-      `When: ${when}`,
+      // Read anywhere, so the zone is named (0.9.0, TZ).
+      `When: ${when} (${t.timezone})`,
       `Why: ${words}`,
       '',
       'The vault kept no copy of it. Anything in this folder is not encrypted:',

@@ -19,6 +19,7 @@ import {
   type Db,
   type Role,
   type Scope,
+  householdZone,
 } from '@fdv/db';
 import { readAll } from '@fdv/storage';
 import argon2 from 'argon2';
@@ -1616,7 +1617,7 @@ export class ShareService {
           summary: summarise(
             { ...r, paused_reason: pausedReason },
             state,
-            household.timezone,
+            householdZone(household.timezone),
             p.accountId,
           ),
           created_by: r.created_by,

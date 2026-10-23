@@ -98,6 +98,7 @@ import {
   guestAccessEndedWords,
   guestEndProblem,
   IDENTITY_AUDIENCES,
+  canonicalZone,
   IDENTITY_EDIT_REFUSAL,
   IDENTITY_NOTICE_HOURS,
   identityAudienceRank,
@@ -180,6 +181,7 @@ import {
   type IncomingFileView,
   type UploadRequestView,
   type IdentityAudience,
+  type FamilyTimeZone,
   type IdentityAudienceView,
   type IdentityFields,
   type IdentityPart,
@@ -353,6 +355,12 @@ export interface FakeVaultState {
   suspensions: Map<string, MemberSuspension>;
   /** The household's clock (5.28): the end of a lock is said in it. UTC, as a new vault's. */
   timezone: string;
+  /**
+   * Whether `timezone` is an owner's choice or the server's default (0.9.0,
+   * TZ), and that default: GET and PUT /household/timezone answer them.
+   */
+  timezoneSource: 'household' | 'server_default';
+  serverTimezone: string;
   /**
    * What an owner has limited each viewer to (5.33), by member id: what PUT
    * and DELETE /members/{id}/access write, what the preview counts by the
@@ -1023,6 +1031,8 @@ export function createFakeVault(): {
     signIns: [],
     suspensions: new Map(),
     timezone: 'UTC',
+    timezoneSource: 'server_default',
+    serverTimezone: 'UTC',
     restrictions: new Map(),
     operatorMail: true,
     keepsPrivate: [],
@@ -2199,6 +2209,8 @@ export function createFakeVault(): {
           collection_checklist: true,
           // Notes kept on their own (0.9.0, N1).
           notes: true,
+          // The family's time zone (0.9.0, TZ).
+          household_timezone: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -5372,6 +5384,41 @@ export function createFakeVault(): {
         state.role === 'owner' ? 'totp_required_for_owner' : 'two_step_required',
         `Turn on two-step sign-in ${why}.`,
       );
+    // The family's time zone (0.9.0, TZ), as the real vault answers it:
+    // every role reads it, an owner chooses it or clears it back to the
+    // server's default (null), and a name nobody knows is refused.
+    if (path === '/api/v1/household/timezone') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const view = (): FamilyTimeZone => ({
+        timezone: state.timezone,
+        timezone_source: state.timezoneSource,
+        server_timezone: state.serverTimezone,
+        can_change: can(state.role, 'household.timezone'),
+      });
+      if (init.method === 'GET') return ok(view());
+      if (init.method !== 'PUT') return fail(404, 'not_found', 'Not here.');
+      if (!can(state.role, 'household.timezone')) {
+        return fail(403, 'forbidden', refusalFor('household.timezone'));
+      }
+      const to = (body as { timezone?: unknown }).timezone;
+      if (to === null) {
+        state.timezone = state.serverTimezone;
+        state.timezoneSource = 'server_default';
+        return ok(view());
+      }
+      const canon = canonicalZone(to);
+      if (!canon) {
+        return fail(
+          422,
+          'validation_failed',
+          'That time zone is not recognised. Choose one from the list, such as Europe/London.',
+        );
+      }
+      state.timezone = canon;
+      state.timezoneSource = 'household';
+      return ok(view());
+    }
     if (path === '/api/v1/household/identity-audience') {
       const s = session();
       if (!('id' in s)) return s;

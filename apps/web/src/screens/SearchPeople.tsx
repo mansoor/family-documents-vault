@@ -76,6 +76,7 @@ import {
   useSignUpOnAdd,
 } from './Invite.js';
 import { OwnerChangeNotices } from './Roles.js';
+import { familyZoneNow } from '../family-time.js';
 
 /** How many of the household's issuers are offered as filter chips. */
 const ISSUER_CHIPS = 8;
@@ -930,7 +931,7 @@ export function RemindersScreen() {
         profileAnswered: suggestions.profile_answered,
         hidden: hidden.items,
         types: types.items,
-        timezone: profile?.timezone ?? 'UTC',
+        timezone: profile?.timezone ?? familyZoneNow(),
         scans,
       };
     },
@@ -961,7 +962,7 @@ export function RemindersScreen() {
    * itself, the vault refuses a snooze to it, and takes a week or a month.
    */
   const snoozes = (r: ReminderView): Array<{ label: string; until: string }> => {
-    const today = localToday(data?.timezone ?? 'UTC');
+    const today = localToday(data?.timezone ?? familyZoneNow());
     const about = r.source && r.source !== 'expires' ? aboutDate(r) : null;
     const held = about !== null && about > today ? about : null;
     const out: Array<{ label: string; until: string }> = [];

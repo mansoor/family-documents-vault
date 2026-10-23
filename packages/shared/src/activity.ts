@@ -117,6 +117,7 @@ export function activityKind(action: string): ActivityKind {
     case 'household.only_me_sharing_changed':
       return 'shared';
     case 'household.profile_updated':
+    case 'household.timezone_changed':
     case 'batch.version_undone':
       return 'changed';
   }
@@ -421,6 +422,20 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
         `${who} turned ${detail.only_me_shareable === true ? 'on' : 'off'} sharing Only me documents outside the family`,
         true,
       );
+    // The family's time zone (0.9.0, TZ): chosen by an owner, or cleared
+    // back to the server's default, from which to which.
+    case 'household.timezone_changed': {
+      const zone = (name: unknown, source: unknown) =>
+        typeof name !== 'string'
+          ? 'another'
+          : source === 'server_default'
+            ? `the server’s default (${name})`
+            : name;
+      return line(
+        `${who} changed the family’s time zone from ${zone(detail.from, detail.from_source)} to ${zone(detail.to, detail.to_source)}`,
+        true,
+      );
+    }
     // Who sees other people's identity details (A34): wider only after
     // notice, and the line says from when.
     case 'identity.audience_changed': {

@@ -1,4 +1,4 @@
-import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import { appendAudit, householdToday, withPrincipal, type Db } from '@fdv/db';
 import {
   CHECKLIST_ITEMS_MAX,
   CHECKLIST_TEXT_MAX,
@@ -80,8 +80,6 @@ const unread = () =>
 const DOCS_PER_KIND = 2_000;
 /** The most documents a checklist's lines are looked for in by their titles (0.9.0): the newest. */
 const TITLED_DOCS = 2_000;
-
-const today = () => new Date().toISOString().slice(0, 10);
 
 interface Context {
   ctx: ChecklistContext;
@@ -310,7 +308,8 @@ export class ChecklistService {
         })),
         people: family.map((m) => ({ id: m.id, name: m.display_name })),
         me: p.memberId,
-        today: today(),
+        // The family's today, on its own calendar (the TZ review).
+        today: await householdToday(trx),
       },
     };
   }

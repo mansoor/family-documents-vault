@@ -5,7 +5,6 @@ import {
   notesPlainText,
   noteTreeText,
   parseNotes,
-  whenExactly,
   type DocumentView,
   type NoteBlock,
   type NoteInline,
@@ -26,6 +25,7 @@ import { describeError, useApp } from './app-context.js';
 import { draftOf, forgetDraft, keepDraft, type DraftOwner, type NoteDraft } from './note-drafts.js';
 import { RichTextEditor } from './rich-text.js';
 import { Button, ErrorNote } from './ui.js';
+import { exactWords } from './family-time.js';
 
 /**
  * A note on the web (5.35, A30; 0.9.0, N1): a document's note, or a note
@@ -167,9 +167,10 @@ function inline(nodes: NoteInline[]): ReactNode[] {
 export const ONLY_ME_TITLE =
   'Only the words of an Only me note are sealed, not its title: keep anything secret out of the title.';
 
+const COUNT = new Intl.NumberFormat('en-GB');
+
 /** "4,212 of 10,000 characters". */
-const countOf = (n: number) =>
-  `${n.toLocaleString('en-GB')} of ${NOTES_MAX.toLocaleString('en-GB')} characters`;
+const countOf = (n: number) => `${COUNT.format(n)} of ${COUNT.format(NOTES_MAX)} characters`;
 
 /** The document as the vault holds it now: it sends it with a 409. */
 export function heldNow(err: ApiRequestError): DocumentView | null {
@@ -478,7 +479,7 @@ export function NotesSection(props: {
 
   const stamp =
     doc.notes && doc.notes_updated_at
-      ? `edited ${whenExactly(doc.notes_updated_at, props.timezone)}${
+      ? `edited ${exactWords(doc.notes_updated_at, props.timezone ?? undefined)}${
           doc.notes_updated_by_name ? ` by ${doc.notes_updated_by_name}` : ''
         }`
       : null;

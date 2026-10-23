@@ -8,6 +8,7 @@ import {
   checklistReadersWords,
   checklistSkipWords,
   formatDate,
+  localToday,
   savedItem,
   sentItem,
   sharedOutsideWords,
@@ -32,6 +33,7 @@ import { api, ApiRequestError } from './api.js';
 import { describeError, useApp } from './app-context.js';
 import { documentsWord } from './collections.js';
 import { Button, ConfirmDialog, ErrorNote, Field, Sheet, TextArea } from './ui.js';
+import { familyZoneNow } from './family-time.js';
 
 /**
  * A collection from a checklist (0.9.0, C1): "Fill from a checklist" on a
@@ -95,7 +97,7 @@ const tone = (i: ChecklistItemCheck) =>
 function matchWords(m: ChecklistMatch, members: readonly Member[]): string {
   const when = m.issued
     ? formatDate(m.issued)
-    : `added ${formatDate({ date: m.added_at.slice(0, 10), precision: 'day' })}`;
+    : `added ${formatDate({ date: localToday(familyZoneNow(), new Date(m.added_at)), precision: 'day' })}`;
   const whose = members.find((p) => p.id === m.owner_member_id)?.display_name;
   return [m.title ?? 'Scan · needs a name', when, whose].filter(Boolean).join(' · ');
 }

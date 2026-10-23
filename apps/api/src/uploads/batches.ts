@@ -15,7 +15,7 @@ import {
   wrapKey,
   type ScopeKeys,
 } from '@fdv/crypto';
-import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db, householdZone } from '@fdv/db';
 import {
   ACCEPT_READY_MAX,
   ACCEPT_UNDO_MINUTES,
@@ -532,7 +532,7 @@ export class BatchService {
         .selectFrom('household')
         .select('timezone')
         .executeTakeFirstOrThrow();
-      const day = localToday(household.timezone, now);
+      const day = localToday(householdZone(household.timezone), now);
       const today = () =>
         trx
           .selectFrom('intake_batch')

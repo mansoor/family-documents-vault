@@ -90,6 +90,7 @@ import { beside, mayChange, useTrashedNote } from '../DocActions.js';
 import { TagField } from '../tags.js';
 import { useSelect } from './SearchPeople.js';
 import { LinksChoiceDialog, linksAsk, linksChoice, type LinksAsk } from './Visibility.js';
+import { familyZoneNow } from '../family-time.js';
 
 /**
  * Documents (Phase 6, R2): every document the reader may see.
@@ -1524,7 +1525,7 @@ function BulkBar(props: {
           // another: the dialog says them by document, never added up.
           others: Math.max(0, ...all.map((a) => a.others)),
           message: linksQuestion(documents.length, new Set(links.map((l) => l.id)).size),
-          timezone: clock?.timezone ?? 'UTC',
+          timezone: clock?.timezone ?? familyZoneNow(),
         },
       });
       setActing('links');

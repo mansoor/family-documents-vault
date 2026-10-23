@@ -4,7 +4,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { EncryptStream, unwrapKey } from '@fdv/crypto';
-import { withScope, withSystem, type Db } from '@fdv/db';
+import { withScope, withSystem, type Db, householdZone } from '@fdv/db';
 import { shareEndWords } from '@fdv/shared';
 import { adapterFromRow, type StorageAdapter } from '@fdv/storage';
 import { sql } from 'kysely';
@@ -292,7 +292,7 @@ async function drawDocumentPages(
         documentId: v.document_id,
         adapter: adapterFromRow(vault, deps.credentialsKey, deps.localRoot),
         fileKey: unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`),
-        timezone: household.timezone,
+        timezone: householdZone(household.timezone),
       };
     });
     adapter = ctx.adapter;

@@ -59,6 +59,7 @@ import {
 } from '../ui.js';
 import { SuggestedMark } from '../suggestions.js';
 import { IncomingList, sizeWords } from './Incoming.js';
+import { dayWordsOf, familyZoneNow } from '../family-time.js';
 
 /**
  * Many documents at once (Phase 6, I1): Add → Many documents, the Inbox's
@@ -76,13 +77,11 @@ import { IncomingList, sizeWords } from './Incoming.js';
  * with the batch's choices, each suggested detail marked.
  */
 
-/** "6 Oct": the day, as a batch with no name is called by it. */
-const shortDay = (iso: string) =>
-  new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+/** "6 Oct": the day, as a batch with no name is called by it, on the family's calendar. */
+const shortDay = (iso: string) => dayWordsOf(iso, familyZoneNow(), { month: 'short' });
 
-/** "5 November": the day what is undecided is removed. */
-const longDay = (iso: string) =>
-  new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
+/** "5 November": the day what is undecided is removed, on the family's calendar. */
+const longDay = (iso: string) => dayWordsOf(iso, familyZoneNow(), { month: 'long' });
 
 /** A batch as it is called: its name, or the day it was made. */
 export function batchLabel(b: { name: string | null; created_at: string }): string {

@@ -776,6 +776,13 @@ const RULES: Record<string, Rule> = {
     who: 'ownerPower',
     body: () => ({ audience: 'family' }),
   },
+  // 0.9.0 (TZ): the family's clock — read by everybody signed in, an
+  // owner's to change (the database holds it too, 0080).
+  'GET /api/v1/household/timezone': { who: 'signedIn' },
+  'PUT /api/v1/household/timezone': {
+    who: 'owners',
+    body: () => ({ timezone: 'Europe/London' }),
+  },
 
   // Changes of owner.
   'GET /api/v1/owner-changes': { who: 'signedIn' },

@@ -1122,9 +1122,7 @@ describe('locking a sign-in (5.28)', () => {
     const until = zonedTime(day, '07:00', 'Asia/Tokyo') as Date;
     const words = shareEndWords(until, 'Asia/Tokyo');
     expect(
-      within(dialog).getByText(
-        new RegExp(`^Unlocks by itself on ${words}( \\(Asia/Tokyo time\\))?\\.$`),
-      ),
+      within(dialog).getByText(new RegExp(`^Unlocks by itself on ${words} GMT\\+9\\.$`)),
     ).toBeInTheDocument();
     fireEvent.click(within(dialog).getByLabelText('End their links and requests for good'));
     fireEvent.change(within(dialog).getByLabelText('A note for the other owners (optional)'), {
@@ -1151,12 +1149,13 @@ describe('locking a sign-in (5.28)', () => {
     expect(
       within(region).getByText(
         new RegExp(
-          `^Tess’s sign-in is locked until ${words}( \\(Asia/Tokyo time\\))?, unless an owner unlocks it sooner\\.$`,
+          `^Tess’s sign-in is locked until ${words} GMT\\+9, unless an owner unlocks it sooner\\.$`,
         ),
       ),
     ).toBeInTheDocument();
     const facts = factsOf(region);
-    expect(facts.Locked).toMatch(/^today, \d+:\d\d[ap]m, by Mansoor Seikh$/);
+    // On the family's clock, named: this browser's is UTC's (0.9.0, TZ).
+    expect(facts.Locked).toMatch(/^today, \d+:\d\d[ap]m GMT\+9, by Mansoor Seikh$/);
     expect(facts.Note).toBe('Lost her phone at school.');
     expect(within(region).getByText('No device at the moment.')).toBeInTheDocument();
     expect(within(region).queryByRole('button', { name: 'Lock sign-in' })).not.toBeInTheDocument();
@@ -1250,7 +1249,7 @@ describe('locking a sign-in (5.28)', () => {
     expect(
       await within(region).findByText(
         new RegExp(
-          `^Tess’s sign-in is locked until ${words}( \\(Asia/Tokyo time\\))?, unless an owner unlocks it sooner\\.$`,
+          `^Tess’s sign-in is locked until ${words} GMT\\+9, unless an owner unlocks it sooner\\.$`,
         ),
       ),
     ).toBeInTheDocument();

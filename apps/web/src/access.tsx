@@ -21,6 +21,7 @@ import { flushSync } from 'react-dom';
 import { api, ApiRequestError, type Member } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { Button, Check, ConfirmDialog, ErrorNote } from './ui.js';
+import { familyZoneNow } from './family-time.js';
 
 /**
  * Limiting what a viewer can see (5.33, D6, A56–A59): the pickers an owner
@@ -126,12 +127,13 @@ export function LimitsPicker(props: {
         members: members.items,
         types: types.items,
         collections: collections.items,
-        timezone: profile?.timezone ?? 'UTC',
+        timezone: profile?.timezone ?? familyZoneNow(),
       };
     },
     [authVersion, hasCollections],
   );
-  const timezone = data?.timezone ?? 'UTC';
+  // Until the vault answers, the family's zone as this tab knows it — never UTC (the TZ review).
+  const timezone = data?.timezone ?? familyZoneNow();
   const [count, setCount] = useState<AccessPreview | null>(null);
   const [countError, setCountError] = useState<string | null>(null);
   const v = props.value;

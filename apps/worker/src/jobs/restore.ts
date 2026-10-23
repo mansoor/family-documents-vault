@@ -1106,6 +1106,8 @@ const GUARDS = [
   // Only an owner changes whether Only me documents are shared outside the
   // family (0061, 5.41).
   { name: 'household_only_me_rule', table: 'household', fn: 'household_only_me_rule' },
+  // Only an owner changes the family's time zone (0080, 0.9.0 TZ).
+  { name: 'household_timezone_rule', table: 'household', fn: 'household_timezone_rule' },
   // A batch's uploader changes its name and defaults, and nothing else of
   // it (0062, Phase 6 I1).
   {

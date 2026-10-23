@@ -1,5 +1,5 @@
 import { logDevicesEnded } from '../devices/service.js';
-import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import { appendAudit, householdZone, withPrincipal, type Db } from '@fdv/db';
 import {
   can,
   DECEASED_NO_SIGN_IN,
@@ -10,6 +10,7 @@ import {
   reducesSight,
   roleLabel,
   ROLES,
+  shareEndWords,
   suspensionInEffect,
   type Role,
   type RoleChangeEffectDone,
@@ -157,7 +158,7 @@ export class CoOwnerService {
           applied: false,
           role: target.role,
           request,
-          message: `Every owner has been told. ${target.display_name} stays an owner until ${formatDay(request.opens_at)}, and can refuse before then.`,
+          message: `Every owner has been told. ${target.display_name} stays an owner until ${formatDay(request.opens_at, await clockOf(trx))}, and can refuse before then.`,
           effects: [],
         };
       }
@@ -711,7 +712,7 @@ export class CoOwnerService {
         throw new ApiError(
           409,
           'notice_period',
-          `The seven days are not up. This can be carried out on ${formatDay(row.opens_at.toISOString())}.`,
+          `The seven days are not up. This can be carried out on ${formatDay(row.opens_at.toISOString(), householdZone(row.household_timezone))}.`,
         );
       }
       if (hasLapsed(row)) {
@@ -1004,6 +1005,7 @@ export class CoOwnerService {
         'target_member.display_name as target_name',
         'asker_member.display_name as requested_by_name',
         'household.name as household_name',
+        'household.timezone as household_timezone',
       ])
       .orderBy('owner_change_request.requested_at', 'desc')
       .execute();
@@ -1057,6 +1059,8 @@ interface OwnerChangeRow {
   target_name: string;
   requested_by_name: string | null;
   household_name: string;
+  /** The household's own zone, as stored: read through householdZone (0.9.0, TZ). */
+  household_timezone: string | null;
 }
 
 /**
@@ -1077,7 +1081,7 @@ function summarise(
   const asker = r.requested_by_name ?? 'An owner';
   switch (state) {
     case 'waiting':
-      return `${asker} asked for ${who} to stop being an owner. Nothing changes until ${formatDay(r.opens_at.toISOString())}${aboutMe ? ', and you can refuse before then' : ''}.`;
+      return `${asker} asked for ${who} to stop being an owner. Nothing changes until ${formatDay(r.opens_at.toISOString(), householdZone(r.household_timezone))}${aboutMe ? ', and you can refuse before then' : ''}.`;
     case 'ready':
       return `The seven days are up. ${who === 'you' ? 'You' : who} can be made an adult now${aboutMe ? ', unless you refuse' : ''}.`;
     case 'refused':
@@ -1100,9 +1104,19 @@ function summarise(
 const article = (role: Role) =>
   `${role === 'owner' || role === 'adult' ? 'an' : 'a'} ${roleLabel(role).toLowerCase()}`;
 
-/** "30 September", in the reader's own words rather than an ISO string. */
-function formatDay(iso: string): string {
-  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
+/**
+ * "30 September", in the reader's own words rather than an ISO string: the
+ * day a moment falls on, on the household's clock (0.9.0, TZ), never the
+ * server's.
+ */
+function formatDay(iso: string, timezone: string): string {
+  return shareEndWords(new Date(iso), timezone, { weekday: false }).replace(/ at .*$/, '');
+}
+
+/** The household's clock in effect, in the caller's transaction. */
+async function clockOf(trx: Db): Promise<string> {
+  const hh = await trx.selectFrom('household').select('timezone').executeTakeFirst();
+  return householdZone(hh?.timezone);
 }
 
 /**

@@ -15,6 +15,7 @@ import {
   type Visibility,
 } from '@fdv/shared';
 import { mayChange } from './DocActions.js';
+import { dateOnlyWords } from './family-time.js';
 
 /**
  * The Documents table (Phase 6, R2): what it shows, what the address says
@@ -66,12 +67,8 @@ export const PICK_WIDTH = 44;
  */
 export function tableDate(d: DateValue): string {
   if (d.precision !== 'month') return formatDate(d);
-  const [y, m] = d.date.split('-').map(Number) as [number, number];
-  return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('en-GB', {
-    month: 'short',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
+  // A month, never a moment: no zone moves it (0.9.0, TZ).
+  return dateOnlyWords(d.date, { day: false, month: 'short' });
 }
 
 /** How many rows a page of the table asks for; Show more asks for the next. */

@@ -25,6 +25,7 @@ import { storedRole } from './session.js';
 import { shortcutsOn, useShortcutsOn } from './shortcuts.js';
 import { CollapseButton, ResizeHandle, useSidebar } from './sidebar.js';
 import { useSheetFocus } from './ui.js';
+import { useFamilyZone } from './family-time.js';
 
 /**
  * The app's shell (Phase 6, R1): one layout around every signed-in screen.
@@ -366,6 +367,8 @@ function busyElsewhere(e: KeyboardEvent): boolean {
 
 export function AppShell() {
   const { caps, session, authVersion, markAuthChanged } = useApp();
+  // The family's clock, asked once a sign-in for every screen (0.9.0, TZ).
+  useFamilyZone();
   const mode = useShellMode();
   const navigate = useNavigate();
   const { pathname, hash } = useLocation();

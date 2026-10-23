@@ -122,6 +122,11 @@ export type Capability =
    */
   | 'sharing.only_me_rule'
   /**
+   * Choose the family's time zone, or clear it back to the server's default
+   * (0.9.0, TZ): every time the vault shows is on it, for everyone.
+   */
+  | 'household.timezone'
+  /**
    * Lock somebody's sign-in, and unlock it (5.28, A51, A52): never one's
    * own, and never another owner's (A50). An owner power (A54): asked with a
    * passkey or a code, never the password.
@@ -305,6 +310,12 @@ const MATRIX: Record<Capability, Rule> = {
     // (A54).
     roles: ['owner'],
     refusal: 'Only an owner can change whether Only me documents can be shared outside the family.',
+  },
+  'household.timezone': {
+    // The family's clock: the times everyone sees, and the hour reminders
+    // and digests arrive (0.9.0, TZ). The database holds it too (0080).
+    roles: ['owner'],
+    refusal: 'Only an owner can change the family’s time zone.',
   },
   'member.suspend': {
     // Only owners lock (A52), and one owner cannot lock out another (A50):

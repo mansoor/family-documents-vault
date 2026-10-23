@@ -238,6 +238,25 @@ describe('the Reading check’s page (R0)', () => {
     await expectAccessible();
   });
 
+  it('says when a check ran on the family’s clock, its zone named when this browser’s differs (the TZ review)', async () => {
+    const was = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    try {
+      at('/settings/reading-check', {
+        readingChecks: [check({ id: 'check-new' })],
+        readingFiled: 50,
+        timezone: 'Europe/London',
+      });
+      // 10:30 UTC on 17 October: 11:30 in London, never 03:30 in Los Angeles.
+      expect(
+        await screen.findByRole('heading', { name: /^Checked 17 Oct, 11:30 BST/ }),
+      ).toBeInTheDocument();
+    } finally {
+      if (was === undefined) delete process.env.TZ;
+      else process.env.TZ = was;
+    }
+  });
+
   it('a finished check: its numbers both ways, by kind, against the one before, and its misses for its owner', async () => {
     at('/settings/reading-check', {
       readingChecks: [check({ id: 'check-new' }), earlier],

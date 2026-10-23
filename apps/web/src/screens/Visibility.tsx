@@ -1,6 +1,5 @@
 import { ONLY_ME_TITLE } from '../notes.js';
 import {
-  shareEndWords,
   visibilityChoices,
   type LinksChoiceNeeded,
   type OwnLinkToEnd,
@@ -11,6 +10,7 @@ import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { Button, ConfirmDialog, ErrorNote, Pills } from '../ui.js';
+import { endWords, familyZoneNow } from '../family-time.js';
 
 /**
  * Who can see a document, in the three plain choices the design insists
@@ -236,7 +236,11 @@ export async function linksAsk(
   const asked = linksChoice(err);
   if (!asked) return null;
   const profile = await withToken((t) => api.profile(t)).catch(() => null);
-  return { ...asked, message: (err as Error).message, timezone: profile?.timezone ?? 'UTC' };
+  return {
+    ...asked,
+    message: (err as Error).message,
+    timezone: profile?.timezone ?? familyZoneNow(),
+  };
 }
 
 /**
@@ -379,5 +383,5 @@ export function ownLinkWords(l: OwnLinkToEnd, timezone: string): string {
   const either = l.will_end
     ? ' It ends either way: paused after a restore, it cannot be turned back on while this is Only me.'
     : '';
-  return `${who}${what}: ends ${shareEndWords(new Date(l.expires_at), timezone, { weekday: false })}; ${asks}.${either}`;
+  return `${who}${what}: ends ${endWords(l.expires_at, timezone, { weekday: false })}; ${asks}.${either}`;
 }

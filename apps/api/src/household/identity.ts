@@ -1,5 +1,5 @@
 import { openIdentity, sealIdentity, type ScopeKeys } from '@fdv/crypto';
-import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db, householdZone } from '@fdv/db';
 import {
   can,
   canEditIdentity,
@@ -874,7 +874,7 @@ export class IdentityService {
         // transaction's, so a failed enqueue rolls the notice back, and only
         // a failure after it (the commit itself) could leave a mail with no
         // notice behind it. The push waits for the commit.
-        const when = `${shareEndWords(notice.notice_until, household.timezone)} (${household.timezone})`;
+        const when = `${shareEndWords(notice.notice_until, householdZone(household.timezone))} (${householdZone(household.timezone)})`;
         await this.alert({
           householdId: p.householdId,
           accountIds: told.map((a) => a.account_id),

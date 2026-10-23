@@ -724,10 +724,11 @@ describe('Activity from 768 px: a table, with filters kept in the address (R4)',
       await waitFor(() => expect(rowsOf()).toEqual(['Sara Seikh made a link to “Home insurance”']));
       const time = await waitFor(() => {
         const t = main().querySelector('tbody time') as HTMLElement;
-        expect(t).toHaveTextContent(/^30 Sept? 2026, 11:12pm$/);
+        // Its zone named: this device's clock is not the family's (0.9.0, TZ).
+        expect(t).toHaveTextContent(/^30 Sept? 2026, 11:12pm BST$/);
         return t;
       });
-      expect(time.getAttribute('title')).toMatch(/30 September.*11:12pm/);
+      expect(time.getAttribute('title')).toMatch(/30 September.*11:12pm BST/);
     } finally {
       if (before === undefined) delete process.env.TZ;
       else process.env.TZ = before;

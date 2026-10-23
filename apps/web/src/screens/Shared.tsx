@@ -3,6 +3,7 @@ import { useParams } from 'react-router';
 import { api, ApiRequestError, type SharedDocument, type SharePreview } from '../api.js';
 import { describeError } from '../app-context.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
+import { browserZone, dateTimeWords } from '../family-time.js';
 
 /**
  * The page somebody outside the family lands on (SHR-05), for a link made
@@ -113,8 +114,9 @@ export function SharedScreen() {
               Download {doc.filename}
             </a>
             <p className="muted">
-              This link stops working on {new Date(preview.expires_at).toLocaleDateString()}, and
-              whoever sent it can take it back sooner. They can see that you opened it.
+              This link stops working on{' '}
+              {dateTimeWords(preview.expires_at, browserZone(), { always: true })}, and whoever sent
+              it can take it back sooner. They can see that you opened it.
             </p>
           </>
         ) : (
