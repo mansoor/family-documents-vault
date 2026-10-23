@@ -5,6 +5,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { DecryptStream, EncryptStream, sealChunk, unwrapKey, type ScopeKeys } from '@fdv/crypto';
+import type { PgBoss } from 'pg-boss';
 import { withSystem, type Db } from '@fdv/db';
 import { adapterFromRow, readAll, type StorageAdapter } from '@fdv/storage';
 import { extractText } from './extract-text.js';
@@ -14,6 +15,7 @@ import {
   drawable,
   imageFrames,
   pdfPageCount,
+  PictureRefused,
   readIfExists,
   thumbnail,
 } from './tools.js';
@@ -48,6 +50,45 @@ export interface ProcessDeps {
   log: (level: string, msg: string, extra?: Record<string, unknown>) => void;
   /** Queues a version's page previews (4.7); an Essential's are queued after processing. */
   sendPreviews?: SendPreviews;
+  /** How long reading its words may take: VERSION_READ_DEADLINE_MS, unless a test shortens it. */
+  readDeadlineMs?: number;
+  /** Reads its words: `extractText`, unless a test stands in for it. */
+  extract?: typeof extractText;
+}
+
+/**
+ * How long a version's words may take to read (0.9.0, R3, the review): its
+ * tools killed then. The pages read before it are kept (the re-check), and
+ * `process_error` says it was too slow, and how many were not read; none
+ * read, `ocr_status` is failed. Second looks end at half of it, so the
+ * pages left are read once and most of a long scan is read in time. Under
+ * the queue's expiry (PROCESS_JOB_EXPIRE_SECONDS), with room for the rest
+ * of the job, so a long scan never runs on past it to be taken again.
+ */
+export const VERSION_READ_DEADLINE_MS = 8 * 60_000;
+/** How long a version.process job may run before the queue takes it as lost. */
+export const PROCESS_JOB_EXPIRE_SECONDS = 14 * 60;
+
+/** The version.process queue's settings: above its read's deadline, so a long scan is never taken twice. */
+export const PROCESS_QUEUE_SETTINGS = {
+  retryLimit: 3,
+  retryDelay: 30,
+  retryBackoff: true,
+  expireInSeconds: PROCESS_JOB_EXPIRE_SECONDS,
+};
+
+/**
+ * Makes the version.process queue (`name`), and gives one made before R3 its
+ * settings too (the R3 re-check): pg-boss keeps a queue's expiry from when
+ * it was made, and an existing install's would stay at its default of 900
+ * seconds — under the read's deadline and the rest of the job.
+ */
+export async function processQueue(
+  boss: Pick<PgBoss, 'createQueue' | 'updateQueue'>,
+  name: string,
+): Promise<void> {
+  await boss.createQueue(name, PROCESS_QUEUE_SETTINGS);
+  await boss.updateQueue(name, PROCESS_QUEUE_SETTINGS);
 }
 
 const IMAGE_MIMES = new Set([
@@ -145,19 +186,36 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
     // 4. The words, bounded: a PDF's own text, OCR only for its pages that
     // have none, a photo's by OCR, a Word file's (5.37).
     let read: { source: string; textPages: number; ocrPages: number } | null = null;
+    const readMs = deps.readDeadlineMs ?? VERSION_READ_DEADLINE_MS;
+    const deadline = AbortSignal.timeout(readMs);
     try {
-      const got = await extractText(plainFile, version.mime, {
+      const got = await (deps.extract ?? extractText)(plainFile, version.mime, {
         maxPages: deps.maxOcrPages,
         workDir: dir,
         tools,
+        signal: deadline,
+        looksUntil: AbortSignal.timeout(Math.round(readMs / 2)),
       });
       if (got) {
         await storeText(deps.db, hh, version.id, doc, scopeKey, got.text);
         update.ocr_status = 'done';
         read = { source: got.source, textPages: got.textPages, ocrPages: got.ocrPages };
+        if (got.unreadPages) {
+          // Its deadline passed part-way: what was read is kept, and said so.
+          errors.push(
+            `ocr: too slow (${got.ocrPages} of ${got.ocrPages + got.unreadPages} scanned pages read; the rest took longer than the vault gives them)`,
+          );
+        }
       }
     } catch (err) {
-      errors.push(`ocr: ${(err as Error).message}`);
+      // Too slow, a picture refused for its size, or a tool that failed: each said as itself.
+      errors.push(
+        deadline.aborted
+          ? 'ocr: too slow (its words took longer than the vault gives them)'
+          : err instanceof PictureRefused
+            ? 'ocr: picture refused (bigger than the vault reads)'
+            : `ocr: ${(err as Error).message}`,
+      );
       update.ocr_status = 'failed';
     }
 

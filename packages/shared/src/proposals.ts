@@ -32,8 +32,14 @@
  * default confirms it; a proposal above its threshold that differs from
  * the default is a disagreement, tagged for Check with both values.
  */
-import type { CoreField, DateValue, DocumentTypeView } from './documents.js';
+import {
+  expiryOptional,
+  type CoreField,
+  type DateValue,
+  type DocumentTypeView,
+} from './documents.js';
 import { scoredIssuers, type KnownIssuer } from './issuers.js';
+import { fixConfusions } from './ocr-confusions.js';
 
 /** The fields a document's pages can propose, by the document's own names for them. */
 export const PROPOSAL_FIELDS = [
@@ -111,6 +117,11 @@ export interface Proposed<T> {
    * the shape alone proposed.
    */
   shape?: true;
+  /**
+   * Read from a token whose OCR confusions were put right ("2O26": 0.9.0,
+   * R3): never Ready on its own strength — the card says so, and waits.
+   */
+  corrected?: true;
 }
 
 /** What the pages propose: only the fields above their threshold, and only empty ones. */
@@ -1256,7 +1267,16 @@ interface DateClaim {
   value: DateValue;
   weight: number;
   cue: ProposalCue;
+  /** Read from a token whose OCR confusions were put right (R3): never sure on its own. */
+  corrected?: boolean;
 }
+
+/**
+ * How sure a date read from a token put right (ocr-confusions.ts) is at
+ * most: above what is proposed, below a sure expiry (ITEM_SURE's 0.8), so
+ * the card is Check unless something else agrees (0.9.0, R3).
+ */
+export const CORRECTED_DATE_CONFIDENCE = 0.75;
 
 /**
  * Each date's role, by its label: the label nearest before it on its own
@@ -1272,8 +1292,15 @@ function claimDates(
   kind: ProposalKind,
   order: 'dmy' | 'mdy' | undefined,
   lines: Lines,
+  /** The tokens OCR's confusions were put right in, lower case (R3). */
+  corrected: readonly string[] = [],
 ): { issued: DateClaim[]; expires: DateClaim[] } {
   const dates = findDates(hay, order, lines);
+  const wasCorrected = (d: FoundDate) => {
+    if (corrected.length === 0) return false;
+    const read = hay.slice(d.at, d.end);
+    return corrected.some((c) => c.includes(read) || read.includes(c));
+  };
   const labels = findLabels(body, hay, labelsFor(kind), lines);
   const role = new Map<FoundDate, LabelSpec>();
 
@@ -1318,8 +1345,10 @@ function claimDates(
   const expiring: DateClaim[] = [];
   const claim = (d: FoundDate, spec: LabelSpec, weaker: boolean) => {
     const weight = weaker ? spec.weight - 1 : spec.weight;
-    if (spec.role === 'issued') issued.push({ value: d.value, weight, cue: spec.cue });
-    if (spec.role === 'expires') expiring.push({ value: d.value, weight, cue: spec.cue });
+    const c: DateClaim = { value: d.value, weight, cue: spec.cue };
+    if (wasCorrected(d)) c.corrected = true;
+    if (spec.role === 'issued') issued.push(c);
+    if (spec.role === 'expires') expiring.push(c);
   };
   // Labels and dates both in order: each date looks back over a window.
   let from = 0;
@@ -1365,8 +1394,18 @@ function claimDates(
   if (PERIOD_KINDS.has(kind.key)) {
     for (const [a, b] of period) {
       if (a.value.date >= b.value.date) continue;
-      issued.push({ value: a.value, weight: 3, cue: 'period_start' });
-      expiring.push({ value: b.value, weight: 3, cue: 'period_end' });
+      issued.push({
+        value: a.value,
+        weight: 3,
+        cue: 'period_start',
+        ...(wasCorrected(a) ? { corrected: true } : {}),
+      });
+      expiring.push({
+        value: b.value,
+        weight: 3,
+        cue: 'period_end',
+        ...(wasCorrected(b) ? { corrected: true } : {}),
+      });
     }
   }
   return { issued, expires: expiring };
@@ -1386,10 +1425,14 @@ function bestDate(claims: DateClaim[], latest: boolean): Proposed<DateValue> | n
   const pick = latest ? values[values.length - 1] : values[0];
   const chosen = best.find((c) => c.value.date === pick) as DateClaim;
   const base = DATE_CONFIDENCE[top] ?? 0;
+  const sure = values.length > 1 ? base - 0.1 : base;
+  // Read only from tokens OCR's confusions were put right in: never sure (R3).
+  const corrected = best.filter((c) => c.value.date === pick).every((c) => c.corrected);
   return {
     value: chosen.value,
-    confidence: values.length > 1 ? base - 0.1 : base,
+    confidence: corrected ? Math.min(sure, CORRECTED_DATE_CONFIDENCE) : sure,
     cue: chosen.cue,
+    ...(corrected ? { corrected: true as const } : {}),
   };
 }
 
@@ -2064,6 +2107,35 @@ export function pageText(text: string, order?: 'dmy' | 'mdy'): PageText {
 const filled = (v: unknown) =>
   v !== null && v !== undefined && (typeof v !== 'string' || v.trim() !== '');
 
+/** The most kinds `expiryLabelKinds` names: more than the household could keep of them. */
+export const MAX_EXPIRY_LABEL_KINDS = 32;
+
+/**
+ * Which kinds' expiry a page labels (0.9.0, R3; the re-check): each kind
+ * whose expiry is the family's to add (EXPIRY_OPTIONAL_KINDS: a will, a
+ * logbook, an employment contract, a deed) that the household keeps, whose
+ * own words for an expiry ("End date", "The term ends") are on the page.
+ * Such a kind is complete without one, so its card could be Ready with the
+ * page's own end date unread — a date OCR misread beside its label. Every
+ * such kind is asked, whatever was proposed or read, and the answer sealed
+ * beside the proposal: the card's kind is the batch's or the uploader's as
+ * much as the pages', and may change after (`levelItem` says it for the
+ * kind the card has then).
+ */
+export function expiryLabelKinds(text: string, ctx: ProposalContext): string[] {
+  const kinds = ctx.types.filter((t) => expiryOptional(t));
+  if (kinds.length === 0) return [];
+  const body = fixConfusions(normalise(text)).text;
+  const hay = fold(body);
+  const lines = new Lines(hay);
+  return kinds
+    .filter((kind) =>
+      findLabels(body, hay, labelsFor(kind), lines).some((l) => l.spec.role === 'expires'),
+    )
+    .map((kind) => kind.key)
+    .slice(0, MAX_EXPIRY_LABEL_KINDS);
+}
+
 /**
  * What the pages propose for a document: its kind, whose it is, its issue
  * and expiry dates, its number and who issued it, each with a confidence
@@ -2091,7 +2163,9 @@ export function proposeWithTie(
   text: string,
   ctx: ProposalContext,
 ): { proposal: DetailProposal; tie: string[] } {
-  const body = normalise(text);
+  // OCR's confusions put right in dates and sums, and which (R3): a date
+  // read from one is offered unsure.
+  const { text: body, corrected } = fixConfusions(normalise(text));
   const hay = fold(body);
   const current = ctx.current ?? {};
   const out: DetailProposal = {};
@@ -2148,7 +2222,14 @@ export function proposeWithTie(
   if (!kind) return { proposal: out, tie };
   const mrzFits = mrz !== null && kind.key === 'passport';
 
-  const { issued, expires: expiring } = claimDates(body, hay, kind, ctx.dateOrder, lines);
+  const { issued, expires: expiring } = claimDates(
+    body,
+    hay,
+    kind,
+    ctx.dateOrder,
+    lines,
+    corrected,
+  );
   const printedIssue = bestDate(issued, false);
   let issuedOn = shows(kind, 'issued') && !filled(current.issued) ? printedIssue : null;
   let expiresOn: Proposed<DateValue> | null = null;

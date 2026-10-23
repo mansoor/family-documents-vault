@@ -5402,6 +5402,35 @@ not_found` ("A note has no file") and `…/pages/{n}` `404 no_preview`.
       fake answers `GET /notes`, has the kind, refuses a file on a note,
       and answers a `409` with the document as it is now.
 
+  - Scans read better (0.9.0, R3). No migration and no new route.
+    - **Changed answers:** a scanned item's `proposals` come from text laid
+      out in the page's rows, as a PDF's own text is, so they may differ
+      from before for the same file. A date the worker read only after
+      putting OCR's confusions right ("2O26") is proposed below
+      `ITEM_SURE` for an expiry; its suggestion carries **`corrected: true`**
+      (new on `ItemSuggestion`, absent before 0.9.0), and its item is Check —
+      with `expiry_unsure` ("Expiry unsure") for an expiry, or the new tag
+      code **`date_corrected`** ("A date read from unclear digits") for an
+      issue date. An item whose kind on the card has an optional expiry (a
+      will, a logbook, an employment contract, a deed) and whose pages label
+      its own expiry label (every such kind is asked, whatever was proposed
+      or read) and that has no expiry is Check, with an `expiry_unsure` tag
+      whose words are "Expiry on the page, not read" — never Ready; worked
+      out for the kind the card has as it is asked, so a kind chosen for it
+      by the batch, or changed after, says so too. And one of those kinds
+      whose pages read an expiry for the kind they proposed — not offered for
+      the card's — is Check with an `expiry_unsure` tag "Expiry on the page,
+      read for another kind". `@fdv/shared`: `CORRECTED_DATE_CONFIDENCE`,
+      `Proposed.corrected`, `ItemSuggestion.corrected`, the tag code
+      `date_corrected`, `expiryLabelKinds`, `MAX_EXPIRY_LABEL_KINDS`,
+      `storedExpiryLabels` and `LevelInput.expiryLabels`; the worker seals
+      `expiry_labels: [kind keys]` beside a proposal.
+    - A version's `process_error` may now say
+      `ocr: too slow (N of M scanned pages read; …)` beside `ocr_status`
+      `done`: its read passed its deadline, and the pages read before it
+      were kept (searchable, and its text as ever). A picture refused for its
+      size says `ocr: picture refused (…)`, as before.
+
 ## Deprecations in effect
 
 - `GET /api/v1/shared/{token}`, `POST /api/v1/shared/{token}/open` and

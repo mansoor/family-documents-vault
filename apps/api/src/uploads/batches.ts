@@ -53,6 +53,7 @@ import {
   NUMBER_SEPARATORS,
   numberKey,
   RENEWALS_MAX,
+  storedExpiryLabels,
   storedLearnedClash,
   periodic,
   storedPaper,
@@ -2613,7 +2614,10 @@ export class BatchService {
       });
     }
     const levelling = await this.levelling(trx, p, batchIds);
-    const proposed = new Map<string, { proposal: DetailProposal; clash: LearnedClash } | null>();
+    const proposed = new Map<
+      string,
+      { proposal: DetailProposal; clash: LearnedClash; expiryLabels?: string[] } | null
+    >();
     for (const r of rows) {
       if (r.state === 'received' && r.read_state === 'read' && (!only || r.id === only)) {
         proposed.set(r.id, await levelling.open(r));
@@ -2685,6 +2689,7 @@ export class BatchService {
         failure,
         proposal: proposed.get(r.id)?.proposal ?? null,
         learnedClash: proposed.get(r.id)?.clash ?? null,
+        expiryLabels: proposed.get(r.id)?.expiryLabels ?? [],
         duplicate,
         // A near match makes it Check (S1): Accept all Ready leaves it.
         renewal: renewals.get(r.id)?.[0] ?? null,
@@ -2868,7 +2873,11 @@ export class BatchService {
       },
       open: async (
         r: ItemRow,
-      ): Promise<{ proposal: DetailProposal; clash: LearnedClash } | null> => {
+      ): Promise<{
+        proposal: DetailProposal;
+        clash: LearnedClash;
+        expiryLabels: string[];
+      } | null> => {
         if (!r.proposals_sealed) return null;
         this.opts.opened?.(r.id);
         try {
@@ -2880,7 +2889,12 @@ export class BatchService {
           const plain = openBytes(fileKey, r.proposals_sealed, itemProposalsBinding(r.id));
           const raw: unknown = JSON.parse(plain.toString('utf8'));
           // And where a sure rule of the uploader's disagreed with the pages (I4).
-          return { proposal: storedProposal(raw), clash: storedLearnedClash(raw) };
+          return {
+            proposal: storedProposal(raw),
+            clash: storedLearnedClash(raw),
+            // The kinds whose expiry the page labels (R3, the re-check).
+            expiryLabels: storedExpiryLabels(raw),
+          };
         } catch {
           return null;
         }

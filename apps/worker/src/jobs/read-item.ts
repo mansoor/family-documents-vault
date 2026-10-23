@@ -119,6 +119,18 @@ export const READ_GIVE_UP_MS = 24 * 3_600_000;
  * reads (its details are on its first pages), and the API's own bound.
  */
 export const PROPOSAL_TEXT_MAX = 60_000;
+
+/**
+ * The words a proposal reads: the first PROPOSAL_TEXT_MAX characters — of a
+ * long file, once its runs of space are made three (0.9.0, R3, the review: a
+ * scan laid out in its rows is two or three times its words, and would
+ * otherwise reach only its first ten pages or so). Three spaces still part
+ * its columns, as the rules read them; a file that fits is read as it is.
+ */
+export function forProposal(text: string): string {
+  if (text.length <= PROPOSAL_TEXT_MAX) return text;
+  return text.replace(/ {4,}/g, '   ').slice(0, PROPOSAL_TEXT_MAX);
+}
 /** Fewer letters and digits than this, in all its pages, and an item is blank. */
 export const BLANK_LETTERS = 4;
 
@@ -341,7 +353,11 @@ export async function readItem(
     return;
   }
 
-  const deadline = AbortSignal.timeout(opts.deadlineMs ?? READ_DEADLINE_MS);
+  const readMs = opts.deadlineMs ?? READ_DEADLINE_MS;
+  const deadline = AbortSignal.timeout(readMs);
+  // Second looks end at half of it (the R3 re-check): the pages left are
+  // read once, so a long scan is read before its deadline.
+  const looksUntil = AbortSignal.timeout(Math.round(readMs / 2));
   let dir: string | null = null;
   try {
     let had: {
@@ -398,13 +414,14 @@ export async function readItem(
         workDir: dir,
         tools,
         signal: deadline,
+        looksUntil,
       });
       deadline.throwIfAborted();
       if (!got) {
         await failed('not_read');
         return;
       }
-      text = got.text.slice(0, PROPOSAL_TEXT_MAX);
+      text = forProposal(got.text);
     } catch (err) {
       // Its deadline passed, its tools killed; or a tool that failed on it,
       // or a file that is not what it says. Logged without a word of it.
@@ -475,6 +492,7 @@ export async function readItem(
                   // The guests' names out of the page's shape (the R1 review,
                   // P2), here: the thread is never told of a guest (I2).
                   settled.paper ? paperWithoutNames(settled.paper, had.guestNames) : undefined,
+                  answer.expiryLabels ?? [],
                 ),
               ),
               'utf8',
@@ -518,11 +536,14 @@ const sealedProposal = (
   proposal: unknown,
   clash: LearnedClash | undefined,
   paper: PaperReading | undefined,
+  /** The kinds complete without an expiry whose expiry label the page has (R3, the re-check). */
+  expiryLabels: readonly string[] = [],
 ) => ({
   v: 1,
   proposal,
   ...(clash && Object.keys(clash).length > 0 ? { learned_clash: clash } : {}),
   ...(paper ? { paper } : {}),
+  ...(expiryLabels.length > 0 ? { expiry_labels: expiryLabels } : {}),
 });
 
 /**

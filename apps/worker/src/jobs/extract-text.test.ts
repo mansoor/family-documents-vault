@@ -587,6 +587,138 @@ describe('extracting text (5.37)', () => {
     expect(wordXmlText(xml)).toBe('A  B A   C');
   });
 
+  it.skipIf(!scans)(
+    'past its deadline the scanned pages read are kept, and the rest said to be unread (the R3 re-check)',
+    async () => {
+      // Tesseract reads the first page; the deadline passes on the second, its tool killed.
+      const stopping = () => {
+        const stop = new AbortController();
+        let n = 0;
+        const ocr = async () => {
+          n += 1;
+          if (n === 1) return 'Policy number 4471 issued to Sara Khan';
+          stop.abort();
+          throw new Error('tesseract was killed');
+        };
+        return { signal: stop.signal, ocr, asked: () => n };
+      };
+      const scanned = path.join(dir, 'three-scans.pdf');
+      await writeFile(scanned, picturedPdf(3, [], '612 0 0 792 0 0'));
+      const a = stopping();
+      const got = await extractText(scanned, 'application/pdf', {
+        maxPages: 5,
+        workDir: dir,
+        ocr: a.ocr,
+        signal: a.signal,
+      });
+      expect(got).toMatchObject({ source: 'ocr', ocrPages: 1, unreadPages: 2 });
+      expect(got?.text).toContain('Policy number 4471');
+      expect(a.asked()).toBe(2);
+
+      // A scanner's TIFF of three pages, the same.
+      const tiff = path.join(dir, 'three-scans.tif');
+      await run(magickBin, [
+        '-size',
+        '300x200',
+        'xc:white',
+        'xc:white',
+        'xc:white',
+        `tiff:${tiff}`,
+      ]);
+      const b = stopping();
+      const photo = await extractText(tiff, 'image/tiff', {
+        maxPages: 5,
+        workDir: dir,
+        ocr: b.ocr,
+        signal: b.signal,
+      });
+      expect(photo).toMatchObject({ source: 'ocr', ocrPages: 1, unreadPages: 2 });
+      expect(photo?.text).toContain('Policy number 4471');
+
+      // Stopped before a page was read: nothing to keep, and it says so.
+      for (const [file, mime] of [
+        [scanned, 'application/pdf'],
+        [tiff, 'image/tiff'],
+      ] as const) {
+        const early = new AbortController();
+        await expect(
+          extractText(file, mime, {
+            maxPages: 5,
+            workDir: dir,
+            ocr: () => {
+              early.abort();
+              return Promise.reject(new Error('tesseract was killed'));
+            },
+            signal: early.signal,
+          }),
+        ).rejects.toThrow();
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(!scans)(
+    'once second looks have ended, each page is read once: no cleaning, no reading again row by row (the R3 re-check)',
+    async () => {
+      const scanned = path.join(dir, 'two-scans.pdf');
+      await writeFile(scanned, picturedPdf(2, [], '612 0 0 792 0 0'));
+      // Next to no words, and a form read column by column: each would be read again.
+      const reads = [
+        'Statement date\nCard number\nPrevious balance\nPayment due\n18 Aug\n4929\n429.79',
+        '',
+      ];
+      for (const read of reads) {
+        const asked: Array<{ image: string; once: boolean }> = [];
+        let rows = 0;
+        await extractText(scanned, 'application/pdf', {
+          maxPages: 5,
+          workDir: dir,
+          looksUntil: AbortSignal.abort(),
+          ocr: (image, how) => {
+            asked.push({ image: path.basename(image), once: how?.once === true });
+            return Promise.resolve(read);
+          },
+          ocrRows: () => {
+            rows += 1;
+            return Promise.resolve(read);
+          },
+        });
+        expect(asked.map((a) => a.once)).toEqual([true, true]);
+        expect(asked.filter((a) => a.image.includes('clean'))).toEqual([]);
+        expect(rows).toBe(0);
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(!scans)(
+    'a page its second look read cleaned is not cleaned again by S5 (the R3 re-check)',
+    async () => {
+      const scanned = path.join(dir, 'one-scan.pdf');
+      await writeFile(scanned, picturedPdf(1, [], '612 0 0 792 0 0'));
+      const asked: string[] = [];
+      let cleaned = 0;
+      const ocr = (image: string, how?: { onCleaned?: () => void }) => {
+        asked.push(path.basename(image));
+        // Its second look read a cleaned copy, and next to nothing still.
+        how?.onCleaned?.();
+        return Promise.resolve('');
+      };
+      await extractText(scanned, 'application/pdf', {
+        maxPages: 5,
+        workDir: dir,
+        ocr,
+        clean: () => {
+          cleaned += 1;
+          return Promise.resolve();
+        },
+      });
+      expect(cleaned).toBe(0);
+      expect(asked).toHaveLength(1);
+    },
+    120_000,
+  );
+
   it('a photo is read by OCR; a workbook is not read', async () => {
     const photo = path.join(dir, 'photo.png');
     await writeFile(photo, 'not decoded here');

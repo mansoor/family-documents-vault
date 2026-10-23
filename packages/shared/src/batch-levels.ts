@@ -8,12 +8,14 @@ import {
   type BatchReadState,
 } from './batches.js';
 import {
+  expiryOptional,
   missingFields,
   type DateValue,
   type DocumentTypeView,
   type Visibility,
 } from './documents.js';
 import {
+  MAX_EXPIRY_LABEL_KINDS,
   PROPOSAL_CUES,
   type DetailProposal,
   type ProposalCue,
@@ -152,7 +154,9 @@ export type BatchTagCode =
    * The folder it came from says another kind, or another person, than the
    * pages (or the uploader's rules) do (0.8.0, S2): the pages' stands.
    */
-  | 'clash_folder';
+  | 'clash_folder'
+  /** A date the pages gave only once OCR's confusions were put right ("2O26": 0.9.0, R3). */
+  | 'date_corrected';
 
 /** One reason for an item's level: a Problem's, a Check's, or something worth knowing. */
 export interface BatchTag {
@@ -198,6 +202,11 @@ export interface ItemSuggestion<T> {
    * Northgate". Only beside `learned`. Absent from a vault before 0.9.0.
    */
   shape?: true;
+  /**
+   * Read from digits OCR's confusions were put right in ("2O26": 0.9.0,
+   * R3): the card is Check for it. Absent from a vault before 0.9.0.
+   */
+  corrected?: true;
 }
 
 /**
@@ -270,6 +279,12 @@ export interface LevelInput {
   proposal: DetailProposal | null;
   /** Where a sure rule of the uploader's disagreed with the pages, as the worker read it (I4). */
   learnedClash?: LearnedClash | null;
+  /**
+   * The kinds complete without an expiry whose own expiry label is on the
+   * pages (0.9.0, R3, the re-check: `expiryLabelKinds`, sealed beside the
+   * proposal): a card of one of them with no expiry is Check, never Ready.
+   */
+  expiryLabels?: readonly string[];
   duplicate: BatchDuplicate | null;
   /** Its best near match, a document the uploader may change (0.8.0, S1): it makes the item Check. */
   renewal?: { title: string | null } | null;
@@ -493,6 +508,7 @@ export function levelItem(input: LevelInput): ItemLevel {
         confidence: p.confidence,
         cue: p.cue,
         ...(p.shape ? { shape: true as const } : {}),
+        ...(p.corrected ? { corrected: true as const } : {}),
       };
     }
   }
@@ -673,6 +689,35 @@ export function levelItem(input: LevelInput): ItemLevel {
     ) {
       check({ code: 'expiry_unsure', kind: 'check', words: 'Expiry unsure' });
     }
+    // An end date on the page, not on the card, for a kind complete without
+    // one (R3; the re-check): by the kind the card has now, whatever the pages
+    // proposed — its own expiry labelled on the page, or an expiry the pages
+    // read for the kind they proposed, not offered for this one.
+    const labelled = (input.expiryLabels ?? []).includes(kind.key);
+    const dropped = !forKind && !!pages.expires;
+    if (
+      (labelled || dropped) &&
+      expiryOptional(kind) &&
+      !expires &&
+      !missing.some((m) => m.key === 'expires')
+    ) {
+      check({
+        code: 'expiry_unsure',
+        kind: 'check',
+        words: labelled
+          ? 'Expiry on the page, not read'
+          : 'Expiry on the page, read for another kind',
+      });
+    }
+    // A date read only once OCR's confusions were put right (R3): never Ready
+    // on its own strength.
+    const corrected = (['issued', 'expires'] as const).some((f) => {
+      const s = proposals[f];
+      return !!s && guessed(s) && s.corrected === true;
+    });
+    if (corrected && !tags.some((t) => t.code === 'expiry_unsure')) {
+      check({ code: 'date_corrected', kind: 'check', words: 'A date read from unclear digits' });
+    }
     if (visibility.from === 'narrowed') {
       const to = visibility.value === 'private' ? 'Only me' : 'adults';
       tags.push({
@@ -731,6 +776,21 @@ export function levelSummary(counts: Partial<Record<BatchLevel, number>>): strin
 }
 
 /**
+ * The kinds whose expiry label the worker sealed it found on the pages
+ * (`{ v: 1, …, expiry_labels: ['property_deed'] }`, 0.9.0 R3, the re-check):
+ * each a short string, at most MAX_EXPIRY_LABEL_KINDS of them. Anything
+ * else is none.
+ */
+export function storedExpiryLabels(raw: unknown): string[] {
+  if (!raw || typeof raw !== 'object' || (raw as { v?: unknown }).v !== 1) return [];
+  const labels = (raw as { expiry_labels?: unknown }).expiry_labels;
+  if (!Array.isArray(labels)) return [];
+  return labels
+    .filter((k): k is string => typeof k === 'string' && k.length > 0 && k.length <= 64)
+    .slice(0, MAX_EXPIRY_LABEL_KINDS);
+}
+
+/**
  * What the worker sealed, opened: `{ v: 1, proposal }`, each field kept only
  * if it is well formed — a value of the right kind, a confidence from 0 to 1
  * and a cue the vault knows. Anything else is nothing proposed.
@@ -767,6 +827,7 @@ export function storedProposal(raw: unknown): DetailProposal {
       cue: f.cue,
       ...((f as { learned?: unknown }).learned === true ? { learned: true } : {}),
       ...((f as { shape?: unknown }).shape === true ? { shape: true } : {}),
+      ...((f as { corrected?: unknown }).corrected === true ? { corrected: true } : {}),
       ...(typeof (f as { page_confidence?: unknown }).page_confidence === 'number' &&
       (f as { page_confidence: number }).page_confidence >= 0 &&
       (f as { page_confidence: number }).page_confidence <= 1

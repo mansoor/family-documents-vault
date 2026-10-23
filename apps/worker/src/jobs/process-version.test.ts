@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { crc32, deflateSync } from 'node:zlib';
 import {
   deriveKey,
   EncryptStream,
@@ -19,8 +20,16 @@ import { LocalAdapter } from '@fdv/storage';
 import { ZipArchive } from 'archiver';
 import { sql } from 'kysely';
 import pg from 'pg';
+import type { PgBoss } from 'pg-boss';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { decryptToBuffer, processVersion } from './process-version.js';
+import { createQueue } from '../queue.js';
+import {
+  decryptToBuffer,
+  PROCESS_JOB_EXPIRE_SECONDS,
+  processQueue,
+  processVersion,
+  VERSION_READ_DEADLINE_MS,
+} from './process-version.js';
 import { detectTools } from './tools.js';
 import { WORD_MIME } from './word-text.js';
 
@@ -220,6 +229,143 @@ describe.skipIf(!testAdminUrl())('version.process job', () => {
           .execute(),
       );
       expect(hit).toHaveLength(1);
+    },
+    120_000,
+  );
+
+  it.skipIf(!ready)(
+    'reading its words has a deadline: past it, its tools are stopped and it says it was too slow (R3 review)',
+    async () => {
+      const { versionId } = await storeVersion('household', textPdf('POLICY NUMBER 4471'));
+      const started = Date.now();
+      await processVersion(
+        { ...deps(), readDeadlineMs: 1 },
+        { household_id: hh, version_id: versionId },
+      );
+      expect(Date.now() - started).toBeLessThan(30_000);
+      const v = await withSystem(db, hh, (trx) =>
+        trx
+          .selectFrom('document_version')
+          .selectAll()
+          .where('id', '=', versionId)
+          .executeTakeFirstOrThrow(),
+      );
+      expect(v.ocr_status).toBe('failed');
+      expect(v.process_error).toMatch(/ocr: too slow/);
+      // The rest of the job is done as ever: the page counted.
+      expect(v.page_count).toBe(1);
+      expect(VERSION_READ_DEADLINE_MS).toBeLessThan(PROCESS_JOB_EXPIRE_SECONDS * 1000 - 60_000);
+    },
+    120_000,
+  );
+
+  it('a queue made before R3 takes its expiry too, not pg-boss’s 900 seconds (R3 re-check)', async () => {
+    const boss: PgBoss = createQueue({ connectionString: tdb.adminUrl, migrate: true });
+    boss.on('error', () => undefined);
+    await boss.start();
+    try {
+      // As an install before R3 made it.
+      await boss.createQueue('version.process.before-r3', { retryLimit: 3, retryDelay: 30 });
+      expect((await boss.getQueue('version.process.before-r3'))?.expireInSeconds).toBe(900);
+      await processQueue(boss, 'version.process.before-r3');
+      expect((await boss.getQueue('version.process.before-r3'))?.expireInSeconds).toBe(
+        PROCESS_JOB_EXPIRE_SECONDS,
+      );
+      // A new one is made with it.
+      await processQueue(boss, 'version.process.new');
+      expect((await boss.getQueue('version.process.new'))?.expireInSeconds).toBe(
+        PROCESS_JOB_EXPIRE_SECONDS,
+      );
+    } finally {
+      await boss.stop({ graceful: false });
+    }
+  }, 60_000);
+
+  it.skipIf(!ready)(
+    'past its deadline the pages read are kept, and second looks end at half of it (R3 re-check)',
+    async () => {
+      const { versionId } = await storeVersion('household', textPdf('POLICY NUMBER 4471'));
+      const seen: { looksFirst?: boolean; readAt?: number } = {};
+      const started = Date.now();
+      await processVersion(
+        {
+          ...deps(),
+          readDeadlineMs: 2_000,
+          // The first page read; the deadline passes on the second.
+          extract: async (_file, _mime, o) => {
+            const { looksUntil, signal } = o;
+            if (!looksUntil || !signal) throw new Error('no deadline given');
+            await new Promise((resolve) => looksUntil.addEventListener('abort', resolve));
+            seen.looksFirst = !signal.aborted;
+            seen.readAt = Date.now() - started;
+            return {
+              text: 'POLICY NUMBER 4471, its first page',
+              source: 'ocr',
+              textPages: 0,
+              ocrPages: 1,
+              unreadPages: 2,
+            };
+          },
+        },
+        { household_id: hh, version_id: versionId },
+      );
+      expect(seen.looksFirst).toBe(true);
+      expect(seen.readAt).toBeGreaterThanOrEqual(900);
+      const v = await withSystem(db, hh, (trx) =>
+        trx
+          .selectFrom('document_version')
+          .selectAll()
+          .where('id', '=', versionId)
+          .executeTakeFirstOrThrow(),
+      );
+      expect(v.ocr_status).toBe('done');
+      expect(v.process_error).toMatch(/ocr: too slow \(1 of 3 scanned pages read/);
+      const hit = await withSystem(db, hh, (trx) =>
+        trx
+          .selectFrom('document_text')
+          .select('document_id')
+          .where('version_id', '=', versionId)
+          .where(sql<boolean>`tsv @@ websearch_to_tsquery('simple', '4471')`)
+          .execute(),
+      );
+      expect(hit).toHaveLength(1);
+    },
+    120_000,
+  );
+
+  it.skipIf(!ready)(
+    'a picture bigger than the vault reads is said to be refused, not as a tool that failed (R3 review)',
+    async () => {
+      // A PNG a few hundred bytes long whose header says 60,000 pixels square.
+      const chunk = (type: string, data: Buffer) => {
+        const len = Buffer.alloc(4);
+        len.writeUInt32BE(data.length);
+        const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+        const crc = Buffer.alloc(4);
+        crc.writeUInt32BE(crc32(body));
+        return Buffer.concat([len, body, crc]);
+      };
+      const ihdr = Buffer.alloc(13);
+      ihdr.writeUInt32BE(60_000, 0);
+      ihdr.writeUInt32BE(60_000, 4);
+      ihdr.set([8, 0, 0, 0, 0], 8);
+      const bomb = Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        chunk('IHDR', ihdr),
+        chunk('IDAT', deflateSync(Buffer.alloc(4096))),
+        chunk('IEND', Buffer.alloc(0)),
+      ]);
+      const { versionId } = await storeVersion('household', bomb, 'image/png');
+      await processVersion(deps(), { household_id: hh, version_id: versionId });
+      const v = await withSystem(db, hh, (trx) =>
+        trx
+          .selectFrom('document_version')
+          .selectAll()
+          .where('id', '=', versionId)
+          .executeTakeFirstOrThrow(),
+      );
+      expect(v.ocr_status).toBe('failed');
+      expect(v.process_error).toMatch(/ocr: picture refused/);
     },
     120_000,
   );

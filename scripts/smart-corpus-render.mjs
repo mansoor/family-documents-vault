@@ -111,7 +111,7 @@ export class Page {
 // ------------------------------------------------------------- PDF writing
 
 /** Bytes of a PDF from its objects, in order; a Buffer[] object is kept as bytes. */
-function pdfOf(objects) {
+export function pdfOf(objects) {
   const parts = [Buffer.from('%PDF-1.4\n%\xe2\xe3\xcf\xd3\n', 'latin1')];
   let size = parts[0].length;
   const offsets = [];
@@ -144,7 +144,7 @@ const BASE_FONTS = {
  * paper set in one is, so that its wider letters keep to the columns laid
  * out for the others (a machine-readable line is set as it is).
  */
-const sizeOf = (it, family) =>
+export const sizeOf = (it, family) =>
   family === 'mono' && !it.mono ? Math.round(it.size * 85) / 100 : it.size;
 
 /** A string as a PDF literal, in WinAnsi: £ and é as their own bytes. */
@@ -231,7 +231,7 @@ export function scanLook(r, quality = 'normal') {
 }
 
 /** Draws a page's words as ink (0 none to 1 full) at `dpi`, in `family`. */
-function inkOf(page, family, dpi, offsetX, offsetY) {
+export function inkOf(page, family, dpi, offsetX, offsetY) {
   const { em, fonts } = glyphs();
   const font = fonts[family];
   const W = Math.round((PAGE_W / 72) * dpi);
@@ -306,7 +306,7 @@ function sample(data, g, x, y) {
 let gaussCache = null;
 
 /** 8,192 normal deviates, the same every time: a pixel's noise is one of them. */
-function gaussTable() {
+export function gaussTable() {
   if (gaussCache) return gaussCache;
   const r = randomFor(0, 'gauss');
   gaussCache = Float32Array.from({ length: 8192 }, () => r.normal());
