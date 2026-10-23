@@ -20,6 +20,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { api, ApiRequestError } from './api.js';
 import { describeError, useApp } from './app-context.js';
 import { draftOf, forgetDraft, keepDraft, type DraftOwner, type NoteDraft } from './note-drafts.js';
@@ -285,6 +286,11 @@ export function NotesSection(props: {
   labelledBy?: string;
   /** Told whether there is anything unsaved, as it changes. */
   onDirty?: (dirty: boolean) => void;
+  /**
+   * A note kept on its own: where its Edit button goes — beside the note's
+   * title, on the same line — rather than above its words.
+   */
+  editSlot?: HTMLElement | null;
 }) {
   const { doc, mayEdit } = props;
   const variant = props.variant ?? 'document';
@@ -489,26 +495,33 @@ export function NotesSection(props: {
   const tooLong = editing !== null && editing.text.length > NOTES_MAX;
   const secret = editing ? secretNoteWarning(editing.text, doc.visibility) : null;
 
+  const editButton =
+    mayEdit && !editing ? (
+      <Button kind={own ? 'primary' : 'quiet'} ref={opener} onClick={start}>
+        {own ? 'Edit' : doc.notes ? 'Edit note' : 'Add a note'}
+      </Button>
+    ) : null;
+
   return (
     <section
       aria-labelledby={own ? props.labelledBy : headingId}
       className={own ? 'notes notes-own' : 'notes'}
     >
-      <div className="notes-head">
-        {!own && (
-          <h2 id={headingId} className="section-h">
-            {props.label}
-          </h2>
-        )}
-        {mayEdit && !editing && (
-          <Button kind={own ? 'primary' : 'quiet'} ref={opener} onClick={start}>
-            {own ? 'Edit' : doc.notes ? 'Edit note' : 'Add a note'}
-          </Button>
-        )}
-      </div>
+      {own && props.editSlot
+        ? editButton && createPortal(editButton, props.editSlot)
+        : (editButton || !own) && (
+            <div className="notes-head">
+              {!own && (
+                <h2 id={headingId} className="section-h">
+                  {props.label}
+                </h2>
+              )}
+              {editButton}
+            </div>
+          )}
       {!editing && doc.notes && <NoteText source={doc.notes} />}
       {!editing && own && !doc.notes && <p className="muted">Nothing written in it yet.</p>}
-      {!editing && stamp && <p className="muted note-stamp">{stamp}</p>}
+      {!editing && stamp && !own && <p className="muted note-stamp">{stamp}</p>}
       {editing && (
         <div className="note-editor">
           {editing.restored && (
@@ -594,6 +607,13 @@ export function NotesSection(props: {
             </div>
           )}
         </div>
+      )}
+      {own && (
+        <>
+          {/* The note's words above, what the vault says of it below. */}
+          <hr className="note-divider" />
+          {!editing && stamp && <p className="muted note-stamp">{stamp}</p>}
+        </>
       )}
     </section>
   );

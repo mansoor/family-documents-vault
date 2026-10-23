@@ -369,6 +369,7 @@ function NotePane(props: {
   const heading = useRef<HTMLHeadingElement>(null);
   const trashButton = useRef<HTMLButtonElement>(null);
   const [trashing, setTrashing] = useState(false);
+  const [editSlot, setEditSlot] = useState<HTMLElement | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const { data, error, reload, setData } = useLoad(
@@ -442,13 +443,17 @@ function NotePane(props: {
   return (
     <article className="note-pane" aria-labelledby={titleId}>
       <header className="note-pane-head">
-        <h2 id={titleId} ref={heading} tabIndex={-1} className="note-pane-title">
-          {title}
-        </h2>
-        <p className="muted note-pane-meta">
-          {visibilityWords[doc.visibility]} · changed{' '}
-          {whenExactly(doc.notes_updated_at ?? doc.updated_at, data.timezone)}
-        </p>
+        <div className="note-pane-heading">
+          <h2 id={titleId} ref={heading} tabIndex={-1} className="note-pane-title">
+            {title}
+          </h2>
+          <p className="muted note-pane-meta">
+            {visibilityWords[doc.visibility]} · changed{' '}
+            {whenExactly(doc.notes_updated_at ?? doc.updated_at, data.timezone)}
+          </p>
+        </div>
+        {/* The note's Edit, on the title's line (NotesSection puts it here). */}
+        <div className="note-pane-edit" ref={setEditSlot} />
       </header>
       <ErrorNote message={actionError} />
       <NotesSection
@@ -462,6 +467,7 @@ function NotePane(props: {
         onSaved={saved}
         onRefreshed={(now) => setData((d) => (d ? { ...d, doc: now } : d))}
         onDirty={props.onDirty}
+        editSlot={editSlot}
       />
       <div className="row note-pane-actions">
         <Button kind="quiet" onClick={() => downloadNote(doc)}>
