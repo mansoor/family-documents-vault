@@ -271,23 +271,44 @@ export function CollectionForm(props: {
         />
       )}
       <AudiencePicker value={audience} role={role} onChange={setAudience} />
-      {props.withChecklist &&
-        (listOpen ? (
-          <TextArea
-            id={`${props.id}-checklist`}
-            label="Start from a checklist (optional)"
-            value={list}
-            maxLength={CHECKLIST_TEXT_MAX}
-            hint="Paste the list you were given, one thing a line. Once the collection is made you see what was found, and choose what to add."
-            onChange={setList}
-          />
-        ) : (
-          <div className="row">
-            <Button kind="link" onClick={() => setListOpen(true)}>
-              Start from a checklist (optional)
-            </Button>
+      {props.withChecklist && (
+        // A panel that opens, plainly one: a box, its arrow at the end (the
+        // owner, 23 Oct). Folded again, its list is kept but not used.
+        <div className={listOpen ? 'disclosure disclosure-open' : 'disclosure'}>
+          <button
+            type="button"
+            className="disclosure-toggle"
+            aria-expanded={listOpen}
+            aria-controls={`${props.id}-checklist-panel`}
+            aria-labelledby={`${props.id}-checklist-title`}
+            aria-describedby={`${props.id}-checklist-hint`}
+            onClick={() => setListOpen(!listOpen)}
+          >
+            <ChecklistIcon />
+            <span className="disclosure-words">
+              <span id={`${props.id}-checklist-title`} className="disclosure-title">
+                Start from a checklist
+              </span>
+              <span id={`${props.id}-checklist-hint`} className="disclosure-hint">
+                Optional. Paste a list you were given; the vault finds what it can.
+              </span>
+            </span>
+            <span aria-hidden="true" className="chevron">
+              {listOpen ? '▾' : '▸'}
+            </span>
+          </button>
+          <div id={`${props.id}-checklist-panel`} className="disclosure-body" hidden={!listOpen}>
+            <TextArea
+              id={`${props.id}-checklist`}
+              label="Your checklist"
+              value={list}
+              maxLength={CHECKLIST_TEXT_MAX}
+              hint="Paste the list you were given, one thing a line. Once the collection is made you see what was found, and choose what to add."
+              onChange={setList}
+            />
           </div>
-        ))}
+        </div>
+      )}
       <ErrorNote message={error?.message ?? null} />
       <div className="row">
         <Button type="submit" disabled={busy}>
@@ -627,5 +648,26 @@ export function CollectionsOnHome(props: {
       )}
       {!none && !props.card && all}
     </section>
+  );
+}
+
+/** A list with ticks: the checklist panel's mark. */
+function ChecklistIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="disclosure-icon"
+      width="20"
+      height="20"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3 5l1.5 1.5L7 4M3 10.5L4.5 12 7 9.5M3 16l1.5 1.5L7 15" />
+      <path d="M10 5.5h7M10 11h7M10 16.5h7" />
+    </svg>
   );
 }

@@ -6,6 +6,12 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.9] - 2026-10-23 — Start from a checklist as a panel that opens
+
+### Changed
+
+- **Start from a checklist is a panel that opens,** on Make a collection: a box with a list mark, its name, a line saying what it does, and an arrow at the end, so it reads as something to open rather than a passing link. Its text box is called "Your checklist". Folded again, the list is kept but not used.
+
 ## [0.9.0-dev.8] - 2026-10-23 — scans read better
 
 ### Changed

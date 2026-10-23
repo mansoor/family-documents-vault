@@ -306,8 +306,8 @@ describe('a collection from a checklist (C1)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Make a collection' }));
     fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'Refinance' } });
     fireEvent.click(screen.getByRole('button', { name: 'Everyone in the family' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Start from a checklist (optional)' }));
-    fireEvent.change(screen.getByLabelText('Start from a checklist (optional)'), {
+    fireEvent.click(screen.getByRole('button', { name: /^Start from a checklist/ }));
+    fireEvent.change(screen.getByLabelText('Your checklist'), {
       target: { value: 'Documents for Mansoor\nLast 2 pay statements' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Make the collection' }));
@@ -366,8 +366,17 @@ describe('a collection from a checklist (C1)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Make a collection' }));
     fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'Refinance' } });
     fireEvent.click(screen.getByRole('button', { name: 'Everyone in the family' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Start from a checklist (optional)' }));
-    fireEvent.change(screen.getByLabelText('Start from a checklist (optional)'), {
+    // A panel plainly to open: a button that says it is folded, then open (the owner, 23 Oct).
+    const panel = screen.getByRole('button', { name: /^Start from a checklist/ });
+    expect(panel).toHaveAttribute('aria-expanded', 'false');
+    expect(panel).toHaveAccessibleName('Start from a checklist');
+    expect(panel).toHaveAccessibleDescription(
+      'Optional. Paste a list you were given; the vault finds what it can.',
+    );
+    expect(screen.getByLabelText('Your checklist')).not.toBeVisible();
+    fireEvent.click(panel);
+    expect(panel).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.change(screen.getByLabelText('Your checklist'), {
       target: { value: 'Documents for Mansoor\nLast 2 pay statements' },
     });
     await expectAccessible();
