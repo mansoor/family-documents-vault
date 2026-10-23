@@ -6220,3 +6220,60 @@ html:has(.shell-phone):has(.has-toast) {
     margin-top: 8px;
   }
 }
+
+/* A panel that opens (the checklist on Make a collection): a box with its
+   arrow at the end, so it reads as something to open, not a passing link. */
+.disclosure {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+}
+.disclosure-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 10px 14px;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-s);
+}
+.disclosure-toggle:hover .disclosure-title {
+  text-decoration: underline;
+}
+.disclosure-toggle:focus-visible {
+  outline: 3px solid var(--accent-glow);
+  outline-offset: 2px;
+}
+.disclosure-icon {
+  flex: none;
+  color: var(--accent);
+}
+.disclosure-words {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.disclosure-title {
+  font-weight: 600;
+}
+.disclosure-hint {
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+.disclosure-toggle .chevron {
+  flex: none;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--accent);
+}
+.disclosure-body {
+  padding: 0 14px 14px;
+}
