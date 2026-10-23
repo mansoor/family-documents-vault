@@ -216,6 +216,15 @@ describe('the notes, listed beside the one open (1280)', () => {
     ).toBeVisible();
     // Nothing of a file: no versions, no pages, no Download of a file.
     expect(within(pane).queryByRole('heading', { name: 'History' })).not.toBeInTheDocument();
+    // Edit on the title's line, and a thin line between its words and the rest.
+    const head = within(pane).getByRole('heading', { level: 2, name: 'Boiler' }).closest('header');
+    expect(head).not.toBeNull();
+    expect(within(head as HTMLElement).getByRole('button', { name: 'Edit' })).toBeVisible();
+    const rule = within(pane).getByRole('separator');
+    const words = within(pane).getByRole('listitem');
+    const download = within(pane).getByRole('button', { name: 'Download as a file' });
+    expect(words.compareDocumentPosition(rule) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rule.compareDocumentPosition(download) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await expectAccessible();
   });
 

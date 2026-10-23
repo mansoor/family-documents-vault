@@ -2850,8 +2850,29 @@ fieldset.identity-section {
 }
 .note-pane-head {
   display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.note-pane-heading {
+  display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+}
+/* The note's Edit, at the end of its title's line. */
+.note-pane-edit {
+  flex: none;
+  padding-top: 4px;
+}
+.note-pane-edit:empty {
+  display: none;
+}
+/* A thin line between a note's words and what the vault says of it. */
+.note-divider {
+  border: 0;
+  border-top: 1px solid var(--border-strong);
+  margin: 4px 0 0;
 }
 .note-pane-title {
   font-size: 28px;

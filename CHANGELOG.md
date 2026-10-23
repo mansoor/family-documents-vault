@@ -6,6 +6,12 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.7] - 2026-10-22 — a note's Edit beside its title
+
+### Changed
+
+- **A note's Edit is on its title's line**, at the right, and a thin line now separates a note's words from what the vault says of it (who edited it and when, Download, the Trash, who can see it, tags, collections and sharing). While the note is being edited, Edit steps aside for Save and Cancel below the editor.
+
 ## [0.9.0-dev.6] - 2026-10-22 — Notes, with a real formatting toolbar
 
 ### Added
