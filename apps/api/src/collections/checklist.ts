@@ -2,7 +2,10 @@ import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   CHECKLIST_ITEMS_MAX,
   CHECKLIST_TEXT_MAX,
+  CHECKLIST_TITLE_WORD_MAX,
+  CHECKLIST_TITLE_WORDS_MAX,
   checkChecklist,
+  checklistLooksByTitle,
   checklistMissing,
   itemAgain,
   savedItem,
@@ -13,6 +16,7 @@ import {
   type ChecklistReadItem,
   type ChecklistReading,
   type CollectionChecklist,
+  type DatePrecision,
 } from '@fdv/shared';
 import { sql } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
@@ -36,6 +40,13 @@ import type { CollectionService } from './service.js';
  *   else's Only me document is never a match, nor counted. People are the
  *   family the caller may choose — a teen only themselves, never a guest —
  *   so a name that is anybody else is nobody to them.
+ * - **By its title too** (0.9.0). A line that names no kind, or whose kind
+ *   finds nothing, is looked for by its words in titles — of the same
+ *   documents, by the same rule: the newest TITLED_DOCS the caller may see,
+ *   out of the Trash, loaded once for the whole checklist and only when a
+ *   line needs them (`checklistLooksByTitle`); CHECKLIST_TITLE_LINES_MAX
+ *   lines at most are looked for. Titles are matched in memory, never by a
+ *   query per line.
  * - **Nothing is put in until its maker ticks it.** POST reads and matches
  *   and writes nothing; PUT keeps the list; `add` puts in the documents
  *   chosen, through the collection's own rules (`addWithin`: its links, its
@@ -67,6 +78,8 @@ const unread = () =>
 
 /** The most documents of one kind a checklist is matched against: the newest. */
 const DOCS_PER_KIND = 2_000;
+/** The most documents a checklist's lines are looked for in by their titles (0.9.0): the newest. */
+const TITLED_DOCS = 2_000;
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -302,6 +315,44 @@ export class ChecklistService {
     };
   }
 
+  /**
+   * The newest TITLED_DOCS documents with a title the caller may see, out
+   * of the Trash, by the one visibility rule — any kind, or none — for the
+   * lines looked for by their titles (0.9.0). A tax year as kept is read
+   * for those the family or the adults see; an Only me one's stays sealed
+   * (its title's year still counts).
+   */
+  private async titled(trx: Db, p: Principal, id: string): Promise<ChecklistDoc[]> {
+    const rows = await trx
+      .selectFrom('document as d')
+      .leftJoin('doc_collection_item as i', (j) =>
+        j.onRef('i.document_id', '=', 'd.id').on('i.collection_id', '=', id),
+      )
+      .select([
+        'd.id',
+        'd.title',
+        'd.type_key',
+        'd.owner_member_id',
+        'd.visibility',
+        'd.issued_on',
+        'd.issued_precision',
+        'd.expires_on',
+        'd.expires_precision',
+        'd.created_at',
+        sql<string | null>`case when d.visibility = 'private' then null
+                                else d.extra->>'tax_year' end`.as('tax_year'),
+        'i.document_id as in_it',
+      ])
+      .where('d.title', 'is not', null)
+      .where('d.deleted_at', 'is', null)
+      .where(seenDocument(p))
+      .orderBy('d.created_at', 'desc')
+      .orderBy('d.id')
+      .limit(TITLED_DOCS)
+      .execute();
+    return rows.map((r) => checklistDoc(r, r.tax_year));
+  }
+
   /** The items matched against what the caller may see. */
   private async answer(
     trx: Db,
@@ -365,28 +416,23 @@ export class ChecklistService {
     );
     const docs: ChecklistDoc[] = rows.map((r) => {
       const own = opened.get(r.id)?.tax_year;
-      return {
-        id: r.id,
-        title: r.title,
-        type_key: r.type_key,
-        owner_member_id: r.owner_member_id,
-        visibility: r.visibility,
-        issued: r.issued_on ? { date: r.issued_on, precision: r.issued_precision ?? 'day' } : null,
-        expires: r.expires_on
-          ? { date: r.expires_on, precision: r.expires_precision ?? 'day' }
-          : null,
-        created_at: r.created_at.toISOString(),
-        tax_year:
-          r.tax_year ?? (typeof own === 'string' || typeof own === 'number' ? String(own) : null),
-        in_collection: r.in_it !== null,
-      };
+      return checklistDoc(
+        r,
+        r.tax_year ?? (typeof own === 'string' || typeof own === 'number' ? String(own) : null),
+      );
     });
-    const items = checkChecklist(reading.items, docs, {
+    const opts = {
       today: c.ctx.today,
       audience: c.audience,
       people: c.ctx.people,
       types: c.ctx.types,
-    });
+    };
+    let items = checkChecklist(reading.items, docs, opts);
+    // A line to look for by its title: matched again with every titled
+    // document the caller may see, loaded once (0.9.0).
+    if (checklistLooksByTitle(items)) {
+      items = checkChecklist(reading.items, docs, opts, await this.titled(trx, p, id));
+    }
     const ticked = new Set(
       items.flatMap((i) => i.matches.filter((m) => m.ticked).map((m) => m.document_id)),
     );
@@ -399,6 +445,37 @@ export class ChecklistService {
       mine: c.mine,
     };
   }
+}
+
+/** A row as the checklist matches it. */
+function checklistDoc(
+  r: {
+    id: string;
+    title: string | null;
+    type_key: string | null;
+    owner_member_id: string | null;
+    visibility: ChecklistDoc['visibility'];
+    issued_on: string | null;
+    issued_precision: DatePrecision | null;
+    expires_on: string | null;
+    expires_precision: DatePrecision | null;
+    created_at: Date;
+    in_it: string | null;
+  },
+  taxYear: string | null,
+): ChecklistDoc {
+  return {
+    id: r.id,
+    title: r.title,
+    type_key: r.type_key,
+    owner_member_id: r.owner_member_id,
+    visibility: r.visibility,
+    issued: r.issued_on ? { date: r.issued_on, precision: r.issued_precision ?? 'day' } : null,
+    expires: r.expires_on ? { date: r.expires_on, precision: r.expires_precision ?? 'day' } : null,
+    created_at: r.created_at.toISOString(),
+    tax_year: taxYear,
+    in_collection: r.in_it !== null,
+  };
 }
 
 /** A reading's items read again for the caller: a person they may not choose is nobody. */
@@ -443,6 +520,16 @@ function storedItems(raw: unknown): ChecklistItem[] {
       skipped: o.skipped === true,
       unresolved:
         o.unresolved === 'person_unknown' || o.unresolved === 'person_shared' ? o.unresolved : null,
+      ...(Array.isArray(o.title_words)
+        ? {
+            title_words: o.title_words
+              .filter(
+                (w): w is string =>
+                  typeof w === 'string' && w !== '' && w.length <= CHECKLIST_TITLE_WORD_MAX,
+              )
+              .slice(0, CHECKLIST_TITLE_WORDS_MAX),
+          }
+        : {}),
     });
   }
   return out;

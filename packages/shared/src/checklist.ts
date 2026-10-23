@@ -55,6 +55,20 @@ import { shortTypeLabel } from './titles.js';
  * how many, and how recent, to the parts after it. A line with no kind is
  * Not understood: the person chooses its kind, person and count, or skips it.
  *
+ * **Whose, without an apostrophe** (0.9.0): "mansoors passport" is
+ * Mansoor's when "mansoors", less its last "s", is somebody the reader may
+ * choose (by first or full name) and "mansoors" is nobody; a name that
+ * ends in "s" ("Chris", "James") never loses one, so "chriss" is nobody. A
+ * line that starts with a name as it is ("james passport") is theirs when
+ * the rest of it says the kind the whole line does.
+ *
+ * **By its title** (0.9.0): each item keeps the words that are left of it
+ * — its person, how many, its years, its form and the words that only say
+ * "papers of" gone — as `title_words` (at most CHECKLIST_TITLE_WORDS_MAX;
+ * more is a sentence, not a title). A line that names no kind, or one whose
+ * kind finds nothing at all, is looked for by them in the titles of the
+ * documents the reader can see (`checkItem`).
+ *
  * Bounded and linear: at most CHECKLIST_TEXT_MAX characters (the API refuses
  * more before anything reads it), CHECKLIST_LINES_MAX lines of at most
  * CHECKLIST_LINE_MAX characters, no pattern with two unbounded repeats over
@@ -100,6 +114,15 @@ export const CHECKLIST_FORM_UNSAID_NOTE = 'Its title does not say which form it 
 
 /** Said beside a bank statement offered for an investment line (0077 made them a kind of their own). */
 export const CHECKLIST_WAS_BANK_NOTE = 'Filed as a bank statement before 0.9.0';
+
+/** Said of a line, and beside a document, found by the words of its title (0.9.0). */
+export const CHECKLIST_BY_TITLE_NOTE = 'Found by its title';
+/** Lines of one checklist looked for by their titles' words, at most: the rest are not. */
+export const CHECKLIST_TITLE_LINES_MAX = 20;
+/** Words a line is looked for by, at most: a line with more says a sentence, not a title. */
+export const CHECKLIST_TITLE_WORDS_MAX = 6;
+/** The most characters of one of those words. */
+export const CHECKLIST_TITLE_WORD_MAX = 40;
 
 /** A kind as the checklist reads it: GET /document-types' view, or enough of it. */
 export interface ChecklistKind {
@@ -157,6 +180,13 @@ export interface ChecklistItem {
   in_months?: string[] | undefined;
   /** Dated within the last N months ("dated within 3 months"); absent or null for none. */
   within?: number | null | undefined;
+  /**
+   * The words left of the line once its person, how many, its years and
+   * its form are read (0.9.0), folded: what it is looked for by in titles
+   * when it names no kind, or its kind finds nothing. Absent or null for
+   * none.
+   */
+  title_words?: string[] | null | undefined;
 }
 
 /** Why an item is not understood: no kind, a person to choose, or years it does not read. */
@@ -349,6 +379,7 @@ const MONTH_WORDS = [
   'nov',
   'dec',
 ];
+const MONTH_SET: ReadonlySet<string> = new Set(MONTH_WORDS);
 
 /** Words of a heading's name that make it a purpose, not a person ("Documents for the refinance"). */
 const PURPOSE = new Set([
@@ -436,6 +467,93 @@ const NUMBER_WORDS: Readonly<Record<string, number>> = {
   'a couple of': 2,
   'couple of': 2,
 };
+
+/**
+ * Words that say nothing of which paper a line means, never looked for in
+ * a title (0.9.0): "the", "copies of", "please send", "documents", and the
+ * words of how many and how recent.
+ */
+const TITLE_FILLER = new Set([
+  'the',
+  'a',
+  'an',
+  'my',
+  'our',
+  'your',
+  'his',
+  'her',
+  'their',
+  'its',
+  'of',
+  'for',
+  'from',
+  'to',
+  'in',
+  'on',
+  'at',
+  'by',
+  'with',
+  'and',
+  'or',
+  'plus',
+  'also',
+  'any',
+  'each',
+  'every',
+  'some',
+  'so',
+  'etc',
+  'copy',
+  'copies',
+  'scan',
+  'scans',
+  'scanned',
+  'original',
+  'originals',
+  'document',
+  'documents',
+  'doc',
+  'docs',
+  'paper',
+  'papers',
+  'paperwork',
+  'file',
+  'files',
+  'item',
+  'items',
+  'thing',
+  'things',
+  'stuff',
+  'please',
+  'bring',
+  'send',
+  'need',
+  'needed',
+  'required',
+  'optional',
+  'last',
+  'latest',
+  'most',
+  'recent',
+  'newest',
+  'past',
+  'previous',
+  'month',
+  'months',
+  'year',
+  'years',
+  'worth',
+  'dated',
+  'within',
+  'other',
+  'others',
+  'misc',
+  'todo',
+  'note',
+  'notes',
+  'nb',
+]);
+
 const N =
   '(\\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|(?:a )?couple(?: of)?)';
 const RECENT = '(?:last|latest|most recent|recent|past|previous|newest)';
@@ -460,6 +578,7 @@ const COUNT_AFTER_RE = new RegExp(`\\b${N} ${RECENT}\\b`);
 const COUNT_LEADING_RE = new RegExp(`^(?:the )?${N}\\b(?! (?:months?|years?)\\b)`);
 const CURRENT_RE =
   /\b(?:current|valid|unexpired|in date|in-date|up to date|up-to-date|still valid)\b/;
+const CURRENT_ALL_RE = new RegExp(CURRENT_RE.source, 'g');
 const YEAR_RANGE_RE = /\b(199\d|20\d\d) ?(?:-|\/|to|through|thru|until) ?(199\d|20\d\d|\d\d)\b/g;
 const YEAR_RE = /\b(199\d|20\d\d)\b/g;
 /** A tax form's own name, and its plural ("W-2s", "1099s"). */
@@ -634,6 +753,47 @@ function whoIs(name: string, ctx: ChecklistContext): Whose | null {
   return { kind: 'unknown' };
 }
 
+/**
+ * Somebody the reader may choose, by a name as written — their whole name,
+ * or one word that is their first — never "me" or "Joint"; null for
+ * nobody (0.9.0).
+ */
+function personNamed(name: string, ctx: ChecklistContext): Whose | null {
+  const words = foldWords(name);
+  if (words.length === 0) return null;
+  const key = words.join(' ');
+  const people = ctx.people.map((p) => ({ id: p.id, words: foldWords(p.name) }));
+  let found = people.filter((p) => p.words.join(' ') === key);
+  if (found.length === 0 && words.length === 1) found = people.filter((p) => p.words[0] === key);
+  if (found.length === 0) return null;
+  return found.length === 1
+    ? { kind: 'person', id: (found[0] as (typeof found)[number]).id }
+    : { kind: 'shared', choices: found.map((p) => p.id) };
+}
+
+/** A word a name is written in, without an apostrophe: letters, a dot or a hyphen. */
+const NAME_WORD = /^\p{L}[\p{L}.-]{0,30}$/u;
+
+/**
+ * Whose a name without an apostrophe says (0.9.0): somebody by the name as
+ * it is (`plain`), or by the name less its last "s" ("mansoors" is
+ * Mansoor's) when the name as it is is nobody — and never a name that
+ * ends in "s" less one more ("chriss" is not Chris's: "Chris", "James"
+ * never lose an "s").
+ */
+function nameWithoutApostrophe(
+  said: readonly string[],
+  ctx: ChecklistContext,
+): { whose: Whose; plain: boolean } | null {
+  if (said.length === 0 || !said.every((w) => NAME_WORD.test(w))) return null;
+  const plain = personNamed(said.join(' '), ctx);
+  if (plain) return { whose: plain, plain: true };
+  const last = said[said.length - 1] as string;
+  if (!/s$/iu.test(last) || /ss$/iu.test(last)) return null;
+  const stem = personNamed([...said.slice(0, -1), last.slice(0, -1)].join(' '), ctx);
+  return stem ? { whose: stem, plain: false } : null;
+}
+
 /** A name that is somebody to the family ("my wife", "the children", "Grandma"). */
 function relation(name: string): boolean {
   const words = foldWords(name);
@@ -673,6 +833,8 @@ const NAME = "([\\p{L}][\\p{L}'’.-]{0,30}(?: [\\p{L}&][\\p{L}'’.-]{0,30}){0,
 const PAPERS = '(?:documents?|docs?|papers?|paperwork|files?|items?|things|stuff)';
 const HEADING_FOR = new RegExp(`^(?:the )?${PAPERS} (?:for|of|from) ${NAME} ?:?$`, 'iu');
 const HEADING_OWN = new RegExp(`^${NAME}['’]s? ${PAPERS} ?:?$`, 'iu');
+/** "Mansoors documents": a name without its apostrophe (0.9.0). */
+const HEADING_OWN_BARE = new RegExp(`^(\\S+(?: \\S+){0,2}) ${PAPERS} ?:?$`, 'iu');
 const HEADING_FOR_COLON = new RegExp(`^for ${NAME} ?:$`, 'iu');
 const HEADING_COLON = new RegExp(`^${NAME} ?: ?(.*)$`, 'iu');
 const ITEM_OWNER = new RegExp(`^${NAME}['’]s `, 'iu');
@@ -714,6 +876,11 @@ function headingOf(
     const whose = headingWhose(m[1] as string, ctx, true, index);
     return whose ? { whose, rest: '' } : null;
   }
+  m = HEADING_OWN_BARE.exec(line);
+  if (m) {
+    const named = nameWithoutApostrophe((m[1] as string).split(' '), ctx);
+    if (named) return { whose: named.whose, rest: '' };
+  }
   m = HEADING_COLON.exec(line);
   if (m) {
     const whose = headingWhose(m[1] as string, ctx, false, index);
@@ -746,6 +913,8 @@ interface Qualifiers {
   saidYears: boolean;
   notes: string[];
   tooManyYears: boolean;
+  /** What is left of the words once all of the above is read: for its title (0.9.0). */
+  rest: string;
 }
 
 /** The latest month of that name, today's or before it. */
@@ -770,6 +939,7 @@ function qualifiersOf(text: string, today: string): Qualifiers {
     saidYears: false,
     notes: [],
     tooManyYears: false,
+    rest: '',
   };
   const take = (re: RegExp): RegExpExecArray | null => {
     const m = re.exec(s);
@@ -864,12 +1034,44 @@ function qualifiersOf(text: string, today: string): Qualifiers {
   m = take(COUNT_BEFORE_RE) ?? take(COUNT_AFTER_RE);
   if (m) q.count = numberOf(m[1] as string);
   else {
-    const lead = COUNT_LEADING_RE.exec(s.trim());
-    if (lead) q.count = numberOf(lead[1] as string);
+    s = s.trim();
+    const lead = COUNT_LEADING_RE.exec(s);
+    if (lead) {
+      q.count = numberOf(lead[1] as string);
+      s = s.slice(lead[0].length);
+    }
   }
   q.count = capped(q.count, CHECKLIST_COUNT_MAX, 'documents');
   if (CURRENT_RE.test(s)) q.current = true;
+  q.rest = s.replace(CURRENT_ALL_RE, ' ');
   return q;
+}
+
+/**
+ * The words a line is looked for by in titles (0.9.0): what is left of it,
+ * folded, without the words that say nothing of which paper, a person's
+ * relation, numbers or months; null for none, or for more than
+ * CHECKLIST_TITLE_WORDS_MAX (a sentence, not a title).
+ */
+function titleWordsOf(rest: string): string[] | null {
+  const out: string[] = [];
+  for (const w of foldWords(rest)) {
+    if (
+      w.length < 2 ||
+      /^\d+$/.test(w) ||
+      TITLE_FILLER.has(w) ||
+      NUMBER_WORDS[w] !== undefined ||
+      MONTH_SET.has(w) ||
+      ME.has(w) ||
+      NO_ONE.has(w) ||
+      RELATIONS.has(w)
+    ) {
+      continue;
+    }
+    if (w.length > CHECKLIST_TITLE_WORD_MAX) return null;
+    if (!out.includes(w)) out.push(w);
+  }
+  return out.length > 0 && out.length <= CHECKLIST_TITLE_WORDS_MAX ? out : null;
 }
 
 /**
@@ -879,7 +1081,11 @@ function qualifiersOf(text: string, today: string): Qualifiers {
  * passport", "Grandma's") is whose?; "last year's", "for the house" name
  * nobody.
  */
-function ownerIn(text: string, ctx: ChecklistContext): { whose: Whose; rest: string } | null {
+function ownerIn(
+  text: string,
+  ctx: ChecklistContext,
+  index: KindIndex,
+): { whose: Whose; rest: string } | null {
   const t = text.trim();
   for (const re of [ITEM_OWNER, ITEM_FOR, ITEM_PAREN]) {
     const m = re.exec(t);
@@ -889,6 +1095,32 @@ function ownerIn(text: string, ctx: ChecklistContext): { whose: Whose; rest: str
     const rest = `${t.slice(0, m.index)} ${t.slice(m.index + m[0].length)}`.trim();
     if (whose && whose.kind !== 'unknown') return { whose, rest };
     if (relation(name) || looksLikeName(name)) return { whose: { kind: 'unknown' }, rest };
+  }
+  return leadingOwner(t, ctx, index);
+}
+
+/**
+ * A part that starts with somebody, without an apostrophe (0.9.0):
+ * "mansoors passport", "Mansoors EAD" — or "james passport", a name as it
+ * is, when the rest names a kind. Either way the rest says the kind the
+ * whole part does, so "bills for 2024" keeps its bills beside a Bill. A
+ * word that is nobody stays as it was.
+ */
+function leadingOwner(
+  t: string,
+  ctx: ChecklistContext,
+  index: KindIndex,
+): { whose: Whose; rest: string } | null {
+  const words = t.split(/\s+/).filter(Boolean);
+  const whole = kindOf(kindsIn(t, index));
+  for (let n = Math.min(3, words.length - 1); n >= 1; n -= 1) {
+    const named = nameWithoutApostrophe(words.slice(0, n), ctx);
+    if (!named) continue;
+    const rest = words.slice(n).join(' ');
+    // Never a name that takes the line's kind with it ("bills for 2024" with a Bill).
+    const kind = kindOf(kindsIn(rest, index));
+    if (kind !== whole || (named.plain && kind === null)) continue;
+    return { whose: named.whose, rest };
   }
   return null;
 }
@@ -973,7 +1205,7 @@ export function readChecklist(text: string, ctx: ChecklistContext): ChecklistRea
     }
     // Whose each part says itself, and its words without the name.
     const owned = partsOf(body, index).map((p) => {
-      const o = ownerIn(p.text, ctx);
+      const o = ownerIn(p.text, ctx, index);
       return o
         ? { text: p.text, read: o.rest, whose: o.whose }
         : { text: p.text, read: p.text, whose: null };
@@ -1000,6 +1232,7 @@ export function readChecklist(text: string, ctx: ChecklistContext): ChecklistRea
       const whose = part.whose ?? lineOwner ?? section;
       const typeKey = kindOf(part.kinds);
       const tooMany = quals.some((x) => x.tooManyYears);
+      const titleWords = titleWordsOf(q.rest);
       const problem: ChecklistProblem | null = !typeKey
         ? 'kind'
         : tooMany
@@ -1040,6 +1273,7 @@ export function readChecklist(text: string, ctx: ChecklistContext): ChecklistRea
         problem,
         person_choices: whose?.kind === 'shared' ? whose.choices : [],
         note: notes.length > 0 ? notes.join(' ') : null,
+        ...(titleWords ? { title_words: titleWords } : {}),
       });
     });
   }
@@ -1208,6 +1442,8 @@ export interface ChecklistItemCheck extends ChecklistReadItem {
   /** What is still missing, in words ("W-2 for 2024, Mansoor’s"). */
   missing: string[];
   matches: ChecklistMatch[];
+  /** Found by the words of its title, not its kind (0.9.0); absent for a line found by its kind. */
+  by_title?: boolean;
 }
 
 /** A document as matching reads it: once, whatever asks. */
@@ -1221,9 +1457,21 @@ interface Prepared {
   forms: string[];
 }
 
+/** A document as a title is looked for in it (0.9.0): its title's words, singular, and years. */
+interface Titled {
+  p: Prepared;
+  words: ReadonlySet<string>;
+  years: readonly number[];
+}
+
 /** The documents a checklist is matched against, read once and grouped by kind. */
 export interface ChecklistDocs {
   byKind: ReadonlyMap<string, readonly Prepared[]>;
+  /**
+   * Those a line is looked for in by its title (0.9.0), newest first,
+   * their titles' words read once, as a title is first looked for.
+   */
+  titled: () => readonly Titled[];
 }
 
 /** Years in words like a tax year's or a title's: "2025", "2024/25" (2024 and 2025). */
@@ -1260,28 +1508,59 @@ function prepare(doc: ChecklistDoc): Prepared {
   };
 }
 
+/** Dated ones newest first, then those with no date, newest added first. */
+const newestFirst = (a: Prepared, b: Prepared) =>
+  // No date, '', sorts after every date.
+  (b.date ?? '').localeCompare(a.date ?? '') ||
+  b.doc.created_at.localeCompare(a.doc.created_at) ||
+  a.doc.id.localeCompare(b.doc.id);
+
+/** A word of a title or a line as they are compared: folded, and singular ("Cards", "W-2s"). */
+const titleKey = (w: string) => keyWord(w);
+
 /**
  * The documents grouped by kind, each read once: dated ones newest first,
- * then those with no date, newest added first.
+ * then those with no date, newest added first. A line is looked for by its
+ * title (0.9.0) in `titleDocs` and `docs` together, or in `docs` alone
+ * when no `titleDocs` are given: every one the reader can see, of any kind
+ * or none, and nothing else.
  */
-export function prepareChecklistDocs(docs: readonly ChecklistDoc[]): ChecklistDocs {
+export function prepareChecklistDocs(
+  docs: readonly ChecklistDoc[],
+  titleDocs?: readonly ChecklistDoc[],
+): ChecklistDocs {
   const byKind = new Map<string, Prepared[]>();
+  const byId = new Map<string, Prepared>();
   for (const d of docs) {
+    const p = prepare(d);
+    byId.set(d.id, p);
     if (!d.type_key) continue;
     const list = byKind.get(d.type_key) ?? [];
-    list.push(prepare(d));
+    list.push(p);
     byKind.set(d.type_key, list);
   }
-  for (const list of byKind.values()) {
-    list.sort(
-      (a, b) =>
-        // No date, '', sorts after every date.
-        (b.date ?? '').localeCompare(a.date ?? '') ||
-        b.doc.created_at.localeCompare(a.doc.created_at) ||
-        a.doc.id.localeCompare(b.doc.id),
-    );
-  }
-  return { byKind };
+  for (const list of byKind.values()) list.sort(newestFirst);
+  let titled: Titled[] | null = null;
+  return {
+    byKind,
+    titled: () => {
+      if (titled) return titled;
+      const all = new Map(byId);
+      for (const d of titleDocs ?? []) if (!all.has(d.id)) all.set(d.id, prepare(d));
+      titled = [...all.values()]
+        .filter((p) => p.doc.title)
+        .sort(newestFirst)
+        .map((p) => {
+          const title = p.doc.title as string;
+          return {
+            p,
+            words: new Set(foldWords(title).map(titleKey)),
+            years: [...new Set([...p.years, ...yearsIn(title)])],
+          };
+        });
+      return titled;
+    },
+  };
 }
 
 /** The first month (YYYY-MM) of the last `n`, today's among them. */
@@ -1320,7 +1599,19 @@ export interface ChecklistMatchOptions {
  *   statements too (CHECKLIST_WAS_BANK_NOTE);
  * - found: those that are, or will be, in the collection; one that will not
  *   (Only me) is found, not added, and not missing either; what is missing
- *   said in words.
+ *   said in words;
+ * - **by its title** (0.9.0): a line that names no kind, or whose kind
+ *   finds nothing at all, is looked for by its `title_words` in the titles
+ *   of the same documents — each word whole, folded (case, accents, a
+ *   possessive), singular or plural alike — still its person's, of its
+ *   years (an issue date's, a tax year's, or one its title names) and not
+ *   run out if it says "current". One found, for a line that asks for
+ *   one, is offered ticked (by the rules above: never Only me in a
+ *   collection others see), and the line is said back as "Found by its
+ *   title: <its title>"; several, or one for a line that asks for more,
+ *   are offered unticked, to choose; none leaves the line as it was (Not
+ *   understood, for one with no kind). A line whose person is still to
+ *   choose is not looked for.
  */
 export function checkItem(
   item: ChecklistReadItem,
@@ -1328,6 +1619,115 @@ export function checkItem(
   opts: ChecklistMatchOptions,
 ): ChecklistItemCheck {
   const prepared = 'byKind' in docs ? docs : prepareChecklistDocs(docs);
+  return checkOne(item, prepared, opts, () => true);
+}
+
+/** An item by its kind, then, where that finds nothing, by its title, while `mayLook` allows. */
+function checkOne(
+  item: ChecklistReadItem,
+  prepared: ChecklistDocs,
+  opts: ChecklistMatchOptions,
+  mayLook: () => boolean,
+): ChecklistItemCheck {
+  const byKind = checkByKind(item, prepared, opts);
+  if (!looksByTitle(byKind) || !mayLook()) return byKind;
+  return checkByTitle(item, byKind, prepared, opts) ?? byKind;
+}
+
+/** A match as it is offered. */
+function matchOf(
+  d: ChecklistDoc,
+  chosen: boolean,
+  note: string | null,
+  onlyMe: boolean,
+): ChecklistMatch {
+  return {
+    document_id: d.id,
+    title: d.title,
+    type_key: d.type_key,
+    owner_member_id: d.owner_member_id,
+    visibility: d.visibility,
+    issued: d.issued,
+    added_at: d.created_at,
+    ticked: chosen && !d.in_collection && !onlyMe,
+    chosen,
+    in_collection: d.in_collection,
+    note: onlyMe ? CHECKLIST_ONLY_ME_NOTE : note,
+  };
+}
+
+/**
+ * Whether an item, as its kind left it, is looked for by its title: words
+ * to look for, nobody still to choose, and no kind — or a kind that found
+ * nothing at all.
+ */
+function looksByTitle(c: ChecklistItemCheck): boolean {
+  return (
+    !c.skipped &&
+    (c.title_words?.length ?? 0) > 0 &&
+    !c.unresolved &&
+    (c.problem === 'kind' || (c.problem === null && c.matches.length === 0))
+  );
+}
+
+/** An item by the words of its title (see `checkItem`); null when no title has them all. */
+function checkByTitle(
+  item: ChecklistReadItem,
+  byKind: ChecklistItemCheck,
+  prepared: ChecklistDocs,
+  opts: ChecklistMatchOptions,
+): ChecklistItemCheck | null {
+  const want = [
+    ...new Set(
+      (item.title_words ?? [])
+        .slice(0, CHECKLIST_TITLE_WORDS_MAX)
+        .flatMap((w) => foldWords(w))
+        .map(titleKey),
+    ),
+  ];
+  if (want.length === 0 || want.length > CHECKLIST_TITLE_WORDS_MAX) return null;
+  const hits: Prepared[] = [];
+  for (const t of prepared.titled()) {
+    if (hits.length >= CHECKLIST_MATCHES_MAX) break;
+    const d = t.p.doc;
+    if (
+      want.every((w) => t.words.has(w)) &&
+      (item.member_id === null || d.owner_member_id === item.member_id) &&
+      (item.years.length === 0 || t.years.some((y) => item.years.includes(y))) &&
+      (!item.current || !d.expires || d.expires.date >= opts.today)
+    ) {
+      hits.push(t.p);
+    }
+  }
+  const first = hits[0]?.doc;
+  if (!first) return null;
+  const onlyMe = (d: ChecklistDoc) => opts.audience !== 'only_me' && d.visibility === 'private';
+  // One found, for a line that asks for one: chosen. Otherwise each is offered, to choose.
+  const one = hits.length === 1;
+  const sure = one && byKind.wanted === 1;
+  const addable = sure && (first.in_collection || !onlyMe(first));
+  return {
+    ...byKind,
+    understood: true,
+    problem: null,
+    summary: one
+      ? `${CHECKLIST_BY_TITLE_NOTE}: ${first.title ?? ''}`
+      : `${CHECKLIST_BY_TITLE_NOTE}: ${hits.length} to choose from`,
+    found: addable ? 1 : 0,
+    found_not_added: sure && !addable ? 1 : 0,
+    // None chosen: what the kind said is missing still is.
+    missing: sure ? [] : byKind.missing,
+    matches: hits.map((p) => matchOf(p.doc, sure, CHECKLIST_BY_TITLE_NOTE, onlyMe(p.doc))),
+    by_title: true,
+  };
+}
+
+/** An item by its kind (see `checkItem`). */
+function checkByKind(
+  item: ChecklistReadItem,
+  prepared: ChecklistDocs,
+  opts: ChecklistMatchOptions,
+): ChecklistItemCheck {
   const summary = checklistSummary(item, opts);
   const wanted = checklistWanted(item);
   const base = { ...item, summary, wanted };
@@ -1450,22 +1850,6 @@ export function checkItem(
     short(n, `${item.current ? 'a current' : 'the most recent'} ${one}`);
   }
 
-  const matchOf = (p: Prepared, isChosen: boolean, note: string | null): ChecklistMatch => {
-    const d = p.doc;
-    return {
-      document_id: d.id,
-      title: d.title,
-      type_key: d.type_key,
-      owner_member_id: d.owner_member_id,
-      visibility: d.visibility,
-      issued: d.issued,
-      added_at: d.created_at,
-      ticked: isChosen && !d.in_collection && !onlyMe(d),
-      chosen: isChosen,
-      in_collection: d.in_collection,
-      note: onlyMe(d) ? CHECKLIST_ONLY_ME_NOTE : note,
-    };
-  };
   const chosenSet = new Set(chosen);
   const others: Array<[Prepared, string | null]> = [];
   for (const p of dated) {
@@ -1490,8 +1874,8 @@ export function checkItem(
     }
   }
   const matches = [
-    ...chosen.map((p) => matchOf(p, true, null)),
-    ...others.map(([p, note]) => matchOf(p, false, note)),
+    ...chosen.map((p) => matchOf(p.doc, true, null, onlyMe(p.doc))),
+    ...others.map(([p, note]) => matchOf(p.doc, false, note, onlyMe(p.doc))),
   ].slice(0, CHECKLIST_MATCHES_MAX);
   found = Math.min(found, wanted);
   return {
@@ -1503,14 +1887,33 @@ export function checkItem(
   };
 }
 
-/** Every item matched against the same documents, read once. */
+/**
+ * Every item matched against the same documents, read once; at most
+ * CHECKLIST_TITLE_LINES_MAX of them looked for by their titles (0.9.0), in
+ * `titleDocs` and `docs` (`prepareChecklistDocs`).
+ */
 export function checkChecklist(
   items: readonly ChecklistReadItem[],
   docs: readonly ChecklistDoc[],
   opts: ChecklistMatchOptions,
+  titleDocs?: readonly ChecklistDoc[],
 ): ChecklistItemCheck[] {
-  const prepared = prepareChecklistDocs(docs);
-  return items.map((i) => checkItem(i, prepared, opts));
+  const prepared = prepareChecklistDocs(docs, titleDocs);
+  let looked = 0;
+  const mayLook = () => {
+    looked += 1;
+    return looked <= CHECKLIST_TITLE_LINES_MAX;
+  };
+  return items.map((i) => checkOne(i, prepared, opts, mayLook));
+}
+
+/**
+ * Whether a checklist matched against some documents looks for a line by
+ * its title (0.9.0): then the API matches it again with every document the
+ * reader can see that has a title (`checkChecklist`'s `titleDocs`).
+ */
+export function checklistLooksByTitle(items: readonly ChecklistItemCheck[]): boolean {
+  return items.some((i) => i.by_title === true || looksByTitle(i));
 }
 
 /** What every missing item asks for, as the lines of a request for them ("Ask for the missing ones"). */
@@ -1536,6 +1939,10 @@ export function savedItem(i: ChecklistItem): ChecklistItem {
     unresolved: i.member_id === null ? (i.unresolved ?? null) : null,
     in_months: [...(i.in_months ?? [])],
     within: i.within ?? null,
+    // What it is looked for by in titles (0.9.0), kept to look again as the page opens.
+    ...(i.title_words && i.title_words.length > 0
+      ? { title_words: i.title_words.slice(0, CHECKLIST_TITLE_WORDS_MAX) }
+      : {}),
   };
 }
 

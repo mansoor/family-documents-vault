@@ -152,6 +152,29 @@ const TRAILING = ['document', 'doc', 'paper', 'paperwork', 'file', 'stuff', 'thi
 const HOUSEHOLD_FILLER = ['the', 'family', 'families', 'household', 'home', 'familie'];
 
 /**
+ * The papers of US immigration (0.9.0), each a visa's: an EAD card, an
+ * I-94, an I-797. Not "approval notice" (a loan's or a planning
+ * application's too: "mortgage approval notice" would read as a visa) nor
+ * "travel document" ("travel documents" is a passport as often), which say
+ * another kind as well. A checklist reads them too (`CHECKLIST_KIND_WORDS`
+ * adds to these, never takes from them).
+ */
+export const US_IMMIGRATION_WORDS: readonly string[] = [
+  'ead',
+  'ead card',
+  'employment authorization',
+  'employment authorisation',
+  'work authorization',
+  'i-94',
+  'i94',
+  'i-797',
+  'i797',
+  'advance parole',
+  'permanent resident card',
+  'pr card',
+];
+
+/**
  * The words families sort their papers under, by the vault's own kinds, each
  * saying that kind and nothing else (the kinds' names are matched too, and a
  * household's own kinds by theirs). A word that could as well hold another
@@ -181,7 +204,15 @@ export const FOLDER_KIND_WORDS: Readonly<Record<string, readonly string[]>> = {
     'social security',
     'national insurance',
   ],
-  visa: ['visa', 'residence permit', 'immigration', 'brp', 'green card', 'work permit'],
+  visa: [
+    'visa',
+    'residence permit',
+    'immigration',
+    'brp',
+    'green card',
+    'work permit',
+    ...US_IMMIGRATION_WORDS,
+  ],
   birth_certificate: ['birth certificate', 'birth certificates', 'birth cert'],
   marriage_certificate: [
     'marriage certificate',
@@ -491,10 +522,12 @@ const numeric = (w: string) => /^(?:fy|q[1-4])?\d{2,}$/.test(w);
  */
 function undated(words: Token[]): Token[] {
   if (words.length > 0 && words.every((w) => MONTHS.has(w.fold))) return [];
-  const dated = words.some((w) => numeric(w.fold));
+  // A form's number after its letter is no date: "I-94", "I-797" (0.9.0).
+  const isDate = (w: Token, i: number) => numeric(w.fold) && words[i - 1]?.fold !== 'i';
+  const dated = words.some(isDate);
   return words.filter(
     (w, i) =>
-      !numeric(w.fold) &&
+      !isDate(w, i) &&
       !(dated && MONTHS.has(w.fold)) &&
       !(i === 0 && words.length > 1 && /^\d+$/.test(w.fold)),
   );

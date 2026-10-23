@@ -591,6 +591,86 @@ describe.skipIf(!testAdminUrl())('a collection from a checklist (C1)', () => {
     }
   });
 
+  it("finds a line by its title — the owner's own list — as each reader sees, never from the Trash (0.9.0)", async () => {
+    // The EAD card filed as a kind of the household's own, with no words to say it.
+    const made = await call('mansoor', 'POST', '/api/v1/document-types', {
+      label: 'Work papers',
+      category: 'other',
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    const own = json<{ key: string }>(made).key;
+    docs.mPassport = await file('mansoor', 'Mansoor’s passport', 'passport', {
+      issued: '2021-05-01',
+      visibility: 'household',
+    });
+    docs.ead = await file('mansoor', 'Mansoor’s EAD Card', own, { visibility: 'household' });
+    // A line with no kind, and three documents by its words: one the family
+    // see, one only Richa sees, one in the Trash.
+    docs.mooring = await file('mansoor', 'Harbour mooring permit 2025', own, {
+      visibility: 'household',
+    });
+    docs.richaMooring = await file('richa', 'Mooring permit (Richa)', own, {
+      visibility: 'private',
+    });
+    docs.oldMooring = await file('mansoor', 'Old mooring permit', own, { visibility: 'household' });
+    const trashed = await call('mansoor', 'DELETE', `/api/v1/documents/${docs.oldMooring}`);
+    expect(trashed.statusCode, trashed.body).toBeLessThan(300);
+    const papers = await makeCollection('mansoor', 'Immigration', 'everyone');
+
+    const c = await check('mansoor', papers, {
+      text: 'mansoors passport\nmansoors ead\nMooring permit',
+    });
+    expect(c.items.map((i) => [i.summary, i.member_id, i.found, i.by_title ?? false])).toEqual([
+      ['The most recent passport, Mansoor’s', t.mansoor.member_id, 1, false],
+      ['Found by its title: Mansoor’s EAD Card', t.mansoor.member_id, 1, true],
+      ['Found by its title: Harbour mooring permit 2025', null, 1, true],
+    ]);
+    expect(ids(c, 0, true)).toEqual([docs.mPassport]);
+    expect(ids(c, 1, true)).toEqual([docs.ead]);
+    expect(ids(c, 2, true)).toEqual([docs.mooring]);
+    // Richa's Only me permit and the one in the Trash: never found, nor counted.
+    expect(JSON.stringify(c)).not.toContain(docs.richaMooring);
+    expect(JSON.stringify(c)).not.toContain('Mooring permit (Richa)');
+    expect(JSON.stringify(c)).not.toContain(docs.oldMooring);
+    expect(c.to_add).toBe(3);
+
+    // Kept, and looked for again by its title as the page opens.
+    const put = await call('mansoor', 'PUT', `/api/v1/collections/${papers}/checklist`, {
+      items: c.items,
+    });
+    expect(put.statusCode, put.body).toBe(200);
+    const kept = await withSystem(h.db, t.mansoor.household_id, (trx) =>
+      trx
+        .selectFrom('collection_checklist')
+        .select('items')
+        .where('collection_id', '=', papers)
+        .executeTakeFirstOrThrow(),
+    );
+    expect((kept.items as Array<{ title_words?: string[] }>)[2]?.title_words).toEqual([
+      'mooring',
+      'permit',
+    ]);
+    const opened = json<CollectionChecklist>(
+      await call('mansoor', 'GET', `/api/v1/collections/${papers}/checklist`),
+    );
+    expect(opened.items.map((i) => i.summary)).toEqual(c.items.map((i) => i.summary));
+    expect(ids(opened, 2, true)).toEqual([docs.mooring]);
+
+    // Richa, opening it: her own Only me permit too — two, to choose from,
+    // hers found and never ticked in a collection others see.
+    const hers = json<CollectionChecklist>(
+      await call('richa', 'GET', `/api/v1/collections/${papers}/checklist`),
+    );
+    expect(hers.items[2]).toMatchObject({
+      by_title: true,
+      summary: 'Found by its title: 2 to choose from',
+      found: 0,
+    });
+    expect(ids(hers, 2).sort()).toEqual([docs.mooring, docs.richaMooring].sort());
+    expect(ids(hers, 2, true)).toEqual([]);
+    expect(JSON.stringify(hers)).not.toContain(docs.oldMooring);
+  });
+
   it('refuses a list longer than it reads, before reading it', async () => {
     const r = await call('mansoor', 'POST', `/api/v1/collections/${refinance}/checklist`, {
       text: 'x'.repeat(10_001),

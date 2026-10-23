@@ -229,6 +229,44 @@ describe('a collection from a checklist (C1)', () => {
     expect(within(sheet).getByRole('button', { name: 'Keep the list' })).toBeInTheDocument();
   });
 
+  it("the owner's list: a line found by its title is said so, ticked and added; several are to choose (0.9.0)", async () => {
+    const state = at('/collections/col-refi', {
+      types: [...KINDS, kind('h_work', 'Work papers')],
+      documents: [
+        doc('pp', 'Mansoor’s passport', 'passport', '2021-05-01'),
+        doc('ead', 'Mansoor’s EAD Card', 'h_work', '2024-02-01'),
+        doc('gym1', 'City gym card', 'h_work', '2025-01-01'),
+        doc('gym2', 'Gym card (old)', 'h_work', '2023-01-01'),
+      ],
+    });
+    const sheet = await readTheList('mansoors passport\nmansoors ead\ngym card');
+    const passport = item(sheet, 'The most recent passport, Mansoor Seikh’s');
+    expect(within(passport).getByLabelText(/Mansoor’s passport/)).toBeChecked();
+    const ead = item(sheet, 'Found by its title: Mansoor’s EAD Card');
+    expect(within(ead).getByText('Found 1 of 1')).toBeInTheDocument();
+    expect(within(ead).getByLabelText(/Mansoor’s EAD Card/)).toBeChecked();
+    // Several: none ticked, to choose which.
+    const gym = item(sheet, 'Found by its title: 2 to choose from');
+    expect(within(gym).getByText('Choose which')).toBeInTheDocument();
+    expect(
+      within(gym)
+        .getAllByRole('checkbox')
+        .map((b) => (b as HTMLInputElement).checked),
+    ).toEqual([false, false]);
+    await expectAccessible();
+    fireEvent.click(within(gym).getByLabelText(/City gym card/));
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Add all found (3)' }));
+    await screen.findByText(
+      '3 documents added to “Refinance”. The checklist is kept on the collection.',
+    );
+    expect(state.checklistAdds).toEqual([['pp', 'ead', 'gym1']]);
+    // Kept, and found by its title again as the page shows it.
+    const section = await screen.findByRole('region', { name: 'Checklist' });
+    expect(
+      await within(section).findByText('Found by its title: Mansoor’s EAD Card'),
+    ).toBeInTheDocument();
+  });
+
   it('a line not understood, once its kind is chosen, stays open with the focus where it was', async () => {
     at('/collections/col-refi');
     const sheet = await readTheList('Something for the lender');

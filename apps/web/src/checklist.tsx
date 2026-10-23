@@ -70,6 +70,8 @@ export function statusWords(i: ChecklistItemCheck): string {
   if (i.skipped) return 'Skipped';
   if (i.problem === 'kind' || i.problem === 'years') return 'Not understood';
   if (i.problem) return 'Whose? Choose who it is for';
+  // Several found by their titles (0.9.0): none ticked, to choose from.
+  if (i.by_title && i.found === 0 && i.found_not_added === 0) return 'Choose which';
   const notAdded =
     i.found_not_added > 0
       ? `${i.found_not_added} ${i.found === 0 ? '' : 'more '}found, not added`
