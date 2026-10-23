@@ -11,6 +11,7 @@
  */
 import { parentPort } from 'node:worker_threads';
 import {
+  expiryLabelKinds,
   proposeOnThread,
   type DetailProposal,
   type LearnedClash,
@@ -37,8 +38,12 @@ export type ProposalReply =
       paper?: PaperReading;
       /** Where a shape matched, and the page's number at its label (N5). */
       account?: ThreadProposal['account'];
+      /** The kinds complete without an expiry whose expiry label the page has (R3, the re-check). */
+      expiryLabels?: string[];
     }
   | { id: number; failed: true };
+
+const withLabels = (labels: string[]) => (labels.length > 0 ? { expiryLabels: labels } : {});
 
 const port = parentPort;
 if (port) {
@@ -57,6 +62,9 @@ if (port) {
         clash: got.clash,
         ...(got.paper ? { paper: got.paper } : {}),
         ...(got.account ? { account: got.account } : {}),
+        // Which kinds complete without an expiry the page labels one of (R3,
+        // the re-check): such a card with none waits for a look.
+        ...withLabels(expiryLabelKinds(job.text, job.ctx)),
       };
     } catch {
       reply = { id: job.id, failed: true };

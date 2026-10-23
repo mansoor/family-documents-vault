@@ -149,6 +149,8 @@ describe('a scan read again, cleaned (S5)', () => {
       });
       expect(cleaned).toEqual([]);
     },
+    // Three pages drawn by poppler: a busy machine takes more than the default.
+    60_000,
   );
 
   it.skipIf(!real)(

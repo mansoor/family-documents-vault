@@ -43,7 +43,7 @@ import {
   BLANK_LETTERS,
   drawnOrNot,
   learnedContext,
-  PROPOSAL_TEXT_MAX,
+  forProposal,
   proposalContext,
   READ_DEADLINE_MS,
   unread,
@@ -591,7 +591,7 @@ async function readDocument(
       deadline.throwIfAborted();
       if (got === 'locked' || !got) return row(unreadAs, notRead, notRead);
       mode = got.ocrPages > 0 || got.source === 'ocr' ? 'scan' : 'text';
-      text = got.text.slice(0, PROPOSAL_TEXT_MAX);
+      text = forProposal(got.text);
     } catch (err) {
       if (err instanceof Cancelled || cancel?.aborted) throw new Cancelled();
       // OCR that failed, a tool killed at the deadline, a file not what it
@@ -609,6 +609,7 @@ async function readDocument(
           failure: null,
           proposal: answer.proposal,
           learnedClash: answer.clash ?? null,
+          expiryLabels: answer.expiryLabels ?? [],
           duplicate: null,
           renewal: null,
           folder: null,

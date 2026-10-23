@@ -22,6 +22,7 @@ import {
   levelItem,
   missingFields,
   proposeDetails,
+  storedExpiryLabels,
   storedProposal,
   type BatchLevel,
   type LevelKind,
@@ -373,6 +374,37 @@ describe.skipIf(!testAdminUrl())('an item read, in the worker (I2)', () => {
     expect(Number(searched.rows[0]?.n)).toBe(0);
   }, 60_000);
 
+  it('the kinds whose expiry the page labels are sealed beside the proposal, for the card to wait (R3, the re-check)', async () => {
+    await clear();
+    const b = await batch();
+    const sealedOf = async (i: { id: string; fileKey: Buffer }) =>
+      storedExpiryLabels(
+        JSON.parse(
+          openBytes(
+            i.fileKey,
+            (await rowOf(i.id))?.proposals_sealed as Buffer,
+            itemProposalsBinding(i.id),
+          ).toString('utf8'),
+        ),
+      );
+    const unread = await item(b, pdf(['CONTRACT']));
+    await readNext({
+      extract: says('Statement of Main Terms of Employment. End date: S Janvary 2027.'),
+      proposer: standIn(() => ({
+        state: 'done',
+        proposal: {},
+        expiryLabels: ['employment_contract', 'property_deed'],
+      })).proposer,
+    });
+    expect(await sealedOf(unread)).toEqual(['employment_contract', 'property_deed']);
+    const read = await item(b, pdf(['CONTRACT TOO']));
+    await readNext({
+      extract: says('Statement of Main Terms of Employment. End date: 5 January 2027.'),
+      proposer: standIn(() => ({ state: 'done', proposal: {} })).proposer,
+    });
+    expect(await sealedOf(read)).toEqual([]);
+  }, 60_000);
+
   it('the proposal reads only what its uploader may see: no issuer, number or kind of another’s Only me document, and never a guest', async () => {
     // Sara's Only me letter, from her own clinic, under a kind the household
     // deleted that only it still uses (0035); an Adults only statement; and
@@ -695,6 +727,25 @@ describe.skipIf(!testAdminUrl())('an item read, in the worker (I2)', () => {
     await readNext({ extract: says(PASSPORT), proposer });
     expect(asked).toHaveLength(THREAD_DIED_ATTEMPTS);
     expect(await rowOf(i.id)).toMatchObject({ read_state: 'failed', read_failure: 'unreadable' });
+  }, 60_000);
+
+  it('second looks end at half the read’s deadline, so its pages left are read once in time (R3, the re-check)', async () => {
+    await clear();
+    const i = await item(await batch(), pdf(['x']));
+    const seen: { looksFirst?: boolean; at?: number } = {};
+    const started = Date.now();
+    const halfway: typeof extractText = async (_file, _mime, o) => {
+      const { looksUntil, signal } = o;
+      if (!looksUntil || !signal) throw new Error('no deadline given');
+      await new Promise((resolve) => looksUntil.addEventListener('abort', resolve));
+      seen.looksFirst = !signal.aborted;
+      seen.at = Date.now() - started;
+      return { text: PASSPORT, source: 'ocr', textPages: 0, ocrPages: 1 };
+    };
+    await readNext({ extract: halfway, deadlineMs: 2_000 });
+    expect(seen.looksFirst).toBe(true);
+    expect(seen.at).toBeGreaterThanOrEqual(900);
+    expect(await rowOf(i.id)).toMatchObject({ read_state: 'read' });
   }, 60_000);
 
   it('a read has a deadline: past it, its tools are killed and it is too slow — never read twice at once (P-I2-2)', async () => {

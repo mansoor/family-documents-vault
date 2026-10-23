@@ -4,7 +4,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker, type WorkerOptions } from 'node:worker_threads';
-import { proposeDetails, type ProposalContext } from '@fdv/shared';
+import { expiryLabelKinds, proposeDetails, type ProposalContext } from '@fdv/shared';
 import { TUNED, FIXTURE_KINDS, FIXTURE_PEOPLE } from '@fdv/shared/testdata';
 import { describe, expect, it } from 'vitest';
 import { ProposalThread } from './proposal-thread.js';
@@ -47,9 +47,58 @@ describe('the worker’s proposal thread (I2)', () => {
     const thread = new ProposalThread();
     try {
       const got = await thread.propose(PASSPORT, CTX);
-      expect(got).toEqual({ state: 'done', proposal: proposeDetails(PASSPORT, CTX) });
+      // And which kinds' expiry its page labels (R3, the re-check): a
+      // passport's "Date of expiry" is any kind's.
+      expect(expiryLabelKinds(PASSPORT, CTX).length).toBeGreaterThan(0);
+      expect(got).toEqual({
+        state: 'done',
+        proposal: proposeDetails(PASSPORT, CTX),
+        expiryLabels: expiryLabelKinds(PASSPORT, CTX),
+      });
       expect(await thread.propose(PASSPORT, CTX)).toEqual(got);
       expect(thread.ended).toBe(0);
+    } finally {
+      await thread.close();
+    }
+  }, 60_000);
+
+  it('says where the page labels an expiry it did not read, for a kind complete without one (R3)', async () => {
+    const thread = new ProposalThread();
+    const contract = (end: string) =>
+      [
+        'Corvid Logistics Ltd',
+        'Statement of Main Terms of Employment',
+        'Employee: Sara Khan',
+        'Job title: Operations Analyst',
+        'Start date: 6 January 2025',
+        `This is a fixed-term contract. End date: ${end}.`,
+        'Salary: £41,328.65 per annum',
+        'Notice period: one month',
+      ].join('\n');
+    try {
+      const ctx: ProposalContext = {
+        types: [
+          {
+            key: 'employment_contract',
+            label: 'Employment contract',
+            fields: [],
+            expiry_driver: 'end_date',
+          },
+        ],
+        people: [{ id: 'm-sara', name: 'Sara Khan' }],
+        dateOrder: 'dmy',
+      };
+      // The kinds whose expiry the page labels, read or not (the re-check).
+      const misread = await thread.propose(contract('S Janvary 2027'), ctx);
+      expect(misread).toMatchObject({ state: 'done', expiryLabels: ['employment_contract'] });
+      const read = await thread.propose(contract('5 January 2027'), ctx);
+      expect(read).toMatchObject({ state: 'done', expiryLabels: ['employment_contract'] });
+      const none = await thread.propose(
+        contract('').replace(/This is a fixed-term contract\. End date: \./, ''),
+        ctx,
+      );
+      expect(none.state).toBe('done');
+      expect('expiryLabels' in none).toBe(false);
     } finally {
       await thread.close();
     }
@@ -165,6 +214,7 @@ describe('the worker’s proposal thread (I2)', () => {
       expect(JSON.parse(out.trim())).toEqual({
         state: 'done',
         proposal: proposeDetails(PASSPORT, CTX),
+        expiryLabels: expiryLabelKinds(PASSPORT, CTX),
       });
     } finally {
       await rm(dir, { recursive: true, force: true });

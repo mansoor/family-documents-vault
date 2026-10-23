@@ -15,7 +15,7 @@ import { WATCH_SYSTEM_DIRS } from '@fdv/shared';
 import { loadConfig, logs, type LogLevel } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
 import { buildExport, type ExportJob } from './jobs/export.js';
-import { processVersion, type ProcessVersionJob } from './jobs/process-version.js';
+import { processQueue, processVersion, type ProcessVersionJob } from './jobs/process-version.js';
 import {
   backfillPreviews,
   previewJobKey,
@@ -150,11 +150,9 @@ async function main(): Promise<void> {
     log,
     sendPreviews,
   };
-  await boss.createQueue(JOBS.processVersion, {
-    retryLimit: 3,
-    retryDelay: 30,
-    retryBackoff: true,
-  });
+  // Above its read's deadline (VERSION_READ_DEADLINE_MS), so a long scan is
+  // never taken twice; a queue made before R3 takes it too.
+  await processQueue(boss, JOBS.processVersion);
   await boss.work<ProcessVersionJob>(JOBS.processVersion, { batchSize: 1 }, async (jobs) => {
     for (const job of jobs) await processVersion(processDeps, job.data);
   });

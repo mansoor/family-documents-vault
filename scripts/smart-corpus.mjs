@@ -495,6 +495,8 @@ export function smartCorpus({
   owner = 'Olivia',
   surname = 'Khan',
   corpus = 'first',
+  /** Each file's pages as drawn and its typeface too (the R3 scan set draws them again). */
+  withPages = false,
 } = {}) {
   const isSecond = corpus === 'second';
   // The third (0.9.0, the R1 review): held out as the second is.
@@ -628,6 +630,7 @@ export function smartCorpus({
     return {
       path: f.path,
       bytes: f.bytes,
+      ...(withPages && f.made ? { pages: f.made.pages, family: f.family } : {}),
       entry: {
         path: f.path,
         sha256: hash,

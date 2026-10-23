@@ -1,9 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFile } from 'node:child_process';
-import { access, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, open, readdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { childEnv } from './child-env.js';
+import { cappedScale } from './scan-read.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -69,6 +70,8 @@ export interface Tools {
   pdftotext?: boolean;
   /** poppler's too: how much of each page its pictures cover (the 5.37 review). */
   pdfimages?: boolean;
+  /** Tesseract's orientation model (tesseract-ocr-data-osd, 0.9.0 R3): which way up a page reads. */
+  osd?: boolean;
 }
 
 let cached: Tools | null = null;
@@ -90,6 +93,7 @@ export async function detectTools(): Promise<Tools> {
     tesseract: await has('tesseract', ['--version']),
     pdftotext: await has('pdftotext', ['-v']),
     pdfimages: await has('pdfimages', ['-v']),
+    osd: await hasOsd(),
   };
   return cached;
 }
@@ -284,8 +288,11 @@ export async function renderPdfPage(
 /**
  * A drawn page (a PNG of `renderPdfPage`'s) cleaned for OCR to read again
  * (0.8.0, S5): twice the size, each pixel the median of its 3×3 neighbours,
- * which takes a grainy scan's speckle out and leaves its letters. Under
- * MAGICK_LIMITS, as every ImageMagick call is.
+ * which takes a grainy scan's speckle out and leaves its letters. Never
+ * made bigger than PREPARE_MAX_PIXELS (the R3 re-check: a photo's page
+ * 4,700 pixels square doubled was 88 megapixels, a minute and 690 MB on
+ * disk), so a page that size already is only cleaned. Under MAGICK_LIMITS,
+ * as every ImageMagick call is.
  */
 export async function cleanForOcr(
   input: string,
@@ -293,13 +300,19 @@ export async function cleanForOcr(
   signal?: AbortSignal,
 ): Promise<void> {
   const bin = await MAGICK();
+  const [w = 0, h = 0] = (
+    await identify(['-ping', '-format', '%w %h', `png:${input}`], 60_000, signal)
+  )
+    .trim()
+    .split(/\s+/)
+    .map(Number);
+  const scale = cappedScale(2, w, h);
   await run(
     bin,
     [
       ...MAGICK_LIMITS,
       `png:${input}`,
-      '-resize',
-      '200%',
+      ...(scale > 1 ? ['-resize', `${Math.round(scale * 100)}%`] : []),
       '-statistic',
       'Median',
       '3x3',
@@ -326,6 +339,10 @@ export async function thumbnail(input: string, output: string, size = 480): Prom
       { timeout: 60_000 },
     );
     src = `${base}.png`;
+  } else {
+    // Read by what its bytes are: a JPEG libjpeg would hold whole, too big
+    // or unreadable, is refused first (R3, round four).
+    await refuseHeldJpeg(input);
   }
   await run(
     bin,
@@ -409,6 +426,8 @@ export async function renderPreviews(
     // A scanner's TIFF holds a page in each frame (5.18 review): each is
     // drawn, up to `maxPages`. Any other image is one page, its first frame.
     const frames = coder === 'tiff' ? Math.min(await imageFrames(input, mime), maxPages) : 1;
+    // A JPEG libjpeg would hold whole, too big or unreadable: refused (R3, round four).
+    if (coder === 'jpeg') await refuseHeldJpeg(input);
     sources = Array.from({ length: frames }, (_, i) => `${coder}:${input}[${i}]`);
   }
   const out: string[] = [];
@@ -657,6 +676,9 @@ export async function squarePhoto(
   ) {
     throw new Error('the picture is bigger than a photo may be');
   }
+  // A JPEG libjpeg would hold whole, too big or unreadable: refused, as a
+  // page read's is (R3, round four) — its shrinking below does not help it.
+  if (coder === 'jpeg') await refuseHeldJpeg(input);
   // Which way up, as the picture will be turned: libheif stands a HEIC up
   // as it reads it; a WebP says so in its EXIF chunk, which ping skips.
   const orientation =
@@ -823,18 +845,23 @@ export function cropBox(
 }
 
 /** `identify`, as whichever ImageMagick is installed names it. */
-async function identify(args: string[], timeout = 60_000): Promise<string> {
+async function identify(args: string[], timeout = 60_000, signal?: AbortSignal): Promise<string> {
   const bin = await MAGICK();
   const [cmd, ...pre] = bin === 'magick' ? ['magick', 'identify'] : ['identify'];
-  const { stdout } = await run(cmd, [...pre, ...MAGICK_LIMITS, ...args], { timeout });
+  const { stdout } = await run(cmd, [...pre, ...MAGICK_LIMITS, ...args], { timeout, signal });
   return stdout;
 }
 
 /**
  * How many pages an image holds: a TIFF from a document scanner has one a
- * frame; every other kind the vault takes is one page. At least 1.
+ * frame; every other kind the vault takes is one page. At least 1. Stopped
+ * by `signal` (a version's read deadline).
  */
-export async function imageFrames(file: string, mime: string): Promise<number> {
+export async function imageFrames(
+  file: string,
+  mime: string,
+  signal?: AbortSignal,
+): Promise<number> {
   const coder = IMAGE_CODERS[mime];
   if (coder !== 'tiff') return 1;
   // Counted from the frames' headers alone (`-ping`), over a bounded range:
@@ -843,12 +870,11 @@ export async function imageFrames(file: string, mime: string): Promise<number> {
   // One line a frame, counted: a frame's number (`%s`) is taken from the
   // file's PageNumber tag, which a scanner may start at 1, or a page split
   // out of a scan keep as 3 (the third review), and is no count.
-  const out = await identify([
-    '-ping',
-    '-format',
-    'frame\n',
-    `tiff:${file}[0-${TIFF_MAX_FRAMES - 1}]`,
-  ]);
+  const out = await identify(
+    ['-ping', '-format', 'frame\n', `tiff:${file}[0-${TIFF_MAX_FRAMES - 1}]`],
+    60_000,
+    signal,
+  );
   const frames = out.split('\n').filter((line) => line.trim() === 'frame').length;
   return Math.min(Math.max(frames, 1), TIFF_MAX_FRAMES);
 }
@@ -1160,6 +1186,477 @@ export async function ocrImage(
     signal,
   });
   return stdout.replace(/\f/g, '\n').trim();
+}
+
+/**
+ * OCR of one page image, as Tesseract's table of words (`tsv`): each word
+ * with its box and how sure it is (0.9.0, R3; scan-read.ts lays them out).
+ * The same limits as `ocrImage`.
+ */
+export async function ocrTsv(file: string, lang = 'eng', signal?: AbortSignal): Promise<string> {
+  const { stdout } = await run('tesseract', [file, '-', '-l', lang, '--psm', '3', 'tsv'], {
+    timeout: 180_000,
+    maxBuffer: 16 * 1024 * 1024,
+    signal,
+  });
+  return stdout;
+}
+
+/**
+ * The longest side, in pixels, a page is read at: an A4 page at 400 dpi.
+ * A phone's photo bigger than this is made smaller to read.
+ */
+export const READ_MAX_SIDE = 4_700;
+
+/**
+ * A picture the vault will not read (0.9.0, R3, the review): bigger than
+ * MAGICK_LIMITS allow even shrunk as it is decoded — a picture claiming to
+ * be 60,000 pixels square, say. Said apart from a tool that failed.
+ */
+export class PictureRefused extends Error {
+  readonly code = 'picture_refused';
+  constructor(why: string) {
+    super(`picture refused: ${why}`);
+    this.name = 'PictureRefused';
+  }
+}
+
+/** ImageMagick refusing a picture for its size, rather than failing on it. */
+const REFUSED =
+  /cache resources exhausted|exceeds (?:user )?limit|too large|pixel cache allocation failed|limit exceeded/i;
+
+/**
+ * How many pages of an uploaded picture are read: each frame of a
+ * scanner's TIFF, up to `maxPages`; one of anything else. Stopped by
+ * `signal`.
+ */
+export async function imagePageCount(
+  input: string,
+  mime: string,
+  maxPages: number,
+  signal?: AbortSignal,
+): Promise<number> {
+  return IMAGE_CODERS[mime] === 'tiff'
+    ? Math.min(await imageFrames(input, mime, signal), maxPages)
+    : 1;
+}
+
+/**
+ * The most coefficients a JPEG libjpeg holds whole may have (0.9.0, R3, the
+ * re-check). A JPEG in more than one scan — a progressive one, or a
+ * baseline one with each colour in a scan of its own — is kept in memory as
+ * all its coefficients, two bytes each, until its last scan, whatever size
+ * it is decoded at, and ImageMagick's limits do not count them: a 2 MB
+ * progressive CMYK JPEG 16,000 pixels square took 2.2 GB. 64 million — a
+ * grey page of 64 megapixels, a colour one of 42 (its colour at a quarter,
+ * as a camera's is) or 21 (in full), a CMYK one of 16 — kept the worst such
+ * page read under 470 MiB, measured, as a one-scan JPEG's is.
+ */
+export const JPEG_HELD_MAX_COEFFICIENTS = 64_000_000;
+
+/**
+ * The most of a JPEG's start read to find its frame and first scan (R3,
+ * round four): 2 MiB. What comes before a JPEG's first scan is its header —
+ * its tables, a camera's EXIF, a colour profile — far less than this; a
+ * header longer than it is not read on, and the picture is refused.
+ */
+export const JPEG_HEADER_MAX_BYTES = 2 * 1024 * 1024;
+
+/** What a JPEG's header says libjpeg will make of it. */
+export interface JpegFrame {
+  width: number;
+  height: number;
+  /** Its coefficients: 64 an 8×8 block of each component, at its sampling. */
+  coefficients: number;
+  /** Whether libjpeg keeps them all at once: more than one scan. */
+  held: boolean;
+}
+
+/**
+ * A JPEG's frame, read from the start of its bytes (`head`) as libjpeg reads
+ * its markers, up to its first scan: each segment's body skipped by its
+ * length, and any bytes between markers passed over as libjpeg passes over
+ * them. Null where `head` does not start with SOI — not a JPEG, which
+ * libjpeg refuses at once too. `'unknown'` where it cannot say: a segment
+ * that runs past `head`, a length under two, a second SOI or a frame, an
+ * EOI or a scan before a frame, a frame of no height or width, or no scan
+ * within `head` — so whoever asks refuses it (it fails closed: round four).
+ * Synchronous and linear in `head`'s length (every step moves on at least
+ * a byte, and nothing is copied): at JPEG_HEADER_MAX_BYTES, a few
+ * milliseconds at worst.
+ */
+export function jpegFrameOf(head: Buffer): JpegFrame | null | 'unknown' {
+  const n = head.length;
+  if (n < 2 || head[0] !== 0xff || head[1] !== 0xd8) return null;
+  let pos = 2;
+  let frame: {
+    width: number;
+    height: number;
+    comps: number;
+    sampling: Array<[number, number]>;
+    progressive: boolean;
+  } | null = null;
+  while (pos < n) {
+    // The next marker: anything not 0xFF passed over, then its fill bytes.
+    while (pos < n && head[pos] !== 0xff) pos += 1;
+    while (pos < n && head[pos] === 0xff) pos += 1;
+    if (pos >= n) return 'unknown';
+    const c = head[pos] as number;
+    pos += 1;
+    if (c === 0x00) continue; // a stuffed 0xFF, not a marker
+    if (c === 0xd8 || c === 0xd9) return 'unknown';
+    if ((c >= 0xd0 && c <= 0xd7) || c === 0x01) continue; // no length
+    if (pos + 2 > n) return 'unknown';
+    const length = head.readUInt16BE(pos);
+    if (length < 2 || pos + length > n) return 'unknown';
+    if (c >= 0xc0 && c <= 0xcf && c !== 0xc4 && c !== 0xc8 && c !== 0xcc) {
+      if (frame || length < 8) return 'unknown';
+      const height = head.readUInt16BE(pos + 3);
+      const width = head.readUInt16BE(pos + 5);
+      const comps = head[pos + 7] as number;
+      if (height === 0 || width === 0 || comps === 0 || length < 8 + comps * 3) {
+        return 'unknown';
+      }
+      const sampling: Array<[number, number]> = [];
+      for (let i = 0; i < comps; i += 1) {
+        const hv = head[pos + 8 + i * 3 + 1] as number;
+        sampling.push([Math.max(1, hv >> 4), Math.max(1, hv & 0x0f)]);
+      }
+      frame = {
+        width,
+        height,
+        comps,
+        sampling,
+        progressive: c === 0xc2 || c === 0xc6 || c === 0xca || c === 0xce,
+      };
+    } else if (c === 0xda) {
+      if (!frame || length < 3) return 'unknown';
+      const inScan = head[pos + 2] as number;
+      const hMax = Math.max(...frame.sampling.map(([h]) => h));
+      const vMax = Math.max(...frame.sampling.map(([, v]) => v));
+      let coefficients = 0;
+      for (const [h, v] of frame.sampling) {
+        const across = Math.ceil(Math.ceil((frame.width * h) / hMax) / 8);
+        const down = Math.ceil(Math.ceil((frame.height * v) / vMax) / 8);
+        coefficients += across * down * 64;
+      }
+      return {
+        width: frame.width,
+        height: frame.height,
+        coefficients,
+        held: frame.progressive || inScan < frame.comps,
+      };
+    }
+    pos += length;
+  }
+  return 'unknown';
+}
+
+/**
+ * A file's JPEG frame: `jpegFrameOf` its first JPEG_HEADER_MAX_BYTES, read
+ * at once — never more of it, however long the file.
+ */
+export async function jpegFrame(file: string): Promise<JpegFrame | null | 'unknown'> {
+  const fh = await open(file, 'r');
+  try {
+    const head = Buffer.alloc(JPEG_HEADER_MAX_BYTES);
+    const { bytesRead } = await fh.read(head, 0, head.length, 0);
+    return jpegFrameOf(head.subarray(0, bytesRead));
+  } finally {
+    await fh.close();
+  }
+}
+
+/**
+ * Refuses (PictureRefused) a JPEG ImageMagick would hand libjpeg to hold
+ * whole with more than JPEG_HELD_MAX_COEFFICIENTS — and one whose header
+ * cannot be read within JPEG_HEADER_MAX_BYTES, which libjpeg may still
+ * decode (round four: fails closed). A file not starting as a JPEG passes:
+ * libjpeg will not decode it. Asked before every ImageMagick read of an
+ * uploaded JPEG: a page read (`imagePage`), a person's photo
+ * (`squarePhoto`), a thumbnail and page previews.
+ */
+export async function refuseHeldJpeg(file: string): Promise<void> {
+  const frame = await jpegFrame(file);
+  if (frame === null) return;
+  if (frame === 'unknown') throw new PictureRefused('a JPEG whose header the vault cannot read');
+  if (frame.held && frame.coefficients > JPEG_HELD_MAX_COEFFICIENTS) {
+    throw new PictureRefused('a JPEG in more scans than the vault reads at its size');
+  }
+}
+
+/**
+ * One page (`index`, from 0) of an uploaded picture as a grey PNG to read
+ * (0.9.0, R3), drawn only when it is to be read, read with the coder its
+ * kind names under MAGICK_LIMITS, its spill in `outDir`. Its header is
+ * asked first (`-ping`, which decodes nothing), and a picture over
+ * PHOTO_MAX_PIXELS, or with a side over PHOTO_MAX_SIDE, is refused there
+ * (PictureRefused) — as is a JPEG libjpeg would hold whole with more than
+ * JPEG_HELD_MAX_COEFFICIENTS, or whose header cannot be read
+ * (`refuseHeldJpeg`) — never handed to Tesseract; one ImageMagick
+ * finds too big as it reads is refused too. A JPEG longer than READ_MAX_SIDE
+ * is shrunk as libjpeg decodes it (`jpeg:size`, asked for in its own
+ * proportions, so neither side is ever grown): by the eighths libjpeg
+ * offers, to about READ_MAX_SIDE across — a phone's 108 megapixel photo,
+ * 12,000 by 9,000, is decoded at 4,500 by 3,375 and read. Turned upright by
+ * its EXIF orientation (which Tesseract ignores), flattened onto white, and
+ * no bigger than READ_MAX_SIDE. Stopped by `signal`.
+ */
+export async function imagePage(
+  input: string,
+  mime: string,
+  outDir: string,
+  index: number,
+  signal?: AbortSignal,
+): Promise<string> {
+  const coder = IMAGE_CODERS[mime];
+  if (!coder) throw new Error(`a page is not read from ${mime}`);
+  const bin = await MAGICK();
+  const file = path.join(outDir, `photo-${index + 1}.png`);
+  const src = `${coder}:${input}[${index}]`;
+  try {
+    // Pinged as a range up to its frame: ImageMagick 7 pings a TIFF's later
+    // frame alone as having no size.
+    const sizes = (
+      await identify(
+        ['-ping', '-format', '%w %h\n', `${coder}:${input}[0-${index}]`],
+        60_000,
+        signal,
+      )
+    )
+      .trim()
+      .split('\n');
+    const [w = 0, h = 0] = (sizes[index] ?? '').trim().split(/\s+/).map(Number);
+    if (w * h > PHOTO_MAX_PIXELS || w > PHOTO_MAX_SIDE || h > PHOTO_MAX_SIDE) {
+      throw new PictureRefused('bigger than the vault reads');
+    }
+    let shrink: string[] = [];
+    if (coder === 'jpeg') {
+      await refuseHeldJpeg(input);
+      const long = Math.max(w, h);
+      if (long > READ_MAX_SIDE) {
+        const side = (n: number) => Math.max(1, Math.ceil((n * READ_MAX_SIDE) / long));
+        shrink = ['-define', `jpeg:size=${side(w)}x${side(h)}`];
+      }
+    }
+    await run(
+      bin,
+      [
+        ...MAGICK_LIMITS,
+        ...shrink,
+        src,
+        '-auto-orient',
+        '-background',
+        'white',
+        '-alpha',
+        'remove',
+        '-alpha',
+        'off',
+        '-colorspace',
+        'Gray',
+        '-resize',
+        `${READ_MAX_SIDE}x${READ_MAX_SIDE}>`,
+        '+repage',
+        '-strip',
+        `png:${file}`,
+      ],
+      { timeout: 120_000, signal, env: { MAGICK_TEMPORARY_PATH: outDir } },
+    );
+  } catch (err) {
+    signal?.throwIfAborted();
+    if (err instanceof PictureRefused) throw err;
+    const { stderr, message } = err as { stderr?: string | Buffer; message?: string };
+    const said = `${stderr?.toString() ?? ''} ${message ?? ''}`;
+    if (REFUSED.test(said)) throw new PictureRefused('bigger than the vault reads');
+    throw err;
+  }
+  return file;
+}
+
+/**
+ * Whether Tesseract has its orientation model (`osd`, the worker image's
+ * tesseract-ocr-data-osd): asked once.
+ */
+let osdFound: Promise<boolean> | null = null;
+export function hasOsd(): Promise<boolean> {
+  osdFound ??= run('tesseract', ['--list-langs'], { timeout: 10_000 })
+    .then(({ stdout, stderr }) => /^osd$/m.test(`${stdout}\n${stderr}`))
+    .catch(() => false);
+  return osdFound;
+}
+
+/**
+ * Which way up a page reads, by Tesseract's orientation model (`--psm 0`,
+ * 0.9.0 R3): the turn (clockwise, as ImageMagick's `-rotate`) that stands
+ * it upright, and how sure. Null where it cannot say.
+ */
+export async function osdOf(
+  file: string,
+  signal?: AbortSignal,
+): Promise<{ turn: 0 | 90 | 180 | 270; confidence: number } | null> {
+  const { stdout } = await run('tesseract', [file, '-', '--psm', '0'], {
+    timeout: 60_000,
+    maxBuffer: 1024 * 1024,
+    signal,
+  });
+  const rotate = /^Rotate:\s*(\d+)/m.exec(stdout);
+  const conf = /^Orientation confidence:\s*([\d.]+)/m.exec(stdout);
+  if (!rotate || !conf) return null;
+  const turn = Number(rotate[1]);
+  if (turn !== 0 && turn !== 90 && turn !== 180 && turn !== 270) return null;
+  // Tesseract's "Rotate" is the clockwise turn ImageMagick's -rotate makes
+  // (measured on a page turned each way: the R3 review's round).
+  return { turn, confidence: Number(conf[1]) };
+}
+
+/** A turn as ImageMagick's arguments. */
+const turnArgs = (turn: 0 | 90 | 180 | 270): string[] =>
+  turn === 0 ? [] : ['-rotate', String(turn)];
+
+/**
+ * A small copy of a page (a third of its size, grey), turned a quarter,
+ * half or three quarters, for trying which way up it reads (0.9.0, R3).
+ */
+export async function smallTurned(
+  input: string,
+  turn: 0 | 90 | 180 | 270,
+  output: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const bin = await MAGICK();
+  await run(
+    bin,
+    [
+      ...MAGICK_LIMITS,
+      `png:${input}`,
+      '-colorspace',
+      'Gray',
+      '-resize',
+      '50%',
+      ...turnArgs(turn),
+      `png:${output}`,
+    ],
+    { timeout: 60_000, signal },
+  );
+}
+
+/**
+ * How many degrees a page is turned off the straight (0.9.0, R3), as
+ * ImageMagick's deskew measures it on a quarter-size grey copy: a crooked
+ * scan's slant within a fraction of a degree, in a fraction of a second.
+ * 0 where it cannot say.
+ */
+export async function skewOf(input: string, signal?: AbortSignal): Promise<number> {
+  const bin = await MAGICK();
+  const { stdout } = await run(
+    bin,
+    [
+      ...MAGICK_LIMITS,
+      `png:${input}`,
+      '-colorspace',
+      'Gray',
+      '-resize',
+      '25%',
+      '-deskew',
+      '40%',
+      '-format',
+      '%[deskew:angle]',
+      'info:',
+    ],
+    { timeout: 60_000, signal },
+  );
+  const angle = Number.parseFloat(stdout.trim());
+  return Number.isFinite(angle) ? angle : 0;
+}
+
+/** How a page is made ready to be read again: prepareScan's. */
+export interface Preparation {
+  /** A quarter, half or three-quarter turn, the way up it reads. */
+  turn: 0 | 90 | 180 | 270;
+  /** Degrees it is turned off the straight (skewOf's), to turn it back; 0 for none. */
+  angle?: number;
+  /** How much bigger to make it, 1 to 3. */
+  scale: number;
+  /** Each pixel the median of its 3×3 neighbours, after it is made bigger: a grainy scan's speckle out. */
+  clean?: boolean;
+}
+
+/**
+ * A page made ready to be read again (0.9.0, R3): turned the way up it
+ * reads (and, turned, straightened by ImageMagick's deskew, its slant
+ * measurable only now) or turned back by `angle`, grey, its background — a
+ * phone's shadow, uneven light — divided out (the page over the paper's own
+ * shade near each place: a small copy, each pixel the lightest of its
+ * neighbours so the print is left out, blurred and made the page's size
+ * again, so it costs little), its faint print darkened and its paper made
+ * white (`-level`), then made `scale` times bigger (at most 3); to
+ * `clean` it, made bigger first and its speckle taken out as S5's
+ * cleanForOcr does. Under MAGICK_LIMITS.
+ */
+export async function prepareScan(
+  input: string,
+  how: Preparation,
+  output: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const bin = await MAGICK();
+  const scale = Math.max(1, Math.min(3, how.scale));
+  const angle = Math.max(-45, Math.min(45, how.angle ?? 0));
+  const bigger = scale > 1 ? ['-resize', `${Math.round(scale * 100)}%`] : [];
+  // Cleaned, as S5's cleanForOcr: made bigger, then each pixel the median of
+  // its neighbours — before the contrast is stretched, which would make its
+  // speckle print.
+  const cleaned = how.clean ? [...bigger, '-statistic', 'Median', '3x3'] : [];
+  await run(
+    bin,
+    [
+      ...MAGICK_LIMITS,
+      `png:${input}`,
+      ...turnArgs(how.turn),
+      '-colorspace',
+      'Gray',
+      '-background',
+      'white',
+      // Turned upright, a page's slant can be measured now: straightened.
+      ...(how.turn !== 0 ? ['-deskew', '40%', '+repage'] : []),
+      ...(how.turn === 0 && angle !== 0 ? ['-rotate', String(angle), '+repage'] : []),
+      ...cleaned,
+      '(',
+      '+clone',
+      '-resize',
+      '4%',
+      '-statistic',
+      'Maximum',
+      '3x3',
+      '-blur',
+      '0x2',
+      '-resize',
+      '2500%',
+      ')',
+      // The blurred copy back to the page's own size, whatever the rounding.
+      '(',
+      '-clone',
+      '0',
+      '-clone',
+      '1',
+      '-compose',
+      'Copy',
+      '-composite',
+      ')',
+      '-delete',
+      '1',
+      '-compose',
+      'DivideSrc',
+      '-composite',
+      '-clamp',
+      '-level',
+      '25%,95%',
+      // Bigger last, unless cleaned: everything before on the page's own pixels.
+      ...(how.clean ? [] : bigger),
+      `png:${output}`,
+    ],
+    { timeout: 120_000, signal },
+  );
 }
 
 export async function readIfExists(file: string): Promise<Buffer | null> {

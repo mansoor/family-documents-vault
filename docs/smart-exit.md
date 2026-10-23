@@ -276,12 +276,187 @@ So a paper is only ever helped by the papers before it. Each set ran five ways w
 
 Run again as the exit is (above), with `FDV_SMART_LEARNING=1`, `FDV_SMART_EXIT_CORPORA` and `FDV_SMART_LEARNING_MODES` (`none,rules,shapes,careless,ready-all`), and `FDV_SMART_LEARNING_OUT`; `FDV_SMART_TEXT_CACHE` keeps each file's words between runs. A wrong Ready's row records its card and what was learned of its sender. With the words kept, the 24 runs took 47 minutes in all on the owner's machine, alongside other work.
 
+## Scans (R3)
+
+0.9.0's R3 reads **scanned papers** better: phone photos, the scanner folder's scans, and PDFs that are only pictures. The owner was away, so there were no real papers to measure on: it is measured on a **scan set** made from this page's made-up papers, and the Reading check (R0) goes on telling text from scans for a family's own.
+
+**Result** (22 October 2026, at `feat/9.r3-scans`; measured again on 23 October after the R3 review's fixes — every number the same, but one held-out turned scan Check rather than Not recognised, and pages the wrong way up faster with Tesseract's orientation model — and again after the R3 re-check's, every paper's card the same as after the review's on both splits and in every learning run, and in the Smart exit but one held-out scan's holder now read, its level unchanged):
+
+- **Wrong Ready is 0 in every run**: on both splits of the scan set, and on the Smart exit's and R1's reruns. Before R3 the scan set's tune split had one (below), which R3 fixed.
+- **On the tune split, needing typing went from 39 of 132 to 17.** Ready from 54 to 70.
+- **On the held-out split, from 94 of 132 to 84.** Ready from 15 to 18. OCR now reads 97% of the held-out pages' words where it read 80%, and every date that matters where it missed 11 — but most of what is left is what the clean scans of the held-out papers miss too (5 of 12): layouts and wording the rules have never seen, as the Smart exit found ("What still needs typing"). Better reading cannot fix that; the learning (R1) and real papers can.
+- **Text PDFs are read as before**, and on the Smart exit's and R1's scans R3 is better on the first and third sets and 1 to 2 papers worse on the second (below).
+- **Slower where a page reads badly:** the median page takes 5.5 seconds where it took 3.6, and the slowest 5% 14.9 where they took 16.2; a page the wrong way up about 12 with Tesseract's orientation model (16 without it). A page that reads well takes what it did (about 4 to 5 seconds).
+
+### The scan set
+
+`node scripts/scan-corpus.mjs --out <folder> [--split tune|held-out|both] [--per 12]` writes it, with `manifest.json` in each split's folder: each file's cause, how it was spoilt, its kind of file, its truth (as the Smart exit's manifest), the words on its pages, and the text that writes the date that matters. Node's own modules only; the same options give the same bytes, on Windows and Linux alike.
+
+- **Two splits of 132 files, 12 of each cause.** The **tune** split is drawn from the first set's papers (seed 1), the only ones looked at while the reader was changed. The **held-out** split is drawn from the second and third sets' (seeds 2 and 3), which never were. A blank page and a copy are left out; papers of no kind are kept (14 and 10).
+- **Each paper drawn again from its own page, spoilt one way** — its **cause**:
+  - `clean`: a good 300 dpi scan, the fast path's control;
+  - `rotated`: turned a quarter, half or three quarters;
+  - `skew`: 1° to 7° off the straight;
+  - `blur`: out of focus;
+  - `jpeg`: saved as a JPEG at quality 12 to 30, at 150 or 200 dpi;
+  - `noise`: heavy grain and thousands of specks;
+  - `lowres`: 100 to 150 dpi;
+  - `shadow`: a phone photo's shadow and uneven light, faint ink on grey paper;
+  - `photo`: a phone photo of the page leaning on a table, its corners in perspective, a little blurred;
+  - `columns`: set in two columns, small enough to fit;
+  - `page2`: two pages, the date that matters at the top of page 2.
+- **As a family keeps them:** PDFs of pictures (75 and 72, kept as a JPEG inside, as a scanning app keeps them), grey PNGs (23 and 24) and JPEGs (34 and 36); 15 and 12 of more than one page.
+- **Held by their bytes:** the SHA-256 of `[path, sha256]` of every file, in order, is `a63f3191b10d4a0c667201bb906ad4e0f305766277734ce440282578f8c4dfcb` for the tune split and `8860aecb7ec6d0d96d7c5a006da2d5abf5e9ed3ccbc6f60e116b7d27fb795436` for the held-out split. A test draws a few causes twice and checks they are the same bytes, and where each split's papers come from.
+- No word but the papers' own, and "Continued overleaf" and "Page 2 of 2".
+
+### Method
+
+`apps/api/src/scan-set.test.ts`, run with `FDV_SCAN_SET=1` as the exit is (node:22-alpine with poppler, ImageMagick and Tesseract 5.5.2 — the worker image's — against the test database), `FDV_SCAN_SET_DIR` set to a folder the script wrote. Each split's files go into one batch, with no folder, as their kind of file; each is read by the worker's own job (`readNextBatchItem`, with the real tools and the proposal thread) and its card, as `GET /batches/{id}` gives it, is scored by the Smart exit's scorer. Beside the levels it records, for each file, the share of its pages' words OCR found (**recall**), whether the date that matters was in the text as written, only with OCR's confusions, or not at all, and the time its reading took for each page. It fails on any wrong Ready. Both splits take about 45 minutes.
+
+### Where scans went wrong, before R3
+
+Measured first, on the reader as it was (`f91de44`): typing needed, of the 12 of each cause, and the share of the pages' words OCR found.
+
+| Cause   | Tune: typing | Tune: words read | Held out: typing | Held out: words read | What went wrong                                                                                                                                                 |
+| ------- | -----------: | ---------------: | ---------------: | -------------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| clean   |            4 |             100% |                5 |                 100% | Nothing of OCR's: names misread ("Mrs Olivia ] Khan") and layouts the rules do not know.                                                                        |
+| rotated |            7 |              33% |               10 |                  17% | **Read upside down or sideways**: words of nonsense, the kind not found (10 and 11 not recognised).                                                             |
+| skew    |            4 |              86% |                7 |                  85% | Past 4° or so Tesseract loses words, and a label and its value drift onto different lines.                                                                      |
+| blur    |            5 |              88% |               12 |                  79% | Letters lost.                                                                                                                                                   |
+| jpeg    |            2 |             100% |                9 |                  99% | Read well: what is missed is the layouts.                                                                                                                       |
+| noise   |            3 |              97% |                8 |                  65% | On the held-out split, **3 pages read as blank** (Problem).                                                                                                     |
+| lowres  |            2 |              97% |                9 |                  98% | Read well.                                                                                                                                                      |
+| shadow  |            6 |              53% |               12 |                  57% | **The shadowed half of a photo read as a picture**: its words, and 4 and 3 of the dates that matter, never read.                                                |
+| photo   |            4 |              82% |                8 |                  85% | The table and the shadow taken for pictures; one **wrong Ready**: a fixed-term contract, its "End date" misread, Ready without it (a contract needs no expiry). |
+| columns |            2 |             100% |                6 |                 100% | **Two columns run together**, a space apart: "Employee: Olivia Khan Salary: £43,386.36", so a name runs into the next column's label, and an end date is lost.  |
+| page2   |            0 |             100% |                8 |                 100% | Not a cause: every page was read (up to `FDV_OCR_MAX_PAGES`); what is missed is the layouts.                                                                    |
+| All     |    39 of 132 |              85% |        94 of 132 |                  80% |                                                                                                                                                                 |
+
+And across all of it:
+
+- **No words at all:** 3 held-out pages (heavy noise); none in the tune split.
+- **Dates and amounts misread** (O for 0, l for 1, S for 5, a comma for a point): **none found.** Of the dates that matter, none was in the text only with a confusion, before or after: Tesseract 5's errors were whole words lost, not digits swapped. The fix was made (below) and tested, but this set shows no gain from it.
+- **Multi-page PDFs read only on page 1:** not so — every page is read, up to `FDV_OCR_MAX_PAGES`.
+
+So the order was: pages the wrong way up, shadows, columns, skew; then noise and blur.
+
+### What changed
+
+All of it in the worker's reading (`apps/worker/src/jobs/scan-read.ts`, `extract-text.ts`, `tools.ts`) and two rules in `@fdv/shared`. No new tool, no new dependency, no migration, no network.
+
+1. **Read in rows.** Tesseract is asked for its words with their boxes (`tsv`), and they are laid out as pdftotext -layout lays out a PDF's own text: lines at the same height put on one row however far apart Tesseract's blocks are, each word at about its place across the page, a blank line for a gap. So "Payment due by" and "29/04/2026" are on one line again, two-column pages included, and the rules — and the layouts R1 learns, whose label columns are made for this — see a scan as they see a text PDF.
+2. **A page that reads well is read once** (the fast path): many words that look like words, letters big enough, most of the page read, its lines level. Anything else is looked at again, made ready as below, and **the second reading is kept only where it reads clearly more**: three more words that look like words (a page turned, always). Two readings a word or two apart differ as much in which words they get wrong — a name — as in how many; on the first set, a motor certificate read with one word more had lost its holder's name.
+   - **the wrong way up** (few of its words look like words, or they stand taller than wide — a page on its side): Tesseract's orientation model (`osd`, in the worker image since the R3 review) says which way up it reads, and where it is unsure, or the worker has no model (a development machine), each way up is tried on a half-size copy, and it is turned the way that reads far better;
+   - **crooked**: its slant measured by the slope of its lines, or, where its lines are too short to say (a form, a card), by ImageMagick's deskew on a quarter-size copy — checked against the page's own rows, since a small copy of a page of little text can be a degree out — and turned back; a slant of 0.3° or more measured so is used to lay the rows out even where it is too small to read the page again, and a label and a value in blocks of their own share a row only within 0.35 of a line's height, so a sparse form a little crooked never pairs a label with the next row's value;
+   - **partly taken for a picture** (more than 15% of the page in blocks Tesseract found no words in — a shadow): **evened out**, the page divided by the paper's own shade near each place (a small copy, each pixel the lightest of its neighbours, blurred and made the page's size again), its faint print darkened and its paper whitened;
+   - **small letters**: made bigger, to about 32 pixels a word;
+   - **read unsurely, or next to nothing read**: also cleaned of speckle, as S5's grainy-page cleaning does (twice the size, a median of each pixel's neighbours).
+3. **Photos first drawn by ImageMagick**, under its limits (MAGICK_LIMITS, its spill in the job's own folder): turned upright by their EXIF orientation (which Tesseract ignores), flattened onto white, grey, no bigger than 4,700 pixels a side — a JPEG longer than that shrunk as libjpeg decodes it, asked for in its own proportions (by eighths, to about 4,700 across: a phone's 108 megapixel photo, 12,000 by 9,000, is decoded at 4,500 by 3,375 and read) — and a scanner's TIFF a frame at a time as it is read, up to `FDV_OCR_MAX_PAGES`. Its header is asked first, and a picture of more than 128 megapixels, or with a side over 16,000 pixels, is refused there, as is a JPEG libjpeg would hold whole — progressive, or each colour in a scan of its own — with more than 64 million coefficients (below); one ImageMagick finds too big as it reads is refused too. A refused picture never reaches Tesseract, and is said so ("picture refused"). Each page, and every copy made of it, is let go once it is read.
+4. **OCR's confusions put right in dates and sums only** (`@fdv/shared` ocr-confusions.ts): "2O26" is 2026, "l2/05" is 12/05, "£1O4.50" is £104.50 — only in a token that, so put right, is a real date or a sum, and has digits of its own; never in a word, a name, a postcode, a reference or any other number (a test lists them). A date read from a corrected token is offered at 0.75 at most, under the 0.8 a sure expiry needs, and marked `corrected`: its card is Check whichever date it is — an expiry "Expiry unsure", an issue date "A date read from unclear digits". B and Z are left alone (a seat "1B" is no 18), each part of a date must have a digit of its own ("IS/O5/2O26" is not put right), and a two-digit year only after a date's label on its line ("Sort code: O1.O2.O3" is left alone). The layouts R1 learns read the page as OCR gave it.
+5. **An expiry on the page, not on the card.** A will, a logbook, an employment contract or a deed is complete without an expiry (0.8.0), so the photographed contract above was Ready with its "End date" misread. Now the worker asks the page for every such kind's words for its expiry ("End date", "The term ends"), whatever was proposed or read, and seals which kinds it found (`expiry_labels`); a card of one of those kinds with no expiry is Check, "Expiry on the page, not read" — by the kind the card has, the batch's or one changed after as much as the pages'. And a card whose expiry the pages read for the kind they proposed, not offered for the card's own (the batch says a deed; the pages, a contract), is Check: "Expiry on the page, read for another kind".
+
+Every step that touches pixels is ImageMagick or Tesseract in its own process, under MAGICK_LIMITS and a timeout. **The second look at a page has one budget, 45 seconds in all** (SECOND_LOOK_MS), however many steps it takes; a step that fails — ImageMagick refusing a page it would have to make too big, say — or runs past the budget leaves the best reading so far, never none. A page is never made ready past 24 megapixels (PREPARE_MAX_PIXELS), and S5's cleaned copy of a grainy page is read once, with no second look of its own. A filed document's words (version.process) have 8 minutes in all (VERSION_READ_DEADLINE_MS, under its job's 14-minute expiry, which a queue made before R3 now takes too), as a batch item's read has (READ_DEADLINE_MS). **Second looks end at half of it**: the pages left are read once, with no second look, no cleaning and no reading again row by row, so a long scan is read before its deadline. Past it, its tools are stopped; a filed document keeps the pages read before then, and says it was too slow and how many were not read ("ocr: too slow (12 of 30 scanned pages read; …)"); none read, its words fail as too slow. S5's cleaning of a grainy page is made no bigger than 24 megapixels either, and is not done again where the second look has read a cleaned copy already. Tests show a picture claiming 60,000 pixels square refused by every step at once, and never handed to Tesseract.
+
+**Memory and disk, the R3 re-check.** Measured in the worker image's tools (node:22-alpine, ImageMagick 7.1.2-34), each picture made by a test's generator or by ImageMagick — kilobytes or a few megabytes that decode to far more — read as `imagePage` reads it, at the R3 review's commit (`1767ce3`) and now: the peak memory of its largest process, and the most its spill took on disk.
+
+| Picture                                                                      | At the R3 review                                                 | Now                                      |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------- |
+| A progressive CMYK JPEG 16,000 pixels square, 2 MB                           | read: 2,207 MiB of memory, 244 MiB on disk, 7 s                  | refused from its header, 0.06 s          |
+| The same as a baseline JPEG with each colour in a scan of its own, 4 MB      | read: 2,209 MiB, 244 MiB on disk, 6 s                            | refused from its header, 0.06 s          |
+| A progressive CMYK JPEG 8,000 square (64 megapixels: under the area), 0.5 MB | read: 879 MiB, 668 MiB on disk, 8 s                              | refused from its header, 0.06 s          |
+| A white PNG 11,000 square, 118 KB                                            | 470 MiB, 1,120 MiB on disk, 63 s, then refused by its time limit | refused at once, nothing on disk, 0.07 s |
+| A CMYK JPEG 8,000 by 2,000 (a wide photo)                                    | read at 16,000 by 4,000: 346 MiB, 1,706 MiB on disk, 11 s        | read: 175 MiB, nothing on disk, 1.2 s    |
+| A colour JPEG 16,000 by 1,000                                                | refused: asked to be decoded at 32,000 by 2,000                  | read: 28 MiB, nothing on disk            |
+| S5's cleaning of a grainy page 4,700 square                                  | 515 MiB, 585 MiB on disk, 91 s, then refused: made 9,400 square  | 384 MiB, 208 MiB on disk, 37 s, its size |
+
+The most a JPEG held whole may have is 64 million coefficients (two bytes each, all in memory until its last scan): a grey page of 64 megapixels, a colour photo of 42 (its colour at a quarter, as a camera's is) or 21 (in full), a CMYK one of 16. It was set by measurement: **the worst such picture allowed, a progressive grey JPEG 8,000 pixels square, peaks at 469 MiB** (280 MiB on disk), as a one-scan JPEG does at any size (190 to 470 MiB: ImageMagick's own limits); a progressive CMYK one 4,000 square, 436 MiB; at 96 million, a CMYK one reached 558 MiB. A real progressive camera photo of 42 megapixels (4:2:0) peaks at 322 MiB and is read; one of 48 is refused. A one-scan JPEG over 128 megapixels is refused too, though libjpeg's shrinking would hide its size from ImageMagick. A phone's 108 megapixel photo, read now at 4,500 by 3,375, peaks at 299 MiB.
+
+**The JPEG check fails closed, and reads a bounded start (round four).** It reads at most the first 2 MiB of a file (JPEG_HEADER_MAX_BYTES), at once, and walks its markers in one synchronous pass in the worker; a JPEG whose frame and first scan it cannot find there — a header cut off or longer than that, a segment of a length under two, a scan before its frame, a second frame, a frame of no height — is refused, as one too big is: before, 100,001 empty segments of 4 bytes ahead of a progressive CMYK frame 8,000 square ran its marker count out, it said nothing, and the page was read at 879 MiB (668 MiB on disk). Each step moves on at least a byte, so its work is bounded by the 2 MiB: at worst 22 ms (the first of twenty passes over 524,000 empty segments; 1.5 to 4 ms after), and 2 MiB of memory. SOI and then 100 MB of nothing is refused in 9 ms. It stays on the worker's own thread because it is that small; the pictures are decoded in ImageMagick's processes as before. **The same check now comes before a person's photo, a thumbnail and page previews** are made of an uploaded JPEG, which it did not before R3 either: a progressive CMYK JPEG 11,000 square was made a person's photo at 961 MiB, and one 8,000 square a thumbnail or previews at 498 MiB and 977 MiB on disk (8 to 19 s); each is refused in under 0.1 s now. JPEGs inside PDFs are drawn by poppler, as before, and not checked.
+
+### Numbers, after
+
+| Split    | Reader    | Ready | Check | Not recognised | Problem | Needs typing | Wrong Ready | Words read | Dates that matter not read |
+| -------- | --------- | ----: | ----: | -------------: | ------: | -----------: | ----------: | ---------: | -------------------------: |
+| Tune     | before R3 |    54 |    44 |             34 |       0 |           39 |           1 |        85% |                    9 of 68 |
+| Tune     | R3        |    70 |    43 |             19 |       0 |           17 |           0 |        98% |                    1 of 68 |
+| Held out | before R3 |    15 |    35 |             79 |       3 |           94 |           0 |        80% |                   11 of 75 |
+| Held out | R3        |    18 |    45 |             69 |       0 |           84 |           0 |        97% |                    0 of 75 |
+
+**By cause, needing typing** (of 12; tune, then held out):
+
+| Cause   | Tune before | Tune R3 | Held out before | Held out R3 |
+| ------- | ----------: | ------: | --------------: | ----------: |
+| clean   |           4 |       2 |               5 |           5 |
+| rotated |           7 |       1 |              10 |           7 |
+| skew    |           4 |       1 |               7 |           6 |
+| blur    |           5 |       4 |              12 |          12 |
+| jpeg    |           2 |       1 |               9 |           9 |
+| noise   |           3 |       4 |               8 |           8 |
+| lowres  |           2 |       1 |               9 |           9 |
+| shadow  |           6 |       1 |              12 |          10 |
+| photo   |           4 |       2 |               8 |           6 |
+| columns |           2 |       0 |               6 |           4 |
+| page2   |           0 |       0 |               8 |           8 |
+
+- **Words read, by cause:** rotated 33% → 100% (tune) and 17% → 100% (held out); shadow 53% → 99% and 57% → 98%; skew 86% → 100% and 85% → 98%; photo 82% → 95% and 85% → 93%; noise 97% → 97% and 65% → 97% (the 3 blank-read pages read). Blur stays at 87% and 79%: nothing tried here brought its letters back.
+- **On the tune split, 23 papers no longer need typing and 1 newly does:** a grainy GP letter, whose name OCR now reads "Farida.Khan". On the held-out split 10 no longer need typing and none newly does.
+- **What is left on the tune split (17):** 6 bank statements whose holder's middle initial OCR reads as "]" or "|" ("Mrs Olivia ] Khan"; R3 changes no word of a name), 3 more names misread (a grainy GP letter's "Farida.Khan", a shadowed motor policy, a blurred dental recall), kinds a blurred or grainy page does not show (5), and 3 dates beside their labels read wrongly or not at all (a blurred travel policy, the photographed contract — Check now, not Ready — and a grainy phone bill).
+- **Clean scans need typing as before** (2 of 12 and 5 of 12): what is left there is the rules, not the reading.
+
+### Time per page
+
+Measured apart, with nothing else running on the machine (8 cores), every third file of each split (88 files, 97 pages), one at a time, each read by `extractText` as the worker reads it with Tesseract's own threads: before R3 (`f91de44`), at R3's first commit (`821d1b4`, no orientation model), and after the R3 review (with the orientation model, as the worker image now has it). Seconds a page:
+
+| Files               | Before: median | Before: 95th | R3 first: median | R3 first: 95th | R3 reviewed: median | R3 reviewed: 95th |
+| ------------------- | -------------: | -----------: | ---------------: | -------------: | ------------------: | ----------------: |
+| Tune split (44)     |            3.6 |         11.0 |              5.5 |           17.9 |                 5.4 |              14.9 |
+| Held-out split (44) |            3.3 |         17.1 |              5.5 |           16.2 |                 5.8 |              14.5 |
+| Both (88)           |            3.6 |         16.2 |              5.5 |           17.5 |                 5.5 |              14.9 |
+
+**Pages the wrong way up** (all 24 `rotated` files of both splits, the reviewed reader): with Tesseract's orientation model, median 12.1 and 95th percentile 15.1 seconds a page; without it (four small readings tried instead), 15.7 and 18.9. Every one read right either way (all their words read).
+
+- **Read well, read once:** a clean scan, a JPEG-crushed or low-resolution one, columns, two pages — about 4 seconds a page before and after (median of those causes 3.9 → 4.9: a photo is now drawn grey and upright by ImageMagick first, about a second).
+- **Read again:** a page the wrong way up 12 seconds with the orientation model, 16 to 18 without (four small readings, then the page); crooked 7 to 8; a shadowed or photographed page 5 (it took 1.3 — reading half of it); a grainy one 16 to 17, as before (it was 16 to 20).
+- **The slowest page** took 21.7 seconds (20.5 at the first commit), where before R3 a grainy one took 33.5. A page's first reading has Tesseract's 3 minutes at most, and its second look 45 seconds in all; S5's cleaning and its row-by-row reading keep their own limits, as before R3. An item's read and a filed document's both stop at 8 minutes: 20 pages all read twice at the 95th percentile come to about 6.
+- The scan-set runs above recorded time per page too (median 8.3 and 8.2 after, 4.3 and 3.8 before), with other measurements running on the machine; these are the numbers to go by.
+
+### The text PDFs, and what R1 learns, again
+
+Both were run again on R3's reader, as they were run before (`smart-exit.test.ts` and `smart-learning.test.ts`, every mode), and compared paper by paper with the runs recorded above; and once more after the R3 review's fixes, and after the R3 re-check's, with the same numbers in every run (after the re-check, one held-out scan of a school trip letter has its holder read, still Not recognised).
+
+**No text PDF changed:** every paper whose card changed is a scan. Wrong Ready is 0 in all 4 Smart exit runs and all 24 learning runs.
+
+**The Smart exit, needing typing** (recorded above → R3):
+
+| Corpus            | With folders | Without folders | Ready, with folders |
+| ----------------- | -----------: | --------------: | ------------------: |
+| First (tune)      |        6 → 4 |         16 → 13 |           111 → 114 |
+| Second (held out) |      53 → 54 |         57 → 59 |             20 → 21 |
+
+The first set's grainy typewriter receipt, read as blank before ("What still needs typing"), is read now (Problem 6 → 5).
+
+**R1's learning, needing typing, all papers** (recorded above → R3):
+
+| Set               | Folders | nothing | rules   | shapes  | careless | Accept all Ready |
+| ----------------- | ------- | ------- | ------- | ------- | -------- | ---------------- |
+| First (tune)      | with    | 6 → 4   | 6 → 4   | 6 → 5   | 6 → 5    | 8 → 6            |
+| First (tune)      | without | 16 → 13 | 13 → 10 | 10 → 8  |          |                  |
+| Second (held out) | with    | 53 → 54 | 40 → 40 | 17 → 17 | 21 → 21  | 18 → 18          |
+| Second (held out) | without | 57 → 59 | 42 → 43 | 17 → 18 |          |                  |
+| Third (held out)  | with    | 38 → 38 | 40 → 40 | 20 → 15 | 20 → 16  | 20 → 15          |
+| Third (held out)  | without | 54 → 54 | 41 → 41 | 20 → 15 |          |                  |
+
+- **Better:** scans whose holder's name is now read (a home insurance schedule, a P60, a passport), and on the third set, the bank three of the family share: its scanned statements now carry their account number beside its label, as R1's layouts expect, so 5 more of them are known as their holder's (20 → 15 with shapes).
+- **Worse, on the second set, by 1 or 2:** two scans whose holder's name R3 now misreads — a logbook ("OUVIA KHAN") and a P60 ("OLIVIAKHAN"). Each was crooked, read again straightened, with 4 more words that look like words than the first time, and kept; the name was one of the words it got wrong. That is within what a second reading changes either way, and it was not adjusted for: the second set is held out. On the third set one scan of the shared bank loses its holder the same way.
+
 ## Anything to decide
 
 - **The target is met on what the rules were adjusted on, and far from met on new layouts.** Adjusting the rules on the second set would make it a tune set too. The next honest step, planned for 0.9, is a held-out set of real (redacted) family papers.
 - **School reports are now their own kind.** Diplomas and certificates of achievement stay diplomas.
 - **Whose statement it is, at a bank several of the family use (0.9.0).** Done since, after the third set showed it (above): its numbers are no longer held-out ones. The next held-out set, of real (redacted) family papers, would measure it honestly.
 - **What a shape's own suggestion should teach (0.9.0).** Since the R1 re-check, accepting a value a shape suggested, unchanged, teaches it nothing (N2). That closes the way a paper filed wrongly once, then accepted as suggested, became Ready and wrong; it costs Ready (the second set's shape runs 28 to 20 of 115, the third's 25 to 15 of 84, and the shared bank's statements are never Ready) and no typing but the bank's 2. Whether to count such an accept where something else vouches for it is for the Reading check on real papers to show.
+- **Scans (R3): two held-out scans lose their holder's name** (the second set, 1 to 2 more needing typing; above), while the first and third sets gain. Keeping the first reading unless the second reads clearly more (3 words) was set on the first set's motor certificate; a larger margin might keep these two as well, but only the held-out set says so, so it was not changed. Real papers will say which way it should go.
+- **Scans (R3): what costs time.** A page read badly takes longer — a page the wrong way up about 12 seconds, where it took 3 to read it wrongly; the median page 5.5 seconds, where it was 3.6. Tesseract's orientation model (`tesseract-ocr-data-osd`, about 10 MB) is in the worker image since the R3 review (the owner's default): a turned page takes 12 seconds where four small readings took 16. A development machine without it tries the four. No other language was needed: the papers are English.
 
 ```json
 {

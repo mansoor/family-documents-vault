@@ -68,7 +68,8 @@ CMD ["node", "apps/api/dist/server.mjs"]
 FROM ${NODE_IMAGE} AS worker
 ENV NODE_ENV=production \
     FDV_MIGRATIONS_DIR=/app/migrations
-# OCR and rendering tools: Tesseract 5 (English), poppler (PDF pages, page
+# OCR and rendering tools: Tesseract 5 (English, and its orientation model,
+# osd, which says which way up a scan reads: 0.9.0 R3), poppler (PDF pages, page
 # counts and the text a PDF carries: 5.37), ImageMagick (thumbnails and page
 # previews; HEIC for iPhone photos). All offline.
 # Fonts matter: without them poppler renders text-only PDFs blank, and OCR
@@ -78,7 +79,7 @@ ENV NODE_ENV=production \
 # character a font — Noto Sans (Latin, Greek, Cyrillic), Noto Sans Arabic
 # and Devanagari, WenQuanYi Zen Hei (Chinese, Japanese, Korean) and Noto
 # Color Emoji. One weight of each is kept: about 28 MB in all.
-RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-eng poppler-utils imagemagick imagemagick-heic \
+RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-eng tesseract-ocr-data-osd poppler-utils imagemagick imagemagick-heic \
       imagemagick-pango fontconfig font-dejavu font-liberation font-noto font-noto-arabic \
       font-noto-devanagari font-noto-emoji font-wqy-zenhei postgresql16-client \
     && find /usr/share/fonts/noto -type f ! -name NotoSans-Regular.ttf \

@@ -76,6 +76,8 @@ export type ThreadAnswer =
       paper?: PaperReading;
       /** Where a shape matched, and the page's number at its label, to settle (N5). */
       account?: ThreadProposal['account'];
+      /** The kinds complete without an expiry whose expiry label the page has (R3, the re-check). */
+      expiryLabels?: string[];
     }
   /** Longer than the deadline: the thread was ended, and nothing is proposed. */
   | { state: 'too_slow' }
@@ -240,6 +242,7 @@ export class ProposalThread implements ItemProposer {
                 // The page's shape (R1), for its accept to learn from.
                 ...(m.paper ? { paper: m.paper } : {}),
                 ...(m.account ? { account: m.account } : {}),
+                ...(m.expiryLabels?.length ? { expiryLabels: m.expiryLabels } : {}),
               },
         );
       });
