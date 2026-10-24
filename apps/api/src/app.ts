@@ -63,6 +63,7 @@ import type { MailInService } from './mail-in/service.js';
 import { registerReadingCheck } from './reading-check/routes.js';
 import type { ReadingCheckService } from './reading-check/service.js';
 import { registerSettingsChecks, type SettingsCheckService } from './settings-checks.js';
+import { registerLocalAi, type LocalAiService } from './household/local-ai.js';
 import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
 import { ownNetworks, trustProxyFor } from './client-address.js';
@@ -133,6 +134,8 @@ export interface AppDeps {
   readingChecks?: ReadingCheckService;
   /** What an owner asks the worker from Settings, and its answers (0.9.0, O1). */
   settingsChecks?: SettingsCheckService;
+  /** The local AI reader's switch, an owner's, and what the workers found of it (0.9.0, R4). */
+  localAi?: LocalAiService;
   logger?: boolean | object;
   /**
    * The networks this process is on, for `FDV_TRUST_PROXY=network` (5.30):
@@ -430,6 +433,11 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
           return false;
         },
       ),
+      // The local AI (R4): only while a worker has one set up, and said so lately.
+      localAi: await (deps.localAi?.available() ?? Promise.resolve(false)).catch((err: unknown) => {
+        req.log.warn({ err }, 'the local AI could not be asked about');
+        return false;
+      }),
       setupRequired,
       pushEnabled: Boolean(config.FDV_VAPID_PUBLIC_KEY),
       // Without it the document is still true, only less specific; say
@@ -495,8 +503,9 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerBatches(app, deps.batches);
   if (deps.watchFolder) registerWatchFolder(app, deps.watchFolder);
   if (deps.mailIn) registerMailIn(app, deps.mailIn, deps.stepUp);
-  if (deps.readingChecks) registerReadingCheck(app, deps.readingChecks);
+  if (deps.readingChecks) registerReadingCheck(app, deps.readingChecks, deps.localAi);
   if (deps.settingsChecks) registerSettingsChecks(app, deps.settingsChecks);
+  if (deps.localAi) registerLocalAi(app, deps.localAi);
   registerDevices(app, deps.devices, deps.stepUp, config.FDV_MAX_UPLOAD_BYTES);
 
   return app;

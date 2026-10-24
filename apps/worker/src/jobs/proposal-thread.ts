@@ -26,6 +26,8 @@ import type {
   DetailProposal,
   LearnedClash,
   LearnedContext,
+  LocalAiOffer,
+  LocalAiReading,
   PaperReading,
   ProposalContext,
   ThreadProposal,
@@ -78,6 +80,12 @@ export type ThreadAnswer =
       account?: ThreadProposal['account'];
       /** The kinds complete without an expiry whose expiry label the page has (R3, the re-check). */
       expiryLabels?: string[];
+      /**
+       * What the local AI read (0.9.0, R4), its reply held to its schema and
+       * to the page on the thread; null where it was not one to use. Absent
+       * where it was not asked.
+       */
+      localAi?: LocalAiReading | null;
     }
   /** Longer than the deadline: the thread was ended, and nothing is proposed. */
   | { state: 'too_slow' }
@@ -93,11 +101,15 @@ export type ThreadAnswer =
 
 /** What the reading of an item needs of the thread. */
 export interface ItemProposer {
-  /** `learned`: the uploader's own rules (I4), applied on the thread too. */
+  /**
+   * `learned`: the uploader's own rules (I4), applied on the thread too;
+   * `ai`: the local AI's reply to these words (R4), read on the thread.
+   */
   propose(
     text: string,
     ctx: ProposalContext,
     learned?: LearnedContext | null,
+    ai?: { reply: string; offer: LocalAiOffer },
   ): Promise<ThreadAnswer>;
 }
 
@@ -139,8 +151,9 @@ export class ProposalThread implements ItemProposer {
     text: string,
     ctx: ProposalContext,
     learned: LearnedContext | null = null,
+    ai?: { reply: string; offer: LocalAiOffer },
   ): Promise<ThreadAnswer> {
-    const mine = this.turn.then(() => this.one(text, ctx, learned));
+    const mine = this.turn.then(() => this.one(text, ctx, learned, ai));
     this.turn = mine.catch(() => undefined);
     return mine.catch((): ThreadAnswer => ({ state: 'unavailable' }));
   }
@@ -171,6 +184,7 @@ export class ProposalThread implements ItemProposer {
     text: string,
     ctx: ProposalContext,
     learned: LearnedContext | null,
+    ai: { reply: string; offer: LocalAiOffer } | undefined,
   ): Promise<ThreadAnswer> {
     if (this.closed) return { state: 'unavailable' };
     if (!(await this.started())) return { state: 'unavailable' };
@@ -191,7 +205,7 @@ export class ProposalThread implements ItemProposer {
       timer.unref();
       this.running = { id, done, timer };
       try {
-        worker.postMessage({ id, text, ctx, learned } satisfies ProposalJob);
+        worker.postMessage({ id, text, ctx, learned, ...(ai ? { ai } : {}) } satisfies ProposalJob);
       } catch {
         clearTimeout(timer);
         this.running = null;
@@ -271,6 +285,8 @@ export class ProposalThread implements ItemProposer {
                 ...(m.paper ? { paper: m.paper } : {}),
                 ...(m.account ? { account: m.account } : {}),
                 ...(m.expiryLabels?.length ? { expiryLabels: m.expiryLabels } : {}),
+                // The local AI's reading, as the thread read it (R4).
+                ...(m.localAi !== undefined ? { localAi: m.localAi } : {}),
               },
         );
       });

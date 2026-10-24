@@ -13,6 +13,7 @@ import { readAs, withSystem, type Db } from '@fdv/db';
 import {
   can,
   levelItem,
+  localAiOffer,
   numbersOnly,
   READING_FIELDS,
   READING_MISSES_KEEP_DAYS,
@@ -40,13 +41,17 @@ import { adapterOf } from './incoming.js';
 import { decryptToBuffer } from './process-version.js';
 import type { ItemProposer, ThreadAnswer } from './proposal-thread.js';
 import {
+  askLocalAi,
   BLANK_LETTERS,
   drawnOrNot,
   learnedContext,
   forProposal,
+  localAiFor,
   proposalContext,
   READ_DEADLINE_MS,
+  sealedLocalAi,
   unread,
+  type LocalAiReader,
   type ReadItemDeps,
 } from './read-item.js';
 import { atLowPriority, detectTools, pdfLocked, type Tools } from './tools.js';
@@ -190,6 +195,12 @@ export interface ReadingOptions {
   runMs?: number;
   /** How often a read looks whether it was cancelled: READING_CANCEL_POLL_MS, unless a test says. */
   cancelPollMs?: number;
+  /**
+   * The local AI (0.9.0, R4), where the operator set one up: asked for a
+   * household that has it on, as its batches are read — at the lowest
+   * priority, giving way to any paper the family is waiting on.
+   */
+  localAi?: LocalAiReader | null;
 }
 
 /** Whom a check reads as: the owner who asked. */
@@ -388,6 +399,8 @@ interface RunContext {
   /** The account whose own filings the rules are used on; null, none. */
   rulesFor: string | null;
   rules: LearnedContext | null;
+  /** The household has the local AI on (0081, R4): the check reads as its batches are read. */
+  localAi: boolean;
 }
 
 /**
@@ -411,6 +424,7 @@ async function runContext(
     me: reader.memberId,
     rulesFor: withRules ? reader.accountId : null,
     rules: withRules ? await learnedContext(trx, hh, reader.memberId) : null,
+    localAi: (await localAiFor(trx, hh, reader.memberId)).on,
   };
 }
 
@@ -461,6 +475,8 @@ const seenOf = (lv: ItemLevel): SmartSeen => ({
 class Again extends Error {}
 /** The check was cancelled or removed while a document was being read. */
 class Cancelled extends Error {}
+/** A paper the family waits on took the local AI from it (R4): it yields, and reads this one again. */
+class Yielded extends Error {}
 
 type Outcome = { kind: 'gone' } | { kind: 'read'; row: WorkRow };
 
@@ -599,6 +615,17 @@ async function readDocument(
       return row(unreadAs, notRead, notRead);
     }
     if (letters(text) < BLANK_LETTERS) return row(mode, notRead, notRead);
+    // The local AI (R4), where the household has it on: asked once, at the
+    // lowest priority. A paper the family waits on stops it, and the check
+    // yields: this document is read again later.
+    const offer = localAiOffer(ctx.proposal, { role: ctx.role, me: ctx.me });
+    const asked = await askLocalAi(opts.localAi, ctx.localAi, text, offer, {
+      priority: 'check',
+      signal,
+    });
+    if (cancel?.aborted) throw new Cancelled();
+    if (asked?.state === 'without' && asked.why === 'preempted') throw new Yielded();
+    const ai = asked?.state === 'replied' ? { reply: asked.body, offer } : undefined;
     const level = (answer: ThreadAnswer): SmartSeen => {
       if (answer.state === 'unavailable') throw new Again('the proposal thread could not be had');
       if (answer.state !== 'done') return notRead;
@@ -610,6 +637,7 @@ async function readDocument(
           proposal: answer.proposal,
           learnedClash: answer.clash ?? null,
           expiryLabels: answer.expiryLabels ?? [],
+          localAi: sealedLocalAi(asked, answer.localAi) ?? null,
           duplicate: null,
           renewal: null,
           folder: null,
@@ -621,10 +649,10 @@ async function readDocument(
         }),
       );
     };
-    const without = level(await opts.proposer.propose(text, ctx.proposal, null));
+    const without = level(await opts.proposer.propose(text, ctx.proposal, null, ai));
     const withRules =
       had.learned && had.learned.rules.length > 0
-        ? level(await opts.proposer.propose(text, ctx.proposal, had.learned))
+        ? level(await opts.proposer.propose(text, ctx.proposal, had.learned, ai))
         : without;
     if (cancel?.aborted) throw new Cancelled();
     return row(mode, without, withRules);
@@ -963,6 +991,8 @@ export async function workReadingCheck(
         work.tries = 0;
       } catch (err) {
         if (err instanceof Cancelled) return { next: null };
+        // The family's paper first (R4): not trouble, and read again later.
+        if (err instanceof Yielded) return { next: new Date(Date.now() + READING_YIELD_MS) };
         // Any trouble with a document, counted (R-2).
         work.tries += 1;
         deps.log('warn', 'a reading check could not read a document just now', {

@@ -1089,6 +1089,9 @@ export function shapeLessonOf(opts: {
   const taughtBy = (field: ShapeField, same: (v: unknown) => boolean) => {
     const c = opts.card?.[field];
     if (c && c.shape === true && c.cue === 'learned' && same(c.value)) return null;
+    // Nor what the local AI suggested, filed unchanged (0.9.0, R4): its echo
+    // is never a lesson, so it never makes a later card Ready by the back door.
+    if (c && c.local_ai === true && same(c.value)) return null;
     // With no card at all, what the accept says of itself (W2).
     const changed = opts.card ? !c || !same(c.value) : opts.vouched;
     const pages = !!c && c.cue !== 'learned' && c.from !== 'batch' && c.from !== 'folder';
@@ -1167,7 +1170,8 @@ export function shapeLessonOf(opts: {
 export type ShapeCard = Partial<
   Record<
     ShapeField,
-    { value: unknown; from: string; cue?: string | null; shape?: boolean } | undefined
+    | { value: unknown; from: string; cue?: string | null; shape?: boolean; local_ai?: boolean }
+    | undefined
   >
 >;
 

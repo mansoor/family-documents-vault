@@ -49,7 +49,9 @@ function at(
 describe('Settings → For owners → Reading (R2)', () => {
   it('is in For owners, says what the model does, and turns it off and on again', async () => {
     const state = at('/settings/owners', { readingModel: true });
-    const row = await screen.findByRole('link', { name: /Reading.*reading model, on or off/ });
+    const row = await screen.findByRole('link', {
+      name: /Reading.*reading model and the local AI, on or off/,
+    });
     fireEvent.click(row);
     await screen.findByRole('heading', { level: 1, name: 'Reading' });
     const box = await screen.findByRole('checkbox', { name: 'Use the reading model' });
@@ -78,7 +80,7 @@ describe('Settings → For owners → Reading (R2)', () => {
     const state = at('/settings/reading', { readingModel: true }, 'adult');
     expect(await screen.findByText('This isn’t something you can open.')).toBeInTheDocument();
     expect(
-      screen.getByText('Only an owner can turn the vault’s reading model on or off.'),
+      screen.getByText('Only an owner can change how the vault reads papers.'),
     ).toBeInTheDocument();
     expect(state.calls.some((c) => c.url.includes('/household/reading'))).toBe(false);
   });

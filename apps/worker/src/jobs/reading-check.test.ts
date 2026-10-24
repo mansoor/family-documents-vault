@@ -24,6 +24,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { extractText } from './extract-text.js';
 import { createQueue } from '../queue.js';
 import { ProposalThread, type ItemProposer } from './proposal-thread.js';
+import type { LocalAiReader } from './read-item.js';
 import {
   chooseDocuments,
   otherWorkWaiting,
@@ -935,6 +936,48 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the worker (R0)', () => 
     await runAll(again, { proposer: away });
     expect(await checkRow(again)).toMatchObject({ state: 'failed', failure: 'stopped' });
     expect(await sealedRow(again)).toBeUndefined();
+  }, 120_000);
+
+  it('the local AI (R4): asked only with the household’s switch on, at the lowest priority; stopped for a family’s paper, the check yields, with no trouble counted', async () => {
+    const asked: string[] = [];
+    let stopFirst = true;
+    const ai: LocalAiReader = {
+      read: async (_text, _offer, o) => {
+        asked.push(o.priority);
+        if (stopFirst) {
+          stopFirst = false;
+          return { state: 'without', why: 'preempted', ms: 1 };
+        }
+        return { state: 'without', why: 'timeout', ms: 1 };
+      },
+    };
+    // Off (as a household starts): never asked.
+    const off = await ask('Olivia');
+    await runAll(off, { localAi: ai });
+    expect(asked).toEqual([]);
+    await admin.query('delete from reading_check where id = $1', [off]);
+    await admin.query('update household set local_ai = true where id = $1', [hh]);
+    try {
+      const id = await ask('Olivia');
+      const first = await workReadingCheck(deps, job(id), { ...opts(), localAi: ai });
+      // A family's paper took the local AI: the check goes behind it, the document not read.
+      expect(first.next).toBeInstanceOf(Date);
+      const at = await checkRow(id);
+      expect(at?.state).toBe('running');
+      expect(at?.done).toBeLessThan(at?.total ?? 0);
+      await runAll(id, { localAi: ai });
+      const row = (
+        await admin.query<{ state: string; errors: number }>(
+          'select state, errors from reading_check where id = $1',
+          [id],
+        )
+      ).rows[0];
+      expect(row).toMatchObject({ state: 'done', errors: 0 });
+      expect(asked.length).toBeGreaterThan(1);
+      expect(asked.every((p) => p === 'check')).toBe(true);
+    } finally {
+      await admin.query('update household set local_ai = false where id = $1', [hh]);
+    }
   }, 120_000);
 
   it('an owner locked or paused: the check stops, with nothing kept (P-3)', async () => {

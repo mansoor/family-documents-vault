@@ -134,6 +134,8 @@ import type {
   ReadingCheckView,
   ReadingChecksList,
   ReadingSettings,
+  LocalAiNotice,
+  LocalAiSettingsView,
   MailInMailboxInput,
   SettingsCheckView,
   WatchFolderInput,
@@ -1564,6 +1566,30 @@ export function createApi(http: Http) {
     /** That code, typed in: the address confirmed (`204`); `422` wrong, `410` expired or used up. */
     confirmMailIn: (token: string, code: string) =>
       request<void>('/api/v1/mail-in/me/confirm', { method: 'POST', body: { code }, token }),
+    // ------------------------------------------- the local AI reader (0.9.0, R4)
+    /**
+     * The household's reading settings (`features.local_ai`): the local AI
+     * on or off, and the server's endpoint as the workers found it — its
+     * model and host, never set here (the operator's .env alone). An owner's
+     * alone (`403` for anybody else).
+     */
+    localAiSettings: (token: string) =>
+      request<LocalAiSettingsView>('/api/v1/household/reading', { token }),
+    /** The local AI on or off for the household; on only while it is set up (`409 local_ai_unavailable`). */
+    setLocalAi: (token: string, body: Pick<LocalAiSettingsView, 'local_ai'>) =>
+      request<LocalAiSettingsView>('/api/v1/household/reading', { method: 'PUT', body, token }),
+    /**
+     * For whoever adds papers (`features.local_ai`): whether this
+     * household's batches are read by the local AI, and on which host.
+     */
+    localAiNotice: (token: string) =>
+      request<LocalAiNotice>('/api/v1/household/reading/notice', { token }),
+    /** Test the local AI, in the worker: `202` and the check, asked after with `settingsCheck`. */
+    testLocalAi: (token: string) =>
+      request<SettingsCheckView>('/api/v1/household/reading/local-ai/test', {
+        method: 'POST',
+        token,
+      }),
     // ------------------------------------------- the Reading check (0.9.0, R0)
     /**
      * The household's Reading checks, newest first (`features.reading_check`):

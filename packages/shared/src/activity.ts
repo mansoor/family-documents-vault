@@ -119,6 +119,7 @@ export function activityKind(action: string): ActivityKind {
     case 'household.profile_updated':
     case 'household.timezone_changed':
     case 'household.reading_model_changed':
+    case 'household.local_ai_changed':
     case 'batch.version_undone':
       return 'changed';
   }
@@ -765,6 +766,9 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
         `${who} turned ${detail.reading_model === true ? 'on' : 'off'} the vault’s reading model`,
         true,
       );
+    // The local AI reader on or off for the household (0.9.0, R4).
+    case 'household.local_ai_changed':
+      return line(`${who} turned ${detail.local_ai === true ? 'on' : 'off'} the local AI`, true);
     // Which folder the scanner folder is, and how long scans are kept (0.9.0, O1).
     case 'watch_folder.folder_changed':
       return line(

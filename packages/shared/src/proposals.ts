@@ -76,6 +76,12 @@ export const PROPOSAL_CUES = [
    * the pages name (Phase 6, I4, learning.ts). Only a batch's item has it.
    */
   'learned',
+  /**
+   * Not the rules': the local AI on the household's own server (0.9.0, R4,
+   * local-ai.ts), weighed on the card as one more cue — never sure, and the
+   * card Check for it. Only a batch's item has it.
+   */
+  'local_ai',
 ] as const;
 export type ProposalCue = (typeof PROPOSAL_CUES)[number];
 
@@ -96,6 +102,7 @@ export const CUE_WORDS: Readonly<Record<ProposalCue, string>> = {
   issuing_body: 'The body that issues this kind of document, named on the page',
   issuing_country: 'The country the page says issued it',
   learned: 'Learned from your earlier choices for this issuer',
+  local_ai: 'Suggested by the local AI on this server',
 };
 
 /** One proposal: the value, how sure, and why. */

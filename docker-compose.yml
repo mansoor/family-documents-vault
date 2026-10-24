@@ -123,10 +123,22 @@ services:
       # your own network, unless these allow more.
       FDV_MAIL_IN_ALLOWED_PORTS: ${FDV_MAIL_IN_ALLOWED_PORTS:-}
       FDV_MAIL_IN_ALLOW_PRIVATE: ${FDV_MAIL_IN_ALLOW_PRIVATE:-}
+      # The local AI reader (README, "A local AI reader"): an Ollama-compatible
+      # model on this server or your own network — the `ollama` service below,
+      # say, as http://ollama:11434. The worker's alone: never give it to the
+      # API or the web. Unset, there is none; each household's owners turn it on.
+      FDV_LOCAL_AI_URL: ${FDV_LOCAL_AI_URL:-}
+      FDV_LOCAL_AI_MODEL: ${FDV_LOCAL_AI_MODEL:-}
+      FDV_LOCAL_AI_TIMEOUT_SECONDS: ${FDV_LOCAL_AI_TIMEOUT_SECONDS:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - vault-data:/data
       # - ./scanner:/watch
+    # Its own network as everything's, and the local AI's (R4): only the
+    # worker reaches the `ollama` service below.
+    networks:
+      - default
+      - local-ai
     depends_on:
       # The API runs migrations; the worker's queue schema depends on them.
       api:
@@ -147,6 +159,30 @@ services:
       api:
         condition: service_healthy
 
+  # The local AI reader (0.9.0, R4; README, "A local AI reader"): optional,
+  # and never started unless asked for —
+  #   docker compose --profile local-ai up -d
+  #   docker compose exec ollama ollama pull qwen2.5:3b-instruct
+  # with FDV_LOCAL_AI_URL=http://ollama:11434 and FDV_LOCAL_AI_MODEL in .env.
+  # No port is published, and it is on the `local-ai` network alone, which
+  # only the worker shares: the API, the web and the database never reach
+  # it, nor it them. Its models are kept in a volume of their own, never in
+  # the vault's images.
+  ollama:
+    image: ollama/ollama:0.40.2
+    profiles: [local-ai]
+    restart: unless-stopped
+    networks:
+      - local-ai
+    volumes:
+      - ollama-models:/root/.ollama
+
+networks:
+  # The worker and the local AI alone (R4). Not internal: `ollama pull`
+  # fetches models through it.
+  local-ai:
+
 volumes:
   db-data:
   vault-data:
+  ollama-models:

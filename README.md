@@ -379,6 +379,9 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_MAIL_IN_AUTHSERV_ID`                       | unset                                     | Your provider's `Authentication-Results` name (`mx.google.com` for Gmail): set, only mail it vouched for is taken, and an address may be confirmed from itself. Unset, items say "sender not verified".                 |
 | `FDV_MAIL_IN_ALLOWED_PORTS`                     | `993`                                     | The ports a mailbox set up in Settings may be on, comma-separated. `FDV_MAIL_IN_PORT` is yours, and not limited.                                                                                                        |
 | `FDV_MAIL_IN_ALLOW_PRIVATE`                     | `false`                                   | `true` lets a mailbox set up in Settings be at an address inside your own network (a mail server on the LAN). Off, the worker never connects to one for a household.                                                    |
+| `FDV_LOCAL_AI_URL`                              | unset                                     | An Ollama-compatible model on your own server or network, e.g. `http://ollama:11434`: `http://` or `https://`, no user or password in it. Worker only. Unset: no local AI. See [A local AI reader](#a-local-ai-reader). |
+| `FDV_LOCAL_AI_MODEL`                            | unset                                     | The model it asks for, pulled there first, e.g. `qwen2.5:3b-instruct`. Needed with `FDV_LOCAL_AI_URL`.                                                                                                                  |
+| `FDV_LOCAL_AI_TIMEOUT_SECONDS`                  | `120`                                     | How long it may take over one paper before the paper is read without it (5 to 300).                                                                                                                                     |
 | `FDV_OFFLINE_MAX_DAYS`                          | `90`                                      | How many days a phone may show the Essentials it keeps without reaching the vault (1 to 365). See [Essentials on a phone](#essentials-on-a-phone).                                                                      |
 | `FDV_RATE_LIMIT_PER_MINUTE`                     | `300`                                     | How many requests one address may make in a minute, beyond the tighter limits on signing in and opening links (60 to 100000). Raise it when many devices share one address.                                             |
 | `FDV_DISPLAY_NAME`                              | `Our family vault`                        | The vault's name until it is set up. From then on every screen, and the phone app, shows the family's name, given at setup.                                                                                             |
@@ -717,6 +720,97 @@ docker compose exec worker node apps/worker/dist/cli.mjs reading-check --househo
 
 It reads with the general reader alone: no Only me document, anybody's,
 and no learned rules (it says so beside the numbers). It keeps nothing.
+
+### A local AI reader
+
+If the server has the memory for it, a small language model can read the
+papers added many at a time — from Add → Many documents, the scanner folder
+and email — beside the vault's own rules. It runs on **your server, or a
+machine on your network you control** — prefer the same host, or https —
+never a cloud service, and it is **off** until you set it up and an owner
+turns it on for the household in **Settings → For owners → Reading**. Turned
+on, it reads **everyone's** uploads in the household, and each of them is
+told so where they add papers ("Read by the household's local AI, on
+ollama:11434"). Everything else works the same with it or without it.
+
+What it does, and does not:
+
+- It suggests the kind, whose it is, who issued it, the dates and the number,
+  for you to check. A detail it suggested says "suggested by the local AI",
+  and the card waits at **Check**; where it reads a paper differently from the
+  rules, the card keeps the rules' reading, says so, and waits too. **It never
+  makes a document Ready**, on its own or with anything else, and accepting
+  what it suggested teaches the vault nothing.
+- What the worker sends it, only to the address in `.env`, and nothing else:
+  - the start of the words (6,000 characters at most) of **every paper anybody
+    in the household adds many at a time** once an owner turns it on — **Only
+    me papers included**, since the reader runs on each uploader's own uploads;
+  - when an owner runs the Reading check with it on, the words of the **filed
+    documents that owner can see**;
+  - the household's kinds of document, and the **first names** of the family
+    the person who added it may file for (a teen, themselves alone) — **whole
+    names** where two of the family share a first name.
+
+  The model's server may keep what it is sent in its own logs (Ollama can), so
+  it should be one you control: the same host as the vault, or reached over
+  https. The vault's own log says how long it took, never a word of the paper
+  or of the answer.
+
+- What it answers is held to a fixed form, and each value to the page: a
+  date that is not among the paper's own dates, or a number or name not on
+  it, is dropped. Anything else — an answer that is not that form, or one
+  that tries to follow instructions written on the paper — is ignored.
+- Slow or not running, a paper is read without it once its time is up
+  (`FDV_LOCAL_AI_TIMEOUT_SECONDS`, 120 unless set), and its card says "Read
+  without the local AI". After three failures in a row it rests for five
+  minutes, and papers are read without it straight away.
+
+**Hardware.** A 3-billion-parameter model such as `qwen2.5:3b-instruct` needs
+about 2 GB of disk and 4 GB of free memory. On a processor alone it is slow:
+measured on a small four-core office PC (a 35 W Ryzen 5 PRO 3400GE, shared
+with other work), a paper took 28 seconds at the median and one in ten over
+a minute, one in a hundred over two (and is then read without it); a batch of a hundred papers takes
+the better part of an hour longer than without it. A graphics card Ollama can use makes it many times faster, and
+is optional. A smaller model (`qwen2.5:1.5b-instruct`) is quicker and reads
+less well.
+
+**Setting it up**, with the compose file's own optional `ollama` service
+(never started unless asked for, its models kept in a volume of their own):
+
+```bash
+docker compose --profile local-ai up -d
+docker compose exec ollama ollama pull qwen2.5:3b-instruct
+```
+
+Then in `.env`:
+
+```bash
+FDV_LOCAL_AI_URL=http://ollama:11434
+FDV_LOCAL_AI_MODEL=qwen2.5:3b-instruct
+```
+
+and `docker compose --profile local-ai up -d` again, so the worker reads them.
+**Settings → For owners → Reading** then says which model at which address,
+and whether it answered; **Test** sends it a one-line question of its own —
+none of your papers — and says how long it took. Turn it on there.
+
+The compose file's `ollama` is on a network of its own with the worker alone,
+and publishes no port. An Ollama already running on another machine you
+control will do too — over https where the papers cross your network
+(`FDV_LOCAL_AI_URL=https://ai.home.example:11434`, behind a TLS proxy of your
+own); plain http only on a network you trust end to end — or anything that
+answers Ollama's `/api/chat` with JSON schemas (Ollama 0.5 or later). It must
+be your own: the address is set in `.env` alone, never from the web, and may
+be a private one for that reason. `http://` or `https://`, with no user name
+or password in it. The worker resolves its name once for each paper, within
+the paper's time, talks to that address, and follows no redirect.
+
+On the vault's made-up test papers ([docs/smart-exit.md](docs/smart-exit.md),
+"A local AI (R4)"), `qwen2.5:3b-instruct` cut the papers needing typing by a
+quarter — mostly ones the vault could not otherwise name — and the cards Ready by a
+quarter too, where it read a paper otherwise than the rules. Run the
+[Reading check](#how-well-the-vault-reads-your-papers) with it on and off to
+see what it does on your own papers.
 
 ### Essentials on a phone
 

@@ -8,10 +8,13 @@ import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import {
   mailInTestResult,
+  type LocalAiTestFound,
   type MailInTestFound,
   type WatchBrowseResult,
   type WatchVerifyFound,
 } from '@fdv/shared';
+import { LocalAiClient } from '../local-ai.js';
+import { startFakeOllama } from '../local-ai-test-server.js';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { childEnv } from './child-env.js';
@@ -452,7 +455,41 @@ describe.skipIf(!testAdminUrl())('Test the mailbox and Verify, asked from Settin
     await tdb?.drop();
   });
 
-  const ask = async (kind: 'folder' | 'browse' | 'mailbox', p: string | null) =>
+  it('Test the local AI (R4): a tiny prompt of its own, the model, the host and how long — or why not', async () => {
+    const fake = await startFakeOllama();
+    try {
+      const client = new LocalAiClient({
+        url: new URL(fake.url),
+        model: 'qwen2.5:3b-instruct',
+        timeoutMs: 5_000,
+      });
+      const { d } = deps();
+      const id = await ask('local_ai', null);
+      await runSettingsCheck({ ...d, localAi: client }, { household_id: hh, check_id: id });
+      const got = (await result(id))?.result as unknown as LocalAiTestFound;
+      expect(got).toMatchObject({
+        problem: null,
+        model: 'qwen2.5:3b-instruct',
+        host: `127.0.0.1:${fake.port}`,
+      });
+      expect(typeof got.latency_ms).toBe('number');
+      // No paper's words: one fixed line.
+      expect(fake.requests[0]?.body).toMatch(/Reply with the single word/);
+      // A model not pulled is a 404.
+      fake.answers = [{ status: 404 }];
+      const nope = await ask('local_ai', null);
+      await runSettingsCheck({ ...d, localAi: client }, { household_id: hh, check_id: nope });
+      expect((await result(nope))?.result).toMatchObject({ problem: 'no_model' });
+      // None set up on this server.
+      const none = await ask('local_ai', null);
+      await runSettingsCheck(d, { household_id: hh, check_id: none });
+      expect((await result(none))?.result).toMatchObject({ problem: 'not_set_up', model: null });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  const ask = async (kind: 'folder' | 'browse' | 'mailbox' | 'local_ai', p: string | null) =>
     (
       await admin.query<{ id: string }>(
         'insert into settings_check (household_id, kind, path) values ($1, $2, $3) returning id',

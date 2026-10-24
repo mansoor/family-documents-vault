@@ -55,6 +55,8 @@ import {
   RENEWALS_MAX,
   storedExpiryLabels,
   storedLearnedClash,
+  storedLocalAi,
+  type StoredLocalAi,
   periodic,
   storedPaper,
   storedProposal,
@@ -2616,7 +2618,12 @@ export class BatchService {
     const levelling = await this.levelling(trx, p, batchIds);
     const proposed = new Map<
       string,
-      { proposal: DetailProposal; clash: LearnedClash; expiryLabels?: string[] } | null
+      {
+        proposal: DetailProposal;
+        clash: LearnedClash;
+        expiryLabels?: string[];
+        localAi?: StoredLocalAi | null;
+      } | null
     >();
     for (const r of rows) {
       if (r.state === 'received' && r.read_state === 'read' && (!only || r.id === only)) {
@@ -2690,6 +2697,8 @@ export class BatchService {
         proposal: proposed.get(r.id)?.proposal ?? null,
         learnedClash: proposed.get(r.id)?.clash ?? null,
         expiryLabels: proposed.get(r.id)?.expiryLabels ?? [],
+        // The local AI's cue (R4): it never makes the card Ready.
+        localAi: proposed.get(r.id)?.localAi ?? null,
         duplicate,
         // A near match makes it Check (S1): Accept all Ready leaves it.
         renewal: renewals.get(r.id)?.[0] ?? null,
@@ -2885,6 +2894,7 @@ export class BatchService {
         proposal: DetailProposal;
         clash: LearnedClash;
         expiryLabels: string[];
+        localAi: StoredLocalAi | null;
       } | null> => {
         if (!r.proposals_sealed) return null;
         this.opts.opened?.(r.id);
@@ -2902,6 +2912,8 @@ export class BatchService {
             clash: storedLearnedClash(raw),
             // The kinds whose expiry the page labels (R3, the re-check).
             expiryLabels: storedExpiryLabels(raw),
+            // What the local AI read of it, where the household has it on (R4).
+            localAi: storedLocalAi(raw),
           };
         } catch {
           return null;

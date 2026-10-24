@@ -28,9 +28,14 @@ import {
   type LearnedClash,
   type LearnedContext,
   type LearnedShape,
+  localAiOffer,
+  type LocalAiOffer,
+  type LocalAiReading,
   type PaperReading,
   type ProposalContext,
   type ProposalKind,
+  type Role,
+  type StoredLocalAi,
 } from '@fdv/shared';
 import { StorageError, type StorageAdapter } from '@fdv/storage';
 import { sql, type ExpressionBuilder } from 'kysely';
@@ -38,6 +43,7 @@ import { extractText } from './extract-text.js';
 import { adapterOf, type IncomingDeps } from './incoming.js';
 import { decryptToBuffer } from './process-version.js';
 import type { ItemProposer } from './proposal-thread.js';
+import type { LocalAiAnswer, LocalAiClient } from '../local-ai.js';
 import { detectTools, pdfLocked, type Tools } from './tools.js';
 import { WORD_MIME } from './word-text.js';
 
@@ -149,6 +155,63 @@ export interface ReadOptions {
   tools?: Tools;
   /** The read's deadline: READ_DEADLINE_MS, unless a test shortens it. */
   deadlineMs?: number;
+  /**
+   * The local AI reader (0.9.0, R4), where the operator set one up
+   * (FDV_LOCAL_AI_URL): asked only for a household that has it on.
+   */
+  localAi?: LocalAiReader | null;
+}
+
+/** What reading needs of the local AI's client (local-ai.ts): a test may stand in. */
+export type LocalAiReader = Pick<LocalAiClient, 'read'>;
+
+/**
+ * Whether a household has the local AI on (0081, R4), and what the uploader
+ * may be offered: their role, for whom they may file (a teen, themselves).
+ */
+export async function localAiFor(
+  trx: Db,
+  hh: string,
+  memberId: string,
+): Promise<{ on: boolean; role: Role | null }> {
+  const row = await trx
+    .selectFrom('household')
+    .select('local_ai')
+    .where('id', '=', hh)
+    .executeTakeFirst();
+  const who = await trx
+    .selectFrom('account_household')
+    .select('role')
+    .where('household_id', '=', hh)
+    .where('member_id', '=', memberId)
+    .executeTakeFirst();
+  return { on: row?.local_ai === true, role: who?.role ?? null };
+}
+
+/**
+ * The local AI asked about a paper's words (R4), for a household that has
+ * it on: its reply, to be read on the proposal thread, or why there is none.
+ * Nothing is asked of it otherwise. `null`: not asked.
+ */
+export async function askLocalAi(
+  reader: LocalAiReader | null | undefined,
+  on: boolean,
+  text: string,
+  offer: LocalAiOffer,
+  o: { priority: 'interactive' | 'check'; signal?: AbortSignal },
+): Promise<LocalAiAnswer | null> {
+  if (!reader || !on) return null;
+  return reader.read(text, offer, o);
+}
+
+/** What is sealed of the local AI beside the proposal (R4): nothing where it was not asked. */
+export function sealedLocalAi(
+  asked: LocalAiAnswer | null,
+  read: LocalAiReading | null | undefined,
+): StoredLocalAi | undefined {
+  if (!asked) return undefined;
+  if (asked.state === 'replied' && read) return { state: 'read', fields: read };
+  return { state: 'without' };
 }
 
 /**
@@ -365,6 +428,7 @@ export async function readItem(
       ctx: ProposalContext;
       learned: LearnedContext | null;
       guestNames: ReadonlySet<string>;
+      localAi: { on: boolean; role: Role | null };
       plain: Buffer;
     };
     let got: {
@@ -372,6 +436,7 @@ export async function readItem(
       ctx: ProposalContext;
       learned: LearnedContext | null;
       guestNames: ReadonlySet<string>;
+      localAi: { on: boolean; role: Role | null };
       adapter: StorageAdapter;
     };
     try {
@@ -383,6 +448,10 @@ export async function readItem(
           ctx: await proposalContext(trx, hh, f.requester_member_id),
           learned: await learnedContext(trx, hh, f.requester_member_id, deps.keys),
           guestNames: await guestNames(trx),
+          // The local AI (R4): only where the operator set one up.
+          localAi: opts.localAi
+            ? await localAiFor(trx, hh, f.requester_member_id)
+            : { on: false, role: null },
         };
       });
     } catch (err) {
@@ -442,12 +511,22 @@ export async function readItem(
       await failed('blank');
       return;
     }
+    // The local AI (R4), for a household that has it on: the paper's first
+    // words and what the uploader may be offered, to the operator's own
+    // endpoint alone; its reply read on the thread, beside the rules. Slow
+    // or down, and the paper is read without it, within its time.
+    const offer = localAiOffer(had.ctx, { role: had.localAi.role, me: f.requester_member_id });
+    const asked = await askLocalAi(opts.localAi, had.localAi.on, text, offer, {
+      priority: 'interactive',
+      signal: deadline,
+    });
     // The thread reads untrusted words: it is given no account's hash and
     // no key to make one (the R1 re-check, N5).
     const answer = await opts.proposer.propose(
       text,
       had.ctx,
       had.learned ? withoutAccounts(had.learned) : had.learned,
+      asked?.state === 'replied' ? { reply: asked.body, offer } : undefined,
     );
     if (answer.state === 'unavailable') {
       throw new NotNow('the proposal thread could not be had', 'vault');
@@ -493,6 +572,7 @@ export async function readItem(
                   // P2), here: the thread is never told of a guest (I2).
                   settled.paper ? paperWithoutNames(settled.paper, had.guestNames) : undefined,
                   answer.expiryLabels ?? [],
+                  sealedLocalAi(asked, answer.localAi),
                 ),
               ),
               'utf8',
@@ -506,6 +586,15 @@ export async function readItem(
       item: f.id,
       // What was proposed, by field, never its value.
       proposed: Object.keys(settled.proposal),
+      // The local AI (R4): whether it read it, which fields, and how long — never what.
+      ...(asked
+        ? {
+            local_ai: sealedLocalAi(asked, answer.localAi)?.state,
+            ...(answer.localAi ? { local_ai_fields: Object.keys(answer.localAi) } : {}),
+            ...(asked.state === 'without' ? { local_ai_why: asked.why } : {}),
+            local_ai_ms: asked.ms,
+          }
+        : {}),
     });
   } catch (err) {
     // Anything else — the database a moment away, the disk full — the vault's.
@@ -538,12 +627,15 @@ const sealedProposal = (
   paper: PaperReading | undefined,
   /** The kinds complete without an expiry whose expiry label the page has (R3, the re-check). */
   expiryLabels: readonly string[] = [],
+  /** What the local AI read, or that it was read without it (R4); nothing where it was not asked. */
+  localAi?: StoredLocalAi,
 ) => ({
   v: 1,
   proposal,
   ...(clash && Object.keys(clash).length > 0 ? { learned_clash: clash } : {}),
   ...(paper ? { paper } : {}),
   ...(expiryLabels.length > 0 ? { expiry_labels: expiryLabels } : {}),
+  ...(localAi ? { local_ai: localAi } : {}),
 });
 
 /**

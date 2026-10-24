@@ -13,7 +13,7 @@ import {
   ACCEPT_UNDO_MINUTES,
   correctionsOf,
   familyWords,
-  learnedIssuerKey,
+  lessonIssuer,
   learningOf,
   LEARNED_RULES_MAX,
   LEARNING_OUTCOMES_KEPT,
@@ -235,7 +235,8 @@ async function learnShape(
   const lesson = shapeLessonOf({
     paper: x.paper,
     filed: x.filed,
-    issuer: learnedIssuerKey(x.filed.issued_by?.trim() || null),
+    // Never the local AI's own issuer, filed unchanged (the R4 review, L7).
+    issuer: lessonIssuer(x.filed.issued_by, x.card),
     role: p.role,
     keeps: x.keeps,
     reviewed: x.reviewed,

@@ -26,6 +26,8 @@ export interface CapabilityConfig {
   readingModel?: boolean;
   /** Email in (S4): the household mailbox set up, and checked by the worker in its last two polls. */
   mailIn?: boolean;
+  /** The local AI reader (0.9.0, R4): a worker has one set up in .env, and said so lately. */
+  localAi?: boolean;
 }
 
 /**
@@ -161,6 +163,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0 (R2): the vault's reading model, and its switch for owners —
       // only while the worker has its weights loaded (the R2 review).
       reading_model: config.readingModel === true,
+      // 0.9.0 (R4): the local AI reader — only while a worker has one set
+      // up in .env and said so lately; each household's owners turn it on.
+      local_ai: config.localAi === true,
       // 0.9.0 (C1): a collection from a checklist, read, matched and kept.
       collection_checklist: true,
       // 0.9.0 (N1): notes kept on their own, a document with no file.
