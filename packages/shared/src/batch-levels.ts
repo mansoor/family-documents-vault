@@ -207,6 +207,12 @@ export interface ItemSuggestion<T> {
    * R3): the card is Check for it. Absent from a vault before 0.9.0.
    */
   corrected?: true;
+  /**
+   * The vault's reading model suggested this kind where the rules found
+   * none (0.9.0, R2) — "suggested by the vault's reading model", never sure.
+   * Only beside `pages`, and only for a kind. Absent from a vault before 0.9.0.
+   */
+  model?: true;
 }
 
 /**
@@ -418,6 +424,8 @@ export function levelItem(input: LevelInput): ItemLevel {
     folder: string;
     other: string;
     rules: boolean;
+    /** The other is the reading model's alone (R2): the folder's stands. */
+    model?: boolean;
   }> = [];
 
   /**
@@ -444,15 +452,35 @@ export function levelItem(input: LevelInput): ItemLevel {
         confidence: p.confidence,
         cue: p.cue,
         ...(p.shape ? { shape: true as const } : {}),
+        // The reading model suggested it (R2).
+        ...(field === 'type_key' && p.model === 'alone' ? { model: true as const } : {}),
       };
       if (fromFolder === null) return said;
+      // The reading model's kind alone never stands over the folder's (R2):
+      // the folder's is shown, and both are said.
+      if (p.model === 'alone' && fromFolder !== p.value) {
+        folderClashes.push({
+          field,
+          folder: fromFolder,
+          other: p.value,
+          rules: false,
+          model: true,
+        });
+        return { value: fromFolder, from: 'folder', confidence: FOLDER_CONFIDENCE, cue: null };
+      }
       if (fromFolder === p.value) {
         // Raised from what the pages alone said (a rule's raising aside, I4-4);
         // to a sure reading only where the pages alone were nearly sure — or,
-        // for the rules alone, where the rule is sure already.
+        // for the rules alone, where the rule is sure already. Never a kind
+        // the reading model suggested alone, or doubted (R2).
         const sure = ITEM_SURE[field];
         const raised = Math.round((own + FOLDER_AGREE_RAISE) * 100) / 100;
-        const mayBeSure = rulesOnly ? p.confidence >= sure : own >= FOLDER_AGREE_FLOOR;
+        const mayBeSure =
+          p.model === 'alone' || p.model === 'doubts'
+            ? false
+            : rulesOnly
+              ? p.confidence >= sure
+              : own >= FOLDER_AGREE_FLOOR;
         const to = Math.min(
           raised,
           mayBeSure ? FOLDER_AGREE_MAX : Math.round((sure - 0.01) * 100) / 100,
@@ -619,7 +647,14 @@ export function levelItem(input: LevelInput): ItemLevel {
   // rules') stands on the card, and both are said.
   for (const c of folderClashes) {
     const other = c.rules ? 'your earlier choices say' : 'the pages';
-    if (c.field === 'type_key') {
+    if (c.field === 'type_key' && c.model) {
+      // The reading model's kind alone (R2): the folder's stands.
+      check({
+        code: 'clash_folder',
+        kind: 'check',
+        words: `The folder says ${shortName(kindOf(c.folder)) ?? 'another kind'}; the vault’s reading model suggests ${aKind(shortName(kindOf(c.other)) ?? 'kind')}`,
+      });
+    } else if (c.field === 'type_key') {
       check({
         code: 'clash_folder',
         kind: 'check',
@@ -645,10 +680,29 @@ export function levelItem(input: LevelInput): ItemLevel {
     s?.from === 'pages' || s?.from === 'learned' || s?.from === 'folder';
   if (kind) {
     if (guessed(kindS) && (kindS?.confidence ?? 0) < ITEM_SURE.type_key) {
+      // What the vault's reading model said of it (R2): it suggested this
+      // kind alone, or read the page as another.
+      const doubted =
+        kindS?.from !== 'folder' &&
+        pages.type_key?.value === kindS?.value &&
+        pages.type_key?.model === 'doubts'
+          ? pages.type_key.model_kind
+          : undefined;
       check({
         code: 'kind_unsure',
         kind: 'check',
-        words: kindS?.from === 'folder' ? 'Kind from the folder name' : 'Kind unsure',
+        words:
+          kindS?.from === 'folder'
+            ? 'Kind from the folder name'
+            : kindS?.model === true
+              ? 'Kind suggested by the vault’s reading model'
+              : doubted
+                ? `Kind unsure: the vault’s reading model reads it as ${
+                    kindOf(doubted)
+                      ? aKind(shortName(kindOf(doubted)) ?? 'kind')
+                      : 'none of its kinds'
+                  }`
+                : 'Kind unsure',
       });
     }
     if (!personS) {
@@ -828,6 +882,14 @@ export function storedProposal(raw: unknown): DetailProposal {
       ...((f as { learned?: unknown }).learned === true ? { learned: true } : {}),
       ...((f as { shape?: unknown }).shape === true ? { shape: true } : {}),
       ...((f as { corrected?: unknown }).corrected === true ? { corrected: true } : {}),
+      // What the reading model said of a kind (R2): a word of two, and a kind's key.
+      ...(['alone', 'doubts'].includes(String((f as { model?: unknown }).model))
+        ? { model: (f as { model: string }).model }
+        : {}),
+      ...(typeof (f as { model_kind?: unknown }).model_kind === 'string' &&
+      /^[a-z0-9_]{1,64}$/.test((f as { model_kind: string }).model_kind)
+        ? { model_kind: (f as { model_kind: string }).model_kind }
+        : {}),
       ...(typeof (f as { page_confidence?: unknown }).page_confidence === 'number' &&
       (f as { page_confidence: number }).page_confidence >= 0 &&
       (f as { page_confidence: number }).page_confidence <= 1

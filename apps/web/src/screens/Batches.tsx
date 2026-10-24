@@ -1303,6 +1303,11 @@ function ItemKind({ item, types }: { item: BatchItemView; types: DocumentTypeVie
         </span>
       ) : kind.from === 'batch' || kind.confidence === null || kind.cue === null ? (
         <span className="mark-batch">from the batch</span>
+      ) : kind.model === true ? (
+        // The vault's reading model's (0.9.0, R2).
+        <span className="mark-sugg" title="Suggested by the vault’s reading model">
+          reading model · {Math.round(kind.confidence * 100)}%
+        </span>
       ) : (
         <SuggestedMark confidence={kind.confidence} cue={kind.cue} />
       )}

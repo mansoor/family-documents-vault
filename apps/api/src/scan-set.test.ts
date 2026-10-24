@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -29,7 +30,10 @@ import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
  * FDV_SCAN_SET_SPLITS (default "tune,held-out"), FDV_SCAN_SET_PER (papers
  * of each cause, default 12), FDV_SCAN_SET_DIR (a set written before by
  * the script, read rather than drawn again), FDV_SCAN_SET_OUT (the JSON it
- * writes).
+ * writes). Since 0.9.0 (R2), FDV_SMART_TEXT_CACHE (each file's words by its
+ * bytes' hash, kept between runs: its seconds are then the cache's, not
+ * OCR's) and FDV_READING_MODEL=off (the household's reading model off,
+ * through the API, for the "before").
  */
 
 const RUN = process.env.FDV_SCAN_SET === '1';
@@ -41,6 +45,9 @@ const PER = Number(process.env.FDV_SCAN_SET_PER ?? '12');
 const DIR = process.env.FDV_SCAN_SET_DIR ?? null;
 const OUT = process.env.FDV_SCAN_SET_OUT ?? path.join(tmpdir(), 'fdv-scan-set.json');
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const CACHE = process.env.FDV_SMART_TEXT_CACHE ?? null;
+/** The household's reading model (R2): on, as a vault is, unless said. */
+const READING_MODEL = process.env.FDV_READING_MODEL !== 'off';
 
 type ScanEntry = SmartEntry & {
   mime: string;
@@ -156,8 +163,17 @@ describe.runIf(RUN && testAdminUrl())('scans, measured (R3)', () => {
     extractText: Extract;
   };
   let thread: { close(): Promise<void> };
+  /** Each file's words, by its bytes' hash (FDV_SMART_TEXT_CACHE). */
+  const texts = new Map<string, Extracted | null>();
 
   beforeAll(async () => {
+    if (CACHE && existsSync(CACHE)) {
+      for (const [k, v] of Object.entries(
+        JSON.parse(readFileSync(CACHE, 'utf8')) as Record<string, Extracted | null>,
+      )) {
+        texts.set(k, v);
+      }
+    }
     w = {
       ...(await load<Pick<typeof w, 'readNextBatchItem'>>('apps/worker/src/jobs/read-item.ts')),
       ...(await load<Pick<typeof w, 'ProposalThread'>>('apps/worker/src/jobs/proposal-thread.ts')),
@@ -204,6 +220,11 @@ describe.runIf(RUN && testAdminUrl())('scans, measured (R3)', () => {
       };
       expect(
         (await call('PUT', '/api/v1/profile', { country: 'GB', timezone: 'Europe/London' }))
+          .statusCode,
+      ).toBe(200);
+      // The vault's reading model (R2), off for the "before".
+      expect(
+        (await call('PUT', '/api/v1/household/reading', { reading_model: READING_MODEL }))
           .statusCode,
       ).toBe(200);
       const people = [
@@ -253,7 +274,11 @@ describe.runIf(RUN && testAdminUrl())('scans, measured (R3)', () => {
       let last: { text: string; seconds: number; pages: number } | null = null;
       const extract: Extract = async (source, mime, o) => {
         const started = process.hrtime.bigint();
-        const got = await w.extractText(source, mime, o);
+        const sha = createHash('sha256').update(readFileSync(source)).digest('hex');
+        const got = texts.has(sha)
+          ? (texts.get(sha) ?? null)
+          : await w.extractText(source, mime, o);
+        texts.set(sha, got);
         last = {
           text: got?.text ?? '',
           seconds: Number(process.hrtime.bigint() - started) / 1e9,
@@ -392,8 +417,10 @@ describe.runIf(RUN && testAdminUrl())('scans, measured (R3)', () => {
         const r = await run(split);
         results[split] = { ...r, seconds: Math.round((Date.now() - started) / 1000) };
         wrong.push(r.all.wrong_ready);
+        results.reading_model = READING_MODEL ? 'on' : 'off';
         mkdirSync(path.dirname(OUT), { recursive: true });
         writeFileSync(OUT, `${JSON.stringify(results, null, 2)}\n`);
+        if (CACHE) writeFileSync(CACHE, JSON.stringify(Object.fromEntries(texts)));
         const line = (name: string, t: Record<string, unknown>) =>
           `${name.padEnd(18)} ${[
             'files',

@@ -42,6 +42,10 @@ begin
   if to_regclass('public.watch_dir') is not null then
     revoke insert, update, delete on public.watch_dir from fdv_app;
   end if;
+  -- Whether the worker has the reading model (0079, the R2 review): the same.
+  if to_regclass('public.reading_model_state') is not null then
+    revoke insert, update, delete on public.reading_model_state from fdv_app;
+  end if;
   -- The household mailbox as the worker last had it (0069): the same.
   if to_regclass('public.mail_in_server') is not null then
     revoke insert, update, delete on public.mail_in_server from fdv_app;

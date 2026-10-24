@@ -99,6 +99,12 @@ export const OWNER_ROWS: SettingsRow[] = [
     title: 'Email in',
     note: 'The family emails documents to their Inbox',
   },
+  // The vault's reading model, on or off (0.9.0, R2).
+  {
+    to: '/settings/reading',
+    title: 'Reading',
+    note: 'The vault’s reading model, on or off',
+  },
   // The Reading check (0.9.0, R0): how well the vault reads the family's papers.
   {
     to: '/settings/reading-check',
@@ -213,7 +219,7 @@ export function settingsSections(
       key: 'owners',
       to: '/settings/owners',
       label: 'For owners',
-      note: 'Where files are kept, where email comes from, the scanner folder, email in, the Reading check',
+      note: 'Where files are kept, where email comes from, the scanner folder, email in, reading',
       holds: at(
         '/settings/owners',
         '/settings/storage',

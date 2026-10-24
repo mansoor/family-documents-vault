@@ -133,6 +133,7 @@ import type {
   ReadingCheckInput,
   ReadingCheckView,
   ReadingChecksList,
+  ReadingSettings,
   MailInMailboxInput,
   SettingsCheckView,
   WatchFolderInput,
@@ -1565,6 +1566,16 @@ export function createApi(http: Http) {
     /** A check removed, its numbers and misses with it (`204`). */
     deleteReadingCheck: (token: string, id: string) =>
       request<void>(`/api/v1/reading-checks/${enc(id)}`, { method: 'DELETE', token }),
+    /**
+     * The household's reading settings (`features.reading_model`, 0.9.0 R2):
+     * whether the vault's reading model reads batches beside the rules. An
+     * owner's alone (`403` for anybody else).
+     */
+    readingSettings: (token: string) =>
+      request<ReadingSettings>('/api/v1/household/reading', { token }),
+    /** The reading model turned on or off; an owner's. */
+    setReadingSettings: (token: string, body: Pick<ReadingSettings, 'reading_model'>) =>
+      request<ReadingSettings>('/api/v1/household/reading', { method: 'PUT', body, token }),
     // ------------------------------------- computers that send scans (0.8.0, D1)
     /**
      * A one-time code for pairing a computer (`features.device_uploads`):

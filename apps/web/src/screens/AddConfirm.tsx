@@ -744,6 +744,23 @@ function CardMark(props: {
       </>
     );
   }
+  if (mark.model === true) {
+    // The vault's reading model suggested this kind (0.9.0, R2): never sure.
+    return (
+      <>
+        <span
+          className="mark-sugg mark-model"
+          title="Suggested by the small reading model that runs on this server, beside the vault’s rules"
+        >
+          suggested by the vault’s reading model · {Math.round(mark.confidence * 100)}%
+        </span>
+        {agrees}
+        {sure !== undefined && mark.confidence < sure && (
+          <span className="mark-unsure">unsure</span>
+        )}
+      </>
+    );
+  }
   return (
     <>
       <SuggestedMark confidence={mark.confidence} cue={mark.cue} />

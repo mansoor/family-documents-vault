@@ -1,8 +1,9 @@
 import { openBytes, readingMissesBinding, type ScopeKeys } from '@fdv/crypto';
-import { withPrincipal, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   numbersOnly,
   READING_CHECK_N,
+  READING_MODEL_STALE_MS,
   type ReadingCheckDetail,
   type ReadingCheckFailure,
   type ReadingCheckInput,
@@ -13,9 +14,10 @@ import {
   type ReadingChecksList,
   type ReadingMiss,
   type ReadingMissView,
+  type ReadingSettings,
 } from '@fdv/shared';
 import { sql } from 'kysely';
-import type { Principal } from '../auth/service.js';
+import type { Principal, RequestMeta } from '../auth/service.js';
 import { seenDocument, type Enqueue } from '../documents/service.js';
 import { ApiError } from '../errors.js';
 
@@ -352,6 +354,88 @@ export class ReadingCheckService {
       // What it read so far, let go at once (P-2): "nothing it read was kept".
       await trx.deleteFrom('reading_check_sealed').where('check_id', '=', id).execute();
       return this.view(p, await this.rows(trx).where('c.id', '=', id).executeTakeFirstOrThrow());
+    });
+  }
+
+  /**
+   * GET /household/reading (0.9.0, R2): whether the vault's reading model
+   * reads the household's batches beside the rules. An owner's.
+   */
+  async readingSettings(p: Principal): Promise<ReadingSettings> {
+    ownerOnly(p);
+    // Asked before the transaction, never inside it: a second connection
+    // taken while one is held starves the pool (the R2 re-check).
+    const loaded = await this.modelLoaded();
+    return withPrincipal(this.db, p, async (trx) => {
+      const row = await trx
+        .selectFrom('household')
+        .select('reading_model')
+        .where('id', '=', p.householdId)
+        .executeTakeFirst();
+      return { reading_model: row?.reading_model !== false, loaded };
+    });
+  }
+
+  /**
+   * Whether the workers have the reading model's weights loaded, as they
+   * said lately (reading_model_state, 0079; the R2 review and its re-check):
+   * at least one worker said so within READING_MODEL_STALE_MS, and every
+   * worker that said anything in that time said "loaded". None said lately —
+   * stopped, or a row a restore brought back — no.
+   */
+  async modelLoaded(): Promise<boolean> {
+    // Not tenant data: the installation's, as watch_dir is. Ages by the
+    // database's own clock, as the worker's rows are written by it.
+    const rows = await this.db
+      .selectFrom('reading_model_state')
+      .select('state')
+      .where(
+        'checked_at',
+        '>',
+        sql<Date>`now() - make_interval(secs => ${READING_MODEL_STALE_MS / 1000})`,
+      )
+      .execute();
+    return rows.length > 0 && rows.every((r) => r.state === 'loaded');
+  }
+
+  /**
+   * PUT /household/reading (R2): the reading model on or off, an owner's
+   * (and the database's: 0079's household_reading_model_rule). Pages read
+   * from now on are read so; a card already read keeps what it was read
+   * with. Said in the activity log, for the owners.
+   */
+  async setReadingSettings(
+    p: Principal,
+    input: ReadingSettings,
+    meta: RequestMeta,
+  ): Promise<ReadingSettings> {
+    ownerOnly(p);
+    // Before the transaction and its lock, never inside them (the R2 re-check).
+    const loaded = await this.modelLoaded();
+    return withPrincipal(this.db, p, async (trx) => {
+      const before = await trx
+        .selectFrom('household')
+        .select('reading_model')
+        .where('id', '=', p.householdId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (before && before.reading_model !== input.reading_model) {
+        await trx
+          .updateTable('household')
+          .set({ reading_model: input.reading_model })
+          .where('id', '=', p.householdId)
+          .execute();
+        await appendAudit(trx, {
+          householdId: p.householdId,
+          actorAccountId: p.accountId,
+          action: 'household.reading_model_changed',
+          objectType: 'household',
+          objectId: p.householdId,
+          detail: { reading_model: input.reading_model },
+          ip: meta.ip,
+        });
+      }
+      return { reading_model: input.reading_model, loaded };
     });
   }
 

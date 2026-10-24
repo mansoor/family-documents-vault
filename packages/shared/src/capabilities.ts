@@ -316,6 +316,13 @@ export interface CapabilityFeatures {
    */
   reading_check?: boolean;
   /**
+   * The vault's reading model (0.9.0, R2): a small local text classifier
+   * that reads a batch's pages beside the rules, one more cue for the kind
+   * (`ItemSuggestion.model`); GET and PUT /household/reading turn it on or
+   * off, an owner's. Absent from older vaults.
+   */
+  reading_model?: boolean;
+  /**
    * A collection from a checklist (0.9.0, C1): GET, POST and PUT
    * /collections/{id}/checklist and POST /collections/{id}/checklist/add —
    * a list read with plain rules, matched against what the reader may see,

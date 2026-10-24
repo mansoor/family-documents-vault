@@ -109,6 +109,8 @@ describe('buildCapabilities', () => {
       tag_management: true,
       // R0: the Reading check, an owner's.
       reading_check: true,
+      // R2: the vault's reading model — only while the worker has its weights (the R2 review).
+      reading_model: false,
       // C1 (0.9.0): a collection from a checklist.
       collection_checklist: true,
       // N1 (0.9.0): notes kept on their own.
@@ -117,6 +119,7 @@ describe('buildCapabilities', () => {
       household_timezone: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
+    expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);
     // S4: email in, reserved as email_ingest since 1.0, only while the worker
     // has a mailbox set up and checked it lately.
     expect(buildCapabilities({ ...config, mailIn: true }).features.email_ingest).toBe(true);

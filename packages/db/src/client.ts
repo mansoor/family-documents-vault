@@ -71,6 +71,8 @@ export interface Schema {
      * unless an owner turned it off; off, no link serves one.
      */
     only_me_shareable: Generated<boolean>;
+    /** The vault's reading model on or off for the household (0079, 0.9.0 R2): an owner's. */
+    reading_model: Generated<boolean>;
   };
 
   member: {
@@ -1389,6 +1391,14 @@ export interface Schema {
     own_dirs: Generated<string[]>;
     /** FDV_WATCH_ROOTS refused: `/`, or holding one of the vault's own (the O1 review, M4). */
     refused_roots: Generated<string[]>;
+  };
+
+  /** Whether the worker has the vault's reading model (0079, the R2 review): the worker's to write. */
+  reading_model_state: {
+    /** The worker process: its host and process id. */
+    worker: string;
+    state: 'loaded' | 'missing' | 'corrupt';
+    checked_at: GeneratedTimestamp;
   };
 
   /**

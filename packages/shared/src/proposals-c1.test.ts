@@ -124,7 +124,12 @@ describe('pay statements (C1)', () => {
       ),
       ctx,
     );
-    expect(likePay.type_key?.value).toBe('tax_form');
+    // Since the R2 re-check, its title no longer rules a payslip out on a
+    // page with a payslip's pay ("Your P60 End of Year Certificate will be
+    // issued in April" is said on payslips): never a payslip, and nothing
+    // sure — the card waits for a look.
+    expect(likePay.type_key?.value).not.toBe('pay_statement');
+    expect(likePay.type_key?.confidence ?? 0).toBeLessThan(0.85);
     const w2 = proposeDetails(
       lines(
         'Form W-2 Wage and Tax Statement 2025',

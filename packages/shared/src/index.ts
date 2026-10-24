@@ -28,6 +28,8 @@ export * from './batches.js';
 export * from './batch-levels.js';
 export * from './batch-review.js';
 export * from './learning.js';
+export * from './reading-model.js';
+export * from './reading-model-rules.js';
 export * from './shapes.js';
 export * from './shape-words.js';
 export * from './sign-up.js';
