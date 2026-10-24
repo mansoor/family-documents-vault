@@ -408,6 +408,17 @@ export function registerHousehold(
     household.updateProfile(principal(req), parse(profileBody, req.body ?? {}), metaOf(req)),
   );
 
+  // The family's time zone (0.9.0, TZ): read by every role; chosen, or
+  // cleared back to the server's default (null), by an owner.
+  app.get('/api/v1/household/timezone', auth, async (req) => household.timezone(principal(req)));
+  app.put('/api/v1/household/timezone', guard('household.timezone'), async (req) => {
+    const body = parse(
+      z.object({ timezone: z.string().min(1).max(64).nullable() }).strict(),
+      req.body ?? {},
+    );
+    return household.setTimezone(principal(req), body.timezone, metaOf(req));
+  });
+
   // The family (5.34: a guest never among them, but for themselves); an
   // owner lists the people outside the family with ?kind=guest.
   const membersQuery = z.object({ kind: z.enum(['family', 'guest']).optional() });

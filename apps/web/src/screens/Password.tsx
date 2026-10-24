@@ -4,6 +4,7 @@ import { api, type ResetPreview } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { heldLinkToken, linkSpent, markLinkSpent } from '../link-token.js';
 import { Button, ErrorNote, Field, LoadFailed, Logo } from '../ui.js';
+import { browserZone, dateTimeWords, dayWordsOf, familyZoneNow } from '../family-time.js';
 
 /**
  * Passwords, from the three places a person meets them.
@@ -21,11 +22,7 @@ export function ChangePassword() {
   // every change takes away each passkey and two-step sign-in added since.
   const { data: me, error: meError, reload } = useLoad((t) => api.me(t), [authVersion]);
   const since = me?.handover_since
-    ? new Date(me.handover_since).toLocaleDateString('en-GB', {
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric',
-      })
+    ? dayWordsOf(me.handover_since, familyZoneNow(), { year: true })
     : null;
   const takenAway = since
     ? `Passkeys and two-step sign-in added since ${since} are removed; add yours again.`
@@ -347,7 +344,7 @@ export function ResetPasswordScreen() {
         <p className="muted">
           The link is out of the address bar and this tab's history now, but this browser's own
           history of pages visited may still have it. That is why it works only once, and only until{' '}
-          {new Date(preview.expires_at).toLocaleTimeString([], { timeStyle: 'short' })}.
+          {dateTimeWords(preview.expires_at, browserZone(), { date: null, always: true })}.
         </p>
       </section>
       <form onSubmit={(e) => void submit(e)} className="card stack">

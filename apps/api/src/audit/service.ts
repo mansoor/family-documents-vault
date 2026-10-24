@@ -1,4 +1,4 @@
-import { withPrincipal, type Db, type Role, type Visibility } from '@fdv/db';
+import { householdZone, withPrincipal, type Db, type Role, type Visibility } from '@fdv/db';
 import {
   can,
   canSee,
@@ -334,6 +334,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // the family, and how many links that paused or turned back on: for the
   // owners and the adults, who may share. Never which links.
   ['household.only_me_sharing_changed', ownersAndAdults],
+  // 0.9.0 (TZ): the family's time zone, chosen or cleared by an owner: the
+  // clock everybody's times are on, so for whoever reads the log.
+  ['household.timezone_changed', everyone],
   ['invitation.created', BY_TYPE],
   ['invitation.accepted', BY_TYPE],
   ['invitation.revoked', BY_TYPE],
@@ -589,7 +592,7 @@ export class AuditService {
               : r.member_name),
           collection_name: r.collection_name,
           detail: (r.detail ?? {}) as Record<string, unknown>,
-          timezone: household?.timezone ?? null,
+          timezone: householdZone(household?.timezone),
         });
       }
       // One sitting with a document is one line, not one per page (0.4.12).

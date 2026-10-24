@@ -17,6 +17,7 @@ import { api, type CreatedInvitation, type Invitation, type Member } from '../ap
 import { describeError, useApp } from '../app-context.js';
 import { GuestInviteForm, OutsideTheFamily } from '../guests.js';
 import { Button, Check, ErrorNote, Field, Pills, Select } from '../ui.js';
+import { familyZoneNow } from '../family-time.js';
 
 /**
  * Inviting somebody (SHR-02), from the People screen.
@@ -150,7 +151,7 @@ export function useHouseholdToday(active = true): string {
       gone = true;
     };
   }, [active, authVersion, withToken]);
-  return localToday(timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+  return localToday(timezone ?? familyZoneNow());
 }
 
 /** The role an invitation gives, and a viewer's limits (5.33): chosen in `RoleFields`. */

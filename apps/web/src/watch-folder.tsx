@@ -12,6 +12,7 @@ import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { Button, Check, ErrorNote, LoadFailed, TopBar } from './ui.js';
 import { useWorkerCheck } from './worker-check.js';
+import { familyZoneNow, shortWhenWords } from './family-time.js';
 
 /**
  * The scanner folder (0.8.0, S3): an owner's page in Settings → For owners,
@@ -464,14 +465,9 @@ function BrowseList(props: {
   );
 }
 
-/** "12 Oct, 14:03", in this browser's time. */
+/** "12 Oct, 14:03", on the family's clock (0.9.0, TZ). */
 function whenWords(at: string): string {
-  return new Date(at).toLocaleString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return shortWhenWords(at, familyZoneNow());
 }
 
 /**

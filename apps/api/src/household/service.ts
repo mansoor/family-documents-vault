@@ -1,7 +1,17 @@
 import type { ScopeKeys } from '@fdv/crypto';
-import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
+  appendAudit,
+  householdZone,
+  householdZoneOf,
+  serverZone,
+  withPrincipal,
+  type Db,
+} from '@fdv/db';
+import {
+  can,
   canChangeDetails,
+  canonicalZone,
+  type FamilyTimeZone,
   CHILD_BIRTHDAY_REFUSAL,
   childBirthday,
   DECEASED_REFUSAL,
@@ -38,7 +48,8 @@ export const profileBody = z
     has_pets: z.boolean().nullable(),
     has_business: z.boolean().nullable(),
     country: z.string().trim().length(2).toUpperCase().nullable(),
-    timezone: z.string().min(1).max(64),
+    // An IANA name, or null to go back to the server's default (0.9.0, TZ).
+    timezone: z.string().min(1).max(64).nullable(),
     extra: z.record(z.string(), z.unknown()),
   })
   .partial()
@@ -184,12 +195,16 @@ export class HouseholdService {
         .select(['name', 'created_at', 'timezone'])
         .where('id', '=', p.householdId)
         .executeTakeFirstOrThrow();
+      // The zone in effect, where it came from, and the server's default it
+      // falls back to (0.9.0, TZ): every role reads them, as every screen
+      // shows its times on that clock.
+      const clock = { ...householdZoneOf(hh.timezone), server_timezone: serverZone() };
       // A viewer gets the household's name and time zone, which every
       // screen shows, and none of its answers (5.3).
       if (!allows(p, 'family.details')) {
         return {
           household_name: hh.name,
-          timezone: hh.timezone,
+          ...clock,
           owns_home: null,
           rents_home: null,
           vehicle_count: null,
@@ -202,7 +217,7 @@ export class HouseholdService {
       }
       return {
         household_name: hh.name,
-        timezone: hh.timezone,
+        ...clock,
         owns_home: row?.owns_home ?? null,
         rents_home: row?.rents_home ?? null,
         vehicle_count: row?.vehicle_count ?? null,
@@ -215,8 +230,96 @@ export class HouseholdService {
     });
   }
 
+  /**
+   * GET /household/timezone (0.9.0, TZ): the family's time zone in effect,
+   * where it came from, and the server's default; for every role, as every
+   * screen says its times on it.
+   */
+  async timezone(p: Principal): Promise<FamilyTimeZone> {
+    return withPrincipal(this.db, p, async (trx) => {
+      const hh = await trx
+        .selectFrom('household')
+        .select('timezone')
+        .where('id', '=', p.householdId)
+        .executeTakeFirstOrThrow();
+      return {
+        ...householdZoneOf(hh.timezone),
+        server_timezone: serverZone(),
+        can_change: can(p.role, 'household.timezone'),
+      };
+    });
+  }
+
+  /**
+   * PUT /household/timezone, and PUT /profile {timezone} as before (0.9.0,
+   * TZ): an owner chooses the family's zone, or clears it (null) back to the
+   * server's default. A name this server does not know is refused (422).
+   * Nothing stored moves: a link's end, a lock's, a guest's are moments,
+   * only said on the new clock; reminders fall due on days, which the
+   * worker reads on the household's calendar each round.
+   */
+  async setTimezone(p: Principal, to: string | null, meta: RequestMeta): Promise<FamilyTimeZone> {
+    requireCapability(p, 'household.timezone');
+    await withPrincipal(this.db, p, (trx) => this.changeTimezone(trx, p, to, meta));
+    return this.timezone(p);
+  }
+
+  /**
+   * The change itself, in the caller's transaction: checked, stored, and its
+   * line written. Who may make it is asked first, by whichever route came
+   * here (`household.timezone`); the database asks again (0080).
+   */
+  private async changeTimezone(
+    trx: Db,
+    p: Principal,
+    to: string | null,
+    meta: RequestMeta,
+  ): Promise<void> {
+    // Kept as the runtime spells it ("europe/london" is "Europe/London"); an
+    // abbreviation or an offset is not a zone (the TZ review).
+    const chosen = to === null ? null : canonicalZone(to);
+    if (to !== null && chosen === null) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'That time zone is not recognised. Choose one from the list, such as Europe/London.',
+      );
+    }
+    const was = await trx
+      .selectFrom('household')
+      .select('timezone')
+      .where('id', '=', p.householdId)
+      .forUpdate()
+      .executeTakeFirstOrThrow();
+    if (was.timezone === chosen) return;
+    const before = householdZoneOf(was.timezone);
+    await trx
+      .updateTable('household')
+      .set({ timezone: chosen })
+      .where('id', '=', p.householdId)
+      .execute();
+    const after = householdZoneOf(chosen);
+    await appendAudit(trx, {
+      householdId: p.householdId,
+      actorAccountId: p.accountId,
+      action: 'household.timezone_changed',
+      objectType: 'household',
+      objectId: p.householdId,
+      detail: {
+        from: before.timezone,
+        from_source: before.timezone_source,
+        to: after.timezone,
+        to_source: after.timezone_source,
+      },
+      ip: meta.ip,
+    });
+  }
+
   async updateProfile(p: Principal, input: z.infer<typeof profileBody>, meta: RequestMeta) {
     requireCapability(p, 'profile.edit');
+    // The time zone is an owner's (0.9.0, TZ): an adult sending one is
+    // refused it, and nothing else in the request is changed.
+    if (input.timezone !== undefined) requireCapability(p, 'household.timezone');
     await withPrincipal(this.db, p, async (trx) => {
       const values: Record<string, unknown> = {};
       for (const k of [
@@ -235,16 +338,7 @@ export class HouseholdService {
       // the README sets it, leaves Home's invitation to answer them.
       if (Object.keys(values).length > 0) values.answered_at = new Date();
       if (input.timezone !== undefined) {
-        try {
-          new Intl.DateTimeFormat('en', { timeZone: input.timezone });
-        } catch {
-          throw new ApiError(422, 'validation_failed', 'That time zone is not recognised.');
-        }
-        await trx
-          .updateTable('household')
-          .set({ timezone: input.timezone })
-          .where('id', '=', p.householdId)
-          .execute();
+        await this.changeTimezone(trx, p, input.timezone, meta);
       }
       if (Object.keys(values).length > 0) {
         await trx
@@ -506,7 +600,7 @@ export class HouseholdService {
         if (
           childBirthday(
             { date_of_birth: born, has_account: signedIn !== undefined },
-            localToday(hh.timezone),
+            localToday(householdZone(hh.timezone)),
           )
         ) {
           throw new ApiError(403, 'child_birthday_owners', CHILD_BIRTHDAY_REFUSAL, {

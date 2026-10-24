@@ -15,7 +15,6 @@ import {
   SHARE_PASSWORD_MAX,
   SHARE_PASSWORD_MIN,
   shareEndProblem,
-  shareEndWords,
   sharePagesNote,
   shareQuickPicks,
   zonedParts,
@@ -29,6 +28,7 @@ import { api, ApiRequestError, type CreatedShare, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { Button, Check, ErrorNote, Field } from '../ui.js';
+import { endWords, familyZoneNow } from '../family-time.js';
 
 /**
  * Sharing one document with somebody outside the family (SHR-05).
@@ -106,7 +106,8 @@ export function SharePanel(props: {
       return {
         shares: shares.items.filter((s) => s.document_id === props.documentId),
         newest,
-        timezone: profile?.timezone ?? 'UTC',
+        // Not reached: the family's zone as the tab knows it, never UTC (the TZ review).
+        timezone: profile?.timezone ?? familyZoneNow(),
         // An older vault says nothing: as before, its owner may.
         onlyMeOut: rule?.only_me_shareable ?? true,
       };
@@ -118,7 +119,8 @@ export function SharePanel(props: {
   // Listed while it can still be taken back: live, or opened as often as it
   // allows (a page opened with it lasts to its own end).
   const listed = (data?.shares ?? []).filter((s) => s.state === 'active' || s.state === 'used_up');
-  const timezone = data?.timezone ?? 'UTC';
+  // Until the vault answers, the family's zone as this tab knows it — never UTC (the TZ review).
+  const timezone = data?.timezone ?? familyZoneNow();
   const viewable = !data?.newest || canShareToView(data.newest.mime);
   // A restore found its file removed for good (5.24): no new link, which
   // would open on nothing; a link already made can still be taken back.
@@ -588,8 +590,6 @@ export function EndPicker(props: {
 }) {
   const { idPrefix: p, timezone, read } = props;
   const { chosen, endAt, endProblem, picks, now, maxDays } = read;
-  const zoneWords =
-    timezone !== Intl.DateTimeFormat().resolvedOptions().timeZone ? ` (${timezone} time)` : '';
   return (
     <div className="field" role="group" aria-labelledby={`${p}-until-h`}>
       <span id={`${p}-until-h`} className="field-label">
@@ -641,7 +641,8 @@ export function EndPicker(props: {
         className={endProblem ? 'field-error' : 'muted'}
         role={endProblem ? 'alert' : undefined}
       >
-        {endProblem ?? (endAt ? `Until ${shareEndWords(endAt, timezone)}${zoneWords}.` : null)}
+        {/* Its zone named where this browser's clock reads otherwise (the TZ review). */}
+        {endProblem ?? (endAt ? `Until ${endWords(endAt, timezone)}.` : null)}
       </span>
       {props.endNote}
     </div>
@@ -937,7 +938,7 @@ export function HandOver(props: { created: CreatedShare; timezone: string; onDon
         </div>
       )}
       <ul className="share-terms">
-        <li>Until {shareEndWords(new Date(share.expires_at), props.timezone)}.</li>
+        <li>Until {endWords(share.expires_at, props.timezone)}.</li>
         <li>
           {share.permission === 'view'
             ? collection

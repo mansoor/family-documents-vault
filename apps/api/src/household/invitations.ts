@@ -1,6 +1,14 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { ScopeKeys } from '@fdv/crypto';
-import { ANONYMOUS, appendAudit, withPrincipal, withScope, withSystem, type Db } from '@fdv/db';
+import {
+  ANONYMOUS,
+  appendAudit,
+  withPrincipal,
+  withScope,
+  withSystem,
+  type Db,
+  householdZone,
+} from '@fdv/db';
 import {
   ageOn,
   can,
@@ -833,7 +841,7 @@ export class InvitationService {
         access_expires_at: row.access_expires_at?.toISOString() ?? null,
         // The household's clock, which a guest's end is said on (the 5.34
         // review's second round).
-        timezone: household.timezone,
+        timezone: householdZone(household.timezone),
       };
     });
   }
@@ -1169,14 +1177,17 @@ async function mustSuitAge(
     .select('timezone')
     .where('id', '=', householdId)
     .executeTakeFirstOrThrow();
-  const today = localToday(household.timezone);
+  const today = localToday(householdZone(household.timezone));
   const born = String(dateOfBirth).slice(0, 10);
   if (!oldEnoughToSignIn(born, today)) {
     throw new ApiError(422, 'too_young', opts.invitee ? NO_LONGER_FITS : TOO_YOUNG(name), {
       detail: 'member_id',
     });
   }
-  const age = ageOn(born, opts.roleOn ? localToday(household.timezone, opts.roleOn) : today);
+  const age = ageOn(
+    born,
+    opts.roleOn ? localToday(householdZone(household.timezone), opts.roleOn) : today,
+  );
   if (age !== null && !roleSuitsAge(age, role)) {
     throw new ApiError(
       422,

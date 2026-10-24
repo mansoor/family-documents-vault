@@ -45,6 +45,7 @@ import {
 } from '@fdv/crypto';
 import {
   appendAudit,
+  householdToday,
   typeEtag,
   withPrincipal,
   type Db,
@@ -281,8 +282,6 @@ const noteStamp = (p: Principal) => ({
 
 const isoDate = (d: string | null): string | null => (d === null ? null : d.slice(0, 10));
 
-const today = () => new Date().toISOString().slice(0, 10);
-
 const notFound = () => new ApiError(404, 'not_found', 'That document is not in the vault.');
 
 /**
@@ -379,13 +378,19 @@ export function statusOf(
     | null
     | undefined,
   plain: RequiredValues & { owner_member_id: string | null; expires: DateValue | null },
-  sealed?: SealedPresence | null,
+  sealed: SealedPresence | null | undefined,
   /**
    * Whether the reader may see where the original is kept (5.41): one who
    * may not is never told a document needs it — that it is not written
    * down is the household's to know.
    */
-  location = true,
+  location: boolean,
+  /**
+   * The household's today, on its own calendar (householdToday; the TZ
+   * review): whether it has expired, or is due, is the family's day, never
+   * the server's UTC one.
+   */
+  today: string,
 ): Status {
   const doc = withSealed(plain, sealed);
   return deriveStatus(
@@ -407,7 +412,7 @@ export function statusOf(
         doc,
       ).filter((m) => location || m.key !== 'physical_location'),
     },
-    today(),
+    today,
   );
 }
 
@@ -437,6 +442,8 @@ export function rowStatus(
     | 'sealed_details'
   >,
   location: boolean,
+  /** The household's today (householdToday). */
+  today: string,
 ): Status {
   const day = (on: string | null, precision: string | null): DateValue | null =>
     on ? { date: isoDate(on) as string, precision: precision as DateValue['precision'] } : null;
@@ -450,6 +457,7 @@ export function rowStatus(
     },
     sealedOf(row),
     location,
+    today,
   );
 }
 
@@ -986,7 +994,7 @@ export class DocumentService {
       // Worked out the same way whoever asks, and however it is asked:
       // from what is plain, and what was written down of what is sealed.
       // (rowStatus: as the Documents table sorts and filters by it, R2.)
-      status: rowStatus(type, row, seesLocation(p.role)),
+      status: rowStatus(type, row, seesLocation(p.role), await householdToday(trx)),
       versions: versions.length,
       latest_version_id: versions[0]?.id ?? null,
       created_at: row.created_at.toISOString(),
@@ -2838,6 +2846,7 @@ export class DocumentService {
 
       const items: SearchHit[] = [];
       const typeOf = typeLookup(trx);
+      const today = await householdToday(trx);
       for (const r of rows.rows) {
         const type = r.type_key ? await typeOf(r.type_key) : null;
         const expires = r.expires_on
@@ -2868,6 +2877,7 @@ export class DocumentService {
             { ...r, issued, expires },
             { notes: r.notes_sealed_present, details: r.sealed_details },
             seesLocation(p.role),
+            today,
           ),
           snippet: snippets.get(r.document_id) ?? r.snippet,
           matched_in: r.matched_in,

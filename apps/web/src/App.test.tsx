@@ -2197,7 +2197,8 @@ describe('the quick fixes (5.1)', () => {
       await within(table).findByText('Mansoor moved “Water bill” to the Trash'),
     ).toBeInTheDocument();
     expect(
-      await within(table).findByText(whenExactly('2026-09-25T14:05:00Z', 'Asia/Tokyo')),
+      // Named: this browser's clock is UTC's, not the family's (0.9.0, TZ).
+      await within(table).findByText(`${whenExactly('2026-09-25T14:05:00Z', 'Asia/Tokyo')} GMT+9`),
     ).toBeInTheDocument();
     await expectAccessible();
   });

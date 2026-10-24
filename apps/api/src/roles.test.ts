@@ -194,6 +194,18 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
         }),
     },
     {
+      // The family's clock (0.9.0, TZ): an owner's alone.
+      capability: 'household.timezone',
+      what: 'change the family’s time zone',
+      call: (t) =>
+        h.app.inject({
+          method: 'PUT',
+          url: '/api/v1/household/timezone',
+          headers: h.as(t),
+          payload: { timezone: 'UTC' },
+        }),
+    },
+    {
       capability: 'member.add',
       what: 'add a person',
       call: (t) =>

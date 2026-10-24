@@ -91,5 +91,61 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // Every time the web app shows is on the family's clock (0.9.0, TZ):
+    // a moment is turned into words through family-time.tsx alone, which
+    // takes the family's zone and says it where the browser's differs. The
+    // platform's date formatting anywhere else would quietly use the
+    // browser's zone, so it is refused here — toLocaleString with a date or
+    // a date's options (a number's is fine), toLocaleDateString,
+    // toLocaleTimeString and Intl.DateTimeFormat. A date without a time goes
+    // through family-time.tsx's dateOnlyWords, which never shifts it.
+    // apps/web/src/date-format-guard.test.ts checks this block catches them.
+    files: ['apps/web/src/**/*.ts', 'apps/web/src/**/*.tsx'],
+    ignores: [
+      'apps/web/src/family-time.tsx',
+      'apps/web/src/**/*.test.ts',
+      'apps/web/src/**/*.test.tsx',
+      'apps/web/src/test-api.ts',
+    ],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...[
+          "CallExpression[callee.property.name='toLocaleDateString']",
+          "CallExpression[callee.property.name='toLocaleTimeString']",
+          "CallExpression[callee.property.name='toLocaleString'][callee.object.type='NewExpression'][callee.object.callee.name='Date']",
+          "CallExpression[callee.property.name='toLocaleString'] > ObjectExpression > Property[key.name=/^(hour|minute|second|timeStyle|dateStyle|weekday|day|month|year|era|timeZone|timeZoneName|hour12|hourCycle|dayPeriod)$/]",
+          "NewExpression[callee.object.name='Intl'][callee.property.name='DateTimeFormat']",
+          "CallExpression[callee.object.name='Intl'][callee.property.name='DateTimeFormat']",
+          // toLocaleString on anything with no arguments, or a locale alone (the
+          // TZ review): a date's would be the browser's clock. A number is
+          // said with Intl.NumberFormat.
+          "CallExpression[callee.property.name='toLocaleString'][arguments.length=0]",
+          "CallExpression[callee.property.name='toLocaleString'][arguments.length=1]",
+        ].map((selector) => ({
+          selector,
+          message:
+            'Say a moment through family-time.tsx (exactWords, endWords, dateTimeWords, dayWordsOf), on the family’s clock; a date without a time through dateOnlyWords; a number with Intl.NumberFormat.',
+        })),
+      ],
+      // whenExactly and whenWords fall back to the browser's zone when given
+      // none: the web asks them only through family-time.tsx, which always
+      // gives the family's (the TZ review).
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@fdv/shared',
+              importNames: ['whenExactly', 'whenWords'],
+              message:
+                'Use exactWords or relativeWords from family-time.tsx: they say the moment on the family’s clock.',
+            },
+          ],
+        },
+      ],
+    },
+  },
   prettier,
 );

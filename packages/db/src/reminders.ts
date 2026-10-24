@@ -1,3 +1,4 @@
+import { householdZone } from './zone.js';
 import {
   addDays,
   birthdayAt,
@@ -205,7 +206,7 @@ export async function regenerateDerived(
     .select('timezone')
     .where('id', '=', householdId)
     .executeTakeFirstOrThrow();
-  const today = localToday(hh.timezone);
+  const today = localToday(householdZone(hh.timezone));
   const dayOfRow = (r: { fire_at: unknown }) => String(r.fire_at).slice(0, 10);
 
   // A date field's day gone by: nothing made, and nothing overdue taken

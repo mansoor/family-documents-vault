@@ -1,4 +1,4 @@
-import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db, householdZone } from '@fdv/db';
 import {
   can,
   PREVIEW_MAX_PAGES,
@@ -310,7 +310,7 @@ export class PurgeService {
     return new ApiError(
       409,
       'purge_not_yet',
-      `Whoever filed it has been told, and can bring it back until then: it can be removed for good from ${shareEndWords(allowedFrom, household.timezone)}.`,
+      `Whoever filed it has been told, and can bring it back until then: it can be removed for good from ${shareEndWords(allowedFrom, householdZone(household.timezone))}.`,
       { detail: allowedFrom.toISOString() },
     );
   }
@@ -361,6 +361,8 @@ export class PurgeService {
       .select('timezone')
       .executeTakeFirstOrThrow();
     const asker = people.find((x) => x.account_id === p.accountId)?.display_name ?? 'An owner';
+    // An email is read anywhere: its times say their zone (the TZ review).
+    const zone = householdZone(household.timezone);
     const at = asked.purge_requested_at as Date;
     const from = new Date(at.getTime() + PURGE_NOTICE_HOURS * 3_600_000);
     const tell: AlertRequest[] = [];
@@ -382,11 +384,11 @@ export class PurgeService {
         subject: 'An owner asked to remove one of your documents for good',
         body:
           `${asker} asked to remove one of the documents you added for good on ` +
-          `${shareEndWords(at, household.timezone, { weekday: false })}. ` +
+          `${shareEndWords(at, zone, { weekday: false })} (${zone}). ` +
           (mayKeep
             ? 'Bring it back to keep it: it is in the Trash. '
             : 'To keep it, ask an owner or another adult to bring it back from the Trash. ') +
-          `Otherwise it can be removed for good from ${shareEndWords(from, household.timezone)}.`,
+          `Otherwise it can be removed for good from ${shareEndWords(from, zone)} (${zone}).`,
       });
     }
     // And the other owners: any of them may remove it once the day is over.

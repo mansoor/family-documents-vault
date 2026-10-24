@@ -14,6 +14,7 @@ import { Link } from 'react-router';
 import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { Button, Check, ConfirmDialog, ErrorNote, Field, LoadFailed, TopBar } from './ui.js';
+import { dayWordsOf, familyZoneNow, shortWhenWords } from './family-time.js';
 
 /**
  * The Reading check (0.9.0, R0): an owner's page in Settings → For owners
@@ -37,14 +38,9 @@ export const READING_POLL_MS = 3_000;
 const running = (c: Pick<ReadingCheckView, 'state'>) =>
   c.state === 'waiting' || c.state === 'running';
 
-/** "17 Oct, 14:03", in this browser's time. */
+/** "17 Oct, 14:03", on the family's clock (0.9.0, TZ). */
 function whenWords(at: string): string {
-  return new Date(at).toLocaleString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return shortWhenWords(at, familyZoneNow());
 }
 
 const FIELD_WORDS = { kind: 'the kind', person: 'whose it is', expiry: 'the expiry' } as const;
@@ -470,10 +466,7 @@ function Result(props: {
             <p className="muted">
               Only you see this list
               {detail.data?.misses_until
-                ? `, until ${new Date(detail.data.misses_until).toLocaleDateString('en-GB', {
-                    day: 'numeric',
-                    month: 'short',
-                  })}`
+                ? `, until ${dayWordsOf(detail.data.misses_until, familyZoneNow(), { month: 'short' })}`
                 : ''}
               .
             </p>

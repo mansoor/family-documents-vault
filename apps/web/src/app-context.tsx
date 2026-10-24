@@ -5,11 +5,16 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
 import { StepUpCoordinator } from '@fdv/client';
 import { api, ApiRequestError, isSessionOver, NetworkError } from './api.js';
+import { onFamilyZoneHeard, setCurrentFamilyZone } from './family-zone-store.js';
+
+/** The family's zone is asked again as the tab is come back to, at most this often. */
+export const ZONE_ASK_AGAIN_MS = 60_000;
 import { Session } from './session.js';
 import { StepUpPrompt } from './StepUpPrompt.js';
 
@@ -74,6 +79,16 @@ interface AppState {
   authVersion: number;
   markAuthChanged: () => void;
   connectionError: string | null;
+  /**
+   * The family's time zone in effect (0.9.0, TZ), once the vault has said
+   * it for this sign-in: every time a screen shows is on it (family-time.tsx).
+   * Null until known.
+   */
+  familyZone: string | null;
+  /** Asks the vault for the family's zone, once a sign-in; screens call it through useFamilyZone. */
+  wantFamilyZone: () => void;
+  /** The family's zone as an owner has just changed it in Settings: every screen moves to it. */
+  setFamilyZone: (zone: string) => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -100,6 +115,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [reloadCaps]);
 
   const markAuthChanged = useCallback(() => setAuthVersion((v) => v + 1), []);
+
+  // The family's clock (0.9.0, TZ): asked once a sign-in, as a screen first
+  // needs it, and remembered on this device for the next visit, so a page
+  // opened again shows its times on the family's clock from the start.
+  const [familyZone, setZone] = useState<string | null>(() => {
+    const remembered = rememberedZone(session);
+    setCurrentFamilyZone(remembered);
+    return remembered;
+  });
+  const zoneAsked = useRef<number | null>(null);
+  const setFamilyZone = useCallback(
+    (zone: string) => {
+      setCurrentFamilyZone(zone);
+      setZone(zone);
+      rememberZone(session, zone);
+    },
+    [session],
+  );
 
   const withToken = useCallback(
     async <T,>(fn: (token: string) => Promise<T>): Promise<T | null> => {
@@ -200,6 +233,46 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [withToken, stepUp],
   );
 
+  // When it was last asked: asked again as the tab is come back to, at most
+  // once a minute (the TZ review), so a tab left open for days takes up an
+  // owner's change made elsewhere.
+  const zoneAskedAt = useRef(0);
+  const askZone = useCallback(() => {
+    zoneAskedAt.current = Date.now();
+    return withToken((t) => api.profile(t)).then((p) => {
+      if (p?.timezone) setFamilyZone(p.timezone);
+    });
+  }, [withToken, setFamilyZone]);
+
+  const wantFamilyZone = useCallback(() => {
+    if (zoneAsked.current === authVersion) return;
+    zoneAsked.current = authVersion;
+    // Not reached: asked again by the next screen that needs it.
+    askZone().catch(() => {
+      zoneAsked.current = null;
+    });
+  }, [authVersion, askZone]);
+
+  // Whatever answer says the zone — the profile, the time zone's own, a
+  // change just made — moves every screen to it (family-zone-store.ts).
+  useEffect(() => onFamilyZoneHeard(setFamilyZone), [setFamilyZone]);
+
+  useEffect(() => {
+    const again = () => {
+      if (document.visibilityState === 'hidden') return;
+      // Only once a signed-in screen has asked for it this sign-in.
+      if (zoneAsked.current !== authVersion) return;
+      if (Date.now() - zoneAskedAt.current < ZONE_ASK_AGAIN_MS) return;
+      askZone().catch(() => undefined);
+    };
+    window.addEventListener('focus', again);
+    document.addEventListener('visibilitychange', again);
+    return () => {
+      window.removeEventListener('focus', again);
+      document.removeEventListener('visibilitychange', again);
+    };
+  }, [authVersion, askZone]);
+
   const value = useMemo<AppState>(
     () => ({
       caps,
@@ -210,8 +283,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
       authVersion,
       markAuthChanged,
       connectionError,
+      familyZone,
+      wantFamilyZone,
+      setFamilyZone,
     }),
-    [caps, session, reloadCaps, withToken, guarded, authVersion, markAuthChanged, connectionError],
+    [
+      caps,
+      session,
+      reloadCaps,
+      withToken,
+      guarded,
+      authVersion,
+      markAuthChanged,
+      connectionError,
+      familyZone,
+      wantFamilyZone,
+      setFamilyZone,
+    ],
   );
   return (
     <Ctx.Provider value={value}>
@@ -256,6 +344,32 @@ function RenewalWait({ session }: { session: Session }) {
       <p aria-hidden="true">{waitingWords(left)}</p>
     </div>
   );
+}
+
+/** Where this device remembers the family's zone, by household. */
+const zoneKey = (session: Session) => {
+  const household = session.info?.household_id;
+  return household ? `fdv.familyZone.${household}` : null;
+};
+
+function rememberedZone(session: Session): string | null {
+  const key = zoneKey(session);
+  if (!key) return null;
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function rememberZone(session: Session, zone: string): void {
+  const key = zoneKey(session);
+  if (!key) return;
+  try {
+    window.localStorage.setItem(key, zone);
+  } catch {
+    // Private windows and blocked storage: asked again next time.
+  }
 }
 
 export function useApp(): AppState {

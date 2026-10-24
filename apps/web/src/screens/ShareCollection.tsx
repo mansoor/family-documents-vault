@@ -19,6 +19,7 @@ import {
   readLinkOptions,
   useLinkOptions,
 } from './Share.js';
+import { familyZoneNow } from '../family-time.js';
 
 /**
  * Sharing a collection outside the family (5.19).
@@ -67,7 +68,7 @@ export function ShareCollectionPanel(props: {
         api.collectionSharePreview(t, props.collection.id),
         api.profile(t).catch(() => null),
       ]);
-      return { offered, timezone: profile?.timezone ?? 'UTC' };
+      return { offered, timezone: profile?.timezone ?? familyZoneNow() };
     },
     [props.collection.id],
   );
@@ -92,7 +93,8 @@ export function ShareCollectionPanel(props: {
   const isTicked = (i: CollectionShareItem) =>
     i.lock !== 'no_file' && (chosen[i.document_id] ?? i.ticked);
   const ticked = items.filter(isTicked);
-  const timezone = data?.timezone ?? 'UTC';
+  // Until the vault answers, the family's zone as this tab knows it — never UTC (the TZ review).
+  const timezone = data?.timezone ?? familyZoneNow();
   const vaultMax = caps?.limits.share_max_days ?? SHARE_MAX_DAYS;
   // A link that keeps up with the collection lasts 30 days at most (A19).
   const maxDays = follow ? Math.min(vaultMax, FOLLOW_MAX_DAYS) : vaultMax;

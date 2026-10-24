@@ -17,6 +17,7 @@ import { api, type CreatedInvitation, type Member } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { storedRole } from './session.js';
 import { Button, ConfirmDialog, ErrorNote, Field, TopBar } from './ui.js';
+import { useFamilyZone, zoneNote } from './family-time.js';
 
 /**
  * Someone outside the family (5.34, D4, A27, A28): an attorney, an
@@ -34,7 +35,8 @@ const DAY = 24 * 60 * 60 * 1000;
  * "Monday 4 January 2027 at 23:59" on the household's clock: with its year
  * (the 5.34 review, W534-05), for a guest's end may be a year away, or past.
  */
-export const accessEndWords = (iso: string, timezone: string) => guestEndWords(iso, timezone);
+export const accessEndWords = (iso: string, timezone: string) =>
+  `${guestEndWords(iso, timezone)}${zoneNote(timezone, iso)}`;
 
 /** What a guest's sign-in says of its end: until when, or that it has ended. */
 export function guestEndLine(iso: string | null | undefined, timezone: string): string {
@@ -46,12 +48,9 @@ export function guestEndLine(iso: string | null | undefined, timezone: string): 
 
 /** The household's clock: what a guest's end is chosen and said on. */
 function useTimezone(): string {
-  const { authVersion } = useApp();
-  const { data } = useLoad(
-    async (t) => (await api.profile(t).catch(() => null))?.timezone ?? 'UTC',
-    [authVersion],
-  );
-  return data ?? 'UTC';
+  // The family's, as every screen has it (the TZ review): never UTC while
+  // the vault has yet to answer, so a quick choice is never made on UTC.
+  return useFamilyZone();
 }
 
 /** The day a guest's access ends, chosen: a date field, from tomorrow to a year from today. */

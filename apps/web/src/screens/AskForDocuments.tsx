@@ -7,7 +7,6 @@ import {
   SHARE_CODE_UNAVAILABLE,
   SHARE_MAX_DAYS,
   shareEndProblem,
-  shareEndWords,
   shareQuickPicks,
   UPLOAD_PASSWORD_MIN,
   UPLOAD_REQUEST_ITEM_LABEL_MAX,
@@ -30,6 +29,7 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { Button, Check, ErrorNote, Field, Select, TextArea, TopBar } from '../ui.js';
 import { DEVICE_ONLY_NOTE, EndPicker, insecureLink, PasswordChoice } from './Share.js';
+import { endWords, familyZoneNow } from '../family-time.js';
 
 /**
  * Ask for documents (5.22): somebody outside the family — the accountant,
@@ -257,7 +257,7 @@ export function AskForDocumentsScreen() {
       return {
         emailCode: requests.email_code_available,
         members: members.items,
-        timezone: profile?.timezone ?? 'UTC',
+        timezone: profile?.timezone ?? familyZoneNow(),
       };
     },
     [authVersion, mayAsk],
@@ -294,7 +294,8 @@ export function AskForDocumentsScreen() {
     );
   }
 
-  const timezone = data?.timezone ?? 'UTC';
+  // Until the vault answers, the family's zone as this tab knows it — never UTC (the TZ review).
+  const timezone = data?.timezone ?? familyZoneNow();
   const emailCode = data?.emailCode === true;
   const read = readAsk(value, {
     timezone,
@@ -778,7 +779,7 @@ export function RequestHandOver(props: {
         </div>
       )}
       <ul className="share-terms">
-        <li>Until {shareEndWords(new Date(r.expires_at), props.timezone)}.</li>
+        <li>Until {endWords(r.expires_at, props.timezone)}.</li>
         {r.items.length > 0 && <li>It asks for {r.items.map((i) => i.label).join(', ')}.</li>}
         <li>
           They can send {filesWord(r.max_files)}, {Math.floor(r.max_total_bytes / MB)} MB in all:{' '}

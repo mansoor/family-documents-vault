@@ -202,9 +202,9 @@ second lock.
 A link can say more than who it is for:
 
 - **Until when**: a date and a time on your household's clock, with Tonight, Friday 5 pm
-  and In a week one tap away. That clock is UTC unless the household's time zone has been
-  set through the API (`PUT /api/v1/profile` with `{"timezone": "Europe/London"}`, any IANA
-  name, as an owner); the web app has no setting for it. At least five minutes ahead, and at
+  and In a week one tap away. That clock is the family's time zone, which an owner chooses
+  in Settings → Time zone; until one does, it is the server's `FDV_TIMEZONE`, UTC unless
+  set (see [The family's time zone](#the-familys-time-zone)). At least five minutes ahead, and at
   most `FDV_SHARE_MAX_DAYS` (90 unless you shorten it; the share sheet offers nothing
   longer): a link always ends.
 - **View, or view and download.** A link to view shows the document's pages, each drawn
@@ -402,6 +402,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_HTTPS_PORT`                                | `443`                                     | The port the TLS overlay's Caddy listens on for `https://`.                                                                                                                                                             |
 | `FDV_HTTP_PORT`                                 | `80`                                      | The port it listens on for `http://` (certificates, and the redirect to `https://`).                                                                                                                                    |
 | `FDV_OCR_MAX_PAGES`                             | `20`                                      | How many pages of a PDF or a scanner's TIFF are read (1 to 200): by the PDF's own text, and by OCR only where a page is a scan. The rest of a longer file is kept, but its words are not searched or suggested from.    |
+| `FDV_TIMEZONE`                                  | `UTC`                                     | The family's time zone until an owner chooses one in Settings: an IANA name, such as `Europe/London`. Set it on the API and the worker. See [The family's time zone](#the-familys-time-zone).                           |
 | `FDV_DIGEST_HOUR`                               | `9`                                       | The household's local hour for the day's reminders (0 to 23).                                                                                                                                                           |
 | `FDV_WEEKLY_HOUR`                               | `18`                                      | The local hour on Sunday for the weekly email summary (0 to 23).                                                                                                                                                        |
 | `FDV_BACKUP_CRON`                               | `30 2 * * *`                              | When the worker writes the nightly encrypted database backup (cron, in UTC).                                                                                                                                            |
@@ -440,6 +441,43 @@ only: the port `docker-compose.dev.yml` opens the database on (see
 [Developing](#developing)).
 
 Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/readyz` (it can reach the database).
+
+### The family's time zone
+
+Every time the vault shows — when something happened, when a link ends, "edited 9:14" —
+is on one clock, the family's, for everyone, whatever zone their own browser or phone is
+in. Reminders and digests arrive at their hour on it (`FDV_DIGEST_HOUR`,
+`FDV_WEEKLY_HOUR`). Somebody whose browser is in another zone sees the zone after each
+time ("5:25pm BST", or "GMT+5:30" where a zone has no short name), so nobody travelling
+is misled; emails and notes read outside the app always name it. A date without a time —
+an expiry, a birthday, the day a reminder falls due — is the same day everywhere, and
+never moves.
+
+Which zone that is: the one an owner chooses in **Settings → Time zone** (any IANA name,
+found by city or offset, or this browser's own in one click); until an owner chooses one,
+the server's default, `FDV_TIMEZONE`; and UTC when neither is set. Set the default in
+`.env`, for the API and the worker alike:
+
+```bash
+FDV_TIMEZONE=Europe/London
+```
+
+A name that is not a time zone stops both at start, saying so, and so does an
+abbreviation or an offset (`EST`, `+05:30`): give a region and a place. A name is kept as
+the server spells it (`europe/london` is `Europe/London`). An owner can go back to
+the server's default from the same page, and everyone else reads the zone there. Changing
+it moves nothing stored: a link that ends at a moment still ends then, only said on the
+new clock; the next digest goes at the household hour on it. A change made over a
+weekend can skip that week's Sunday summary, when the new zone's Sunday evening has
+already passed. The change is in the activity log. Apps can read and set it too: `GET` and `PUT /api/v1/household/timezone`
+(`{"timezone": "Europe/London"}`, or `null` for the server's default), an owner's to
+change; `PUT /api/v1/profile` with `timezone` still works. There is no per-person zone.
+
+Before 0.9.0 every household was on UTC unless an owner had set a zone through the API.
+Upgrading keeps any zone an owner set; a household that never set one follows
+`FDV_TIMEZONE` from then on. A household whose owner chose UTC itself (the activity log
+says so) keeps UTC, and does **not** follow an `FDV_TIMEZONE` you set later: an owner
+there moves it with "Use the server's default" in Settings → Time zone.
 
 ### Sign-in and sessions
 

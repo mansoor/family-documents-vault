@@ -1,3 +1,4 @@
+import { canonicalZone, isTimeZone } from '@fdv/shared';
 import { z } from 'zod';
 
 /**
@@ -57,6 +58,20 @@ const schema = z.object({
       'Let pushes go to addresses inside your own network — a UnifiedPush distributor ' +
         '(ntfy) on the LAN. Off by default: a push address is chosen by whoever registers ' +
         'a device, and must not be able to point the vault at its own network.',
+    ),
+  FDV_TIMEZONE: z
+    .string()
+    .trim()
+    .refine(isTimeZone, {
+      message:
+        'not a time zone this server knows: give an IANA name such as Europe/London, America/New_York or UTC',
+    })
+    // As the runtime spells it: "europe/london" is "Europe/London" (the TZ review).
+    .transform((z) => canonicalZone(z) ?? z)
+    .default('UTC')
+    .describe(
+      'The family’s time zone until an owner chooses one in Settings (0.9.0): the hour ' +
+        'reminders and digests arrive at, and every time the worker writes, are on it.',
     ),
   FDV_DIGEST_HOUR: z.coerce
     .number()

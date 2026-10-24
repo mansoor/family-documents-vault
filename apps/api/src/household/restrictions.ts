@@ -1,4 +1,4 @@
-import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db, householdZone } from '@fdv/db';
 import {
   ACCESS_GRANT_MAX,
   can,
@@ -894,7 +894,7 @@ export class RestrictionService {
           limits_people: r.limits_people,
           limits_types: r.limits_types,
         },
-        hh.timezone,
+        householdZone(hh.timezone),
         Date.now(),
         // A guest owns nothing (5.34): "and your own" is not theirs.
         { own: !p.guest },
@@ -963,7 +963,7 @@ export async function restrictionSummaries(
     .where('r.member_id', 'in', memberIds)
     .execute();
   for (const r of rows) {
-    found.set(r.member_id, { summary: restrictionSummary(r, hh.timezone, now) });
+    found.set(r.member_id, { summary: restrictionSummary(r, householdZone(hh.timezone), now) });
   }
   return found;
 }

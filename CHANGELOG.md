@@ -6,6 +6,17 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.11] - 2026-10-23 — the family's time zone
+
+### Added
+
+- **The family's time zone, set in Settings or by `FDV_TIMEZONE`, and every time shown in it (0.9.0, TZ).** Every time the vault shows — when something happened, when a link ends, when a note was edited, when a sign-in is locked until — is on one clock, the family's, for everyone in the family, whatever zone their own browser is in (the times on the share and upload pages people outside the family open are on their own clock, its zone named). Where a browser's zone differs from the family's, each time says which clock it is on, "5:25pm BST" (or its offset, "GMT+5:30", where a zone has no short name); in the same zone nothing is added. Emails and notes read outside the app always name it. A date without a time — an expiry, a birthday, the day a reminder falls due — never moves with any zone. **Settings → Time zone** shows the zone, its offset and its time now, and what it affects; an owner finds another by name or offset, or takes this browser's zone in one click, or goes back to the server's default; everyone else reads it there. Reminders and digests arrive at their hour on the new clock from the next round; a link's end, a lock's, a guest's are moments and keep them, only said on the new clock. The change is in the activity log ("changed the family’s time zone from Europe/London to the server’s default (UTC)"). Whoever runs the vault sets the default for a family that has not chosen one, `FDV_TIMEZONE` in `.env` (an IANA name, for the API and the worker; UTC unless set; a name that is not a zone stops both at start). There is no per-person zone. Migration 0080.
+
+### Changed
+
+- **Only an owner changes the family's time zone.** `PUT /api/v1/profile` with a `timezone` from an adult is now refused; the database holds it too (0080).
+- **Upgrading:** a household's time zone was `UTC` unless an owner set another through the API. A household whose activity log shows an owner set it keeps what they set, `UTC` included; any other `UTC` becomes "not chosen", so the family follows `FDV_TIMEZONE` — which is UTC until you set it, so nothing moves until then. A household whose owner chose UTC itself keeps UTC, and does not follow an `FDV_TIMEZONE` set later; an owner there moves it with "Use the server's default". A zone is an IANA name, kept as the server spells it (`europe/london` is `Europe/London`); an abbreviation or an offset (`EST`, `+05:30`) is refused, by the API and in `FDV_TIMEZONE`. A zone changed over a weekend can skip that week's Sunday summary.
+
 ## [0.9.0-dev.10] - 2026-10-23 — a checklist finds by title, and knows EAD
 
 ### Fixed

@@ -16,6 +16,7 @@ import { describeError } from '../app-context.js';
 import { NoteText } from '../notes.js';
 import { useFixedTitle } from '../page-title.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
+import { browserZone, dateTimeWords } from '../family-time.js';
 
 /**
  * The page a link opens (5.16): `/s#<token>`.
@@ -410,11 +411,8 @@ function Preview({
         </Button>
         <p className="muted">
           Nothing is opened until you press Open. The link works until{' '}
-          {new Date(preview.expires_at).toLocaleString([], {
-            dateStyle: 'long',
-            timeStyle: 'short',
-          })}
-          , and whoever sent it can take it back sooner. They will see that it was opened.
+          {dateTimeWords(preview.expires_at, browserZone(), { always: true })}, and whoever sent it
+          can take it back sooner. They will see that it was opened.
         </p>
       </form>
     </>
@@ -558,11 +556,8 @@ function Opened({
         </ul>
         <p className="muted">
           This page stays open for 30 minutes after you last use it, and until{' '}
-          {new Date(session.session_expires_at).toLocaleString([], {
-            dateStyle: 'long',
-            timeStyle: 'short',
-          })}{' '}
-          at the latest. After that, open the link again.
+          {dateTimeWords(session.session_expires_at, browserZone(), { always: true })} at the
+          latest. After that, open the link again.
         </p>
       </section>
     </>

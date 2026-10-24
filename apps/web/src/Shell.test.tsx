@@ -811,18 +811,28 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
   const SECTIONS: Record<Role, string[]> = {
     // Household became Privacy, and Kinds of document a section of its own (0.8.0).
     // Tags after Kinds of document (0.9.0, T1): whoever may change documents.
+    // Time zone after Notifications (0.9.0, TZ): everybody reads the family's clock.
     owner: [
       'Your account',
       'Notifications',
+      'Time zone',
       'Privacy',
       'Kinds of document',
       'Tags',
       'Your data',
       'For owners',
     ],
-    adult: ['Your account', 'Notifications', 'Privacy', 'Kinds of document', 'Tags', 'Your data'],
-    teen: ['Your account', 'Notifications', 'Tags'],
-    viewer: ['Your account', 'Notifications'],
+    adult: [
+      'Your account',
+      'Notifications',
+      'Time zone',
+      'Privacy',
+      'Kinds of document',
+      'Tags',
+      'Your data',
+    ],
+    teen: ['Your account', 'Notifications', 'Time zone', 'Tags'],
+    viewer: ['Your account', 'Notifications', 'Time zone'],
   };
 
   it.each(['owner', 'adult', 'teen', 'viewer'] as const)(
@@ -924,6 +934,7 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
     await screen.findByRole('heading', { level: 1, name: 'Your account' });
     for (const [name, path, heading, title] of [
       ['Notifications', '/settings/notifications', 'Notifications', 'Settings: notifications'],
+      ['Time zone', '/settings/time-zone', 'Time zone', 'Settings: time zone'],
       ['Privacy', '/settings/privacy', 'Privacy', 'Settings: privacy'],
       ['Kinds of document', '/settings/kinds', 'Kinds of document', 'Settings: kinds of document'],
       ['Tags', '/settings/tags', 'Tags', 'Settings: tags'],

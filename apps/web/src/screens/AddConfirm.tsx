@@ -79,6 +79,7 @@ import {
 import { LinksChoiceDialog, linksAsk, type LinksAsk } from './Visibility.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 import { EmailInLine } from '../mail-in.js';
+import { localeReadsMonthFirst } from '../family-time.js';
 
 /**
  * Said under the date an Only me document is reminded from (5.16b): the
@@ -95,9 +96,7 @@ export const ONLY_ME_REMINDING =
  * 2031-03-14, and read a slashed date day first like most of the world.
  */
 function dateOrder(): DateOrder {
-  const parts = new Intl.DateTimeFormat(undefined).formatToParts(new Date(2031, 2, 14));
-  const at = (type: string) => parts.findIndex((p) => p.type === type);
-  return at('month') >= 0 && at('month') < at('day') && at('day') < at('year') ? 'mdy' : 'dmy';
+  return localeReadsMonthFirst() ? 'mdy' : 'dmy';
 }
 
 /** The card's details as a capture sends them: only what the card asks. */

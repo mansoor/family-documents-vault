@@ -5,7 +5,6 @@ import {
   NOTE_KIND,
   PREVIEW_MAX_PAGES,
   seesLocation,
-  whenExactly,
   type CoreField,
   type VersionView,
 } from '@fdv/shared';
@@ -36,6 +35,7 @@ import { SharePanel } from './Share.js';
 import { TagSection } from '../tags.js';
 import { VisibilityControl } from './Visibility.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
+import { exactWords } from '../family-time.js';
 
 /**
  * Document detail: the facts in a plain two-column list, its notes, the
@@ -410,7 +410,7 @@ export function DocumentScreen() {
                     <strong>{i === 0 ? 'Current' : `Version ${v.version_no}`}</strong>
                     <span className="muted">
                       {v.filename} · {(v.byte_size / 1024).toFixed(0)} KB · added{' '}
-                      {whenExactly(v.uploaded_at)}
+                      {exactWords(v.uploaded_at)}
                       {v.uploaded_by_name ? ` by ${v.uploaded_by_name}` : ''}
                       {/* Where it came from, when somebody outside sent it (5.23). */}
                       {v.sent_through ? ` · ${v.sent_through}` : ''}

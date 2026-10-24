@@ -5,6 +5,7 @@ import type { IdentityAudience, IdentityFields, IdentityPart } from './identity.
 import type { MemberAccess, MyRestriction, RestrictionSummary } from './restrictions.js';
 import type { CollectionAudience, Role, RoleChangeEffect } from './roles.js';
 import type { CollectionShareLock, SharePages, SharePermission } from './shares.js';
+import type { TimeZoneSource } from './time-zone.js';
 
 /**
  * The shapes that travel over the wire, written once.
@@ -936,9 +937,15 @@ export interface Profile {
   /**
    * The household's time zone (IANA): reminders fall due on its calendar,
    * and "today" is its day. Every role reads it; a vault answers it
-   * whenever it answers the profile.
+   * whenever it answers the profile. Since 0.9.0 (TZ) the zone in effect:
+   * the household's own when an owner chose one, else the server's default
+   * (FDV_TIMEZONE), else UTC. Every time shown is on it.
    */
   timezone?: string;
+  /** Where `timezone` came from (0.9.0, TZ): an owner's choice, or the server's default. Absent from older vaults. */
+  timezone_source?: TimeZoneSource;
+  /** The server's default zone, FDV_TIMEZONE (UTC unless set): what clearing the family's own returns to. Absent from older vaults. */
+  server_timezone?: string;
   owns_home: boolean | null;
   rents_home: boolean | null;
   vehicle_count: number | null;
@@ -946,6 +953,18 @@ export interface Profile {
   has_business: boolean | null;
   country: string | null;
   answered_at: string | null;
+}
+
+/**
+ * GET and PUT /household/timezone (0.9.0, TZ): the family's time zone in
+ * effect, where it came from, the server's default it falls back to, and
+ * whether this reader may change it (an owner).
+ */
+export interface FamilyTimeZone {
+  timezone: string;
+  timezone_source: TimeZoneSource;
+  server_timezone: string;
+  can_change: boolean;
 }
 
 export interface DocumentInput {

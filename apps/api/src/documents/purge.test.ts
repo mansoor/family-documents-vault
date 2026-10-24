@@ -464,6 +464,9 @@ describe.skipIf(!testAdminUrl())('removing a document for good (5.24)', () => {
       .find((a) => a.account_ids.includes(accounts.adult));
     expect(toCreator?.subject).toBe('An owner asked to remove one of your documents for good');
     expect(toCreator?.body).toMatch(/Bring it back to keep it/);
+    // Read anywhere: each time names the family's zone (the TZ review).
+    expect(toCreator?.body).toMatch(/ on \d+ \w+ at \d\d:\d\d \(UTC\)\. /);
+    expect(toCreator?.body).toMatch(/removed for good from \w+ \d+ \w+ at \d\d:\d\d \(UTC\)\.$/);
     expect(toCreator?.body).not.toContain('payslip');
     expect(alertsTo(accounts.second).length).toBeGreaterThan(0);
     expect(told.some((j) => (j.data.account_ids as string[]).includes(accounts.owner))).toBe(false);

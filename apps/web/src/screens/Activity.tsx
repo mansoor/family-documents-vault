@@ -1,4 +1,4 @@
-import { ACTIVITY_KINDS, localToday, whenExactly, whenWords, type ActivityLine } from '@fdv/shared';
+import { ACTIVITY_KINDS, localToday, type ActivityLine } from '@fdv/shared';
 import { useId, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { api, type Member } from '../api.js';
@@ -6,6 +6,7 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { useShellMode } from '../shell.js';
 import { FilterSelect } from '../table-grid.js';
 import { Button, ErrorNote, TopBar } from '../ui.js';
+import { exactWords, relativeWords, useFamilyZone } from '../family-time.js';
 
 /**
  * The household activity log (SHR-07).
@@ -31,10 +32,7 @@ export function ActivityScreen() {
   const { data: members } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
   // The household's time zone, which every role reads: its days are the
   // From and To filters' days. None said, this device's.
-  const { data: timezone } = useLoad(
-    async (t) => (await api.profile(t).catch(() => null))?.timezone ?? null,
-    [authVersion],
-  );
+  const timezone = useFamilyZone();
   const [older, setOlder] = useState<ActivityLine[]>([]);
   // Undefined until "Show older" is used; then the next page, or null at
   // the end — which used to fall back to the first page's cursor, so the
@@ -136,7 +134,8 @@ export function ActivityScreen() {
           <table className="tbl tbl-plain activity-tbl">
             <caption className="visually-hidden">What has been happening, newest first</caption>
             <colgroup>
-              <col style={{ width: 180 }} />
+              {/* Room for the family's zone after a time (0.9.0, TZ): "12:42pm GMT+5:30". */}
+              <col style={{ width: 228 }} />
               <col style={{ width: 170 }} />
               <col />
             </colgroup>
@@ -278,8 +277,8 @@ function emptyWords(filtered: boolean, older: boolean): string {
 /** When, on the household's clock, as the From and To days are counted. */
 function When({ at, timezone }: { at: string; timezone: string | null }) {
   return (
-    <time dateTime={at} title={whenWords(at, new Date(), timezone)}>
-      {whenExactly(at, timezone)}
+    <time dateTime={at} title={relativeWords(at, timezone ?? undefined)}>
+      {exactWords(at, timezone ?? undefined)}
     </time>
   );
 }

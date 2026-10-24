@@ -6277,3 +6277,46 @@ html:has(.shell-phone):has(.has-toast) {
 .disclosure-body {
   padding: 0 14px 14px;
 }
+
+/* Settings → Time zone (0.9.0, TZ): the list of zones, a few rows tall,
+   as wide as the card, each row a zone, its offset and its time now —
+   wrapping after the zone's name on a phone, never cut off. */
+.tz-list {
+  /* Holds its rows' hidden commas too (.visually-hidden is placed absolutely). */
+  position: relative;
+  max-height: 18rem;
+  overflow-y: auto;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  padding: 4px 0;
+}
+
+.tz-row {
+  box-sizing: border-box;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: var(--tap);
+  padding: 6px 12px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.tz-row input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.tz-now {
+  display: block;
+  color: var(--ink-muted);
+}
+
+.tz-row:has(input:checked) {
+  background: var(--accent-soft);
+  font-weight: 600;
+}

@@ -27,6 +27,7 @@ import { ForgotPasswordScreen, ResetPasswordScreen } from './screens/Password.js
 import { SharedScreen } from './screens/Shared.js';
 import { SharingScreen } from './screens/Sharing.js';
 import { PrivacyScreen } from './screens/Household.js';
+import { TimeZoneScreen } from './screens/TimeZone.js';
 import { EmailScreen, NotificationsScreen } from './screens/Notifications.js';
 import { ScannerScreen } from './watch-folder.js';
 import { EmailInScreen } from './mail-in.js';
@@ -343,6 +344,7 @@ export function App() {
                   }
                 />
                 <Route path="notifications" element={<NotificationsScreen />} />
+                <Route path="time-zone" element={<TimeZoneScreen />} />
                 <Route path="privacy" element={<PrivacyScreen />} />
                 <Route path="family" element={<FamilyScreen />} />
                 <Route path="kinds" element={<KindsScreen />} />

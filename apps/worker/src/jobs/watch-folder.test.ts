@@ -849,6 +849,10 @@ describe.skipIf(!testAdminUrl())('the scanner folder, in the worker', () => {
     expect(await note('locked.pdf')).toMatch(/couldn’t read it from the folder/);
     expect(await note('form (2).bmp')).toMatch(/File: form\.bmp \(it was b\/form\.bmp\)/);
     expect(await note('notes.txt')).toMatch(/not encrypted/);
+    // When, on the family's clock, its zone named: a note is read anywhere (0.9.0, TZ).
+    expect(await note('notes.txt')).toMatch(
+      /^When: \d+ \w+ \d{4}, \d\d:\d\d \(Pacific\/Auckland\)$/m,
+    );
     // Its person told, each by name and why — and nobody else.
     expect(await notes()).toEqual(
       [

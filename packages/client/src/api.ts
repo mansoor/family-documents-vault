@@ -57,6 +57,7 @@ import type {
   DocumentView,
   ExportRow,
   GuestRenewal,
+  FamilyTimeZone,
   IncomingAccepted,
   IncomingAcceptInput,
   IncomingFileView,
@@ -319,8 +320,33 @@ export function createApi(http: Http) {
 
     // ------------------------------------------------------------- household
     profile: (token: string) => request<Profile>('/api/v1/profile', { token }),
-    updateProfile: (token: string, body: Partial<Profile>) =>
-      request<Profile>('/api/v1/profile', { method: 'PUT', body, token }),
+    /**
+     * The household's details. `timezone` is an owner's to send (0.9.0, TZ):
+     * an IANA name, or null to go back to the server's default; refused
+     * (`403`) to an adult, and a name the vault does not know is `422`.
+     */
+    updateProfile: (
+      token: string,
+      body: Partial<Omit<Profile, 'timezone'>> & { timezone?: string | null },
+    ) => request<Profile>('/api/v1/profile', { method: 'PUT', body, token }),
+    /**
+     * The family's time zone (0.9.0, TZ): the zone in effect, whether an
+     * owner chose it or it is the server's default (FDV_TIMEZONE), that
+     * default, and whether this reader may change it. Every role reads it.
+     */
+    householdTimezone: (token: string) =>
+      request<FamilyTimeZone>('/api/v1/household/timezone', { token }),
+    /**
+     * An owner chooses the family's time zone (an IANA name), or clears it
+     * back to the server's default (null). `403` to anybody else; `422` for
+     * a name the vault does not know.
+     */
+    setHouseholdTimezone: (token: string, timezone: string | null) =>
+      request<FamilyTimeZone>('/api/v1/household/timezone', {
+        method: 'PUT',
+        body: { timezone },
+        token,
+      }),
     /** The family: a guest is never among them (5.34), but for a guest themselves. */
     members: (token: string) => request<{ items: Member[] }>('/api/v1/members', { token }),
     /**

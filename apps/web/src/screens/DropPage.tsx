@@ -24,6 +24,7 @@ import { describeError } from '../app-context.js';
 import { useFixedTitle } from '../page-title.js';
 import { sendDropFile } from '../drop-upload.js';
 import { Button, ErrorNote, Field, Logo, TextArea } from '../ui.js';
+import { browserZone, dateTimeWords } from '../family-time.js';
 
 /**
  * The page a request to send documents opens (5.22): `/drop#<token>`.
@@ -91,8 +92,12 @@ function openedBefore(): string | null {
  */
 const secure = () => window.isSecureContext !== false;
 
-const when = (iso: string) =>
-  new Date(iso).toLocaleString([], { dateStyle: 'long', timeStyle: 'short' });
+/**
+ * A moment, on this browser's own clock with its zone named (0.9.0, TZ):
+ * whoever sends files through a request is outside the family, and is told
+ * the time where they are, never the family's zone.
+ */
+const when = (iso: string) => dateTimeWords(iso, browserZone(), { always: true });
 
 /** Who asked, in a sentence: their name, or "whoever sent it". */
 const asker = (name: string | null) => name ?? 'whoever sent it';

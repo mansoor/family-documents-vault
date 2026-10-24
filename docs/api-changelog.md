@@ -5470,6 +5470,53 @@ not_found` ("A note has no file") and `…/pages/{n}` `404 no_preview`.
       `prepareChecklistDocs` take the titled documents as a last, optional
       argument. The fake looks for a line by its title in every document
       the person may see.
+  - The family's time zone (0.9.0, TZ, migration 0080). Everything is
+    **additive** but where it says otherwise.
+    - **New `features`:** `household_timezone`, `true`; absent from older
+      vaults.
+    - **New routes:** `GET /api/v1/household/timezone` — `FamilyTimeZone`
+      `{ timezone, timezone_source, server_timezone, can_change }`, for every
+      role: the zone in effect (an IANA name), whether an owner chose it
+      (`"household"`) or it is the server's default (`"server_default"`,
+      `FDV_TIMEZONE`, else UTC), that default, and whether the caller may
+      change it. `PUT /api/v1/household/timezone` `{ timezone }` — an IANA
+      name, or `null` to go back to the server's default; answers the same
+      shape. `403 forbidden` to anybody but an owner ("Only an owner can
+      change the family’s time zone."); `422 validation_failed` for a name
+      the vault does not know.
+    - **New fields** on `GET /api/v1/profile` (and the `PUT`'s answer):
+      `timezone_source` and `server_timezone`, as above. **Changed answer:**
+      `timezone` is the zone in effect — the household's own, else
+      `FDV_TIMEZONE` — where it was the household's column, `UTC` unless
+      set; a vault whose `FDV_TIMEZONE` is unset answers as before.
+    - **`PUT /api/v1/profile`** still takes `timezone`, and now `null` too
+      (the server's default). **Changed:** it is an owner's alone — an adult
+      sending `timezone` is `403 forbidden` and nothing in the request is
+      changed (an adult could set it before; the web never sent it). A
+      name not known is `422` as before, with new words.
+    - Every moment the API says in words (a lock's end, a guest's, an
+      owner change's day, the Trash's "removed for good from", a link's end
+      after a restore, the activity log's lines) is on the zone in effect,
+      and the activity log has a new line, `household.timezone_changed`
+      (`detail: { from, from_source, to, to_source }`), read by whoever
+      reads the log.
+    - A zone is an IANA name the server lists (`Intl.supportedValuesOf`), or
+      `UTC`, and is stored and answered as the server spells it: `europe/london`
+      is answered `Europe/London`, `utc` is `UTC`. An abbreviation (`EST`,
+      `GMT`) or an offset (`+05:30`) is `422`, where some were taken before.
+    - **Changed answers:** a document's `status` (and the Documents table's
+      sort and filter by it, search hits, and a checklist's matches) is worked
+      out on the household's today, not the server's UTC day: around
+      midnight a document may be `expired` an hour or so sooner or later than
+      before. The email telling somebody an owner asked to remove their
+      document for good names the zone of its times.
+    - The new capability `household.timezone` (owners) is in `CAPABILITIES`.
+      `@fdv/shared`: `TimeZoneSource`, `FamilyTimeZone`, `effectiveZone`,
+      `isTimeZone`, `zoneShortName`, `zoneOffsetWords`, `timeZoneNames`,
+      `FALLBACK_TIME_ZONES`, `DEFAULT_TIME_ZONE`; `Profile.timezone_source`,
+      `Profile.server_timezone`. `@fdv/client`: `householdTimezone`,
+      `setHouseholdTimezone`, and `updateProfile` takes `timezone: null`;
+      the fake answers both routes.
 
 ## Deprecations in effect
 

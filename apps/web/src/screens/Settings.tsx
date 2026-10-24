@@ -17,6 +17,7 @@ import {
   useSettingsSections,
 } from '../settings-sections.js';
 import { ChangePassword } from './Password.js';
+import { dateTimeWords, dayWordsOf, useFamilyZone } from '../family-time.js';
 
 /**
  * A section's page: its heading names the section. On a phone its bar has
@@ -190,6 +191,7 @@ function KeyShortcuts() {
  */
 function Passkeys() {
   const { guarded, authVersion } = useApp();
+  const zone = useFamilyZone();
   const {
     data,
     error: loadError,
@@ -244,9 +246,9 @@ function Passkeys() {
                 <span>
                   <strong>{k.label ?? 'A passkey'}</strong>
                   <span className="muted">
-                    Added {new Date(k.created_at).toLocaleDateString()}
+                    Added {dayWordsOf(k.created_at, zone, { year: true })}
                     {k.last_used_at
-                      ? ` · last used ${new Date(k.last_used_at).toLocaleDateString()}`
+                      ? ` · last used ${dayWordsOf(k.last_used_at, zone, { year: true })}`
                       : ' · not used yet'}
                     {k.backed_up ? ' · synced to your other devices' : ''}
                   </span>
@@ -390,6 +392,7 @@ function TwoStep() {
 /** STO-07: one button, one ZIP, no lock-in. */
 function ExportSection() {
   const { guarded, authVersion } = useApp();
+  const zone = useFamilyZone();
   const {
     data,
     error: loadError,
@@ -450,7 +453,7 @@ function ExportSection() {
             {(data ?? []).slice(0, 3).map((e) => (
               <li key={e.id}>
                 <span>
-                  <strong>{new Date(e.created_at).toLocaleString()}</strong>
+                  <strong>{dateTimeWords(e.created_at, zone)}</strong>
                   <span className="muted">
                     {e.state === 'done'
                       ? `${e.document_count} document${e.document_count === 1 ? '' : 's'} · ${((e.byte_size ?? 0) / 1024 / 1024).toFixed(1)} MB`

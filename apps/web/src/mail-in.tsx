@@ -13,6 +13,7 @@ import { describeError, useApp, useLoad } from './app-context.js';
 import { storedRole } from './session.js';
 import { Button, Check, ErrorNote, LoadFailed, TopBar } from './ui.js';
 import { useWorkerCheck } from './worker-check.js';
+import { dayWordsOf, familyZoneNow, shortWhenWords } from './family-time.js';
 
 /**
  * Email in (0.8.0, S4): an owner's page in Settings → For owners, and the
@@ -527,19 +528,14 @@ function MailboxForm(props: { view: MailInView; onSaved: () => Promise<void> }) 
   );
 }
 
-/** "12 Oct, 14:03", in this browser's time. */
+/** "12 Oct, 14:03", on the family's clock (0.9.0, TZ). */
 function whenWords(at: string): string {
-  return new Date(at).toLocaleString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return shortWhenWords(at, familyZoneNow());
 }
 
-/** "12 Oct", in this browser's time. */
+/** "12 Oct", on the family's calendar. */
 function dayWords(at: string): string {
-  return new Date(at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return dayWordsOf(at, familyZoneNow(), { month: 'short' });
 }
 
 /** What of theirs was left in the mailbox, to its person (F1): counts, and the newest one's date. */

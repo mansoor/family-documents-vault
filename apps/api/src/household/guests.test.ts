@@ -1,4 +1,4 @@
-import { createPool } from '@fdv/db';
+import { createPool, householdZone } from '@fdv/db';
 import { testAdminUrl, zoneShortOfAYear } from '@fdv/db/testing';
 import {
   GUEST_ALWAYS_LIMITED,
@@ -964,9 +964,15 @@ describe.skipIf(!testAdminUrl())('someone outside the family (5.34)', () => {
       ...peer(),
     });
     expect(before.statusCode, before.body).toBe(200);
-    const zone = (
-      await admin.query<{ timezone: string }>('select timezone from household where id = $1', [hh])
-    ).rows[0]?.timezone;
+    // The zone in effect: the household's own, else the server's default (0.9.0, TZ).
+    const zone = householdZone(
+      (
+        await admin.query<{ timezone: string | null }>(
+          'select timezone from household where id = $1',
+          [hh],
+        )
+      ).rows[0]?.timezone,
+    );
     expect(json<InvitationPreview>(before)).toMatchObject({
       kind: 'guest',
       access_expires_at: expect.stringMatching(/^\d{4}-/) as unknown,

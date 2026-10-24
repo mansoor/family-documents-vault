@@ -15,6 +15,7 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { TwoStepNeeded, whenWords } from '../identity.js';
 import { storedRole } from '../session.js';
 import { Button, ErrorNote, LoadFailed, Pills, TopBar } from '../ui.js';
+import { familyZoneNow } from '../family-time.js';
 
 /**
  * Settings → Family (5.27): who can see the identity details kept on each
@@ -45,7 +46,7 @@ function IdentityAudienceCard() {
   const { data, error, setData, reload } = useLoad(
     async (t) => {
       const [audience, profile] = await Promise.all([api.identityAudience(t), api.profile(t)]);
-      return { audience, timezone: profile.timezone ?? 'UTC' };
+      return { audience, timezone: profile.timezone ?? familyZoneNow() };
     },
     [authVersion],
   );
@@ -58,7 +59,8 @@ function IdentityAudienceCard() {
   const problemAt = useRef<HTMLDivElement>(null);
 
   const view = data?.audience ?? null;
-  const timezone = data?.timezone ?? 'UTC';
+  // Until the vault answers, the family's zone as this tab knows it — never UTC (the TZ review).
+  const timezone = data?.timezone ?? familyZoneNow();
   const now = view?.audience ?? 'owners_and_self';
   const pending = view?.pending ?? null;
   const choice = chosen ?? pending?.to ?? now;

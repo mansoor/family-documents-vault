@@ -3425,6 +3425,35 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: "the family's time zone: the server's default until an owner chooses one, cleared back by null, a name nobody knows refused (0.9.0, TZ)",
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      const first = await api.householdTimezone(token);
+      expect(first).toMatchObject({ timezone_source: 'server_default', can_change: true });
+      expect(first.timezone).toBe(first.server_timezone);
+      const chosen = await api.setHouseholdTimezone(token, 'Pacific/Kiritimati');
+      expect(chosen).toMatchObject({
+        timezone: 'Pacific/Kiritimati',
+        timezone_source: 'household',
+        server_timezone: first.server_timezone,
+      });
+      expect(await api.householdTimezone(token)).toEqual(chosen);
+      const unknown = await refusal(api.setHouseholdTimezone(token, 'Mars/Olympus_Mons'));
+      expect([unknown.status, unknown.code]).toEqual([422, 'validation_failed']);
+      // An abbreviation or an offset is not a zone; a name is kept as it is spelt.
+      for (const not of ['EST', '+05:30']) {
+        expect((await refusal(api.setHouseholdTimezone(token, not))).status).toBe(422);
+      }
+      expect((await api.setHouseholdTimezone(token, 'europe/london')).timezone).toBe(
+        'Europe/London',
+      );
+      await api.setHouseholdTimezone(token, 'Pacific/Kiritimati');
+      expect((await api.householdTimezone(token)).timezone).toBe('Pacific/Kiritimati');
+      const cleared = await api.setHouseholdTimezone(token, null);
+      expect(cleared).toEqual(first);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

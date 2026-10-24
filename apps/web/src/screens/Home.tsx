@@ -35,6 +35,7 @@ import { OnlyYou, useMayBatch } from './Batches.js';
 import { mayBringBack, purgeAskedWords } from './Trash.js';
 import { loadScannerNotices, ScannerNotices } from '../watch-folder.js';
 import { EmailInLine } from '../mail-in.js';
+import { dayWordsOf, familyZoneNow } from '../family-time.js';
 
 /**
  * Home is the whole product in one view: the needs-attention strip (the
@@ -78,7 +79,9 @@ export function HomeScreen() {
         ]);
       // A guest is told when their access ends, on the family's clock (5.34).
       const timezone =
-        me.kind === 'guest' ? ((await api.profile(t).catch(() => null))?.timezone ?? 'UTC') : 'UTC';
+        me.kind === 'guest'
+          ? ((await api.profile(t).catch(() => null))?.timezone ?? familyZoneNow())
+          : familyZoneNow();
       const reminded = new Set(due.items.map((r) => r.document_id));
       const attention = [
         ...due.items.map((r) => ({
@@ -617,8 +620,7 @@ export function ResetNoticeStrip(props: { notice: ResetNotice; onSeen: () => voi
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const by = props.notice.by ?? 'An owner';
-  const dayOf = (at: string) =>
-    new Date(at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
+  const dayOf = (at: string) => dayWordsOf(at, familyZoneNow());
   const day = dayOf(props.notice.at);
   const added = [
     ...(props.notice.passkeys_since ?? []).map(

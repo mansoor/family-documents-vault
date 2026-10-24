@@ -3,7 +3,6 @@ import {
   NOTE_KIND,
   NOTES_MAX,
   noteFirstWords,
-  whenExactly,
   type DocumentView,
   type NoteSummary,
   type Visibility,
@@ -32,6 +31,7 @@ import { Button, ErrorNote, MoveToTrashDialog, Pills, TopBar, TrashIcon } from '
 import { DocumentCollections } from './Document.js';
 import { SharePanel } from './Share.js';
 import { VisibilityControl } from './Visibility.js';
+import { dayWordsOf, exactWords, familyZoneNow } from '../family-time.js';
 
 /**
  * Notes (0.9.0, N1, the owner's request of 18 Oct 2026): what the family
@@ -86,13 +86,7 @@ const visibilityWords: Record<Visibility, string> = {
 
 /** "3 Oct", or "3 Oct 2025" for another year. */
 function shortDate(iso: string): string {
-  const d = new Date(iso);
-  const sameYear = d.getFullYear() === new Date().getFullYear();
-  return d.toLocaleDateString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    ...(sameYear ? {} : { year: 'numeric' }),
-  });
+  return dayWordsOf(iso, familyZoneNow(), { month: 'short', year: 'other' });
 }
 
 /** A note's name: its title, or its first words, or "Untitled note". */
@@ -449,7 +443,7 @@ function NotePane(props: {
           </h2>
           <p className="muted note-pane-meta">
             {visibilityWords[doc.visibility]} · changed{' '}
-            {whenExactly(doc.notes_updated_at ?? doc.updated_at, data.timezone)}
+            {exactWords(doc.notes_updated_at ?? doc.updated_at, data.timezone ?? undefined)}
           </p>
         </div>
         {/* The note's Edit, on the title's line (NotesSection puts it here). */}
@@ -621,7 +615,7 @@ function NewNote(props: { onMade: () => void; onDirty: (dirty: boolean) => void 
       />
       <p id={`${id}-not-for`} className="muted note-count">
         {tooLong
-          ? `Too long to save: ${text.length.toLocaleString('en-GB')} characters.`
+          ? `Too long to save: ${new Intl.NumberFormat('en-GB').format(text.length)} characters.`
           : NOTES_NOT_FOR}
       </p>
       {secret && (

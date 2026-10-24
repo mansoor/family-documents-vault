@@ -332,6 +332,15 @@ export interface CapabilityFeatures {
    * page (GET /shared/items/{id}/note). Absent from older vaults.
    */
   notes?: boolean;
+  /**
+   * The family's time zone (0.9.0, TZ): GET /household/timezone says the
+   * zone every time is shown on, whether an owner chose it or it is the
+   * server's default (FDV_TIMEZONE), and that default; an owner changes it
+   * with PUT /household/timezone (null goes back to the default). The
+   * profile's `timezone` is the zone in effect, with `timezone_source`.
+   * Absent from older vaults.
+   */
+  household_timezone?: boolean;
 }
 
 export interface CapabilityLimits {

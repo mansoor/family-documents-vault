@@ -48,6 +48,7 @@ const PAGES: ReadonlyArray<readonly [pattern: string, title: string]> = [
   ['/settings/account', 'Settings: your account'],
   ['/settings/computers', 'Settings: your computers'],
   ['/settings/notifications', 'Settings: notifications'],
+  ['/settings/time-zone', 'Settings: time zone'],
   ['/settings/privacy', 'Settings: privacy'],
   ['/settings/data', 'Settings: your data'],
   ['/settings/owners', 'Settings: for owners'],

@@ -7,7 +7,6 @@ import {
   IDENTITY_SEXES,
   IDENTITY_TEXT_FIELDS,
   identityChanges,
-  shareEndWords,
   type DocumentTypeView,
   type DocumentView,
   type IdentityAudience,
@@ -25,6 +24,7 @@ import { api, ApiRequestError, type Member } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { storedRole } from './session.js';
 import { Button, ErrorNote, Field, Select, Switch, TextArea } from './ui.js';
+import { endWords, familyZoneNow } from './family-time.js';
 
 /**
  * A person's identity details on the web (5.27), over 5.26's API: the card
@@ -1877,7 +1877,7 @@ export function IdentityNotice(props: { memberId: string | null | undefined }) {
     async (t) => {
       if (!offered) return null;
       const [audience, profile] = await Promise.all([api.identityAudience(t), api.profile(t)]);
-      return { audience, timezone: profile.timezone ?? 'UTC' };
+      return { audience, timezone: profile.timezone ?? familyZoneNow() };
     },
     [authVersion, offered],
   );
@@ -1917,8 +1917,8 @@ export function IdentityNotice(props: { memberId: string | null | undefined }) {
 export function whenWords(iso: string, timezone: string): string {
   const at = new Date(iso);
   try {
-    return shareEndWords(at, timezone || 'UTC', { weekday: false });
+    return endWords(at, timezone || 'UTC', { weekday: false });
   } catch {
-    return shareEndWords(at, 'UTC', { weekday: false });
+    return endWords(at, 'UTC', { weekday: false });
   }
 }

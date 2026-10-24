@@ -10,6 +10,7 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { Button, ConfirmDialog, ErrorNote, LoadFailed, useSheetFocus } from '../ui.js';
 import { SettingsPage } from './Settings.js';
+import { dayWordsOf, familyZoneNow } from '../family-time.js';
 
 /**
  * Your computers (/settings/computers, 0.8.0 D1): a computer of the
@@ -28,9 +29,8 @@ const PLATFORM: Record<DevicePlatform, string> = {
   other: 'A computer',
 };
 
-/** A day as the list says it: "13 Oct 2026". */
-const day = (iso: string) =>
-  new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+/** A day as the list says it: "13 Oct 2026", on the family's calendar. */
+const day = (iso: string) => dayWordsOf(iso, familyZoneNow(), { month: 'short', year: true });
 
 /**
  * The address the app is to be told: the vault's own, unless it names this

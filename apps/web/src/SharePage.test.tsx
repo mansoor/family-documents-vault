@@ -238,7 +238,8 @@ describe('until a date and time, view or download, so many opens', () => {
       with_pin: false,
     });
     // Said back: until when, what they can do, how often, and the pages.
-    expect(screen.getByText(/^Until Friday \d+ \w+ at 17:00\.$/)).toBeInTheDocument();
+    // Its zone named in summer, when London's clock is not this browser's UTC (0.9.0, TZ).
+    expect(screen.getByText(/^Until Friday \d+ \w+ at 17:00( BST)?\.$/)).toBeInTheDocument();
     expect(screen.getByText(/^To view: they see its pages/)).toBeInTheDocument();
     expect(screen.getByText('It can be opened 5 times.')).toBeInTheDocument();
     expect(

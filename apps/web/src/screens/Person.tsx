@@ -10,9 +10,9 @@ import {
   PHOTO_TYPES,
   resetCommand,
   roleLabel,
-  shareEndWords,
+  ageOn,
+  localToday,
   shortName,
-  whenWords,
   zonedParts,
   zonedTime,
   type MemberAccount,
@@ -67,6 +67,13 @@ import { DocRow } from './Home.js';
 import { useTrashedNote } from '../DocActions.js';
 import { RoleControls } from './Roles.js';
 import { HandOver, InviteForm, useHouseholdToday } from './Invite.js';
+import {
+  dateOnlyWords,
+  dateTimeWords,
+  endWords,
+  familyZoneNow,
+  relativeWords,
+} from '../family-time.js';
 
 /**
  * A person (5.17c). A name on People opens their profile, which also lists
@@ -94,19 +101,21 @@ const nameOf = (m: Member, family: ReadonlyArray<Member>) =>
   shortName(family.length > 0 ? family : [m]).get(m.id) ??
   (m.display_name.trim().split(/\s+/)[0] || m.display_name);
 
-/** "12 March 2012 · 14"; no age once they have died. */
-export function bornLine(dateOfBirth: string, deceased: boolean, today = new Date()): string {
-  const [y, mo, d] = dateOfBirth.split('-').map(Number) as [number, number, number];
-  const born = new Date(y, mo - 1, d);
-  const words = born.toLocaleDateString('en-GB', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  });
+/**
+ * "12 March 2012 · 14"; no age once they have died. The age is on the
+ * family's calendar (the TZ review): a birthday comes on the family's day,
+ * whatever zone this browser is in.
+ */
+export function bornLine(
+  dateOfBirth: string,
+  deceased: boolean,
+  today: string = localToday(familyZoneNow()),
+): string {
+  // A date of birth is a date, never a moment: no zone moves it (0.9.0, TZ).
+  const words = dateOnlyWords(dateOfBirth);
   if (deceased) return words;
-  let age = today.getFullYear() - y;
-  if (today.getMonth() + 1 < mo || (today.getMonth() + 1 === mo && today.getDate() < d)) age -= 1;
-  return age >= 0 ? `${words} · ${age}` : words;
+  const age = ageOn(dateOfBirth, today);
+  return age !== null && age >= 0 ? `${words} · ${age}` : words;
 }
 
 /** The one line under a person's name. */
@@ -649,7 +658,7 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
   // The household's clock, which a lock's end is chosen and said on, as a
   // link's is (5.18): the vault tells the person the same words.
   const { data: timezone } = useLoad(
-    async (t) => (await api.profile(t).catch(() => null))?.timezone ?? 'UTC',
+    async (t) => (await api.profile(t).catch(() => null))?.timezone ?? familyZoneNow(),
     [authVersion],
   );
   const [card, setCard] = useState<MemberAccount | null>(null);
@@ -666,7 +675,8 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
   const lockButton = useRef<HTMLButtonElement>(null);
   const resetButton = useRef<HTMLButtonElement>(null);
   const signOutButton = useRef<HTMLButtonElement>(null);
-  const tz = timezone ?? 'UTC';
+  // Until the vault answers, the family's zone as this tab knows it — never UTC (the TZ review).
+  const tz = timezone ?? familyZoneNow();
 
   const show = async () => {
     setBusy(true);
@@ -776,7 +786,7 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
               <dl className="facts">
                 <dt>{suspended.reason === 'locked' ? 'Locked' : 'Paused'}</dt>
                 <dd>
-                  {whenWords(suspended.since)}
+                  {relativeWords(suspended.since)}
                   {suspended.by ? `, by ${suspended.by}` : ''}
                 </dd>
                 {suspended.note && (
@@ -818,7 +828,7 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
             <dt>Passkeys</dt>
             <dd>{card.passkeys === 0 ? 'None' : card.passkeys}</dd>
             <dt>Last signed in</dt>
-            <dd>{card.last_signed_in_at ? whenWords(card.last_signed_in_at) : 'Never'}</dd>
+            <dd>{card.last_signed_in_at ? relativeWords(card.last_signed_in_at) : 'Never'}</dd>
           </dl>
           {/* A viewer's limits (5.33): what they can see, to change, with the
               same confirmation the card was opened with. */}
@@ -845,7 +855,7 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
                 <li key={i} className="place">
                   <span className="doc-title">{capitalised(d.label)}</span>
                   <span className="muted">
-                    {CLIENT_WORDS[d.client]} · last used {whenWords(d.last_used_at)}
+                    {CLIENT_WORDS[d.client]} · last used {relativeWords(d.last_used_at)}
                     {d.offline ? ' · Keeps Essentials for offline use' : ''}
                   </span>
                 </li>
@@ -1145,11 +1155,11 @@ function ResetDialog(props: {
                 </p>
                 <code className="reset-secret">{shown.link}</code>
                 <p className="muted">
-                  {`Whoever has it can set ${name}’s password, once, until ${new Date(
+                  {`Whoever has it can set ${name}’s password, once, until ${dateTimeWords(
                     shown.expires_at as string,
-                  ).toLocaleTimeString([], {
-                    timeStyle: 'short',
-                  })}. It stops working if ${name} starts keeping something only they can see first. ${name} is told the next time they sign in.`}
+                    familyZoneNow(),
+                    { date: null },
+                  )}. It stops working if ${name} starts keeping something only they can see first. ${name} is told the next time they sign in.`}
                 </p>
                 <Button kind="quiet" onClick={() => copy(shown.link as string)}>
                   {copied ? 'Copied' : 'Copy the link'}
@@ -1260,8 +1270,6 @@ function ResetDialog(props: {
 }
 
 /** " (Europe/London time)" when the household's clock is not this browser's. */
-const zoneWords = (timezone: string) =>
-  timezone !== Intl.DateTimeFormat().resolvedOptions().timeZone ? ` (${timezone} time)` : '';
 
 /** What a locked or paused sign-in is, in a sentence: until when, and who ends it. */
 export function suspendedWords(s: MemberSuspension, name: string, timezone: string): string {
@@ -1270,7 +1278,7 @@ export function suspendedWords(s: MemberSuspension, name: string, timezone: stri
     return `${name}’s sign-in is paused after the restore, until an owner turns it back on.`;
   }
   return s.until
-    ? `${name}’s sign-in is locked until ${shareEndWords(new Date(s.until), timezone)}${zoneWords(timezone)}, unless an owner unlocks it sooner.`
+    ? `${name}’s sign-in is locked until ${endWords(s.until, timezone)}, unless an owner unlocks it sooner.`
     : `${name}’s sign-in is locked until an owner unlocks it.`;
 }
 
@@ -1333,7 +1341,8 @@ function LockDialog(props: {
 
   const at = ends === 'dated' ? zonedTime(when.date, when.time, timezone) : null;
   const problem = ends === 'dated' ? lockEndProblem(at) : null;
-  const endWords = at && !problem ? `${shareEndWords(at, timezone)}${zoneWords(timezone)}` : null;
+  // Its zone named where this browser's clock reads otherwise (the TZ review).
+  const endsWords = at && !problem ? endWords(at, timezone) : null;
   // The days a lock may end on, as the dialog opens: today to a year on.
   const [{ today, latest }] = useState(() => ({
     today: zonedParts(new Date(), timezone).date,
@@ -1379,8 +1388,8 @@ function LockDialog(props: {
             <li>{`The lock takes the place of the pause after the restore: once it is unlocked, ${name} can sign in again.`}</li>
           )}
           <li>
-            {endWords
-              ? `${name} can’t sign in until ${endWords}, unless an owner unlocks it sooner.`
+            {endsWords
+              ? `${name} can’t sign in until ${endsWords}, unless an owner unlocks it sooner.`
               : `${name} can’t sign in until an owner unlocks it.`}
           </li>
           <li>{`Every device ${name} is signed in on is signed out now.`}</li>
@@ -1460,7 +1469,7 @@ function LockDialog(props: {
                 className={problem ? 'field-error' : 'muted'}
                 role={problem ? 'alert' : undefined}
               >
-                {problem ?? `Unlocks by itself on ${endWords ?? ''}.`}
+                {problem ?? `Unlocks by itself on ${endsWords ?? ''}.`}
               </span>
             </>
           )}

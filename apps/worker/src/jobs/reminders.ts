@@ -1,4 +1,5 @@
 import {
+  householdZone,
   mayYetSignUp,
   readAs,
   remindTurned13,
@@ -142,11 +143,17 @@ export interface ReminderDeps {
   weeklyHour?: number;
 }
 
+/**
+ * The households, each with its clock in effect (0.9.0, TZ): its own zone
+ * when an owner chose one, else FDV_TIMEZONE. Read afresh every round, so a
+ * zone changed in Settings moves the next digest to the household hour on
+ * the new clock; what is due is a day, never shifted by it.
+ */
 async function households(admin: pg.Pool) {
-  const { rows } = await admin.query<{ id: string; name: string; timezone: string }>(
+  const { rows } = await admin.query<{ id: string; name: string; timezone: string | null }>(
     'select id, name, timezone from household where deleted_at is null',
   );
-  return rows;
+  return rows.map((r) => ({ ...r, timezone: householdZone(r.timezone) }));
 }
 
 /** A reminder about to be sent, with what decides who may hear of it. */

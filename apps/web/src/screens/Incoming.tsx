@@ -3,7 +3,6 @@ import {
   effectiveVisibility,
   incomingFileName,
   NOT_SCANNED,
-  whenExactly,
   type DocumentTypeView,
   type DocumentView,
   type IncomingFileView,
@@ -17,6 +16,7 @@ import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { Button, ConfirmDialog, ErrorNote, Field, Select, TopBar, useArrivedSaid } from '../ui.js';
+import { dayWordsOf, exactWords, familyZoneNow } from '../family-time.js';
 
 /**
  * Incoming (5.23): what somebody outside the family sent through a request,
@@ -38,8 +38,7 @@ export function sizeWords(bytes: number): string {
 }
 
 /** "1 November": the day it is removed. */
-const dayWords = (iso: string) =>
-  new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
+const dayWords = (iso: string) => dayWordsOf(iso, familyZoneNow());
 
 /** Whom from, and for what: "From Jane, accountant, for “Your tax papers” — W-2". */
 function fromWords(f: IncomingFileView): string {
@@ -97,7 +96,7 @@ export function IncomingList(props: {
               <span className="doc-title">{f.name}</span>
               <span className="muted">{fromWords(f)}</span>
               <span className="muted">
-                {sizeWords(f.byte_size)} · sent {whenExactly(f.sent_at)} · removed on{' '}
+                {sizeWords(f.byte_size)} · sent {exactWords(f.sent_at)} · removed on{' '}
                 {dayWords(f.removed_at)} unless you file it
               </span>
               {f.scan_state !== 'clean' && <NotScanned />}
@@ -387,7 +386,7 @@ function IncomingFile(props: {
         <p>{fromWords(file)}</p>
         <p className="muted">
           {file.content_type === 'application/pdf' ? 'PDF' : file.content_type} ·{' '}
-          {sizeWords(file.byte_size)} · sent {whenExactly(file.sent_at)}
+          {sizeWords(file.byte_size)} · sent {exactWords(file.sent_at)}
         </p>
         {file.scan_state !== 'clean' && (
           <div className="stack incoming-scan">

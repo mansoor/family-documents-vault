@@ -9,7 +9,15 @@ import {
 } from '@fdv/shared';
 import { createHash, randomUUID } from 'node:crypto';
 import type { ScopeKeys } from '@fdv/crypto';
-import { ANONYMOUS, appendAudit, withPrincipal, withScope, type Db, type Role } from '@fdv/db';
+import {
+  ANONYMOUS,
+  appendAudit,
+  withPrincipal,
+  withScope,
+  type Db,
+  type Role,
+  householdZone,
+} from '@fdv/db';
 import argon2 from 'argon2';
 import { sql } from 'kysely';
 import { ApiError } from '../errors.js';
@@ -449,13 +457,17 @@ export class AuthService {
       // been proven, and only now.
       if (suspensionInEffect(held)) {
         const hh = await trx.selectFrom('household').select(['timezone']).executeTakeFirstOrThrow();
-        throw membershipSuspended(held.suspend_reason, held.suspended_until, hh.timezone);
+        throw membershipSuspended(
+          held.suspend_reason,
+          held.suspended_until,
+          householdZone(hh.timezone),
+        );
       }
       // A guest's sign-in past its end (5.34, A28): refused, now that who it
       // is has been proven, and only now, with the day it ended.
       if (held.access_expires_at && guestAccessEnded(held.access_expires_at)) {
         const hh = await trx.selectFrom('household').select(['timezone']).executeTakeFirstOrThrow();
-        throw guestAccessEndedRefusal(held.access_expires_at, hh.timezone);
+        throw guestAccessEndedRefusal(held.access_expires_at, householdZone(hh.timezone));
       }
       const p = { ...asked, memberId: held.member_id, role: held.role };
       await appendAudit(trx, {

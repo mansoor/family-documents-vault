@@ -1,6 +1,6 @@
 import { openPrivate, type PrivateValues, type ScopeKeys } from '@fdv/crypto';
 import { openSealedText } from './sealed-text.js';
-import { withPrincipal, type Db } from '@fdv/db';
+import { householdToday, withPrincipal, type Db } from '@fdv/db';
 import { matchText, notesPlainText, parseQuery, seesLocation, type DateValue } from '@fdv/shared';
 import { sql } from 'kysely';
 import type { Principal } from '../auth/service.js';
@@ -178,6 +178,7 @@ export class SealedSearchService {
               { ...row, issued, expires },
               sealedOf(row),
               seesLocation(p.role),
+              await householdToday(trx),
             ),
             snippet: (inOwn ?? inContent ?? m).snippet,
             // Its notes or details, as the first pass says of a document's

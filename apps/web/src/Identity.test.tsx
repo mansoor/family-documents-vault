@@ -256,9 +256,10 @@ describe("a person's identity details (5.27)", () => {
       signedIn(role);
       at('/');
       const r = render(<App />);
-      // On the household's clock: 14:00 UTC is 07:00 in Los Angeles.
+      // On the household's clock: 14:00 UTC is 07:00 in Los Angeles, and
+      // named, as this browser's clock is UTC's (0.9.0, TZ).
       const banner = await screen.findByText(
-        'From 6 October at 07:00, all adults will see your shared identity details.',
+        'From 6 October at 07:00 PDT, all adults will see your shared identity details.',
       );
       const notice = banner.closest('.identity-notice') as HTMLElement;
       expect(within(notice).getByRole('link', { name: 'Look at yours' }), role).toHaveAttribute(

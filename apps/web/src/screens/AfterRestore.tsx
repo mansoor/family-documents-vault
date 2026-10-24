@@ -21,6 +21,7 @@ import {
   requestTarget,
   turnedBackOnWords,
 } from './Sharing.js';
+import { dayWordsOf, familyZoneNow } from '../family-time.js';
 
 /**
  * "1 link is paused until you turn it back on", "2 links and 1 request you
@@ -368,7 +369,7 @@ export function AfterRestoreScreen() {
                   ),
                   link.created_by_name ?? <None key="m" />,
                   <span key="u">
-                    {new Date(link.expires_at).toLocaleDateString([], { dateStyle: 'long' })}
+                    {dayWordsOf(link.expires_at, familyZoneNow(), { year: true })}
                     {link.has_pin ? <span className="muted cell-sub">Has a PIN</span> : null}
                   </span>,
                 ],
@@ -418,8 +419,7 @@ export function AfterRestoreScreen() {
                 </div>
                 <div className="muted">
                   {link.has_pin ? 'Has a PIN. ' : ''}
-                  Would work until{' '}
-                  {new Date(link.expires_at).toLocaleDateString([], { dateStyle: 'long' })}.
+                  Would work until {dayWordsOf(link.expires_at, familyZoneNow(), { year: true })}.
                 </div>
                 <div className="row">
                   {owner && (

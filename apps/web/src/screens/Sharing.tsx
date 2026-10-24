@@ -7,6 +7,7 @@ import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { None, useGrid } from '../table-grid.js';
 import { Button, ConfirmDialog, ErrorNote, TopBar } from '../ui.js';
+import { dateTimeWords, familyZoneNow } from '../family-time.js';
 
 /**
  * Sharing (5.19): every link outside the family the reader may
@@ -73,10 +74,7 @@ export function requestState(
   words: string;
   tone: 'ok' | 'warn' | 'danger' | null;
 } {
-  const at = new Date(r.expires_at).toLocaleString([], {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
+  const at = dateTimeWords(r.expires_at, familyZoneNow(), { date: 'medium' });
   switch (r.state) {
     case 'active':
       return { words: `Working until ${at}`, tone: 'ok' };
