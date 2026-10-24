@@ -3794,15 +3794,22 @@ a.menu-item {
   min-width: 0;
 }
 
+/* Kept beside the page as it scrolls, never taller than the window: past
+   that it scrolls within itself, so a link tabbed to is always on screen
+   (WCAG 2.4.11), as the notes list does. */
 .settings-nav {
   flex: none;
   width: 240px;
   position: sticky;
   top: var(--shell-top);
+  max-height: calc(100dvh - var(--shell-top));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 12px;
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 24px 0 24px 24px;
+  padding: 24px 4px 24px 24px;
 }
 
 .shell-mid .settings-nav {
