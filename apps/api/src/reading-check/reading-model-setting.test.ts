@@ -64,20 +64,20 @@ describe.skipIf(!testAdminUrl())('the reading model’s switch (R2)', () => {
     // No worker has said yet: not offered, and Settings is told.
     await admin.query('delete from reading_model_state');
     expect(await features()).toBe(false);
-    expect(await settings()).toEqual({ reading_model: true, loaded: false });
+    expect(await settings()).toMatchObject({ reading_model: true, loaded: false });
     // Loaded, as the worker says (the R2 review).
     await admin.query("insert into reading_model_state (worker, state) values ('w1:1', 'loaded')");
     expect(await features()).toBe(true);
-    expect(await settings()).toEqual({ reading_model: true, loaded: true });
+    expect(await settings()).toMatchObject({ reading_model: true, loaded: true });
     // Its weights spoilt: not offered again.
     await admin.query("update reading_model_state set state = 'corrupt'");
     expect(await features()).toBe(false);
-    expect(await settings()).toEqual({ reading_model: true, loaded: false });
+    expect(await settings()).toMatchObject({ reading_model: true, loaded: false });
     await admin.query("update reading_model_state set state = 'loaded'");
     // Two workers: offered only while every one said lately has it (the R2 re-check).
     await admin.query("insert into reading_model_state (worker, state) values ('w2:2', 'missing')");
     expect(await features()).toBe(false);
-    expect(await settings()).toEqual({ reading_model: true, loaded: false });
+    expect(await settings()).toMatchObject({ reading_model: true, loaded: false });
     // The one without it stopped saying so long ago (stopped, or a restore's row): not counted.
     await admin.query(
       "update reading_model_state set checked_at = now() - interval '1 hour' where worker = 'w2:2'",
@@ -86,7 +86,7 @@ describe.skipIf(!testAdminUrl())('the reading model’s switch (R2)', () => {
     // And no worker said anything lately: not offered.
     await admin.query("update reading_model_state set checked_at = now() - interval '1 hour'");
     expect(await features()).toBe(false);
-    expect(await settings()).toEqual({ reading_model: true, loaded: false });
+    expect(await settings()).toMatchObject({ reading_model: true, loaded: false });
     await admin.query("delete from reading_model_state where worker = 'w2:2'");
     await admin.query('update reading_model_state set checked_at = now()');
     expect(await features()).toBe(true);

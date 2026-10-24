@@ -53,7 +53,7 @@ import {
   itemFolder,
   levelItem,
   RELATIVE_PATH_MAX,
-  learnedIssuerKey,
+  lessonIssuer,
   periodic,
   lessonTrusted,
   ruleTrusted,
@@ -5106,7 +5106,7 @@ export function createFakeVault(): {
             card: learn.proposals,
             paper: learn.paper ?? null,
             filed,
-            issuer: learnedIssuerKey(filed.issued_by?.trim() || null),
+            issuer: lessonIssuer(filed.issued_by, learn.proposals),
             role: who.role,
             keeps: {
               issued: kind.core?.issued?.shown !== false,

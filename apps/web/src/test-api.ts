@@ -422,6 +422,17 @@ export interface FakeState {
   verifyAnswers?: Record<string, Record<string, unknown>>;
   browseAnswers?: Record<string, string[]>;
   mailboxTestAnswer?: Record<string, unknown>;
+  /** Test the local AI's answer (LocalAiTestResult, 0.9.0 R4). */
+  localAiTestAnswer?: Record<string, unknown>;
+  /**
+   * The local AI (0.9.0, R4), as GET /household/reading gives it to an owner
+   * (LocalAiSettingsView); a PUT sets `local_ai` (409 while it is not set
+   * up), and anything but the switch is refused (422). Left out, the
+   * feature is not said.
+   */
+  localAi?: { local_ai: boolean; local_ai_server: Record<string, unknown> };
+  /** The bodies PUT /household/reading was sent, in order. */
+  localAiPuts?: Array<Record<string, unknown>>;
   checkWaits?: number;
   /** What was asked of the worker, in order: kind and path. */
   checksAsked?: Array<{ kind: string; path: string | null }>;
@@ -1151,6 +1162,10 @@ export function installFakeApi(state: FakeState) {
           ...(state.readingModel !== undefined && state.readingModelLoaded !== false
             ? { reading_model: true }
             : {}),
+          // The local AI (0.9.0, R4): said while it is set up.
+          ...(state.localAi && state.localAi.local_ai_server.state !== 'not_set_up'
+            ? { local_ai: true }
+            : {}),
         },
         limits: {
           ...(state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {}),
@@ -1335,16 +1350,43 @@ export function installFakeApi(state: FakeState) {
     }
     if (path === '/api/v1/auth/step-up') return json({ verified_at: null, expires_in: 0 });
     if (path === '/api/v1/exports') return json({ items: [] });
+    // Whoever adds papers is told the local AI reads them (R4, the review's M1).
+    if (path === '/api/v1/household/reading/notice') {
+      if (storedRole() === 'viewer') return refuse(403, 'forbidden', 'Not for a viewer.');
+      const server = state.localAi?.local_ai_server as { state: string; host?: string } | undefined;
+      return json(
+        state.localAi?.local_ai && server && server.state !== 'not_set_up'
+          ? { local_ai: true, host: server.host ?? null }
+          : { local_ai: false, host: null },
+      );
+    }
+    // How the vault reads papers: the reading model (R2) and the local AI
+    // (R4), each an owner's switch; a PUT takes either or both, and nothing else.
     if (path === '/api/v1/household/reading') {
       if (storedRole() !== 'owner') {
-        return refuse(403, 'forbidden', 'Only an owner can run the Reading check.');
+        return refuse(403, 'forbidden', 'Only an owner can change how the vault reads papers.');
       }
+      const ai = state.localAi ?? { local_ai: false, local_ai_server: { state: 'not_set_up' } };
       if (method === 'PUT') {
-        state.readingModel = (body as { reading_model: boolean }).reading_model;
+        const b = body as Record<string, unknown>;
+        if ('local_ai' in b) (state.localAiPuts ??= []).push(b);
+        const keys = Object.keys(b);
+        if (
+          keys.length === 0 ||
+          keys.some((k) => !['reading_model', 'local_ai'].includes(k) || typeof b[k] !== 'boolean')
+        ) {
+          return refuse(422, 'validation_failed', 'Only the switches can be sent.');
+        }
+        if (b.local_ai === true && ai.local_ai_server.state === 'not_set_up') {
+          return refuse(409, 'local_ai_unavailable', 'The local AI can’t be turned on.');
+        }
+        if (typeof b.reading_model === 'boolean') state.readingModel = b.reading_model;
+        if (typeof b.local_ai === 'boolean') state.localAi = { ...ai, local_ai: b.local_ai };
       }
       return json({
         reading_model: state.readingModel ?? true,
         loaded: state.readingModelLoaded !== false,
+        ...(state.localAi ?? ai),
       });
     }
     if (path === '/api/v1/reading-checks' || path.startsWith('/api/v1/reading-checks/')) {
@@ -1472,7 +1514,7 @@ export function installFakeApi(state: FakeState) {
       return json(folder);
     }
     // What an owner asks the worker from Settings (O1): Verify, browse, Test the mailbox.
-    const askWorker = (kind: 'folder' | 'browse' | 'mailbox', p: string | null) => {
+    const askWorker = (kind: 'folder' | 'browse' | 'mailbox' | 'local_ai', p: string | null) => {
       if (storedRole() !== 'owner') {
         return refuse(
           403,
@@ -1503,6 +1545,10 @@ export function installFakeApi(state: FakeState) {
     if (path === '/api/v1/mail-in/mailbox/test' && method === 'POST') {
       return askWorker('mailbox', null);
     }
+    // The local AI (0.9.0, R4): an owner's switch, and Test asked of the worker.
+    if (path === '/api/v1/household/reading/local-ai/test' && method === 'POST') {
+      return askWorker('local_ai', null);
+    }
     const checkAt = /^\/api\/v1\/settings-checks\/([^/]+)$/.exec(path);
     if (checkAt) {
       const c = checks.get(checkAt[1] as string);
@@ -1519,7 +1565,9 @@ export function installFakeApi(state: FakeState) {
           ? state.verifyAnswers?.[c.path ?? '']
           : c.kind === 'browse'
             ? state.browseAnswers?.[c.path ?? '']
-            : state.mailboxTestAnswer;
+            : c.kind === 'local_ai'
+              ? state.localAiTestAnswer
+              : state.mailboxTestAnswer;
       if (c.looks <= (state.checkWaits ?? 1) || answer === undefined) {
         return json({ ...base, state: 'waiting' });
       }

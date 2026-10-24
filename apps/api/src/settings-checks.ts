@@ -1,6 +1,8 @@
 import { withPrincipal, type Db } from '@fdv/db';
 import {
+  localAiTestResult,
   mailInTestResult,
+  type LocalAiTestFound,
   SETTINGS_CHECK_LATE_MS,
   SETTINGS_CHECK_LATE_WORDS,
   SETTINGS_CHECKS_PER_MINUTE,
@@ -38,13 +40,16 @@ const tooMany = () =>
     retryAfter: 60,
   });
 
-const underWay = () =>
+const underWay = (what: 'mailbox' | 'local_ai') =>
   new ApiError(
     429,
     'rate_limited',
-    'The mailbox is being tested now. Wait for its answer, then test it again.',
+    `${what === 'mailbox' ? 'The mailbox' : 'The local AI'} is being tested now. Wait for its answer, then test it again.`,
     { retriable: true, retryAfter: 15 },
   );
+
+/** How long a Test of the local AI not yet answered holds the next one off (R4): its own time, and more. */
+export const LOCAL_AI_TEST_HOLD_MS = 60_000;
 
 /** How long a Test the mailbox not yet answered holds the next one off (the O1 review, L6). */
 export const MAILBOX_TEST_HOLD_MS = 30_000;
@@ -73,16 +78,23 @@ export class SettingsCheckService {
         .where('requested_at', '>', new Date(this.now() - 60_000))
         .executeTakeFirstOrThrow();
       if (Number(recent.n) >= SETTINGS_CHECKS_PER_MINUTE) throw tooMany();
-      if (kind === 'mailbox') {
-        // One test of the mailbox at a time: each signs in to it.
+      if (kind === 'mailbox' || kind === 'local_ai') {
+        // One test of the mailbox at a time: each signs in to it. And of the
+        // local AI (R4): each asks the model.
         const running = await trx
           .selectFrom('settings_check')
           .select('id')
-          .where('kind', '=', 'mailbox')
+          .where('kind', '=', kind)
           .where('done_at', 'is', null)
-          .where('requested_at', '>', new Date(this.now() - MAILBOX_TEST_HOLD_MS))
+          .where(
+            'requested_at',
+            '>',
+            new Date(
+              this.now() - (kind === 'mailbox' ? MAILBOX_TEST_HOLD_MS : LOCAL_AI_TEST_HOLD_MS),
+            ),
+          )
           .executeTakeFirst();
-        if (running) throw underWay();
+        if (running) throw underWay(kind);
       }
       return trx
         .insertInto('settings_check')
@@ -162,8 +174,36 @@ export class SettingsCheckService {
           mailbox: mailInTestResult(r as unknown as MailInTestFound, mailFolder),
           words: null,
         };
+      case 'local_ai':
+        // Test the local AI (R4): the model, the host and how long.
+        return {
+          ...base,
+          state: 'done',
+          local_ai: localAiTestResult(localAiFound(r)),
+          words: null,
+        };
     }
   }
+}
+
+const PROBLEMS = ['not_set_up', 'unreachable', 'timeout', 'no_model', 'http_error', 'too_big'];
+
+/** What the worker wrote of a Test of the local AI, each field kept only if well formed. */
+function localAiFound(r: Record<string, unknown>): LocalAiTestFound {
+  const str = (v: unknown, max: number) =>
+    typeof v === 'string' && v.length > 0 && v.length <= max ? v : null;
+  return {
+    problem:
+      typeof r.problem === 'string' && PROBLEMS.includes(r.problem)
+        ? (r.problem as LocalAiTestFound['problem'])
+        : null,
+    model: str(r.model, 200),
+    host: str(r.host, 300),
+    latency_ms:
+      typeof r.latency_ms === 'number' && Number.isFinite(r.latency_ms) && r.latency_ms >= 0
+        ? Math.round(r.latency_ms)
+        : null,
+  };
 }
 
 /** GET /settings-checks/{id}: an owner's; anybody else is refused before anything is read. */

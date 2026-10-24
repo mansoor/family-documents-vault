@@ -657,19 +657,43 @@ export interface LearningStep {
  * kind and the person filed, the value and whether it was a correction. A
  * teen is taught no person. Nothing without an issuer filed.
  */
+/**
+ * The issuer an accept's lessons are keyed on — the rules' (I4) and a
+ * sender's layout's (R1) — the issuer filed; none where it is the local AI's
+ * own suggestion, filed unchanged (0.9.0, the R4 review, L7): the pages had
+ * none of their own, and an echo of the model is no sender to learn.
+ */
+export function lessonIssuer(
+  filed: string | null | undefined,
+  card: Pick<ItemProposals, 'issued_by'> | null | undefined,
+): string {
+  const value = text(filed);
+  if (
+    card?.issued_by?.local_ai === true &&
+    value !== null &&
+    value === text(card.issued_by.value)
+  ) {
+    return '';
+  }
+  return learnedIssuerKey(value);
+}
+
 export function learningOf(opts: {
   proposals: ItemProposals | null;
   filed: FiledDetails;
   role: Role;
 }): { issuer: string; steps: LearningStep[] } {
   const { proposals: p, filed } = opts;
-  const issuer = learnedIssuerKey(text(filed.issued_by));
+  const issuer = lessonIssuer(filed.issued_by, p);
   if (!issuer) return { issuer: '', steps: [] };
   const steps: LearningStep[] = [];
   for (const field of ['type_key', 'owner_member_id'] as const) {
     if (field === 'owner_member_id' && opts.role === 'teen') continue;
     const value = text(filed[field]);
     if (!value) continue;
+    // What the local AI suggested, filed unchanged (0.9.0, R4), teaches no
+    // rule: its echo confirms nothing, so it never makes a later card Ready.
+    if (p?.[field]?.local_ai === true && p[field]?.value === value) continue;
     steps.push({ field, value, corrected: value !== (p?.[field]?.value ?? null) });
   }
   return { issuer, steps };

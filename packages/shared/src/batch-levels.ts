@@ -31,6 +31,7 @@ import {
   type FolderSuggestion,
 } from './folders.js';
 import { seesLocation, type Role } from './roles.js';
+import { applyLocalAi, type StoredLocalAi } from './local-ai.js';
 
 /**
  * What the vault made of a batch's item once it read its pages (Phase 6,
@@ -156,7 +157,13 @@ export type BatchTagCode =
    */
   | 'clash_folder'
   /** A date the pages gave only once OCR's confusions were put right ("2O26": 0.9.0, R3). */
-  | 'date_corrected';
+  | 'date_corrected'
+  /** The local AI filled a field the card had nothing for (0.9.0, R4): never sure. */
+  | 'local_ai'
+  /** The local AI reads a field otherwise than the card has it (R4): the card's stands. */
+  | 'clash_local_ai'
+  /** The household has the local AI on, and this was read without it (R4): worth knowing. */
+  | 'local_ai_without';
 
 /** One reason for an item's level: a Problem's, a Check's, or something worth knowing. */
 export interface BatchTag {
@@ -213,6 +220,12 @@ export interface ItemSuggestion<T> {
    * Only beside `pages`, and only for a kind. Absent from a vault before 0.9.0.
    */
   model?: true;
+  /**
+   * Suggested by the local AI on the household's own server, where the card
+   * had nothing (0.9.0, R4, `applyLocalAi`): "suggested by the local AI",
+   * never sure, and the card Check for it. Absent from a vault before 0.9.0.
+   */
+  local_ai?: true;
 }
 
 /**
@@ -299,6 +312,12 @@ export interface LevelInput {
    * uploader as it is asked (`suggestFromFolder`); null with no folder.
    */
   folder?: FolderSuggestion | null;
+  /**
+   * What the local AI read of it (0.9.0, R4), as the worker sealed it beside
+   * the proposal; null or absent where the household has it off, or none.
+   * One more cue (`applyLocalAi`): it never makes a card Ready.
+   */
+  localAi?: StoredLocalAi | null;
   defaults: BatchDefaults;
   /** The household's kinds as they are now, and not deleted. */
   types: readonly LevelKind[];
@@ -350,6 +369,16 @@ const aKind = (label: string) => {
  * vault the same way.
  */
 export function levelItem(input: LevelInput): ItemLevel {
+  // The local AI (0.9.0, R4) fills no blank on a card that is Ready without
+  // it: there it may only disagree, and so only ever make it Check.
+  if (input.localAi?.state === 'read') {
+    const plain = levelOne({ ...input, localAi: null }, true);
+    return levelOne(input, plain.level !== 'ready');
+  }
+  return levelOne(input, true);
+}
+
+function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
   if (input.state === 'accepted') return { level: null, tags: [], proposals: null, clashes: [] };
   const { defaults: d, types, people, role, me } = input;
   const tags: BatchTag[] = [];
@@ -513,24 +542,23 @@ export function levelItem(input: LevelInput): ItemLevel {
     return { value: dflt, from: 'batch', confidence: null, cue: null };
   };
 
-  const proposals: Omit<ItemProposals, 'visibility'> = {};
-  const kindS = merge('type_key', kindP, kindD, kindF);
-  const personS = merge('owner_member_id', personP, personD, personF);
-  if (kindS) proposals.type_key = kindS;
-  if (personS) proposals.owner_member_id = personS;
-  const kind = kindOf(kindS?.value);
+  const merged: Omit<ItemProposals, 'visibility'> = {};
+  const kindM = merge('type_key', kindP, kindD, kindF);
+  const personM = merge('owner_member_id', personP, personD, personF);
+  if (kindM) merged.type_key = kindM;
+  if (personM) merged.owner_member_id = personM;
 
   // Its dates and its number were read for the kind the pages proposed: for
   // another kind (the batch's), they are not offered — nor its issuer.
   // A kind proposed and since deleted counts too: its dates are not the batch's kind's.
-  const forKind = !pages.type_key || pages.type_key.value === kindS?.value;
+  const forKind = !pages.type_key || pages.type_key.value === kindM?.value;
   if (forKind) {
     for (const field of ['issued', 'expires', 'identifier', 'issued_by'] as const) {
       const p = pages[field];
       if (!p) continue;
       // Read at a label the uploader's earlier papers of this layout taught
       // (R1), or made surer by them: learned, not the pages' alone.
-      (proposals as Record<string, ItemSuggestion<unknown>>)[field] = {
+      (merged as Record<string, ItemSuggestion<unknown>>)[field] = {
         value: p.value,
         from: isLearned(p) ? 'learned' : 'pages',
         confidence: p.confidence,
@@ -540,6 +568,21 @@ export function levelItem(input: LevelInput): ItemLevel {
       };
     }
   }
+
+  // The local AI, where the household has it on (0.9.0, R4): it fills only
+  // a blank, unsure, and Check for it; it disagrees, and the card is Check.
+  // It never makes anything surer: its tags are all Check (`applyLocalAi`).
+  const ai = applyLocalAi({
+    ai: input.localAi,
+    proposals: merged,
+    kindOf,
+    choosable,
+    fill: aiFills,
+  });
+  const proposals = ai.proposals;
+  const kindS = proposals.type_key;
+  const personS = proposals.owner_member_id;
+  const kind = kindOf(kindS?.value);
 
   // Who can see it: never wider than the batch chose, narrowed by the kind.
   const owner = personS?.value ?? (role === 'teen' ? me : null);
@@ -635,7 +678,7 @@ export function levelItem(input: LevelInput): ItemLevel {
   ] as const) {
     const said = proposals[field];
     const other = lc?.[field];
-    if (!other || !said || said.from !== 'pages') continue;
+    if (!other || !said || said.from !== 'pages' || said.local_ai) continue;
     if (field !== 'identifier' && (said.value as DateValue).date === other) continue;
     check({
       code: 'clash_learned',
@@ -670,6 +713,12 @@ export function levelItem(input: LevelInput): ItemLevel {
       });
     }
   }
+  // What the local AI suggested or read otherwise (R4): Check, each of
+  // them; read without it, said.
+  for (const t of ai.tags) {
+    if (t.kind === 'check') check(t);
+    else if (read) tags.push(t);
+  }
   // A near match (S1): to be looked at, never filed as a new document unseen.
   if (input.renewal && !problem) {
     check({ code: 'renewal', kind: 'check', words: renewalWords(input.renewal) });
@@ -678,8 +727,10 @@ export function levelItem(input: LevelInput): ItemLevel {
   // folder alone (S2) — never the batch's.
   const guessed = (s: ItemSuggestion<unknown> | undefined) =>
     s?.from === 'pages' || s?.from === 'learned' || s?.from === 'folder';
+  // The local AI's own: Check by its own tag (R4), not said twice.
+  const ours = (s: ItemSuggestion<unknown> | undefined) => guessed(s) && s?.local_ai !== true;
   if (kind) {
-    if (guessed(kindS) && (kindS?.confidence ?? 0) < ITEM_SURE.type_key) {
+    if (ours(kindS) && (kindS?.confidence ?? 0) < ITEM_SURE.type_key) {
       // What the vault's reading model said of it (R2): it suggested this
       // kind alone, or read the page as another.
       const doubted =
@@ -707,7 +758,7 @@ export function levelItem(input: LevelInput): ItemLevel {
     }
     if (!personS) {
       check({ code: 'person_missing', kind: 'check', words: 'Missing: whose it is' });
-    } else if (guessed(personS) && (personS.confidence ?? 0) < ITEM_SURE.owner_member_id) {
+    } else if (ours(personS) && (personS.confidence ?? 0) < ITEM_SURE.owner_member_id) {
       check({
         code: 'person_unsure',
         kind: 'check',
@@ -737,7 +788,7 @@ export function levelItem(input: LevelInput): ItemLevel {
     }
     const expires = proposals.expires;
     if (
-      guessed(expires) &&
+      ours(expires) &&
       (expires?.confidence ?? 0) < ITEM_SURE.expires &&
       !missing.some((m) => m.key === 'expires')
     ) {

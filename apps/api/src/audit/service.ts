@@ -368,6 +368,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // The vault's reading model turned on or off (0.9.0, R2): about the
   // household, so for the owners alone.
   ['household.reading_model_changed', ownersAndThePerson],
+  // The local AI reader turned on or off for the household (0.9.0, R4):
+  // about the household, so for the owners alone.
+  ['household.local_ai_changed', ownersAndThePerson],
   ['export.requested', BY_TYPE],
   ['export.downloaded', BY_TYPE],
   // signing in

@@ -15,9 +15,12 @@ import { parentPort, workerData } from 'node:worker_threads';
 import {
   expiryLabelKinds,
   proposeOnThread,
+  readLocalAiReply,
   type DetailProposal,
   type LearnedClash,
   type LearnedContext,
+  type LocalAiOffer,
+  type LocalAiReading,
   type PaperReading,
   type ProposalContext,
   type ThreadProposal,
@@ -30,6 +33,12 @@ export interface ProposalJob {
   ctx: ProposalContext;
   /** The uploader's own rules, learned from their corrections (I4); none, or null. */
   learned?: LearnedContext | null;
+  /**
+   * The local AI's reply to these words (0.9.0, R4), as the endpoint sent it,
+   * and what it was offered: read here, strictly — never on the worker's
+   * event loop.
+   */
+  ai?: { reply: string; offer: LocalAiOffer };
 }
 
 export type ProposalReply =
@@ -44,10 +53,19 @@ export type ProposalReply =
       account?: ThreadProposal['account'];
       /** The kinds complete without an expiry whose expiry label the page has (R3, the re-check). */
       expiryLabels?: string[];
+      /** What the local AI read, checked (R4); null where its reply was not one to use. */
+      localAi?: LocalAiReading | null;
     }
   | { id: number; failed: true };
 
 const withLabels = (labels: string[]) => (labels.length > 0 ? { expiryLabels: labels } : {});
+
+/** The local AI's reply read (R4): what it read, borne out by the page; null if not one to use. */
+const localAiOf = (job: ProposalJob): LocalAiReading | null => {
+  if (!job.ai) return null;
+  const got = readLocalAiReply(job.ai.reply, job.ai.offer, job.text, job.ctx.dateOrder);
+  return 'reading' in got ? got.reading : null;
+};
 
 const port = parentPort;
 if (port) {
@@ -73,6 +91,8 @@ if (port) {
         // Which kinds complete without an expiry the page labels one of (R3,
         // the re-check): such a card with none waits for a look.
         ...withLabels(expiryLabelKinds(job.text, job.ctx)),
+        // The local AI's reply (R4): held to its schema and to the page, or nothing.
+        ...(job.ai ? { localAi: localAiOf(job) } : {}),
       };
     } catch {
       reply = { id: job.id, failed: true };

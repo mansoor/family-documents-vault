@@ -60,6 +60,7 @@ import {
 import { SuggestedMark } from '../suggestions.js';
 import { IncomingList, sizeWords } from './Incoming.js';
 import { dayWordsOf, familyZoneNow } from '../family-time.js';
+import { LocalAiNotice } from '../local-ai-settings.js';
 
 /**
  * Many documents at once (Phase 6, I1): Add → Many documents, the Inbox's
@@ -761,6 +762,7 @@ function AddMany({ visit }: { visit: string }) {
             </Button>
           )}
           <OnlyYou>Only you see them until you accept them.</OnlyYou>
+          <LocalAiNotice />
         </section>
       </div>
     </main>
@@ -1309,6 +1311,11 @@ function ItemKind({ item, types }: { item: BatchItemView; types: DocumentTypeVie
         <span className="mark-sugg" title="Suggested by the vault’s reading model">
           reading model · {Math.round(kind.confidence * 100)}%
         </span>
+      ) : kind.local_ai === true ? (
+        // The local AI's (0.9.0, R4): never sure.
+        <span className="mark-sugg" title="Suggested by the local AI on your own server">
+          local AI · unsure
+        </span>
       ) : (
         <SuggestedMark confidence={kind.confidence} cue={kind.cue} />
       )}
@@ -1760,6 +1767,7 @@ export function BatchScreen() {
         </div>
         <div className="stack batch-actions">
           <OnlyYou />
+          <LocalAiNotice />
           <div className="row">
             <Link className="btn btn-quiet" to={`/add/many?batch=${b.id}`}>
               Carry on uploading

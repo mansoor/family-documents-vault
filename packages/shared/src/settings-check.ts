@@ -1,3 +1,4 @@
+import type { LocalAiTestResult } from './local-ai.js';
 import type { MailInTestResult } from './mail-in.js';
 import type { WatchBrowseResult, WatchVerifyResult } from './watch-folder.js';
 
@@ -8,8 +9,11 @@ import type { WatchBrowseResult, WatchVerifyResult } from './watch-folder.js';
  * password, so it answers; the page asks for the answer until it is there.
  */
 
-/** `folder`: Verify; `browse`: the folders inside one; `mailbox`: Test the mailbox. */
-export type SettingsCheckKind = 'folder' | 'browse' | 'mailbox';
+/**
+ * `folder`: Verify; `browse`: the folders inside one; `mailbox`: Test the
+ * mailbox; `local_ai`: Test the local AI (0.9.0, R4).
+ */
+export type SettingsCheckKind = 'folder' | 'browse' | 'mailbox' | 'local_ai';
 
 /**
  * A worker that has not answered in this long is not running, or is busy:
@@ -34,6 +38,8 @@ export interface SettingsCheckView {
   folder?: WatchVerifyResult;
   browse?: WatchBrowseResult;
   mailbox?: MailInTestResult;
+  /** Test the local AI (R4): the model, the host and how long; never a paper's words. */
+  local_ai?: LocalAiTestResult;
   /** While late: why, and what to do. */
   words: string | null;
 }

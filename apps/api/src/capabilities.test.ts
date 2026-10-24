@@ -111,6 +111,8 @@ describe('buildCapabilities', () => {
       reading_check: true,
       // R2: the vault's reading model — only while the worker has its weights (the R2 review).
       reading_model: false,
+      // R4: the local AI — only while a worker has one set up and said so lately.
+      local_ai: false,
       // C1 (0.9.0): a collection from a checklist.
       collection_checklist: true,
       // N1 (0.9.0): notes kept on their own.
@@ -122,6 +124,7 @@ describe('buildCapabilities', () => {
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);
+    expect(buildCapabilities({ ...config, localAi: true }).features.local_ai).toBe(true);
     // S4: email in, reserved as email_ingest since 1.0, only while the worker
     // has a mailbox set up and checked it lately.
     expect(buildCapabilities({ ...config, mailIn: true }).features.email_ingest).toBe(true);

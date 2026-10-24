@@ -65,6 +65,7 @@ import { WatchFolderService } from './watch-folder/service.js';
 import { ReadingCheckService } from './reading-check/service.js';
 import { MAIL_IN_CODE_KEY_PURPOSE, MailInService } from './mail-in/service.js';
 import { SettingsCheckService } from './settings-checks.js';
+import { LocalAiService } from './household/local-ai.js';
 import { serverVersion } from './version.js';
 import { masterKeyOpensVault } from './master-key-check.js';
 
@@ -228,6 +229,8 @@ async function main(): Promise<void> {
       checks: settingsChecks,
     }),
     settingsChecks,
+    // The local AI reader's switch (0.9.0, R4): the endpoint is the worker's alone.
+    localAi: new LocalAiService(db, settingsChecks),
     pingDatabase: async () => {
       await pool.query('select 1');
     },

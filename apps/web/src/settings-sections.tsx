@@ -99,11 +99,11 @@ export const OWNER_ROWS: SettingsRow[] = [
     title: 'Email in',
     note: 'The family emails documents to their Inbox',
   },
-  // The vault's reading model, on or off (0.9.0, R2).
+  // The vault's reading model (0.9.0, R2) and the local AI (R4), on or off.
   {
     to: '/settings/reading',
     title: 'Reading',
-    note: 'The vault’s reading model, on or off',
+    note: 'The vault’s reading model and the local AI, on or off',
   },
   // The Reading check (0.9.0, R0): how well the vault reads the family's papers.
   {
@@ -226,6 +226,7 @@ export function settingsSections(
         '/settings/email',
         '/settings/scanner',
         '/settings/email-in',
+        '/settings/reading',
         '/settings/reading-check',
       ),
     });

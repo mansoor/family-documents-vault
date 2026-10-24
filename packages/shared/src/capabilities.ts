@@ -323,6 +323,17 @@ export interface CapabilityFeatures {
    */
   reading_model?: boolean;
   /**
+   * The local AI reader (0.9.0, R4): an Ollama-compatible model on the
+   * household's own server, set up by the operator in .env alone, that reads
+   * a batch's pages beside the rules — one more cue, never Ready on its own
+   * (`ItemSuggestion.local_ai`, the tags `local_ai`, `clash_local_ai`,
+   * `local_ai_without`). True while a worker has one set up and said so
+   * lately; GET and PUT /household/reading `{ local_ai }` turn it on or off
+   * for the household, an owner's, and POST /household/reading/local-ai/test
+   * tests it. Absent from older vaults.
+   */
+  local_ai?: boolean;
+  /**
    * A collection from a checklist (0.9.0, C1): GET, POST and PUT
    * /collections/{id}/checklist and POST /collections/{id}/checklist/add —
    * a list read with plain rules, matched against what the reader may see,

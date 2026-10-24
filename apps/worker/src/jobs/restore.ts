@@ -1114,6 +1114,8 @@ const GUARDS = [
     table: 'household',
     fn: 'household_reading_model_rule',
   },
+  // Only an owner turns the local AI on or off (0081, R4).
+  { name: 'household_local_ai_rule', table: 'household', fn: 'household_local_ai_rule' },
   // A batch's uploader changes its name and defaults, and nothing else of
   // it (0062, Phase 6 I1).
   {
