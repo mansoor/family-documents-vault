@@ -6,6 +6,10 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Settings menu keeps a focused link on screen.** On a long Settings page, the menu beside it could be taller than the window, so tabbing reached links scrolled out of sight. It now stays no taller than the window and scrolls within itself, bringing the link you tab to into view.
+
 ## [0.9.0-dev.15] - 2026-10-24 — an optional local AI reader
 
 ### Added
