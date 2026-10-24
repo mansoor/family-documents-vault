@@ -247,9 +247,13 @@ test("a collection's own page finds two documents by search and adds them", asyn
 
   await expect(picker).toHaveCount(0);
   await expect(page.getByText(`2 documents added to “Picker ${run}”.`)).toBeVisible();
+  // In its table, as Documents shows them (0.9.0), each with its ⋯.
   const inIt = page.getByRole('region', { name: 'In this collection' });
-  await expect(inIt.getByRole('button', { name: new RegExp(`^Picker one ${word}`) })).toBeVisible();
-  await expect(inIt.getByRole('button', { name: new RegExp(`^Picker two ${word}`) })).toBeVisible();
+  await expect(inIt.getByRole('link', { name: `Picker one ${word}` })).toBeVisible();
+  await expect(inIt.getByRole('link', { name: `Picker two ${word}` })).toBeVisible();
+  await expect(
+    inIt.getByRole('button', { name: `Actions for “Picker one ${word}”` }),
+  ).toBeVisible();
 });
 
 test('a document opens in two panes: its details on the left, its pages on the right', async () => {

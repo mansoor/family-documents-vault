@@ -6285,6 +6285,73 @@ html:has(.shell-phone):has(.has-toast) {
   padding: 0 14px 14px;
 }
 
+/* A collection's checklist, folded (0.9.0): one line — its name, then how it
+   stands — in a heading of its own, wrapping on a phone. */
+.disclosure-h {
+  margin: 0;
+  font: inherit;
+  letter-spacing: inherit;
+}
+/* Folded, its body is not there at all, whatever lays it out when open. */
+.disclosure-body[hidden] {
+  display: none;
+}
+.disclosure-line .disclosure-words {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+}
+.disclosure-line .disclosure-hint {
+  font-size: inherit;
+}
+.disclosure-dot {
+  color: var(--ink-soft);
+}
+
+/* A collection's documents (0.9.0): the Documents table, a part of its page.
+   Its box as tall as its rows up to most of the window, so the head stays in
+   sight and the bar for the chosen is never far below; the bar and the
+   foot joined to it, as the Documents page's are. */
+.coll-table {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.coll-table .table-head h2 {
+  flex: 1;
+}
+.tbl-wrap.coll-tbl-wrap {
+  flex: none;
+  min-height: 0;
+  max-height: max(320px, calc(100dvh - var(--shell-chrome) - 140px));
+}
+/* Its ⋯ stays at the right as the rest scrolls under it, as the box and the
+   title stay at the left: always in reach, however wide the table. */
+.tbl td.col-more,
+.tbl th.col-more {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  padding: 0 4px;
+  text-align: center;
+  box-shadow: -1px 0 0 var(--border);
+}
+.tbl th.col-more {
+  z-index: 3;
+}
+.cell-more .more {
+  margin: 0 auto;
+}
+.coll-list-head {
+  align-items: center;
+  justify-content: space-between;
+}
+.coll-list-head .section-h {
+  margin: 0;
+}
+
 /* Settings → Time zone (0.9.0, TZ): the list of zones, a few rows tall,
    as wide as the card, each row a zone, its offset and its time now —
    wrapping after the zone's name on a phone, never cut off. */

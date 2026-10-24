@@ -21,7 +21,7 @@ import {
  * Collections on the web (5.15): the Collections screen and a collection's page, making and
  * changing a collection with who it is for, "Add to a collection" from any row's ⋯ and
  * from a document's page, Select in search, and taking a document out of a
- * collection, which asks first. Every number on screen is the vault's.
+ * collection — at once since 0.9.0, said with Undo. Every number on screen is the vault's.
  */
 
 beforeEach(() => {
@@ -265,62 +265,69 @@ describe('collections on the web (5.15)', () => {
     ).toBeInTheDocument();
   });
 
-  it('removing asks first', async () => {
+  it('Remove from this collection: at once from a row’s ⋯, said with Undo, which puts it back (0.9.0)', async () => {
     const state = at('/collections/collection-h', {
       documents: [{ ...PASSPORT }, { ...COUNCIL_TAX, owner_member_id: 'me' }],
       collections: [{ ...HOLIDAY, items: ['doc-1', 'doc-3'] }],
     });
     expect(await screen.findByRole('heading', { name: 'Holiday', level: 1 })).toBeInTheDocument();
-    expect(screen.getByText('2 documents')).toBeInTheDocument();
+    expect(await screen.findByText('2 documents')).toBeInTheDocument();
     const deletes = () => state.calls.filter((c) => c.method === 'DELETE').map((c) => c.url);
+    const puts = () => state.calls.filter((c) => c.method === 'POST' && c.url.endsWith('/items'));
 
     const first = await openMenu();
-    expect(offered(first.menu)).toContain('Take out of this collection');
+    expect(offered(first.menu)).toContain('Remove from this collection');
     fireEvent.click(
-      within(first.menu).getByRole('menuitem', { name: 'Take out of this collection' }),
+      within(first.menu).getByRole('menuitem', { name: 'Remove from this collection' }),
     );
-    const dialog = await screen.findByRole('alertdialog', {
-      name: 'Take it out of this collection?',
-    });
-    await waitFor(() =>
-      expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus(),
-    );
-    expect(dialog).toHaveTextContent(
-      "“Mansoor's passport” comes out of “Holiday”. It stays in the vault, and in any other collection it is in.",
-    );
-    await expectAccessible();
-
-    // Cancel is an answer: nothing is taken out, and focus is back on the ⋯.
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
-    expect(first.more).toHaveFocus();
-    expect(deletes()).toEqual([]);
-
-    const again = await openMenu();
-    fireEvent.click(
-      within(again.menu).getByRole('menuitem', { name: 'Take out of this collection' }),
-    );
-    const sure = await screen.findByRole('alertdialog', {
-      name: 'Take it out of this collection?',
-    });
-    fireEvent.click(within(sure).getByRole('button', { name: 'Take it out' }));
+    // No question: it is out, and the page says so, with Undo.
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: PASSPORT_MENU })).not.toBeInTheDocument(),
     );
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
     expect(deletes()).toEqual(['/api/v1/collections/collection-h/items/doc-1']);
     expect(await screen.findByText('1 document')).toBeInTheDocument();
-    // Focus went to the row that is left, not to nowhere.
+    const toast = screen.getByRole('region', { name: 'What was just done' });
+    expect(toast).toHaveTextContent(
+      "“Mansoor's passport” is out of “Holiday”. It is still in the vault.",
+    );
+    // Heard politely; the focus went to the row that is left, not to nowhere.
     expect(document.activeElement?.closest('li')).toHaveTextContent('Council tax bill');
-    // Still in the vault: only the collection changed.
+    // Still in the vault, untouched: only the collection changed.
     expect(state.documents.find((d) => d.id === 'doc-1')?.deleted_at).toBeNull();
+    expect(state.calls.some((c) => c.method === 'PATCH')).toBe(false);
+    await expectAccessible();
 
-    // Deleting the collection asks first too.
+    // Undo: back in, by the vault's own Add.
+    fireEvent.click(within(toast).getByRole('button', { name: 'Undo' }));
+    expect(
+      await within(toast).findByText("“Mansoor's passport” is back in “Holiday”."),
+    ).toBeInTheDocument();
+    expect(puts().map((c) => c.body)).toEqual([{ document_ids: ['doc-1'] }]);
+    expect(state.collections?.[0]?.items).toEqual(['doc-3', 'doc-1']);
+    expect(await screen.findByRole('button', { name: PASSPORT_MENU })).toBeInTheDocument();
+    expect(await screen.findByText('2 documents')).toBeInTheDocument();
+    // Nothing more to undo; put away, the focus goes to the documents.
+    expect(within(toast).queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument();
+    fireEvent.click(within(toast).getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByRole('region', { name: 'What was just done' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'In this collection' })).toHaveFocus();
+
+    // Out again, to go on.
+    const again = await openMenu();
+    fireEvent.click(
+      within(again.menu).getByRole('menuitem', { name: 'Remove from this collection' }),
+    );
+    await waitFor(() => expect(deletes()).toHaveLength(2));
+    expect(await screen.findByText('1 document')).toBeInTheDocument();
+
+    // Deleting the collection asks first.
     fireEvent.click(screen.getByRole('button', { name: 'Delete this collection' }));
     const del = await screen.findByRole('alertdialog', { name: 'Delete this collection?' });
     expect(del).toHaveTextContent('The documents in it stay in the vault');
     fireEvent.keyDown(within(del).getByRole('button', { name: 'Cancel' }), { key: 'Escape' });
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
-    expect(deletes()).toHaveLength(1);
+    expect(deletes()).toHaveLength(2);
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete this collection' }));
     const gone = await screen.findByRole('alertdialog', { name: 'Delete this collection?' });
@@ -331,6 +338,7 @@ describe('collections on the web (5.15)', () => {
     await waitFor(() => expect(said).toHaveFocus());
     expect(window.location.pathname).toBe('/collections');
     expect(deletes()).toEqual([
+      '/api/v1/collections/collection-h/items/doc-1',
       '/api/v1/collections/collection-h/items/doc-1',
       '/api/v1/collections/collection-h',
     ]);
@@ -426,7 +434,7 @@ describe('collections on the web (5.15)', () => {
     ).not.toBeInTheDocument();
     const { menu } = await openMenu('Actions for “Barclays statement, September 2026”');
     expect(offered(menu)).toContain('Add to a collection');
-    expect(offered(menu)).not.toContain('Take out of this collection');
+    expect(offered(menu)).not.toContain('Remove from this collection');
   });
 
   it('renaming is made to the collection as it was seen', async () => {
@@ -521,19 +529,53 @@ describe('collections on the web (5.15)', () => {
     expect(await within(collections).findByRole('link', { name: /^Trip/ })).toBeInTheDocument();
   });
 
-  it('a long collection comes a page at a time, and its count is all the reader sees', async () => {
-    at('/collections/collection-h', {
-      documents: [{ ...PASSPORT }, { ...COUNCIL_TAX }],
-      collections: [{ ...HOLIDAY, items: ['doc-1', 'doc-3'] }],
-      collectionPageSize: 1,
+  it('a long collection comes a page at a time, and its count is all the reader sees: never another’s Only me', async () => {
+    const many = Array.from({ length: 101 }, (_, i) => ({
+      ...PASSPORT,
+      id: `doc-m${i}`,
+      title: `Paper ${String(i).padStart(3, '0')}`,
+      etag: `"m${i}"`,
+    }));
+    // Sam's own, Only me, in Sam's collection for everyone: never the owner's to see.
+    const theirs = {
+      ...COUNCIL_TAX,
+      id: 'doc-sam',
+      title: 'Sam’s private letter',
+      owner_member_id: 'm-1',
+      visibility: 'private',
+    };
+    const state = at('/collections/collection-h', {
+      members: [ME, SAM],
+      documents: [...many, theirs],
+      collections: [
+        { ...HOLIDAY, owner_member_id: 'm-1', items: ['doc-sam', ...many.map((d) => d.id)] },
+      ],
     });
-    expect(await screen.findByRole('button', { name: /^Mansoor's passport/ })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Council tax bill/ })).not.toBeInTheDocument();
-    expect(screen.getByText('2 documents')).toBeInTheDocument();
+    expect(await screen.findByText('101 documents')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: /^Paper / })).toHaveLength(100),
+    );
+    expect(screen.queryByText('Sam’s private letter')).not.toBeInTheDocument();
+    // The table's own call, for this collection.
+    expect(
+      state.calls.some(
+        (c) =>
+          c.method === 'GET' &&
+          c.url.startsWith('/api/v1/documents?') &&
+          c.url.includes('collection_id=collection-h'),
+      ),
+    ).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-    expect(await screen.findByRole('button', { name: /^Council tax bill/ })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: /^Paper / })).toHaveLength(101),
+    );
     expect(screen.queryByRole('button', { name: 'Show more' })).not.toBeInTheDocument();
-  });
+    expect(screen.queryByText('Sam’s private letter')).not.toBeInTheDocument();
+    // Not Sam's to take out of, from here: only Sam may (A18).
+    const { menu } = await openMenu('Actions for “Paper 000”');
+    expect(offered(menu)).not.toContain('Remove from this collection');
+    expect(screen.queryByRole('button', { name: 'Select' })).toBeInTheDocument();
+  }, 30_000);
 
   it('a viewer given no collection sees no Collections entry, and nothing about collections anywhere', async () => {
     const state = at(
@@ -666,22 +708,11 @@ describe('collections on the web (5.15)', () => {
     const state = at('/collections/collection-h', {
       documents: [{ ...PASSPORT }, { ...COUNCIL_TAX }],
       collections: [{ ...HOLIDAY, items: ['doc-1', 'doc-3'] }],
-      collectionPageSize: 1,
     });
     expect(await screen.findByRole('heading', { name: 'Holiday', level: 1 })).toBeInTheDocument();
 
-    // Deleted somewhere else, and then Show more.
-    state.collections = [];
-    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('That collection does not exist.');
-    expect(screen.queryByRole('heading', { name: 'Holiday' })).not.toBeInTheDocument();
-    expect(screen.queryByText('2 documents')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: PASSPORT_MENU })).not.toBeInTheDocument();
-
-    // The same when it is loaded again, after a row's ⋯ changed something.
-    state.collections = [{ ...HOLIDAY, items: ['doc-1', 'doc-3'] }];
-    reopen(state, '/collections/collection-h');
-    expect(await screen.findByRole('heading', { name: 'Holiday', level: 1 })).toBeInTheDocument();
+    // Deleted somewhere else: said when it is loaded again, after a row's ⋯
+    // changed something.
     state.collections = [];
     const { menu } = await openMenu();
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Stop it being Essential' }));
@@ -929,26 +960,56 @@ describe('collections on the web (5.15)', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('a page after one whose last document has gone starts the collection again', async () => {
+  it('on a phone, Select takes several out at once for its maker, said with Undo (0.9.0)', async () => {
+    const state = at('/collections/collection-h', {
+      documents: [{ ...PASSPORT }, { ...STATEMENT }, { ...COUNCIL_TAX }],
+      collections: [{ ...HOLIDAY, items: ['doc-1', 'doc-2', 'doc-3'] }],
+    });
+    expect(await screen.findByText('3 documents')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Select' }));
+    const remove = screen.getByRole('button', { name: 'Remove from this collection' });
+    expect(remove).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox', { name: "Select “Mansoor's passport”" }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select “Council tax bill”' }));
+    await expectAccessible();
+    fireEvent.click(remove);
+    const toast = await screen.findByRole('region', { name: 'What was just done' });
+    expect(toast).toHaveTextContent(
+      '2 documents taken out of “Holiday”. They are still in the vault.',
+    );
+    await waitFor(() => expect(toast).toHaveFocus());
+    expect(state.calls.filter((c) => c.method === 'DELETE').map((c) => c.url)).toEqual([
+      '/api/v1/collections/collection-h/items/doc-1',
+      '/api/v1/collections/collection-h/items/doc-3',
+    ]);
+    expect(await screen.findByText('1 document')).toBeInTheDocument();
+    expect(state.collections?.[0]?.items).toEqual(['doc-2']);
+    // Undo puts both back, in one Add.
+    fireEvent.click(within(toast).getByRole('button', { name: 'Undo' }));
+    expect(
+      await within(toast).findByText('2 documents are back in “Holiday”.'),
+    ).toBeInTheDocument();
+    expect(state.collections?.[0]?.items).toEqual(['doc-2', 'doc-1', 'doc-3']);
+    expect(await screen.findByText('3 documents')).toBeInTheDocument();
+  });
+
+  it('Undo that the vault refuses says why, and can be tried again', async () => {
     const state = at('/collections/collection-h', {
       documents: [{ ...PASSPORT }, { ...COUNCIL_TAX }],
       collections: [{ ...HOLIDAY, items: ['doc-1', 'doc-3'] }],
-      collectionPageSize: 1,
     });
-    expect(await screen.findByRole('button', { name: /^Mansoor's passport/ })).toBeInTheDocument();
-
-    // The passport comes out of it somewhere else: the page after it has nowhere to start.
-    state.collections = [{ ...HOLIDAY, items: ['doc-3'] }];
-    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    const { menu } = await openMenu();
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Remove from this collection' }));
+    const toast = await screen.findByRole('region', { name: 'What was just done' });
+    // Moved to the Trash somewhere else meanwhile: the vault puts nothing back.
+    const passport = state.documents.find((d) => d.id === 'doc-1') as Record<string, unknown>;
+    passport.deleted_at = '2026-10-24T10:00:00Z';
+    fireEvent.click(within(toast).getByRole('button', { name: 'Undo' }));
     expect(
-      await screen.findByText(
-        'This collection changed while you were looking, so it has been loaded again.',
-      ),
+      await within(toast).findByText('That document is not in the vault.'),
     ).toBeInTheDocument();
-    expect(await screen.findByRole('button', { name: /^Council tax bill/ })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Mansoor's passport/ })).not.toBeInTheDocument();
-    expect(screen.getByText('1 document')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Show more' })).not.toBeInTheDocument();
+    expect(within(toast).getByRole('button', { name: 'Undo' })).toBeInTheDocument();
+    expect(state.collections?.[0]?.items).toEqual(['doc-3']);
   });
 
   it('a chosen row its ⋯ took out stays unchosen when another row’s ⋯ asks again meanwhile', async () => {
@@ -1006,10 +1067,8 @@ describe('collections on the web (5.15)', () => {
         { ...HOLIDAY, items: ['doc-1', 'doc-3'] },
         { ...HOLIDAY, id: 'collection-t', name: 'Trip', etag: '"t"' },
       ],
-      collectionPageSize: 1,
     });
     expect(await screen.findByRole('button', { name: /^Mansoor's passport/ })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     expect(await screen.findByRole('button', { name: /^Council tax bill/ })).toBeInTheDocument();
 
     // Already in this one, and put in another from its ⋯.

@@ -125,6 +125,20 @@ async function readTheList(list = LIST) {
   await within(sheet).findByRole('heading', { name: 'What it found' });
   return sheet;
 }
+/**
+ * The kept checklist's panel, folded as the page opens (0.9.0): its toggle
+ * named Checklist and described by how it stands; opened, its lines.
+ */
+async function openChecklist(section: HTMLElement, summary?: string) {
+  const toggle = within(section).getByRole('button', { name: 'Checklist' });
+  if (summary !== undefined) {
+    await waitFor(() => expect(toggle).toHaveAccessibleDescription(summary));
+  }
+  if (toggle.getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  return within(section).findByRole('list', { name: 'What the checklist asks for' });
+}
+
 const item = (sheet: HTMLElement, summary: string) =>
   within(sheet).getByText(summary).closest('li') as HTMLElement;
 
@@ -175,9 +189,10 @@ describe('a collection from a checklist (C1)', () => {
     ]);
     expect(state.collections?.[0]?.checklist?.items).toHaveLength(5);
 
-    // The page shows the list kept, matched again as it opens.
+    // The page shows the list kept, matched again as it opens: folded away
+    // (0.9.0), its line saying how it stands, and opened to read it.
     const section = await screen.findByRole('region', { name: 'Checklist' });
-    const lines = await within(section).findByRole('list', { name: 'What the checklist asks for' });
+    const lines = await openChecklist(section, '6 of 10 found · 1 new match');
     expect(
       within(lines)
         .getAllByRole('listitem')
@@ -367,6 +382,7 @@ describe('a collection from a checklist (C1)', () => {
     // What was saved is the lines and what they ask for, never what was found.
     expect(JSON.stringify(puts()[0]?.body)).not.toContain('matches');
     // Opened again, the list is not read again, and kept as it was: nothing is saved.
+    await openChecklist(await screen.findByRole('region', { name: 'Checklist' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Change the checklist' }));
     const again = await screen.findByRole('dialog', { name: 'Fill “Refinance” from a checklist' });
     expect(within(again).getByLabelText('The list')).toHaveValue('');
@@ -459,12 +475,139 @@ describe('a collection from a checklist (C1)', () => {
     const theirs = { ...REFI, owner_member_id: 'm-richa', checklist: kept };
     at('/collections/col-refi', { collections: [theirs] }, 'adult');
     const section = await screen.findByRole('region', { name: 'Checklist' });
+    // Its line as it stands; no new matches to be told of, not being theirs to add.
+    await openChecklist(section, '2 of 2 found');
     await within(section).findByText('2 most recent pay statements, anyone’s');
-    expect(within(section).queryByRole('button')).not.toBeInTheDocument();
+    // Only its panel's toggle: nothing to change, nor new matches to be told of.
+    expect(within(section).getAllByRole('button')).toEqual([
+      within(section).getByRole('button', { name: 'Checklist' }),
+    ]);
     cleanup();
     localStorage.clear();
     at('/collections/col-refi', { collections: [{ ...theirs, owner_member_id: 'me' }] }, 'viewer');
     await screen.findByRole('heading', { level: 1 });
     expect(screen.queryByRole('region', { name: 'Checklist' })).not.toBeInTheDocument();
+  });
+  it('a kept checklist is folded away as the page opens: its line says how it stands, and this person’s choice is remembered for this collection (0.9.0)', async () => {
+    const line = (l: string, type_key: string, count: number | null) => ({
+      line: l,
+      heading: null,
+      type_key,
+      member_id: null,
+      count,
+      months: null,
+      years: [],
+      current: false,
+      form: null,
+      skipped: false,
+    });
+    const kept = {
+      items: [
+        line('Last 2 pay statements', 'pay_statement', 2),
+        line('Bank statement', 'bank_statement', null),
+      ],
+      saved_at: '2026-10-18T09:00:00Z',
+    };
+    const OTHER: FakeCollection = { ...REFI, id: 'col-other', name: 'Other', checklist: kept };
+    const collections = [{ ...REFI, items: ['pay-sep'], checklist: kept }, OTHER];
+    at('/collections/col-refi', { collections });
+    const section = await screen.findByRole('region', { name: 'Checklist' });
+    const toggle = within(section).getByRole('button', { name: 'Checklist' });
+    // Folded: named Checklist, described by how it stands, its lines out of sight.
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await waitFor(() => expect(toggle).toHaveAccessibleDescription('3 of 3 found · 2 new matches'));
+    expect(toggle).toHaveTextContent('Checklist·3 of 3 found · 2 new matches');
+    const panel = document.getElementById(toggle.getAttribute('aria-controls') as string);
+    expect(panel).not.toBeVisible();
+    expect(
+      within(section).queryByRole('list', { name: 'What the checklist asks for' }),
+    ).not.toBeInTheDocument();
+    // The documents come first now: the table's heading is on the page.
+    expect(screen.getByRole('heading', { name: 'In this collection' })).toBeInTheDocument();
+    await expectAccessible();
+    // Opened: the checklist as ever.
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(panel).toBeVisible();
+    await within(section).findByRole('list', { name: 'What the checklist asks for' });
+    expect(within(section).getByRole('button', { name: 'Review and add' })).toBeVisible();
+    await expectAccessible();
+
+    // Remembered on this device, for this person and this collection.
+    cleanup();
+    at('/collections/col-refi', { collections });
+    const again = await screen.findByRole('region', { name: 'Checklist' });
+    expect(within(again).getByRole('button', { name: 'Checklist' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    // Another collection is folded, as it starts.
+    cleanup();
+    at('/collections/col-other', { collections });
+    const other = await screen.findByRole('region', { name: 'Checklist' });
+    expect(within(other).getByRole('button', { name: 'Checklist' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    // And folded again, it stays folded.
+    cleanup();
+    at('/collections/col-refi', { collections });
+    const refi = within(await screen.findByRole('region', { name: 'Checklist' })).getByRole(
+      'button',
+      { name: 'Checklist' },
+    );
+    fireEvent.click(refi);
+    expect(refi).toHaveAttribute('aria-expanded', 'false');
+    expect(localStorage.getItem('fdv.checklist-open.me.col-refi')).toBeNull();
+  });
+
+  it('with none kept, Fill from a checklist is where it always was', async () => {
+    at('/collections/col-refi');
+    const section = await screen.findByRole('region', { name: 'Checklist' });
+    expect(within(section).getByRole('heading', { name: 'Checklist' })).toBeInTheDocument();
+    expect(within(section).getByRole('button', { name: 'Fill from a checklist' })).toBeVisible();
+    expect(within(section).queryByRole('button', { name: 'Checklist' })).toBeNull();
+  });
+
+  it('remembering it never stops the page when this device keeps nothing', async () => {
+    const kept = {
+      items: [
+        {
+          line: 'Bank statement',
+          heading: null,
+          type_key: 'bank_statement',
+          member_id: null,
+          count: null,
+          months: null,
+          years: [],
+          current: false,
+          form: null,
+          skipped: false,
+        },
+      ],
+      saved_at: '2026-10-18T09:00:00Z',
+    };
+    at('/collections/col-refi', { collections: [{ ...REFI, checklist: kept }] });
+    // This device keeps nothing of it from now on: a private window, say.
+    // Only its own keys refused; the rest — the sign-in's — kept as they are.
+    for (const m of ['getItem', 'setItem', 'removeItem'] as const) {
+      const real = Object.getOwnPropertyDescriptor(Storage.prototype, m)?.value as (
+        this: Storage,
+        ...a: string[]
+      ) => unknown;
+      vi.spyOn(Storage.prototype, m).mockImplementation(function (this: Storage, ...a: string[]) {
+        if (a[0]?.startsWith('fdv.checklist-open')) throw new Error('blocked');
+        return real.apply(this, a);
+      });
+    }
+    const toggle = within(await screen.findByRole('region', { name: 'Checklist' })).getByRole(
+      'button',
+      { name: 'Checklist' },
+    );
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
   });
 });

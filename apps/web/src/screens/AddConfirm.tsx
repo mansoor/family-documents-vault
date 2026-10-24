@@ -80,6 +80,15 @@ import { LinksChoiceDialog, linksAsk, type LinksAsk } from './Visibility.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 import { EmailInLine } from '../mail-in.js';
 import { localeReadsMonthFirst } from '../family-time.js';
+import { mayChange } from '../DocActions.js';
+import { storedRole } from '../session.js';
+import {
+  bodyOf,
+  draftOf,
+  NoLongerNeededProperty,
+  reasonTooLong,
+  type NoLongerNeededDraft,
+} from '../no-longer-needed.js';
 
 /**
  * Said under the date an Only me document is reminded from (5.16b): the
@@ -375,7 +384,12 @@ function heldNow(err: ApiRequestError): DocumentView | null {
 /** The confirm card for a document already in the vault: its details, changed in place. */
 export function ConfirmScreen() {
   const { id } = useParams<{ id: string }>();
-  const { guarded, withToken } = useApp();
+  const { guarded, withToken, session } = useApp();
+  // No longer needed, as the card holds it (0.9.0): null until it is changed
+  // on the card, then as it was set there — saved with the details.
+  const [unneeded, setUnneeded] = useState<{ on: boolean; draft: NoLongerNeededDraft } | null>(
+    null,
+  );
   const navigate = useNavigate();
   const [params] = useSearchParams();
   // Into Only me with links of one's own (5.41): asked here as "Who can see
@@ -415,6 +429,28 @@ export function ConfirmScreen() {
       </main>
     );
   const { doc, types, members } = data;
+  // Set by whoever may change the document, as the vault decides (0.9.0).
+  const mayMark = mayChange(storedRole(), session.info?.member_id, doc);
+  const nln = unneeded ?? {
+    on: doc.no_longer_needed !== null && doc.no_longer_needed !== undefined,
+    draft: draftOf(doc.no_longer_needed ?? null),
+  };
+  /**
+   * No longer needed, once the details are saved: marked (or why and what
+   * replaced it changed), or needed again — only what the card changed.
+   * Refused, the card stays with the vault's words, the details saved.
+   */
+  const saveUnneeded = async (saved: DocumentView): Promise<DocumentView> => {
+    if (!mayMark || unneeded === null) return saved;
+    const was = doc.no_longer_needed ?? null;
+    if (unneeded.on) {
+      const body = bodyOf(was, unneeded.draft);
+      if (was && Object.keys(body).length === 0) return saved;
+      return (await withToken((t) => api.markNoLongerNeeded(t, doc.id, body))) ?? saved;
+    }
+    if (!was) return saved;
+    return (await withToken((t) => api.markNeededAgain(t, doc.id))) ?? saved;
+  };
   const suggestedType = types.find(
     (t) => t.key === params.get('type') && !t.hidden && t.key !== NOTE_KIND,
   );
@@ -473,7 +509,20 @@ export function ConfirmScreen() {
         initial={cardFor(doc)}
         submitLabel="Save to the vault"
         submitButton={saveButton}
+        more={
+          mayMark ? (
+            <NoLongerNeededProperty
+              doc={doc}
+              on={nln.on}
+              draft={nln.draft}
+              onChange={(on, draft) => setUnneeded({ on, draft })}
+            />
+          ) : undefined
+        }
         onSubmit={async (details) => {
+          // Why is kept short: said before anything is saved.
+          const tooLong = unneeded?.on ? reasonTooLong(unneeded.draft) : null;
+          if (tooLong) throw new ApiRequestError(422, 'validation_failed', tooLong);
           // Only send visibility when it changed: the server rewraps keys for it.
           if (details.visibility === doc.visibility) delete details.visibility;
           // Out of Only me asks what opening it asks (5.4); not confirmed,
@@ -520,6 +569,15 @@ export function ConfirmScreen() {
           // document's Back still reaches the list. Opened afresh, the
           // document takes the card's place.
           if (!saved) return;
+          try {
+            saved = await saveUnneeded(saved);
+          } catch (err) {
+            // The details are saved: the card holds the document as it now
+            // is, so the next Save is made on top of it.
+            const now = saved;
+            setData({ doc: now, types, members });
+            throw err;
+          }
           if (cameFromTheApp()) void navigate(-1);
           else void navigate(`/documents/${saved.id}`, { replace: true });
         }}
@@ -882,6 +940,11 @@ export function ConfirmForm(props: {
       ) => Promise<void>;
     };
   };
+  /**
+   * A document already in the vault (0.9.0): what else of its own the card
+   * sets, with its details, under them — No longer needed. Saved with them.
+   */
+  more?: ReactNode;
   /** Throws to keep the card open with the vault's words. */
   onSubmit: (details: DocumentInput, extra?: { collection_id: string | null }) => Promise<void>;
   /** Save without details: offered for a new document only. */
@@ -1803,6 +1866,7 @@ export function ConfirmForm(props: {
             </span>
           )}
         </div>
+        {props.more}
         <ErrorNote message={error} />
         {props.pane ? (
           <div className="row review-actions">

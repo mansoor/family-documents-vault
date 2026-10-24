@@ -1,10 +1,14 @@
 import {
+  collectionItemHint,
+  COLLECTION_HINT_PRIVATE,
+  COLLECTION_HINT_TEENS,
   seesLocation,
   shortName,
   tagDetail,
   tagKey,
   tagLabelKey,
   tagWords,
+  type CollectionAudience,
   type CollectionView,
   type DocumentSort,
   type DocumentTypeView,
@@ -17,6 +21,7 @@ import {
   documentName,
 } from '@fdv/shared';
 import {
+  Fragment,
   useEffect,
   useId,
   useLayoutEffect,
@@ -29,6 +34,7 @@ import {
   type CSSProperties,
   type ReactNode,
   type RefObject,
+  type SyntheticEvent,
 } from 'react';
 import { flushSync } from 'react-dom';
 import {
@@ -53,6 +59,9 @@ import {
   PICK_WIDTH,
   queryOf,
   readHidden,
+  COLLECTION_HIDDEN_BY_DEFAULT,
+  COLLECTION_HIDDEN_COLUMNS_KEY,
+  HIDDEN_COLUMNS_KEY,
   STATUS_WORDS,
   tableDate,
   TITLE_MIN,
@@ -86,8 +95,14 @@ import {
   useSheetFocus,
 } from '../ui.js';
 import { DocRow } from './Home.js';
-import { beside, mayChange, useTrashedNote } from '../DocActions.js';
-import { NoLongerNeededDialog, type NoLongerNeededBody } from '../no-longer-needed.js';
+import {
+  beside,
+  DocActions,
+  mayChange,
+  trashedWords,
+  useTrashedNote,
+  type Removed,
+} from '../DocActions.js';
 import { TagField } from '../tags.js';
 import { useSelect } from './SearchPeople.js';
 import { LinksChoiceDialog, linksAsk, linksChoice, type LinksAsk } from './Visibility.js';
@@ -112,7 +127,7 @@ import { familyZoneNow } from '../family-time.js';
  */
 export function DocumentsScreen() {
   const mode = useShellMode();
-  const { authVersion, caps, session } = useApp();
+  const { caps, session } = useApp();
   const role = storedRole();
   const [params, setParams] = useSearchParams();
   const view = viewFrom(params, role);
@@ -122,27 +137,7 @@ export function DocumentsScreen() {
     ? { household: info.household_id, member: info.member_id }
     : null;
   const pages = usePages(view, holder);
-
-  const hasCollections = caps?.features.collections === true;
-  const { data: members } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
-  const { data: types } = useLoad(async (t) => (await api.documentTypes(t)).items, [authVersion]);
-  const { data: collections } = useLoad(
-    async (t) => (hasCollections ? (await api.collections(t)).items : []),
-    [authVersion, hasCollections],
-  );
-  // Every tag the reader can see, for the filters by a tag and by a detail's label (T1).
-  const { data: tags } = useLoad(
-    async (t) => (await api.tags(t, undefined, { limit: 1000 })).items.map((x) => x.tag),
-    [authVersion],
-  );
-  const known: Known = {
-    members: members ?? [],
-    // First names, or whole ones where two first names match (5.17c).
-    names: shortName(members ?? []),
-    types: types ?? [],
-    collections: collections ?? [],
-    tags: tags ?? [],
-  };
+  const known = useKnown();
   const who: Chooser = {
     role,
     memberId: session.info?.member_id ?? null,
@@ -161,6 +156,136 @@ export function DocumentsScreen() {
       holder={holder}
     />
   );
+}
+
+/** The household as this reader is given it: what the filters offer and the cells name. */
+function useKnown(): Known {
+  const { authVersion, caps } = useApp();
+  const hasCollections = caps?.features.collections === true;
+  const { data: members } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
+  const { data: types } = useLoad(async (t) => (await api.documentTypes(t)).items, [authVersion]);
+  const { data: collections } = useLoad(
+    async (t) => (hasCollections ? (await api.collections(t)).items : []),
+    [authVersion, hasCollections],
+  );
+  // Every tag the reader can see, for the filters by a tag and by a detail's label (T1).
+  const { data: tags } = useLoad(
+    async (t) => (await api.tags(t, undefined, { limit: 1000 })).items.map((x) => x.tag),
+    [authVersion],
+  );
+  return {
+    members: members ?? [],
+    // First names, or whole ones where two first names match (5.17c).
+    names: shortName(members ?? []),
+    types: types ?? [],
+    collections: collections ?? [],
+    tags: tags ?? [],
+  };
+}
+
+// ------------------------------------------------------------- a collection's
+
+/**
+ * A collection's documents (0.9.0; the owner's ask of 24 Oct), on its page:
+ * the Documents table itself — its columns, sorts, filters, boxes, the bar
+ * for the chosen, a ⋯ on each row, and its phone layout — for the documents
+ * in this one collection. They come from the table's own call with the
+ * collection as its filter: what the vault gives this reader of it, by the
+ * rules its page has always given them (`seenDocument`, out of the Trash, in
+ * a collection they may see), and counted the same; nothing is decided here.
+ *
+ * Its maker, in its audience (A18), may take documents out from a row's ⋯
+ * and from the bar for the chosen — at once, the page saying so with Undo.
+ * Its maker is told, too, who in its audience is not given each one (5.14),
+ * worked out from the document as the vault works it out.
+ */
+export interface TableScope {
+  collection: {
+    id: string;
+    name: string;
+    audience: CollectionAudience;
+    /** The reader made it: told who of its audience is not given each one. */
+    mine: boolean;
+  };
+  /** Its maker, in its audience: may take documents out of it (A18). */
+  mayRemove: boolean;
+  /** What it says with nothing in it, in its own words. */
+  empty: string;
+  /**
+   * Taken out, from a row's ⋯ or the bar for the chosen: the page says so,
+   * with Undo. From the bar, which goes with them, the focus is the page's
+   * to give; from a row's ⋯, it is on the next row already.
+   */
+  onRemoved: (removed: Removed[], from: 'row' | 'bar') => void;
+  /** What is in it, or how it stands, changed here: the collection is loaded again. */
+  onChanged: () => void;
+}
+
+export function CollectionDocuments(props: {
+  scope: TableScope;
+  /** Moved on by the page when what is in it changed there (Add documents, Undo). */
+  refresh: number;
+}) {
+  const { scope, refresh } = props;
+  const mode = useShellMode();
+  const { caps, session } = useApp();
+  const role = storedRole();
+  const [params, setParams] = useSearchParams();
+  // Its sort and filters in the address, as Documents' are; never which
+  // collection, which is the page's own.
+  const view: TableView = { ...viewFrom(params, role), collection: '' };
+  const setView = (next: TableView) =>
+    setParams(paramsOf({ ...next, collection: '' }), { replace: true });
+  const info = session.info;
+  const holder: Holder | null = info
+    ? { household: info.household_id, member: info.member_id }
+    : null;
+  const pages = usePages({ ...view, collection: scope.collection.id }, holder);
+  const { reload } = pages;
+  const seen = useRef(refresh);
+  useEffect(() => {
+    if (seen.current === refresh) return;
+    seen.current = refresh;
+    reload();
+  }, [refresh, reload]);
+  const known = useKnown();
+  const who: Chooser = {
+    role,
+    memberId: info?.member_id ?? null,
+    collections: collectionsOffered(caps, role),
+  };
+  return mode === 'phone' ? (
+    <PhoneDocuments
+      view={view}
+      setView={setView}
+      pages={pages}
+      who={who}
+      known={known}
+      scope={scope}
+    />
+  ) : (
+    <TableDocuments
+      view={view}
+      setView={setView}
+      pages={pages}
+      who={who}
+      known={known}
+      holder={holder}
+      scope={scope}
+    />
+  );
+}
+
+/** Who in a collection's audience is not given a document in it, in a cell's few words. */
+const HINT_WORDS: Record<string, string> = {
+  [COLLECTION_HINT_TEENS]: 'Teens',
+  [COLLECTION_HINT_PRIVATE]: 'Everyone but you',
+};
+
+/** The hint for a row, for the collection's maker alone (5.14); null for anybody else. */
+function hintOf(scope: TableScope | undefined, doc: DocumentView): string | null {
+  if (!scope?.collection.mine) return null;
+  return collectionItemHint(scope.collection.audience, doc);
 }
 
 /**
@@ -248,7 +373,8 @@ function writeKept(k: Kept): void {
 let lastOpened: { search: string; id: string } | null = null;
 
 function rememberOpened(id: string): void {
-  lastOpened = { search: window.location.search, id };
+  // The page's path too: a collection's table (0.9.0) is not Documents'.
+  lastOpened = { search: window.location.pathname + window.location.search, id };
 }
 
 function forgetOpened(): void {
@@ -267,7 +393,8 @@ function useBackToOpened(
 ) {
   const navigation = useNavigationType();
   const [returningTo] = useState(() =>
-    navigation === NavigationType.Pop && lastOpened?.search === window.location.search
+    navigation === NavigationType.Pop &&
+    lastOpened?.search === window.location.pathname + window.location.search
       ? lastOpened.id
       : null,
   );
@@ -525,11 +652,14 @@ export const FILTER_LABELS: Record<FilterKey, string> = {
   label: 'Detail',
 };
 
-/** The filters there is something to choose in: no collections, no collection filter. */
-function filtersFor(known: Known): FilterKey[] {
+/**
+ * The filters there is something to choose in: no collections, no collection
+ * filter — nor on a collection's own page (`scoped`), whose collection it is.
+ */
+function filtersFor(known: Known, scoped = false): FilterKey[] {
   return FILTER_KEYS.filter(
     (k) =>
-      (k !== 'collection' || known.collections.length > 0) &&
+      (k !== 'collection' || (!scoped && known.collections.length > 0)) &&
       (k !== 'tag' || known.tags.length > 0) &&
       (k !== 'label' || known.tags.some((t) => tagDetail(t) !== null)),
   );
@@ -544,13 +674,26 @@ function TableDocuments(props: {
   who: Chooser;
   known: Known;
   holder: Holder | null;
+  /** A collection's page (0.9.0): its documents, a ⋯ on each row, and Remove. */
+  scope?: TableScope | undefined;
 }) {
-  const { view, setView, pages, who, known, holder } = props;
+  const { view, setView, pages, who, known, holder, scope } = props;
   const navigate = useNavigate();
-  const [hidden, setHidden] = useState<Set<ColumnKey>>(readHidden);
+  // A collection's own table remembers its columns apart, and starts without
+  // Collections (0.9.0): every row there is in that one.
+  const hiddenKey = scope ? COLLECTION_HIDDEN_COLUMNS_KEY : HIDDEN_COLUMNS_KEY;
+  const [hidden, setHidden] = useState<Set<ColumnKey>>(() =>
+    readHidden(hiddenKey, scope ? COLLECTION_HIDDEN_BY_DEFAULT : []),
+  );
   const columns = columnsFor(who.role, { collections: known.collections.length > 0 });
   const shown = columns.filter((c) => c.key === 'title' || !hidden.has(c.key));
-  const selectable = maySelect(who);
+  // On a collection's page, for its maker: who of its audience is not given
+  // each one (5.14) — never for an Only me collection, which is theirs alone.
+  const hints = scope?.collection.mine === true && scope.collection.audience !== 'only_me';
+  // A ⋯ on every row, pinned at the right (0.9.0): Documents' and a collection's.
+  const extraWidth = (hints ? HINT_WIDTH : 0) + MORE_WIDTH;
+  const extraCols = (hints ? 1 : 0) + 1;
+  const selectable = maySelect(who) || scope?.mayRemove === true;
   const viewKey = paramsOf(view).toString();
   // What is chosen, for this view: a new sort or filter starts again, and
   // Back from a document finds it as it was (W4).
@@ -606,7 +749,7 @@ function TableDocuments(props: {
     if (on) next.delete(key);
     else next.add(key);
     setHidden(next);
-    writeHidden(next);
+    writeHidden(next, hiddenKey);
   };
 
   const pick = (id: string, on: boolean) => {
@@ -634,6 +777,16 @@ function TableDocuments(props: {
 
   /** An action came back: what it did, what it could not, and the list again. */
   const finished = (o: Outcome) => {
+    if (!o.said && o.failed.length === 0 && o.untouched.length === 0) {
+      // All done, and said by the page (a collection's toast, 0.9.0): nothing
+      // to say here, and the focus is the page's to give.
+      flushSync(() => {
+        setOutcome(null);
+        setPickedIds(new Set());
+      });
+      pages.reload();
+      return;
+    }
     flushSync(() => {
       setOutcome(o);
       // What failed, or was never reached, stays chosen, to try again; the
@@ -650,7 +803,8 @@ function TableDocuments(props: {
     const target = e.target as HTMLElement;
     // The box's cell is the box's (W4): a near miss on it chooses nothing,
     // and opens nothing.
-    if (target.closest('a, button, input, label, select, td.col-pick')) return;
+    // Nor the ⋯'s cell, and what its menu and sheets hold (0.9.0).
+    if (target.closest('a, button, input, label, select, td.col-pick, td.col-more')) return;
     // A word being chosen to copy is not a click on the row.
     if (window.getSelection?.()?.toString()) return;
     rememberOpened(id);
@@ -673,19 +827,54 @@ function TableDocuments(props: {
   };
 
   const minWidth =
-    (selectable ? PICK_WIDTH : 0) + shown.reduce((sum, c) => sum + (c.width ?? TITLE_MIN), 0);
+    (selectable ? PICK_WIDTH : 0) +
+    shown.reduce((sum, c) => sum + (c.width ?? TITLE_MIN), 0) +
+    extraWidth;
   const words = directionWords(view.sort);
 
+  /**
+   * What a row's ⋯ had to say, said above the table, as what an action on
+   * many came to is (its cell has no room): politely, the focus where the ⋯
+   * left it.
+   */
+  const [rowError, setRowError] = useState<string | null>(null);
+  const sayRow = (words: string, failed = false) => {
+    if (failed) {
+      setRowError(words);
+      return;
+    }
+    setRowError(null);
+    setOutcome({ said: words, failedHead: null, failed: [], untouched: [] });
+  };
+  /** A row's ⋯ changed something: the table again, and the collection with it. */
+  const rowChanged = () => {
+    pages.reload();
+    scope?.onChanged();
+  };
+
+  // A collection's table is a part of its page, under the page's own heading
+  // (0.9.0); Documents' is the page.
+  const Wrap = scope ? 'section' : 'main';
   return (
-    <main className="page page-table" aria-busy={pages.loading}>
+    <Wrap
+      className={scope ? 'coll-table' : 'page page-table'}
+      aria-busy={pages.loading}
+      {...(scope ? { 'aria-labelledby': 'collection-items-h' } : {})}
+    >
       <div className="table-head">
-        <h1 ref={heading} tabIndex={-1}>
-          Documents
-        </h1>
+        {scope ? (
+          <h2 ref={heading} id="collection-items-h" tabIndex={-1} className="section-h">
+            In this collection
+          </h2>
+        ) : (
+          <h1 ref={heading} tabIndex={-1}>
+            Documents
+          </h1>
+        )}
         <ColumnsMenu columns={columns} hidden={hidden} onChange={toggleColumn} />
       </div>
       <div className="filters" role="group" aria-label="Filters">
-        {filtersFor(known).map((k) => (
+        {filtersFor(known, scope !== undefined).map((k) => (
           <FilterSelect
             key={k}
             id={`filter-${k}`}
@@ -719,7 +908,7 @@ function TableDocuments(props: {
           {countWords(pages, view)}
         </p>
       </div>
-      <ErrorNote message={pages.error} />
+      <ErrorNote message={pages.error ?? rowError} />
       {outcome && (
         <OutcomeNote
           ref={outcomeRef}
@@ -732,7 +921,7 @@ function TableDocuments(props: {
       )}
       <div
         ref={wrap}
-        className="tbl-wrap"
+        className={scope ? 'tbl-wrap coll-tbl-wrap' : 'tbl-wrap'}
         // No scroll-padding: with it, a browser scrolls a pinned cell or the
         // head "into view" each time it is focused, back to the left and up
         // (F2). `reveal` keeps the focus clear of them instead (W3).
@@ -753,13 +942,18 @@ function TableDocuments(props: {
           onBlur={tips.hide}
         >
           <caption className="visually-hidden">
-            Documents, sorted by {SORT_LABELS[view.sort]}, {words[view.dir]}
+            {scope ? `In “${scope.collection.name}”` : 'Documents'}, sorted by{' '}
+            {SORT_LABELS[view.sort]}, {words[view.dir]}
           </caption>
           <colgroup>
             {selectable && <col style={{ width: PICK_WIDTH }} />}
             {shown.map((c) => (
-              <col key={c.key} style={c.width ? { width: c.width } : undefined} />
+              <Fragment key={c.key}>
+                <col style={c.width ? { width: c.width } : undefined} />
+                {hints && c.key === 'title' && <col style={{ width: HINT_WIDTH }} />}
+              </Fragment>
             ))}
+            <col style={{ width: MORE_WIDTH }} />
           </colgroup>
           <thead>
             <tr>
@@ -775,58 +969,86 @@ function TableDocuments(props: {
                 </th>
               )}
               {shown.map((c) => (
-                <HeaderCell
-                  key={c.key}
-                  column={c}
-                  view={view}
-                  pinned={c.key === 'title'}
-                  offset={selectable ? PICK_WIDTH : 0}
-                  onSort={() => sortBy(c.key)}
-                />
+                <Fragment key={c.key}>
+                  <HeaderCell
+                    column={c}
+                    view={view}
+                    pinned={c.key === 'title'}
+                    offset={selectable ? PICK_WIDTH : 0}
+                    onSort={() => sortBy(c.key)}
+                  />
+                  {/* Beside the title, in sight: not a sort, but what the
+                      collection's maker is told of each (5.14). */}
+                  {hints && c.key === 'title' && <th scope="col">Not seen by</th>}
+                </Fragment>
               ))}
+              <th scope="col" className="col-more">
+                <span className="visually-hidden">Actions</span>
+              </th>
             </tr>
           </thead>
           <tbody>
-            {pages.items.map((d) => (
-              <tr
-                key={d.id}
-                data-id={d.id}
-                className={pickedIds.has(d.id) ? 'picked' : undefined}
-                onClick={(e) => openRow(e, d.id)}
-              >
-                {selectable && (
-                  <td className="col-pick">
-                    <label className="pick-cell">
-                      <input
-                        type="checkbox"
-                        checked={pickedIds.has(d.id)}
-                        onChange={(e) => pick(d.id, e.target.checked)}
-                      />
-                      <span className="visually-hidden">Select “{titleOf(d)}”</span>
-                    </label>
+            {pages.items.map((d) => {
+              const hint = hints ? hintOf(scope, d) : null;
+              return (
+                <tr
+                  key={d.id}
+                  data-id={d.id}
+                  className={pickedIds.has(d.id) ? 'picked' : undefined}
+                  onClick={(e) => openRow(e, d.id)}
+                >
+                  {selectable && (
+                    <td className="col-pick">
+                      <label className="pick-cell">
+                        <input
+                          type="checkbox"
+                          checked={pickedIds.has(d.id)}
+                          onChange={(e) => pick(d.id, e.target.checked)}
+                        />
+                        <span className="visually-hidden">Select “{titleOf(d)}”</span>
+                      </label>
+                    </td>
+                  )}
+                  {shown.map((c) => (
+                    <Fragment key={c.key}>
+                      <Cell column={c} doc={d} known={known} offset={selectable ? PICK_WIDTH : 0} />
+                      {hints && c.key === 'title' && (
+                        <td>
+                          {hint ? (
+                            <Clip text={hint} always>
+                              <span className="collection-hint">
+                                {HINT_WORDS[hint] ?? 'Some people'}
+                              </span>
+                            </Clip>
+                          ) : (
+                            <None />
+                          )}
+                        </td>
+                      )}
+                    </Fragment>
+                  ))}
+                  <td className="col-more">
+                    <RowMore
+                      doc={d}
+                      scope={scope}
+                      onSay={sayRow}
+                      onChanged={rowChanged}
+                      onTrashed={(title) => sayRow(trashedWords(title))}
+                    />
                   </td>
-                )}
-                {shown.map((c) => (
-                  <Cell
-                    key={c.key}
-                    column={c}
-                    doc={d}
-                    known={known}
-                    offset={selectable ? PICK_WIDTH : 0}
-                  />
-                ))}
-              </tr>
-            ))}
+                </tr>
+              );
+            })}
             {pages.items.length === 0 && (
               <tr className="empty-row">
-                <td colSpan={shown.length + (selectable ? 1 : 0)}>
+                <td colSpan={shown.length + (selectable ? 1 : 0) + extraCols}>
                   {pages.loading
                     ? 'Loading your documents…'
                     : pages.error
                       ? 'The documents could not be loaded.'
                       : anyFilter
                         ? 'Nothing matches these filters.'
-                        : 'Nothing here yet.'}
+                        : (scope?.empty ?? 'Nothing here yet.')}
                 </td>
               </tr>
             )}
@@ -861,6 +1083,7 @@ function TableDocuments(props: {
           who={who}
           known={known}
           rows={pages.items}
+          scope={scope}
           onClear={() => {
             flushSync(() => setPickedIds(new Set()));
             backToTable();
@@ -880,7 +1103,55 @@ function TableDocuments(props: {
         </div>
       )}
       {tips.tip}
-    </main>
+    </Wrap>
+  );
+}
+
+/** A collection's column for who is not given each (its maker's), and the ⋯'s, in px. */
+const HINT_WIDTH = 132;
+const MORE_WIDTH = 56;
+
+/**
+ * A row's ⋯ in the table (0.9.0): what every list's ⋯ offers — on a
+ * collection's page, with Remove from this collection for its maker. Its
+ * menu and sheets are drawn inside the cell, so what is done in them is
+ * theirs alone: never the grid's arrows, the row's click that opens the
+ * document, nor its tip.
+ */
+function RowMore(props: {
+  doc: DocumentView;
+  scope: TableScope | undefined;
+  onSay: (words: string, failed?: boolean) => void;
+  onChanged: () => void;
+  onTrashed: (title: string) => void;
+}) {
+  const { doc, scope } = props;
+  const theirs = (e: SyntheticEvent) => {
+    if (!(e.target as HTMLElement).matches('button.more')) e.stopPropagation();
+  };
+  return (
+    <div
+      className="cell-more"
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={theirs}
+      onFocus={theirs}
+      onMouseOver={(e) => e.stopPropagation()}
+    >
+      <DocActions
+        documentId={doc.id}
+        title={titleOf(doc)}
+        doc={doc}
+        collection={
+          scope
+            ? { id: scope.collection.id, name: scope.collection.name, mayChange: scope.mayRemove }
+            : undefined
+        }
+        onChanged={props.onChanged}
+        onTrashed={props.onTrashed}
+        onRemoved={scope ? (removed) => scope.onRemoved([removed], 'row') : undefined}
+        say={props.onSay}
+      />
+    </div>
   );
 }
 
@@ -1160,7 +1431,6 @@ type Acting =
   | 'confirm-visibility'
   | 'links'
   | 'trash'
-  | 'unneeded'
   | null;
 
 /** What the vault says once a change is made: "Only you can open this" (SEC-19). */
@@ -1271,10 +1541,12 @@ function BulkBar(props: {
   who: Chooser;
   known: Known;
   rows: DocumentView[];
+  /** On a collection's page (0.9.0): Remove from this collection, for its maker. */
+  scope?: TableScope | undefined;
   onClear: () => void;
   onFinished: (o: Outcome) => void;
 }) {
-  const { chosen, who } = props;
+  const { chosen, who, scope } = props;
   const { withToken, guarded } = useApp();
   const n = chosen.length;
   const offer: BulkOffer = bulkOffer(who, chosen);
@@ -1297,7 +1569,6 @@ function BulkBar(props: {
   const tagsButton = useRef<HTMLButtonElement>(null);
   const visibilityButton = useRef<HTMLButtonElement>(null);
   const trashButton = useRef<HTMLButtonElement>(null);
-  const unneededButton = useRef<HTMLButtonElement>(null);
   const busy = progress !== null;
 
   /**
@@ -1438,35 +1709,32 @@ function BulkBar(props: {
   };
 
   /**
-   * No longer needed (0.9.0), for the chosen documents the person may change:
-   * one reason and replacement for all, or none — each through its own call,
-   * so one refused is listed alone; those not theirs are left and named.
+   * Out of this collection (0.9.0), by its maker: each by the vault's call
+   * for one, as a row's ⋯ takes it out — at once, no question; what went is
+   * said by the page with Undo, and what could not is listed here, still
+   * chosen. The documents themselves are untouched.
    */
-  const unneededMine = chosen.filter((d) => mayChange(who.role, who.memberId, d));
-  const unneededNotMine = chosen.filter((d) => !mayChange(who.role, who.memberId, d));
-  const owners = [...new Set(unneededMine.map((d) => d.owner_member_id))];
-  const markUnneeded = async (body: NoLongerNeededBody) => {
-    const r = await each(unneededMine, (d) =>
-      withToken((t) => api.markNoLongerNeeded(t, d.id, body)),
+  const removeFromCollection = async () => {
+    if (!scope) return;
+    const id = scope.collection.id;
+    const r = await each(chosen, (d) =>
+      withToken(async (t) => {
+        await api.removeFromCollection(t, id, d.id);
+        return true;
+      }),
     );
     finish({
-      said: said(
-        r.done.length > 0
-          ? `${documentsCount(r.done.length)} marked no longer needed. Nobody is reminded of ${
-              r.done.length === 1 ? 'it' : 'them'
-            }.`
-          : null,
-        unneededNotMine.length > 0
-          ? `Left as ${unneededNotMine.length === 1 ? 'it was' : 'they were'}, not yours to change: ${unneededNotMine
-              .map((d) => `“${titleOf(d)}”`)
-              .join(', ')}.`
-          : null,
-        leftWords(r.done.length, r.untouched.length, 'marked', signedOut),
-      ),
-      failedHead: failedHead(r.failed.length, unneededMine.length, 'marked'),
+      said: said(leftWords(r.done.length, r.untouched.length, 'taken out', signedOut)),
+      failedHead: failedHead(r.failed.length, n, 'taken out'),
       failed: r.failed,
       untouched: r.untouched.map((d) => d.id),
     });
+    if (r.done.length > 0) {
+      scope.onRemoved(
+        r.done.map((d) => ({ id: d.id, title: titleOf(d) })),
+        'bar',
+      );
+    }
   };
 
   const changing = to ? chosen.filter((d) => d.visibility !== to) : [];
@@ -1654,15 +1922,16 @@ function BulkBar(props: {
             Who can see it
           </button>
         )}
-        {offer.unneeded && (
+        {scope?.mayRemove && (
           <button
-            ref={unneededButton}
             type="button"
             className="btn btn-bulk"
             disabled={busy || tooMany}
-            onClick={() => setActing('unneeded')}
+            onClick={() => void removeFromCollection()}
           >
-            No longer needed
+            {progress && acting === null
+              ? `Removing ${progress.done + 1} of ${progress.of}…`
+              : 'Remove from this collection'}
           </button>
         )}
         {offer.trash && (
@@ -1698,24 +1967,6 @@ function BulkBar(props: {
           onClose={(news) => {
             setActing(null);
             if (news) props.onFinished({ said: news, failedHead: null, failed: [], untouched: [] });
-          }}
-        />
-      )}
-      {acting === 'unneeded' && (
-        <NoLongerNeededDialog
-          doc={{
-            id: '',
-            title: null,
-            owner_member_id: owners.length === 1 ? (owners[0] ?? null) : null,
-            no_longer_needed: null,
-          }}
-          returnFocus={unneededButton}
-          onCancel={() => setActing(null)}
-          onDone={() => setActing(null)}
-          many={{
-            what: documentsCount(unneededMine.length),
-            exclude: chosen.map((d) => d.id),
-            run: markUnneeded,
           }}
         />
       )}
@@ -2158,7 +2409,9 @@ function LocationSheet(props: {
 
 /**
  * On a phone, today's rows: each with its ⋯, the filters and the sort in a
- * sheet, and Select as today, into a collection.
+ * sheet, and Select as today, into a collection. On a collection's page
+ * (0.9.0), under the page's own heading: Select takes them out of it too, for
+ * its maker, and its maker is told who of its audience is not given each.
  */
 function PhoneDocuments(props: {
   view: TableView;
@@ -2166,10 +2419,46 @@ function PhoneDocuments(props: {
   pages: Pages;
   who: Chooser;
   known: Known;
+  scope?: TableScope | undefined;
 }) {
-  const { view, pages, known } = props;
+  const { view, pages, known, scope } = props;
+  const { withToken } = useApp();
   const navigate = useNavigate();
-  const select = useSelect(props.who.collections);
+  // Out of this collection, as the table's bar takes them out: each by the
+  // vault's call for one; what went is said by the page, with Undo.
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const select = useSelect(
+    props.who.collections,
+    scope?.mayRemove
+      ? {
+          run: async (ids) => {
+            setRemoveError(null);
+            const gone: Removed[] = [];
+            const failed: string[] = [];
+            for (const id of ids) {
+              const d = pages.items.find((x) => x.id === id);
+              try {
+                const r = await withToken(async (t) => {
+                  await api.removeFromCollection(t, scope.collection.id, id);
+                  return true;
+                });
+                if (r === null) break;
+                gone.push({ id, title: d ? titleOf(d) : 'A document' });
+              } catch (err) {
+                failed.push(`“${d ? titleOf(d) : 'A document'}”: ${describeError(err)}`);
+              }
+            }
+            if (failed.length > 0) {
+              setRemoveError(
+                `${failed.length === ids.length ? 'None could be' : `${failed.length} could not be`} taken out: ${failed.join('; ')}`,
+              );
+            }
+            pages.reload();
+            if (gone.length > 0) scope.onRemoved(gone, 'bar');
+          },
+        }
+      : undefined,
+  );
   const trashed = useTrashedNote();
   useBackToOpened(pages.items, (id) =>
     document.querySelector<HTMLElement>(
@@ -2198,27 +2487,29 @@ function PhoneDocuments(props: {
         label: `${SORT_LABELS[s]}, ${directionWords(s)[d]}`,
       })),
     );
+  /** A row's ⋯ changed something: the list again, and the collection with it. */
+  const changed = () => {
+    pages.reload();
+    scope?.onChanged();
+  };
 
-  return (
-    <main className="page page-top page-wide has-nav">
-      <TopBar
-        title="Documents"
-        action={
-          <button
-            ref={filtersButton}
-            type="button"
-            className="btn btn-quiet btn-small"
-            aria-haspopup="dialog"
-            onClick={() => setFiltering(true)}
-          >
-            {on > 0 ? `Filters (${on})` : 'Filters'}
-          </button>
-        }
-      />
+  const filtersAction = (
+    <button
+      ref={filtersButton}
+      type="button"
+      className="btn btn-quiet btn-small"
+      aria-haspopup="dialog"
+      onClick={() => setFiltering(true)}
+    >
+      {on > 0 ? `Filters (${on})` : 'Filters'}
+    </button>
+  );
+  const body = (
+    <>
       <p className="muted" role="status" tabIndex={-1} data-landing>
         {countWords(pages, view)}
       </p>
-      <ErrorNote message={pages.error} />
+      <ErrorNote message={pages.error ?? removeError} />
       {(select.on || pages.items.length > 0) && select.bar}
       {trashed.note}
       <ul className="list">
@@ -2228,7 +2519,7 @@ function PhoneDocuments(props: {
               ? 'The documents could not be loaded.'
               : on > 0
                 ? 'Nothing matches these filters.'
-                : 'Nothing here yet.'}
+                : (scope?.empty ?? 'Nothing here yet.')}
           </li>
         )}
         {pages.items.map((d) => (
@@ -2237,12 +2528,23 @@ function PhoneDocuments(props: {
             doc={d}
             types={known.types}
             pick={select.pick(d.id)}
+            hint={hintOf(scope, d)}
+            collection={
+              scope
+                ? {
+                    id: scope.collection.id,
+                    name: scope.collection.name,
+                    mayChange: scope.mayRemove,
+                  }
+                : undefined
+            }
             onOpen={() => {
               rememberOpened(d.id);
               void navigate(`/documents/${d.id}`);
             }}
-            onChanged={pages.reload}
+            onChanged={changed}
             onTrashed={trashed.onTrashed}
+            onRemoved={scope ? (removed) => scope.onRemoved([removed], 'row') : undefined}
           />
         ))}
       </ul>
@@ -2271,7 +2573,7 @@ function PhoneDocuments(props: {
                 props.setView({ ...view, sort, dir });
               }}
             />
-            {filtersFor(known).map((k) => (
+            {filtersFor(known, scope !== undefined).map((k) => (
               <Select
                 key={k}
                 id={`phone-filter-${k}`}
@@ -2309,6 +2611,27 @@ function PhoneDocuments(props: {
           </div>
         </Sheet>
       )}
+    </>
+  );
+
+  // A collection's documents: a part of its page, under the page's heading.
+  if (scope) {
+    return (
+      <section aria-labelledby="collection-items-h" className="stack coll-list">
+        <div className="row coll-list-head">
+          <h2 id="collection-items-h" className="section-h">
+            In this collection
+          </h2>
+          {filtersAction}
+        </div>
+        {body}
+      </section>
+    );
+  }
+  return (
+    <main className="page page-top page-wide has-nav">
+      <TopBar title="Documents" action={filtersAction} />
+      {body}
     </main>
   );
 }

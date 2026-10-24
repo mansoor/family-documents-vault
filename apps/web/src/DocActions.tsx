@@ -20,16 +20,9 @@ import { VisibilityControl } from './screens/Visibility.js';
 import { focusHeading } from './focus-on-move.js';
 import { storedRole } from './session.js';
 import { OutcomeNote } from './table-grid.js';
-import {
-  ConfirmDialog,
-  ErrorNote,
-  MoveToTrashDialog,
-  Sheet,
-  TrashIcon,
-  useSheetFocus,
-} from './ui.js';
+import { ErrorNote, MoveToTrashDialog, Sheet, TrashIcon, useSheetFocus } from './ui.js';
 import { createUploadKeys, whileInProgress } from './upload-keys.js';
-import { NeededAgainQuestion, NoLongerNeededDialog } from './no-longer-needed.js';
+import { NeededAgainQuestion } from './no-longer-needed.js';
 
 /**
  * Quick actions on every document (5.4): a ⋯ beside each row in a list
@@ -48,8 +41,6 @@ export type DocAction =
   | 'collect'
   | 'uncollect'
   | 'essential'
-  | 'unneeded'
-  | 'needed'
   | 'version'
   | 'trash';
 
@@ -59,6 +50,12 @@ export interface RowCollection {
   name: string;
   /** The reader made it and is in its audience: its maker may take things out (A18). */
   mayChange: boolean;
+}
+
+/** A document taken out of a collection from its row's ⋯ (0.9.0): what the page's toast says. */
+export interface Removed {
+  id: string;
+  title: string;
 }
 
 /**
@@ -91,8 +88,7 @@ export function actionsFor(
     | (Pick<
         DocumentView,
         'owner_member_id' | 'visibility' | 'latest_version_id' | 'filed_by_me' | 'file_removed'
-      > &
-        Partial<Pick<DocumentView, 'no_longer_needed'>> & { type_key?: string | null })
+      > & { type_key?: string | null })
     | null,
   collections: { collections: boolean; uncollect: boolean } = {
     collections: false,
@@ -126,8 +122,8 @@ export function actionsFor(
   if (collections.collections) actions.push('collect');
   if (collections.collections && collections.uncollect) actions.push('uncollect');
   if (changes) actions.push('essential');
-  // Kept, but no longer needed (0.9.0), and needed again: whoever may change it.
-  if (changes) actions.push(doc.no_longer_needed ? 'needed' : 'unneeded');
+  // No longer needed (0.9.0) is a property, set with the details (Edit
+  // details), not a menu's item: not a thing often done (the owner, 24 Oct).
   // A note has no file, nor ever a version (the N1 review).
   if (changes && can(role, 'document.add') && doc.type_key !== NOTE_KIND) actions.push('version');
   if (changes) actions.push('trash');
@@ -151,13 +147,9 @@ function labelFor(action: DocAction, doc: DocumentView | null): string {
     case 'collect':
       return 'Add to a collection';
     case 'uncollect':
-      return 'Take out of this collection';
+      return 'Remove from this collection';
     case 'essential':
       return doc?.is_essential ? 'Stop it being Essential' : 'Make it Essential';
-    case 'unneeded':
-      return 'Mark as no longer needed';
-    case 'needed':
-      return 'Needed again';
     case 'version':
       return 'Add a new version';
     case 'trash':
@@ -166,10 +158,10 @@ function labelFor(action: DocAction, doc: DocumentView | null): string {
 }
 
 /**
- * The most the menu can be: an owner's twelve items on a collection's page,
+ * The most the menu can be: an owner's eleven items on a collection's page,
  * 44 px each, and its edges.
  */
-const MENU_TALLEST = 12 * 44 + 18;
+const MENU_TALLEST = 11 * 44 + 18;
 /** However little room there is, three items and a bit, so it is seen to scroll. */
 const MENU_SHORTEST = 132;
 
@@ -207,6 +199,16 @@ export function DocActions(props: {
   /** The row is on this collection's page (5.15): its maker may take it out from here. */
   collection?: RowCollection | undefined;
   /**
+   * Taken out of `collection` from here (0.9.0): at once, no question — the
+   * page says so in a toast with Undo, which puts it back.
+   */
+  onRemoved?: ((removed: Removed) => void) | undefined;
+  /**
+   * Where what the ⋯ has to say goes, when its row has no room for it (a
+   * cell of a table): said by the list, not under the ⋯.
+   */
+  say?: ((words: string, failed?: boolean) => void) | undefined;
+  /**
    * Moved to the Trash from here: the list says so (`useTrashedNote`), as
    * the row — and what it would have said — goes with it.
    */
@@ -223,7 +225,7 @@ export function DocActions(props: {
     error: null,
   });
   const [sheet, setSheet] = useState<
-    'share' | 'visibility' | 'collect' | 'uncollect' | 'trash' | 'unneeded' | 'ask_again' | null
+    'share' | 'visibility' | 'collect' | 'trash' | 'ask_again' | null
   >(null);
   // What the sheet holds is on its way: Escape leaves it open until it is done.
   const [sheetBusy, setSheetBusy] = useState(false);
@@ -238,8 +240,22 @@ export function DocActions(props: {
   // Until the list is loaded again the row still has one of those, and
   // this is what is there now (5.4).
   const [saved, setSaved] = useState<{ doc: DocumentView; replaces: string[] } | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [noteHere, setNoteHere] = useState<string | null>(null);
+  const [errorHere, setErrorHere] = useState<string | null>(null);
+  // Said under the ⋯; or, in a table's cell, by the list (`say`).
+  const { say } = props;
+  const note = say ? null : noteHere;
+  const error = say ? null : errorHere;
+  const setNote = (words: string | null) => {
+    if (say) {
+      if (words) say(words);
+    } else setNoteHere(words);
+  };
+  const setError = (words: string | null) => {
+    if (say) {
+      if (words) say(words, true);
+    } else setErrorHere(words);
+  };
   const [keys] = useState(createUploadKeys);
 
   const drawn = props.doc ?? fetched.doc;
@@ -254,7 +270,7 @@ export function DocActions(props: {
   // A row that leaves its list takes its ⋯ with it. If focus was there, it
   // goes to what the list says about itself, which stays, not to nowhere.
   useLayoutEffect(() => {
-    const row = more.current?.closest('li');
+    const row = more.current?.closest('li, tr');
     return () => {
       if (row?.contains(document.activeElement)) landing(row)?.focus();
     };
@@ -347,20 +363,6 @@ export function DocActions(props: {
     }
   };
 
-  /** Needed again (0.9.0), from the ⋯: said by the row, and the list loaded again. */
-  const neededAgain = async (d: DocumentView) => {
-    setError(null);
-    try {
-      const saved = await withToken((t) => api.markNeededAgain(t, d.id));
-      if (!saved) return;
-      setSaved((s) => ({ doc: saved, replaces: [...(s?.replaces ?? []), d.etag] }));
-      setNote(`“${props.title}” is needed again: its reminders come back as its dates say.`);
-      await props.onChanged();
-    } catch (err) {
-      setError(describeError(err));
-    }
-  };
-
   /** The row leaves its list: moved to the Trash, or taken out of this collection (5.15). */
   const leave = async (go: (token: string) => Promise<unknown>, said?: () => void) => {
     setLeaving(true);
@@ -371,7 +373,7 @@ export function DocActions(props: {
       // to its own part, the button that opens it, or in search's Select
       // its box (5.15). The only row in its list leaves it to the list's
       // heading (landing).
-      const row = more.current?.closest('li');
+      const row = more.current?.closest('li, tr');
       const neighbour = (
         row?.nextElementSibling ?? row?.previousElementSibling
       )?.querySelector<HTMLElement>('input.pick, button');
@@ -394,8 +396,16 @@ export function DocActions(props: {
       (t) => api.deleteDocument(t, props.documentId),
       () => props.onTrashed?.(props.title),
     );
+  /**
+   * Out of this collection (0.9.0): at once, by the vault's own call, as
+   * Add to a collection puts it in — the page's toast says so, with Undo.
+   * The document itself is untouched.
+   */
   const uncollect = (collection: RowCollection) =>
-    leave((t) => api.removeFromCollection(t, collection.id, props.documentId));
+    leave(
+      (t) => api.removeFromCollection(t, collection.id, props.documentId),
+      () => props.onRemoved?.({ id: props.documentId, title: props.title }),
+    );
 
   const choose = (action: DocAction) => {
     setMenu(null);
@@ -420,16 +430,12 @@ export function DocActions(props: {
         // Still inside the tap, so the browser lets the file chooser open.
         file.current?.click();
         return;
-      case 'needed':
-        if (doc) void neededAgain(doc);
-        return;
-      case 'unneeded':
-        setSheet('unneeded');
+      case 'uncollect':
+        if (props.collection && !leaving) void uncollect(props.collection);
         return;
       case 'share':
       case 'visibility':
       case 'collect':
-      case 'uncollect':
       case 'trash':
         setSheet(action);
         return;
@@ -563,29 +569,6 @@ export function DocActions(props: {
           />
         </Sheet>
       )}
-      {sheet === 'uncollect' && props.collection && (
-        <TakeOutOfCollectionDialog
-          title={props.title}
-          collection={props.collection.name}
-          busy={leaving}
-          returnFocus={more}
-          onConfirm={() => props.collection && void uncollect(props.collection)}
-          onCancel={closeSheet}
-        />
-      )}
-      {sheet === 'unneeded' && doc && (
-        <NoLongerNeededDialog
-          doc={doc}
-          returnFocus={more}
-          onCancel={closeSheet}
-          onDone={async (saved) => {
-            setSaved((s) => ({ doc: saved, replaces: [...(s?.replaces ?? []), doc.etag] }));
-            setSheet(null);
-            setNote(`“${props.title}” is marked no longer needed. Nobody is reminded of it.`);
-            await props.onChanged();
-          }}
-        />
-      )}
       {sheet === 'ask_again' && doc && (
         <NeededAgainQuestion
           doc={doc}
@@ -640,36 +623,6 @@ export function useTrashedNote(): { note: ReactNode; onTrashed: (title: string) 
       />
     );
   return { note, onTrashed };
-}
-
-/**
- * Taking a document out of a collection asks first (5.15), in the app's own dialog
- * (5.1): it stays in the vault, and in any other collection.
- */
-function TakeOutOfCollectionDialog(props: {
-  title: string;
-  collection: string;
-  busy: boolean;
-  returnFocus: RefObject<HTMLElement | null>;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <ConfirmDialog
-      title="Take it out of this collection?"
-      confirmLabel="Take it out"
-      busyLabel="Taking it out…"
-      busy={props.busy}
-      returnFocus={props.returnFocus}
-      onConfirm={props.onConfirm}
-      onCancel={props.onCancel}
-    >
-      <p>
-        “{props.title}” comes out of “{props.collection}”. It stays in the vault, and in any other
-        collection it is in.
-      </p>
-    </ConfirmDialog>
-  );
 }
 
 /**

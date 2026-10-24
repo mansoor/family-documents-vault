@@ -2,7 +2,6 @@ import {
   can,
   inCollectionAudience,
   sharedOutsideWords,
-  type CollectionItemView,
   type CollectionView,
   type Member,
 } from '@fdv/shared';
@@ -25,10 +24,11 @@ import {
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { OutcomeNote, type Outcome } from '../table-grid.js';
-import { Button, ConfirmDialog, ErrorNote, Sheet, TopBar, TrashIcon } from '../ui.js';
+import { ConfirmDialog, ErrorNote, Sheet, TopBar, TrashIcon } from '../ui.js';
 import { AddDocumentsPicker } from '../collection-add.js';
-import { DocRow } from './Home.js';
-import { useTrashedNote } from '../DocActions.js';
+import { Toast, type ReviewToast } from '../batch-review.js';
+import type { Removed } from '../DocActions.js';
+import { CollectionDocuments } from './Documents.js';
 import { collectionShareOffered, ShareCollectionPanel } from './ShareCollection.js';
 import {
   checklistOffered,
@@ -221,12 +221,12 @@ export function CollectionScreen() {
   const { id } = useParams<{ id: string }>();
   const { withToken, authVersion, caps } = useApp();
   const navigate = useNavigate();
-  const trashed = useTrashedNote();
   const role = storedRole();
   const first = useLoad(
     async (t) => {
       const [collection, types, members] = await Promise.all([
-        api.getCollection(t, id as string),
+        // Its documents are its table's (0.9.0): of the page, only the collection.
+        api.getCollection(t, id as string, { limit: 1 }),
         api.documentTypes(t),
         can(role, 'collection.manage')
           ? api.members(t)
@@ -236,10 +236,6 @@ export function CollectionScreen() {
     },
     [id, authVersion],
   );
-  // Pages after the first, as "Show more" brings them; undefined until it is used.
-  const [older, setOlder] = useState<CollectionItemView[]>([]);
-  const [cursor, setCursor] = useState<string | null | undefined>(undefined);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -260,6 +256,14 @@ export function CollectionScreen() {
   const [added, setAdded] = useState<Outcome | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   const addedRef = useRef<HTMLDivElement>(null);
+  // What is in it changed here (Add documents, a checklist, Undo): its table
+  // is loaded again (0.9.0).
+  const [refresh, setRefresh] = useState(0);
+  // Taken out (0.9.0): said in a toast with Undo, which puts them back.
+  const [toast, setToast] = useState<ReviewToast | null>(null);
+  const [heard, setHeard] = useState('');
+  const toastBox = useRef<HTMLDivElement>(null);
+  const removedTitles = useRef<string[]>([]);
   // Its checklist (0.9.0, C1): matched again as the page opens, and the
   // sheet that fills it — opened at once with a list typed as it was made.
   const location = useLocation();
@@ -288,14 +292,12 @@ export function CollectionScreen() {
     return true;
   };
 
-  /** From the first page again: what is in it, or the collection itself, has changed. */
+  /** The collection again: what is in it, or the collection itself, has changed. */
   const again = async () => {
-    setOlder([]);
-    setCursor(undefined);
     // What went wrong before is said again only if it goes wrong again.
     setProblem(null);
     try {
-      const collection = await withToken((t) => api.getCollection(t, id as string));
+      const collection = await withToken((t) => api.getCollection(t, id as string, { limit: 1 }));
       if (collection) first.setData((d) => (d ? { ...d, collection } : d));
     } catch (err) {
       if (!goneIf(err)) setProblem(describeError(err));
@@ -313,9 +315,6 @@ export function CollectionScreen() {
   }
 
   const { collection, types, members } = first.data;
-  const items = [...collection.items, ...older];
-  const next =
-    cursor === undefined ? (collection.has_more ? collection.next_cursor : null) : cursor;
   const mayChange = mayChangeCollection(role, collection);
   const maker = members.find((m) => m.id === collection.owner_member_id) ?? null;
   // Nobody may change it any more — its maker is outside its audience now,
@@ -338,6 +337,7 @@ export function CollectionScreen() {
       setAdded({ said: done.said, failedHead: null, failed: [], untouched: [] });
     });
     window.setTimeout(() => addedRef.current?.focus(), 0);
+    setRefresh((n) => n + 1);
     void again();
     void kept.reload();
   };
@@ -350,29 +350,74 @@ export function CollectionScreen() {
     });
     // The picker gives the focus back as it closes; then it comes here.
     window.setTimeout(() => addedRef.current?.focus(), 0);
+    setRefresh((n) => n + 1);
     void again();
+    void kept.reload();
   };
 
-  const more = async (from: string) => {
-    setLoadingMore(true);
-    setProblem(null);
+  /**
+   * Taken out (0.9.0), from a row's ⋯ or the bar for the chosen: said in a
+   * toast, with Undo, which puts them back by the vault's own Add. The
+   * documents themselves are untouched. From the bar — gone with them — the
+   * focus comes to the toast; from a ⋯ it stays on the next row.
+   */
+  const onRemoved = (removed: Removed[], from: 'row' | 'bar') => {
+    const one = removed.length === 1 ? removed[0] : undefined;
+    const text = one
+      ? `“${one.title}” is out of “${collection.name}”. It is still in the vault.`
+      : `${documentsWord(removed.length)} taken out of “${collection.name}”. They are still in the vault.`;
+    removedTitles.current = removed.map((r) => r.title);
+    setToast({
+      text,
+      more: [],
+      // Undo's documents: the collection's, put back as they went (not a batch's).
+      undo: { batchId: collection.id, itemIds: removed.map((r) => r.id), until: null },
+      busy: false,
+    });
+    setHeard(text);
+    void again();
+    void kept.reload();
+    if (from === 'bar') window.setTimeout(() => toastBox.current?.focus(), 0);
+  };
+
+  /** Undo: back in, by the vault's own Add (its rules, its log), as Add documents puts them. */
+  const undo = async () => {
+    const was = toast;
+    if (!was?.undo) return;
+    const { itemIds } = was.undo;
+    setToast({ ...was, busy: true });
     try {
-      const page = await withToken((t) => api.getCollection(t, collection.id, { cursor: from }));
-      if (page) {
-        setOlder((o) => [...o, ...page.items]);
-        setCursor(page.has_more ? page.next_cursor : null);
+      const back = await withToken((t) => api.addToCollection(t, collection.id, itemIds));
+      if (!back) {
+        setToast({ ...was, busy: false });
+        return;
       }
+      const titles = removedTitles.current;
+      const text =
+        itemIds.length === 1
+          ? `“${titles[0] ?? 'It'}” is back in “${collection.name}”.`
+          : `${documentsWord(itemIds.length)} are back in “${collection.name}”.`;
+      setToast({ text, more: back.warnings ?? [], undo: null, busy: false });
+      setHeard(text);
+      setRefresh((n) => n + 1);
+      void again();
+      void kept.reload();
     } catch (err) {
-      if (err instanceof ApiRequestError && err.status === 422) {
-        // The last one shown has gone since: from the top again.
-        setNotice('This collection changed while you were looking, so it has been loaded again.');
-        await again();
-      } else if (!goneIf(err)) {
-        setProblem(describeError(err));
-      }
-    } finally {
-      setLoadingMore(false);
+      // Nothing put back (all of them, or none): Undo is still there to try
+      // again. A 404 is a document gone meanwhile, or the collection: which,
+      // the collection loaded again says.
+      setToast({ ...was, more: [describeError(err)], busy: false });
+      setHeard(describeError(err));
+      void again();
     }
+  };
+
+  const dismissToast = () => {
+    flushSync(() => setToast(null));
+    // Back to the documents, never nowhere.
+    const h = document.getElementById('collection-items-h');
+    if (h && !h.hasAttribute('tabindex')) h.tabIndex = -1;
+    h?.focus();
   };
 
   const save = async (fields: CollectionFields) => {
@@ -388,11 +433,11 @@ export function CollectionScreen() {
       if (!changed) return;
       flushSync(() => {
         first.setData((d) => (d ? { ...d, collection: changed } : d));
-        setOlder([]);
-        setCursor(undefined);
         setEditing(false);
         setNotice(`“${changed.name}” is saved.`);
       });
+      // Who it is for may have changed what its maker is told of each.
+      setRefresh((n) => n + 1);
       status.current?.focus();
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 409) {
@@ -432,7 +477,7 @@ export function CollectionScreen() {
 
   const sentence = audienceSentence(collection.audience);
   return (
-    <main className="page page-top page-wide has-nav">
+    <main className={`page page-top page-wide has-nav${toast ? ' has-toast' : ''}`}>
       <TopBar
         title={collection.name}
         back="/collections"
@@ -587,44 +632,30 @@ export function CollectionScreen() {
           }}
         />
       )}
-      <section aria-labelledby="collection-items-h">
-        <h2 id="collection-items-h" className="section-h">
-          In this collection
-        </h2>
-        {/* What the collection holds, as the vault counts it for this reader. Where
-            focus goes when a row leaves the collection with it (5.4). */}
-        <p className="muted" tabIndex={-1} data-landing>
-          {documentsWord(collection.item_count)}
-        </p>
-        {trashed.note}
-        <ul className="list">
-          {items.map((item) => (
-            <DocRow
-              key={item.document.id}
-              doc={item.document}
-              types={types}
-              hint={item.hint}
-              collection={{ id: collection.id, name: collection.name, mayChange }}
-              onOpen={() => void navigate(`/documents/${item.document.id}`)}
-              onChanged={again}
-              onTrashed={trashed.onTrashed}
-            />
-          ))}
-          {items.length === 0 && (
-            <li className="muted">
-              Nothing in this collection yet.
-              {mayAdd
-                ? ' Use Add documents, above, or Add to a collection in the ⋯ beside any document.'
-                : ''}
-            </li>
-          )}
-        </ul>
-        {next && (
-          <Button kind="quiet" disabled={loadingMore} onClick={() => void more(next)}>
-            {loadingMore ? 'Loading…' : 'Show more'}
-          </Button>
-        )}
-      </section>
+      {/* What is in it, as the Documents table shows documents (0.9.0): what
+          the vault gives this reader of it, counted as it counts them. */}
+      <CollectionDocuments
+        refresh={refresh}
+        scope={{
+          collection: {
+            id: collection.id,
+            name: collection.name,
+            audience: collection.audience,
+            mine: collection.mine,
+          },
+          mayRemove: mayChange,
+          empty: `Nothing in this collection yet.${
+            mayAdd
+              ? ' Use Add documents, above, or Add to a collection in the ⋯ beside any document.'
+              : ''
+          }`,
+          onRemoved,
+          onChanged: () => {
+            void again();
+            void kept.reload();
+          },
+        }}
+      />
       {mayDelete && (
         <button
           ref={deleteButton}
@@ -654,6 +685,13 @@ export function CollectionScreen() {
           </p>
         </ConfirmDialog>
       )}
+      {toast && (
+        <Toast toast={toast} box={toastBox} onUndo={() => void undo()} onDismiss={dismissToast} />
+      )}
+      {/* The toast said politely, the focus staying where it is (WCAG 4.1.3). */}
+      <p className="visually-hidden" role="status" aria-live="polite">
+        {heard}
+      </p>
     </main>
   );
 }

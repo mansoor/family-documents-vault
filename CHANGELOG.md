@@ -6,6 +6,16 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.16] - 2026-10-24 — a collection as the Documents table
+
+### Changed
+
+- **A collection's documents are now shown in the same table as Documents (0.9.0).** On a wider screen, a collection's page lists what is in it in the Documents table: its columns (with Columns to show or hide them), sorting by a column, filters, boxes to choose several documents, the bar for those chosen, and a ⋯ on each row that stays in view at the right edge. On a phone it is the usual list, with Filters and Select. The vault works out what the table shows: the documents in that collection the reader can see, counted the same way as before. Another member's Only me document is never shown or counted, and nothing in the Trash appears. The person who made a collection still sees which members of its audience can't see each document, now in a **Not seen by** column next to the title. The **Collections** column starts hidden there, since every row is in that collection; it can be shown from Columns, and a collection's columns are remembered separately from Documents'.
+- **Every row of the Documents table has a ⋯ (0.9.0).** It stays in view at the right edge and offers what the ⋯ on the phone list offers: Open, Download, Edit details, Share a link, Who can see it, Add to a collection, Essential, a new version and Move to the Trash. What it does is said above the table.
+- **A collection's checklist is folded away (0.9.0).** It is now a panel that opens, folded by default, so the documents come first. Its line gives the status, for example "Checklist · 6 of 7 found · 1 new match". Each person's device remembers whether they left it open on that collection. With no checklist yet, **Fill from a checklist** is where it always was.
+- **Removing a document from a collection is as easy as adding one (0.9.0).** The collection's maker can choose **Remove from this collection** in a row's ⋯ or in the bar for chosen documents (or Select, on a phone). The document is removed straight away, with no question first, and a message offers **Undo**, which puts it back. Removing never changes the document itself, which stays in the vault and in any other collection. As before, only the collection's maker can remove documents from it.
+- **No longer needed is now set with a document's details (0.9.0).** **Edit details** has a **No longer needed** switch. Turning it on shows two optional fields: why, and what replaced it, picked the same way the dialog picks it. Turning it off makes the document needed again. Both are saved with the rest of the card. Edit details is now the only place on a document's page to set it: the setting is no longer on the page itself (beside Download), in the ⋯ menus (Documents, search, collections) or in the Documents bar for chosen documents. Once a document is marked, its page banner still offers **Needed again** and **Change why**. **Not needed any more** beside a reminder, the Documents status filter, the export and the API are unchanged.
+
 ### Fixed
 
 - **The Settings menu keeps a focused link on screen.** On a long Settings page, the menu beside it could be taller than the window, so tabbing reached links scrolled out of sight. It now stays no taller than the window and scrolls within itself, bringing the link you tab to into view.

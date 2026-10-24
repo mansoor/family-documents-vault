@@ -4,20 +4,21 @@ import {
   type DocumentView,
   type NoLongerNeededView,
 } from '@fdv/shared';
-import { useEffect, useId, useRef, useState, type RefObject } from 'react';
+import { useEffect, useId, useRef, useState, type Ref, type RefObject } from 'react';
 import { Link } from 'react-router';
 import { api } from './api.js';
 import { describeError, useApp } from './app-context.js';
 import { dayWordsOf, useFamilyZone } from './family-time.js';
-import { ErrorNote, useSheetFocus } from './ui.js';
+import { ErrorNote, Switch, useSheetFocus } from './ui.js';
 
 /**
  * No longer needed (0.9.0; the owner's ask of 23 Oct 2026): a document kept
  * — found, shared and in its collections as ever — whose expiry says
  * nothing any more, because something else made it unnecessary: an EAD card
- * once the green card came. Marked from its page, a row's ⋯ and a reminder
- * (Not needed any more), each with the same dialog; said on its page by a
- * banner, with Needed again.
+ * once the green card came. Set with its details (Edit details, the one
+ * place on its own page, 0.9.0 — not a menu's item, as it is not often
+ * done), and beside a reminder (Not needed any more, with the dialog); said
+ * on its page by a banner, with Needed again and Change why.
  */
 
 /** A document the dialog may offer as what replaced it. */
@@ -38,64 +39,88 @@ export function sinceWords(n: Pick<NoLongerNeededView, 'at'>, zone: string): str
   return `No longer needed since ${dayWordsOf(n.at, zone, { month: 'short', year: true })}`;
 }
 
-/**
- * The dialog that marks a document no longer needed — or, asked again,
- * changes why and by what. Why is optional, at most 200 characters; what
- * replaced it is one of the documents the reader can see, found as they
- * type, the same person's offered first. `onDone` is given the document as
- * the vault now has it.
- */
 /** Marks one replacement the reader may not see, kept as it is: never sent (the review, M1). */
 const KEPT = 'kept';
 
 /** What the dialog sends: only what was changed — a field left out is kept as it is. */
 export type NoLongerNeededBody = { reason?: string | null; replaced_by?: string | null };
 
-export function NoLongerNeededDialog(props: {
-  doc: Pick<DocumentView, 'id' | 'title' | 'owner_member_id' | 'no_longer_needed'>;
-  returnFocus: RefObject<HTMLElement | null>;
-  onDone: (saved: DocumentView) => void | Promise<unknown>;
-  onCancel: () => void;
-  /**
-   * Many at once (the Documents table's bulk bar): what it is about, in words
-   * ("3 documents"), the documents never offered as their own replacement,
-   * and the run itself, in place of one document's call.
-   */
-  many?: {
-    what: string;
-    exclude: readonly string[];
-    run: (body: NoLongerNeededBody) => Promise<void>;
+/**
+ * Why, and what replaced it, as typed and chosen: the dialog's, and the
+ * property's on the document's details (0.9.0) — one picker, one rule.
+ */
+export interface NoLongerNeededDraft {
+  reason: string;
+  /** The id chosen, '' for nothing in particular, or KEPT for one the reader may not see. */
+  chosen: string;
+  /** The one chosen, offered whatever is typed: what is chosen is seen. */
+  chosenOne: Choice | null;
+}
+
+/** A draft as the document has it now: its reason and what replaced it, or none. */
+export function draftOf(was: NoLongerNeededView | null): NoLongerNeededDraft {
+  const hiddenKept = was?.replaced_by != null && was.replaced_by.id === null;
+  return {
+    reason: was?.reason ?? '',
+    chosen: hiddenKept ? KEPT : (was?.replaced_by?.id ?? ''),
+    chosenOne: was?.replaced_by?.id
+      ? { id: was.replaced_by.id, title: was.replaced_by.title }
+      : null,
   };
+}
+
+/**
+ * What to send for a draft: a field only once it is changed from what the
+ * document had, so a replacement the reader may not see — or a reason sealed
+ * from a list — is kept as it is, never wiped by what they were not shown (M1).
+ */
+export function bodyOf(
+  was: NoLongerNeededView | null,
+  draft: NoLongerNeededDraft,
+): NoLongerNeededBody {
+  const before = draftOf(was);
+  return {
+    ...(draft.reason.trim() !== before.reason.trim()
+      ? { reason: draft.reason.trim() || null }
+      : {}),
+    ...(draft.chosen !== before.chosen && draft.chosen !== KEPT
+      ? { replaced_by: draft.chosen || null }
+      : {}),
+  };
+}
+
+/** Why is at most NO_LONGER_NEEDED_REASON_MAX characters: the words when it is longer. */
+export function reasonTooLong(draft: NoLongerNeededDraft): string | null {
+  return [...draft.reason.trim()].length > NO_LONGER_NEEDED_REASON_MAX
+    ? `Keep why to ${NO_LONGER_NEEDED_REASON_MAX} characters.`
+    : null;
+}
+
+/**
+ * Why (optional), and Replaced by (optional): what replaced it is one of the
+ * documents the reader can see, found as they type, the same person's
+ * offered first, never the document itself.
+ */
+export function NoLongerNeededFields({
+  ref,
+  ...props
+}: {
+  /** Each field's id starts with it. */
+  ids: string;
+  doc: Pick<DocumentView, 'id' | 'owner_member_id' | 'no_longer_needed'>;
+  draft: NoLongerNeededDraft;
+  onChange: (draft: NoLongerNeededDraft) => void;
+  /** Why's box, for the dialog to start on. */
+  ref?: Ref<HTMLTextAreaElement>;
 }) {
   const { withToken } = useApp();
-  const ids = useId();
-  const box = useRef<HTMLElement>(null);
-  const why = useRef<HTMLTextAreaElement>(null);
-  const [busy, setBusy] = useState(false);
-  useSheetFocus(box, {
-    start: why,
-    onEscape: props.onCancel,
-    busy,
-    returnFocus: props.returnFocus,
-  });
-  const was = props.doc.no_longer_needed ?? null;
-  // As it was given: a field is sent only once it is changed from this, so
-  // a replacement the reader may not see — or a reason sealed from a list —
-  // is kept as it is, never wiped by what they were not shown (M1).
-  const reasonWas = was?.reason ?? '';
-  const hiddenKept = was?.replaced_by != null && was.replaced_by.id === null;
-  const chosenWas = hiddenKept ? KEPT : (was?.replaced_by?.id ?? '');
-  const [reason, setReason] = useState(reasonWas);
+  const { ids, draft, onChange } = props;
   const [query, setQuery] = useState('');
-  const [chosen, setChosen] = useState<string>(chosenWas);
-  // Those never offered as their own replacement, as one key for the effect.
-  const excluded = (props.many?.exclude ?? []).join(',');
   const [offered, setOffered] = useState<Choice[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The one chosen stays offered whatever is typed: what is chosen is seen.
-  const [chosenOne, setChosenOne] = useState<Choice | null>(
-    was?.replaced_by?.id ? { id: was.replaced_by.id, title: was.replaced_by.title } : null,
-  );
+  const hiddenKept =
+    props.doc.no_longer_needed?.replaced_by != null &&
+    props.doc.no_longer_needed.replaced_by.id === null;
 
   useEffect(() => {
     let stopped = false;
@@ -119,8 +144,7 @@ export function NoLongerNeededDialog(props: {
         }).then(
           (found) => {
             if (stopped || !found) return;
-            const left = new Set([props.doc.id, ...excluded.split(',')]);
-            setOffered(found.filter((d) => !left.has(d.id)).slice(0, OFFERED));
+            setOffered(found.filter((d) => d.id !== props.doc.id).slice(0, OFFERED));
           },
           (err: unknown) => {
             if (!stopped) setError(describeError(err));
@@ -133,33 +157,140 @@ export function NoLongerNeededDialog(props: {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [query, props.doc.id, props.doc.owner_member_id, excluded, withToken]);
+  }, [query, props.doc.id, props.doc.owner_member_id, withToken]);
 
   const choices = [
-    ...(chosenOne && !(offered ?? []).some((d) => d.id === chosenOne.id) ? [chosenOne] : []),
+    ...(draft.chosenOne && !(offered ?? []).some((d) => d.id === draft.chosenOne?.id)
+      ? [draft.chosenOne]
+      : []),
     ...(offered ?? []),
   ];
-  const length = [...reason.trim()].length;
+  const length = [...draft.reason.trim()].length;
   const tooLong = length > NO_LONGER_NEEDED_REASON_MAX;
+  return (
+    <>
+      <div className="field">
+        <label htmlFor={`${ids}-why`}>Why (optional)</label>
+        <textarea
+          ref={ref}
+          id={`${ids}-why`}
+          value={draft.reason}
+          rows={3}
+          maxLength={NO_LONGER_NEEDED_REASON_MAX + 20}
+          aria-invalid={tooLong || undefined}
+          aria-describedby={`${ids}-count`}
+          onChange={(e) => onChange({ ...draft, reason: e.target.value })}
+        />
+        <span id={`${ids}-count`} className={tooLong ? 'error-text' : 'muted'}>
+          {length} of {NO_LONGER_NEEDED_REASON_MAX} characters
+        </span>
+      </div>
+      <fieldset className="nln-replaced">
+        <legend>Replaced by (optional)</legend>
+        <div className="field">
+          <label htmlFor={`${ids}-find`}>Find a document</label>
+          <input
+            id={`${ids}-find`}
+            type="search"
+            value={query}
+            autoComplete="off"
+            aria-describedby={`${ids}-found`}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+        <p id={`${ids}-found`} className="muted" role="status">
+          {offered === null
+            ? 'Looking…'
+            : query.trim().length < 2
+              ? 'Documents of the same person. Type to find any other.'
+              : offered.length === 0
+                ? 'No document has those words.'
+                : `${offered.length} found`}
+        </p>
+        <div className="nln-choices">
+          <div className="check">
+            <input
+              id={`${ids}-none`}
+              type="radio"
+              name={`${ids}-by`}
+              value=""
+              checked={draft.chosen === ''}
+              onChange={() => onChange({ ...draft, chosen: '' })}
+            />
+            <label htmlFor={`${ids}-none`}>Nothing in particular</label>
+          </div>
+          {hiddenKept && (
+            <div className="check">
+              <input
+                id={`${ids}-kept`}
+                type="radio"
+                name={`${ids}-by`}
+                value={KEPT}
+                checked={draft.chosen === KEPT}
+                onChange={() => onChange({ ...draft, chosen: KEPT })}
+              />
+              <label htmlFor={`${ids}-kept`}>Another document (kept as it is)</label>
+            </div>
+          )}
+          {choices.map((d, i) => (
+            <div key={d.id} className="check">
+              <input
+                id={`${ids}-by-${i}`}
+                type="radio"
+                name={`${ids}-by`}
+                value={d.id}
+                checked={draft.chosen === d.id}
+                onChange={() => onChange({ ...draft, chosen: d.id, chosenOne: d })}
+              />
+              <label htmlFor={`${ids}-by-${i}`}>{named(d.title)}</label>
+            </div>
+          ))}
+        </div>
+      </fieldset>
+      <ErrorNote message={error} />
+    </>
+  );
+}
+
+/**
+ * The dialog that marks a document no longer needed — or, asked again,
+ * changes why and by what (the banner's Change why, a reminder's Not needed
+ * any more). `onDone` is given the document as the vault now has it.
+ */
+export function NoLongerNeededDialog(props: {
+  doc: Pick<DocumentView, 'id' | 'title' | 'owner_member_id' | 'no_longer_needed'>;
+  returnFocus: RefObject<HTMLElement | null>;
+  onDone: (saved: DocumentView) => void | Promise<unknown>;
+  onCancel: () => void;
+}) {
+  const { withToken } = useApp();
+  const ids = useId();
+  const box = useRef<HTMLElement>(null);
+  const why = useRef<HTMLTextAreaElement>(null);
+  const [busy, setBusy] = useState(false);
+  useSheetFocus(box, {
+    start: why,
+    onEscape: props.onCancel,
+    busy,
+    returnFocus: props.returnFocus,
+  });
+  const was = props.doc.no_longer_needed ?? null;
+  const [draft, setDraft] = useState(() => draftOf(was));
+  const [error, setError] = useState<string | null>(null);
 
   const save = async () => {
     if (busy) return;
+    const tooLong = reasonTooLong(draft);
     if (tooLong) {
-      setError(`Keep why to ${NO_LONGER_NEEDED_REASON_MAX} characters.`);
+      setError(tooLong);
       return;
     }
     setBusy(true);
     setError(null);
-    const body: NoLongerNeededBody = {
-      ...(reason.trim() !== reasonWas.trim() ? { reason: reason.trim() || null } : {}),
-      ...(chosen !== chosenWas && chosen !== KEPT ? { replaced_by: chosen || null } : {}),
-    };
     try {
-      if (props.many) {
-        await props.many.run(body);
-        return;
-      }
-      const saved = await withToken((t) => api.markNoLongerNeeded(t, props.doc.id, body));
+      const saved = await withToken((t) =>
+        api.markNoLongerNeeded(t, props.doc.id, bodyOf(was, draft)),
+      );
       if (saved) await props.onDone(saved);
     } catch (err) {
       setError(describeError(err));
@@ -168,9 +299,6 @@ export function NoLongerNeededDialog(props: {
     }
   };
 
-  const title = props.many ? props.many.what : `“${named(props.doc.title)}”`;
-  // Said of many, "3 documents stay"; of one, "“EAD card” stays".
-  const many = props.many !== undefined && !props.many.what.startsWith('1 ');
   return (
     <div className="scrim" role="presentation">
       <section
@@ -186,91 +314,16 @@ export function NoLongerNeededDialog(props: {
           {was ? 'No longer needed' : 'Mark as no longer needed'}
         </h2>
         <p id={`${ids}-what`} className="muted">
-          {title} {many ? 'stay' : 'stays'} in the vault: found, shared and in{' '}
-          {many ? 'their' : 'its'} collections as before. Nobody is reminded of{' '}
-          {many ? 'them' : 'it'}, and {many ? 'they leave' : 'it leaves'} Needs attention.
+          “{named(props.doc.title)}” stays in the vault: found, shared and in its collections as
+          before. Nobody is reminded of it, and it leaves Needs attention.
         </p>
-        <div className="field">
-          <label htmlFor={`${ids}-why`}>Why (optional)</label>
-          <textarea
-            ref={why}
-            id={`${ids}-why`}
-            value={reason}
-            rows={3}
-            maxLength={NO_LONGER_NEEDED_REASON_MAX + 20}
-            aria-invalid={tooLong || undefined}
-            aria-describedby={`${ids}-count`}
-            onChange={(e) => setReason(e.target.value)}
-          />
-          <span id={`${ids}-count`} className={tooLong ? 'error-text' : 'muted'}>
-            {length} of {NO_LONGER_NEEDED_REASON_MAX} characters
-          </span>
-        </div>
-        <fieldset className="nln-replaced">
-          <legend>Replaced by (optional)</legend>
-          <div className="field">
-            <label htmlFor={`${ids}-find`}>Find a document</label>
-            <input
-              id={`${ids}-find`}
-              type="search"
-              value={query}
-              autoComplete="off"
-              aria-describedby={`${ids}-found`}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          </div>
-          <p id={`${ids}-found`} className="muted" role="status">
-            {offered === null
-              ? 'Looking…'
-              : query.trim().length < 2
-                ? 'Documents of the same person. Type to find any other.'
-                : offered.length === 0
-                  ? 'No document has those words.'
-                  : `${offered.length} found`}
-          </p>
-          <div className="nln-choices">
-            <div className="check">
-              <input
-                id={`${ids}-none`}
-                type="radio"
-                name={`${ids}-by`}
-                value=""
-                checked={chosen === ''}
-                onChange={() => setChosen('')}
-              />
-              <label htmlFor={`${ids}-none`}>Nothing in particular</label>
-            </div>
-            {hiddenKept && (
-              <div className="check">
-                <input
-                  id={`${ids}-kept`}
-                  type="radio"
-                  name={`${ids}-by`}
-                  value={KEPT}
-                  checked={chosen === KEPT}
-                  onChange={() => setChosen(KEPT)}
-                />
-                <label htmlFor={`${ids}-kept`}>Another document (kept as it is)</label>
-              </div>
-            )}
-            {choices.map((d, i) => (
-              <div key={d.id} className="check">
-                <input
-                  id={`${ids}-by-${i}`}
-                  type="radio"
-                  name={`${ids}-by`}
-                  value={d.id}
-                  checked={chosen === d.id}
-                  onChange={() => {
-                    setChosen(d.id);
-                    setChosenOne(d);
-                  }}
-                />
-                <label htmlFor={`${ids}-by-${i}`}>{named(d.title)}</label>
-              </div>
-            ))}
-          </div>
-        </fieldset>
+        <NoLongerNeededFields
+          ids={ids}
+          doc={props.doc}
+          draft={draft}
+          onChange={setDraft}
+          ref={why}
+        />
         <ErrorNote message={error} />
         <div className="row">
           <button
@@ -293,6 +346,50 @@ export function NoLongerNeededDialog(props: {
           </button>
         </div>
       </section>
+    </div>
+  );
+}
+
+/**
+ * No longer needed as a property of the document (0.9.0; the owner's ask of
+ * 24 Oct), on its details card (Edit details) with its kind and dates: a
+ * switch, and — on — why and what replaced it, as the dialog asks them.
+ * Saved with the card: turned off, it is needed again.
+ */
+export function NoLongerNeededProperty(props: {
+  doc: Pick<DocumentView, 'id' | 'owner_member_id' | 'no_longer_needed'>;
+  on: boolean;
+  draft: NoLongerNeededDraft;
+  onChange: (on: boolean, draft: NoLongerNeededDraft) => void;
+}) {
+  const ids = useId();
+  const zone = useFamilyZone();
+  const was = props.doc.no_longer_needed;
+  return (
+    <div className="nln-property stack">
+      <Switch
+        id={`${ids}-on`}
+        label="No longer needed"
+        checked={props.on}
+        onChange={(on) => props.onChange(on, props.draft)}
+      />
+      <p className="muted nln-property-note">
+        {props.on
+          ? was
+            ? `${sinceWords(was, zone)}. Kept, found and shared as before; nobody is reminded of it. Turn it off when it is needed again.`
+            : 'Kept, found and shared as before; nobody is reminded of it, and it leaves Needs attention.'
+          : was
+            ? 'Needed again once you save: its reminders come back as its dates say.'
+            : 'For a document kept, but made unnecessary by another: an EAD card once the green card came.'}
+      </p>
+      {props.on && (
+        <NoLongerNeededFields
+          ids={ids}
+          doc={props.doc}
+          draft={props.draft}
+          onChange={(draft) => props.onChange(props.on, draft)}
+        />
+      )}
     </div>
   );
 }

@@ -155,7 +155,7 @@ describe('quick actions on every document (5.4)', () => {
       // Their own, between Only me and Everyone (A72).
       'Who can see it',
       'Stop it being Essential',
-      'Mark as no longer needed',
+      // No longer needed is set with the details, not here (0.9.0).
       'Add a new version',
       'Move to the Trash',
     ]);
@@ -262,7 +262,7 @@ describe('quick actions on every document (5.4)', () => {
       'Share a link',
       'Who can see it',
       'Stop it being Essential',
-      'Mark as no longer needed',
+      // No longer needed is set with the details, not here (0.9.0).
       'Add a new version',
       'Move to the Trash',
     ]);
@@ -674,7 +674,7 @@ describe('quick actions on every document (5.4)', () => {
       'Edit details',
       'Who can see it',
       'Stop it being Essential',
-      'Mark as no longer needed',
+      // No longer needed is set with the details, not here (0.9.0).
       'Add a new version',
       'Move to the Trash',
     ]);

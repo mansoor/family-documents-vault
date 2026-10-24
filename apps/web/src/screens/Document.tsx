@@ -16,11 +16,7 @@ import { AddToCollection, audienceLabel, collectionsOffered } from '../collectio
 import { mayChange } from '../DocActions.js';
 import { asksFor, coreRule, detailText, useAttributes } from '../details.js';
 import { NotesSection } from '../notes.js';
-import {
-  NeededAgainQuestion,
-  NoLongerNeededBanner,
-  NoLongerNeededDialog,
-} from '../no-longer-needed.js';
+import { NeededAgainQuestion, NoLongerNeededBanner } from '../no-longer-needed.js';
 import { PageViewer } from '../page-viewer.js';
 import { useShellMode } from '../shell.js';
 import {
@@ -101,10 +97,10 @@ export function DocumentScreen() {
     }
   };
 
-  // No longer needed (0.9.0): marked from here, and asked about again when
-  // a new version is added — never made needed again by the adding alone.
-  const [marking, setMarking] = useState(false);
-  const markButton = useRef<HTMLButtonElement>(null);
+  // No longer needed (0.9.0): set with the details (Edit, since the owner's
+  // word of 24 Oct, the one place to set it), said here by its banner, and
+  // asked about again when a new version is added — never made needed again
+  // by the adding alone.
   const [askAgain, setAskAgain] = useState(false);
   const versionInput = useRef<HTMLLabelElement>(null);
 
@@ -269,28 +265,10 @@ export function DocumentScreen() {
             onChanged={reload}
           />
           <ErrorNote message={actionError} />
-          {(latest && !latest.file_removed) || (mayChangeIt && !doc.no_longer_needed) ? (
+          {latest && !latest.file_removed && (
             <div className="row doc-actions">
-              {latest && !latest.file_removed && (
-                <Button onClick={() => void download(latest)}>Download</Button>
-              )}
-              {mayChangeIt && !doc.no_longer_needed && (
-                <Button ref={markButton} kind="quiet" onClick={() => setMarking(true)}>
-                  Mark as no longer needed
-                </Button>
-              )}
+              <Button onClick={() => void download(latest)}>Download</Button>
             </div>
-          ) : null}
-          {marking && (
-            <NoLongerNeededDialog
-              doc={doc}
-              returnFocus={markButton}
-              onCancel={() => setMarking(false)}
-              onDone={(saved) => {
-                setMarking(false);
-                setData((d) => (d ? { ...d, doc: saved } : d));
-              }}
-            />
           )}
           {askAgain && (
             <NeededAgainQuestion
