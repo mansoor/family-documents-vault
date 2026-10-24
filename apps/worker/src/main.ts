@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   ALERT_LINK_KEY_PURPOSE,
@@ -45,6 +45,7 @@ import {
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import { resumeBatchItems, sendBatchPreviews, workBatchPreviews } from './jobs/batches.js';
 import { ProposalThread } from './jobs/proposal-thread.js';
+import { keepRecordingReadingModel, recordReadingModel } from './reading-model.js';
 import {
   READING_CHECK_JOB,
   READING_CHECK_SWEEP_JOB,
@@ -467,7 +468,18 @@ async function main(): Promise<void> {
   // Many documents at once (I1): a batch's items drawn one at a time a
   // household, each household taking its turn (jobs/batches.ts); and, since
   // I2, each read and proposed for, on a thread of its own (read-item.ts).
-  const proposals = new ProposalThread();
+  // What it found of the reading model's weights is recorded for the API
+  // (0079, the R2 review), as each new thread finds it, from the start.
+  // A row a worker process, said again while it runs (the R2 re-check).
+  const workerName = `${hostname()}:${process.pid}`;
+  const recordModel = (state: 'loaded' | 'missing' | 'corrupt' | null) =>
+    void recordReadingModel(dbs.admin, workerName, state).catch((err: unknown) =>
+      log('warn', 'could not record whether the reading model is loaded', {
+        err: (err as Error).message.slice(0, 200),
+      }),
+    );
+  const proposals = new ProposalThread({ onModel: recordModel });
+  keepRecordingReadingModel(proposals, recordModel);
   await workBatchPreviews(boss, incomingDeps, {
     read: { maxPages: config.FDV_OCR_MAX_PAGES, proposer: proposals },
   });

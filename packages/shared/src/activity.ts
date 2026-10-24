@@ -118,6 +118,7 @@ export function activityKind(action: string): ActivityKind {
       return 'shared';
     case 'household.profile_updated':
     case 'household.timezone_changed':
+    case 'household.reading_model_changed':
     case 'batch.version_undone':
       return 'changed';
   }
@@ -752,6 +753,12 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return detail.enabled === true
         ? line(`${who} set the scanner folder to fill ${possessive(personOf(e))} Inbox`, true)
         : line(`${who} turned off the scanner folder`, true);
+    // The vault's reading model on or off (0.9.0, R2).
+    case 'household.reading_model_changed':
+      return line(
+        `${who} turned ${detail.reading_model === true ? 'on' : 'off'} the vault’s reading model`,
+        true,
+      );
     // Which folder the scanner folder is, and how long scans are kept (0.9.0, O1).
     case 'watch_folder.folder_changed':
       return line(

@@ -122,6 +122,16 @@ export interface Proposed<T> {
    * R3): never Ready on its own strength — the card says so, and waits.
    */
   corrected?: true;
+  /**
+   * The vault's reading model (0.9.0, R2, reading-model-rules.ts) had a say
+   * in a kind: `alone`, it suggested the kind where the rules found none
+   * (never sure); `doubts`, it read the page as another kind (`model_kind`,
+   * or `none`, no kind the vault keeps), so the rules' kind is not sure.
+   * Only a kind says it.
+   */
+  model?: 'alone' | 'doubts';
+  /** The kind the reading model read the page as, where it `doubts`. */
+  model_kind?: string;
 }
 
 /** What the pages propose: only the fields above their threshold, and only empty ones. */
@@ -154,7 +164,9 @@ export const KIND_MIN_LEAD = 2;
 
 /** A kind of document as the household keeps it: GET /document-types' view, or enough of it. */
 export type ProposalKind = Pick<DocumentTypeView, 'key' | 'label' | 'fields' | 'expiry_driver'> &
-  Partial<Pick<DocumentTypeView, 'short_label' | 'hidden' | 'core' | 'issued_by_label'>>;
+  Partial<
+    Pick<DocumentTypeView, 'short_label' | 'hidden' | 'core' | 'issued_by_label' | 'builtin'>
+  >;
 
 /** Somebody in the family, by the name the household knows them by. */
 export interface ProposalPerson {
@@ -194,6 +206,11 @@ export interface ProposalContext {
    * is not read at all.
    */
   dateOrder?: 'dmy' | 'mdy' | undefined;
+  /**
+   * The household's switch for the vault's reading model (0.9.0, R2):
+   * false, the rules alone read the page. On unless said.
+   */
+  readingModel?: boolean | undefined;
 }
 
 /** Text beyond this is the small print of a long document; the details are on its first pages. */
@@ -574,11 +591,29 @@ const KIND_VETOES: Readonly<Record<string, RegExp>> = {
     /\bveterinar(?:y|ian)\b|\bvet\b|\bmrcvs\b|\bdvm\b|pet'?s name|\bspecies\b|\bmicrochip|\bcanine\b|\bfeline\b|animal hospital|pet hospital|\bkennel cough\b/,
   // A bill has no credit limit, nor a minimum payment: a card's statement does (S5).
   utility_bill: /credit limit|minimum (?:payment|repayment)/,
-  // A year's certificate of pay is a tax form, never a payslip; nor is a
-  // contract that says what the pay will be (C1 and its review).
+  // A contract that says what the pay will be is never a payslip (C1 and
+  // its review); nor is a year's certificate of pay (`vetoedOn`, below).
   pay_statement:
-    /wage and tax statement|form w-?2\b|\bw-2\b|\bp60\b|\bp45\b|\bp11d\b|\b1099\b|end of year certificate|contract of employment|employment (?:contract|agreement)|statement of (?:main )?terms|terms and conditions(?: of employment)?|offer of employment|notice period|holiday entitlement/,
+    /contract of employment|employment (?:contract|agreement)|statement of (?:main )?terms|terms and conditions(?: of employment)?|offer of employment|notice period|holiday entitlement/,
 };
+
+/**
+ * A year's certificate of pay named on the page — "P60", its title "End of
+ * Year Certificate", "Form W-2 Wage and Tax Statement" — rules a payslip
+ * out, unless the page has a payslip's own pay for its period (PAY_MARKS).
+ * Then it may be a payslip that mentions one ("Keep your P60 safe", "Your
+ * Form W-2 will be available in January": the R2 review and its re-check),
+ * or a certificate that sets out the pay: neither kind is sure
+ * (`statementSure`), and the card waits for a look.
+ */
+const TAX_FORM_WORDS =
+  /wage and tax statement|form w-?2\b|\bw-2\b|\bp60\b|\bp45\b|\bp11d\b|\b1099\b|end of year certificate/;
+
+/** Whether the rules rule a kind out for the folded page. */
+function vetoedOn(key: string, hay: string): boolean {
+  if (KIND_VETOES[key]?.test(hay)) return true;
+  return key === 'pay_statement' && TAX_FORM_WORDS.test(hay) && !PAY_MARKS.test(hay);
+}
 
 /**
  * What tells a bank's statement from a card's (S5): a card's limit, its
@@ -626,7 +661,10 @@ const PAY_MARKS =
 function statementSure(key: string, hay: string): boolean {
   if (key === 'investment_statement') return INVESTMENT_MARKS.test(hay) && !DEPOSIT_MARKS.test(hay);
   if (key === 'bank_statement') return !INVESTMENT_MARKS.test(hay);
-  if (key === 'pay_statement') return PAY_MARKS.test(hay);
+  // A payslip that names a year's certificate, and a certificate on a page
+  // with a payslip's pay (the R2 review): neither is sure.
+  if (key === 'pay_statement') return PAY_MARKS.test(hay) && !TAX_FORM_WORDS.test(hay);
+  if (key === 'tax_form') return !PAY_MARKS.test(hay);
   return true;
 }
 
@@ -667,12 +705,20 @@ interface KindScore {
   mrz: boolean;
 }
 
+/**
+ * Whether the rules rule a kind out for this page (`KIND_VETOES`): a vet's
+ * certificate is no medical record, a card's statement no bill, a contract
+ * no payslip, whatever else says so — the reading model too (0.9.0, R2).
+ */
+export function kindVetoed(key: string, text: string): boolean {
+  return vetoedOn(key, fold(normalise(text)));
+}
+
 function scoreKinds(hay: string, types: readonly ProposalKind[], mrz: Mrz | null): KindScore[] {
   const out: KindScore[] = [];
   for (const kind of types.slice(0, MAX_KINDS)) {
     if (kind.hidden) continue;
-    const veto = KIND_VETOES[kind.key];
-    if (veto?.test(hay)) continue;
+    if (vetoedOn(kind.key, hay)) continue;
     const own = KIND_CUES[kind.key];
     let score = 0;
     if (own) {
@@ -2190,12 +2236,10 @@ export function proposeWithTie(
       if (confidence >= PROPOSAL_THRESHOLDS.type_key) {
         kind = best.kind;
         kindFactor = 0.6 + 0.4 * confidence;
+        const guarded = !(cardOrBankSure(best.kind.key, hay) && statementSure(best.kind.key, hay));
         out.type_key = {
           value: best.kind.key,
-          confidence:
-            cardOrBankSure(best.kind.key, hay) && statementSure(best.kind.key, hay)
-              ? confidence
-              : Math.min(confidence, CARD_OR_BANK_UNSURE),
+          confidence: guarded ? Math.min(confidence, CARD_OR_BANK_UNSURE) : confidence,
           cue: best.mrz ? 'machine_lines' : 'kind_words',
         };
       }

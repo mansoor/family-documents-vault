@@ -22,6 +22,8 @@ export interface CapabilityConfig {
   operatorMail?: boolean;
   /** The scanner folder (S3): set, there and writable, and said so lately by the worker. */
   watchFolder?: boolean;
+  /** The worker has the reading model's weights loaded (0.9.0, R2). */
+  readingModel?: boolean;
   /** Email in (S4): the household mailbox set up, and checked by the worker in its last two polls. */
   mailIn?: boolean;
 }
@@ -156,6 +158,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // R0 (0.9.0): the Reading check, an owner's measure of the reader on
       // the family's own papers, numbers only.
       reading_check: true,
+      // 0.9.0 (R2): the vault's reading model, and its switch for owners —
+      // only while the worker has its weights loaded (the R2 review).
+      reading_model: config.readingModel === true,
       // 0.9.0 (C1): a collection from a checklist, read, matched and kept.
       collection_checklist: true,
       // 0.9.0 (N1): notes kept on their own, a document with no file.

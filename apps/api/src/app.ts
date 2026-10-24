@@ -423,6 +423,13 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
         req.log.warn({ err }, 'email in could not be asked about');
         return false;
       }),
+      // The reading model (R2): only while the worker has its weights loaded.
+      readingModel: await (deps.readingChecks?.modelLoaded() ?? Promise.resolve(false)).catch(
+        (err: unknown) => {
+          req.log.warn({ err }, 'the reading model could not be asked about');
+          return false;
+        },
+      ),
       setupRequired,
       pushEnabled: Boolean(config.FDV_VAPID_PUBLIC_KEY),
       // Without it the document is still true, only less specific; say

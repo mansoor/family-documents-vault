@@ -28,6 +28,8 @@ Built for people whose whole skill floor is _scan, upload, download_. You should
 
 One `docker compose up`. Four containers: the API, a background worker (OCR, thumbnails, page previews, reminders), the web app, and PostgreSQL. No Redis, no message broker, no Kubernetes.
 
+The worker reads the papers you add many at a time with plain rules and, beside them, a small text classifier of its own (a file of under a megabyte in the worker image), all on your server: no page goes to any outside service. Owners can turn the classifier off in Settings → For owners → Reading.
+
 |           | Minimum                                                                   |
 | --------- | ------------------------------------------------------------------------- |
 | Host      | Anything that runs Docker: a NAS, a Raspberry Pi 5, a small VPS, a laptop |

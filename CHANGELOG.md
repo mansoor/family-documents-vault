@@ -6,6 +6,16 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.13] - 2026-10-23 — a small reading model for kinds
+
+### Added
+
+- **A small reading model for kinds, run on your server (0.9.0, R2).** Beside its hand-written rules, the vault now reads the papers you add many at a time — Add → Many documents, the scanner folder, email in, a paired computer — with a small text classifier of its own: under a megabyte of weights in the worker, plain arithmetic in a fraction of a millisecond a page, no network, no AI service, nothing sent anywhere. It was trained only on made-up papers written for it (scripts/reading-model-corpus.mjs). It is one more cue, never the decider, and it never makes a card Ready: where the rules cannot tell what kind of document a paper is, it may suggest one — "suggested by the vault's reading model" — always for you to check, with the paper's dates read for that kind; where it reads the paper as something else than the rules do, the card waits for a look ("Kind unsure: the vault's reading model reads it as a bill"). It never overrides the folder a file came from, nor what the vault learned from your own corrections, without the card waiting for you; it knows only the vault's built-in kinds, never your own or a hidden one. On the made-up papers the vault is measured on, papers needing typing fell from 54 to 38 of 115 (with folders) on one held-out set, and from 38 to 33 of 84 on another, where with learning on it is within noise (15 to 14); no card was wrongly Ready (docs/smart-exit.md, "Reading model (R2)", which also says why the first measurement was withdrawn). The Reading check on your own papers is what will say whether it helps: owners can turn it off in **Settings → For owners → Reading** and compare. That page also says when the worker could not load the model. Migration 0079.
+
+### Fixed
+
+- **A payslip that mentions a P60 is no longer Ready as a tax form.** "Keep your P60 safe" on a payslip made the vault read it as a P60, sure of it. Now a P60, a P45, a W-2 or a 1099 named on a page with a payslip's own pay for the period — by its name, or by its title ("Your Form W-2 for 2025 will be available in January") — leaves the card waiting for a look; a certificate without a payslip's pay ("P60 End of Year Certificate") is a tax form, as before.
+
 ## [0.9.0-dev.12] - 2026-10-23 — storage keys named plainly, and path style under Advanced
 
 ### Changed

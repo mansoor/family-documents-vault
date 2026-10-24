@@ -3201,6 +3201,27 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it("notices the guard on the household's reading model switch gone (0079)", async () => {
+    await sql(
+      vault.adminUrl,
+      'alter table public.household disable trigger household_reading_model_rule',
+    );
+    try {
+      const refused = await checkRestored(target()).then(
+        () => null,
+        (e: unknown) => (e as Error).message,
+      );
+      expect(refused).toMatch(/guard the vault relies on is missing/);
+      expect(refused).not.toMatch(/household_reading_model_rule/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.household enable trigger household_reading_model_rule',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it('notices the guards that keep a note a note gone: no file on one, none made one, its kind the vault’s (0078, N1)', async () => {
     for (const [table, trigger] of [
       ['document_version', 'document_version_not_on_note'],

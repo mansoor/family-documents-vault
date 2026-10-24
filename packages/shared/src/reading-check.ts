@@ -136,6 +136,22 @@ export interface ReadingReader {
 }
 
 /** GET /reading-checks: a check, as the owner who asked sees it (theirs alone). */
+/**
+ * The household's reading settings (0.9.0, R2): GET and PUT
+ * /household/reading, an owner's. `reading_model`: whether the vault's
+ * reading model reads a batch's pages beside the rules (on unless an owner
+ * turned it off).
+ */
+export interface ReadingSettings {
+  reading_model: boolean;
+  /**
+   * Whether the worker has the model's weights loaded, as it last said
+   * (the R2 review): false, the rules read alone whatever the switch says.
+   * Answered, never sent.
+   */
+  loaded?: boolean;
+}
+
 export interface ReadingCheckView {
   id: string;
   state: ReadingCheckState;

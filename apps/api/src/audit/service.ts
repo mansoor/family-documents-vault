@@ -361,6 +361,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // The household mailbox set up in Settings, or taken away (O1): the owners'.
   ['mail_in.mailbox_saved', ownersAndThePerson],
   ['mail_in.mailbox_removed', ownersAndThePerson],
+  // The vault's reading model turned on or off (0.9.0, R2): about the
+  // household, so for the owners alone.
+  ['household.reading_model_changed', ownersAndThePerson],
   ['export.requested', BY_TYPE],
   ['export.downloaded', BY_TYPE],
   // signing in

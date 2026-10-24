@@ -12,6 +12,8 @@ import {
   type ProposalKind,
   type Proposed,
 } from './proposals.js';
+import { readingModelChances, type ReadingModel } from './reading-model.js';
+import { applyReadingModel, READING_MODEL_START } from './reading-model-rules.js';
 import type { Role } from './roles.js';
 import {
   applyShapeFields,
@@ -443,14 +445,39 @@ export function settleAccounts(
   return { ...rest, proposal: settled.proposal, clash: settled.clash };
 }
 
-/** What the proposal thread runs (N5): `proposeLearned` with no hash and no account. */
+/**
+ * What the proposal thread runs (N5): `proposeLearned` with no hash and no
+ * account; and, with the vault's reading model (0.9.0, R2) and the
+ * household's switch on, the model's say last of all (`applyReadingModel`),
+ * over whatever the rules, the uploader's rules and their layouts made of
+ * the page.
+ */
 export function proposeOnThread(
   text: string,
   ctx: ProposalContext,
   learned: LearnedContext | null | undefined,
+  model: ReadingModel | null = null,
 ): ThreadProposal {
   const first = proposeWithTie(text, ctx);
-  if (!learned) return { proposal: first.proposal, clash: {} };
+  // The model reads the page's start: its first page's worth (the R2 review).
+  const chances =
+    model && ctx.readingModel !== false && !filledKind(ctx)
+      ? readingModelChances(model, text.slice(0, READING_MODEL_START))
+      : null;
+  const withModel = <T extends { proposal: DetailProposal }>(got: T): T =>
+    chances
+      ? {
+          ...got,
+          proposal: applyReadingModel({
+            text,
+            ctx,
+            proposal: got.proposal,
+            rules: first,
+            chances,
+          }),
+        }
+      : got;
+  if (!learned) return withModel({ proposal: first.proposal, clash: {} });
   // The page's shape, and its labelled dates and numbers (R1): what this
   // read is matched with, and what its accept will learn from. A page whose
   // shape cannot be read still has its proposal (the R1 review, PERF1).
@@ -458,7 +485,7 @@ export function proposeOnThread(
   try {
     paper = readPaper(text, ctx);
   } catch {
-    return applyRulesOnly(text, ctx, learned, first);
+    return withModel(applyRulesOnly(text, ctx, learned, first));
   }
   let proposal = first.proposal;
   let clash: LearnedClash = {};
@@ -514,15 +541,21 @@ export function proposeOnThread(
     clash = fielded.clash;
   }
   const index = match ? (learned.shapes ?? []).indexOf(match.shape) : -1;
-  return {
+  return withModel({
     proposal,
     clash,
     paper,
     ...(match && index >= 0
       ? { account: { shape: index, sure: match.sure, number: shapeNumberOn(match.shape, paper) } }
       : {}),
-  };
+  });
 }
+
+/** A kind the document has already: the model is not asked. */
+const filledKind = (ctx: ProposalContext) => {
+  const k = ctx.current?.type_key;
+  return typeof k === 'string' && k.trim() !== '';
+};
 
 /** I4's rules alone, as before R1: for a page whose shape could not be read. */
 function applyRulesOnly(

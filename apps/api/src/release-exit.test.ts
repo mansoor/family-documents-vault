@@ -1011,6 +1011,9 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/reading-checks/:id': { who: 'owners' },
   'POST /api/v1/reading-checks/:id/cancel': { who: 'owners', body: () => ({}) },
   'DELETE /api/v1/reading-checks/:id': { who: 'owners', last: true },
+  // The vault's reading model on or off (0.9.0, R2): an owner's, both ways.
+  'GET /api/v1/household/reading': { who: 'owners' },
+  'PUT /api/v1/household/reading': { who: 'owners', body: () => ({ reading_model: true }) },
 };
 
 /** Whether a role is among those a rule is for. */

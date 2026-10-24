@@ -88,8 +88,10 @@ describe.skipIf(!testAdminUrl())('an item read with its uploader’s own rules (
     admin.on('error', () => undefined);
     root = await mkdtemp(path.join(tmpdir(), 'fdv-learned-'));
     hh = randomUUID();
+    // The vault's reading model (0.9.0, R2) off: what is measured here is I4's rules alone (its own
+    // tests are reading-model*.test.ts and read-item.test.ts).
     await admin.query(
-      "insert into household (id, name, timezone) values ($1, 'The Khan family', 'Europe/London')",
+      "insert into household (id, name, timezone, reading_model) values ($1, 'The Khan family', 'Europe/London', false)",
       [hh],
     );
     await admin.query("insert into household_profile (household_id, country) values ($1, 'GB')", [

@@ -107,6 +107,10 @@ export interface ProposalThreadOptions {
   deadlineMs?: number;
   /** Makes the thread; a test gives one that throws, as `new Worker` can (ERR_WORKER_INIT_FAILED). */
   createWorker?: (code: string, options: WorkerOptions) => Worker;
+  /** The reading model's weights (R2); a test gives one missing or spoilt. Beside the entry unless said. */
+  modelFile?: string;
+  /** Told what each new thread found of the weights (the R2 review): the worker records it. */
+  onModel?: (state: 'loaded' | 'missing' | 'corrupt') => void;
 }
 
 interface Running {
@@ -125,6 +129,8 @@ export class ProposalThread implements ItemProposer {
   private closed = false;
   /** Threads ended at their deadline, for tests and for the curious. */
   ended = 0;
+  /** Whether the last thread had the vault's reading model (R2): null before one said. */
+  model: 'loaded' | 'missing' | 'corrupt' | null = null;
 
   constructor(private readonly opts: ProposalThreadOptions = {}) {}
 
@@ -137,6 +143,15 @@ export class ProposalThread implements ItemProposer {
     const mine = this.turn.then(() => this.one(text, ctx, learned));
     this.turn = mine.catch(() => undefined);
     return mine.catch((): ThreadAnswer => ({ state: 'unavailable' }));
+  }
+
+  /**
+   * A thread started now, not at the first page, and what it found of the
+   * reading model's weights (R2): null if no thread could be had.
+   */
+  async warm(): Promise<'loaded' | 'missing' | 'corrupt' | null> {
+    if (this.closed) return null;
+    return (await this.started()) ? this.model : null;
   }
 
   /** Ends the thread; a page on it is answered `unavailable`. */
@@ -197,7 +212,11 @@ export class ProposalThread implements ItemProposer {
           : null;
         const options: WorkerOptions = {
           eval: true,
-          workerData: { entry: entry.href, loader },
+          workerData: {
+            entry: entry.href,
+            loader,
+            ...(this.opts.modelFile ? { modelFile: this.opts.modelFile } : {}),
+          },
           execArgv: [],
           // It reads words from outside: no copy of the master key, the
           // database's address or anything else of the environment. From
@@ -224,6 +243,15 @@ export class ProposalThread implements ItemProposer {
         if (made !== this.worker) return;
         if ('ready' in m) {
           clearTimeout(slow);
+          // Without the reading model the rules read alone (R2): said once a thread.
+          this.model = m.model ?? null;
+          if (m.model) this.opts.onModel?.(m.model);
+          if (m.model && m.model !== 'loaded') {
+            process.emitWarning(
+              `The vault's reading model is not used (${m.model}${m.detail ? `: ${m.detail}` : ''}): the rules read alone`,
+              'FdvWarning',
+            );
+          }
           resolve(true);
           return;
         }

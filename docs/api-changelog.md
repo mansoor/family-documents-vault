@@ -5517,6 +5517,54 @@ not_found` ("A note has no file") and `…/pages/{n}` `404 no_preview`.
       `Profile.server_timezone`. `@fdv/client`: `householdTimezone`,
       `setHouseholdTimezone`, and `updateProfile` takes `timezone: null`;
       the fake answers both routes.
+  - The vault's reading model (0.9.0, R2): a small local text classifier,
+    run by the worker on its proposal thread beside the rules, as one more
+    cue for a batch item's kind. It never makes an item Ready. Migration 0079.
+    - **New `features.reading_model`**: `true` only while the workers have
+      the model's weights loaded: each worker process says what it found as it
+      starts and every five minutes after, and only what was said in the last
+      fifteen minutes counts — at least one worker, and every one of them
+      loaded. Absent from older vaults.
+    - **New routes:** `GET /api/v1/household/reading` —
+      `{ reading_model, loaded }`: whether the household's batches are read
+      with the model (on unless an owner turned it off), and whether the
+      worker has the weights loaded (false: the rules read alone, whatever the
+      switch says; the same rule as `features.reading_model`); `PUT /api/v1/household/reading` `{ reading_model: boolean }`
+      (strict) turns it on or off and answers the same. Both an owner's alone:
+      `403 forbidden` for anybody else, `422` for any other body. A change is
+      said in the activity log as `household.reading_model_changed`
+      (`detail: { reading_model }`), read by the owners. Items read from then
+      on are read so; one read already keeps what it was read with.
+    - **Changed answers:** an item whose pages the rules found no kind for may
+      now have a `type_key` suggested by the model alone — always under
+      `ITEM_SURE` (0.78), so its item is Check, with the tag `kind_unsure`
+      whose words are "Kind suggested by the vault’s reading model", and its
+      dates, number and issuer read for that kind. Where the model reads the
+      page as another kind (or none), the rules' kind stands but under sure
+      (at most 0.84): Check, with `kind_unsure` "Kind unsure: the vault’s
+      reading model reads it as a bill". A kind the model suggested alone
+      never stands over the folder's: the folder's is shown (`from: "folder"`)
+      with a `clash_folder` tag "The folder says …; the vault’s reading model
+      suggests …". The model never proposes a hidden kind, a household's own,
+      `other` or a note, and never doubts a household's own kind.
+    - **Changed answers (the rules):** a page with a payslip's own pay for
+      its period ("Net pay £2,840.00") that names a P60, a P45, a W-2 or a
+      1099 — by its name ("Keep your P60 safe") or its title ("Your Form W-2
+      for 2025 will be available in January", "Your P60 End of Year
+      Certificate will be issued in April") — is no longer ruled out as a
+      payslip, and neither a payslip nor a tax form is sure on it: Check. A
+      certificate without a payslip's pay ("P60 End of Year Certificate", "Form
+      W-2 Wage and Tax Statement") is a tax form, surely, as before.
+    - **New on `ItemSuggestion`:** `model: true` on a kind the model suggested
+      ("suggested by the vault’s reading model"). Absent before 0.9.0, and on
+      anything else. `@fdv/shared`: `Proposed.model` (`alone`, `doubts`) and
+      `Proposed.model_kind`, kept by `storedProposal`; `ProposalKind.builtin`;
+      `ProposalContext.readingModel`; `kindVetoed`; `proposeOnThread(text, ctx, learned, model)`;
+      reading-model.ts (`parseReadingModel`, `readingModelChances`,
+      `readingModelFeatures`, `readingModelWords` and their bounds) and
+      reading-model-rules.ts (`applyReadingModel`, `modelMayPropose` and the
+      thresholds); `ReadingSettings` (with `loaded`); `features.reading_model`.
+      `@fdv/client`: `readingSettings`, `setReadingSettings`.
 
 ## Deprecations in effect
 

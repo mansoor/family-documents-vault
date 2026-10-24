@@ -673,6 +673,7 @@ export async function proposalContext(
       'core',
       'issued_by_label',
       'short_label',
+      'builtin',
     ])
     .where('deleted_at', 'is', null)
     .orderBy('key')
@@ -698,7 +699,7 @@ export async function proposalContext(
      limit 50`.execute(trx);
   const household = await trx
     .selectFrom('household')
-    .select('name')
+    .select(['name', 'reading_model'])
     .where('id', '=', hh)
     .executeTakeFirst();
   const profile = await trx
@@ -718,6 +719,8 @@ export async function proposalContext(
           core: k.core as NonNullable<ProposalKind['core']>,
           issued_by_label: k.issued_by_label,
           short_label: k.short_label,
+          // The reading model proposes the vault's own kinds alone (R2).
+          builtin: k.builtin === true,
         }) satisfies ProposalKind,
     ),
     people: family.map((m) => ({ id: m.id, name: m.display_name })),
@@ -728,5 +731,7 @@ export async function proposalContext(
     })),
     household: household?.name ?? null,
     dateOrder: householdDateOrder(profile?.country),
+    // The household's switch for the vault's reading model (0079, R2).
+    readingModel: household?.reading_model !== false,
   };
 }

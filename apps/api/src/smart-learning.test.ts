@@ -69,6 +69,8 @@ const CARELESS = 0.2;
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const OUT = process.env.FDV_SMART_LEARNING_OUT ?? path.join(tmpdir(), 'fdv-smart-learning.json');
 const CACHE = process.env.FDV_SMART_TEXT_CACHE ?? null;
+/** The household's reading model (0.9.0, R2): on, as a vault is, unless FDV_READING_MODEL=off. */
+const READING_MODEL = process.env.FDV_READING_MODEL !== 'off';
 const TOP = 'Family papers';
 
 /**
@@ -212,6 +214,11 @@ describe.runIf(RUN && testAdminUrl())('learning each sender’s papers, measured
         });
       expect(
         (await call('PUT', '/api/v1/profile', { country: 'GB', timezone: 'Europe/London' }))
+          .statusCode,
+      ).toBe(200);
+      // The vault's reading model (R2), off for the "before".
+      expect(
+        (await call('PUT', '/api/v1/household/reading', { reading_model: READING_MODEL }))
           .statusCode,
       ).toBe(200);
       for (const p of people) {
@@ -492,7 +499,11 @@ describe.runIf(RUN && testAdminUrl())('learning each sender’s papers, measured
           }
         }
       }
-      console.log([...lines, `written to ${OUT}`].join('\n'));
+      results.reading_model = READING_MODEL ? 'on' : 'off';
+      writeFileSync(OUT, `${JSON.stringify(results, null, 2)}\n`);
+      console.log(
+        [...lines, `reading model ${READING_MODEL ? 'on' : 'off'}`, `written to ${OUT}`].join('\n'),
+      );
       expect(wrong.every((n) => n === 0)).toBe(true);
     },
     6 * 60 * 60_000,

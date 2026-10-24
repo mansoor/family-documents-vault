@@ -383,6 +383,14 @@ export interface FakeState {
    */
   readingChecks?: Array<Record<string, unknown> & { id: string; state: string; mine: boolean }>;
   readingFiled?: number;
+  /**
+   * The household's reading model (0.9.0, R2), as GET /household/reading
+   * gives it to an owner; PUT changes it (403 for anybody else). Left out,
+   * the feature is not said.
+   */
+  readingModel?: boolean;
+  /** Whether the worker has the model's weights loaded (the R2 review); left out, it has. */
+  readingModelLoaded?: boolean;
   readingMisses?: Record<string, Array<Record<string, unknown>>>;
   /**
    * Email in (S4), as GET /mail-in gives it to an owner (MailInView);
@@ -1134,6 +1142,10 @@ export function installFakeApi(state: FakeState) {
           ...(state.tagManagement ? { tag_details: true, tag_management: true } : {}),
           // The Reading check (0.9.0, R0): said when a test gives checks.
           ...(state.readingChecks ? { reading_check: true } : {}),
+          // The vault's reading model (0.9.0, R2): said when a test gives it.
+          ...(state.readingModel !== undefined && state.readingModelLoaded !== false
+            ? { reading_model: true }
+            : {}),
         },
         limits: {
           ...(state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {}),
@@ -1318,6 +1330,18 @@ export function installFakeApi(state: FakeState) {
     }
     if (path === '/api/v1/auth/step-up') return json({ verified_at: null, expires_in: 0 });
     if (path === '/api/v1/exports') return json({ items: [] });
+    if (path === '/api/v1/household/reading') {
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner can run the Reading check.');
+      }
+      if (method === 'PUT') {
+        state.readingModel = (body as { reading_model: boolean }).reading_model;
+      }
+      return json({
+        reading_model: state.readingModel ?? true,
+        loaded: state.readingModelLoaded !== false,
+      });
+    }
     if (path === '/api/v1/reading-checks' || path.startsWith('/api/v1/reading-checks/')) {
       if (storedRole() !== 'owner') {
         return refuse(403, 'forbidden', 'Only an owner can run the Reading check.');

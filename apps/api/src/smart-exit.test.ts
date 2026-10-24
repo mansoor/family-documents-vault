@@ -1,4 +1,6 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -41,6 +43,12 @@ import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
  * Tesseract, as the restore tests run (docs/smart-exit.md says how). It
  * writes what it found to FDV_SMART_EXIT_OUT (a JSON file), and fails on
  * any Ready item wrong; how many need typing it records.
+ *
+ * Since 0.9.0 (R2): FDV_SMART_TEXT_CACHE keeps each file's words (by its
+ * bytes' hash) between runs, as R1's learning runs do, so a run with the
+ * vault's reading model and one without read the very same words; and
+ * FDV_READING_MODEL=off turns the household's reading model off through
+ * the API (PUT /household/reading), for the "before".
  */
 
 const RUN = process.env.FDV_SMART_EXIT === '1';
@@ -56,6 +64,9 @@ const CORPORA = (process.env.FDV_SMART_EXIT_CORPORA ?? 'first,second')
 const SEED_OF = { first: 1, second: 2 } as const;
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const OUT = process.env.FDV_SMART_EXIT_OUT ?? path.join(tmpdir(), 'fdv-smart-exit.json');
+const CACHE = process.env.FDV_SMART_TEXT_CACHE ?? null;
+/** The household's reading model (R2): on, as a vault is, unless said. */
+const READING_MODEL = process.env.FDV_READING_MODEL !== 'off';
 /** The folder chosen on Add → Many documents: a container, so the web drops it (folderOfChosen). */
 const TOP = 'Family papers';
 
@@ -73,6 +84,13 @@ interface CorpusModule {
 interface Answer {
   more: boolean;
 }
+interface Extracted {
+  text: string;
+  source: string;
+  textPages: number;
+  ocrPages: number;
+}
+type Extract = (source: string, mime: string, o: unknown) => Promise<Extracted | null>;
 interface WorkerModules {
   drawNextBatchItem(
     deps: unknown,
@@ -81,10 +99,11 @@ interface WorkerModules {
   readNextBatchItem(
     deps: unknown,
     hh: string,
-    opts: { maxPages: number; proposer: unknown },
+    opts: { maxPages: number; proposer: unknown; extract: Extract },
   ): Promise<Answer & { read: string | null }>;
-  ProposalThread: new () => { close(): Promise<void> };
+  ProposalThread: new () => { close(): Promise<void>; model: string | null };
   detectTools(): Promise<Record<string, boolean>>;
+  extractText: Extract;
 }
 
 /** A module of the repository by its path, loaded as vitest loads any other. */
@@ -97,8 +116,10 @@ describe.runIf(RUN && testAdminUrl())('the Smart exit, measured (S5)', () => {
   let hh: string;
   let admin: ReturnType<typeof createPool>;
   let w: WorkerModules;
-  let thread: { close(): Promise<void> };
+  let thread: { close(): Promise<void>; model: string | null };
   let corpora: Record<string, ReturnType<CorpusModule['smartCorpus']>>;
+  /** Each file's words, read with the real tools once, by its bytes' hash. */
+  const texts = new Map<string, Extracted | null>();
   /** A member's id → their key in the corpus ("ahmed"). */
   const keyOf = new Map<string, string>();
   let expiring: Set<string>;
@@ -118,10 +139,18 @@ describe.runIf(RUN && testAdminUrl())('the Smart exit, measured (S5)', () => {
         'apps/worker/src/jobs/proposal-thread.ts',
       )),
       ...(await load<Pick<WorkerModules, 'detectTools'>>('apps/worker/src/jobs/tools.ts')),
+      ...(await load<Pick<WorkerModules, 'extractText'>>('apps/worker/src/jobs/extract-text.ts')),
     };
     const tools = await w.detectTools();
     if (!tools.pdftotext || !tools.pdftoppm || !tools.tesseract) {
       throw new Error(`the worker's tools are not all here: ${JSON.stringify(tools)}`);
+    }
+    if (CACHE && existsSync(CACHE)) {
+      for (const [k, v] of Object.entries(
+        JSON.parse(readFileSync(CACHE, 'utf8')) as Record<string, Extracted | null>,
+      )) {
+        texts.set(k, v);
+      }
     }
     h = await createHarness({ rateLimitPerMinute: 100_000 });
     const people = corpus.household.people;
@@ -137,6 +166,14 @@ describe.runIf(RUN && testAdminUrl())('the Smart exit, measured (S5)', () => {
       payload: { country: 'GB', timezone: 'Europe/London' },
     });
     expect(profile.statusCode, profile.body).toBe(200);
+    // The vault's reading model (R2), off for the "before".
+    const reading = await h.app.inject({
+      method: 'PUT',
+      url: '/api/v1/household/reading',
+      headers: as,
+      payload: { reading_model: READING_MODEL },
+    });
+    expect(reading.statusCode, reading.body).toBe(200);
     for (const p of people) {
       if (p.role === 'adult' || p.role === 'teen') {
         await h.join(owner, { name: p.name, email: `${p.key}@smart-exit.test`, role: p.role });
@@ -178,6 +215,15 @@ describe.runIf(RUN && testAdminUrl())('the Smart exit, measured (S5)', () => {
     await h?.close();
   });
 
+  /** The worker's own reading, each file's words read with the real tools once. */
+  const extract: Extract = async (source, mime, o) => {
+    const sha = createHash('sha256')
+      .update(await readFile(source))
+      .digest('hex');
+    if (!texts.has(sha)) texts.set(sha, await w.extractText(source, mime, o));
+    return texts.get(sha) ?? null;
+  };
+
   /** The worker's own: drawing and reading, as its batch.previews job does, one item a turn. */
   const work = async () => {
     const deps = {
@@ -190,7 +236,7 @@ describe.runIf(RUN && testAdminUrl())('the Smart exit, measured (S5)', () => {
     };
     for (;;) {
       const drawn = await w.drawNextBatchItem(deps, { household_id: hh });
-      const read = await w.readNextBatchItem(deps, hh, { maxPages: 20, proposer: thread });
+      const read = await w.readNextBatchItem(deps, hh, { maxPages: 20, proposer: thread, extract });
       if (!drawn.drawn && !read.read) return;
     }
   };
@@ -331,9 +377,15 @@ describe.runIf(RUN && testAdminUrl())('the Smart exit, measured (S5)', () => {
         );
         wrong.push(withFolders.summary.all.wrong_ready, without.summary.all.wrong_ready);
       }
+      // The reading model was read as asked: the thread had it (R2).
+      expect(thread.model).toBe('loaded');
+      results.reading_model = READING_MODEL ? 'on' : 'off';
       mkdirSync(path.dirname(OUT), { recursive: true });
       writeFileSync(OUT, `${JSON.stringify(results, null, 2)}\n`);
-      console.log([...lines, `written to ${OUT}`].join('\n'));
+      if (CACHE) writeFileSync(CACHE, JSON.stringify(Object.fromEntries(texts)));
+      console.log(
+        [...lines, `reading model ${READING_MODEL ? 'on' : 'off'}`, `written to ${OUT}`].join('\n'),
+      );
       // The rule that matters most. How many need typing is recorded, not
       // asserted: the release records whatever it reaches (docs/smart-exit.md).
       expect(wrong.every((n) => n === 0)).toBe(true);

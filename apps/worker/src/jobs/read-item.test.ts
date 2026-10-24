@@ -405,6 +405,38 @@ describe.skipIf(!testAdminUrl())('an item read, in the worker (I2)', () => {
     expect(await sealedOf(read)).toEqual([]);
   }, 60_000);
 
+  it('the household’s switch for the reading model reaches the thread, and only the vault’s own kinds are offered it (R2)', async () => {
+    await clear();
+    const b = await batch();
+    const VET = [
+      'Larkfield Animal Clinic',
+      'Mabel has been seen today',
+      'Annual booster given today',
+      'Booster due: 14/03/2027',
+      'Consultation £68.00',
+    ].join('\n');
+    // On, as a household is: the model suggests what the rules could not say.
+    const ctx = await ctxOf('Sara');
+    expect(ctx.readingModel).toBe(true);
+    expect(ctx.types.find((t) => t.key === 'pet_record')?.builtin).toBe(true);
+    const on = await item(b, pdf(['VET ON']));
+    await readNext({ extract: says(VET) });
+    expect((await opened(on)).proposal.type_key).toMatchObject({
+      value: 'pet_record',
+      model: 'alone',
+    });
+    // Off: the rules alone.
+    await admin.query('update household set reading_model = false where id = $1', [hh]);
+    try {
+      expect((await ctxOf('Sara')).readingModel).toBe(false);
+      const off = await item(b, pdf(['VET OFF']));
+      await readNext({ extract: says(VET) });
+      expect((await opened(off)).proposal.type_key).toBeUndefined();
+    } finally {
+      await admin.query('update household set reading_model = true where id = $1', [hh]);
+    }
+  }, 60_000);
+
   it('the proposal reads only what its uploader may see: no issuer, number or kind of another’s Only me document, and never a guest', async () => {
     // Sara's Only me letter, from her own clinic, under a kind the household
     // deleted that only it still uses (0035); an Adults only statement; and
