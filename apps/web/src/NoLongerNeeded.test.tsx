@@ -1,14 +1,15 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { fresh, installFakeApi, ME, PASSPORT, signedIn, type FakeState } from './test-api.js';
 
 /**
- * No longer needed (0.9.0), on the web: marked from a document's page, its
- * row's ⋯ and a reminder in Needs attention, with the same dialog — why,
- * and what replaced it, found as you type — and said on its page by a
- * banner with Needed again. A replacement the reader may not see is
+ * No longer needed (0.9.0), on the web: set or cleared with a document's
+ * details (Edit details, the one place on its page), never a menu's item;
+ * marked beside a reminder in Needs attention with the dialog — why, and
+ * what replaced it, found as you type; said on its page by a banner with
+ * Needed again and Change why. A replacement the reader may not see is
  * "another document". A new version of one asks whether it is needed again.
  */
 
@@ -104,33 +105,21 @@ function atWidth(px: number) {
 }
 
 describe('no longer needed, on the web (0.9.0)', () => {
-  it('a document’s page: Mark as no longer needed, the dialog, then the banner with Needed again', async () => {
+  it('a document’s page offers no Mark (Edit is where it is set); marked, its banner says so, with Needed again (0.9.0)', async () => {
     const state = open('/documents/doc-ead', [{ ...EAD }, { ...GREEN }]);
-    const mark = await screen.findByRole('button', { name: 'Mark as no longer needed' });
+    // Not marked: nothing of it here but Edit, which sets it.
+    expect(await screen.findByRole('link', { name: 'Edit' })).toHaveAttribute(
+      'href',
+      '/documents/doc-ead/confirm',
+    );
+    await screen.findByRole('button', { name: 'Download' });
+    expect(screen.queryByRole('button', { name: 'Mark as no longer needed' })).toBeNull();
     expect(screen.queryByRole('region', { name: 'No longer needed' })).toBeNull();
-    fireEvent.click(mark);
-    const dialog = await screen.findByRole('dialog', { name: 'Mark as no longer needed' });
-    // Why first, with its count; then what replaced it, the same person's first.
-    const why = within(dialog).getByLabelText('Why (optional)');
-    expect(document.activeElement).toBe(why);
-    fireEvent.change(why, { target: { value: 'The green card came' } });
-    expect(within(dialog).getByText('19 of 200 characters')).toBeInTheDocument();
-    const green = await within(dialog).findByRole('radio', { name: 'Green card' });
-    // Never itself.
-    expect(within(dialog).queryByRole('radio', { name: 'EAD card' })).toBeNull();
-    expect(within(dialog).getByRole('radio', { name: 'Nothing in particular' })).toBeChecked();
-    fireEvent.click(green);
-    await expectAccessible();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Mark as no longer needed' }));
+    cleanup();
+
+    // Marked: its banner, with what replaced it, why, and Needed again.
+    const marked = open('/documents/doc-ead', [{ ...MARKED }, { ...GREEN }]);
     const said = await banner();
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(state.unneededCalls).toEqual([
-      {
-        method: 'POST',
-        id: 'doc-ead',
-        body: { reason: 'The green card came', replaced_by: 'doc-green' },
-      },
-    ]);
     expect(said).toHaveTextContent(
       'No longer needed since 23 Oct 2026 · Replaced by Green card · Needed again',
     );
@@ -139,17 +128,17 @@ describe('no longer needed, on the web (0.9.0)', () => {
       '/documents/doc-green',
     );
     expect(said).toHaveTextContent('The green card came');
-    // Its status says it too, and the button to mark it has gone.
-    expect(screen.getAllByText('No longer needed').length).toBeGreaterThan(0);
+    expect(within(said).getByRole('button', { name: 'Change why' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Mark as no longer needed' })).toBeNull();
     await expectAccessible();
-    // Needed again: the banner goes, and Mark is back.
+    // Needed again: the banner goes, and nothing to mark it with comes back.
     fireEvent.click(within(said).getByRole('button', { name: 'Needed again' }));
     await waitFor(() =>
       expect(screen.queryByRole('region', { name: 'No longer needed' })).toBeNull(),
     );
-    expect(state.unneededCalls?.at(-1)).toMatchObject({ method: 'DELETE', id: 'doc-ead' });
-    expect(await screen.findByRole('button', { name: 'Mark as no longer needed' })).toBeVisible();
+    expect(marked.unneededCalls?.at(-1)).toMatchObject({ method: 'DELETE', id: 'doc-ead' });
+    expect(screen.queryByRole('button', { name: 'Mark as no longer needed' })).toBeNull();
+    expect(state.unneededCalls ?? []).toEqual([]);
   });
 
   it('a replacement the reader may not see is "another document", named and linked never', async () => {
@@ -206,38 +195,107 @@ describe('no longer needed, on the web (0.9.0)', () => {
   });
 
   it('what the vault refuses is said in the dialog, which stays open', async () => {
-    open('/documents/doc-ead', [{ ...EAD }], 'owner', {
+    open('/documents/doc-ead', [{ ...MARKED }], 'owner', {
       unneededRefusal: {
         status: 422,
         code: 'validation_failed',
         message: 'That document is not in the vault.',
       },
     });
-    fireEvent.click(await screen.findByRole('button', { name: 'Mark as no longer needed' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Mark as no longer needed' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Mark as no longer needed' }));
+    fireEvent.click(within(await banner()).getByRole('button', { name: 'Change why' }));
+    const dialog = await screen.findByRole('dialog', { name: 'No longer needed' });
+    fireEvent.change(within(dialog).getByLabelText('Why (optional)'), {
+      target: { value: 'Kept for the lawyer' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
     expect(await within(dialog).findByRole('alert')).toHaveTextContent(
       'That document is not in the vault.',
     );
-    expect(screen.getByRole('dialog', { name: 'Mark as no longer needed' })).toBeVisible();
+    expect(screen.getByRole('dialog', { name: 'No longer needed' })).toBeVisible();
   });
 
-  it('the ⋯ menu marks it, and once marked offers Needed again', async () => {
-    const state = open('/', [{ ...EAD }, { ...GREEN }]);
-    const more = await screen.findByRole('button', { name: 'Actions for “EAD card”' });
-    fireEvent.click(more);
-    const menu = await screen.findByRole('menu', { name: 'Actions for “EAD card”' });
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Mark as no longer needed' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Mark as no longer needed' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Mark as no longer needed' }));
+  it('the ⋯ menus offer it no more, either way: it is set with the details (0.9.0)', async () => {
+    open('/', [{ ...EAD }, { ...MARKED, id: 'doc-old', title: 'Old card' }]);
+    for (const title of ['EAD card', 'Old card']) {
+      const more = await screen.findByRole('button', { name: `Actions for “${title}”` });
+      fireEvent.click(more);
+      const menu = await screen.findByRole('menu', { name: `Actions for “${title}”` });
+      const items = within(menu)
+        .getAllByRole('menuitem')
+        .map((i) => i.textContent);
+      expect(items).toContain('Edit details');
+      expect(items).not.toContain('Mark as no longer needed');
+      expect(items).not.toContain('Needed again');
+      fireEvent.keyDown(within(menu).getAllByRole('menuitem')[0] as HTMLElement, {
+        key: 'Escape',
+      });
+      await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    }
+  });
+
+  it('Edit details sets it, with why and what replaced it, saved with the details', async () => {
+    const state = open('/documents/doc-ead/confirm', [{ ...EAD }, { ...GREEN }]);
+    const on = await screen.findByRole('switch', { name: 'No longer needed' });
+    expect(on).not.toBeChecked();
+    // Off, nothing of it is asked.
+    expect(screen.queryByLabelText('Why (optional)')).toBeNull();
+    fireEvent.click(on);
+    const why = await screen.findByLabelText('Why (optional)');
+    fireEvent.change(why, { target: { value: 'The green card came' } });
+    const green = await screen.findByRole('radio', { name: 'Green card' });
+    // Never itself.
+    expect(screen.queryByRole('radio', { name: 'EAD card' })).toBeNull();
+    fireEvent.click(green);
+    await expectAccessible();
+    // Nothing is marked until the card is saved.
+    expect(state.unneededCalls ?? []).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
     await waitFor(() => expect(state.unneededCalls).toHaveLength(1));
+    expect(state.unneededCalls).toEqual([
+      {
+        method: 'POST',
+        id: 'doc-ead',
+        body: { reason: 'The green card came', replaced_by: 'doc-green' },
+      },
+    ]);
+    // The details went first, as ever.
+    expect(state.calls.some((c) => c.method === 'PATCH' && c.url.endsWith('/doc-ead'))).toBe(true);
+  });
+
+  it('Edit details clears it — needed again — and saving it untouched sends nothing of it', async () => {
+    const state = open('/documents/doc-ead/confirm', [{ ...MARKED }, { ...GREEN }]);
+    const on = await screen.findByRole('switch', { name: 'No longer needed' });
+    expect(on).toBeChecked();
+    expect(await screen.findByLabelText('Why (optional)')).toHaveValue('The green card came');
+    expect(await screen.findByRole('radio', { name: 'Green card' })).toBeChecked();
+    // Saved untouched: nothing of it is sent.
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() =>
+      expect(state.calls.some((c) => c.method === 'PATCH' && c.url.endsWith('/doc-ead'))).toBe(
+        true,
+      ),
+    );
+    expect(state.unneededCalls ?? []).toEqual([]);
+
+    // Turned off: needed again, once saved.
+    cleanup();
+    const again = open('/documents/doc-ead/confirm', [{ ...MARKED }, { ...GREEN }]);
+    const off = await screen.findByRole('switch', { name: 'No longer needed' });
+    fireEvent.click(off);
     expect(
-      await screen.findByText('“EAD card” is marked no longer needed. Nobody is reminded of it.'),
+      screen.getByText('Needed again once you save: its reminders come back as its dates say.'),
     ).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole('button', { name: 'Actions for “EAD card”' }));
-    const again = await screen.findByRole('menu', { name: 'Actions for “EAD card”' });
-    expect(within(again).getByRole('menuitem', { name: 'Needed again' })).toBeVisible();
-    expect(within(again).queryByRole('menuitem', { name: 'Mark as no longer needed' })).toBeNull();
+    expect(screen.queryByLabelText('Why (optional)')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() => expect(again.unneededCalls).toHaveLength(1));
+    expect(again.unneededCalls?.[0]).toMatchObject({ method: 'DELETE', id: 'doc-ead' });
+  });
+
+  it('Edit details offers it only to whoever may change the document', async () => {
+    // A teen's card for somebody else's document: not theirs to mark.
+    open('/documents/doc-ead/confirm', [{ ...EAD, owner_member_id: 'm-2' }], 'teen');
+    await screen.findByRole('button', { name: 'Save to the vault' });
+    expect(screen.queryByRole('switch', { name: 'No longer needed' })).toBeNull();
   });
 
   it('Needs attention: a reminder’s Not needed any more marks its document, and it leaves the list', async () => {
@@ -301,39 +359,14 @@ describe('no longer needed, on the web (0.9.0)', () => {
     expect(screen.queryByRole('button', { name: /Not needed any more/ })).toBeNull();
   });
 
-  it('the Documents table’s bulk bar marks many at once — one reason for all — and leaves, and names, those not theirs', async () => {
+  it('the Documents table’s bulk bar offers it no more (0.9.0)', async () => {
     atWidth(1280);
-    const state = open(
-      '/documents',
-      [
-        { ...EAD, owner_member_id: 'me', filed_by_me: true },
-        { ...GREEN, id: 'doc-sara', title: "Sara's permit", owner_member_id: 'm-2' },
-      ],
-      'teen',
-    );
+    open('/documents', [{ ...EAD }, { ...GREEN }]);
     const table = await screen.findByRole('grid', { name: /^Documents, sorted by/ });
     fireEvent.click(await within(table).findByRole('checkbox', { name: 'Select “EAD card”' }));
-    fireEvent.click(within(table).getByRole('checkbox', { name: "Select “Sara's permit”" }));
     const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
-    fireEvent.click(within(bar).getByRole('button', { name: 'No longer needed' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Mark as no longer needed' });
-    expect(dialog).toHaveTextContent('1 document stays in the vault');
-    // Never one of the chosen as their own replacement.
-    await within(dialog).findByRole('radio', { name: 'Nothing in particular' });
-    expect(within(dialog).queryByRole('radio', { name: 'EAD card' })).toBeNull();
-    fireEvent.change(within(dialog).getByLabelText('Why (optional)'), {
-      target: { value: 'The green cards came' },
-    });
-    await expectAccessible();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Mark as no longer needed' }));
-    await waitFor(() => expect(state.unneededCalls).toHaveLength(1));
-    expect(state.unneededCalls).toEqual([
-      { method: 'POST', id: 'doc-ead', body: { reason: 'The green cards came' } },
-    ]);
-    expect(
-      await screen.findByText(/1 document marked no longer needed\. Nobody is reminded of it\./),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/not yours to change: “Sara's permit”/)).toBeInTheDocument();
+    expect(within(bar).getByRole('button', { name: 'Move to the Trash' })).toBeInTheDocument();
+    expect(within(bar).queryByRole('button', { name: 'No longer needed' })).toBeNull();
   });
 
   it('the Documents table filters by it, among Any status', async () => {

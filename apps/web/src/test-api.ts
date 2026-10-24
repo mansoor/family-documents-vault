@@ -5603,6 +5603,17 @@ function documentTable(
   const want = (k: string) => query.get(k);
   const rows = state.documents
     .filter((d) => Boolean(d.deleted_at) === inTrash)
+    // What any list gives the reader, as the vault's one rule does
+    // (`seenDocument`): never another's Only me, nor Adults only to a teen.
+    .filter((d) =>
+      canSee(
+        { role, memberId: 'me' },
+        {
+          visibility: (d.visibility as string | undefined) ?? 'household',
+          owner_member_id: (d.owner_member_id as string | null | undefined) ?? null,
+        },
+      ),
+    )
     .filter((d) => {
       const person = want('member_id');
       if (person === 'none') return !d.owner_member_id;

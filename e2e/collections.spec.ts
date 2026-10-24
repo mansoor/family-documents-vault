@@ -243,30 +243,35 @@ test('the collection is shared from its page, and opens outside the family with 
   }
 });
 
-test('taking one out asks first; the collection is renamed, then deleted', async () => {
+test('taking one out is at once, with Undo; the collection is renamed, then deleted', async () => {
   await page.getByRole('link', { name: 'Home' }).click();
   await page.getByRole('link', { name: 'All collections' }).click();
   await page.getByRole('link', { name: new RegExp(`^${COLLECTION}`) }).click();
   await expect(page.getByRole('heading', { name: COLLECTION, level: 1 })).toBeVisible();
   await expect(page.getByText('2 documents')).toBeVisible();
 
-  // Asked first, in the app's own dialog, which starts on Cancel.
+  // Out at once, from its ⋯ (0.9.0): said with Undo, which puts it back.
   const more = page.getByRole('button', { name: `Actions for “${PASS}”` });
   const menu = page.getByRole('menu', { name: `Actions for “${PASS}”` });
   await more.click();
-  await menu.getByRole('menuitem', { name: 'Take out of this collection' }).click();
-  const dialog = page.getByRole('alertdialog', { name: 'Take it out of this collection?' });
-  await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
-  await page.keyboard.press('Escape');
-  await expect(dialog).toBeHidden();
+  await menu.getByRole('menuitem', { name: 'Remove from this collection' }).click();
+  await expect(more).toHaveCount(0);
+  await expect(page.getByText('1 document', { exact: true })).toBeVisible();
+  const toast = page.getByRole('region', { name: 'What was just done' });
+  await expect(toast).toContainText(`“${PASS}” is out of “${COLLECTION}”.`);
+  await toast.getByRole('button', { name: 'Undo' }).click();
+  await expect(toast).toContainText(`“${PASS}” is back in “${COLLECTION}”.`);
   await expect(page.getByText('2 documents')).toBeVisible();
+  await expect(more).toBeVisible();
 
+  // And out again, to go on.
   await more.click();
-  await menu.getByRole('menuitem', { name: 'Take out of this collection' }).click();
-  await dialog.getByRole('button', { name: 'Take it out' }).click();
+  await menu.getByRole('menuitem', { name: 'Remove from this collection' }).click();
   await expect(more).toHaveCount(0);
   await expect(page.getByText('1 document', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: `Actions for “${HOTEL}”` })).toBeVisible();
+  await toast.getByRole('button', { name: 'Dismiss' }).click();
+  await expect(toast).toHaveCount(0);
 
   // Renamed, by its maker.
   const renamed = `${COLLECTION} (Lisbon)`;

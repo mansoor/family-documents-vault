@@ -187,9 +187,21 @@ export function filtersOn(view: TableView): number {
 /** Which columns this device hides: remembered here, and only here. */
 export const HIDDEN_COLUMNS_KEY = 'fdv.documents.hidden-columns';
 
-export function readHidden(): Set<ColumnKey> {
+/**
+ * A collection's own table (0.9.0) remembers its columns apart from
+ * Documents', and starts without Collections: every row is in this one.
+ */
+export const COLLECTION_HIDDEN_COLUMNS_KEY = 'fdv.collection.hidden-columns';
+export const COLLECTION_HIDDEN_BY_DEFAULT: readonly ColumnKey[] = ['collections'];
+
+/** Which columns are hidden on this device: what was chosen, or `byDefault` until anything is. */
+export function readHidden(
+  key: string = HIDDEN_COLUMNS_KEY,
+  byDefault: readonly ColumnKey[] = [],
+): Set<ColumnKey> {
   try {
-    const raw = localStorage.getItem(HIDDEN_COLUMNS_KEY);
+    const raw = localStorage.getItem(key);
+    if (raw === null) return new Set(byDefault);
     const keys = raw ? (JSON.parse(raw) as unknown) : [];
     return new Set(
       Array.isArray(keys)
@@ -200,14 +212,17 @@ export function readHidden(): Set<ColumnKey> {
         : [],
     );
   } catch {
-    // A private window, or something else's words there: every column.
-    return new Set();
+    // A private window, or something else's words there: as it starts.
+    return new Set(byDefault);
   }
 }
 
-export function writeHidden(hidden: ReadonlySet<ColumnKey>): void {
+export function writeHidden(
+  hidden: ReadonlySet<ColumnKey>,
+  key: string = HIDDEN_COLUMNS_KEY,
+): void {
   try {
-    localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify([...hidden]));
+    localStorage.setItem(key, JSON.stringify([...hidden]));
   } catch {
     // Not remembered: hidden for now, on this page.
   }
@@ -244,12 +259,6 @@ export interface BulkOffer {
    * any of them — and done to those, the rest left as they are and named.
    */
   tags: boolean;
-  /**
-   * No longer needed (0.9.0): offered when the person may change any of
-   * them — done to those, one reason and replacement for all, the rest left
-   * as they are and named.
-   */
-  unneeded: boolean;
   notes: string[];
 }
 
@@ -295,7 +304,6 @@ export function bulkOffer(who: Chooser, docs: readonly DocumentView[]): BulkOffe
     visibility: n > 0 ? visibility : [],
     trash: n > 0 && changeAll,
     tags: n > 0 && editor && notMine < n,
-    unneeded: n > 0 && editor && notMine < n,
     notes,
   };
 }

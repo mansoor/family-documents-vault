@@ -172,12 +172,14 @@ export function reveal(box: HTMLDivElement | null, cell: HTMLTableCellElement) {
   const b = box.getBoundingClientRect();
   const c = cell.getBoundingClientRect();
   const head = box.querySelector('thead')?.getBoundingClientRect();
-  if (!cell.matches('.col-pick, .col-title')) {
+  if (!cell.matches('.col-pick, .col-title, .col-more')) {
     let pinned = b.left;
     for (const p of box.querySelectorAll('thead .col-pick, thead .col-title')) {
       pinned = Math.max(pinned, p.getBoundingClientRect().right);
     }
-    const right = b.left + box.clientWidth;
+    // And the ⋯ pinned at the right (a collection's table, 0.9.0).
+    const more = box.querySelector('thead .col-more')?.getBoundingClientRect();
+    const right = Math.min(b.left + box.clientWidth, more ? more.left : Infinity);
     if (c.left < pinned) box.scrollLeft -= pinned - c.left;
     else if (c.right > right) box.scrollLeft += Math.min(c.right - right, c.left - pinned);
   }

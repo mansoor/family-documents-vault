@@ -16,7 +16,7 @@ import { Link, useNavigate } from 'react-router';
 import { api, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { collectionsOffered, CollectionsOnHome } from '../collections.js';
-import { DocActions, useTrashedNote, type RowCollection } from '../DocActions.js';
+import { DocActions, useTrashedNote, type Removed, type RowCollection } from '../DocActions.js';
 import { accessEndWords } from '../guests.js';
 import { IdentityNotice } from '../identity.js';
 import { PersonAvatar } from '../person-avatar.js';
@@ -744,6 +744,7 @@ export function DocRow({
   collection,
   pick,
   onTrashed,
+  onRemoved,
 }: {
   doc: DocumentView;
   /** The vault's types, for the type's short name; the category until they arrive. */
@@ -759,6 +760,8 @@ export function DocRow({
   pick?: RowPick | undefined;
   /** Its ⋯ moved it to the Trash: the list says so (`useTrashedNote`). */
   onTrashed?: ((title: string) => void) | undefined;
+  /** Its ⋯ took it out of `collection` (0.9.0): the page says so, with Undo. */
+  onRemoved?: ((removed: Removed) => void) | undefined;
 }) {
   const who =
     doc.visibility === 'adults' ? 'Adults only' : doc.visibility === 'private' ? 'Only me' : null;
@@ -783,6 +786,7 @@ export function DocRow({
         onChanged={onChanged}
         collection={collection}
         onTrashed={onTrashed}
+        onRemoved={onRemoved}
       />
     </li>
   );

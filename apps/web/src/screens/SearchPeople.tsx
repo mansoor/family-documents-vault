@@ -412,8 +412,12 @@ export function SearchScreen({ title = 'Search' }: { title?: string } = {}) {
  * a collection at once — all of them, or, if one has gone meanwhile, none. Only
  * where collections are offered; what is chosen stays chosen from one search to
  * the next, until it is put in a collection or Select is cancelled.
+ *
+ * On a collection's page, for its maker (0.9.0): Remove from this collection
+ * too (`remove`), beside Add to a collection — those chosen taken out, and
+ * the page's toast saying so, with Undo.
  */
-export function useSelect(offered: boolean) {
+export function useSelect(offered: boolean, remove?: { run: (ids: string[]) => Promise<void> }) {
   const [on, setOn] = useState(false);
   const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
   const [adding, setAdding] = useState(false);
@@ -423,6 +427,7 @@ export function useSelect(offered: boolean) {
   const added = useRef<string | null>(null);
   const start = useRef<HTMLButtonElement>(null);
   const add = useRef<HTMLButtonElement>(null);
+  const [removing, setRemoving] = useState(false);
 
   const pick = (id: string): RowPick | undefined =>
     on
@@ -484,40 +489,70 @@ export function useSelect(offered: boolean) {
     start.current?.focus();
   };
 
+  /** Out of this collection: done with these, Select put away, the focus back on it. */
+  const takeOut = async () => {
+    if (!remove || removing) return;
+    setRemoving(true);
+    try {
+      await remove.run([...picked]);
+    } finally {
+      setRemoving(false);
+    }
+    flushSync(() => {
+      setOn(false);
+      setPicked(new Set());
+    });
+    start.current?.focus();
+  };
+
   const tooMany = picked.size > MOST_AT_ONCE;
-  const bar = offered ? (
-    <div className="select-bar">
-      <div className="row select-row">
-        {on ? (
-          <>
-            <span className="select-count" role="status">
-              {picked.size} selected
-            </span>
-            <button
-              ref={add}
-              type="button"
-              className="btn btn-primary"
-              disabled={picked.size === 0 || tooMany}
-              onClick={() => setAdding(true)}
-            >
-              Add to a collection
+  const bar =
+    offered || remove ? (
+      <div className="select-bar">
+        <div className="row select-row">
+          {on ? (
+            <>
+              <span className="select-count" role="status">
+                {picked.size} selected
+              </span>
+              {offered && (
+                <button
+                  ref={add}
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={picked.size === 0 || tooMany}
+                  onClick={() => setAdding(true)}
+                >
+                  Add to a collection
+                </button>
+              )}
+              {remove && (
+                <button
+                  type="button"
+                  className="btn btn-quiet"
+                  disabled={picked.size === 0 || tooMany}
+                  aria-disabled={removing || undefined}
+                  onClick={() => void takeOut()}
+                >
+                  {removing ? 'Removing…' : 'Remove from this collection'}
+                </button>
+              )}
+              <Button kind="quiet" onClick={stop}>
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <button ref={start} type="button" className="btn btn-quiet" onClick={begin}>
+              Select
             </button>
-            <Button kind="quiet" onClick={stop}>
-              Cancel
-            </Button>
-          </>
-        ) : (
-          <button ref={start} type="button" className="btn btn-quiet" onClick={begin}>
-            Select
-          </button>
-        )}
+          )}
+        </div>
+        {tooMany && <p className="muted">Up to {MOST_AT_ONCE} can go in a collection at once.</p>}
+        <p className="notice status-line" role="status">
+          {said}
+        </p>
       </div>
-      {tooMany && <p className="muted">Up to {MOST_AT_ONCE} can go in a collection at once.</p>}
-      <p className="notice status-line" role="status">
-        {said}
-      </p>
-    </div>
-  ) : null;
+    ) : null;
 
   const sheet = adding ? (
     <Sheet

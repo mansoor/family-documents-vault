@@ -86,13 +86,14 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
   await expect(more).toBeFocused();
   await expect(more).toHaveAttribute('aria-expanded', 'false');
 
-  // Made Essential with Enter: the last four are Essential, no longer
-  // needed (0.9.0), a new version and the Trash.
+  // Made Essential with Enter: the last three are Essential, a new version
+  // and the Trash — no longer needed is set with the details since 0.9.0,
+  // never offered here.
   await page.keyboard.press('Enter');
+  await expect(menu.getByRole('menuitem', { name: 'Mark as no longer needed' })).toHaveCount(0);
   await page.keyboard.press('End');
   await page.keyboard.press('ArrowUp');
-  await page.keyboard.press('ArrowUp');
-  await expect(menu.getByRole('menuitem', { name: 'Mark as no longer needed' })).toBeFocused();
+  await expect(menu.getByRole('menuitem', { name: 'Add a new version' })).toBeFocused();
   await page.keyboard.press('ArrowUp');
   await expect(menu.getByRole('menuitem', { name: 'Make it Essential' })).toBeFocused();
   await page.keyboard.press('Enter');

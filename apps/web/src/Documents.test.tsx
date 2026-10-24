@@ -155,7 +155,8 @@ const table = () => screen.findByRole('grid', { name: /^Documents, sorted by/ })
 const headers = (t: HTMLElement) =>
   within(t)
     .getAllByRole('columnheader')
-    .filter((th) => !th.classList.contains('col-pick'))
+    // Never the box's, nor the ⋯'s (0.9.0): neither is a column to sort or hide.
+    .filter((th) => !th.classList.contains('col-pick') && !th.classList.contains('col-more'))
     .map((th) => th.textContent?.replace(/[▲▼]/g, '').trim())
     .filter((x) => x);
 /** The titles in the table, top to bottom. */
@@ -421,8 +422,7 @@ describe('the Documents table, from 768 px (R2)', () => {
       // A tag to many at once (0.9.0, T1): one menu button, Add and Remove in it.
       'Tags▾',
       'Who can see it',
-      // Kept, but no longer needed (0.9.0): one reason for all.
-      'No longer needed',
+      // No longer needed is set with a document's details, not here (0.9.0).
       'Move to the Trash',
       'Clear selection',
     ]);
@@ -1334,12 +1334,15 @@ describe('the Documents table, from 768 px (R2)', () => {
     at('/documents');
     const t = await table();
     await waitFor(() => expect(titles(t)).toHaveLength(4));
-    // The last column's cell, then that column hidden.
+    // The last column's cell — before the ⋯, pinned at the end (0.9.0) —
+    // then that column hidden.
     const first = within(t).getByRole('checkbox', {
       name: 'Select “Barclays statement, September 2026”',
     });
     act(() => first.focus());
     fireEvent.keyDown(first, { key: 'End' });
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowLeft' });
+    expect(document.activeElement?.closest('td')).not.toHaveClass('col-more');
     const last = headers(t).at(-1) as string;
     fireEvent.click(screen.getByRole('button', { name: 'Columns' }));
     fireEvent.click(screen.getByRole('checkbox', { name: last }));
@@ -1556,6 +1559,60 @@ describe('the Documents table, from 768 px (R2)', () => {
     fireEvent.click(within(t).getByRole('checkbox', { name: 'Select “House deed”' }));
     await expectAccessible();
     fireEvent.click(screen.getByRole('button', { name: 'Move to the Trash' }));
+    await expectAccessible();
+  });
+  it('each row has a ⋯, pinned at the right, offering what the phone list’s ⋯ does (0.9.0)', async () => {
+    const state = at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    // The last column: the ⋯, named for a screen reader, never a sort.
+    const last = within(t).getAllByRole('columnheader').at(-1) as HTMLElement;
+    expect(last).toHaveClass('col-more');
+    expect(last).toHaveTextContent('Actions');
+    expect(within(last).queryByRole('button')).toBeNull();
+    for (const title of titles(t)) {
+      const more = within(t).getByRole('button', { name: `Actions for “${title}”` });
+      expect(more.closest('td')).toHaveClass('col-more');
+    }
+    const more = within(t).getByRole('button', { name: 'Actions for “House deed”' });
+    more.focus();
+    fireEvent.click(more);
+    const menu = await screen.findByRole('menu', { name: 'Actions for “House deed”' });
+    const items = within(menu)
+      .getAllByRole('menuitem')
+      .map((i) => i.textContent);
+    expect(items).toEqual(
+      expect.arrayContaining(['Open', 'Edit details', 'Add to a collection', 'Move to the Trash']),
+    );
+    // Not a collection's page: nothing to take out of; and no longer needed is the details'.
+    expect(items).not.toContain('Remove from this collection');
+    expect(items).not.toContain('Mark as no longer needed');
+    // A press inside the menu is the menu's: the row does not open.
+    fireEvent.click(menu);
+    expect(window.location.pathname).toBe('/documents');
+    await expectAccessible();
+    // Add to a collection, from the row's ⋯ as from the phone list's.
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Add to a collection' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Add “House deed” to a collection' });
+    fireEvent.click(await within(sheet).findByRole('button', { name: 'Add to “Travel”' }));
+    expect(await within(sheet).findByText('“House deed” is in “Travel” now.')).toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(more).toHaveFocus());
+    expect(state.collections?.[0]?.items).toEqual(['doc-1', 'doc-3', 'doc-4']);
+
+    // Moved to the Trash from it: said above the table; the focus on the next row's ⋯.
+    fireEvent.click(within(t).getByRole('button', { name: "Actions for “Mansoor's passport”" }));
+    const again = await screen.findByRole('menu', { name: "Actions for “Mansoor's passport”" });
+    fireEvent.click(within(again).getByRole('menuitem', { name: 'Move to the Trash' }));
+    const sure = await screen.findByRole('alertdialog', { name: 'Move to the Trash?' });
+    fireEvent.click(within(sure).getByRole('button', { name: 'Move to the Trash' }));
+    await waitFor(() => expect(titles(t)).not.toContain("Mansoor's passport"));
+    const said = await screen.findByText(
+      "“Mansoor's passport” moved to the Trash. You can bring it back from there.",
+    );
+    expect(said.closest('td')).toBeNull();
+    expect(document.activeElement).toHaveAccessibleName(/^Actions for “/);
+    expect(document.activeElement?.closest('td')).toHaveClass('col-more');
     await expectAccessible();
   });
 });

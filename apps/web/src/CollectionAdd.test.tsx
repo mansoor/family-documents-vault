@@ -392,10 +392,12 @@ describe("a collection's Add documents (Phase 6)", () => {
     ]);
     const said = await screen.findByText('3 documents added to “Holiday”.');
     await waitFor(() => expect(said.closest('.bulk-outcome')).toHaveFocus());
-    // The collection's list, loaded again.
+    // The collection's table, loaded again (0.9.0).
     expect(await screen.findByText('4 documents')).toBeInTheDocument();
     expect(
-      await screen.findByRole('button', { name: /^Barclays statement, September 2026/ }),
+      await within(screen.getByRole('grid', { name: /^In “Holiday”/ })).findByRole('link', {
+        name: 'Barclays statement, September 2026',
+      }),
     ).toBeInTheDocument();
     await expectAccessible();
     // Put away: back to the button.

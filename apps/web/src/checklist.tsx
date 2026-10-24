@@ -115,9 +115,62 @@ const keptOf = (items: readonly ChecklistItem[]) => JSON.stringify(items.map(sav
 // ---------------------------------------------------------- on the page
 
 /**
+ * "5 of 7 found · 2 new matches": a kept checklist in a line, as its folded
+ * panel says it (0.9.0, the owner's ask of 24 Oct). Found is its lines'
+ * "Found 2 of 3", added up — of all they ask for; a line skipped asks for
+ * nothing — and new matches, what the vault found since that is not in the
+ * collection yet, to add: said only to whom may add them, as the panel's
+ * notice is.
+ */
+export function checklistSummary(kept: CollectionChecklist, mayFill: boolean): string {
+  let wanted = 0;
+  let found = 0;
+  for (const i of kept.items) {
+    if (i.skipped) continue;
+    wanted += i.wanted;
+    found += Math.min(i.wanted, i.found);
+  }
+  const parts = [`${found} of ${wanted} found`];
+  if (mayFill && kept.to_add > 0) {
+    parts.push(kept.to_add === 1 ? '1 new match' : `${kept.to_add} new matches`);
+  }
+  return parts.join(' · ');
+}
+
+/** Where this device remembers whether a person has a collection's checklist open. */
+export const checklistOpenKey = (memberId: string, collectionId: string) =>
+  `fdv.checklist-open.${memberId}.${collectionId}`;
+
+function readOpen(key: string | null): boolean {
+  if (!key) return false;
+  try {
+    return localStorage.getItem(key) === '1';
+  } catch {
+    // A private window: folded, as it starts.
+    return false;
+  }
+}
+
+function writeOpen(key: string | null, open: boolean): void {
+  if (!key) return;
+  try {
+    if (open) localStorage.setItem(key, '1');
+    else localStorage.removeItem(key);
+  } catch {
+    // Not remembered: open for now, on this page.
+  }
+}
+
+/**
  * The checklist kept on a collection, as the page opens: each line and how
  * it stands, matched again now. Its maker is offered what newly matches,
  * never given it by itself.
+ *
+ * Folded away by default (0.9.0, the owner's ask of 24 Oct), so the
+ * documents are what the page shows: a panel that opens, its line saying
+ * how it stands ("5 of 7 found · 2 new matches"), open or folded as this
+ * person last left it on this device for this collection. With none kept
+ * yet, Fill from a checklist is where it always was.
  */
 export function ChecklistSection({
   ref,
@@ -132,57 +185,135 @@ export function ChecklistSection({
   onFill: () => void;
 }) {
   const { checklist } = props;
+  const { session } = useApp();
+  const memberId = session.info?.member_id ?? null;
+  const key = memberId ? checklistOpenKey(memberId, props.collection.id) : null;
+  const [open, setOpenState] = useState<{ key: string | null; open: boolean }>(() => ({
+    key,
+    open: readOpen(key),
+  }));
+  // Another collection, or another person, is read afresh.
+  const isOpen = open.key === key ? open.open : readOpen(key);
+  const setOpen = (now: boolean) => {
+    setOpenState({ key, open: now });
+    writeOpen(key, now);
+  };
   const kept = checklist?.saved_at ? checklist : null;
   if (!kept && !props.mayFill) return null;
-  return (
-    <section aria-labelledby="checklist-h" className="stack checklist">
-      <h2 id="checklist-h" className="section-h">
-        Checklist
-      </h2>
-      <ErrorNote message={props.error} />
-      {kept ? (
-        <>
-          <ol className="checklist-lines" aria-label="What the checklist asks for">
-            {kept.items.map((i, n) => (
-              <li key={n} className="checklist-line">
-                <span className="checklist-what">
-                  {i.heading && <span className="muted checklist-heading">{i.heading}</span>}
-                  <span>{i.understood ? i.summary : i.line}</span>
-                </span>
-                <span className={tone(i)}>{statusWords(i)}</span>
-                {i.missing.length > 0 && !i.skipped && (
-                  <span className="muted">Missing: {i.missing.join('; ')}</span>
-                )}
-              </li>
-            ))}
-          </ol>
-          {props.mayFill && kept.to_add > 0 && (
-            <p className="notice">
-              {kept.to_add === 1
-                ? '1 document now matches this checklist and is not in the collection yet.'
-                : `${kept.to_add} documents now match this checklist and are not in the collection yet.`}{' '}
-              Nothing is added until you choose.
-            </p>
-          )}
-        </>
-      ) : (
+  if (!kept) {
+    return (
+      <section aria-labelledby="checklist-h" className="stack checklist">
+        <h2 id="checklist-h" className="section-h">
+          Checklist
+        </h2>
+        <ErrorNote message={props.error} />
         <p className="muted">
           Paste a list of what you need — “Documents for Mansoor”, “Last 3 pay statements” — and the
           vault finds them for you to add.
         </p>
-      )}
-      {props.mayFill && (
         <div className="row">
           <button ref={ref} type="button" className="btn btn-quiet" onClick={props.onFill}>
-            {kept
-              ? kept.to_add > 0
-                ? 'Review and add'
-                : 'Change the checklist'
-              : 'Fill from a checklist'}
+            Fill from a checklist
           </button>
         </div>
-      )}
+      </section>
+    );
+  }
+  return (
+    <section
+      aria-labelledby="checklist-title"
+      className={`checklist disclosure disclosure-line${isOpen ? ' disclosure-open' : ''}`}
+    >
+      <h2 className="disclosure-h">
+        <button
+          type="button"
+          className="disclosure-toggle"
+          aria-expanded={isOpen}
+          aria-controls="checklist-panel"
+          aria-labelledby="checklist-title"
+          aria-describedby="checklist-summary"
+          onClick={() => setOpen(!isOpen)}
+        >
+          <ChecklistMark />
+          <span className="disclosure-words">
+            <span id="checklist-title" className="disclosure-title">
+              Checklist
+            </span>
+            <span aria-hidden="true" className="disclosure-dot">
+              ·
+            </span>
+            <span id="checklist-summary" className="disclosure-hint">
+              {checklistSummary(kept, props.mayFill)}
+            </span>
+          </span>
+          <span aria-hidden="true" className="chevron">
+            {isOpen ? '▾' : '▸'}
+          </span>
+        </button>
+      </h2>
+      <div id="checklist-panel" className="disclosure-body stack" hidden={!isOpen}>
+        <ErrorNote message={props.error} />
+        <ChecklistLines kept={kept} mayFill={props.mayFill} />
+        {props.mayFill && (
+          <div className="row">
+            <button ref={ref} type="button" className="btn btn-quiet" onClick={props.onFill}>
+              {kept.to_add > 0 ? 'Review and add' : 'Change the checklist'}
+            </button>
+          </div>
+        )}
+      </div>
     </section>
+  );
+}
+
+/** A list with ticks: the checklist panel's mark, as Make a collection's. */
+function ChecklistMark() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="disclosure-icon"
+      width="20"
+      height="20"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3 5l1.5 1.5L7 4M3 10.5L4.5 12 7 9.5M3 16l1.5 1.5L7 15" />
+      <path d="M10 5.5h7M10 11h7M10 16.5h7" />
+    </svg>
+  );
+}
+
+/** The kept checklist's lines, each as it stands, and what newly matches. */
+function ChecklistLines({ kept, mayFill }: { kept: CollectionChecklist; mayFill: boolean }) {
+  return (
+    <>
+      <ol className="checklist-lines" aria-label="What the checklist asks for">
+        {kept.items.map((i, n) => (
+          <li key={n} className="checklist-line">
+            <span className="checklist-what">
+              {i.heading && <span className="muted checklist-heading">{i.heading}</span>}
+              <span>{i.understood ? i.summary : i.line}</span>
+            </span>
+            <span className={tone(i)}>{statusWords(i)}</span>
+            {i.missing.length > 0 && !i.skipped && (
+              <span className="muted">Missing: {i.missing.join('; ')}</span>
+            )}
+          </li>
+        ))}
+      </ol>
+      {mayFill && kept.to_add > 0 && (
+        <p className="notice">
+          {kept.to_add === 1
+            ? '1 document now matches this checklist and is not in the collection yet.'
+            : `${kept.to_add} documents now match this checklist and are not in the collection yet.`}{' '}
+          Nothing is added until you choose.
+        </p>
+      )}
+    </>
   );
 }
 
