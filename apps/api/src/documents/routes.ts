@@ -12,7 +12,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
-import { requireCapability } from '../authz.js';
+import { needs, requireCapability } from '../authz.js';
 import { ApiError } from '../errors.js';
 import { errorForLog } from '../log-redaction.js';
 import { presentedDeviceCookies } from '../public/device-cookie.js';
@@ -451,6 +451,39 @@ export function registerDocuments(
     await docs.softDelete(principal(req), req.params.id, metaOf(req));
     return reply.status(204).send();
   });
+
+  // No longer needed (0.9.0, 0082): kept, its expiry silent; and needed
+  // again. For whoever may change the document: a viewer is told so before
+  // the body is read, as for any change.
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/documents/:id/no-longer-needed',
+    { preHandler: [app.requireAuth, needs('document.edit')] },
+    async (req, reply) => {
+      const body = parse(
+        z
+          .object({
+            // Counted again, in characters, once trimmed (NO_LONGER_NEEDED_REASON_MAX).
+            reason: z.string().max(2_000).nullable().optional(),
+            replaced_by: z.string().max(64).nullable().optional(),
+          })
+          .strict(),
+        req.body ?? {},
+      );
+      const d = await docs.markNoLongerNeeded(principal(req), req.params.id, body, metaOf(req));
+      reply.header('etag', d.etag);
+      return d;
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    '/api/v1/documents/:id/no-longer-needed',
+    { preHandler: [app.requireAuth, needs('document.edit')] },
+    async (req, reply) => {
+      const d = await docs.markNeededAgain(principal(req), req.params.id, metaOf(req));
+      reply.header('etag', d.etag);
+      return d;
+    },
+  );
 
   app.post<{ Params: { id: string } }>(
     '/api/v1/documents/:id/visibility',

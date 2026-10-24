@@ -87,6 +87,7 @@ import {
 } from '../ui.js';
 import { DocRow } from './Home.js';
 import { beside, mayChange, useTrashedNote } from '../DocActions.js';
+import { NoLongerNeededDialog, type NoLongerNeededBody } from '../no-longer-needed.js';
 import { TagField } from '../tags.js';
 import { useSelect } from './SearchPeople.js';
 import { LinksChoiceDialog, linksAsk, linksChoice, type LinksAsk } from './Visibility.js';
@@ -1159,6 +1160,7 @@ type Acting =
   | 'confirm-visibility'
   | 'links'
   | 'trash'
+  | 'unneeded'
   | null;
 
 /** What the vault says once a change is made: "Only you can open this" (SEC-19). */
@@ -1295,6 +1297,7 @@ function BulkBar(props: {
   const tagsButton = useRef<HTMLButtonElement>(null);
   const visibilityButton = useRef<HTMLButtonElement>(null);
   const trashButton = useRef<HTMLButtonElement>(null);
+  const unneededButton = useRef<HTMLButtonElement>(null);
   const busy = progress !== null;
 
   /**
@@ -1429,6 +1432,38 @@ function BulkBar(props: {
         leftWords(changed, r.untouched.length, 'changed', signedOut),
       ),
       failedHead: failedHead(r.failed.length, mine.length, 'changed'),
+      failed: r.failed,
+      untouched: r.untouched.map((d) => d.id),
+    });
+  };
+
+  /**
+   * No longer needed (0.9.0), for the chosen documents the person may change:
+   * one reason and replacement for all, or none — each through its own call,
+   * so one refused is listed alone; those not theirs are left and named.
+   */
+  const unneededMine = chosen.filter((d) => mayChange(who.role, who.memberId, d));
+  const unneededNotMine = chosen.filter((d) => !mayChange(who.role, who.memberId, d));
+  const owners = [...new Set(unneededMine.map((d) => d.owner_member_id))];
+  const markUnneeded = async (body: NoLongerNeededBody) => {
+    const r = await each(unneededMine, (d) =>
+      withToken((t) => api.markNoLongerNeeded(t, d.id, body)),
+    );
+    finish({
+      said: said(
+        r.done.length > 0
+          ? `${documentsCount(r.done.length)} marked no longer needed. Nobody is reminded of ${
+              r.done.length === 1 ? 'it' : 'them'
+            }.`
+          : null,
+        unneededNotMine.length > 0
+          ? `Left as ${unneededNotMine.length === 1 ? 'it was' : 'they were'}, not yours to change: ${unneededNotMine
+              .map((d) => `“${titleOf(d)}”`)
+              .join(', ')}.`
+          : null,
+        leftWords(r.done.length, r.untouched.length, 'marked', signedOut),
+      ),
+      failedHead: failedHead(r.failed.length, unneededMine.length, 'marked'),
       failed: r.failed,
       untouched: r.untouched.map((d) => d.id),
     });
@@ -1619,6 +1654,17 @@ function BulkBar(props: {
             Who can see it
           </button>
         )}
+        {offer.unneeded && (
+          <button
+            ref={unneededButton}
+            type="button"
+            className="btn btn-bulk"
+            disabled={busy || tooMany}
+            onClick={() => setActing('unneeded')}
+          >
+            No longer needed
+          </button>
+        )}
         {offer.trash && (
           <button
             ref={trashButton}
@@ -1652,6 +1698,24 @@ function BulkBar(props: {
           onClose={(news) => {
             setActing(null);
             if (news) props.onFinished({ said: news, failedHead: null, failed: [], untouched: [] });
+          }}
+        />
+      )}
+      {acting === 'unneeded' && (
+        <NoLongerNeededDialog
+          doc={{
+            id: '',
+            title: null,
+            owner_member_id: owners.length === 1 ? (owners[0] ?? null) : null,
+            no_longer_needed: null,
+          }}
+          returnFocus={unneededButton}
+          onCancel={() => setActing(null)}
+          onDone={() => setActing(null)}
+          many={{
+            what: documentsCount(unneededMine.length),
+            exclude: chosen.map((d) => d.id),
+            run: markUnneeded,
           }}
         />
       )}

@@ -348,6 +348,39 @@ describe.skipIf(!testAdminUrl())('removing a document for good (5.24)', () => {
     expect(json<{ item_count: number }>(after).item_count).toBe(0);
   });
 
+  it('removing the document that replaced one no longer needed takes only the link: the other stays, no longer needed (0.9.0)', async () => {
+    await fresh('owner', true);
+    const green = await make('owner', 'Green card');
+    const ead = await make('owner', 'EAD card');
+    // And the adult's own Only me card, replaced by the same: theirs, which
+    // the owner removing it for good cannot see — and does not need to.
+    const own = await make('adult', 'Adult’s own EAD', { visibility: 'private' });
+    for (const [who, id] of [
+      ['owner', ead],
+      ['adult', own],
+    ] as const) {
+      const marked = await call(who, 'POST', `/api/v1/documents/${id}/no-longer-needed`, {
+        replaced_by: green,
+      });
+      expect(marked.statusCode, marked.body).toBe(200);
+    }
+    await trash('owner', green);
+    const gone = await purge('owner', green);
+    expect(gone.statusCode, gone.body).toBe(204);
+    expect((await leftOf(green)).document).toBe(0);
+    const kept = await withAdmin((c) =>
+      c.query<{ id: string; at: Date | null; replaced_by: string | null }>(
+        `select id, no_longer_needed_at as at, replaced_by from document where id = any($1::uuid[])`,
+        [[ead, own]],
+      ),
+    );
+    expect(kept.rows).toHaveLength(2);
+    for (const row of kept.rows) {
+      expect(row.at).not.toBeNull();
+      expect(row.replaced_by).toBeNull();
+    }
+  });
+
   it('after an Only me document is removed, another adult and a teen see no new lines, and no old line gains words', async () => {
     await fresh('owner', true);
     const id = await make('owner', 'Divorce papers', { visibility: 'private' });

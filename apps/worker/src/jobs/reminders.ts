@@ -359,6 +359,15 @@ function personItems(
   });
 }
 
+/**
+ * A reminder whose document is still needed (0082), or that is about a
+ * person: one of a document marked no longer needed is never made due — it
+ * was resolved as it was marked, and the scan passes by any that is not.
+ */
+const stillNeeded = sql<boolean>`(reminder.document_id is null or not exists (
+  select 1 from document d
+   where d.id = reminder.document_id and d.no_longer_needed_at is not null))`;
+
 export async function tick(deps: ReminderDeps): Promise<{ became_due: number }> {
   const now = deps.now?.() ?? new Date();
   let total = 0;
@@ -372,12 +381,14 @@ export async function tick(deps: ReminderDeps): Promise<{ became_due: number }> 
         .set({ status: 'due' })
         .where('status', '=', 'scheduled')
         .where('fire_at', '<=', today)
+        .where(stillNeeded)
         .executeTakeFirst();
       const b = await trx
         .updateTable('reminder')
         .set({ status: 'due', snoozed_until: null })
         .where('status', '=', 'snoozed')
         .where('snoozed_until', '<=', today)
+        .where(stillNeeded)
         .executeTakeFirst();
       return turned + Number(a.numUpdatedRows) + Number(b.numUpdatedRows);
     });
@@ -459,6 +470,8 @@ async function deliverTo(
       ])
       .where('reminder.status', '=', 'due')
       .where('document.deleted_at', 'is', null)
+      // No longer needed (0082): in nobody's digest, by email or push.
+      .where('document.no_longer_needed_at', 'is', null)
       .where('reminder_delivery.reminder_id', 'is', null)
       .orderBy('reminder.fire_at')
       // Held until the ledger is written: see deliver.
@@ -571,6 +584,8 @@ export async function weekly(deps: ReminderDeps): Promise<{ digests: number }> {
           'document.owner_member_id',
         ])
         .where('document.deleted_at', 'is', null)
+        // No longer needed (0082): not in the Sunday summary either.
+        .where('document.no_longer_needed_at', 'is', null)
         .where('reminder.status', 'in', ['due', 'scheduled'])
         .where('reminder.fire_at', '<=', horizon)
         .orderBy('reminder.fire_at')
@@ -633,6 +648,7 @@ export async function refreshStatus(
           // of them, while they were open, is what counts.
           sql<boolean>`document.notes_sealed is not null`.as('notes_sealed_present'),
           'document.sealed_details',
+          'document.no_longer_needed_at',
           't.key as type_key',
           't.expiry_driver',
           't.reminder_leads',
@@ -657,6 +673,7 @@ export async function refreshStatus(
             type,
             owner_member_id: d.owner_member_id,
             expires,
+            no_longer_needed: d.no_longer_needed_at !== null,
             missing: missingFields(
               type && {
                 key: type.key,

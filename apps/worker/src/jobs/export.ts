@@ -8,6 +8,7 @@ import {
   EncryptStream,
   memberPhotoBinding,
   newKey,
+  noLongerNeededBinding,
   openBytes,
   openIdentity,
   openPrivate,
@@ -16,10 +17,12 @@ import {
   type PrivateValues,
   type ScopeKeys,
 } from '@fdv/crypto';
-import { readAs, withSystem, type Db } from '@fdv/db';
+import { householdZone, readAs, withSystem, type Db } from '@fdv/db';
 import {
+  ANOTHER_DOCUMENT,
   can,
   canSeeIdentity,
+  localToday,
   FILE_REMOVED,
   formatDate,
   IDENTITY_FIELDS,
@@ -131,6 +134,25 @@ interface Entry {
   file_note: string | null;
   version_no: number | null;
   sha256: string | null;
+  /**
+   * Kept, but no longer needed (0.9.0): since when, on the family's
+   * calendar; why — an Only me one's in its owner's export alone, opened as
+   * its notes are; and what replaced it, by its title only where that is in
+   * this export too, else "another document". Null while it is needed.
+   */
+  no_longer_needed: { since: string; reason: string | null; replaced_by: string | null } | null;
+}
+
+/** A document no longer needed, in a line: "No longer needed since 23 Oct 2026 · Replaced by …". */
+export function noLongerNeededWords(n: Entry['no_longer_needed']): string | null {
+  if (!n) return null;
+  return [
+    `No longer needed since ${formatDate({ date: n.since, precision: 'day' })}`,
+    n.replaced_by ? `Replaced by ${n.replaced_by}` : null,
+    n.reason,
+  ]
+    .filter((x) => x)
+    .join(' · ');
 }
 
 /** A column for one of the types' details: its key, and the name it is shown by. */
@@ -266,7 +288,7 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
       });
       const active = await trx
         .selectFrom('household')
-        .select('active_vault_id')
+        .select(['active_vault_id', 'timezone'])
         .where('id', '=', hh)
         .executeTakeFirstOrThrow();
       const people = await peopleFor(
@@ -286,6 +308,7 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         memberKey,
         requesterMember: requester.member_id,
         activeVaultId: active.active_vault_id,
+        zone: householdZone(active.timezone),
         exp,
         ...people,
       };
@@ -310,6 +333,24 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
       }),
     );
     const valuesOf = (id: string) => values.get(id) ?? { notes: null, extra: extraOf(null) };
+    // No longer needed (0.9.0): what replaced it, named only where it is in
+    // this export — what the requester may see — and why, an Only me one's
+    // opened only in its owner's own export, as its notes are.
+    const titled = new Map(ctx.docs.map((d) => [d.id, d.title ?? 'Untitled']));
+    const unneeded = (d: (typeof ctx.docs)[number]): Entry['no_longer_needed'] => {
+      if (!d.no_longer_needed_at) return null;
+      const sealed = d.no_longer_needed_reason_sealed;
+      const reason = sealed
+        ? d.visibility === 'private' && d.owner_member_id === ctx.requesterMember
+          ? openBytes(ctx.memberKey.key, sealed, noLongerNeededBinding(d.id)).toString('utf8')
+          : null
+        : d.no_longer_needed_reason;
+      return {
+        since: localToday(ctx.zone, new Date(d.no_longer_needed_at)),
+        reason,
+        replaced_by: d.replaced_by ? (titled.get(d.replaced_by) ?? ANOTHER_DOCUMENT) : null,
+      };
+    };
     const columns = detailColumns(
       ctx.docs.map((d) => ({ type_key: d.type_key, extra: valuesOf(d.id).extra })),
       ctx.types.map((t) => ({ key: t.key, fields: (t.fields ?? []) as TypeField[] })),
@@ -396,6 +437,7 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         file_note: fileNote,
         version_no: v?.version_no ?? null,
         sha256: v ? v.sha256.toString('hex') : null,
+        no_longer_needed: unneeded(d),
       });
     }
 
@@ -558,9 +600,13 @@ function csv(entries: Entry[], details: DetailColumn[]): string {
   const tail = ['file', 'version_no', 'sha256', 'document_id', 'file_note'] as const;
   // A detail's name is somebody's writing too, so the header is guarded as
   // every cell is.
-  const header = [...cols, ...details.map((c) => c.label), ...tail].map(csvCell);
+  // No longer needed (0.9.0), in words, after the notes.
+  const header = [...cols, 'no_longer_needed', ...details.map((c) => c.label), ...tail].map(
+    csvCell,
+  );
   const row = (e: Entry) => [
     ...cols.map((c) => csvCell(e[c])),
+    csvCell(noLongerNeededWords(e.no_longer_needed)),
     ...details.map((c) => csvCell(detailValue(e.extra[c.key]))),
     ...tail.map((c) => csvCell(e[c])),
   ];
@@ -600,7 +646,7 @@ function html(
   const rows = entries
     .map(
       (e) =>
-        `<tr><td>${e.file ? `<a href="${esc(e.file)}">${esc(e.title)}</a>` : esc(e.title)}${e.file_note ? `<br><small>${esc(e.file_note)}</small>` : ''}</td><td>${esc(e.category)}</td><td>${esc(e.person)}</td><td>${esc(e.expires)}</td><td>${esc(e.identifier)}</td><td>${detailsOf(e)}</td><td>${esc(e.physical_location)}</td></tr>`,
+        `<tr><td>${e.file ? `<a href="${esc(e.file)}">${esc(e.title)}</a>` : esc(e.title)}${e.file_note ? `<br><small>${esc(e.file_note)}</small>` : ''}${e.no_longer_needed ? `<br><small>${esc(noLongerNeededWords(e.no_longer_needed))}</small>` : ''}</td><td>${esc(e.category)}</td><td>${esc(e.person)}</td><td>${esc(e.expires)}</td><td>${esc(e.identifier)}</td><td>${detailsOf(e)}</td><td>${esc(e.physical_location)}</td></tr>`,
     )
     .join('\n');
   // People (5.27): their photos, where there are any.

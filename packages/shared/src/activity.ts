@@ -228,6 +228,12 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
         : detail.change === 'removed'
           ? line(`${who} took a tag off ${doc}`)
           : line(`${who} renamed a tag on ${doc}`);
+    // 0.9.0: kept, but no longer needed, and needed again. The log never
+    // holds why, nor what replaced it: neither is the reader's to be told.
+    case 'document.no_longer_needed':
+      return line(`${who} marked ${doc} no longer needed`);
+    case 'document.needed_again':
+      return line(`${who} marked ${doc} needed again`);
     case 'document.version_added':
       return line(`${who} uploaded a new copy of ${doc}`);
     // 0.8.0 (S1): a copy added from a batch, taken back within its minutes.

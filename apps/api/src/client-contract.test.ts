@@ -441,3 +441,98 @@ describe.skipIf(!testAdminUrl())('a note, newer than the client (N1)', () => {
     expect(kept.items.map((i) => i.document.id)).not.toContain(id);
   });
 });
+
+/**
+ * A document no longer needed (0.9.0), read by a client from before it. Run
+ * with the phone's older clients (scripts/older-client.mjs, at v0.5.0-rc.1
+ * and v0.5.11): marked as the web marks it, through the new route, the
+ * older client lists it, reads it, finds it, edits it and says Done to what
+ * it had kept — with a status value it has never heard of, which it shows
+ * by its label (API spec, rule 3: an unknown status is opaque) — and is
+ * told of no reminder for it, because the vault makes none.
+ */
+describe.skipIf(!testAdminUrl())(
+  'a document no longer needed, read by an older client (0.9.0)',
+  () => {
+    let h: Harness;
+    const fetch: FetchLike = async (url, init) => {
+      const res = await h.app.inject({
+        method: init.method as 'GET',
+        url: url.replace(/^https?:\/\/[^/]+/, ''),
+        headers: init.headers,
+        ...(typeof init.body === 'string' ? { payload: init.body } : {}),
+      });
+      return {
+        ok: res.statusCode < 400,
+        status: res.statusCode,
+        headers: {
+          get: (name) => {
+            const v = res.headers[name.toLowerCase()];
+            return v === undefined ? null : String(v);
+          },
+        },
+        json: async () => res.json(),
+        text: async () => res.body,
+        arrayBuffer: async () => new ArrayBuffer(0),
+      };
+    };
+    const api = createApi(createHttp({ baseUrl: 'http://vault.test', fetch }));
+
+    beforeAll(async () => {
+      h = await createHarness();
+    }, 60_000);
+    afterAll(() => h.close());
+
+    it('lists, reads, finds and edits it, shows its status by its label, and hears of no reminder for it', async () => {
+      const tokens = await api.setup({
+        household_name: 'The Kept family',
+        display_name: 'Owner',
+        email: 'kept-older@example.test',
+        password: 'a long enough password',
+      });
+      const token = tokens.access_token;
+      const soon = new Date(Date.now() + 20 * 86_400_000).toISOString().slice(0, 10);
+      const ead = await api.createDocument(token, {
+        title: 'EAD card',
+        type_key: 'visa',
+        identifier: 'EAD-OLDER-1',
+        expires: { date: soon, precision: 'day' },
+      });
+      const due = await api.reminders(token, 'due');
+      const kept = due.items.find((r) => r.document_id === ead.id);
+      expect(kept).toBeDefined();
+      // Marked as the web marks it: the route is newer than the client.
+      const marked = await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/documents/${ead.id}/no-longer-needed`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { reason: 'The green card came' },
+      });
+      expect(marked.statusCode, marked.body).toBe(200);
+
+      const listed = (await api.documents(token)).items.find((d) => d.id === ead.id);
+      expect(listed?.status).toEqual({ value: 'no_longer_needed', label: 'No longer needed' });
+      const read = await api.document(token, ead.id);
+      expect(read.identifier).toBe('EAD-OLDER-1');
+      expect(read.status.label).toBe('No longer needed');
+      // Found by its words, as ever.
+      expect((await api.search(token, 'EAD-OLDER-1')).items.map((i) => i.document_id)).toContain(
+        ead.id,
+      );
+      // No reminder of it, in any list the phone asks for.
+      for (const state of ['all', 'due', 'upcoming'] as const) {
+        expect((await api.reminders(token, state)).items.map((r) => r.document_id)).not.toContain(
+          ead.id,
+        );
+      }
+      // The line the phone had kept, Done: answered, not refused.
+      const done = await api.acknowledgeReminder(token, (kept as { id: string }).id);
+      expect(done.id).toBe(kept?.id);
+      // An edit from the phone keeps it as it is: no longer needed, still silent.
+      const edited = await api.updateDocument(token, ead.id, { title: 'Old EAD card' }, read.etag);
+      expect(edited.title).toBe('Old EAD card');
+      expect(edited.status.value).toBe('no_longer_needed');
+      expect((await api.reminders(token)).items.map((r) => r.document_id)).not.toContain(ead.id);
+    });
+  },
+);

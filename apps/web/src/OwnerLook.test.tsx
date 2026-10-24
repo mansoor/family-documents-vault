@@ -222,7 +222,8 @@ describe('Needs attention across the width (the owner’s report)', () => {
       within(actions)
         .getAllByRole('button')
         .map((b) => b.textContent),
-    ).toEqual(['A week', 'A month', 'Done']);
+      // And, for whoever may change it, Not needed any more (0.9.0).
+    ).toEqual(['A week', 'A month', 'Done', 'Not needed any more']);
     // The bill, with no reminder: its status, and its ⋯ as on a phone.
     const bill = within(now).getByRole('rowheader', { name: /Council tax bill/ });
     const billRow = bill.closest('tr') as HTMLElement;
@@ -291,7 +292,13 @@ describe('Needs attention across the width (the owner’s report)', () => {
       within(li)
         .getAllByRole('button')
         .map((b) => b.textContent),
-    ).toEqual([expect.stringContaining('Sara’s passport'), 'A week', 'A month', 'Done']);
+    ).toEqual([
+      expect.stringContaining('Sara’s passport'),
+      'A week',
+      'A month',
+      'Done',
+      'Not needed any more',
+    ]);
     expect(screen.getByRole('region', { name: 'Coming up' })).toBeVisible();
     expect(screen.getByRole('link', { name: 'Answer the questions' })).toBeVisible();
     await expectAccessible();

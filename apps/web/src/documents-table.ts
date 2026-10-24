@@ -113,7 +113,15 @@ export const FILTER_KEYS = [
 ] as const;
 export type FilterKey = (typeof FILTER_KEYS)[number];
 
-const STATUSES: readonly string[] = ['expired', 'expiring_soon', 'needs_info', 'active', 'valid'];
+const STATUSES: readonly string[] = [
+  'expired',
+  'expiring_soon',
+  'needs_info',
+  'active',
+  'valid',
+  // Kept, but no longer needed (0.9.0): among Any status, never the others.
+  'no_longer_needed',
+];
 const VISIBILITIES: readonly string[] = ['household', 'adults', 'private'];
 
 /**
@@ -236,6 +244,12 @@ export interface BulkOffer {
    * any of them — and done to those, the rest left as they are and named.
    */
   tags: boolean;
+  /**
+   * No longer needed (0.9.0): offered when the person may change any of
+   * them — done to those, one reason and replacement for all, the rest left
+   * as they are and named.
+   */
+  unneeded: boolean;
   notes: string[];
 }
 
@@ -281,6 +295,7 @@ export function bulkOffer(who: Chooser, docs: readonly DocumentView[]): BulkOffe
     visibility: n > 0 ? visibility : [],
     trash: n > 0 && changeAll,
     tags: n > 0 && editor && notMine < n,
+    unneeded: n > 0 && editor && notMine < n,
     notes,
   };
 }
@@ -314,4 +329,5 @@ export const STATUS_WORDS: Record<string, string> = {
   needs_info: 'Needs details',
   active: 'In date',
   valid: 'Nothing to renew',
+  no_longer_needed: 'No longer needed',
 };

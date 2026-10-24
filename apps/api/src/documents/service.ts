@@ -34,6 +34,9 @@ import { pipeline } from 'node:stream/promises';
 import {
   DecryptStream,
   decryptRange,
+  noLongerNeededBinding,
+  openBytes,
+  sealBytes,
   EncryptStream,
   newKey,
   openPrivate,
@@ -46,6 +49,8 @@ import {
 import {
   appendAudit,
   householdToday,
+  remindAgain,
+  silenceReminders,
   typeEtag,
   withPrincipal,
   type Db,
@@ -58,6 +63,7 @@ import {
   EXTRA_MAX_BYTES,
   extraBytes,
   missingFields,
+  NO_LONGER_NEEDED_REASON_MAX,
   OFFLINE_SET_MAX,
   periodic,
   type DateValue,
@@ -67,6 +73,7 @@ import {
   type DocumentSort,
   type DocumentTypeView,
   type DocumentView,
+  type NoLongerNeededView,
   type OfflineItem,
   type RequiredRules,
   type RequiredValues,
@@ -226,6 +233,15 @@ interface Filing {
   place: (to: string) => Promise<string>;
 }
 
+/**
+ * An Only me document's notes and details opened for its owner — and why
+ * it is no longer needed, when it is and says (0082), sealed where they are.
+ */
+type Opened = PrivateValues & { noLongerNeededReason?: string | null };
+
+/** A replacement the reader sees (0082): its id and title. */
+type Replacement = { id: string; title: string | null };
+
 export type DocRow = {
   id: string;
   type_key: string | null;
@@ -258,6 +274,15 @@ export type DocRow = {
   /** When its note's words last changed, and whose sign-in changed them (0057, 5.35). */
   notes_updated_at: Date | null;
   notes_updated_by: string | null;
+  /**
+   * No longer needed (0082, 0.9.0): when, and whose sign-in marked it; why
+   * (plain, or sealed on an Only me document); and what replaced it.
+   */
+  no_longer_needed_at: Date | null;
+  no_longer_needed_by: string | null;
+  no_longer_needed_reason: string | null;
+  no_longer_needed_reason_sealed: Buffer | null;
+  replaced_by: string | null;
 };
 
 /**
@@ -377,7 +402,12 @@ export function statusOf(
     | Pick<EffectiveType, 'key' | 'expiry_driver' | 'reminder_leads' | 'core' | 'fields'>
     | null
     | undefined,
-  plain: RequiredValues & { owner_member_id: string | null; expires: DateValue | null },
+  plain: RequiredValues & {
+    owner_member_id: string | null;
+    expires: DateValue | null;
+    /** Marked no longer needed (0082): said so, whatever its expiry. Every caller says. */
+    no_longer_needed_at: Date | string | null;
+  },
   sealed: SealedPresence | null | undefined,
   /**
    * Whether the reader may see where the original is kept (5.41): one who
@@ -400,6 +430,7 @@ export function statusOf(
         : null,
       owner_member_id: doc.owner_member_id,
       expires: doc.expires,
+      no_longer_needed: plain.no_longer_needed_at != null,
       missing: missingFields(
         type
           ? {
@@ -440,6 +471,7 @@ export function rowStatus(
     | 'extra'
     | 'notes_sealed'
     | 'sealed_details'
+    | 'no_longer_needed_at'
   >,
   location: boolean,
   /** The household's today (householdToday). */
@@ -854,7 +886,7 @@ export class DocumentService {
    * their own request for the document itself (and its edits), never in a
    * list. Null for anybody else, and for any other document.
    */
-  private async opened(trx: Db, p: Principal, row: DocRow): Promise<PrivateValues | null> {
+  private async opened(trx: Db, p: Principal, row: DocRow): Promise<Opened | null> {
     if (row.visibility !== 'private' || row.owner_member_id !== p.memberId) return null;
     return this.openRow(trx, p.householdId, row);
   }
@@ -895,16 +927,29 @@ export class DocumentService {
    * What an Only me document's notes and details are: the sealed ones
    * opened, and any the private.seal job has not reached yet as they are.
    */
-  private async openRow(trx: Db, householdId: string, row: DocRow): Promise<PrivateValues> {
+  private async openRow(trx: Db, householdId: string, row: DocRow): Promise<Opened> {
     const plain = { notes: row.notes, extra: (row.extra ?? {}) as Record<string, unknown> };
-    if (!row.notes_sealed && !row.extra_sealed) return plain;
+    if (!row.notes_sealed && !row.extra_sealed && !row.no_longer_needed_reason_sealed) return plain;
     const key = await this.keys.unwrap(trx, {
       householdId,
       kind: 'member',
       memberId: row.owner_member_id,
     });
     const sealed = openPrivate(key.key, row.id, row);
-    return { notes: plain.notes ?? sealed.notes, extra: { ...sealed.extra, ...plain.extra } };
+    return {
+      notes: plain.notes ?? sealed.notes,
+      extra: { ...sealed.extra, ...plain.extra },
+      // Why it is no longer needed (0082), sealed where its notes are.
+      ...(row.no_longer_needed_reason_sealed
+        ? {
+            noLongerNeededReason: openBytes(
+              key.key,
+              row.no_longer_needed_reason_sealed,
+              noLongerNeededBinding(row.id),
+            ).toString('utf8'),
+          }
+        : {}),
+    };
   }
 
   /**
@@ -939,15 +984,18 @@ export class DocumentService {
     p: Principal,
     row: DocRow,
     typeOf: TypeLookup = typeLookup(trx),
-    opened: PrivateValues | null = null,
+    opened: Opened | null = null,
     /** Its versions, newest first, when a list has read them for the page. */
     known?: VersionBrief[],
     /** Who changed notes, by sign-in, when a list has read them for the page. */
     editors?: Map<string, string>,
+    /** The replacements this reader sees, by id, when a list has read them (0082). */
+    replacements?: Map<string, Replacement>,
   ): Promise<DocumentView> {
     const type = row.type_key ? await typeOf(row.type_key) : null;
     const versions = known ?? (await this.versionsOf(trx, [row.id])).get(row.id) ?? [];
     const named = editors ?? (await this.noteEditors(trx, p, [row]));
+    const replacing = replacements ?? (await this.replacementsOf(trx, p, [row]));
     const issued = row.issued_on
       ? {
           date: isoDate(row.issued_on) as string,
@@ -1017,8 +1065,69 @@ export class DocumentService {
         removableAtOnce(p, row, await signsInHere(trx, row.created_by)),
       // A restore from before its removal brought the record back, not the file.
       file_removed: versions[0]?.file_removed_at != null,
+      no_longer_needed: this.noLongerNeededView(p, row, named, replacing, opened),
       etag: etagOf(row.id, row.updated_at),
     };
+  }
+
+  /**
+   * What a document marked no longer needed says (0082, 0.9.0): when; who,
+   * on the activity log's terms (`named`); why — an Only me one's opened
+   * only in its owner's own look at it (`opened`), as its notes are; and
+   * what replaced it, by its title only to a reader who sees it now
+   * (`replacing`), and to anybody else neither its title nor its id.
+   */
+  private noLongerNeededView(
+    p: Principal,
+    row: DocRow,
+    named: Map<string, string>,
+    replacing: Map<string, Replacement>,
+    opened: Opened | null,
+  ): NoLongerNeededView | null {
+    if (row.no_longer_needed_at == null) return null;
+    const sealed = row.no_longer_needed_reason_sealed;
+    let reason = row.no_longer_needed_reason;
+    if (sealed && opened && row.owner_member_id === p.memberId) {
+      reason = opened.noLongerNeededReason ?? null;
+    }
+    const seen = row.replaced_by ? replacing.get(row.replaced_by) : undefined;
+    return {
+      at: row.no_longer_needed_at.toISOString(),
+      by_name: row.no_longer_needed_by ? (named.get(row.no_longer_needed_by) ?? null) : null,
+      reason,
+      has_reason: reason !== null || sealed !== null,
+      replaced_by: row.replaced_by
+        ? seen
+          ? { id: seen.id, title: seen.title }
+          : { id: null, title: null }
+        : null,
+    };
+  }
+
+  /**
+   * The documents these replaced (0082) that this reader sees now, by id:
+   * as every list keeps it (`seenDocument`, and the row rules for whoever is
+   * restricted), and out of the Trash. One statement for a page; none when
+   * nothing on it was replaced. One the reader may not see is left out, and
+   * said as "another document".
+   */
+  private async replacementsOf(
+    trx: Db,
+    p: Principal,
+    rows: ReadonlyArray<Pick<DocRow, 'replaced_by'>>,
+  ): Promise<Map<string, Replacement>> {
+    const ids = [
+      ...new Set(rows.map((r) => r.replaced_by).filter((id): id is string => id != null)),
+    ];
+    const seen = new Map<string, Replacement>();
+    if (ids.length === 0) return seen;
+    const found = await sql<Replacement>`
+      select d.id, d.title from document d
+       where d.id = any(${ids}::uuid[]) and d.deleted_at is null and ${seenDocument(p)}`.execute(
+      trx,
+    );
+    for (const r of found.rows) seen.set(r.id, r);
+    return seen;
   }
 
   /**
@@ -1055,11 +1164,16 @@ export class DocumentService {
   private async noteEditors(
     trx: Db,
     p: Principal,
-    rows: Array<Pick<DocRow, 'notes_updated_by'>>,
+    rows: Array<Pick<DocRow, 'notes_updated_by'> & Partial<Pick<DocRow, 'no_longer_needed_by'>>>,
   ): Promise<Map<string, string>> {
     const named = new Map<string, string>();
+    // And who marked them no longer needed (0082), on the same terms.
     const ids = [
-      ...new Set(rows.map((r) => r.notes_updated_by).filter((id): id is string => id !== null)),
+      ...new Set(
+        rows
+          .flatMap((r) => [r.notes_updated_by, r.no_longer_needed_by ?? null])
+          .filter((id): id is string => id !== null),
+      ),
     ];
     if (ids.length === 0 || !allows(p, 'audit.read')) return named;
     const found = await sql<{ account_id: string; name: string }>`
@@ -1089,8 +1203,11 @@ export class DocumentService {
       rows.map((r) => r.id),
     );
     const editors = await this.noteEditors(trx, p, rows);
+    const replacing = await this.replacementsOf(trx, p, rows);
     return Promise.all(
-      rows.map((r) => this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [], editors)),
+      rows.map((r) =>
+        this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [], editors, replacing),
+      ),
     );
   }
 
@@ -1464,6 +1581,173 @@ export class DocumentService {
     });
   }
 
+  /**
+   * POST /documents/{id}/no-longer-needed (0082, 0.9.0): kept, but no
+   * longer needed — an EAD card a green card made unnecessary. Whoever may
+   * change it marks it (a teen only their own; never a viewer or a guest),
+   * with why (`reason`, at most 200 characters, sealed on an Only me
+   * document where its notes are) and what replaced it (`replaced_by`, a
+   * document they can see, out of the Trash — any other is refused as one
+   * not in the vault, whether it is there or not).
+   *
+   * Its open reminders are resolved as it is marked, with no word to
+   * anybody, and none is made while it stays so. Asked again while marked,
+   * its reason and replacement are changed, and when and by whom it was
+   * marked stay as they were.
+   */
+  async markNoLongerNeeded(
+    p: Principal,
+    id: string,
+    input: { reason?: string | null | undefined; replaced_by?: string | null | undefined },
+    meta: RequestMeta,
+  ): Promise<DocumentView> {
+    this.canWrite(p);
+    return withPrincipal(this.db, p, async (trx) => {
+      const current = await this.fetch(trx, p, id, false, true);
+      this.mustOwnIfTeen(p, current);
+      // Left out, each is kept as it is; null (or a blank reason) takes it
+      // away (the review, M1): asked again by somebody who cannot see what
+      // replaced it, or from a page loaded before it was marked, what they
+      // did not touch stays — never wiped by a field they were not shown.
+      const reason =
+        input.reason === undefined ? undefined : input.reason?.trim() ? input.reason.trim() : null;
+      if (reason && [...reason].length > NO_LONGER_NEEDED_REASON_MAX) {
+        throw new ApiError(
+          422,
+          'validation_failed',
+          `Keep why to ${NO_LONGER_NEEDED_REASON_MAX} characters.`,
+          { detail: 'reason' },
+        );
+      }
+      let replacedBy: string | null | undefined =
+        input.replaced_by === undefined ? undefined : null;
+      if (input.replaced_by) {
+        const notThere = () =>
+          new ApiError(422, 'validation_failed', 'That document is not in the vault.', {
+            detail: 'replaced_by',
+          });
+        if (!UUID.test(input.replaced_by)) throw notThere();
+        const target = await trx
+          .selectFrom('document as d')
+          .select('d.id')
+          .where('d.id', '=', input.replaced_by)
+          .where('d.deleted_at', 'is', null)
+          .where(seenDocument(p))
+          .executeTakeFirst();
+        if (!target) throw notThere();
+        if (target.id === current.id) {
+          throw new ApiError(422, 'validation_failed', 'A document cannot replace itself.', {
+            detail: 'replaced_by',
+          });
+        }
+        replacedBy = target.id;
+      }
+      // Why, where its notes are: sealed under its owner's key on an Only me
+      // document, plain on any other.
+      const why =
+        reason === undefined
+          ? {}
+          : current.visibility === 'private'
+            ? {
+                no_longer_needed_reason: null,
+                no_longer_needed_reason_sealed: reason
+                  ? sealBytes(
+                      (
+                        await this.keys.unwrap(trx, {
+                          householdId: p.householdId,
+                          kind: 'member',
+                          memberId: current.owner_member_id,
+                        })
+                      ).key,
+                      Buffer.from(reason, 'utf8'),
+                      noLongerNeededBinding(current.id),
+                    )
+                  : null,
+              }
+            : { no_longer_needed_reason: reason, no_longer_needed_reason_sealed: null };
+      const already = current.no_longer_needed_at !== null;
+      const row = (await trx
+        .updateTable('document')
+        .set({
+          // As themselves, now (the database holds them to it).
+          ...(already
+            ? {}
+            : { no_longer_needed_at: sql<Date>`now()`, no_longer_needed_by: p.accountId }),
+          ...why,
+          ...(replacedBy === undefined ? {} : { replaced_by: replacedBy }),
+          updated_at: new Date(),
+          updated_by: p.accountId,
+        })
+        .where('id', '=', current.id)
+        .returningAll()
+        .executeTakeFirstOrThrow()) as DocRow;
+      if (!already) await silenceReminders(trx, current.id, p.accountId);
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        // Never why, nor what replaced it: neither is every reader's.
+        ...(already
+          ? { action: 'document.updated', detail: { fields: ['no_longer_needed'] } }
+          : { action: 'document.no_longer_needed' }),
+        objectType: 'document',
+        objectId: current.id,
+        ip: meta.ip,
+      });
+      return this.view(trx, p, row, typeLookup(trx), await this.opened(trx, p, row));
+    });
+  }
+
+  /**
+   * DELETE /documents/{id}/no-longer-needed (0082): needed again, by
+   * whoever may change it. What the marking resolved comes back as its date
+   * warrants now (remindAgain); what was done with before stays done. One
+   * that is needed already is answered as it is.
+   */
+  async markNeededAgain(p: Principal, id: string, meta: RequestMeta): Promise<DocumentView> {
+    this.canWrite(p);
+    return withPrincipal(this.db, p, async (trx) => {
+      const current = await this.fetch(trx, p, id, false, true);
+      this.mustOwnIfTeen(p, current);
+      if (current.no_longer_needed_at === null) {
+        return this.view(trx, p, current, typeLookup(trx), await this.opened(trx, p, current));
+      }
+      // The moment it was marked, to the microsecond: what the marking resolved.
+      const marked = await sql<{ at: string }>`
+        select no_longer_needed_at::text as at from document where id = ${current.id}::uuid`.execute(
+        trx,
+      );
+      const row = (await trx
+        .updateTable('document')
+        .set({
+          no_longer_needed_at: null,
+          no_longer_needed_by: null,
+          no_longer_needed_reason: null,
+          no_longer_needed_reason_sealed: null,
+          replaced_by: null,
+          updated_at: new Date(),
+          updated_by: p.accountId,
+        })
+        .where('id', '=', current.id)
+        .returningAll()
+        .executeTakeFirstOrThrow()) as DocRow;
+      // An Only me document's date may be one of its sealed details: opened
+      // here, in its owner's own request (0.5.15, A62).
+      const opened = await this.opened(trx, p, row);
+      await remindAgain(trx, p.householdId, row.id, marked.rows[0]?.at as string, {
+        details: opened?.extra,
+      });
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'document.needed_again',
+        objectType: 'document',
+        objectId: row.id,
+        ip: meta.ip,
+      });
+      return this.view(trx, p, row, typeLookup(trx), opened);
+    });
+  }
+
   async list(
     p: Principal,
     q: ListQuery,
@@ -1537,8 +1821,11 @@ export class DocumentService {
         page.map((r) => r.id),
       );
       const editors = await this.noteEditors(trx, p, page);
+      const replacing = await this.replacementsOf(trx, p, page);
       const items = await Promise.all(
-        page.map((r) => this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [], editors)),
+        page.map((r) =>
+          this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [], editors, replacing),
+        ),
       );
       const filtered = q.status ? items.filter((d) => d.status.value === q.status) : items;
       const last = page[page.length - 1];
@@ -2756,6 +3043,7 @@ export class DocumentService {
         extra: Record<string, unknown> | null;
         notes_sealed_present: boolean;
         sealed_details: string[];
+        no_longer_needed_at: Date | null;
         words_shown: boolean;
         details_text: string;
         rank: number;
@@ -2799,6 +3087,7 @@ export class DocumentService {
                d.expires_on, d.expires_precision, d.issued_by, d.issued_on, d.issued_precision,
                d.identifier, d.physical_location, d.tags, d.notes, d.extra,
                d.notes_sealed is not null as notes_sealed_present, d.sealed_details,
+               d.no_longer_needed_at,
                d.visibility in ('household', 'adults') as words_shown,
                case when d.visibility in ('household', 'adults')
                     then fdv_details_text(d.extra) else '' end as details_text,

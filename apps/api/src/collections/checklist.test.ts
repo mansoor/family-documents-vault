@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createPool, withScope, withSystem, type Db } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
+  CHECKLIST_NO_LONGER_NEEDED_NOTE,
   CHECKLIST_ONLY_ME_NOTE,
   CHECKLIST_WAS_BANK_NOTE,
   type ChecklistAdded,
@@ -669,6 +670,22 @@ describe.skipIf(!testAdminUrl())('a collection from a checklist (C1)', () => {
     expect(ids(hers, 2).sort()).toEqual([docs.mooring, docs.richaMooring].sort());
     expect(ids(hers, 2, true)).toEqual([]);
     expect(JSON.stringify(hers)).not.toContain(docs.oldMooring);
+  });
+
+  it('a current passport passes by one no longer needed; a plain line finds it, and says so (0.9.0)', async () => {
+    const old = await file('richa', 'Richa old passport', 'passport', {
+      issued: '2025-02-01',
+      visibility: 'household',
+    });
+    const marked = await call('richa', 'POST', `/api/v1/documents/${old}/no-longer-needed`, {});
+    expect(marked.statusCode, marked.body).toBe(200);
+    const trip = await makeCollection('richa', 'Trip', 'everyone');
+    const c = await check('richa', trip, { text: "Richa's current passport\nRicha's passport" });
+    expect(ids(c, 0)).toEqual([]);
+    expect(c.items[0]?.missing).toEqual(['a current passport, Richa’s']);
+    expect(c.items[1]?.matches.map((m) => [m.document_id, m.note])).toEqual([
+      [old, CHECKLIST_NO_LONGER_NEEDED_NOTE],
+    ]);
   });
 
   it('refuses a list longer than it reads, before reading it', async () => {

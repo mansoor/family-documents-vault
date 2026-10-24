@@ -115,6 +115,12 @@ export const CHECKLIST_FORM_UNSAID_NOTE = 'Its title does not say which form it 
 /** Said beside a bank statement offered for an investment line (0077 made them a kind of their own). */
 export const CHECKLIST_WAS_BANK_NOTE = 'Filed as a bank statement before 0.9.0';
 
+/**
+ * Said beside a document marked no longer needed (0.9.0), wherever a plain
+ * line still finds it; a line asking for a current or valid one passes it by.
+ */
+export const CHECKLIST_NO_LONGER_NEEDED_NOTE = 'No longer needed';
+
 /** Said of a line, and beside a document, found by the words of its title (0.9.0). */
 export const CHECKLIST_BY_TITLE_NOTE = 'Found by its title';
 /** Lines of one checklist looked for by their titles' words, at most: the rest are not. */
@@ -1409,6 +1415,8 @@ export interface ChecklistDoc {
   tax_year: string | null;
   /** In this collection already. */
   in_collection: boolean;
+  /** Marked no longer needed (0.9.0): never a current one, and said so beside it. */
+  no_longer_needed?: boolean;
 }
 
 /** One document offered for an item. */
@@ -1622,6 +1630,14 @@ export function checkItem(
   return checkOne(item, prepared, opts, () => true);
 }
 
+/**
+ * What a line asking for a current or valid one takes: not run out, and not
+ * marked no longer needed (0.9.0) — whatever its date says.
+ */
+function isCurrent(d: ChecklistDoc, today: string): boolean {
+  return !d.no_longer_needed && (!d.expires || d.expires.date >= today);
+}
+
 /** An item by its kind, then, where that finds nothing, by its title, while `mayLook` allows. */
 function checkOne(
   item: ChecklistReadItem,
@@ -1652,7 +1668,13 @@ function matchOf(
     ticked: chosen && !d.in_collection && !onlyMe,
     chosen,
     in_collection: d.in_collection,
-    note: onlyMe ? CHECKLIST_ONLY_ME_NOTE : note,
+    note: onlyMe
+      ? CHECKLIST_ONLY_ME_NOTE
+      : d.no_longer_needed
+        ? note
+          ? `${CHECKLIST_NO_LONGER_NEEDED_NOTE} · ${note}`
+          : CHECKLIST_NO_LONGER_NEEDED_NOTE
+        : note,
   };
 }
 
@@ -1694,7 +1716,7 @@ function checkByTitle(
       want.every((w) => t.words.has(w)) &&
       (item.member_id === null || d.owner_member_id === item.member_id) &&
       (item.years.length === 0 || t.years.some((y) => item.years.includes(y))) &&
-      (!item.current || !d.expires || d.expires.date >= opts.today)
+      (!item.current || isCurrent(d, opts.today))
     ) {
       hits.push(t.p);
     }
@@ -1740,7 +1762,7 @@ function checkByKind(
   const all = (prepared.byKind.get(item.type_key) ?? []).filter(
     (p) =>
       (item.member_id === null || p.doc.owner_member_id === item.member_id) &&
-      (!item.current || !p.doc.expires || p.doc.expires.date >= opts.today),
+      (!item.current || isCurrent(p.doc, opts.today)),
   );
   // A form named: those whose title names it may be ticked; those naming
   // none, offered to check; those naming another, not this.

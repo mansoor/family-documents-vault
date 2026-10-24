@@ -272,6 +272,8 @@ export function BatchItemScreen() {
       name: it.name,
       title,
       until: sent.undo_until ?? null,
+      // No longer needed (0.9.0): the toast asks whether it is needed again.
+      ...(to?.no_longer_needed ? { unneeded: documentId } : {}),
     });
     const now = (await fresh().catch(() => null)) ?? b;
     // Said by the toast, and heard from it: the status line does not say it twice.
@@ -648,7 +650,13 @@ export function BatchItemScreen() {
               ...(renewals.length > 0
                 ? {
                     version: {
-                      to: renewals.map((r) => ({ id: r.document_id, title: titleOf(r.title) })),
+                      // One no longer needed says so (0.9.0): added to, it stays so.
+                      to: renewals.map((r) => ({
+                        id: r.document_id,
+                        title: r.no_longer_needed
+                          ? `${titleOf(r.title)} (no longer needed)`
+                          : titleOf(r.title),
+                      })),
                       onAdd: (documentId, fields) => addAsVersion(batch, item, documentId, fields),
                     },
                   }

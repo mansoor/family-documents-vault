@@ -29,6 +29,7 @@ import {
   useSheetFocus,
 } from './ui.js';
 import { createUploadKeys, whileInProgress } from './upload-keys.js';
+import { NeededAgainQuestion, NoLongerNeededDialog } from './no-longer-needed.js';
 
 /**
  * Quick actions on every document (5.4): a ⋯ beside each row in a list
@@ -47,6 +48,8 @@ export type DocAction =
   | 'collect'
   | 'uncollect'
   | 'essential'
+  | 'unneeded'
+  | 'needed'
   | 'version'
   | 'trash';
 
@@ -88,7 +91,8 @@ export function actionsFor(
     | (Pick<
         DocumentView,
         'owner_member_id' | 'visibility' | 'latest_version_id' | 'filed_by_me' | 'file_removed'
-      > & { type_key?: string | null })
+      > &
+        Partial<Pick<DocumentView, 'no_longer_needed'>> & { type_key?: string | null })
     | null,
   collections: { collections: boolean; uncollect: boolean } = {
     collections: false,
@@ -122,6 +126,8 @@ export function actionsFor(
   if (collections.collections) actions.push('collect');
   if (collections.collections && collections.uncollect) actions.push('uncollect');
   if (changes) actions.push('essential');
+  // Kept, but no longer needed (0.9.0), and needed again: whoever may change it.
+  if (changes) actions.push(doc.no_longer_needed ? 'needed' : 'unneeded');
   // A note has no file, nor ever a version (the N1 review).
   if (changes && can(role, 'document.add') && doc.type_key !== NOTE_KIND) actions.push('version');
   if (changes) actions.push('trash');
@@ -148,6 +154,10 @@ function labelFor(action: DocAction, doc: DocumentView | null): string {
       return 'Take out of this collection';
     case 'essential':
       return doc?.is_essential ? 'Stop it being Essential' : 'Make it Essential';
+    case 'unneeded':
+      return 'Mark as no longer needed';
+    case 'needed':
+      return 'Needed again';
     case 'version':
       return 'Add a new version';
     case 'trash':
@@ -156,10 +166,10 @@ function labelFor(action: DocAction, doc: DocumentView | null): string {
 }
 
 /**
- * The most the menu can be: an owner's eleven items on a collection's page,
+ * The most the menu can be: an owner's twelve items on a collection's page,
  * 44 px each, and its edges.
  */
-const MENU_TALLEST = 11 * 44 + 18;
+const MENU_TALLEST = 12 * 44 + 18;
 /** However little room there is, three items and a bit, so it is seen to scroll. */
 const MENU_SHORTEST = 132;
 
@@ -213,7 +223,7 @@ export function DocActions(props: {
     error: null,
   });
   const [sheet, setSheet] = useState<
-    'share' | 'visibility' | 'collect' | 'uncollect' | 'trash' | null
+    'share' | 'visibility' | 'collect' | 'uncollect' | 'trash' | 'unneeded' | 'ask_again' | null
   >(null);
   // What the sheet holds is on its way: Escape leaves it open until it is done.
   const [sheetBusy, setSheetBusy] = useState(false);
@@ -327,9 +337,26 @@ export function DocActions(props: {
       );
       keys.saved();
       setNote(made ? `A new version of “${props.title}” was added.` : null);
+      // No longer needed (0.9.0): asked whether it is needed again, never
+      // made so by the new copy alone.
+      if (made && doc?.no_longer_needed) setSheet('ask_again');
       await props.onChanged();
     } catch (err) {
       setNote(null);
+      setError(describeError(err));
+    }
+  };
+
+  /** Needed again (0.9.0), from the ⋯: said by the row, and the list loaded again. */
+  const neededAgain = async (d: DocumentView) => {
+    setError(null);
+    try {
+      const saved = await withToken((t) => api.markNeededAgain(t, d.id));
+      if (!saved) return;
+      setSaved((s) => ({ doc: saved, replaces: [...(s?.replaces ?? []), d.etag] }));
+      setNote(`“${props.title}” is needed again: its reminders come back as its dates say.`);
+      await props.onChanged();
+    } catch (err) {
       setError(describeError(err));
     }
   };
@@ -392,6 +419,12 @@ export function DocActions(props: {
       case 'version':
         // Still inside the tap, so the browser lets the file chooser open.
         file.current?.click();
+        return;
+      case 'needed':
+        if (doc) void neededAgain(doc);
+        return;
+      case 'unneeded':
+        setSheet('unneeded');
         return;
       case 'share':
       case 'visibility':
@@ -538,6 +571,32 @@ export function DocActions(props: {
           returnFocus={more}
           onConfirm={() => props.collection && void uncollect(props.collection)}
           onCancel={closeSheet}
+        />
+      )}
+      {sheet === 'unneeded' && doc && (
+        <NoLongerNeededDialog
+          doc={doc}
+          returnFocus={more}
+          onCancel={closeSheet}
+          onDone={async (saved) => {
+            setSaved((s) => ({ doc: saved, replaces: [...(s?.replaces ?? []), doc.etag] }));
+            setSheet(null);
+            setNote(`“${props.title}” is marked no longer needed. Nobody is reminded of it.`);
+            await props.onChanged();
+          }}
+        />
+      )}
+      {sheet === 'ask_again' && doc && (
+        <NeededAgainQuestion
+          doc={doc}
+          returnFocus={more}
+          onAnswered={async (saved) => {
+            setSheet(null);
+            if (!saved) return;
+            setSaved((s) => ({ doc: saved, replaces: [...(s?.replaces ?? []), doc.etag] }));
+            setNote(`“${props.title}” is needed again: its reminders come back as its dates say.`);
+            await props.onChanged();
+          }}
         />
       )}
       {sheet === 'trash' && (

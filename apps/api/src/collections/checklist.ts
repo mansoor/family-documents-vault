@@ -338,6 +338,7 @@ export class ChecklistService {
         'd.expires_on',
         'd.expires_precision',
         'd.created_at',
+        'd.no_longer_needed_at',
         sql<string | null>`case when d.visibility = 'private' then null
                                 else d.extra->>'tax_year' end`.as('tax_year'),
         'i.document_id as in_it',
@@ -384,6 +385,7 @@ export class ChecklistService {
         'd.expires_on',
         'd.expires_precision',
         'd.created_at',
+        'd.no_longer_needed_at',
         // A tax form's or a return's year, as kept; an Only me one's is sealed…
         sql<string | null>`case when d.visibility = 'private' then null
                                 else d.extra->>'tax_year' end`.as('tax_year'),
@@ -460,6 +462,7 @@ function checklistDoc(
     expires_precision: DatePrecision | null;
     created_at: Date;
     in_it: string | null;
+    no_longer_needed_at: Date | null;
   },
   taxYear: string | null,
 ): ChecklistDoc {
@@ -474,6 +477,8 @@ function checklistDoc(
     created_at: r.created_at.toISOString(),
     tax_year: taxYear,
     in_collection: r.in_it !== null,
+    // Never a current one, and said so beside it (0.9.0).
+    ...(r.no_longer_needed_at ? { no_longer_needed: true } : {}),
   };
 }
 

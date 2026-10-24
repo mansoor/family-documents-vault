@@ -128,6 +128,12 @@ export interface BatchRenewal {
   title: string | null;
   /** How it matched: its number, or its kind, person and issuer. */
   by: 'number' | 'details';
+  /**
+   * Marked no longer needed (0.9.0): a new version of it leaves it so, and
+   * its uploader is asked whether it is needed again. Absent otherwise, and
+   * from older vaults.
+   */
+  no_longer_needed?: boolean;
 }
 
 /**

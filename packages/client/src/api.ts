@@ -830,6 +830,31 @@ export function createApi(http: Http) {
     restoreDocument: (token: string, id: string) =>
       request<DocumentView>(`/api/v1/documents/${id}/restore`, { method: 'POST', token }),
     /**
+     * Kept, but no longer needed (0.9.0, `features.no_longer_needed`): its
+     * open reminders are resolved, nothing reminds of it, and its status
+     * says so. `reason` is at most 200 characters (sealed on an Only me
+     * document); `replaced_by` is a document the caller can see, out of the
+     * Trash — any other is `422`. Asked again, the reason and replacement
+     * change and when it was marked stays. For whoever may change it: `403`
+     * to a viewer or a guest, and a teen's not their own.
+     */
+    markNoLongerNeeded: (
+      token: string,
+      id: string,
+      body: { reason?: string | null; replaced_by?: string | null } = {},
+    ) =>
+      request<DocumentView>(`/api/v1/documents/${id}/no-longer-needed`, {
+        method: 'POST',
+        body,
+        token,
+      }),
+    /** Needed again (0.9.0): its reminders come back as its date warrants now. */
+    markNeededAgain: (token: string, id: string) =>
+      request<DocumentView>(`/api/v1/documents/${id}/no-longer-needed`, {
+        method: 'DELETE',
+        token,
+      }),
+    /**
      * Removes a document in the Trash for good (5.24, `features.remove_for_good`).
      * Owners only, and it always asks to confirm it's you first (`403
      * step_up_required`, action `remove_for_good`). One the caller filed, or

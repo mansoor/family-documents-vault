@@ -135,6 +135,8 @@ export class ReminderService {
           'document.type_key',
         ])
         .where('document.deleted_at', 'is', null)
+        // No longer needed (0082): reminded of nothing, whatever a row says.
+        .where('document.no_longer_needed_at', 'is', null)
         .where(visibleTo(p))
         .orderBy('reminder.fire_at');
       if (state === 'due') q = q.where('reminder.status', '=', 'due');
@@ -167,12 +169,14 @@ export class ReminderService {
     return withPrincipal(this.db, p, async (trx) => {
       const doc = await trx
         .selectFrom('document')
-        .select(['id', 'title'])
+        .select(['id', 'title', 'no_longer_needed_at'])
         .where('id', '=', input.document_id)
         .where(visibleTo(p))
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
       if (!doc) throw new ApiError(404, 'not_found', 'That document is not in the vault.');
+      // No longer needed (0082): nothing reminds of it until it is needed again.
+      if (doc.no_longer_needed_at) throw noLongerNeeded();
       const today = await this.today(trx, p.householdId);
       const row = await trx
         .insertInto('reminder')
@@ -209,7 +213,7 @@ export class ReminderService {
    * so an older phone's "A month" on a bill due in 9 days waits 9 days.
    */
   async snooze(p: Principal, id: string, until: string, meta: RequestMeta): Promise<ReminderView> {
-    return this.transition(p, id, meta, async (trx, r, today) => {
+    return this.transition(p, id, meta, 'snooze', async (trx, r, today) => {
       const about = aboutDate({ ...r, fire_at: iso(r.fire_at) as string });
       let date = until;
       if (until === 'expiry' && about) {
@@ -241,7 +245,7 @@ export class ReminderService {
    * expired passport: the document's status still says so.
    */
   async acknowledge(p: Principal, id: string, meta: RequestMeta): Promise<ReminderView> {
-    return this.transition(p, id, meta, async (_trx, r, today) => {
+    return this.transition(p, id, meta, 'done', async (_trx, r, today) => {
       if (r.recurrence) {
         const next =
           nextOccurrence(iso(r.fire_at) as string, r.recurrence, today) ?? addMonths(today, 1);
@@ -373,6 +377,8 @@ export class ReminderService {
     p: Principal,
     id: string,
     meta: RequestMeta,
+    /** What is asked: Done answers a reminder of a document no longer needed as it is. */
+    asked: 'snooze' | 'done',
     decide: (
       trx: Db,
       r: Row,
@@ -385,7 +391,7 @@ export class ReminderService {
         .selectFrom('reminder')
         .innerJoin('document', 'document.id', 'reminder.document_id')
         .selectAll('reminder')
-        .select(['document.title', 'document.type_key'])
+        .select(['document.title', 'document.type_key', 'document.no_longer_needed_at'])
         .where('reminder.id', '=', id)
         .where(visibleTo(p))
         // Held before the log, as its document's removal holds it: one taken
@@ -395,6 +401,14 @@ export class ReminderService {
         .executeTakeFirst();
       if (!r) throw new ApiError(404, 'not_found', 'That reminder does not exist.');
       const today = await this.today(trx, p.householdId);
+      // Its document no longer needed (0082): what reminded of it was
+      // resolved as it was marked. Done with is answered as it is (an older
+      // phone's Done on a line it had kept); anything else would remind.
+      if (r.no_longer_needed_at) {
+        if (asked !== 'done') throw noLongerNeeded();
+        const words = await reminderWords(trx, [r]);
+        return view(ofDocument(r), r.title, today, words.get(r.id) ?? null);
+      }
       const { action, ...set } = await decide(trx, ofDocument(r), today);
       const updated = await trx
         .updateTable('reminder')
@@ -429,6 +443,14 @@ function ofDocument<T extends { document_id: string | null; kind: string }>(
   }
   return r as T & { document_id: string; kind: 'derived' | 'manual' };
 }
+
+/** A document no longer needed (0082) is reminded of nothing: said when a reminder is asked of it. */
+const noLongerNeeded = () =>
+  new ApiError(
+    409,
+    'no_longer_needed',
+    'This document is no longer needed, so nothing reminds of it. Mark it needed again to be reminded.',
+  );
 
 /** A turning-13 reminder is the owners' (0066): said to anybody else as a refusal. */
 function mustBeOwner(p: Principal): void {

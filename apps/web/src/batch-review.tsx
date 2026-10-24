@@ -144,6 +144,7 @@ export function Toast({
   onUndo,
   onDismiss,
   inline = false,
+  extra,
 }: {
   toast: ReviewToast;
   box: RefObject<HTMLDivElement | null>;
@@ -151,6 +152,8 @@ export function Toast({
   onDismiss: () => void;
   /** In the page's own flow, never over it (S1: on a file's card, above the card). */
   inline?: boolean;
+  /** What else it asks, under its words: whether a document no longer needed is needed again (0.9.0). */
+  extra?: ReactNode;
 }) {
   return (
     <div
@@ -174,6 +177,7 @@ export function Toast({
             {m}
           </p>
         ))}
+        {extra}
       </div>
       {toast.undo && (
         <button
@@ -212,6 +216,12 @@ export interface VersionUndo {
   name: string;
   title: string;
   until: string | null;
+  /**
+   * The document it was added to, when that is marked no longer needed
+   * (0.9.0): the toast asks whether it is needed again — adding a copy
+   * never makes it so by itself.
+   */
+  unneeded?: string;
 }
 
 let versionUndo: VersionUndo | null = null;
@@ -266,6 +276,8 @@ export function useVersionUndo(
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const [heard, setHeard] = useState('');
+  // Asked whether it is needed again (0.9.0): what the answer came to.
+  const [again, setAgain] = useState<{ id: string; said: string } | null>(null);
   const box = useRef<HTMLDivElement>(null);
   useEffect(
     () =>
@@ -282,6 +294,36 @@ export function useVersionUndo(
     [],
   );
   const mine = held && held.batchId === batchId ? held : null;
+
+  const neededAgain = async (documentId: string, title: string) => {
+    try {
+      const saved = await withToken((t) => api.markNeededAgain(t, documentId));
+      if (!saved) return;
+      const said = `${title} is needed again: its reminders come back as its dates say.`;
+      setAgain({ id: documentId, said });
+      setHeard(said);
+    } catch (err) {
+      setAgain({ id: documentId, said: describeError(err) });
+      setHeard(describeError(err));
+    }
+  };
+  const asked =
+    mine?.unneeded && !done ? (
+      again?.id === mine.unneeded ? (
+        <p className="toast-more">{again.said}</p>
+      ) : (
+        <p className="toast-more">
+          {mine.title} is still marked no longer needed, so nobody is reminded of it.{' '}
+          <button
+            type="button"
+            className="btn-link"
+            onClick={() => void neededAgain(mine.unneeded as string, mine.title)}
+          >
+            Needed again
+          </button>
+        </p>
+      )
+    ) : null;
 
   const undo = async () => {
     if (!mine || busy) return;
@@ -332,6 +374,7 @@ export function useVersionUndo(
           toast={toast}
           box={box}
           inline={inline}
+          extra={asked}
           onUndo={() => void undo()}
           onDismiss={() => {
             versionUndoStore.set(null);

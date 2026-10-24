@@ -63,10 +63,15 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
         'share_page_failure',
         // A version filed through review (0074, R0): goes with its document.
         'review_filing',
+        // Another document, replaced by it (0082, 0.9.0): see below.
+        'document',
       ]),
     );
-    // 'c': on delete cascade, every one.
-    expect(keys.filter((k) => k.on_delete !== 'c')).toEqual([]);
+    // 'c': on delete cascade, every one — but a document no longer needed,
+    // replaced by this one, which stays: only the link goes ('n', set null).
+    expect(keys.filter((k) => k.on_delete !== 'c')).toEqual([
+      { name: 'document_replaced_by_fkey', from_table: 'document', on_delete: 'n' },
+    ]);
   });
 
   it("every foreign key to a document's version cascades", async () => {

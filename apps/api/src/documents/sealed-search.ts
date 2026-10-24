@@ -45,6 +45,8 @@ interface SealedRow {
   notes_sealed: Buffer | null;
   extra_sealed: Buffer | null;
   sealed_details: string[];
+  /** Marked no longer needed (0082): its status says so. */
+  no_longer_needed_at: Date | null;
   /** Its newest pages' text, sealed; null when there is none. */
   content_cipher: Buffer | null;
   wrapped_by_scope: string | null;
@@ -74,7 +76,7 @@ export class SealedSearchService {
                d.expires_on, d.expires_precision, d.updated_at,
                d.issued_by, d.issued_on, d.issued_precision,
                d.identifier, d.physical_location, d.tags, d.notes, d.extra,
-               d.notes_sealed, d.extra_sealed, d.sealed_details,
+               d.notes_sealed, d.extra_sealed, d.sealed_details, d.no_longer_needed_at,
                t.content_cipher, t.wrapped_by_scope
           from document d
           left join lateral (

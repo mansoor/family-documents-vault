@@ -53,6 +53,8 @@ export const STATUS_ORDER: readonly StatusValue[] = [
   'active',
   'valid',
   'superseded',
+  // Kept, and nothing to act on (0.9.0): after everything that is.
+  'no_longer_needed',
   'missing',
 ];
 

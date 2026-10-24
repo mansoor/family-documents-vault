@@ -12,6 +12,7 @@ import {
   MAILBOX_PASSWORD_PURPOSE,
   memberPhotoBinding,
   newKey,
+  noLongerNeededBinding,
   ScopeKeys,
   sealBytes,
   sealIdentity,
@@ -657,6 +658,86 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     );
     expect(hers.all.includes(Buffer.from('solicitor'))).toBe(false);
     expect(hers.index.documents.map((d) => d.title)).not.toContain('My sealed will');
+  }, 60_000);
+
+  it('a document no longer needed says so: since when, why (an Only me one’s in its owner’s export alone), and what replaced it only where the requester sees it (0.9.0)', async () => {
+    let sanaAccount = (
+      await admin.query<{ account_id: string }>(
+        'select account_id from account_household where member_id = $1',
+        [otherMember],
+      )
+    ).rows[0]?.account_id;
+    if (!sanaAccount) {
+      sanaAccount = (
+        await admin.query<{ id: string }>(
+          "insert into account (email) values ('s-nln@x.test') returning id",
+        )
+      ).rows[0]?.id;
+      await admin.query(
+        "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'adult')",
+        [sanaAccount, hh, otherMember],
+      );
+    }
+    const green = await addDoc('Sana green card NLN', 'private', otherMember, 'GREEN', 'identity');
+    const ead = await addDoc('Family EAD card NLN', 'household', ownerMember, 'EAD', 'identity');
+    const sanas = await addDoc('Sana old permit NLN', 'private', otherMember, 'PERMIT', 'identity');
+    await admin.query(
+      `update document set no_longer_needed_at = '2026-10-23T10:00:00Z',
+              no_longer_needed_reason = 'The green card came', replaced_by = $2
+        where id = $1`,
+      [ead, green],
+    );
+    await withSystem(db, hh, async (trx) => {
+      const key = await keys.unwrap(trx, {
+        householdId: hh,
+        kind: 'member',
+        memberId: otherMember,
+      });
+      await trx
+        .updateTable('document')
+        .set({
+          no_longer_needed_at: new Date('2026-10-22T10:00:00Z'),
+          no_longer_needed_reason_sealed: sealBytes(
+            key.key,
+            Buffer.from('Sana’s sealed why', 'utf8'),
+            noLongerNeededBinding(sanas),
+          ),
+        })
+        .where('id', '=', sanas)
+        .execute();
+    });
+    type Unneeded = { since: string; reason: string | null; replaced_by: string | null } | null;
+    const of = (x: Awaited<ReturnType<typeof exported>>, title: string) =>
+      (
+        x.index.documents.find((d) => d.title === title) as unknown as
+          { no_longer_needed: Unneeded } | undefined
+      )?.no_longer_needed;
+
+    // The owner: Sana's green card is not in their export, so not named.
+    const mine = await exported(ownerAccount);
+    expect(of(mine, 'Family EAD card NLN')).toEqual({
+      since: '2026-10-23',
+      reason: 'The green card came',
+      replaced_by: 'another document',
+    });
+    expect(mine.entries.get('index.csv')?.toString()).toContain(
+      'No longer needed since 23 Oct 2026 · Replaced by another document · The green card came',
+    );
+    expect(mine.entries.get('index.html')?.toString()).toContain(
+      'No longer needed since 23 Oct 2026',
+    );
+    expect(mine.all.includes(Buffer.from('Sana green card NLN'))).toBe(false);
+    expect(mine.all.includes(Buffer.from('sealed why'))).toBe(false);
+    // Sana: her green card named; her own sealed why opened, for her.
+    const hers = await exported(sanaAccount as string);
+    expect(of(hers, 'Family EAD card NLN')?.replaced_by).toBe('Sana green card NLN');
+    expect(of(hers, 'Sana old permit NLN')).toEqual({
+      since: '2026-10-22',
+      reason: 'Sana’s sealed why',
+      replaced_by: null,
+    });
+    // One still needed says nothing of it.
+    expect(of(hers, 'Sana green card NLN')).toBeNull();
   }, 60_000);
 
   it('a note kept on its own goes in as a Markdown file in Notes/, an Only me one only for its owner (0.9.0, N1)', async () => {
