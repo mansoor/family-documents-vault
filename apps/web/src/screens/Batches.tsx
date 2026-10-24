@@ -1219,6 +1219,7 @@ export function ItemTags({
           <Link to={`/documents/${near.document_id}`} tabIndex={stop}>
             {renewalWords(near)}
           </Link>
+          {near.no_longer_needed && <span className="item-tag-detail">No longer needed</span>}
         </li>
       )}
     </ul>

@@ -3454,6 +3454,73 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'a document no longer needed: kept and listed, said so, reminded of nothing, replaced by one the reader sees, and needed again (0.9.0)',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      const me = await api.me(token);
+      const soon = new Date(Date.now() + 20 * 86_400_000).toISOString().slice(0, 10);
+      // A passport for the contract's purpose: a kind every vault, and the fake, has.
+      const ead = await api.createDocument(token, {
+        type_key: 'passport',
+        title: 'Contract EAD card',
+        owner_member_id: me.member_id,
+        identifier: 'EAD-0001',
+        expires: { date: soon, precision: 'day' },
+      });
+      expect(ead.status.value).toBe('expiring_soon');
+      expect(ead.no_longer_needed ?? null).toBeNull();
+      const green = await api.createDocument(token, {
+        type_key: 'passport',
+        title: 'Contract green card',
+        owner_member_id: me.member_id,
+        identifier: 'GC-0001',
+      });
+      const marked = await api.markNoLongerNeeded(token, ead.id, {
+        reason: '  The green card came  ',
+        replaced_by: green.id,
+      });
+      expect(marked.status).toEqual({ value: 'no_longer_needed', label: 'No longer needed' });
+      expect(marked.no_longer_needed).toMatchObject({
+        reason: 'The green card came',
+        has_reason: true,
+        replaced_by: { id: green.id, title: 'Contract green card' },
+      });
+      expect(marked.etag).not.toBe(ead.etag);
+      // Asked again with nothing: both kept; a field left out is never wiped.
+      expect((await api.markNoLongerNeeded(token, ead.id, {})).no_longer_needed).toMatchObject({
+        reason: 'The green card came',
+        replaced_by: { id: green.id },
+      });
+      // Nothing reminds of it, and the lists say what it is.
+      const reminders = await api.reminders(token);
+      expect(reminders.items.filter((r) => r.document_id === ead.id)).toEqual([]);
+      const ids = async (status: string) =>
+        (await api.documents(token, { status })).items.map((d) => d.id);
+      expect(await ids('no_longer_needed')).toContain(ead.id);
+      expect(await ids('expiring_soon')).not.toContain(ead.id);
+      // Kept, and read as it always was.
+      expect((await api.document(token, ead.id)).identifier).toBe('EAD-0001');
+      // Not by itself, nor by what is not there, nor at any length.
+      for (const [body, detail] of [
+        [{ replaced_by: ead.id }, 'replaced_by'],
+        [{ replaced_by: '00000000-0000-4000-8000-000000000000' }, 'replaced_by'],
+        [{ reason: 'x'.repeat(201) }, 'reason'],
+      ] as const) {
+        const refused = await refusal(api.markNoLongerNeeded(token, ead.id, body));
+        expect([refused.status, refused.code, refused.detail]).toEqual([
+          422,
+          'validation_failed',
+          detail,
+        ]);
+      }
+      // Needed again: its expiry speaks again.
+      const again = await api.markNeededAgain(token, ead.id);
+      expect(again.no_longer_needed ?? null).toBeNull();
+      expect(again.status.value).toBe('expiring_soon');
+      expect(await ids('no_longer_needed')).not.toContain(ead.id);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

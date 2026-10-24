@@ -167,6 +167,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       notes: true,
       // 0.9.0 (TZ): the family's time zone, set in Settings or by FDV_TIMEZONE.
       household_timezone: true,
+      // 0.9.0: a document kept, but no longer needed: its expiry silent.
+      no_longer_needed: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

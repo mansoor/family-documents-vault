@@ -149,6 +149,13 @@ export const shapeNumberHash = (key: Buffer, plain: string): string =>
 export const intakeShapeTaughtBinding = (householdId: string, memberId: string, itemId: string) =>
   `intake-shape-taught:${householdId}:${memberId}:${itemId}`;
 
+/**
+ * Why an Only me document is no longer needed (0.9.0, 0082): sealed under
+ * its owner's member key where its notes are, with `sealBytes`, and bound to
+ * the document, so it opens on no other row and as nothing else.
+ */
+export const noLongerNeededBinding = (documentId: string) => `no-longer-needed:${documentId}`;
+
 /** What sealing adds to the bytes sealed: the nonce before them, the tag after. */
 export const SEAL_OVERHEAD = IV_BYTES + TAG_BYTES;
 

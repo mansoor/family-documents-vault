@@ -348,6 +348,17 @@ export interface CapabilityFeatures {
    * Absent from older vaults.
    */
   household_timezone?: boolean;
+  /**
+   * No longer needed (0.9.0): POST /documents/{id}/no-longer-needed
+   * (`reason`, up to 200 characters; `replaced_by`, a document the caller
+   * can see) and DELETE to mark it needed again, for whoever may change the
+   * document. While marked, its status is `no_longer_needed`, its
+   * `no_longer_needed` says when, by whom, why and what replaced it (never a
+   * replacement the reader may not see), nothing reminds of it, and
+   * GET /documents?status=no_longer_needed lists them. Absent from older
+   * vaults.
+   */
+  no_longer_needed?: boolean;
 }
 
 export interface CapabilityLimits {

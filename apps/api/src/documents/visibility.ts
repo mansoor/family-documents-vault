@@ -1,7 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import {
+  noLongerNeededBinding,
+  openBytes,
   openChunk,
   openPrivate,
+  sealBytes,
   sealChunk,
   sealPrivate,
   unwrapKey,
@@ -93,6 +96,8 @@ export class VisibilityService {
           'extra',
           'notes_sealed',
           'extra_sealed',
+          'no_longer_needed_reason',
+          'no_longer_needed_reason_sealed',
         ])
         .where('id', '=', documentId)
         .where('deleted_at', 'is', null)
@@ -308,6 +313,30 @@ export class VisibilityService {
                 extra_sealed: null,
                 sealed_details: [],
               };
+        // Why it is no longer needed (0082) goes where its notes go: sealed
+        // under its owner's key into Only me, opened and plain out of it.
+        const why = doc.no_longer_needed_reason_sealed
+          ? openBytes(
+              from.key,
+              doc.no_longer_needed_reason_sealed,
+              noLongerNeededBinding(documentId),
+            ).toString('utf8')
+          : doc.no_longer_needed_reason;
+        moved = {
+          ...moved,
+          ...(to === 'private'
+            ? {
+                no_longer_needed_reason: null,
+                no_longer_needed_reason_sealed: why
+                  ? sealBytes(
+                      target.key,
+                      Buffer.from(why, 'utf8'),
+                      noLongerNeededBinding(documentId),
+                    )
+                  : null,
+              }
+            : { no_longer_needed_reason: why, no_longer_needed_reason_sealed: null }),
+        };
       }
 
       await trx

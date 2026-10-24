@@ -1117,6 +1117,26 @@ export interface Schema {
       Date | string | null
     >;
     notes_updated_by: ColumnType<string | null, string | null | undefined, string | null>;
+    /**
+     * No longer needed (0082, 0.9.0): when, and whose sign-in marked it —
+     * as themselves, now, and only whoever may change it. While it is, it
+     * has no open reminder and its status says so. Why, plain, or sealed on
+     * an Only me document; and what replaced it, a document its marker
+     * could see.
+     */
+    no_longer_needed_at: ColumnType<
+      Date | null,
+      Date | string | null | undefined,
+      Date | string | null
+    >;
+    no_longer_needed_by: ColumnType<string | null, string | null | undefined, string | null>;
+    no_longer_needed_reason: ColumnType<string | null, string | null | undefined, string | null>;
+    no_longer_needed_reason_sealed: ColumnType<
+      Buffer | null,
+      Buffer | null | undefined,
+      Buffer | null
+    >;
+    replaced_by: ColumnType<string | null, string | null | undefined, string | null>;
   };
 
   /**

@@ -16,6 +16,11 @@ import { AddToCollection, audienceLabel, collectionsOffered } from '../collectio
 import { mayChange } from '../DocActions.js';
 import { asksFor, coreRule, detailText, useAttributes } from '../details.js';
 import { NotesSection } from '../notes.js';
+import {
+  NeededAgainQuestion,
+  NoLongerNeededBanner,
+  NoLongerNeededDialog,
+} from '../no-longer-needed.js';
 import { PageViewer } from '../page-viewer.js';
 import { useShellMode } from '../shell.js';
 import {
@@ -96,14 +101,24 @@ export function DocumentScreen() {
     }
   };
 
+  // No longer needed (0.9.0): marked from here, and asked about again when
+  // a new version is added — never made needed again by the adding alone.
+  const [marking, setMarking] = useState(false);
+  const markButton = useRef<HTMLButtonElement>(null);
+  const [askAgain, setAskAgain] = useState(false);
+  const versionInput = useRef<HTMLLabelElement>(null);
+
   const addVersion = async (file: File | undefined) => {
     if (!file || !data) return;
     setActionError(null);
     try {
       const key = keys.keyFor(file);
-      await whileInProgress(() => withToken((t) => api.upload(t, data.doc.id, file, key)));
+      const added = await whileInProgress(() =>
+        withToken((t) => api.upload(t, data.doc.id, file, key)),
+      );
       keys.saved();
       await reload();
+      if (added && data.doc.no_longer_needed) setAskAgain(true);
     } catch (err) {
       setActionError(describeError(err));
     }
@@ -239,6 +254,13 @@ export function DocumentScreen() {
             <StatusBadge status={doc.status} />
             <span className="muted">{visibilityLabel}</span>
           </div>
+          {/* Kept, but no longer needed (0.9.0): since when, what replaced
+              it, and Needed again for whoever may change it. */}
+          <NoLongerNeededBanner
+            doc={doc}
+            mayChange={mayChangeIt}
+            onChanged={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
+          />
           <VisibilityControl
             documentId={doc.id}
             current={doc.visibility}
@@ -247,13 +269,43 @@ export function DocumentScreen() {
             onChanged={reload}
           />
           <ErrorNote message={actionError} />
-          {latest && !latest.file_removed && (
-            <Button onClick={() => void download(latest)}>Download</Button>
+          {(latest && !latest.file_removed) || (mayChangeIt && !doc.no_longer_needed) ? (
+            <div className="row doc-actions">
+              {latest && !latest.file_removed && (
+                <Button onClick={() => void download(latest)}>Download</Button>
+              )}
+              {mayChangeIt && !doc.no_longer_needed && (
+                <Button ref={markButton} kind="quiet" onClick={() => setMarking(true)}>
+                  Mark as no longer needed
+                </Button>
+              )}
+            </div>
+          ) : null}
+          {marking && (
+            <NoLongerNeededDialog
+              doc={doc}
+              returnFocus={markButton}
+              onCancel={() => setMarking(false)}
+              onDone={(saved) => {
+                setMarking(false);
+                setData((d) => (d ? { ...d, doc: saved } : d));
+              }}
+            />
+          )}
+          {askAgain && (
+            <NeededAgainQuestion
+              doc={doc}
+              returnFocus={versionInput}
+              onAnswered={(saved) => {
+                setAskAgain(false);
+                if (saved) setData((d) => (d ? { ...d, doc: saved } : d));
+              }}
+            />
           )}
           {/* "We read the pages — is this right?" (5.37): for whoever may change it. */}
           {suggests && mayChangeIt && latest && !latest.file_removed && (
             <PagesSuggest
-              key={doc.id}
+              key={`pages-${doc.id}`}
               doc={doc}
               types={types}
               members={members}
@@ -426,6 +478,7 @@ export function DocumentScreen() {
               ))}
             </ul>
             <label
+              ref={versionInput}
               className="btn btn-quiet"
               style={{ display: 'inline-flex', alignItems: 'center' }}
             >

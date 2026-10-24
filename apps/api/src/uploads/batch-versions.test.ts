@@ -825,6 +825,64 @@ describe.skipIf(!testAdminUrl())('duplicates as versions (S1)', () => {
     expect(after.rows[1]?.snoozed_until).toBe(snoozedUntil);
   });
 
+  it('no longer needed (0.9.0): a near match says so; added to, it stays so, reminding of nothing; marked meanwhile, the copy is kept and nothing reopened', async () => {
+    const issuer = `Unneeded ${randomUUID().slice(0, 6)}`;
+    const docId = await filed(adult, {
+      title: 'Sana’s old EAD passport',
+      type_key: 'passport',
+      owner_member_id: adult.member_id,
+      issued_by: issuer,
+      identifier: 'NLN-S1-1',
+      expires: day(inDays(200)),
+    });
+    const marked = await call(adult, 'POST', `/api/v1/documents/${docId}/no-longer-needed`, {});
+    expect(marked.statusCode, marked.body).toBe(200);
+    const x = await readItem(
+      adult,
+      passport({ who: adult.member_id, issuer, number: 'NLN-S1-1', expires: inDays(3650) }),
+    );
+    expect(x.item.renewals).toEqual([
+      {
+        document_id: docId,
+        title: 'Sana’s old EAD passport',
+        by: 'number',
+        no_longer_needed: true,
+      },
+    ]);
+    const res = await accept(adult, x.batchId, x.item.id, {
+      into_document_id: docId,
+      expires: day(inDays(3650)),
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    // Added to: still no longer needed, its new date reminding of nothing.
+    expect((await docOf(adult, docId)).status.value).toBe('no_longer_needed');
+    expect((await reminders(docId)).filter((r) => r.status !== 'resolved')).toEqual([]);
+
+    // Another, added while it was needed, and marked before its Undo: the
+    // document has moved on, so the copy is kept, and the reminders the
+    // accept resolved stay resolved.
+    const back = await call(adult, 'DELETE', `/api/v1/documents/${docId}/no-longer-needed`);
+    expect(back.statusCode, back.body).toBe(200);
+    expect(
+      (await reminders(docId)).some((r) => r.status === 'due' || r.status === 'scheduled'),
+    ).toBe(true);
+    const y = await readItem(
+      adult,
+      passport({ who: adult.member_id, issuer, number: 'NLN-S1-1', expires: inDays(5000) }),
+    );
+    const again = await accept(adult, y.batchId, y.item.id, { into_document_id: docId });
+    expect(again.statusCode, again.body).toBe(201);
+    const remarked = await call(adult, 'POST', `/api/v1/documents/${docId}/no-longer-needed`, {});
+    expect(remarked.statusCode, remarked.body).toBe(200);
+    expect((await undone(adult, y.batchId, [y.item.id])).restored).toEqual([]);
+    expect(
+      (await reminders(docId)).filter(
+        (r) => r.status !== 'resolved' && r.status !== 'acknowledged',
+      ),
+    ).toEqual([]);
+    expect((await docOf(adult, docId)).status.value).toBe('no_longer_needed');
+  });
+
   it('a version accept teaches only what the card sent: a blank date that keeps the document’s, and the document’s own issuer, are no correction (L4)', async () => {
     const docId = await filed(adult, {
       title: 'Sana’s taught passport',

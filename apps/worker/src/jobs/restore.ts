@@ -1181,6 +1181,15 @@ const GUARDS = [
     table: 'document_type_setting',
     fn: 'document_type_setting_not_note',
   },
+  // Whoever may change a document marks it no longer needed, as themselves,
+  // now, replaced by one they can see; and nothing reminds of one that is
+  // (0082, 0.9.0).
+  {
+    name: 'document_no_longer_needed_rule',
+    table: 'document',
+    fn: 'document_no_longer_needed_rule',
+  },
+  { name: 'reminder_not_for_unneeded', table: 'reminder', fn: 'reminder_not_for_unneeded' },
 ];
 
 /**
@@ -1271,6 +1280,13 @@ const REQUIRED_CHECKS = [
     name: 'reading_check_numbers_only',
     table: 'reading_check',
     what: 'a Reading check’s numbers, numbers only',
+  },
+  // Why an Only me document is no longer needed is sealed, and plain on
+  // no other (0082, 0.9.0).
+  {
+    name: 'document_no_longer_needed_reason_sealed',
+    table: 'document',
+    what: 'why an Only me document is no longer needed, kept sealed',
   },
 ];
 

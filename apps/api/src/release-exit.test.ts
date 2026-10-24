@@ -509,6 +509,13 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/documents/:id/versions': { who: 'signedIn' },
   'POST /api/v1/documents/:id/versions': { who: 'family', file: 'pdf' },
   'POST /api/v1/documents/:id/restore': { who: 'family', body: () => ({}) },
+  // No longer needed, and needed again (0.9.0): whoever may change it —
+  // never a viewer or a guest — and replaced only by one they can see.
+  'POST /api/v1/documents/:id/no-longer-needed': {
+    who: 'family',
+    bodies: (f) => [{}, { reason: 'Marked by an attacker', replaced_by: f.document }],
+  },
+  'DELETE /api/v1/documents/:id/no-longer-needed': { who: 'family' },
   'POST /api/v1/documents/:id/purge': { who: 'owners', body: () => ({}) },
   'GET /api/v1/versions/:id/thumbnail': { who: 'signedIn' },
   'GET /api/v1/versions/:id/pages/:n': { who: 'signedIn' },
@@ -1229,6 +1236,17 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     ]);
     await ok(
       send(ahmed, 'POST', `/api/v1/documents/${priv.id}/visibility`, { visibility: 'private' }),
+    );
+    // His tax return, which the family and his limited viewers see, no longer
+    // needed (0.9.0): replaced by his Only me papers, which nobody else is
+    // told of — neither their title nor their id, in any answer (base).
+    await ok(
+      send(
+        ahmed,
+        'POST',
+        `/api/v1/documents/${(doc.ahmedTax as { id: string }).id}/no-longer-needed`,
+        { reason: 'Filed again with the new papers', replaced_by: priv.id },
+      ),
     );
     // And his Only me note (0.9.0, N1).
     const kept = await ok(

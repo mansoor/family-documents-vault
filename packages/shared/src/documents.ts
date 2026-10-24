@@ -13,8 +13,22 @@ export interface DateValue {
   precision: DatePrecision;
 }
 
+/**
+ * `no_longer_needed` (0.9.0): kept, but something else made it unnecessary —
+ * its expiry says nothing and nothing reminds of it. `deriveStatus` gives it
+ * whatever the expiry and what is missing, second only to `superseded`. New since 0.9.0: an
+ * older client shows it, as every value it has not heard of, by its label
+ * (API spec, rule 3), and is never told it has expired.
+ */
 export type StatusValue =
-  'active' | 'expiring_soon' | 'expired' | 'valid' | 'needs_info' | 'superseded' | 'missing';
+  | 'active'
+  | 'expiring_soon'
+  | 'expired'
+  | 'valid'
+  | 'needs_info'
+  | 'superseded'
+  | 'missing'
+  | 'no_longer_needed';
 
 export interface Status {
   value: StatusValue;
@@ -117,7 +131,48 @@ export interface DocumentView {
    * Trash. Absent everywhere else, and from older vaults.
    */
   collections?: Array<{ id: string; name: string }>;
+  /**
+   * Kept, but no longer needed (0.9.0, `features.no_longer_needed`): null
+   * while it is needed, which is always so on an older vault (absent). Its
+   * status is then `no_longer_needed`, and nothing reminds of it.
+   */
+  no_longer_needed?: NoLongerNeededView | null;
   etag: string;
+}
+
+/** The longest reason a document is no longer needed, in characters (0.9.0). */
+export const NO_LONGER_NEEDED_REASON_MAX = 200;
+
+/** What a document no longer needed says for its status, to every client (0.9.0). */
+export const NO_LONGER_NEEDED_LABEL = 'No longer needed';
+
+/** What a replacement the reader may not see is called: never its title, nor its id. */
+export const ANOTHER_DOCUMENT = 'another document';
+
+/** A document marked no longer needed (0.9.0): when, by whom, why, and what replaced it. */
+export interface NoLongerNeededView {
+  /** When it was marked. */
+  at: string;
+  /**
+   * Who marked it, as the household knows them — on the activity log's
+   * terms, as `notes_updated_by_name`: null to a viewer, and when that
+   * person has left the household.
+   */
+  by_name: string | null;
+  /**
+   * Why, as written (at most `NO_LONGER_NEEDED_REASON_MAX` characters). An
+   * Only me document's is sealed as its notes are: given to its owner's own
+   * look at it, and null in a list, where `has_reason` says there is one.
+   */
+  reason: string | null;
+  has_reason: boolean;
+  /**
+   * The document that replaced it. To a reader who may not see that one —
+   * somebody else's Only me document, one in the Trash, one outside their
+   * grant — both are null: "Replaced by another document", never its title
+   * or its id. Null when nothing was named, or what was is gone for good.
+   */
+  replaced_by: { id: string | null; title: string | null } | null;
 }
 
 /**
@@ -986,6 +1041,8 @@ export interface StatusInput {
   owner_member_id: string | null;
   expires: DateValue | null;
   superseded?: boolean;
+  /** Marked no longer needed (0.9.0): its expiry, and what it lacks, say nothing. */
+  no_longer_needed?: boolean;
   /**
    * The required fields it has no value for, as `missingFields` finds them
    * (0.5.7). Left out, only the expiry date is asked for, as before.
@@ -1009,6 +1066,7 @@ function daysBetween(fromIso: string, toIso: string): number {
  */
 export function deriveStatus(doc: StatusInput, todayIso: string): Status {
   if (doc.superseded) return { value: 'superseded', label: 'Replaced by a newer version' };
+  if (doc.no_longer_needed) return { value: 'no_longer_needed', label: NO_LONGER_NEEDED_LABEL };
   if (!doc.type) return { value: 'needs_info', label: 'Needs a name' };
   if (!doc.owner_member_id) return { value: 'needs_info', label: 'Needs a person' };
   const missing = [...(doc.missing ?? [])];

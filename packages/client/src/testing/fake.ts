@@ -118,6 +118,7 @@ import {
   revealIdentity,
   libraryHasName,
   missingFields,
+  NO_LONGER_NEEDED_REASON_MAX,
   nextReminder,
   ageOn,
   CHILD_BIRTHDAY_REFUSAL,
@@ -542,6 +543,16 @@ type FakeDocument = {
    */
   notes_updated_at?: string | null;
   notes_updated_by?: string | null;
+  /**
+   * No longer needed (0.9.0): when, by whom (a member id), why, and what
+   * replaced it, as the real vault keeps it. Absent or null while needed.
+   */
+  no_longer_needed?: {
+    at: string;
+    by: string | null;
+    reason: string | null;
+    replaced_by: string | null;
+  } | null;
 } & Omit<CaptureMetadata, 'title'>;
 
 /** A computer that sends scans, as the fake keeps one (0.8.0, D1). */
@@ -2211,6 +2222,7 @@ export function createFakeVault(): {
           notes: true,
           // The family's time zone (0.9.0, TZ).
           household_timezone: true,
+          no_longer_needed: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -2377,11 +2389,27 @@ export function createFakeVault(): {
       return 'id' in s && seesLocation(whoOf(s).role);
     };
     /** A document as the real vault answers it, with its status in words (0.5.7). */
+    /**
+     * A replacement as the reader sees it (0.9.0): one in the vault, out of
+     * the Trash, that they may see — anything else is neither named nor given.
+     */
+    const replacement = (id: string) => {
+      const s = session();
+      const who = 'id' in s ? whoOf(s) : null;
+      const d = state.documents.find((x) => x.id === id && !x.deleted_at);
+      if (!d || !who) return null;
+      const seen =
+        (d.visibility ?? 'household') === 'household' ||
+        (d.visibility === 'adults' && can(who.role, 'document.see_adults')) ||
+        (d.visibility === 'private' && d.owner_member_id === who.memberId);
+      return seen ? { id: d.id, title: d.title } : null;
+    };
     const viewOf = (doc: FakeDocument) =>
       documentView(doc, state.types, {
         role: state.role,
         editorName,
         location: locationShown(),
+        replacement,
       });
     /** As a list answers it: an Only me document's notes and details stay sealed (0.5.8). */
     const listedOf = (doc: FakeDocument) =>
@@ -2390,6 +2418,7 @@ export function createFakeVault(): {
         role: state.role,
         editorName,
         location: locationShown(),
+        replacement,
       });
     /**
      * GET /documents sorted by a column (R2), as the real vault answers it
@@ -2724,7 +2753,80 @@ export function createFakeVault(): {
         .filter((d) => Boolean(d.deleted_at) === inTrash)
         .filter((d) => asked === undefined || Boolean(d.purge_requested_at) === (asked === 'true'))
         .filter((d) => !by || d.issued_by?.toLowerCase() === by.trim().toLowerCase());
-      return ok({ items: items.map(listedOf), next_cursor: null, has_more: false });
+      // ?status= as the real vault filters it: by the status each one says.
+      const status = param(url, 'status');
+      const listed = items.map(listedOf).filter((d) => !status || d.status.value === status);
+      return ok({ items: listed, next_cursor: null, has_more: false });
+    }
+    // No longer needed, and needed again (0.9.0), as the real vault keeps it:
+    // for whoever may change it, replaced by one they can see, its reminders
+    // resolved as it is marked.
+    const unneededAt = /^\/api\/v1\/documents\/([^/]+)\/no-longer-needed$/.exec(path);
+    if (unneededAt && (init.method === 'POST' || init.method === 'DELETE')) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!can(who.role, 'document.edit')) {
+        return fail(403, 'forbidden', refusalFor('document.edit'));
+      }
+      const doc = state.documents.find(
+        (d) => d.id === decodeURIComponent(unneededAt[1] as string) && !d.deleted_at,
+      );
+      if (!doc) return fail(404, 'not_found', 'That document is not in the vault.');
+      if (who.role === 'teen' && doc.owner_member_id !== who.memberId) {
+        return fail(403, 'forbidden', 'You can only change your own documents.');
+      }
+      if (init.method === 'DELETE') {
+        doc.no_longer_needed = null;
+        doc.revision = (doc.revision ?? 1) + 1;
+        return ok(viewOf(doc));
+      }
+      const asked = body as { reason?: string | null; replaced_by?: string | null };
+      // Left out, kept as it is; null takes it away (the review, M1).
+      const reason =
+        asked.reason === undefined
+          ? (doc.no_longer_needed?.reason ?? null)
+          : asked.reason?.trim()
+            ? asked.reason.trim()
+            : null;
+      if (reason !== null && [...reason].length > NO_LONGER_NEEDED_REASON_MAX) {
+        return fail(
+          422,
+          'validation_failed',
+          `Keep why to ${NO_LONGER_NEEDED_REASON_MAX} characters.`,
+          'reason',
+        );
+      }
+      const replacedBy =
+        asked.replaced_by === undefined
+          ? (doc.no_longer_needed?.replaced_by ?? null)
+          : asked.replaced_by;
+      if (replacedBy !== null && asked.replaced_by !== undefined) {
+        if (!replacement(replacedBy)) {
+          return fail(
+            422,
+            'validation_failed',
+            'That document is not in the vault.',
+            'replaced_by',
+          );
+        }
+        if (replacedBy === doc.id) {
+          return fail(422, 'validation_failed', 'A document cannot replace itself.', 'replaced_by');
+        }
+      }
+      doc.no_longer_needed = {
+        at: doc.no_longer_needed?.at ?? new Date().toISOString(),
+        by: doc.no_longer_needed?.by ?? who.memberId,
+        reason,
+        replaced_by: replacedBy,
+      };
+      doc.revision = (doc.revision ?? 1) + 1;
+      for (const r of state.reminders) {
+        if (r.document_id === doc.id && ['scheduled', 'due', 'snoozed'].includes(r.status)) {
+          r.status = 'resolved';
+        }
+      }
+      return ok(viewOf(doc));
     }
     // Into the Trash, out of it, and out of the vault for good (5.1, 5.24),
     // as the real vault keeps them.
@@ -6106,7 +6208,9 @@ export function createFakeVault(): {
     if (path === '/api/v1/reminders' && init.method === 'GET') {
       const s = session();
       if (!('id' in s)) return s;
-      return ok({ items: state.reminders });
+      // Nothing reminds of a document no longer needed (0.9.0).
+      const unneeded = new Set(state.documents.filter((d) => d.no_longer_needed).map((d) => d.id));
+      return ok({ items: state.reminders.filter((r) => !unneeded.has(r.document_id)) });
     }
     return fail(404, 'not_found', `The fake vault has no ${init.method} ${path}.`);
   };
@@ -6356,6 +6460,8 @@ function documentView(
     editorName?: (memberId: string) => string | null;
     /** Whether the reader sees where the original is kept (5.41): null unless they do. */
     location?: boolean;
+    /** A replacement as the reader sees it (0.9.0): its id and title, or null when they may not. */
+    replacement?: (documentId: string) => { id: string; title: string | null } | null;
   } = {},
 ): DocumentView {
   const type = types.find((t) => t.key === doc.type_key);
@@ -6395,12 +6501,29 @@ function documentView(
     purge_at_once:
       Boolean(doc.deleted_at) && opts.role === 'owner' && doc.filedBySomeoneElse !== true,
     file_removed: false,
+    // No longer needed (0.9.0), as the real vault says it: an Only me one's
+    // reason sealed in a list, and a replacement the reader may not see
+    // neither named nor given by id.
+    no_longer_needed: doc.no_longer_needed
+      ? {
+          at: doc.no_longer_needed.at,
+          by_name: doc.no_longer_needed.by
+            ? (opts.editorName?.(doc.no_longer_needed.by) ?? null)
+            : null,
+          reason: sealed ? null : doc.no_longer_needed.reason,
+          has_reason: doc.no_longer_needed.reason !== null,
+          replaced_by: doc.no_longer_needed.replaced_by
+            ? (opts.replacement?.(doc.no_longer_needed.replaced_by) ?? { id: null, title: null })
+            : null,
+        }
+      : null,
     etag: etagOf(doc),
     status: deriveStatus(
       {
         type: type ?? null,
         owner_member_id: doc.owner_member_id ?? null,
         expires,
+        no_longer_needed: Boolean(doc.no_longer_needed),
         // Never, to whoever may not see where the original is kept, that a
         // document needs it (5.41) — and so never in the table's sort or
         // filter by status either, which are this (R2).

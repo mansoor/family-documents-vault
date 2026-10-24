@@ -2780,8 +2780,9 @@ export class BatchService {
       id: string;
       title: string | null;
       by_number: boolean;
+      no_longer_needed: boolean;
     }>`
-      select c.item_id, d.id, d.title,
+      select c.item_id, d.id, d.title, d.no_longer_needed_at is not null as no_longer_needed,
              (c.number is not null and d.identifier is not null
               and lower(regexp_replace(d.identifier, ${strip}, '', 'g')) = c.number) as by_number
         from unnest(${asked.map((a) => a.id)}::uuid[],
@@ -2807,7 +2808,14 @@ export class BatchService {
     for (const r of found.rows) {
       const list = out.get(r.item_id) ?? [];
       if (list.length >= RENEWALS_MAX) continue;
-      list.push({ document_id: r.id, title: r.title, by: r.by_number ? 'number' : 'details' });
+      list.push({
+        document_id: r.id,
+        title: r.title,
+        by: r.by_number ? 'number' : 'details',
+        // Marked no longer needed (0082): its uploader is asked, once it is
+        // added, whether it is needed again — never made so by the adding.
+        ...(r.no_longer_needed ? { no_longer_needed: true } : {}),
+      });
       out.set(r.item_id, list);
     }
     return out;

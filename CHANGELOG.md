@@ -6,6 +6,12 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.14] - 2026-10-24 — a document can be no longer needed
+
+### Added
+
+- **No longer needed: keep a document, and silence its expiry (0.9.0).** An EAD card made unnecessary by a green card can stay in the vault — read, found, shared and in its collections as before — without anybody being reminded to renew it. **Mark as no longer needed** is on a document's page, in its ⋯ menu wherever it is listed, in the Documents table's bar for many at once (one reason and replacement for all; those not yours to change are left and named), and beside a reminder in Needs attention (**Not needed any more**, where a reminder's email and notification lead): a small dialog asks why (optional, up to 200 characters) and what replaced it (optional: a document you can see, found as you type, the same person's offered first). Its reminders are resolved at once, with no email, notification or digest line, and none is made while it stays so; it leaves Needs attention, Home's attention cards and the expiring and expired counts, and its status says **No longer needed**. Its page says "No longer needed since 23 Oct 2026 · Replaced by Green card · Needed again"; **Needed again** brings its reminders back as its dates say now. The Documents table filters by it (shown under Any status, never among the expiring or expired). A checklist line asking for a "current" or "valid" document passes it by; a plain line still finds it, with "No longer needed" beside it. Adding a new version to one asks whether it is needed again, and never makes it so by itself. Whoever may change a document marks it (a teen only their own; never a viewer or a guest), and the database holds the same rule. A replacement you may not see — somebody else's Only me document — is shown as "another document", never by its name; on an Only me document, why is kept sealed where its notes are. Changing why later keeps what you did not touch — a replacement you may not see stays as it is. **Needed again** brings back the same reminders, so a snooze is kept and nothing already sent is sent again. A household export says it too: since when, why, and what replaced it where you can see that. Marking it, and marking it needed again, are in the activity log. Older phone apps keep working: they show the document by its new status's words and get no reminders for it, because the vault makes none. Migration 0082.
+
 ## [0.9.0-dev.13] - 2026-10-23 — a small reading model for kinds
 
 ### Added

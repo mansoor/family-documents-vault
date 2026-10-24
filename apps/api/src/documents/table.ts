@@ -206,6 +206,12 @@ const COLUMNS = sql.raw(
     'purge_requested_at',
     'notes_updated_at',
     'notes_updated_by',
+    // No longer needed (0082): when, by whom, why, and what replaced it.
+    'no_longer_needed_at',
+    'no_longer_needed_by',
+    'no_longer_needed_reason',
+    'no_longer_needed_reason_sealed',
+    'replaced_by',
   ]
     .map((c) => `d.${c}`)
     .join(', '),
@@ -367,6 +373,7 @@ type StatusRow = Pick<
   | 'tags'
   | 'extra'
   | 'sealed_details'
+  | 'no_longer_needed_at'
 > & { has_notes: boolean; has_sealed_notes: boolean };
 
 const STATUS_COLUMNS = sql.raw(
@@ -384,6 +391,7 @@ const STATUS_COLUMNS = sql.raw(
     'tags',
     'extra',
     'sealed_details',
+    'no_longer_needed_at',
   ]
     .map((c) => `d.${c}`)
     .concat(['d.notes is not null as has_notes', 'd.notes_sealed is not null as has_sealed_notes'])

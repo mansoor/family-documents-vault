@@ -207,6 +207,10 @@ export interface FakeCollection {
 }
 
 export interface FakeState {
+  /** Each POST and DELETE of /documents/{id}/no-longer-needed (0.9.0), as sent. */
+  unneededCalls?: Array<{ method: string; id: string; body: unknown }>;
+  /** Refuse them so, to see what the dialog says. */
+  unneededRefusal?: { status: number; code: string; message: string };
   setupRequired: boolean;
   displayName: string;
   members: Array<Record<string, unknown>>;
@@ -1098,6 +1102,7 @@ export function installFakeApi(state: FakeState) {
           document_table: true,
           // The family's time zone (0.9.0, TZ).
           household_timezone: true,
+          no_longer_needed: true,
           ...(state.notes ? { notes: true } : {}),
           ...(state.collections ? { collections: true } : {}),
           ...(state.collections && state.collectionChecklist !== false
@@ -4409,6 +4414,9 @@ export function installFakeApi(state: FakeState) {
       // One person's (5.17c): their documents, and their profile's first few.
       const whose = query.get('member_id');
       if (whose) items = items.filter((d) => d.owner_member_id === whose);
+      // By the status each one says, as the vault filters it (0.9.0's no longer needed).
+      const status = query.get('status');
+      if (status) items = items.filter((d) => (d.status as { value?: string })?.value === status);
       return json({ items: items.map(listed), next_cursor: null, has_more: false });
     }
     if (path === '/api/v1/issuers') {
@@ -4509,6 +4517,80 @@ export function installFakeApi(state: FakeState) {
           items: [],
         },
       );
+    }
+    // No longer needed, and needed again (0.9.0), as the vault keeps it: for
+    // whoever may change it, its reminders resolved, a replacement one the
+    // reader can see, and its status said; its status as it was, once needed.
+    const unneededMatch = /^\/api\/v1\/documents\/([^/]+)\/no-longer-needed$/.exec(path);
+    if (unneededMatch && (method === 'POST' || method === 'DELETE')) {
+      (state.unneededCalls ??= []).push({ method, id: unneededMatch[1] as string, body });
+      if (state.unneededRefusal) {
+        const r = state.unneededRefusal;
+        return refuse(r.status, r.code, r.message);
+      }
+      const role = storedRole();
+      if (role === 'viewer') {
+        return refuse(
+          403,
+          'forbidden',
+          'Viewers can open and download documents, but not change them.',
+        );
+      }
+      const doc = state.documents.find((d) => d.id === unneededMatch[1] && !d.deleted_at);
+      if (!doc) return refuse(404, 'not_found', 'That document is not in the vault.');
+      if (method === 'DELETE') {
+        const before = (doc as { status_before_unneeded?: unknown }).status_before_unneeded;
+        Object.assign(doc, {
+          no_longer_needed: null,
+          status: before ?? { value: 'active', label: 'Valid' },
+          etag: `"${String(doc.id)}-needed"`,
+        });
+        return json(doc);
+      }
+      const sent = body as { reason?: string | null; replaced_by?: string | null };
+      const replaced = sent.replaced_by
+        ? state.documents.find((d) => d.id === sent.replaced_by && !d.deleted_at)
+        : null;
+      if (sent.replaced_by && !replaced) {
+        return refuse(422, 'validation_failed', 'That document is not in the vault.');
+      }
+      const was = doc.no_longer_needed as {
+        at?: string;
+        by_name?: string | null;
+        reason?: string | null;
+        replaced_by?: { id: string | null; title: string | null } | null;
+      } | null;
+      // Left out, kept as it is; null takes it away (the review, M1).
+      const reason =
+        sent.reason === undefined ? (was?.reason ?? null) : sent.reason?.trim() || null;
+      const replacedBy =
+        sent.replaced_by === undefined
+          ? (was?.replaced_by ?? null)
+          : replaced
+            ? { id: replaced.id, title: replaced.title ?? null }
+            : null;
+      Object.assign(doc, {
+        status_before_unneeded:
+          (doc as { status_before_unneeded?: unknown }).status_before_unneeded ?? doc.status,
+        status: { value: 'no_longer_needed', label: 'No longer needed' },
+        no_longer_needed: {
+          at: was?.at ?? '2026-10-23T10:00:00Z',
+          by_name: was?.by_name ?? 'Mansoor Seikh',
+          reason,
+          has_reason: reason !== null,
+          replaced_by: replacedBy,
+        },
+        etag: `"${String(doc.id)}-unneeded"`,
+      });
+      for (const r of state.reminders ?? []) {
+        if (
+          r.document_id === doc.id &&
+          ['scheduled', 'due', 'snoozed'].includes(String(r.status))
+        ) {
+          r.status = 'resolved';
+        }
+      }
+      return json(doc);
     }
     const restoreMatch = /^\/api\/v1\/documents\/([^/]+)\/restore$/.exec(path);
     if (restoreMatch && method === 'POST') {

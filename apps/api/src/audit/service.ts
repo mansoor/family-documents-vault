@@ -241,6 +241,10 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // whoever may see the document, as an edit's is.
   ['document.tags_changed', BY_TYPE],
   ['document.version_added', BY_TYPE],
+  // 0.9.0: marked no longer needed, and needed again — never why, nor what
+  // replaced it: the document's line, for whoever may see the document.
+  ['document.no_longer_needed', BY_TYPE],
+  ['document.needed_again', BY_TYPE],
   // 0.8.0 (S1): a copy added from a batch and taken back: the document's
   // line, for whoever may see the document, as its adding was.
   ['batch.version_undone', BY_TYPE],

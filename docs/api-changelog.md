@@ -5565,6 +5565,87 @@ not_found` ("A note has no file") and `…/pages/{n}` `404 no_preview`.
       reading-model-rules.ts (`applyReadingModel`, `modelMayPropose` and the
       thresholds); `ReadingSettings` (with `loaded`); `features.reading_model`.
       `@fdv/client`: `readingSettings`, `setReadingSettings`.
+  - No longer needed (0.9.0, migration 0082): a document kept — read,
+    found, shared and in its collections as ever — whose expiry says
+    nothing any more. Everything is **additive** but where it says
+    otherwise.
+    - **New `features`:** `no_longer_needed`, `true`; absent from older
+      vaults.
+    - **New routes:** `POST /api/v1/documents/{id}/no-longer-needed`
+      `{ reason?, replaced_by? }` marks it; `DELETE` on the same path marks
+      it needed again. Each answers the `DocumentView` and its `ETag`. For
+      whoever may change the document: `403 forbidden` to a viewer or a
+      guest (before the body is read) and to a teen for one not their own;
+      `404` for one the caller cannot see, or in the Trash. `reason` is
+      trimmed, at most 200 characters (`422 validation_failed`, `detail:
+"reason"`); `replaced_by` is the id of another document the caller can
+      see, out of the Trash — any other, or one that is not there, is `422
+validation_failed` "That document is not in the vault." with `detail:
+"replaced_by"`, the same words either way, so it says nothing of what
+      somebody else keeps; itself is `422` too. Each field left out is
+      kept as it is, and only `null` (or a blank reason) takes it away: a
+      client asking again sends only what the person changed, so a
+      replacement it was not shown ("another document") is never wiped.
+      Asked again while marked, what is sent changes, and when and by whom
+      it was marked stay. `DELETE` on one that is needed already answers it
+      as it is.
+    - **New field** on `DocumentView`: `no_longer_needed` — null while it
+      is needed — `{ at, by_name, reason, has_reason, replaced_by }`: when;
+      who, on the activity log's terms (null to a viewer or a guest, and
+      for somebody who has left); why — an Only me document's sealed as its
+      notes are, given to its owner's own look at it and null in a list,
+      `has_reason` saying there is one; and `replaced_by`, `{ id, title }`
+      of the document that replaced it, both `null` to a reader who may
+      not see that document (somebody else's Only me, one in the Trash, one
+      outside a grant): "another document", never its title or its id.
+      `null` when nothing was named, or what was is removed for good.
+    - **New status value:** `no_longer_needed`, label `No longer needed`,
+      whatever its expiry or what it lacks (second only to `superseded`,
+      which no vault gives yet). An older client
+      shows it by its label, as rule 3 above has always asked; the phone's
+      clients (v0.5.0-rc.1, v0.5.11) are run against it. It is last of
+      the statuses in a sort by status (`STATUS_ORDER`), and `GET
+/api/v1/documents?status=no_longer_needed` (the older list's filter
+      and the table's) lists them.
+    - **Changed answers:** while a document is marked, nothing reminds of
+      it: its scheduled, due and snoozed reminders are resolved as it is
+      marked; none is made by an edit of its dates, a change to its kind,
+      a new version, a restore or the worker; `GET /api/v1/reminders`
+      leaves them out; and it is in no digest, email or push. `POST
+/api/v1/reminders` for it is `409 no_longer_needed`, and so is a
+      snooze of one of its reminders; Done on one is answered as it is.
+      An older phone that kept a reminder from before it was marked and
+      snoozes it is told the refusal's words, or its own general error,
+      as it shows any refusal it has not heard of; nothing else changes.
+      Marked needed again, the reminders the marking resolved are open
+      again as their days say — the same ones, so a snooze is kept and one
+      already sent is not sent again — its kind's checked against its date
+      as it is then (one about a date it no longer holds goes, one missing
+      is made), and of them at most one due, the nearest. What was done
+      with before it was marked stays done. An open reminder written for
+      a document the writer cannot see is refused (`check_violation` in
+      the database), marked or not. The activity log has two new lines,
+      `document.no_longer_needed` and `document.needed_again` ("marked …
+      no longer needed", "marked … needed again"), with no detail; a
+      change to the reason is `document.updated` with `fields:
+["no_longer_needed"]`. On a batch item, a `renewals` entry for a
+      document so marked carries `no_longer_needed: true`; adding the item
+      as its new version leaves it marked. In a checklist, a line asking
+      for a current or valid document passes one marked by, and a plain
+      line's match for one has the note "No longer needed". A household
+      export says it too: `no_longer_needed` (`{ since, reason,
+replaced_by }`, or null) on each document in `index.json`, a
+      `no_longer_needed` column in `index.csv`, after `notes`, and a line in
+      `index.html` — its replacement by title only where that is in the same
+      export, else "another document", and an Only me reason only in its
+      owner's own export.
+    - `@fdv/shared`: `NoLongerNeededView`, `NO_LONGER_NEEDED_REASON_MAX`,
+      `NO_LONGER_NEEDED_LABEL`, `ANOTHER_DOCUMENT`,
+      `CHECKLIST_NO_LONGER_NEEDED_NOTE`; `StatusInput.no_longer_needed`,
+      `ChecklistDoc.no_longer_needed`, `BatchRenewal.no_longer_needed`.
+      `@fdv/client`: `markNoLongerNeeded`, `markNeededAgain`; the fake
+      answers both routes, filters the older list by `status`, and leaves a
+      marked document's reminders out of `GET /reminders`.
 
 ## Deprecations in effect
 

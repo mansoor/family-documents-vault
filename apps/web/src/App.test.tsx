@@ -2471,7 +2471,9 @@ describe('reminders from any date, on the web (5.16b)', () => {
     within(screen.getByText(title).closest('li') as HTMLElement)
       .getAllByRole('button')
       .slice(1)
-      .map((b) => b.textContent);
+      .map((b) => b.textContent)
+      // Not a snooze: the way to say its document is no longer needed (0.9.0).
+      .filter((words) => words !== 'Not needed any more');
   const snoozedTo = (state: FakeState, id: string) =>
     state.calls.find((c) => c.url.endsWith(`/reminders/${id}/snooze`))?.body;
 

@@ -187,6 +187,24 @@ async function seed(url: string): Promise<string> {
           and exists (select 1 from document_type where key = 'note' and household_id is null)`,
       [hh],
     );
+    // The first of them no longer needed, replaced by the second, where the
+    // schema has it (0082, 0.9.0): it comes back so, with why.
+    const unneeded = await c.query<{ has: boolean }>(
+      `select exists (select 1 from information_schema.columns
+                       where table_name = 'document' and column_name = 'no_longer_needed_at') as has`,
+    );
+    if (unneeded.rows[0]?.has) {
+      await c.query(
+        `update document d
+            set no_longer_needed_at = now(),
+                no_longer_needed_by = $2,
+                no_longer_needed_reason = 'The green card came',
+                replaced_by = (select id from document where household_id = $1
+                                order by id offset 1 limit 1)
+          where d.id = (select id from document where household_id = $1 order by id limit 1)`,
+        [hh, account],
+      );
+    }
     // An export, made and still to be downloaded (5.27: a restore ends it);
     // and one that failed, which never could be (and is not counted).
     await c.query(
@@ -3244,6 +3262,42 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it('notices the guards of a document no longer needed gone: who marks it, nothing reminding of it, its reason sealed (0082)', async () => {
+    for (const [table, trigger] of [
+      ['document', 'document_no_longer_needed_rule'],
+      ['reminder', 'reminder_not_for_unneeded'],
+    ] as const) {
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        const refused = await checkRestored(target()).then(
+          () => null,
+          (e: unknown) => (e as Error).message,
+        );
+        expect(refused, trigger).toMatch(/guard the vault relies on is missing/);
+        expect(refused, trigger).not.toMatch(new RegExp(trigger));
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    await sql(
+      vault.adminUrl,
+      'alter table public.document drop constraint document_no_longer_needed_reason_sealed',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a check the vault relies on is missing: why an Only me document is no longer needed, kept sealed/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter table public.document add constraint document_no_longer_needed_reason_sealed
+           check ((no_longer_needed_reason is null or visibility <> 'private')
+                  and (no_longer_needed_reason_sealed is null or visibility = 'private'))`,
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it("notices the guard on a note's stamp gone (0057)", async () => {
     await sql(vault.adminUrl, 'alter table public.document disable trigger document_notes_stamp');
     try {
@@ -3514,6 +3568,13 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     // The family's own time zone comes back as it was chosen (0080, TZ).
     const zone = await sql(t.adminUrl, 'select timezone from household');
     expect(zone.rows).toEqual([{ timezone: 'Pacific/Auckland' }]);
+    // A document no longer needed comes back so, with why and by what (0082).
+    const unneeded = await sql(
+      t.adminUrl,
+      `select no_longer_needed_reason as reason, replaced_by is not null as replaced
+         from document where no_longer_needed_at is not null`,
+    );
+    expect(unneeded.rows).toEqual([{ reason: 'The green card came', replaced: true }]);
     // The job queue came back too, and the vault can use it.
     const jobs = await sql(
       t.appUrl,

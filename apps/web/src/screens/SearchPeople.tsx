@@ -43,7 +43,8 @@ import {
 } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { AddToCollection, collectionsOffered, documentsWord } from '../collections.js';
-import { DocActions, useTrashedNote } from '../DocActions.js';
+import { DocActions, mayChange, useTrashedNote } from '../DocActions.js';
+import { NotNeededButton } from '../no-longer-needed.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
 import {
@@ -879,7 +880,7 @@ function FamilyTable(props: {
 }
 
 export function RemindersScreen() {
-  const { authVersion, withToken } = useApp();
+  const { authVersion, withToken, session } = useApp();
   const navigate = useNavigate();
   const trashed = useTrashedNote();
   const [error, setError] = useState<string | null>(null);
@@ -978,6 +979,23 @@ export function RemindersScreen() {
     }
     return out;
   };
+  /**
+   * "Not needed any more" (0.9.0), beside a reminder due, for whoever may
+   * change its document: marked no longer needed, its reminders go.
+   */
+  const notNeeded = (r: ReminderView): ReactNode => {
+    const d = data?.docs.get(r.document_id);
+    const owner = d?.owner_member_id ?? null;
+    if (!mayChange(storedRole(), session.info?.member_id, { owner_member_id: owner })) return null;
+    return (
+      <NotNeededButton
+        documentId={r.document_id}
+        title={r.document_title}
+        ownerMemberId={owner}
+        onDone={reload}
+      />
+    );
+  };
   /** When a reminder coming up is next heard of: "Reminder on 3 Oct". */
   const remindsOn = (r: ReminderView) =>
     `Reminder on ${shortDate(
@@ -1016,6 +1034,7 @@ export function RemindersScreen() {
             snoozes={snoozes}
             remindsOn={remindsOn}
             act={act}
+            notNeeded={notNeeded}
             onChanged={reload}
             onTrashed={trashed.onTrashed}
             others={scans}
@@ -1027,6 +1046,7 @@ export function RemindersScreen() {
           snoozes={snoozes}
           remindsOn={remindsOn}
           act={act}
+          notNeeded={notNeeded}
           onOpen={(id) => void navigate(`/documents/${id}`)}
           onChanged={reload}
           onTrashed={trashed.onTrashed}
@@ -1057,6 +1077,8 @@ function AttentionList(props: {
   snoozes: Snoozes;
   remindsOn: (r: ReminderView) => string;
   act: Act;
+  /** "Not needed any more" for this reminder's document (0.9.0), or nothing. */
+  notNeeded: (r: ReminderView) => ReactNode;
   onOpen: (documentId: string) => void;
   onChanged: () => Promise<unknown>;
   onTrashed: (title: string) => void;
@@ -1090,6 +1112,7 @@ function AttentionList(props: {
               >
                 Done
               </Button>
+              {props.notNeeded(r)}
             </div>
           </li>
         ))}
@@ -1151,6 +1174,8 @@ function AttentionTables(props: {
   snoozes: Snoozes;
   remindsOn: (r: ReminderView) => string;
   act: Act;
+  /** "Not needed any more" for this reminder's document (0.9.0), or nothing. */
+  notNeeded: (r: ReminderView) => ReactNode;
   onChanged: () => Promise<unknown>;
   onTrashed: (title: string) => void;
   /** Something else above needs attention (a scanned file, S3): never "Everything is fine". */
@@ -1239,6 +1264,7 @@ function AttentionTables(props: {
                         >
                           Done
                         </button>
+                        {props.notNeeded(r)}
                       </div>
                     </td>
                   </tr>

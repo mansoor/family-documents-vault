@@ -120,6 +120,9 @@ export function statusTone(
       return { tone: 'warn', icon: 'info', words: status.label };
     case 'active':
       return { tone: 'ok', icon: 'check', words: status.label };
+    // Kept, and nothing to act on (0.9.0): said plainly, never in warning.
+    case 'no_longer_needed':
+      return { tone: 'neutral', icon: 'info', words: status.label };
     default:
       // A value this client has never heard of is shown as its words,
       // plainly (API-02: unknown enum values are opaque).

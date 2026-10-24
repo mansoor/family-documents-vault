@@ -165,10 +165,15 @@ export async function regenerateDerived(
       'document.type_key',
       'document.extra',
       'document.sealed_details',
+      'document.no_longer_needed_at',
     ])
     .where('document.id', '=', documentId)
     .forUpdate()
     .executeTakeFirst();
+  // No longer needed (0082): reminded of nothing, and nothing taken away —
+  // what it had was resolved as it was marked, and is made again from its
+  // date as it is now when it is marked needed again (markedNeededAgain).
+  if (doc?.no_longer_needed_at) return;
   const type =
     doc?.type_key && !doc.deleted_at
       ? await trx
@@ -270,6 +275,131 @@ export async function regenerateDerived(
         lead_days: lead,
         status: fire_at <= today ? 'due' : 'scheduled',
       })
+      .execute();
+  }
+}
+
+// ------------------------------------------------- no longer needed (0082)
+
+/**
+ * A document marked no longer needed (0082, 0.9.0): its open reminders —
+ * scheduled, due or snoozed, its kind's and any set by hand — resolved, by
+ * whoever marked it, at the transaction's moment, which is the moment the
+ * document says it was marked (`no_longer_needed_at`, now()). That is how
+ * marking it needed again knows which the marking resolved, and which were
+ * done with before. In the caller's transaction, as it marks it. How many.
+ */
+export async function silenceReminders(
+  trx: Db,
+  documentId: string,
+  accountId: string,
+): Promise<number> {
+  // Held first, as Done holds one (the review, L3): a digest being sent
+  // holds what it reads (FOR KEY SHARE) until its ledger is written, and a
+  // plain update would not wait for it — resolving under it, then the
+  // digest's ledger saying it went to a document already silent. Held, it
+  // waits for the digest, or the digest waits for it and reads it resolved.
+  const open = await trx
+    .selectFrom('reminder')
+    .select('id')
+    .where('document_id', '=', documentId)
+    .where('status', 'in', ['scheduled', 'due', 'snoozed'])
+    .orderBy('id')
+    .forUpdate()
+    .execute();
+  if (open.length === 0) return 0;
+  const r = await trx
+    .updateTable('reminder')
+    .set({
+      status: 'resolved',
+      acknowledged_by: accountId,
+      acknowledged_at: sql<Date>`now()`,
+    })
+    .where(
+      'id',
+      'in',
+      open.map((o) => o.id),
+    )
+    .where('status', 'in', ['scheduled', 'due', 'snoozed'])
+    .executeTakeFirst();
+  return Number(r.numUpdatedRows);
+}
+
+/**
+ * Marked needed again (0082): what the marking resolved comes back as the
+ * document's date warrants now — the same reminders, open again as their
+ * own days say (due, snoozed till a day still ahead, or waiting), so a
+ * snooze and what was already sent are kept; its kind's checked against its
+ * date as it is now (regenerateDerived) — one about a date it no longer
+ * holds goes, one missing is made — and of them at most one due, the
+ * nearest, as for a document filed today. What was done with before it was
+ * marked stays done.
+ *
+ * `markedAt` is the moment it was marked, as the database wrote it (its
+ * text: a timestamp to the microsecond, which a Date would round). Called
+ * once the document is no longer marked, in the same transaction.
+ */
+export async function remindAgain(
+  trx: Db,
+  householdId: string,
+  documentId: string,
+  markedAt: string,
+  opts: RegenerateOptions = {},
+): Promise<void> {
+  const hh = await trx
+    .selectFrom('household')
+    .select('timezone')
+    .where('id', '=', householdId)
+    .executeTakeFirstOrThrow();
+  const today = localToday(householdZone(hh.timezone));
+  // What the marking resolved, its kind's and those set by hand alike, open
+  // again as each one's own days say — the same rows, so a snooze is kept,
+  // and so is the ledger of what was already sent (reminder_delivery, by
+  // reminder id): nothing told before is told again (the review, L2).
+  const reopened = await trx
+    .updateTable('reminder')
+    .set({
+      status: sql<'due' | 'snoozed' | 'scheduled'>`case
+        when snoozed_until > ${today}::date then 'snoozed'
+        when fire_at <= ${today}::date then 'due'
+        else 'scheduled' end`,
+      snoozed_until: sql<string | null>`case
+        when snoozed_until > ${today}::date then snoozed_until end`,
+      acknowledged_by: null,
+      acknowledged_at: null,
+    })
+    .where('document_id', '=', documentId)
+    .where('status', '=', 'resolved')
+    .where(sql<boolean>`acknowledged_at = ${markedAt}::timestamptz`)
+    .returning(['id', 'kind'])
+    .execute();
+  // Its kind's made again from its date as it is now: one still about that
+  // date is kept as it is; one about a date it no longer holds goes, and
+  // whatever is missing is made (regenerateDerived).
+  await regenerateDerived(trx, householdId, documentId, opts);
+  // And at most one of them due, as for a document filed today: the one
+  // nearest its date. Any other reopened due is done with again, by the one
+  // nearer it — resolved, never deleted, so its ledger stays.
+  const mine = new Set(reopened.filter((r) => r.kind === 'derived').map((r) => r.id));
+  const due = await trx
+    .selectFrom('reminder')
+    .select(['id', 'lead_days'])
+    .where('document_id', '=', documentId)
+    .where('kind', '=', 'derived')
+    .where('status', '=', 'due')
+    .orderBy('lead_days')
+    .orderBy('id')
+    .execute();
+  const later = due.slice(1).filter((r) => mine.has(r.id));
+  if (later.length > 0) {
+    await trx
+      .updateTable('reminder')
+      .set({ status: 'resolved' })
+      .where(
+        'id',
+        'in',
+        later.map((r) => r.id),
+      )
       .execute();
   }
 }
