@@ -104,11 +104,11 @@ export const SCREEN_RULES = {
   },
   // Email in (S4): an owner's.
   emailIn: { may: owner, title: 'Email in', why: 'Only an owner can set up email in.' },
-  // The vault's reading model (0.9.0, R2): an owner's.
+  // How the vault reads papers: the reading model (R2) and the local AI (R4), an owner's.
   reading: {
     may: owner,
     title: 'Reading',
-    why: 'Only an owner can turn the vault’s reading model on or off.',
+    why: 'Only an owner can change how the vault reads papers.',
   },
   // The Reading check (0.9.0, R0): an owner's.
   readingCheck: {

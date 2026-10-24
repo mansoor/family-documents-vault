@@ -566,8 +566,69 @@ By cause, needing typing on the held-out split (of 12): clean 5 → 2, rotated 7
 - **What it broke:** in R1's runs, a paper whose sender's earlier paper the model named rightly, accepted as suggested, which teaches I4 no rule (I4 learns only from what a person changes or fills in), so its own kind was not learned (one surgery summary on the second set in the "rules" run; on the third set, a scanned letter and a surgery letter with folders, in three runs, and a water bill in the "rules" run). The uploader's rules alone lose Ready for the same reason (the second set 24 → 21 and 25 → 22, the third 11 → 8 and 13 → 12); with R1's shapes, as 0.9.0 is, the second set's Ready is unchanged and the third's 15 → 13 with folders, 17 → 17 without. And where a folder names another kind than the model's — a mortgage statement filed under "Tax/P60" — the card says so (`clash_folder`), as it should.
 - **Time:** over every page of the sets' words (663 pages, median 461 characters), the model alone takes 0.25 ms a page (95th percentile 0.69 ms); the whole proposal 1.7 ms with it and 1.3 ms without; a page of 12,000 characters, 2.1 ms. Measured on the owner's machine, busy with other runs. Loading the weights (their size and hash checked) once a thread: a few milliseconds.
 
+## A local AI (R4)
+
+0.9.0's R4 adds an **optional local AI reader**, off by default: a small language model on the household's own server, asked about each paper beside the rules (README, "A local AI reader"). Its answer is one more cue the guards weigh: it may fill a blank, always at Check, or disagree with the rules, and the card is Check; it never makes a card Ready, and on a card the rules make Ready it fills nothing in.
+
+**Result** (24 October 2026, at `feat/9.r4-local-ai`, with `qwen2.5:3b-instruct` in `ollama/ollama:0.40.2` on the CPU alone):
+
+- **Wrong Ready is 0 in every set, with the switch on**, and no card is Ready with it that was not Ready without it (the test fails on either).
+- **Needing typing went from 165 of 657 papers to 126**, beside the rules and the vault's reading model (R2): on the held-out sets from 144 to 109, on the tune sets from 21 to 17. Almost all of it is papers neither could name: Not recognised went from 97 to 7, the local AI's kind offered at Check.
+- **It costs Ready: 231 to 172.** On a card the rules make Ready it fills nothing in, but where it reads the paper otherwise the card goes to Check — 179 cards in all, and on 117 of those the card was right. Mostly kinds a small model confuses: above all a bank statement read as a payslip (77 cards), then a P60 as a tax return or a payslip, a pet's record as a warranty, a doctor's letter as "something else".
+- **It is slow on a processor alone:** a median of 28 seconds a paper, one in ten over a minute.
+
+### Method
+
+`apps/api/src/local-ai-measure.test.ts`, run with `FDV_LOCAL_AI_MEASURE=1` against the test database and a real model (`docker run --rm ollama/ollama:0.40.2`, the model pulled into it; no image built). It does not read the files again: each paper's words are the worker's own reading of it, as R3's runs recorded them (the Smart exit's three sets by each file's SHA-256, and the scan set's rows) — 657 papers, the copies of another file left out (a batch calls them a Problem). Each is proposed for as the proposal thread does (`proposeOnThread`, with the vault's reading model, R2, as it is on by default, and no learned rules), the local AI asked through the worker's own client and prompt, its reply read as the thread reads it (`readLocalAiReply`), and the card levelled for the household's owner as the Reading check levels it — no folder, no defaults — once without the local AI and once with it, and scored by the Smart exit's scorer. So the "before" numbers are the rules and R2's model without folder names, and differ from the tables above, which have them.
+
+The model's own time was given 300 seconds here, so that what it reads could be measured; the vault gives it `FDV_LOCAL_AI_TIMEOUT_SECONDS`, 120 unless set (60 when these were measured), and a paper it does not answer in time is read without it.
+
+The model was asked once for each paper (24 October, before R2 was merged) and its replies kept by the paper's words; the numbers below are those replies read again on the merged tree, R2 on. Those prompts listed the family's names in the order of their ids, which change from run to run; the vault now lists them in alphabetical order (the same family, the same prompt), so a run made now sends them in another order than the replies were given to.
+
+**After the R4 review** the replies were read again under its stricter reading (no invisible characters, numbers and issuers found whole word by whole word and kept as the page writes them): the table below is that, and moved by one card (a scan's number no longer matched across words, so one more Ready). The prompt changed too in the review — the paper's words cut by a token estimate, the task said again after them, `num_ctx` 8,192 — and the whole set was not asked again. Twenty papers of the second set were (25 October): the cards' levels were the same, one more paper needed typing (9 of 20 where it was 8), the model filled more fields on some phone bills and named a pet's booster letter worse, and it took a median of 20 seconds a paper on the same machine.
+
+### Numbers
+
+| Set               | Files | Ready     | Check     | Not recognised | Needs typing | Wrong Ready |
+| ----------------- | ----: | --------- | --------- | -------------- | ------------ | ----------: |
+| First (tune)      |   198 | 112 → 79  | 63 → 116  | 20 → 0         | 8 → 8        |       0 → 0 |
+| Second (held out) |   113 | 22 → 15   | 69 → 92   | 19 → 3         | 36 → 16      |       0 → 0 |
+| Third (held out)  |    82 | 9 → 9     | 52 → 67   | 18 → 3         | 47 → 46      |       0 → 0 |
+| Scans, tune       |   132 | 70 → 56   | 48 → 76   | 14 → 0         | 13 → 9       |       0 → 0 |
+| Scans, held out   |   132 | 18 → 13   | 88 → 118  | 26 → 1         | 61 → 47      |       0 → 0 |
+| All               |   657 | 231 → 172 | 320 → 469 | 97 → 7         | 165 → 126    |       0 → 0 |
+
+(Before → after: the rules and R2's model, then with the local AI on too. Problems, 9, are the same both ways.)
+
+- **What it answered:** 641 papers read; 7 answers not the form, and ignored (each such paper read without it); 9 blank pages never sent.
+- **Where it filled a blank** (184 cards) the paper needed typing in 47 fewer, and in 8 more: papers of no kind — a parking permit, a school trip letter — left Not recognised, given a kind.
+- **Where it read otherwise** (179 cards): 62 times the card needed typing anyway, and the local AI's disagreement says so; 117 times the card was right, and waits for a look it did not need. 59 of those were Ready.
+- **Ready with a lesser detail wrong** (an issue date, a number, an issuer): 9 → 6.
+- **Third set:** it names the kind of most papers the rules could not, but the kind is often wrong (a doctor's letter as a prescription or "something else"), so typing barely moves.
+
+### Time per paper
+
+On the owner's small office PC (a four-core 35 W Ryzen 5 PRO 3400GE), shared with other work, over 648 papers: **median 28 seconds, 95th percentile 72, slowest 264**; 65 (10%) over a minute and 8 (1%) over two: with the default of 120 seconds (60 when measured), those 8 would be read without it. A paper of 500 to 1,500 tokens is read at 10 to 50 tokens a second and answered with 50 to 80. `qwen2.5:1.5b-instruct` was tried on four papers only (18 to 48 seconds each, the first loading the model) and read a council tax bill as a bank statement; it was not measured further. A graphics card makes either many times faster.
+
+To run it again:
+
+```sh
+docker run --rm -d -p 127.0.0.1:11434:11434 -v ollama:/root/.ollama ollama/ollama:0.40.2
+docker exec <container> ollama pull qwen2.5:3b-instruct
+FDV_LOCAL_AI_MEASURE=1 FDV_LOCAL_AI_URL=http://127.0.0.1:11434 FDV_LOCAL_AI_MODEL=qwen2.5:3b-instruct \
+  FDV_LOCAL_AI_TIMEOUT_SECONDS=300 FDV_SMART_TEXT_CACHE=<R3's text cache> FDV_SCAN_SET_ROWS=<R3's scan rows> \
+  FDV_LOCAL_AI_REPLIES=<a file to keep the replies in> DATABASE_ADMIN_URL=postgres://… \
+  npx vitest run apps/api/src/local-ai-measure.test.ts
+```
+
+The Reading check (R0) measures it on a family's own papers: run it with the switch on and off.
+
 ## Anything to decide
 
+- **The local AI (R4): Check on every disagreement, as the brief says, costs Ready.** On these sets a 3B model cuts typing by about a quarter (165 to 126, mostly papers nothing else could name) and Ready by a quarter too (231 to 172), 117 of its 179 disagreements being with a card that was right. Whether a disagreement on the kind alone, from a model this small, should send a sure card to Check, or only be said beside it, is for the Reading check on real papers, run with it on and off. Decided after the R4 review: Check stays the default until then.
+- **The local AI's commonest confusion is a bank statement for a payslip** (77 cards). The prompt gives each kind's key and name and nothing more; a line describing each kind might cure it, but would be tuned on these sets. Decided after the R4 review: not changed.
+- **The local AI's "something else"** is taken as a disagreement where the card has a kind; it could be taken as no say. Decided after the R4 review: not changed (tuning on held-out sets).
+- **The local AI's time:** decided after the R4 review: 120 seconds by default (5 to 300), so on a small office PC about one paper in a hundred is read without it, where one in ten was at 60.
 - **The target is met on what the rules were adjusted on, and far from met on new layouts.** Adjusting the rules on the second set would make it a tune set too. The next honest step, planned for 0.9, is a held-out set of real (redacted) family papers.
 - **School reports are now their own kind.** Diplomas and certificates of achievement stay diplomas.
 - **Whose statement it is, at a bank several of the family use (0.9.0).** Done since, after the third set showed it (above): its numbers are no longer held-out ones. The next held-out set, of real (redacted) family papers, would measure it honestly.

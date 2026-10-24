@@ -236,6 +236,41 @@ const schema = z.object({
     .describe(
       'Let a household mailbox set up in Settings be on an address inside your own network (a mail server on the LAN). Off by default: an owner types the server, and must not be able to point the vault at its own network.',
     ),
+  FDV_LOCAL_AI_URL: z
+    .string()
+    .max(2000)
+    .transform((s, ctx) => {
+      const url = localAiUrl(s);
+      if (typeof url === 'string') {
+        ctx.addIssue({ code: 'custom', message: url });
+        return z.NEVER;
+      }
+      return url;
+    })
+    .optional()
+    .describe(
+      'The local AI reader (0.9.0, R4): an Ollama-compatible endpoint on your own server or ' +
+        'network, such as http://ollama:11434. http or https, no user or password in it. ' +
+        "Unset: there is no local AI. The worker sends it a paper's words and nothing leaves " +
+        'for anywhere else; it must be your own.',
+    ),
+  FDV_LOCAL_AI_MODEL: z
+    .string()
+    .regex(
+      /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/,
+      'a model name such as qwen2.5:3b-instruct or llama3.2:3b',
+    )
+    .optional()
+    .describe('The model the local AI reader asks for, pulled on that endpoint.'),
+  FDV_LOCAL_AI_TIMEOUT_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(5)
+    .max(300)
+    .default(120)
+    .describe(
+      'How long the local AI may take over one paper before it is read without it (5 to 300).',
+    ),
   DATABASE_ADMIN_URL: z
     .string()
     .min(1)
@@ -245,10 +280,36 @@ const schema = z.object({
 
 export type WorkerConfig = z.infer<typeof schema>;
 
-const withMasterKey = schema.refine((c) => c.FDV_MASTER_KEY || c.FDV_MASTER_KEY_FILE, {
-  message: 'set FDV_MASTER_KEY (or FDV_MASTER_KEY_FILE)',
-  path: ['FDV_MASTER_KEY'],
-});
+/**
+ * FDV_LOCAL_AI_URL checked (R4): http or https, a host, no user or password,
+ * no query or fragment; a path is kept as the endpoint's base. The URL, or
+ * what is wrong with it.
+ */
+export function localAiUrl(s: string): URL | string {
+  let url: URL;
+  try {
+    url = new URL(s.trim());
+  } catch {
+    return 'not a URL: give one such as http://ollama:11434';
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'use http:// or https://';
+  if (url.username || url.password) {
+    return 'no user name or password in it: the local AI is on your own network';
+  }
+  if (!url.hostname) return 'give the host: http://ollama:11434';
+  if (url.search || url.hash) return 'no query or # in it';
+  return url;
+}
+
+const withMasterKey = schema
+  .refine((c) => c.FDV_MASTER_KEY || c.FDV_MASTER_KEY_FILE, {
+    message: 'set FDV_MASTER_KEY (or FDV_MASTER_KEY_FILE)',
+    path: ['FDV_MASTER_KEY'],
+  })
+  .refine((c) => !c.FDV_LOCAL_AI_URL || c.FDV_LOCAL_AI_MODEL, {
+    message: 'set FDV_LOCAL_AI_MODEL too: the model to ask for at FDV_LOCAL_AI_URL',
+    path: ['FDV_LOCAL_AI_MODEL'],
+  });
 
 /**
  * An environment variable set to nothing is not set. Compose writes

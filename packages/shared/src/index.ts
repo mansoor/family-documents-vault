@@ -44,3 +44,4 @@ export * from './reading-score.js';
 export * from './reading-check.js';
 export * from './checklist.js';
 export * from './time-zone.js';
+export * from './local-ai.js';

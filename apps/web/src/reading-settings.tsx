@@ -4,6 +4,7 @@ import { flushSync } from 'react-dom';
 import { Link } from 'react-router';
 import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
+import { LocalAiCard } from './local-ai-settings.js';
 import { Check, LoadFailed, TopBar } from './ui.js';
 
 /**
@@ -106,6 +107,8 @@ export function ReadingSettingsScreen() {
           {said}
         </p>
       </section>
+      {/* The local AI (0.9.0, R4): set up by the operator, an owner's switch. */}
+      <LocalAiCard />
     </main>
   );
 }

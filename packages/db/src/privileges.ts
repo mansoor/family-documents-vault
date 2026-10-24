@@ -50,6 +50,10 @@ begin
   if to_regclass('public.mail_in_server') is not null then
     revoke insert, update, delete on public.mail_in_server from fdv_app;
   end if;
+  -- The local AI as each worker last found it (0081, R4): the same.
+  if to_regclass('public.local_ai_state') is not null then
+    revoke insert, update, delete on public.local_ai_state from fdv_app;
+  end if;
   if to_regprocedure('public.invitation_household(bytea)') is not null then
     grant execute on function public.invitation_household(bytea) to fdv_app;
   end if;

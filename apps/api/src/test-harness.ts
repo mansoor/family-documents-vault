@@ -72,6 +72,7 @@ import { WatchFolderService } from './watch-folder/service.js';
 import { ReadingCheckService } from './reading-check/service.js';
 import { MAIL_IN_CODE_KEY_PURPOSE, MailInService } from './mail-in/service.js';
 import { SettingsCheckService } from './settings-checks.js';
+import { LocalAiService } from './household/local-ai.js';
 import { serverVersion } from './version.js';
 
 /**
@@ -358,6 +359,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       ...(opts.now ? { now: opts.now } : {}),
     }),
     settingsChecks,
+    localAi: new LocalAiService(db, settingsChecks),
     pingDatabase: async () => undefined,
     auth,
     totp,

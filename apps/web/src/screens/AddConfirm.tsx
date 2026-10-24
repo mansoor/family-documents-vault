@@ -695,6 +695,20 @@ function CardMark(props: {
   if (mark.from === 'batch' || mark.confidence === null || mark.cue === null) {
     return <span className="mark-batch">from the batch</span>;
   }
+  if (mark.local_ai === true) {
+    // The local AI on the household's own server suggested it (0.9.0, R4): never sure.
+    return (
+      <>
+        <span
+          className="mark-sugg mark-local-ai"
+          title="Suggested by the local AI that runs on your own server, beside the vault’s rules"
+        >
+          suggested by the local AI
+        </span>
+        <span className="mark-unsure">unsure</span>
+      </>
+    );
+  }
   // Unsure as the level says it: only what the pages alone say (the I2
   // review), or the uploader's own rules (I4).
   const sure =

@@ -1021,6 +1021,10 @@ const RULES: Record<string, Rule> = {
   // The vault's reading model on or off (0.9.0, R2): an owner's, both ways.
   'GET /api/v1/household/reading': { who: 'owners' },
   'PUT /api/v1/household/reading': { who: 'owners', body: () => ({ reading_model: true }) },
+  // The local AI's Test (0.9.0, R4): an owner's.
+  'POST /api/v1/household/reading/local-ai/test': { who: 'owners', body: () => ({}) },
+  // Whether the local AI reads their papers (the R4 review, M1): whoever adds them.
+  'GET /api/v1/household/reading/notice': { who: 'family' },
 };
 
 /** Whether a role is among those a rule is for. */

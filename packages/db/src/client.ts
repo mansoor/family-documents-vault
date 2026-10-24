@@ -73,6 +73,11 @@ export interface Schema {
     only_me_shareable: Generated<boolean>;
     /** The vault's reading model on or off for the household (0079, 0.9.0 R2): an owner's. */
     reading_model: Generated<boolean>;
+    /**
+     * The local AI reader on or off for the household (0081, 0.9.0 R4): off
+     * unless an owner turned it on; an owner's alone.
+     */
+    local_ai: Generated<boolean>;
   };
 
   member: {
@@ -1398,6 +1403,20 @@ export interface Schema {
   };
 
   /**
+   * The local AI reader as each worker last found it (0081, 0.9.0 R4): the
+   * model and host the operator set, and whether it answered. The
+   * installation's, a row a worker process; written by the owning role alone.
+   */
+  local_ai_state: {
+    /** The worker process: its host and process id. */
+    worker: string;
+    model: string;
+    host: string;
+    state: 'reachable' | 'unreachable' | 'no_model';
+    checked_at: GeneratedTimestamp;
+  };
+
+  /**
    * The scanner folder as the worker last found it (0068, S3): the
    * installation's, one row. Written by the owning role alone.
    */
@@ -1580,7 +1599,8 @@ export interface Schema {
   settings_check: {
     id: Generated<string>;
     household_id: string;
-    kind: 'folder' | 'browse' | 'mailbox';
+    /** `local_ai`: Test the local AI (0081, R4). */
+    kind: 'folder' | 'browse' | 'mailbox' | 'local_ai';
     path: string | null;
     requested_by: string | null;
     requested_at: GeneratedTimestamp;

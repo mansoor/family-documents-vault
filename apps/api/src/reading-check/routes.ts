@@ -3,10 +3,16 @@ import { READING_CHECK_N } from '@fdv/shared';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
+import type { LocalAiService } from '../household/local-ai.js';
 import { ownerOnly, type ReadingCheckService } from './service.js';
 
 /** The Reading check (0.9.0, R0): an owner's, every route. */
-export function registerReadingCheck(app: FastifyInstance, checks: ReadingCheckService): void {
+export function registerReadingCheck(
+  app: FastifyInstance,
+  checks: ReadingCheckService,
+  /** The local AI's switch (0.9.0, R4), answered beside the reading model's. */
+  localAi?: LocalAiService,
+): void {
   // An owner's: anybody else is refused before their form is read.
   const owners = {
     preHandler: [
@@ -47,15 +53,36 @@ export function registerReadingCheck(app: FastifyInstance, checks: ReadingCheckS
   );
 
   /**
-   * The household's reading settings (0.9.0, R2): the vault's reading model
-   * on or off. An owner's, both ways.
+   * The household's reading settings (0.9.0): the vault's reading model (R2)
+   * and the local AI (R4), each on or off. An owner's, both ways. A PUT
+   * takes either switch or both, and nothing else: where the local AI is,
+   * the operator's .env alone says (R4).
    */
-  app.get('/api/v1/household/reading', owners, async (req) =>
-    checks.readingSettings(principal(req)),
-  );
+  app.get('/api/v1/household/reading', owners, async (req) => ({
+    ...(await checks.readingSettings(principal(req))),
+    ...(localAi ? await localAi.get(principal(req)) : {}),
+  }));
   app.put('/api/v1/household/reading', owners, async (req) => {
-    const body = parse(z.object({ reading_model: z.boolean() }).strict(), req.body ?? {});
-    return checks.setReadingSettings(principal(req), body, metaOf(req));
+    const body = parse(
+      z
+        .object({ reading_model: z.boolean().optional(), local_ai: z.boolean().optional() })
+        .strict()
+        .refine((b) => b.reading_model !== undefined || b.local_ai !== undefined, {
+          message: 'Send reading_model, local_ai or both.',
+        }),
+      req.body ?? {},
+    );
+    const p = principal(req);
+    if (!localAi) {
+      return checks.setReadingSettings(
+        p,
+        { reading_model: body.reading_model ?? true },
+        metaOf(req),
+      );
+    }
+    // Both switches in one transaction (the R4 review): both, or neither.
+    const loaded = await checks.modelLoaded();
+    return { ...(await localAi.setSwitches(p, body, metaOf(req))), loaded };
   });
 
   app.delete<{ Params: { id: string } }>(

@@ -47,6 +47,13 @@ import { resumeBatchItems, sendBatchPreviews, workBatchPreviews } from './jobs/b
 import { ProposalThread } from './jobs/proposal-thread.js';
 import { keepRecordingReadingModel, recordReadingModel } from './reading-model.js';
 import {
+  keepProbingLocalAi,
+  LocalAiClient,
+  localAiHost,
+  localAiSettings,
+  recordLocalAi,
+} from './local-ai.js';
+import {
   READING_CHECK_JOB,
   READING_CHECK_SWEEP_JOB,
   READING_JOB_EXPIRE_SECONDS,
@@ -480,8 +487,30 @@ async function main(): Promise<void> {
     );
   const proposals = new ProposalThread({ onModel: recordModel });
   keepRecordingReadingModel(proposals, recordModel);
+  // The local AI reader (0.9.0, R4): only where the operator set one up in
+  // .env, and asked only for a household that has it on. What it finds of
+  // the endpoint is said for Settings (local_ai_state), now and every few
+  // minutes; one call at a time, the family's papers first.
+  const localAiConf = localAiSettings(config);
+  const recordAi = (state: 'reachable' | 'unreachable' | 'no_model') => {
+    if (!localAiConf) return;
+    void recordLocalAi(dbs.admin, workerName, localAiConf, state).catch((err: unknown) =>
+      log('warn', 'could not record what the local AI is', {
+        err: (err as Error).message.slice(0, 200),
+      }),
+    );
+  };
+  const localAi = localAiConf ? new LocalAiClient(localAiConf, { log, onState: recordAi }) : null;
+  if (localAi && localAiConf) {
+    keepProbingLocalAi(localAi, recordAi);
+    log('info', 'local AI set', {
+      host: localAiHost(localAiConf.url),
+      model: localAiConf.model,
+      timeout_seconds: localAiConf.timeoutMs / 1000,
+    });
+  }
   await workBatchPreviews(boss, incomingDeps, {
-    read: { maxPages: config.FDV_OCR_MAX_PAGES, proposer: proposals },
+    read: { maxPages: config.FDV_OCR_MAX_PAGES, proposer: proposals, localAi },
   });
   // The Reading check (0.9.0, R0): one household's check read a document
   // at a time, on the same thread and tools, behind its batch items, and
@@ -509,6 +538,7 @@ async function main(): Promise<void> {
       const r = await workReadingCheck(readingDeps, job.data, {
         maxPages: config.FDV_OCR_MAX_PAGES,
         proposer: proposals,
+        localAi,
       });
       if (r.next === 'now') await sendCheck(job.data);
       else if (r.next) await sendCheck(job.data, r.next);
@@ -639,6 +669,8 @@ async function main(): Promise<void> {
       reader: mailReader,
       hosts: mailHosts,
     },
+    // Test the local AI (R4): through the same client, its turn the family's.
+    localAi,
   };
   await boss.createQueue(JOBS.settingsCheck, { retryLimit: 0, expireInSeconds: 120 });
   await boss.work(JOBS.settingsCheck, { batchSize: 1, pollingIntervalSeconds: 1 }, async (jobs) => {

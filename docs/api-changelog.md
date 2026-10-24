@@ -5646,6 +5646,57 @@ replaced_by }`, or null) on each document in `index.json`, a
       `@fdv/client`: `markNoLongerNeeded`, `markNeededAgain`; the fake
       answers both routes, filters the older list by `status`, and leaves a
       marked document's reminders out of `GET /reminders`.
+  - The local AI reader, off by default (0.9.0, R4, migration 0081).
+    Everything is **additive**.
+    - **New `features`:** `local_ai` — `true` while a worker has a local AI
+      set up in its `.env` (`FDV_LOCAL_AI_URL`, `FDV_LOCAL_AI_MODEL`) and said
+      so in the last 15 minutes; absent from older vaults.
+    - **Routes** (an owner's; `403 forbidden` to anybody else):
+      - `GET /api/v1/household/reading` (R2's) now also answers
+        `LocalAiSettingsView` `{ local_ai, local_ai_server }` beside
+        `{ reading_model, loaded }`: the household's switch (`false` unless an
+        owner turned it on) and the endpoint as the workers found it,
+        `{ state: "not_set_up" }` or `{ state: "reachable" | "unreachable" |
+"no_model", model, host, checked_at }` — `host` is the URL's host and
+        port alone, never its path.
+      - `PUT /api/v1/household/reading` takes `{ reading_model?, local_ai? }`
+        — either switch or both, at least one, and nothing else: any other key
+        (an address, a model) is `422 validation_failed`, so no endpoint can
+        be set from a client. `{ reading_model }` alone is answered as before.
+        `409 local_ai_unavailable` to turn the local AI on while it is not set
+        up (nothing is changed then); off is always taken. Answers the whole
+        shape; the activity log has a new line, `household.local_ai_changed`
+        (`detail: { local_ai }`), for the owners.
+      - Both switches in one `PUT` are set in one transaction: both, or
+        neither.
+      - **New:** `GET /api/v1/household/reading/notice` — `LocalAiNotice`
+        `{ local_ai, host }`, for whoever adds documents (owners, adults,
+        teens; `403` to a viewer): whether this household's batches are read
+        by the local AI, and on which host and port — said where they add
+        papers. Never the model, nor whether it answered.
+      - **New:** `POST /api/v1/household/reading/local-ai/test` — `202` and a settings
+        check of the new kind `local_ai`, asked after at `GET
+/api/v1/settings-checks/{id}` as the others are; done, it has
+        `local_ai` (`LocalAiTestResult`: `{ problem, model, host, latency_ms,
+words }`, `problem` one of `not_set_up`, `unreachable`, `timeout`,
+        `no_model`, `http_error`, `too_big`, or null). One at a time: `429`
+        while one is unanswered, for a minute.
+    - **New values on a batch item:** a suggestion's `cue` may be `local_ai`,
+      with `local_ai: true` (`ItemSuggestion.local_ai`) — suggested by the
+      local AI where the card had nothing, at a confidence of 0.6, and never
+      Ready: the item is `check` with the new tag `local_ai` ("Suggested by
+      the local AI: kind, expiry"). The new tag `clash_local_ai` (`check`)
+      says where it reads the paper otherwise than the card ("The local AI
+      reads it as a passport"), and `local_ai_without` (`info`, "Read without
+      the local AI") an item read without it while the household has it on.
+      An item read before, or with it off, is as before.
+    - `@fdv/shared`: `local-ai.ts` (`LocalAiSettingsView`, `LocalAiServerView`,
+      `LocalAiTestResult`, `localAiTestResult`, `localAiOffer`,
+      `localAiPrompt`, `localAiRequestBody`, `readLocalAiReply`,
+      `storedLocalAi`, `applyLocalAi`, `LOCAL_AI_*`); `LevelInput.localAi`;
+      `SettingsCheckKind` gains `local_ai`; `PROPOSAL_CUES` gains `local_ai`.
+      `@fdv/client`: `localAiSettings`, `setLocalAi`, `testLocalAi`, `localAiNotice`;
+      `@fdv/shared`: `LocalAiNotice`, `localAiTokens`, `lessonIssuer`.
 
 ## Deprecations in effect
 

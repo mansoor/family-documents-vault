@@ -13,11 +13,13 @@ import {
   watchPathRefusal,
   watchPathWords,
   MAIL_IN_AUTHSERV_AGREE,
+  type LocalAiTestFound,
   type MailInTestFound,
   type WatchBrowseResult,
   type WatchVerifyCheck,
   type WatchVerifyFound,
 } from '@fdv/shared';
+import { localAiHost, type LocalAiClient } from '../local-ai.js';
 import { whyOf } from './intake-ingest.js';
 import { mailHostAddress, type MailHostRules } from './mail-address.js';
 import {
@@ -98,6 +100,35 @@ export interface SettingsCheckDeps {
     /** How long Test the mailbox may take: MAILBOX_TEST_MS, unless a test says less. */
     testMs?: number;
   };
+  /** The local AI's client (R4), where the operator set one up; none, and Test says so. */
+  localAi?: Pick<LocalAiClient, 'test' | 'settings'> | null;
+}
+
+/**
+ * Test the local AI (R4): a tiny fixed prompt — no paper's words — to the
+ * operator's endpoint, through the same client and turn as a paper's, and
+ * whatever its breaker says (the client says what it found, for
+ * local_ai_state). What it found: the model, the host, how long. The reply
+ * is not read, beyond its status: 200 is an answer.
+ */
+export async function testLocalAi(
+  client: Pick<LocalAiClient, 'test' | 'settings'> | null,
+): Promise<LocalAiTestFound> {
+  if (!client) return { problem: 'not_set_up', model: null, host: null, latency_ms: null };
+  const at = { model: client.settings.model, host: localAiHost(client.settings.url) };
+  const got = await client.test();
+  if (got.state === 'replied') return { problem: null, ...at, latency_ms: got.ms };
+  const problem: LocalAiTestFound['problem'] =
+    got.why === 'http_error'
+      ? got.status === 404
+        ? 'no_model'
+        : 'http_error'
+      : got.why === 'too_big'
+        ? 'too_big'
+        : got.why === 'timeout'
+          ? 'timeout'
+          : 'unreachable';
+  return { problem, ...at, latency_ms: null };
 }
 
 /** The question answered, once: a row answered already, or gone, is left as it is. */
@@ -117,7 +148,7 @@ export async function runSettingsCheck(
   const fsx = deps.watch.fs ?? nodeFs;
   // The roots but `/` and any holding one of the vault's own (the O1 review, M4).
   const { accepted } =
-    row.kind === 'mailbox'
+    row.kind === 'mailbox' || row.kind === 'local_ai'
       ? { accepted: [] }
       : await acceptedRoots(deps.watch.roots, deps.watch.ownDirs, fsx);
   const rules = { roots: accepted, ownDirs: deps.watch.ownDirs };
@@ -127,6 +158,8 @@ export async function runSettingsCheck(
       result = await verifyWatchFolder(row.path ?? '', rules, fsx);
     } else if (row.kind === 'browse') {
       result = await browseWatchFolder(row.path ?? '', rules, fsx);
+    } else if (row.kind === 'local_ai') {
+      result = await testLocalAi(deps.localAi ?? null);
     } else {
       result = await testMailbox(deps, hh);
     }
@@ -134,20 +167,27 @@ export async function runSettingsCheck(
     // Said as nothing could be told, never as the error's own words.
     deps.log('warn', 'a check asked for in Settings could not be finished', { err: whyOf(err) });
     result =
-      row.kind === 'mailbox'
-        ? ({ ...emptyTest('none'), problem: 'unreachable' } satisfies MailInTestFound)
-        : row.kind === 'browse'
-          ? ({
-              path: row.path ?? '',
-              folders: [],
-              truncated: false,
-              problem: 'That folder couldn’t be looked in just now. Try again.',
-            } satisfies WatchBrowseResult)
-          : ({
-              path: row.path ?? '',
-              steps: WATCH_VERIFY_CHECKS.map((check) => ({ check, ok: null })),
-              free_bytes: null,
-            } satisfies WatchVerifyFound);
+      row.kind === 'local_ai'
+        ? ({
+            problem: 'unreachable',
+            model: null,
+            host: null,
+            latency_ms: null,
+          } satisfies LocalAiTestFound)
+        : row.kind === 'mailbox'
+          ? ({ ...emptyTest('none'), problem: 'unreachable' } satisfies MailInTestFound)
+          : row.kind === 'browse'
+            ? ({
+                path: row.path ?? '',
+                folders: [],
+                truncated: false,
+                problem: 'That folder couldn’t be looked in just now. Try again.',
+              } satisfies WatchBrowseResult)
+            : ({
+                path: row.path ?? '',
+                steps: WATCH_VERIFY_CHECKS.map((check) => ({ check, ok: null })),
+                free_bytes: null,
+              } satisfies WatchVerifyFound);
   }
   await withSystem(deps.db, hh, async (trx) => {
     await trx
