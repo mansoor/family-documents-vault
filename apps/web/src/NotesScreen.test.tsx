@@ -199,21 +199,19 @@ describe('the notes, listed beside the one open (1280)', () => {
     await waitFor(() =>
       expect(within(pane).getByRole('heading', { level: 2, name: 'Boiler' })).toHaveFocus(),
     );
-    expect(within(pane).getByText('Everyone in the family', { exact: false })).toBeVisible();
+    expect(within(pane).getByText(/^Everyone in the family ·/)).toBeVisible();
     expect(within(pane).getByText('Ann').tagName).toBe('STRONG');
     expect(within(pane).getByRole('listitem')).toHaveTextContent('Done: bleed the radiators');
     expect(within(await list()).getByRole('link', { name: /^Boiler/ })).toHaveAttribute(
       'aria-current',
       'page',
     );
-    // Its own controls, as a document's: who sees it, tags, collections, a link, the Trash.
+    // Its own controls, as a document's: who sees it, tags, collections, a link, the Trash,
+    // in the one row under it (0.9.0), each section opened from its button.
     expect(within(pane).getByRole('button', { name: 'Edit' })).toBeVisible();
-    expect(within(pane).getByRole('button', { name: 'Download as a file' })).toBeVisible();
-    expect(within(pane).getByRole('button', { name: /Move to the Trash/ })).toBeVisible();
-    expect(within(pane).getByRole('heading', { name: 'Tags' })).toBeVisible();
-    expect(
-      within(pane).getByRole('heading', { name: 'Send this to someone outside the family' }),
-    ).toBeVisible();
+    const row = within(pane).getByRole('toolbar', { name: 'Note actions' });
+    expect(within(row).getByRole('button', { name: 'Download' })).toBeVisible();
+    expect(within(row).getByRole('button', { name: /Move to the Trash/ })).toBeVisible();
     // Nothing of a file: no versions, no pages, no Download of a file.
     expect(within(pane).queryByRole('heading', { name: 'History' })).not.toBeInTheDocument();
     // Edit on the title's line, and a thin line between its words and the rest.
@@ -222,10 +220,17 @@ describe('the notes, listed beside the one open (1280)', () => {
     expect(within(head as HTMLElement).getByRole('button', { name: 'Edit' })).toBeVisible();
     const rule = within(pane).getByRole('separator');
     const words = within(pane).getByRole('listitem');
-    const download = within(pane).getByRole('button', { name: 'Download as a file' });
+    const download = within(row).getByRole('button', { name: 'Download' });
     expect(words.compareDocumentPosition(rule) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(rule.compareDocumentPosition(download) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await expectAccessible();
+    // Its tags and its link, each a section of the row, opened from its button.
+    fireEvent.click(within(row).getByRole('button', { name: /^Tags/ }));
+    expect(within(pane).getByRole('heading', { name: 'Tags' })).toBeVisible();
+    fireEvent.click(within(row).getByRole('button', { name: /^Share a link/ }));
+    expect(
+      within(pane).getByRole('heading', { name: 'Send this to someone outside the family' }),
+    ).toBeVisible();
   });
 
   it('Edit writes it in the one editor, its title with it; Save keeps it, Cancel leaves it as it was', async () => {
@@ -649,7 +654,7 @@ describe('the notes, listed beside the one open (1280)', () => {
   it('a note made Only me later is said to keep its title in plain (the N1 review)', async () => {
     await openAt(withNotes(), '/notes/note-stopcock');
     const pane = await screen.findByRole('article', { name: 'Where the stopcock is' });
-    fireEvent.click(within(pane).getByRole('button', { name: 'Change who can see it' }));
+    fireEvent.click(within(pane).getByRole('button', { name: /^Who can see it/ }));
     expect(screen.queryByText(/not its title/)).not.toBeInTheDocument();
     fireEvent.click(within(pane).getByRole('button', { name: 'Only me' }));
     expect(screen.getByText(/not its title/)).toBeVisible();

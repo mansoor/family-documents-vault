@@ -2882,10 +2882,93 @@ fieldset.identity-section {
   margin: 0;
   font-size: 14px;
 }
-.note-pane-actions {
-  gap: 8px;
+/* One row of actions under a note or a document (0.9.0, the owner's
+   request of 24 Oct 2026): alike buttons, each with its picture, its word
+   and — for a section — a count or who can see it; the Trash at the far
+   end, as words in the danger colour. It wraps, and on a phone the Trash
+   takes a line of its own, last; nothing scrolls sideways. */
+.action-row-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.action-row {
+  display: flex;
   flex-wrap: wrap;
   align-items: center;
+  gap: 8px;
+}
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--tap);
+  padding: 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+  background: var(--surface);
+  color: var(--ink-soft);
+  border-color: var(--border-input);
+  max-width: 100%;
+}
+.action-btn[aria-expanded='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.action-badge {
+  display: inline-block;
+  min-width: 22px;
+  padding: 1px 8px;
+  border-radius: var(--radius-s);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: center;
+}
+.action-btn[aria-expanded='true'] .action-badge {
+  background: var(--surface);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.action-trash {
+  margin-left: auto;
+  padding: 0 8px;
+}
+.action-panel {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  padding: 16px;
+  min-width: 0;
+}
+.action-panel[hidden] {
+  display: none;
+}
+/* A section that is a card of its own is the panel's content: one edge, not two. */
+.action-panel > .card,
+.action-panel > section {
+  border: 0;
+  padding: 0;
+  background: none;
+}
+@media (max-width: 480px) {
+  .action-row {
+    gap: 6px;
+  }
+  .action-btn {
+    padding: 0 10px;
+    gap: 6px;
+  }
+  .action-trash {
+    flex-basis: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
 }
 .notes-own .notes-head {
   justify-content: flex-start;
@@ -6445,11 +6528,6 @@ html:has(.shell-phone):has(.has-toast) {
 
 .nln-reason {
   color: var(--ink-soft);
-}
-
-.doc-actions {
-  flex-wrap: wrap;
-  gap: 8px;
 }
 
 .nln-dialog .field textarea {

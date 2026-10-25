@@ -1,4 +1,5 @@
 import {
+  can,
   FILE_REMOVED,
   formatDate,
   issuedByLabel,
@@ -8,7 +9,7 @@ import {
   type CoreField,
   type VersionView,
 } from '@fdv/shared';
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -28,13 +29,18 @@ import {
   Sheet,
   StatusBadge,
   TopBar,
-  TrashIcon,
 } from '../ui.js';
 import { storedRole } from '../session.js';
 import { PagesSuggest, useSuggestionsOffered } from '../suggestions.js';
 import { SharePanel } from './Share.js';
 import { TagSection } from '../tags.js';
-import { VisibilityControl } from './Visibility.js';
+import {
+  mayChangeWhoSees,
+  VISIBILITY_SHORT,
+  VISIBILITY_WORDS,
+  VisibilityControl,
+} from './Visibility.js';
+import { ActionIcon, ActionRow, countBadge } from '../action-row.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 import { exactWords } from '../family-time.js';
 
@@ -71,6 +77,14 @@ export function DocumentScreen() {
     [id, authVersion],
   );
   const [actionError, setActionError] = useState<string | null>(null);
+  // The action row's counts, as its sections say them; and which is busy.
+  const [counts, setCounts] = useState<{ collections?: number; links?: number }>({});
+  const [busy, setBusy] = useState<{ visibility?: boolean; share?: boolean }>({});
+  const onCollections = useCallback(
+    (n: number) => setCounts((c) => ({ ...c, collections: n })),
+    [],
+  );
+  const onLinks = useCallback((n: number) => setCounts((c) => ({ ...c, links: n })), []);
   const [keys] = useState(createUploadKeys);
   // What its pages propose for its empty fields (5.37): offered after Save.
   const suggests = useSuggestionsOffered();
@@ -221,6 +235,17 @@ export function DocumentScreen() {
     return value === undefined || value === null || value === '' ? [] : [{ field, value }];
   });
   const title = doc.title ?? 'Needs a name';
+  const memberId = session.info?.member_id ?? null;
+  const isMine = doc.owner_member_id !== null && doc.owner_member_id === memberId;
+  const filedByMe = doc.filed_by_me === true;
+  const history = (
+    <HistorySection
+      versions={versions}
+      onDownload={(v) => void download(v)}
+      ref={versionInput}
+      onAdd={(file) => void addVersion(file)}
+    />
+  );
   const visibilityLabel =
     doc.visibility === 'household'
       ? 'Everyone in the family'
@@ -257,19 +282,6 @@ export function DocumentScreen() {
             mayChange={mayChangeIt}
             onChanged={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
           />
-          <VisibilityControl
-            documentId={doc.id}
-            current={doc.visibility}
-            isMine={doc.owner_member_id !== null && doc.owner_member_id === session.info?.member_id}
-            filedByMe={doc.filed_by_me === true}
-            onChanged={reload}
-          />
-          <ErrorNote message={actionError} />
-          {latest && !latest.file_removed && (
-            <div className="row doc-actions">
-              <Button onClick={() => void download(latest)}>Download</Button>
-            </div>
-          )}
           {askAgain && (
             <NeededAgainQuestion
               doc={doc}
@@ -350,15 +362,6 @@ export function DocumentScreen() {
             <PhonePages documentId={doc.id} title={title} docTitle={doc.title} version={latest} />
           )}
 
-          {/* Its tags as chips, each a way to the others like it; added and
-          taken off here by whoever may change it (0.9.0, T1). */}
-          <TagSection
-            key={`tags-${doc.id}`}
-            doc={doc}
-            mayEdit={mayChangeIt}
-            onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
-          />
-
           {others.length > 0 && (
             <section aria-labelledby="other-h">
               <h2 id="other-h" className="section-h">
@@ -429,74 +432,118 @@ export function DocumentScreen() {
               onRefreshed={(now) => setData((d) => (d ? { ...d, doc: now } : d))}
             />
           )}
-          <section aria-labelledby="history-h">
-            <h2 id="history-h" className="section-h">
-              History
-            </h2>
-            <ul className="list">
-              {versions.map((v, i) => (
-                <li key={v.id}>
-                  <span>
-                    <strong>{i === 0 ? 'Current' : `Version ${v.version_no}`}</strong>
-                    <span className="muted">
-                      {v.filename} · {(v.byte_size / 1024).toFixed(0)} KB · added{' '}
-                      {exactWords(v.uploaded_at)}
-                      {v.uploaded_by_name ? ` by ${v.uploaded_by_name}` : ''}
-                      {/* Where it came from, when somebody outside sent it (5.23). */}
-                      {v.sent_through ? ` · ${v.sent_through}` : ''}
-                    </span>
-                    {v.file_removed && <span className="muted">{FILE_REMOVED}</span>}
-                  </span>
-                  {i > 0 && !v.file_removed && (
-                    <Button kind="quiet" onClick={() => void download(v)}>
-                      Download
-                    </Button>
-                  )}
-                </li>
-              ))}
-            </ul>
-            <label
-              ref={versionInput}
-              className="btn btn-quiet"
-              style={{ display: 'inline-flex', alignItems: 'center' }}
-            >
-              Add a new version
-              <input
-                type="file"
-                accept="image/*,application/pdf"
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  // Cleared, so the same file chosen again is a retry, not nothing.
-                  e.target.value = '';
-                  void addVersion(file);
-                }}
-              />
-            </label>
-          </section>
-
-          {collectionsOffered(caps, storedRole()) && (
-            <DocumentCollections documentId={doc.id} title={title} />
-          )}
-          {/* A link sends the file: with none yet, there is nothing to send (5.4). */}
-          {doc.latest_version_id !== null && (
-            <SharePanel
-              documentId={doc.id}
-              documentTitle={doc.title}
-              onlyMe={doc.visibility === 'private'}
-            />
-          )}
-          {mayChangeIt && (
-            <button
-              ref={trashButton}
-              type="button"
-              className="btn btn-link btn-trash"
-              onClick={() => setConfirmingTrash(true)}
-            >
-              <TrashIcon />
-              Move to the Trash
-            </button>
-          )}
+          {/* The thin line under the details and the note; then one row:
+              Download, a button for each section, and the Trash at the end
+              (the owner's request of 24 Oct 2026). */}
+          <hr className="note-divider" />
+          <ActionRow
+            kind="document"
+            memberId={memberId}
+            onDownload={latest && !latest.file_removed ? () => void download(latest) : null}
+            onTrash={mayChangeIt ? () => setConfirmingTrash(true) : null}
+            trashRef={trashButton}
+            error={<ErrorNote message={actionError} />}
+            sections={[
+              // Its versions beside Download: the file's own actions together.
+              {
+                key: 'history' as const,
+                label: 'History',
+                icon: <ActionIcon name="history" />,
+                badge: countBadge(versions.length, 'version', 'versions'),
+                render: () => history,
+              },
+              ...(mayChangeWhoSees({ current: doc.visibility, isMine, filedByMe })
+                ? [
+                    {
+                      key: 'visibility' as const,
+                      label: 'Who can see it',
+                      icon: <ActionIcon name="eye" />,
+                      badge: {
+                        shown: VISIBILITY_SHORT[doc.visibility],
+                        spoken: VISIBILITY_WORDS[doc.visibility],
+                      },
+                      heading: 'Who can see it',
+                      busy: busy.visibility === true,
+                      render: (done: () => void) => (
+                        <VisibilityControl
+                          documentId={doc.id}
+                          current={doc.visibility}
+                          isMine={isMine}
+                          filedByMe={filedByMe}
+                          onChanged={reload}
+                          onClose={done}
+                          onBusy={(on) => setBusy((b) => ({ ...b, visibility: on }))}
+                        />
+                      ),
+                    },
+                  ]
+                : []),
+              // Its tags as chips, each a way to the others like it; added and
+              // taken off here by whoever may change it (0.9.0, T1).
+              ...(doc.tags.length > 0 || mayChangeIt
+                ? [
+                    {
+                      key: 'tags' as const,
+                      label: 'Tags',
+                      icon: <ActionIcon name="tag" />,
+                      badge: countBadge(doc.tags.length, 'tag', 'tags'),
+                      render: () => (
+                        <TagSection
+                          key={`tags-${doc.id}`}
+                          doc={doc}
+                          mayEdit={mayChangeIt}
+                          onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
+                        />
+                      ),
+                    },
+                  ]
+                : []),
+              ...(collectionsOffered(caps, storedRole())
+                ? [
+                    {
+                      key: 'collections' as const,
+                      label: 'Collections',
+                      icon: <ActionIcon name="collection" />,
+                      badge:
+                        counts.collections === undefined
+                          ? null
+                          : countBadge(counts.collections, 'collection', 'collections'),
+                      render: () => (
+                        <DocumentCollections
+                          documentId={doc.id}
+                          title={title}
+                          onCount={onCollections}
+                        />
+                      ),
+                    },
+                  ]
+                : []),
+              // A link sends the file: with none yet, there is nothing to send (5.4).
+              ...(doc.latest_version_id !== null && can(storedRole(), 'document.share')
+                ? [
+                    {
+                      key: 'share' as const,
+                      label: 'Share a link',
+                      icon: <ActionIcon name="link" />,
+                      badge: counts.links
+                        ? countBadge(counts.links, 'live link', 'live links')
+                        : null,
+                      busy: busy.share === true,
+                      render: (done: () => void) => (
+                        <SharePanel
+                          documentId={doc.id}
+                          documentTitle={doc.title}
+                          onlyMe={doc.visibility === 'private'}
+                          onClose={done}
+                          onBusy={(on) => setBusy((b) => ({ ...b, share: on }))}
+                          onCount={onLinks}
+                        />
+                      ),
+                    },
+                  ]
+                : []),
+            ]}
+          />
           {confirmingTrash && (
             <MoveToTrashDialog
               title={doc.title}
@@ -521,16 +568,87 @@ export function DocumentScreen() {
   );
 }
 
+/** A document's versions, newest first, each to download; and Add a new version. */
+function HistorySection({
+  ref,
+  ...props
+}: {
+  versions: VersionView[];
+  onDownload: (v: VersionView) => void;
+  /** Add a new version: where the focus goes back to after asking about it. */
+  ref: RefObject<HTMLLabelElement | null>;
+  onAdd: (file: File | undefined) => void;
+}) {
+  const { versions } = props;
+  return (
+    <section aria-labelledby="history-h">
+      <h2 id="history-h" className="section-h">
+        History
+      </h2>
+      <ul className="list">
+        {versions.map((v, i) => (
+          <li key={v.id}>
+            <span>
+              <strong>{i === 0 ? 'Current' : `Version ${v.version_no}`}</strong>
+              <span className="muted">
+                {v.filename} · {(v.byte_size / 1024).toFixed(0)} KB · added{' '}
+                {exactWords(v.uploaded_at)}
+                {v.uploaded_by_name ? ` by ${v.uploaded_by_name}` : ''}
+                {/* Where it came from, when somebody outside sent it (5.23). */}
+                {v.sent_through ? ` · ${v.sent_through}` : ''}
+              </span>
+              {v.file_removed && <span className="muted">{FILE_REMOVED}</span>}
+            </span>
+            {i > 0 && !v.file_removed && (
+              <Button kind="quiet" onClick={() => props.onDownload(v)}>
+                Download
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+      <label
+        ref={ref}
+        className="btn btn-quiet"
+        style={{ display: 'inline-flex', alignItems: 'center' }}
+      >
+        Add a new version
+        <input
+          type="file"
+          accept="image/*,application/pdf"
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            // Cleared, so the same file chosen again is a retry, not nothing.
+            e.target.value = '';
+            props.onAdd(file);
+          }}
+        />
+      </label>
+    </section>
+  );
+}
+
 /**
  * The collections this document is in, of those the reader may see, and "Add to
  * a collection" (5.15). A collection the reader may not see is not mentioned at all.
  */
-export function DocumentCollections(props: { documentId: string; title: string }) {
+export function DocumentCollections(props: {
+  documentId: string;
+  title: string;
+  /** Told how many it is in, as that changes (the action row). */
+  onCount?: (n: number) => void;
+}) {
   const { authVersion } = useApp();
   const { data, error, reload } = useLoad(
     async (t) => (await api.documentCollections(t, props.documentId)).items,
     [props.documentId, authVersion],
   );
+  const { onCount } = props;
+  const count = data ? data.length : null;
+  useEffect(() => {
+    if (count !== null) onCount?.(count);
+  }, [count, onCount]);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const added = useRef(false);

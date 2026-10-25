@@ -702,12 +702,16 @@ describe('quick actions on every document (5.4)', () => {
     expect(items).toContain('Open');
     expect(items).not.toContain('Download');
     expect(items).not.toContain('Share a link');
-    // Its own page says why, and makes no link.
+    // Its own page says why, and makes no link: its Share a link section
+    // (0.9.0, the action row) says so, with no Download beside it.
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Open' }));
+    const row = await screen.findByRole('toolbar', { name: 'Document actions' });
+    expect(within(row).queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
+    fireEvent.click(within(row).getByRole('button', { name: /^Share a link/ }));
     expect(
       await screen.findByText('The file was removed for good, so there is nothing to send.'),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Share a link' })).not.toBeInTheDocument();
+    ).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Make the link' })).not.toBeInTheDocument();
   });
 });
 

@@ -495,6 +495,8 @@ describe('collections on the web (5.15)', () => {
         },
       ],
     });
+    // A section of the action row (0.9.0): opened from its button, which counts them.
+    fireEvent.click(await screen.findByRole('button', { name: 'Collections: 1 collection' }));
     const collections = await screen.findByRole('region', { name: 'Collections' });
     expect(await within(collections).findByRole('link', { name: /^Mortgage/ })).toBeInTheDocument();
     const add = within(collections).getByRole('button', { name: 'Add to a collection' });
@@ -1218,6 +1220,7 @@ describe('collections on the web (5.15)', () => {
     expect(await screen.findByText('In this collection')).toBeInTheDocument();
     drawn();
     reopen(state, '/documents/doc-1');
+    fireEvent.click(await screen.findByRole('button', { name: /^Collections/ }));
     const collections = await screen.findByRole('region', { name: 'Collections' });
     expect(await within(collections).findByRole('link', { name: /^Holiday/ })).toHaveAttribute(
       'href',

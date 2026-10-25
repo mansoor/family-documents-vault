@@ -329,6 +329,8 @@ describe('what a viewer can see (5.33)', () => {
       ],
       collectionWarnings: ['Val (viewer) will be able to see this.'],
     });
+    // A section of the action row (0.9.0): opened from its button.
+    fireEvent.click(await screen.findByRole('button', { name: /^Collections: / }));
     const region = await screen.findByRole('region', { name: 'Collections' });
     fireEvent.click(within(region).getByRole('button', { name: 'Add to a collection' }));
     const sheet = await screen.findByRole('dialog', {

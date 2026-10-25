@@ -737,7 +737,8 @@ describe('App', () => {
     await expectAccessible();
 
     fireEvent.click(screen.getByRole('button', { name: 'Done' }));
-    // Back to the document, with the live link listed and takeable back.
+    // Back to the document, with the live link counted, listed and takeable back.
+    fireEvent.click(await screen.findByRole('button', { name: 'Share a link: 1 live link' }));
     await screen.findByText(/Shared with the letting agent, not opened yet/);
     fireEvent.click(screen.getByRole('button', { name: 'Take it back' }));
     await waitFor(() => expect(state.shares).toHaveLength(0));
@@ -843,7 +844,7 @@ describe('App', () => {
     window.history.replaceState({}, '', '/documents/doc-1');
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Change who can see it' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Who can see it/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Only me' }));
     expect(screen.getByText(/Nobody else, including the owner of this vault/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -855,8 +856,8 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'I understand' }));
 
     // And never again for this document: the server decides, and says null.
-    await screen.findByRole('button', { name: 'Change who can see it' });
-    fireEvent.click(screen.getByRole('button', { name: 'Change who can see it' }));
+    await screen.findByRole('button', { name: 'Who can see it: Only me' });
+    fireEvent.click(screen.getByRole('button', { name: 'Who can see it: Only me' }));
     fireEvent.click(screen.getByRole('button', { name: 'Everyone in the family' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() =>

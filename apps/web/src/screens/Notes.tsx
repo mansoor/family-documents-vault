@@ -27,10 +27,16 @@ import { RichTextEditor } from '../rich-text.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { TagSection } from '../tags.js';
-import { Button, ErrorNote, MoveToTrashDialog, Pills, TopBar, TrashIcon } from '../ui.js';
+import { Button, ErrorNote, MoveToTrashDialog, Pills, TopBar } from '../ui.js';
+import { ActionIcon, ActionRow, countBadge } from '../action-row.js';
 import { DocumentCollections } from './Document.js';
 import { SharePanel } from './Share.js';
-import { VisibilityControl } from './Visibility.js';
+import {
+  mayChangeWhoSees,
+  VISIBILITY_SHORT,
+  VISIBILITY_WORDS,
+  VisibilityControl,
+} from './Visibility.js';
 import { dayWordsOf, exactWords, familyZoneNow } from '../family-time.js';
 
 /**
@@ -366,6 +372,14 @@ function NotePane(props: {
   const [editSlot, setEditSlot] = useState<HTMLElement | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // The row's counts, as its sections say them; and which of them is busy.
+  const [counts, setCounts] = useState<{ collections?: number; links?: number }>({});
+  const [busy, setBusy] = useState<{ visibility?: boolean; share?: boolean }>({});
+  const onCollections = useCallback(
+    (n: number) => setCounts((c) => ({ ...c, collections: n })),
+    [],
+  );
+  const onLinks = useCallback((n: number) => setCounts((c) => ({ ...c, links: n })), []);
   const { data, error, reload, setData } = useLoad(
     async (t) => {
       const [doc, profile] = await Promise.all([
@@ -411,6 +425,8 @@ function NotePane(props: {
   const memberId = session.info?.member_id ?? null;
   const role = session.info?.role ?? storedRole();
   const mayEdit = mayChange(role, memberId, doc);
+  const isMine = doc.owner_member_id !== null && doc.owner_member_id === memberId;
+  const filedByMe = doc.filed_by_me === true;
   const title = noteTitle(doc.title, doc.notes);
   const saved = (next: DocumentView) => {
     setData((d) => (d ? { ...d, doc: next } : d));
@@ -449,7 +465,6 @@ function NotePane(props: {
         {/* The note's Edit, on the title's line (NotesSection puts it here). */}
         <div className="note-pane-edit" ref={setEditSlot} />
       </header>
-      <ErrorNote message={actionError} />
       <NotesSection
         key={doc.id}
         variant="note"
@@ -463,40 +478,107 @@ function NotePane(props: {
         onDirty={props.onDirty}
         editSlot={editSlot}
       />
-      <div className="row note-pane-actions">
-        <Button kind="quiet" onClick={() => downloadNote(doc)}>
-          Download as a file
-        </Button>
-        {mayEdit && (
-          <button
-            ref={trashButton}
-            type="button"
-            className="btn btn-link btn-trash"
-            onClick={() => setConfirming(true)}
-          >
-            <TrashIcon />
-            Move to the Trash
-          </button>
-        )}
-      </div>
-      <VisibilityControl
-        documentId={doc.id}
-        current={doc.visibility}
-        isMine={doc.owner_member_id !== null && doc.owner_member_id === memberId}
-        filedByMe={doc.filed_by_me === true}
-        note
-        onChanged={async () => {
-          await reload();
-          props.onChanged();
-        }}
-      />
-      <TagSection key={`tags-${doc.id}`} doc={doc} mayEdit={mayEdit} onSaved={saved} />
-      {collectionsOffered(caps, role) && <DocumentCollections documentId={doc.id} title={title} />}
-      <SharePanel
-        documentId={doc.id}
-        documentTitle={doc.title}
-        onlyMe={doc.visibility === 'private'}
-        note
+      {/* Under the note, one row: Download, a button for each section,
+          and the Trash at the end (the owner's request of 24 Oct 2026). */}
+      <ActionRow
+        kind="note"
+        memberId={memberId}
+        onDownload={() => downloadNote(doc)}
+        onTrash={mayEdit ? () => setConfirming(true) : null}
+        trashRef={trashButton}
+        error={<ErrorNote message={actionError} />}
+        sections={[
+          ...(mayChangeWhoSees({ current: doc.visibility, isMine, filedByMe })
+            ? [
+                {
+                  key: 'visibility' as const,
+                  label: 'Who can see it',
+                  icon: <ActionIcon name="eye" />,
+                  badge: {
+                    shown: VISIBILITY_SHORT[doc.visibility],
+                    spoken: VISIBILITY_WORDS[doc.visibility],
+                  },
+                  heading: 'Who can see it',
+                  busy: busy.visibility === true,
+                  render: (done: () => void) => (
+                    <VisibilityControl
+                      documentId={doc.id}
+                      current={doc.visibility}
+                      isMine={isMine}
+                      filedByMe={filedByMe}
+                      note
+                      onChanged={async () => {
+                        await reload();
+                        props.onChanged();
+                      }}
+                      onClose={done}
+                      onBusy={(on) => setBusy((b) => ({ ...b, visibility: on }))}
+                    />
+                  ),
+                },
+              ]
+            : []),
+          ...(doc.tags.length > 0 || mayEdit
+            ? [
+                {
+                  key: 'tags' as const,
+                  label: 'Tags',
+                  icon: <ActionIcon name="tag" />,
+                  badge: countBadge(doc.tags.length, 'tag', 'tags'),
+                  render: () => (
+                    <TagSection
+                      key={`tags-${doc.id}`}
+                      doc={doc}
+                      mayEdit={mayEdit}
+                      onSaved={saved}
+                    />
+                  ),
+                },
+              ]
+            : []),
+          ...(collectionsOffered(caps, role)
+            ? [
+                {
+                  key: 'collections' as const,
+                  label: 'Collections',
+                  icon: <ActionIcon name="collection" />,
+                  badge:
+                    counts.collections === undefined
+                      ? null
+                      : countBadge(counts.collections, 'collection', 'collections'),
+                  render: () => (
+                    <DocumentCollections
+                      documentId={doc.id}
+                      title={title}
+                      onCount={onCollections}
+                    />
+                  ),
+                },
+              ]
+            : []),
+          ...(can(role, 'document.share')
+            ? [
+                {
+                  key: 'share' as const,
+                  label: 'Share a link',
+                  icon: <ActionIcon name="link" />,
+                  badge: counts.links ? countBadge(counts.links, 'live link', 'live links') : null,
+                  busy: busy.share === true,
+                  render: (done: () => void) => (
+                    <SharePanel
+                      documentId={doc.id}
+                      documentTitle={doc.title}
+                      onlyMe={doc.visibility === 'private'}
+                      note
+                      onClose={done}
+                      onBusy={(on) => setBusy((b) => ({ ...b, share: on }))}
+                      onCount={onLinks}
+                    />
+                  ),
+                },
+              ]
+            : []),
+        ]}
       />
       {confirming && (
         <MoveToTrashDialog

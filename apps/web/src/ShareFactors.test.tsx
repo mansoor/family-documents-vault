@@ -98,7 +98,7 @@ describe('the protection choices (5.20)', () => {
 
     // Done: gone, and nowhere to be found again.
     fireEvent.click(screen.getByRole('button', { name: 'Done' }));
-    await screen.findByRole('button', { name: 'Share a link' });
+    await screen.findByRole('button', { name: /^Share a link/ });
     expect(screen.queryByText('k7mq-p2xa-9htw')).not.toBeInTheDocument();
   });
 
