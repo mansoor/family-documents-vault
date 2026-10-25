@@ -9,6 +9,7 @@ import {
   detectTools,
   JPEG_HEADER_MAX_BYTES,
   PDF_CHECK_MAX_BYTES,
+  PDF_LIST_MAX_BYTES,
   pdfJpegFrameOf,
   pdfJpegStart,
   pdfPictures,
@@ -201,50 +202,101 @@ describe.skipIf(!real)('JPEGs inside PDFs, with the real tools (L2)', () => {
     await expect(refusePdfHeldJpegs(many, 1, 1, dir)).resolves.toBeUndefined();
   }, 120_000);
 
+  it('a PDF whose pictures cannot be listed is refused, not failed: failing, or a list cut off; one needing a password says so', async () => {
+    // pdfimages fails on it (exit 1).
+    const broken = path.join(dir, 'broken.pdf');
+    await writeFile(broken, Buffer.from('%PDF-1.4\nnothing a PDF needs\n'));
+    await expect(refusePdfHeldJpegs(broken, 1, 1, dir)).rejects.toBeInstanceOf(PictureRefused);
+    await expect(renderPdfPage(broken, dir, 1)).rejects.toMatchObject({ code: 'picture_refused' });
+    // A list past PDF_LIST_MAX_BYTES: a 16-pixel picture drawn 100,000 times (2.6 MB).
+    const listed = path.join(dir, 'listed.pdf');
+    const tiny = wholeBufferJpeg(16, 16, 1, 'sequential');
+    await writeFile(
+      listed,
+      pdfOfJpegs([{ jpeg: tiny, width: 16, height: 16, components: 1, draws: 100_000 }]),
+    );
+    expect(100_000 * 90).toBeGreaterThan(PDF_LIST_MAX_BYTES);
+    await expect(refusePdfHeldJpegs(listed, 1, 1, dir)).rejects.toThrow(/cannot list/);
+    await rm(listed, { force: true });
+    // Locked with a password (any: the vault tries none): said as before, not as a refusal.
+    const plain = pdfOfJpegs([{ jpeg: tiny, width: 16, height: 16, components: 1 }]).toString(
+      'latin1',
+    );
+    const locked = path.join(dir, 'locked.pdf');
+    const hex32 = '11'.repeat(32);
+    await writeFile(
+      locked,
+      Buffer.from(
+        plain.replace(
+          /\/Root 1 0 R >>/,
+          `/Root 1 0 R /Encrypt << /Filter /Standard /V 1 /R 2 /O <${hex32}> /U <${hex32}> /P -4 >> /ID [<${'22'.repeat(16)}> <${'22'.repeat(16)}>] >>`,
+        ),
+        'latin1',
+      ),
+    );
+    const err = await refusePdfHeldJpegs(locked, 1, 1, dir).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(PictureRefused);
+    expect(String((err as { stderr?: string }).stderr ?? (err as Error).message)).toMatch(
+      /password/i,
+    );
+  }, 120_000);
+
   it.skipIf(process.platform !== 'linux')(
-    'a poppler run is capped: a JPEG the check cannot see (DCT under another filter) is drawn in no more than POPPLER_MAX_KIB',
+    'a poppler run is capped: a JPEG the check cannot see — under another filter, in a tiling pattern, in a Type 3 glyph — is drawn blank in no more than POPPLER_MAX_KIB',
     async () => {
-      // [/DCTDecode /FlateDecode]: pdfimages lists it as a plain picture, and
-      // libjpeg still holds it whole, 1,972 MiB before the cap.
-      const hidden = path.join(dir, 'dct-inner.pdf');
-      await writeFile(
-        hidden,
-        Buffer.from(
+      const prog16 = wholeBufferJpeg(16_000, 16_000, 4);
+      const page = { jpeg: prog16, width: 16_000, height: 16_000, components: 4 as const };
+      const unseen = {
+        // pdfimages lists it as a plain picture; libjpeg holds it whole, 1,972 MiB uncapped.
+        'dct-inner.pdf': Buffer.from(
           bombs['prog-16000-cmyk.pdf']!.toString('latin1').replace(
             '/Filter /DCTDecode',
             '/Filter [/DCTDecode /FlateDecode]',
           ),
           'latin1',
         ),
-      );
-      await expect(refusePdfHeldJpegs(hidden, 1, 1, dir)).resolves.toBeUndefined();
-      const out = path.join(dir, 'hidden');
-      const how = popplerCommand('pdftoppm', [
-        '-png',
-        '-r',
-        '150',
-        '-f',
-        '1',
-        '-l',
-        '1',
-        '-singlefile',
-        hidden,
-        out,
-      ]);
-      const child = spawn(how.bin, how.args, { stdio: 'ignore' });
-      let peakKib = 0;
-      const poll = setInterval(() => {
-        readFile(`/proc/${child.pid}/status`, 'utf8')
-          .then((s) => {
-            const kib = Number(/VmPeak:\s+(\d+)/.exec(s)?.[1] ?? 0);
-            peakKib = Math.max(peakKib, kib);
-          })
-          .catch(() => undefined);
-      }, 10);
-      await new Promise((resolve) => child.on('exit', resolve));
-      clearInterval(poll);
-      expect(peakKib).toBeGreaterThan(0);
-      expect(peakKib).toBeLessThanOrEqual(POPPLER_MAX_KIB);
+        // pdfimages lists nothing of either; pdftoppm draws them.
+        'pattern.pdf': pdfOfJpegs([{ ...page, as: 'pattern' }]),
+        'type3.pdf': pdfOfJpegs([{ ...page, as: 'type3' }]),
+      };
+      for (const [name, bytes] of Object.entries(unseen)) {
+        const hidden = path.join(dir, name);
+        await writeFile(hidden, bytes);
+        await expect(refusePdfHeldJpegs(hidden, 1, 1, dir), name).resolves.toBeUndefined();
+        const out = path.join(dir, 'hidden');
+        const how = popplerCommand('pdftoppm', [
+          '-png',
+          '-r',
+          '150',
+          '-f',
+          '1',
+          '-l',
+          '1',
+          '-singlefile',
+          hidden,
+          out,
+        ]);
+        const child = spawn(how.bin, how.args, { stdio: 'ignore' });
+        let peakKib = 0;
+        const poll = setInterval(() => {
+          readFile(`/proc/${child.pid}/status`, 'utf8')
+            .then((s) => {
+              const kib = Number(/VmPeak:\s+(\d+)/.exec(s)?.[1] ?? 0);
+              peakKib = Math.max(peakKib, kib);
+            })
+            .catch(() => undefined);
+        }, 10);
+        const code = await new Promise((resolve) => child.on('exit', resolve));
+        clearInterval(poll);
+        // It went for the picture (far past what a blank page takes), and was held to the cap.
+        expect(peakKib, name).toBeGreaterThan(256 * 1024);
+        expect(peakKib, name).toBeLessThanOrEqual(POPPLER_MAX_KIB);
+        // Silently: drawn, blank, exit 0 (a known limit: docs/smart-exit.md).
+        expect(code, name).toBe(0);
+        await rm(`${out}.png`, { force: true });
+        await rm(hidden, { force: true });
+      }
 
       // And what the check writes is cut off at JPEG_HEADER_MAX_BYTES a file:
       // this JPEG is 4 MB, and pdfimages carries on past it.

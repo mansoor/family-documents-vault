@@ -62,7 +62,9 @@ export const runTool = run;
  * CMYK JPEG 16,000 pixels square took 1,979 MiB to draw, and pdftotext and
  * `pdfimages -list` decode an inline one (1,962 MiB). Capped, the run fails
  * instead of the server: a decode that cannot have its memory is drawn
- * blank, and the page reads nothing. Measured, the most an ordinary page
+ * blank, and the page reads nothing — silently (pdftoppm says nothing and
+ * exits 0), so a page that truly needed more than this would come out
+ * blank, unremarked. Measured, the most an ordinary page
  * takes is an A0 page drawn at 150 dpi for OCR, 250 MiB; a JPEG at the most
  * a picture may hold whole (JPEG_HELD_MAX_COEFFICIENTS), 153 MiB. A JPEG
  * held whole past that is refused before anything is drawn
@@ -1522,6 +1524,9 @@ export function pdfPictures(listed: string): PdfPicture[] {
  */
 export const PDF_CHECK_MAX_BYTES = 256 * 1024 * 1024;
 
+/** The most of `pdfimages -list` the check reads (L2): 8 MiB, some 88,000 pictures drawn; past it, refused. */
+export const PDF_LIST_MAX_BYTES = 8 * 1024 * 1024;
+
 /** What one listed picture may take on disk as the check writes it. */
 function pictureBytes(p: PdfPicture): number {
   if (p.enc === 'jpeg') return JPEG_HEADER_MAX_BYTES;
@@ -1539,18 +1544,25 @@ function pictureBytes(p: PdfPicture): number {
  * 16,000 pixels square took 1,979 MiB to draw.
  *
  * The PDF's own dictionary may say a picture is any size, whatever its JPEG
- * is, and a JPEG may sit inline in a page, under another filter, or behind
- * bytes poppler passes over; so each is read from its own bytes, as poppler
- * will decode them. `pdfimages -list` says what is drawn on the pages; with
+ * is, and a JPEG may sit inline in a page, deflated as well, or behind bytes
+ * poppler passes over; so each is read from its own bytes, as poppler will
+ * decode them. `pdfimages -list` says what is drawn on the pages — their
+ * content, the Form XObjects they draw and their annotations' appearances,
+ * in object streams or not, encrypted with an empty password or not; with
  * no JPEG, that is all. Otherwise `pdfimages -j` writes each picture into a
  * folder of its own in `workDir` — a JPEG as the bytes poppler will decode,
  * the rest decoded — no file past JPEG_HEADER_MAX_BYTES, and no more than
  * PDF_CHECK_MAX_BYTES at once; each JPEG's start is read
  * (`pdfJpegFrameOf`), and the folder removed. Both runs are poppler's, in
  * their own processes, capped (POPPLER_MAX_KIB) and timed; only the bounded
- * start of each JPEG is read here. A JPEG listed but not written, or a
- * check that failed, is refused (failing closed). A list that fails is
- * thrown as it is: nothing is drawn.
+ * start of each JPEG is read here. A JPEG listed but not written, a check
+ * that failed, or a list that failed — or was cut off, or too slow — is
+ * refused (failing closed); a PDF that needs a password says so, as it did.
+ *
+ * What it does not see — pdfimages does not look inside a tiling pattern or
+ * a Type 3 glyph, which pdftoppm draws; a JPEG under a second filter
+ * (`[/DCTDecode /FlateDecode]`); JPEG 2000 and JBIG2 pictures — is bounded
+ * by the cap alone: drawn blank, never more than POPPLER_MAX_KIB.
  */
 export async function refusePdfHeldJpegs(
   file: string,
@@ -1560,12 +1572,24 @@ export async function refusePdfHeldJpegs(
   signal?: AbortSignal,
 ): Promise<void> {
   const range = ['-f', String(first), '-l', String(last)];
-  const { stdout } = await poppler('pdfimages', ['-list', ...range, file], {
-    timeout: 60_000,
-    maxBuffer: 8 * 1024 * 1024,
-    signal,
-  });
-  const pictures = pdfPictures(stdout);
+  let listed: string;
+  try {
+    listed = (
+      await poppler('pdfimages', ['-list', ...range, file], {
+        timeout: 60_000,
+        maxBuffer: PDF_LIST_MAX_BYTES,
+        signal,
+      })
+    ).stdout;
+  } catch (err) {
+    signal?.throwIfAborted();
+    const { stderr, message } = err as { stderr?: string | Buffer; message?: string };
+    // A PDF that needs a password is said to as before (read-item, process-version).
+    if (/password/i.test(`${stderr?.toString() ?? ''} ${message ?? ''}`)) throw err;
+    // Failed, cut off past PDF_LIST_MAX_BYTES, or too slow: what it would draw is not known.
+    throw new PictureRefused('a PDF whose pictures the vault cannot list');
+  }
+  const pictures = pdfPictures(listed);
   if (!pictures.some((p) => p.enc === 'jpeg')) return;
   // Pages together while they fit; a page of more than fits, refused.
   const byPage = new Map<number, PdfPicture[]>();

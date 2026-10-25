@@ -110,8 +110,10 @@ export function wholeBufferJpeg(
  * As a hostile PDF may keep it: `claims` a size in its dictionary other
  * than the JPEG's own; `as` 'flate', its stream deflated as well
  * ([/FlateDecode /DCTDecode]); 'inline', in the page's content (BI … ID …
- * EI) rather than an object of its own; `draws`, drawn that many times.
- * `place` draws it that many points across and up, from the corner.
+ * EI) rather than an object of its own; 'pattern', only inside a tiling
+ * pattern the page is filled with; 'type3', only inside the one glyph of a
+ * Type 3 font the page shows; `draws`, drawn that many times. `place` draws
+ * it that many points across and up, from the corner.
  * For tests only.
  */
 export function pdfOfJpegs(
@@ -123,7 +125,7 @@ export function pdfOfJpegs(
     text?: string;
     size?: [number, number];
     claims?: [number, number];
-    as?: 'xobject' | 'flate' | 'inline';
+    as?: 'xobject' | 'flate' | 'inline' | 'pattern' | 'type3';
     draws?: number;
     place?: [number, number];
   }>,
@@ -161,20 +163,50 @@ export function pdfOfJpegs(
     const words = p.text
       ? `BT /F1 14 Tf 40 ${ph - 60} Td (${p.text.replace(/[()\\]/g, '\\$&')}) Tj ET\n`
       : '';
-    const draw = inline
-      ? Buffer.concat([
-          Buffer.from(
-            `q ${iw} 0 0 ${ih} 0 0 cm\nBI /W ${w} /H ${h} /CS /${{ 1: 'G', 3: 'RGB', 4: 'CMYK' }[p.components]} /BPC 8 /F /DCT ID `,
-            'latin1',
-          ),
-          p.jpeg,
-          Buffer.from('\nEI Q\n', 'latin1'),
-        ])
-      : Buffer.from(`q ${iw} 0 0 ${ih} 0 0 cm /Im0 Do Q\n`.repeat(p.draws ?? 1), 'latin1');
+    // Drawn only inside a tiling pattern the page is filled with, or a Type 3
+    // glyph it shows: places pdfimages does not look, and pdftoppm draws.
+    const once = Buffer.from(`q ${iw} 0 0 ${ih} 0 0 cm /Im0 Do Q`, 'latin1');
+    const holder =
+      p.as === 'pattern'
+        ? add(
+            stream(
+              `/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 ${pw} ${ph}] /XStep ${pw} /YStep ${ph} /Resources << /XObject << /Im0 ${image} 0 R >> >>`,
+              once,
+            ),
+          )
+        : p.as === 'type3'
+          ? add(
+              `<< /Type /Font /Subtype /Type3 /FontBBox [0 0 ${pw} ${ph}] /FontMatrix [1 0 0 1 0 0] /CharProcs << /a ${objects.length + 2} 0 R >> /Encoding << /Type /Encoding /Differences [97 /a] >> /FirstChar 97 /LastChar 97 /Widths [${pw}] /Resources << /XObject << /Im0 ${image} 0 R >> >> >>`,
+            )
+          : 0;
+    if (p.as === 'type3') {
+      add(stream('', Buffer.concat([Buffer.from(`${pw} 0 d0 `, 'latin1'), once])));
+    }
+    const resources =
+      p.as === 'pattern'
+        ? `/Pattern << /P0 ${holder} 0 R >> /Font << /F1 3 0 R >>`
+        : p.as === 'type3'
+          ? `/Font << /F1 3 0 R /T3 ${holder} 0 R >>`
+          : `/XObject << /Im0 ${image} 0 R >> /Font << /F1 3 0 R >>`;
+    const draw =
+      p.as === 'pattern'
+        ? Buffer.from(`q /Pattern cs /P0 scn 0 0 ${pw} ${ph} re f Q\n`, 'latin1')
+        : p.as === 'type3'
+          ? Buffer.from('BT /T3 1 Tf 0 0 Td (a) Tj ET\n', 'latin1')
+          : inline
+            ? Buffer.concat([
+                Buffer.from(
+                  `q ${iw} 0 0 ${ih} 0 0 cm\nBI /W ${w} /H ${h} /CS /${{ 1: 'G', 3: 'RGB', 4: 'CMYK' }[p.components]} /BPC 8 /F /DCT ID `,
+                  'latin1',
+                ),
+                p.jpeg,
+                Buffer.from('\nEI Q\n', 'latin1'),
+              ])
+            : Buffer.from(`q ${iw} 0 0 ${ih} 0 0 cm /Im0 Do Q\n`.repeat(p.draws ?? 1), 'latin1');
     const content = add(stream('', Buffer.concat([draw, Buffer.from(words, 'latin1')])));
     kids.push(
       add(
-        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw} ${ph}] /Resources << /XObject << /Im0 ${image} 0 R >> /Font << /F1 3 0 R >> >> /Contents ${content} 0 R >>`,
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw} ${ph}] /Resources << ${resources} >> /Contents ${content} 0 R >>`,
       ),
     );
   }
