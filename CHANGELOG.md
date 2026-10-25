@@ -6,6 +6,10 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A collection with no checklist no longer shows an empty Checklist section.** Fill from a checklist is one of the collection's buttons, beside Add documents and Share this collection, until a checklist is kept; then the folded Checklist panel takes its place.
+
 ## [0.9.0-dev.16] - 2026-10-24 — a collection as the Documents table
 
 ### Changed

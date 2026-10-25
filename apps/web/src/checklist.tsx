@@ -170,7 +170,7 @@ function writeOpen(key: string | null, open: boolean): void {
  * documents are what the page shows: a panel that opens, its line saying
  * how it stands ("5 of 7 found · 2 new matches"), open or folded as this
  * person last left it on this device for this collection. With none kept
- * yet, Fill from a checklist is where it always was.
+ * yet, nothing: Fill from a checklist is one of the collection's buttons.
  */
 export function ChecklistSection({
   ref,
@@ -200,25 +200,10 @@ export function ChecklistSection({
   };
   const kept = checklist?.saved_at ? checklist : null;
   if (!kept && !props.mayFill) return null;
-  if (!kept) {
-    return (
-      <section aria-labelledby="checklist-h" className="stack checklist">
-        <h2 id="checklist-h" className="section-h">
-          Checklist
-        </h2>
-        <ErrorNote message={props.error} />
-        <p className="muted">
-          Paste a list of what you need — “Documents for Mansoor”, “Last 3 pay statements” — and the
-          vault finds them for you to add.
-        </p>
-        <div className="row">
-          <button ref={ref} type="button" className="btn btn-quiet" onClick={props.onFill}>
-            Fill from a checklist
-          </button>
-        </div>
-      </section>
-    );
-  }
+  // None kept yet: nothing here but a problem reading it, if there was
+  // one. Fill from a checklist sits with the collection's own buttons (the
+  // owner, 24 Oct): an empty Checklist heading only took the page's room.
+  if (!kept) return props.error ? <ErrorNote message={props.error} /> : null;
   return (
     <section
       aria-labelledby="checklist-title"

@@ -561,12 +561,19 @@ describe('a collection from a checklist (C1)', () => {
     expect(localStorage.getItem('fdv.checklist-open.me.col-refi')).toBeNull();
   });
 
-  it('with none kept, Fill from a checklist is where it always was', async () => {
+  it('with none kept, Fill from a checklist is one of the collection’s buttons, and no Checklist section takes room (the owner, 24 Oct)', async () => {
     at('/collections/col-refi');
-    const section = await screen.findByRole('region', { name: 'Checklist' });
-    expect(within(section).getByRole('heading', { name: 'Checklist' })).toBeInTheDocument();
-    expect(within(section).getByRole('button', { name: 'Fill from a checklist' })).toBeVisible();
-    expect(within(section).queryByRole('button', { name: 'Checklist' })).toBeNull();
+    const fill = await screen.findByRole('button', { name: 'Fill from a checklist' });
+    expect(fill).toBeVisible();
+    // Beside Add documents, not under a heading of its own.
+    const add = screen.getByRole('button', { name: 'Add documents' });
+    expect(fill.parentElement).toBe(add.parentElement);
+    expect(screen.queryByRole('region', { name: 'Checklist' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Checklist' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Checklist' })).toBeNull();
+    // It still opens the sheet.
+    fireEvent.click(fill);
+    expect(await screen.findByRole('dialog', { name: /from a checklist/ })).toBeInTheDocument();
   });
 
   it('remembering it never stops the page when this device keeps nothing', async () => {
