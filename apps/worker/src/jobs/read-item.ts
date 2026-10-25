@@ -160,6 +160,11 @@ export interface ReadOptions {
    * (FDV_LOCAL_AI_URL): asked only for a household that has it on.
    */
   localAi?: LocalAiReader | null;
+  /**
+   * The worker's clock: when an item may be read again, and when its wait
+   * on the vault has gone on a day. The real one, unless a test sets it.
+   */
+  now?: () => Date;
 }
 
 /** What reading needs of the local AI's client (local-ai.ts): a test may stand in. */
@@ -218,15 +223,15 @@ export function sealedLocalAi(
  * Waiting to be read — and, after a read that could not finish, its wait
  * over — or taken by a worker that has gone.
  */
-export const unread = (eb: ExpressionBuilder<Schema, 'incoming_file'>) =>
+export const unread = (eb: ExpressionBuilder<Schema, 'incoming_file'>, now = new Date()) =>
   eb.or([
     eb.and([
       eb('read_state', '=', 'waiting'),
-      eb.or([eb('read_not_before', 'is', null), eb('read_not_before', '<=', new Date())]),
+      eb.or([eb('read_not_before', 'is', null), eb('read_not_before', '<=', now)]),
     ]),
     eb.and([
       eb('read_state', '=', 'reading'),
-      eb('read_started_at', '<', new Date(Date.now() - READ_STALE_MS)),
+      eb('read_started_at', '<', new Date(now.getTime() - READ_STALE_MS)),
     ]),
   ]);
 
@@ -261,7 +266,7 @@ export async function readNextBatchItem(
         ])
         .where('batch_id', 'is not', null)
         .where('state', '=', 'received')
-        .where(unread)
+        .where((eb) => unread(eb, opts.now?.()))
         .where(drawnOrNot)
         .orderBy('read_attempts')
         .orderBy('received_at')
@@ -321,7 +326,8 @@ export async function readItem(
   },
   opts: ReadOptions,
 ): Promise<void> {
-  const stamp = new Date();
+  const clock = opts.now ?? (() => new Date());
+  const stamp = clock();
   const taken = await withSystem(deps.db, hh, (trx) =>
     trx
       .updateTable('incoming_file')
@@ -335,7 +341,7 @@ export async function readItem(
       })
       .where('id', '=', f.id)
       .where('state', '=', 'received')
-      .where(unread)
+      .where((eb) => unread(eb, stamp))
       .returning(['read_attempts', 'read_waits', 'read_waited_since'])
       .executeTakeFirst(),
   ).catch((err: unknown) => {
@@ -382,14 +388,14 @@ export async function readItem(
           .set({
             read_state: 'waiting',
             read_started_at: null,
-            read_not_before: new Date(Date.now() + readAgainAfter(attempts)),
+            read_not_before: new Date(clock().getTime() + readAgainAfter(attempts)),
           })
           .execute(),
       );
       return;
     }
-    const since = taken.read_waited_since ?? new Date();
-    if (Date.now() - since.getTime() >= READ_GIVE_UP_MS) {
+    const since = taken.read_waited_since ?? clock();
+    if (clock().getTime() - since.getTime() >= READ_GIVE_UP_MS) {
       await failed('not_reachable');
       return;
     }
@@ -403,7 +409,7 @@ export async function readItem(
           read_attempts: Math.max(0, attempts - 1),
           read_waits: waits,
           read_waited_since: since,
-          read_not_before: new Date(Date.now() + waitAgainAfter(waits)),
+          read_not_before: new Date(clock().getTime() + waitAgainAfter(waits)),
         })
         .execute(),
     );

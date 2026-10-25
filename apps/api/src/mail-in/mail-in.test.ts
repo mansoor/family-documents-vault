@@ -33,13 +33,20 @@ describe.skipIf(!testAdminUrl())('email in, in the API (S4)', () => {
   let admin: ReturnType<typeof createPool>;
   let app: ReturnType<typeof createPool>;
   let nth = 0;
+  /**
+   * The API's clock, held still where a test says (null: the real one), so
+   * the worker's word is exactly so old by the clock that reads it — never
+   * the database's clock against the API's, or a slow run's milliseconds.
+   */
+  let frozen: number | null = null;
+  const clock = () => frozen ?? Date.now();
   const PASSWORD = `pw-${randomBytes(9).toString('hex')}`;
 
   beforeAll(async () => {
     // The worker's password in this process's environment, as a careless
     // compose file might put it: the API must still never say it.
     process.env.FDV_MAIL_IN_PASSWORD = PASSWORD;
-    h = await createHarness({ rateLimitPerMinute: 100_000 });
+    h = await createHarness({ rateLimitPerMinute: 100_000, now: clock });
     owner = await h.setup();
     adult = await h.join(owner, { name: 'Ahmed', email: 'ahmed@example.test', role: 'adult' });
     other = await h.join(owner, { name: 'Bea', email: 'bea@example.test', role: 'adult' });
@@ -55,6 +62,7 @@ describe.skipIf(!testAdminUrl())('email in, in the API (S4)', () => {
     await h?.close();
   });
   beforeEach(async () => {
+    frozen = null;
     await admin.query('delete from mail_in');
     await admin.query('delete from mail_in_address');
     await admin.query('delete from mail_in_server');
@@ -74,7 +82,7 @@ describe.skipIf(!testAdminUrl())('email in, in the API (S4)', () => {
       ...(payload ? { payload } : {}),
       remoteAddress: `10.69.${++nth >> 8}.${nth & 0xff}`,
     });
-  /** The mailbox as the worker says it, `ago` seconds ago. */
+  /** The mailbox as the worker says it, `ago` seconds ago by the API's clock. */
   const said = (
     configured: boolean,
     ago = 0,
@@ -82,9 +90,9 @@ describe.skipIf(!testAdminUrl())('email in, in the API (S4)', () => {
   ) =>
     admin.query(
       `insert into mail_in_server (singleton, configured, address, folder, after, sender_check, poll_seconds, checked_at)
-       values (true, $1, $2, $3, $4, $5, $6, now() - make_interval(secs => $7))
+       values (true, $1, $2, $3, $4, $5, $6, $7)
        on conflict (singleton) do update set configured = $1, address = $2, folder = $3, after = $4,
-         sender_check = $5, poll_seconds = $6, checked_at = now() - make_interval(secs => $7)`,
+         sender_check = $5, poll_seconds = $6, checked_at = $7`,
       [
         configured,
         configured ? 'home@vault.test' : null,
@@ -92,7 +100,7 @@ describe.skipIf(!testAdminUrl())('email in, in the API (S4)', () => {
         over.after ?? 'move',
         over.sender_check ?? false,
         over.poll ?? 300,
-        ago,
+        new Date(clock() - ago * 1000),
       ],
     );
   const offered = async () =>
@@ -141,6 +149,7 @@ describe.skipIf(!testAdminUrl())('email in, in the API (S4)', () => {
   };
 
   it('is offered only while the worker has a mailbox set up and checked it in its last two polls', async () => {
+    frozen = Date.now();
     expect(await offered()).toBe(false);
     expect((await view()).server).toMatchObject({
       state: 'unknown',
@@ -157,11 +166,17 @@ describe.skipIf(!testAdminUrl())('email in, in the API (S4)', () => {
     // Two polls of five minutes and a minute more: still. Past that: not running.
     await said(true, 10 * 60 + 30);
     expect(await offered()).toBe(true);
+    await said(true, 11 * 60);
+    expect(await offered()).toBe(true);
+    await said(true, 11 * 60 + 1);
+    expect(await offered()).toBe(false);
     await said(true, 11 * 60 + 30);
     expect(await offered()).toBe(false);
     expect((await view()).server.state).toBe('unknown');
-    // A quicker poll goes stale sooner.
+    // A quicker poll goes stale sooner: two of a minute, and a minute more.
     await said(true, 3 * 60, { poll: 60 });
+    expect(await offered()).toBe(true);
+    await said(true, 3 * 60 + 1, { poll: 60 });
     expect(await offered()).toBe(false);
     // Not set up on the worker: said so, with what to set.
     await said(false);

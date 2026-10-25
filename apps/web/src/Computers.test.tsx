@@ -1,10 +1,10 @@
 import type { PairedDevice } from '@fdv/shared';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished } from 'vitest';
 import { App } from './App.js';
 import { pairingAddressCheck } from '@fdv/shared';
-import { addressToType } from './screens/Computers.js';
+import { addressToType, pairingPoll } from './screens/Computers.js';
 import { fresh, installFakeApi, signedIn, type FakeState } from './test-api.js';
 
 /**
@@ -179,26 +179,73 @@ describe('Your computers (0.8.0, D1)', () => {
   });
 
   it('says so once the computer is paired', async () => {
-    at(
+    // The vault is asked every few seconds while the code is shown; here,
+    // sooner, so a loaded run's seconds are not waited out.
+    expect(pairingPoll.everyMs).toBe(4000);
+    pairingPoll.everyMs = 20;
+    onTestFinished(() => {
+      pairingPoll.everyMs = 4000;
+    });
+    const state = at(
       '/settings/computers',
       { computers: [], pairedMeanwhile: [computer({ id: 'd-new', name: 'Study PC' })] },
       'adult',
     );
     fireEvent.click(await screen.findByRole('button', { name: 'Add a computer' }));
     const dialog = await screen.findByRole('dialog', { name: 'Add a computer' });
-    // The vault asked every few seconds while the code is shown: two asks'
-    // time, since under a loaded run the first answer can come late.
     expect(
       await within(dialog).findByText(
         '“Study PC” is paired. What it sends arrives in your uploads, a batch a day.',
-        undefined,
-        { timeout: 30_000 },
       ),
     ).toBeInTheDocument();
+    // Found by asking the vault again, not by the list it opened with.
+    expect(
+      state.calls.filter((c) => c.method === 'GET' && c.url === '/api/v1/paired-devices').length,
+    ).toBeGreaterThan(1);
     await expectAccessible();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
     expect(await screen.findByText('Study PC')).toBeInTheDocument();
-  }, 45_000);
+  });
+
+  it('a computer already paired is never said to be the new one, even before the list has come', async () => {
+    pairingPoll.everyMs = 20;
+    let release = () => {};
+    const first = new Promise<void>((r) => {
+      release = r;
+    });
+    onTestFinished(() => {
+      release();
+      pairingPoll.everyMs = 4000;
+    });
+    // The screen's own list held: Add a computer is pressed before it comes.
+    let lists = 0;
+    const state = at(
+      '/settings/computers',
+      {
+        computers: [computer({})],
+        hold: (method, path) =>
+          method === 'GET' && path === '/api/v1/paired-devices' && ++lists === 1
+            ? first
+            : undefined,
+      },
+      'adult',
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Add a computer' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add a computer' });
+    // Asked again and again meanwhile, with only the laptop there before.
+    const asks = () =>
+      state.calls.filter((c) => c.method === 'GET' && c.url === '/api/v1/paired-devices').length;
+    await waitFor(() => expect(asks()).toBeGreaterThan(5));
+    expect(within(dialog).queryByText(/is paired/)).toBeNull();
+    expect(screen.queryByText(/Kitchen laptop/)).toBeNull();
+    // Paired now: that one, and only that one, is said.
+    state.computers = [computer({ id: 'd-new', name: 'Study PC' }), ...(state.computers ?? [])];
+    expect(
+      await within(dialog).findByText(
+        '“Study PC” is paired. What it sends arrives in your uploads, a batch a day.',
+      ),
+    ).toBeInTheDocument();
+  });
 
   it('lists your computers, and removes one after asking', async () => {
     const state = at('/settings/computers', { computers: [computer({})] }, 'adult');

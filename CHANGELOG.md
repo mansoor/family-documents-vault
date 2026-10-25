@@ -6,6 +6,11 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **An end time on the night the clocks go back is the earlier one (0.9.0).** When the clocks go back, one hour of the night happens twice (in London on 25 October 2026, 01:00 to 01:59 comes round again). An end chosen in that hour, for a share link, a request for documents, a lock on someone's access, or anything else set on the family's clock, now means the first time round, which is the shorter and safer reading. Before, it meant the second time round, an hour later, so "in two minutes" could be taken as an hour and two minutes away. On the night the clocks go forward, a time that never happens (01:30 in London on 29 March 2026) is moved on by the missing hour, to 02:30. This now works the same way in every time zone; before, in a time zone behind UTC, such as New York, it was moved back instead.
+- **Add a computer no longer names the wrong computer as just paired.** If **Add a computer** was pressed before the list of your computers had loaded, a computer you had already paired could be shown as the new one. The vault now checks which computers are already paired just before it makes the code.
+
 ## [0.9.0-dev.17] - 2026-10-24 — one action row on a note and a document
 
 ### Changed

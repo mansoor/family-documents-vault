@@ -57,6 +57,8 @@ export function ComputersScreen() {
     reload,
   } = useLoad(async (t) => (await api.listDevices(t)).items, [authVersion]);
   const [pairing, setPairing] = useState<DevicePairingCode | null>(null);
+  /** The computers there were just before the code was made: a new one is the one just paired. */
+  const [known, setKnown] = useState<Set<string>>(() => new Set());
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [removing, setRemoving] = useState<PairedDevice | null>(null);
@@ -69,8 +71,18 @@ export function ComputersScreen() {
     setError(null);
     setSaid(null);
     try {
-      const made = await guarded((t) => api.createDevicePairing(t));
-      if (made) setPairing(made);
+      // Asked for before the code, never taken from the list on screen,
+      // which may not have come yet, or may have come after the code: then
+      // a computer already paired would be said to be the new one, or the
+      // new one taken as already known.
+      const made = await guarded(async (t) => {
+        const before = (await api.listDevices(t)).items;
+        return { before, code: await api.createDevicePairing(t) };
+      });
+      if (made) {
+        setKnown(new Set(made.before.map((d) => d.id)));
+        setPairing(made.code);
+      }
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -185,7 +197,7 @@ export function ComputersScreen() {
       {pairing && (
         <PairingDialog
           pairing={pairing}
-          known={new Set((data ?? []).map((d) => d.id))}
+          known={known}
           returnFocus={addButton}
           onNew={() => void add()}
           onClose={() => {
@@ -219,6 +231,13 @@ export function ComputersScreen() {
     </SettingsPage>
   );
 }
+
+/**
+ * How often the pairing dialog asks the vault whether a computer has been
+ * paired: every few seconds. A setting of the module's, so a test can ask
+ * sooner than a loaded run's real seconds.
+ */
+export const pairingPoll = { everyMs: 4000 };
 
 /** "9:41": minutes and seconds left. */
 function left(ms: number): string {
@@ -269,7 +288,7 @@ function PairingDialog(props: {
           if (fresh) setPaired(fresh);
         })
         .catch(() => undefined);
-    }, 4000);
+    }, pairingPoll.everyMs);
     return () => clearInterval(t);
   }, [paired, ran, withToken]);
   const address = addressToType(props.pairing.vault_address);
