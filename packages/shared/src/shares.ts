@@ -256,6 +256,16 @@ function offsetMinutes(at: Date, timezone: string): number {
  * The moment a date and a time on the household's clock name: "Friday at
  * 17:00" in Europe/London is 16:00 UTC in summer and 17:00 in winter.
  * Null when either is not one.
+ *
+ * The one place a family-clock date and time becomes an instant (share-link
+ * ends, guest access ends, a sign-in's renewal, the next local midnight), so
+ * the change of the clocks is decided here, the same way everywhere:
+ * - a time that happens twice (the hour the clocks go back: 01:30 on
+ *   25 October 2026 in London) is the **earlier** of the two, 00:30 UTC.
+ *   For an end, that is the shorter, safer reading;
+ * - a time that never happens (the hour the clocks go forward: 01:30 on
+ *   29 March 2026 in London) moves **forward by the gap**: 02:30 BST, the
+ *   instant the clock before the change would have called 01:30.
  */
 export function zonedTime(date: string, time: string, timezone: string): Date | null {
   const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
@@ -263,11 +273,19 @@ export function zonedTime(date: string, time: string, timezone: string): Date | 
   if (!d || !t) return null;
   const wall = Date.UTC(Number(d[1]), Number(d[2]) - 1, Number(d[3]), Number(t[1]), Number(t[2]));
   if (Number.isNaN(wall)) return null;
-  // Twice: the offset at the first guess can differ from the one at the
-  // answer, around a change of the clocks.
-  let at = wall - offsetMinutes(new Date(wall), timezone) * 60_000;
-  at = wall - offsetMinutes(new Date(at), timezone) * 60_000;
-  return new Date(at);
+  // The offsets the clock has a day either side of the wall time (and at
+  // it): each names a candidate instant, which is a reading of the wall time
+  // only if the clock has that offset at it.
+  const offsets = new Set(
+    [wall - 864e5, wall, wall + 864e5].map((at) => offsetMinutes(new Date(at), timezone)),
+  );
+  const candidates = [...offsets].map((o) => wall - o * 60_000);
+  const readings = candidates.filter(
+    (at) => wall - offsetMinutes(new Date(at), timezone) * 60_000 === at,
+  );
+  // Twice: the earlier. Never: the latest candidate, the one read with the
+  // offset before the clocks went forward, which is forward by the gap.
+  return new Date(readings.length > 0 ? Math.min(...readings) : Math.max(...candidates));
 }
 
 /** The quick picks for a link's end: Tonight, Friday 5 pm, In a week. */

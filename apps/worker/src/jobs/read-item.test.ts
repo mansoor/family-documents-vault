@@ -588,25 +588,46 @@ describe.skipIf(!testAdminUrl())('an item read, in the worker (I2)', () => {
          and kind = 'household' limit 1) where id = $1`,
       [i.id, hh],
     );
-    const now = () =>
-      admin.query('update incoming_file set read_not_before = now() where id = $1', [i.id]);
+    // The worker's clock, set here: each wait read off it exactly, and each
+    // read again once that wait is over by it — never the database's clock
+    // against the worker's, or a slow run's seconds counted in the wait.
+    const start = Date.now();
+    let clock = start;
+    const now = () => new Date(clock);
     const waits: number[] = [];
     for (let n = 1; n <= 6; n++) {
-      const before = Date.now();
-      await readNext({ extract: says(PASSPORT) });
+      // Its wait not yet over, by the worker's clock: not taken.
+      if (n > 1) {
+        clock -= 1;
+        await expect(readNext({ extract: says(PASSPORT), now })).resolves.toMatchObject({
+          read: null,
+        });
+        expect(await rowOf(i.id)).toMatchObject({ read_waits: n - 1 });
+        clock += 1;
+      }
+      await expect(readNext({ extract: says(PASSPORT), now })).resolves.toMatchObject({
+        read: i.id,
+      });
       const row = await rowOf(i.id);
       expect(row).toMatchObject({ read_state: 'waiting', read_attempts: 0, read_waits: n });
-      waits.push(Math.round(((row?.read_not_before?.getTime() ?? 0) - before) / 1000));
-      await now();
+      const until = row?.read_not_before?.getTime() ?? 0;
+      waits.push((until - clock) / 1000);
+      // Its wait over, to the millisecond.
+      clock = until;
     }
     // 30 s, 2 min, 10 min, an hour, then hourly.
-    expect(waits.map((w) => Math.round(w / 10) * 10)).toEqual([30, 120, 600, 3600, 3600, 3600]);
+    expect(waits).toEqual([30, 120, 600, 3600, 3600, 3600]);
+    // Just short of a day after the first: still waiting, an hour more.
+    clock = start + 24 * 3_600_000 - 1;
+    await expect(readNext({ extract: says(PASSPORT), now })).resolves.toMatchObject({
+      read: i.id,
+    });
+    const last = await rowOf(i.id);
+    expect(last).toMatchObject({ read_state: 'waiting', read_attempts: 0, read_waits: 7 });
+    expect(last?.read_not_before?.getTime()).toBe(clock + 3_600_000);
     // A day after the first: given up — not reachable, not "not readable".
-    await admin.query(
-      "update incoming_file set read_waited_since = now() - interval '25 hours' where id = $1",
-      [i.id],
-    );
-    await readNext({ extract: says(PASSPORT) });
+    clock = last?.read_not_before?.getTime() ?? 0;
+    await readNext({ extract: says(PASSPORT), now });
     expect(await rowOf(i.id)).toMatchObject({
       read_state: 'failed',
       read_failure: 'not_reachable',

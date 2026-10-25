@@ -46,6 +46,73 @@ describe("a link's options", () => {
     expect(zonedParts(at, 'UTC')).toEqual({ date: '2026-09-27', time: '23:30', weekday: 0 });
   });
 
+  it('reads a time that happens twice, the night the clocks go back, as the earlier one', () => {
+    // London's clocks go back at 01:00 UTC on 25 October 2026: 01:29 happens
+    // at 00:29 UTC (BST) and again at 01:29 UTC (GMT). The earlier is taken.
+    expect(zonedTime('2026-10-25', '01:29', 'Europe/London')?.toISOString()).toBe(
+      '2026-10-25T00:29:00.000Z',
+    );
+    expect(zonedTime('2026-10-25', '01:00', 'Europe/London')?.toISOString()).toBe(
+      '2026-10-25T00:00:00.000Z',
+    );
+    expect(zonedTime('2026-10-25', '01:59', 'Europe/London')?.toISOString()).toBe(
+      '2026-10-25T00:59:00.000Z',
+    );
+    // Either side of the repeated hour, only one reading.
+    expect(zonedTime('2026-10-25', '00:59', 'Europe/London')?.toISOString()).toBe(
+      '2026-10-24T23:59:00.000Z',
+    );
+    expect(zonedTime('2026-10-25', '02:00', 'Europe/London')?.toISOString()).toBe(
+      '2026-10-25T02:00:00.000Z',
+    );
+    // New York's go back at 06:00 UTC on 1 November 2026: 01:30 is 05:30 UTC
+    // (EDT) and 06:30 UTC (EST). The earlier is taken.
+    expect(zonedTime('2026-11-01', '01:30', 'America/New_York')?.toISOString()).toBe(
+      '2026-11-01T05:30:00.000Z',
+    );
+    // And it reads back as the time it was given.
+    for (const [date, time, zone] of [
+      ['2026-10-25', '01:29', 'Europe/London'],
+      ['2026-11-01', '01:30', 'America/New_York'],
+    ] as const) {
+      const p = zonedParts(zonedTime(date, time, zone) as Date, zone);
+      expect([p.date, p.time]).toEqual([date, time]);
+    }
+  });
+
+  it('moves a time that never happens, the night the clocks go forward, on by the gap', () => {
+    // London's clocks go forward at 01:00 UTC on 29 March 2026, from 01:00 GMT
+    // to 02:00 BST: 01:30 never happens, and is read as 02:30 BST.
+    const at = zonedTime('2026-03-29', '01:30', 'Europe/London') as Date;
+    expect(at.toISOString()).toBe('2026-03-29T01:30:00.000Z');
+    expect(zonedParts(at, 'Europe/London').time).toBe('02:30');
+    expect(zonedTime('2026-03-29', '01:00', 'Europe/London')?.toISOString()).toBe(
+      '2026-03-29T01:00:00.000Z',
+    );
+    // Either side of the gap, as before.
+    expect(zonedTime('2026-03-29', '00:59', 'Europe/London')?.toISOString()).toBe(
+      '2026-03-29T00:59:00.000Z',
+    );
+    expect(zonedTime('2026-03-29', '02:00', 'Europe/London')?.toISOString()).toBe(
+      '2026-03-29T01:00:00.000Z',
+    );
+    // New York's on 8 March 2026 at 07:00 UTC: 02:30 is read as 03:30 EDT.
+    const ny = zonedTime('2026-03-08', '02:30', 'America/New_York') as Date;
+    expect(ny.toISOString()).toBe('2026-03-08T07:30:00.000Z');
+    expect(zonedParts(ny, 'America/New_York').time).toBe('03:30');
+  });
+
+  it('refuses two minutes from now as an end, even inside the repeated hour', () => {
+    // 01:27 BST, the first 01:27 of the night: 01:29 is two minutes on.
+    // And 01:27 GMT, the second: 01:29 is read as the earlier 01:29, gone.
+    for (const now of [new Date('2026-10-25T00:27:00Z'), new Date('2026-10-25T01:27:00Z')]) {
+      const soon = zonedParts(new Date(now.getTime() + 2 * 60_000), 'Europe/London');
+      expect(soon).toMatchObject({ date: '2026-10-25', time: '01:29' });
+      const at = zonedTime(soon.date, soon.time, 'Europe/London') as Date;
+      expect(shareEndProblem(at, { now })).toBe('Choose a time at least 5 minutes from now.');
+    }
+  });
+
   it('offers Tonight, Friday 5 pm and In a week, each still ahead', () => {
     // Sunday 27 September 2026, 10:00 in London.
     const sunday = new Date('2026-09-27T09:00:00Z');
@@ -90,16 +157,20 @@ describe("a link's options", () => {
       zonedTime(p.date, p.time, 'Europe/London') as Date;
     // Three days on from here is 01:30 on the night British Summer Time
     // ends, a time that happens twice: the very edge, read back, is the
-    // second, an hour past the longest.
+    // first (the earlier), exactly the longest, and taken; the second would
+    // be an hour past it.
     const before = new Date('2026-10-22T00:30:00Z');
     const edge = latestShareEnd('Europe/London', before, 3);
     expect(edge).toMatchObject({ date: '2026-10-25', time: '01:30' });
-    expect(shareEndProblem(at(edge), { now: before, maxDays: 3 })).toBe(
+    expect(at(edge).toISOString()).toBe('2026-10-25T00:30:00.000Z');
+    expect(shareEndProblem(at(edge), { now: before, maxDays: 3 })).toBeNull();
+    expect(shareEndProblem(new Date('2026-10-25T01:30:00Z'), { now: before, maxDays: 3 })).toBe(
       'A link can last 3 days at most.',
     );
-    // The default is on the hour, and inside it.
+    // The default is on the hour, and inside it: the first 01:00, 00:00 UTC.
     const start = defaultShareEnd('Europe/London', before, 3);
-    expect(start).toEqual({ date: '2026-10-25', time: '00:00' });
+    expect(start).toEqual({ date: '2026-10-25', time: '01:00' });
+    expect(at(start).toISOString()).toBe('2026-10-25T00:00:00.000Z');
     expect(shareEndProblem(at(start), { now: before, maxDays: 3 })).toBeNull();
     // On an ordinary day: the hour below a quarter of an hour inside it.
     const sunday = new Date('2026-09-27T09:40:00Z');

@@ -5697,6 +5697,19 @@ words }`, `problem` one of `not_set_up`, `unreachable`, `timeout`,
       `SettingsCheckKind` gains `local_ai`; `PROPOSAL_CUES` gains `local_ai`.
       `@fdv/client`: `localAiSettings`, `setLocalAi`, `testLocalAi`, `localAiNotice`;
       `@fdv/shared`: `LocalAiNotice`, `localAiTokens`, `lessonIssuer`.
+  - The change of the clocks, decided once (0.9.0, later list). No route
+    changes and no migration. **Changed:** `@fdv/shared` `zonedTime(date,
+time, timezone)`, which every client turns a family-clock date and time
+    into an instant with (a link's end, a request's, a lock's, a guest's
+    `endOf` day, `defaultShareEnd`, `shareQuickPicks`, `nextLocalMidnight`),
+    reads a time that happens twice (the hour the clocks go back) as the
+    **earlier** instant: `zonedTime('2026-10-25', '01:29', 'Europe/London')`
+    is `00:29Z`, where it was `01:29Z`. A time that never happens (the hour
+    the clocks go forward) moves **forward by the gap** in every zone:
+    `('2026-03-29', '01:30', 'Europe/London')` is `01:30Z` (02:30 BST), as
+    before, and `('2026-03-08', '02:30', 'America/New_York')` is `07:30Z`
+    (03:30 EDT), where it was `06:30Z` (01:30 EST). The vault still takes
+    the instant a client sends, unchanged.
 
 ## Deprecations in effect
 

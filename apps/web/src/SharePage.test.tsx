@@ -269,6 +269,27 @@ describe('until a date and time, view or download, so many opens', () => {
     expect(shareBody(state)).toBeUndefined();
   });
 
+  it('two minutes from now is refused even in the repeated autumn hour, read as the earlier one', async () => {
+    // 01:27 BST on 25 October 2026, the first 01:27 of the night in London:
+    // "two minutes from now" is 01:29, which happens twice. Read as the
+    // earlier (00:29 UTC), it is under 5 minutes away and refused.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-25T00:27:00Z'));
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const state = await openSheet();
+    const soon = zonedParts(new Date(Date.now() + 2 * 60_000), 'Europe/London');
+    expect(soon).toMatchObject({ date: '2026-10-25', time: '01:29' });
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: soon.date } });
+    fireEvent.change(screen.getByLabelText('Time'), { target: { value: soon.time } });
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Choose a time at least 5 minutes from now.',
+    );
+    expect(screen.getByRole('button', { name: 'Make the link' })).toBeDisabled();
+    expect(shareBody(state)).toBeUndefined();
+  });
+
   it('under a vault limit shorter than a week, only ends it takes are offered, and the default is one (5.18 review)', async () => {
     const state = await openSheet({ shareMaxDays: 3 });
     // No "In a week": the vault would refuse it.
