@@ -10,12 +10,13 @@ import {
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
-import { Button, Check, ErrorNote, LoadFailed, TopBar } from './ui.js';
+import { Button, Check, ErrorNote, LoadFailed } from './ui.js';
+import { SettingsPage } from './screens/Settings.js';
 import { useWorkerCheck } from './worker-check.js';
 import { familyZoneNow, shortWhenWords } from './family-time.js';
 
 /**
- * The scanner folder (0.8.0, S3): an owner's page in Settings → For owners,
+ * The scanner folder (0.8.0, S3): an owner's page in Settings → Server and reading,
  * and the notes it leaves in Needs attention for whoever's Inbox it fills.
  *
  * The page says how the worker found the folder — ready, or why not, in
@@ -130,8 +131,7 @@ export function ScannerScreen() {
   const listed = browse.view?.state === 'done' ? (browse.view.browse ?? null) : null;
   const result = verify.view?.state === 'done' ? (verify.view.folder ?? null) : null;
   return (
-    <main className="page page-top">
-      <TopBar title="Scanner folder" back="/settings/owners" backLabel="Back to For owners" />
+    <SettingsPage title="Scanner folder">
       <p className="lede">
         Scan straight into the vault: your scanner saves into a folder on this server, and each file
         goes into one person’s Inbox to look over, as if they had added it.
@@ -400,7 +400,7 @@ export function ScannerScreen() {
           </section>
         </>
       )}
-    </main>
+    </SettingsPage>
   );
 }
 

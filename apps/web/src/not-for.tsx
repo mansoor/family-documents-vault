@@ -92,29 +92,29 @@ export const SCREEN_RULES = {
     title: 'Your data',
     why: refusalFor('export.request'),
   },
-  // Each as its page said it before.
-  owners: { may: owner, title: 'For owners', why: refusalFor('storage.manage') },
-  storage: { may: owner, title: 'Where your files are kept', why: refusalFor('storage.manage') },
-  email: { may: owner, title: 'Where email comes from', why: refusalFor('notifications.manage') },
+  // Each as its page said it before. (For owners, /settings/owners, opens
+  // Storage since 0.9.0, and says what it said.)
+  // Named as the menu names it since 0.9.0.
+  storage: { may: owner, title: 'Storage', why: refusalFor('storage.manage') },
+  // Where email comes from and Email in (S4), one page since 0.9.0: an
+  // owner's, one refusal for both parts, at either part's address.
+  email: {
+    may: owner,
+    title: 'Email, in and out',
+    why: 'Only an owner can change the vault’s email settings.',
+  },
   // The scanner folder (S3): an owner's.
   scanner: {
     may: owner,
     title: 'Scanner folder',
     why: 'Only an owner can set up the scanner folder.',
   },
-  // Email in (S4): an owner's.
-  emailIn: { may: owner, title: 'Email in', why: 'Only an owner can set up email in.' },
-  // How the vault reads papers: the reading model (R2) and the local AI (R4), an owner's.
+  // How the vault reads papers — the reading model (R2) and the local AI
+  // (R4) — and the Reading check (R0), one page since 0.9.0: an owner's.
   reading: {
     may: owner,
-    title: 'Reading',
+    title: 'Reading and the check',
     why: 'Only an owner can change how the vault reads papers.',
-  },
-  // The Reading check (0.9.0, R0): an owner's.
-  readingCheck: {
-    may: owner,
-    title: 'Reading check',
-    why: 'Only an owner can run the Reading check.',
   },
 } satisfies Record<string, ScreenRule>;
 

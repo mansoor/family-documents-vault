@@ -7,15 +7,7 @@ import {
   type NoteSummary,
   type Visibility,
 } from '@fdv/shared';
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type KeyboardEvent,
-  type PointerEvent,
-} from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate, useParams } from 'react-router';
 import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -26,6 +18,7 @@ import { release, useLeaveGuard } from '../leave-guard.js';
 import { RichTextEditor } from '../rich-text.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
+import { Splitter, useKeptWidth, type WidthBounds } from '../splitter.js';
 import { TagSection } from '../tags.js';
 import { Button, ErrorNote, MoveToTrashDialog, Pills, TopBar } from '../ui.js';
 import { ActionIcon, ActionRow, countBadge } from '../action-row.js';
@@ -63,26 +56,9 @@ export const NOTES_NOT_FOR =
   'A note is not a password manager: keep passwords and PINs in one, or at the very least in an Only me note.';
 
 /** The list's width, in pixels: as it starts, and how narrow or wide it may be dragged. */
-const LIST_WIDTH = { start: 320, min: 240, max: 560, step: 16 };
+const LIST_WIDTH: WidthBounds = { start: 320, min: 240, max: 560, step: 16 };
 
 const widthKey = (memberId: string | null) => `fdv.notes.list-width.${memberId ?? 'nobody'}`;
-
-function keptWidth(memberId: string | null): number {
-  try {
-    const n = Number(window.localStorage.getItem(widthKey(memberId)));
-    return Number.isFinite(n) && n >= LIST_WIDTH.min && n <= LIST_WIDTH.max ? n : LIST_WIDTH.start;
-  } catch {
-    return LIST_WIDTH.start;
-  }
-}
-
-function keepWidth(memberId: string | null, width: number): void {
-  try {
-    window.localStorage.setItem(widthKey(memberId), String(Math.round(width)));
-  } catch {
-    // Blocked, or full: the width is this visit's alone.
-  }
-}
 
 const visibilityWords: Record<Visibility, string> = {
   household: 'Everyone in the family',
@@ -127,9 +103,7 @@ export function NotesScreen() {
   const changed = useCallback(() => setListed((n) => n + 1), []);
 
   // The list's width: as this person left it here.
-  const [held, setHeld] = useState(() => ({ who: memberId, w: keptWidth(memberId) }));
-  const width = held.who === memberId ? held.w : keptWidth(memberId);
-  const setWidth = (w: number) => setHeld({ who: memberId, w });
+  const [width, setWidth, keepWidth] = useKeptWidth(widthKey(memberId), LIST_WIDTH);
 
   const mayAdd = can(role, 'document.add');
   const showList = !phone || (!id && !creating);
@@ -178,78 +152,20 @@ export function NotesScreen() {
           style={{ gridTemplateColumns: `${width}px 12px minmax(0, 1fr)` }}
         >
           {list}
-          <Resizer width={width} onWidth={setWidth} onDone={(w) => keepWidth(memberId, w)} />
+          <Splitter
+            className="notes-resizer"
+            label="Width of the list of notes"
+            controls="notes-list"
+            width={width}
+            bounds={LIST_WIDTH}
+            onWidth={setWidth}
+            onDone={keepWidth}
+          />
           {pane}
         </div>
       )}
       {guard}
     </main>
-  );
-}
-
-/**
- * Between the list and the note: dragged, or moved with the arrow keys
- * (16 px a press), Home and End — a window splitter, as ARIA has one.
- */
-function Resizer(props: {
-  width: number;
-  onWidth: (w: number) => void;
-  onDone: (w: number) => void;
-}) {
-  const drag = useRef<{ x: number; w: number } | null>(null);
-  const clamp = (w: number) => Math.min(LIST_WIDTH.max, Math.max(LIST_WIDTH.min, w));
-  const set = (w: number) => {
-    const next = clamp(w);
-    props.onWidth(next);
-    props.onDone(next);
-  };
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    const step = e.shiftKey ? LIST_WIDTH.step * 4 : LIST_WIDTH.step;
-    const to =
-      e.key === 'ArrowLeft'
-        ? props.width - step
-        : e.key === 'ArrowRight'
-          ? props.width + step
-          : e.key === 'Home'
-            ? LIST_WIDTH.min
-            : e.key === 'End'
-              ? LIST_WIDTH.max
-              : null;
-    if (to === null) return;
-    e.preventDefault();
-    set(to);
-  };
-  const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
-    drag.current = { x: e.clientX, w: props.width };
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-  };
-  const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
-    if (!drag.current) return;
-    props.onWidth(clamp(drag.current.w + e.clientX - drag.current.x));
-  };
-  const onPointerUp = (e: PointerEvent<HTMLDivElement>) => {
-    if (!drag.current) return;
-    const w = clamp(drag.current.w + e.clientX - drag.current.x);
-    drag.current = null;
-    set(w);
-  };
-  return (
-    <div
-      className="notes-resizer"
-      role="separator"
-      aria-orientation="vertical"
-      aria-label="Width of the list of notes"
-      aria-controls="notes-list"
-      aria-valuenow={props.width}
-      aria-valuemin={LIST_WIDTH.min}
-      aria-valuemax={LIST_WIDTH.max}
-      aria-valuetext={`${props.width} pixels wide`}
-      tabIndex={0}
-      onKeyDown={onKeyDown}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-    />
   );
 }
 

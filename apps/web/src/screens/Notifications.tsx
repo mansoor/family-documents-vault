@@ -4,14 +4,14 @@ import { Link } from 'react-router';
 import { api, type SmtpProvider, type SmtpView } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import * as push from '../push.js';
-import { Button, ErrorNote, Field, LoadFailed, TopBar } from '../ui.js';
+import { Button, ErrorNote, Field, LoadFailed } from '../ui.js';
 import { SettingsPage } from './Settings.js';
 import { relativeWords } from '../family-time.js';
 
 /**
  * Settings → Notifications, "how you hear about things": notifications on
  * this device, and what each person wants. The household's own email
- * settings are For owners', in Settings (`EmailScreen`).
+ * settings are an owner’s, in Settings → Server and reading (`EmailOutPart`).
  */
 export function NotificationsScreen() {
   const { withToken, session, authVersion } = useApp();
@@ -146,7 +146,8 @@ export function NotificationsScreen() {
         {isOwner ? (
           <p className="muted">
             Email needs the mail server set up:{' '}
-            <Link to="/settings/email">Where email comes from</Link>, under For owners in Settings.
+            <Link to="/settings/email">Where email comes from</Link>, under Server and reading in
+            Settings.
           </p>
         ) : (
           <p className="muted">Email needs an owner to set up the mail server.</p>
@@ -158,25 +159,17 @@ export function NotificationsScreen() {
 
 /**
  * Where email comes from (decision 13: bring your own SMTP, with presets
- * and a Test): the household's, set by an owner. Under For owners in
- * Settings since its sections (under Household from R1; on How you hear
- * about things before that).
+ * and a Test): the household’s, set by an owner. The first part of
+ * Settings → Server and reading → Email, in and out since 0.9.0 (a page
+ * of its own under For owners before that; under Household from R1; on How
+ * you hear about things before that).
  */
-export function EmailScreen() {
+export function EmailOutPart() {
   const { session } = useApp();
-  return (
-    <main className="page page-top">
-      <TopBar
-        title="Where email comes from"
-        back="/settings/owners"
-        backLabel="Back to For owners"
-      />
-      {session.info?.role === 'owner' ? (
-        <SmtpSection />
-      ) : (
-        <p className="lede">{refusalFor('notifications.manage')}</p>
-      )}
-    </main>
+  return session.info?.role === 'owner' ? (
+    <SmtpSection />
+  ) : (
+    <p className="lede">{refusalFor('notifications.manage')}</p>
   );
 }
 

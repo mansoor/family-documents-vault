@@ -121,7 +121,7 @@ export function restoreSummary(file: string, r: RestoreReport): string {
     lines.push(
       `  - ${plural(r.readingChecksStopped, 'Reading check')} that had not finished ` +
         `${r.readingChecksStopped === 1 ? 'was' : 'were'} stopped. An owner starts another`,
-      '    in Settings → For owners → Reading check.',
+      '    in Settings → Server and reading → Reading and the check.',
     );
   }
   if (r.filesRemoved.length > 0) {

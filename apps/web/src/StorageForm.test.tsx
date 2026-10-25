@@ -5,7 +5,7 @@ import type { NewVault, Provider } from './api.js';
 import { AddPlace } from './screens/Settings.js';
 
 /**
- * Settings → Where your files are kept → Add another place (the owner,
+ * Settings → Storage (where your files are kept) → Add another place (the owner,
  * 23 Oct): each half of a key called what its provider calls it, and how
  * the bucket is addressed shown and changeable under Advanced — the
  * provider's own way unless changed (MinIO and "something else": path

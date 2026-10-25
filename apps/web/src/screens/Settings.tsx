@@ -9,13 +9,7 @@ import { can, refusalFor } from '@fdv/shared';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { setShortcutsOn, useShortcutsOn } from '../shortcuts.js';
-import {
-  ElsewhereNote,
-  OWNER_ROWS,
-  ServerLine,
-  SettingsRows,
-  useSettingsSections,
-} from '../settings-sections.js';
+import { ElsewhereNote, GroupName, ServerLine, useSettingsGroups } from '../settings-sections.js';
 import { ChangePassword } from './Password.js';
 import { dateTimeWords, dayWordsOf, useFamilyZone } from '../family-time.js';
 
@@ -26,7 +20,12 @@ import { dateTimeWords, dayWordsOf, useFamilyZone } from '../family-time.js';
  * document, where files are kept, where email comes from — has Back to its
  * section in its own bar.)
  */
-export function SettingsPage(props: { title: string; children: ReactNode }) {
+export function SettingsPage(props: {
+  title: string;
+  /** A line under the heading saying what the section is: Storage's "Where your files are kept". */
+  subtitle?: string;
+  children: ReactNode;
+}) {
   const phone = useShellMode() === 'phone';
   return (
     <main className="page page-top has-nav settings-page">
@@ -34,6 +33,7 @@ export function SettingsPage(props: { title: string; children: ReactNode }) {
         title={props.title}
         {...(phone ? { back: '/settings', backLabel: 'Back to Settings' } : {})}
       />
+      {props.subtitle && <p className="settings-subtitle">{props.subtitle}</p>}
       {props.children}
     </main>
   );
@@ -41,32 +41,40 @@ export function SettingsPage(props: { title: string; children: ReactNode }) {
 
 /**
  * Settings (/settings) holds settings only (R1), in sections since the
- * owner's ask: from 768 px it opens the first of them, the sub-menu beside
- * it (settings-sections.tsx); on a phone it is the list of them. An old
- * address with a place on the page (/settings#two-step) goes to that place
- * in its section, at any width.
+ * owner's ask, in three groups since 0.9.0: from 768 px it opens the first
+ * of them, the menu beside it (settings-sections.tsx); on a phone it is the
+ * list of the groups, each with its sections. An old address with a place
+ * on the page (/settings#two-step) goes to that place in its section, at
+ * any width.
  */
 export function SettingsScreen() {
   const wide = useShellMode() !== 'phone';
-  const sections = useSettingsSections();
+  const groups = useSettingsGroups();
   const { hash } = useLocation();
   if (hash.length > 1) return <Navigate to={{ pathname: '/settings/account', hash }} replace />;
-  if (wide) return <Navigate to={sections[0]?.to ?? '/settings/account'} replace />;
+  if (wide) return <Navigate to={groups[0]?.sections[0]?.to ?? '/settings/account'} replace />;
   return (
     <main className="page page-top has-nav">
       <TopBar title="Settings" />
       <ServerLine />
-      <nav aria-label="Settings sections">
-        <ul className="list">
-          {sections.map((s) => (
-            <li key={s.key}>
-              <Link to={s.to} className="rowbtn">
-                <span className="doc-title">{s.label}</span>
-                <span className="muted">{s.note}</span>
-              </Link>
-            </li>
-          ))}
-        </ul>
+      <nav aria-label="Settings sections" className="settings-groups">
+        {groups.map((g) => (
+          <div key={g.key} className="settings-group">
+            <h2 id={`settings-list-${g.key}`} className="settings-list-h">
+              <GroupName group={g} />
+            </h2>
+            <ul className="list" aria-labelledby={`settings-list-${g.key}`}>
+              {g.sections.map((s) => (
+                <li key={s.key}>
+                  <Link to={s.to} className="rowbtn">
+                    <span className="doc-title">{s.label}</span>
+                    <span className="muted">{s.note}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
       </nav>
       <ElsewhereNote />
     </main>
@@ -138,23 +146,6 @@ export function DataScreen() {
         <ExportSection />
       ) : (
         <p className="lede">{refusalFor('export.request')}</p>
-      )}
-    </SettingsPage>
-  );
-}
-
-/**
- * For owners (/settings/owners): where the household's files are kept, and
- * where its email comes from — an owner's, each a page of its own.
- */
-export function OwnersScreen() {
-  const { session } = useApp();
-  return (
-    <SettingsPage title="For owners">
-      {session.info?.role === 'owner' ? (
-        <SettingsRows rows={OWNER_ROWS} label="For owners" />
-      ) : (
-        <p className="lede">{refusalFor('storage.manage')}</p>
       )}
     </SettingsPage>
   );
@@ -487,7 +478,9 @@ function shortAgent(ua: string | null): string {
 }
 
 /**
- * "Where your files are kept" — the Storage board from the prototype.
+ * Storage, "Where your files are kept" — the Storage board from the
+ * prototype: Settings → Server and reading → Storage since 0.9.0, its
+ * heading the menu's name (the owner, 25 Oct 2026), what it is beneath.
  */
 export function StorageScreen() {
   const { withToken, guarded, authVersion } = useApp();
@@ -511,12 +504,8 @@ export function StorageScreen() {
   };
 
   return (
-    <main className="page page-top">
-      <TopBar
-        title="Where your files are kept"
-        back="/settings/owners"
-        backLabel="Back to For owners"
-      />
+    // Named as the menu names it (the owner, 25 Oct 2026), what it is beneath.
+    <SettingsPage title="Storage" subtitle="Where your files are kept">
       <p className="lede">
         Your documents are scrambled before they leave this app, so whoever stores them cannot read
         them.
@@ -575,7 +564,7 @@ export function StorageScreen() {
           }
         }}
       />
-    </main>
+    </SettingsPage>
   );
 }
 

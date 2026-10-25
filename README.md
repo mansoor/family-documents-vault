@@ -28,7 +28,7 @@ Built for people whose whole skill floor is _scan, upload, download_. You should
 
 One `docker compose up`. Four containers: the API, a background worker (OCR, thumbnails, page previews, reminders), the web app, and PostgreSQL. No Redis, no message broker, no Kubernetes.
 
-The worker reads the papers you add many at a time with plain rules and, beside them, a small text classifier of its own (a file of under a megabyte in the worker image), all on your server: no page goes to any outside service. Owners can turn the classifier off in Settings → For owners → Reading.
+The worker reads the papers you add many at a time with plain rules and, beside them, a small text classifier of its own (a file of under a megabyte in the worker image), all on your server: no page goes to any outside service. Owners can turn the classifier off in Settings → Server and reading → Reading and the check.
 
 |           | Minimum                                                                   |
 | --------- | ------------------------------------------------------------------------- |
@@ -693,7 +693,7 @@ its file.
 
 ### How well the vault reads your papers
 
-**Settings → For owners → Reading check** measures the vault's reader on
+**Settings → Server and reading → Reading and the check** measures the vault's reader on
 your own papers. It reads again the last documents somebody filed through
 review — accepted from Many documents or the Inbox, so a person checked the
 details — that you can see, and counts how often it would have got the kind,
@@ -728,7 +728,7 @@ papers added many at a time — from Add → Many documents, the scanner folder
 and email — beside the vault's own rules. It runs on **your server, or a
 machine on your network you control** — prefer the same host, or https —
 never a cloud service, and it is **off** until you set it up and an owner
-turns it on for the household in **Settings → For owners → Reading**. Turned
+turns it on for the household in **Settings → Server and reading → Reading and the check**. Turned
 on, it reads **everyone's** uploads in the household, and each of them is
 told so where they add papers ("Read by the household's local AI, on
 ollama:11434"). Everything else works the same with it or without it.
@@ -790,7 +790,7 @@ FDV_LOCAL_AI_MODEL=qwen2.5:3b-instruct
 ```
 
 and `docker compose --profile local-ai up -d` again, so the worker reads them.
-**Settings → For owners → Reading** then says which model at which address,
+**Settings → Server and reading → Reading and the check** then says which model at which address,
 and whether it answered; **Test** sends it a one-line question of its own —
 none of your papers — and says how long it took. Turn it on there.
 
@@ -966,7 +966,7 @@ scanner alone, on your home network, with a password of its own.
    `guest_username=fdv`, `local_umask=077`, and the folder as that user's
    `local_root`.
 
-4. **Turn it on.** An owner, in **Settings → For owners → Scanner folder**,
+4. **Turn it on.** An owner, in **Settings → Server and reading → Scanner folder**,
    chooses whose Inbox it fills: themselves, or anyone in the family who signs
    in and adds documents, never a viewer. The page says whether the folder is
    ready and, if not, why: not set, not there, not writable, or not a folder
@@ -1115,7 +1115,7 @@ family goes into their Inbox to look over, as if they had added it.
    so no tool the worker runs is handed it.
 
    **Or set it up in Settings**, with nothing on the server: an owner, in
-   **Settings → For owners → Email in → Set up the mailbox**, fills in the
+   **Settings → Server and reading → Email, in and out → Email in → Set up the mailbox**, fills in the
    IMAP server and port (993), the sign-in and its app password, the folder
    (INBOX), what happens to an email once its attachments are in, the
    provider's authserv-id ("Gmail: mx.google.com") and how often it is
@@ -1144,7 +1144,7 @@ family goes into their Inbox to look over, as if they had added it.
    are. If it ever does not open, Settings says so: type the app password in
    again.
 
-4. **Turn it on.** An owner, in **Settings → For owners → Email in**. The page
+4. **Turn it on.** An owner, in **Settings → Server and reading → Email, in and out → Email in**. The page
    says whether the mailbox is set up and when the worker last checked it,
    the last problem it had (a refused sign-in, an unreachable server, a
    certificate it couldn't verify), how much mail it left alone, and whether
@@ -1358,7 +1358,7 @@ A database restored by hand — loaded with `psql` from `decrypt-backup <file> o
 
 **Notifications work out of the box.** Open the vault, go to _Settings → Notifications_, and turn them on: the day's reminders arrive on that device even when the vault is closed. Nothing is configured, no account anywhere is involved, and the signing keys are generated into your `.env`. On iPhone and iPad, add the vault to the home screen first — Apple only allows notifications for installed web apps.
 
-**Email is optional and uses your own mail account.** Every other adult is told whenever an owner changes it, because everything the vault emails travels through it — and for the same reason no email ever names a private document, even to the person it belongs to; that is left to notifications, which are encrypted to your own device. In **Settings → For owners → Where email comes from**, an owner picks a provider (Gmail, Fastmail, iCloud, Outlook, Amazon SES, Postmark, or anything else with an SMTP server), pastes an address and an app password, and presses **Save and send a test**. A real message goes to your own address, and if it does not arrive the screen says why in plain words. Reminders then come from an address your family recognises, and no third party ever handles them.
+**Email is optional and uses your own mail account.** Every other adult is told whenever an owner changes it, because everything the vault emails travels through it — and for the same reason no email ever names a private document, even to the person it belongs to; that is left to notifications, which are encrypted to your own device. In **Settings → Server and reading → Email, in and out → Where email comes from**, an owner picks a provider (Gmail, Fastmail, iCloud, Outlook, Amazon SES, Postmark, or anything else with an SMTP server), pastes an address and an app password, and presses **Save and send a test**. A real message goes to your own address, and if it does not arrive the screen says why in plain words. Reminders then come from an address your family recognises, and no third party ever handles them.
 
 Each person chooses what they want: the day's reminders on their devices, the same by email, and a summary every Sunday evening.
 
@@ -1376,7 +1376,7 @@ What the phone is sent says nothing a lock screen should not: _how many_ things 
 
 ### Where files are kept
 
-Setup creates a local vault on the server (the `fdv_vault-data` volume) and uses it straight away. An owner can add an S3-compatible bucket under **Settings → For owners → Where your files are kept**: pick the provider (Amazon S3, Backblaze B2, Wasabi, Cloudflare R2, DigitalOcean Spaces, MinIO, or anything with an S3 address), paste the bucket name and two keys, and press **Test and save**. The test writes a small object, reads it back and deletes it, and tells you in plain words what happened. A place that has not passed its test cannot be chosen.
+Setup creates a local vault on the server (the `fdv_vault-data` volume) and uses it straight away. An owner can add an S3-compatible bucket under **Settings → Server and reading → Storage**: pick the provider (Amazon S3, Backblaze B2, Wasabi, Cloudflare R2, DigitalOcean Spaces, MinIO, or anything with an S3 address), paste the bucket name and two keys, and press **Test and save**. The test writes a small object, reads it back and deletes it, and tells you in plain words what happened. A place that has not passed its test cannot be chosen.
 
 Objects are laid out as `<household>/<document>/<version>/<hash>.<ext>.enc`, with a version's thumbnail and page previews beside it (`….thumb.enc`, `….p1.enc`), so a bucket can always be read with the provider's own console — the files are ciphertext until the offline recovery tool (a later release) opens them with your recovery code.
 

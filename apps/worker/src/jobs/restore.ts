@@ -136,7 +136,7 @@ export interface RestoreReport {
   /**
    * Reading checks stopped (0.9.0, R0): one waiting or running when the
    * backup was made has no job here to finish it, and what it had read so
-   * far is let go. Its owner starts another, in Settings → For owners.
+   * far is let go. Its owner starts another, in Settings → Server and reading.
    */
   readingChecksStopped: number;
   /**

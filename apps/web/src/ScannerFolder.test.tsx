@@ -6,7 +6,7 @@ import { fresh, installFakeApi, signedIn, type FakeState } from './test-api.js';
 
 /**
  * The scanner folder (0.8.0, S3), on the web: an owner's page in Settings →
- * For owners, which says how the worker found the folder and why it is off,
+ * Server and reading, which says how the worker found the folder and why it is off,
  * turns it on only while it is offered, and chooses whose Inbox it fills;
  * and "A scanned file couldn't be added" in that person's Needs attention.
  */
@@ -66,9 +66,9 @@ const puts = (state: FakeState) =>
   state.calls.filter((c) => c.method === 'PUT' && c.url === '/api/v1/watch-folder');
 
 describe('the scanner folder’s page (S3)', () => {
-  it('is in For owners, says the folder is ready, and turns it on for someone who adds documents', async () => {
-    const state = at('/settings/owners', { watchFolder: folder() });
-    fireEvent.click(await screen.findByRole('link', { name: /Scanner folder/ }));
+  it('is in Server and reading, says the folder is ready, and turns it on for someone who adds documents', async () => {
+    const state = at('/settings', { watchFolder: folder() });
+    fireEvent.click(await screen.findByRole('link', { name: /^Scanner folder/ }));
     expect(
       await screen.findByRole('heading', { name: 'Scanner folder', level: 1 }),
     ).toBeInTheDocument();

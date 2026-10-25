@@ -522,8 +522,6 @@ const LISTS: Array<[string, string, Role, string]> = [
 
 /** Forms, and what is read as one: a readable width, as they were. */
 const FORMS: Array<[string, string, Role, string]> = [
-  ['Settings → Your account', '/settings/account', 'owner', 'Your account'],
-  ['Settings → Privacy', '/settings/privacy', 'adult', 'Privacy'],
   ['Ask for documents', '/sharing/ask', 'adult', 'Ask for documents'],
   ['a profile', '/people/m-2', 'owner', 'Sara Seikh'],
   ['the add card', '/add', 'adult', 'Add a document'],
@@ -557,6 +555,51 @@ describe('every list and table uses the width; forms keep a readable one (the sw
       expect(widthOf(main())).toBe('720px');
     });
   }
+
+  // Settings (0.9.0, the owner's ask of 25 Oct 2026): every page across the
+  // width beside the menu, as Notes and Documents are; what reads badly that
+  // wide keeps a width of its own — a field, a line of prose, a button.
+  for (const [name, path, role, heading] of [
+    ['Settings → Your account', '/settings/account', 'owner', 'Your account'],
+    ['Settings → Privacy', '/settings/privacy', 'adult', 'Privacy'],
+    ['Settings → Email, in and out', '/settings/email', 'owner', 'Email, in and out'],
+    ['Settings → Reading and the check', '/settings/reading', 'owner', 'Reading and the check'],
+    ['Settings → Scanner folder', '/settings/scanner', 'owner', 'Scanner folder'],
+    ['Settings → Storage', '/settings/storage', 'owner', 'Storage'],
+    ['Settings → Kinds of document', '/settings/kinds', 'owner', 'Kinds of document'],
+  ] as Array<[string, string, Role, string]>) {
+    it(`${name}, at 1280 and 900: the page the full width; its fields, prose and buttons their own`, async () => {
+      for (const px of [WIDE, MID]) {
+        atWidth(px);
+        open(path, household(), role);
+        await screen.findByRole('heading', { level: 1, name: heading });
+        expect(widthOf(main())).toBe('none');
+        await waitFor(() => expect(main().querySelector('p')).not.toBeNull());
+        for (const p of main().querySelectorAll<HTMLElement>('p')) {
+          expect(widthOf(p)).not.toBe('none');
+        }
+        for (const f of main().querySelectorAll<HTMLElement>('.field')) {
+          expect(widthOf(f)).toBe('560px');
+        }
+        for (const b of main().querySelectorAll<HTMLElement>(':scope > .btn, .card > .btn')) {
+          expect(getComputedStyle(b).alignSelf).toBe('flex-start');
+        }
+        cleanup();
+      }
+    });
+  }
+
+  it('Settings → Your account: a lone button its own width, the password’s field a form’s', async () => {
+    atWidth(WIDE);
+    open('/settings/account', household(), 'owner');
+    const change = await screen.findByRole('button', { name: 'Change your password' });
+    expect(getComputedStyle(change).alignSelf).toBe('flex-start');
+    fireEvent.click(change);
+    const field = (await screen.findByLabelText('Your password now')).closest(
+      '.field',
+    ) as HTMLElement;
+    expect(widthOf(field)).toBe('560px');
+  });
 
   it('Search’s field and its filters keep a form’s width over results across the window', async () => {
     atWidth(WIDE);

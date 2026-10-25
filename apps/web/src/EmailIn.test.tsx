@@ -5,8 +5,8 @@ import { App } from './App.js';
 import { fresh, installFakeApi, signedIn, type FakeState } from './test-api.js';
 
 /**
- * Email in (0.8.0, S4), on the web: an owner's page in Settings → For
- * owners, which says how the worker has the mailbox, warns while senders are
+ * Email in (0.8.0, S4), on the web: an owner's, the second part of
+ * Settings → Server and reading → Email, in and out (0.9.0), which says how the worker has the mailbox, warns while senders are
  * not checked, says what went wrong and what was left alone, and turns it
  * on only while it is offered; the line on Add and Home telling whoever may
  * add documents where to send from where, with a code to confirm it — never
@@ -69,10 +69,14 @@ const puts = (state: FakeState) =>
   state.calls.filter((c) => c.method === 'PUT' && c.url === '/api/v1/mail-in');
 
 describe('email in’s page (S4)', () => {
-  it('is in For owners, says the mailbox is ready, warns that senders aren’t checked, and turns it on', async () => {
-    const state = at('/settings/owners', { mailIn: mailbox() });
-    fireEvent.click(await screen.findByRole('link', { name: /Email in/ }));
-    expect(await screen.findByRole('heading', { name: 'Email in', level: 1 })).toBeInTheDocument();
+  it('is in Server and reading, says the mailbox is ready, warns that senders aren’t checked, and turns it on', async () => {
+    const state = at('/settings', { mailIn: mailbox() });
+    fireEvent.click(await screen.findByRole('link', { name: /^Email, in and out/ }));
+    expect(
+      await screen.findByRole('heading', { name: 'Email, in and out', level: 1 }),
+    ).toBeInTheDocument();
+    // Its second part, after where email comes from.
+    expect(screen.getByRole('heading', { name: 'Email in', level: 2 })).toBeInTheDocument();
     expect(
       await screen.findByText('The vault checks home@vault.test, in its INBOX folder.'),
     ).toBeInTheDocument();
@@ -163,8 +167,16 @@ describe('email in’s page (S4)', () => {
   });
 
   it('is an owner’s page: anybody else is told it is not theirs', async () => {
-    at('/settings/email-in', { mailIn: mailbox() }, 'adult');
-    expect(await screen.findByText('Only an owner can set up email in.')).toBeInTheDocument();
+    const state = at('/settings/email-in', { mailIn: mailbox() }, 'adult');
+    expect(
+      await screen.findByRole('heading', { name: 'Email, in and out', level: 1 }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Only an owner can change the vault’s email settings.'),
+    ).toBeInTheDocument();
+    // Nothing of the page drawn, nor asked of the vault.
+    expect(screen.queryByRole('checkbox', { name: 'Add what the family emails in' })).toBeNull();
+    expect(state.calls.some((c) => c.url === '/api/v1/mail-in')).toBe(false);
   });
 });
 

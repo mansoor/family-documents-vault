@@ -13,12 +13,12 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
-import { Button, Check, ConfirmDialog, ErrorNote, Field, LoadFailed, TopBar } from './ui.js';
+import { Button, Check, ConfirmDialog, ErrorNote, Field, LoadFailed } from './ui.js';
 import { dayWordsOf, familyZoneNow, shortWhenWords } from './family-time.js';
 
 /**
- * The Reading check (0.9.0, R0): an owner's page in Settings → For owners
- * that measures the vault's reader on the family's own papers.
+ * The Reading check (0.9.0, R0): an owner's, the second part of Settings →
+ * Server and reading → Reading and the check, that measures the vault's reader on the family's own papers.
  *
  * An owner starts a check of the last N documents filed through review;
  * the worker reads them again in the background, and the page shows how far
@@ -71,7 +71,7 @@ function stateWords(c: ReadingCheckView): string {
   }
 }
 
-export function ReadingCheckScreen() {
+export function ReadingCheckPart() {
   const { authVersion, guarded } = useApp();
   const { data, error, reload } = useLoad((t) => api.readingChecks(t), [authVersion]);
   const kinds = useLoad((t) => api.documentTypes(t, { all: true }), [authVersion]);
@@ -210,8 +210,7 @@ export function ReadingCheckScreen() {
           key.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()));
 
   return (
-    <main className="page page-top">
-      <TopBar title="Reading check" back="/settings/owners" backLabel="Back to For owners" />
+    <>
       <p className="lede">
         See how well the vault reads your family’s own papers. It reads again the last documents
         someone filed through review, where a person checked the details, and counts how often it
@@ -226,9 +225,9 @@ export function ReadingCheckScreen() {
         <>
           {current ? (
             <section aria-labelledby="reading-now-h" className="stack">
-              <h2 id="reading-now-h" className="section-h">
+              <h3 id="reading-now-h" className="section-h">
                 Reading now
-              </h2>
+              </h3>
               <p>{stateWords(current)}</p>
               <progress
                 className="reading-progress"
@@ -248,9 +247,9 @@ export function ReadingCheckScreen() {
             </section>
           ) : theirs ? (
             <section aria-labelledby="reading-now-h" className="stack">
-              <h2 id="reading-now-h" className="section-h">
+              <h3 id="reading-now-h" className="section-h">
                 Reading now
-              </h2>
+              </h3>
               <p>
                 {`${theirs.requested_by.name ?? 'Another owner'}’s check is ${
                   theirs.state === 'waiting' ? 'waiting to start' : 'running'
@@ -263,9 +262,9 @@ export function ReadingCheckScreen() {
               onSubmit={(e) => void start(e)}
               aria-labelledby="reading-start-h"
             >
-              <h2 id="reading-start-h" className="section-h">
+              <h3 id="reading-start-h" className="section-h">
                 Start a check
-              </h2>
+              </h3>
               {data.filed === 0 ? (
                 <p className="attention">
                   No documents have been filed through review yet. Add some with{' '}
@@ -318,9 +317,9 @@ export function ReadingCheckScreen() {
           )}
           {items.length + others.length > 0 && (
             <section aria-labelledby="reading-all-h" className="stack">
-              <h2 id="reading-all-h" className="section-h">
+              <h3 id="reading-all-h" className="section-h">
                 Checks
-              </h2>
+              </h3>
               <ul className="list reading-list">
                 {items.map((c) => (
                   <li key={c.id} className="reading-row">
@@ -380,7 +379,7 @@ export function ReadingCheckScreen() {
           not touched.
         </ConfirmDialog>
       )}
-    </main>
+    </>
   );
 }
 
@@ -405,9 +404,9 @@ function Result(props: {
   const misses = detail.data?.misses ?? null;
   return (
     <section aria-labelledby="reading-result-h" className="stack">
-      <h2 id="reading-result-h" className="section-h">
+      <h3 id="reading-result-h" className="section-h">
         {`Checked ${whenWords(check.finished_at ?? check.created_at)}`}
-      </h2>
+      </h3>
       <p>
         <strong>{`${s.without_rules.all.needs_typing} of ${s.read}`}</strong> needed something
         typed; <strong>{s.without_rules.all.wrong_ready}</strong>{' '}
@@ -462,7 +461,7 @@ function Result(props: {
           <p className="muted">None of the documents you can see needed typing.</p>
         ) : (
           <section aria-labelledby="reading-misses-h" className="stack">
-            <h3 id="reading-misses-h">Documents that needed typing</h3>
+            <h4 id="reading-misses-h">Documents that needed typing</h4>
             <p className="muted">
               Only you see this list
               {detail.data?.misses_until

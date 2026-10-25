@@ -241,6 +241,8 @@ const mailIn = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('the household mailbox set up in Settings (O1)', () => {
+  /** Email in: the second part of Email, in and out, beside the mail server's form (0.9.0). */
+  const inPart = () => within(screen.getByRole('region', { name: 'Email in' }));
   it('sets it up with an app password sent once, never shown, and tests it, what it found said', async () => {
     const state = at('/settings/email-in', {
       mailIn: mailIn(),
@@ -261,26 +263,26 @@ describe('the household mailbox set up in Settings (O1)', () => {
       },
     });
     expect(
-      await screen.findByRole('heading', { name: 'Set up the mailbox', level: 2 }),
+      await screen.findByRole('heading', { name: 'Set up the mailbox', level: 3 }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText('Port')).toHaveValue(993);
-    expect(screen.getByLabelText('Folder')).toHaveValue('INBOX');
+    expect(inPart().getByLabelText('Port')).toHaveValue(993);
+    expect(inPart().getByLabelText('Folder')).toHaveValue('INBOX');
     expect(screen.getByText(/Gmail: mx\.google\.com\./)).toBeInTheDocument();
-    expect(screen.getByLabelText('App password')).toHaveAttribute('type', 'password');
+    expect(inPart().getByLabelText('App password')).toHaveAttribute('type', 'password');
     await expectAccessible();
-    fireEvent.change(screen.getByLabelText('Mail server (IMAP)'), {
+    fireEvent.change(inPart().getByLabelText('Mail server (IMAP)'), {
       target: { value: 'imap.gmail.com' },
     });
-    fireEvent.change(screen.getByLabelText('Sign-in'), {
+    fireEvent.change(inPart().getByLabelText('Sign-in'), {
       target: { value: 'family.docs@gmail.com' },
     });
-    fireEvent.change(screen.getByLabelText('App password'), {
+    fireEvent.change(inPart().getByLabelText('App password'), {
       target: { value: 'abcd efgh ijkl' },
     });
-    fireEvent.change(screen.getByLabelText('The provider’s authserv-id'), {
+    fireEvent.change(inPart().getByLabelText('The provider’s authserv-id'), {
       target: { value: 'mx.google.com' },
     });
-    fireEvent.change(screen.getByLabelText('How often it is checked'), {
+    fireEvent.change(inPart().getByLabelText('How often it is checked'), {
       target: { value: '120' },
     });
     // Not tested until saved.
@@ -305,28 +307,28 @@ describe('the household mailbox set up in Settings (O1)', () => {
       ),
     ).toBeInTheDocument();
     // Never shown again: the field is empty, and says one is kept.
-    expect(screen.getByLabelText('App password')).toHaveValue('');
+    expect(inPart().getByLabelText('App password')).toHaveValue('');
     expect(screen.getByText(/One is saved, and never shown/)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('abcd efgh ijkl');
     // Changed without a password: the one saved is kept.
-    fireEvent.change(screen.getByLabelText('Folder'), { target: { value: 'Scans' } });
+    fireEvent.change(inPart().getByLabelText('Folder'), { target: { value: 'Scans' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save the mailbox' }));
     await waitFor(() => expect(state.mailboxSaves).toHaveLength(2));
     expect(state.mailboxSaves?.[1]).not.toHaveProperty('password');
     // The server changed (the O1 review, H1): the password asked for again,
     // and nothing saved until it is typed.
-    await waitFor(() => expect(screen.getByLabelText('Folder')).toHaveValue('Scans'));
-    fireEvent.change(screen.getByLabelText('Mail server (IMAP)'), {
+    await waitFor(() => expect(inPart().getByLabelText('Folder')).toHaveValue('Scans'));
+    fireEvent.change(inPart().getByLabelText('Mail server (IMAP)'), {
       target: { value: 'imap.fastmail.com' },
     });
     expect(screen.getByText(/You changed the server or the sign-in/)).toBeInTheDocument();
-    expect(screen.getByLabelText('App password')).toHaveAttribute('aria-invalid', 'true');
+    expect(inPart().getByLabelText('App password')).toHaveAttribute('aria-invalid', 'true');
     fireEvent.click(screen.getByRole('button', { name: 'Save the mailbox' }));
     expect(
       await screen.findByText('Type the app password again for the new server.'),
     ).toBeInTheDocument();
     expect(state.mailboxSaves).toHaveLength(2);
-    fireEvent.change(screen.getByLabelText('Mail server (IMAP)'), {
+    fireEvent.change(inPart().getByLabelText('Mail server (IMAP)'), {
       target: { value: 'imap.gmail.com' },
     });
     expect(screen.queryByText(/You changed the server or the sign-in/)).toBeNull();
@@ -392,7 +394,7 @@ describe('the household mailbox set up in Settings (O1)', () => {
       ),
     ).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByLabelText('Once its attachments are in')).toHaveValue('delete'),
+      expect(inPart().getByLabelText('Once its attachments are in')).toHaveValue('delete'),
     );
     fireEvent.click(screen.getByRole('button', { name: 'Test the mailbox' }));
     const why = await screen.findByRole('list', { name: 'Why the test failed' }, WAIT);

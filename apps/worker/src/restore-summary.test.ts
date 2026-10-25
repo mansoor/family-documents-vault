@@ -50,4 +50,15 @@ describe('what restore-backup says when it is done', () => {
     );
     expect(words).not.toContain('Settings → After a restore');
   });
+
+  it('sends an owner to the Reading check where Settings keeps it since 0.9.0, not For owners', () => {
+    const words = restoreSummary(
+      'fdv-2026-10-25T02-30-00-123Z.sql.enc',
+      report({ readingChecksStopped: 1 }),
+    ).replace(/\s+/g, ' ');
+    expect(words).toContain(
+      '1 Reading check that had not finished was stopped. An owner starts another in Settings → Server and reading → Reading and the check.',
+    );
+    expect(words).not.toContain('For owners');
+  });
 });
