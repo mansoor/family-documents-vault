@@ -56,6 +56,56 @@ function run(
 export const runTool = run;
 
 /**
+ * The most address space one poppler run may take (L2): 1 GiB. poppler
+ * hands a PDF's pictures to libjpeg, openjpeg and its own decoders, with no
+ * limits of its own like ImageMagick's: a 3 KB PDF holding a progressive
+ * CMYK JPEG 16,000 pixels square took 1,979 MiB to draw, and pdftotext and
+ * `pdfimages -list` decode an inline one (1,962 MiB). Capped, the run fails
+ * instead of the server: a decode that cannot have its memory is drawn
+ * blank, and the page reads nothing — silently (pdftoppm says nothing and
+ * exits 0), so a page that truly needed more than this would come out
+ * blank, unremarked. Measured, the most an ordinary page
+ * takes is an A0 page drawn at 150 dpi for OCR, 250 MiB; a JPEG at the most
+ * a picture may hold whole (JPEG_HELD_MAX_COEFFICIENTS), 153 MiB. A JPEG
+ * held whole past that is refused before anything is drawn
+ * (refusePdfHeldJpegs), as a photo's is.
+ */
+export const POPPLER_MAX_KIB = 1024 * 1024;
+
+/**
+ * How a poppler tool is run: on Linux (the worker image), by `sh`, which
+ * caps its address space (`ulimit -v`, POPPLER_MAX_KIB) and then becomes it
+ * (`exec`, so a timeout or an abort kills the tool itself); `fileBlocks`
+ * also caps each file it writes, in 512-byte blocks, a write past it failing
+ * rather than killing it (SIGXFSZ ignored). Elsewhere — a development
+ * machine — as it is.
+ */
+export function popplerCommand(
+  bin: string,
+  args: string[],
+  opts: { fileBlocks?: number } = {},
+  platform: NodeJS.Platform = process.platform,
+): { bin: string; args: string[] } {
+  if (platform !== 'linux') return { bin, args };
+  const files = opts.fileBlocks ? `trap '' XFSZ && ulimit -f ${opts.fileBlocks} && ` : '';
+  return {
+    bin: 'sh',
+    args: ['-c', `${files}ulimit -v ${POPPLER_MAX_KIB} && exec "$0" "$@"`, bin, ...args],
+  };
+}
+
+/** A poppler tool, run as `popplerCommand` says. */
+function poppler(
+  bin: string,
+  args: string[],
+  opts: Parameters<typeof run>[2] & { fileBlocks?: number } = {},
+): Promise<{ stdout: string; stderr: string }> {
+  const { fileBlocks, ...rest } = opts;
+  const how = popplerCommand(bin, args, fileBlocks ? { fileBlocks } : {});
+  return run(how.bin, how.args, rest);
+}
+
+/**
  * The three command-line tools the worker image ships: poppler
  * (pdftoppm, pdfinfo, pdftotext), ImageMagick (magick) and Tesseract.
  * Wrapped so the rest of the worker never builds a shell command, and so
@@ -133,7 +183,7 @@ export const MAGICK_LIMITS = [
 /** Page count of a PDF, from pdfinfo. */
 export async function pdfPageCount(file: string, signal?: AbortSignal): Promise<number | null> {
   try {
-    const { stdout } = await run('pdfinfo', [file], { timeout: 30_000, signal });
+    const { stdout } = await poppler('pdfinfo', [file], { timeout: 30_000, signal });
     const m = /^Pages:\s+(\d+)/m.exec(stdout);
     return m ? Number(m[1]) : null;
   } catch {
@@ -148,7 +198,7 @@ export async function pdfPageCount(file: string, signal?: AbortSignal): Promise<
  */
 export async function pdfLocked(file: string, signal?: AbortSignal): Promise<boolean> {
   try {
-    await run('pdfinfo', [file], { timeout: 30_000, signal });
+    await poppler('pdfinfo', [file], { timeout: 30_000, signal });
     return false;
   } catch (err) {
     const { message, stderr } = err as { message?: string; stderr?: string | Buffer };
@@ -156,7 +206,11 @@ export async function pdfLocked(file: string, signal?: AbortSignal): Promise<boo
   }
 }
 
-/** Renders the first `maxPages` pages of a PDF to PNGs in `outDir`; returns them in order. */
+/**
+ * Renders the first `maxPages` pages of a PDF to PNGs in `outDir`; returns
+ * them in order. A JPEG on them libjpeg would hold whole past
+ * JPEG_HELD_MAX_COEFFICIENTS is refused first (refusePdfHeldJpegs, L2).
+ */
 export async function renderPdfPages(
   file: string,
   outDir: string,
@@ -165,7 +219,8 @@ export async function renderPdfPages(
   /** Ends the drawing, its process killed, when it is aborted (a read's deadline, I2). */
   signal?: AbortSignal,
 ): Promise<string[]> {
-  await run(
+  await refusePdfHeldJpegs(file, 1, maxPages, outDir, signal);
+  await poppler(
     'pdftoppm',
     ['-png', '-r', String(dpi), '-f', '1', '-l', String(maxPages), file, path.join(outDir, 'page')],
     {
@@ -190,7 +245,7 @@ export async function pdfPageTexts(
   lastPage: number,
   signal?: AbortSignal,
 ): Promise<string[]> {
-  const { stdout } = await run(
+  const { stdout } = await poppler(
     'pdftotext',
     [
       '-q',
@@ -230,12 +285,12 @@ export async function pdfImageCoverage(
   try {
     const range = ['-f', '1', '-l', String(lastPage)];
     const [listed, info] = await Promise.all([
-      run('pdfimages', ['-list', ...range, file], {
+      poppler('pdfimages', ['-list', ...range, file], {
         timeout: 60_000,
         maxBuffer: 8 * 1024 * 1024,
         signal,
       }),
-      run('pdfinfo', [...range, file], { timeout: 30_000, signal }),
+      poppler('pdfinfo', [...range, file], { timeout: 30_000, signal }),
     ]);
     const pageArea = new Map<number, number>();
     for (const m of info.stdout.matchAll(
@@ -268,7 +323,10 @@ export async function pdfImageCoverage(
   }
 }
 
-/** Draws one page of a PDF as a PNG in `outDir`, as `renderPdfPages` draws them, for OCR. */
+/**
+ * Draws one page of a PDF as a PNG in `outDir`, as `renderPdfPages` draws
+ * them, for OCR: its JPEGs checked first, as theirs are (L2).
+ */
 export async function renderPdfPage(
   file: string,
   outDir: string,
@@ -277,7 +335,8 @@ export async function renderPdfPage(
   signal?: AbortSignal,
 ): Promise<string> {
   const base = path.join(outDir, `page-${page}`);
-  await run(
+  await refusePdfHeldJpegs(file, page, page, outDir, signal);
+  await poppler(
     'pdftoppm',
     ['-png', '-r', String(dpi), '-f', String(page), '-l', String(page), '-singlefile', file, base],
     { timeout: 120_000, signal },
@@ -332,8 +391,11 @@ export async function thumbnail(input: string, output: string, size = 480): Prom
   let src = input;
   if (input.toLowerCase().endsWith('.pdf')) {
     const base = path.join(path.dirname(output), 'thumb-src');
+    // A JPEG on its first page libjpeg would hold whole, too big or
+    // unreadable, is refused first, as a photo's is (L2).
+    await refusePdfHeldJpegs(input, 1, 1, path.dirname(output));
     // A size, not a resolution: a page drawn 200 inches wide stays small.
-    await run(
+    await poppler(
       'pdftoppm',
       ['-png', '-scale-to', '960', '-f', '1', '-l', '1', '-singlefile', input, base],
       { timeout: 60_000 },
@@ -388,8 +450,9 @@ export function drawable(mime: string): boolean {
 /**
  * Page previews: JPEG, 1600 px on the long edge, quality 80, and nothing
  * but the picture — `-strip` drops EXIF, GPS and every other tag. A PDF's
- * first `maxPages` pages go through poppler; an image is one page, turned
- * upright first. Returns the JPEGs in page order.
+ * first `maxPages` pages go through poppler, their JPEGs checked first
+ * (refusePdfHeldJpegs); an image is one page, turned upright first.
+ * Returns the JPEGs in page order.
  */
 export async function renderPreviews(
   input: string,
@@ -400,7 +463,10 @@ export async function renderPreviews(
   const bin = await MAGICK();
   let sources: string[];
   if (mime === 'application/pdf') {
-    await run(
+    // A JPEG on its pages libjpeg would hold whole, too big or unreadable:
+    // refused, as an image's is (L2).
+    await refusePdfHeldJpegs(input, 1, maxPages, outDir);
+    await poppler(
       'pdftoppm',
       [
         '-png',
@@ -1377,11 +1443,221 @@ export async function jpegFrame(file: string): Promise<JpegFrame | null | 'unkno
  * (`squarePhoto`), a thumbnail and page previews.
  */
 export async function refuseHeldJpeg(file: string): Promise<void> {
-  const frame = await jpegFrame(file);
+  refuseFrame(await jpegFrame(file));
+}
+
+/** A JPEG frame refused, or not: unreadable, or held whole past JPEG_HELD_MAX_COEFFICIENTS. */
+function refuseFrame(frame: JpegFrame | null | 'unknown'): void {
   if (frame === null) return;
   if (frame === 'unknown') throw new PictureRefused('a JPEG whose header the vault cannot read');
   if (frame.held && frame.coefficients > JPEG_HELD_MAX_COEFFICIENTS) {
     throw new PictureRefused('a JPEG in more scans than the vault reads at its size');
+  }
+}
+
+/**
+ * Where poppler's JPEG decoder starts a picture in a PDF's DCT stream, as
+ * it looks for it: the first 0xFF then 0xD8, any bytes before passed over
+ * (poppler's DCTStream skips what precedes, unlike libjpeg; an 0xFF after
+ * 0xFF starts the looking again, so FF FF D8 is not a start). Its offset,
+ * or -1 where `head` has none.
+ */
+export function pdfJpegStart(head: Buffer): number {
+  let marker = false;
+  for (let i = 0; i < head.length; i += 1) {
+    const c = head[i] as number;
+    if (!marker) marker = c === 0xff;
+    else if (c === 0xd8) return i - 1;
+    else marker = false;
+  }
+  return -1;
+}
+
+/**
+ * A JPEG inside a PDF, from the start of its stream (`head`, all of it when
+ * `whole`): its frame, read from where poppler starts it (pdfJpegStart) as
+ * libjpeg reads it. Null where it has no start at all — poppler draws
+ * nothing of it; `'unknown'` where none is found in a `head` that is not
+ * the whole stream, so it is refused (failing closed).
+ */
+export function pdfJpegFrameOf(head: Buffer, whole: boolean): JpegFrame | null | 'unknown' {
+  const start = pdfJpegStart(head);
+  if (start < 0) return whole ? null : 'unknown';
+  return jpegFrameOf(head.subarray(start));
+}
+
+/** A row of `pdfimages -list`: its page, what it is, its size and its encoding. */
+interface PdfPicture {
+  page: number;
+  width: number;
+  height: number;
+  components: number;
+  bits: number;
+  enc: string;
+}
+
+/** `pdfimages -list`'s rows: every picture drawn on the pages listed, a row each time it is drawn. */
+export function pdfPictures(listed: string): PdfPicture[] {
+  const out: PdfPicture[] = [];
+  for (const row of listed.split('\n')) {
+    const c = row.trim().split(/\s+/);
+    if (c.length < 10 || !/^\d+$/.test(c[0] ?? '') || !/^\d+$/.test(c[1] ?? '')) continue;
+    out.push({
+      page: Number(c[0]),
+      width: Number(c[3]),
+      height: Number(c[4]),
+      components: Number(c[6]),
+      bits: Number(c[7]),
+      enc: c[8] ?? '',
+    });
+  }
+  return out;
+}
+
+/**
+ * The most the check of a PDF's JPEGs writes at once (L2): 256 MiB. Each
+ * picture it lists is written as `pdfimages -j` writes it — a JPEG as the
+ * bytes it is kept as, any other decoded — but no file past
+ * JPEG_HEADER_MAX_BYTES, so a picture counts as its decoded size, or that,
+ * whichever is less. Pages are checked as many together as fit; a page whose
+ * pictures alone are more is refused.
+ */
+export const PDF_CHECK_MAX_BYTES = 256 * 1024 * 1024;
+
+/** The most of `pdfimages -list` the check reads (L2): 8 MiB, some 88,000 pictures drawn; past it, refused. */
+export const PDF_LIST_MAX_BYTES = 8 * 1024 * 1024;
+
+/** What one listed picture may take on disk as the check writes it. */
+function pictureBytes(p: PdfPicture): number {
+  if (p.enc === 'jpeg') return JPEG_HEADER_MAX_BYTES;
+  const decoded =
+    Math.ceil((p.width * Math.max(p.components, 3) * Math.max(p.bits, 8)) / 8) * p.height;
+  return Math.min(JPEG_HEADER_MAX_BYTES, (Number.isFinite(decoded) ? decoded : Infinity) + 1024);
+}
+
+/**
+ * Refuses (PictureRefused) a PDF whose pages `first` to `last` draw a JPEG
+ * libjpeg would hold whole past JPEG_HELD_MAX_COEFFICIENTS, or one whose
+ * header cannot be read — the rule a photo's JPEG is held to
+ * (refuseHeldJpeg) — before poppler draws them (L2). poppler decodes a
+ * PDF's JPEGs with libjpeg, and a 3 KB PDF holding a progressive CMYK JPEG
+ * 16,000 pixels square took 1,979 MiB to draw.
+ *
+ * The PDF's own dictionary may say a picture is any size, whatever its JPEG
+ * is, and a JPEG may sit inline in a page, deflated as well, or behind bytes
+ * poppler passes over; so each is read from its own bytes, as poppler will
+ * decode them. `pdfimages -list` says what is drawn on the pages — their
+ * content, the Form XObjects they draw and their annotations' appearances,
+ * in object streams or not, encrypted with an empty password or not; with
+ * no JPEG, that is all. Otherwise `pdfimages -j` writes each picture into a
+ * folder of its own in `workDir` — a JPEG as the bytes poppler will decode,
+ * the rest decoded — no file past JPEG_HEADER_MAX_BYTES, and no more than
+ * PDF_CHECK_MAX_BYTES at once; each JPEG's start is read
+ * (`pdfJpegFrameOf`), and the folder removed. Both runs are poppler's, in
+ * their own processes, capped (POPPLER_MAX_KIB) and timed; only the bounded
+ * start of each JPEG is read here. A JPEG listed but not written, a check
+ * that failed, or a list that failed — or was cut off, or too slow — is
+ * refused (failing closed); a PDF that needs a password says so, as it did.
+ *
+ * What it does not see — pdfimages does not look inside a tiling pattern or
+ * a Type 3 glyph, which pdftoppm draws; a JPEG under a second filter
+ * (`[/DCTDecode /FlateDecode]`); JPEG 2000 and JBIG2 pictures — is bounded
+ * by the cap alone: drawn blank, never more than POPPLER_MAX_KIB.
+ */
+export async function refusePdfHeldJpegs(
+  file: string,
+  first: number,
+  last: number,
+  workDir: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const range = ['-f', String(first), '-l', String(last)];
+  let listed: string;
+  try {
+    listed = (
+      await poppler('pdfimages', ['-list', ...range, file], {
+        timeout: 60_000,
+        maxBuffer: PDF_LIST_MAX_BYTES,
+        signal,
+      })
+    ).stdout;
+  } catch (err) {
+    signal?.throwIfAborted();
+    const { stderr, message } = err as { stderr?: string | Buffer; message?: string };
+    // A PDF that needs a password is said to as before (read-item, process-version).
+    if (/password/i.test(`${stderr?.toString() ?? ''} ${message ?? ''}`)) throw err;
+    // Failed, cut off past PDF_LIST_MAX_BYTES, or too slow: what it would draw is not known.
+    throw new PictureRefused('a PDF whose pictures the vault cannot list');
+  }
+  const pictures = pdfPictures(listed);
+  if (!pictures.some((p) => p.enc === 'jpeg')) return;
+  // Pages together while they fit; a page of more than fits, refused.
+  const byPage = new Map<number, PdfPicture[]>();
+  for (const p of pictures) byPage.set(p.page, [...(byPage.get(p.page) ?? []), p]);
+  const batches: Array<{ from: number; to: number; jpegs: number }> = [];
+  let current: { from: number; to: number; jpegs: number; bytes: number } | null = null;
+  for (const [page, drawn] of [...byPage].sort(([a], [b]) => a - b)) {
+    const bytes = drawn.reduce((sum, p) => sum + pictureBytes(p), 0);
+    const jpegs = drawn.filter((p) => p.enc === 'jpeg').length;
+    if (bytes > PDF_CHECK_MAX_BYTES) {
+      throw new PictureRefused('a PDF page of more pictures than the vault checks');
+    }
+    if (current && current.bytes + bytes <= PDF_CHECK_MAX_BYTES) {
+      current.to = page;
+      current.jpegs += jpegs;
+      current.bytes += bytes;
+    } else {
+      if (current) batches.push(current);
+      current = { from: page, to: page, jpegs, bytes };
+    }
+  }
+  if (current) batches.push(current);
+  for (const batch of batches) {
+    if (batch.jpegs === 0) continue;
+    signal?.throwIfAborted();
+    const dir = await mkdtemp(path.join(workDir, 'pdf-jpegs-'));
+    try {
+      try {
+        await poppler(
+          'pdfimages',
+          [
+            '-j',
+            '-jp2',
+            '-jbig2',
+            '-ccitt',
+            '-f',
+            String(batch.from),
+            '-l',
+            String(batch.to),
+            file,
+            path.join(dir, 'p'),
+          ],
+          { timeout: 60_000, signal, fileBlocks: JPEG_HEADER_MAX_BYTES / 512 },
+        );
+      } catch (err) {
+        signal?.throwIfAborted();
+        throw new PictureRefused(
+          `a PDF whose JPEGs the vault cannot check (${(err as Error).message.slice(0, 80)})`,
+        );
+      }
+      const jpegs = (await readdir(dir)).filter((f) => f.endsWith('.jpg')).sort();
+      if (jpegs.length !== batch.jpegs) {
+        throw new PictureRefused('a PDF whose JPEGs the vault cannot check');
+      }
+      for (const name of jpegs) {
+        const fh = await open(path.join(dir, name), 'r');
+        try {
+          const head = Buffer.alloc(JPEG_HEADER_MAX_BYTES);
+          const { bytesRead } = await fh.read(head, 0, head.length, 0);
+          // Written whole only if shorter than the most each file may be.
+          refuseFrame(pdfJpegFrameOf(head.subarray(0, bytesRead), bytesRead < head.length));
+        } finally {
+          await fh.close();
+        }
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 }
 

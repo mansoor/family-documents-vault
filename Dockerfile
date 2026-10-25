@@ -69,9 +69,12 @@ FROM ${NODE_IMAGE} AS worker
 ENV NODE_ENV=production \
     FDV_MIGRATIONS_DIR=/app/migrations
 # OCR and rendering tools: Tesseract 5 (English, and its orientation model,
-# osd, which says which way up a scan reads: 0.9.0 R3), poppler (PDF pages, page
-# counts and the text a PDF carries: 5.37), ImageMagick (thumbnails and page
-# previews; HEIC for iPhone photos). All offline.
+# osd, which says which way up a scan reads: since 0.9.0 R3), poppler-utils
+# (Alpine's current one, 25.12.0 when measured for 0.9.0 L2: pdftoppm draws
+# PDF pages, pdfinfo counts them, pdftotext reads the text a PDF carries —
+# since iteration 5.37 — and pdfimages lists and checks its pictures; each
+# run capped at 1 GiB, tools.ts), ImageMagick (thumbnails and page previews;
+# HEIC for iPhone photos). All offline.
 # Fonts matter: without them poppler renders text-only PDFs blank, and OCR
 # reads nothing.
 # A view-only link's pages carry whom it is for (5.18), in whatever script
