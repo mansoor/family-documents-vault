@@ -9,7 +9,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import axe from 'axe-core';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { App } from './App.js';
 import { takeLinkToken } from './link-token.js';
 import { SharePage } from './screens/SharePage.js';
@@ -249,6 +249,13 @@ describe('until a date and time, view or download, so many opens', () => {
   });
 
   it('an end in the past or under 5 minutes is refused before it is sent', async () => {
+    // A fixed now, clear of a clock change: in London's repeated autumn hour
+    // "two minutes from now" names a time an hour later, and passed.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-06-10T10:00:00Z'));
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     const state = await openSheet();
     const soon = zonedParts(new Date(Date.now() + 2 * 60_000), 'Europe/London');
     fireEvent.change(screen.getByLabelText('Date'), { target: { value: soon.date } });
