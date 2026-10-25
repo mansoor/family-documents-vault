@@ -283,6 +283,11 @@ test('a detail tag added on a document’s page is found by its value (0.9.0, T1
   const { id } = (await made.json()) as { id: string };
   const value = `bay${run}`;
   await visit(page, `/documents/${id}`);
+  // Its tags are a section of the action row (0.9.0): opened from its button.
+  await page
+    .getByRole('toolbar', { name: 'Document actions' })
+    .getByRole('button', { name: /^Tags/ })
+    .click();
   const tags = page.getByRole('region', { name: 'Tags' });
   await tags.getByLabel('Add a tag').fill(`Locker :  ${value}`);
   await tags.getByRole('button', { name: 'Add', exact: true }).click();

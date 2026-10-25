@@ -191,29 +191,32 @@ describe('the focus is never left nowhere (R5’s keyboard paths)', () => {
       expect(screen.getByRole('heading', { name: /^The link to / })).toHaveFocus(),
     );
     press(screen.getByRole('button', { name: 'Done' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Share a link' })).toHaveFocus());
+    // Back to the action row's button, which now counts the link.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Share a link: 1 live link' })).toHaveFocus(),
+    );
   });
 
   it('who can see it: the choice, what the vault said, and back to the button', async () => {
     at('/documents/doc-1', { documents: [{ ...PASSPORT }] });
-    press(await screen.findByRole('button', { name: 'Change who can see it' }));
+    press(await screen.findByRole('button', { name: /^Who can see it/ }));
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Everyone in the family' })).toHaveFocus(),
     );
     press(screen.getByRole('button', { name: 'Adults only' }));
     press(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Change who can see it' })).toHaveFocus(),
+      expect(screen.getByRole('button', { name: /^Who can see it/ })).toHaveFocus(),
     );
     // Only me, the first time: what has to be said, said where the focus is.
-    press(screen.getByRole('button', { name: 'Change who can see it' }));
+    press(screen.getByRole('button', { name: /^Who can see it/ }));
     press(await screen.findByRole('button', { name: 'Only me' }));
     press(screen.getByRole('button', { name: 'Save' }));
     const said = await screen.findByRole('alert', { name: /./ });
     await waitFor(() => expect(within(said).getByRole('heading')).toHaveFocus());
     press(screen.getByRole('button', { name: 'I understand' }));
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Change who can see it' })).toHaveFocus(),
+      expect(screen.getByRole('button', { name: /^Who can see it/ })).toHaveFocus(),
     );
   });
 });

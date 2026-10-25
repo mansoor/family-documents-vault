@@ -290,6 +290,8 @@ describe('before the vault has answered: the family’s zone as the tab knows it
     fireEvent.click(screen.getByRole('button', { name: 'Friday 5 pm' }));
     expect(screen.getByText(/^Until Friday \d+ \w+ at 17:00\.$/)).toBeInTheDocument();
     cleanup();
+    // The action row remembers Share open (0.9.0): begun again folded, as the first time.
+    localStorage.clear();
     // Los Angeles' does not: the zone's short name, as everywhere else.
     browserIn('America/Los_Angeles');
     open('/documents/doc-1', { timezone: 'Europe/London' });

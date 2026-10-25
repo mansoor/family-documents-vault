@@ -316,7 +316,7 @@ describe('notes you can write, on the web (5.35)', () => {
     shown.unmount();
     // With no note, a viewer has no Notes section at all.
     await openDocument(fresh({ documents: [{ ...PASSPORT }] }), 'viewer');
-    await screen.findByRole('heading', { name: 'History' });
+    await screen.findByRole('button', { name: /^History/ });
     expect(screen.queryByRole('region', { name: 'Notes' })).not.toBeInTheDocument();
   });
 

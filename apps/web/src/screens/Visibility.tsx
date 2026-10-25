@@ -34,6 +34,37 @@ const CHOICES: Array<{ value: Visibility; label: string; hint: string }> = [
   { value: 'private', label: 'Only me', hint: 'Nobody else, including the owner of this vault.' },
 ];
 
+/**
+ * Whether this reader may change who can see it at all: as the control
+ * draws nothing otherwise, the action row offers no button for it.
+ */
+export function mayChangeWhoSees(props: {
+  current: Visibility;
+  isMine: boolean;
+  filedByMe: boolean;
+}): boolean {
+  return (
+    visibilityChoices(
+      { role: storedRole(), mine: props.isMine, filedByMe: props.filedByMe },
+      props.current,
+    ).length > 0
+  );
+}
+
+/** Who can see it, in a word: on the action row's button. */
+export const VISIBILITY_SHORT: Record<Visibility, string> = {
+  household: 'Everyone',
+  adults: 'Adults',
+  private: 'Only me',
+};
+
+/** And said in full. */
+export const VISIBILITY_WORDS: Record<Visibility, string> = {
+  household: 'Everyone in the family',
+  adults: 'Adults only',
+  private: 'Only me',
+};
+
 export function VisibilityControl(props: {
   documentId: string;
   current: Visibility;
@@ -201,7 +232,13 @@ export function VisibilityControl(props: {
         <Button
           ref={saveButton}
           disabled={busy || choice === props.current}
-          onClick={() => void save()}
+          onClick={() => {
+            // Pressed, it holds the focus — Safari gives a clicked button
+            // none — so the question about links gives it back here, not to
+            // the choice the action row put the focus on as it opened (W3).
+            saveButton.current?.focus();
+            void save();
+          }}
         >
           {busy ? 'Saving…' : 'Save'}
         </Button>

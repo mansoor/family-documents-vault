@@ -187,15 +187,16 @@ describe('a document in two panes (R3)', () => {
     const left = await details();
     const right = await pages();
     expect(left.closest('main')).not.toHaveClass('doc-panes');
-    // In the DOM, and so for Tab and a screen reader: status and Download,
-    // the facts, the pages within reach, then notes, history, … Move to the Trash.
+    // In the DOM, and so for Tab and a screen reader: the facts, the pages
+    // within reach, the notes, then the action row (0.9.0) — Download … Move
+    // to the Trash — and the sections it opens, History among them.
     const order = [
-      within(left).getByRole('button', { name: 'Download' }),
       left.querySelector('dl.facts') as HTMLElement,
       right,
       within(left).getByRole('heading', { name: 'Notes' }),
-      within(left).getByRole('heading', { name: 'History' }),
+      within(left).getByRole('button', { name: 'Download' }),
       within(left).getByRole('button', { name: 'Move to the Trash' }),
+      left.querySelector('#history-h') as HTMLElement,
     ];
     for (let i = 1; i < order.length; i += 1) {
       const [before, after] = [order[i - 1] as HTMLElement, order[i] as HTMLElement];
@@ -251,7 +252,7 @@ describe('who sees what, in either arrangement (R3)', () => {
       const left = await details();
       await within(left).findByText('Renewal form is in the blue folder.');
       if (who === 'owner' || who === 'adult' || who === 'teen') {
-        await within(left).findByRole('heading', { name: 'Collections' });
+        await within(left).findByRole('button', { name: /^Collections: \d/ });
       }
       await waitFor(() =>
         expect(wide.calls.some((c) => c.url === '/api/v1/shares')).toBe(
@@ -264,7 +265,7 @@ describe('who sees what, in either arrangement (R3)', () => {
       const leftPhone = await details();
       await within(leftPhone).findByText('Renewal form is in the blue folder.');
       if (who === 'owner' || who === 'adult' || who === 'teen') {
-        await within(leftPhone).findByRole('heading', { name: 'Collections' });
+        await within(leftPhone).findByRole('button', { name: /^Collections: \d/ });
       }
       await waitFor(() =>
         expect(phone.calls.some((c) => c.url === '/api/v1/shares')).toBe(

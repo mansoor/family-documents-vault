@@ -394,6 +394,8 @@ describe('sharing a collection (5.19)', () => {
         { ...BROKER, id: 'collection-q', name: 'Quiet', etag: '"q"', items: [] },
       ],
     });
+    // Its Collections, a section of the action row (0.9.0), opened first.
+    fireEvent.click(await screen.findByRole('button', { name: /^Collections: / }));
     fireEvent.click(await screen.findByRole('button', { name: 'Add to a collection' }));
     const sheet = await screen.findByRole('dialog', {
       name: "Add “Mansoor's passport” to a collection",
@@ -430,6 +432,8 @@ describe('sharing a collection (5.19)', () => {
       },
       'teen',
     );
+    // Its Collections, a section of the action row (0.9.0), opened first.
+    fireEvent.click(await screen.findByRole('button', { name: /^Collections: / }));
     fireEvent.click(await screen.findByRole('button', { name: 'Add to a collection' }));
     const sheet = await screen.findByRole('dialog', {
       name: "Add “Mansoor's passport” to a collection",

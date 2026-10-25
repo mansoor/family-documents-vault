@@ -114,7 +114,12 @@ function at(path: string, over: Partial<FakeState> = {}, role: Role = 'owner', p
   return state;
 }
 
-const tags = () => screen.findByRole('region', { name: 'Tags' });
+/** A document's tags: a section of its action row (0.9.0), opened from its button. */
+const tags = async () => {
+  const opener = await screen.findByRole('button', { name: /^Tags: / });
+  if (opener.getAttribute('aria-expanded') !== 'true') fireEvent.click(opener);
+  return screen.findByRole('region', { name: 'Tags' });
+};
 const patches = (state: FakeState) =>
   state.calls
     .filter((c) => c.method === 'PATCH')

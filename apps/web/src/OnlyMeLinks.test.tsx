@@ -42,7 +42,9 @@ const visibilityCalls = (state: FakeState) =>
     .map((c) => c.body);
 
 const makeItOnlyMe = async () => {
-  fireEvent.click(await screen.findByRole('button', { name: 'Change who can see it' }));
+  // Who can see it: a section of the action row (0.9.0), opened from its button.
+  const opener = await screen.findByRole('button', { name: /^Who can see it/ });
+  if (opener.getAttribute('aria-expanded') !== 'true') fireEvent.click(opener);
   fireEvent.click(screen.getByRole('button', { name: 'Only me' }));
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
   return screen.findByRole('alertdialog', { name: 'Your links to this document' });
@@ -367,6 +369,6 @@ describe('the share sheet of an Only me document', () => {
     window.history.replaceState({}, '', '/documents/doc-1');
     render(<App />);
     expect(await screen.findByText(ONLY_ME_NOT_SHARED)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Share a link' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Make the link' })).toBeNull();
   });
 });

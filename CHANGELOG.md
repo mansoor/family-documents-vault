@@ -6,6 +6,12 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.17] - 2026-10-24 — one action row on a note and a document
+
+### Changed
+
+- **One row of actions under a note and under a document (0.9.0).** The controls under a note, and at the bottom of a document's page, are now one row of matching buttons: **Download**, a document's **History** beside it (with how many versions), **Who can see it** (with who, such as "Everyone", on the button), **Tags** and **Collections** (each with how many), **Share a link** (with how many live links, when there are any), and **Move to the Trash** at the far end. Download works straight away; each of the others opens its section in a panel just under the row, one at a time. Press the same button again, or Escape, to close it. Your device remembers which section you left open, for notes and for documents separately. A link ending in `#share`, `#tags`, `#collections`, `#history` or `#who-can-see-it` opens that section. Edit stays where it was. Each person sees only the buttons for what they can already do, and on a phone the row wraps, with Move to the Trash on a line of its own.
+
 ### Fixed
 
 - **A collection with no checklist no longer shows an empty Checklist section.** Fill from a checklist is one of the collection's buttons, beside Add documents and Share this collection, until a checklist is kept; then the folded Checklist panel takes its place.

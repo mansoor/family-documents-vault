@@ -69,6 +69,8 @@ export function SharePanel(props: {
    * nowhere else.
    */
   onBusy?: (busy: boolean) => void;
+  /** Told how many of its links can still be taken back, as that changes (the action row). */
+  onCount?: (n: number) => void;
 }) {
   const { guarded, authVersion, caps } = useApp();
   const [made, setMade] = useState<CreatedShare | null>(null);
@@ -114,11 +116,15 @@ export function SharePanel(props: {
     },
     [props.documentId, authVersion, mayShare, props.onlyMe],
   );
-  if (!mayShare) return null;
-
   // Listed while it can still be taken back: live, or opened as often as it
   // allows (a page opened with it lasts to its own end).
   const listed = (data?.shares ?? []).filter((s) => s.state === 'active' || s.state === 'used_up');
+  const { onCount } = props;
+  const live = data ? listed.length : null;
+  useEffect(() => {
+    if (live !== null) onCount?.(live);
+  }, [live, onCount]);
+  if (!mayShare) return null;
   // Until the vault answers, the family's zone as this tab knows it — never UTC (the TZ review).
   const timezone = data?.timezone ?? familyZoneNow();
   const viewable = !data?.newest || canShareToView(data.newest.mime);
