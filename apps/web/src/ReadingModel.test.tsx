@@ -12,8 +12,8 @@ import { App } from './App.js';
 import { AISHA, fresh, installFakeApi, ME, signedIn, type FakeState } from './test-api.js';
 
 /**
- * The vault's reading model (0.9.0, R2), on the web: Settings → For owners
- * → Reading turns it on or off, an owner's alone; and a card whose kind it
+ * The vault's reading model (0.9.0, R2), on the web: Settings → Server and
+ * reading → Reading and the check turns it on or off, an owner's alone; and a card whose kind it
  * suggested says so — "suggested by the vault's reading model" — unsure,
  * in the same plain style as the other marks.
  */
@@ -46,14 +46,16 @@ function at(
   return state;
 }
 
-describe('Settings → For owners → Reading (R2)', () => {
-  it('is in For owners, says what the model does, and turns it off and on again', async () => {
-    const state = at('/settings/owners', { readingModel: true });
+describe('Settings → Server and reading → Reading and the check (R2)', () => {
+  it('is in Server and reading, says what the model does, and turns it off and on again', async () => {
+    const state = at('/settings', { readingModel: true });
     const row = await screen.findByRole('link', {
-      name: /Reading.*reading model and the local AI, on or off/,
+      name: /^Reading and the check.*reading model/,
     });
     fireEvent.click(row);
-    await screen.findByRole('heading', { level: 1, name: 'Reading' });
+    await screen.findByRole('heading', { level: 1, name: 'Reading and the check' });
+    // Its first part.
+    expect(screen.getByRole('heading', { level: 2, name: 'Reading' })).toBeInTheDocument();
     const box = await screen.findByRole('checkbox', { name: 'Use the reading model' });
     expect(box).toBeChecked();
     expect(screen.getByText(/never makes a document Ready on its own/)).toBeInTheDocument();

@@ -11,12 +11,13 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { storedRole } from './session.js';
-import { Button, Check, ErrorNote, LoadFailed, TopBar } from './ui.js';
+import { Button, Check, ErrorNote, LoadFailed } from './ui.js';
 import { useWorkerCheck } from './worker-check.js';
 import { dayWordsOf, familyZoneNow, shortWhenWords } from './family-time.js';
 
 /**
- * Email in (0.8.0, S4): an owner's page in Settings → For owners, and the
+ * Email in (0.8.0, S4): an owner's, the second part of Settings → Server
+ * and reading → Email, in and out (a page of its own until 0.9.0), and the
  * line on Add and Home that tells whoever may add documents where to email
  * them, from which address, and how to confirm it.
  *
@@ -25,7 +26,7 @@ import { dayWordsOf, familyZoneNow, shortWhenWords } from './family-time.js';
  * last went wrong, and what was left in the mailbox; and turns it on (only
  * while it is offered) or off.
  */
-export function EmailInScreen() {
+export function EmailInPart() {
   const { authVersion, guarded, reloadCaps } = useApp();
   const { data, error, reload } = useLoad((t) => api.mailIn(t), [authVersion]);
   const [enabled, setEnabled] = useState(false);
@@ -69,8 +70,7 @@ export function EmailInScreen() {
   const mayTurnOn = data?.available === true || data?.enabled === true;
   const changed = data !== null && enabled !== data.enabled;
   return (
-    <main className="page page-top">
-      <TopBar title="Email in" back="/settings/owners" backLabel="Back to For owners" />
+    <>
       <p className="lede">
         Email documents to the vault: the family sends them to a mailbox of the household’s own, and
         each attachment goes into the sender’s Inbox to look over, as if they had added it.
@@ -82,9 +82,9 @@ export function EmailInScreen() {
       ) : (
         <>
           <section aria-labelledby="mail-in-box-h" className="stack">
-            <h2 id="mail-in-box-h" className="section-h">
+            <h3 id="mail-in-box-h" className="section-h">
               The mailbox
-            </h2>
+            </h3>
             <p
               className={data.server.state === 'ready' ? 'attention attention-calm' : 'attention'}
               role="status"
@@ -138,9 +138,9 @@ export function EmailInScreen() {
             />
           )}
           <form className="stack" onSubmit={(e) => void save(e)} aria-labelledby="mail-in-set-h">
-            <h2 id="mail-in-set-h" className="section-h">
+            <h3 id="mail-in-set-h" className="section-h">
               Turn it on
-            </h2>
+            </h3>
             <Check
               id="mail-in-on"
               checked={enabled}
@@ -164,9 +164,9 @@ export function EmailInScreen() {
             </p>
           </form>
           <section aria-labelledby="mail-in-what-h" className="stack">
-            <h2 id="mail-in-what-h" className="section-h">
+            <h3 id="mail-in-what-h" className="section-h">
               What happens to each email
-            </h2>
+            </h3>
             <ul className="scanner-what">
               <li>
                 Only email from the sign-in address of someone in the family who adds documents is
@@ -192,7 +192,7 @@ export function EmailInScreen() {
           </section>
         </>
       )}
-    </main>
+    </>
   );
 }
 
@@ -349,9 +349,9 @@ function MailboxForm(props: { view: MailInView; onSaved: () => Promise<void> }) 
       aria-labelledby="mail-in-box-set-h"
       noValidate
     >
-      <h2 id="mail-in-box-set-h" className="section-h">
+      <h3 id="mail-in-box-set-h" className="section-h">
         Set up the mailbox
-      </h2>
+      </h3>
       <p className="muted">
         {props.view.source === 'settings'
           ? 'The vault checks the mailbox set up here.'

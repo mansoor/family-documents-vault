@@ -28,20 +28,12 @@ import { SharedScreen } from './screens/Shared.js';
 import { SharingScreen } from './screens/Sharing.js';
 import { PrivacyScreen } from './screens/Household.js';
 import { TimeZoneScreen } from './screens/TimeZone.js';
-import { EmailScreen, NotificationsScreen } from './screens/Notifications.js';
+import { NotificationsScreen } from './screens/Notifications.js';
 import { ScannerScreen } from './watch-folder.js';
-import { EmailInScreen } from './mail-in.js';
-import { ReadingCheckScreen } from './reading-check.js';
-import { ReadingSettingsScreen } from './reading-settings.js';
+import { EmailInAndOutScreen, ReadingAndCheckScreen } from './screens/ServerSettings.js';
 import { PersonDocumentsScreen, ProfileScreen } from './screens/Person.js';
 import { PeopleScreen, RemindersScreen, SearchScreen } from './screens/SearchPeople.js';
-import {
-  AccountScreen,
-  DataScreen,
-  OwnersScreen,
-  SettingsScreen,
-  StorageScreen,
-} from './screens/Settings.js';
+import { AccountScreen, DataScreen, SettingsScreen, StorageScreen } from './screens/Settings.js';
 import { SettingsLayout } from './settings-sections.js';
 import { ComputersScreen } from './screens/Computers.js';
 import { SetupScreen } from './screens/Setup.js';
@@ -108,6 +100,9 @@ const MOVED: ReadonlyArray<readonly [from: string, to: string]> = [
   ['/settings/after-restore', '/after-restore'],
   // Household became Privacy in 0.8.0 (the owner's ask of 17 Oct 2026).
   ['/settings/household', '/settings/privacy'],
+  // For owners' list of pages is the menu's Server and reading since 0.9.0
+  // (the owner's ask of 25 Oct 2026): its address opens the first of them.
+  ['/settings/owners', '/settings/storage'],
   ['/incoming', '/inbox/sent'],
   ['/incoming/:id', '/inbox/:id'],
 ];
@@ -330,9 +325,11 @@ export function App() {
                   </Only>
                 }
               />
-              {/* Settings holds settings only (R1), in sections: from 768 px
-                the sub-menu beside each; on a phone, /settings lists them.
-                The pages it had keep their addresses, under their section. */}
+              {/* Settings holds settings only (R1), in sections, in three
+                groups since 0.9.0: from 768 px the menu beside each; on a
+                phone, /settings lists them. The pages it had keep their
+                addresses: each part of a page that holds two opens it at
+                that part (screens/ServerSettings.tsx). */}
               <Route path="/settings" element={<SettingsLayout />}>
                 <Route index element={<SettingsScreen />} />
                 <Route path="account" element={<AccountScreen />} />
@@ -361,14 +358,6 @@ export function App() {
                   }
                 />
                 <Route
-                  path="owners"
-                  element={
-                    <Only rule={SCREEN_RULES.owners}>
-                      <OwnersScreen />
-                    </Only>
-                  }
-                />
-                <Route
                   path="storage"
                   element={
                     <Only rule={SCREEN_RULES.storage}>
@@ -380,7 +369,7 @@ export function App() {
                   path="email"
                   element={
                     <Only rule={SCREEN_RULES.email}>
-                      <EmailScreen />
+                      <EmailInAndOutScreen />
                     </Only>
                   }
                 />
@@ -395,8 +384,8 @@ export function App() {
                 <Route
                   path="email-in"
                   element={
-                    <Only rule={SCREEN_RULES.emailIn}>
-                      <EmailInScreen />
+                    <Only rule={SCREEN_RULES.email}>
+                      <EmailInAndOutScreen />
                     </Only>
                   }
                 />
@@ -404,15 +393,15 @@ export function App() {
                   path="reading"
                   element={
                     <Only rule={SCREEN_RULES.reading}>
-                      <ReadingSettingsScreen />
+                      <ReadingAndCheckScreen />
                     </Only>
                   }
                 />
                 <Route
                   path="reading-check"
                   element={
-                    <Only rule={SCREEN_RULES.readingCheck}>
-                      <ReadingCheckScreen />
+                    <Only rule={SCREEN_RULES.reading}>
+                      <ReadingAndCheckScreen />
                     </Only>
                   }
                 />

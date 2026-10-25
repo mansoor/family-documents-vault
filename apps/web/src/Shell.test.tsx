@@ -797,46 +797,51 @@ describe('on a phone: the bottom bar and the drawer', () => {
   });
 });
 
-describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
-  /** The sections the sub-menu offers, by name. */
+describe('Settings in three groups, with a menu beside the page (0.9.0, the owner’s ask)', () => {
+  /** The menu beside the page. */
   const subMenu = async () => screen.findByRole('navigation', { name: 'Settings sections' });
-  const sectionNames = (nav: HTMLElement) =>
-    within(within(nav).getAllByRole('list')[0] as HTMLElement)
-      .getAllByRole('link')
-      .map((l) => l.querySelector('.settings-nav-label')?.textContent ?? l.textContent);
+  /** Each group the menu offers, by its heading, with its sections by name. */
+  const groupsIn = (nav: HTMLElement): Array<[string, string[]]> =>
+    [...nav.querySelectorAll<HTMLElement>('ul[aria-labelledby]')].map((list) => [
+      // Each list is named by its group's heading.
+      document.getElementById(list.getAttribute('aria-labelledby') ?? '')?.textContent ?? '',
+      within(list)
+        .getAllByRole('link')
+        .map((l) => l.querySelector('.settings-nav-label, .doc-title')?.textContent ?? ''),
+    ]);
+  /** The sections, in order, whatever their group. */
+  const sectionNames = (nav: HTMLElement) => groupsIn(nav).flatMap(([, names]) => names);
   /** The rows a section opens, by title, in order. */
   const rows = (main: HTMLElement) =>
     [...main.querySelectorAll('a.rowbtn .doc-title')].map((t) => t.textContent);
 
-  const SECTIONS: Record<Role, string[]> = {
-    // Household became Privacy, and Kinds of document a section of its own (0.8.0).
-    // Tags after Kinds of document (0.9.0, T1): whoever may change documents.
-    // Time zone after Notifications (0.9.0, TZ): everybody reads the family's clock.
+  const GROUPS: Record<Role, Array<[string, string[]]>> = {
     owner: [
-      'Your account',
-      'Notifications',
-      'Time zone',
-      'Privacy',
-      'Kinds of document',
-      'Tags',
-      'Your data',
-      'For owners',
+      ['You', ['Your account', 'Notifications', 'Your data']],
+      ['Household', ['Privacy', 'Time zone', 'Kinds of document', 'Tags']],
+      [
+        'Server and reading · owners',
+        ['Storage', 'Email, in and out', 'Scanner folder', 'Reading and the check'],
+      ],
     ],
     adult: [
-      'Your account',
-      'Notifications',
-      'Time zone',
-      'Privacy',
-      'Kinds of document',
-      'Tags',
-      'Your data',
+      ['You', ['Your account', 'Notifications', 'Your data']],
+      ['Household', ['Privacy', 'Time zone', 'Kinds of document', 'Tags']],
     ],
-    teen: ['Your account', 'Notifications', 'Time zone', 'Tags'],
-    viewer: ['Your account', 'Notifications', 'Time zone'],
+    // A teen: their own tags, and the family's clock to read; no export.
+    teen: [
+      ['You', ['Your account', 'Notifications']],
+      ['Household', ['Time zone', 'Tags']],
+    ],
+    viewer: [
+      ['You', ['Your account', 'Notifications']],
+      ['Household', ['Time zone']],
+    ],
   };
+  const SECTIONS = (role: Role) => GROUPS[role].flatMap(([, names]) => names);
 
   it.each(['owner', 'adult', 'teen', 'viewer'] as const)(
-    'at 1280, a %s’s Settings opens on its first section, the sub-menu beside it with only their sections',
+    'at 1280, a %s’s Settings opens on its first section, the menu beside it in its groups, only their sections',
     async (role) => {
       const before = window.history.length;
       at('/settings', EVERYTHING, role);
@@ -850,7 +855,16 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
         ).toHaveAttribute('aria-current', 'page'),
       );
       const nav = await subMenu();
-      expect(sectionNames(nav)).toEqual(SECTIONS[role]);
+      // Each group heading only where one of its sections is theirs.
+      expect(groupsIn(nav)).toEqual(GROUPS[role]);
+      // Each group's list named by it; none of them a heading, so the page's
+      // own h1, after the menu, is the first.
+      for (const [name] of GROUPS[role]) {
+        expect(
+          within(nav).getByRole('list', { name: (n) => n.replace(/\s+/g, ' ') === name }),
+        ).toBeVisible();
+      }
+      expect(within(nav).queryAllByRole('heading')).toEqual([]);
       // Links, the current one marked: not tabs.
       expect(within(nav).queryByRole('tab')).toBeNull();
       expect(
@@ -858,6 +872,12 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
           .getAllByRole('link')
           .filter((l) => l.hasAttribute('aria-current')),
       ).toHaveLength(1);
+      // Each link its icon, hidden from a screen reader: the name is the words.
+      for (const link of within(nav)
+        .getAllByRole('link')
+        .filter((l) => l.closest('ul[aria-labelledby]'))) {
+        expect(link.querySelector('svg.settings-icon')).toHaveAttribute('aria-hidden', 'true');
+      }
       expect(await screen.findByRole('heading', { level: 1, name: 'Your account' })).toBeVisible();
       expect(document.title).toBe('Settings: your account – Family Document Vault');
       // The shell's own Settings, one entry, current.
@@ -870,22 +890,26 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
   );
 
   it.each(['owner', 'adult', 'teen', 'viewer'] as const)(
-    'at 320, a %s’s Settings is the list of their sections; each opens its page, with Back to Settings',
+    'at 320, a %s’s Settings is the list of their groups, each headed; each section opens its page, with Back to Settings',
     async (role) => {
       at('/settings', EVERYTHING, role, 320);
       await screen.findByRole('heading', { level: 1, name: 'Settings' });
       const list = screen.getByRole('navigation', { name: 'Settings sections' });
+      expect(groupsIn(list)).toEqual(GROUPS[role]);
+      // Here, after the page's h1: each group headed.
       expect(
         within(list)
-          .getAllByRole('link')
-          .map((l) => l.querySelector('.doc-title')?.textContent),
-      ).toEqual(SECTIONS[role]);
+          .getAllByRole('heading', { level: 2 })
+          .map((h) => h.textContent),
+      ).toEqual(GROUPS[role].map(([name]) => name));
       expect(window.location.pathname).toBe('/settings');
       expect(document.title).toBe('Settings – Family Document Vault');
+      // No menu to widen on a phone.
+      expect(screen.queryByRole('separator', { name: 'Width of the Settings menu' })).toBeNull();
       await expectAccessible();
       fireEvent.click(within(list).getByRole('link', { name: /^Notifications/ }));
       expect(await screen.findByRole('heading', { level: 1, name: 'Notifications' })).toBeVisible();
-      // No sub-menu on a phone: the way back is the page's own.
+      // No menu on a phone: the way back is the page's own.
       expect(screen.queryByRole('navigation', { name: 'Settings sections' })).toBeNull();
       expect(screen.getByRole('link', { name: 'Back to Settings' })).toHaveAttribute(
         'href',
@@ -897,12 +921,16 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
     },
   );
 
-  it('a page under a section keeps its address; the sub-menu marks its section', async () => {
-    for (const [path, section, heading] of [
-      ['/settings/family', 'Privacy', 'Family'],
-      ['/settings/kinds/new', 'Kinds of document', 'Add a kind'],
-      ['/settings/storage', 'For owners', 'Where your files are kept'],
-      ['/settings/email', 'For owners', 'Where email comes from'],
+  it('a page under a section, or a part of one, keeps its address; the menu marks its section', async () => {
+    for (const [path, section, current, heading] of [
+      ['/settings/family', 'Privacy', 'true', 'Family'],
+      ['/settings/kinds/new', 'Kinds of document', 'true', 'Add a kind'],
+      ['/settings/storage', 'Storage', 'page', 'Storage'],
+      ['/settings/email', 'Email, in and out', 'page', 'Email, in and out'],
+      ['/settings/email-in', 'Email, in and out', 'page', 'Email, in and out'],
+      ['/settings/scanner', 'Scanner folder', 'page', 'Scanner folder'],
+      ['/settings/reading', 'Reading and the check', 'page', 'Reading and the check'],
+      ['/settings/reading-check', 'Reading and the check', 'page', 'Reading and the check'],
     ] as const) {
       at(path, { ...EVERYTHING, identities: {} });
       const nav = await subMenu();
@@ -919,7 +947,7 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
           l.querySelector('.settings-nav-label')?.textContent,
           l.getAttribute('aria-current'),
         ]),
-      ).toEqual([[section, 'true']]);
+      ).toEqual([[section, current]]);
       expect(within(await sidebar()).getByRole('link', { name: 'Settings' })).toHaveAttribute(
         'aria-current',
         'page',
@@ -934,12 +962,20 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
     await screen.findByRole('heading', { level: 1, name: 'Your account' });
     for (const [name, path, heading, title] of [
       ['Notifications', '/settings/notifications', 'Notifications', 'Settings: notifications'],
-      ['Time zone', '/settings/time-zone', 'Time zone', 'Settings: time zone'],
+      ['Your data', '/settings/data', 'Your data', 'Settings: your data'],
       ['Privacy', '/settings/privacy', 'Privacy', 'Settings: privacy'],
+      ['Time zone', '/settings/time-zone', 'Time zone', 'Settings: time zone'],
       ['Kinds of document', '/settings/kinds', 'Kinds of document', 'Settings: kinds of document'],
       ['Tags', '/settings/tags', 'Tags', 'Settings: tags'],
-      ['Your data', '/settings/data', 'Your data', 'Settings: your data'],
-      ['For owners', '/settings/owners', 'For owners', 'Settings: for owners'],
+      ['Storage', '/settings/storage', 'Storage', 'Settings: storage'],
+      ['Email, in and out', '/settings/email', 'Email, in and out', 'Settings: email, in and out'],
+      ['Scanner folder', '/settings/scanner', 'Scanner folder', 'Settings: scanner folder'],
+      [
+        'Reading and the check',
+        '/settings/reading',
+        'Reading and the check',
+        'Settings: reading and the check',
+      ],
       ['Your account', '/settings/account', 'Your account', 'Settings: your account'],
     ] as const) {
       fireEvent.click(within(nav).getByRole('link', { name: new RegExp(`^${name}`) }));
@@ -1017,17 +1053,35 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
     main = await go('Your data', 'Your data');
     expect(within(main).getByRole('button', { name: 'Make an export' })).toBeVisible();
     await expectAccessible();
-    // For owners: where files are kept, where email comes from, the scanner
-    // folder (S3), email in (S4), reading (0.9.0, R2) and the Reading check (R0).
-    main = await go('For owners', 'For owners');
-    expect(rows(main)).toEqual([
-      'Where your files are kept',
-      'Where email comes from',
-      'Scanner folder',
-      'Email in',
-      'Reading',
-      'Reading check',
-    ]);
+    // Server and reading (For owners until 0.9.0): where files are kept, the
+    // two parts of Email, in and out, the scanner folder (S3), and the two
+    // parts of Reading and the check (R2, R4, R0) — every page For owners listed.
+    main = await go('Storage', 'Storage');
+    // Named as the menu names it; what it is, the line beneath.
+    expect(within(main).getByText('Where your files are kept')).toHaveClass('settings-subtitle');
+    expect(within(main).queryByRole('heading', { name: 'Where your files are kept' })).toBeNull();
+    expect(within(main).getByRole('list', { name: 'Places' })).toBeInTheDocument();
+    await expectAccessible();
+    main = await go('Email, in and out', 'Email, in and out');
+    expect(
+      within(main)
+        .getAllByRole('heading', { level: 2 })
+        .map((h) => h.textContent),
+    ).toEqual(['Where email comes from', 'Email in']);
+    expect(within(main).getByRole('region', { name: 'Where email comes from' })).toBeVisible();
+    expect(within(main).getByRole('region', { name: 'Email in' })).toBeVisible();
+    await expectAccessible();
+    await go('Scanner folder', 'Scanner folder');
+    await expectAccessible();
+    main = await go('Reading and the check', 'Reading and the check');
+    expect(
+      within(main)
+        .getAllByRole('heading', { level: 2 })
+        .map((h) => h.textContent),
+    ).toEqual(['Reading', 'Reading check']);
+    expect(
+      await within(main).findByRole('heading', { name: 'The vault’s reading model', level: 3 }),
+    ).toBeVisible();
     await expectAccessible();
     // What has a place of its own is said beside the sections, never here.
     const nav = await subMenu();
@@ -1079,6 +1133,7 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
         await screen.findByText('Only an owner can change where your files are kept.'),
       ).toBeVisible();
       expect(screen.queryByRole('link', { name: /Where your files are kept/ })).toBeNull();
+      expect(screen.queryByText(/Server and reading/)).toBeNull();
     },
   );
 
@@ -1107,7 +1162,7 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
     },
   );
 
-  it('on a phone, Kinds of document is a section: its Back goes to Settings; Family’s to Privacy (0.8.0)', async () => {
+  it('on a phone, each section’s Back goes to Settings; Family’s to Privacy', async () => {
     at('/settings/kinds', EVERYTHING, 'adult', 320);
     await screen.findByRole('heading', { level: 1, name: 'Kinds of document' });
     expect(screen.getByRole('link', { name: 'Back to Settings' })).toHaveAttribute(
@@ -1118,12 +1173,24 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
     cleanup();
     at('/settings', EVERYTHING, 'owner', 320);
     const list = await screen.findByRole('navigation', { name: 'Settings sections' });
-    expect(
-      within(list)
-        .getAllByRole('link')
-        .map((l) => l.querySelector('.doc-title')?.textContent),
-    ).toEqual(SECTIONS.owner);
+    expect(sectionNames(list)).toEqual(SECTIONS('owner'));
     cleanup();
+    // Server and reading's pages, sections now: Back to Settings, never to For owners.
+    for (const [path, heading] of [
+      ['/settings/storage', 'Storage'],
+      ['/settings/email-in', 'Email, in and out'],
+      ['/settings/scanner', 'Scanner folder'],
+      ['/settings/reading-check', 'Reading and the check'],
+    ] as const) {
+      at(path, EVERYTHING, 'owner', 320);
+      await screen.findByRole('heading', { level: 1, name: heading });
+      expect(screen.getByRole('link', { name: 'Back to Settings' })).toHaveAttribute(
+        'href',
+        '/settings',
+      );
+      expect(screen.queryByRole('link', { name: 'Back to For owners' })).toBeNull();
+      cleanup();
+    }
     at('/settings/family', { ...EVERYTHING, identities: {} }, 'owner', 320);
     await screen.findByRole('heading', { level: 1, name: 'Family' });
     expect(screen.getByRole('link', { name: 'Back to Privacy' })).toHaveAttribute(
@@ -1131,22 +1198,313 @@ describe('Settings in sections, with a sub-menu (the owner’s ask)', () => {
       '/settings/privacy',
     );
   });
+});
 
-  it('where email comes from is under For owners, an owner’s', async () => {
-    at('/settings/owners', EVERYTHING);
-    fireEvent.click(await screen.findByRole('link', { name: /Where email comes from/ }));
-    await screen.findByRole('heading', { name: 'Where email comes from', level: 1 });
-    expect(await screen.findByLabelText('Provider')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Back to For owners' })).toHaveAttribute(
-      'href',
-      '/settings/owners',
-    );
-    cleanup();
-    at('/settings/email', EVERYTHING, 'adult');
+describe('a page in two parts: each part’s old address lands on it (0.9.0)', () => {
+  it.each([
+    ['/settings/email', 'Email, in and out', ['Where email comes from', 'Email in']],
+    ['/settings/reading', 'Reading and the check', ['Reading', 'Reading check']],
+  ] as const)('%s holds both parts, headed, each a region', async (path, title, parts) => {
+    at(path, EVERYTHING);
+    const h1 = await screen.findByRole('heading', { level: 1, name: title });
+    const main = h1.closest('main') as HTMLElement;
     expect(
-      await screen.findByText('Only an owner can change how the vault sends email.'),
-    ).toBeInTheDocument();
-    expect(screen.queryByLabelText('Provider')).toBeNull();
+      within(main)
+        .getAllByRole('heading', { level: 2 })
+        .map((h) => h.textContent),
+    ).toEqual([...parts]);
+    for (const part of parts) {
+      expect(within(main).getByRole('region', { name: part })).toBeInTheDocument();
+    }
+    await expectAccessible();
+  });
+
+  it('the first part’s address opens the page at its top; the second’s, at the second part, its heading given the focus', async () => {
+    at('/settings/email-in', EVERYTHING);
+    const second = await screen.findByRole('heading', { level: 2, name: 'Email in' });
+    await waitFor(() => expect(second).toHaveFocus());
+    expect(screen.getByRole('heading', { level: 1, name: 'Email, in and out' })).toBeVisible();
+    cleanup();
+    at('/settings/reading-check', EVERYTHING);
+    const check = await screen.findByRole('heading', { level: 2, name: 'Reading check' });
+    await waitFor(() => expect(check).toHaveFocus());
+    cleanup();
+    at('/settings/reading', EVERYTHING);
+    await screen.findByRole('heading', { level: 1, name: 'Reading and the check' });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByRole('heading', { level: 2, name: 'Reading' })).not.toHaveFocus();
+  });
+
+  it('the second part is kept in view while the part above it loads and grows, until the person scrolls or presses a key', async () => {
+    const watchers: Array<{ grew: () => void; off: boolean }> = [];
+    class Watch {
+      w: { grew: () => void; off: boolean };
+      constructor(grew: () => void) {
+        this.w = { grew, off: false };
+        watchers.push(this.w);
+      }
+      observe() {}
+      disconnect() {
+        this.w.off = true;
+      }
+    }
+    const before = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = Watch as unknown as typeof ResizeObserver;
+    const scrolled = vi.fn();
+    const was = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrolled,
+    });
+    try {
+      at('/settings/reading-check', EVERYTHING);
+      const check = await screen.findByRole('heading', { level: 2, name: 'Reading check' });
+      await waitFor(() => expect(check).toHaveFocus());
+      const mine = () => scrolled.mock.contexts.filter((c) => c === check).length;
+      expect(mine()).toBe(1);
+      const watch = watchers.at(-1);
+      expect(watch?.off).toBe(false);
+      // The part above grew: the heading moved down, and is gone to again.
+      check.getBoundingClientRect = () => ({ top: 600 }) as DOMRect;
+      watch?.grew();
+      expect(mine()).toBe(2);
+      // Not moved: left where it is.
+      watch?.grew();
+      expect(mine()).toBe(2);
+      // The person takes over: no more.
+      fireEvent.keyDown(window, { key: 'ArrowDown' });
+      expect(watch?.off).toBe(true);
+    } finally {
+      if (was) Object.defineProperty(Element.prototype, 'scrollIntoView', was);
+      else delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+      globalThis.ResizeObserver = before;
+    }
+  });
+
+  it('gone to from elsewhere in the app: the second part’s heading has the focus, and the shell leaves it there', async () => {
+    at('/settings/account', EVERYTHING);
+    await screen.findByRole('heading', { level: 1, name: 'Your account' });
+    act(() => {
+      window.history.pushState({}, '', '/settings/reading-check');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    const check = await screen.findByRole('heading', { level: 2, name: 'Reading check' });
+    await waitFor(() => expect(check).toHaveFocus());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(check).toHaveFocus();
+    // And from the page's first part to its second, the page kept.
+    act(() => {
+      window.history.pushState({}, '', '/settings/email');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    const h1 = await screen.findByRole('heading', { level: 1, name: 'Email, in and out' });
+    await waitFor(() => expect(h1).toHaveFocus());
+    act(() => {
+      window.history.pushState({}, '', '/settings/email-in');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { level: 2, name: 'Email in' })).toHaveFocus(),
+    );
+  });
+
+  it('Notifications’ link to where email comes from opens Email, in and out at its top', async () => {
+    at('/settings/notifications', EVERYTHING);
+    fireEvent.click(await screen.findByRole('link', { name: 'Where email comes from' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/settings/email'));
+    const h1 = await screen.findByRole('heading', { level: 1, name: 'Email, in and out' });
+    await waitFor(() => expect(h1).toHaveFocus());
+    expect(await screen.findByLabelText('Provider')).toBeInTheDocument();
+  });
+
+  it('an owner’s: an adult is refused at either address, and nothing of it is asked of the vault', async () => {
+    for (const path of ['/settings/email', '/settings/email-in']) {
+      const state = at(path, EVERYTHING, 'adult');
+      expect(
+        await screen.findByText('Only an owner can change the vault’s email settings.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByLabelText('Provider')).toBeNull();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(state.calls.some((c) => /\/smtp|\/mail-in/.test(c.url))).toBe(false);
+      cleanup();
+    }
+  });
+});
+
+describe('the Settings menu, as wide as its person makes it (0.9.0)', () => {
+  const bar = () => screen.findByRole('separator', { name: 'Width of the Settings menu' });
+  /** The menu the line widens, in the Settings sections landmark with it. */
+  const menu = () =>
+    screen
+      .getByRole('navigation', { name: 'Settings sections' })
+      .querySelector('#settings-menu') as HTMLElement;
+
+  it('a window splitter: about 248 px to start, 200 to 360, moved with the keys', async () => {
+    at('/settings/account', EVERYTHING);
+    const line = await bar();
+    expect(line).toHaveAttribute('aria-orientation', 'vertical');
+    expect(line).toHaveAttribute('aria-valuenow', '248');
+    expect(line).toHaveAttribute('aria-valuemin', '200');
+    expect(line).toHaveAttribute('aria-valuemax', '360');
+    expect(line).toHaveAttribute('aria-controls', 'settings-menu');
+    expect(line).toHaveAttribute('tabindex', '0');
+    expect(screen.getByRole('navigation', { name: 'Settings sections' })).toContainElement(line);
+    expect(menu().style.width).toBe('248px');
+    fireEvent.keyDown(line, { key: 'ArrowRight' });
+    expect(line).toHaveAttribute('aria-valuenow', '264');
+    expect(menu().style.width).toBe('264px');
+    fireEvent.keyDown(line, { key: 'ArrowRight', shiftKey: true });
+    expect(line).toHaveAttribute('aria-valuenow', '328');
+    fireEvent.keyDown(line, { key: 'ArrowLeft' });
+    expect(line).toHaveAttribute('aria-valuenow', '312');
+    // The bounds: no wider than 360, no narrower than 200.
+    fireEvent.keyDown(line, { key: 'End' });
+    expect(line).toHaveAttribute('aria-valuenow', '360');
+    fireEvent.keyDown(line, { key: 'ArrowRight' });
+    expect(line).toHaveAttribute('aria-valuenow', '360');
+    fireEvent.keyDown(line, { key: 'Home' });
+    expect(line).toHaveAttribute('aria-valuenow', '200');
+    fireEvent.keyDown(line, { key: 'ArrowLeft', shiftKey: true });
+    expect(line).toHaveAttribute('aria-valuenow', '200');
+    expect(menu().style.width).toBe('200px');
+    await expectAccessible();
+  });
+
+  it('dragged, within its bounds; remembered for each person, on this device', async () => {
+    at('/settings/account', EVERYTHING);
+    const line = await bar();
+    fireEvent.pointerDown(line, { clientX: 300, pointerId: 1 });
+    fireEvent.pointerMove(line, { clientX: 340, pointerId: 1 });
+    // As it moves: the menu with it.
+    expect(menu().style.width).toBe('288px');
+    fireEvent.pointerUp(line, { clientX: 352, pointerId: 1 });
+    expect(line).toHaveAttribute('aria-valuenow', '300');
+    expect(localStorage.getItem('fdv.settings.menu-width.me')).toBe('300');
+    // Dragged far past the widest: the widest.
+    fireEvent.pointerDown(line, { clientX: 300, pointerId: 2 });
+    fireEvent.pointerUp(line, { clientX: 900, pointerId: 2 });
+    expect(line).toHaveAttribute('aria-valuenow', '360');
+    fireEvent.keyDown(line, { key: 'ArrowLeft' });
+    expect(localStorage.getItem('fdv.settings.menu-width.me')).toBe('344');
+    cleanup();
+    // Back again, on another page of Settings: as it was left.
+    at('/settings/privacy', EVERYTHING);
+    expect(await bar()).toHaveAttribute('aria-valuenow', '344');
+    expect(menu().style.width).toBe('344px');
+    cleanup();
+    // One kept out of bounds still wins, within them.
+    localStorage.setItem('fdv.settings.menu-width.me', '9000');
+    at('/settings/account', EVERYTHING);
+    expect(await bar()).toHaveAttribute('aria-valuenow', '360');
+    cleanup();
+    localStorage.setItem('fdv.settings.menu-width.me', '50');
+    at('/settings/account', EVERYTHING, 'owner', MID);
+    expect(await bar()).toHaveAttribute('aria-valuenow', '200');
+    cleanup();
+    // Nonsense kept: as it starts.
+    localStorage.setItem('fdv.settings.menu-width.me', 'wide');
+    at('/settings/account', EVERYTHING);
+    expect(await bar()).toHaveAttribute('aria-valuenow', '248');
+  });
+
+  it('on a tablet (768–1023 px) it starts at its narrowest, 200 px, and from 1024 px at 248; a width kept wins at both', async () => {
+    at('/settings/account', EVERYTHING, 'owner', MID);
+    const line = await bar();
+    expect(line).toHaveAttribute('aria-valuenow', '200');
+    expect(menu().style.width).toBe('200px');
+    // Its bounds are the same.
+    expect(line).toHaveAttribute('aria-valuemin', '200');
+    expect(line).toHaveAttribute('aria-valuemax', '360');
+    // The window grown past 1024 px, nothing kept: 248; and back again, 200.
+    resizeTo(WIDE);
+    await waitFor(() => expect(menu().style.width).toBe('248px'));
+    resizeTo(MID);
+    await waitFor(() => expect(menu().style.width).toBe('200px'));
+    // Moved: kept, and it wins at either size.
+    fireEvent.keyDown(await bar(), { key: 'ArrowRight', shiftKey: true });
+    expect(menu().style.width).toBe('264px');
+    expect(localStorage.getItem('fdv.settings.menu-width.me')).toBe('264');
+    resizeTo(WIDE);
+    await waitFor(() => expect(menu().style.width).toBe('264px'));
+    cleanup();
+    localStorage.setItem('fdv.settings.menu-width.me', '300');
+    at('/settings/account', EVERYTHING, 'owner', MID);
+    expect(await bar()).toHaveAttribute('aria-valuenow', '300');
+  });
+
+  it('the current section is brought into sight in a menu that scrolls; one in sight is left be', async () => {
+    const rect = (el: Element) =>
+      el.id === 'settings-menu'
+        ? { top: 64, bottom: 464, height: 400 }
+        : el.matches('a[aria-current][href="/settings/reading"]')
+          ? { top: 764, bottom: 824, height: 60 }
+          : el.matches('a[aria-current]')
+            ? { top: 100, bottom: 160, height: 60 }
+            : { top: 0, bottom: 0, height: 0 };
+    const rects = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element,
+    ) {
+      return rect(this) as DOMRect;
+    });
+    const moved: number[] = [];
+    Object.defineProperty(HTMLDivElement.prototype, 'scrollTop', {
+      configurable: true,
+      get: () => 0,
+      set(this: HTMLDivElement, v: number) {
+        if (this.id === 'settings-menu') moved.push(v);
+      },
+    });
+    try {
+      at('/settings/reading-check', EVERYTHING);
+      await screen.findByRole('heading', { level: 1, name: 'Reading and the check' });
+      // 700 below the menu's top, less half of what is left around it.
+      await waitFor(() => expect(moved).toEqual([700 - (400 - 60) / 2]));
+      cleanup();
+      moved.length = 0;
+      at('/settings/account', EVERYTHING);
+      await screen.findByRole('heading', { level: 1, name: 'Your account' });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(moved).toEqual([]);
+    } finally {
+      rects.mockRestore();
+      delete (HTMLDivElement.prototype as { scrollTop?: number }).scrollTop;
+    }
+  });
+
+  it('storage blocked: as it starts, still moved, nothing thrown', async () => {
+    // Refused for the menu's width alone: the session itself is kept as ever.
+    const realGet = Object.getOwnPropertyDescriptor(Storage.prototype, 'getItem')
+      ?.value as Storage['getItem'];
+    const realSet = Object.getOwnPropertyDescriptor(Storage.prototype, 'setItem')
+      ?.value as Storage['setItem'];
+    const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (
+      this: Storage,
+      key: string,
+    ) {
+      if (key.startsWith('fdv.settings.')) throw new Error('blocked');
+      return realGet.call(this, key);
+    });
+    const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+      this: Storage,
+      key: string,
+      value: string,
+    ) {
+      if (key.startsWith('fdv.settings.')) throw new Error('blocked');
+      realSet.call(this, key, value);
+    });
+    try {
+      at('/settings/account', EVERYTHING);
+      const line = await bar();
+      expect(line).toHaveAttribute('aria-valuenow', '248');
+      fireEvent.keyDown(line, { key: 'ArrowRight' });
+      expect(line).toHaveAttribute('aria-valuenow', '264');
+      expect(menu().style.width).toBe('264px');
+      expect(get).toHaveBeenCalledWith('fdv.settings.menu-width.me');
+      expect(set).toHaveBeenCalledWith('fdv.settings.menu-width.me', '264');
+    } finally {
+      get.mockRestore();
+      set.mockRestore();
+    }
   });
 });
 
@@ -1171,6 +1529,74 @@ describe('every address Settings had still works (R1)', () => {
     expect(window.location.pathname + window.location.search).toBe(to);
     // Replaced, not added: Back does not bounce off the old address.
     expect(window.history.length).toBe(before);
+  });
+
+  /**
+   * Every /settings address there is, and where it lands (0.9.0, the three
+   * groups): each still opens, by a redirect or as itself. The list is held
+   * to App.tsx's own routes below, so an address added there is added here.
+   */
+  const SETTINGS_ADDRESSES: Array<[from: string, to: string, heading: string]> = [
+    ['/settings', '/settings/account', 'Your account'],
+    ['/settings/account', '/settings/account', 'Your account'],
+    ['/settings/notifications', '/settings/notifications', 'Notifications'],
+    // Refused without the feature, as before; the address stays.
+    ['/settings/computers', '/settings/computers', 'Your computers'],
+    ['/settings/data', '/settings/data', 'Your data'],
+    ['/settings/privacy', '/settings/privacy', 'Privacy'],
+    ['/settings/household', '/settings/privacy', 'Privacy'],
+    ['/settings/family', '/settings/family', 'Family'],
+    ['/settings/time-zone', '/settings/time-zone', 'Time zone'],
+    ['/settings/kinds', '/settings/kinds', 'Kinds of document'],
+    ['/settings/kinds/new', '/settings/kinds/new', 'Add a kind'],
+    ['/settings/kinds/passport', '/settings/kinds/passport', 'Passport'],
+    ['/settings/tags', '/settings/tags', 'Tags'],
+    // For owners' list is the menu's Server and reading: its address, Storage.
+    ['/settings/owners', '/settings/storage', 'Storage'],
+    ['/settings/storage', '/settings/storage', 'Storage'],
+    ['/settings/email', '/settings/email', 'Email, in and out'],
+    ['/settings/email-in', '/settings/email-in', 'Email, in and out'],
+    ['/settings/scanner', '/settings/scanner', 'Scanner folder'],
+    ['/settings/reading', '/settings/reading', 'Reading and the check'],
+    ['/settings/reading-check', '/settings/reading-check', 'Reading and the check'],
+    ['/settings/activity', '/activity', 'What has been happening'],
+    ['/settings/trash', '/trash', 'Trash'],
+    ['/settings/sharing', '/sharing', 'Sharing'],
+    ['/settings/sharing/ask', '/sharing/ask', 'Ask for documents'],
+    ['/settings/guests', '/people/outside', 'People outside the family'],
+    ['/settings/after-restore', '/after-restore', 'After a restore'],
+  ];
+
+  it.each(SETTINGS_ADDRESSES)('%s opens at %s, an owner’s', async (from, to, heading) => {
+    at(from, { ...EVERYTHING, identities: {} });
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { level: 1, name: heading })).toBeVisible(),
+    );
+    expect(window.location.pathname).toBe(to);
+  });
+
+  it('that list is every /settings address App.tsx has', () => {
+    const file = ['src/App.tsx', 'apps/web/src/App.tsx']
+      .map((p) => resolve(process.cwd(), p))
+      .find((p) => existsSync(p));
+    const app = file ? readFileSync(file, 'utf8') : '';
+    const from = app.indexOf('<Route path="/settings" element={<SettingsLayout />}>');
+    const to = app.indexOf('{MOVED.map', from);
+    expect(from).toBeGreaterThan(0);
+    const children = [
+      ...app
+        .slice(from + '<Route path="/settings"'.length, to)
+        .matchAll(/<Route\s+path="([^"]+)"/g),
+    ].map((m) => `/settings/${m[1]}`);
+    const moved = [...app.matchAll(/\['(\/settings[^']*)',\s*'[^']*'\]/g)].map((m) => m[1]);
+    const routes = new Set(['/settings', ...children, ...moved]);
+    // `:key` stands for a kind's own.
+    const listed = new Set(
+      SETTINGS_ADDRESSES.map(([path]) =>
+        path.replace(/^\/settings\/kinds\/passport$/, '/settings/kinds/:key'),
+      ),
+    );
+    expect([...routes].sort()).toEqual([...listed].sort());
   });
 
   it('what the last screen said comes with it', async () => {

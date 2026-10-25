@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import axe from 'axe-core';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { App } from './App.js';
@@ -54,10 +54,54 @@ const CASES: Array<[path: string, roles: Role[], title: string, asks: RegExp]> =
   ['/add', ['viewer'], 'Add a document', /\/document-types/],
   ['/add/many', ['viewer'], 'Add many documents', /\/batches/],
   ['/settings/data', ['teen', 'viewer'], 'Your data', /\/exports/],
-  ['/settings/owners', ['adult', 'teen', 'viewer'], 'For owners', /\/vaults|\/smtp/],
-  ['/settings/storage', ['adult', 'teen', 'viewer'], 'Where your files are kept', /\/vaults/],
-  ['/settings/email', ['adult', 'teen', 'viewer'], 'Where email comes from', /\/smtp/],
+  ['/settings/storage', ['adult', 'teen', 'viewer'], 'Storage', /\/vaults/],
+  // Server and reading (0.9.0): each part's address, its page's name.
+  ['/settings/email', ['adult', 'teen', 'viewer'], 'Email, in and out', /\/smtp|\/mail-in/],
+  ['/settings/email-in', ['adult', 'teen', 'viewer'], 'Email, in and out', /\/smtp|\/mail-in/],
+  ['/settings/scanner', ['adult', 'teen', 'viewer'], 'Scanner folder', /\/watch-folder/],
+  [
+    '/settings/reading',
+    ['adult', 'teen', 'viewer'],
+    'Reading and the check',
+    /\/household\/reading|\/reading-checks/,
+  ],
+  [
+    '/settings/reading-check',
+    ['adult', 'teen', 'viewer'],
+    'Reading and the check',
+    /\/household\/reading|\/reading-checks/,
+  ],
 ];
+
+describe('a page in two parts refuses with one sentence for both, at either part’s address (0.9.0)', () => {
+  it.each([
+    ['/settings/email', 'Only an owner can change the vault’s email settings.'],
+    ['/settings/email-in', 'Only an owner can change the vault’s email settings.'],
+    ['/settings/reading', 'Only an owner can change how the vault reads papers.'],
+    ['/settings/reading-check', 'Only an owner can change how the vault reads papers.'],
+  ])('%s: “%s”', async (path, why) => {
+    for (const role of ['adult', 'teen', 'viewer'] as const) {
+      open(path, role);
+      expect(await screen.findByText(why)).toBeVisible();
+      cleanup();
+    }
+  });
+});
+
+describe('For owners, an address that was a page', () => {
+  it.each(['adult', 'teen', 'viewer'] as const)(
+    'as a %s: Storage’s, not theirs to open, as For owners said',
+    async (role) => {
+      const state = open('/settings/owners', role);
+      expect(await screen.findByRole('heading', { level: 1, name: 'Storage' })).toBeVisible();
+      expect(window.location.pathname).toBe('/settings/storage');
+      expect(screen.getByText(/^This isn’t something you can open\./)).toBeVisible();
+      expect(screen.getByText('Only an owner can change where your files are kept.')).toBeVisible();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(state.calls.map((c) => c.url).filter((u) => /\/vaults|\/smtp/.test(u))).toEqual([]);
+    },
+  );
+});
 
 describe('a screen a role cannot use, typed into the address bar', () => {
   for (const [path, roles, title, asks] of CASES) {

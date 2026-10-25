@@ -108,9 +108,9 @@ export function LocalAiCard() {
   const result = test.view?.state === 'done' ? (test.view.local_ai ?? null) : null;
   return (
     <section className="card stack" aria-labelledby="local-ai-h">
-      <h2 id="local-ai-h" style={{ fontSize: 18 }}>
+      <h3 id="local-ai-h" style={{ fontSize: 18 }}>
         The local AI
-      </h2>
+      </h3>
       {data === null && error ? (
         <LoadFailed message={error} what="the reading settings" onRetry={() => void reload()} />
       ) : data === null ? (

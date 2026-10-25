@@ -5,8 +5,8 @@ import { App } from './App.js';
 import { fresh, installFakeApi, signedIn, type FakeState } from './test-api.js';
 
 /**
- * The Reading check (0.9.0, R0), on the web: an owner's page in Settings →
- * For owners. It starts a check of the last N documents filed through
+ * The Reading check (0.9.0, R0), on the web: an owner's, the second part of
+ * Settings → Server and reading → Reading and the check. It starts a check of the last N documents filed through
  * review, shows how far the worker has got and lets it be cancelled; a
  * finished check shows its numbers both ways, by kind, against the check
  * before it, and — to the owner who ran it alone — the documents that
@@ -105,12 +105,14 @@ const posts = (state: FakeState) =>
   state.calls.filter((c) => c.method === 'POST' && c.url === '/api/v1/reading-checks');
 
 describe('the Reading check’s page (R0)', () => {
-  it('is in For owners, says how many can be read, and starts a check of the last N', async () => {
-    const state = at('/settings/owners', { readingChecks: [], readingFiled: 37 });
-    fireEvent.click(await screen.findByRole('link', { name: /Reading check/ }));
+  it('is in Server and reading, says how many can be read, and starts a check of the last N', async () => {
+    const state = at('/settings', { readingChecks: [], readingFiled: 37 });
+    fireEvent.click(await screen.findByRole('link', { name: /^Reading and the check/ }));
     expect(
-      await screen.findByRole('heading', { name: 'Reading check', level: 1 }),
+      await screen.findByRole('heading', { name: 'Reading and the check', level: 1 }),
     ).toBeInTheDocument();
+    // Its second part, after the reading model.
+    expect(screen.getByRole('heading', { name: 'Reading check', level: 2 })).toBeInTheDocument();
     expect(
       await screen.findByText('You can see 37 documents filed through review.'),
     ).toBeInTheDocument();
@@ -169,8 +171,10 @@ describe('the Reading check’s page (R0)', () => {
     expect(within(now).getByText('Reading 12 of 50…')).toBeInTheDocument();
     // Its count is no live region: only the one status line is.
     expect(within(now).queryAllByRole('status')).toEqual([]);
-    expect(screen.getAllByRole('status')).toHaveLength(1);
-    const said = () => screen.getByRole('status').textContent ?? '';
+    // One in the check's part (the reading model's part has its own, above).
+    const part = screen.getByRole('region', { name: 'Reading check' });
+    expect(within(part).getAllByRole('status')).toHaveLength(1);
+    const said = () => within(part).getByRole('status').textContent ?? '';
     // The next poll: further on, and nothing said.
     const row = state.readingChecks?.[0] as Record<string, unknown>;
     row.progress = { total: 50, done: 30 };
@@ -345,11 +349,16 @@ describe('the Reading check’s page (R0)', () => {
   });
 
   it('is an owner’s: not offered to an adult, and refused if they go there', async () => {
-    at('/settings/owners', { readingChecks: [], readingFiled: 3 }, 'adult');
-    expect(await screen.findByText('This isn’t something you can open.')).toBeInTheDocument();
+    at('/settings', { readingChecks: [], readingFiled: 3 }, 'adult');
+    await screen.findByRole('heading', { level: 1, name: 'Settings' });
+    expect(screen.queryByRole('link', { name: /^Reading and the check/ })).toBeNull();
     cleanup();
-    at('/settings/reading-check', { readingChecks: [], readingFiled: 3 }, 'adult');
-    expect(await screen.findByText('Only an owner can run the Reading check.')).toBeInTheDocument();
+    const state = at('/settings/reading-check', { readingChecks: [], readingFiled: 3 }, 'adult');
+    expect(await screen.findByText('This isn’t something you can open.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Only an owner can change how the vault reads papers.'),
+    ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start the check' })).toBeNull();
+    expect(state.calls.some((c) => c.url.startsWith('/api/v1/reading-checks'))).toBe(false);
   });
 });

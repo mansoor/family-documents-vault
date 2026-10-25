@@ -3863,9 +3863,11 @@ a.menu-item {
   text-underline-offset: 2px;
 }
 
-/* Settings in sections (the owner's ask): from 768 px a sub-menu down the
-   left of the Settings area, links with the current one marked, and the
-   section beside it at a form's width. */
+/* Settings in sections (the owner's ask), in three groups since 0.9.0: from
+   768 px a menu down the left of the Settings area, links with the current
+   one marked, as wide as its person dragged the line beside it (200 to
+   360 px), and the section across the rest of the width, as Notes and
+   Documents are (the owner's ask of 25 Oct 2026). */
 .settings-area {
   display: flex;
   align-items: flex-start;
@@ -3877,26 +3879,113 @@ a.menu-item {
   min-width: 0;
 }
 
-/* Kept beside the page as it scrolls, never taller than the window: past
-   that it scrolls within itself, so a link tabbed to is always on screen
-   (WCAG 2.4.11), as the notes list does. */
-.settings-nav {
+/* The page spans the width: no page max-width. What reads badly that wide
+   keeps a readable width of its own, below (.settings-page). */
+.shell-wide .settings-area > .page,
+.shell-mid .settings-area > .page {
+  max-width: none;
+}
+
+/* What reads badly across a wide window keeps a width of its own, each
+   thing on its own, never the page: a field (a label and its box) a form's
+   width; a line of prose, a status or a switch's words a readable measure;
+   a button its own width, not stretched across. Lists, tables and cards
+   span the page, as Notes' and Documents' do. */
+.shell-wide .settings-area > .page .field,
+.shell-mid .settings-area > .page .field,
+.shell-wide .settings-area > .page .row:has(> .field),
+.shell-mid .settings-area > .page .row:has(> .field) {
+  max-width: 560px;
+}
+
+.shell-wide .settings-area > .page :is(p, ol, ul:not(.list), .check),
+.shell-mid .settings-area > .page :is(p, ol, ul:not(.list), .check) {
+  max-width: 72ch;
+}
+
+.shell-wide .settings-area > .page > .btn,
+.shell-mid .settings-area > .page > .btn,
+.shell-wide .settings-area > .page :is(.stack, .card, form, section) > .btn,
+.shell-mid .settings-area > .page :is(.stack, .card, form, section) > .btn {
+  align-self: flex-start;
+}
+
+/* The menu and the line at its edge, kept beside the page as it scrolls,
+   never taller than the window. */
+.settings-side {
   flex: none;
-  width: 240px;
   position: sticky;
   top: var(--shell-top);
+  height: calc(100dvh - var(--shell-top));
+  display: flex;
+  align-items: stretch;
+}
+
+/* The menu: past the window's height it scrolls within itself, so a link
+   tabbed to is always on screen (WCAG 2.4.11), as the notes list does. Its
+   width is its person's (set on the element, from the line beside it). */
+.settings-nav {
+  flex: none;
   max-height: calc(100dvh - var(--shell-top));
   overflow-y: auto;
   overscroll-behavior: contain;
   scroll-padding-block: 12px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 20px;
   padding: 24px 4px 24px 24px;
 }
 
-.shell-mid .settings-nav {
-  width: 200px;
+/* The line between the menu and the page: dragged, or moved with the
+   arrow keys (splitter.tsx). Always in sight beside the page. */
+.settings-resizer {
+  flex: none;
+  position: relative;
+  width: 12px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.settings-resizer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 2px;
+  background: var(--border);
+}
+
+.settings-resizer:hover::before,
+.settings-resizer:focus-visible::before {
+  left: 4px;
+  width: 4px;
+  background: var(--accent);
+}
+
+.settings-resizer:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -1px;
+}
+
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* A group's name: You, Household, Server and reading · owners. */
+.settings-nav-h {
+  margin: 0;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ink-muted);
+}
+
+.settings-for {
+  font-weight: 500;
 }
 
 .settings-nav-list {
@@ -3910,15 +3999,30 @@ a.menu-item {
 
 .settings-nav-list a {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 2px;
+  align-items: flex-start;
+  gap: 10px;
   min-height: var(--tap);
   padding: 8px 12px;
   border-radius: var(--radius-m);
   color: var(--ink);
   font-weight: 600;
   font-size: 15px;
+}
+
+.settings-nav-list a .settings-icon {
+  margin-top: 1px;
+  color: var(--ink-muted);
+}
+
+.settings-nav-list a[aria-current] .settings-icon {
+  color: var(--accent);
+}
+
+.settings-nav-words {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .settings-nav-list a:hover {
@@ -3944,6 +4048,36 @@ a.menu-item {
 
 .settings-nav .elsewhere {
   font-size: 14px;
+}
+
+/* On a phone, Settings is the list of the groups, each with its sections. */
+.settings-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.settings-list-h {
+  font-size: 18px;
+}
+
+/* What a section is, under its heading: Storage's "Where your files are kept". */
+.settings-subtitle {
+  margin: -10px 0 0;
+  color: var(--ink-muted);
+  font-size: 15px;
+}
+
+/* A page in two parts (Email, in and out; Reading and the check): each
+   part's heading, gone to from its own address under the shell's bar. */
+.settings-part + .settings-part {
+  border-top: 1px solid var(--border);
+  padding-top: 24px;
+}
+
+.settings-part-h {
+  font-size: 20px;
+  scroll-margin-top: calc(var(--shell-top) + 16px);
 }
 
 .settings-server {

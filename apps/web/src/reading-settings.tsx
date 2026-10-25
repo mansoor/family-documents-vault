@@ -5,16 +5,16 @@ import { Link } from 'react-router';
 import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { LocalAiCard } from './local-ai-settings.js';
-import { Check, LoadFailed, TopBar } from './ui.js';
+import { Check, LoadFailed } from './ui.js';
 
 /**
- * Settings → For owners → Reading (0.9.0, R2): the vault's reading model,
- * on or off — an owner's. The model is a small text classifier that runs
+ * Settings → Server and reading → Reading and the check, its first part
+ * (0.9.0, R2): the vault's reading model, on or off — an owner's. The model is a small text classifier that runs
  * on this server beside the rules and suggests a kind where the rules find
  * none; it never makes a card Ready on its own. Off, the rules read alone,
  * so the owner can run the Reading check both ways and compare.
  */
-export function ReadingSettingsScreen() {
+export function ReadingModelPart() {
   const { authVersion, guarded } = useApp();
   const { data, error, setData, reload } = useLoad((t) => api.readingSettings(t), [authVersion]);
   const [busy, setBusy] = useState(false);
@@ -51,16 +51,15 @@ export function ReadingSettingsScreen() {
   };
 
   return (
-    <main className="page page-top">
-      <TopBar title="Reading" back="/settings/owners" backLabel="Back to For owners" />
+    <>
       <p className="lede">
         How the vault reads the papers you add many at a time, from the scanner folder and from
         email.
       </p>
       <section className="card stack" aria-labelledby="reading-model-h">
-        <h2 id="reading-model-h" style={{ fontSize: 18 }}>
+        <h3 id="reading-model-h" style={{ fontSize: 18 }}>
           The vault’s reading model
-        </h2>
+        </h3>
         {data === null && error ? (
           <LoadFailed message={error} what="the reading settings" onRetry={() => void reload()} />
         ) : data === null ? (
@@ -109,6 +108,6 @@ export function ReadingSettingsScreen() {
       </section>
       {/* The local AI (0.9.0, R4): set up by the operator, an owner's switch. */}
       <LocalAiCard />
-    </main>
+    </>
   );
 }

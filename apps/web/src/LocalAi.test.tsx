@@ -13,8 +13,8 @@ import { App } from './App.js';
 import { AISHA, fresh, installFakeApi, ME, signedIn, type FakeState } from './test-api.js';
 
 /**
- * The local AI (0.9.0, R4), on the web: Settings → For owners → Reading
- * says whether the server has one set up — its model and host, never set
+ * The local AI (0.9.0, R4), on the web: Settings → Server and reading →
+ * Reading and the check says whether the server has one set up — its model and host, never set
  * here — and turns it on or off for the household, an owner's, off unless
  * turned on; Test asks the worker. And on a card, a detail it suggested is
  * marked "suggested by the local AI", unsure, with the card at Check.
@@ -164,9 +164,9 @@ describe('Settings → Reading: the local AI (R4)', () => {
     expect(screen.queryByText(/Read by the household’s local AI/)).toBeNull();
   });
 
-  it('For owners lists it', async () => {
-    at('/settings/owners', { localAi: { local_ai: false, local_ai_server: SET_UP } });
-    const link = await screen.findByRole('link', { name: /Reading.*local AI, on or off/ });
+  it('Server and reading lists it', async () => {
+    at('/settings', { localAi: { local_ai: false, local_ai_server: SET_UP } });
+    const link = await screen.findByRole('link', { name: /^Reading and the check.*local AI/ });
     expect(link).toHaveAttribute('href', '/settings/reading');
   });
 });

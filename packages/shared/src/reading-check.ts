@@ -13,7 +13,7 @@ import {
  * The Reading check (0.9.0, R0): the vault's current reader measured on a
  * family's own papers, without a word of them leaving the vault.
  *
- * An owner asks for it in Settings → For owners. The worker re-reads, at a
+ * An owner asks for it in Settings → Server and reading. The worker re-reads, at a
  * low priority, the last N documents filed through review — a batch's item
  * or an Inbox file somebody accepted, so a person confirmed its details —
  * that the owner can see out of the Trash: never somebody else's Only me.
