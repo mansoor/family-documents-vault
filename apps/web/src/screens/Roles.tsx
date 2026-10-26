@@ -12,7 +12,7 @@ import { flushSync } from 'react-dom';
 import { api, type Member, type OwnerChange, type RoleChangeResult } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { Button, ErrorNote, Pills, useSheetFocus } from '../ui.js';
+import { Button, ErrorNote, Pills, OnTop, useSheetFocus } from '../ui.js';
 
 /**
  * Changing what somebody is allowed to do (SHR-09, SHR-10).
@@ -286,57 +286,59 @@ function RoleDialog(props: {
   };
 
   return (
-    <div className="scrim" role="presentation">
-      <section
-        ref={box}
-        className="card stack sheet"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="role-h"
-        aria-busy={busy}
-      >
-        <h2 id="role-h" ref={heading} tabIndex={-1} style={{ fontSize: 20 }}>
-          Change what {name} can do
-        </h2>
-        <Pills
-          label="Role"
-          value={role}
-          options={ROLES.map((r) => ({ value: r, label: roleLabel(r) }))}
-          onChange={setRole}
-        />
-        <p className="muted">{roleDescription(role)}</p>
-        {lines.length > 0 && (
-          <ul className="lock-effects" aria-label="What changing it does">
-            {lines.map((l) => (
-              <li key={l}>{l}</li>
-            ))}
-          </ul>
-        )}
-        <ErrorNote message={error} />
-        <div className="row">
-          {/* aria-disabled, not disabled: a disabled button drops the focus
-              it holds, and "confirm it is you" gives it back here. */}
-          <button
-            type="button"
-            className="btn btn-primary"
-            aria-disabled={blocked}
-            onClick={() => void change()}
-          >
-            {busy ? 'Saving…' : waits ? 'Ask for the change' : 'Change role'}
-          </button>
-          <button
-            type="button"
-            className="btn btn-quiet"
-            aria-disabled={busy}
-            onClick={() => {
-              if (!busy) props.onCancel();
-            }}
-          >
-            Cancel
-          </button>
-        </div>
-      </section>
-    </div>
+    <OnTop>
+      <div className="scrim" role="presentation">
+        <section
+          ref={box}
+          className="card stack sheet"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="role-h"
+          aria-busy={busy}
+        >
+          <h2 id="role-h" ref={heading} tabIndex={-1} style={{ fontSize: 20 }}>
+            Change what {name} can do
+          </h2>
+          <Pills
+            label="Role"
+            value={role}
+            options={ROLES.map((r) => ({ value: r, label: roleLabel(r) }))}
+            onChange={setRole}
+          />
+          <p className="muted">{roleDescription(role)}</p>
+          {lines.length > 0 && (
+            <ul className="lock-effects" aria-label="What changing it does">
+              {lines.map((l) => (
+                <li key={l}>{l}</li>
+              ))}
+            </ul>
+          )}
+          <ErrorNote message={error} />
+          <div className="row">
+            {/* aria-disabled, not disabled: a disabled button drops the focus
+                it holds, and "confirm it is you" gives it back here. */}
+            <button
+              type="button"
+              className="btn btn-primary"
+              aria-disabled={blocked}
+              onClick={() => void change()}
+            >
+              {busy ? 'Saving…' : waits ? 'Ask for the change' : 'Change role'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-quiet"
+              aria-disabled={busy}
+              onClick={() => {
+                if (!busy) props.onCancel();
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </section>
+      </div>
+    </OnTop>
   );
 }
 

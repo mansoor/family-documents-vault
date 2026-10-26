@@ -6,6 +6,10 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A row's ⋯ menu is no longer hidden under the Documents table's header (0.9.0).** On a row near the bottom of the table, the menu opens upwards, and the table's header row was drawn over part of it, hiding items such as **Who can see it**. The menu is now always drawn on top of the table, its header and its pinned columns. So is every panel and question it opens, such as **Who can see it**, **Add to a collection** and **Move to the Trash?**, together with the shading behind them.
+
 ## [0.9.0-dev.18] - 2026-10-25 — Settings in three groups, at full width
 
 ### Changed

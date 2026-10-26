@@ -20,7 +20,15 @@ import { VisibilityControl } from './screens/Visibility.js';
 import { focusHeading } from './focus-on-move.js';
 import { storedRole } from './session.js';
 import { OutcomeNote } from './table-grid.js';
-import { ErrorNote, MoveToTrashDialog, Sheet, TrashIcon, useSheetFocus } from './ui.js';
+import {
+  ErrorNote,
+  MoveToTrashDialog,
+  Sheet,
+  TrashIcon,
+  landmarkOf,
+  OnTop,
+  useSheetFocus,
+} from './ui.js';
 import { createUploadKeys, whileInProgress } from './upload-keys.js';
 import { NeededAgainQuestion } from './no-longer-needed.js';
 
@@ -219,7 +227,12 @@ export function DocActions(props: {
   const more = useRef<HTMLButtonElement>(null);
   const file = useRef<HTMLInputElement>(null);
   const menuId = useId();
-  const [menu, setMenu] = useState<{ start: 'first' | 'last'; at: CSSProperties } | null>(null);
+  const [menu, setMenu] = useState<{
+    start: 'first' | 'last';
+    at: CSSProperties;
+    /** Where it is drawn: the end of the ⋯'s landmark, out of the row's sticky cell. */
+    into: Element;
+  } | null>(null);
   const [fetched, setFetched] = useState<{ doc: DocumentView | null; error: string | null }>({
     doc: null,
     error: null,
@@ -279,7 +292,7 @@ export function DocActions(props: {
   const openMenu = (start: 'first' | 'last') => {
     setNote(null);
     setError(null);
-    setMenu({ start, at: beside(more.current) });
+    setMenu({ start, at: beside(more.current), into: landmarkOf(more.current) });
     if (props.doc) return;
     // A search hit has no version or ETag: what may be done with it is
     // decided on the document itself, as it is now.
@@ -503,6 +516,7 @@ export function DocActions(props: {
           }))}
           start={menu.start}
           at={menu.at}
+          into={menu.into}
           waiting={!doc && !fetched.error}
           error={props.doc ? null : fetched.error}
           returnFocus={more}
@@ -638,6 +652,7 @@ function ActionMenu(props: {
   items: Array<{ action: DocAction; label: string; waiting: boolean }>;
   start: 'first' | 'last';
   at: CSSProperties;
+  into: Element;
   /** A search hit's document is still on its way. */
   waiting: boolean;
   error: string | null;
@@ -667,41 +682,43 @@ function ActionMenu(props: {
   };
 
   return (
-    <div
-      className="menu-layer"
-      role="presentation"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) props.onClose();
-      }}
-    >
-      <div ref={box} className="menu-box" style={props.at}>
-        <p className="menu-title">{props.title}</p>
-        <div id={props.id} role="menu" aria-label={props.label} onKeyDown={move}>
-          {props.items.map((item, i) => (
-            <button
-              key={item.action}
-              ref={i === startAt ? start : undefined}
-              type="button"
-              role="menuitem"
-              className={`menu-item${item.action === 'trash' ? ' menu-item-danger' : ''}`}
-              aria-disabled={item.waiting || undefined}
-              onClick={() => {
-                if (!item.waiting) props.onChoose(item.action);
-              }}
-            >
-              {item.action === 'trash' && <TrashIcon />}
-              {item.label}
-            </button>
-          ))}
+    <OnTop into={props.into}>
+      <div
+        className="menu-layer"
+        role="presentation"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) props.onClose();
+        }}
+      >
+        <div ref={box} className="menu-box" style={props.at}>
+          <p className="menu-title">{props.title}</p>
+          <div id={props.id} role="menu" aria-label={props.label} onKeyDown={move}>
+            {props.items.map((item, i) => (
+              <button
+                key={item.action}
+                ref={i === startAt ? start : undefined}
+                type="button"
+                role="menuitem"
+                className={`menu-item${item.action === 'trash' ? ' menu-item-danger' : ''}`}
+                aria-disabled={item.waiting || undefined}
+                onClick={() => {
+                  if (!item.waiting) props.onChoose(item.action);
+                }}
+              >
+                {item.action === 'trash' && <TrashIcon />}
+                {item.label}
+              </button>
+            ))}
+          </div>
+          {props.waiting && (
+            <p className="muted menu-wait" role="status">
+              Seeing what you can do with it…
+            </p>
+          )}
+          <ErrorNote message={props.error} />
         </div>
-        {props.waiting && (
-          <p className="muted menu-wait" role="status">
-            Seeing what you can do with it…
-          </p>
-        )}
-        <ErrorNote message={props.error} />
       </div>
-    </div>
+    </OnTop>
   );
 }
 
