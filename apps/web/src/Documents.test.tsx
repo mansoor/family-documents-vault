@@ -1578,6 +1578,11 @@ describe('the Documents table, from 768 px (R2)', () => {
     more.focus();
     fireEvent.click(more);
     const menu = await screen.findByRole('menu', { name: 'Actions for “House deed”' });
+    // Drawn out of its sticky cell, which kept it under the table's sticky
+    // header (0.9.0, the owner's screenshot): at the end of the page's main
+    // landmark, with nothing of the table around it.
+    expect(menu.closest('td, tr, table, .tbl-wrap')).toBeNull();
+    expect(menu.closest('main')).not.toBeNull();
     const items = within(menu)
       .getAllByRole('menuitem')
       .map((i) => i.textContent);

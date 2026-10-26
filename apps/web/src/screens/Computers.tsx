@@ -8,7 +8,7 @@ import {
 import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { Button, ConfirmDialog, ErrorNote, LoadFailed, useSheetFocus } from '../ui.js';
+import { Button, ConfirmDialog, ErrorNote, LoadFailed, OnTop, useSheetFocus } from '../ui.js';
 import { SettingsPage } from './Settings.js';
 import { dayWordsOf, familyZoneNow } from '../family-time.js';
 
@@ -298,85 +298,87 @@ function PairingDialog(props: {
   // anything (pairing-address.ts).
   const code = showPairingCodeFor(props.pairing.code, address);
   return (
-    <div className="scrim" role="presentation">
-      <section
-        ref={box}
-        className="card stack sheet pairing-sheet"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="pairing-h"
-      >
-        <h2 id="pairing-h" ref={heading} tabIndex={-1} style={{ fontSize: 20 }}>
-          Add a computer
-        </h2>
-        {paired ? (
-          <p className="status status-ok" role="status">
-            {`“${paired.name}” is paired. What it sends arrives in your uploads, a batch a day.`}
-          </p>
-        ) : (
-          <>
-            <ol className="pairing-steps">
-              <li>
-                {props.pairing.download_url ? (
-                  <>
-                    On the computer,{' '}
-                    <a href={props.pairing.download_url} target="_blank" rel="noreferrer">
-                      download the Family Documents Vault uploader
-                    </a>{' '}
-                    and open it.
-                  </>
-                ) : (
-                  <>Ask whoever runs your vault for the Family Documents Vault uploader.</>
-                )}
-              </li>
-              <li>
-                Type this address into it:
-                <code className="pairing-address">{address}</code>
-              </li>
-              <li>
-                Then this code:
-                <span ref={codeBox} tabIndex={-1} className="pairing-code-box">
-                  {/* Read a character at a time; the large code itself is for the eye. */}
-                  <span className="visually-hidden">
-                    {`Code: ${code.replace(/-/g, '').split('').join(' ')}`}
+    <OnTop>
+      <div className="scrim" role="presentation">
+        <section
+          ref={box}
+          className="card stack sheet pairing-sheet"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="pairing-h"
+        >
+          <h2 id="pairing-h" ref={heading} tabIndex={-1} style={{ fontSize: 20 }}>
+            Add a computer
+          </h2>
+          {paired ? (
+            <p className="status status-ok" role="status">
+              {`“${paired.name}” is paired. What it sends arrives in your uploads, a batch a day.`}
+            </p>
+          ) : (
+            <>
+              <ol className="pairing-steps">
+                <li>
+                  {props.pairing.download_url ? (
+                    <>
+                      On the computer,{' '}
+                      <a href={props.pairing.download_url} target="_blank" rel="noreferrer">
+                        download the Family Documents Vault uploader
+                      </a>{' '}
+                      and open it.
+                    </>
+                  ) : (
+                    <>Ask whoever runs your vault for the Family Documents Vault uploader.</>
+                  )}
+                </li>
+                <li>
+                  Type this address into it:
+                  <code className="pairing-address">{address}</code>
+                </li>
+                <li>
+                  Then this code:
+                  <span ref={codeBox} tabIndex={-1} className="pairing-code-box">
+                    {/* Read a character at a time; the large code itself is for the eye. */}
+                    <span className="visually-hidden">
+                      {`Code: ${code.replace(/-/g, '').split('').join(' ')}`}
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className={ran ? 'pairing-code pairing-code-ran' : 'pairing-code'}
+                    >
+                      {code}
+                    </span>
                   </span>
-                  <span
-                    aria-hidden="true"
-                    className={ran ? 'pairing-code pairing-code-ran' : 'pairing-code'}
-                  >
-                    {code}
-                  </span>
-                </span>
-              </li>
-            </ol>
-            {ran ? (
-              <p className="status status-warn" role="alert">
-                This code has run out. Make a new one.
-              </p>
-            ) : (
-              <p className="muted pairing-left">
-                Works once, for <span className="pairing-time">{left(ends - now)}</span> more. It is
-                shown only here: once you close this, it cannot be seen again.
-              </p>
-            )}
-          </>
-        )}
-        <div className="row">
-          {ran && !paired && (
-            <Button
-              onClick={() => {
-                renewing.current = true;
-                props.onNew();
-              }}
-            >
-              Make a new code
-            </Button>
+                </li>
+              </ol>
+              {ran ? (
+                <p className="status status-warn" role="alert">
+                  This code has run out. Make a new one.
+                </p>
+              ) : (
+                <p className="muted pairing-left">
+                  Works once, for <span className="pairing-time">{left(ends - now)}</span> more. It
+                  is shown only here: once you close this, it cannot be seen again.
+                </p>
+              )}
+            </>
           )}
-          <Button kind={ran || paired ? 'quiet' : 'primary'} onClick={props.onClose}>
-            {paired ? 'Done' : 'Close'}
-          </Button>
-        </div>
-      </section>
-    </div>
+          <div className="row">
+            {ran && !paired && (
+              <Button
+                onClick={() => {
+                  renewing.current = true;
+                  props.onNew();
+                }}
+              >
+                Make a new code
+              </Button>
+            )}
+            <Button kind={ran || paired ? 'quiet' : 'primary'} onClick={props.onClose}>
+              {paired ? 'Done' : 'Close'}
+            </Button>
+          </div>
+        </section>
+      </div>
+    </OnTop>
   );
 }

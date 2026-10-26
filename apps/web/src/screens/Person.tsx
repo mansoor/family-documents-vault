@@ -61,6 +61,7 @@ import {
   Switch,
   TextArea,
   TopBar,
+  OnTop,
   useSheetFocus,
 } from '../ui.js';
 import { DocRow } from './Home.js';
@@ -1134,138 +1135,144 @@ function ResetDialog(props: {
 
   const toldOwners = props.otherOwners ? ' The other owners are told.' : '';
   return (
-    <div className="scrim" role="presentation">
-      <section
-        ref={box}
-        className="card stack sheet"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={shown ? 'reset-shown-h' : 'reset-h'}
-        aria-busy={busy}
-      >
-        {shown ? (
-          <>
-            <h2 id="reset-shown-h" ref={shownHeading} tabIndex={-1} style={{ fontSize: 20 }}>
-              {shown.link ? `The link for ${name}` : 'Ask whoever runs the vault'}
-            </h2>
-            {shown.link ? (
-              <>
-                <p className="status status-warn" role="alert">
-                  {`Shown once: this link is not kept anywhere you can see it again. Copy it now, and give it to ${name} yourself — in person, or in a message only they read.`}
-                </p>
-                <code className="reset-secret">{shown.link}</code>
-                <p className="muted">
-                  {`Whoever has it can set ${name}’s password, once, until ${dateTimeWords(
-                    shown.expires_at as string,
-                    familyZoneNow(),
-                    { date: null },
-                  )}. It stops working if ${name} starts keeping something only they can see first. ${name} is told the next time they sign in.`}
-                </p>
-                <Button kind="quiet" onClick={() => copy(shown.link as string)}>
-                  {copied ? 'Copied' : 'Copy the link'}
-                </Button>
-              </>
-            ) : (
-              <>
-                <p>{`Ask whoever runs your vault’s server to run this, and to give ${name} the link it prints:`}</p>
-                <code className="reset-secret">{shown.command ?? command}</code>
-                <Button kind="quiet" onClick={() => copy(shown.command ?? command)}>
-                  {copied ? 'Copied' : 'Copy the command'}
-                </Button>
-              </>
-            )}
-            <div className="row">
-              <button type="button" className="btn btn-primary" onClick={() => props.onDone(shown)}>
-                Done
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <h2 id="reset-h" ref={heading} tabIndex={-1} style={{ fontSize: 20 }}>
-              Reset {name}’s password
-            </h2>
-            {props.path === 'mail' && (
-              <p>{`Whoever runs your vault gave it a mail server of its own, so a link to set a new password goes to ${props.email}, the address ${name} signs in with. No owner sees it.`}</p>
-            )}
-            {props.path === 'handover' && (
-              <p>{`Your vault has no mail server of its own, and ${name} keeps nothing only they can see, so you are given a link to hand to them.`}</p>
-            )}
-            {props.path === 'operator' && (
-              <>
-                <p>{`Your vault has no mail server of its own, and ${name} keeps something only they can see. A link in an owner’s hands could open it, so no owner can reset ${name}’s password. Ask whoever runs your vault’s server to run:`}</p>
-                <code className="reset-secret">{command}</code>
-              </>
-            )}
-            <ul className="lock-effects" aria-label="What a reset does">
-              {props.path === 'handover' && (
-                <li>{`It is shown to you once, works once, for an hour, and stops working if ${name} starts keeping something only they can see first.`}</li>
+    <OnTop>
+      <div className="scrim" role="presentation">
+        <section
+          ref={box}
+          className="card stack sheet"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={shown ? 'reset-shown-h' : 'reset-h'}
+          aria-busy={busy}
+        >
+          {shown ? (
+            <>
+              <h2 id="reset-shown-h" ref={shownHeading} tabIndex={-1} style={{ fontSize: 20 }}>
+                {shown.link ? `The link for ${name}` : 'Ask whoever runs the vault'}
+              </h2>
+              {shown.link ? (
+                <>
+                  <p className="status status-warn" role="alert">
+                    {`Shown once: this link is not kept anywhere you can see it again. Copy it now, and give it to ${name} yourself — in person, or in a message only they read.`}
+                  </p>
+                  <code className="reset-secret">{shown.link}</code>
+                  <p className="muted">
+                    {`Whoever has it can set ${name}’s password, once, until ${dateTimeWords(
+                      shown.expires_at as string,
+                      familyZoneNow(),
+                      { date: null },
+                    )}. It stops working if ${name} starts keeping something only they can see first. ${name} is told the next time they sign in.`}
+                  </p>
+                  <Button kind="quiet" onClick={() => copy(shown.link as string)}>
+                    {copied ? 'Copied' : 'Copy the link'}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <p>{`Ask whoever runs your vault’s server to run this, and to give ${name} the link it prints:`}</p>
+                  <code className="reset-secret">{shown.command ?? command}</code>
+                  <Button kind="quiet" onClick={() => copy(shown.command ?? command)}>
+                    {copied ? 'Copied' : 'Copy the command'}
+                  </Button>
+                </>
               )}
-              {props.path === 'mail' && <li>It works once, for an hour.</li>}
-              {props.path === 'operator' && (
-                <li>{`Their link works once, for an hour. Starting the reset here puts it in the activity log.${toldOwners}`}</li>
-              )}
-              <li>{`When it is used, ${name} is signed out everywhere, their passkeys are removed, two-step sign-in is still asked for, and any exports they made stop working.`}</li>
+              <div className="row">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => props.onDone(shown)}
+                >
+                  Done
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <h2 id="reset-h" ref={heading} tabIndex={-1} style={{ fontSize: 20 }}>
+                Reset {name}’s password
+              </h2>
               {props.path === 'mail' && (
-                <li>
-                  {stopNow
-                    ? `${name}’s password stops working now.${toldOwners}`
-                    : `Until then, ${name}’s password still works.${toldOwners}`}
-                </li>
+                <p>{`Whoever runs your vault gave it a mail server of its own, so a link to set a new password goes to ${props.email}, the address ${name} signs in with. No owner sees it.`}</p>
               )}
               {props.path === 'handover' && (
-                <li>{`${name} is told the next time they sign in.${toldOwners}`}</li>
+                <p>{`Your vault has no mail server of its own, and ${name} keeps nothing only they can see, so you are given a link to hand to them.`}</p>
               )}
-            </ul>
-            {/* Only where a link can reach them (the 5.29 review): on the
-                operator's way a stopped password would be a lock with none
-                of a lock's record or safeguards. A passkey of theirs still
-                signs them in until the link is used. */}
-            {props.path !== 'operator' && (
-              <Check
-                id="reset-stop-now"
-                checked={stopNow}
-                onChange={setStopNow}
-                label="Stop their current password now"
-                note={
-                  props.passkeys > 0
-                    ? `${name}’s password stops working and every device is signed out now, but a passkey of theirs still signs them in until the link is used. Lock their sign-in to keep them out.`
-                    : `${name} is signed out everywhere at once, and can’t sign in again until they set a new password through the link.`
-                }
-              />
-            )}
-            <ErrorNote message={error} />
-            <div className="row">
-              {/* aria-disabled, not disabled: "confirm it is you" gives focus back to it. */}
-              <button
-                type="button"
-                className="btn btn-primary"
-                aria-disabled={busy}
-                onClick={() => void start()}
-              >
-                {busy
-                  ? 'Working…'
-                  : props.path === 'mail'
-                    ? 'Send the link'
-                    : props.path === 'handover'
-                      ? 'Make the link'
-                      : 'Start the reset'}
-              </button>
-              <button
-                type="button"
-                className="btn btn-quiet"
-                aria-disabled={busy}
-                onClick={() => {
-                  if (!busy) props.onCancel();
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </>
-        )}
-      </section>
-    </div>
+              {props.path === 'operator' && (
+                <>
+                  <p>{`Your vault has no mail server of its own, and ${name} keeps something only they can see. A link in an owner’s hands could open it, so no owner can reset ${name}’s password. Ask whoever runs your vault’s server to run:`}</p>
+                  <code className="reset-secret">{command}</code>
+                </>
+              )}
+              <ul className="lock-effects" aria-label="What a reset does">
+                {props.path === 'handover' && (
+                  <li>{`It is shown to you once, works once, for an hour, and stops working if ${name} starts keeping something only they can see first.`}</li>
+                )}
+                {props.path === 'mail' && <li>It works once, for an hour.</li>}
+                {props.path === 'operator' && (
+                  <li>{`Their link works once, for an hour. Starting the reset here puts it in the activity log.${toldOwners}`}</li>
+                )}
+                <li>{`When it is used, ${name} is signed out everywhere, their passkeys are removed, two-step sign-in is still asked for, and any exports they made stop working.`}</li>
+                {props.path === 'mail' && (
+                  <li>
+                    {stopNow
+                      ? `${name}’s password stops working now.${toldOwners}`
+                      : `Until then, ${name}’s password still works.${toldOwners}`}
+                  </li>
+                )}
+                {props.path === 'handover' && (
+                  <li>{`${name} is told the next time they sign in.${toldOwners}`}</li>
+                )}
+              </ul>
+              {/* Only where a link can reach them (the 5.29 review): on the
+                  operator's way a stopped password would be a lock with none
+                  of a lock's record or safeguards. A passkey of theirs still
+                  signs them in until the link is used. */}
+              {props.path !== 'operator' && (
+                <Check
+                  id="reset-stop-now"
+                  checked={stopNow}
+                  onChange={setStopNow}
+                  label="Stop their current password now"
+                  note={
+                    props.passkeys > 0
+                      ? `${name}’s password stops working and every device is signed out now, but a passkey of theirs still signs them in until the link is used. Lock their sign-in to keep them out.`
+                      : `${name} is signed out everywhere at once, and can’t sign in again until they set a new password through the link.`
+                  }
+                />
+              )}
+              <ErrorNote message={error} />
+              <div className="row">
+                {/* aria-disabled, not disabled: "confirm it is you" gives focus back to it. */}
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  aria-disabled={busy}
+                  onClick={() => void start()}
+                >
+                  {busy
+                    ? 'Working…'
+                    : props.path === 'mail'
+                      ? 'Send the link'
+                      : props.path === 'handover'
+                        ? 'Make the link'
+                        : 'Start the reset'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-quiet"
+                  aria-disabled={busy}
+                  onClick={() => {
+                    if (!busy) props.onCancel();
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
+        </section>
+      </div>
+    </OnTop>
   );
 }
 
@@ -1371,156 +1378,160 @@ function LockDialog(props: {
   };
 
   return (
-    <div className="scrim" role="presentation">
-      <section
-        ref={box}
-        className="card stack sheet"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="lock-h"
-        aria-busy={busy}
-      >
-        <h2 id="lock-h" ref={heading} tabIndex={-1} style={{ fontSize: 20 }}>
-          Lock {name}’s sign-in
-        </h2>
-        <ul className="lock-effects" aria-label="What locking does">
-          {props.replacesPause && (
-            <li>{`The lock takes the place of the pause after the restore: once it is unlocked, ${name} can sign in again.`}</li>
-          )}
-          <li>
-            {endsWords
-              ? `${name} can’t sign in until ${endsWords}, unless an owner unlocks it sooner.`
-              : `${name} can’t sign in until an owner unlocks it.`}
-          </li>
-          <li>{`Every device ${name} is signed in on is signed out now.`}</li>
-          {props.offlineDays !== undefined && (
-            <li>{`A phone that never reconnects keeps its offline copies up to ${props.offlineDays} days.`}</li>
-          )}
-          <li>
-            {endLinks
-              ? `Any links and requests to send documents ${name} made end for good.`
-              : props.replacesPause
-                ? // The restore paused each of them for an owner to decide, as
-                  // well as the sign-in, and an unlock does not decide for
-                  // them (A55; the 5.28 second round).
-                  `Any links and requests to send documents ${name} made stay paused. Those an owner has turned back on after the restore work again when the lock ends; the others still wait in After a restore for an owner to turn each back on.`
-                : `Any links and requests to send documents ${name} made pause, and work again when the lock ends.`}
-          </li>
-          <li>{`Any invitations ${name} sent are cancelled, and any exports they made stop working.`}</li>
-          <li>{`Files sent for ${name} alone to look at go to the owners.`}</li>
-          <li>
-            {props.otherOwners
-              ? `${name} is emailed to say so, and the other owners are told.`
-              : `${name} is emailed to say so.`}
-          </li>
-        </ul>
+    <OnTop>
+      <div className="scrim" role="presentation">
+        <section
+          ref={box}
+          className="card stack sheet"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="lock-h"
+          aria-busy={busy}
+        >
+          <h2 id="lock-h" ref={heading} tabIndex={-1} style={{ fontSize: 20 }}>
+            Lock {name}’s sign-in
+          </h2>
+          <ul className="lock-effects" aria-label="What locking does">
+            {props.replacesPause && (
+              <li>{`The lock takes the place of the pause after the restore: once it is unlocked, ${name} can sign in again.`}</li>
+            )}
+            <li>
+              {endsWords
+                ? `${name} can’t sign in until ${endsWords}, unless an owner unlocks it sooner.`
+                : `${name} can’t sign in until an owner unlocks it.`}
+            </li>
+            <li>{`Every device ${name} is signed in on is signed out now.`}</li>
+            {props.offlineDays !== undefined && (
+              <li>{`A phone that never reconnects keeps its offline copies up to ${props.offlineDays} days.`}</li>
+            )}
+            <li>
+              {endLinks
+                ? `Any links and requests to send documents ${name} made end for good.`
+                : props.replacesPause
+                  ? // The restore paused each of them for an owner to decide, as
+                    // well as the sign-in, and an unlock does not decide for
+                    // them (A55; the 5.28 second round).
+                    `Any links and requests to send documents ${name} made stay paused. Those an owner has turned back on after the restore work again when the lock ends; the others still wait in After a restore for an owner to turn each back on.`
+                  : `Any links and requests to send documents ${name} made pause, and work again when the lock ends.`}
+            </li>
+            <li>{`Any invitations ${name} sent are cancelled, and any exports they made stop working.`}</li>
+            <li>{`Files sent for ${name} alone to look at go to the owners.`}</li>
+            <li>
+              {props.otherOwners
+                ? `${name} is emailed to say so, and the other owners are told.`
+                : `${name} is emailed to say so.`}
+            </li>
+          </ul>
 
-        <div className="field" role="group" aria-labelledby="lock-end-h">
-          <span id="lock-end-h" className="field-label">
-            How long
-          </span>
-          <div className="pills">
-            {(
-              [
-                ['unlocked', 'Until I unlock it'],
-                ['dated', 'Until a date'],
-              ] as const
-            ).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                className={`pill${ends === value ? ' pill-on' : ''}`}
-                aria-pressed={ends === value}
-                onClick={() => setEnds(value)}
-              >
-                {label}
-              </button>
-            ))}
+          <div className="field" role="group" aria-labelledby="lock-end-h">
+            <span id="lock-end-h" className="field-label">
+              How long
+            </span>
+            <div className="pills">
+              {(
+                [
+                  ['unlocked', 'Until I unlock it'],
+                  ['dated', 'Until a date'],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`pill${ends === value ? ' pill-on' : ''}`}
+                  aria-pressed={ends === value}
+                  onClick={() => setEnds(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {ends === 'dated' && (
+              <>
+                <div className="share-when">
+                  <label className="field" htmlFor="lock-date">
+                    <span>Date</span>
+                    <input
+                      id="lock-date"
+                      type="date"
+                      value={when.date}
+                      min={today}
+                      max={latest}
+                      onChange={(e) => setWhen({ date: e.target.value, time: when.time })}
+                      aria-describedby="lock-end-note"
+                    />
+                  </label>
+                  <label className="field" htmlFor="lock-time">
+                    <span>Time</span>
+                    <input
+                      id="lock-time"
+                      type="time"
+                      value={when.time}
+                      step={300}
+                      onChange={(e) => setWhen({ date: when.date, time: e.target.value })}
+                      aria-describedby="lock-end-note"
+                    />
+                  </label>
+                </div>
+                <span
+                  id="lock-end-note"
+                  className={problem ? 'field-error' : 'muted'}
+                  role={problem ? 'alert' : undefined}
+                >
+                  {problem ?? `Unlocks by itself on ${endsWords ?? ''}.`}
+                </span>
+              </>
+            )}
           </div>
-          {ends === 'dated' && (
-            <>
-              <div className="share-when">
-                <label className="field" htmlFor="lock-date">
-                  <span>Date</span>
-                  <input
-                    id="lock-date"
-                    type="date"
-                    value={when.date}
-                    min={today}
-                    max={latest}
-                    onChange={(e) => setWhen({ date: e.target.value, time: when.time })}
-                    aria-describedby="lock-end-note"
-                  />
-                </label>
-                <label className="field" htmlFor="lock-time">
-                  <span>Time</span>
-                  <input
-                    id="lock-time"
-                    type="time"
-                    value={when.time}
-                    step={300}
-                    onChange={(e) => setWhen({ date: when.date, time: e.target.value })}
-                    aria-describedby="lock-end-note"
-                  />
-                </label>
-              </div>
-              <span
-                id="lock-end-note"
-                className={problem ? 'field-error' : 'muted'}
-                role={problem ? 'alert' : undefined}
-              >
-                {problem ?? `Unlocks by itself on ${endsWords ?? ''}.`}
-              </span>
-            </>
-          )}
-        </div>
 
-        <Check
-          id="lock-end-links"
-          checked={endLinks}
-          onChange={setEndLinks}
-          label="End their links and requests for good"
-          note={
-            props.replacesPause
-              ? 'Otherwise they stay paused: those turned back on after the restore work again when the lock ends, and the others still wait in After a restore.'
-              : 'Otherwise they pause, and work again when the lock ends.'
-          }
-        />
-        <TextArea
-          id="lock-note"
-          label={props.otherOwners ? 'A note for the other owners (optional)' : 'A note (optional)'}
-          value={note}
-          maxLength={LOCK_NOTE_MAX}
-          onChange={setNote}
-          hint={`Owners see it on ${name}’s page. ${name} never does.`}
-        />
+          <Check
+            id="lock-end-links"
+            checked={endLinks}
+            onChange={setEndLinks}
+            label="End their links and requests for good"
+            note={
+              props.replacesPause
+                ? 'Otherwise they stay paused: those turned back on after the restore work again when the lock ends, and the others still wait in After a restore.'
+                : 'Otherwise they pause, and work again when the lock ends.'
+            }
+          />
+          <TextArea
+            id="lock-note"
+            label={
+              props.otherOwners ? 'A note for the other owners (optional)' : 'A note (optional)'
+            }
+            value={note}
+            maxLength={LOCK_NOTE_MAX}
+            onChange={setNote}
+            hint={`Owners see it on ${name}’s page. ${name} never does.`}
+          />
 
-        <ErrorNote message={error} />
-        <div className="row">
-          {/* aria-disabled, not disabled: a disabled button drops the focus
-              it holds, and "confirm it is you" gives it back here. */}
-          <button
-            type="button"
-            className="btn btn-danger btn-icon"
-            aria-disabled={busy || problem !== null}
-            onClick={() => void lock()}
-          >
-            <LockIcon />
-            {busy ? 'Locking…' : 'Lock sign-in'}
-          </button>
-          <button
-            type="button"
-            className="btn btn-quiet"
-            aria-disabled={busy}
-            onClick={() => {
-              if (!busy) props.onCancel();
-            }}
-          >
-            Cancel
-          </button>
-        </div>
-      </section>
-    </div>
+          <ErrorNote message={error} />
+          <div className="row">
+            {/* aria-disabled, not disabled: a disabled button drops the focus
+                it holds, and "confirm it is you" gives it back here. */}
+            <button
+              type="button"
+              className="btn btn-danger btn-icon"
+              aria-disabled={busy || problem !== null}
+              onClick={() => void lock()}
+            >
+              <LockIcon />
+              {busy ? 'Locking…' : 'Lock sign-in'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-quiet"
+              aria-disabled={busy}
+              onClick={() => {
+                if (!busy) props.onCancel();
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </section>
+      </div>
+    </OnTop>
   );
 }
 

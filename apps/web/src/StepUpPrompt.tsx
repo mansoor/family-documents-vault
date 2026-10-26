@@ -3,7 +3,7 @@ import { useRef, useState, type FormEvent } from 'react';
 import { api } from './api.js';
 import { useApp } from './app-context.js';
 import * as passkeys from './passkeys.js';
-import { Button, ErrorNote, Field, useSheetFocus } from './ui.js';
+import { Button, ErrorNote, Field, OnTop, useSheetFocus } from './ui.js';
 
 /**
  * "Confirm it is you" (SEC-17).
@@ -89,75 +89,77 @@ export function StepUpPrompt(props: {
   };
 
   return (
-    <div className="scrim" role="presentation">
-      <section
-        ref={box}
-        className="card stack sheet"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="stepup-h"
-      >
-        <h2 id="stepup-h" style={{ fontSize: 20 }}>
-          Just checking it is you
-        </h2>
-        <p className="muted">{props.message}</p>
-        {factorOnly && (
-          <p className="muted">
-            Use your passkey, or a code from your authenticator app. Your password isn’t enough for
-            this.
-          </p>
-        )}
-        {canUsePasskey && (
-          <Button disabled={busy} onClick={() => void withPasskey()}>
-            {busy ? 'Waiting for your device…' : 'Use your passkey'}
-          </Button>
-        )}
-        {factorOnly ? (
-          <form onSubmit={(e) => void withCode(e)} className="stack">
-            <Field
-              id="stepup-code"
-              label={
-                canUsePasskey
-                  ? 'Or a code from your authenticator app'
-                  : 'Code from your authenticator app'
-              }
-              value={code}
-              onChange={setCode}
-              autoComplete="one-time-code"
-              inputMode="numeric"
-            />
-            <ErrorNote message={error} />
-            <div className="row">
-              <Button type="submit" disabled={busy || code.replace(/\s+/g, '').length < 6}>
-                {busy ? 'Checking…' : 'Confirm'}
-              </Button>
-              <Button kind="quiet" onClick={() => props.onSettled(false)}>
-                Cancel
-              </Button>
-            </div>
-          </form>
-        ) : (
-          <form onSubmit={(e) => void withPassword(e)} className="stack">
-            <Field
-              id="stepup-password"
-              label="Or your password"
-              type="password"
-              value={password}
-              onChange={setPassword}
-              autoComplete="current-password"
-            />
-            <ErrorNote message={error} />
-            <div className="row">
-              <Button type="submit" disabled={busy || !password}>
-                {busy ? 'Checking…' : 'Confirm'}
-              </Button>
-              <Button kind="quiet" onClick={() => props.onSettled(false)}>
-                Cancel
-              </Button>
-            </div>
-          </form>
-        )}
-      </section>
-    </div>
+    <OnTop>
+      <div className="scrim" role="presentation">
+        <section
+          ref={box}
+          className="card stack sheet"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="stepup-h"
+        >
+          <h2 id="stepup-h" style={{ fontSize: 20 }}>
+            Just checking it is you
+          </h2>
+          <p className="muted">{props.message}</p>
+          {factorOnly && (
+            <p className="muted">
+              Use your passkey, or a code from your authenticator app. Your password isn’t enough
+              for this.
+            </p>
+          )}
+          {canUsePasskey && (
+            <Button disabled={busy} onClick={() => void withPasskey()}>
+              {busy ? 'Waiting for your device…' : 'Use your passkey'}
+            </Button>
+          )}
+          {factorOnly ? (
+            <form onSubmit={(e) => void withCode(e)} className="stack">
+              <Field
+                id="stepup-code"
+                label={
+                  canUsePasskey
+                    ? 'Or a code from your authenticator app'
+                    : 'Code from your authenticator app'
+                }
+                value={code}
+                onChange={setCode}
+                autoComplete="one-time-code"
+                inputMode="numeric"
+              />
+              <ErrorNote message={error} />
+              <div className="row">
+                <Button type="submit" disabled={busy || code.replace(/\s+/g, '').length < 6}>
+                  {busy ? 'Checking…' : 'Confirm'}
+                </Button>
+                <Button kind="quiet" onClick={() => props.onSettled(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          ) : (
+            <form onSubmit={(e) => void withPassword(e)} className="stack">
+              <Field
+                id="stepup-password"
+                label="Or your password"
+                type="password"
+                value={password}
+                onChange={setPassword}
+                autoComplete="current-password"
+              />
+              <ErrorNote message={error} />
+              <div className="row">
+                <Button type="submit" disabled={busy || !password}>
+                  {busy ? 'Checking…' : 'Confirm'}
+                </Button>
+                <Button kind="quiet" onClick={() => props.onSettled(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          )}
+        </section>
+      </div>
+    </OnTop>
   );
 }

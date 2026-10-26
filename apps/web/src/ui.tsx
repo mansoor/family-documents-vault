@@ -9,6 +9,7 @@ import {
   type Ref,
   type RefObject,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { NavLink, useLocation, useNavigate } from 'react-router';
 
 /** Small shared pieces, styled from the tokens in styles.css. */
@@ -559,6 +560,28 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(', ');
 
+/**
+ * Over the whole page: a sheet, an "are you sure?", a row's ⋯ menu. Drawn
+ * at the end of the page, never where it was opened. A row's ⋯ sits in a
+ * sticky cell, which keeps whatever is inside it under the table's sticky
+ * header and columns, however high its z-index. Every sheet goes at the
+ * end of the page, so the last one opened is the last in the page, and so
+ * the one on top (topSheet). A menu is not a dialog, so it goes at the end
+ * of the landmark it was opened from (`into`, landmarkOf), where a screen
+ * reader's list of landmarks still finds it.
+ */
+export function OnTop(props: { children: ReactNode; into?: Element }) {
+  return createPortal(props.children, props.into ?? document.body);
+}
+
+const LANDMARKS =
+  'main, header, nav, aside, footer, [role="main"], [role="banner"], [role="navigation"], [role="complementary"], [role="contentinfo"], [role="region"]';
+
+/** The landmark something is in (`main`, the bar on top…), or the page itself. */
+export function landmarkOf(el: Element | null): Element {
+  return el?.closest(LANDMARKS) ?? document.body;
+}
+
 /** The sheet on top of the page, if one is open: the last in the page is drawn over the rest. */
 function topSheet(): HTMLElement | null {
   const open = document.querySelectorAll<HTMLElement>('[aria-modal="true"]');
@@ -663,18 +686,20 @@ export function Sheet(props: {
     returnFocus: props.returnFocus,
   });
   return (
-    <div className="scrim" role="presentation">
-      <section
-        ref={box}
-        className={props.className ? `sheet ${props.className}` : 'sheet'}
-        role="dialog"
-        aria-modal="true"
-        aria-label={props.label}
-        aria-busy={props.busy}
-      >
-        {props.children}
-      </section>
-    </div>
+    <OnTop>
+      <div className="scrim" role="presentation">
+        <section
+          ref={box}
+          className={props.className ? `sheet ${props.className}` : 'sheet'}
+          role="dialog"
+          aria-modal="true"
+          aria-label={props.label}
+          aria-busy={props.busy}
+        >
+          {props.children}
+        </section>
+      </div>
+    </OnTop>
   );
 }
 
@@ -709,50 +734,52 @@ export function ConfirmDialog(props: {
   });
   const busy = Boolean(props.busy);
   return (
-    <div className="scrim" role="presentation">
-      <section
-        ref={box}
-        className="card stack sheet"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="confirm-h"
-        aria-describedby="confirm-body"
-        aria-busy={busy}
-      >
-        <h2 id="confirm-h" style={{ fontSize: 20 }}>
-          {props.title}
-        </h2>
-        <div id="confirm-body" className="muted">
-          {props.children}
-        </div>
-        <div className="row">
-          {/* aria-disabled, not disabled: a disabled button drops the focus
-              it holds, and the trap above with it. */}
-          <button
-            type="button"
-            className={`btn ${props.danger ? 'btn-danger' : 'btn-primary'} btn-icon`}
-            aria-disabled={busy}
-            onClick={() => {
-              if (!busy) props.onConfirm();
-            }}
-          >
-            {props.icon}
-            {busy && props.busyLabel ? props.busyLabel : props.confirmLabel}
-          </button>
-          <button
-            ref={cancel}
-            type="button"
-            className="btn btn-quiet"
-            aria-disabled={busy}
-            onClick={() => {
-              if (!busy) props.onCancel();
-            }}
-          >
-            Cancel
-          </button>
-        </div>
-      </section>
-    </div>
+    <OnTop>
+      <div className="scrim" role="presentation">
+        <section
+          ref={box}
+          className="card stack sheet"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="confirm-h"
+          aria-describedby="confirm-body"
+          aria-busy={busy}
+        >
+          <h2 id="confirm-h" style={{ fontSize: 20 }}>
+            {props.title}
+          </h2>
+          <div id="confirm-body" className="muted">
+            {props.children}
+          </div>
+          <div className="row">
+            {/* aria-disabled, not disabled: a disabled button drops the focus
+                it holds, and the trap above with it. */}
+            <button
+              type="button"
+              className={`btn ${props.danger ? 'btn-danger' : 'btn-primary'} btn-icon`}
+              aria-disabled={busy}
+              onClick={() => {
+                if (!busy) props.onConfirm();
+              }}
+            >
+              {props.icon}
+              {busy && props.busyLabel ? props.busyLabel : props.confirmLabel}
+            </button>
+            <button
+              ref={cancel}
+              type="button"
+              className="btn btn-quiet"
+              aria-disabled={busy}
+              onClick={() => {
+                if (!busy) props.onCancel();
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </section>
+      </div>
+    </OnTop>
   );
 }
 

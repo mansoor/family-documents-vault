@@ -9,7 +9,7 @@ import { Link } from 'react-router';
 import { api } from './api.js';
 import { describeError, useApp } from './app-context.js';
 import { dayWordsOf, useFamilyZone } from './family-time.js';
-import { ErrorNote, Switch, useSheetFocus } from './ui.js';
+import { ErrorNote, Switch, OnTop, useSheetFocus } from './ui.js';
 
 /**
  * No longer needed (0.9.0; the owner's ask of 23 Oct 2026): a document kept
@@ -300,53 +300,55 @@ export function NoLongerNeededDialog(props: {
   };
 
   return (
-    <div className="scrim" role="presentation">
-      <section
-        ref={box}
-        className="card stack sheet nln-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={`${ids}-h`}
-        aria-describedby={`${ids}-what`}
-        aria-busy={busy}
-      >
-        <h2 id={`${ids}-h`} style={{ fontSize: 20 }}>
-          {was ? 'No longer needed' : 'Mark as no longer needed'}
-        </h2>
-        <p id={`${ids}-what`} className="muted">
-          “{named(props.doc.title)}” stays in the vault: found, shared and in its collections as
-          before. Nobody is reminded of it, and it leaves Needs attention.
-        </p>
-        <NoLongerNeededFields
-          ids={ids}
-          doc={props.doc}
-          draft={draft}
-          onChange={setDraft}
-          ref={why}
-        />
-        <ErrorNote message={error} />
-        <div className="row">
-          <button
-            type="button"
-            className="btn btn-primary"
-            aria-disabled={busy || undefined}
-            onClick={() => void save()}
-          >
-            {busy ? 'Saving…' : was ? 'Save' : 'Mark as no longer needed'}
-          </button>
-          <button
-            type="button"
-            className="btn btn-quiet"
-            aria-disabled={busy || undefined}
-            onClick={() => {
-              if (!busy) props.onCancel();
-            }}
-          >
-            Cancel
-          </button>
-        </div>
-      </section>
-    </div>
+    <OnTop>
+      <div className="scrim" role="presentation">
+        <section
+          ref={box}
+          className="card stack sheet nln-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={`${ids}-h`}
+          aria-describedby={`${ids}-what`}
+          aria-busy={busy}
+        >
+          <h2 id={`${ids}-h`} style={{ fontSize: 20 }}>
+            {was ? 'No longer needed' : 'Mark as no longer needed'}
+          </h2>
+          <p id={`${ids}-what`} className="muted">
+            “{named(props.doc.title)}” stays in the vault: found, shared and in its collections as
+            before. Nobody is reminded of it, and it leaves Needs attention.
+          </p>
+          <NoLongerNeededFields
+            ids={ids}
+            doc={props.doc}
+            draft={draft}
+            onChange={setDraft}
+            ref={why}
+          />
+          <ErrorNote message={error} />
+          <div className="row">
+            <button
+              type="button"
+              className="btn btn-primary"
+              aria-disabled={busy || undefined}
+              onClick={() => void save()}
+            >
+              {busy ? 'Saving…' : was ? 'Save' : 'Mark as no longer needed'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-quiet"
+              aria-disabled={busy || undefined}
+              onClick={() => {
+                if (!busy) props.onCancel();
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </section>
+      </div>
+    </OnTop>
   );
 }
 
@@ -530,47 +532,49 @@ export function NeededAgainQuestion(props: {
     }
   };
   return (
-    <div className="scrim" role="presentation">
-      <section
-        ref={box}
-        className="card stack sheet"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby={`${ids}-h`}
-        aria-describedby={`${ids}-body`}
-        aria-busy={busy}
-      >
-        <h2 id={`${ids}-h`} style={{ fontSize: 20 }}>
-          Is it needed again?
-        </h2>
-        <p id={`${ids}-body`} className="muted">
-          A new version of “{named(props.doc.title)}” was added. It is still marked no longer
-          needed, so nobody is reminded of it.
-        </p>
-        <ErrorNote message={error} />
-        <div className="row">
-          <button
-            type="button"
-            className="btn btn-primary"
-            aria-disabled={busy || undefined}
-            onClick={() => void again()}
-          >
-            {busy ? 'Marking it needed again…' : 'Needed again'}
-          </button>
-          <button
-            ref={keep}
-            type="button"
-            className="btn btn-quiet"
-            aria-disabled={busy || undefined}
-            onClick={() => {
-              if (!busy) void props.onAnswered(null);
-            }}
-          >
-            Keep it no longer needed
-          </button>
-        </div>
-      </section>
-    </div>
+    <OnTop>
+      <div className="scrim" role="presentation">
+        <section
+          ref={box}
+          className="card stack sheet"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby={`${ids}-h`}
+          aria-describedby={`${ids}-body`}
+          aria-busy={busy}
+        >
+          <h2 id={`${ids}-h`} style={{ fontSize: 20 }}>
+            Is it needed again?
+          </h2>
+          <p id={`${ids}-body`} className="muted">
+            A new version of “{named(props.doc.title)}” was added. It is still marked no longer
+            needed, so nobody is reminded of it.
+          </p>
+          <ErrorNote message={error} />
+          <div className="row">
+            <button
+              type="button"
+              className="btn btn-primary"
+              aria-disabled={busy || undefined}
+              onClick={() => void again()}
+            >
+              {busy ? 'Marking it needed again…' : 'Needed again'}
+            </button>
+            <button
+              ref={keep}
+              type="button"
+              className="btn btn-quiet"
+              aria-disabled={busy || undefined}
+              onClick={() => {
+                if (!busy) void props.onAnswered(null);
+              }}
+            >
+              Keep it no longer needed
+            </button>
+          </div>
+        </section>
+      </div>
+    </OnTop>
   );
 }
 
