@@ -11,7 +11,8 @@ import { Splitter, useKeptWidth, type WidthBounds } from './splitter.js';
  * its own, in three groups since 0.9.0 (the owner's ask of 25 Oct 2026: too
  * many at the top, some nested):
  *
- *  - You: Your account, Notifications, Your computers, Your data.
+ *  - You: Your account, Notifications, Appearance (light, dark or Auto,
+ *    on this browser, for everybody: 0.9.0), Your computers, Your data.
  *  - Household: Privacy, Time zone, Kinds of document, Tags — an owner
  *    changes them; everybody else reads what is theirs, as before.
  *  - Server and reading, an owner's: Storage, Email in and out, Scanner
@@ -36,6 +37,7 @@ import { Splitter, useKeptWidth, type WidthBounds } from './splitter.js';
 export type SectionKey =
   | 'account'
   | 'notifications'
+  | 'appearance'
   | 'computers'
   | 'data'
   | 'privacy'
@@ -134,6 +136,13 @@ export function settingsGroups(
       '/settings/notifications',
       'Notifications',
       'How you hear about things',
+    ),
+    // Light, dark or as the device is (0.9.0): everybody's, on this browser.
+    section(
+      'appearance',
+      '/settings/appearance',
+      'Appearance',
+      'Light, dark, or as your device is',
     ),
   ];
   // A computer that sends scans (0.8.0, D1): whoever may add documents.
@@ -401,6 +410,13 @@ const DRAWN: Record<SectionKey, ReactNode> = {
     <>
       <path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 2h-14z" />
       <path d="M10 20.5h4" />
+    </>
+  ),
+  // A circle half filled: light and dark.
+  appearance: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" />
     </>
   ),
   computers: (

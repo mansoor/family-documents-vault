@@ -4,7 +4,13 @@ import { App } from './App.js';
 import { holdAccountLinkToken, reopenOnNewLink, takeLinkToken } from './link-token.js';
 import { DropPage } from './screens/DropPage.js';
 import { SharePage } from './screens/SharePage.js';
+import { followTheme } from './theme.js';
 import './styles.css';
+
+// Light, dark or Auto (0.9.0): index.html's script set it before anything
+// was drawn; this keeps it as the system's setting, or another tab's
+// choice, changes — on every page, a share link's and a request's too.
+followTheme();
 
 const root = createRoot(document.getElementById('root') as HTMLElement);
 

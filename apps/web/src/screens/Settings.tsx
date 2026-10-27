@@ -345,7 +345,13 @@ function TwoStep() {
             Scan this with an authenticator app (Google Authenticator, Authy, 1Password…), then
             enter the code it shows.
           </p>
-          <img src={enrol.qr} alt="QR code for your authenticator app" width={220} height={220} />
+          <img
+            className="qr"
+            src={enrol.qr}
+            alt="QR code for your authenticator app"
+            width={220}
+            height={220}
+          />
           <p className="muted">
             Or type the key by hand: <code>{enrol.secret}</code>
           </p>
