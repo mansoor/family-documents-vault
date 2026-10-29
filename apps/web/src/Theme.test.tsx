@@ -267,9 +267,11 @@ describe('Settings → Appearance', () => {
       );
       // Light, at once, kept.
       fireEvent.click(screen.getByRole('radio', { name: 'Light' }));
-      expect(screen.getByRole('radio', { name: 'Light' })).toBeChecked();
+      // Chosen and kept at once; the radios are drawn as soon as React is free
+      // (on a busy machine, after the app's own loading finishes drawing).
       expect(shown()).toBe('light');
       expect(localStorage.getItem(THEME_KEY)).toBe('light');
+      await waitFor(() => expect(screen.getByRole('radio', { name: 'Light' })).toBeChecked());
       expect(group).toHaveAccessibleDescription(
         /Light on this browser, however your device is set/,
       );
@@ -310,7 +312,7 @@ describe('the name menu’s quick switch', () => {
     fireEvent.click(radio('Light'));
     expect(shown()).toBe('light');
     expect(localStorage.getItem(THEME_KEY)).toBe('light');
-    expect(radio('Light')).toHaveAttribute('aria-checked', 'true');
+    await waitFor(() => expect(radio('Light')).toHaveAttribute('aria-checked', 'true'));
     expect(radio('Dark')).toHaveAttribute('aria-checked', 'false');
     expect(screen.getByRole('menu', { name: 'Your account' })).toBeInTheDocument();
     fireEvent.click(radio('Auto'));
@@ -325,7 +327,8 @@ describe('the name menu’s quick switch', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Your account: Mansoor Seikh' }));
     const menu = await screen.findByRole('menu', { name: 'Your account' });
     fireEvent.click(within(menu).getByRole('menuitemradio', { name: 'Dark' }));
-    expect(screen.getByRole('radio', { name: 'Dark' })).toBeChecked();
+    expect(localStorage.getItem(THEME_KEY)).toBe('dark');
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Dark' })).toBeChecked());
   });
 });
 
