@@ -6,6 +6,12 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.21] - 2026-10-29 — every reading within 1 GB, as every PDF drawing is
+
+### Security
+
+- **Reading a page for its words can no longer make the server run out of memory (0.9.0, from 0.8.0-rc.2).** Tesseract, which reads a page's words, had no memory limit of its own. A photo was already safe: it is drawn small and grey under ImageMagick's limits before it is read, and a picture too big, such as a 750 KB PNG of nothing 16,000 pixels square, is refused first ("picture refused"). But a PDF's page was read at the size the PDF gives it: a 3 KB PDF of one page 100 inches square was drawn 15,000 pixels square and took Tesseract 2,354 MB to read. **Each reading now has 1 GB of memory at most,** as each run of the PDF tools already had: such a page is not read ("ocr failed") instead of taking the server's memory. Every reading is held to it, for a filed document, a file in your uploads, a page read again, and the Reading check. No real page comes close: the largest a photo is read at, 4,700 pixels square, takes about 330 MB, and a 108 megapixel phone photo reads as before.
+
 ## [0.9.0-dev.20] - 2026-10-27 — a soft dark theme
 
 ### Added

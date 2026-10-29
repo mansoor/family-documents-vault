@@ -73,26 +73,44 @@ export const runTool = run;
 export const POPPLER_MAX_KIB = 1024 * 1024;
 
 /**
- * How a poppler tool is run: on Linux (the worker image), by `sh`, which
- * caps its address space (`ulimit -v`, POPPLER_MAX_KIB) and then becomes it
- * (`exec`, so a timeout or an abort kills the tool itself); `fileBlocks`
- * also caps each file it writes, in 512-byte blocks, a write past it failing
- * rather than killing it (SIGXFSZ ignored). Elsewhere — a development
- * machine — as it is.
+ * The most address space one Tesseract run may take: 1 GiB, as poppler's
+ * (0.8.0-rc.2, brought forward). Tesseract reads with Leptonica, which has
+ * no limits like ImageMagick's: in 0.8.0, where a photo went to it as it
+ * was uploaded, a 750 KB PNG of nothing 16,000 pixels square took 2,672
+ * MiB, and the progressive CMYK JPEG bomb 2,978 MiB. Here a photo reaches
+ * it only drawn by `imagePage`, no more than READ_MAX_SIDE a side, but a
+ * PDF's page reaches it as pdftoppm drew it, at the size the PDF says: a
+ * 3 KB PDF of one page 100 inches square, drawn 15,000 pixels square, took
+ * 2,354 MiB to read. Measured, the most a real page takes is 330 MiB (a
+ * READ_MAX_SIDE square of noise, or of dense text).
  */
-export function popplerCommand(
+export const OCR_MAX_KIB = 1024 * 1024;
+
+/**
+ * How a capped tool is run: on Linux (the worker image), by `sh`, which
+ * caps its address space (`ulimit -v`, `maxKib`: POPPLER_MAX_KIB unless
+ * said) and then becomes it (`exec`, so a timeout or an abort kills the
+ * tool itself); `fileBlocks` also caps each file it writes, in 512-byte
+ * blocks, a write past it failing rather than killing it (SIGXFSZ ignored).
+ * Elsewhere — a development machine — as it is.
+ */
+export function cappedCommand(
   bin: string,
   args: string[],
-  opts: { fileBlocks?: number } = {},
+  opts: { fileBlocks?: number; maxKib?: number } = {},
   platform: NodeJS.Platform = process.platform,
 ): { bin: string; args: string[] } {
   if (platform !== 'linux') return { bin, args };
   const files = opts.fileBlocks ? `trap '' XFSZ && ulimit -f ${opts.fileBlocks} && ` : '';
+  const kib = opts.maxKib ?? POPPLER_MAX_KIB;
   return {
     bin: 'sh',
-    args: ['-c', `${files}ulimit -v ${POPPLER_MAX_KIB} && exec "$0" "$@"`, bin, ...args],
+    args: ['-c', `${files}ulimit -v ${kib} && exec "$0" "$@"`, bin, ...args],
   };
 }
+
+/** How a poppler tool is run: `cappedCommand`, at POPPLER_MAX_KIB. */
+export const popplerCommand = cappedCommand;
 
 /** A poppler tool, run as `popplerCommand` says. */
 function poppler(
@@ -103,6 +121,15 @@ function poppler(
   const { fileBlocks, ...rest } = opts;
   const how = popplerCommand(bin, args, fileBlocks ? { fileBlocks } : {});
   return run(how.bin, how.args, rest);
+}
+
+/** Tesseract on a page, capped at OCR_MAX_KIB (`cappedCommand`): every reading goes through here. */
+function tesseract(
+  args: string[],
+  opts: Parameters<typeof run>[2] = {},
+): Promise<{ stdout: string; stderr: string }> {
+  const how = cappedCommand('tesseract', args, { maxKib: OCR_MAX_KIB });
+  return run(how.bin, how.args, opts);
 }
 
 /**
@@ -1238,7 +1265,7 @@ export async function watermarkPage(
   await access(output);
 }
 
-/** OCR of one page image. Returns the text, possibly empty. */
+/** OCR of one page image. Returns the text, possibly empty. Capped at OCR_MAX_KIB. */
 export async function ocrImage(
   file: string,
   lang = 'eng',
@@ -1246,7 +1273,7 @@ export async function ocrImage(
   /** Tesseract's page segmentation: 3, found by itself; 6, one block read row by row (S5). */
   psm: '3' | '6' = '3',
 ): Promise<string> {
-  const { stdout } = await run('tesseract', [file, '-', '-l', lang, '--psm', psm], {
+  const { stdout } = await tesseract([file, '-', '-l', lang, '--psm', psm], {
     timeout: 180_000,
     maxBuffer: 16 * 1024 * 1024,
     signal,
@@ -1257,10 +1284,10 @@ export async function ocrImage(
 /**
  * OCR of one page image, as Tesseract's table of words (`tsv`): each word
  * with its box and how sure it is (0.9.0, R3; scan-read.ts lays them out).
- * The same limits as `ocrImage`.
+ * The same limits as `ocrImage`, its cap among them.
  */
 export async function ocrTsv(file: string, lang = 'eng', signal?: AbortSignal): Promise<string> {
-  const { stdout } = await run('tesseract', [file, '-', '-l', lang, '--psm', '3', 'tsv'], {
+  const { stdout } = await tesseract([file, '-', '-l', lang, '--psm', '3', 'tsv'], {
     timeout: 180_000,
     maxBuffer: 16 * 1024 * 1024,
     signal,
@@ -1755,7 +1782,7 @@ export async function imagePage(
  */
 let osdFound: Promise<boolean> | null = null;
 export function hasOsd(): Promise<boolean> {
-  osdFound ??= run('tesseract', ['--list-langs'], { timeout: 10_000 })
+  osdFound ??= tesseract(['--list-langs'], { timeout: 10_000 })
     .then(({ stdout, stderr }) => /^osd$/m.test(`${stdout}\n${stderr}`))
     .catch(() => false);
   return osdFound;
@@ -1770,7 +1797,7 @@ export async function osdOf(
   file: string,
   signal?: AbortSignal,
 ): Promise<{ turn: 0 | 90 | 180 | 270; confidence: number } | null> {
-  const { stdout } = await run('tesseract', [file, '-', '--psm', '0'], {
+  const { stdout } = await tesseract([file, '-', '--psm', '0'], {
     timeout: 60_000,
     maxBuffer: 1024 * 1024,
     signal,
