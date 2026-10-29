@@ -28,6 +28,69 @@ function run(
 export const runTool = run;
 
 /**
+ * The most address space one poppler run may take (0.8.0-rc.2, from 0.9.0's
+ * L2): 1 GiB. poppler hands a PDF's pictures to libjpeg, openjpeg and its
+ * own decoders, with no limits of its own like ImageMagick's: a 3 KB PDF
+ * holding a progressive CMYK JPEG 16,000 pixels square took 1,986 MiB to
+ * draw (0.8.0-rc.1's image, poppler 25.12.0), and pdftotext decodes an
+ * inline one (1,967 MiB). Capped, the run fails instead of the server: a
+ * decode that cannot have its memory is drawn blank, and the page reads
+ * nothing — silently (pdftoppm says nothing and exits 0), so a page that
+ * truly needed more than this would come out blank, unremarked. It still
+ * takes its time: 13 to 15 s a drawing, 37 s pdftotext's, within each
+ * run's timeout. Measured for 0.9.0, the most an ordinary page takes is an
+ * A0 page drawn at 150 dpi for OCR, 250 MiB.
+ */
+export const POPPLER_MAX_KIB = 1024 * 1024;
+
+/**
+ * The most address space one Tesseract run may take (0.8.0-rc.2): 1 GiB,
+ * as poppler's. Tesseract reads a photo itself, with Leptonica, which has
+ * no limits like ImageMagick's: a 2 MB progressive CMYK JPEG 16,000 pixels
+ * square took 2,978 MiB to read, a 750 KB PNG of nothing 16,000 square
+ * 2,672 MiB. Measured, a phone's 12 megapixel photo takes 175 MiB, a 48
+ * megapixel one 564 MiB; one past about 90 megapixels (a 108 megapixel one
+ * took 1,192 MiB) is no longer read, as it already had no thumbnail or
+ * previews under MAGICK_LIMITS. A drawn PDF page is far less.
+ */
+export const OCR_MAX_KIB = 1024 * 1024;
+
+/**
+ * How a tool is run capped: on Linux (the worker image), by `sh`, which
+ * caps its address space (`ulimit -v`, `maxKib`) and then becomes it
+ * (`exec`, so a timeout or an abort kills the tool itself). Elsewhere — a
+ * development machine — as it is.
+ */
+export function cappedCommand(
+  bin: string,
+  args: string[],
+  maxKib: number,
+  platform: NodeJS.Platform = process.platform,
+): { bin: string; args: string[] } {
+  if (platform !== 'linux') return { bin, args };
+  return { bin: 'sh', args: ['-c', `ulimit -v ${maxKib} && exec "$0" "$@"`, bin, ...args] };
+}
+
+/** How a poppler tool is run: capped at POPPLER_MAX_KIB (`cappedCommand`). */
+export function popplerCommand(
+  bin: string,
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+): { bin: string; args: string[] } {
+  return cappedCommand(bin, args, POPPLER_MAX_KIB, platform);
+}
+
+/** A poppler tool, run as `popplerCommand` says: every poppler run goes through here. */
+function poppler(
+  bin: string,
+  args: string[],
+  opts: Parameters<typeof run>[2] = {},
+): Promise<{ stdout: string; stderr: string }> {
+  const how = popplerCommand(bin, args);
+  return run(how.bin, how.args, opts);
+}
+
+/**
  * The three command-line tools the worker image ships: poppler
  * (pdftoppm, pdfinfo, pdftotext), ImageMagick (magick) and Tesseract.
  * Wrapped so the rest of the worker never builds a shell command, and so
@@ -102,7 +165,7 @@ export const MAGICK_LIMITS = [
 /** Page count of a PDF, from pdfinfo. */
 export async function pdfPageCount(file: string, signal?: AbortSignal): Promise<number | null> {
   try {
-    const { stdout } = await run('pdfinfo', [file], { timeout: 30_000, signal });
+    const { stdout } = await poppler('pdfinfo', [file], { timeout: 30_000, signal });
     const m = /^Pages:\s+(\d+)/m.exec(stdout);
     return m ? Number(m[1]) : null;
   } catch {
@@ -117,7 +180,7 @@ export async function pdfPageCount(file: string, signal?: AbortSignal): Promise<
  */
 export async function pdfLocked(file: string, signal?: AbortSignal): Promise<boolean> {
   try {
-    await run('pdfinfo', [file], { timeout: 30_000, signal });
+    await poppler('pdfinfo', [file], { timeout: 30_000, signal });
     return false;
   } catch (err) {
     const { message, stderr } = err as { message?: string; stderr?: string | Buffer };
@@ -134,7 +197,7 @@ export async function renderPdfPages(
   /** Ends the drawing, its process killed, when it is aborted (a read's deadline, I2). */
   signal?: AbortSignal,
 ): Promise<string[]> {
-  await run(
+  await poppler(
     'pdftoppm',
     ['-png', '-r', String(dpi), '-f', '1', '-l', String(maxPages), file, path.join(outDir, 'page')],
     {
@@ -159,7 +222,7 @@ export async function pdfPageTexts(
   lastPage: number,
   signal?: AbortSignal,
 ): Promise<string[]> {
-  const { stdout } = await run(
+  const { stdout } = await poppler(
     'pdftotext',
     [
       '-q',
@@ -199,12 +262,12 @@ export async function pdfImageCoverage(
   try {
     const range = ['-f', '1', '-l', String(lastPage)];
     const [listed, info] = await Promise.all([
-      run('pdfimages', ['-list', ...range, file], {
+      poppler('pdfimages', ['-list', ...range, file], {
         timeout: 60_000,
         maxBuffer: 8 * 1024 * 1024,
         signal,
       }),
-      run('pdfinfo', [...range, file], { timeout: 30_000, signal }),
+      poppler('pdfinfo', [...range, file], { timeout: 30_000, signal }),
     ]);
     const pageArea = new Map<number, number>();
     for (const m of info.stdout.matchAll(
@@ -246,7 +309,7 @@ export async function renderPdfPage(
   signal?: AbortSignal,
 ): Promise<string> {
   const base = path.join(outDir, `page-${page}`);
-  await run(
+  await poppler(
     'pdftoppm',
     ['-png', '-r', String(dpi), '-f', String(page), '-l', String(page), '-singlefile', file, base],
     { timeout: 120_000, signal },
@@ -293,7 +356,7 @@ export async function thumbnail(input: string, output: string, size = 480): Prom
   if (input.toLowerCase().endsWith('.pdf')) {
     const base = path.join(path.dirname(output), 'thumb-src');
     // A size, not a resolution: a page drawn 200 inches wide stays small.
-    await run(
+    await poppler(
       'pdftoppm',
       ['-png', '-scale-to', '960', '-f', '1', '-l', '1', '-singlefile', input, base],
       { timeout: 60_000 },
@@ -356,7 +419,7 @@ export async function renderPreviews(
   const bin = await MAGICK();
   let sources: string[];
   if (mime === 'application/pdf') {
-    await run(
+    await poppler(
       'pdftoppm',
       [
         '-png',
@@ -1119,7 +1182,10 @@ export async function watermarkPage(
   await access(output);
 }
 
-/** OCR of one page image. Returns the text, possibly empty. */
+/**
+ * OCR of one page image — a drawn PDF page, or a photo as it was uploaded.
+ * Returns the text, possibly empty. Capped at OCR_MAX_KIB (0.8.0-rc.2).
+ */
 export async function ocrImage(
   file: string,
   lang = 'eng',
@@ -1127,7 +1193,8 @@ export async function ocrImage(
   /** Tesseract's page segmentation: 3, found by itself; 6, one block read row by row (S5). */
   psm: '3' | '6' = '3',
 ): Promise<string> {
-  const { stdout } = await run('tesseract', [file, '-', '-l', lang, '--psm', psm], {
+  const how = cappedCommand('tesseract', [file, '-', '-l', lang, '--psm', psm], OCR_MAX_KIB);
+  const { stdout } = await run(how.bin, how.args, {
     timeout: 180_000,
     maxBuffer: 16 * 1024 * 1024,
     signal,

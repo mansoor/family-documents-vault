@@ -6,6 +6,19 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.8.0-rc.2] - 2026-10-29 — PDFs and photos read within 1 GB, and the checks on Ubuntu 24.04
+
+The second release candidate for 0.8.0: two fixes from the 0.9.0 work, and a third of the same kind found while bringing them back. Upgrading from 0.8.0-rc.1 needs nothing but the new images.
+
+### Security
+
+- **A PDF can no longer make the server run out of memory with a picture inside it.** The PDF tools draw a PDF's pictures with no limit of their own: a 3 KB PDF holding a JPEG saved in many passes (a progressive one) 16,000 pixels square took about 2 GB to draw for reading, a thumbnail or page previews, and as much to read its text when the picture sat in the page itself. In 0.8.0 anyone with a link to ask for documents can send a PDF, as can the scanner folder, email in and a paired computer. **Each run of the PDF tools now has 1 GB of memory at most.** Such a picture is drawn blank instead (after 13 to 37 seconds), and the page reads nothing. That blank is silent, so a page that truly needed more than 1 GB to draw would come out blank with nothing said; no real document comes close (an A0 page drawn for reading takes 250 MB). Ordinary PDFs, scanned or not, read as before. 0.9.0 also refuses such a picture before drawing it; that check is built on 0.9.0's new way of reading photos, and is not in 0.8.0.
+- **A photo can no longer make the server run out of memory as it is read.** A photo is read for its words by Tesseract, which had no limit either: the same 2 MB JPEG sent as a photo took about 3 GB to read, and a 750 KB PNG 16,000 pixels square about 2.7 GB. **Each reading now has 1 GB at most,** and such a photo is kept without its words instead. A phone's ordinary photo takes far less (12 megapixels: 175 MB; 48 megapixels: 564 MB), but one of more than about 90 megapixels, such as a phone's 108 megapixel mode, is now kept without its words too, as it was already kept without a thumbnail or page previews. Thumbnails, page previews and people's photos were already held to ImageMagick's limits.
+
+### Changed
+
+- **The checks run on Ubuntu 24.04.** GitHub's newest Ubuntu, 26.04, has no PostgreSQL 16 client, so the checks failed there and a release tag would have published no images. Every job now names Ubuntu 24.04.
+
 ## [0.8.0-rc.1] - 2026-10-17 — the 0.8.0 exit, the release candidate for 0.8.0
 
 The release candidate for 0.8.0, the next release after 0.4.5. There is no 0.6.0 and no 0.7.0: their candidates (0.6.0-rc.1, 0.7.0-rc.1 and 0.7.0-rc.2, below) never became releases, and everything in them is here (the owner's decision of 17 Oct 2026: one demonstration, for 0.8.0). This entry gathers, for someone upgrading from 0.4.5, everything since: the phone release (0.5.0), Phase 5 (0.5.1 to 0.6.0-rc.1), Phase 6 (0.7.0-dev.1 to 0.7.0-rc.2) and 0.8.0 (0.8.0-dev.1 to dev.8). The entries below it are the history, release by release. Once the owner's demonstration passes, 0.8.0 goes to `main` and the `latest` images move to it.
