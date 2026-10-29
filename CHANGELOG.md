@@ -6,6 +6,14 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.22] - 2026-10-29 — a document's page at full width, a line you can drag, zoom, and the pages beside Edit
+
+### Changed
+
+- **A document's page uses the whole window, with a line you can drag between its details and its pages (0.9.0).** From 768 pixels wide, a document's page now spans the whole width beside the sidebar, where before it stopped at 1,440 pixels and left an empty band on a wide window. Drag the line between the details and the pages, or focus it and use the arrow keys (Shift moves it further, Home and End to either end), to make the details between 280 and 640 pixels wide; the pages always keep about 360 pixels. Your device remembers the width for you, and a width kept on a wider window is narrowed to fit a smaller one. Until you change it, the details start as wide as they were before, so nothing moves. The buttons under the details (Download, History, Who can see it, Tags, Collections, Share a link) now fill each row, so a wider details pane has fewer, even rows; **Move to the Trash** stays at the end. On a phone the page is unchanged.
+- **Zoom for a document's pages (0.9.0).** Beside **Previous page** and **Next page** are now **Zoom out (−)**, the zoom as a percentage and **Zoom in (+)**, with **Fit to width** and a new **Fit page**, which shows the whole page. The zoom goes in the steps browsers use, from 25% up to 200%; 100% is the page at the size the vault draws it. Pressing the percentage goes back to Fit to width. You can also hold Ctrl (⌘ on a Mac) and scroll, or pinch on a touch screen or trackpad, over the page; and with the page in focus, **+** and **−** zoom and **0** fits it to the width, while single-key shortcuts are on. The point under your pointer stays where it is, and a page zoomed past the pane scrolls both ways. The zoom stays as you turn the pages, and another document starts at Fit to width. The vault draws pages at 1,600 pixels on their long edge, so the zoom stops at 200%, where a page would start to blur; download the file to see the original. The review step of bulk upload has the same zoom.
+- **Edit shows the document's pages beside the form (0.9.0).** From 768 pixels wide, **Edit** keeps the pages beside the form, as the document's page and the review step of bulk upload do, with the same line between them and the same zoom, so you can read the details off the page while you type them. An Essential's pages still ask you to confirm it's you before they are shown, and you can edit and save without opening them. On a phone, Edit is the form alone, as before.
+
 ## [0.9.0-dev.21] - 2026-10-29 — every reading within 1 GB, as every PDF drawing is
 
 ### Security

@@ -400,8 +400,11 @@ describe('no longer needed, on the web (0.9.0)', () => {
     fireEvent.change(input, { target: { files: [file] } });
     const ask = await screen.findByRole('alertdialog', { name: 'Is it needed again?' });
     // The likelier answer has the focus: a late scan of the old card is still the old card.
-    expect(document.activeElement).toBe(
-      within(ask).getByRole('button', { name: 'Keep it no longer needed' }),
+    // Given as the sheet's effect runs, just after it is drawn: waited for.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        within(ask).getByRole('button', { name: 'Keep it no longer needed' }),
+      ),
     );
     await expectAccessible();
     fireEvent.click(within(ask).getByRole('button', { name: 'Keep it no longer needed' }));

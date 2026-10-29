@@ -267,6 +267,25 @@ test('a document opens in two panes: its details on the left, its pages on the r
   const right = await pages.boundingBox();
   expect(left && right && left.x + left.width <= right.x).toBe(true);
   expect(left && right && Math.abs(left.y - right.y) < 40).toBe(true);
+  // The line between them (0.9.0): where the layout before it was, and
+  // moved with the keys, the details with it — then put back as it was.
+  const line = page.getByRole('separator', { name: 'Width of the details' });
+  await expect(line).toHaveAttribute('aria-valuenow', '400');
+  const before = (await details.boundingBox())?.width ?? 0;
+  await line.focus();
+  await page.keyboard.press('Shift+ArrowRight');
+  await expect(line).toHaveAttribute('aria-valuenow', '464');
+  expect(((await details.boundingBox())?.width ?? 0) - before).toBeCloseTo(64, 0);
+  await page.keyboard.press('Shift+ArrowLeft');
+  await expect(line).toHaveAttribute('aria-valuenow', '400');
+  // Its pages zoom, beside the page buttons. Exact names: the zoom's percentage
+  // is named "78%, back to Fit to width".
+  await expect(pages.getByRole('button', { name: 'Zoom in', exact: true })).toBeVisible();
+  await expect(pages.getByRole('button', { name: 'Zoom out', exact: true })).toBeVisible();
+  await expect(pages.getByRole('button', { name: 'Fit to width', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
   await expect(page).toHaveTitle('A document – Family Document Vault');
   // Back is where it was opened from: the table.
   await page.getByRole('link', { name: 'Back' }).click();
