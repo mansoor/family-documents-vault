@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { testAdminUrl } from '@fdv/db/testing';
@@ -40,20 +40,38 @@ function caddyMatches(patterns: string[], path: string): boolean {
   return patterns.some((p) => (p.endsWith('*') ? path.startsWith(p.slice(0, -1)) : path === p));
 }
 
+/**
+ * The page's one inline script, the theme's (0.9.0): what it is, and the
+ * hash a policy allows it by — that script and no other, not inline script
+ * in general. Read from the file, so a change to it fails here until the
+ * hash in docker/nginx.conf is changed with it.
+ */
+async function themeScript(): Promise<{ body: string; hash: string }> {
+  const shell = await readFile(root('apps/web/index.html'), 'utf8');
+  const inline = [...shell.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1] ?? '');
+  expect(inline).toHaveLength(1);
+  const body = inline[0] as string;
+  return { body, hash: `'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'` };
+}
+
 /** A strict policy: nothing from anywhere by default, no inline or evaluated script, no frames. */
-function expectStrict(csp: string | null, what: string) {
+function expectStrict(csp: string | null, what: string, theme?: string) {
   expect(csp, what).not.toBeNull();
   const policy = csp as string;
   expect(policy, what).toMatch(/(^|; )default-src 'none'(;|$)/);
   expect(policy, what).toMatch(/(^|; )frame-ancestors 'none'(;|$)/);
   expect(policy, what).not.toMatch(/unsafe-inline|unsafe-eval|\*/);
   const script = /script-src ([^;]*)/.exec(policy)?.[1];
-  if (script !== undefined) expect(script.trim(), what).toBe("'self'");
+  // The vault's own files; on the page itself, and the theme's few lines by their hash.
+  if (script !== undefined) {
+    expect(script.trim(), what).toBe(theme ? `'self' ${theme}` : "'self'");
+  }
 }
 
 describe('the pages a link opens', () => {
   it('every public page is sent no referrer, no sniffing, no framing and a strict policy', async () => {
     const conf = await readFile(root('docker/nginx.conf'), 'utf8');
+    const { hash } = await themeScript();
     for (const opening of [
       'location ~ ^/s/?$ {',
       'location ^~ /shared/ {',
@@ -64,13 +82,13 @@ describe('the pages a link opens', () => {
       expect(added(block, 'Referrer-Policy'), opening).toBe('no-referrer');
       expect(added(block, 'X-Content-Type-Options'), opening).toBe('nosniff');
       expect(added(block, 'X-Frame-Options'), opening).toBe('DENY');
-      expectStrict(added(block, 'Content-Security-Policy'), opening);
+      expectStrict(added(block, 'Content-Security-Policy'), opening, hash);
       // The page itself, not a route of the app's that might send others.
       expect(block, opening).toContain('try_files /index.html =404;');
     }
   });
 
-  it('the app itself runs scripts from the vault only, and nothing inline (5.35)', async () => {
+  it('the app itself runs scripts from the vault only, and nothing inline but the theme’s (5.35, 0.9.0)', async () => {
     const conf = await readFile(root('docker/nginx.conf'), 'utf8');
     const csp = added(nginxBlock(conf, 'location / {'), 'Content-Security-Policy');
     expect(csp).not.toBeNull();
@@ -80,17 +98,24 @@ describe('the pages a link opens', () => {
         return [name, values.join(' ')] as const;
       }),
     );
-    expect(directives.get('script-src')).toBe("'self'");
+    const theme = await themeScript();
+    expect(directives.get('script-src')).toBe(`'self' ${theme.hash}`);
     expect(directives.get('object-src')).toBe("'none'");
     expect(directives.get('base-uri')).toBe("'none'");
     expect(csp).not.toMatch(/unsafe-inline|unsafe-eval|\*/);
-    // And the page it serves has no script of its own to allow: one module, by address.
+    // And the page it serves has no other script of its own to allow: the
+    // theme's few lines, and one module by address.
     const shell = await readFile(root('apps/web/index.html'), 'utf8');
     const scripts = [...shell.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
     expect(scripts.map((s) => [/\bsrc="([^"]+)"/.exec(s[1] ?? '')?.[1], s[2]?.trim()])).toEqual([
+      [undefined, theme.body.trim()],
       ['/src/main.tsx', ''],
     ]);
+    // The theme's lines read storage and a media query, and set the theme: nothing else.
+    expect(theme.body).not.toMatch(/fetch|XMLHttpRequest|eval|Function|import|innerHTML|cookie/);
     expect(shell).not.toMatch(/\son[a-z]+=/i);
+    // Before the stylesheet: a dark page is never drawn light first.
+    expect(shell.indexOf('<script>')).toBeLessThan(shell.indexOf('rel="stylesheet"'));
   });
 
   it('the vault behind a TLS site keeps the pages’ own referrer policy', async () => {

@@ -32,14 +32,61 @@ export const colours = {
   danger: '#962D2D',
   dangerSoft: '#FBEAEA',
   highlight: '#F3EAD0',
+  /** Words and marks drawn on the accent: a primary button's, a count's, the logo's. */
   onAccent: '#FFFFFF',
   /** Ink at 45%: behind a sheet, so the page still shows through. */
   scrim: '#1C1A1773',
   /** Accent at 35%: the shadow under the add button. */
   accentGlow: '#1F5D4C59',
+  /** A menu, a sheet or a dialog, above the page: the surface itself in light. */
+  raised: '#FFFFFF',
+  /**
+   * A page's own white, in either theme: behind a scan, a preview and the
+   * QR code (a transparent PNG must never vanish into a dark page), and the
+   * initials on a member's colour. Never filtered, never inverted.
+   */
+  paper: '#FFFFFF',
+  /** A switch's knob while it is off. */
+  knob: '#FFFFFF',
 } as const;
 
 export type ColourRole = keyof typeof colours;
+
+/**
+ * The soft dark theme (0.9.0, the owner's ask of 27 Oct 2026): a slate-blue
+ * page, cards a little lighter, soft light text, the brand's green lightened
+ * to be the accent, and warm warning and error tints — never black, never
+ * a developer's dark. Every role the light theme has, with the same job;
+ * the same pairs pass WCAG AA (tokens.test.ts).
+ */
+export const darkColours = {
+  bg: '#1E2633',
+  surface: '#263142',
+  border: '#3A4759',
+  borderStrong: '#46546A',
+  borderInput: '#8695AB',
+  ink: '#E8EDF4',
+  inkSoft: '#C9D2DE',
+  inkMuted: '#A3AFC0',
+  accent: '#6DB89E',
+  accentSoft: '#22413A',
+  ok: '#6DB89E',
+  warn: '#F0B46B',
+  warnSoft: '#3B2F1F',
+  danger: '#F2A0A0',
+  dangerSoft: '#42282B',
+  highlight: '#4A4128',
+  onAccent: '#0F2620',
+  /** A deep slate at 70%: a sheet must still stand off a dark page. */
+  scrim: '#0B0F16B3',
+  accentGlow: '#6DB89E59',
+  raised: '#2D3A4E',
+  paper: '#FFFFFF',
+  knob: '#E8EDF4',
+} as const satisfies Record<ColourRole, string>;
+
+/** The two themes, by the name the web's `data-theme` gives them. */
+export const themes = { light: colours, dark: darkColours } as const;
 
 export const radii = { s: 10, m: 12, l: 14, xl: 17, card: 16, pill: 999 } as const;
 

@@ -24,6 +24,7 @@ import { PersonAvatar } from './person-avatar.js';
 import { storedRole } from './session.js';
 import { shortcutsOn, useShortcutsOn } from './shortcuts.js';
 import { CollapseButton, ResizeHandle, useSidebar } from './sidebar.js';
+import { setThemeChoice, THEME_CHOICES, useThemeChoice } from './theme.js';
 import { useSheetFocus } from './ui.js';
 import { useFamilyZone } from './family-time.js';
 
@@ -685,7 +686,7 @@ function Brand(props: { household: string; home?: boolean; children?: ReactNode 
           height="19"
           viewBox="0 0 24 24"
           fill="none"
-          stroke="#fff"
+          stroke="currentColor"
           strokeWidth="1.8"
           strokeLinecap="round"
           strokeLinejoin="round"
@@ -897,7 +898,9 @@ function AddControl({
 
 /** Up and down a menu's items, round from the end, and Home and End (the account's, the Add's). */
 export function moveInMenu(e: ReactKeyboardEvent<HTMLDivElement>) {
-  const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  const items = [
+    ...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"], [role="menuitemradio"]'),
+  ];
   const now = items.findIndex((item) => item === document.activeElement);
   const end = items.length - 1;
   const to = (
@@ -965,6 +968,37 @@ function AddMenuBox(props: {
             </span>
           </Link>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The theme, quickly, in the account menu (0.9.0): Auto, Light and Dark side
+ * by side, the one in use checked — the same three as Settings → Appearance.
+ * Choosing one shows it at once and leaves the menu open, so the change is
+ * seen with the choice still in sight; the arrows go on to Sign out.
+ */
+function ThemeItems() {
+  const choice = useThemeChoice();
+  return (
+    <div role="group" aria-labelledby="menu-theme-h" className="menu-theme">
+      <span id="menu-theme-h" className="menu-theme-h">
+        Theme
+      </span>
+      <div className="menu-seg">
+        {THEME_CHOICES.map((c) => (
+          <button
+            key={c.value}
+            type="button"
+            role="menuitemradio"
+            aria-checked={choice === c.value}
+            className="menu-seg-item"
+            onClick={() => setThemeChoice(c.value)}
+          >
+            {c.label}
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -1076,6 +1110,7 @@ function AccountMenuBox(props: {
             <Icon name="settings" />
             Settings
           </Link>
+          <ThemeItems />
           <button
             ref={last}
             type="button"

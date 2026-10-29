@@ -50,7 +50,7 @@ export function OwnerChangeNotices(props: {
   return (
     <section className="stack">
       {live.map((r) => (
-        <div key={r.id} className="card stack" style={{ borderColor: '#b45309' }}>
+        <div key={r.id} className="card stack card-warn">
           <span className="status status-warn">
             {r.about_me ? 'About your own account' : 'Waiting'}
           </span>

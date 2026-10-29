@@ -615,7 +615,7 @@ describe('the bar on top', () => {
     expect(document.activeElement).toBe(before);
   });
 
-  it('the account menu: your name, Settings, and Sign out', async () => {
+  it('the account menu: your name, Settings, the theme, and Sign out', async () => {
     at('/', EVERYTHING);
     await sidebar();
     const button = await screen.findByRole('button', { name: 'Your account: Mansoor Seikh' });
@@ -626,9 +626,23 @@ describe('the bar on top', () => {
     expect(menu.parentElement).toHaveTextContent('Mansoor SeikhOwner');
     const items = within(menu).getAllByRole('menuitem');
     expect(items.map((i) => i.textContent)).toEqual(['Settings', 'Sign out']);
+    // The theme between them (0.9.0): Auto, Light and Dark, Auto in use.
+    const theme = within(menu).getByRole('group', { name: 'Theme' });
+    const choices = within(theme).getAllByRole('menuitemradio');
+    expect(choices.map((c) => [c.textContent, c.getAttribute('aria-checked')])).toEqual([
+      ['Auto', 'true'],
+      ['Light', 'false'],
+      ['Dark', 'false'],
+    ]);
     await waitFor(() => expect(items[0]).toHaveFocus());
-    // The arrows move between them, and Escape gives focus back.
+    // The arrows move through them all, in order, and Escape gives focus back.
     fireEvent.keyDown(items[0] as HTMLElement, { key: 'ArrowDown' });
+    expect(choices[0]).toHaveFocus();
+    fireEvent.keyDown(choices[0] as HTMLElement, { key: 'End' });
+    expect(items[1]).toHaveFocus();
+    fireEvent.keyDown(items[1] as HTMLElement, { key: 'ArrowUp' });
+    expect(choices[2]).toHaveFocus();
+    fireEvent.keyDown(choices[2] as HTMLElement, { key: 'ArrowDown' });
     expect(items[1]).toHaveFocus();
     await expectAccessible();
     fireEvent.keyDown(items[1] as HTMLElement, { key: 'Escape' });
@@ -817,7 +831,7 @@ describe('Settings in three groups, with a menu beside the page (0.9.0, the owne
 
   const GROUPS: Record<Role, Array<[string, string[]]>> = {
     owner: [
-      ['You', ['Your account', 'Notifications', 'Your data']],
+      ['You', ['Your account', 'Notifications', 'Appearance', 'Your data']],
       ['Household', ['Privacy', 'Time zone', 'Kinds of document', 'Tags']],
       [
         'Server and reading · owners',
@@ -825,16 +839,16 @@ describe('Settings in three groups, with a menu beside the page (0.9.0, the owne
       ],
     ],
     adult: [
-      ['You', ['Your account', 'Notifications', 'Your data']],
+      ['You', ['Your account', 'Notifications', 'Appearance', 'Your data']],
       ['Household', ['Privacy', 'Time zone', 'Kinds of document', 'Tags']],
     ],
     // A teen: their own tags, and the family's clock to read; no export.
     teen: [
-      ['You', ['Your account', 'Notifications']],
+      ['You', ['Your account', 'Notifications', 'Appearance']],
       ['Household', ['Time zone', 'Tags']],
     ],
     viewer: [
-      ['You', ['Your account', 'Notifications']],
+      ['You', ['Your account', 'Notifications', 'Appearance']],
       ['Household', ['Time zone']],
     ],
   };
@@ -962,6 +976,7 @@ describe('Settings in three groups, with a menu beside the page (0.9.0, the owne
     await screen.findByRole('heading', { level: 1, name: 'Your account' });
     for (const [name, path, heading, title] of [
       ['Notifications', '/settings/notifications', 'Notifications', 'Settings: notifications'],
+      ['Appearance', '/settings/appearance', 'Appearance', 'Settings: appearance'],
       ['Your data', '/settings/data', 'Your data', 'Settings: your data'],
       ['Privacy', '/settings/privacy', 'Privacy', 'Settings: privacy'],
       ['Time zone', '/settings/time-zone', 'Time zone', 'Settings: time zone'],
@@ -1540,6 +1555,7 @@ describe('every address Settings had still works (R1)', () => {
     ['/settings', '/settings/account', 'Your account'],
     ['/settings/account', '/settings/account', 'Your account'],
     ['/settings/notifications', '/settings/notifications', 'Notifications'],
+    ['/settings/appearance', '/settings/appearance', 'Appearance'],
     // Refused without the feature, as before; the address stays.
     ['/settings/computers', '/settings/computers', 'Your computers'],
     ['/settings/data', '/settings/data', 'Your data'],

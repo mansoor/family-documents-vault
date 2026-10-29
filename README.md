@@ -134,8 +134,9 @@ Desktop, every device can reach the vault as the Docker network's gateway, and s
 recorded as that one address.
 
 **A proxy of your own must pass the vault's headers on as they are.** The web container
-sends a `Content-Security-Policy` with every page: `script-src 'self'; object-src 'none';
-base-uri 'none'` for the app, and a stricter one (no framing, no forms, and nothing loaded
+sends a `Content-Security-Policy` with every page: `script-src 'self' 'sha256-…'; object-src 'none';
+base-uri 'none'` for the app (the hash allows the few lines at the top of the page that
+choose light or dark before anything is drawn, and nothing else inline), and a stricter one (no framing, no forms, and nothing loaded
 from anywhere but the vault itself and Google Fonts) with `Referrer-Policy: no-referrer`,
 `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY` on the pages people outside
 the family open (`/s`, `/shared/…`, `/drop`); the API adds a sandbox policy to everything
@@ -144,7 +145,8 @@ from Google Fonts (`fonts.googleapis.com`, `fonts.gstatic.com`): the browser of 
 you send a link to asks Google for them, with no referrer. Do not replace, loosen or drop
 the headers, and turn off anything in a proxy or a CDN that adds a script to pages
 (analytics, "email address obfuscation", script optimisers): the policy blocks it, and the
-page breaks. They are a second line of defence behind the app, which never draws a note or
+page breaks. A proxy that rewrites the page's HTML (minifies it) changes that hash: the
+dark theme is then drawn light for a moment as each page opens. They are a second line of defence behind the app, which never draws a note or
 a file as HTML.
 
 ### Links for people outside the family

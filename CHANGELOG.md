@@ -6,6 +6,17 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.20] - 2026-10-27 — a soft dark theme
+
+### Added
+
+- **A soft dark theme, and Auto / Light / Dark (0.9.0).** The web app now has a dark theme in calm slate blues, not black: a slate page, cards a little lighter, soft light text, the family's green lightened for buttons and links, and warm amber and rose for warnings and problems. Every word and control passes WCAG AA in both themes. Choose it in **Settings → You → Appearance**, or quickly from your name's menu at the top right: **Auto** (the default) follows your device's light or dark setting and changes when it does; **Light** and **Dark** stay as chosen. The choice is kept on this browser only, nothing is sent to the vault, and the page is drawn in the right theme from the first moment, with no flash of light. Scans, page previews and the two-step sign-in QR code are always shown as they are, on white. The pages people outside the family open (a share link, a request to send documents) and the sign-in pages follow the device's setting, or this browser's choice if it has one.
+
+### Changed
+
+- **Focus rings are drawn in full colour everywhere.** A few controls (a section's fold, a document's disclosure, the crop frame) drew their keyboard focus ring in a pale green that was too faint to see easily; they now use the same solid ring as everything else.
+- **A self-hosted vault's page policy allows one inline script by its hash.** The few lines at the top of the page that choose light or dark before anything is drawn are allowed by their SHA-256 hash in the `Content-Security-Policy` that the web container sends; nothing else inline is allowed. A proxy that rewrites the page's HTML changes that hash, and the dark theme is then drawn light for a moment as a page opens.
+
 ## [0.9.0-dev.19] - 2026-10-26 — the row menu above the table header
 
 ### Fixed
