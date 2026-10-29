@@ -70,7 +70,9 @@ ENV NODE_ENV=production \
     FDV_MIGRATIONS_DIR=/app/migrations
 # OCR and rendering tools: Tesseract 5 (English), poppler (PDF pages, page
 # counts and the text a PDF carries: 5.37), ImageMagick (thumbnails and page
-# previews; HEIC for iPhone photos). All offline.
+# previews; HEIC for iPhone photos). All offline. Each Tesseract and poppler
+# run is capped at 1 GiB of address space (tools.ts, 0.8.0-rc.2), as each
+# ImageMagick run is held to MAGICK_LIMITS.
 # Fonts matter: without them poppler renders text-only PDFs blank, and OCR
 # reads nothing.
 # A view-only link's pages carry whom it is for (5.18), in whatever script

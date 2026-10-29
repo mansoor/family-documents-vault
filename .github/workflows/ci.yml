@@ -17,7 +17,7 @@ permissions:
 jobs:
   guard:
     name: Private folders are absent
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Fail if docs-private/ or prototype/ were ever committed
@@ -37,7 +37,7 @@ jobs:
 
   check:
     name: Lint, typecheck, test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: guard
     services:
       postgres:
@@ -121,7 +121,7 @@ jobs:
   # worker image's own packages.
   image-tests:
     name: Image tests on the worker's ImageMagick 7
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: guard
     container: node:22-alpine
     services:
@@ -177,7 +177,7 @@ jobs:
 
   images:
     name: Build images
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: check
     strategy:
       matrix:
@@ -245,7 +245,7 @@ jobs:
 
   e2e:
     name: End to end (docker compose)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: check
     steps:
       - uses: actions/checkout@v4
