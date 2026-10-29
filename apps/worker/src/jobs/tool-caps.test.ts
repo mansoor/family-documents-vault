@@ -227,128 +227,140 @@ async function peakOf<T>(
 
 const real = await detectTools();
 
-describe.skipIf(process.platform !== 'linux' || !(real.pdftoppm && real.pdfimages && real.magick))(
-  'the bomb PDF, with the real tools (0.8.0-rc.2)',
-  () => {
-    let dir: string;
-    const bombs: Record<string, string> = {};
-    beforeAll(async () => {
-      dir = await mkdtemp(path.join(tmpdir(), 'fdv-pdf-bomb-'));
-      const prog16 = wholeBufferJpeg(16_000, 16_000, 4);
-      const page = { jpeg: prog16, width: 16_000, height: 16_000, components: 4 as const };
-      const made = {
-        // A picture of its own, 2 MB: drawn for OCR, the thumbnail and previews.
-        'xobject.pdf': pdfOfJpegs([page]),
-        // In the page's content: pdftotext and pdfimages -list decode it too.
-        'inline.pdf': pdfOfJpegs([{ ...page, as: 'inline' }]),
-      };
-      for (const [name, bytes] of Object.entries(made)) {
-        bombs[name] = path.join(dir, name);
-        await writeFile(bombs[name], bytes);
-      }
-      // Deflated as well, the same PDF is 3 KB.
-      expect(pdfOfJpegs([{ ...page, as: 'flate' }]).length).toBeLessThan(4_000);
-    });
-    afterAll(async () => {
-      await rm(dir, { recursive: true, force: true });
-    });
+/**
+ * The bombs are measured against the worker image's own tools: an older
+ * Tesseract or poppler gives up on them early, far under the cap, and proves
+ * nothing. They run where FDV_IMAGE_PARITY=1 says those tools are (CI's
+ * image-tests job), and are skipped everywhere else.
+ */
+const parity = process.platform === 'linux' && process.env.FDV_IMAGE_PARITY === '1';
 
-    // Each capped run still takes 13 to 15 s to draw it blank (37 s for
-    // pdftotext's inline one): a 2 MB JPEG's DC scan of 16 million blocks.
-    it('is drawn blank within the cap by every path that draws it: OCR pages, the thumbnail, previews', async () => {
-      const file = bombs['xobject.pdf']!;
-      const draws: Record<string, (out: string) => Promise<unknown>> = {
-        renderPdfPage: (out) => renderPdfPage(file, out, 1),
-        renderPdfPages: (out) => renderPdfPages(file, out, 5),
-        thumbnail: (out) => thumbnail(file, path.join(out, 'thumb.jpg')),
-        renderPreviews: (out) => renderPreviews(file, 'application/pdf', out, 5),
-      };
-      for (const [where, draw] of Object.entries(draws)) {
-        const out = await mkdtemp(path.join(dir, 'out-'));
-        const { peakKib, result } = await peakOf(() => draw(out));
-        // Drawn — blank — not failed.
-        expect(result, where).not.toBeInstanceOf(Error);
-        // It went for the picture (far past what a blank page takes), and was held to the cap.
-        expect(peakKib, where).toBeGreaterThan(256 * 1024);
-        expect(peakKib, where).toBeLessThanOrEqual(POPPLER_MAX_KIB);
-        // The page drawn for OCR is there, to be read (as nothing).
-        if (where === 'renderPdfPage')
-          expect((await stat(result as string)).size).toBeGreaterThan(0);
-        await rm(out, { recursive: true, force: true });
-      }
-    }, 300_000);
+describe.runIf(parity)("the worker image's tools, where FDV_IMAGE_PARITY=1 says they are", () => {
+  it('has poppler, ImageMagick and Tesseract', () => {
+    expect({
+      pdftoppm: real.pdftoppm,
+      pdfimages: real.pdfimages,
+      magick: real.magick,
+      tesseract: real.tesseract,
+    }).toEqual({ pdftoppm: true, pdfimages: true, magick: true, tesseract: true });
+  });
+});
 
-    it('an inline one read for its text, and its pictures listed, within the cap', async () => {
-      const file = bombs['inline.pdf']!;
-      for (const [where, call] of Object.entries<() => Promise<unknown>>({
-        pdfPageTexts: () => pdfPageTexts(file, 5),
-        pdfImageCoverage: () => pdfImageCoverage(file, 5),
-        pdfPageCount: () => pdfPageCount(file),
-      })) {
-        const { peakKib } = await peakOf(call);
-        expect(peakKib, where).toBeLessThanOrEqual(POPPLER_MAX_KIB);
-        if (where !== 'pdfPageCount') expect(peakKib, where).toBeGreaterThan(256 * 1024);
-      }
-      expect(await pdfPageCount(file)).toBe(1);
-    }, 300_000);
-  },
-);
+describe.skipIf(!parity)('the bomb PDF, with the real tools (0.8.0-rc.2)', () => {
+  let dir: string;
+  const bombs: Record<string, string> = {};
+  beforeAll(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'fdv-pdf-bomb-'));
+    const prog16 = wholeBufferJpeg(16_000, 16_000, 4);
+    const page = { jpeg: prog16, width: 16_000, height: 16_000, components: 4 as const };
+    const made = {
+      // A picture of its own, 2 MB: drawn for OCR, the thumbnail and previews.
+      'xobject.pdf': pdfOfJpegs([page]),
+      // In the page's content: pdftotext and pdfimages -list decode it too.
+      'inline.pdf': pdfOfJpegs([{ ...page, as: 'inline' }]),
+    };
+    for (const [name, bytes] of Object.entries(made)) {
+      bombs[name] = path.join(dir, name);
+      await writeFile(bombs[name], bytes);
+    }
+    // Deflated as well, the same PDF is 3 KB.
+    expect(pdfOfJpegs([{ ...page, as: 'flate' }]).length).toBeLessThan(4_000);
+  });
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
 
-describe.skipIf(process.platform !== 'linux' || !real.tesseract)(
-  'the same JPEG sent as a photo, read by Tesseract (0.8.0-rc.2)',
-  () => {
-    let dir: string;
-    beforeAll(async () => {
-      dir = await mkdtemp(path.join(tmpdir(), 'fdv-ocr-bomb-'));
-    });
-    afterAll(async () => {
-      await rm(dir, { recursive: true, force: true });
-    });
+  // Each capped run still takes 13 to 15 s to draw it blank (37 s for
+  // pdftotext's inline one): a 2 MB JPEG's DC scan of 16 million blocks.
+  it('is drawn blank within the cap by every path that draws it: OCR pages, the thumbnail, previews', async () => {
+    const file = bombs['xobject.pdf']!;
+    const draws: Record<string, (out: string) => Promise<unknown>> = {
+      renderPdfPage: (out) => renderPdfPage(file, out, 1),
+      renderPdfPages: (out) => renderPdfPages(file, out, 5),
+      thumbnail: (out) => thumbnail(file, path.join(out, 'thumb.jpg')),
+      renderPreviews: (out) => renderPreviews(file, 'application/pdf', out, 5),
+    };
+    for (const [where, draw] of Object.entries(draws)) {
+      const out = await mkdtemp(path.join(dir, 'out-'));
+      const { peakKib, result } = await peakOf(() => draw(out));
+      // Drawn — blank — not failed.
+      expect(result, where).not.toBeInstanceOf(Error);
+      // It went for the picture (far past what a blank page takes), and was held to the cap.
+      expect(peakKib, where).toBeGreaterThan(256 * 1024);
+      expect(peakKib, where).toBeLessThanOrEqual(POPPLER_MAX_KIB);
+      // The page drawn for OCR is there, to be read (as nothing).
+      if (where === 'renderPdfPage') expect((await stat(result as string)).size).toBeGreaterThan(0);
+      await rm(out, { recursive: true, force: true });
+    }
+  }, 300_000);
 
-    it('is read within the cap: a failed read, not the server’s memory taken', async () => {
-      const bomb = path.join(dir, 'photo.jpg');
-      await writeFile(bomb, wholeBufferJpeg(16_000, 16_000, 4));
-      const started = Date.now();
-      const { peakKib, result } = await peakOf(
-        () => extractText(bomb, 'image/jpeg', { maxPages: 5, workDir: dir }),
-        ['tesseract'],
-      );
-      // It went for the picture, and was held to the cap.
-      expect(peakKib).toBeGreaterThan(256 * 1024);
-      expect(peakKib).toBeLessThanOrEqual(OCR_MAX_KIB);
-      expect(result).toBeInstanceOf(Error);
-      expect(Date.now() - started).toBeLessThan(30_000);
-    }, 300_000);
+  it('an inline one read for its text, and its pictures listed, within the cap', async () => {
+    const file = bombs['inline.pdf']!;
+    for (const [where, call] of Object.entries<() => Promise<unknown>>({
+      pdfPageTexts: () => pdfPageTexts(file, 5),
+      pdfImageCoverage: () => pdfImageCoverage(file, 5),
+      pdfPageCount: () => pdfPageCount(file),
+    })) {
+      const { peakKib } = await peakOf(call);
+      expect(peakKib, where).toBeLessThanOrEqual(POPPLER_MAX_KIB);
+      if (where !== 'pdfPageCount') expect(peakKib, where).toBeGreaterThan(256 * 1024);
+    }
+    expect(await pdfPageCount(file)).toBe(1);
+  }, 300_000);
+});
 
-    it.skipIf(!real.magick)(
-      'an ordinary photo of a page still reads',
-      async () => {
-        const photo = path.join(dir, 'page.jpg');
-        await tools.runTool(
-          'magick',
-          [
-            '-size',
-            '2480x3508',
-            'xc:white',
-            '-font',
-            'DejaVu-Sans',
-            '-fill',
-            'black',
-            '-pointsize',
-            '60',
-            '-annotate',
-            '+200+400',
-            'Payment due by 29/04/2026',
-            '-quality',
-            '85',
-            `jpeg:${photo}`,
-          ],
-          { timeout: 120_000 },
-        );
-        const got = await extractText(photo, 'image/jpeg', { maxPages: 5, workDir: dir });
-        expect(got?.text).toMatch(/Payment due by 29\/04\/2026/);
-      },
-      300_000,
+describe.skipIf(!parity)('the same JPEG sent as a photo, read by Tesseract (0.8.0-rc.2)', () => {
+  let dir: string;
+  beforeAll(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'fdv-ocr-bomb-'));
+  });
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('is read within the cap: a failed read, not the server’s memory taken', async () => {
+    const bomb = path.join(dir, 'photo.jpg');
+    await writeFile(bomb, wholeBufferJpeg(16_000, 16_000, 4));
+    const started = Date.now();
+    const { peakKib, result } = await peakOf(
+      () => extractText(bomb, 'image/jpeg', { maxPages: 5, workDir: dir }),
+      ['tesseract'],
     );
-  },
-);
+    // It went for the picture, and was held to the cap.
+    expect(peakKib).toBeGreaterThan(256 * 1024);
+    expect(peakKib).toBeLessThanOrEqual(OCR_MAX_KIB);
+    expect(result).toBeInstanceOf(Error);
+    expect(Date.now() - started).toBeLessThan(30_000);
+  }, 300_000);
+
+  it.skipIf(!real.magick)(
+    'an ordinary photo of a page still reads',
+    async () => {
+      const photo = path.join(dir, 'page.jpg');
+      await tools.runTool(
+        'magick',
+        [
+          '-size',
+          '2480x3508',
+          'xc:white',
+          '-font',
+          'DejaVu-Sans',
+          '-fill',
+          'black',
+          '-pointsize',
+          '60',
+          '-annotate',
+          '+200+400',
+          'Payment due by 29/04/2026',
+          '-quality',
+          '85',
+          `jpeg:${photo}`,
+        ],
+        { timeout: 120_000 },
+      );
+      const got = await extractText(photo, 'image/jpeg', { maxPages: 5, workDir: dir });
+      expect(got?.text).toMatch(/Payment due by 29\/04\/2026/);
+    },
+    300_000,
+  );
+});
