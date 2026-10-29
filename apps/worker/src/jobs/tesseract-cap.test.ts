@@ -130,8 +130,16 @@ describe('every Tesseract run is capped (0.9.0)', () => {
   });
 });
 
-/** The peak address space, in KiB, of every Tesseract run while `call` ran, and what it gave. */
-async function peakOf<T>(call: () => Promise<T>): Promise<{ peakKib: number; result: T | Error }> {
+/**
+ * The peak address space, in KiB, of every Tesseract run on a file under
+ * `under` while `call` ran, and what it gave. Only those: the other test
+ * files run Tesseract at the same time (CI's image-tests job), and theirs
+ * are not this test's.
+ */
+async function peakOf<T>(
+  call: () => Promise<T>,
+  under: string,
+): Promise<{ peakKib: number; result: T | Error }> {
   let peakKib = 0;
   let polling = true;
   const poll = (async () => {
@@ -139,7 +147,9 @@ async function peakOf<T>(call: () => Promise<T>): Promise<{ peakKib: number; res
       for (const pid of await readdir('/proc').catch(() => [] as string[])) {
         if (!/^\d+$/.test(pid)) continue;
         const status = await readFile(`/proc/${pid}/status`, 'utf8').catch(() => '');
-        if (/^Name:\s+tesseract$/m.test(status)) {
+        if (!/^Name:\s+tesseract$/m.test(status)) continue;
+        const args = await readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => '');
+        if (args.split('\0').some((arg) => arg.startsWith(under))) {
           peakKib = Math.max(peakKib, Number(/VmPeak:\s+(\d+)/.exec(status)?.[1] ?? 0));
         }
       }
@@ -232,8 +242,9 @@ describe.runIf(parity)(
     });
 
     it('sent as a photo, is refused before Tesseract sees it (R3: imagePage)', async () => {
-      const { peakKib, result } = await peakOf(() =>
-        extractText(bomb, 'image/png', { maxPages: 5, workDir: dir }),
+      const { peakKib, result } = await peakOf(
+        () => extractText(bomb, 'image/png', { maxPages: 5, workDir: dir }),
+        dir,
       );
       expect(result).toBeInstanceOf(PictureRefused);
       expect(peakKib).toBe(0);
@@ -252,7 +263,7 @@ describe.runIf(parity)(
         ocrTsv: () => ocrTsv(bomb),
         osdOf: () => osdOf(bomb),
       })) {
-        const { peakKib, result } = await peakOf(read);
+        const { peakKib, result } = await peakOf(read, dir);
         // It went for the picture (far past what a page takes), and was held to the cap.
         expect(peakKib, how).toBeGreaterThan(256 * 1024);
         expect(peakKib, how).toBeLessThanOrEqual(OCR_MAX_KIB);
@@ -278,8 +289,9 @@ describe.runIf(parity)(
           },
         ]),
       );
-      const { peakKib, result } = await peakOf(() =>
-        extractText(big, 'application/pdf', { maxPages: 5, workDir: dir }),
+      const { peakKib, result } = await peakOf(
+        () => extractText(big, 'application/pdf', { maxPages: 5, workDir: dir }),
+        dir,
       );
       expect(peakKib).toBeGreaterThan(256 * 1024);
       expect(peakKib).toBeLessThanOrEqual(OCR_MAX_KIB);
