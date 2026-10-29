@@ -152,7 +152,7 @@ jobs:
       # HEIC), and git, for the checkout.
       - name: Install the worker image's tools
         run: |
-          apk add --no-cache git tesseract-ocr tesseract-ocr-data-eng poppler-utils \
+          apk add --no-cache git tesseract-ocr tesseract-ocr-data-eng tesseract-ocr-data-osd poppler-utils \
             imagemagick imagemagick-heic imagemagick-pango fontconfig font-dejavu \
             font-liberation font-noto font-noto-arabic font-noto-devanagari font-noto-emoji \
             font-wqy-zenhei postgresql16-client libheif-plugins-all libheif-tools
@@ -174,6 +174,7 @@ jobs:
           apps/worker/src/jobs/previews.test.ts
           apps/worker/src/jobs/share-pages.test.ts
           apps/worker/src/jobs/incoming.test.ts
+          apps/worker/src/jobs/tesseract-cap.test.ts
 
   images:
     name: Build images
