@@ -37,7 +37,13 @@ export type ColumnKey =
 export interface Column {
   key: ColumnKey;
   label: string;
-  /** Its width in px; the title takes what is left, at least `TITLE_MIN`. */
+  /** Its header's words, where they are shorter than its name (0.9.0, TW): one line. */
+  head?: string;
+  /**
+   * Its width in px in a collection's Add documents (collection-add.tsx);
+   * the title takes what is left, at least `TITLE_MIN`. The Documents table
+   * sizes its own (column-widths.tsx).
+   */
   width: number | null;
   /** Dates line up on the right. */
   end?: boolean;
@@ -51,12 +57,12 @@ export const COLUMNS: readonly Column[] = [
   { key: 'issued', label: 'Issued', width: 100, end: true },
   { key: 'expires', label: 'Expires', width: 100, end: true },
   { key: 'status', label: 'Status', width: 120 },
-  { key: 'visibility', label: 'Who can see it', width: 92 },
+  { key: 'visibility', label: 'Who can see it', head: 'Who sees it', width: 92 },
   { key: 'location', label: 'Location', width: 104 },
   { key: 'collections', label: 'Collections', width: 96 },
 ];
 
-/** The title's least width, in px: below it the box scrolls sideways. */
+/** The title's least width in Add documents, in px: below it the box scrolls sideways. */
 export const TITLE_MIN = 168;
 /** The box for choosing, in px. */
 export const PICK_WIDTH = 44;

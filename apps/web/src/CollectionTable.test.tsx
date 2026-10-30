@@ -183,7 +183,7 @@ describe('a collection’s documents as the Documents table (0.9.0)', () => {
       .getAllByRole('columnheader')
       .map((h) => h.textContent);
     expect(heads.some((h) => h?.startsWith('Title'))).toBe(true);
-    expect(heads).toContain('Who can see it');
+    expect(heads).toContain('Who sees it');
     expect(heads).toContain('Not seen by');
     expect(heads.at(-1)).toBe('Actions');
     const row = (title: string) =>
@@ -430,5 +430,39 @@ describe('a collection’s documents as the Documents table (0.9.0)', () => {
     expect(within(sheet).getByLabelText('Sort by')).toBeInTheDocument();
     await expectAccessible();
     cleanup();
+  });
+
+  it('its columns widen as Documents’ do, kept apart from Documents’; Add documents’ table as it was (0.9.0, TW)', async () => {
+    localStorage.setItem('fdv.documents.columns.me', JSON.stringify({ title: 500 }));
+    at();
+    const t = await grid();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    const title = within(t).getByRole('separator', { name: 'Width of Title' });
+    // Not Documents' widths: its own, from where they start.
+    expect(title).toHaveAttribute('aria-valuenow', '240');
+    // Who is not given each is no column of the table's own to widen.
+    expect(within(t).queryByRole('separator', { name: /Not seen by/ })).toBeNull();
+    fireEvent.keyDown(title, { key: 'ArrowRight' });
+    expect(title).toHaveAttribute('aria-valuenow', '256');
+    expect(JSON.parse(localStorage.getItem('fdv.collection.columns.me') ?? '{}')).toEqual({
+      title: 256,
+    });
+    expect(JSON.parse(localStorage.getItem('fdv.documents.columns.me') ?? '{}')).toEqual({
+      title: 500,
+    });
+    // Add documents: its own table, its widths as they were, no line to drag.
+    fireEvent.click(screen.getByRole('button', { name: 'Add documents' }));
+    const picker = await screen.findByRole('dialog', { name: 'Add documents to “Holiday”' });
+    const table = within(picker).getByRole('grid');
+    expect(table).not.toHaveClass('docs-tbl');
+    expect(within(table).queryAllByRole('separator')).toEqual([]);
+    expect([...table.querySelectorAll<HTMLElement>('col')].map((c) => c.style.width)).toEqual([
+      '44px',
+      '',
+      '96px',
+      '92px',
+      '100px',
+      '100px',
+    ]);
   });
 });
