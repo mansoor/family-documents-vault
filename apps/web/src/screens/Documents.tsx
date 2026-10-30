@@ -64,7 +64,6 @@ import {
   HIDDEN_COLUMNS_KEY,
   STATUS_WORDS,
   tableDate,
-  TITLE_MIN,
   viewFrom,
   VISIBILITY_CHOICES,
   VISIBILITY_WORDS,
@@ -77,6 +76,19 @@ import {
   type FilterKey,
   type TableView,
 } from '../documents-table.js';
+import {
+  ColumnHandle,
+  columnWidths,
+  columnWidthsKey,
+  COLUMN_SIZES,
+  fitWidth,
+  measureColumn,
+  readKeptWidths,
+  revealLine,
+  useTableRoom,
+  writeKeptWidths,
+  type KeptWidths,
+} from '../column-widths.js';
 import { storedRole } from '../session.js';
 import { moveInMenu, useShellMode } from '../shell.js';
 import { FilterSelect, None, OutcomeNote, PickAll, useGrid, type Outcome } from '../table-grid.js';
@@ -115,8 +127,11 @@ import { familyZoneNow } from '../family-time.js';
  *    sort (`aria-sort`); a Columns menu, remembered on this device; filters
  *    for whose, what kind, its status, who can see it, its collection and
  *    a tag; and boxes to choose many, with what may be done with all of
- *    them at once. Below 1024 px the table scrolls sideways in its own box,
- *    the box and the title staying where they are.
+ *    them at once. Each column as wide as what it usually says, the title
+ *    what is left, and each one's edge dragged or moved with the keys
+ *    (0.9.0, TW: column-widths.tsx). Where they do not fit, the table
+ *    scrolls sideways in its own box, the box and the title staying where
+ *    they are.
  *  - On a phone, today's list of rows, the filters in a sheet, and Select as
  *    today: into a collection.
  *
@@ -721,6 +736,54 @@ function TableDocuments(props: {
     String(selectable),
   ]);
 
+  // Each column's width (0.9.0, TW): as wide as what it usually says, the
+  // title what is left within a range — or as this person left it, here.
+  const mode = useShellMode();
+  const room = useTableRoom(wrap, mode);
+  const widthsKey = columnWidthsKey(scope ? 'collection' : 'documents', holder?.member ?? null);
+  const [keptWidths, setKeptWidths] = useState(() => ({
+    key: widthsKey,
+    kept: readKeptWidths(widthsKey),
+  }));
+  const kept = keptWidths.key === widthsKey ? keptWidths.kept : readKeptWidths(widthsKey);
+  const pinnedWidth = (selectable ? PICK_WIDTH : 0) + extraWidth;
+  const shownKeys = shown.map((c) => c.key);
+  const layout = (k: KeptWidths) => {
+    const w = columnWidths(shownKeys, room - pinnedWidth, k);
+    return { w, total: shownKeys.reduce((sum, key) => sum + (w[key] ?? 0), pinnedWidth) };
+  };
+  const { w: widths, total: tableWidth } = layout(kept);
+  const cols = useRef(new Map<ColumnKey, HTMLTableColElement>());
+  /** The table drawn with one column this wide: while its edge is dragged, without React. */
+  const drawWidth = (key: ColumnKey, w: number) => {
+    const next = layout({ ...kept, [key]: w });
+    for (const [k, col] of cols.current) {
+      const px = next.w[k];
+      if (px !== undefined) col.style.width = `${px}px`;
+    }
+    if (table.current) table.current.style.width = `${next.total}px`;
+  };
+  const keepWidths = (next: KeptWidths) => {
+    setKeptWidths({ key: widthsKey, kept: next });
+    writeKeptWidths(widthsKey, next);
+  };
+  const setWidth = (key: ColumnKey, w: number) => {
+    drawWidth(key, w);
+    keepWidths({ ...kept, [key]: w });
+  };
+  /**
+   * A header's line is a stop for Tab only while its header is the grid's
+   * stop (W1: the grid is one stop): Tab from a header's sort goes to its
+   * line, and on out of the table.
+   */
+  const syncHandles = () => {
+    for (const h of table.current?.querySelectorAll<HTMLElement>('thead .col-resize') ?? []) {
+      const sort = h.closest('th')?.querySelector<HTMLElement>('.th-sort');
+      h.tabIndex = sort?.tabIndex === 0 ? 0 : -1;
+    }
+  };
+  useLayoutEffect(syncHandles);
+
   // Kept in this page's history entry as it changes (W4).
   const pickedKey = [...pickedIds].join(',');
   const count = pages.items.length;
@@ -826,10 +889,6 @@ function TableDocuments(props: {
     }, 0);
   };
 
-  const minWidth =
-    (selectable ? PICK_WIDTH : 0) +
-    shown.reduce((sum, c) => sum + (c.width ?? TITLE_MIN), 0) +
-    extraWidth;
   const words = directionWords(view.sort);
 
   /**
@@ -871,7 +930,12 @@ function TableDocuments(props: {
             Documents
           </h1>
         )}
-        <ColumnsMenu columns={columns} hidden={hidden} onChange={toggleColumn} />
+        <ColumnsMenu
+          columns={columns}
+          hidden={hidden}
+          onChange={toggleColumn}
+          onReset={() => keepWidths({})}
+        />
       </div>
       <div className="filters" role="group" aria-label="Filters">
         {filtersFor(known, scope !== undefined).map((k) => (
@@ -921,7 +985,7 @@ function TableDocuments(props: {
       )}
       <div
         ref={wrap}
-        className={scope ? 'tbl-wrap coll-tbl-wrap' : 'tbl-wrap'}
+        className={scope ? 'tbl-wrap docs-tbl-wrap coll-tbl-wrap' : 'tbl-wrap docs-tbl-wrap'}
         // No scroll-padding: with it, a browser scrolls a pinned cell or the
         // head "into view" each time it is focused, back to the left and up
         // (F2). `reveal` keeps the focus clear of them instead (W3).
@@ -931,12 +995,16 @@ function TableDocuments(props: {
       >
         <table
           ref={table}
-          className="tbl"
+          className="tbl docs-tbl"
           role="grid"
-          style={{ minWidth }}
+          style={{ width: tableWidth }}
           onKeyDown={grid.onKeyDown}
           onFocus={(e) => {
             grid.onFocus(e);
+            syncHandles();
+            if ((e.target as HTMLElement).matches('.col-resize')) {
+              revealLine(wrap.current, e.target);
+            }
             tips.show(e);
           }}
           onBlur={tips.hide}
@@ -949,7 +1017,13 @@ function TableDocuments(props: {
             {selectable && <col style={{ width: PICK_WIDTH }} />}
             {shown.map((c) => (
               <Fragment key={c.key}>
-                <col style={c.width ? { width: c.width } : undefined} />
+                <col
+                  ref={(el) => {
+                    if (el) cols.current.set(c.key, el);
+                    else cols.current.delete(c.key);
+                  }}
+                  style={{ width: widths[c.key] }}
+                />
                 {hints && c.key === 'title' && <col style={{ width: HINT_WIDTH }} />}
               </Fragment>
             ))}
@@ -968,18 +1042,29 @@ function TableDocuments(props: {
                   />
                 </th>
               )}
-              {shown.map((c) => (
+              {shown.map((c, i) => (
                 <Fragment key={c.key}>
                   <HeaderCell
                     column={c}
                     view={view}
                     pinned={c.key === 'title'}
                     offset={selectable ? PICK_WIDTH : 0}
+                    // Each header over the next, so its line, astride the
+                    // edge between them, is over the next one's start.
+                    layer={HEAD_LAYER - i}
+                    last={i === shown.length - 1}
+                    width={widths[c.key] ?? COLUMN_SIZES[c.key].base}
                     onSort={() => sortBy(c.key)}
+                    onDrag={(w) => drawWidth(c.key, w)}
+                    onWidth={(w) => setWidth(c.key, w)}
                   />
                   {/* Beside the title, in sight: not a sort, but what the
                       collection's maker is told of each (5.14). */}
-                  {hints && c.key === 'title' && <th scope="col">Not seen by</th>}
+                  {hints && c.key === 'title' && (
+                    <th scope="col" style={{ zIndex: HEAD_LAYER }}>
+                      Not seen by
+                    </th>
+                  )}
                 </Fragment>
               ))}
               <th scope="col" className="col-more">
@@ -1110,6 +1195,11 @@ function TableDocuments(props: {
 /** A collection's column for who is not given each (its maker's), and the ⋯'s, in px. */
 const HINT_WIDTH = 132;
 const MORE_WIDTH = 56;
+/**
+ * The layer of the first header that scrolls; each after it one lower, all
+ * under the pinned ones' (styles.css), inside the table's box.
+ */
+const HEAD_LAYER = 20;
 
 /**
  * A row's ⋯ in the table (0.9.0): what every list's ⋯ offers — on a
@@ -1160,26 +1250,50 @@ function HeaderCell(props: {
   view: TableView;
   pinned: boolean;
   offset: number;
+  /** Its layer, over the header after it: a pinned one's is styles.css's. */
+  layer: number;
+  /** Beside the ⋯: its line inside its own edge, not astride it. */
+  last: boolean;
+  width: number;
   onSort: () => void;
+  /** Its edge dragged: drawn, not yet kept. */
+  onDrag: (w: number) => void;
+  /** Its width set, and kept. */
+  onWidth: (w: number) => void;
 }) {
   const { column, view } = props;
+  const th = useRef<HTMLTableCellElement>(null);
   const on = view.sort === column.key;
   const sort = on ? (view.dir === 'asc' ? 'ascending' : 'descending') : undefined;
+  const size = COLUMN_SIZES[column.key];
   return (
     <th
+      ref={th}
       scope="col"
       className={
         `${column.end ? 'end ' : ''}${props.pinned ? 'col-title' : ''}`.trim() || undefined
       }
-      style={props.pinned ? { left: props.offset } : undefined}
+      style={props.pinned ? { left: props.offset } : { zIndex: props.layer }}
       aria-sort={sort}
     >
       <button type="button" className="th-sort" onClick={props.onSort}>
-        {column.label}
+        <span className="th-words">{column.head ?? column.label}</span>
         <span className="sort-mark" aria-hidden="true">
           {on ? (view.dir === 'asc' ? '▲' : '▼') : ''}
         </span>
       </button>
+      <ColumnHandle
+        label={`Width of ${column.label}`}
+        width={props.width}
+        min={size.min}
+        max={size.max}
+        last={props.last}
+        onDrag={props.onDrag}
+        onDone={props.onWidth}
+        onFit={() => {
+          if (th.current) props.onWidth(fitWidth(column.key, measureColumn(th.current)));
+        }}
+      />
     </th>
   );
 }
@@ -1192,14 +1306,20 @@ function HeaderCell(props: {
 function Clip({
   text,
   always,
+  className,
   children,
 }: {
   text: string;
   always?: boolean;
+  className?: string;
   children?: ReactNode;
 }) {
   return (
-    <span className="clip" data-clip={text} data-clip-always={always ? '' : undefined}>
+    <span
+      className={className ? `clip ${className}` : 'clip'}
+      data-clip={text}
+      data-clip-always={always ? '' : undefined}
+    >
       {children ?? text}
     </span>
   );
@@ -1229,14 +1349,24 @@ function Cell(props: { column: Column; doc: DocumentView; known: Known; offset: 
       return <td>{name ? <Clip text={name} /> : <None />}</td>;
     }
     case 'issued':
-      return <td className="end nowrap">{doc.issued ? tableDate(doc.issued) : <None />}</td>;
+      return (
+        <td className="end nowrap">
+          {doc.issued ? <Clip text={tableDate(doc.issued)} /> : <None />}
+        </td>
+      );
     case 'expires':
-      return <td className="end nowrap">{doc.expires ? tableDate(doc.expires) : <None />}</td>;
+      return (
+        <td className="end nowrap">
+          {doc.expires ? <Clip text={tableDate(doc.expires)} /> : <None />}
+        </td>
+      );
     case 'status':
       return (
         <td>
           {doc.status.value === 'valid' ? (
-            <span className="muted">Nothing to renew</span>
+            <Clip text="Nothing to renew">
+              <span className="muted">Nothing to renew</span>
+            </Clip>
           ) : (
             <Clip text={doc.status.label}>
               <StatusBadge status={doc.status} />
@@ -1247,10 +1377,12 @@ function Cell(props: { column: Column; doc: DocumentView; known: Known; offset: 
     case 'visibility':
       return (
         <td className="nowrap">
-          <span className="vis">
-            {doc.visibility === 'private' && <LockIcon />}
-            {VISIBILITY_WORDS[doc.visibility]}
-          </span>
+          <Clip text={VISIBILITY_WORDS[doc.visibility]}>
+            <span className="vis">
+              {doc.visibility === 'private' && <LockIcon />}
+              {VISIBILITY_WORDS[doc.visibility]}
+            </span>
+          </Clip>
         </td>
       );
     case 'location':
@@ -1262,7 +1394,7 @@ function Cell(props: { column: Column; doc: DocumentView; known: Known; offset: 
           {names.length === 0 ? (
             <None />
           ) : (
-            <Clip text={names.join(', ')} always={names.length > 1}>
+            <Clip text={names.join(', ')} always={names.length > 1} className="clip-chips">
               <span className="chip">{names[0]}</span>
               {/* The rest, in a tip and to a screen reader (W10). */}
               {names.length > 1 && (
@@ -1290,6 +1422,8 @@ function ColumnsMenu(props: {
   columns: Column[];
   hidden: ReadonlySet<ColumnKey>;
   onChange: (key: ColumnKey, on: boolean) => void;
+  /** Every column's width as it starts (0.9.0, TW). */
+  onReset: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const id = useId();
@@ -1347,6 +1481,13 @@ function ColumnsMenu(props: {
                 onChange={(on) => props.onChange(c.key, on)}
               />
             ))}
+          <button
+            type="button"
+            className="btn btn-quiet btn-small columns-reset"
+            onClick={props.onReset}
+          >
+            Reset column widths
+          </button>
         </div>
       )}
     </div>
@@ -1379,8 +1520,10 @@ function useClipTips(rows: readonly DocumentView[]) {
     bottom?: number;
   } | null>(null);
   const shown = tip && (tip.row === null || rows.some((d) => d.id === tip.row)) ? tip : null;
-  const cut = (el: HTMLElement) =>
+  const over = (el: Element) =>
     el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
+  // Or a chip in it, cut short in its own box (0.9.0, TW).
+  const cut = (el: HTMLElement) => over(el) || [...el.querySelectorAll('.chip')].some(over);
   const clipOf = (target: EventTarget | null): HTMLElement | null => {
     if (!(target instanceof HTMLElement)) return null;
     return target.closest<HTMLElement>('[data-clip]') ?? target.querySelector('[data-clip]');

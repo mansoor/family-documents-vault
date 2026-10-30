@@ -4593,6 +4593,143 @@ a.menu-item {
   gap: 6px;
 }
 
+/* ---- 0.9.0, TW: the Documents table's columns ----
+   Documents' and a collection's table (docs-tbl), never the app's other
+   tables. Each column is as wide as what it usually says, on one line, cut
+   short with an ellipsis past that (the whole of it in a tip); its header
+   whole, on one line; and its right edge a line to drag, or to move with
+   the keys (column-widths.tsx). The title alone keeps two lines. */
+.docs-tbl-wrap {
+  /* The headers' layers are the table's own, under the page's menus. */
+  isolation: isolate;
+}
+
+.docs-tbl th {
+  padding: 0 12px 0 8px;
+  white-space: nowrap;
+}
+
+/* The pinned headers over every one that scrolls under them (over
+   `.tbl th.col-more`'s too, later in this file). */
+.tbl.docs-tbl th.col-pick,
+.tbl.docs-tbl th.col-title,
+.tbl.docs-tbl th.col-more {
+  z-index: 30;
+}
+
+.docs-tbl .th-sort {
+  min-width: 0;
+}
+
+.docs-tbl .th-words {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A date's end under its header's. */
+.docs-tbl td.end {
+  padding-right: 12px;
+}
+
+.docs-tbl td:not(.col-title) .clip {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+}
+
+/* Inline, so the ellipsis cuts its words rather than hiding it whole. */
+.docs-tbl .clip .vis {
+  display: inline;
+}
+
+.docs-tbl .clip .vis .icon {
+  margin-right: 6px;
+  vertical-align: -2px;
+}
+
+/* One chip and a "+2": the chip gives up its room first, the "+2" never. */
+.docs-tbl td .clip.clip-chips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.docs-tbl .clip.clip-chips .chip {
+  flex: none;
+  margin: 0;
+}
+
+.docs-tbl .clip.clip-chips .chip:first-child {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* The line at a column's right edge: astride it, 24 px to aim at; over the
+   next header, which is a layer under this one (Documents.tsx). */
+.col-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -12px;
+  z-index: 1;
+  width: 24px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+/* Beside the ⋯, inside its own edge. */
+.col-resize.col-resize-last {
+  right: 0;
+}
+
+.col-resize::before {
+  content: '';
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 11px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--border-strong);
+}
+
+.col-resize.col-resize-last::before {
+  left: auto;
+  right: 0;
+}
+
+.col-resize:hover::before,
+.col-resize:focus-visible::before,
+.col-resize.dragging::before {
+  top: 4px;
+  bottom: 4px;
+  left: 10px;
+  width: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.col-resize.col-resize-last:hover::before,
+.col-resize.col-resize-last:focus-visible::before,
+.col-resize.col-resize-last.dragging::before {
+  left: auto;
+  right: 0;
+}
+
+.col-resize:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
+.columns-reset {
+  align-self: flex-start;
+  margin-top: 6px;
+}
+
 /* Under the box that scrolls, as its last line: never scrolled aside (W2). */
 .tbl-more {
   display: flex;

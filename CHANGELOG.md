@@ -6,6 +6,13 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.24] - 2026-10-30 — a balanced Documents table, with columns you can widen
+
+### Changed
+
+- **A balanced Documents table, with columns you can widen (0.9.0).** The table no longer gives the title most of the width while the other columns squeeze onto two lines. Each column now starts as wide as what it usually says, on one line: a kind such as "Visa / residence permit", a first name, a date such as "28 Sept 2026", a status such as "Valid for 1 year 1 month", who can see it, a place, and one collection with a "+2". Its header fits on one line too; **Who can see it** is headed **Who sees it** to save room, and keeps its full name in the Columns menu and the filters. The title takes what is left, from 240 pixels up to a quarter of the table, and on a wide window the rest of the room is shared out among the other columns. Anything longer than its column is cut short with "…", and the whole of it shows when you point at it or move to it. On a window a little too narrow for every column (about 1,530 to 1,630 pixels wide with the sidebar open), the kind, status and place give up a little room first; narrower than that, as at 1,280 or 1,024 pixels, every column keeps its width, nothing is cut, and the table scrolls sideways, with the title and the tick boxes staying where they are. Hiding a column in the **Columns** menu gives its room to the others.
+- **Drag the edge of any column's header to make it wider or narrower,** the title's included. You can also press Tab from a header's sort button to reach its edge, then use the arrow keys (Shift moves it further), Home for its narrowest and End for its widest; a double-click, or Enter, fits the column to the widest of what it shows. Your widths are remembered for you on this browser, and **Reset column widths** in the Columns menu puts them back. A collection's table keeps its own widths, apart from the Documents table's. Pressing a header still sorts by it; the edge never does. On a phone the list is unchanged.
+
 ## [0.9.0-dev.23] - 2026-10-30 — a switch is a switch everywhere
 
 ### Fixed

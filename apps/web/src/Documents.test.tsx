@@ -230,7 +230,7 @@ describe('the Documents table, from 768 px (R2)', () => {
       'Issued',
       'Expires',
       'Status',
-      'Who can see it',
+      'Who sees it',
       'Location',
       'Collections',
     ]);
@@ -1371,9 +1371,13 @@ describe('the Documents table, from 768 px (R2)', () => {
     at('/documents', { documents: [] });
     let t = await table();
     await screen.findByText('Nothing here yet.');
-    // Not the header's box, which has nothing to choose: the first sort.
+    // Not the header's box, which has nothing to choose: the first sort —
+    // and, after it, the line at its edge (0.9.0, TW).
     expect(within(t).getByRole('checkbox', { name: /^Select all/ })).toBeDisabled();
-    expect(gridStops(t)).toEqual([within(t).getByRole('button', { name: /^Title/ })]);
+    expect(gridStops(t)).toEqual([
+      within(t).getByRole('button', { name: /^Title/ }),
+      within(t).getByRole('separator', { name: 'Width of Title' }),
+    ]);
     cleanup();
 
     at('/documents');
@@ -1619,6 +1623,397 @@ describe('the Documents table, from 768 px (R2)', () => {
     expect(document.activeElement).toHaveAccessibleName(/^Actions for “/);
     expect(document.activeElement?.closest('td')).toHaveClass('col-more');
     await expectAccessible();
+  });
+});
+
+describe('the Documents table’s columns, balanced and widened (0.9.0, TW)', () => {
+  const KEY = 'fdv.documents.columns.me';
+  const NAMES = [
+    'Title',
+    'Kind',
+    'Person',
+    'Issued',
+    'Expires',
+    'Status',
+    'Who can see it',
+    'Location',
+    'Collections',
+  ];
+  const line = (t: HTMLElement, name: string) =>
+    within(t).getByRole('separator', { name: `Width of ${name}` });
+  const now = (el: HTMLElement) => Number(el.getAttribute('aria-valuenow'));
+  /** Long enough for a sort, which goes through the address, to have been drawn. */
+  const settled = () =>
+    act(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+    });
+  const sortOf = (t: HTMLElement, name: string) =>
+    (
+      within(t)
+        .getByRole('button', { name: new RegExp(`^${name}`) })
+        .closest('th') as HTMLElement
+    ).getAttribute('aria-sort');
+  /** The window this wide: what the table's room is worked out from before it is measured. */
+  const windowOf = (px: number) =>
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: px });
+  let was = 1024;
+  beforeEach(() => {
+    was = window.innerWidth;
+  });
+  afterEach(() => windowOf(was));
+
+  it('starts each column as wide as what it usually says, the title what is left (1,650 px)', async () => {
+    windowOf(1650);
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    // A line at the edge of each column's header, the title's too — never the box's, nor the ⋯'s.
+    expect(within(t).getAllByRole('separator')).toHaveLength(NAMES.length);
+    expect(t.querySelector('th.col-pick [role="separator"]')).toBeNull();
+    expect(t.querySelector('th.col-more [role="separator"]')).toBeNull();
+    const widths = Object.fromEntries(NAMES.map((n) => [n, now(line(t, n))]));
+    expect(widths).toEqual({
+      Title: 262,
+      Kind: 162,
+      Person: 92,
+      Issued: 106,
+      Expires: 106,
+      Status: 184,
+      'Who can see it': 118,
+      Location: 122,
+      Collections: 132,
+    });
+    const title = line(t, 'Title');
+    expect(title).toHaveAttribute('aria-orientation', 'vertical');
+    expect(title).toHaveAttribute('aria-valuemin', '160');
+    expect(title).toHaveAttribute('aria-valuemax', '960');
+    // The table as wide as its box (the window less the sidebar, the
+    // page's padding and the box's border), each column as wide as its line says.
+    expect(t.style.width).toBe('1384px');
+    const cols = [...t.querySelectorAll<HTMLElement>('colgroup col')].map((c) => c.style.width);
+    expect(cols).toEqual(['44px', ...NAMES.map((n) => `${widths[n] ?? 0}px`), '56px']);
+    // Its header in shorter words, whole on one line; its name in full elsewhere.
+    expect(within(t).getByRole('button', { name: /^Who sees it/ })).toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('at 1,024 px, keeps every column whole and the title at 240 px: the box scrolls sideways', async () => {
+    windowOf(1024);
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    expect(now(line(t, 'Title'))).toBe(240);
+    expect(now(line(t, 'Kind'))).toBe(162);
+    expect(now(line(t, 'Status'))).toBe(184);
+    // Wider than its box (758 px): it scrolls, the box and the title staying put.
+    expect(Number.parseInt(t.style.width, 10)).toBeGreaterThan(758);
+  });
+
+  it('gives a hidden column’s room back to the rest', async () => {
+    windowOf(1650);
+    localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify(['location', 'collections']));
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    expect(within(t).queryByRole('separator', { name: 'Width of Location' })).toBeNull();
+    expect(now(line(t, 'Title'))).toBeGreaterThan(262);
+    expect(now(line(t, 'Kind'))).toBeGreaterThan(162);
+    expect(t.style.width).toBe('1384px');
+  });
+
+  it('a line dragged widens its column, the rest giving way; kept once let go, and never a sort', async () => {
+    windowOf(1650);
+    const state = at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    const asked = documentCalls(state).length;
+    const title = line(t, 'Title');
+    const col = t.querySelectorAll<HTMLElement>('colgroup col')[1] as HTMLElement;
+    fireEvent.pointerDown(title, { clientX: 500, pointerId: 1 });
+    fireEvent.pointerMove(title, { clientX: 560, pointerId: 1 });
+    // Drawn as it moves, the others giving way; not yet kept.
+    expect(col.style.width).toBe('322px');
+    expect(Number.parseInt(t.style.width, 10)).toBe(1384);
+    expect(localStorage.getItem(KEY)).toBeNull();
+    fireEvent.pointerUp(title, { clientX: 580, pointerId: 1 });
+    await waitFor(() => expect(now(title)).toBe(342));
+    expect(JSON.parse(localStorage.getItem(KEY) ?? '{}')).toEqual({ title: 342 });
+    // Let go over the header: no sort, nothing asked of the vault again.
+    fireEvent.click(title);
+    await settled();
+    expect(sortOf(t, 'Title')).toBe('ascending');
+    expect(window.location.search).toBe('');
+    expect(documentCalls(state)).toHaveLength(asked);
+    // Never past its bounds.
+    fireEvent.pointerDown(title, { clientX: 500, pointerId: 2 });
+    fireEvent.pointerMove(title, { clientX: -900, pointerId: 2 });
+    fireEvent.pointerUp(title, { clientX: -900, pointerId: 2 });
+    await waitFor(() => expect(now(title)).toBe(160));
+    fireEvent.pointerDown(title, { clientX: 0, pointerId: 3 });
+    fireEvent.pointerMove(title, { clientX: 2500, pointerId: 3 });
+    fireEvent.pointerUp(title, { clientX: 5000, pointerId: 3 });
+    await waitFor(() => expect(now(title)).toBe(960));
+    // A press that never moves changes nothing.
+    const kind = line(t, 'Kind');
+    fireEvent.pointerDown(kind, { clientX: 700, pointerId: 4 });
+    fireEvent.pointerUp(kind, { clientX: 700, pointerId: 4 });
+    expect(JSON.parse(localStorage.getItem(KEY) ?? '{}')).toEqual({ title: 960 });
+  });
+
+  it('a line in focus moves with the arrows, Shift four times as far, Home and End; never the grid’s', async () => {
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    const title = line(t, 'Title');
+    act(() => title.focus());
+    const press = (key: string, shiftKey = false) => fireEvent.keyDown(title, { key, shiftKey });
+    press('ArrowRight');
+    expect(now(title)).toBe(256);
+    press('ArrowRight', true);
+    expect(now(title)).toBe(320);
+    press('ArrowLeft');
+    expect(now(title)).toBe(304);
+    press('ArrowLeft', true);
+    expect(now(title)).toBe(240);
+    press('Home');
+    expect(now(title)).toBe(160);
+    press('End');
+    expect(now(title)).toBe(960);
+    // Each a move of the line, not of the grid's focus.
+    expect(title).toHaveFocus();
+    expect(JSON.parse(localStorage.getItem(KEY) ?? '{}')).toEqual({ title: 960 });
+    // ↓ is the grid's: to the first row's title.
+    press('ArrowDown');
+    expect(document.activeElement).toHaveClass('cell-title');
+    expect(sortOf(t, 'Title')).toBe('ascending');
+  });
+
+  it('a double click, or Enter, fits a column to the widest of what it shows', async () => {
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    // jsdom has no layout: words 7 px a letter, measured only as they are
+    // measured to fit, all on one line.
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element,
+    ) {
+      const el = this as HTMLElement;
+      const w =
+        el.matches('.clip, .th-sort') && el.style.width === 'max-content'
+          ? (el.textContent?.length ?? 0) * 7
+          : 0;
+      return { left: 0, top: 0, right: w, bottom: 20, width: w, height: 20 } as DOMRect;
+    });
+    // With each cell's own padding (jsdom's is a pixel each side).
+    const widest = (i: number) =>
+      Math.max(
+        ...[...t.querySelectorAll('tr')].map((r) => {
+          const cell = r.children[i] as HTMLElement;
+          const c = cell.querySelector('.clip, .th-sort');
+          const cs = getComputedStyle(cell);
+          const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+          return c ? (c.textContent?.length ?? 0) * 7 + pad : 0;
+        }),
+      );
+    const kind = line(t, 'Kind');
+    fireEvent.doubleClick(kind);
+    // The box's column, then the title's, then Kind's.
+    const fit = Math.max(72, widest(2));
+    expect(fit).toBeGreaterThan(72);
+    await waitFor(() => expect(now(kind)).toBe(fit));
+    // Measured, then each as it was.
+    expect(t.querySelector('.clip[style], .th-sort[style]')).toBeNull();
+    const title = line(t, 'Title');
+    act(() => title.focus());
+    fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(now(title)).toBe(Math.max(160, widest(1))));
+    expect(window.location.search).toBe('');
+    expect(JSON.parse(localStorage.getItem(KEY) ?? '{}')).toEqual({
+      kind: fit,
+      title: Math.max(160, widest(1)),
+    });
+  });
+
+  it('remembers each person’s widths, within each column’s bounds', async () => {
+    localStorage.setItem(KEY, JSON.stringify({ title: 5000, kind: 300, person: 'wide', x: 9 }));
+    localStorage.setItem('fdv.documents.columns.m-2', JSON.stringify({ status: 400 }));
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    expect(now(line(t, 'Title'))).toBe(960);
+    expect(now(line(t, 'Kind'))).toBe(300);
+    expect(now(line(t, 'Person'))).toBe(92);
+    // Somebody else's, on this device, are theirs.
+    expect(now(line(t, 'Status'))).toBe(184);
+  });
+
+  it('with storage blocked, starts as it starts, and still moves for this visit', async () => {
+    const blocked = (key: string) => key.startsWith('fdv.documents.columns');
+    const getItem = Object.getOwnPropertyDescriptor(Storage.prototype, 'getItem')
+      ?.value as Storage['getItem'];
+    const setItem = Object.getOwnPropertyDescriptor(Storage.prototype, 'setItem')
+      ?.value as Storage['setItem'];
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key) {
+      if (blocked(key)) throw new Error('blocked');
+      return getItem.call(this, key);
+    });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key, v) {
+      if (blocked(key)) throw new Error('blocked');
+      setItem.call(this, key, v);
+    });
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    const title = line(t, 'Title');
+    expect(now(title)).toBe(240);
+    fireEvent.keyDown(title, { key: 'ArrowRight' });
+    expect(now(title)).toBe(256);
+  });
+
+  it('Reset column widths, in the Columns menu, puts every column back as it starts', async () => {
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    fireEvent.keyDown(line(t, 'Title'), { key: 'End' });
+    fireEvent.keyDown(line(t, 'Kind'), { key: 'ArrowRight' });
+    expect(localStorage.getItem(KEY)).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Columns' }));
+    const menu = screen.getByRole('group', { name: 'Columns shown' });
+    fireEvent.click(within(menu).getByRole('button', { name: 'Reset column widths' }));
+    expect(now(line(t, 'Title'))).toBe(240);
+    expect(now(line(t, 'Kind'))).toBe(162);
+    expect(localStorage.getItem(KEY)).toBeNull();
+    // Which columns are shown is the menu's other business: left as it was.
+    expect(headers(t)).toHaveLength(NAMES.length);
+  });
+
+  it('a header still sorts by a click; its line never does', async () => {
+    const state = at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    fireEvent.click(line(t, 'Kind'));
+    fireEvent.doubleClick(line(t, 'Kind'));
+    await settled();
+    expect(sortOf(t, 'Kind')).toBeNull();
+    expect(window.location.search).toBe('');
+    fireEvent.click(within(t).getByRole('button', { name: /^Kind/ }));
+    await waitFor(() => expect(sortOf(t, 'Kind')).toBe('ascending'));
+    expect(lastQuery(state).get('sort')).toBe('kind');
+  });
+
+  it('a header’s line is a stop for Tab beside its sort, while that is the grid’s stop', async () => {
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    const stops = () =>
+      within(t)
+        .getAllByRole('separator')
+        .filter((s) => s.tabIndex === 0)
+        .map((s) => s.getAttribute('aria-label'));
+    // The grid's stop in a row: no line is one.
+    expect(stops()).toEqual([]);
+    act(() =>
+      within(t)
+        .getByRole('button', { name: /^Title/ })
+        .focus(),
+    );
+    expect(stops()).toEqual(['Width of Title']);
+    act(() => within(t).getByRole('button', { name: /^Kind/ }).focus());
+    expect(stops()).toEqual(['Width of Kind']);
+    // In focus itself, it stays the stop beside its sort.
+    act(() => line(t, 'Kind').focus());
+    expect(stops()).toEqual(['Width of Kind']);
+    expect(gridStops(t)).toEqual([
+      within(t).getByRole('button', { name: /^Kind/ }),
+      line(t, 'Kind'),
+    ]);
+    act(() => within(t).getByRole('checkbox', { name: 'Select “House deed”' }).focus());
+    expect(stops()).toEqual([]);
+  });
+
+  it('a line in focus is scrolled clear of the ⋯ pinned at the right, and of the box and title', async () => {
+    at('/documents', {}, 'owner', MID);
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    const wrap = t.closest('.tbl-wrap') as HTMLDivElement;
+    let left = 300;
+    Object.defineProperty(wrap, 'scrollLeft', {
+      configurable: true,
+      get: () => left,
+      set: (v: number) => {
+        left = v;
+      },
+    });
+    Object.defineProperty(wrap, 'clientWidth', { configurable: true, get: () => 600 });
+    Object.defineProperty(wrap, 'clientHeight', { configurable: true, get: () => 400 });
+    // A box 600 px wide; the box and title pinned over its first 284 px, the
+    // ⋯ over its last 56; Location's header in sight, its line, astride its
+    // edge, partly under the ⋯; Kind's partly under the title.
+    const rect = (l: number, w: number) =>
+      ({ left: l, right: l + w, top: 0, bottom: 44, width: w, height: 44 }) as DOMRect;
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element,
+    ) {
+      if (this === wrap) return rect(0, 600);
+      if (this.matches('thead .col-pick')) return rect(0, 44);
+      if (this.matches('thead .col-title')) return rect(44, 240);
+      if (this.matches('thead .col-more')) return rect(544, 56);
+      if (this.matches('thead th')) return rect(300, 100);
+      const name = this.getAttribute('aria-label');
+      if (name === 'Width of Location') return rect(530, 24);
+      if (name === 'Width of Kind') return rect(274, 24);
+      return rect(0, 0);
+    });
+    act(() => line(t, 'Location').focus());
+    // Scrolled on by what the ⋯ covered: 530 + 24 - 544.
+    expect(left).toBe(310);
+    act(() => line(t, 'Kind').focus());
+    // Back by what the title covered: 284 - 274.
+    expect(left).toBe(300);
+  });
+
+  it('a date, who can see it, and a chip cut short are shown whole in a tip', async () => {
+    at('/documents', {
+      collections: [{ ...TRAVEL, name: 'Everything for the mortgage broker' }],
+    });
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    const visa = within(t).getByRole('link', { name: "Sara's visa" }).closest('tr') as HTMLElement;
+    // jsdom has no layout: the chip's words wider than its box.
+    const chip = within(visa).getByText('Everything for the mortgage broker');
+    Object.defineProperty(chip, 'scrollWidth', { configurable: true, get: () => 200 });
+    Object.defineProperty(chip, 'clientWidth', { configurable: true, get: () => 90 });
+    fireEvent.mouseOver(chip);
+    expect(document.querySelector('.clip-tip')).toHaveTextContent(
+      'Everything for the mortgage broker',
+    );
+    fireEvent.mouseOut(chip);
+    const date = within(visa).getByText('1 May 2019');
+    expect(date).toHaveAttribute('data-clip', '1 May 2019');
+    Object.defineProperty(date, 'scrollWidth', { configurable: true, get: () => 90 });
+    Object.defineProperty(date, 'clientWidth', { configurable: true, get: () => 60 });
+    fireEvent.mouseOver(date);
+    expect(document.querySelector('.clip-tip')).toHaveTextContent('1 May 2019');
+    expect(within(visa).getByText('Everyone').closest('[data-clip]')).toHaveAttribute(
+      'data-clip',
+      'Everyone',
+    );
+  });
+
+  it('is not on a phone: its list is as it was', async () => {
+    at('/documents', {}, 'owner', PHONE);
+    await screen.findByRole('button', { name: /^Mansoor's passport/ });
+    expect(screen.queryByRole('grid')).toBeNull();
+    expect(screen.queryAllByRole('separator')).toEqual([]);
+    expect(document.querySelector('.docs-tbl, .col-resize')).toBeNull();
+  });
+
+  it('leaves the app’s other tables as they were', async () => {
+    at('/activity');
+    await waitFor(() => expect(document.querySelector('table.tbl')).not.toBeNull());
+    const other = document.querySelector('table.tbl') as HTMLElement;
+    expect(document.querySelector('.docs-tbl, .docs-tbl-wrap, .col-resize')).toBeNull();
+    expect(within(other).queryAllByRole('separator')).toEqual([]);
   });
 });
 

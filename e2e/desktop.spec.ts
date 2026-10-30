@@ -204,6 +204,26 @@ test('the Documents table sorts by a column, and moves two chosen to the Trash',
   );
   await expect(page).toHaveURL(/dir=desc/);
 
+  // The line at the title's edge (0.9.0, TW): Tab from the title's sort,
+  // Shift+→ widens the column 64 px, still sorted as it was; and Reset
+  // column widths, in the Columns menu, puts it back. Exact names.
+  await grid.getByRole('button', { name: /^Title/ }).focus();
+  await page.keyboard.press('Tab');
+  const line = grid.getByRole('separator', { name: 'Width of Title', exact: true });
+  await expect(line).toBeFocused();
+  const was = Number(await line.getAttribute('aria-valuenow'));
+  const head = grid.locator('thead th.col-title');
+  const before = (await head.boundingBox())?.width ?? 0;
+  await page.keyboard.press('Shift+ArrowRight');
+  await expect(line).toHaveAttribute('aria-valuenow', String(was + 64));
+  expect(((await head.boundingBox())?.width ?? 0) - before).toBeCloseTo(64, 0);
+  await expect(page).toHaveURL(/dir=desc/);
+  await expect(titles).toHaveText([`R5 table B ${run}`, `R5 table A ${run}`]);
+  await page.getByRole('button', { name: 'Columns', exact: true }).click();
+  await page.getByRole('button', { name: 'Reset column widths', exact: true }).click();
+  await expect(line).toHaveAttribute('aria-valuenow', String(was));
+  await page.keyboard.press('Escape');
+
   // Both chosen, then one action for both.
   await grid.getByRole('checkbox', { name: `Select “R5 table A ${run}”` }).check();
   await grid.getByRole('checkbox', { name: `Select “R5 table B ${run}”` }).check();
