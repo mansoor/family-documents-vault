@@ -6,6 +6,12 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.23] - 2026-10-30 — a switch is a switch everywhere
+
+### Fixed
+
+- **A switch inside a form is drawn as a switch again, not a square (0.9.0).** The yes-or-no switches in a form's fields (**No longer needed** in Edit, **Required** when adding a kind, and the like) took a text box's height and padding, so their rounded track was drawn as a tall, square-cornered box. They worked as before; now they look like every other switch, in both themes.
+
 ## [0.9.0-dev.22] - 2026-10-29 — a document's page at full width, a line you can drag, zoom, and the pages beside Edit
 
 ### Changed
