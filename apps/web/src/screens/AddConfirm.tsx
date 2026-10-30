@@ -81,6 +81,9 @@ import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 import { EmailInLine } from '../mail-in.js';
 import { localeReadsMonthFirst } from '../family-time.js';
 import { mayChange } from '../DocActions.js';
+import { DocPanes } from '../doc-panes.js';
+import { useShellMode } from '../shell.js';
+import { DocumentPages } from './Document.js';
 import { storedRole } from '../session.js';
 import {
   bodyOf,
@@ -400,6 +403,8 @@ export function ConfirmScreen() {
     answer: (ownLinks: 'end' | 'keep' | null) => void;
   } | null>(null);
   const saveButton = useRef<HTMLButtonElement>(null);
+  // From 768 px its pages beside the card, as on its own page (0.9.0).
+  const panes = useShellMode() !== 'phone';
   const {
     data,
     error: loadError,
@@ -509,6 +514,9 @@ export function ConfirmScreen() {
         initial={cardFor(doc)}
         submitLabel="Save to the vault"
         submitButton={saveButton}
+        pages={
+          panes ? <EditPages documentId={doc.id} title={doc.title ?? 'Needs a name'} /> : undefined
+        }
         more={
           mayMark ? (
             <NoLongerNeededProperty
@@ -591,6 +599,41 @@ export function ConfirmScreen() {
         />
       )}
     </>
+  );
+}
+
+/**
+ * A document's pages beside its card (0.9.0): asked for on their own, so
+ * the card never waits for them nor fails with them — and an Essential's
+ * still wait for "Confirm it's you", which the card never needs.
+ */
+function EditPages(props: { documentId: string; title: string }) {
+  const { authVersion } = useApp();
+  const { data, error, reload } = useLoad(
+    async (t) => (await api.versions(t, props.documentId)).items,
+    [props.documentId, authVersion],
+  );
+  if (error)
+    return (
+      <section className="doc-pages" aria-label={`Pages of ${props.title}`}>
+        <ErrorNote message={error} />
+      </section>
+    );
+  if (!data)
+    return (
+      <section className="doc-pages" aria-label={`Pages of ${props.title}`}>
+        <p className="muted">Loading the pages…</p>
+      </section>
+    );
+  const latest = data[0];
+  return (
+    <DocumentPages
+      key={latest?.id ?? 'none'}
+      documentId={props.documentId}
+      title={props.title}
+      version={latest}
+      onDrawn={() => void reload()}
+    />
   );
 }
 
@@ -945,6 +988,12 @@ export function ConfirmForm(props: {
    * sets, with its details, under them — No longer needed. Saved with them.
    */
   more?: ReactNode;
+  /**
+   * Its pages, beside the card (0.9.0, the owner's ask of 29 Oct 2026): the
+   * card in the details' place, the line between them and the pages as on
+   * the document's own page. Given only where there is room for two panes.
+   */
+  pages?: ReactNode;
   /** Throws to keep the card open with the vault's words. */
   onSubmit: (details: DocumentInput, extra?: { collection_id: string | null }) => Promise<void>;
   /** Save without details: offered for a new document only. */
@@ -1964,6 +2013,23 @@ export function ConfirmForm(props: {
   );
   // The review queue's item: the card is the left pane, its page the queue's (I3).
   if (props.pane) return form;
+  // A document's: the card beside its pages, as the review queue's is.
+  if (props.pages)
+    return (
+      <main className="page page-top doc-panes">
+        <TopBar title={props.title} back={props.back} backInApp={props.backInApp === true} />
+        <DocPanes
+          details={
+            <section id="doc-details" className="doc-details" aria-label="The details">
+              <p className="lede">{props.lede}</p>
+              {props.aside}
+              {form}
+            </section>
+          }
+          pages={props.pages}
+        />
+      </main>
+    );
   return (
     <main className="page page-top">
       <TopBar title={props.title} back={props.back} backInApp={props.backInApp === true} />

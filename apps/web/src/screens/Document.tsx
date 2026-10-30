@@ -18,6 +18,7 @@ import { mayChange } from '../DocActions.js';
 import { asksFor, coreRule, detailText, useAttributes } from '../details.js';
 import { NotesSection } from '../notes.js';
 import { NeededAgainQuestion, NoLongerNeededBanner } from '../no-longer-needed.js';
+import { DocPanes } from '../doc-panes.js';
 import { PageViewer } from '../page-viewer.js';
 import { useShellMode } from '../shell.js';
 import {
@@ -253,6 +254,291 @@ export function DocumentScreen() {
         ? 'Adults only'
         : 'Only me';
 
+  const detailsPane = (
+    <section id="doc-details" className="doc-details" aria-label={`Details of ${title}`}>
+      <div className="row" style={{ alignItems: 'center', gap: 12 }}>
+        <StatusBadge status={doc.status} />
+        <span className="muted">{visibilityLabel}</span>
+      </div>
+      {/* Kept, but no longer needed (0.9.0): since when, what replaced
+              it, and Needed again for whoever may change it. */}
+      <NoLongerNeededBanner
+        doc={doc}
+        mayChange={mayChangeIt}
+        onChanged={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
+      />
+      {askAgain && (
+        <NeededAgainQuestion
+          doc={doc}
+          returnFocus={versionInput}
+          onAnswered={(saved) => {
+            setAskAgain(false);
+            if (saved) setData((d) => (d ? { ...d, doc: saved } : d));
+          }}
+        />
+      )}
+      {/* "We read the pages — is this right?" (5.37): for whoever may change it. */}
+      {suggests && mayChangeIt && latest && !latest.file_removed && (
+        <PagesSuggest
+          key={`pages-${doc.id}`}
+          doc={doc}
+          types={types}
+          members={members}
+          onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
+          onStale={reload}
+          onGone={() => facts.current?.focus()}
+        />
+      )}
+
+      <dl className="facts" ref={facts} tabIndex={-1}>
+        <dt>Type</dt>
+        <dd>{type?.label ?? 'Not set'}</dd>
+        <dt>Person</dt>
+        <dd>{owner?.display_name ?? 'Not set'}</dd>
+        {doc.issued_by && (
+          <>
+            {/* The type's own word for it: "Institution", "Insurer"… */}
+            <dt>{issuedByLabel(type)}</dt>
+            <dd>{doc.issued_by}</dd>
+          </>
+        )}
+        {doc.identifier && (
+          <>
+            <dt>{word('identifier', 'Number')}</dt>
+            <dd>{doc.identifier}</dd>
+          </>
+        )}
+        {doc.issued && (
+          <>
+            <dt>{word('issued', 'Issued')}</dt>
+            <dd>{formatDate(doc.issued)}</dd>
+          </>
+        )}
+        {doc.expires && (
+          <>
+            <dt>{word('expires', 'Expires')}</dt>
+            <dd>{formatDate(doc.expires)}</dd>
+          </>
+        )}
+        {/* The type's own details, in its order (5.10). */}
+        {details.map(({ field, value }) => (
+          <Fragment key={field.key}>
+            <dt>{field.label}</dt>
+            <dd className={field.kind === 'long_text' ? 'keep-lines' : undefined}>
+              {detailText(field.kind, value)}
+            </dd>
+          </Fragment>
+        ))}
+        <dt>Category</dt>
+        <dd>{categoryLabel(doc.category)}</dd>
+        {/* Where the original is kept is the household's (5.41): never a
+            viewer's or a guest's, whatever an answer carries. */}
+        {seesLocation(storedRole()) && doc.physical_location && (
+          <>
+            <dt>{word('physical_location', 'Original is kept')}</dt>
+            <dd>{doc.physical_location}</dd>
+          </>
+        )}
+      </dl>
+
+      {/* On a phone, the pages within reach: right after the facts, before
+              the notes, the history and the rest (R3, as the prototype). */}
+      {!panes && (
+        <PhonePages documentId={doc.id} title={title} docTitle={doc.title} version={latest} />
+      )}
+
+      {others.length > 0 && (
+        <section aria-labelledby="other-h">
+          <h2 id="other-h" className="section-h">
+            Other details
+          </h2>
+          <p className="muted">
+            This kind of document no longer asks for these. They are kept until somebody removes
+            them.
+          </p>
+          <ul className="list">
+            {others.map(([key, value]) => {
+              const known = library?.find((a) => a.key === key);
+              const label = known?.label ?? key;
+              const text = detailText(known?.kind, value);
+              return (
+                <li key={key}>
+                  <span>
+                    <strong>{label}</strong>
+                    <span className="muted keep-lines">{text}</span>
+                  </span>
+                  {mayChangeIt && (
+                    <Button
+                      kind="quiet"
+                      ariaLabel={`Remove ${label}`}
+                      onClick={() => setRemoving({ key, label, text })}
+                    >
+                      Remove
+                    </Button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+      {/* By the list, where the person is: not at the top of the page. */}
+      <ErrorNote message={removeNote} />
+      {removing && (
+        <ConfirmDialog
+          title="Remove this detail?"
+          confirmLabel="Remove"
+          busyLabel="Removing…"
+          danger
+          busy={removeBusy}
+          returnFocus={facts}
+          onConfirm={() => void removeDetail()}
+          onCancel={() => setRemoving(null)}
+        >
+          <p>
+            “{removing.label}: {removing.text}” is taken off this document for good.
+          </p>
+        </ConfirmDialog>
+      )}
+
+      {/* One note a document (5.35, A30): read by whoever sees it, written
+          by whoever may change it. A kind of document that does not ask for
+          notes offers none, but shows one it has. */}
+      {(doc.notes || (mayChangeIt && coreRule(type, 'notes').shown)) && (
+        <NotesSection
+          key={doc.id}
+          doc={doc}
+          label={word('notes', 'Notes')}
+          mayEdit={mayChangeIt}
+          timezone={data.timezone}
+          // As the vault holds it now, whether saved or refused (409): over
+          // whatever the page holds then, never a copy from before a reload.
+          onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
+          onRefreshed={(now) => setData((d) => (d ? { ...d, doc: now } : d))}
+        />
+      )}
+      {/* The thin line under the details and the note; then one row:
+              Download, a button for each section, and the Trash at the end
+              (the owner's request of 24 Oct 2026). */}
+      <hr className="note-divider" />
+      <ActionRow
+        kind="document"
+        memberId={memberId}
+        onDownload={latest && !latest.file_removed ? () => void download(latest) : null}
+        onTrash={mayChangeIt ? () => setConfirmingTrash(true) : null}
+        trashRef={trashButton}
+        error={<ErrorNote message={actionError} />}
+        sections={[
+          // Its versions beside Download: the file's own actions together.
+          {
+            key: 'history' as const,
+            label: 'History',
+            icon: <ActionIcon name="history" />,
+            badge: countBadge(versions.length, 'version', 'versions'),
+            render: () => history,
+          },
+          ...(mayChangeWhoSees({ current: doc.visibility, isMine, filedByMe })
+            ? [
+                {
+                  key: 'visibility' as const,
+                  label: 'Who can see it',
+                  icon: <ActionIcon name="eye" />,
+                  badge: {
+                    shown: VISIBILITY_SHORT[doc.visibility],
+                    spoken: VISIBILITY_WORDS[doc.visibility],
+                  },
+                  heading: 'Who can see it',
+                  busy: busy.visibility === true,
+                  render: (done: () => void) => (
+                    <VisibilityControl
+                      documentId={doc.id}
+                      current={doc.visibility}
+                      isMine={isMine}
+                      filedByMe={filedByMe}
+                      onChanged={reload}
+                      onClose={done}
+                      onBusy={(on) => setBusy((b) => ({ ...b, visibility: on }))}
+                    />
+                  ),
+                },
+              ]
+            : []),
+          // Its tags as chips, each a way to the others like it; added and
+          // taken off here by whoever may change it (0.9.0, T1).
+          ...(doc.tags.length > 0 || mayChangeIt
+            ? [
+                {
+                  key: 'tags' as const,
+                  label: 'Tags',
+                  icon: <ActionIcon name="tag" />,
+                  badge: countBadge(doc.tags.length, 'tag', 'tags'),
+                  render: () => (
+                    <TagSection
+                      key={`tags-${doc.id}`}
+                      doc={doc}
+                      mayEdit={mayChangeIt}
+                      onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
+                    />
+                  ),
+                },
+              ]
+            : []),
+          ...(collectionsOffered(caps, storedRole())
+            ? [
+                {
+                  key: 'collections' as const,
+                  label: 'Collections',
+                  icon: <ActionIcon name="collection" />,
+                  badge:
+                    counts.collections === undefined
+                      ? null
+                      : countBadge(counts.collections, 'collection', 'collections'),
+                  render: () => (
+                    <DocumentCollections
+                      documentId={doc.id}
+                      title={title}
+                      onCount={onCollections}
+                    />
+                  ),
+                },
+              ]
+            : []),
+          // A link sends the file: with none yet, there is nothing to send (5.4).
+          ...(doc.latest_version_id !== null && can(storedRole(), 'document.share')
+            ? [
+                {
+                  key: 'share' as const,
+                  label: 'Share a link',
+                  icon: <ActionIcon name="link" />,
+                  badge: counts.links ? countBadge(counts.links, 'live link', 'live links') : null,
+                  busy: busy.share === true,
+                  render: (done: () => void) => (
+                    <SharePanel
+                      documentId={doc.id}
+                      documentTitle={doc.title}
+                      onlyMe={doc.visibility === 'private'}
+                      onClose={done}
+                      onBusy={(on) => setBusy((b) => ({ ...b, share: on }))}
+                      onCount={onLinks}
+                    />
+                  ),
+                },
+              ]
+            : []),
+        ]}
+      />
+      {confirmingTrash && (
+        <MoveToTrashDialog
+          title={doc.title}
+          busy={trashing}
+          returnFocus={trashButton}
+          onConfirm={() => void remove()}
+          onCancel={() => setConfirmingTrash(false)}
+        />
+      )}
+    </section>
+  );
+
   return (
     <main className={`page page-top has-nav${panes ? ' doc-panes' : ''}`}>
       <TopBar
@@ -269,301 +555,24 @@ export function DocumentScreen() {
           </Link>
         }
       />
-      <div className="doc-split">
-        <section className="doc-details" aria-label={`Details of ${title}`}>
-          <div className="row" style={{ alignItems: 'center', gap: 12 }}>
-            <StatusBadge status={doc.status} />
-            <span className="muted">{visibilityLabel}</span>
-          </div>
-          {/* Kept, but no longer needed (0.9.0): since when, what replaced
-              it, and Needed again for whoever may change it. */}
-          <NoLongerNeededBanner
-            doc={doc}
-            mayChange={mayChangeIt}
-            onChanged={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
-          />
-          {askAgain && (
-            <NeededAgainQuestion
-              doc={doc}
-              returnFocus={versionInput}
-              onAnswered={(saved) => {
-                setAskAgain(false);
-                if (saved) setData((d) => (d ? { ...d, doc: saved } : d));
-              }}
+      {panes ? (
+        // From 768 px the details beside the pages, the line between them
+        // moved to widen either (0.9.0).
+        <DocPanes
+          details={detailsPane}
+          pages={
+            <DocumentPages
+              key={latest?.id ?? 'none'}
+              documentId={doc.id}
+              title={title}
+              version={latest}
+              onDrawn={() => void reload()}
             />
-          )}
-          {/* "We read the pages — is this right?" (5.37): for whoever may change it. */}
-          {suggests && mayChangeIt && latest && !latest.file_removed && (
-            <PagesSuggest
-              key={`pages-${doc.id}`}
-              doc={doc}
-              types={types}
-              members={members}
-              onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
-              onStale={reload}
-              onGone={() => facts.current?.focus()}
-            />
-          )}
-
-          <dl className="facts" ref={facts} tabIndex={-1}>
-            <dt>Type</dt>
-            <dd>{type?.label ?? 'Not set'}</dd>
-            <dt>Person</dt>
-            <dd>{owner?.display_name ?? 'Not set'}</dd>
-            {doc.issued_by && (
-              <>
-                {/* The type's own word for it: "Institution", "Insurer"… */}
-                <dt>{issuedByLabel(type)}</dt>
-                <dd>{doc.issued_by}</dd>
-              </>
-            )}
-            {doc.identifier && (
-              <>
-                <dt>{word('identifier', 'Number')}</dt>
-                <dd>{doc.identifier}</dd>
-              </>
-            )}
-            {doc.issued && (
-              <>
-                <dt>{word('issued', 'Issued')}</dt>
-                <dd>{formatDate(doc.issued)}</dd>
-              </>
-            )}
-            {doc.expires && (
-              <>
-                <dt>{word('expires', 'Expires')}</dt>
-                <dd>{formatDate(doc.expires)}</dd>
-              </>
-            )}
-            {/* The type's own details, in its order (5.10). */}
-            {details.map(({ field, value }) => (
-              <Fragment key={field.key}>
-                <dt>{field.label}</dt>
-                <dd className={field.kind === 'long_text' ? 'keep-lines' : undefined}>
-                  {detailText(field.kind, value)}
-                </dd>
-              </Fragment>
-            ))}
-            <dt>Category</dt>
-            <dd>{categoryLabel(doc.category)}</dd>
-            {/* Where the original is kept is the household's (5.41): never a
-            viewer's or a guest's, whatever an answer carries. */}
-            {seesLocation(storedRole()) && doc.physical_location && (
-              <>
-                <dt>{word('physical_location', 'Original is kept')}</dt>
-                <dd>{doc.physical_location}</dd>
-              </>
-            )}
-          </dl>
-
-          {/* On a phone, the pages within reach: right after the facts, before
-              the notes, the history and the rest (R3, as the prototype). */}
-          {!panes && (
-            <PhonePages documentId={doc.id} title={title} docTitle={doc.title} version={latest} />
-          )}
-
-          {others.length > 0 && (
-            <section aria-labelledby="other-h">
-              <h2 id="other-h" className="section-h">
-                Other details
-              </h2>
-              <p className="muted">
-                This kind of document no longer asks for these. They are kept until somebody removes
-                them.
-              </p>
-              <ul className="list">
-                {others.map(([key, value]) => {
-                  const known = library?.find((a) => a.key === key);
-                  const label = known?.label ?? key;
-                  const text = detailText(known?.kind, value);
-                  return (
-                    <li key={key}>
-                      <span>
-                        <strong>{label}</strong>
-                        <span className="muted keep-lines">{text}</span>
-                      </span>
-                      {mayChangeIt && (
-                        <Button
-                          kind="quiet"
-                          ariaLabel={`Remove ${label}`}
-                          onClick={() => setRemoving({ key, label, text })}
-                        >
-                          Remove
-                        </Button>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          )}
-          {/* By the list, where the person is: not at the top of the page. */}
-          <ErrorNote message={removeNote} />
-          {removing && (
-            <ConfirmDialog
-              title="Remove this detail?"
-              confirmLabel="Remove"
-              busyLabel="Removing…"
-              danger
-              busy={removeBusy}
-              returnFocus={facts}
-              onConfirm={() => void removeDetail()}
-              onCancel={() => setRemoving(null)}
-            >
-              <p>
-                “{removing.label}: {removing.text}” is taken off this document for good.
-              </p>
-            </ConfirmDialog>
-          )}
-
-          {/* One note a document (5.35, A30): read by whoever sees it, written
-          by whoever may change it. A kind of document that does not ask for
-          notes offers none, but shows one it has. */}
-          {(doc.notes || (mayChangeIt && coreRule(type, 'notes').shown)) && (
-            <NotesSection
-              key={doc.id}
-              doc={doc}
-              label={word('notes', 'Notes')}
-              mayEdit={mayChangeIt}
-              timezone={data.timezone}
-              // As the vault holds it now, whether saved or refused (409): over
-              // whatever the page holds then, never a copy from before a reload.
-              onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
-              onRefreshed={(now) => setData((d) => (d ? { ...d, doc: now } : d))}
-            />
-          )}
-          {/* The thin line under the details and the note; then one row:
-              Download, a button for each section, and the Trash at the end
-              (the owner's request of 24 Oct 2026). */}
-          <hr className="note-divider" />
-          <ActionRow
-            kind="document"
-            memberId={memberId}
-            onDownload={latest && !latest.file_removed ? () => void download(latest) : null}
-            onTrash={mayChangeIt ? () => setConfirmingTrash(true) : null}
-            trashRef={trashButton}
-            error={<ErrorNote message={actionError} />}
-            sections={[
-              // Its versions beside Download: the file's own actions together.
-              {
-                key: 'history' as const,
-                label: 'History',
-                icon: <ActionIcon name="history" />,
-                badge: countBadge(versions.length, 'version', 'versions'),
-                render: () => history,
-              },
-              ...(mayChangeWhoSees({ current: doc.visibility, isMine, filedByMe })
-                ? [
-                    {
-                      key: 'visibility' as const,
-                      label: 'Who can see it',
-                      icon: <ActionIcon name="eye" />,
-                      badge: {
-                        shown: VISIBILITY_SHORT[doc.visibility],
-                        spoken: VISIBILITY_WORDS[doc.visibility],
-                      },
-                      heading: 'Who can see it',
-                      busy: busy.visibility === true,
-                      render: (done: () => void) => (
-                        <VisibilityControl
-                          documentId={doc.id}
-                          current={doc.visibility}
-                          isMine={isMine}
-                          filedByMe={filedByMe}
-                          onChanged={reload}
-                          onClose={done}
-                          onBusy={(on) => setBusy((b) => ({ ...b, visibility: on }))}
-                        />
-                      ),
-                    },
-                  ]
-                : []),
-              // Its tags as chips, each a way to the others like it; added and
-              // taken off here by whoever may change it (0.9.0, T1).
-              ...(doc.tags.length > 0 || mayChangeIt
-                ? [
-                    {
-                      key: 'tags' as const,
-                      label: 'Tags',
-                      icon: <ActionIcon name="tag" />,
-                      badge: countBadge(doc.tags.length, 'tag', 'tags'),
-                      render: () => (
-                        <TagSection
-                          key={`tags-${doc.id}`}
-                          doc={doc}
-                          mayEdit={mayChangeIt}
-                          onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
-                        />
-                      ),
-                    },
-                  ]
-                : []),
-              ...(collectionsOffered(caps, storedRole())
-                ? [
-                    {
-                      key: 'collections' as const,
-                      label: 'Collections',
-                      icon: <ActionIcon name="collection" />,
-                      badge:
-                        counts.collections === undefined
-                          ? null
-                          : countBadge(counts.collections, 'collection', 'collections'),
-                      render: () => (
-                        <DocumentCollections
-                          documentId={doc.id}
-                          title={title}
-                          onCount={onCollections}
-                        />
-                      ),
-                    },
-                  ]
-                : []),
-              // A link sends the file: with none yet, there is nothing to send (5.4).
-              ...(doc.latest_version_id !== null && can(storedRole(), 'document.share')
-                ? [
-                    {
-                      key: 'share' as const,
-                      label: 'Share a link',
-                      icon: <ActionIcon name="link" />,
-                      badge: counts.links
-                        ? countBadge(counts.links, 'live link', 'live links')
-                        : null,
-                      busy: busy.share === true,
-                      render: (done: () => void) => (
-                        <SharePanel
-                          documentId={doc.id}
-                          documentTitle={doc.title}
-                          onlyMe={doc.visibility === 'private'}
-                          onClose={done}
-                          onBusy={(on) => setBusy((b) => ({ ...b, share: on }))}
-                          onCount={onLinks}
-                        />
-                      ),
-                    },
-                  ]
-                : []),
-            ]}
-          />
-          {confirmingTrash && (
-            <MoveToTrashDialog
-              title={doc.title}
-              busy={trashing}
-              returnFocus={trashButton}
-              onConfirm={() => void remove()}
-              onCancel={() => setConfirmingTrash(false)}
-            />
-          )}
-        </section>
-        {panes && (
-          <DocumentPages
-            key={latest?.id ?? 'none'}
-            documentId={doc.id}
-            title={title}
-            version={latest}
-            onDrawn={() => void reload()}
-          />
-        )}
-      </div>
+          }
+        />
+      ) : (
+        <div className="doc-split">{detailsPane}</div>
+      )}
     </main>
   );
 }
@@ -798,7 +807,7 @@ type PageState =
  * arrival: "Confirm it's you" waits for the person to ask. "Read it full
  * size" opens today's reader at the page shown.
  */
-function DocumentPages(props: {
+export function DocumentPages(props: {
   documentId: string;
   title: string;
   version: VersionView | undefined;
@@ -969,6 +978,8 @@ function DocumentPages(props: {
       note={note}
       noteAction={noteAction}
       none={none}
+      fitPage
+      beyond={none === null ? 'Download it to see the original.' : undefined}
       tools={
         version && none === null ? (
           <Link

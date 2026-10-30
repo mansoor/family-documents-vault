@@ -5669,9 +5669,29 @@ html:has(.shell-phone):has(.has-toast) {
   font-weight: 600;
 }
 
+/* Zoom out, the zoom (back to Fit to width), Zoom in: one group, kept
+   together as the bar wraps. Each a full target (--tap, 44 px). */
+.viewer-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.viewer-zoom-btn {
+  min-width: var(--tap);
+  padding: 0 8px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.viewer-zoom-at {
+  min-width: 64px;
+  padding: 0 8px;
+  font-variant-numeric: tabular-nums;
+}
+
 .viewer {
   display: flex;
-  justify-content: center;
   align-items: flex-start;
   min-height: 240px;
   max-height: calc(100dvh - var(--shell-chrome, 0px) - 160px);
@@ -5680,6 +5700,15 @@ html:has(.shell-phone):has(.has-toast) {
   border: 1px solid var(--border);
   border-radius: var(--radius-l);
   background: var(--bg);
+  /* A pinch over the page zooms the page (page-viewer.tsx), not the window;
+     a finger still scrolls it either way. */
+  touch-action: pan-x pan-y;
+}
+
+/* In the middle while it fits; zoomed past the pane, from its left edge,
+   so all of it scrolls into view (centring would cut off its left). */
+.viewer > * {
+  margin-inline: auto;
 }
 
 .viewer:focus-visible {
@@ -5738,36 +5767,75 @@ html:has(.shell-phone):has(.has-toast) {
   gap: 12px;
 }
 
-.shell-wide .page.doc-panes {
-  max-width: 1440px;
-}
-
+/* The whole of the content's width from 768 px (the owner's ask of 29 Oct
+   2026: a wide window left an empty band at its right), as Settings is. */
+.shell-wide .page.doc-panes,
 .shell-mid .page.doc-panes {
   max-width: none;
 }
 
-/* The details up to 400 px, and never more than 40% of the room: just past
-   1024 px, where the sidebar takes its full width, the pages keep the room
-   they had just below it, and grow smoothly from there (W-R3-4). */
+/* The details as wide as their person left the line between them (280 to
+   640 px, the pages never under about 360: doc-panes.tsx, which starts it
+   where the layout before it was), the line, and the pages across the
+   rest. */
 .doc-panes .doc-split {
-  grid-template-columns: minmax(280px, min(400px, 40%)) minmax(0, 1fr);
-  gap: clamp(20px, 2.5vw, 32px);
+  grid-template-columns: var(--doc-details-w, 400px) 16px minmax(0, 1fr);
+  column-gap: 8px;
 }
 
-/* 768–1023 px: two panes still, the details narrower and the pages beside. */
-.shell-mid .doc-panes .doc-split {
-  grid-template-columns: minmax(272px, 5fr) minmax(0, 6fr);
-  gap: 20px;
+/* The line between the details and the pages: dragged, or moved with the
+   arrow keys (splitter.tsx), down the whole of the details beside them. */
+.doc-resizer {
+  position: relative;
+  align-self: stretch;
+  min-height: 200px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.doc-resizer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 7px;
+  width: 2px;
+  background: var(--border);
+}
+
+.doc-resizer:hover::before,
+.doc-resizer:focus-visible::before {
+  left: 6px;
+  width: 4px;
+  background: var(--accent);
+}
+
+.doc-resizer:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -1px;
+}
+
+/* The details' actions flow to their width: each row as wide as the pane,
+   so a wider pane has fewer rows and none of them ragged. Move to the
+   Trash stays at the end. */
+.doc-panes .doc-details .action-btn {
+  flex: 1 1 auto;
+  justify-content: center;
 }
 
 /* The whole pane in the window, however many rows its buttons take: the
-   page takes what the bar and the hint leave, and scrolls inside. Short
-   enough to stay below the bar on top at the foot of the page too, where
-   the page's own padding is all that is left below it. */
+   page takes what the bar and the hint leave, and scrolls inside — the
+   window's height whatever the page's, so Fit page fits it to the window.
+   Short enough to stay below the bar on top at the foot of the page too,
+   where the page's own padding is all that is left below it. */
 .doc-panes .doc-pages {
   position: sticky;
   top: calc(var(--shell-top, 0px) + 12px);
   max-height: calc(100dvh - var(--shell-top, 0px) - 68px);
+}
+
+.doc-panes .doc-pages:has(> .viewer-bar) {
+  height: calc(100dvh - var(--shell-top, 0px) - 68px);
 }
 
 .doc-panes .viewer {
