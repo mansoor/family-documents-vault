@@ -266,16 +266,6 @@ export function sectionsFor(who: {
   if (caps?.features.notes === true) {
     out.push({ key: 'notes', label: 'Notes', to: '/notes', icon: 'notes', owns: under('/notes') });
   }
-  // The family's own details are for the family (5.3): a viewer is given documents.
-  if (can(role, 'family.details')) {
-    out.push({
-      key: 'people',
-      label: 'People',
-      to: '/people',
-      icon: 'people',
-      owns: under('/people'),
-    });
-  }
   if (collectionsOffered(caps, role) || (caps?.features.collections && who.givenCollections)) {
     out.push({
       key: 'collections',
@@ -306,6 +296,17 @@ export function sectionsFor(who: {
       icon: 'inbox',
       ...(who.waiting ? { count: who.waiting } : {}),
       owns: under('/inbox'),
+    });
+  }
+  // The family's own details are for the family (5.3): a viewer is given documents.
+  // Beside Sharing, who the documents are for and with (the owner's order, 1 Nov 2026).
+  if (can(role, 'family.details')) {
+    out.push({
+      key: 'people',
+      label: 'People',
+      to: '/people',
+      icon: 'people',
+      owns: under('/people'),
     });
   }
   if (can(role, 'document.share')) {
