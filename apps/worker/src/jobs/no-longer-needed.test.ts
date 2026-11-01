@@ -103,6 +103,15 @@ describe.skipIf(!testAdminUrl())('a document no longer needed, to the worker (00
   });
 
   it('its kind’s reminders made again pass it by; its status says what it is', async () => {
+    // Made again, reminders are made only ahead of the real today (aheadOnly), so
+    // the two expire 60 days from it: a visa's 120-day reminder is past, its
+    // 30-day one ahead. Fixed dates broke here on 1 Nov 2026, when 1 Dec's
+    // 30-day reminder fell due.
+    await admin.query(
+      'update document set expires_on = current_date + 60 where id = any($1::uuid[])',
+      [[ids.ead, ids.visa]],
+    );
+    clock = new Date();
     const keys = new ScopeKeys(new EnvKeyProvider(MASTER));
     const done = await regenerateTypeReminders(
       { app: db, keys },
