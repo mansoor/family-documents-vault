@@ -6,6 +6,10 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **People sits just above Sharing in the menu (0.9.0).** The sidebar now reads Home, Documents, Notes, Collections, Needs attention, Inbox, People, Sharing, Activity, Trash: who the documents are for, beside who they are shared with. The phone's bottom bar is unchanged.
+
 ## [0.9.0-dev.24] - 2026-10-30 — a balanced Documents table, with columns you can widen
 
 ### Changed
