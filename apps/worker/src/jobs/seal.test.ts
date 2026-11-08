@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { EnvKeyProvider, openPrivate, ScopeKeys } from '@fdv/crypto';
+import { EnvKeyProvider, openPrivate, openVersionExtra, ScopeKeys } from '@fdv/crypto';
 import { createPool, withSystem, type Db, type Schema } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import { Kysely, PostgresDialect } from 'kysely';
@@ -221,5 +221,47 @@ describe.skipIf(!testAdminUrl())('the private.seal job', () => {
     // Its box number is sealed, so the box has what it needs; the other has none.
     expect(await row(ids.box)).toMatchObject({ extra: {}, status_cache: 'valid' });
     expect((await row(ids.noNumber)).status_cache).toBe('needs_info');
+  });
+
+  it('an Only me document’s older version’s own details, brought back plain, are sealed too (0.9.0, 0083)', async () => {
+    const vault = (
+      await admin.query<{ id: string }>(
+        "insert into vault (household_id, kind, label) values ($1, 'local', 'Here') returning id",
+        [hh],
+      )
+    ).rows[0]?.id;
+    const scope = (
+      await admin.query<{ id: string }>('select id from scope_key where member_id = $1', [
+        members.mansoor,
+      ])
+    ).rows[0]?.id;
+    const version = (
+      await admin.query<{ id: string }>(
+        `insert into document_version (household_id, document_id, version_no, filename, mime,
+           byte_size, sha256, cipher_bytes, cipher_sha256, storage_key, vault_id,
+           file_key_wrapped, wrapped_by_scope, details_kept_at, expires_on, expires_precision, extra)
+         values ($1, $2, 1, 'old.pdf', 'application/pdf', 1, decode('00', 'hex'), 1, decode('00', 'hex'), 'k', $3,
+           decode('00', 'hex'), $4, now(), '2025-03-01', 'day', $5)
+         returning id`,
+        [hh, ids.car, vault, scope, JSON.stringify({ vin: 'OLDVIN0000000000' })],
+      )
+    ).rows[0]?.id as string;
+    expect(await sealPrivateValues({ admin, app: db, keys, log: () => undefined })).toEqual({
+      sealed: 1,
+      failed: 0,
+    });
+    const kept = (
+      await admin.query<{ extra: unknown; extra_sealed: Buffer | null }>(
+        'select extra, extra_sealed from document_version where id = $1',
+        [version],
+      )
+    ).rows[0];
+    expect(kept?.extra).toEqual({});
+    const key = await withSystem(db, hh, (trx) =>
+      keys.unwrap(trx, { householdId: hh, kind: 'member', memberId: members.mansoor }),
+    );
+    expect(openVersionExtra(key.key, version, kept?.extra_sealed ?? null)).toEqual({
+      vin: 'OLDVIN0000000000',
+    });
   });
 });

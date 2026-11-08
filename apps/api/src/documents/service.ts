@@ -16,7 +16,13 @@ import {
   PRIVATE_TO_THEM,
   sentThroughWords,
   visibilityRefusal,
+  type DetailProposal,
   type DetailSuggestions,
+  RENEWAL_FIELDS,
+  RENEWAL_UNDO_MINUTES,
+  type RenewalField,
+  type RenewalInput,
+  type RenewalResult,
   type IssuerCount,
   type IssuerSuggestions,
   type KnownIssuer,
@@ -40,7 +46,9 @@ import {
   EncryptStream,
   newKey,
   openPrivate,
+  openVersionExtra,
   sealPrivate,
+  sealVersionExtra,
   unwrapKey,
   wrapKey,
   type PrivateValues,
@@ -92,6 +100,18 @@ import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import type { ReminderService } from '../reminders/service.js';
 import { proposalPool, type Proposals } from './proposal-pool.js';
+import {
+  changedSince,
+  dateOf,
+  derivedAsTheyAre,
+  lastLine,
+  putDerivedBack,
+  renewalChange,
+  storedDerived,
+  storedFields,
+  storedLine,
+  type PriorFields,
+} from './renewal.js';
 import { signSealedToken } from './sealed-token.js';
 import { openSealedText } from './sealed-text.js';
 import { askerOf } from './visibility.js';
@@ -136,6 +156,8 @@ export interface DocumentInput {
   tags?: string[] | undefined;
   notes?: string | null | undefined;
   extra?: Record<string, unknown> | undefined;
+  /** The whole edit card saved (0.9.0): its newest version's details confirmed. */
+  confirm_details?: true | undefined;
 }
 
 export interface ListQuery {
@@ -641,6 +663,8 @@ interface VersionBrief {
   id: string;
   version_no: number;
   file_removed_at: Date | null;
+  /** Its details still the version before's, not confirmed for it (0083). */
+  details_unconfirmed: boolean;
 }
 
 /** How the API hands work to the worker. The server wires pg-boss; tests collect. */
@@ -1045,6 +1069,8 @@ export class DocumentService {
       status: rowStatus(type, row, seesLocation(p.role), await householdToday(trx)),
       versions: versions.length,
       latest_version_id: versions[0]?.id ?? null,
+      // Its newest version's details still the one before's (0.9.0, 0083).
+      details_unconfirmed: versions[0]?.details_unconfirmed === true,
       created_at: row.created_at.toISOString(),
       updated_at: row.updated_at.toISOString(),
       deleted_at: row.deleted_at?.toISOString() ?? null,
@@ -1141,14 +1167,19 @@ export class DocumentService {
     if (ids.length === 0) return found;
     const rows = await trx
       .selectFrom('document_version')
-      .select(['id', 'document_id', 'version_no', 'file_removed_at'])
+      .select(['id', 'document_id', 'version_no', 'file_removed_at', 'details_unconfirmed'])
       .where('document_id', 'in', ids)
       .orderBy('document_id')
       .orderBy('version_no', 'desc')
       .execute();
     for (const r of rows) {
       const of = found.get(r.document_id) ?? [];
-      of.push({ id: r.id, version_no: r.version_no, file_removed_at: r.file_removed_at });
+      of.push({
+        id: r.id,
+        version_no: r.version_no,
+        file_removed_at: r.file_removed_at,
+        details_unconfirmed: r.details_unconfirmed,
+      });
       found.set(r.document_id, of);
     }
     return found;
@@ -1364,7 +1395,7 @@ export class DocumentService {
     trx: Db,
     p: Principal,
     id: string,
-    input: Pick<DocumentInput, 'issued' | 'expires' | 'identifier'>,
+    input: Pick<DocumentInput, 'issued' | 'expires' | 'identifier' | 'issued_by'>,
     meta: RequestMeta,
   ): Promise<void> {
     this.canWrite(p);
@@ -1380,6 +1411,11 @@ export class DocumentService {
     meta: RequestMeta,
   ): Promise<{ row: DocRow; drawNow: string | null }> {
     let drawNow: string | null = null;
+    // The whole edit card saved (0.9.0, 0083): its newest version's details
+    // confirmed — never by a one-field change (a chip, a tag, a note), nor
+    // by anything that only puts details back.
+    const { confirm_details: confirmDetails, ...rest } = input;
+    input = rest;
     {
       // The row is held for every edit, and read as it is once held (5.9
       // review): details are checked against what it holds (16 KB at most);
@@ -1459,6 +1495,7 @@ export class DocumentService {
       if (current.type_key && row.type_key !== current.type_key) {
         await dropDeletedType(trx, current.type_key);
       }
+      if (confirmDetails === true) await confirmNewest(trx, id);
       // What else it changed, by name; its note is a line of its own.
       const fields = Object.keys(input).filter((f) => f !== 'notes');
       if (fields.length > 0 || !('notes' in input)) {
@@ -1504,6 +1541,192 @@ export class DocumentService {
       }
       return { row, drawNow };
     }
+  }
+
+  /**
+   * POST /documents/{id}/renewal (0.9.0): what the newest version's pages
+   * read, chosen by whoever may change it, made the document's details —
+   * that version's own — as a renewal: the same way as a batch's file added
+   * as a new version (S1, documents/renewal.ts): only what differs is
+   * changed, through the edit every change goes through (reminders made
+   * again from the new date, the activity log saying what changed), with
+   * what it replaced kept on the version for an Undo, until
+   * RENEWAL_UNDO_MINUTES on the database's clock. The open reminders were
+   * resolved when the version was added (REM-08).
+   *
+   * Only on the document as the page loaded it (If-Match: 428 without it,
+   * 409 conflict when it changed), and only while `version_id` is its newest
+   * (409 version_changed), after its first; and not again while the last
+   * one may still be undone (409 renewal_undo_open), whose Undo would lose
+   * what it puts back. Nothing is saved otherwise.
+   */
+  async applyRenewal(
+    p: Principal,
+    id: string,
+    input: RenewalInput,
+    ifMatch: string | undefined,
+    meta: RequestMeta,
+  ): Promise<RenewalResult> {
+    this.canWrite(p);
+    return withPrincipal(this.db, p, async (trx) => {
+      const current = await this.fetch(trx, p, id, false, true);
+      this.mustOwnIfTeen(p, current);
+      if (!ifMatch) {
+        throw new ApiError(
+          428,
+          'precondition_required',
+          'Send If-Match: the document as you last saw it.',
+        );
+      }
+      if (ifMatch !== etagOf(current.id, current.updated_at)) {
+        throw new ApiError(
+          409,
+          'conflict',
+          'Someone else changed this document. Reload and try again.',
+        );
+      }
+      const newest = await trx
+        .selectFrom('document_version')
+        .select([
+          'id',
+          'version_no',
+          'details_unconfirmed',
+          sql<boolean>`coalesce(renewal_undo_until > now(), false)`.as('undo_open'),
+        ])
+        .where('document_id', '=', current.id)
+        .orderBy('version_no', 'desc')
+        .limit(1)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!newest || newest.id !== input.version_id || newest.version_no < 2) {
+        throw new ApiError(
+          409,
+          'version_changed',
+          'This document has another newest version now. Reload and look again.',
+        );
+      }
+      // Used once already, and still to be undone: a second would lose what
+      // the first one's Undo puts back. Nothing is saved.
+      if (newest.undo_open) {
+        throw new ApiError(
+          409,
+          'renewal_undo_open',
+          'These details were used just now. Undo that first, or change them with Edit.',
+        );
+      }
+      const derived = await derivedAsTheyAre(trx, current.id);
+      const sent: PriorFields = {};
+      for (const k of RENEWAL_FIELDS) {
+        if (input[k] !== undefined) Object.assign(sent, { [k]: input[k] });
+      }
+      const { edit, before } = renewalChange(
+        {
+          identifier: current.identifier,
+          issued_by: current.issued_by,
+          issued: dateOf(current.issued_on, current.issued_precision),
+          expires: dateOf(current.expires_on, current.expires_precision),
+        },
+        sent,
+      );
+      if (Object.keys(edit).length > 0) await this.edit(trx, p, current.id, edit, undefined, meta);
+      // Looked at and chosen: this version's own, whatever was the same.
+      await confirmNewest(trx, current.id);
+      const line = await lastLine(trx, p.householdId, current.id);
+      const kept = await trx
+        .updateTable('document_version')
+        .set({
+          renewal_prior: JSON.stringify({
+            v: 1,
+            fields: before,
+            derived,
+            line,
+            by: p.accountId,
+            unconfirmed: newest.details_unconfirmed,
+          }),
+          // On the database's clock, as a batch's Undo (0064).
+          renewal_undo_until: sql<Date>`now() + make_interval(mins => ${RENEWAL_UNDO_MINUTES})`,
+        })
+        .where('id', '=', newest.id)
+        .returning('renewal_undo_until')
+        .executeTakeFirstOrThrow();
+      const row = await this.fetch(trx, p, current.id);
+      return {
+        document: await this.view(trx, p, row, typeLookup(trx), await this.opened(trx, p, row)),
+        undo_until: kept.renewal_undo_until ? kept.renewal_undo_until.toISOString() : null,
+      };
+    });
+  }
+
+  /**
+   * POST /documents/{id}/renewal/undo (0.9.0): "Use these" taken back, by
+   * whoever chose them, while it may be — the fields put back through the
+   * edit every change goes through, its derived reminders each as it was,
+   * and the version's details unconfirmed again if they were — as a batch's
+   * new version is taken back (S1). Kept, and said so (409 renewal_kept),
+   * when the document changed since, or another version was added; 409
+   * renewal_not_undoable once the time is up, or with nothing to take back.
+   */
+  async undoRenewal(
+    p: Principal,
+    id: string,
+    versionId: string,
+    meta: RequestMeta,
+  ): Promise<DocumentView> {
+    this.canWrite(p);
+    return withPrincipal(this.db, p, async (trx) => {
+      const current = await this.fetch(trx, p, id, false, true);
+      this.mustOwnIfTeen(p, current);
+      const newest = await trx
+        .selectFrom('document_version')
+        .select([
+          'id',
+          'renewal_prior',
+          sql<boolean>`coalesce(renewal_undo_until > now(), false)`.as('in_time'),
+        ])
+        .where('document_id', '=', current.id)
+        .orderBy('version_no', 'desc')
+        .limit(1)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!newest || newest.id !== versionId) {
+        throw new ApiError(
+          409,
+          'renewal_kept',
+          'A newer version was added since, so these details stay as they are.',
+        );
+      }
+      const raw = newest.renewal_prior as Record<string, unknown> | null;
+      const fields = raw && raw.v === 1 ? storedFields(raw.fields) : null;
+      if (!raw || !fields || !newest.in_time || raw.by !== p.accountId) {
+        throw new ApiError(
+          409,
+          'renewal_not_undoable',
+          'This can no longer be undone. Change the details with Edit instead.',
+        );
+      }
+      if (await changedSince(trx, p.householdId, current.id, storedLine(raw.line))) {
+        throw new ApiError(
+          409,
+          'renewal_kept',
+          'This document was changed since, so these details stay as they are.',
+        );
+      }
+      if (Object.keys(fields).length > 0) {
+        await this.edit(trx, p, current.id, fields, undefined, meta);
+      }
+      await putDerivedBack(trx, current.id, storedDerived(raw.derived));
+      await trx
+        .updateTable('document_version')
+        .set({
+          details_unconfirmed: raw.unconfirmed === true,
+          renewal_prior: null,
+          renewal_undo_until: null,
+        })
+        .where('id', '=', newest.id)
+        .execute();
+      const row = await this.fetch(trx, p, current.id);
+      return this.view(trx, p, row, typeLookup(trx), await this.opened(trx, p, row));
+    });
   }
 
   /** ORG-08: soft delete, recoverable for 30 days. */
@@ -2112,7 +2335,14 @@ export class DocumentService {
       async (
         trx,
       ): Promise<
-        | { state: 'ready'; text: string; versionId: string; ctx: ProposalContext }
+        | {
+            state: 'ready';
+            text: string;
+            versionId: string;
+            ctx: ProposalContext;
+            renewal: ProposalContext | null;
+            held: RenewalField[];
+          }
         | { state: 'pending' | 'unavailable' }
       > => {
         const doc = await this.fetch(trx, p, id);
@@ -2163,13 +2393,50 @@ export class DocumentService {
           // 03/04/2031 as the household writes dates: the US month first.
           dateOrder: householdDateOrder(profile?.country),
         };
-        return { state: 'ready', text: read.text, versionId: read.versionId, ctx };
+        // A version after the first (0.9.0): its pages read again for the
+        // fields a renewal changes, whatever the document holds now — only
+        // those it has a value for; an empty one is the proposal's.
+        const held = RENEWAL_FIELDS.filter((f) => {
+          const v = ctx.current?.[f];
+          return v !== null && v !== undefined && (typeof v !== 'string' || v.trim() !== '');
+        });
+        const renewal =
+          read.versionNo > 1 && held.length > 0
+            ? {
+                ...ctx,
+                current: {
+                  type_key: doc.type_key,
+                  owner_member_id: doc.owner_member_id,
+                },
+              }
+            : null;
+        return {
+          state: 'ready',
+          text: read.text,
+          versionId: read.versionId,
+          ctx,
+          renewal,
+          held: [...held],
+        };
       },
     );
     if (asked.state !== 'ready') return { state: asked.state, version_id: null, proposal: {} };
     const proposal = await this.proposals.propose(asked.text, asked.ctx);
     if (!proposal) return { state: 'unavailable', version_id: null, proposal: {} };
-    return { state: 'ready', version_id: asked.versionId, proposal };
+    let renewal: DetailProposal | undefined;
+    if (asked.renewal) {
+      const read = await this.proposals.propose(asked.text, asked.renewal);
+      if (read) {
+        renewal = {};
+        for (const f of asked.held) if (read[f]) Object.assign(renewal, { [f]: read[f] });
+      }
+    }
+    return {
+      state: 'ready',
+      version_id: asked.versionId,
+      proposal,
+      ...(renewal ? { renewal } : {}),
+    };
   }
 
   /**
@@ -2184,11 +2451,12 @@ export class DocumentService {
     p: Principal,
     doc: DocRow,
   ): Promise<
-    { state: 'ready'; text: string; versionId: string } | { state: 'pending' | 'unavailable' }
+    | { state: 'ready'; text: string; versionId: string; versionNo: number }
+    | { state: 'pending' | 'unavailable' }
   > {
     const version = await trx
       .selectFrom('document_version')
-      .select(['id', 'ocr_status', 'wrapped_by_scope'])
+      .select(['id', 'version_no', 'ocr_status', 'wrapped_by_scope'])
       .where('document_id', '=', doc.id)
       .orderBy('version_no', 'desc')
       .executeTakeFirst();
@@ -2216,7 +2484,12 @@ export class DocumentService {
     }
     if (text === null)
       return { state: version.ocr_status === 'pending' ? 'pending' : 'unavailable' };
-    return { state: 'ready', text: text.slice(0, PAGES_TEXT_MAX), versionId: version.id };
+    return {
+      state: 'ready',
+      text: text.slice(0, PAGES_TEXT_MAX),
+      versionId: version.id,
+      versionNo: version.version_no,
+    };
   }
 
   /** Counts by member and by category, for the home screen tiles (ORG-02). */
@@ -2245,7 +2518,7 @@ export class DocumentService {
 
   async versions(p: Principal, documentId: string): Promise<VersionView[]> {
     return withPrincipal(this.db, p, async (trx) => {
-      await this.fetch(trx, p, documentId, true);
+      const doc = await this.fetch(trx, p, documentId, true);
       // Who added each version, by the name the household knows them by
       // (5.1) — on the activity log's terms: a viewer, an outsider, is not
       // told what the family has been doing. Somebody whose sign-in was
@@ -2280,10 +2553,47 @@ export class DocumentService {
         .where('document_version.document_id', '=', documentId)
         .orderBy('document_version.version_no', 'desc')
         .execute();
-      return rows.map((r) => ({
+      // Each older version's own details (0.9.0, 0083), as the document's
+      // are given: an Only me one's kind's details opened only in its
+      // owner's own request — nobody else is given that document at all.
+      const own = doc.visibility === 'private' && doc.owner_member_id === p.memberId;
+      const key =
+        own && rows.some((r) => r.extra_sealed !== null)
+          ? (
+              await this.keys.unwrap(trx, {
+                householdId: p.householdId,
+                kind: 'member',
+                memberId: p.memberId,
+              })
+            ).key
+          : null;
+      return rows.map((r, i) => ({
         ...versionView(r),
         uploaded_by_name: named ? (r.uploaded_by_name ?? r.former_name ?? null) : null,
         sent_through: named && r.request_id ? sentThroughWords(r.request_label) : null,
+        details: r.details_kept_at
+          ? {
+              issued: dateValueOf(r.issued_on, r.issued_precision),
+              expires: dateValueOf(r.expires_on, r.expires_precision),
+              identifier: r.identifier,
+              issued_by: r.issued_by,
+              extra:
+                doc.visibility === 'private'
+                  ? own
+                    ? // Anything private.seal has not reached yet (a restore), as it is.
+                      {
+                        ...(key ? openVersionExtra(key, r.id, r.extra_sealed) : {}),
+                        ...extraOf(r.extra),
+                      }
+                    : {}
+                  : extraOf(r.extra),
+              kept_at: r.details_kept_at.toISOString(),
+            }
+          : null,
+        // The current version's are the document's; an older one's were
+        // kept from 0.9.0 on, and nothing is guessed for one before.
+        details_kept: i === 0 || r.details_kept_at !== null,
+        details_unconfirmed: r.details_unconfirmed,
       }));
     });
   }
@@ -2476,6 +2786,9 @@ export class DocumentService {
     f: Filing,
     meta: RequestMeta,
   ): Promise<Selectable<Schema['document_version']>> {
+    // The document as it is, for a new version: its details are the
+    // outgoing version's, frozen onto it below (0083).
+    let now: DocRow | null = null;
     if (f.values === null) {
       // The document's row, locked before anything is read from it:
       // version numbers, and who it is wrapped for, cannot change under
@@ -2490,7 +2803,7 @@ export class DocumentService {
       // upload began. If it has since been made private, or moved to
       // somebody else, that key is the wrong one — and the uploader may
       // no longer be allowed to see it at all. Ask again, under the lock.
-      const now = await this.fetch(trx, p, f.documentId);
+      now = await this.fetch(trx, p, f.documentId);
       this.mustOwnIfTeen(p, now);
       // Made a note while the file came (it cannot be: 0078 holds it too).
       if (now.type_key === NOTE_KIND) throw noFileOnNote();
@@ -2544,6 +2857,8 @@ export class DocumentService {
       .where('document_id', '=', f.documentId)
       .executeTakeFirstOrThrow();
     const versionNo = Number(last.n) + 1;
+    // The version it replaces keeps its own details, as they are now (0.9.0).
+    if (versionNo > 1 && now) await this.freezeOutgoing(trx, p.householdId, now);
     const storageKey = await f.place(
       objectKey({
         householdId: p.householdId,
@@ -2571,6 +2886,9 @@ export class DocumentService {
         file_key_wrapped: f.fileKeyWrapped,
         wrapped_by_scope: f.scopeKeyId,
         uploaded_by: p.accountId,
+        // Starting from the version before's details, until somebody
+        // confirms them for this one (0.9.0, 0083).
+        details_unconfirmed: versionNo > 1,
       })
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -2593,6 +2911,82 @@ export class DocumentService {
       ip: meta.ip,
     });
     return row;
+  }
+
+  /**
+   * The version a new one replaces keeps its own details (0.9.0, 0083): the
+   * document's dates, number, issuer and kind's details as they are, frozen
+   * onto it — an Only me document's kind's details sealed under its owner's
+   * key, bound to the version, as the document's are. The document's row
+   * stays the current version's. Its "Use these" can no longer be undone.
+   */
+  private async freezeOutgoing(trx: Db, householdId: string, doc: DocRow): Promise<void> {
+    const outgoing = await trx
+      .selectFrom('document_version')
+      .select(['id', 'details_kept_at'])
+      .where('document_id', '=', doc.id)
+      .orderBy('version_no', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    if (!outgoing || outgoing.details_kept_at !== null) return;
+    let kept: { extra: string; extra_sealed: Buffer | null };
+    if (doc.visibility === 'private') {
+      const open = await this.openRow(trx, householdId, doc);
+      const key = await this.keys.unwrap(trx, {
+        householdId,
+        kind: 'member',
+        memberId: doc.owner_member_id,
+      });
+      kept = { extra: '{}', extra_sealed: sealVersionExtra(key.key, outgoing.id, open.extra) };
+    } else {
+      kept = { extra: JSON.stringify(extraOf(doc.extra)), extra_sealed: null };
+    }
+    await trx
+      .updateTable('document_version')
+      .set({
+        details_kept_at: new Date(),
+        issued_on: doc.issued_on,
+        issued_precision: doc.issued_precision,
+        expires_on: doc.expires_on,
+        expires_precision: doc.expires_precision,
+        identifier: doc.identifier,
+        issued_by: doc.issued_by,
+        ...kept,
+        renewal_prior: null,
+        renewal_undo_until: null,
+      })
+      .where('id', '=', outgoing.id)
+      .execute();
+  }
+
+  /**
+   * The newest version the current one again (0.9.0, 0083), when the one
+   * after it was taken back (a batch's Undo, S1): its details are the
+   * document's again, put back by that Undo, so none are kept on it.
+   */
+  async currentAgain(trx: Db, documentId: string): Promise<void> {
+    await trx
+      .updateTable('document_version')
+      .set({
+        details_kept_at: null,
+        issued_on: null,
+        issued_precision: null,
+        expires_on: null,
+        expires_precision: null,
+        identifier: null,
+        issued_by: null,
+        extra: '{}',
+        extra_sealed: null,
+      })
+      .where('id', '=', (eb) =>
+        eb
+          .selectFrom('document_version')
+          .select('id')
+          .where('document_id', '=', documentId)
+          .orderBy('version_no', 'desc')
+          .limit(1),
+      )
+      .execute();
   }
 
   /**
@@ -3825,6 +4219,23 @@ function scopeFor(doc: Pick<DocRow, 'visibility' | 'owner_member_id'>, household
   }
 }
 
+/** Its newest version's details confirmed for it: no longer the version before's. */
+export async function confirmNewest(trx: Db, documentId: string): Promise<void> {
+  await trx
+    .updateTable('document_version')
+    .set({ details_unconfirmed: false })
+    .where('id', '=', (eb) =>
+      eb
+        .selectFrom('document_version')
+        .select('id')
+        .where('document_id', '=', documentId)
+        .orderBy('version_no', 'desc')
+        .limit(1),
+    )
+    .where('details_unconfirmed', '=', true)
+    .execute();
+}
+
 function versionView(v: {
   id: string;
   document_id: string;
@@ -3861,6 +4272,13 @@ function versionView(v: {
     // A restore from before its removal brought the record back, not the file (5.24).
     file_removed: v.file_removed_at !== null,
   };
+}
+
+/** A date as a version's columns keep it. */
+function dateValueOf(on: string | null, precision: string | null): DateValue | null {
+  return on
+    ? { date: isoDate(on) as string, precision: (precision ?? 'day') as DateValue['precision'] }
+    : null;
 }
 
 /** Its record came back with a restore; its file had been removed for good (5.24). */

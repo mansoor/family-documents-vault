@@ -1,4 +1,10 @@
-import { openPrivate, sealPrivate, type ScopeKeys } from '@fdv/crypto';
+import {
+  openPrivate,
+  openVersionExtra,
+  sealPrivate,
+  sealVersionExtra,
+  type ScopeKeys,
+} from '@fdv/crypto';
 import { withSystem, type Db } from '@fdv/db';
 import type pg from 'pg';
 
@@ -60,7 +66,74 @@ export async function sealPrivateValues(
       });
     }
   }
+  // And an Only me document's older versions' own details (0.9.0, 0083):
+  // the API seals them as it keeps them, but a restore can bring back one
+  // kept before its document was made Only me.
+  const { rows: versions } = await deps.admin.query<{ household_id: string; id: string }>(
+    `select v.household_id, v.id from document_version v
+       join document d on d.id = v.document_id
+      where d.visibility = 'private' and v.extra <> '{}'::jsonb
+      order by v.household_id, v.id`,
+  );
+  for (const r of versions) {
+    try {
+      const done = await withSystem(deps.app, r.household_id, (trx) =>
+        sealVersionOne(trx, deps.keys, r.household_id, r.id),
+      );
+      if (done) sealed += 1;
+    } catch (err) {
+      failed += 1;
+      firstError ??= (err as Error).message;
+      deps.log('error', "an Only me document's older version's details could not be sealed", {
+        household_id: r.household_id,
+        version_id: r.id,
+        error: (err as Error).message,
+      });
+    }
+  }
   return { sealed, failed, ...(firstError !== undefined ? { firstError } : {}) };
+}
+
+/** One older version's details, in its own transaction, its document held first. */
+async function sealVersionOne(trx: Db, keys: ScopeKeys, householdId: string, id: string) {
+  const v = await trx
+    .selectFrom('document_version')
+    .select(['document_id'])
+    .where('id', '=', id)
+    .executeTakeFirst();
+  if (!v) return false;
+  const doc = await trx
+    .selectFrom('document')
+    .select(['visibility', 'owner_member_id'])
+    .where('id', '=', v.document_id)
+    .forUpdate()
+    .executeTakeFirst();
+  if (!doc || doc.visibility !== 'private') return false;
+  const row = await trx
+    .selectFrom('document_version')
+    .select(['extra', 'extra_sealed'])
+    .where('id', '=', id)
+    .forUpdate()
+    .executeTakeFirst();
+  const extra = extraOf(row?.extra);
+  if (!row || Object.keys(extra).length === 0) return false;
+  const key = await keys.unwrap(trx, {
+    householdId,
+    kind: 'member',
+    memberId: doc.owner_member_id,
+  });
+  await trx
+    .updateTable('document_version')
+    .set({
+      extra: '{}',
+      extra_sealed: sealVersionExtra(key.key, id, {
+        ...openVersionExtra(key.key, id, row.extra_sealed),
+        ...extra,
+      }),
+    })
+    .where('id', '=', id)
+    .execute();
+  return true;
 }
 
 /** One document, in its own transaction. False when there was nothing to do by then. */

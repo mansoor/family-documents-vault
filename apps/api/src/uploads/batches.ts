@@ -63,7 +63,6 @@ import {
   VERSION_ACCEPT_FIELDS,
   type BatchAccepted,
   type BatchRenewal,
-  type DateValue,
   type BatchAcceptInput,
   type BatchCounts,
   type BatchDefaults,
@@ -100,8 +99,23 @@ import {
   typeView,
   type DocumentService,
   type Enqueue,
+  confirmNewest,
 } from '../documents/service.js';
 import { holdDocumentRows, ownedObjects, versionObjects } from '../documents/purge.js';
+import {
+  changedSince,
+  dateOf,
+  derivedAsTheyAre,
+  lastLine,
+  putDerivedBack,
+  REMINDER_OPEN,
+  renewalChange,
+  storedDerived,
+  storedFields,
+  storedLine,
+  type DerivedReminder,
+  type PriorFields,
+} from '../documents/renewal.js';
 import { ApiError } from '../errors.js';
 import { confirmedByAccept } from '../reading-check/filing.js';
 import type { VaultService } from '../vaults/service.js';
@@ -1216,29 +1230,8 @@ export class BatchService {
     // And its derived ones as they are, by what each reminds of (the review,
     // M1): an expiry changed below makes them again under new ids, and an
     // Undo puts each back as it was — acknowledged, snoozed, or neither.
-    const derived = (
-      await trx
-        .selectFrom('reminder')
-        .select([
-          sql<string>`source || ':' || lead_days || ':' || to_char(fire_at, 'YYYY-MM-DD')`.as(
-            'key',
-          ),
-          'status',
-          sql<string | null>`to_char(snoozed_until, 'YYYY-MM-DD')`.as('snoozed_until'),
-          'acknowledged_by',
-          'acknowledged_at',
-        ])
-        .where('document_id', '=', doc.id)
-        .where('kind', '=', 'derived')
-        .orderBy('id')
-        .execute()
-    ).map((r) => ({
-      key: r.key,
-      status: r.status,
-      snoozed_until: r.snoozed_until,
-      acknowledged_by: r.acknowledged_by,
-      acknowledged_at: r.acknowledged_at ? r.acknowledged_at.toISOString() : null,
-    }));
+    // (documents/renewal.ts: one way, shared with a document's "Use these".)
+    const derived = await derivedAsTheyAre(trx, doc.id);
     placed.vaultId = f.vault_id;
     const scopeKey = await this.keys.unwrapById(trx, f.wrapped_by_scope);
     const fileKey = unwrapKey(f.file_key_wrapped, scopeKey, `incoming:${f.id}`);
@@ -1269,42 +1262,28 @@ export class BatchService {
       issued: dateOf(doc.issued_on, doc.issued_precision),
       expires: dateOf(doc.expires_on, doc.expires_precision),
     };
-    const edit: PriorFields = {};
-    const before: PriorFields = {};
-    if (sent.identifier !== undefined) {
-      const v = sent.identifier?.trim() || null;
-      if (v !== was.identifier) {
-        edit.identifier = v;
-        before.identifier = was.identifier ?? null;
-      }
-    }
-    for (const k of ['issued', 'expires'] as const) {
-      const v = sent[k];
-      if (v === undefined) continue;
-      if (!sameDay(v ?? null, was[k] ?? null)) {
-        edit[k] = v ?? null;
-        before[k] = was[k] ?? null;
-      }
-    }
+    const { edit, before } = renewalChange(was, {
+      ...(sent.identifier !== undefined ? { identifier: sent.identifier } : {}),
+      ...(sent.issued !== undefined ? { issued: sent.issued } : {}),
+      ...(sent.expires !== undefined ? { expires: sent.expires } : {}),
+    });
     if (Object.keys(edit).length > 0) {
       await this.documents.editWithin(trx, p, doc.id, edit, meta);
     }
+    // Its dates and number looked at on the card: the new version's own (0.9.0, 0083).
+    if (sent.identifier !== undefined || sent.issued !== undefined || sent.expires !== undefined) {
+      await confirmNewest(trx, doc.id);
+    }
     // The last line this accept wrote about the document (the log is held
     // to its commit): anything after it is since (the review, L3).
-    const line = await trx
-      .selectFrom('audit_event')
-      .select((eb) => eb.fn.max('id').as('id'))
-      .where('household_id', '=', p.householdId)
-      .where('object_type', '=', 'document')
-      .where('object_id', '=', doc.id)
-      .executeTakeFirst();
+    const line = await lastLine(trx, p.householdId, doc.id);
     const prior: Prior = {
       v: 1,
       fields: before,
       // Resolved by this version only when it is not the document's first (REM-08).
       reminders: version.version_no > 1 ? open : [],
       derived,
-      line: line?.id === null || line?.id === undefined ? null : String(line.id),
+      line,
     };
     // What this accept confirmed of the document's details, for the Reading
     // check (0074, R0, the review's A-2): what the card sent of its number
@@ -2084,19 +2063,7 @@ export class BatchService {
     // accept, never a clock (the review, L3); and anybody else's, asked of
     // the database — first, as it holds the log until this commits.
     if (await this.versionReached(trx, versionId)) return 'changed';
-    const since = prior.line
-      ? await trx
-          .selectFrom('audit_event')
-          .select('id')
-          .where('household_id', '=', p.householdId)
-          .where('object_type', '=', 'document')
-          .where('object_id', '=', docId)
-          .where(sql<boolean>`id > ${prior.line}::bigint`)
-          .where('action', 'not in', LOOKS)
-          .limit(1)
-          .executeTakeFirst()
-      : { id: 'unknown' };
-    if (since) return 'changed';
+    if (await changedSince(trx, p.householdId, docId, prior.line)) return 'changed';
     // That version's own objects, and the item's old object should its
     // removal after the accept have failed: written down to be deleted.
     const leftovers = (await versionObjects(trx, docId, ours)).map((k) => ({
@@ -2140,6 +2107,9 @@ export class BatchService {
       .where('id', '=', versionId)
       .executeTakeFirst();
     if (Number(gone.numDeletedRows) !== 1) throw new Error('a held version was not removed');
+    // The version before is the current one again: its details are the
+    // document's, which are put back next (0.9.0, 0083).
+    await this.documents.currentAgain(trx, docId);
     // What its accept changed on the document, put back as an edit puts it.
     if (Object.keys(prior.fields).length > 0) {
       await this.documents.editWithin(trx, p, docId, prior.fields, meta);
@@ -2161,24 +2131,8 @@ export class BatchService {
         .execute();
     }
     // Its derived reminders, each as it was before the accept — the edit
-    // above may have made them again, under new ids — by what each reminds
-    // of: acknowledged, snoozed, or open (the review, M1).
-    for (const d of prior.derived) {
-      await trx
-        .updateTable('reminder')
-        .set({
-          status: d.status as 'scheduled' | 'due' | 'snoozed' | 'acknowledged' | 'resolved',
-          snoozed_until: d.snoozed_until,
-          acknowledged_by: d.acknowledged_by,
-          acknowledged_at: d.acknowledged_at ? new Date(d.acknowledged_at) : null,
-        })
-        .where('document_id', '=', docId)
-        .where('kind', '=', 'derived')
-        .where(
-          sql<boolean>`source || ':' || lead_days || ':' || to_char(fire_at, 'YYYY-MM-DD') = ${d.key}`,
-        )
-        .execute();
-    }
+    // above may have made them again, under new ids (the review, M1).
+    await putDerivedBack(trx, docId, prior.derived);
     // What its accept taught is taken back with it, and it is not counted (I4).
     await unlearnAccept(trx, p, held.id, { keys: this.keys });
     await appendAudit(trx, {
@@ -3095,13 +3049,6 @@ function nameOf(v: string | null | undefined): string | null {
   return tidy || null;
 }
 
-/** What a version added from a batch changed on its document: each as it was (S1). */
-type PriorFields = {
-  identifier?: string | null;
-  issued?: DateValue | null;
-  expires?: DateValue | null;
-};
-
 /** Sealed beside an item added as a version (0067), for its Undo. */
 interface Prior {
   v: 1;
@@ -3113,92 +3060,24 @@ interface Prior {
    * (source:lead:fire_at): an expiry put back makes them again, and each is
    * put back to this (the review, M1).
    */
-  derived: Array<{
-    key: string;
-    status: string;
-    snoozed_until: string | null;
-    acknowledged_by: string | null;
-    acknowledged_at: string | null;
-  }>;
+  derived: DerivedReminder[];
   /** The last line of the log the accept wrote about the document: what came after is since (L3). */
   line: string | null;
 }
 
-const REMINDER_OPEN = new Set(['scheduled', 'due', 'snoozed']);
-const REMINDER_STATES = new Set(['scheduled', 'due', 'snoozed', 'acknowledged', 'resolved']);
-
-/** A look at a document, or a phone keeping it: not a change to it. */
-const LOOKS = [
-  'document.viewed',
-  'document.downloaded',
-  'document.cached_offline',
-  'document.opened_offline',
-];
-
 /** What an item's sealed `prior_sealed` says, well formed, or null. */
 function storedPrior(raw: unknown): Prior | null {
   if (!raw || typeof raw !== 'object' || (raw as { v?: unknown }).v !== 1) return null;
-  const r = raw as { fields?: unknown; reminders?: unknown };
-  if (!r.fields || typeof r.fields !== 'object' || !Array.isArray(r.reminders)) return null;
-  const f = r.fields as Record<string, unknown>;
-  const fields: PriorFields = {};
-  if ('identifier' in f) {
-    if (f.identifier !== null && typeof f.identifier !== 'string') return null;
-    fields.identifier = f.identifier;
-  }
-  for (const k of ['issued', 'expires'] as const) {
-    if (!(k in f)) continue;
-    const d = f[k] as { date?: unknown; precision?: unknown } | null;
-    if (d === null) fields[k] = null;
-    else if (
-      d &&
-      typeof d.date === 'string' &&
-      /^\d{4}-\d{2}-\d{2}$/.test(d.date) &&
-      ['day', 'month', 'year'].includes(String(d.precision))
-    ) {
-      fields[k] = { date: d.date, precision: d.precision as DateValue['precision'] };
-    } else return null;
-  }
+  const r = raw as { fields?: unknown; reminders?: unknown; derived?: unknown; line?: unknown };
+  const fields = storedFields(r.fields);
+  if (!fields || !Array.isArray(r.reminders)) return null;
   const reminders = (r.reminders as unknown[]).filter(
     (m): m is { id: string; status: string } =>
       !!m &&
       typeof (m as { id?: unknown }).id === 'string' &&
       REMINDER_OPEN.has(String((m as { status?: unknown }).status)),
   );
-  const str = (v: unknown) => (typeof v === 'string' ? v : null);
-  const derived = (
-    Array.isArray((raw as { derived?: unknown }).derived)
-      ? ((raw as { derived: unknown[] }).derived as Array<Record<string, unknown>>)
-      : []
-  ).flatMap((d) =>
-    d && typeof d.key === 'string' && REMINDER_STATES.has(String(d.status))
-      ? [
-          {
-            key: d.key,
-            status: String(d.status),
-            snoozed_until: str(d.snoozed_until),
-            acknowledged_by: str(d.acknowledged_by),
-            acknowledged_at: str(d.acknowledged_at),
-          },
-        ]
-      : [],
-  );
-  const line = str((raw as { line?: unknown }).line);
-  return { v: 1, fields, reminders, derived, line: line && /^\d+$/.test(line) ? line : null };
-}
-
-/** A document's date as its columns hold it. */
-function dateOf(on: string | null, precision: string | null): DateValue | null {
-  return on
-    ? { date: on.slice(0, 10), precision: (precision ?? 'day') as DateValue['precision'] }
-    : null;
-}
-
-/** The same date, as a document keeps it. */
-function sameDay(a: DateValue | null, b: DateValue | null): boolean {
-  return a === null || b === null
-    ? a === b
-    : a.date.slice(0, 10) === b.date.slice(0, 10) && a.precision === b.precision;
+  return { v: 1, fields, reminders, derived: storedDerived(r.derived), line: storedLine(r.line) };
 }
 
 /** Its pages as the uploader is told: being drawn until they are, or why there are none. */

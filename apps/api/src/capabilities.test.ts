@@ -121,6 +121,7 @@ describe('buildCapabilities', () => {
       household_timezone: true,
       // 0.9.0: a document kept, but no longer needed.
       no_longer_needed: true,
+      version_details: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

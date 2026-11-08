@@ -576,6 +576,14 @@ describe.skipIf(!testAdminUrl())('duplicates as versions (S1)', () => {
     // Its newest version, and what the card said.
     const versions = await versionsOf(adult, docId);
     expect(versions.map((v) => v.id)).toEqual([added.version_id, original?.id]);
+    // The version it replaced keeps its own details (0.9.0, 0083), and the
+    // new one's are the card's, confirmed.
+    expect(versions[1]?.details).toMatchObject({
+      identifier: 'R-111',
+      issued: day('2016-06-01'),
+      expires: day(oldExpiry),
+    });
+    expect(versions[0]?.details_unconfirmed).toBe(false);
     expect(await docOf(adult, docId)).toMatchObject({
       identifier: 'R-222',
       issued: day('2026-09-01'),
@@ -665,6 +673,16 @@ describe.skipIf(!testAdminUrl())('duplicates as versions (S1)', () => {
     const back = await undone(adult, x.batchId, [x.item.id]);
     expect(back).toEqual({ restored: [x.item.id], kept: [] });
     expect((await versionsOf(adult, docId)).map((v) => v.id)).toEqual([original?.id]);
+    // The current version again: its details are the document's, none kept on it.
+    expect((await versionsOf(adult, docId))[0]?.details).toBeNull();
+    expect(
+      (
+        await admin.query<{ kept: Date | null }>(
+          'select details_kept_at as kept from document_version where id = $1',
+          [original?.id],
+        )
+      ).rows[0]?.kept,
+    ).toBeNull();
     expect(await docOf(adult, docId)).toMatchObject({
       identifier: 'R-111',
       issued: day('2016-06-01'),

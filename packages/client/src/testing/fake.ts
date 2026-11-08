@@ -674,6 +674,8 @@ const FAKE_EDITABLE = [
   'expires',
   'notes',
   'tags',
+  // The whole edit card saved (0.9.0): taken, as the vault takes it.
+  'confirm_details',
 ];
 
 /** A document's version, as an If-Match names it: changed by every edit. */
@@ -1072,6 +1074,11 @@ export function createFakeVault(): {
   // Kinds of document, managed (0.5.10): each kind's version, which every
   // change moves on, as its ETag says.
   const revisions = new Map<string, number>();
+  /** What each document's last "Use these" replaced (0.9.0), for its Undo. */
+  const renewals = new Map<
+    string,
+    { versionId: string; by: string; before: Record<string, unknown>; revision: number }
+  >();
   const typeTag = (t: DocumentTypeView) => `"${t.key}.${revisions.get(t.key) ?? 1}"`;
   const bump = (t: DocumentTypeView) => revisions.set(t.key, (revisions.get(t.key) ?? 1) + 1);
   /**
@@ -3215,7 +3222,84 @@ export function createFakeVault(): {
       const proposal = Object.fromEntries(
         Object.entries(given.proposal).filter(([k]) => !has[k as keyof typeof has]),
       );
-      return ok({ state: 'ready', version_id: given.version_id, proposal });
+      // What a renewal changes (0.9.0): for the fields it has, as the vault gives it.
+      const renewal = given.renewal
+        ? Object.fromEntries(
+            Object.entries(given.renewal).filter(([k]) => has[k as keyof typeof has]),
+          )
+        : undefined;
+      return ok({
+        state: 'ready',
+        version_id: given.version_id,
+        proposal,
+        ...(renewal ? { renewal } : {}),
+      });
+    }
+    // A new version's details made its own (0.9.0), and taken back: for
+    // whoever may change it, on the document as last seen (If-Match), while
+    // `version_id` is its newest after the first — as the vault refuses.
+    const renewalOf = /^\/api\/v1\/documents\/([^/]+)\/renewal(\/undo)?$/.exec(path);
+    if (renewalOf && init.method === 'POST') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const editor = whoOf(s);
+      if (!can(editor.role, 'document.edit')) {
+        return fail(403, 'forbidden', refusalFor('document.edit'));
+      }
+      const id = decodeURIComponent(renewalOf[1] as string);
+      const doc = state.documents.find((d) => d.id === id && !d.deleted_at);
+      if (!doc || (doc.visibility === 'private' && doc.owner_member_id !== editor.memberId)) {
+        return fail(404, 'not_found', 'That document is not in the vault.');
+      }
+      if (editor.role === 'teen' && doc.owner_member_id !== editor.memberId) {
+        return fail(403, 'forbidden', 'You can only change your own documents.');
+      }
+      const newest = [...state.captures.values()]
+        .filter((c) => c.document_id === doc.id)
+        .sort((a, b) => b.version_no - a.version_no)[0];
+      const kept = renewals.get(doc.id);
+      if (renewalOf[2]) {
+        if (!kept || kept.versionId !== body.version_id || kept.by !== editor.memberId) {
+          return fail(409, 'renewal_not_undoable', 'This can no longer be undone.');
+        }
+        if (kept.revision !== (doc.revision ?? 1)) {
+          return fail(409, 'renewal_kept', 'This document was changed since.');
+        }
+        Object.assign(doc, kept.before);
+        doc.revision = (doc.revision ?? 1) + 1;
+        renewals.delete(doc.id);
+        return ok(viewOf(doc));
+      }
+      if (!init.headers['if-match']) {
+        return fail(428, 'precondition_required', 'Send If-Match.');
+      }
+      if (init.headers['if-match'] !== etagOf(doc)) {
+        return fail(409, 'conflict', 'Someone else changed this document. Reload and try again.');
+      }
+      if (!newest || newest.version_no < 2 || newest.version_id !== body.version_id) {
+        return fail(409, 'version_changed', 'This document has another newest version now.');
+      }
+      if (kept?.versionId === newest.version_id) {
+        return fail(409, 'renewal_undo_open', 'These details were used just now. Undo that first.');
+      }
+      const fields = (['issued', 'expires', 'identifier', 'issued_by'] as const).filter(
+        (f) => body[f] !== undefined,
+      );
+      const before = Object.fromEntries(fields.map((f) => [f, doc[f] ?? null]));
+      Object.assign(doc, Object.fromEntries(fields.map((f) => [f, body[f] ?? null])));
+      doc.revision = (doc.revision ?? 1) + 1;
+      renewals.set(doc.id, {
+        versionId: newest.version_id,
+        by: editor.memberId,
+        before,
+        revision: doc.revision,
+      });
+      const view = viewOf(doc);
+      return respond(
+        200,
+        { document: view, undo_until: new Date(Date.now() + 5 * 60_000).toISOString() },
+        { etag: view.etag },
+      );
     }
     const uploadKey = /^\/api\/v1\/uploads\/([^/]+)$/.exec(path);
     if (uploadKey && init.method === 'GET') {

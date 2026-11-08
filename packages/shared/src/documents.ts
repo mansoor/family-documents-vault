@@ -91,6 +91,12 @@ export interface DocumentView {
   status: Status;
   versions: number;
   latest_version_id: string | null;
+  /**
+   * Its newest version's details are still the version before's, copied
+   * when it was added, and nobody has confirmed them for it (0.9.0,
+   * `features.version_details`). Absent from older vaults.
+   */
+  details_unconfirmed?: boolean;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -223,6 +229,36 @@ export interface VersionView {
    * `uploaded_by_name` names whoever filed it.
    */
   sent_through?: string | null;
+  /**
+   * This version's own details (0.9.0, `features.version_details`): frozen
+   * as they were when a newer version replaced it, and given in a
+   * document's history only. Null for the current version — its details are
+   * the document's — and for a version whose details were never kept
+   * (`details_kept: false`). An Only me document's `extra` is opened only in
+   * its owner's own request, as the document's is.
+   */
+  details?: VersionDetails | null;
+  /**
+   * False for a version a newer one replaced before 0.9.0, whose details
+   * were never kept: nothing is guessed. True for every other.
+   */
+  details_kept?: boolean;
+  /**
+   * Its details were copied from the version before when it was added, and
+   * nobody has confirmed them for it yet (Use these, or Edit).
+   */
+  details_unconfirmed?: boolean;
+}
+
+/** A version's own details, as they were when a newer version replaced it (0.9.0). */
+export interface VersionDetails {
+  issued: DateValue | null;
+  expires: DateValue | null;
+  identifier: string | null;
+  issued_by: string | null;
+  extra: Record<string, unknown>;
+  /** When they were frozen: when the next version was added. */
+  kept_at: string;
 }
 
 /** The vault draws a version's first 30 pages; the rest are opened by saving a copy. */

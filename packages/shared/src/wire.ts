@@ -993,6 +993,14 @@ export interface DocumentInput {
    * any. Never on a new document.
    */
   own_links?: 'end' | 'keep';
+  /**
+   * Sent by an edit card that showed the whole of the document's details
+   * (0.9.0, `features.version_details`): what it saves is its newest
+   * version's own, confirmed for it. A one-field change (a chip, a tag, a
+   * note) never sends it. Refused by older vaults: send it only to one that
+   * says `version_details`.
+   */
+  confirm_details?: true;
 }
 
 export interface Counts {
@@ -1060,6 +1068,15 @@ export interface DetailSuggestions {
    */
   version_id: string | null;
   proposal: DetailProposal;
+  /**
+   * What the same pages read of the fields a renewal changes — its dates,
+   * number and issuer — whatever the document holds now (0.9.0,
+   * `features.version_details`): only for a version after the first, only
+   * for the fields the document has a value for (an empty one is in
+   * `proposal`), and only to whoever may change it. `renewalOffers` says
+   * which differ. Absent otherwise, and from older vaults.
+   */
+  renewal?: DetailProposal;
 }
 
 export interface SearchResult {

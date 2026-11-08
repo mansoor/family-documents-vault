@@ -612,6 +612,108 @@ h3 {
   font-size: 14px;
 }
 
+/* 0.9.0: "The new version says:" — each field the new version's pages read
+   otherwise, as new (was old), a tick each; a weak reading unticked and
+   marked "check this". */
+.renewal-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.renewal-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: var(--tap);
+  padding: 6px 0;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.renewal-choice input {
+  flex: none;
+  margin-top: 3px;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+.renewal-words {
+  min-width: 0;
+}
+
+.mark-check {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.renewal-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 0.9.0: an older version looked at — which it is, when it was replaced,
+   and the way back — above its own details. Said plainly, never as a
+   warning. */
+.version-banner {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius-m);
+  background: var(--accent-soft);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.version-banner p {
+  margin: 0;
+}
+
+.version-banner-h {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.version-banner-h:focus {
+  outline: none;
+}
+
+.version-banner-h:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.history-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: none;
+}
+
+.history-shown {
+  align-self: center;
+  padding: 0 8px;
+}
+
 .steps {
   display: flex;
   gap: 6px;

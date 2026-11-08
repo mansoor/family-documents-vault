@@ -620,6 +620,17 @@ export interface FakeState {
    */
   detailSuggestions?: Record<string, DetailSuggestions>;
   /**
+   * A document's older versions (0.9.0), by document id, newest first: listed
+   * after its current one by GET /documents/{id}/versions, each with its own
+   * details as the vault keeps them.
+   */
+  olderVersions?: Record<string, Array<Record<string, unknown>>>;
+  /** POST /documents/{id}/renewal and …/undo as they were asked (0.9.0). */
+  renewalCalls?: Array<{ path: string; body: unknown; etag: string | null }>;
+  /** What the vault answers them instead, when a test says. */
+  renewalRefusal?: { status: number; code: string; message: string };
+  undoRenewalRefusal?: { status: number; code: string; message: string };
+  /**
    * People's identity details (5.27, over 5.26's API), by member id: each
    * part's fields, as the vault keeps them sealed, and its version. Given,
    * the vault says it keeps them (`features.member_identity`). The one
@@ -4555,6 +4566,71 @@ export function installFakeApi(state: FakeState) {
         proposal: Object.fromEntries(
           Object.entries(given.proposal).filter(([field]) => !has(doc[field])),
         ),
+        // What a renewal changes, for the fields it has (0.9.0).
+        ...(given.renewal
+          ? {
+              renewal: Object.fromEntries(
+                Object.entries(given.renewal).filter(([field]) => has(doc[field])),
+              ),
+            }
+          : {}),
+      });
+    }
+    // A new version's details made its own (0.9.0), and taken back, as the
+    // vault does: for whoever may change it, on the document as it was
+    // loaded, while that version is its newest.
+    const renewalMatch = /^\/api\/v1\/documents\/([^/]+)\/renewal(\/undo)?$/.exec(path);
+    if (renewalMatch && method === 'POST') {
+      const id = renewalMatch[1] as string;
+      const etag = (init?.headers as Record<string, string> | undefined)?.['if-match'] ?? null;
+      (state.renewalCalls ??= []).push({ path, body, etag });
+      const doc = state.documents.find((d) => d.id === id);
+      if (!doc) return refuse(404, 'not_found', 'That document is not in the vault.');
+      if (storedRole() === 'viewer') {
+        return refuse(403, 'forbidden', 'Your role does not allow that.');
+      }
+      const sent = body as Record<string, unknown>;
+      const prior = (doc as { renewalPrior?: Record<string, unknown> }).renewalPrior;
+      if (renewalMatch[2]) {
+        if (state.undoRenewalRefusal) {
+          const r = state.undoRenewalRefusal;
+          return refuse(r.status, r.code, r.message);
+        }
+        if (!prior) {
+          return refuse(409, 'renewal_not_undoable', 'This can no longer be undone.');
+        }
+        Object.assign(doc, prior, {
+          details_unconfirmed: true,
+          etag: `"undone-${state.calls.length}"`,
+        });
+        delete (doc as { renewalPrior?: unknown }).renewalPrior;
+        return json(doc);
+      }
+      if (state.renewalRefusal) {
+        const r = state.renewalRefusal;
+        return refuse(r.status, r.code, r.message);
+      }
+      if (etag !== doc.etag) {
+        return refuse(409, 'conflict', 'Someone else changed this document. Reload and try again.');
+      }
+      if (sent.version_id !== doc.latest_version_id) {
+        return refuse(409, 'version_changed', 'This document has another newest version now.');
+      }
+      const fields = ['issued', 'expires', 'identifier', 'issued_by'].filter(
+        (f) => sent[f] !== undefined,
+      );
+      (doc as { renewalPrior?: Record<string, unknown> }).renewalPrior = Object.fromEntries(
+        fields.map((f) => [f, doc[f]]),
+      );
+      Object.assign(doc, Object.fromEntries(fields.map((f) => [f, sent[f]])), {
+        details_unconfirmed: false,
+        etag: `"renewed-${state.calls.length}"`,
+      });
+      const shown = { ...doc };
+      delete (shown as { renewalPrior?: unknown }).renewalPrior;
+      return json({
+        document: shown,
+        undo_until: new Date(Date.now() + 5 * 60_000).toISOString(),
       });
     }
     const suggestionsMatch = /^\/api\/v1\/documents\/([^/]+)\/issuer-suggestions$/.exec(path);
@@ -4715,9 +4791,16 @@ export function installFakeApi(state: FakeState) {
         if (state.stepUpNeeded && ask) return stepUp(ask);
         // Into Only me with links of one's own (5.41): which way, first —
         // before the ETag, as the vault's visibility change comes first.
-        const { own_links: ownLinks, ...edit } = body as Record<string, unknown> & {
+        const {
+          own_links: ownLinks,
+          confirm_details: confirmDetails,
+          ...edit
+        } = body as Record<string, unknown> & {
           own_links?: 'end' | 'keep';
+          confirm_details?: true;
         };
+        // The whole edit card saved (0.9.0): the newest version's details confirmed.
+        if (confirmDetails === true) edit.details_unconfirmed = false;
         const own =
           edit.visibility === 'private' && doc.visibility !== 'private' ? ownLinksTo(doc.id) : [];
         if (own.length > 0) {
@@ -4829,7 +4912,17 @@ export function installFakeApi(state: FakeState) {
                   : state.pagesDrawn,
             // Its record came back with a restore, its file did not (5.24).
             file_removed: doc?.file_removed === true,
+            ...(state.olderVersions?.[versionsOf[1] as string]
+              ? {
+                  version_no: (state.olderVersions[versionsOf[1] as string]?.length ?? 0) + 1,
+                  details: null,
+                  details_kept: true,
+                  details_unconfirmed: doc?.details_unconfirmed === true,
+                }
+              : {}),
           },
+          // Its older versions (0.9.0), each with its own details.
+          ...(state.olderVersions?.[versionsOf[1] as string] ?? []),
         ],
       });
     }
@@ -4845,7 +4938,13 @@ export function installFakeApi(state: FakeState) {
       // An Only me or an Essential document's pages ask who is asking first,
       // as its file does (the page route, SEC-17).
       const versionId = /^\/api\/v1\/versions\/([^/]+)\//.exec(path)?.[1];
-      const pageAsk = askedToOpen(state.documents.find((d) => d.latest_version_id === versionId));
+      const pageAsk = askedToOpen(
+        state.documents.find(
+          (d) =>
+            d.latest_version_id === versionId ||
+            (state.olderVersions?.[d.id as string] ?? []).some((v) => v.id === versionId),
+        ),
+      );
       if (state.stepUpNeeded && pageAsk) return stepUp(pageAsk);
       if (state.pagesDrawn === 'unsupported') {
         return refuse(
@@ -4875,7 +4974,11 @@ export function installFakeApi(state: FakeState) {
     const contentOf = /^\/api\/v1\/versions\/([^/]+)\/content$/.exec(path);
     if (contentOf) {
       // An Only me or an Essential document asks who is asking first (SEC-17).
-      const doc = state.documents.find((d) => d.latest_version_id === contentOf[1]);
+      const doc = state.documents.find(
+        (d) =>
+          d.latest_version_id === contentOf[1] ||
+          (state.olderVersions?.[d.id as string] ?? []).some((v) => v.id === contentOf[1]),
+      );
       const ask = askedToOpen(doc);
       if (state.stepUpNeeded && ask) return stepUp(ask);
       return Promise.resolve(

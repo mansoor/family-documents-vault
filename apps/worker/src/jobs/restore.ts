@@ -1290,6 +1290,12 @@ const REQUIRED_CHECKS = [
     table: 'document',
     what: 'why an Only me document is no longer needed, kept sealed',
   },
+  // An older version's own details are plain or sealed, never both (0083, 0.9.0).
+  {
+    name: 'version_extra_plain_or_sealed',
+    table: 'document_version',
+    what: 'an older version’s own details, plain or sealed and never both',
+  },
 ];
 
 /**

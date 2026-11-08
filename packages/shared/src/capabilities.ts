@@ -370,6 +370,20 @@ export interface CapabilityFeatures {
    * vaults.
    */
   no_longer_needed?: boolean;
+  /**
+   * Each version's own details (0.9.0): a version a newer one replaced
+   * keeps its dates, number, issuer and its kind's details, frozen as they
+   * were (`VersionView.details`; `details_kept: false` for one replaced
+   * before 0.9.0, never guessed); a new version starts from the one
+   * before's, `details_unconfirmed` until somebody confirms them. GET
+   * /documents/{id}/suggestions gives `renewal`, what the newest version's
+   * pages read of the fields a renewal changes; POST
+   * /documents/{id}/renewal makes them its details (If-Match), as a
+   * renewal — its reminders made again — and POST
+   * /documents/{id}/renewal/undo takes that back for RENEWAL_UNDO_MINUTES.
+   * Absent from older vaults.
+   */
+  version_details?: boolean;
 }
 
 export interface CapabilityLimits {

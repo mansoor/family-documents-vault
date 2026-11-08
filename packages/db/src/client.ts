@@ -1208,6 +1208,26 @@ export interface Schema {
       Date | string | null | undefined,
       Date | string | null
     >;
+    /**
+     * This version's own details (0083, 0.9.0), frozen when a newer version
+     * replaced it; null (and the rest empty) for the current version, whose
+     * details are the document's, and for one replaced before 0.9.0.
+     */
+    details_kept_at: Timestamp | null;
+    issued_on: DateOnly | null;
+    issued_precision: DatePrecision | null;
+    expires_on: DateOnly | null;
+    expires_precision: DatePrecision | null;
+    identifier: string | null;
+    issued_by: string | null;
+    extra: GeneratedJson;
+    /** An Only me document's version's details, sealed under its owner's key. */
+    extra_sealed: Buffer | null;
+    /** Its details are still the version before's, not yet confirmed for it. */
+    details_unconfirmed: Generated<boolean>;
+    /** What "Use these" changed, for its Undo, and until when (0083). */
+    renewal_prior: ColumnType<unknown, string | null | undefined, string | null>;
+    renewal_undo_until: Timestamp | null;
   };
 
   document_text: {

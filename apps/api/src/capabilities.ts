@@ -174,6 +174,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       household_timezone: true,
       // 0.9.0: a document kept, but no longer needed: its expiry silent.
       no_longer_needed: true,
+      // 0.9.0: each version's own details, and a renewal's read from its pages.
+      version_details: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

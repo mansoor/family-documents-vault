@@ -4,9 +4,11 @@ import {
   openBytes,
   openChunk,
   openPrivate,
+  openVersionExtra,
   sealBytes,
   sealChunk,
   sealPrivate,
+  sealVersionExtra,
   unwrapKey,
   wrapKey,
   type ScopeKeys,
@@ -212,16 +214,32 @@ export class VisibilityService {
 
       const versions = await trx
         .selectFrom('document_version')
-        .select(['id', 'file_key_wrapped'])
+        .select(['id', 'file_key_wrapped', 'details_kept_at', 'extra', 'extra_sealed'])
         .where('document_id', '=', documentId)
         .execute();
+      // An older version's own details (0.9.0, 0083) move as the document's
+      // do: sealed under its owner's key on the way into Only me, bound to
+      // the version; opened and put back on the way out.
+      const intoPrivate = to === 'private' && doc.visibility !== 'private';
+      const outOfPrivate = doc.visibility === 'private' && to !== 'private';
       for (const v of versions) {
         const fileKey = unwrapKey(v.file_key_wrapped, from.key, `version:${documentId}`);
+        let details = {};
+        if (v.details_kept_at && (intoPrivate || outOfPrivate)) {
+          const extra = {
+            ...openVersionExtra(from.key, v.id, v.extra_sealed),
+            ...extraOf(v.extra),
+          };
+          details = intoPrivate
+            ? { extra: '{}', extra_sealed: sealVersionExtra(target.key, v.id, extra) }
+            : { extra: JSON.stringify(extra), extra_sealed: null };
+        }
         await trx
           .updateTable('document_version')
           .set({
             file_key_wrapped: wrapKey(fileKey, target.key, `version:${documentId}`),
             wrapped_by_scope: target.id,
+            ...details,
           })
           .where('id', '=', v.id)
           .execute();
