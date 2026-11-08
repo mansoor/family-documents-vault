@@ -3319,6 +3319,25 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it('notices the guard that keeps an older version’s own details plain or sealed, never both, gone (0083)', async () => {
+    await sql(
+      vault.adminUrl,
+      'alter table public.document_version drop constraint version_extra_plain_or_sealed',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a check the vault relies on is missing: an older version’s own details, plain or sealed and never both/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter table public.document_version add constraint version_extra_plain_or_sealed
+           check (extra_sealed is null or extra = '{}'::jsonb)`,
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it("notices the guard on a note's stamp gone (0057)", async () => {
     await sql(vault.adminUrl, 'alter table public.document disable trigger document_notes_stamp');
     try {

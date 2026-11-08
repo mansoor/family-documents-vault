@@ -516,6 +516,16 @@ const RULES: Record<string, Rule> = {
     bodies: (f) => [{}, { reason: 'Marked by an attacker', replaced_by: f.document }],
   },
   'DELETE /api/v1/documents/:id/no-longer-needed': { who: 'family' },
+  // A new version's details used, and taken back (0.9.0): whoever may
+  // change the document — never a viewer or a guest.
+  'POST /api/v1/documents/:id/renewal': {
+    who: 'family',
+    body: (f) => ({ version_id: f.version, expires: { date: IS_DAY, precision: 'day' } }),
+  },
+  'POST /api/v1/documents/:id/renewal/undo': {
+    who: 'family',
+    body: (f) => ({ version_id: f.version }),
+  },
   'POST /api/v1/documents/:id/purge': { who: 'owners', body: () => ({}) },
   'GET /api/v1/versions/:id/thumbnail': { who: 'signedIn' },
   'GET /api/v1/versions/:id/pages/:n': { who: 'signedIn' },

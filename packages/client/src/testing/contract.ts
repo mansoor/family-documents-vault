@@ -3521,6 +3521,63 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'a new version’s details used as a renewal: only on the document as last seen, only for its newest version, and taken back (0.9.0)',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      const doc = await api.createDocument(token, {
+        type_key: 'passport',
+        title: 'Contract renewed passport',
+        expires: { date: '2025-03-01', precision: 'day' },
+        identifier: 'OLD-0001',
+      });
+      const file = () => {
+        const form = multipartBody([
+          { name: 'file', filename: 'scan.pdf', contentType: 'application/pdf', bytes: PDF },
+        ]);
+        return { kind: 'bytes' as const, bytes: form.bytes, contentType: form.contentType };
+      };
+      const first = await api.upload(token, doc.id, file(), '1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b');
+      const second = await api.upload(
+        token,
+        doc.id,
+        file(),
+        '2c3d4e5f-6071-4829-9bac-1d2e3f4a5b6c',
+      );
+      const seen = await api.document(token, doc.id);
+      // Changed since it was seen: an edit, as anybody's.
+      const now = await api.updateDocument(
+        token,
+        doc.id,
+        { title: 'Contract renewed passport, 2025' },
+        seen.etag,
+      );
+      const body = {
+        version_id: second.id,
+        expires: { date: '2035-03-01', precision: 'day' as const },
+        identifier: 'NEW-0002',
+      };
+      // Not the newest version, or a document changed since: nothing saved.
+      const older = await refusal(
+        api.applyRenewal(token, doc.id, { ...body, version_id: first.id }, now.etag),
+      );
+      expect([older.status, older.code]).toEqual([409, 'version_changed']);
+      const stale = await refusal(api.applyRenewal(token, doc.id, body, seen.etag));
+      expect([stale.status, stale.code]).toEqual([409, 'conflict']);
+      expect((await api.document(token, doc.id)).identifier).toBe('OLD-0001');
+      // Used: the document's now, with until when it can be taken back.
+      const used = await api.applyRenewal(token, doc.id, body, now.etag);
+      expect(used.document.expires).toEqual({ date: '2035-03-01', precision: 'day' });
+      expect(used.document.identifier).toBe('NEW-0002');
+      expect(Date.parse(used.undo_until ?? '')).toBeGreaterThan(Date.now());
+      // Taken back: as it was.
+      const back = await api.undoRenewal(token, doc.id, second.id);
+      expect(back.expires).toEqual({ date: '2025-03-01', precision: 'day' });
+      expect(back.identifier).toBe('OLD-0001');
+      const twice = await refusal(api.undoRenewal(token, doc.id, second.id));
+      expect([twice.status, twice.code]).toEqual([409, 'renewal_not_undoable']);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

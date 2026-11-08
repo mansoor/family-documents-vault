@@ -73,6 +73,8 @@ const documentBody = z
     extra: z.record(z.string(), z.unknown()),
     // API spec §9: a client-set status is refused.
     status: z.never().optional(),
+    // The whole edit card saved (0.9.0): its newest version's details confirmed.
+    confirm_details: z.literal(true),
   })
   .partial()
   .strict();
@@ -319,6 +321,51 @@ export function registerDocuments(
     },
   );
 
+  /**
+   * A new version's details read off its pages, used (0.9.0,
+   * `features.version_details`): the fields chosen become the document's —
+   * its newest version's — as a renewal (documents/renewal.ts, as a batch's
+   * new version, S1): reminders made again, and Undo for
+   * RENEWAL_UNDO_MINUTES. Only on the document as it was loaded (If-Match),
+   * and only while `version_id` is still its newest.
+   */
+  const renewalBody = z
+    .object({
+      version_id: z.string().uuid(),
+      issued: dateValue.optional(),
+      expires: dateValue.optional(),
+      identifier: z.string().max(200).nullable().optional(),
+      issued_by: z.string().max(200).nullable().optional(),
+    })
+    .strict();
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/documents/:id/renewal',
+    { preHandler: [app.requireAuth, needs('document.edit')] },
+    async (req, reply) => {
+      const body = parse(renewalBody, req.body ?? {});
+      const ifMatch = req.headers['if-match'];
+      const done = await docs.applyRenewal(
+        principal(req),
+        req.params.id,
+        body,
+        typeof ifMatch === 'string' ? ifMatch : undefined,
+        metaOf(req),
+      );
+      reply.header('etag', done.document.etag);
+      return done;
+    },
+  );
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/documents/:id/renewal/undo',
+    { preHandler: [app.requireAuth, needs('document.edit')] },
+    async (req, reply) => {
+      const body = parse(z.object({ version_id: z.string().uuid() }).strict(), req.body ?? {});
+      const d = await docs.undoRenewal(principal(req), req.params.id, body.version_id, metaOf(req));
+      reply.header('etag', d.etag);
+      return d;
+    },
+  );
+
   const searchQuery = z.object({
     q: z.string().trim().min(1).max(200),
     member_id: z.string().uuid().optional(),
@@ -405,11 +452,10 @@ export function registerDocuments(
   );
 
   app.post('/api/v1/documents', auth, async (req, reply) => {
-    const created = await docs.create(
-      principal(req),
-      parse(documentBody, req.body ?? {}),
-      metaOf(req),
-    );
+    // Confirming is an edit's: a new document's first version has nothing to confirm.
+    const { confirm_details: _confirm, ...input } = parse(documentBody, req.body ?? {});
+    void _confirm;
+    const created = await docs.create(principal(req), input, metaOf(req));
     reply.header('etag', created.etag);
     return reply.status(201).send(created);
   });

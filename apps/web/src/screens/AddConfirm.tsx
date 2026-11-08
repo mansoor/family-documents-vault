@@ -272,7 +272,8 @@ export function AddScreen() {
       if (!(await guarded((t) => api.setVisibility(t, id, move)))) return false;
     }
     // No If-Match: a visibility change just now moved the etag on.
-    await withToken((t) => api.updateDocument(t, id, fields));
+    // The whole card, saved: the details are its version's own (0.9.0).
+    await withToken((t) => api.updateDocument(t, id, { ...fields, confirm_details: true }));
     if (move === 'private') await withToken((t) => api.setVisibility(t, id, move));
     return true;
   };
@@ -540,7 +541,12 @@ export function ConfirmScreen() {
               api.updateDocument(
                 t,
                 doc.id,
-                ownLinks ? { ...details, own_links: ownLinks } : details,
+                // The whole card, saved: the details are the newest version's own (0.9.0).
+                {
+                  ...details,
+                  confirm_details: true,
+                  ...(ownLinks ? { own_links: ownLinks } : {}),
+                },
                 doc.etag,
               ),
             );

@@ -318,7 +318,8 @@ describe('before the vault has answered: the family’s zone as the tab knows it
           is_deceased: false,
           colour: 3,
           document_count: 0,
-          access_expires_at: '2026-11-02T14:30:00Z',
+          // Years ahead of the real today: one in 2026 had run out by 3 Nov 2026.
+          access_expires_at: '2037-11-02T14:30:00Z',
           restriction: null,
         },
       ],
@@ -334,7 +335,7 @@ describe('before the vault has answered: the family’s zone as the tab knows it
     });
     // 14:30 UTC is 23:30 in Tokyo.
     expect(await screen.findByText(/^Their access ends /)).toHaveTextContent(
-      'Their access ends Monday 2 November 2026 at 23:30 GMT+9.',
+      'Their access ends Monday 2 November 2037 at 23:30 GMT+9.',
     );
     answer();
   });

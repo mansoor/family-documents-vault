@@ -10,7 +10,7 @@ import {
   type VersionView,
 } from '@fdv/shared';
 import { Fragment, useCallback, useEffect, useRef, useState, type RefObject } from 'react';
-import { Link, Navigate, useNavigate, useParams } from 'react-router';
+import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { AddToCollection, audienceLabel, collectionsOffered } from '../collections.js';
@@ -32,7 +32,9 @@ import {
   TopBar,
 } from '../ui.js';
 import { storedRole } from '../session.js';
-import { PagesSuggest, useSuggestionsOffered } from '../suggestions.js';
+import { useSuggestionsOffered } from '../suggestions.js';
+import { PagesOffers } from '../renewal.js';
+import { OlderVersionBanner, OlderVersionDetails } from '../version-view.js';
 import { SharePanel } from './Share.js';
 import { TagSection } from '../tags.js';
 import {
@@ -91,6 +93,23 @@ export function DocumentScreen() {
   const suggests = useSuggestionsOffered();
 
   const latest = data?.versions[0];
+  // An older version looked at (0.9.0): named in the address, so Back and a
+  // reload keep it. The current version, or one not of this document, is
+  // the document as ever.
+  const [params, setParams] = useSearchParams();
+  const asked = params.get('version');
+  const shownAt = asked ? (data?.versions.findIndex((v) => v.id === asked) ?? -1) : -1;
+  const viewing = shownAt > 0 ? data?.versions[shownAt] : undefined;
+  const viewVersion = (v: VersionView | null) =>
+    setParams(
+      (now) => {
+        const next = new URLSearchParams(now);
+        if (v) next.set('version', v.id);
+        else next.delete('version');
+        return next;
+      },
+      { replace: false },
+    );
   // Two panes from 768 px, the details on the left and the pages on the
   // right (R3, the owner's rule); on a phone, one column, details first.
   const panes = useShellMode() !== 'phone';
@@ -242,11 +261,53 @@ export function DocumentScreen() {
   const history = (
     <HistorySection
       versions={versions}
+      viewing={viewing?.id ?? null}
       onDownload={(v) => void download(v)}
+      onView={(v) => viewVersion(v)}
       ref={versionInput}
       onAdd={(file) => void addVersion(file)}
     />
   );
+  // An older version looked at: its banner, its own details, its pages, its
+  // Download and the history — nothing that changes the document, which is
+  // the current version's (0.9.0).
+  const olderPane = viewing ? (
+    <section id="doc-details" className="doc-details" aria-label={`Details of ${title}`}>
+      <OlderVersionBanner
+        version={viewing}
+        of={versions.length}
+        next={versions[shownAt - 1]}
+        onBack={() => viewVersion(null)}
+      />
+      {!panes && (
+        <DocumentPages
+          key={`phone-${viewing.id}`}
+          documentId={doc.id}
+          title={`${title}, version ${viewing.version_no}`}
+          version={viewing}
+          onDrawn={() => void reload()}
+        />
+      )}
+      <OlderVersionDetails version={viewing} type={type} person={owner?.display_name ?? null} />
+      <hr className="note-divider" />
+      <ActionRow
+        kind="document"
+        memberId={memberId}
+        onDownload={!viewing.file_removed ? () => void download(viewing) : null}
+        onTrash={null}
+        error={<ErrorNote message={actionError} />}
+        sections={[
+          {
+            key: 'history' as const,
+            label: 'History',
+            icon: <ActionIcon name="history" />,
+            badge: countBadge(versions.length, 'version', 'versions'),
+            render: () => history,
+          },
+        ]}
+      />
+    </section>
+  ) : null;
   const visibilityLabel =
     doc.visibility === 'household'
       ? 'Everyone in the family'
@@ -277,9 +338,10 @@ export function DocumentScreen() {
           }}
         />
       )}
-      {/* "We read the pages — is this right?" (5.37): for whoever may change it. */}
+      {/* "The new version says:" (0.9.0) and "We read the pages — is this
+          right?" (5.37): for whoever may change it. */}
       {suggests && mayChangeIt && latest && !latest.file_removed && (
-        <PagesSuggest
+        <PagesOffers
           key={`pages-${doc.id}`}
           doc={doc}
           types={types}
@@ -546,44 +608,54 @@ export function DocumentScreen() {
         back="/"
         backInApp
         action={
-          <Link
-            to={`/documents/${doc.id}/confirm`}
-            className="btn btn-quiet"
-            style={{ minHeight: 40 }}
-          >
-            Edit
-          </Link>
+          // Edit is the current version's: none while an older one is shown.
+          viewing ? undefined : (
+            <Link
+              to={`/documents/${doc.id}/confirm`}
+              className="btn btn-quiet"
+              style={{ minHeight: 40 }}
+            >
+              Edit
+            </Link>
+          )
         }
       />
       {panes ? (
         // From 768 px the details beside the pages, the line between them
         // moved to widen either (0.9.0).
         <DocPanes
-          details={detailsPane}
+          details={olderPane ?? detailsPane}
           pages={
             <DocumentPages
-              key={latest?.id ?? 'none'}
+              key={(viewing ?? latest)?.id ?? 'none'}
               documentId={doc.id}
-              title={title}
-              version={latest}
+              title={viewing ? `${title}, version ${viewing.version_no}` : title}
+              version={viewing ?? latest}
               onDrawn={() => void reload()}
             />
           }
         />
       ) : (
-        <div className="doc-split">{detailsPane}</div>
+        <div className="doc-split">{olderPane ?? detailsPane}</div>
       )}
     </main>
   );
 }
 
-/** A document's versions, newest first, each to download; and Add a new version. */
+/**
+ * A document's versions, newest first, each older one to look at (0.9.0)
+ * and to download; and Add a new version.
+ */
 function HistorySection({
   ref,
   ...props
 }: {
   versions: VersionView[];
+  /** The older version shown, if one is. */
+  viewing: string | null;
   onDownload: (v: VersionView) => void;
+  /** Look at a version: an older one, or the current one again (null). */
+  onView: (v: VersionView | null) => void;
   /** Add a new version: where the focus goes back to after asking about it. */
   ref: RefObject<HTMLLabelElement | null>;
   onAdd: (file: File | undefined) => void;
@@ -608,9 +680,37 @@ function HistorySection({
               </span>
               {v.file_removed && <span className="muted">{FILE_REMOVED}</span>}
             </span>
-            {i > 0 && !v.file_removed && (
-              <Button kind="quiet" onClick={() => props.onDownload(v)}>
-                Download
+            {i > 0 && (
+              <span className="history-actions">
+                {props.viewing === v.id ? (
+                  <span className="muted history-shown">Shown</span>
+                ) : (
+                  <Button
+                    kind="quiet"
+                    ariaLabel={`View version ${v.version_no}`}
+                    onClick={() => props.onView(v)}
+                  >
+                    View
+                  </Button>
+                )}
+                {!v.file_removed && (
+                  <Button
+                    kind="quiet"
+                    ariaLabel={`Download version ${v.version_no}`}
+                    onClick={() => props.onDownload(v)}
+                  >
+                    Download
+                  </Button>
+                )}
+              </span>
+            )}
+            {i === 0 && props.viewing !== null && (
+              <Button
+                kind="quiet"
+                ariaLabel="View the current version"
+                onClick={() => props.onView(null)}
+              >
+                View
               </Button>
             )}
           </li>

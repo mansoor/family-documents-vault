@@ -12,6 +12,7 @@ import {
   openBytes,
   openIdentity,
   openPrivate,
+  openVersionExtra,
   unwrapKey,
   wrapKey,
   type PrivateValues,
@@ -141,6 +142,24 @@ interface Entry {
    * this export too, else "another document". Null while it is needed.
    */
   no_longer_needed: { since: string; reason: string | null; replaced_by: string | null } | null;
+  /**
+   * Its older versions (0.9.0, 0083), newest first: each one's own details,
+   * as they were when a newer version replaced it — an Only me one's kind's
+   * details opened for its owner, whose export this is — or null for a
+   * version replaced before 0.9.0, whose details were never kept. In
+   * index.json; their files stay in the vault.
+   */
+  older_versions: Array<{
+    version_no: number;
+    added: string;
+    details: {
+      issued: string | null;
+      expires: string | null;
+      identifier: string | null;
+      issued_by: string | null;
+      extra: Record<string, unknown>;
+    } | null;
+  }>;
 }
 
 /** A document no longer needed, in a line: "No longer needed since 23 Oct 2026 · Replaced by …". */
@@ -360,6 +379,31 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
     const memberName = new Map(ctx.members.map((m) => [m.id, m.display_name]));
     const latestOf = new Map<string, (typeof ctx.versions)[number]>();
     for (const v of ctx.versions) if (!latestOf.has(v.document_id)) latestOf.set(v.document_id, v);
+    // Each document's older versions' own details (0083): an Only me one's
+    // opened for the requester, whose own it is.
+    const privateOf = new Map(ctx.docs.map((d) => [d.id, d.visibility === 'private']));
+    const olderOf = (id: string): Entry['older_versions'] =>
+      ctx.versions
+        .filter((v) => v.document_id === id && v.id !== latestOf.get(id)?.id)
+        .map((v) => ({
+          version_no: v.version_no,
+          added: new Date(v.uploaded_at).toISOString(),
+          details: v.details_kept_at
+            ? {
+                issued: dateOf(v.issued_on, v.issued_precision),
+                expires: dateOf(v.expires_on, v.expires_precision),
+                identifier: v.identifier,
+                issued_by: v.issued_by,
+                // Anything private.seal has not reached yet (a restore), as it is.
+                extra: privateOf.get(id)
+                  ? {
+                      ...openVersionExtra(ctx.memberKey.key, v.id, v.extra_sealed),
+                      ...extraOf(v.extra),
+                    }
+                  : extraOf(v.extra),
+              }
+            : null,
+        }));
     const adapters = new Map(
       ctx.vaults.map((v) => [v.id, adapterFromRow(v, deps.credentialsKey, deps.localRoot)]),
     );
@@ -438,6 +482,7 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         version_no: v?.version_no ?? null,
         sha256: v ? v.sha256.toString('hex') : null,
         no_longer_needed: unneeded(d),
+        older_versions: olderOf(d.id),
       });
     }
 

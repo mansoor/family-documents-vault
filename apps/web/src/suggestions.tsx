@@ -40,6 +40,12 @@ export function useSuggestionsOffered(): boolean {
 export interface PagesRead {
   versionId: string;
   proposal: DetailProposal;
+  /**
+   * What the same pages read of the fields a renewal changes, whatever the
+   * document holds (0.9.0): for a version after the first, from a vault
+   * that keeps each version's details. The card "The new version says…".
+   */
+  renewal?: DetailProposal;
 }
 
 /**
@@ -76,7 +82,11 @@ export function useDetailSuggestions(
         const r = await withToken((t) => api.detailSuggestions(t, documentId));
         if (stopped || !r) return;
         if (r.state === 'ready' && r.version_id) {
-          setRead({ versionId: r.version_id, proposal: r.proposal });
+          setRead({
+            versionId: r.version_id,
+            proposal: r.proposal,
+            ...(r.renewal ? { renewal: r.renewal } : {}),
+          });
           return;
         }
         setRead(null);
@@ -203,6 +213,15 @@ function automaticName(
 const notNowKey = (household: string, member: string, documentId: string) =>
   `fdv.pages-not-now.${household}.${member}.${documentId}`;
 
+/** Whether this person put the chips away for this document ("Not now"). */
+export function chipsPutAway(
+  household: string | undefined,
+  member: string | undefined,
+  documentId: string,
+): boolean {
+  return notNowSaid(household && member ? notNowKey(household, member, documentId) : null);
+}
+
 function notNowSaid(key: string | null): boolean {
   if (!key) return false;
   try {
@@ -232,6 +251,11 @@ export function PagesSuggest(props: {
   onStale: () => Promise<void>;
   /** Where the place goes once the card has been put away. */
   onGone: () => void;
+  /**
+   * What the pages read, when the page asked already (0.9.0: once for this
+   * card and "The new version says…"); left out, the card asks itself.
+   */
+  read?: PagesRead | null;
 }) {
   const { doc, types, members } = props;
   const { withToken, session } = useApp();
@@ -240,10 +264,11 @@ export function PagesSuggest(props: {
   const keyed = household && member ? notNowKey(household, member, doc.id) : null;
   const [dismissed, setDismissed] = useState(() => notNowSaid(keyed));
   // Put away for this document: the vault is not even asked.
-  const read = useDetailSuggestions(doc.id, !dismissed, {
+  const asked = useDetailSuggestions(doc.id, !dismissed && props.read === undefined, {
     refresh: doc.etag,
     versionId: doc.latest_version_id,
   });
+  const read = props.read === undefined ? asked : dismissed ? null : props.read;
   const proposal = read?.proposal ?? null;
   const [busy, setBusy] = useState<ProposalField | null>(null);
   const [error, setError] = useState<string | null>(null);

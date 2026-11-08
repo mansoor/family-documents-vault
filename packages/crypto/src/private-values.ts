@@ -156,6 +156,34 @@ export const intakeShapeTaughtBinding = (householdId: string, memberId: string, 
  */
 export const noLongerNeededBinding = (documentId: string) => `no-longer-needed:${documentId}`;
 
+/**
+ * An Only me document's older version's own details (0.9.0, 0083): sealed
+ * under its owner's member key as the document's are, and bound to the
+ * version, so they open on no other version and as nothing else.
+ */
+export const versionExtraBinding = (versionId: string) => `version-extra:${versionId}`;
+
+/** A version's details sealed (null: none to seal). */
+export function sealVersionExtra(
+  key: Buffer,
+  versionId: string,
+  extra: Record<string, unknown>,
+): Buffer | null {
+  const details = Object.keys(extra).filter((k) => !blank(extra[k]));
+  return details.length ? seal(key, JSON.stringify(extra), versionExtraBinding(versionId)) : null;
+}
+
+/** And opened: anything that does not open throws. */
+export function openVersionExtra(
+  key: Buffer,
+  versionId: string,
+  sealed: Buffer | null,
+): Record<string, unknown> {
+  if (!sealed) return {};
+  const v = JSON.parse(open(key, sealed, versionExtraBinding(versionId))) as unknown;
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+}
+
 /** What sealing adds to the bytes sealed: the nonce before them, the tag after. */
 export const SEAL_OVERHEAD = IV_BYTES + TAG_BYTES;
 

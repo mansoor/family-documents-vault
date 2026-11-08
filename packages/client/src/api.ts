@@ -26,6 +26,8 @@ import type {
   TagChangeResult,
   TagView,
   DetailSuggestions,
+  RenewalInput,
+  RenewalResult,
   IssuerSuggestions,
   ChecklistAdded,
   ChecklistInput,
@@ -805,6 +807,26 @@ export function createApi(http: Http) {
      */
     detailSuggestions: (token: string, documentId: string) =>
       request<DetailSuggestions>(`/api/v1/documents/${documentId}/suggestions`, { token }),
+    /**
+     * What the newest version's pages read, made its details (0.9.0,
+     * `features.version_details`): the fields chosen, as a renewal, on the
+     * document as last seen (`etag`), while `version_id` is its newest.
+     * `409 conflict` or `version_changed` saves nothing: load it again.
+     */
+    applyRenewal: (token: string, documentId: string, body: RenewalInput, etag: string) =>
+      request<RenewalResult>(`/api/v1/documents/${documentId}/renewal`, {
+        method: 'POST',
+        body,
+        token,
+        headers: { 'if-match': etag },
+      }),
+    /** And taken back, while `undo_until` says it may be: `409 renewal_kept` when it changed since. */
+    undoRenewal: (token: string, documentId: string, versionId: string) =>
+      request<DocumentView>(`/api/v1/documents/${documentId}/renewal/undo`, {
+        method: 'POST',
+        body: { version_id: versionId },
+        token,
+      }),
     counts: (token: string) => request<Counts>('/api/v1/documents/counts', { token }),
     /**
      * The caller's notes kept on their own (0.9.0, `features.notes`):

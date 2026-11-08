@@ -18,6 +18,7 @@ import {
   sealIdentity,
   sealMailboxPassword,
   sealPrivate,
+  sealVersionExtra,
   unwrapKey,
   wrapKey,
 } from '@fdv/crypto';
@@ -738,6 +739,108 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     });
     // One still needed says nothing of it.
     expect(of(hers, 'Sana green card NLN')).toBeNull();
+  }, 60_000);
+
+  it('each document’s older versions’ own details go in index.json — an Only me one’s opened for its owner, one never kept said so (0.9.0, 0083)', async () => {
+    /** An older version before its document's one: its own details kept, or not. */
+    const older = async (
+      docId: string,
+      kept: { extra: Record<string, unknown>; plain?: true } | null,
+    ) =>
+      withSystem(db, hh, async (trx) => {
+        const v = await trx
+          .selectFrom('document_version')
+          .selectAll()
+          .where('document_id', '=', docId)
+          .executeTakeFirstOrThrow();
+        await trx
+          .updateTable('document_version')
+          .set({ version_no: 2 })
+          .where('id', '=', v.id)
+          .execute();
+        const doc = await trx
+          .selectFrom('document')
+          .select(['visibility', 'owner_member_id'])
+          .where('id', '=', docId)
+          .executeTakeFirstOrThrow();
+        const id = randomUUID();
+        const key = await keys.unwrap(
+          trx,
+          doc.visibility === 'private'
+            ? { householdId: hh, kind: 'member', memberId: doc.owner_member_id }
+            : { householdId: hh, kind: doc.visibility },
+        );
+        await trx
+          .insertInto('document_version')
+          .values({
+            id,
+            household_id: hh,
+            document_id: docId,
+            version_no: 1,
+            filename: 'old.pdf',
+            mime: 'application/pdf',
+            byte_size: 1,
+            sha256: Buffer.alloc(32),
+            cipher_bytes: 1,
+            cipher_sha256: Buffer.alloc(32),
+            storage_key: `${hh}/${docId}/old.enc`,
+            vault_id: v.vault_id,
+            file_key_wrapped: v.file_key_wrapped,
+            wrapped_by_scope: v.wrapped_by_scope,
+            ...(kept
+              ? {
+                  details_kept_at: new Date(),
+                  expires_on: '2025-03-01',
+                  expires_precision: 'day' as const,
+                  identifier: 'OLD-1',
+                  ...(doc.visibility === 'private' && !kept.plain
+                    ? { extra_sealed: sealVersionExtra(key.key, id, kept.extra) }
+                    : { extra: JSON.stringify(kept.extra) }),
+                }
+              : {}),
+          })
+          .execute();
+      });
+    const shared = await addDoc('Licence OV', 'household', ownerMember, 'LICENCE', 'identity', {
+      type_key: 'drivers_licence',
+    });
+    await older(shared, { extra: { class: 'B' } });
+    const mine = await addDoc('Own licence OV', 'private', ownerMember, 'MINE', 'identity', {
+      type_key: 'drivers_licence',
+    });
+    await older(mine, { extra: { class: 'C1' } });
+    // Brought back plain, as a restore can before private.seal reaches it.
+    const plain = await addDoc('Plain licence OV', 'private', ownerMember, 'PLAIN', 'identity', {
+      type_key: 'drivers_licence',
+    });
+    await older(plain, { extra: { class: 'D' }, plain: true });
+    const before = await addDoc('Old licence OV', 'household', ownerMember, 'OLD', 'identity');
+    await older(before, null);
+
+    const { index } = await exported(ownerAccount);
+    type Older = { version_no: number; details: Record<string, unknown> | null };
+    const of = (title: string) =>
+      (index.documents as unknown as Array<{ title: string; older_versions: Older[] }>).find(
+        (d) => d.title === title,
+      )?.older_versions;
+    expect(of('Licence OV')).toEqual([
+      expect.objectContaining({
+        version_no: 1,
+        details: {
+          issued: null,
+          expires: '1 Mar 2025',
+          identifier: 'OLD-1',
+          issued_by: null,
+          extra: { class: 'B' },
+        },
+      }),
+    ]);
+    expect(of('Own licence OV')?.[0]?.details?.extra).toEqual({ class: 'C1' });
+    expect(of('Plain licence OV')?.[0]?.details?.extra).toEqual({ class: 'D' });
+    // Replaced before 0.9.0: nothing kept, nothing guessed.
+    expect(of('Old licence OV')).toEqual([
+      expect.objectContaining({ version_no: 1, details: null }),
+    ]);
   }, 60_000);
 
   it('a note kept on its own goes in as a Markdown file in Notes/, an Only me one only for its owner (0.9.0, N1)', async () => {

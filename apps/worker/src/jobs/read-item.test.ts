@@ -691,9 +691,11 @@ describe.skipIf(!testAdminUrl())('an item read, in the worker (I2)', () => {
       read_attempts: 0,
       read_waits: 1,
     });
-    // Its key to be had again, and its wait over: read, its first taking.
+    // Its key to be had again, and its wait over: read, its first taking. A
+    // minute ago, not now(): the reader compares with its own clock, and the
+    // database's may run a little ahead (0.16 s after a WSL restart, 6 Nov 2026).
     await admin.query(
-      'update incoming_file set wrapped_by_scope = $2, read_not_before = now() where id = $1',
+      "update incoming_file set wrapped_by_scope = $2, read_not_before = now() - interval '1 minute' where id = $1",
       [i.id, scope],
     );
     await readNext({ extract: says(PASSPORT) });
@@ -776,7 +778,11 @@ describe.skipIf(!testAdminUrl())('an item read, in the worker (I2)', () => {
     const { proposer, asked } = standIn(() => ({ state: 'died' }));
     await readNext({ extract: says(PASSPORT), proposer });
     expect(await rowOf(i.id)).toMatchObject({ read_state: 'waiting', read_attempts: 1 });
-    await admin.query('update incoming_file set read_not_before = now() where id = $1', [i.id]);
+    // A minute ago: the reader's clock, not the database's, says when it is due.
+    await admin.query(
+      "update incoming_file set read_not_before = now() - interval '1 minute' where id = $1",
+      [i.id],
+    );
     await readNext({ extract: says(PASSPORT), proposer });
     expect(asked).toHaveLength(THREAD_DIED_ATTEMPTS);
     expect(await rowOf(i.id)).toMatchObject({ read_state: 'failed', read_failure: 'unreadable' });

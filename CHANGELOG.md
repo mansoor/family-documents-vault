@@ -6,6 +6,14 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.25] - 2026-11-08 — each version keeps its own details, a new version's are offered, and older versions can be viewed
+
+### Added
+
+- **A new version's details, offered from its pages (0.9.0).** When you add a new version of a document — from the phone, the web, a batch or a computer — and the vault has read its pages, the document's page now says **The new version says:** with each detail that differs, such as "Expires 1 Mar 2033 (was 1 Mar 2025)" or a new number. Untick any that are wrong, then **Use these**: the dates and number become the document's, its reminders are made again from the new expiry as a renewal's are, and a message offers **Undo** for 5 minutes. A reading the vault is less sure of is shown unticked and marked "check this". **Not now** puts it away for you, for that version. Nothing is ever changed until you choose. Only whoever may change the document is asked.
+- **Each version keeps its own details.** A version replaced by a newer one keeps the dates, number, issuer and other details it had, so you can see what the old licence said. A new version starts from the old one's details until you confirm them, with Use these or Edit. Versions replaced before 0.9.0 say plainly that their details weren't kept.
+- **View an older version (0.9.0).** In a document's **History**, each older version now has **View** beside Download. It shows that version's pages in the pages pane, with zoom and turning, and its own details under a banner such as "Version 1 of 2: replaced on 6 Nov 2026 — not the current version", with **Back to the current version**. Editing, sharing and the Trash are for the current version, so they are hidden while an older one is shown; its Download stays. The address names the version shown, so Back and a reload keep it. An Essential's or an Only me document's older pages ask you to confirm it's you, as its current ones do.
+
 ### Changed
 
 - **People sits just above Sharing in the menu (0.9.0).** The sidebar now reads Home, Documents, Notes, Collections, Needs attention, Inbox, People, Sharing, Activity, Trash: who the documents are for, beside who they are shared with. The phone's bottom bar is unchanged.

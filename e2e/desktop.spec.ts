@@ -511,6 +511,59 @@ test('a renewed passport, uploaded in a batch, is added as a new version of the 
   expect(versions.items).toHaveLength(2);
 });
 
+test('a second version’s read dates are offered and used, and the first version is viewed under its banner (0.9.0)', async () => {
+  test.setTimeout(150_000);
+  const number = String((Date.now() + 17) % 1e9).padStart(9, '6');
+  const title = `E2E renewed passport ${run}`;
+  const auth = { authorization: `Bearer ${token}` };
+  const made = await page.request.post('/api/v1/documents', {
+    headers: auth,
+    data: {
+      title,
+      type_key: 'passport',
+      identifier: '111111111',
+      issued_by: 'United Kingdom',
+      issued: { date: '2011-03-14', precision: 'day' },
+      expires: { date: '2021-03-14', precision: 'day' },
+    },
+  });
+  expect(made.status()).toBe(201);
+  const docId = ((await made.json()) as { id: string }).id;
+  for (const buffer of [pdf('old passport'), passportPdf(number)]) {
+    const added = await page.request.post(`/api/v1/documents/${docId}/versions`, {
+      headers: { ...auth, 'idempotency-key': crypto.randomUUID() },
+      multipart: { file: { name: `passport-${run}.pdf`, mimeType: 'application/pdf', buffer } },
+    });
+    expect(added.status()).toBe(201);
+  }
+  // Once the worker has read the second version's pages, the page offers its dates.
+  const card = page.getByRole('region', { name: 'The new version says:' });
+  await expect(async () => {
+    await visit(page, `/documents/${docId}`);
+    await expect(card).toBeVisible({ timeout: 5_000 });
+  }).toPass({ timeout: 90_000 });
+  await expect(card.getByRole('checkbox', { name: /^Expires 14 Mar 2031/ })).toBeChecked();
+  await card.getByRole('button', { name: 'Use these', exact: true }).click();
+  const toast = page.getByRole('region', { name: 'What was just done' });
+  await expect(toast).toContainText('The new version’s details are saved.');
+  await expect(toast.getByRole('button', { name: 'Undo', exact: true })).toBeVisible();
+  const doc = (await (
+    await page.request.get(`/api/v1/documents/${docId}`, { headers: auth })
+  ).json()) as { expires: { date: string } | null };
+  expect(doc.expires?.date).toBe('2031-03-14');
+  // The first version, looked at: its own dates, under its banner.
+  await page.getByRole('button', { name: /^History/ }).click();
+  await page.getByRole('button', { name: 'View version 1', exact: true }).click();
+  await expect(page.getByRole('heading', { name: /^Version 1 of 2: replaced on / })).toBeVisible();
+  await expect(page).toHaveURL(/\?version=/);
+  const own = page.getByRole('region', { name: 'This version’s details' });
+  await expect(own.getByText('14 Mar 2021', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Edit', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Back to the current version', exact: true }).click();
+  await expect(page).not.toHaveURL(/\?version=/);
+  await expect(page.getByRole('link', { name: 'Edit', exact: true })).toBeVisible();
+});
+
 test('a 15-year-old added with “Invite them to sign up now” ticked: the link and the code, once', async () => {
   // Fifteen on any calendar: born fifteen years and a month or so ago.
   const now = new Date();

@@ -5646,6 +5646,83 @@ replaced_by }`, or null) on each document in `index.json`, a
       `@fdv/client`: `markNoLongerNeeded`, `markNeededAgain`; the fake
       answers both routes, filters the older list by `status`, and leaves a
       marked document's reminders out of `GET /reminders`.
+  - Each version's own details, and a new version's read off its pages
+    (0.9.0, migration 0083; the owner's report of 7 Nov 2026). Everything is
+    **additive**. What every version shares stays the document's (its
+    title, person, kind, who sees it, tags, collections, notes, Essential,
+    No longer needed); its dates, number, issuer and kind's details are
+    each version's own. The `DocumentView` is still the **current**
+    version's, so every list, search, status, reminder, share and export
+    reads as before.
+    - **New `features`:** `version_details`, `true`; absent from older
+      vaults.
+    - **New fields** on `VersionView` (in `GET
+/api/v1/documents/{id}/versions` only): `details` — `{ issued, expires,
+identifier, issued_by, extra, kept_at }`, frozen when a newer version
+      replaced it; null for the current version (its details are the
+      document's) and for one replaced before 0.9.0 — `details_kept: false`
+      says so, and nothing is guessed. An Only me document's `extra` is
+      opened only in its owner's own request, as the document's is.
+      `details_unconfirmed` — its details were copied from the version
+      before and nobody has confirmed them for it. On `DocumentView`:
+      `details_unconfirmed`, the same of its newest version.
+    - **Changed answers:** a version added after the first (by any client,
+      a batch, an upload link, email or a computer) freezes the one it
+      replaces and starts `details_unconfirmed: true`.
+    - **New field** on `PATCH /api/v1/documents/{id}`: `confirm_details:
+true`, sent by an edit card that showed the whole of the document's
+      details: what it saves confirms the newest version's details. A
+      one-field change (a chip, a tag, a note) leaves them unconfirmed.
+      Older vaults refuse the field (`422`): send it only to one with
+      `version_details`. `POST /api/v1/documents` takes it and ignores it.
+    - **New field** on `GET /api/v1/documents/{id}/suggestions`: `renewal`
+      — what the newest version's pages read of `issued`, `expires`,
+      `identifier` and `issued_by`, whatever the document holds now; only
+      for a version after the first, only for the fields the document has
+      a value for (an empty one is in `proposal`, as before). Absent
+      otherwise. `@fdv/shared` `renewalOffers(doc, renewal)` says which
+      differ, each `{ field, value, was, confidence, cue, weak }` — `weak`
+      under `RENEWAL_SURE` (0.8) or read from unclear digits.
+    - **New routes** (for whoever may change the document: `403` to a
+      viewer or a guest, and to a teen for one not their own):
+      - `POST /api/v1/documents/{id}/renewal` `{ version_id, issued?,
+expires?, identifier?, issued_by? }` with `If-Match` (the document's
+        `etag`; `428 precondition_required` without it): the fields sent
+        become the document's — its newest version's — as a renewal, as a
+        batch's file added as a new version does (only what differs is
+        changed, the reminders made again from the new date; the open ones
+        were resolved when the version was added). Answers `{ document,
+undo_until }` and the new `ETag`. `409 conflict` when the document
+        changed since, `409 version_changed` once `version_id` is not its
+        newest (or is its first), `409 renewal_undo_open` while the last
+        one may still be undone (a second would lose what its Undo puts
+        back): nothing is saved.
+      - `POST /api/v1/documents/{id}/renewal/undo` `{ version_id }`: taken
+        back by whoever chose them, for `RENEWAL_UNDO_MINUTES` (5) on the
+        vault's clock — the fields as they were, its derived reminders each
+        as it was (acknowledged, snoozed), the details unconfirmed again.
+        Answers the `DocumentView`. `409 renewal_kept` when the document
+        changed since or another version was added; `409
+renewal_not_undoable` after the time, a second time, or for anybody
+        else.
+    - Older versions' pages were always served (`/versions/{id}/pages/{n}`,
+      `/thumbnail`, `/content`), drawn on demand the first time they are
+      asked for, with the step-up an Essential or an Only me document asks
+      for every version. Unchanged.
+    - A household export's `index.json` gives each document's
+      `older_versions` (`[{ version_no, added, details }]`, `details` null
+      for one never kept); an Only me one's opened only in its owner's
+      export. Backups carry them as every column; a restore seals any Only
+      me version's details it finds plain (`private.seal`), and its owner
+      is given (and exported) any still plain until then, over the sealed.
+      A restore checks 0083's `version_extra_plain_or_sealed` is there.
+    - `@fdv/shared`: `VersionDetails`, `RENEWAL_FIELDS`, `RenewalField`,
+      `RENEWAL_UNDO_MINUTES`, `RENEWAL_SURE`, `RenewalOffer`,
+      `renewalOffers`, `RenewalInput`, `RenewalResult`, `RenewalUndoInput`;
+      `DetailSuggestions.renewal`. `@fdv/client`: `applyRenewal`,
+      `undoRenewal`; the fake answers both routes and gives `renewal`, and
+      the contract checks both against the real API. `@fdv/crypto`: `versionExtraBinding`,
+      `sealVersionExtra`, `openVersionExtra`.
   - The local AI reader, off by default (0.9.0, R4, migration 0081).
     Everything is **additive**.
     - **New `features`:** `local_ai` — `true` while a worker has a local AI
