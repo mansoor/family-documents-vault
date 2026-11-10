@@ -22,6 +22,7 @@ import type { PurgeService } from './purge.js';
 import type { LockService } from '../household/locks.js';
 import { NOTES_LIST_MAX, type DocumentService } from './service.js';
 import { TAG_LIST_MAX } from './tags.js';
+import { asLists, filtersOf } from './filters.js';
 import type { VisibilityService } from './visibility.js';
 import type { UploadRequestService } from '../uploads/requests.js';
 import {
@@ -156,21 +157,34 @@ function captureMetadata(raw: unknown): CaptureMetadata {
   return parse(captureBody, json) as CaptureMetadata;
 }
 
+/** A filter of one value, or of several comma-separated (V1, filters.ts): checked as it is read. */
+const values = z.string().max(4000).optional();
+/** A day, `YYYY-MM-DD` (V1): checked as it is read. */
+const day = z.string().max(10).optional();
+const dates = {
+  added_from: day,
+  added_to: day,
+  issued_from: day,
+  issued_to: day,
+  expires_from: day,
+  expires_to: day,
+};
+
 const listQuery = z.object({
-  // A person's id; or, with a column sort (R2), `none`: nobody's.
-  member_id: z.union([z.string().uuid(), z.literal('none')]).optional(),
-  category: z.string().optional(),
+  // A person's id; or, with a column sort (R2), `none`: nobody's. Several since V1.
+  member_id: values,
+  category: values,
   issued_by: z.string().trim().min(1).max(200).optional(),
-  type_key: z.string().optional(),
+  type_key: values,
   tag: z.string().optional(),
   // A detail tag's label, any value (0.9.0, T1): every document with a locker.
   tag_label: z.string().trim().min(1).max(200).optional(),
-  visibility: z.enum(['household', 'adults', 'private']).optional(),
+  visibility: values,
   essential: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
     .optional(),
-  status: z.string().optional(),
+  status: values,
   deleted: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
@@ -195,6 +209,7 @@ const listQuery = z.object({
   // of them (a control character, \u0001: 6 bytes), is 3,000 bytes; with
   // the rest at most 3,200, as base64 about 4,270, and its tag 44 more.
   cursor: z.string().max(8192).optional(),
+  ...dates,
 });
 
 function parseRange(
@@ -368,14 +383,33 @@ export function registerDocuments(
 
   const searchQuery = z.object({
     q: z.string().trim().min(1).max(200),
-    member_id: z.string().uuid().optional(),
-    category: z.string().optional(),
+    member_id: values,
+    category: values,
+    // Since V1: the kinds, statuses and who-can-see of the list, and its days.
+    type_key: values,
+    status: values,
+    visibility: values,
     issued_by: z.string().trim().min(1).max(200).optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
+    ...dates,
   });
-  app.get('/api/v1/search', auth, async (req) =>
-    docs.search(principal(req), parse(searchQuery, req.query)),
-  );
+  app.get('/api/v1/search', auth, async (req) => {
+    const raw = parse(searchQuery, req.query);
+    const { single, many } = filtersOf(raw);
+    if (single.member_id === 'none' || many.member_ids?.includes('none')) {
+      throw new ApiError(422, 'validation_failed', 'That is not a person in this vault.', {
+        detail: 'member_id',
+      });
+    }
+    return docs.search(principal(req), {
+      q: raw.q,
+      issued_by: raw.issued_by,
+      limit: raw.limit,
+      member_id: single.member_id,
+      category: single.category,
+      filters: asLists(single, many),
+    });
+  });
 
   // The second pass: the caller's own sealed documents, opened in their
   // session. The token from the first pass says what to search.
@@ -429,7 +463,18 @@ export function registerDocuments(
   // Sorted by a column, the Documents table (R2, table.ts); otherwise the
   // list as older clients have always been given it.
   app.get('/api/v1/documents', auth, async (req) => {
-    const q = parse(listQuery, req.query);
+    const raw = parse(listQuery, req.query);
+    // One value as it always was; several, any of them; and the days (V1).
+    const { single, many } = filtersOf(raw);
+    const q = {
+      ...raw,
+      member_id: single.member_id,
+      type_key: single.type_key,
+      category: single.category,
+      status: single.status,
+      visibility: single.visibility,
+      ...many,
+    };
     const sort = q.sort;
     return isDocumentSort(sort)
       ? docs.table(principal(req), { ...q, sort })

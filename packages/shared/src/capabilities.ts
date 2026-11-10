@@ -384,6 +384,16 @@ export interface CapabilityFeatures {
    * Absent from older vaults.
    */
   version_details?: boolean;
+  /**
+   * 0.9.0 (V1, the phone's filter panel): GET /documents and GET /search
+   * take several comma-separated values for `member_id`, `type_key`,
+   * `category`, `status` and `visibility` (any of them), and the days
+   * `added_from`/`added_to`, `issued_from`/`issued_to` and
+   * `expires_from`/`expires_to` (`YYYY-MM-DD`, both included). Search
+   * takes `type_key`, `status` and `visibility` too. Absent from older
+   * vaults, which take one value each and no days.
+   */
+  document_filters?: boolean;
 }
 
 export interface CapabilityLimits {

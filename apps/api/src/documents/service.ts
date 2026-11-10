@@ -117,6 +117,7 @@ import { openSealedText } from './sealed-text.js';
 import { askerOf } from './visibility.js';
 import { removableAtOnce, signsInHere } from './purge-rule.js';
 import { documentTable } from './table.js';
+import { andFilters, filterClauses, statusAllowed, type DocumentFilters } from './filters.js';
 import { deleteTag, listTags, renameTag } from './tags.js';
 import { allows, requireCapability } from '../authz.js';
 import {
@@ -160,7 +161,8 @@ export interface DocumentInput {
   confirm_details?: true | undefined;
 }
 
-export interface ListQuery {
+/** A list's query; any of several values, and dates, since V1 (`DocumentFilters`, filters.ts). */
+export interface ListQuery extends DocumentFilters {
   /** A person's id; or, with a column sort (R2), `none` for nobody's. */
   member_id?: string | undefined;
   category?: string | undefined;
@@ -685,6 +687,8 @@ export interface SearchQuery {
   category?: string | undefined;
   issued_by?: string | undefined;
   limit?: number | undefined;
+  /** V1: any of several people, kinds, categories, statuses and who-can-see, and dates. */
+  filters?: DocumentFilters | undefined;
 }
 
 /** A search result: the shared wire type, with the rank the server always sends. */
@@ -1981,7 +1985,7 @@ export class DocumentService {
       q.direction !== undefined && 'direction',
       q.collection_id !== undefined && 'collection_id',
       q.location !== undefined && 'location',
-      q.member_id === 'none' && 'member_id=none',
+      (q.member_id === 'none' || q.member_ids?.includes('none') === true) && 'member_id=none',
     ].filter((x): x is string => x !== false);
     if (tableOnly.length > 0) {
       throw new ApiError(
@@ -2015,6 +2019,8 @@ export class DocumentService {
         query = query.where(sql<boolean>`lower(issued_by) = lower(${q.issued_by.trim()})`);
       }
       if (q.updated_since) query = query.where('updated_at', '>', new Date(q.updated_since));
+      // Any of several, and the days (V1).
+      for (const clause of filterClauses(q, 'document')) query = query.where(clause as never);
 
       const sort = q.sort ?? 'recent';
       if (sort === 'alpha') query = query.orderBy('title').orderBy('id');
@@ -2050,7 +2056,8 @@ export class DocumentService {
           this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [], editors, replacing),
         ),
       );
-      const filtered = q.status ? items.filter((d) => d.status.value === q.status) : items;
+      const shown = statusAllowed(q, q.status);
+      const filtered = items.filter((d) => shown(d.status.value));
       const last = page[page.length - 1];
       const next =
         rows.length > limit && last
@@ -3494,6 +3501,7 @@ export class DocumentService {
           ${q.member_id ? sql`and d.owner_member_id = ${q.member_id}::uuid` : sql``}
           ${q.category ? sql`and d.category = ${q.category}` : sql``}
           ${q.issued_by ? sql`and lower(d.issued_by) = lower(${q.issued_by.trim()})` : sql``}
+          ${andFilters(q.filters ?? {})}
         order by h.rank desc, d.updated_at desc
         limit ${limit}`.execute(trx);
 
@@ -3567,6 +3575,11 @@ export class DocumentService {
           rank: Number(r.rank),
         });
       }
+      // A status asked for (V1) is worked out, not stored: the hits are narrowed to it here.
+      const allowed = statusAllowed(q.filters ?? {}, undefined);
+      const asked = items.filter((h) => allowed(h.status.value));
+      items.length = 0;
+      items.push(...asked);
       // How much of the caller's own words this pass could not look inside:
       // their Only me documents' pages, notes and details (0.5.8). Counted
       // by document, not by version: it is documents the person thinks in,
@@ -3593,6 +3606,7 @@ export class DocumentService {
             category: q.category,
             issued_by: q.issued_by?.trim(),
             limit,
+            filters: q.filters,
           }),
         },
       };

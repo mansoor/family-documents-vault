@@ -17,6 +17,7 @@ import { sql, type RawBuilder } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { seenCollection } from '../collections/seen.js';
 import { ApiError } from '../errors.js';
+import { asksStatus, filterClauses, statusAllowed } from './filters.js';
 import {
   kindGiven,
   rowStatus,
@@ -82,6 +83,8 @@ export async function documentTable(
   const limit = Math.min(Math.max(q.limit ?? 50, 1), DOCUMENT_PAGE_MAX);
   const cursor = q.cursor ? readCursor(cursorKey, p, q.cursor, q.sort, dir) : null;
   const where = whereOf(p, q);
+  // The status, or statuses, asked for (V1): any of them.
+  const allowed = statusAllowed(q, q.status);
 
   let ids: string[];
   let more: boolean;
@@ -94,7 +97,7 @@ export async function documentTable(
       await sql<StatusRow>`select ${STATUS_COLUMNS} from document d where ${where}`.execute(trx)
     ).rows;
     const ranked = await withStatus(trx, rows, seesLocation(p.role));
-    const shown = q.status ? ranked.filter((r) => r.status === q.status) : ranked;
+    const shown = ranked.filter((r) => allowed(r.status));
     const sign = dir === 'desc' ? -1 : 1;
     shown.sort((a, b) => compareStatus(a, b, sign));
     const after = cursor
@@ -117,7 +120,7 @@ export async function documentTable(
     const keyset = cursor ? afterCursor(cursor, key.type, dir) : sql<boolean>`true`;
     type Keyed = { id: string; cursor_k: string | null };
     let keyed: Keyed[];
-    if (q.status) {
+    if (asksStatus(q, q.status)) {
       // A status filter: what a status is made from, of every row in the
       // database's order, each marked whether it comes after the cursor;
       // then those of that status.
@@ -131,7 +134,7 @@ export async function documentTable(
            ${order}`.execute(trx)
       ).rows;
       const ranked = await withStatus(trx, rows, seesLocation(p.role));
-      const shown = ranked.filter((r) => r.status === q.status);
+      const shown = ranked.filter((r) => allowed(r.status));
       total = shown.length;
       const after = shown.filter((r) => r.row.is_after).map((r) => r.row);
       more = after.length > limit;
@@ -257,6 +260,8 @@ function whereOf(p: Principal, q: ListQuery): RawBuilder<boolean> {
   if (q.tag_label) parts.push(tagLabelFilter(q.tag_label, 'd.'));
   if (q.issued_by) parts.push(sql`lower(d.issued_by) = lower(${q.issued_by.trim()})`);
   if (q.updated_since) parts.push(sql`d.updated_at > ${new Date(q.updated_since)}`);
+  // Any of several, and the days (V1, filters.ts).
+  parts.push(...filterClauses(q));
   if (q.location !== undefined) {
     parts.push(sql`lower(btrim(d.physical_location)) = lower(btrim(${q.location}))`);
   }

@@ -5787,6 +5787,35 @@ time, timezone)`, which every client turns a family-clock date and time
     before, and `('2026-03-08', '02:30', 'America/New_York')` is `07:30Z`
     (03:30 EDT), where it was `06:30Z` (01:30 EST). The vault still takes
     the instant a client sends, unchanged.
+  - Filters of several values and of days (0.9.0-dev.26, V1; the phone's
+    filter panel). No migration. Everything is **additive**: a filter of one
+    value is read as before.
+    - **New `features`:** `document_filters`, `true`; absent from older
+      vaults, which take one value per filter and no days.
+    - **Changed:** `GET /api/v1/documents` takes several comma-separated
+      values for `member_id`, `type_key`, `category`, `status` and
+      `visibility`: any of them match (`member_id=<a>,<b>`). `member_id`
+      may include `none` (nobody's) with a column sort only, as before.
+      `tag` stays one value: a tag may hold a comma. At most 50 values per
+      filter.
+    - **New query fields** on `GET /api/v1/documents` (both list shapes):
+      `added_from`, `added_to`, `issued_from`, `issued_to`, `expires_from`
+      and `expires_to`. Each is a day, `YYYY-MM-DD`; both ends are included,
+      `added` is the day it was made on the database's calendar, and a
+      document without that date is in no range. A day that is not one,
+      or a `_from` after its `_to`, is `422 validation_failed` with the
+      field as `detail`. With a column sort, `total` counts what the
+      filters give, as before.
+    - **Changed:** `GET /api/v1/search` takes the same: several values for
+      `member_id` and `category`, and **new** `type_key`, `status` and
+      `visibility` (one or several), and the six days. `member_id=none` is
+      refused. The second pass (`GET /api/v1/search/sealed`) keeps to the
+      first pass's filters. A status narrows the hits after the search's
+      `limit` is applied.
+    - `@fdv/shared`: `Capabilities.features.document_filters`;
+      `DocumentListParams` gains the six days. `@fdv/client`: the fake
+      takes several values and the days on the table (column sorts), and
+      on the older list where several values or days are asked for.
 
 ## Deprecations in effect
 

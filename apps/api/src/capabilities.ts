@@ -176,6 +176,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       no_longer_needed: true,
       // 0.9.0: each version's own details, and a renewal's read from its pages.
       version_details: true,
+      // 0.9.0 (V1): filters of several values and of dates, on the list and on search.
+      document_filters: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

@@ -1,6 +1,7 @@
 import { deriveKey } from '@fdv/crypto';
 import { jwtVerify, SignJWT } from 'jose';
 import { ApiError } from '../errors.js';
+import type { DocumentFilters } from './filters.js';
 
 /**
  * The handle on the second pass of search (FND-08).
@@ -27,6 +28,8 @@ export interface SealedClaims {
   /** The issuer chip the first pass was filtered by (0.4.10). */
   issued_by?: string | undefined;
   limit: number;
+  /** V1: the first pass's other filters, which the second keeps to. */
+  filters?: DocumentFilters | undefined;
 }
 
 export function deriveSealedKey(masterSecret: string): Uint8Array {
@@ -43,6 +46,7 @@ export async function signSealedToken(key: Uint8Array, claims: SealedClaims): Pr
     category: claims.category ?? null,
     issued_by: claims.issued_by ?? null,
     limit: claims.limit,
+    filters: claims.filters ?? null,
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
@@ -83,5 +87,7 @@ export async function verifySealedToken(key: Uint8Array, token: string): Promise
     member_id: typeof payload.member_id === 'string' ? payload.member_id : undefined,
     category: typeof payload.category === 'string' ? payload.category : undefined,
     issued_by: typeof payload.issued_by === 'string' ? payload.issued_by : undefined,
+    // Signed with the rest: as the first pass wrote them.
+    filters: payload.filters && typeof payload.filters === 'object' ? payload.filters : undefined,
   };
 }

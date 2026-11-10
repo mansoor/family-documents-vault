@@ -5,6 +5,7 @@ import { matchText, notesPlainText, parseQuery, seesLocation, type DateValue } f
 import { sql } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
+import { andFilters } from './filters.js';
 import { HAS_PRIVATE_WORDS, searchedWords, sealedOf, statusOf, type SearchHit } from './service.js';
 import { verifySealedToken } from './sealed-token.js';
 
@@ -93,6 +94,7 @@ export class SealedSearchService {
            ${claims.member_id ? sql`and d.owner_member_id = ${claims.member_id}::uuid` : sql``}
            ${claims.category ? sql`and d.category = ${claims.category}` : sql``}
            ${claims.issued_by ? sql`and lower(d.issued_by) = lower(${claims.issued_by})` : sql``}
+           ${andFilters(claims.filters ?? {})}
            -- Anything the first pass already returned on its title, number,
            -- tags or issuer is not repeated here: matched as that pass
            -- matched it, with the location's words or without (5.41).
