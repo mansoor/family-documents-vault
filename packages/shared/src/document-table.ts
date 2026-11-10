@@ -115,6 +115,18 @@ export type DocumentListParams = {
   deleted?: boolean | undefined;
   purge_requested?: boolean | undefined;
   updated_since?: string | undefined;
+  /**
+   * V1 (`features.document_filters`): the days a document was added,
+   * issued or expires within, `YYYY-MM-DD`, both included. Several
+   * people, kinds, statuses or who-can-see go comma-separated in their
+   * own field (`member_id: 'a,b'`).
+   */
+  added_from?: string | undefined;
+  added_to?: string | undefined;
+  issued_from?: string | undefined;
+  issued_to?: string | undefined;
+  expires_from?: string | undefined;
+  expires_to?: string | undefined;
   /** At most `DOCUMENT_PAGE_MAX`. */
   limit?: number | undefined;
   /** The `next_cursor` of the page before, asked the same way. */

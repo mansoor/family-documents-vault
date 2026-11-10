@@ -2209,6 +2209,8 @@ export function createFakeVault(): {
           detail_suggestions: true,
           // GET /documents sorted by a column, filtered and paged (R2).
           document_table: true,
+          // V1 (0.9.0): several values and days, on the list (the fake has no search).
+          document_filters: true,
           batches: true,
           // Each item read and levelled (I2): the fake's are read as a test says.
           batch_proposals: true,
@@ -2452,8 +2454,9 @@ export function createFakeVault(): {
       if (direction !== 'asc' && direction !== 'desc') {
         return fail(422, 'validation_failed', 'A direction is asc or desc.', 'direction');
       }
-      const status = param(url, 'status');
-      if (status !== undefined && !(STATUS_ORDER as readonly string[]).includes(status)) {
+      // Several values, comma-separated, any of them (V1, features.document_filters).
+      const statuses = listParam(url, 'status');
+      if (statuses?.some((v) => !(STATUS_ORDER as readonly string[]).includes(v))) {
         return fail(
           422,
           'validation_failed',
@@ -2461,6 +2464,8 @@ export function createFakeVault(): {
           'status',
         );
       }
+      const v1 = v1Filters(url);
+      if ('refused' in v1) return v1.refused;
       const limit = Number(param(url, 'limit') ?? 50);
       if (!Number.isInteger(limit) || limit < 1 || limit > DOCUMENT_PAGE_MAX) {
         return fail(
@@ -2481,11 +2486,12 @@ export function createFakeVault(): {
           : shownCollections
               .filter((l) => l.items.some((i) => i.document_id === doc.id))
               .map((l) => ({ id: l.id, name: l.name }));
-      const memberId = param(url, 'member_id');
-      const typeKey = param(url, 'type_key');
+      const members = listParam(url, 'member_id');
+      const typeKeys = listParam(url, 'type_key');
+      const categories = listParam(url, 'category');
       const tag = param(url, 'tag');
       const tagLabel = param(url, 'tag_label');
-      const visibility = param(url, 'visibility');
+      const visibilities = listParam(url, 'visibility');
       const collectionId = param(url, 'collection_id');
       const by = param(url, 'issued_by');
       const asked = param(url, 'purge_requested');
@@ -2499,14 +2505,13 @@ export function createFakeVault(): {
         )
         .filter((d) => asked === undefined || Boolean(d.purge_requested_at) === (asked === 'true'))
         .filter((d) => !by || d.issued_by?.toLowerCase() === by.trim().toLowerCase())
-        .filter((d) =>
-          memberId === undefined
-            ? true
-            : memberId === 'none'
-              ? !d.owner_member_id
-              : d.owner_member_id === memberId,
+        .filter(
+          (d) =>
+            members === undefined ||
+            members.some((m) => (m === 'none' ? !d.owner_member_id : d.owner_member_id === m)),
         )
-        .filter((d) => typeKey === undefined || d.type_key === typeKey)
+        .filter((d) => typeKeys === undefined || typeKeys.includes(d.type_key ?? ''))
+        .filter((d) => categories === undefined || categories.includes(listedOf(d).category ?? ''))
         // A tag whatever its case, and a detail tag's label (0.9.0, T1).
         .filter((d) => tag === undefined || (d.tags ?? []).some((t) => tagKey(t) === tagKey(tag)))
         .filter(
@@ -2517,8 +2522,11 @@ export function createFakeVault(): {
               return detail !== null && tagLabelKey(detail.label) === tagLabelKey(tagLabel);
             }),
         )
-        .filter((d) => visibility === undefined || (d.visibility ?? 'household') === visibility)
+        .filter(
+          (d) => visibilities === undefined || visibilities.includes(d.visibility ?? 'household'),
+        )
         .filter((d) => location === undefined || low(d.physical_location) === low(location))
+        .filter((d) => v1.within(listedOf(d)))
         .filter((d) => {
           if (collectionId === undefined) return true;
           const ids = collectionsOf(d).map((c) => c.id);
@@ -2549,7 +2557,7 @@ export function createFakeVault(): {
                             : [low(d.physical_location)];
           return { view: { ...view, collections: collectionsOf(d) }, key, id: d.id };
         })
-        .filter((r) => status === undefined || r.view.status.value === status);
+        .filter((r) => statuses === undefined || statuses.includes(r.view.status.value));
       const sign = direction === 'desc' ? -1 : 1;
       type Keyed = { key: Array<string | number | null>; id: string };
       const compare = (a: Keyed, b: Keyed) => {
@@ -2760,9 +2768,23 @@ export function createFakeVault(): {
         .filter((d) => Boolean(d.deleted_at) === inTrash)
         .filter((d) => asked === undefined || Boolean(d.purge_requested_at) === (asked === 'true'))
         .filter((d) => !by || d.issued_by?.toLowerCase() === by.trim().toLowerCase());
-      // ?status= as the real vault filters it: by the status each one says.
-      const status = param(url, 'status');
-      const listed = items.map(listedOf).filter((d) => !status || d.status.value === status);
+      // ?status= as the real vault filters it: by the status each one says;
+      // several (V1), any of them.
+      const statuses = listParam(url, 'status');
+      const older = v1Filters(url);
+      if ('refused' in older) return older.refused;
+      const several = (name: string) => {
+        const v = listParam(url, name);
+        return v && v.length > 1 ? v : undefined;
+      };
+      const members = several('member_id');
+      const typeKeys = several('type_key');
+      const listed = items
+        .filter((d) => members === undefined || members.includes(d.owner_member_id ?? ''))
+        .filter((d) => typeKeys === undefined || typeKeys.includes(d.type_key ?? ''))
+        .map(listedOf)
+        .filter((d) => older.within(d))
+        .filter((d) => !statuses || statuses.includes(d.status.value));
       return ok({ items: listed, next_cursor: null, has_more: false });
     }
     // No longer needed, and needed again (0.9.0), as the real vault keeps it:
@@ -6515,6 +6537,82 @@ function tagsOf(tags: ReadonlyArray<string> | null | undefined): string[] {
 }
 
 /** One query parameter, decoded; the client's library has no URLSearchParams. */
+/** A filter's values, comma-separated (V1): one, several, or none asked for. */
+function listParam(url: string, name: string): string[] | undefined {
+  const raw = param(url, name);
+  if (raw === undefined) return undefined;
+  const v = [
+    ...new Set(
+      raw
+        .split(',')
+        .map((x) => x.trim())
+        .filter((x) => x !== ''),
+    ),
+  ];
+  return v.length > 0 ? v : undefined;
+}
+
+/**
+ * The days a document was added, issued or expires within (V1), both ends
+ * included, as the real vault reads them; one without that date is in no
+ * range. A day that is not one, or the wrong way round, is refused.
+ */
+function v1Filters(url: string):
+  | {
+      within: (d: {
+        created_at: string;
+        issued: { date: string } | null;
+        expires: { date: string } | null;
+      }) => boolean;
+    }
+  | { refused: ReturnType<typeof fail> } {
+  const ranges: Array<
+    [
+      string,
+      (d: {
+        created_at: string;
+        issued: { date: string } | null;
+        expires: { date: string } | null;
+      }) => string | null,
+    ]
+  > = [
+    ['added', (d) => d.created_at.slice(0, 10)],
+    ['issued', (d) => d.issued?.date ?? null],
+    ['expires', (d) => d.expires?.date ?? null],
+  ];
+  const asked: Array<{ from?: string; to?: string; of: (typeof ranges)[number][1] }> = [];
+  for (const [name, of] of ranges) {
+    const from = param(url, `${name}_from`);
+    const to = param(url, `${name}_to`);
+    for (const [k, v] of [
+      [`${name}_from`, from],
+      [`${name}_to`, to],
+    ] as const) {
+      if (
+        v !== undefined &&
+        !(/^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`)))
+      ) {
+        return {
+          refused: fail(422, 'validation_failed', 'A date is a day, written as 2026-11-10.', k),
+        };
+      }
+    }
+    if (from && to && from > to) {
+      return {
+        refused: fail(422, 'validation_failed', 'The first day is after the last.', `${name}_from`),
+      };
+    }
+    if (from || to) asked.push({ ...(from ? { from } : {}), ...(to ? { to } : {}), of });
+  }
+  return {
+    within: (d) =>
+      asked.every((r) => {
+        const day = r.of(d);
+        return day !== null && (!r.from || day >= r.from) && (!r.to || day <= r.to);
+      }),
+  };
+}
+
 function param(url: string, name: string): string | undefined {
   const raw = new RegExp(`[?&]${name}=([^&]*)`).exec(url)?.[1];
   return raw === undefined ? undefined : decodeURIComponent(raw.split('+').join(' '));

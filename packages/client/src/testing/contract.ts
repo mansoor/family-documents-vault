@@ -2179,6 +2179,49 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'the Documents table filtered by several values, comma-separated, and by days, both ends included (V1)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.document_filters).toBe(true);
+      const TAG = 'v1-filters';
+      for (const [key, type_key, expires] of [
+        ['one', 'passport', '2030-06-01'],
+        ['two', 'passport', '2034-01-01'],
+        ['three', 'bank_statement', null],
+      ] as const) {
+        await api.createDocument(token, {
+          title: `V1 filter ${key}`,
+          type_key,
+          tags: [TAG],
+          ...(expires ? { expires: { date: expires, precision: 'day' as const } } : {}),
+        });
+      }
+      const titles = (page: { items: Array<{ title: string | null }> }) =>
+        page.items.map((d) => d.title?.replace(/^V1 filter /, ''));
+      // Any of the kinds asked for.
+      const kinds = await api.documents(token, {
+        sort: 'title',
+        tag: TAG,
+        type_key: 'passport,bank_statement',
+      });
+      expect(titles(kinds)).toEqual(['one', 'three', 'two']);
+      expect(kinds.total).toBe(3);
+      // Within the days, both ends included; one with no expiry is in no range.
+      const within = await api.documents(token, {
+        sort: 'title',
+        tag: TAG,
+        expires_from: '2030-06-01',
+        expires_to: '2033-12-31',
+      });
+      expect(titles(within)).toEqual(['one']);
+      // What it cannot read is refused, saying which.
+      const refused = await refusal(
+        api.documents(token, { sort: 'title', tag: TAG, status: 'expired,lost' as never }),
+      );
+      expect(refused).toMatchObject({ status: 422, code: 'validation_failed' });
+    },
+  },
+  {
     name: 'the Documents table: sorted by a column either way with blanks last, filtered, a page at a time by its cursor with how many in all; a viewer may not sort or filter by where originals are kept (R2)',
     run: async (api, ctx) => {
       const { access_token: token } = await signIn(api, ctx);

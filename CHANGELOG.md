@@ -6,6 +6,22 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.26] - 2026-11-10 — filters of several values, and of dates
+
+### Added
+
+- **Filters of several values and of dates** on the documents list and on
+  search (V1, for the phone's filter panel). Several people, kinds,
+  categories, statuses or who-can-see go comma-separated, and any of them
+  match: Sam's or Leo's, passports or licences. The days a document was
+  added, issued or expires can be given as a range (`YYYY-MM-DD`, both
+  ends included); a document without that date is in no range. Search
+  also takes kinds, statuses and who can see it. Every filter only
+  narrows what the reader may see already.
+  - One value is read exactly as before, and older clients are answered
+    as before.
+  - The capability is `features.document_filters`.
+
 ## [0.9.0-dev.25] - 2026-11-08 — each version keeps its own details, a new version's are offered, and older versions can be viewed
 
 ### Added
