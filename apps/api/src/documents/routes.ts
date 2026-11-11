@@ -22,7 +22,7 @@ import type { PurgeService } from './purge.js';
 import type { LockService } from '../household/locks.js';
 import { NOTES_LIST_MAX, type DocumentService } from './service.js';
 import { TAG_LIST_MAX } from './tags.js';
-import { asLists, filtersOf } from './filters.js';
+import { asLists, FILTER_VALUES_MAX, filtersOf } from './filters.js';
 import type { VisibilityService } from './visibility.js';
 import type { UploadRequestService } from '../uploads/requests.js';
 import {
@@ -159,6 +159,12 @@ function captureMetadata(raw: unknown): CaptureMetadata {
 
 /** A filter of one value, or of several comma-separated (V1, filters.ts): checked as it is read. */
 const values = z.string().max(4000).optional();
+/** A tag, or several: the field given once for each (11 Nov 2026), any of them. */
+const tagValues = z
+  .union([z.string().max(400), z.array(z.string().max(400)).max(FILTER_VALUES_MAX)])
+  .optional();
+/** Notes left out (11 Nov 2026): what the Documents tab and table keep to. */
+const notesFilter = z.enum(['exclude']).optional();
 /** A day, `YYYY-MM-DD` (V1): checked as it is read. */
 const day = z.string().max(10).optional();
 const dates = {
@@ -176,7 +182,8 @@ const listQuery = z.object({
   category: values,
   issued_by: z.string().trim().min(1).max(200).optional(),
   type_key: values,
-  tag: z.string().optional(),
+  tag: tagValues,
+  notes: notesFilter,
   // A detail tag's label, any value (0.9.0, T1): every document with a locker.
   tag_label: z.string().trim().min(1).max(200).optional(),
   visibility: values,
@@ -389,6 +396,9 @@ export function registerDocuments(
     type_key: values,
     status: values,
     visibility: values,
+    // Since 11 Nov 2026: tags, and notes left out.
+    tag: tagValues,
+    notes: notesFilter,
     issued_by: z.string().trim().min(1).max(200).optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
     ...dates,
@@ -473,6 +483,7 @@ export function registerDocuments(
       category: single.category,
       status: single.status,
       visibility: single.visibility,
+      tag: single.tag,
       ...many,
     };
     const sort = q.sort;

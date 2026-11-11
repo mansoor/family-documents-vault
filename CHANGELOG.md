@@ -6,6 +6,17 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.28] - 2026-11-11 — Documents without the notes, and several tags
+
+### Changed
+
+- **The Documents table keeps to documents.** Notes have their own page, so the web's Documents table no longer lists them, its count leaves them out, and its Kind filter no longer offers Note. A collection's own table still shows the notes in it. (The owner's tidy-up of 11 Nov 2026; the phone's Documents tab does the same.)
+
+### Added
+
+- **Several tags at once** on the documents list and in search: any of them match, whatever their case. Search takes tags for the first time. For the phone's filter panel. The capability is `features.tag_filters`.
+- **Notes left out on request** (`notes=exclude`) on the documents list and in search, counted without them. The capability is `features.notes_apart`.
+
 ## [0.9.0-dev.27] - 2026-11-11 — reminders you set yourself, for the phone
 
 ### Added

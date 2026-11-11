@@ -394,6 +394,19 @@ export interface CapabilityFeatures {
    * vaults, which take one value each and no days.
    */
   document_filters?: boolean;
+  /**
+   * 0.9.0 (the owner's tidy-up of 11 Nov 2026): GET /documents and GET
+   * /search take several tags, `tag` given once for each (`tag=a&tag=b`),
+   * any of them; search takes `tag` at all. Absent from older vaults,
+   * which take one tag, on the list only.
+   */
+  tag_filters?: boolean;
+  /**
+   * 0.9.0 (the owner's tidy-up of 11 Nov 2026): GET /documents and GET
+   * /search take `notes=exclude`, documents without the notes — what the
+   * phone's Documents tab and the web's Documents table keep to, and count.
+   */
+  notes_apart?: boolean;
 }
 
 export interface CapabilityLimits {

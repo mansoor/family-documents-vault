@@ -19,6 +19,7 @@ import {
   type Visibility,
   type VisibilityChange,
   documentName,
+  NOTE_KIND,
 } from '@fdv/shared';
 import {
   Fragment,
@@ -151,7 +152,8 @@ export function DocumentsScreen() {
   const holder: Holder | null = info
     ? { household: info.household_id, member: info.member_id }
     : null;
-  const pages = usePages(view, holder);
+  // Documents, without the notes: they have their own page (the owner's tidy-up of 11 Nov 2026).
+  const pages = usePages(view, holder, true);
   const known = useKnown();
   const who: Chooser = {
     role,
@@ -434,7 +436,8 @@ function useBackToOpened(
 }
 
 /** A view's pages: the first, then each Show more asks for the next after the cursor. */
-function usePages(view: TableView, holder: Holder | null): Pages {
+function usePages(view: TableView, holder: Holder | null, withoutNotes = false): Pages {
+  const apart = withoutNotes ? { notes: 'exclude' as const } : {};
   const { withToken } = useApp();
   const key = paramsOf(view).toString();
   const household = holder?.household ?? null;
@@ -465,10 +468,10 @@ function usePages(view: TableView, holder: Holder | null): Pages {
           : (readKept(key, household && member ? { household, member } : null)?.shown ?? PAGE_SIZE);
       try {
         let r = await withToken((t) =>
-          api.documents(
-            t,
-            queryOf(asWas, { limit: Math.min(MOST_AT_ONCE, Math.max(PAGE_SIZE, want)) }),
-          ),
+          api.documents(t, {
+            ...queryOf(asWas, { limit: Math.min(MOST_AT_ONCE, Math.max(PAGE_SIZE, want)) }),
+            ...apart,
+          }),
         );
         if (cancelled || !r) return;
         let items = r.items;
@@ -478,10 +481,10 @@ function usePages(view: TableView, holder: Holder | null): Pages {
           const cursor = next;
           const had = items;
           r = await withToken((t) =>
-            api.documents(
-              t,
-              queryOf(asWas, { cursor, limit: Math.min(MOST_AT_ONCE, want - had.length) }),
-            ),
+            api.documents(t, {
+              ...queryOf(asWas, { cursor, limit: Math.min(MOST_AT_ONCE, want - had.length) }),
+              ...apart,
+            }),
           );
           if (cancelled || !r) return;
           items = [...had, ...r.items.filter((d) => !had.some((x) => x.id === d.id))];
@@ -500,6 +503,8 @@ function usePages(view: TableView, holder: Holder | null): Pages {
     return () => {
       cancelled = true;
     };
+    // `apart` is the page's own, never changing while it is shown.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, asked, withToken, household, member]);
 
   const current = got && got.key === key ? got : null;
@@ -507,7 +512,9 @@ function usePages(view: TableView, holder: Holder | null): Pages {
     if (!current?.next || loadingMore) return null;
     setLoadingMore(true);
     try {
-      const r = await withToken((t) => api.documents(t, queryOf(view, { cursor: current.next })));
+      const r = await withToken((t) =>
+        api.documents(t, { ...queryOf(view, { cursor: current.next }), ...apart }),
+      );
       setError(null);
       if (!r) return null;
       const fresh = r.items.filter((d) => !current.items.some((x) => x.id === d.id));
@@ -589,6 +596,8 @@ export function filterChoices(
   key: FilterKey,
   known: Known,
   view: TableView,
+  /** Documents' own table has no notes, so no Note among its kinds. */
+  withNotes = true,
 ): Array<{ value: string; label: string }> {
   switch (key) {
     case 'person':
@@ -600,6 +609,7 @@ export function filterChoices(
     case 'kind': {
       const kinds = known.types
         .filter((t) => !t.hidden || t.key === view.kind)
+        .filter((t) => withNotes || t.key !== NOTE_KIND)
         .sort((a, b) => a.label.localeCompare(b.label));
       return [
         { value: '', label: 'All kinds' },
@@ -944,7 +954,7 @@ function TableDocuments(props: {
             id={`filter-${k}`}
             label={FILTER_LABELS[k]}
             value={view[k]}
-            options={filterChoices(k, known, view)}
+            options={filterChoices(k, known, view, scope !== undefined)}
             onChange={(v) => setFilter(k, v)}
           />
         ))}
@@ -2722,7 +2732,7 @@ function PhoneDocuments(props: {
                 id={`phone-filter-${k}`}
                 label={FILTER_LABELS[k]}
                 value={view[k]}
-                options={filterChoices(k, known, view)}
+                options={filterChoices(k, known, view, scope !== undefined)}
                 onChange={(v) => props.setView({ ...view, [k]: v })}
               />
             ))}
