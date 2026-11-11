@@ -123,6 +123,8 @@ describe('buildCapabilities', () => {
       no_longer_needed: true,
       version_details: true,
       document_filters: true,
+      tag_filters: true,
+      notes_apart: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

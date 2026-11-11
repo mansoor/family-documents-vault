@@ -162,7 +162,10 @@ import {
  * with whatever session layer a platform has.
  */
 
-export type Params = Record<string, string | number | boolean | undefined | null>;
+export type Params = Record<
+  string,
+  string | number | boolean | readonly string[] | undefined | null
+>;
 
 /**
  * What asking to remove a document for good came to (5.24): removed, or —
@@ -176,8 +179,11 @@ export type PasskeyOptions = Record<string, unknown>;
 export function qs(params: Params): string {
   const parts: string[] = [];
   for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null && v !== '') {
-      parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`);
+    // A list is the field once for each (several tags, 11 Nov 2026): a tag may hold a comma.
+    for (const one of Array.isArray(v) ? (v as readonly string[]) : [v]) {
+      if (one !== undefined && one !== null && one !== '') {
+        parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(one))}`);
+      }
     }
   }
   return parts.length ? `?${parts.join('&')}` : '';

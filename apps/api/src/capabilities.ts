@@ -178,6 +178,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       version_details: true,
       // 0.9.0 (V1): filters of several values and of dates, on the list and on search.
       document_filters: true,
+      // 0.9.0 (the owner's tidy-up of 11 Nov 2026): several tags, and notes left out.
+      tag_filters: true,
+      notes_apart: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

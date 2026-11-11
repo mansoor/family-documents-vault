@@ -1,4 +1,4 @@
-import { STATUS_ORDER, type Visibility } from '@fdv/shared';
+import { NOTE_KIND, STATUS_ORDER, type Visibility } from '@fdv/shared';
 import { sql, type RawBuilder } from 'kysely';
 import { ApiError } from '../errors.js';
 
@@ -12,6 +12,13 @@ import { ApiError } from '../errors.js';
  * the filter as it always was; several, any of them. Tags stay one at a
  * time: a tag may hold a comma. Dates are days, `YYYY-MM-DD`, both ends
  * included; a document without that date is not within any range.
+ *
+ * Since the owner's tidy-up of 11 Nov 2026 (`features.tag_filters`,
+ * `features.notes_apart`): several tags, the `tag` field given once for
+ * each (`tag=a&tag=b`, any of them, a comma being part of a tag); and
+ * `notes=exclude`, documents without the notes, which the phone's
+ * Documents tab and the web's Documents table keep to (notes have their
+ * own place on both).
  */
 
 /** Any of these, and within these dates: what a list or a search is narrowed by. */
@@ -27,6 +34,10 @@ export interface DocumentFilters {
   issued_to?: string | undefined;
   expires_from?: string | undefined;
   expires_to?: string | undefined;
+  /** Any of these tags, whatever their case (several since 11 Nov 2026). */
+  tags?: string[] | undefined;
+  /** Notes left out (`notes=exclude`). */
+  without_notes?: boolean | undefined;
 }
 
 /** How many values one filter may hold. */
@@ -78,6 +89,9 @@ export interface RawFilters {
   issued_to?: string | undefined;
   expires_from?: string | undefined;
   expires_to?: string | undefined;
+  /** A tag, or several: the field given once for each. */
+  tag?: string | string[] | undefined;
+  notes?: 'exclude' | undefined;
 }
 
 /**
@@ -92,6 +106,7 @@ export function filtersOf(raw: RawFilters): {
     category?: string | undefined;
     status?: string | undefined;
     visibility?: Visibility | undefined;
+    tag?: string | undefined;
   };
   many: DocumentFilters;
 } {
@@ -136,6 +151,23 @@ export function filtersOf(raw: RawFilters): {
     if (visibilities.length === 1) single.visibility = visibilities[0] as Visibility;
     else many.visibilities = visibilities as Visibility[];
   }
+  // Tags are never split: a tag may hold a comma. One is the filter as it always was.
+  const tags =
+    raw.tag === undefined
+      ? []
+      : [
+          ...new Set(
+            (Array.isArray(raw.tag) ? raw.tag : [raw.tag])
+              .map((x) => x.trim())
+              .filter((x) => x !== ''),
+          ),
+        ];
+  if (tags.length > 0) {
+    tooMany('tag', tags);
+    if (tags.length === 1) single.tag = tags[0];
+    else many.tags = tags;
+  }
+  if (raw.notes === 'exclude') many.without_notes = true;
   for (const d of ['added', 'issued', 'expires'] as const) {
     const from = dayOf(`${d}_from`, raw[`${d}_from`]);
     const to = dayOf(`${d}_to`, raw[`${d}_to`]);
@@ -166,6 +198,13 @@ export function filterClauses(f: DocumentFilters, table = 'd'): RawBuilder<unkno
   if (f.type_keys) parts.push(sql`${c('type_key')} = any(${f.type_keys}::text[])`);
   if (f.categories) parts.push(sql`${c('category')} = any(${f.categories}::text[])`);
   if (f.visibilities) parts.push(sql`${c('visibility')}::text = any(${f.visibilities}::text[])`);
+  // Any of the tags, keyed by the database as one tag is (tagFilter, 0073).
+  if (f.tags) {
+    parts.push(
+      sql`${c('tag_keys')} && array(select fdv_tag_key(x) from unnest(${f.tags}::text[]) as x)::text[]`,
+    );
+  }
+  if (f.without_notes) parts.push(sql`${c('type_key')} is distinct from ${NOTE_KIND}`);
   // Added: the day it was made, on the database's calendar, both ends included.
   if (f.added_from) parts.push(sql`${c('created_at')} >= ${f.added_from}::date`);
   if (f.added_to) parts.push(sql`${c('created_at')} < (${f.added_to}::date + 1)`);
@@ -203,6 +242,7 @@ export function asLists(
     type_key?: string | undefined;
     status?: string | undefined;
     visibility?: Visibility | undefined;
+    tag?: string | undefined;
   },
   many: DocumentFilters,
 ): DocumentFilters {
@@ -211,5 +251,6 @@ export function asLists(
     ...(single.type_key ? { type_keys: [single.type_key] } : {}),
     ...(single.status ? { statuses: [single.status] } : {}),
     ...(single.visibility ? { visibilities: [single.visibility] } : {}),
+    ...(single.tag ? { tags: [single.tag] } : {}),
   };
 }

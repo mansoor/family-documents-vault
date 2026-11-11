@@ -2213,6 +2213,8 @@ export function createFakeVault(): {
           document_table: true,
           // V1 (0.9.0): several values and days, on the list (the fake has no search).
           document_filters: true,
+          tag_filters: true,
+          notes_apart: true,
           batches: true,
           // Each item read and levelled (I2): the fake's are read as a test says.
           batch_proposals: true,
@@ -2491,7 +2493,7 @@ export function createFakeVault(): {
       const members = listParam(url, 'member_id');
       const typeKeys = listParam(url, 'type_key');
       const categories = listParam(url, 'category');
-      const tag = param(url, 'tag');
+      const apart = notesAndTags(url);
       const tagLabel = param(url, 'tag_label');
       const visibilities = listParam(url, 'visibility');
       const collectionId = param(url, 'collection_id');
@@ -2514,8 +2516,9 @@ export function createFakeVault(): {
         )
         .filter((d) => typeKeys === undefined || typeKeys.includes(d.type_key ?? ''))
         .filter((d) => categories === undefined || categories.includes(listedOf(d).category ?? ''))
-        // A tag whatever its case, and a detail tag's label (0.9.0, T1).
-        .filter((d) => tag === undefined || (d.tags ?? []).some((t) => tagKey(t) === tagKey(tag)))
+        // Tags whatever their case (several, any of them), notes left out,
+        // and a detail tag's label (0.9.0, T1).
+        .filter(apart)
         .filter(
           (d) =>
             tagLabel === undefined ||
@@ -2782,6 +2785,7 @@ export function createFakeVault(): {
       const members = several('member_id');
       const typeKeys = several('type_key');
       const listed = items
+        .filter(notesAndTags(url))
         .filter((d) => members === undefined || members.includes(d.owner_member_id ?? ''))
         .filter((d) => typeKeys === undefined || typeKeys.includes(d.type_key ?? ''))
         .map(listedOf)
@@ -6685,6 +6689,29 @@ function v1Filters(url: string):
         return day !== null && (!r.from || day >= r.from) && (!r.to || day <= r.to);
       }),
   };
+}
+
+/** Each value of a field given once for each (`tag=a&tag=b`), decoded. */
+function params(url: string, name: string): string[] {
+  return [...url.matchAll(new RegExp(`[?&]${name}=([^&]*)`, 'g'))].map((m) =>
+    decodeURIComponent((m[1] ?? '').split('+').join(' ')),
+  );
+}
+
+/**
+ * Tags and notes as the real vault filters them (the owner's tidy-up of 11
+ * Nov 2026): any of the tags asked for, whatever their case; and with
+ * `notes=exclude`, no note.
+ */
+function notesAndTags(url: string): (d: FakeDocument) => boolean {
+  const tags = params(url, 'tag')
+    .map((t) => t.trim())
+    .filter((t) => t !== '')
+    .map(tagKey);
+  const noNotes = param(url, 'notes') === 'exclude';
+  return (d) =>
+    (!noNotes || d.type_key !== NOTE_KIND) &&
+    (tags.length === 0 || (d.tags ?? []).some((t) => tags.includes(tagKey(t))));
 }
 
 function param(url: string, name: string): string | undefined {

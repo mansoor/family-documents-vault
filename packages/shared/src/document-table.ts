@@ -100,8 +100,13 @@ export type DocumentListParams = {
   type_key?: string | undefined;
   category?: string | undefined;
   issued_by?: string | undefined;
-  /** A tag, whatever its case since 0.9.0 (`features.tag_details`). */
-  tag?: string | undefined;
+  /**
+   * A tag, whatever its case since 0.9.0 (`features.tag_details`); several,
+   * any of them, since `features.tag_filters`.
+   */
+  tag?: string | readonly string[] | undefined;
+  /** Notes left out (`features.notes_apart`). */
+  notes?: 'exclude' | undefined;
   /** A detail tag's label, any value: "locker" (0.9.0, `features.tag_details`). */
   tag_label?: string | undefined;
   visibility?: Visibility | undefined;

@@ -5824,6 +5824,26 @@ no_longer_needed` on a document no longer needed) and
     `deleteReminder(token, id)` for `DELETE /api/v1/reminders/{id}` (`204`;
     `404` for any reminder but one somebody set themselves). The fake
     answers both, as the vault does.
+  - Several tags, and notes left out (0.9.0-dev.28; the owner's tidy-up of
+    11 Nov 2026, for the phone's Documents tab and the web's Documents
+    table). No migration. Everything is **additive**: a request made as
+    before is answered as before.
+    - **New `features`:** `tag_filters` and `notes_apart`, both `true`;
+      absent from older vaults.
+    - **Changed:** `GET /api/v1/documents` takes `tag` given once for each
+      tag (`tag=a&tag=b`): any of them match, whatever their case, as one
+      tag always has. A tag is never split at a comma. At most 50.
+    - **Changed:** `GET /api/v1/search` takes `tag` too (one or several),
+      and its second pass keeps to them.
+    - **New query field** on `GET /api/v1/documents` (both list shapes) and
+      `GET /api/v1/search`: `notes=exclude`, documents without the notes;
+      with a column sort, `total` counts without them. Any other value is
+      `422 validation_failed`.
+    - `@fdv/shared`: `Capabilities.features.tag_filters` and `notes_apart`;
+      `DocumentListParams.tag` may be a list, and gains `notes`.
+      `@fdv/client`: a query value that is a list is sent as the field once
+      for each; the fake takes several tags and `notes=exclude` on both list
+      shapes.
 
 ## Deprecations in effect
 
