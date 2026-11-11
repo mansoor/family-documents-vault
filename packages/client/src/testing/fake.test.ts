@@ -1364,3 +1364,57 @@ describe('the fake vault, the household mailbox set up in Settings (0.9.0, O1)',
     ).toMatchObject({ host: 'imap.fastmail.com', password: 'set' });
   });
 });
+
+describe('the fake vault, reminders somebody sets themselves (0.9.0-dev.27)', () => {
+  const refusal = (p: Promise<unknown>) =>
+    p.then(
+      () => null,
+      (err: { status?: number; code?: string }) => err,
+    );
+  it('made on a document, listed, and removed; never one made from its dates, nor on one no longer needed', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const bill = await api.createDocument(token, { title: 'Water bill' });
+    const today = new Date().toISOString().slice(0, 10);
+    const made = await api.createReminder(token, {
+      document_id: bill.id,
+      fire_at: today,
+      note: 'Check the meter',
+    });
+    expect(made).toMatchObject({
+      document_id: bill.id,
+      document_title: 'Water bill',
+      kind: 'manual',
+      status: 'due',
+      note: 'Check the meter',
+      label: 'Due today',
+    });
+    expect((await api.reminders(token, 'due')).items.map((r) => r.id)).toContain(made.id);
+    expect(
+      await refusal(api.createReminder(token, { document_id: bill.id, fire_at: 'soon' })),
+    ).toMatchObject({
+      status: 422,
+    });
+    expect(
+      await refusal(api.createReminder(token, { document_id: 'nope', fire_at: today })),
+    ).toMatchObject({ status: 404 });
+
+    await api.deleteReminder(token, made.id);
+    expect((await api.reminders(token)).items.map((r) => r.id)).not.toContain(made.id);
+    expect(await refusal(api.deleteReminder(token, made.id))).toMatchObject({ status: 404 });
+    // One made from a document's dates is not removed this way.
+    vault.state.reminders.push({ ...made, id: 'derived-1', kind: 'derived' });
+    expect(await refusal(api.deleteReminder(token, 'derived-1'))).toMatchObject({ status: 404 });
+
+    await api.markNoLongerNeeded(token, bill.id);
+    expect(
+      await refusal(api.createReminder(token, { document_id: bill.id, fire_at: today })),
+    ).toMatchObject({ status: 409, code: 'no_longer_needed' });
+  });
+});

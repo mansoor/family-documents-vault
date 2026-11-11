@@ -5816,6 +5816,14 @@ time, timezone)`, which every client turns a family-clock date and time
       `DocumentListParams` gains the six days. `@fdv/client`: the fake
       takes several values and the days on the table (column sorts), and
       on the older list where several values or days are asked for.
+  - Reminders set and removed from a client (0.9.0-dev.27, for the phone).
+    No route changes and no migration. **New in `@fdv/client`:**
+    `createReminder(token, { document_id, fire_at, note?, recurrence? })`
+    for `POST /api/v1/reminders` (`201` with the reminder; `409
+no_longer_needed` on a document no longer needed) and
+    `deleteReminder(token, id)` for `DELETE /api/v1/reminders/{id}` (`204`;
+    `404` for any reminder but one somebody set themselves). The fake
+    answers both, as the vault does.
 
 ## Deprecations in effect
 
