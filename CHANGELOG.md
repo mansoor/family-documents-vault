@@ -6,6 +6,12 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.27] - 2026-11-11 — reminders you set yourself, for the phone
+
+### Added
+
+- **The client can set and remove your own reminders.** `@fdv/client` gains `createReminder` and `deleteReminder` for the routes the vault already had (`POST /api/v1/reminders`, `DELETE /api/v1/reminders/{id}`), so the phone app can set a reminder on a document and remove one it set. Only reminders somebody set themselves can be removed; those made from a document's dates stay. The client's fake answers both, as the vault does.
+
 ## [0.9.0-dev.26] - 2026-11-10 — filters of several values, and of dates
 
 ### Added

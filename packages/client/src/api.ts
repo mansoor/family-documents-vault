@@ -1138,6 +1138,31 @@ export function createApi(http: Http) {
     acknowledgeReminder: (token: string, id: string) =>
       request<ReminderView>(`/api/v1/reminders/${id}/acknowledge`, { method: 'POST', token }),
     /**
+     * A reminder the caller sets themselves (`reminder.manage`) on a
+     * document they can see, out of the Trash: on `fire_at` (`YYYY-MM-DD`),
+     * with a note of at most 500 characters if they say, and repeating if
+     * `recurrence` says (`monthly`, `quarterly`, `annual`, `every:Nm`).
+     * `201` with it: `due` if the day has come on the family's calendar,
+     * else `scheduled`. A document no longer needed is `409
+     * no_longer_needed`; one they cannot see, `404`.
+     */
+    createReminder: (
+      token: string,
+      body: {
+        document_id: string;
+        fire_at: string;
+        note?: string | null;
+        recurrence?: string | null;
+      },
+    ) => request<ReminderView>('/api/v1/reminders', { method: 'POST', body, token }),
+    /**
+     * One the caller set themselves (`kind: 'manual'`), removed (`204`):
+     * never one made from a document's dates, which is `404` as one they
+     * cannot see is.
+     */
+    deleteReminder: (token: string, id: string) =>
+      request<void>(`/api/v1/reminders/${enc(id)}`, { method: 'DELETE', token }),
+    /**
      * An owner's reminders that somebody has turned 13 and may now have a
      * sign-in of their own (after 0.7.0): each due one, while they may
      * still be invited. Anybody else is `403`; an older vault, `404`.

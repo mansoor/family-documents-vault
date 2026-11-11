@@ -120,6 +120,8 @@ import {
   missingFields,
   NO_LONGER_NEEDED_REASON_MAX,
   nextReminder,
+  parseRecurrence,
+  reminderLabel,
   ageOn,
   CHILD_BIRTHDAY_REFUSAL,
   childBirthday,
@@ -6317,6 +6319,78 @@ export function createFakeVault(): {
       // Nothing reminds of a document no longer needed (0.9.0).
       const unneeded = new Set(state.documents.filter((d) => d.no_longer_needed).map((d) => d.id));
       return ok({ items: state.reminders.filter((r) => !unneeded.has(r.document_id)) });
+    }
+    // A reminder somebody sets themselves, and removing it, as the real
+    // vault answers (reminders/routes.ts): on a document they can see.
+    if (path === '/api/v1/reminders' && init.method === 'POST') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!can(who.role, 'reminder.manage'))
+        return fail(403, 'forbidden', refusalFor('reminder.manage'));
+      const b = body as {
+        document_id?: unknown;
+        fire_at?: unknown;
+        note?: unknown;
+        recurrence?: unknown;
+      };
+      if (typeof b.fire_at !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(b.fire_at)) {
+        return fail(422, 'validation_failed', 'Invalid date', 'fire_at');
+      }
+      if (
+        b.note !== undefined &&
+        b.note !== null &&
+        (typeof b.note !== 'string' || b.note.length > 500)
+      ) {
+        return fail(422, 'validation_failed', 'At most 500 characters.', 'note');
+      }
+      if (typeof b.recurrence === 'string' && !parseRecurrence(b.recurrence)) {
+        return fail(
+          422,
+          'validation_failed',
+          'Repeat can be monthly, quarterly, annual, or every:Nm.',
+        );
+      }
+      const doc = state.documents.find((d) => d.id === b.document_id && !d.deleted_at);
+      if (!doc) return fail(404, 'not_found', 'That document is not in the vault.');
+      if (doc.no_longer_needed) {
+        return fail(
+          409,
+          'no_longer_needed',
+          'This document is no longer needed, so nothing reminds of it. Mark it needed again to be reminded.',
+        );
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const status = b.fire_at <= today ? 'due' : 'scheduled';
+      const made: ReminderView = {
+        id: next('reminder'),
+        document_id: doc.id,
+        document_title: doc.title,
+        kind: 'manual',
+        fire_at: b.fire_at,
+        lead_days: null,
+        note: typeof b.note === 'string' ? b.note : null,
+        recurrence: typeof b.recurrence === 'string' ? b.recurrence : null,
+        status,
+        snoozed_until: null,
+        label: reminderLabel(b.fire_at, today, status, null),
+        source: null,
+        about: null,
+      };
+      state.reminders.push(made);
+      return ok(made, 201);
+    }
+    const reminderAt = /^\/api\/v1\/reminders\/([^/]+)$/.exec(path);
+    if (reminderAt && init.method === 'DELETE') {
+      const s = session();
+      if (!('id' in s)) return s;
+      if (!can(whoOf(s).role, 'reminder.manage'))
+        return fail(403, 'forbidden', refusalFor('reminder.manage'));
+      const id = decodeURIComponent(reminderAt[1] as string);
+      const at = state.reminders.findIndex((r) => r.id === id && r.kind === 'manual');
+      if (at < 0) return fail(404, 'not_found', 'Only reminders you set yourself can be removed.');
+      state.reminders.splice(at, 1);
+      return empty();
     }
     return fail(404, 'not_found', `The fake vault has no ${init.method} ${path}.`);
   };

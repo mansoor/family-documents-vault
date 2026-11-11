@@ -536,3 +536,88 @@ describe.skipIf(!testAdminUrl())(
     });
   },
 );
+
+/**
+ * Reminders set and removed came to the client in 0.9.0-dev.27: the
+ * phone's older clients (scripts/older-client.mjs) have neither method, so
+ * this case is this commit's client's alone.
+ */
+const clientSetsReminders =
+  'createReminder' in
+  createApi(
+    createHttp({
+      baseUrl: 'http://vault.test',
+      fetch: () => Promise.reject(new Error('not asked')),
+    }),
+  );
+
+describe.skipIf(!testAdminUrl() || !clientSetsReminders)(
+  'reminders set and removed by a client (0.9.0-dev.27)',
+  () => {
+    let h: Harness;
+    const fetch: FetchLike = async (url, init) => {
+      const res = await h.app.inject({
+        method: init.method as 'GET',
+        url: url.replace(/^https?:\/\/[^/]+/, ''),
+        headers: init.headers,
+        ...(typeof init.body === 'string' ? { payload: init.body } : {}),
+      });
+      return {
+        ok: res.statusCode < 400,
+        status: res.statusCode,
+        headers: {
+          get: (name) => {
+            const v = res.headers[name.toLowerCase()];
+            return v === undefined ? null : String(v);
+          },
+        },
+        json: async () => (res.body ? res.json() : null),
+        text: async () => res.body,
+        arrayBuffer: async () => new ArrayBuffer(0),
+      };
+    };
+    const api = createApi(createHttp({ baseUrl: 'http://vault.test', fetch }));
+
+    beforeAll(async () => {
+      h = await createHarness();
+    }, 60_000);
+    afterAll(() => h.close());
+
+    it('a reminder set from the phone, listed, and removed; one from a date is not', async () => {
+      const { access_token: token } = await api.setup({
+        household_name: 'The Reminded family',
+        display_name: 'Owner',
+        email: 'reminded@example.test',
+        password: 'a long enough password',
+      });
+      const soon = new Date(Date.now() + 20 * 86_400_000).toISOString().slice(0, 10);
+      const visa = await api.createDocument(token, {
+        title: 'Visa',
+        type_key: 'visa',
+        identifier: 'V-1',
+        expires: { date: soon, precision: 'day' },
+      });
+      const made = await api.createReminder(token, {
+        document_id: visa.id,
+        fire_at: soon,
+        note: 'Book the appointment',
+      });
+      expect(made).toMatchObject({
+        document_id: visa.id,
+        kind: 'manual',
+        note: 'Book the appointment',
+      });
+      expect((await api.reminders(token)).items.map((r) => r.id)).toContain(made.id);
+      await api.deleteReminder(token, made.id);
+      expect((await api.reminders(token)).items.map((r) => r.id)).not.toContain(made.id);
+      // The one made from its expiry stays, and is not removed this way.
+      const derived = (await api.reminders(token)).items.find((r) => r.kind === 'derived');
+      expect(derived).toBeDefined();
+      await expect(api.deleteReminder(token, (derived as { id: string }).id)).rejects.toMatchObject(
+        {
+          status: 404,
+        },
+      );
+    });
+  },
+);
