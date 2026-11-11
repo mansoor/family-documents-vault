@@ -15,9 +15,13 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-/** Each MIT package, and the only packages it may use at run time. */
+/**
+ * Each MIT package, and the only packages it may use at run time: each of
+ * them MIT itself. libphonenumber-js (MIT) reads a mobile number typed for
+ * text messages (0.9.0).
+ */
 const MIT = {
-  'packages/shared': [],
+  'packages/shared': ['libphonenumber-js'],
   'packages/client': ['@fdv/shared'],
 };
 /** Used by tests, and by the client's `testing` entry that tests import. */

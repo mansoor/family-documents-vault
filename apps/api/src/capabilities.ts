@@ -181,6 +181,10 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0 (the owner's tidy-up of 11 Nov 2026): several tags, and notes left out.
       tag_filters: true,
       notes_apart: true,
+      // 0.9.0 (SMS1): texts through the household's own SMS Gate, once an
+      // owner has set it up and a test passed (GET /sms/status says so), and
+      // each person's mobile number, confirmed by a code.
+      sms_texts: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

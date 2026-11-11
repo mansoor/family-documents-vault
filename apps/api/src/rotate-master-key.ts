@@ -55,6 +55,7 @@ const SEALED_LABEL: Record<SealedName, [one: string, many: string]> = {
   vaultCredentials: ['storage (S3) credential', 'storage (S3) credentials'],
   smtpPasswords: ['mail (SMTP) password', 'mail (SMTP) passwords'],
   mailInPasswords: ['household mailbox (IMAP) password', 'household mailbox (IMAP) passwords'],
+  smsPasswords: ['text messages (SMS Gate) password', 'text messages (SMS Gate) passwords'],
 };
 
 export interface CommandOptions {

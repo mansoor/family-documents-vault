@@ -116,6 +116,12 @@ export const SCREEN_RULES = {
     title: 'Reading and the check',
     why: 'Only an owner can change how the vault reads papers.',
   },
+  // Text messages (0.9.0, SMS1): the household's SMS Gate, an owner's.
+  texts: {
+    may: owner,
+    title: 'Text messages',
+    why: 'Only an owner can set up text messages.',
+  },
 } satisfies Record<string, ScreenRule>;
 
 /** "This isn't something you can open": the screen's name, and who it is for. */

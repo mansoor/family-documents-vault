@@ -6,6 +6,7 @@ import {
   MAILBOX_PASSWORD_PURPOSE,
   OPERATOR_MAIL_KEY_PURPOSE,
   ScopeKeys,
+  SMS_PASSWORD_PURPOSE,
 } from '@fdv/crypto';
 import { assertSchemaKnown, createDb, createPool, migrateUp } from '@fdv/db';
 import { AuthService } from './auth/service.js';
@@ -66,6 +67,8 @@ import { ReadingCheckService } from './reading-check/service.js';
 import { MAIL_IN_CODE_KEY_PURPOSE, MailInService } from './mail-in/service.js';
 import { SettingsCheckService } from './settings-checks.js';
 import { LocalAiService } from './household/local-ai.js';
+import { PHONE_CODE_KEY_PURPOSE, MemberPhoneService } from './sms/phones.js';
+import { SmsService } from './sms/service.js';
 import { serverVersion } from './version.js';
 import { masterKeyOpensVault } from './master-key-check.js';
 
@@ -215,6 +218,9 @@ async function main(): Promise<void> {
   );
   // What an owner asks the worker from Settings (0.9.0, O1): Verify, browse, Test the mailbox.
   const settingsChecks = new SettingsCheckService(db, enqueue);
+  // Text messages (0.9.0, SMS1): SMS Gate's password sealed as it is saved,
+  // and the codes that confirm a number HMACed under a key of their own.
+  const sms = new SmsService(db, { key: deriveKey(masterSecret, SMS_PASSWORD_PURPOSE), alert });
   const app = await buildApp(config, {
     serverVersion: version,
     instanceId: instanceIdReader(db),
@@ -229,6 +235,10 @@ async function main(): Promise<void> {
       checks: settingsChecks,
     }),
     settingsChecks,
+    sms,
+    phones: new MemberPhoneService(db, sms, {
+      codeKey: deriveKey(masterSecret, PHONE_CODE_KEY_PURPOSE),
+    }),
     // The local AI reader's switch (0.9.0, R4): the endpoint is the worker's alone.
     localAi: new LocalAiService(db, settingsChecks),
     pingDatabase: async () => {

@@ -71,6 +71,8 @@ const CASES: Array<[path: string, roles: Role[], title: string, asks: RegExp]> =
     'Reading and the check',
     /\/household\/reading|\/reading-checks/,
   ],
+  // Text messages (0.9.0, SMS1): an owner's.
+  ['/settings/texts', ['adult', 'teen', 'viewer'], 'Text messages', /\/sms\//],
 ];
 
 describe('a page in two parts refuses with one sentence for both, at either part’s address (0.9.0)', () => {

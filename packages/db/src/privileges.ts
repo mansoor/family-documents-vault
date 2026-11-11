@@ -255,6 +255,17 @@ begin
     revoke execute on function public.watch_dir_used_elsewhere(text, boolean) from public;
     grant execute on function public.watch_dir_used_elsewhere(text, boolean) to fdv_app;
   end if;
+  -- Whether the household can send texts now (0084, SMS1): for anybody
+  -- signed in, and nothing else of the setting.
+  if to_regprocedure('public.sms_ready()') is not null then
+    revoke execute on function public.sms_ready() from public;
+    grant execute on function public.sms_ready() to fdv_app;
+    -- Where a number without + is, and until when a code out can be typed.
+    revoke execute on function public.sms_country() from public;
+    grant execute on function public.sms_country() to fdv_app;
+    revoke execute on function public.phone_code_expires(uuid) from public;
+    grant execute on function public.phone_code_expires(uuid) to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

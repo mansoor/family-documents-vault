@@ -47,7 +47,8 @@ export type SectionKey =
   | 'storage'
   | 'email'
   | 'scanner'
-  | 'reading';
+  | 'reading'
+  | 'texts';
 
 export type GroupKey = 'you' | 'household' | 'server';
 
@@ -248,6 +249,17 @@ export function settingsGroups(
         ),
       ]
     : [];
+  // Text messages (0.9.0, SMS1): the household's own SMS Gate, an owner's.
+  if (owner && caps?.features.sms_texts === true) {
+    server.push(
+      section(
+        'texts',
+        '/settings/texts',
+        'Text messages',
+        'Texts through your own SMS Gate: codes for mobile numbers',
+      ),
+    );
+  }
 
   return (
     [
@@ -481,6 +493,13 @@ const DRAWN: Record<SectionKey, ReactNode> = {
     <>
       <path d="M12 6.5c-1.8-1.3-4.5-2-8-2v13c3.5 0 6.2.7 8 2 1.8-1.3 4.5-2 8-2v-13c-3.5 0-6.2.7-8 2z" />
       <path d="M12 6.5v13" />
+    </>
+  ),
+  // A speech bubble: a text message.
+  texts: (
+    <>
+      <path d="M4.5 6a1.5 1.5 0 0 1 1.5-1.5h12A1.5 1.5 0 0 1 19.5 6v8.5A1.5 1.5 0 0 1 18 16h-7.5l-4 3.5V16h-.5a1.5 1.5 0 0 1-1.5-1.5z" />
+      <path d="M8.5 9.5h7M8.5 12.5h4.5" />
     </>
   ),
 };

@@ -10,6 +10,7 @@ import {
   EncryptStream,
   EnvKeyProvider,
   MAILBOX_PASSWORD_PURPOSE,
+  SMS_PASSWORD_PURPOSE,
   memberPhotoBinding,
   newKey,
   noLongerNeededBinding,
@@ -18,6 +19,7 @@ import {
   sealIdentity,
   sealMailboxPassword,
   sealPrivate,
+  sealSmsPassword,
   sealVersionExtra,
   unwrapKey,
   wrapKey,
@@ -278,6 +280,25 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
        on conflict (household_id) do update set password_encrypted = $2`,
       [hh, sealedPassword],
     );
+    // The household's SMS Gate set up in Settings (0.9.0, SMS1): its
+    // password, its address and sign-in, and a mobile number, likewise.
+    const smsPassword = `export-sms-${randomUUID()}`;
+    const sealedSms = sealSmsPassword(deriveKey(MASTER, SMS_PASSWORD_PURPOSE), smsPassword, hh, {
+      mode: 'local',
+      baseUrl: 'http://192.168.77.5:8080',
+      username: 'sms-signin-export',
+    });
+    await admin.query(
+      `insert into sms_settings (household_id, mode, base_url, username, password_encrypted)
+       values ($1, 'local', 'http://192.168.77.5:8080', 'sms-signin-export', $2)
+       on conflict (household_id) do update set password_encrypted = $2`,
+      [hh, sealedSms],
+    );
+    await admin.query(
+      `insert into member_phone (member_id, household_id, number) values ($1, $2, '+447700900987')
+       on conflict (member_id) do nothing`,
+      [ownerMember, hh],
+    );
 
     const exportId = await withSystem(db, hh, (trx) =>
       trx
@@ -341,6 +362,13 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
       Buffer.from(sealedPassword.toString('base64')),
       Buffer.from('mailbox-signin@export.test'),
       Buffer.from('imap.export.test'),
+      Buffer.from(smsPassword),
+      sealedSms,
+      Buffer.from(sealedSms.toString('hex')),
+      Buffer.from(sealedSms.toString('base64')),
+      Buffer.from('sms-signin-export'),
+      Buffer.from('192.168.77.5'),
+      Buffer.from('7700900987'),
     ]) {
       expect(all.includes(secret)).toBe(false);
     }

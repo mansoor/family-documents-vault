@@ -1,4 +1,10 @@
 import {
+  maskPhone,
+  parsePhone,
+  PHONE_CODE_MINUTES,
+  PHONE_CODE_TRIES,
+  phoneCodeText,
+  type MemberPhoneView,
   NOTE_KIND,
   noteMatchWords,
   notePreview,
@@ -264,6 +270,18 @@ interface FakeSession {
   memberId?: string;
 }
 
+/** Somebody's mobile number in the fake (SMS1), and the code out for it. */
+export interface FakePhone {
+  /** E.164. */
+  number: string;
+  confirmed_at: string | null;
+  /** The newest code texted, while it can still be typed. */
+  code: string | null;
+  code_expires_at: number | null;
+  attempts: number;
+  updated_at: string;
+}
+
 export interface FakeVaultState {
   setupRequired: boolean;
   /** The household's name, as set up: a container in a folder's name (S2). */
@@ -483,6 +501,17 @@ export interface FakeVaultState {
   mailbox?: (MailInMailboxView & { secret: string | null }) | null;
   mailInAllowedPorts?: number[];
   mailInAllowPrivate?: boolean;
+  /**
+   * Text messages (0.9.0, SMS1): whether the household's SMS Gate is set up
+   * and a test passed (GET /sms/status; true unless a test says not), and
+   * each person's mobile number, by member id, with the code the fake texted
+   * it — kept here, as only a fake may keep a code, so a test reads it and
+   * types it back.
+   */
+  smsReady?: boolean;
+  phones?: Map<string, FakePhone>;
+  /** Every text the fake sent, in order: to whom, and what it said. */
+  texts?: Array<{ to: string; text: string }>;
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -1771,6 +1800,150 @@ export function createFakeVault(): {
    * with the server, port or sign-in changed but no password typed again
    * (`mailbox_password_needed`, H1). Null for any other route.
    */
+  /**
+   * Text messages (0.9.0, SMS1), as the real vault answers: whether texts
+   * can be sent, and somebody's mobile number — their own, or an owner's for
+   * anybody — confirmed by a six-digit code. The fake "texts" each code into
+   * `state.texts` and keeps it on the number, for a test to read.
+   */
+  const phoneRoutes = (
+    path: string,
+    init: Parameters<FetchLike>[1],
+    body: Record<string, unknown>,
+    sessionOf: () => FakeSession | ResponseLike,
+  ): ResponseLike | null => {
+    if (path === '/api/v1/sms/status') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      return ok({ ready: state.smsReady ?? true });
+    }
+    const m = /^\/api\/v1\/members\/([^/]+)\/phone(\/confirm|\/resend)?$/.exec(path);
+    if (!m) return null;
+    const s = sessionOf();
+    if (!('id' in s)) return s;
+    const id = decodeURIComponent(m[1] as string);
+    const who = whoOf(s);
+    if (who.memberId !== id && who.role !== 'owner') {
+      return fail(
+        403,
+        'forbidden',
+        'Only the person themselves or an owner can see or change their mobile number.',
+      );
+    }
+    const person = state.members.find((x) => x.id === id);
+    if (!person) return fail(404, 'not_found', 'That person isn’t in the family.');
+    const phones = (state.phones ??= new Map());
+    const texts = (state.texts ??= []);
+    const ready = state.smsReady ?? true;
+    const view = (): MemberPhoneView => {
+      const p = phones.get(id);
+      const live =
+        p && !p.confirmed_at && p.code && (p.code_expires_at ?? 0) > Date.now()
+          ? new Date(p.code_expires_at as number).toISOString()
+          : null;
+      return {
+        phone: p
+          ? {
+              masked: maskPhone(p.number),
+              confirmed: p.confirmed_at !== null,
+              confirmed_at: p.confirmed_at,
+              code_expires_at: live,
+              updated_at: p.updated_at,
+            }
+          : null,
+        sms_ready: ready,
+      };
+    };
+    const notSetUp = () =>
+      fail(
+        409,
+        'sms_not_set_up',
+        'Text messages aren’t set up for this household yet. An owner can set them up in Settings, under Text messages.',
+      );
+    const text = (p: FakePhone) => {
+      const code = String(100000 + ((texts.length * 7919 + 4242) % 900000));
+      p.code = code;
+      p.code_expires_at = Date.now() + PHONE_CODE_MINUTES * 60_000;
+      p.attempts = 0;
+      texts.push({ to: p.number, text: phoneCodeText(code, person.display_name) });
+    };
+    const suffix = m[2];
+    if (!suffix && init.method === 'GET') return ok(view());
+    if (!suffix && init.method === 'PUT') {
+      if (!ready) return notSetUp();
+      const number = parsePhone(typeof body.number === 'string' ? body.number : '', 'GB');
+      if (!number) {
+        return fail(
+          422,
+          'phone_number_invalid',
+          'That doesn’t look like a mobile number. Type it with its country code, such as +44 7700 900123.',
+        );
+      }
+      const was = phones.get(id);
+      if (was && was.number === number && was.confirmed_at) return ok(view());
+      const p: FakePhone = {
+        number,
+        confirmed_at: null,
+        code: null,
+        code_expires_at: null,
+        attempts: 0,
+        updated_at: new Date().toISOString(),
+      };
+      phones.set(id, p);
+      text(p);
+      return ok(view());
+    }
+    if (!suffix && init.method === 'DELETE') {
+      if (!phones.delete(id)) {
+        return fail(404, 'phone_none', 'There is no mobile number for this person yet.');
+      }
+      return ok(view());
+    }
+    const p = phones.get(id);
+    if (init.method !== 'POST' || !suffix) return fail(404, 'not_found', 'Not here.');
+    if (!p) return fail(404, 'phone_none', 'There is no mobile number for this person yet.');
+    if (suffix === '/resend') {
+      if (!ready) return notSetUp();
+      if (p.confirmed_at) return fail(409, 'phone_confirmed', 'That number is confirmed already.');
+      text(p);
+      return ok(view());
+    }
+    if (p.confirmed_at) return ok(view());
+    if (p.attempts >= PHONE_CODE_TRIES) {
+      return fail(
+        409,
+        'phone_code_too_many',
+        `That code was typed wrong ${PHONE_CODE_TRIES} times, so it no longer works. Ask for a new one.`,
+      );
+    }
+    if (!p.code || (p.code_expires_at ?? 0) <= Date.now()) {
+      return fail(
+        409,
+        'phone_code_expired',
+        'That code has ended. Ask for a new one, and type the newest.',
+      );
+    }
+    p.attempts += 1;
+    if ((typeof body.code === 'string' ? body.code : '').replace(/[\s-]/g, '') !== p.code) {
+      const left = PHONE_CODE_TRIES - p.attempts;
+      return left <= 0
+        ? fail(
+            409,
+            'phone_code_too_many',
+            `That code was typed wrong ${PHONE_CODE_TRIES} times, so it no longer works. Ask for a new one.`,
+          )
+        : fail(
+            422,
+            'phone_code_wrong',
+            `That code isn’t right. ${left} ${left === 1 ? 'try' : 'tries'} left.`,
+          );
+    }
+    p.confirmed_at = new Date().toISOString();
+    p.code = null;
+    p.code_expires_at = null;
+    return ok(view());
+  };
+
   const mailboxRoutes = (
     path: string,
     init: Parameters<FetchLike>[1],
@@ -2153,6 +2326,8 @@ export function createFakeVault(): {
     if (deviceAnswer) return deviceAnswer;
     const mailboxAnswer = mailboxRoutes(path, init, body, session);
     if (mailboxAnswer) return mailboxAnswer;
+    const phoneAnswer = phoneRoutes(path, init, body, session);
+    if (phoneAnswer) return phoneAnswer;
 
     if (path === '/api/v1/capabilities') {
       const caps: Capabilities = {
@@ -2236,6 +2411,8 @@ export function createFakeVault(): {
           // The family's time zone (0.9.0, TZ).
           household_timezone: true,
           no_longer_needed: true,
+          // Text messages (0.9.0, SMS1): GET /sms/status says whether it is set up.
+          sms_texts: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
