@@ -710,6 +710,40 @@ describe('Sharing and After a restore are tables from 768 px (the prototype’s)
     },
   );
 
+  it('Sharing at 1280: a link the reader may see again has Show the link, a column of its own (0.9.0)', async () => {
+    atWidth(WIDE);
+    open(
+      '/sharing',
+      household({
+        shares: [
+          link({ revealable: true }),
+          link({ id: 'sh-2', recipient_label: 'the bank', revealable: false }),
+        ],
+      }),
+    );
+    const live = await screen.findByRole('grid', { name: 'Links that work now' });
+    expect(headsOf(live)).toEqual([
+      'Link to',
+      'For',
+      'Where it stands',
+      'Made by',
+      'Show the link',
+      'Take it back',
+    ]);
+    const [, mine, theirs] = within(live).getAllByRole('row');
+    expect(
+      within(mine as HTMLElement).getByRole('button', {
+        name: 'Show the link to “Sara’s passport”, shared with the visa agent',
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(theirs as HTMLElement).queryByRole('button', { name: /^Show the link/ }),
+    ).toBeNull();
+    // Still one stop for Tab.
+    await waitFor(() => expect(live.querySelectorAll('[tabindex="0"]')).toHaveLength(1));
+    await expectAccessible();
+  });
+
   it('Sharing at 320: the lists, as before', async () => {
     atWidth(PHONE);
     open('/sharing', household({ shares: [link(), ENDED] }));

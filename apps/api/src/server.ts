@@ -7,6 +7,7 @@ import {
   OPERATOR_MAIL_KEY_PURPOSE,
   ScopeKeys,
   SMS_PASSWORD_PURPOSE,
+  SHARE_LINK_COPY_PURPOSE,
 } from '@fdv/crypto';
 import { assertSchemaKnown, createDb, createPool, migrateUp } from '@fdv/db';
 import { AuthService } from './auth/service.js';
@@ -289,6 +290,8 @@ async function main(): Promise<void> {
       mail: config.FDV_SMTP_URL ? operatorMail : null,
       // "This device only" cookies: made, and checked, by the vault alone.
       deviceKey: deviceCookieKey(masterSecret, SHARE_DEVICE_KEY_PURPOSE),
+      // 0.9.0: what a link's maker was handed, kept sealed to show them again.
+      copyKey: deriveKey(masterSecret, SHARE_LINK_COPY_PURPOSE),
     }),
     uploads: new UploadRequestService(db, keys, vaults, {
       maxDays: config.FDV_SHARE_MAX_DAYS,

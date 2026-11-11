@@ -434,6 +434,15 @@ export interface Schema {
     this_device_only: ColumnType<boolean, boolean | undefined, never>;
     /** That browser: SHA-256 of the link and its device cookie, set once (0043). */
     device_hash: ColumnType<Buffer | null, never, Buffer>;
+    /**
+     * What was handed over as it was made, sealed (0084): its secret, and
+     * the PIN or the password the vault made up, under
+     * deriveKey(master, 'share-link-copies') with the household and the
+     * link bound in (MASTER_SEALED). Shown again to its maker alone, after
+     * confirming it's them. Null for a link made before, and once taken
+     * back. Set as it is made, never after.
+     */
+    link_copy_sealed: ColumnType<Buffer | null, Buffer | null | undefined, never>;
   };
 
   /**

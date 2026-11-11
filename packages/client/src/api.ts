@@ -28,6 +28,7 @@ import type {
   DetailSuggestions,
   RenewalInput,
   RenewalResult,
+  RevealedShare,
   IssuerSuggestions,
   ChecklistAdded,
   ChecklistInput,
@@ -1254,6 +1255,15 @@ export function createApi(http: Http) {
     shares: (token: string) => request<{ items: Share[] }>('/api/v1/shares', { token }),
     revokeShare: (token: string, id: string) =>
       request<void>(`/api/v1/shares/${id}`, { method: 'DELETE', token }),
+    /**
+     * A link shown again (0.9.0, `features.share_reveal`): to the account
+     * that made it, after confirming it's them (`403 step_up_required`,
+     * action `reveal_share`), while `Share.revealable`. `404 not_found` for
+     * anybody else's; `409 share_not_revealable` for one made before the
+     * vault kept copies; `410 share_ended` for one that has ended.
+     */
+    revealShare: (token: string, id: string) =>
+      request<RevealedShare>(`/api/v1/shares/${enc(id)}/reveal`, { method: 'POST', token }),
     sharePreview: (linkToken: string) => request<SharePreview>(`/api/v1/shared/${enc(linkToken)}`),
     openShare: (linkToken: string, pin?: string) =>
       request<SharedDocument>(`/api/v1/shared/${enc(linkToken)}/open`, {

@@ -12,6 +12,7 @@ import {
   operatorMailBinding,
   ScopeKeys,
   SMS_PASSWORD_PURPOSE,
+  SHARE_LINK_COPY_PURPOSE,
 } from '@fdv/crypto';
 import { createDb, createPool, type Db, type Schema } from '@fdv/db';
 import type { Role } from '@fdv/shared';
@@ -428,6 +429,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       codeKey: deriveKey(TEST_MASTER, SHARE_CODE_KEY_PURPOSE),
       mail: config.FDV_SMTP_URL ? (opts.mail ?? operatorMail) : null,
       deviceKey: deviceCookieKey(TEST_MASTER, SHARE_DEVICE_KEY_PURPOSE),
+      copyKey: deriveKey(TEST_MASTER, SHARE_LINK_COPY_PURPOSE),
     }),
     uploads: new UploadRequestService(db, keys, vaults, {
       maxDays: config.FDV_SHARE_MAX_DAYS,

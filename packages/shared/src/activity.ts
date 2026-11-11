@@ -699,6 +699,13 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
         `${who} turned a link to ${e.object_type === 'collection' ? collection : doc} back on after a restore`,
         true,
       );
+    // 0.9.0: a link shown again to whoever made it, after confirming it was
+    // them. Never the link, nor its PIN or password.
+    case 'share.revealed':
+      return line(
+        `${who} looked again at the link they made to ${e.object_type === 'collection' ? collection : doc}`,
+        true,
+      );
 
     // ---------------------------------- asking to be sent documents (5.21)
     // Shown to whoever reviews the request only; never its title, and

@@ -175,6 +175,9 @@ import {
   mailInAddressRefused,
   type MailInMailboxView,
   type MailInView,
+  type CreatedShare,
+  type RevealedShare,
+  type Share,
   type CaptureMetadata,
   type CollectionAudience,
   type CollectionDetail,
@@ -499,6 +502,13 @@ export interface FakeVaultState {
    * be, as the worker says (FDV_MAIL_IN_ALLOWED_PORTS, FDV_MAIL_IN_ALLOW_PRIVATE).
    */
   mailbox?: (MailInMailboxView & { secret: string | null }) | null;
+  /**
+   * Links to documents outside the family (0.9.0), each with what was
+   * handed over as it was made — in the clear, as only a fake may keep
+   * them — to show its maker again (POST /shares/{id}/reveal). A document's
+   * only: the fake shares no collection.
+   */
+  shares?: FakeShare[];
   mailInAllowedPorts?: number[];
   mailInAllowPrivate?: boolean;
   /**
@@ -522,6 +532,20 @@ export interface FakeVaultState {
    * with who did it and what sort of thing.
    */
   activity?: ActivityEvent[];
+}
+
+/**
+ * A link as the fake keeps it (0.9.0): its view, who made it (a member id),
+ * and what was handed over. `shown_once`, set by a test, is a link made
+ * before the vault kept copies: listed, never revealable.
+ */
+export interface FakeShare {
+  share: Share;
+  made_by: string;
+  token: string;
+  pin: string | null;
+  password: string | null;
+  shown_once?: boolean;
 }
 
 /** A viewer's limits, as the fake keeps them (5.33): the flags always said. */
@@ -2055,6 +2079,133 @@ export function createFakeVault(): {
   };
 
   /** Computers that send scans (0.8.0, D1): their routes, or null for any other. */
+  /**
+   * Links to documents outside the family, as far as the fake makes them
+   * (0.9.0): made by whoever may share a document they can see, listed,
+   * taken back, and shown again to whoever made them — as the real vault
+   * answers, but with no confirming it's you first, which the fake asks
+   * nowhere. Null for any other route.
+   */
+  const shareRoutes = (
+    path: string,
+    init: Parameters<FetchLike>[1],
+    body: Record<string, unknown>,
+    sessionOf: () => FakeSession | ResponseLike,
+  ): ResponseLike | null => {
+    const making = /^\/api\/v1\/documents\/([^/]+)\/share$/.exec(path);
+    const one = /^\/api\/v1\/shares\/([^/]+)(\/reveal)?$/.exec(path);
+    if (!making && !one && path !== '/api/v1/shares') return null;
+    const s = sessionOf();
+    if (!('id' in s)) return s;
+    const who = whoOf(s);
+    const links = (state.shares ??= []);
+    const ended = (l: FakeShare) =>
+      l.share.state === 'revoked' || l.share.state === 'expired' || l.share.state === 'locked';
+    const view = (l: FakeShare): Share => ({
+      ...l.share,
+      revealable: l.made_by === who.memberId && !l.shown_once && !ended(l),
+    });
+    if (path === '/api/v1/shares' && init.method === 'GET') {
+      if (!can(who.role, 'document.share')) return ok({ items: [] });
+      return ok({ items: links.map(view) });
+    }
+    if (!can(who.role, 'document.share')) {
+      return fail(403, 'forbidden', refusalFor('document.share'));
+    }
+    if (making && init.method === 'POST') {
+      const doc = state.documents.find(
+        (d) => d.id === decodeURIComponent(making[1] as string) && !d.deleted_at,
+      );
+      if (
+        !doc ||
+        !canSee(who, {
+          visibility: doc.visibility ?? 'household',
+          owner_member_id: doc.owner_member_id ?? null,
+        })
+      ) {
+        return fail(404, 'not_found', 'That document is not in the vault.');
+      }
+      const token = `fake-link-${next('token')}`.padEnd(43, 'x');
+      const pin = body.with_pin === true ? String(1000 + (n % 9000)) : null;
+      const password = body.with_password === true ? `fake-${next('pw')}-word` : null;
+      const typed = typeof body.password === 'string' ? body.password : null;
+      const now = new Date();
+      const share: Share = {
+        id: next('share'),
+        document_id: doc.id,
+        document_title: doc.title,
+        collection_id: null,
+        collection_name: null,
+        follow_collection: false,
+        recipient_label: typeof body.recipient_label === 'string' ? body.recipient_label : null,
+        created_by_name: state.members.find((m) => m.id === who.memberId)?.display_name ?? null,
+        created_at: now.toISOString(),
+        expires_at: new Date(now.getTime() + 7 * 864e5).toISOString(),
+        has_pin: pin !== null,
+        open_count: 0,
+        last_opened_at: null,
+        state: 'active',
+        flow: 'v2',
+        paused_at: null,
+        paused_reason: null,
+        permission: body.permission === 'view' ? 'view' : 'download',
+        protection: pin ? ['pin'] : password || typed ? ['password'] : [],
+        code_to: null,
+        this_device_only: body.this_device_only === true,
+        summary: 'Not opened yet',
+      };
+      // A password the sharer typed is theirs, and never kept to show again.
+      const made: FakeShare = { share, made_by: who.memberId, token, pin, password };
+      links.unshift(made);
+      const created: CreatedShare = {
+        share: view(made),
+        link_token: token,
+        link_url: null,
+        ...(pin ? { pin } : {}),
+        ...(password ? { password } : {}),
+      };
+      return ok(created, 201);
+    }
+    const link = one
+      ? links.find((l) => l.share.id === decodeURIComponent(one[1] as string))
+      : null;
+    if (one && one[2] && init.method === 'POST') {
+      // Anybody else's is a link there is no such of, an owner's included.
+      if (!link || link.made_by !== who.memberId) {
+        return fail(404, 'not_found', 'That link does not exist.');
+      }
+      if (ended(link)) {
+        return fail(
+          410,
+          'share_ended',
+          'That link no longer works, so there is nothing to show. Make a new one if you need to.',
+        );
+      }
+      if (link.shown_once) {
+        return fail(
+          409,
+          'share_not_revealable',
+          'That link was made before the vault kept a copy, so it was shown only once. Take it back and make a new one if you need it again.',
+        );
+      }
+      const shown: RevealedShare = {
+        link_token: link.token,
+        link_url: null,
+        ...(link.pin ? { pin: link.pin } : {}),
+        ...(link.password ? { password: link.password } : {}),
+      };
+      return ok(shown);
+    }
+    if (one && !one[2] && init.method === 'DELETE') {
+      if (!link || link.share.state === 'revoked') {
+        return fail(404, 'not_found', 'That link does not exist.');
+      }
+      link.share = { ...link.share, state: 'revoked' };
+      return empty();
+    }
+    return null;
+  };
+
   const deviceRoutes = (
     path: string,
     init: Parameters<FetchLike>[1],
@@ -2328,6 +2479,9 @@ export function createFakeVault(): {
     if (mailboxAnswer) return mailboxAnswer;
     const phoneAnswer = phoneRoutes(path, init, body, session);
     if (phoneAnswer) return phoneAnswer;
+    // Links outside the family, and one shown again to its maker (0.9.0).
+    const shareAnswer = shareRoutes(path, init, body, session);
+    if (shareAnswer) return shareAnswer;
 
     if (path === '/api/v1/capabilities') {
       const caps: Capabilities = {
@@ -2413,6 +2567,8 @@ export function createFakeVault(): {
           no_longer_needed: true,
           // Text messages (0.9.0, SMS1): GET /sms/status says whether it is set up.
           sms_texts: true,
+          // A link shown again to whoever made it (0.9.0): a document's, as the fake makes them.
+          share_reveal: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,

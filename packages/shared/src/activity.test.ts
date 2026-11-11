@@ -87,6 +87,12 @@ describe('the activity log, in sentences', () => {
     expect(describeEvent(ev({ action: 'share.resumed' }))?.text).toBe(
       'Sarah turned a link to “Home insurance policy” back on after a restore',
     );
+    // 0.9.0: a link shown again to whoever made it, never the link itself.
+    const revealed = describeEvent(ev({ action: 'share.revealed', detail: { share_id: 's-1' } }));
+    expect(revealed?.text).toBe(
+      'Sarah looked again at the link they made to “Home insurance policy”',
+    );
+    expect(revealed?.notable).toBe(true);
   });
 
   it('says a code was emailed, to an address it only ever has masked (5.20)', () => {
@@ -356,6 +362,9 @@ describe('the activity log, in sentences', () => {
     expect(describeEvent(aCollection({ action: 'share.resumed' }))?.text).toBe(
       'Sarah turned a link to the collection “For the lawyer” back on after a restore',
     );
+    expect(
+      describeEvent(aCollection({ action: 'share.revealed', detail: { share_id: 's-1' } }))?.text,
+    ).toBe('Sarah looked again at the link they made to the collection “For the lawyer”');
     const followed = describeEvent(
       ev({ action: 'share.followed', collection_name: 'For the lawyer' }),
     );

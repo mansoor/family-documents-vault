@@ -9,7 +9,13 @@ import {
 import { isIPv6 } from 'node:net';
 import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { openPrivate, unwrapKey, type ScopeKeys } from '@fdv/crypto';
+import {
+  openPrivate,
+  openShareLinkCopy,
+  sealShareLinkCopy,
+  unwrapKey,
+  type ScopeKeys,
+} from '@fdv/crypto';
 import {
   appendAudit,
   withPrincipal,
@@ -74,6 +80,7 @@ import {
   type CollectionAudience,
   type CollectionSharePreview,
   type OnlyMeSharing,
+  type RevealedShare,
   type ShareCodeSent,
   type ShareLinkPreview,
   type SharePages,
@@ -150,6 +157,13 @@ const sharerOf = (role: Role, memberId: string) => ({
  * checked; with a password and a code, the code is tried only once the
  * password is right, and whichever is wrong, the answer is the same. A code
  * is kept only as an HMAC under a key derived from the master key.
+ *
+ * Since 0.9.0 (the owner's decision of 11 Nov 2026) a link can be shown
+ * again, to the account that made it and nobody else, once it has confirmed
+ * it's them: the vault keeps a sealed copy of what it handed over — the
+ * link's secret, and the PIN or the password it made up — under a key
+ * derived from the master key for this alone (0084). It is still checked
+ * by its hashes alone. A link made before has no copy, and stays shown once.
  */
 
 const MAX_PIN_ATTEMPTS = 10;
@@ -319,13 +333,22 @@ export interface ShareView {
   code_to: string | null;
   /** It opens in the first browser that opened it, and no other (5.20). */
   this_device_only: boolean;
+  /**
+   * The reader made it, it still works (or is only paused or used up), and
+   * a sealed copy was kept as it was made (0.9.0): POST /shares/{id}/reveal
+   * shows it again.
+   */
+  revealable: boolean;
   /** One sentence for the list on the home screen. */
   summary: string;
 }
 
 export interface CreatedShare {
   share: ShareView;
-  /** Shown once. The vault keeps only its hash. */
+  /**
+   * Checked by its hash alone. Since 0.9.0 a sealed copy is kept too, for
+   * its maker to see again (reveal).
+   */
   link_token: string;
   /**
    * The link to send, `{FDV_PUBLIC_URL}/s#{link_token}`, when the vault
@@ -543,6 +566,9 @@ const isRefused = (outcome: object): outcome is Refused =>
 const usedUp = (link: { open_count: number; max_opens: number | null }) =>
   link.max_opens !== null && link.open_count >= link.max_opens;
 
+/** The states of a link that has ended: it opens nothing, and is not shown again (0.9.0). */
+const ENDED: readonly ShareView['state'][] = ['revoked', 'expired', 'locked'];
+
 /** What a link's lines in the activity log are about: its document, or its collection. */
 const objectOf = (link: { document_id: string | null; collection_id: string | null }) =>
   link.collection_id !== null
@@ -716,6 +742,12 @@ export interface ShareOptions {
    * made up for this process.
    */
   deviceKey?: Buffer;
+  /**
+   * The key a link's copy is sealed under (0.9.0, 0084): derived from the
+   * master key for this alone (SHARE_LINK_COPY_PURPOSE). Without one no copy
+   * is kept, and no link can be shown again.
+   */
+  copyKey?: Buffer;
 }
 
 /** What "this device only" cookies are made with: deviceCookieKey(master, this). */
@@ -727,6 +759,7 @@ export class ShareService {
   private readonly codeKey: Buffer;
   private readonly deviceKey: Buffer;
   private readonly mail: ((m: MailRequest) => Promise<void>) | null;
+  private readonly copyKey: Buffer | null;
 
   constructor(
     private readonly db: Db,
@@ -743,6 +776,7 @@ export class ShareService {
     this.codeKey = opts.codeKey ?? randomBytes(32);
     this.deviceKey = opts.deviceKey ?? randomBytes(32);
     this.mail = opts.mail ?? null;
+    this.copyKey = opts.copyKey ?? null;
   }
 
   /** Whether a link can ask for an emailed code here: the operator's mail server is set (A21). */
@@ -851,7 +885,39 @@ export class ShareService {
     };
   }
 
-  /** What the maker of a link is handed, once. */
+  /**
+   * The whole link to send, on the public-only site, when the vault has
+   * one: the secret after the #, which no server is sent.
+   */
+  private linkUrl(token: string): string | null {
+    return this.publicUrl ? `${this.publicUrl.replace(/\/+$/, '')}/s#${token}` : null;
+  }
+
+  /**
+   * What is kept to show the link's maker again (0.9.0, 0084): the link's
+   * secret, and the PIN or the password the vault made up, sealed with the
+   * household and the link bound in. A password the sharer typed is theirs,
+   * and is never kept. Null without a key: then nothing is.
+   */
+  private copyOf(
+    householdId: string,
+    shareId: string,
+    secrets: { token: string; pin: string | null; password: string | null },
+  ): Buffer | null {
+    if (!this.copyKey) return null;
+    return sealShareLinkCopy(
+      this.copyKey,
+      {
+        token: secrets.token,
+        ...(secrets.pin ? { pin: secrets.pin } : {}),
+        ...(secrets.password ? { password: secrets.password } : {}),
+      },
+      householdId,
+      shareId,
+    );
+  }
+
+  /** What the maker of a link is handed as it is made. */
   private async handOver(
     p: Principal,
     id: string,
@@ -859,13 +925,10 @@ export class ShareService {
     secrets: { pin: string | null; password: string | null },
   ): Promise<CreatedShare> {
     const share = (await this.list(p)).find((s) => s.id === id) as ShareView;
-    // The whole link to send, on the public-only site, when the vault has
-    // one: the secret after the #, which no server is sent.
-    const link_url = this.publicUrl ? `${this.publicUrl.replace(/\/+$/, '')}/s#${token}` : null;
     return {
       share,
       link_token: token,
-      link_url,
+      link_url: this.linkUrl(token),
       ...(secrets.pin ? { pin: secrets.pin } : {}),
       ...(secrets.password ? { password: secrets.password } : {}),
     };
@@ -963,10 +1026,13 @@ export class ShareService {
       }
 
       // Always a new link (5.16): the column's default, never said here, so
-      // no path through this code can make a legacy one.
+      // no path through this code can make a legacy one. Its id is made here,
+      // to bind its sealed copy to (0.9.0).
+      const shareId = randomUUID();
       const row = await trx
         .insertInto('share_link')
         .values({
+          id: shareId,
           household_id: p.householdId,
           document_id: documentId,
           token_hash: hashToken(token),
@@ -980,6 +1046,7 @@ export class ShareService {
           permission,
           max_opens: input.max_opens ?? null,
           max_downloads: input.max_downloads ?? null,
+          link_copy_sealed: this.copyOf(p.householdId, shareId, secrets),
         })
         .returning('id')
         .executeTakeFirstOrThrow();
@@ -1224,9 +1291,12 @@ export class ShareService {
         );
       }
 
+      // Its id made here, to bind its sealed copy to (0.9.0).
+      const shareId = randomUUID();
       const row = await trx
         .insertInto('share_link')
         .values({
+          id: shareId,
           household_id: p.householdId,
           document_id: null,
           collection_id: c.id,
@@ -1246,6 +1316,7 @@ export class ShareService {
           permission,
           max_opens: input.max_opens ?? null,
           max_downloads: input.max_downloads ?? null,
+          link_copy_sealed: this.copyOf(p.householdId, shareId, secrets),
         })
         .returning('id')
         .executeTakeFirstOrThrow();
@@ -1498,6 +1569,8 @@ export class ShareService {
           'account_household.suspend_reason as maker_suspend_reason',
           // 5.32: whether its maker, restricted since, still lends it.
           sql<boolean>`share_link_lends(share_link.id)`.as('maker_lends'),
+          // 0.9.0: whether a copy was kept to show its maker again — never the copy.
+          sql<boolean>`share_link.link_copy_sealed is not null`.as('has_copy'),
         ])
         .orderBy('share_link.created_at', 'desc')
         .execute();
@@ -1614,6 +1687,13 @@ export class ShareService {
               ? maskEmail(r.code_email)
               : null,
           this_device_only: r.this_device_only,
+          // 0.9.0: its maker's to see again, while it still works (or is
+          // only paused or used up), if a copy was kept as it was made.
+          revealable:
+            this.copyKey !== null &&
+            r.has_copy &&
+            r.created_by === p.accountId &&
+            !ENDED.includes(state),
           summary: summarise(
             { ...r, paused_reason: pausedReason },
             state,
@@ -1771,6 +1851,78 @@ export class ShareService {
         share_id: id,
       }).catch(() => undefined);
     }
+  }
+
+  // ------------------------------------------- shown again (0.9.0)
+
+  /**
+   * A link its maker may see again (0.9.0; the owner's decision of 11 Nov
+   * 2026): one the caller made, and can still see, as the list shows it —
+   * anybody else's, or one not there for them, is a link there is no such
+   * of (404), whoever they are, an owner included. Asked before the
+   * credential is (step-up), so nobody confirms it's them about a link that
+   * cannot be shown: one taken back, run out of time or stopped by wrong
+   * tries is `410 share_ended`; one made before copies were kept, `409
+   * share_not_revealable`. Paused, or opened as often as it allows, it is
+   * still theirs to see.
+   */
+  async revealable(p: Principal, id: string): Promise<LinkView> {
+    requireCapability(p, 'document.share');
+    const link = (await this.views(p)).find((s) => s.id === id);
+    if (!link || link.created_by !== p.accountId) throw notFound('That link');
+    if (ENDED.includes(link.state)) {
+      throw new ApiError(
+        410,
+        'share_ended',
+        'That link no longer works, so there is nothing to show. Make a new one if you need to.',
+      );
+    }
+    if (!link.revealable) {
+      throw new ApiError(
+        409,
+        'share_not_revealable',
+        'That link was made before the vault kept a copy, so it was shown only once. Take it back and make a new one if you need it again.',
+      );
+    }
+    return link;
+  }
+
+  /**
+   * POST /shares/{id}/reveal: what was handed over as the link was made —
+   * the link, and the PIN or the password the vault made up — opened from
+   * its sealed copy, for its maker, once they have confirmed it's them (the
+   * route asks). Written to the activity log, never with the link.
+   */
+  async reveal(p: Principal, id: string, meta: RequestMeta): Promise<RevealedShare> {
+    const link = await this.revealable(p, id);
+    const copy = await withPrincipal(this.db, p, async (trx) => {
+      // Read again under the caller's own rules: taken back meanwhile, it
+      // has forgotten its copy (0084).
+      const row = await trx
+        .selectFrom('share_link')
+        .select(['link_copy_sealed'])
+        .where('id', '=', id)
+        .where('created_by', '=', p.accountId)
+        .where('revoked_at', 'is', null)
+        .executeTakeFirst();
+      if (!row?.link_copy_sealed || !this.copyKey) throw notFound('That link');
+      const opened = openShareLinkCopy(this.copyKey, row.link_copy_sealed, p.householdId, id);
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'share.revealed',
+        ...objectOf(link),
+        detail: { share_id: id },
+        ip: meta.ip,
+      });
+      return opened;
+    });
+    return {
+      link_token: copy.token,
+      link_url: this.linkUrl(copy.token),
+      ...(copy.pin ? { pin: copy.pin } : {}),
+      ...(copy.password ? { password: copy.password } : {}),
+    };
   }
 
   // ------------------------------------- Only me documents outside (5.41)

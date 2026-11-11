@@ -220,6 +220,15 @@ export interface FakeState {
   invitations: Array<Record<string, unknown> & { id: string }>;
   ownerChanges: Array<Record<string, unknown> & { id: string }>;
   shares: Array<Record<string, unknown> & { id: string }>;
+  /**
+   * What a link its maker may see again shows (0.9.0), by link id: the link,
+   * and its PIN or password. One not here, though `revealable`, is answered
+   * as a link made before the vault kept copies.
+   */
+  revealedShares?: Record<
+    string,
+    { link_token: string; link_url: string | null; pin?: string; password?: string }
+  >;
   activity: Array<{
     id: number;
     at: string;
@@ -2880,6 +2889,32 @@ export function installFakeApi(state: FakeState) {
       return json({ only_me_shareable: next, can_change: true });
     }
     if (path === '/api/v1/shares' && method === 'GET') return json({ items: state.shares });
+    // A link shown again to whoever made it (0.9.0): theirs alone, after
+    // confirming it's them, as the vault answers.
+    if (path.startsWith('/api/v1/shares/') && path.endsWith('/reveal') && method === 'POST') {
+      const id = path.split('/')[4] as string;
+      const link = state.shares.find((x) => x.id === id);
+      if (!link || link.revealable !== true) {
+        return refuse(404, 'not_found', 'That link does not exist.');
+      }
+      if (state.stepUpNeeded) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to see a link you made again.',
+          { action: 'reveal_share' },
+        );
+      }
+      const shown = state.revealedShares?.[id];
+      if (!shown) {
+        return refuse(
+          409,
+          'share_not_revealable',
+          'That link was made before the vault kept a copy, so it was shown only once. Take it back and make a new one if you need it again.',
+        );
+      }
+      return json(shown);
+    }
     if (path.endsWith('/share') && method === 'POST') {
       const documentId = path.split('/')[4] as string;
       const doc = state.documents.find((d) => d.id === documentId && !d.deleted_at);
