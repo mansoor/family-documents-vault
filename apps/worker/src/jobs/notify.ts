@@ -5,6 +5,7 @@ import { sql } from 'kysely';
 import nodemailer from 'nodemailer';
 import { deliver, pushDepsOf, unifiedPayload } from './push.js';
 import type { Digest, Notifier } from './reminders.js';
+import type { Texter } from './texts.js';
 
 /**
  * Delivering a digest (REM-05, REM-06, STO-09).
@@ -42,6 +43,8 @@ export interface NotifyDeps {
   agent?: https.Agent;
   /** FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS: a push distributor on the operator's own network. */
   allowPrivate?: boolean;
+  /** The day's reminders by text (0.9.0, SMS2), to whoever asked; none without. */
+  texts?: Pick<Texter, 'digest'>;
 }
 
 export function subject(d: Digest): string {
@@ -172,9 +175,14 @@ export function openPassword(key: Buffer, sealed: Buffer, householdId: string): 
 
 /**
  * The real notifier: push to the recipient's registered devices if they
- * want it, then email through the household's SMTP if they want that.
- * Returns the channels that actually reached them, which is what the
- * ledger records.
+ * want it, then email through the household's SMTP if they want that,
+ * then — the day's, not the Sunday summary — one text with the count if
+ * they asked for that (SMS2). Returns the channels that actually reached
+ * them, which is what the ledger records: a text that waits for their
+ * quiet hours to end is counted as sent, for it is on its way and goes once.
+ *
+ * A text they asked for that cannot go, when neither push nor email reached
+ * them, is made up for by the email digest, as if they had asked for it.
  */
 export function createNotifier(deps: NotifyDeps): Notifier {
   return {
@@ -184,6 +192,13 @@ export function createNotifier(deps: NotifyDeps): Notifier {
       if (pushed > 0) channels.push('push');
       const mailed = await sendEmail(deps, d);
       if (mailed > 0) channels.push('email');
+      if (deps.texts) {
+        const texted = await deps.texts.digest(d, channels);
+        if (texted === 'sent' || texted === 'later') channels.push('sms');
+        else if (texted === 'failed' && channels.length === 0) {
+          if ((await sendEmail(deps, d, true)) > 0) channels.push('email');
+        }
+      }
       if (channels.length === 0) {
         deps.log('info', 'digest had nowhere to go', {
           household: d.household_name,
@@ -266,7 +281,8 @@ async function sendPush(deps: NotifyDeps, d: Digest): Promise<number> {
   return sent;
 }
 
-async function sendEmail(deps: NotifyDeps, d: Digest): Promise<number> {
+/** `instead`: sent whatever they asked for by email, in place of a text that could not go. */
+async function sendEmail(deps: NotifyDeps, d: Digest, instead = false): Promise<number> {
   const ctx = await withSystem(deps.app, d.household_id, async (trx) => {
     const smtp = await trx
       .selectFrom('smtp_settings')
@@ -283,7 +299,7 @@ async function sendEmail(deps: NotifyDeps, d: Digest): Promise<number> {
       .executeTakeFirst();
     const wants = pref?.wants ?? null;
     // Defaults: weekly on, daily off (design: per-item email is off).
-    const wanted = wants === null ? d.kind === 'weekly' : wants === true;
+    const wanted = instead || (wants === null ? d.kind === 'weekly' : wants === true);
     return { smtp, wanted };
   });
   if (!ctx || !ctx.wanted) return 0;

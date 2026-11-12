@@ -171,9 +171,15 @@ describe.skipIf(!testAdminUrl())('changing a password', () => {
 
   it('tells the person it happened, by email and not by push', async () => {
     const alerts = h.jobs.filter((j) => j.name === 'alert.send').map((j) => j.data);
-    const last = alerts[alerts.length - 1] as { subject: string; email_only?: boolean };
+    const last = alerts[alerts.length - 1] as {
+      subject: string;
+      email_only?: boolean;
+      text_kind?: string;
+    };
     expect(last.subject).toMatch(/password was changed/);
     expect(last.email_only).toBe(true);
+    // By text too, to whoever asked (SMS2): its headline as a word, at once.
+    expect(last.text_kind).toBe('password_changed');
   });
 
   it('without the current password, a session that has gone cold is asked to prove it is you', async () => {

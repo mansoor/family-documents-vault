@@ -388,6 +388,8 @@ export interface Schema {
     revoked_by: string | null;
     open_count: Generated<number>;
     last_opened_at: Timestamp | null;
+    /** When its maker was last told it was opened (0086, SMS2): at most once an hour. */
+    opened_texted_at: Timestamp | null;
     attempts: Generated<number>;
     /**
      * Which routes open it (0037): `legacy`, a link made before 5.16, on the
@@ -1713,6 +1715,13 @@ export interface Schema {
     daily_push: Generated<boolean>;
     daily_email: Generated<boolean>;
     weekly_email: Generated<boolean>;
+    /** Notifications by text (0086, SMS2): each off until turned on. */
+    daily_text: Generated<boolean>;
+    alerts_text: Generated<boolean>;
+    share_opened_text: Generated<boolean>;
+    /** Quiet hours on the family's clock, as Postgres gives a time: "21:00:00". */
+    quiet_from: Generated<string>;
+    quiet_to: Generated<string>;
   };
 
   suggestion_rule: {
@@ -1815,7 +1824,7 @@ export interface Schema {
     household_id: string;
     member_id: string | null;
     number_tail: string;
-    kind: 'test' | 'phone_code' | 'phone_changed';
+    kind: 'test' | 'phone_code' | 'phone_changed' | 'reminders' | 'alert' | 'share_opened';
     provider_id: string | null;
     state: Generated<'pending' | 'processed' | 'sent' | 'delivered' | 'failed' | 'not_sent'>;
     error: string | null;

@@ -1,4 +1,8 @@
 import {
+  CLOCK_TIME,
+  QUIET_FROM_DEFAULT,
+  QUIET_TO_DEFAULT,
+  type Preferences,
   maskPhone,
   parsePhone,
   PHONE_CODE_MINUTES,
@@ -522,6 +526,12 @@ export interface FakeVaultState {
   phones?: Map<string, FakePhone>;
   /** Every text the fake sent, in order: to whom, and what it said. */
   texts?: Array<{ to: string; text: string }>;
+  /**
+   * What each person wants to hear, and how (GET and PUT
+   * /notifications/preferences), by member id: the vault's defaults until
+   * they change one — texts among them since SMS2, each off.
+   */
+  preferences?: Map<string, Preferences>;
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -1841,6 +1851,43 @@ export function createFakeVault(): {
       if (!('id' in s)) return s;
       return ok({ ready: state.smsReady ?? true });
     }
+    // What somebody wants to hear, and how (SMS2: by text too, each off
+    // until turned on, and their quiet hours): theirs alone, kept as sent.
+    if (path === '/api/v1/notifications/preferences') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      const me = whoOf(s).memberId;
+      const prefs = (state.preferences ??= new Map());
+      const now: Preferences = prefs.get(me) ?? {
+        daily_push: true,
+        daily_email: false,
+        weekly_email: true,
+        daily_text: false,
+        alerts_text: false,
+        share_opened_text: false,
+        quiet_from: QUIET_FROM_DEFAULT,
+        quiet_to: QUIET_TO_DEFAULT,
+      };
+      if ((init?.method ?? 'GET') === 'PUT') {
+        const next = { ...now };
+        for (const k of ['daily_push', 'daily_email', 'weekly_email'] as const) {
+          if (typeof body[k] === 'boolean') next[k] = body[k];
+        }
+        for (const k of ['daily_text', 'alerts_text', 'share_opened_text'] as const) {
+          if (typeof body[k] === 'boolean') next[k] = body[k];
+        }
+        for (const k of ['quiet_from', 'quiet_to'] as const) {
+          if (body[k] === undefined) continue;
+          if (typeof body[k] !== 'string' || !CLOCK_TIME.test(body[k])) {
+            return fail(422, 'validation_failed', 'Quiet hours are a time of day, such as 21:00.');
+          }
+          next[k] = body[k];
+        }
+        prefs.set(me, next);
+        return ok(next);
+      }
+      return ok(now);
+    }
     const m = /^\/api\/v1\/members\/([^/]+)\/phone(\/confirm|\/resend)?$/.exec(path);
     if (!m) return null;
     const s = sessionOf();
@@ -2569,6 +2616,8 @@ export function createFakeVault(): {
           sms_texts: true,
           // A link shown again to whoever made it (0.9.0): a document's, as the fake makes them.
           share_reveal: true,
+          // Notifications by text (0.9.0, SMS2): in the preferences, each off.
+          sms_notifications: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,

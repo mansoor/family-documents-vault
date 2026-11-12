@@ -6,3 +6,5 @@ export * from './audit.js';
 export * from './reminders.js';
 export * from './type-etag.js';
 export * from './zone.js';
+export * from './sms-gate.js';
+export * from './sms-send.js';

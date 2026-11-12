@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { SmsGateProvider, SmsProviderError, stateOf, type SmsConnection } from './provider.js';
+import { SmsGateProvider, SmsProviderError, stateOf, type SmsConnection } from './sms-gate.js';
 
 /**
  * SMS Gate for Android's API, as the vault speaks it (0.9.0, SMS1): against

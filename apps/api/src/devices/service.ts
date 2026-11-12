@@ -388,6 +388,7 @@ export class DeviceService {
         householdId: at.household_id,
         accountIds: [outcome.accountId],
         subject: 'A computer was added to your sign-in',
+        text: 'computer_added',
         body: `A computer was added to your sign-in: ${outcome.name} (${PLATFORM_WORDS[outcome.platform] ?? 'a computer'}), on ${shareEndWords(new Date(), outcome.timezone)} (${outcome.timezone}). It can send scans into your uploads, and nothing else. If this wasn't you, remove it in Settings → Your computers.`,
         emailOnly: true,
       })

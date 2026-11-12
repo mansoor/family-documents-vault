@@ -9,6 +9,7 @@ import {
   OPERATOR_MAIL_KEY_PURPOSE,
   READING_RULES_KEY_PURPOSE,
   ScopeKeys,
+  SMS_PASSWORD_PURPOSE,
 } from '@fdv/crypto';
 import { assertSchemaKnown, createPool } from '@fdv/db';
 import { WATCH_SYSTEM_DIRS } from '@fdv/shared';
@@ -24,6 +25,7 @@ import {
   type SendPreviews,
 } from './jobs/previews.js';
 import { createNotifier } from './jobs/notify.js';
+import { createTexter, isTextJob, type TextJob } from './jobs/texts.js';
 import { makeMemberPhoto, type MemberPhotoJob } from './jobs/member-photo.js';
 import { drawSharePages, pruneSharePages, type SharePagesJob } from './jobs/share-pages.js';
 import { removeLeftovers, type PurgeLeftoversJob } from './jobs/purge-leftovers.js';
@@ -323,6 +325,19 @@ async function main(): Promise<void> {
   if (allowPrivate)
     log('warn', 'pushes may go to private addresses (FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS)');
   const pushAgent = createPushAgent({ allowPrivate });
+  // Notifications by text (0.9.0, SMS2): through the household's SMS Gate,
+  // its password opened as each text is sent; one that falls in somebody's
+  // quiet hours waits on the queue until they end.
+  const texter = createTexter({
+    app: dbs.app,
+    smsKey: deriveKey(masterSecret, SMS_PASSWORD_PURPOSE),
+    smtpKey: deriveKey(masterSecret, 'smtp-credentials'),
+    baseUrl: config.FDV_BASE_URL,
+    log,
+    later: async (job: TextJob, at: Date) => {
+      await boss.send(JOBS.smsText, { ...job }, { startAfter: at });
+    },
+  });
   const notifier = createNotifier({
     app: dbs.app,
     vapid,
@@ -331,6 +346,7 @@ async function main(): Promise<void> {
     log,
     agent: pushAgent,
     allowPrivate,
+    texts: texter,
   });
   void logNotifier;
 
@@ -347,6 +363,7 @@ async function main(): Promise<void> {
     log,
     agent: pushAgent,
     allowPrivate,
+    texts: texter,
   };
   await boss.createQueue(JOBS.pushSend);
   await boss.work(JOBS.pushSend, async (jobs) => {
@@ -380,6 +397,19 @@ async function main(): Promise<void> {
       }
       const channels = await sendAlert(alertDeps, job.data);
       log('info', 'alert sent', { subject: job.data.subject, channels });
+    }
+  });
+  // A text (SMS2): a link opened, or one that waited for quiet hours to
+  // end. Counts and kinds in the log, never the words or the number.
+  await boss.createQueue(JOBS.smsText, { retryLimit: 0 });
+  await boss.work(JOBS.smsText, async (jobs) => {
+    for (const job of jobs) {
+      if (!isTextJob(job.data)) {
+        log('warn', 'text job had the wrong shape', { id: job.id });
+        continue;
+      }
+      const texted = await texter.run(job.data);
+      log('info', 'text job done', { kind: job.data.kind, texted });
     }
   });
   // One email to one address (5.20): a share link's code, through the

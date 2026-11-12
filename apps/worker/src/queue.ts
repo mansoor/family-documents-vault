@@ -76,6 +76,14 @@ export const JOBS = {
    */
   alertSend: 'alert.send',
   /**
+   * A text (0.9.0, SMS2): a link opened, which the API sends (its
+   * SMS_TEXT_JOB) for the worker to tell the link's maker, if they asked;
+   * and the day's reminders or an alert by text, put back on the queue
+   * until somebody's quiet hours end (startAfter). Never tried again: a
+   * text that could not go is made up for by email, not sent twice.
+   */
+  smsText: 'sms.text',
+  /**
    * One email to one address (5.20): a share link's code, to the address its
    * sharer typed. Only through the operator's mail server (FDV_SMTP_URL),
    * never the household's (A21); sealed on the queue. The name matches the

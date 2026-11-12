@@ -1532,3 +1532,34 @@ describe('the fake vault, a link shown again to whoever made it (0.9.0)', () => 
     });
   });
 });
+
+describe('the fake vault, notifications by text (0.9.0, SMS2)', () => {
+  it('keeps each person’s texts and quiet hours, off and nine to eight until changed', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    expect((await api.capabilities()).features.sms_notifications).toBe(true);
+    expect(await api.preferences(token)).toEqual({
+      daily_push: true,
+      daily_email: false,
+      weekly_email: true,
+      daily_text: false,
+      alerts_text: false,
+      share_opened_text: false,
+      quiet_from: '21:00',
+      quiet_to: '08:00',
+    });
+    expect(
+      await api.updatePreferences(token, { daily_text: true, quiet_from: '22:30' }),
+    ).toMatchObject({ daily_text: true, alerts_text: false, quiet_from: '22:30' });
+    expect(await api.preferences(token)).toMatchObject({ daily_text: true, quiet_from: '22:30' });
+    await expect(api.updatePreferences(token, { quiet_to: '8am' })).rejects.toMatchObject({
+      status: 422,
+    });
+  });
+});

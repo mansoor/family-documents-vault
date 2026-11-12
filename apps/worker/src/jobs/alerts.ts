@@ -5,6 +5,7 @@ import { sql } from 'kysely';
 import nodemailer from 'nodemailer';
 import { liveDevice, openPassword, type VapidKeys } from './notify.js';
 import { deliver, pushDepsOf, unifiedPayload } from './push.js';
+import type { Texter } from './texts.js';
 
 /**
  * Alerts: one thing, to named people, now.
@@ -19,6 +20,10 @@ import { deliver, pushDepsOf, unifiedPayload } from './push.js';
  * to both channels at once and a failure on one never stops the other.
  * There are only two kinds of them and both are about somebody's access
  * to the vault, which is why they are not something to turn off.
+ *
+ * Since 0.9.0 (SMS2) they also go by text to whoever asked for alerts by
+ * text (texts.ts): a headline and no more, kept out of their quiet hours
+ * unless it is about their own sign-in.
  */
 
 export interface Alert {
@@ -59,6 +64,13 @@ export interface Alert {
    * as no other alert does.
    */
   own_sign_in?: boolean;
+  /**
+   * What it says by text (0.9.0, SMS2), to whoever of them asked for alerts
+   * by text: a word of ALERT_TEXTS, chosen by the API; without one, that
+   * there is news in their email. Never its subject or body, which may name
+   * people.
+   */
+  text_kind?: string;
 }
 
 /**
@@ -87,6 +99,8 @@ export interface AlertDeps {
   log: (level: string, msg: string, extra?: Record<string, unknown>) => void;
   agent?: https.Agent;
   allowPrivate?: boolean;
+  /** Texts (0.9.0, SMS2), to those who asked for alerts by text; none without. */
+  texts?: Pick<Texter, 'alert'>;
 }
 
 export function isAlert(data: unknown): data is Alert {
@@ -134,6 +148,10 @@ export async function sendAlert(deps: AlertDeps, queued: Alert): Promise<string[
   const channels: string[] = [];
   if (!alert.email_only && (await pushAlert(deps, alert)) > 0) channels.push('push');
   if ((await emailAlert(deps, alert)) > 0) channels.push('email');
+  // And by text, to whoever asked for alerts so (SMS2): now, or once their
+  // quiet hours end. A text that cannot go is not made up for by email:
+  // the alert's email went to them already, if it could.
+  if (deps.texts && (await deps.texts.alert(alert)) > 0) channels.push('sms');
   if (channels.length === 0) {
     // Worth a line in the log: the point of an alert is that somebody
     // hears it, and nobody did.

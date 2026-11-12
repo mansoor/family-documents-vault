@@ -76,7 +76,7 @@ import { MAIL_IN_CODE_KEY_PURPOSE, MailInService } from './mail-in/service.js';
 import { SettingsCheckService } from './settings-checks.js';
 import { LocalAiService } from './household/local-ai.js';
 import { PHONE_CODE_KEY_PURPOSE, MemberPhoneService } from './sms/phones.js';
-import type { SmsProvider, SmsProviderFactory } from './sms/provider.js';
+import type { SmsProvider, SmsProviderFactory } from '@fdv/db';
 import { SmsService } from './sms/service.js';
 import { serverVersion } from './version.js';
 

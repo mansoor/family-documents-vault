@@ -20,6 +20,10 @@ import { isLoopbackName, isPrivateAddress, type SmsMode, type SmsState } from '@
  * link-local (cloud metadata) and the like — checked when the connection is
  * made, on the address DNS gives then (a blind-SSRF guard, as a push's is).
  * Every request waits ten seconds at most, and a redirect is never followed.
+ *
+ * Here, beside the database, since notifications by text (0.9.0, SMS2):
+ * the API sends a test and the codes, the worker the reminders, the alerts
+ * and the news of a link opened, both through this one client and `sendSms`.
  */
 
 /** What a provider says of a text it took: its id for it, and how it stands. */

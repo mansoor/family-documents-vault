@@ -1147,6 +1147,24 @@ export interface Preferences {
   daily_push: boolean;
   daily_email: boolean;
   weekly_email: boolean;
+  /**
+   * Notifications by text (0.9.0, SMS2), each off until the person turns it
+   * on, and only ever sent to their own confirmed number: the day's
+   * reminders as one text with a count; the security alerts; and a link
+   * they shared being opened. Absent from a vault without
+   * `features.sms_notifications`.
+   */
+  daily_text?: boolean;
+  alerts_text?: boolean;
+  share_opened_text?: boolean;
+  /**
+   * Their quiet hours on the family's clock, "21:00" to "08:00" until they
+   * choose (and may run past midnight; the same for both is none): a text
+   * that falls in them waits until they end, unless it is about their own
+   * account's safety.
+   */
+  quiet_from?: string;
+  quiet_to?: string;
 }
 
 export interface SmtpProvider {

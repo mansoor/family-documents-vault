@@ -14,7 +14,7 @@ import {
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
-import { SmsProviderError, type SmsConnection, type SmsProviderFactory } from './provider.js';
+import { SmsProviderError, type SmsConnection, type SmsProviderFactory } from '@fdv/db';
 
 /**
  * Text messages (0.9.0, SMS1), in the API: the household's SMS Gate, an
