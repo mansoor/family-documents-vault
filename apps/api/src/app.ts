@@ -59,7 +59,10 @@ import { registerVaults } from './vaults/routes.js';
 import { registerWatchFolder } from './watch-folder/routes.js';
 import type { WatchFolderService } from './watch-folder/service.js';
 import { registerMailIn } from './mail-in/routes.js';
+import { registerSms } from './sms/routes.js';
 import type { MailInService } from './mail-in/service.js';
+import type { MemberPhoneService } from './sms/phones.js';
+import type { SmsService } from './sms/service.js';
 import { registerReadingCheck } from './reading-check/routes.js';
 import type { ReadingCheckService } from './reading-check/service.js';
 import { registerSettingsChecks, type SettingsCheckService } from './settings-checks.js';
@@ -130,6 +133,9 @@ export interface AppDeps {
   watchFolder?: WatchFolderService;
   /** Email in (0.8.0, S4): the owners' setting, and each person's address and code. */
   mailIn?: MailInService;
+  /** Text messages (0.9.0, SMS1): the owners' SMS Gate, and each person's mobile number. */
+  sms?: SmsService;
+  phones?: MemberPhoneService;
   /** The Reading check (0.9.0, R0): an owner's. */
   readingChecks?: ReadingCheckService;
   /** What an owner asks the worker from Settings, and its answers (0.9.0, O1). */
@@ -503,6 +509,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerBatches(app, deps.batches);
   if (deps.watchFolder) registerWatchFolder(app, deps.watchFolder);
   if (deps.mailIn) registerMailIn(app, deps.mailIn, deps.stepUp);
+  if (deps.sms && deps.phones) registerSms(app, deps.sms, deps.phones, deps.stepUp);
   if (deps.readingChecks) registerReadingCheck(app, deps.readingChecks, deps.localAi);
   if (deps.settingsChecks) registerSettingsChecks(app, deps.settingsChecks);
   if (deps.localAi) registerLocalAi(app, deps.localAi);

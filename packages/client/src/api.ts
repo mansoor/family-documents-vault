@@ -139,7 +139,12 @@ import type {
   LocalAiNotice,
   LocalAiSettingsView,
   MailInMailboxInput,
+  MemberPhoneView,
   SettingsCheckView,
+  SmsSettingsInput,
+  SmsSettingsView,
+  SmsStatusView,
+  SmsTestResult,
   WatchFolderInput,
   WatchFolderView,
   WatchNoticeView,
@@ -1619,6 +1624,71 @@ export function createApi(http: Http) {
     /** That code, typed in: the address confirmed (`204`); `422` wrong, `410` expired or used up. */
     confirmMailIn: (token: string, code: string) =>
       request<void>('/api/v1/mail-in/me/confirm', { method: 'POST', body: { code }, token }),
+    // ------------------------------------------- text messages (0.9.0, SMS1)
+    /**
+     * Whether the vault sends texts now (`features.sms_texts`): set up by an
+     * owner, and a test passed. Anybody signed in; offer a mobile number only
+     * when `ready`.
+     */
+    smsStatus: (token: string) => request<SmsStatusView>('/api/v1/sms/status', { token }),
+    /** The household's SMS Gate, and this month's texts: an owner's (`403` for anybody else). */
+    smsSettings: (token: string) => request<SmsSettingsView>('/api/v1/sms/settings', { token }),
+    /**
+     * SMS Gate set up or changed (the step-up first): saved untested when
+     * anything that reaches it changed. `password` left out keeps the one
+     * set (`422 sms_password_needed` for a new address or sign-in); it is
+     * never returned.
+     */
+    setSmsSettings: (token: string, body: SmsSettingsInput) =>
+      request<SmsSettingsView>('/api/v1/sms/settings', { method: 'PUT', body, token }),
+    /** SMS Gate forgotten, password and all: no text is sent after. */
+    removeSmsSettings: (token: string) =>
+      request<SmsSettingsView>('/api/v1/sms/settings', { method: 'DELETE', token }),
+    /**
+     * A test text to `number`, through the settings saved: `ok` once SMS Gate
+     * has sent it (up to 20 seconds); then the vault sends other texts.
+     */
+    testSms: (token: string, number: string) =>
+      request<SmsTestResult>('/api/v1/sms/settings/test', {
+        method: 'POST',
+        body: { number },
+        token,
+      }),
+    /** Somebody's mobile number, masked: their own, or an owner's for anybody (`403` otherwise). */
+    memberPhone: (token: string, memberId: string) =>
+      request<MemberPhoneView>(`/api/v1/members/${encodeURIComponent(memberId)}/phone`, { token }),
+    /**
+     * A mobile number saved, unconfirmed, and a code texted to it (`409
+     * sms_not_set_up`, `422 phone_number_invalid`, `429 phone_code_limit`).
+     */
+    setMemberPhone: (token: string, memberId: string, number: string) =>
+      request<MemberPhoneView>(`/api/v1/members/${encodeURIComponent(memberId)}/phone`, {
+        method: 'PUT',
+        body: { number },
+        token,
+      }),
+    /**
+     * The code texted, typed back: the number confirmed (`422 phone_code_wrong`,
+     * `409 phone_code_expired` or `phone_code_too_many`).
+     */
+    confirmMemberPhone: (token: string, memberId: string, code: string) =>
+      request<MemberPhoneView>(`/api/v1/members/${encodeURIComponent(memberId)}/phone/confirm`, {
+        method: 'POST',
+        body: { code },
+        token,
+      }),
+    /** A new code to the number saved, while it is unconfirmed. */
+    resendMemberPhoneCode: (token: string, memberId: string) =>
+      request<MemberPhoneView>(`/api/v1/members/${encodeURIComponent(memberId)}/phone/resend`, {
+        method: 'POST',
+        token,
+      }),
+    /** The mobile number removed. */
+    removeMemberPhone: (token: string, memberId: string) =>
+      request<MemberPhoneView>(`/api/v1/members/${encodeURIComponent(memberId)}/phone`, {
+        method: 'DELETE',
+        token,
+      }),
     // ------------------------------------------- the local AI reader (0.9.0, R4)
     /**
      * The household's reading settings (`features.local_ai`): the local AI

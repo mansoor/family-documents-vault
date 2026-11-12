@@ -1575,6 +1575,8 @@ describe('every address Settings had still works (R1)', () => {
     ['/settings/scanner', '/settings/scanner', 'Scanner folder'],
     ['/settings/reading', '/settings/reading', 'Reading and the check'],
     ['/settings/reading-check', '/settings/reading-check', 'Reading and the check'],
+    // Text messages (0.9.0, SMS1).
+    ['/settings/texts', '/settings/texts', 'Text messages'],
     ['/settings/activity', '/activity', 'What has been happening'],
     ['/settings/trash', '/trash', 'Trash'],
     ['/settings/sharing', '/sharing', 'Sharing'],

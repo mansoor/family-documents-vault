@@ -819,6 +819,11 @@ begin
   if to_regclass('public.share_code') is not null then
     delete from public.share_code;
   end if;
+  -- A code texted to confirm a number (0084, SMS1): the same. A number it
+  -- would have confirmed waits for a new one.
+  if to_regclass('public.phone_code') is not null then
+    delete from public.phone_code;
+  end if;
   if to_regclass('public.upload_request') is not null then
     update public.upload_request set paused_at = now(), paused_reason = 'restored'
      where paused_at is null and revoked_at is null and closed_at is null
@@ -1192,6 +1197,20 @@ const GUARDS = [
     fn: 'document_no_longer_needed_rule',
   },
   { name: 'reminder_not_for_unneeded', table: 'reminder', fn: 'reminder_not_for_unneeded' },
+  // An owner sets up text messages as themselves, and never says a test
+  // passed; somebody writes a mobile number as themselves, and never
+  // confirms it; a code sent keeps what it was (0084, SMS1).
+  {
+    name: 'sms_settings_account_writes',
+    table: 'sms_settings',
+    fn: 'sms_settings_account_writes',
+  },
+  {
+    name: 'member_phone_account_writes',
+    table: 'member_phone',
+    fn: 'member_phone_account_writes',
+  },
+  { name: 'phone_code_writes', table: 'phone_code', fn: 'phone_code_writes' },
 ];
 
 /**
@@ -1211,6 +1230,10 @@ const OWNERS_SETTINGS = [
   // an owner asks the worker from Settings, and its answers (0076, O1).
   { table: 'mail_in_mailbox', what: 'the household mailbox' },
   { table: 'settings_check', what: 'a check of the scanner folder or the mailbox' },
+  // The household's SMS Gate, its password sealed; and the texts sent
+  // through it (0084, SMS1).
+  { table: 'sms_settings', what: 'how the vault sends text messages' },
+  { table: 'sms_message', what: 'the texts the vault sent' },
 ];
 
 /**
@@ -1218,7 +1241,11 @@ const OWNERS_SETTINGS = [
  * in processed/, by the names the family gave them — the only files it
  * deletes there. Nobody signed in, an owner included, is given any.
  */
-const VAULTS_OWN = [{ table: 'watch_kept', what: 'the scans the vault kept' }];
+const VAULTS_OWN = [
+  { table: 'watch_kept', what: 'the scans the vault kept' },
+  // A code texted to confirm a number (0084, SMS1): between the vault and the phone.
+  { table: 'phone_code', what: 'the codes texted to confirm a number' },
+];
 
 /**
  * A restore puts back the record of kept scans as it was when the backup was
@@ -1404,6 +1431,12 @@ const ACTOR_GUARDED = [
   'settings_check',
   // The scans the vault kept (the O1 review, M2): the owners'.
   'watch_kept',
+  // Text messages (0084, SMS1): the owners' setting and the texts sent;
+  // somebody's mobile number, theirs and the owners'; the codes, the vault's.
+  'sms_settings',
+  'sms_message',
+  'member_phone',
+  'phone_code',
   // Computers that send scans, and their pairing codes (0070, D1): their
   // person's, an owner's by name; nobody else's.
   'upload_device',

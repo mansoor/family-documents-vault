@@ -22,6 +22,8 @@ import {
   ScopeKeys,
   sealIdentity,
   sealMailboxPassword,
+  sealSmsPassword,
+  SMS_PASSWORD_PURPOSE,
   wrapKey,
 } from '@fdv/crypto';
 import {
@@ -613,6 +615,44 @@ async function seed(url: string): Promise<string> {
                select $1, b.created_by, b.member_id, $2, $3, now() + interval '5 minutes'
                  from intake_batch b where b.household_id = $1`,
               [hh, randomBytes(32), randomBytes(32)],
+            );
+          }
+          // And, where the schema has them (0084, SMS1), the household's SMS
+          // Gate, a text it sent, that person's mobile number and a code
+          // texted to it: the code is the past, and does not come back.
+          const texts = await c.query<{ has: boolean }>(
+            "select to_regclass('public.sms_settings') is not null as has",
+          );
+          if (texts.rows[0]?.has) {
+            await c.query(
+              `insert into sms_settings (household_id, mode, base_url, username, password_encrypted, status)
+               values ($1, 'local', 'http://192.168.1.20:8080', 'sms', $2, 'ok')`,
+              [
+                hh,
+                sealSmsPassword(deriveKey(MASTER, SMS_PASSWORD_PURPOSE), 'seeded', hh, {
+                  mode: 'local',
+                  baseUrl: 'http://192.168.1.20:8080',
+                  username: 'sms',
+                }),
+              ],
+            );
+            await c.query(
+              `insert into sms_message (household_id, number_tail, kind, provider_id, state)
+               values ($1, '123', 'test', 'seeded', 'delivered')`,
+              [hh],
+            );
+            await c.query(
+              `insert into member_phone (member_id, household_id, number)
+               select b.member_id, $1, '+447700900123'
+                 from intake_batch b where b.household_id = $1 limit 1`,
+              [hh],
+            );
+            await c.query(
+              `insert into phone_code (id, household_id, member_id, number, code_hash, expires_at)
+               select gen_random_uuid(), $1, b.member_id, '+447700900123', $2,
+                      now() + interval '5 minutes'
+                 from intake_batch b where b.household_id = $1 limit 1`,
+              [hh, randomBytes(32)],
             );
           }
         }

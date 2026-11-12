@@ -59,6 +59,9 @@ import {
   type ReminderProblem,
   type ResetNotice,
   type Role,
+  type SmsMode,
+  type SmsSettingsView,
+  type SmsState,
   isDocumentSort,
   LOCATION_SORT_REFUSAL,
   seesLocation,
@@ -438,6 +441,19 @@ export interface FakeState {
   checksAsked?: Array<{ kind: string; path: string | null }>;
   /** The bodies the mailbox was saved with (PUT /mail-in/mailbox), in order. */
   mailboxSaves?: Array<Record<string, unknown>>;
+  /**
+   * Text messages (0.9.0, SMS1): said when a test gives them. `settings` is
+   * what GET /sms/settings answers (null: not set up); `test` what a test
+   * answers, its view following; `phones` each person's number by member
+   * id, with the code the fake texted it; `saves` the bodies PUT was sent.
+   */
+  sms?: {
+    view: SmsSettingsView;
+    test?: { ok: boolean; state: SmsState; words: string };
+    phones?: Record<string, { masked: string; confirmed: boolean; code: string }>;
+    saves?: Array<Record<string, unknown>>;
+    tested?: string[];
+  };
   /**
    * The household's time zone, as GET /profile gives it: reminders fall due
    * on its calendar. Left out, 'UTC', the vault's default.
@@ -1163,6 +1179,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.watchFolder?.available ? { watch_folder: true } : {}),
           // Email in (S4): said while a test's mailbox is ready.
           ...(state.mailIn?.available ? { email_ingest: true } : {}),
+          // Text messages (0.9.0, SMS1): said when a test gives them.
+          ...(state.sms ? { sms_texts: true } : {}),
           // A computer that sends scans (0.8.0, D1): said when a test gives computers.
           ...(state.computers ? { device_uploads: true } : {}),
           // Tags you can use (0.9.0, T1): said when a test gives them.
@@ -1590,6 +1608,112 @@ export function installFakeApi(state: FakeState) {
         });
       }
       return json({ ...base, state: 'done', [c.kind]: answer });
+    }
+    // Text messages (0.9.0, SMS1), as the vault answers them.
+    if (
+      state.sms &&
+      (path.startsWith('/api/v1/sms/') || /^\/api\/v1\/members\/[^/]+\/phone/.test(path))
+    ) {
+      const sms = state.sms;
+      if (path === '/api/v1/sms/status') return json({ ready: sms.view.ready });
+      if (path.startsWith('/api/v1/sms/settings')) {
+        if (storedRole() !== 'owner') {
+          return refuse(403, 'forbidden', 'Only an owner can set up text messages.');
+        }
+        if (path === '/api/v1/sms/settings/test' && method === 'POST') {
+          (sms.tested ??= []).push((body as { number: string }).number);
+          const t = sms.test ?? { ok: true, state: 'delivered', words: 'The test text went.' };
+          const s = sms.view.settings;
+          if (s) {
+            s.status = t.ok ? 'ok' : 'failed';
+            s.last_error = t.ok ? null : t.words;
+          }
+          sms.view = { ...sms.view, ready: t.ok, sent_this_month: sms.view.sent_this_month + 1 };
+          return json({ ...t, view: sms.view });
+        }
+        if (method === 'DELETE') {
+          sms.view = { ...sms.view, settings: null, ready: false };
+          return json(sms.view);
+        }
+        if (method === 'PUT') {
+          const b = body as Record<string, unknown> & { password?: string };
+          (sms.saves ??= []).push(b);
+          const { password, ...rest } = b;
+          const was = sms.view.settings;
+          sms.view = {
+            ...sms.view,
+            ready: false,
+            monthly_cap: Number(b.monthly_cap),
+            settings: {
+              mode: rest.mode as SmsMode,
+              base_url:
+                rest.mode === 'cloud'
+                  ? sms.view.cloud_url
+                  : typeof rest.base_url === 'string'
+                    ? rest.base_url
+                    : '',
+              username: String(rest.username),
+              password: password !== undefined || was?.password === 'set' ? 'set' : 'not_set',
+              country: String(rest.country),
+              monthly_cap: Number(rest.monthly_cap),
+              status: 'untested',
+              last_verified_at: null,
+              last_error: null,
+              updated_at: new Date().toISOString(),
+            },
+          };
+          return json(sms.view);
+        }
+        return json(sms.view);
+      }
+      const at = /^\/api\/v1\/members\/([^/]+)\/phone(\/confirm|\/resend)?$/.exec(path);
+      if (at) {
+        const id = at[1] as string;
+        const phones = (sms.phones ??= {});
+        const view = () => {
+          const p = phones[id];
+          return {
+            phone: p
+              ? {
+                  masked: p.masked,
+                  confirmed: p.confirmed,
+                  confirmed_at: p.confirmed ? new Date().toISOString() : null,
+                  code_expires_at: p.confirmed ? null : new Date(Date.now() + 6e5).toISOString(),
+                  updated_at: new Date().toISOString(),
+                }
+              : null,
+            sms_ready: sms.view.ready,
+          };
+        };
+        if (!at[2] && method === 'GET') return json(view());
+        if (!at[2] && method === 'PUT') {
+          if (!sms.view.ready) {
+            return refuse(
+              409,
+              'sms_not_set_up',
+              'Text messages aren’t set up for this household yet.',
+            );
+          }
+          const n = String((body as { number: string }).number).replace(/\D/g, '');
+          phones[id] = { masked: `•••• •••${n.slice(-3)}`, confirmed: false, code: '123456' };
+          return json(view());
+        }
+        if (!at[2] && method === 'DELETE') {
+          delete phones[id];
+          return json(view());
+        }
+        if (at[2] === '/confirm') {
+          const p = phones[id];
+          if (!p)
+            return refuse(404, 'phone_none', 'There is no mobile number for this person yet.');
+          if ((body as { code: string }).code.replace(/\s/g, '') !== p.code) {
+            return refuse(422, 'phone_code_wrong', 'That code isn’t right. 4 tries left.');
+          }
+          p.confirmed = true;
+          return json(view());
+        }
+        if (at[2] === '/resend') return json(view());
+      }
     }
     if (path === '/api/v1/mail-in/mailbox') {
       if (storedRole() !== 'owner') {

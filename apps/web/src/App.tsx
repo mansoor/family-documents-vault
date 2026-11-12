@@ -32,6 +32,7 @@ import { NotificationsScreen } from './screens/Notifications.js';
 import { AppearanceScreen } from './screens/Appearance.js';
 import { ScannerScreen } from './watch-folder.js';
 import { EmailInAndOutScreen, ReadingAndCheckScreen } from './screens/ServerSettings.js';
+import { TextMessagesScreen } from './text-messages.js';
 import { PersonDocumentsScreen, ProfileScreen } from './screens/Person.js';
 import { PeopleScreen, RemindersScreen, SearchScreen } from './screens/SearchPeople.js';
 import { AccountScreen, DataScreen, SettingsScreen, StorageScreen } from './screens/Settings.js';
@@ -404,6 +405,14 @@ export function App() {
                   element={
                     <Only rule={SCREEN_RULES.reading}>
                       <ReadingAndCheckScreen />
+                    </Only>
+                  }
+                />
+                <Route
+                  path="texts"
+                  element={
+                    <Only rule={SCREEN_RULES.texts}>
+                      <TextMessagesScreen />
                     </Only>
                   }
                 />

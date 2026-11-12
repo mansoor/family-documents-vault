@@ -46,6 +46,22 @@ const ALLOWED = [
   // that is nobody's, so that it takes as long (the D1 review, F4).
   'devices/service.ts DeviceService.pair',
   'devices/service.ts DeviceService.authenticate',
+  // Text messages (0.9.0, SMS1): a text is sent by the vault, whoever asked
+  // for it — the household's SMS Gate and its sealed password read, the
+  // month's texts counted and one written (sms_message is the vault's to
+  // write, 0084), what became of it noted, and a test's result said on the
+  // setting (only the vault says a test passed). Who may ask is checked
+  // first, as themselves.
+  'sms/service.ts SmsService.dispatch',
+  'sms/service.ts SmsService.mark',
+  'sms/service.ts SmsService.test',
+  // A code that confirms a number: made, counted and ended, and tried, by
+  // the vault alone (phone_code is nobody's to read, 0084), once the person
+  // asking has been found to be its person or an owner, as themselves. A
+  // number is confirmed by the vault, once its code is right.
+  'sms/phones.ts MemberPhoneService.issue',
+  'sms/phones.ts MemberPhoneService.issue',
+  'sms/phones.ts MemberPhoneService.confirm',
 ];
 
 const SRC = fileURLToPath(new URL('.', import.meta.url));

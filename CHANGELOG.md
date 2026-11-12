@@ -6,6 +6,14 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.29] - 2026-11-11 — text messages: SMS Gate, and mobile numbers
+
+### Added
+
+- **Text messages through your own SMS Gate (SMS1).** An owner can set up text messages in Settings → Server and reading → **Text messages**. The vault sends texts through [SMS Gate for Android](https://sms-gate.app), an app on a phone your family owns, reached one of three ways: the phone itself on your home network (**Local server on your network**, recommended), **SMS Gate cloud**, whose relay sees each text (the page says so), or **Your own server**. Type the address, the username and the password the app shows, the country your numbers are in, and the most texts the vault may send in a calendar month (200 unless you change it). Then **Send a test** to a number: no other text is sent until a test has gone, and the page says in plain words why one did not. Changing the address, username or password waits for a new test; changing the limit or the country does not. Saving asks you to confirm it's you, and the other owners are told. The password is kept encrypted with the household, mode, address and username bound in, is never shown again, and moves with `rotate-master-key` and a restore as the other secrets do. The page shows how many texts were sent this month. The capability is `features.sms_texts`.
+- **A mobile number on each person's profile.** Once text messages are set up, you can add your own mobile number on your profile, and an owner can add one for anybody, someone without a sign-in included. The vault texts a six-digit code to it: "Family Vault code: 123456. It confirms this number for Sana. It ends in 10 minutes." Type it back to confirm the number. A code works for 10 minutes and 5 tries; at most 3 are sent to a number in 15 minutes and 10 in a day. A changed number waits for its own code, and the old number, if it was confirmed, is told it changed. Removing a number asks first. Numbers are shown masked (•••• •••123), and only you and the owners see yours. Texts never carry a link or a document's details. Reminders by text come next.
+- **A log of the texts sent,** for the owners: to whom (the last three digits), what kind, and what became of each. Never what a text said.
+
 ## [0.9.0-dev.28] - 2026-11-11 — Documents without the notes, and several tags
 
 ### Changed

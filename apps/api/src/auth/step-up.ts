@@ -43,7 +43,8 @@ export type StepUpAction =
   | 'limit_access'
   | 'renew_guest'
   | 'only_me_sharing'
-  | 'change_mailbox';
+  | 'change_mailbox'
+  | 'change_sms';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -105,6 +106,10 @@ const WHY: Record<StepUpAction, string> = {
   // session picked up from an unlocked device could otherwise point the
   // vault's sign-in at a server of its own.
   change_mailbox: 'to change the household mailbox',
+  // The household's SMS Gate set up in Settings (0.9.0, SMS1): a session
+  // picked up from an unlocked device could otherwise send the codes that
+  // confirm the family's numbers through a server of its own.
+  change_sms: 'to change how the vault sends text messages',
 };
 
 /**

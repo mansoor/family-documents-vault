@@ -390,6 +390,29 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
           : `${who} changed ${possessive(personOf(e))} ${what}`,
       );
     }
+    // Somebody's mobile number (0.9.0, SMS1): added, confirmed by its code,
+    // removed. Never the number.
+    case 'member.phone_added':
+      return line(
+        isOwn(e)
+          ? `${who} added their mobile number`
+          : `${who} added a mobile number for ${personOf(e)}`,
+        true,
+      );
+    case 'member.phone_confirmed':
+      return line(
+        isOwn(e)
+          ? `${who} confirmed their mobile number`
+          : `${who} confirmed ${possessive(personOf(e))} mobile number`,
+        true,
+      );
+    case 'member.phone_removed':
+      return line(
+        isOwn(e)
+          ? `${who} removed their mobile number`
+          : `${who} removed ${possessive(personOf(e))} mobile number`,
+        true,
+      );
     // An owner's look at somebody's sign-in (5.25): news, to the owners and
     // to them, and never what the card said.
     case 'member.account_viewed':
@@ -785,6 +808,15 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return line(`${who} changed the household mailbox email in checks`, true);
     case 'mail_in.mailbox_removed':
       return line(`${who} went back to the server’s own household mailbox for email in`, true);
+    // The household's SMS Gate (0.9.0, SMS1): set up, tested, taken away.
+    case 'sms.settings_saved':
+      return line(`${who} changed how the vault sends text messages`, true);
+    case 'sms.settings_tested':
+      return detail.ok === true
+        ? line(`${who} sent a test text, and it went`, true)
+        : line(`${who} sent a test text, and it did not go`, true);
+    case 'sms.settings_removed':
+      return line(`${who} turned off text messages`, true);
     case 'export.requested':
       return line(`${who} asked for a copy of everything`, true);
     case 'export.downloaded':

@@ -365,6 +365,16 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // The household mailbox set up in Settings, or taken away (O1): the owners'.
   ['mail_in.mailbox_saved', ownersAndThePerson],
   ['mail_in.mailbox_removed', ownersAndThePerson],
+  // The household's SMS Gate set up, tested or taken away (0.9.0, SMS1):
+  // about the household, so for the owners alone.
+  ['sms.settings_saved', ownersAndThePerson],
+  ['sms.settings_tested', ownersAndThePerson],
+  ['sms.settings_removed', ownersAndThePerson],
+  // Somebody's mobile number added, confirmed or removed (SMS1): for the
+  // owners, the person and whoever did it. Masked, never the number.
+  ['member.phone_added', ownersThePersonAndTheActor],
+  ['member.phone_confirmed', ownersThePersonAndTheActor],
+  ['member.phone_removed', ownersThePersonAndTheActor],
   // The vault's reading model turned on or off (0.9.0, R2): about the
   // household, so for the owners alone.
   ['household.reading_model_changed', ownersAndThePerson],

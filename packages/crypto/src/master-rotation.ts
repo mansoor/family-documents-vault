@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type pg from 'pg';
 import { deriveKey, KEK_PURPOSE } from './master.js';
 import { mailboxPasswordAad } from './mailbox-password.js';
+import { smsPasswordAad } from './sms-password.js';
 import { binding, type ScopeKind } from './scope-keys.js';
 import { unwrapKey, wrapKey } from './wrap.js';
 
@@ -78,6 +79,21 @@ export const MASTER_SEALED = [
     bind: ['host', 'port', 'username'],
     aad: (id: string, row: Readonly<Record<string, string>>) =>
       mailboxPasswordAad(id, row.host ?? '', Number(row.port), row.username ?? ''),
+  },
+  // packages/crypto/src/sms-password.ts (sealSmsPassword, used by the API's
+  // SmsService): the household's SMS Gate password, set in Settings (0.9.0,
+  // SMS1)
+  {
+    name: 'smsPasswords',
+    purpose: 'sms-credentials',
+    table: 'sms_settings',
+    key: 'household_id',
+    column: 'password_encrypted',
+    // The mode, address and sign-in it was typed for are bound in too: a
+    // password kept for one server never opens for another.
+    bind: ['mode', 'base_url', 'username'],
+    aad: (id: string, row: Readonly<Record<string, string>>) =>
+      smsPasswordAad(id, row.mode ?? '', row.base_url ?? '', row.username ?? ''),
   },
 ] as const;
 
@@ -406,6 +422,7 @@ async function rekey(
     vaultCredentials: 0,
     smtpPasswords: 0,
     mailInPasswords: 0,
+    smsPasswords: 0,
   };
   for (const s of MASTER_SEALED) {
     // A backup can be older than the column; a restore brings it up to date

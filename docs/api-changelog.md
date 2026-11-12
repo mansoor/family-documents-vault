@@ -5844,6 +5844,50 @@ no_longer_needed` on a document no longer needed) and
       `@fdv/client`: a query value that is a list is sent as the field once
       for each; the fake takes several tags and `notes=exclude` on both list
       shapes.
+  - Text messages: SMS Gate, and mobile numbers (0.9.0-dev.29; SMS1).
+    Migration 0084. Everything is **additive**.
+    - **New `features`:** `sms_texts`, `true`; absent from older vaults.
+    - **New routes** (owners; `403` to anybody else): `GET`, `PUT` and
+      `DELETE /api/v1/sms/settings` and `POST /api/v1/sms/settings/test`.
+      `PUT` takes `{ mode: "local" | "cloud" | "private", base_url,
+username, password?, country, monthly_cap }` and asks for the step-up
+      (`change_sms`); `base_url` is ignored for `cloud`, `https` only for
+      `private`, and an address inside the vault's own network is `422
+sms_address_refused` for anything but `local`. `password` left out
+      keeps the one set, unless the mode, address or username changed (`422
+sms_password_needed`); it is never returned (`password: "set" |
+"not_set"`). A save that changes how SMS Gate is reached is
+      `status: "untested"`. The test takes `{ number }` and answers `{ ok,
+state, words, view }` once SMS Gate has sent it, failed it or 20
+      seconds have passed; only a passing test makes `status: "ok"` (`ready`).
+      Every answer is `cache-control: no-store`.
+    - **New route** (anybody signed in): `GET /api/v1/sms/status` →
+      `{ ready }`, whether to offer a mobile number.
+    - **New routes** (the person themselves, or an owner for anybody; `403`
+      otherwise): `GET`, `PUT { number }` and `DELETE
+/api/v1/members/{id}/phone`; `POST /api/v1/members/{id}/phone/confirm
+{ code }` and `POST /api/v1/members/{id}/phone/resend`. Each answers
+      `{ phone: { masked, confirmed, confirmed_at, code_expires_at,
+updated_at } | null, sms_ready }`. A number without `+` is read in the
+      household's `country`. Errors: `409 sms_not_set_up`, `409
+sms_cap_reached`, `503 sms_not_sent`, `422 phone_number_invalid`,
+      `422 phone_code_wrong`, `409 phone_code_expired`, `409
+phone_code_too_many`, `429 phone_code_limit` (with `Retry-After`),
+      `409 phone_confirmed`, `404 phone_none`.
+    - **New step-up action:** `change_sms`.
+    - **New activity lines:** `sms.settings_saved`, `sms.settings_tested`,
+      `sms.settings_removed` (owners); `member.phone_added`,
+      `member.phone_confirmed`, `member.phone_removed` (owners, the person
+      and whoever did it; the number masked).
+    - `@fdv/shared`: `sms.ts` (`SmsSettingsView`, `SmsSettingsInput`,
+      `SmsTestResult`, `SmsStatusView`, `MemberPhoneView`, `parsePhone`,
+      `maskPhone`, the code and text words and limits), using
+      `libphonenumber-js` (MIT); `Capabilities.features.sms_texts`.
+      `@fdv/client`: `smsStatus`, `smsSettings`, `setSmsSettings`,
+      `removeSmsSettings`, `testSms`, `memberPhone`, `setMemberPhone`,
+      `confirmMemberPhone`, `resendMemberPhoneCode`, `removeMemberPhone`; the
+      fake answers the status and mobile-number routes, keeping the code it
+      texted in `state.phones` and `state.texts`.
 
 ## Deprecations in effect
 

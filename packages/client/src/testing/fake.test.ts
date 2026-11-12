@@ -1418,3 +1418,43 @@ describe('the fake vault, reminders somebody sets themselves (0.9.0-dev.27)', ()
     ).toMatchObject({ status: 409, code: 'no_longer_needed' });
   });
 });
+
+describe('the fake vault, mobile numbers (0.9.0, SMS1)', () => {
+  it('texts a code to a number, keeps it for the test to read, and confirms the number with it', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token, member_id: me } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    expect(await api.smsStatus(token)).toEqual({ ready: true });
+    const saved = await api.setMemberPhone(token, me, '07700 900123');
+    expect(saved.phone).toMatchObject({ masked: '•••• •••123', confirmed: false });
+    expect(saved.phone?.code_expires_at).not.toBeNull();
+    const sent = vault.state.texts?.at(-1);
+    expect(sent?.to).toBe('+447700900123');
+    const code = vault.state.phones?.get(me)?.code as string;
+    expect(sent?.text).toBe(
+      `Family Vault code: ${code}. It confirms this number for Fake. It ends in 10 minutes.`,
+    );
+    await expect(
+      api.confirmMemberPhone(token, me, code === '000000' ? '111111' : '000000'),
+    ).rejects.toMatchObject({ status: 422, code: 'phone_code_wrong' });
+    const confirmed = await api.confirmMemberPhone(token, me, code);
+    expect(confirmed.phone?.confirmed).toBe(true);
+    await expect(api.resendMemberPhoneCode(token, me)).rejects.toMatchObject({
+      status: 409,
+      code: 'phone_confirmed',
+    });
+    expect((await api.removeMemberPhone(token, me)).phone).toBeNull();
+    // Not set up: nothing is offered.
+    vault.state.smsReady = false;
+    await expect(api.setMemberPhone(token, me, '+447700900123')).rejects.toMatchObject({
+      status: 409,
+      code: 'sms_not_set_up',
+    });
+    expect((await api.memberPhone(token, me)).sms_ready).toBe(false);
+  });
+});

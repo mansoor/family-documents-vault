@@ -407,6 +407,17 @@ export interface CapabilityFeatures {
    * phone's Documents tab and the web's Documents table keep to, and count.
    */
   notes_apart?: boolean;
+  /**
+   * Text messages (0.9.0, SMS1): this vault can send texts through the
+   * household's own SMS Gate, once an owner has set it up and a test has
+   * passed — GET /sms/status says whether it has (`{ ready }`, anybody
+   * signed in). Owners set it up with GET, PUT and DELETE /sms/settings and
+   * POST /sms/settings/test; anybody adds their own mobile number, and an
+   * owner anybody's, with GET, PUT and DELETE /members/{id}/phone, POST
+   * /members/{id}/phone/confirm and /resend: a code texted to it confirms
+   * it. Absent from older vaults.
+   */
+  sms_texts?: boolean;
 }
 
 export interface CapabilityLimits {

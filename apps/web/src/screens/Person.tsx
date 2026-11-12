@@ -48,6 +48,7 @@ import {
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { ViewerLimits } from '../access.js';
 import { IdentityCard } from '../identity.js';
+import { MobileNumberCard } from '../text-messages.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
 import {
@@ -266,6 +267,15 @@ export function ProfileScreen() {
             name={name}
             types={data?.types}
             startEditing={start.edit && start.id === member.id}
+          />
+
+          {/* Their mobile number (0.9.0, SMS1): their own, or an owner's to
+              add for anybody; once the household's texts are set up. */}
+          <MobileNumberCard
+            key={`mobile-${member.id}`}
+            member={member}
+            name={name}
+            owner={myRole === 'owner'}
           />
 
           <section aria-labelledby="their-docs-h">

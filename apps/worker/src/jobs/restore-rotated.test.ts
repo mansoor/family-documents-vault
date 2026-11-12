@@ -12,9 +12,12 @@ import {
   newKey,
   openBound,
   openMailboxPassword,
+  openSmsPassword,
   ScopeKeys,
   sealBound,
   sealMailboxPassword,
+  sealSmsPassword,
+  SMS_PASSWORD_PURPOSE,
   unwrapKey,
   wrapKey,
   type ScopeRef,
@@ -49,6 +52,9 @@ const S3 = { accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'the-bucket-secret-key
 const TOTP = 'JBSWY3DPEHPK3PXP';
 const MAIL = 'the household mail password';
 const MAILBOX = 'the household mailbox app password';
+const SMS = 'the household SMS Gate password';
+/** The SMS Gate's mode, address and sign-in: bound into its password. */
+const GATE = { mode: 'local', baseUrl: 'http://192.168.1.20:8080', username: 'sms' };
 const quiet = () => undefined;
 const backupKey = (secret: string) => deriveKey(secret, 'database-backup');
 
@@ -185,6 +191,13 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
           sealMailboxPassword(deriveKey(secret, MAILBOX_PASSWORD_PURPOSE), MAILBOX, household, BOX),
         ],
       );
+      // The household's SMS Gate (0.9.0, SMS1): the same.
+      await query(
+        t.adminUrl,
+        `insert into sms_settings (household_id, mode, base_url, username, password_encrypted)
+         values ($1, 'local', 'http://192.168.1.20:8080', 'sms', $2)`,
+        [household, sealSmsPassword(deriveKey(secret, SMS_PASSWORD_PURPOSE), SMS, household, GATE)],
+      );
       return { db: t, household, account: accountId, vault: vaultId };
     }
 
@@ -250,9 +263,28 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
           v.household,
           BOX,
         ),
+        sms: openSmsPassword(
+          deriveKey(secret, SMS_PASSWORD_PURPOSE),
+          (
+            await query<{ p: Buffer }>(
+              t.adminUrl,
+              'select password_encrypted as p from sms_settings where household_id = $1',
+              [v.household],
+            )
+          )[0]?.p as Buffer,
+          v.household,
+          GATE,
+        ),
       };
     }
-    const everything = { scopeKeys: 3, totp: TOTP, s3: S3, mail: MAIL, mailbox: MAILBOX };
+    const everything = {
+      scopeKeys: 3,
+      totp: TOTP,
+      s3: S3,
+      mail: MAIL,
+      mailbox: MAILBOX,
+      sms: SMS,
+    };
 
     /** A restore as the command line runs it, in a vault whose master key is NEW. */
     const restore = (file: string, into: TestDatabase, master: RestoreTarget['master']) =>
@@ -287,7 +319,13 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
         households: 1,
         rekeyed: {
           rewrapped: 3,
-          resealed: { totpSecrets: 1, vaultCredentials: 1, smtpPasswords: 1, mailInPasswords: 1 },
+          resealed: {
+            totpSecrets: 1,
+            vaultCredentials: 1,
+            smtpPasswords: 1,
+            mailInPasswords: 1,
+            smsPasswords: 1,
+          },
         },
       });
       expect(await opensUnder(t, NEW)).toEqual(everything);
@@ -325,7 +363,13 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
       const report = await restore(file, t, { current: NEW, previous: OLD });
       expect(report.rekeyed).toEqual({
         rewrapped: 0,
-        resealed: { totpSecrets: 1, vaultCredentials: 1, smtpPasswords: 1, mailInPasswords: 1 },
+        resealed: {
+          totpSecrets: 1,
+          vaultCredentials: 1,
+          smtpPasswords: 1,
+          mailInPasswords: 1,
+          smsPasswords: 1,
+        },
         unchanged: 3,
       });
       expect(await opensUnder(t, NEW, mixed)).toEqual(everything);

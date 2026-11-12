@@ -12,7 +12,9 @@ import {
   MAILBOX_PASSWORD_PURPOSE,
   openIdentity,
   openMailboxPassword,
+  openSmsPassword,
   ScopeKeys,
+  SMS_PASSWORD_PURPOSE,
   unwrapKey,
   wrapKey,
   type ScopeKind,
@@ -58,6 +60,9 @@ const S3 = { accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'the-bucket-secret-key
 const MAIL_PASSWORD = 'the household mail password';
 /** The household mailbox's app password, set in Settings (0.9.0, O1). */
 const MAILBOX_PASSWORD = 'the household mailbox app password';
+const SMS_PASSWORD = 'the household SMS Gate password';
+/** The SMS Gate's mode, address and sign-in: bound into its password. */
+const SMS = { mode: 'local', baseUrl: 'http://192.168.1.20:8080', username: 'sms' };
 /** What the owner keeps of themselves (5.26): each part opens after the rotation as it was. */
 const IDENTITY = {
   shared: { given_name: 'Rotated', ids: [{ id: 'p1', kind: 'passport', number: 'ROT-PASS-1' }] },
@@ -119,6 +124,7 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       ['vault', 'credentials_encrypted'],
       ['smtp_settings', 'password_encrypted'],
       ['mail_in_mailbox', 'password_encrypted'],
+      ['sms_settings', 'password_encrypted'],
     ]) {
       const { rows } = await admin.query<{ v: string }>(
         `select encode(${column}, 'hex') as v from ${table} where ${column} is not null order by 1`,
@@ -235,6 +241,22 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       },
     });
     expect(mailbox.statusCode, mailbox.body).toBe(200);
+
+    // The household's SMS Gate, set up in Settings with its password (SMS1).
+    const sms = await h.app.inject({
+      method: 'PUT',
+      url: '/api/v1/sms/settings',
+      headers: h.as(owner),
+      payload: {
+        mode: 'local',
+        base_url: SMS.baseUrl,
+        username: SMS.username,
+        password: SMS_PASSWORD,
+        country: 'GB',
+        monthly_cap: 200,
+      },
+    });
+    expect(sms.statusCode, sms.body).toBe(200);
 
     // An S3 vault, its credentials sealed as VaultService.create seals them.
     vaultId = (
@@ -456,6 +478,7 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       expect(done.out).toContain('1 storage (S3) credential sealed again');
       expect(done.out).toContain('1 mail (SMTP) password sealed again');
       expect(done.out).toContain('1 household mailbox (IMAP) password sealed again');
+      expect(done.out).toContain('1 text messages (SMS Gate) password sealed again');
       expect(done.out).toContain(`${sessions} session${sessions === 1 ? '' : 's'} ended`);
       for (const secret of [
         NEW,
@@ -464,6 +487,7 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
         S3.secretAccessKey,
         MAIL_PASSWORD,
         MAILBOX_PASSWORD,
+        SMS_PASSWORD,
       ]) {
         expect(done.out).not.toContain(secret);
       }
@@ -490,6 +514,25 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
           sealed,
           owner.household_id,
           BOX,
+        ),
+      ).toThrow();
+    });
+
+    it('the SMS Gate password opens under the new key, as the API opens it (SMS1)', async () => {
+      const row = await admin.query<{ p: Buffer }>(
+        'select password_encrypted as p from sms_settings where household_id = $1',
+        [owner.household_id],
+      );
+      const sealed = row.rows[0]?.p as Buffer;
+      expect(
+        openSmsPassword(deriveKey(NEW, SMS_PASSWORD_PURPOSE), sealed, owner.household_id, SMS),
+      ).toBe(SMS_PASSWORD);
+      expect(() =>
+        openSmsPassword(
+          deriveKey(TEST_MASTER, SMS_PASSWORD_PURPOSE),
+          sealed,
+          owner.household_id,
+          SMS,
         ),
       ).toThrow();
     });
@@ -530,8 +573,9 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
     });
 
     it('every scope key opens under the new key, and opens its files', async () => {
-      // All of them: the one added while it waited too.
-      expect(await checkMasterKey(admin, NEW)).toEqual({ checked: scopeKeys + 4 });
+      // All of them: the one added while it waited too; and the five sealed
+      // secrets, SMS Gate's password among them (SMS1).
+      expect(await checkMasterKey(admin, NEW)).toEqual({ checked: scopeKeys + 5 });
       const keys = new ScopeKeys(new EnvKeyProvider(NEW));
       // As the owning role, which every household's rows are open to.
       const db = createDb(createPool(h.adminUrl, 1));

@@ -364,6 +364,9 @@ const FAMILY_SUGGESTIONS = {
   otherAdult: 'the household’s suggestions are the family’s',
   passwordOnlyOwner: 'the household’s suggestions are the family’s',
 } as const;
+/** An owner adds and confirms a mobile number for anybody of the household (0.9.0, SMS1). */
+const OWNERS_PHONES =
+  'an owner adds a mobile number for anybody, a child with no sign-in among them (SMS1)';
 /** Owners read and write everybody's shared identity part, masked (A33); never an Only me part. */
 const OWNERS_SHARED_IDENTITY =
   "owners read everybody's shared part, its numbers masked (A33); never an Only me part";
@@ -983,6 +986,50 @@ const RULES: Record<string, Rule> = {
   },
   'DELETE /api/v1/mail-in/mailbox': { who: 'owners', last: true },
   'POST /api/v1/mail-in/mailbox/test': { who: 'owners', body: () => ({}) },
+  // Text messages (0.9.0, SMS1): the household's SMS Gate, the owners'
+  // alone — one an attacker writes would carry the codes that confirm the
+  // family's numbers, so last. Whether texts can be sent: anybody signed in.
+  'GET /api/v1/sms/status': { who: 'signedIn' },
+  'GET /api/v1/sms/settings': { who: 'owners' },
+  'PUT /api/v1/sms/settings': {
+    who: 'owners',
+    last: true,
+    body: () => ({
+      mode: 'local',
+      base_url: 'http://192.168.66.6:8080',
+      username: 'attacker',
+      password: 'attacker-pw',
+      country: 'GB',
+      monthly_cap: 100000,
+    }),
+  },
+  'DELETE /api/v1/sms/settings': { who: 'owners', last: true },
+  'POST /api/v1/sms/settings/test': { who: 'owners', body: () => ({ number: '+447700900666' }) },
+  // Somebody's mobile number (SMS1): their own, or an owner's for anybody
+  // (a child with no sign-in, say); nobody else's.
+  'GET /api/v1/members/:id/phone': {
+    who: 'signedIn',
+    theirs: { passwordOnlyOwner: OWNERS_PHONES },
+  },
+  'PUT /api/v1/members/:id/phone': {
+    who: 'signedIn',
+    theirs: { passwordOnlyOwner: OWNERS_PHONES },
+    body: () => ({ number: '+447700900666' }),
+  },
+  'DELETE /api/v1/members/:id/phone': {
+    who: 'signedIn',
+    theirs: { passwordOnlyOwner: OWNERS_PHONES },
+  },
+  'POST /api/v1/members/:id/phone/confirm': {
+    who: 'signedIn',
+    theirs: { passwordOnlyOwner: OWNERS_PHONES },
+    body: () => ({ code: '123456' }),
+  },
+  'POST /api/v1/members/:id/phone/resend': {
+    who: 'signedIn',
+    theirs: { passwordOnlyOwner: OWNERS_PHONES },
+    body: () => ({}),
+  },
   'POST /api/v1/watch-folder/verify': { who: 'owners', body: () => ({ path: '/watch' }) },
   'POST /api/v1/watch-folder/browse': { who: 'owners', body: () => ({ path: '/watch' }) },
   'GET /api/v1/settings-checks/:id': {

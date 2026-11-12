@@ -21,6 +21,7 @@
     "argon2": "^0.45.1",
     "imapflow": "2.4.0",
     "kysely": "^0.29.6",
+    "libphonenumber-js": "^1.13.16",
     "mailparser": "3.9.38",
     "nodemailer": "^10.0.10",
     "pg": "^8.23.0",

@@ -1756,6 +1756,63 @@ export interface Schema {
     prev_hash: Buffer | null;
     hash: Buffer;
   };
+
+  /**
+   * How the vault reaches the household's SMS Gate (0084, 0.9.0 SMS1): its
+   * password sealed under a master-derived key, never returned. An owner's
+   * alone; whether a test passed is the vault's word.
+   */
+  sms_settings: {
+    household_id: string;
+    mode: 'local' | 'cloud' | 'private';
+    base_url: string;
+    username: string;
+    password_encrypted: Buffer | null;
+    country: Generated<string>;
+    monthly_cap: Generated<number>;
+    status: Generated<'untested' | 'ok' | 'failed'>;
+    last_verified_at: Timestamp | null;
+    last_error: string | null;
+    updated_by: string | null;
+    updated_at: GeneratedTimestamp;
+  };
+
+  /** Somebody's mobile number, as E.164, and when its code confirmed it (0084): theirs and the owners'. */
+  member_phone: {
+    member_id: string;
+    household_id: string;
+    number: string;
+    confirmed_at: Timestamp | null;
+    updated_by: string | null;
+    updated_at: GeneratedTimestamp;
+  };
+
+  /** A code texted to confirm a number (0084): its HMAC, never the code. The vault's alone. */
+  phone_code: {
+    id: string;
+    household_id: string;
+    member_id: string;
+    number: string;
+    code_hash: Buffer;
+    sent_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    attempts: Generated<number>;
+    used_at: Timestamp | null;
+  };
+
+  /** Each text the vault asked SMS Gate to send (0084): never its words. The owners' to read. */
+  sms_message: {
+    id: Generated<string>;
+    household_id: string;
+    member_id: string | null;
+    number_tail: string;
+    kind: 'test' | 'phone_code' | 'phone_changed';
+    provider_id: string | null;
+    state: Generated<'pending' | 'processed' | 'sent' | 'delivered' | 'failed' | 'not_sent'>;
+    error: string | null;
+    created_at: GeneratedTimestamp;
+    updated_at: GeneratedTimestamp;
+  };
 }
 
 export type Db = Kysely<Schema>;

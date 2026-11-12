@@ -11,6 +11,7 @@ import {
   openBytes,
   operatorMailBinding,
   ScopeKeys,
+  SMS_PASSWORD_PURPOSE,
 } from '@fdv/crypto';
 import { createDb, createPool, type Db, type Schema } from '@fdv/db';
 import type { Role } from '@fdv/shared';
@@ -73,6 +74,9 @@ import { ReadingCheckService } from './reading-check/service.js';
 import { MAIL_IN_CODE_KEY_PURPOSE, MailInService } from './mail-in/service.js';
 import { SettingsCheckService } from './settings-checks.js';
 import { LocalAiService } from './household/local-ai.js';
+import { PHONE_CODE_KEY_PURPOSE, MemberPhoneService } from './sms/phones.js';
+import type { SmsProvider, SmsProviderFactory } from './sms/provider.js';
+import { SmsService } from './sms/service.js';
 import { serverVersion } from './version.js';
 
 /**
@@ -121,6 +125,20 @@ export interface Harness {
   dns: Map<string, string[]>;
   /** The batches, for a test that sends a file as a stream it holds (the D1 review). */
   batches: BatchService;
+  /**
+   * Every text the harness's own SMS Gate was asked to send (SMS1), in
+   * order: nothing leaves it. Each is Delivered at once. Empty when a test
+   * brings an SMS Gate of its own (`smsProvider`).
+   */
+  texts: SentText[];
+}
+
+/** A text the harness's SMS Gate took: to whom, and what it said. */
+export interface SentText {
+  to: string;
+  text: string;
+  /** Where it was asked to go, as the household set it up. */
+  baseUrl: string;
 }
 
 export interface JoinRequest {
@@ -187,6 +205,10 @@ export interface HarnessOptions {
   deviceDailyBytes?: number;
   /** The clock of the scanner folder's, email in's and the Settings checks' services (O1). */
   now?: () => number;
+  /** SMS Gate (SMS1): the harness's own, which delivers every text at once, unless a test stands in. */
+  smsProvider?: SmsProviderFactory;
+  /** How long a test text is waited for, and how often asked after (SMS1): short, for the tests. */
+  smsTestWaitMs?: number;
 }
 
 /** The key the harness's `mail.to_address` jobs are sealed under, as the worker's are. */
@@ -343,6 +365,28 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
   // What an owner asks the worker from Settings (O1): the job is in h.jobs,
   // and a test answers it as the worker would.
   const settingsChecks = new SettingsCheckService(db, enqueue, opts.now);
+  // Text messages (SMS1): an SMS Gate that delivers every text at once and
+  // keeps it in h.texts, unless a test brings its own.
+  const texts: SentText[] = [];
+  const delivering: SmsProviderFactory = (c): SmsProvider => ({
+    send: async (to, text) => {
+      texts.push({ to, text, baseUrl: c.baseUrl });
+      return { id: `text-${texts.length}`, state: 'delivered' };
+    },
+    state: async () => ({ state: 'delivered' }),
+  });
+  const sms = new SmsService(db, {
+    key: deriveKey(TEST_MASTER, SMS_PASSWORD_PURPOSE),
+    provider: opts.smsProvider ?? delivering,
+    alert,
+    testWaitMs: opts.smsTestWaitMs ?? 2000,
+    pollMs: 20,
+    resolve: async (host) => {
+      const found = dns.get(host);
+      if (!found) throw new Error(`ENOTFOUND ${host}`);
+      return found;
+    },
+  });
   const app = await buildApp(config, {
     serverVersion: await serverVersion(),
     instanceId: instanceIdReader(db),
@@ -359,6 +403,10 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       ...(opts.now ? { now: opts.now } : {}),
     }),
     settingsChecks,
+    sms,
+    phones: new MemberPhoneService(db, sms, {
+      codeKey: deriveKey(TEST_MASTER, PHONE_CODE_KEY_PURPOSE),
+    }),
     localAi: new LocalAiService(db, settingsChecks),
     pingDatabase: async () => undefined,
     auth,
@@ -447,6 +495,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     jobs,
     dns,
     batches,
+    texts,
     async close() {
       await app.close();
       await admin?.end();
