@@ -1,7 +1,7 @@
 import type { BatchLevel, ItemProposals } from './batch-levels.js';
 import type { BatchAcceptInput, BatchDefaults } from './batches.js';
 import { autoTitle } from './capture.js';
-import type { CoreField, DocumentTypeView } from './documents.js';
+import { expiryReadInto, type CoreField, type DocumentTypeView } from './documents.js';
 import type { Role } from './roles.js';
 
 /**
@@ -164,6 +164,10 @@ export function untouchedAccept(opts: {
   for (const f of type?.fields ?? []) {
     if (f.kind === 'yes_no' && f.required === true) answers[f.key] = false;
   }
+  // An expiry read for a kind that keeps it as a date of its own: a bill's
+  // Due date (0.9.0).
+  const into = expiryReadInto(type);
+  if (into && into !== 'expires' && p.expires?.value) answers[into] = p.expires.value;
   if (Object.keys(answers).length > 0) out.extra = answers;
   // The batch's tags only: a folder's are offered on the card, never filed
   // unasked (S2) — a tag of somebody's Only me papers is never made one the

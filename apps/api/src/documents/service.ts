@@ -66,9 +66,11 @@ import {
   type Visibility,
 } from '@fdv/db';
 import {
+  belongsTo,
   checkExtra,
   deriveStatus,
   EXTRA_MAX_BYTES,
+  HOUSEHOLD_OR_PERSON,
   extraBytes,
   missingFields,
   NO_LONGER_NEEDED_REASON_MAX,
@@ -146,6 +148,12 @@ export interface DocumentInput {
   type_key?: string | null | undefined;
   title?: string | null | undefined;
   owner_member_id?: string | null | undefined;
+  /**
+   * The household's (0.9.0): true clears the person, false makes it Not
+   * sure yet unless a person is sent. Left out, a new document of a
+   * household's kind is the household's, and an edit keeps it as it is.
+   */
+  household_owned?: boolean | undefined;
   category?: string | null | undefined;
   visibility?: Visibility | undefined;
   issued?: DateValue | null | undefined;
@@ -163,7 +171,10 @@ export interface DocumentInput {
 
 /** A list's query; any of several values, and dates, since V1 (`DocumentFilters`, filters.ts). */
 export interface ListQuery extends DocumentFilters {
-  /** A person's id; or, with a column sort (R2), `none` for nobody's. */
+  /**
+   * A person's id; or, with a column sort (R2), `none` for Not sure yet and
+   * (0.9.0) `household` for the household's.
+   */
   member_id?: string | undefined;
   category?: string | undefined;
   /** Who issued it: the filter chips (0.4.10), matched regardless of case. */
@@ -271,6 +282,8 @@ export type DocRow = {
   type_key: string | null;
   title: string | null;
   owner_member_id: string | null;
+  /** The household's (0087): never with a person. */
+  household_owned: boolean;
   category: string | null;
   visibility: Visibility;
   issued_on: string | null;
@@ -359,9 +372,10 @@ const noteStaysNote = () =>
  * editing them, and so without touching updated_at: every ETag handed out
  * before goes stale, and a write made from an older view is refused (412)
  * instead of putting back what the migration moved. 2: 0025 moved issuers
- * out of extra.
+ * out of extra. 3: 0087 moved each bill's expiry to its due date, and made
+ * the household's kinds' documents with nobody chosen the household's.
  */
-const ETAG_EPOCH = 2;
+const ETAG_EPOCH = 3;
 
 export function etagOf(id: string, updatedAt: Date): string {
   const seed = `${id}:${updatedAt.toISOString()}:${ETAG_EPOCH}`;
@@ -428,6 +442,8 @@ export function statusOf(
     | undefined,
   plain: RequiredValues & {
     owner_member_id: string | null;
+    /** The household's (0087): needs nobody chosen. */
+    household_owned?: boolean | undefined;
     expires: DateValue | null;
     /** Marked no longer needed (0082): said so, whatever its expiry. Every caller says. */
     no_longer_needed_at: Date | string | null;
@@ -453,6 +469,7 @@ export function statusOf(
         ? { key: type.key, expiry_driver: type.expiry_driver, reminder_leads: type.reminder_leads }
         : null,
       owner_member_id: doc.owner_member_id,
+      household_owned: plain.household_owned === true,
       expires: doc.expires,
       no_longer_needed: plain.no_longer_needed_at != null,
       missing: missingFields(
@@ -483,6 +500,7 @@ export function rowStatus(
   row: Pick<
     DocRow,
     | 'owner_member_id'
+    | 'household_owned'
     | 'issued_on'
     | 'issued_precision'
     | 'expires_on'
@@ -581,6 +599,9 @@ export function typeView(t: EffectiveType): DocumentTypeView {
     core,
     short_label: t.short_label,
     issuer_noun: t.issuer_noun,
+    // Whom its documents usually belong to (0.9.0): a new one of the
+    // household's kind is the household's.
+    belongs_to: t.belongs_to,
     // Each paper its own document, never a renewal of the last (0.9.0).
     periodic: periodic(t),
     etag: typeEtag(t),
@@ -1044,6 +1065,7 @@ export class DocumentService {
       type_key: row.type_key,
       title: row.title,
       owner_member_id: row.owner_member_id,
+      household_owned: row.household_owned,
       category: row.category,
       visibility: row.visibility,
       issued,
@@ -1264,6 +1286,9 @@ export class DocumentService {
         input.owner_member_id != null &&
         input.owner_member_id !== p.memberId
       ) {
+        throw new ApiError(403, 'forbidden', 'You can only add documents that belong to you.');
+      }
+      if (p.role === 'teen' && input.household_owned === true) {
         throw new ApiError(403, 'forbidden', 'You can only add documents that belong to you.');
       }
       const whose = p.role === 'teen' ? { ...input, owner_member_id: p.memberId } : input;
@@ -1986,6 +2011,8 @@ export class DocumentService {
       q.collection_id !== undefined && 'collection_id',
       q.location !== undefined && 'location',
       (q.member_id === 'none' || q.member_ids?.includes('none') === true) && 'member_id=none',
+      (q.member_id === 'household' || q.member_ids?.includes('household') === true) &&
+        'member_id=household',
     ].filter((x): x is string => x !== false);
     if (tableOnly.length > 0) {
       throw new ApiError(
@@ -3432,6 +3459,7 @@ export class DocumentService {
         type_key: string | null;
         category: string | null;
         owner_member_id: string | null;
+        household_owned: boolean;
         expires_on: string | null;
         expires_precision: DateValue['precision'] | null;
         issued_by: string | null;
@@ -3485,6 +3513,7 @@ export class DocumentService {
           group by id
         )
         select d.id as document_id, d.title, d.type_key, d.category, d.owner_member_id,
+               d.household_owned,
                d.expires_on, d.expires_precision, d.issued_by, d.issued_on, d.issued_precision,
                d.identifier, d.physical_location, d.tags, d.notes, d.extra,
                d.notes_sealed is not null as notes_sealed_present, d.sealed_details,
@@ -3559,6 +3588,7 @@ export class DocumentService {
           type_key: r.type_key,
           category: r.category,
           owner_member_id: r.owner_member_id,
+          household_owned: r.household_owned,
           issued_by: r.issued_by,
           issued,
           expires,
@@ -4039,19 +4069,42 @@ export class DocumentService {
     }
     if (input.title !== undefined) out.title = input.title?.trim() || null;
     if (input.category !== undefined) out.category = input.category;
-    if (input.owner_member_id !== undefined) {
-      if (current && input.owner_member_id !== current.owner_member_id) {
+    // The household's, or a person's, never both (0.9.0, 0087). Somebody
+    // chosen clears the household; the household chosen clears the person.
+    // Null alone — all an older client can send — leaves the household's
+    // the household's: only `household_owned: false` makes one Not sure yet.
+    // A teen's documents are their own: never the household's (as a capture's, capture.ts).
+    if (input.household_owned === true && p.role === 'teen') {
+      throw new ApiError(403, 'forbidden', 'You can only add documents that belong to you.');
+    }
+    if (input.household_owned === true && input.owner_member_id != null) {
+      throw new ApiError(422, 'validation_failed', HOUSEHOLD_OR_PERSON, {
+        detail: 'household_owned',
+      });
+    }
+    const owner = input.household_owned === true ? null : input.owner_member_id;
+    if (owner !== undefined) {
+      if (current && owner !== current.owner_member_id) {
         await this.mayHandOver(trx, p, current);
       }
-      if (input.owner_member_id !== null) {
+      if (owner !== null) {
         const m = await trx
           .selectFrom('member')
           .select('id')
-          .where('id', '=', input.owner_member_id)
+          .where('id', '=', owner)
           .executeTakeFirst();
         if (!m) throw new ApiError(422, 'validation_failed', 'That person is not in the family.');
       }
-      out.owner_member_id = input.owner_member_id;
+      out.owner_member_id = owner;
+    }
+    if (owner) out.household_owned = false;
+    else if (input.household_owned !== undefined) out.household_owned = input.household_owned;
+    else if (!current) {
+      // A new document with nobody chosen: the household's when its kind
+      // usually is (a bill, the deeds), else Not sure yet, as before.
+      const key = input.type_key ?? null;
+      const kind = type ?? (key ? await this.typeOrThrow(key, trx) : null);
+      out.household_owned = belongsTo(kind) === 'household';
     }
     if (input.visibility !== undefined) {
       if (current !== null) {

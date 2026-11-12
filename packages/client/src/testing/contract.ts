@@ -2972,19 +2972,21 @@ export const contractScenarios: Scenario[] = [
       const { access_token: token } = await signIn(api, ctx);
       await api.forgetBatchLearning(token);
       expect((await api.batchLearning(token)).shapes ?? []).toEqual([]);
-      const b = await api.createBatch(token, { name: 'Bills' });
+      // A card statement: its Payment due is its Expires. (A bill's due date
+      // is a detail of its own since 0.9.0, 0087.)
+      const b = await api.createBatch(token, { name: 'Statements' });
       const words = ['account', 'charge', 'date', 'number', 'payment', 'total', 'water', 'your'];
       for (const [n, day] of ['2026-03-20', '2026-04-20', '2026-05-20'].entries()) {
         const it = await api.addBatchItem(token, b.id, {
           kind: 'bytes',
-          filename: `bill-${n}.pdf`,
+          filename: `statement-${n}.pdf`,
           contentType: 'application/pdf',
-          bytes: new TextEncoder().encode(`%PDF-1.4\n% the contract's bill ${n}\n%%EOF\n`),
+          bytes: new TextEncoder().encode(`%PDF-1.4\n% the contract's statement ${n}\n%%EOF\n`),
         });
         await ctx.readBatchItems(b.id, {
           [it.id]: {
             proposal: {
-              type_key: { value: 'utility_bill', confidence: 0.97, cue: 'kind_words' },
+              type_key: { value: 'credit_card_statement', confidence: 0.97, cue: 'kind_words' },
               issued_by: { value: 'Northgate Water', confidence: 0.95, cue: 'letterhead' },
             },
             paper: {
@@ -2995,7 +2997,7 @@ export const contractScenarios: Scenario[] = [
           },
         });
         await api.acceptBatchItem(token, b.id, it.id, {
-          type_key: 'utility_bill',
+          type_key: 'credit_card_statement',
           issued_by: 'Northgate Water',
           expires: { date: day, precision: 'day' },
         });
@@ -3013,7 +3015,7 @@ export const contractScenarios: Scenario[] = [
           'northgate water',
           words.length,
           [
-            ['type_key', 'utility_bill', 3, 0, true],
+            ['type_key', 'credit_card_statement', 3, 0, true],
             ['expires', 'payment date', 3, 0, true],
           ],
         ],
@@ -3618,6 +3620,58 @@ export const contractScenarios: Scenario[] = [
       expect(back.identifier).toBe('OLD-0001');
       const twice = await refusal(api.undoRenewal(token, doc.id, second.id));
       expect([twice.status, twice.code]).toEqual([409, 'renewal_not_undoable']);
+    },
+  },
+  {
+    name: 'the household as a document’s owner: a household’s kind is the household’s, an older edit keeps it, only Not sure yet needs a person, and the table finds each (0.9.0)',
+    run: async (api, ctx) => {
+      const { access_token: token, member_id: me } = await signIn(api, ctx);
+      if ((await api.capabilities()).features.household_owner !== true) return;
+      const kinds = (await api.documentTypes(token, { all: true })).items;
+      expect(kinds.find((k) => k.key === 'utility_bill')?.belongs_to).toBe('household');
+      expect(kinds.find((k) => k.key === 'passport')?.belongs_to).toBe('person');
+      const TAG = 'household-owner';
+      let bill = await api.createDocument(token, {
+        title: 'Contract household bill',
+        type_key: 'utility_bill',
+        tags: [TAG],
+      });
+      expect(bill).toMatchObject({ owner_member_id: null, household_owned: true });
+      expect(bill.status.label).not.toBe('Needs a person');
+      // What an older phone sends when it saves the card: the person, null.
+      bill = await api.updateDocument(token, bill.id, { owner_member_id: null }, bill.etag);
+      expect(bill.household_owned).toBe(true);
+      const unsure = await api.createDocument(token, {
+        title: 'Contract unsure passport',
+        type_key: 'passport',
+        tags: [TAG],
+      });
+      expect(unsure).toMatchObject({ household_owned: false });
+      expect(unsure.status.label).toBe('Needs a person');
+      const mine = await api.createDocument(token, {
+        title: 'Contract my passport',
+        type_key: 'passport',
+        owner_member_id: me,
+        household_owned: false,
+        tags: [TAG],
+      });
+      const titles = async (member: string) =>
+        (await api.documents(token, { sort: 'title', tag: TAG, member_id: member })).items.map(
+          (d) => d.title,
+        );
+      expect(await titles('household')).toEqual(['Contract household bill']);
+      expect(await titles('none')).toEqual(['Contract unsure passport']);
+      expect(await titles(`household,${me}`)).toEqual([
+        'Contract household bill',
+        'Contract my passport',
+      ]);
+      // The household's, then a person: theirs, and no longer the household's.
+      bill = await api.updateDocument(token, bill.id, { owner_member_id: me }, bill.etag);
+      expect(bill).toMatchObject({ owner_member_id: me, household_owned: false });
+      const both = await refusal(
+        api.updateDocument(token, mine.id, { owner_member_id: me, household_owned: true }),
+      );
+      expect([both.status, both.code]).toEqual([422, 'validation_failed']);
     },
   },
   {

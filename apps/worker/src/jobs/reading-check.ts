@@ -362,6 +362,7 @@ async function levelKinds(trx: Db): Promise<LevelKind[]> {
       'core',
       'short_label',
       'remind_from',
+      'belongs_to',
     ])
     .where('deleted_at', 'is', null)
     .orderBy('key')
@@ -375,6 +376,9 @@ async function levelKinds(trx: Db): Promise<LevelKind[]> {
       default_visibility: k.default_visibility,
       expiry_driver: k.expiry_driver,
       short_label: k.short_label,
+      // A bill's Due date, and whom it belongs to, as the card has them (0.9.0).
+      remind_from: k.remind_from,
+      belongs_to: k.belongs_to,
       core,
       // The date reminders come from is always asked for, as typeView says.
       fields: ((k.fields ?? []) as TypeField[]).map((f) => ({

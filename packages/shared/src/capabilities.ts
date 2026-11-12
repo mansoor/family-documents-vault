@@ -436,6 +436,17 @@ export interface CapabilityFeatures {
    * household's texts are set up (GET /sms/status). Absent from older vaults.
    */
   sms_notifications?: boolean;
+  /**
+   * The household as a document's owner (0.9.0, the owner's decision of 11
+   * Nov 2026): `DocumentView.household_owned`, sent as `household_owned` on
+   * POST and PATCH /documents and a capture's metadata; `member_id=household`
+   * on GET /documents (a column sort) and GET /search, beside `none`, now
+   * meaning Not sure yet (nobody, and not the household's); and each kind's
+   * `belongs_to` (`'person' | 'household'`), changed on PATCH
+   * /document-types/{key}, which a new document of the kind follows. Only
+   * Not sure yet reads Needs a person. Absent from older vaults.
+   */
+  household_owner?: boolean;
 }
 
 export interface CapabilityLimits {

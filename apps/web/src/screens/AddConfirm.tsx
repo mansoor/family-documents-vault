@@ -1,5 +1,6 @@
 import {
   autoTitle,
+  belongsTo,
   can,
   dateReminderSentence,
   effectiveVisibility,
@@ -33,6 +34,9 @@ import {
   type Role,
   type Visibility,
   NOTE_KIND,
+  HOUSEHOLD_MEMBER_FILTER,
+  NOT_SURE_YET,
+  THE_HOUSEHOLD,
 } from '@fdv/shared';
 import {
   useEffect,
@@ -117,6 +121,7 @@ export function captureDetails(d: DocumentInput): CaptureMetadata {
   if (d.type_key !== undefined) out.type_key = d.type_key;
   if (d.title !== undefined) out.title = d.title;
   if (d.owner_member_id !== undefined) out.owner_member_id = d.owner_member_id;
+  if (d.household_owned !== undefined) out.household_owned = d.household_owned;
   if (d.visibility !== undefined) out.visibility = d.visibility;
   if (d.issued !== undefined) out.issued = d.issued;
   if (d.expires !== undefined) out.expires = d.expires;
@@ -126,6 +131,26 @@ export function captureDetails(d: DocumentInput): CaptureMetadata {
   if (d.notes !== undefined) out.notes = d.notes;
   if (d.extra !== undefined) out.extra = d.extra;
   return out;
+}
+
+/**
+ * "The household" as the card holds whose it is (0.9.0): never a person's
+ * id. Sent as `household_owned`, with nobody.
+ */
+export const HOUSEHOLD_OWNER = HOUSEHOLD_MEMBER_FILTER;
+
+/**
+ * Whose a new document starts as, before anybody chooses (0.9.0): a kind
+ * that is usually the household's, the household's — where the vault has
+ * the household, and for anybody but a teen, whose are their own; any other,
+ * `person` (the one adding it, or nobody yet).
+ */
+export function startingOwner(
+  type: Pick<DocumentTypeView, 'belongs_to'> | null | undefined,
+  person: string,
+  household: boolean,
+): string {
+  return household && type && belongsTo(type) === 'household' ? HOUSEHOLD_OWNER : person;
 }
 
 /**
@@ -156,7 +181,7 @@ function startingVisibility(
  * the document is filed complete, and for the right people, from the start.
  */
 export function AddScreen() {
-  const { withToken, guarded } = useApp();
+  const { withToken, guarded, caps } = useApp();
   const navigate = useNavigate();
   const [file, setFile] = useState<File | null>(null);
   const [keys] = useState(createUploadKeys);
@@ -284,6 +309,12 @@ export function AddScreen() {
     const suggested = data.members.find((m) => m.id === forMember);
     const owner = me?.role === 'teen' ? me : (suggested ?? me);
     const role = me?.role ?? 'owner';
+    // A household's kind starts as the household's, unless somebody was asked for (0.9.0).
+    const household = caps?.features.household_owner === true && role !== 'teen';
+    const whose =
+      role === 'teen' || suggested
+        ? (owner?.id ?? '')
+        : startingOwner(type, owner?.id ?? '', household);
     return (
       <ConfirmForm
         title="Is this right?"
@@ -294,14 +325,17 @@ export function AddScreen() {
         members={data.members}
         initial={{
           typeKey: type?.key ?? '',
-          title: type ? autoTitle(type, owner) : '',
-          owner: owner?.id ?? '',
+          title: type ? autoTitle(type, whose === HOUSEHOLD_OWNER ? null : owner) : '',
+          owner: whose,
+          // The kind's guess, not a choice: another kind moves it (0.9.0).
+          ownerDefaulted: !suggested && role !== 'teen',
+          personDefault: owner?.id ?? '',
           issuer: '',
           issued: '',
           expires: '',
           identifier: '',
           location: '',
-          visibility: startingVisibility(type, role, owner?.id ?? '', me?.id),
+          visibility: startingVisibility(type, role, whose, me?.id),
           notes: '',
           details: {},
         }}
@@ -463,16 +497,20 @@ export function ConfirmScreen() {
   const suggestedOwner = members.find((m) => m.id === params.get('member'));
   /** A document as the card holds it: its dates as a person writes them ("June 2027"). */
   const cardFor = (d: DocumentView): CardValues => {
-    const owner =
-      members.find((m) => m.id === d.owner_member_id) ??
-      suggestedOwner ??
-      members.find((m) => m.is_me);
+    // What the document says: a person, the household's, or Not sure yet —
+    // never whoever is signed in, which saving would make it (0.9.0).
+    const owner = members.find((m) => m.id === d.owner_member_id);
+    const whose = owner
+      ? owner.id
+      : d.household_owned === true
+        ? HOUSEHOLD_OWNER
+        : (suggestedOwner?.id ?? '');
     const typeKey = d.type_key ?? suggestedType?.key ?? '';
     const type = types.find((t) => t.key === typeKey);
     return {
       typeKey,
       title: d.title ?? '',
-      owner: owner?.id ?? '',
+      owner: whose,
       issuer: d.issued_by ?? '',
       issued: d.issued ? formatDate(d.issued) : '',
       expires: d.expires ? formatDate(d.expires) : '',
@@ -485,7 +523,7 @@ export function ConfirmScreen() {
       notes: d.notes ?? (d.has_notes ? null : ''),
       details: detailInputs(d.extra, type?.fields ?? []),
       // Whose it is, when the document says nobody: the card's own guess.
-      ownerDefaulted: d.owner_member_id === null,
+      ownerDefaulted: d.owner_member_id === null && d.household_owned !== true,
       // A name nobody typed — none, or the one the card would give it —
       // still follows the kind, the person, the issuer and the month.
       titleAutomatic:
@@ -661,6 +699,12 @@ interface CardValues {
   details: Record<string, DetailInput>;
   /** Whose it is was the card's guess, not the document's (5.37, decision 17). */
   ownerDefaulted?: boolean;
+  /**
+   * A new document's person while nobody has chosen (0.9.0): what whose it
+   * is goes back to when another kind, a person's, is chosen. The card's
+   * own `owner` otherwise.
+   */
+  personDefault?: string;
   /** The name is one nobody typed: it follows the details until somebody does. */
   titleAutomatic?: boolean;
 }
@@ -1007,6 +1051,7 @@ export function ConfirmForm(props: {
   onChooseAgain?: () => void;
 }) {
   const { types, members, initial } = props;
+  const { caps } = useApp();
   // What the document held when the card was filled, which Save compares
   // with: moved on when Save finds it changed somewhere else since.
   const [base, setBase] = useState(initial);
@@ -1096,6 +1141,13 @@ export function ConfirmForm(props: {
   const teen = myRole === 'teen';
   // A teen cannot see Adults only documents, their own included.
   const adultsOnlyAllowed = !teen;
+  // The household as whose it is (0.9.0): where the vault has it, for
+  // anybody but a teen, whose documents are their own.
+  const householdOffered =
+    caps?.features.household_owner === true && (!teen || owner === HOUSEHOLD_OWNER);
+  // Whose a new one goes back to when a person's kind is chosen, nobody having chosen.
+  const personDefault =
+    initial.personDefault ?? (initial.owner === HOUSEHOLD_OWNER ? '' : initial.owner);
   // A teen files their own documents, and may change who can see one
   // already in the vault only if they filed it, between Only me and
   // Everyone (A72).
@@ -1260,10 +1312,20 @@ export function ConfirmForm(props: {
     setWaited(false);
     const t = types.find((x) => x.key === v);
     retitle({ type: t ?? null });
+    // A new document's whose it is follows the kind while nobody has
+    // chosen (0.9.0): a bill the household's, a passport the person's.
+    let who = owner;
+    if (props.fileName && !ownerChosen && householdOffered && !teen) {
+      who = t ? startingOwner(t, personDefault, true) : personDefault;
+      if (who !== owner) {
+        setOwner(who);
+        retitle({ type: t ?? null, who: members.find((m) => m.id === who) ?? null });
+      }
+    }
     // A new document takes the type's default; an existing one keeps
     // who can see it until somebody chooses otherwise.
     if (t && props.fileName) {
-      setVisibility(startVisibility(t, owner));
+      setVisibility(startVisibility(t, who));
       setVisibilityChosen(false);
     }
   };
@@ -1413,10 +1475,13 @@ export function ConfirmForm(props: {
       );
       return;
     }
+    const household = owner === HOUSEHOLD_OWNER;
     const details: DocumentInput = {
       type_key: typeKey || null,
       title: title.trim() || null,
-      owner_member_id: owner || null,
+      owner_member_id: household ? null : owner || null,
+      // Said either way where the vault has it: Not sure yet is a choice too (0.9.0).
+      ...(householdOffered ? { household_owned: household } : {}),
       visibility,
     };
     // A field the card does not show is left as it is.
@@ -1619,10 +1684,18 @@ export function ConfirmForm(props: {
           value={owner}
           onChange={chooseOwner}
           mark={markOf('owner_member_id')}
-          options={[
-            { value: '', label: 'Not sure yet' },
-            ...people.map((m) => ({ value: m.id, label: m.display_name })),
-          ]}
+          options={
+            householdOffered
+              ? [
+                  { value: HOUSEHOLD_OWNER, label: THE_HOUSEHOLD },
+                  ...people.map((m) => ({ value: m.id, label: m.display_name })),
+                  { value: '', label: NOT_SURE_YET },
+                ]
+              : [
+                  { value: '', label: NOT_SURE_YET },
+                  ...people.map((m) => ({ value: m.id, label: m.display_name })),
+                ]
+          }
         />
         {chip(
           'owner_member_id',

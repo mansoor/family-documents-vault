@@ -41,6 +41,14 @@ export interface DocumentView {
   type_key: string | null;
   title: string | null;
   owner_member_id: string | null;
+  /**
+   * The household's, rather than a person's (0.9.0, `features.household_owner`,
+   * the owner's decision of 11 Nov 2026): a bill, the deeds, the pet's
+   * records. `owner_member_id` is then null. Null with this false is "Not
+   * sure yet", which alone reads Needs a person. Absent from older vaults,
+   * where every document without a person is not sure yet.
+   */
+  household_owned?: boolean;
   category: string | null;
   visibility: Visibility;
   issued: DateValue | null;
@@ -322,6 +330,13 @@ export interface DocumentTypeView {
   hidden?: boolean;
   /** The fixed fields: each shown or not, required or not, and its label. */
   core?: Record<CoreField, CoreFieldRule>;
+  /**
+   * Whom its documents usually belong to (0.9.0, `features.household_owner`):
+   * a person, or the household — a bill, the deeds. A new document of a
+   * household's kind is the household's unless somebody is chosen; one of
+   * a person's kind is as before. Absent from older vaults: a person's.
+   */
+  belongs_to?: BelongsTo;
   /** Its short name in a line, "Bank statement"; null is its label. */
   short_label?: string | null;
   /** The noun after its issuer in a name, "statement"; null when named for its person. */
@@ -353,6 +368,39 @@ export interface DocumentTypeView {
    */
   periodic?: boolean;
 }
+
+/**
+ * Whom a kind's documents usually belong to (0.9.0, the owner's decision of
+ * 11 Nov 2026): a person — a passport, a payslip — or the household — a
+ * bill, the deeds, the pet's records.
+ */
+export type BelongsTo = 'person' | 'household';
+
+/** The two, in the order an editor offers them. */
+export const BELONGS_TO: readonly BelongsTo[] = ['person', 'household'];
+
+/** Whom a kind's documents usually belong to; a kind that does not say (an older vault), a person. */
+export const belongsTo = (type: { belongs_to?: BelongsTo | null } | null | undefined): BelongsTo =>
+  type?.belongs_to === 'household' ? 'household' : 'person';
+
+/**
+ * Whose a document is, in words every client uses (0.9.0): the household's,
+ * or nobody's yet. A person is named by their name.
+ */
+export const THE_HOUSEHOLD = 'The household';
+export const NOT_SURE_YET = 'Not sure yet';
+
+/**
+ * The person filter's two values that are not a person (GET /documents
+ * sorted by a column, GET /search): `household`, the household's documents;
+ * `none`, those nobody is chosen for yet (not the household's either).
+ */
+export const HOUSEHOLD_MEMBER_FILTER = 'household';
+export const NOBODY_MEMBER_FILTER = 'none';
+
+/** A document both the household's and a person's (422, `detail: 'household_owned'`). */
+export const HOUSEHOLD_OR_PERSON =
+  'A document belongs to the household or to one person, not both. Choose one.';
 
 /**
  * Kinds whose papers come one after another, each its own document (0.9.0,
@@ -431,6 +479,11 @@ export interface DocumentTypeInput {
   remind_leads?: number[];
   default_visibility?: Visibility;
   usually_essential?: boolean;
+  /**
+   * Whom its documents usually belong to (0.9.0, `features.household_owner`):
+   * a built-in's too, for this household. Changes no document filed already.
+   */
+  belongs_to?: BelongsTo;
   /** A built-in, no longer offered (or offered again). */
   hidden?: boolean;
 }
@@ -537,6 +590,29 @@ export const libraryHasName = (label: string): string =>
 
 /** The built-in library field a bill reminds from (0038). */
 export const DUE_DATE = 'due_date';
+
+/**
+ * Where a date the pages read as an expiry goes on this kind's card (0.9.0):
+ * its Expires while it shows one; otherwise the date field it reminds from —
+ * a bill's Due date, which was its Expires until 0087, so that what reads a
+ * bill's "payment date" goes on filling and learning it. Null for neither.
+ */
+export function expiryReadInto(
+  type:
+    | (Pick<DocumentTypeView, 'expiry_driver'> &
+        Partial<Pick<DocumentTypeView, 'remind_from'>> & {
+          fields?: ReadonlyArray<Pick<TypeField, 'key' | 'kind'>> | null | undefined;
+        })
+    | null
+    | undefined,
+): string | null {
+  if (!type) return null;
+  if (type.expiry_driver) return 'expires';
+  const from = type.remind_from;
+  return from && from !== 'expires' && type.fields?.some((f) => f.key === from && f.kind === 'date')
+    ? from
+    : null;
+}
 
 /** A date to remind from, and how long before it. */
 export interface Reminding {
@@ -1075,6 +1151,8 @@ function needsInfo(missing: ReadonlyArray<MissingField>): Status {
 export interface StatusInput {
   type: { key: string; expiry_driver: string | null; reminder_leads: number[] } | null;
   owner_member_id: string | null;
+  /** The household's (0.9.0): needs nobody chosen. Left out, as before: Needs a person. */
+  household_owned?: boolean;
   expires: DateValue | null;
   superseded?: boolean;
   /** Marked no longer needed (0.9.0): its expiry, and what it lacks, say nothing. */
@@ -1104,7 +1182,9 @@ export function deriveStatus(doc: StatusInput, todayIso: string): Status {
   if (doc.superseded) return { value: 'superseded', label: 'Replaced by a newer version' };
   if (doc.no_longer_needed) return { value: 'no_longer_needed', label: NO_LONGER_NEEDED_LABEL };
   if (!doc.type) return { value: 'needs_info', label: 'Needs a name' };
-  if (!doc.owner_member_id) return { value: 'needs_info', label: 'Needs a person' };
+  // The household's needs nobody (0.9.0): only Not sure yet asks for a person.
+  if (!doc.owner_member_id && !doc.household_owned)
+    return { value: 'needs_info', label: 'Needs a person' };
   const missing = [...(doc.missing ?? [])];
   // No expiry, and none to have — or none asked for (EXPIRY_OPTIONAL_KINDS, 0.8.0).
   if (!doc.type.expiry_driver || (!doc.expires && expiryOptional(doc.type)))

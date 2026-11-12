@@ -1,4 +1,6 @@
 import {
+  HOUSEHOLD_MEMBER_FILTER,
+  NOBODY_MEMBER_FILTER,
   sharedOutsideWords,
   shortName,
   tagKey,
@@ -127,12 +129,13 @@ function viewOf(a: Asked): TableView {
 
 /**
  * Whether a search's result is one the filters keep: person by the search
- * itself, but for nobody in particular; kind, status and tag by what the
- * result says of itself.
+ * itself, but for the household's and Not sure yet (0.9.0); kind, status
+ * and tag by what the result says of itself.
  */
 function kept(a: Asked, h: SearchHit): boolean {
   return (
-    (a.person !== 'none' || !h.owner_member_id) &&
+    (a.person !== NOBODY_MEMBER_FILTER || (!h.owner_member_id && h.household_owned !== true)) &&
+    (a.person !== HOUSEHOLD_MEMBER_FILTER || h.household_owned === true) &&
     (!a.kind || h.type_key === a.kind) &&
     (!a.status || h.status.value === a.status) &&
     (!a.tag || (h.tags ?? []).some((t) => tagKey(t) === tagKey(a.tag)))
@@ -264,7 +267,11 @@ export function AddDocumentsPicker(props: {
         const r = await withToken((t) =>
           api.search(t, a.words, {
             limit: SEARCH_MOST,
-            ...(a.person && a.person !== 'none' ? { member_id: a.person } : {}),
+            ...(a.person &&
+            a.person !== NOBODY_MEMBER_FILTER &&
+            a.person !== HOUSEHOLD_MEMBER_FILTER
+              ? { member_id: a.person }
+              : {}),
           }),
         );
         if (cancelled || !r) return;

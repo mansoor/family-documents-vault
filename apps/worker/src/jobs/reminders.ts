@@ -634,6 +634,8 @@ export async function refreshStatus(
         .select([
           'document.id',
           'document.owner_member_id',
+          // The household's needs nobody chosen (0.9.0, 0087).
+          'document.household_owned',
           'document.expires_on',
           'document.expires_precision',
           'document.issued_on',
@@ -672,6 +674,7 @@ export async function refreshStatus(
           {
             type,
             owner_member_id: d.owner_member_id,
+            household_owned: d.household_owned,
             expires,
             no_longer_needed: d.no_longer_needed_at !== null,
             missing: missingFields(

@@ -3,8 +3,10 @@ import { deriveKey } from '@fdv/crypto';
 import { householdToday, type Db } from '@fdv/db';
 import {
   DOCUMENT_PAGE_MAX,
+  HOUSEHOLD_MEMBER_FILTER,
   LOCATION_SORT_REFUSAL,
   maySortByLocation,
+  NOBODY_MEMBER_FILTER,
   seesLocation,
   STATUS_ORDER,
   statusRank,
@@ -186,6 +188,7 @@ const COLUMNS = sql.raw(
     'type_key',
     'title',
     'owner_member_id',
+    'household_owned',
     'category',
     'visibility',
     'issued_on',
@@ -244,7 +247,10 @@ function whereOf(p: Principal, q: ListQuery): RawBuilder<boolean> {
     seenDocument(p),
     q.deleted ? sql`d.deleted_at is not null` : sql`d.deleted_at is null`,
   ];
-  if (q.member_id === 'none') parts.push(sql`d.owner_member_id is null`);
+  // Not sure yet: nobody, and not the household's; or the household's (0.9.0).
+  if (q.member_id === NOBODY_MEMBER_FILTER) {
+    parts.push(sql`d.owner_member_id is null and not d.household_owned`);
+  } else if (q.member_id === HOUSEHOLD_MEMBER_FILTER) parts.push(sql`d.household_owned`);
   else if (q.member_id) parts.push(sql`d.owner_member_id = ${q.member_id}::uuid`);
   if (q.category) parts.push(sql`d.category = ${q.category}`);
   if (q.type_key) parts.push(sql`d.type_key = ${q.type_key}`);
@@ -368,6 +374,7 @@ type StatusRow = Pick<
   | 'id'
   | 'type_key'
   | 'owner_member_id'
+  | 'household_owned'
   | 'issued_on'
   | 'issued_precision'
   | 'expires_on'
@@ -386,6 +393,7 @@ const STATUS_COLUMNS = sql.raw(
     'id',
     'type_key',
     'owner_member_id',
+    'household_owned',
     'issued_on',
     'issued_precision',
     'expires_on',

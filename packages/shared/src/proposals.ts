@@ -34,6 +34,7 @@
  */
 import {
   expiryOptional,
+  expiryReadInto,
   type CoreField,
   type DateValue,
   type DocumentTypeView,
@@ -172,7 +173,10 @@ export const KIND_MIN_LEAD = 2;
 /** A kind of document as the household keeps it: GET /document-types' view, or enough of it. */
 export type ProposalKind = Pick<DocumentTypeView, 'key' | 'label' | 'fields' | 'expiry_driver'> &
   Partial<
-    Pick<DocumentTypeView, 'short_label' | 'hidden' | 'core' | 'issued_by_label' | 'builtin'>
+    Pick<
+      DocumentTypeView,
+      'short_label' | 'hidden' | 'core' | 'issued_by_label' | 'builtin' | 'remind_from'
+    >
   >;
 
 /** Somebody in the family, by the name the household knows them by. */
@@ -294,9 +298,19 @@ function shows(kind: ProposalKind, field: CoreField): boolean {
   return kind.core?.[field]?.shown !== false;
 }
 
-/** Whether a kind keeps an expiry: it is driven by one, and shows it. */
+/**
+ * Whether a kind keeps an expiry: it is driven by one, and shows it — or it
+ * keeps the date the pages call one as a date of its own, a bill's Due date
+ * (0.9.0, `expiryReadInto`), which the card is given it for.
+ */
 function expires(kind: ProposalKind): boolean {
-  return kind.expiry_driver !== null && shows(kind, 'expires');
+  return (kind.expiry_driver !== null && shows(kind, 'expires')) || readAsDate(kind);
+}
+
+/** A kind keeping a read expiry as a date field of its own (0.9.0): a bill's Due date. */
+export function readAsDate(kind: ProposalKind): boolean {
+  const into = expiryReadInto(kind);
+  return into !== null && into !== 'expires';
 }
 
 // ------------------------------------------------------------------ kinds

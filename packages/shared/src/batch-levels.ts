@@ -8,7 +8,9 @@ import {
   type BatchReadState,
 } from './batches.js';
 import {
+  belongsTo,
   expiryOptional,
+  expiryReadInto,
   missingFields,
   type DateValue,
   type DocumentTypeView,
@@ -288,7 +290,7 @@ export type LevelKind = Pick<
   DocumentTypeView,
   'key' | 'label' | 'default_visibility' | 'expiry_driver' | 'fields'
 > &
-  Partial<Pick<DocumentTypeView, 'core' | 'short_label'>>;
+  Partial<Pick<DocumentTypeView, 'core' | 'short_label' | 'belongs_to' | 'remind_from'>>;
 
 export interface LevelInput {
   state: BatchItemState;
@@ -359,7 +361,8 @@ const shortName = (k: LevelKind | null | undefined) => (k ? shortTypeLabel(k) : 
 /** "a passport", "an insurance policy". */
 const aKind = (label: string) => {
   const l = lowerFirst(label);
-  return `${/^[aeiou]/.test(l) ? 'an' : 'a'} ${l}`;
+  // "a utility / bill", as "a uniform": a u said "you" takes "a".
+  return `${/^[aeiou]/.test(l) && !/^(uni|use|usu|uti|eu)/.test(l) ? 'an' : 'a'} ${l}`;
 };
 
 /**
@@ -756,8 +759,12 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
                 : 'Kind unsure',
       });
     }
+    // A kind that is usually the household's is filed as the household's
+    // (0.9.0): nobody is missing.
     if (!personS) {
-      check({ code: 'person_missing', kind: 'check', words: 'Missing: whose it is' });
+      if (belongsTo(kind) === 'person') {
+        check({ code: 'person_missing', kind: 'check', words: 'Missing: whose it is' });
+      }
     } else if (ours(personS) && (personS.confidence ?? 0) < ITEM_SURE.owner_member_id) {
       check({
         code: 'person_unsure',
@@ -765,6 +772,10 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
         words: personS.from === 'folder' ? 'Whose it is: from the folder name' : 'Person unsure',
       });
     }
+    // An expiry read for a kind that keeps it as a date of its own — a
+    // bill's Due date (0.9.0) — is that date.
+    const into = expiryReadInto(kind);
+    const dated = into && into !== 'expires' ? into : null;
     const missing = missingFields(kind, {
       issued: proposals.issued?.value ?? null,
       expires: proposals.expires?.value ?? null,
@@ -775,7 +786,7 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
       // The batch's tags: a folder's are never filed unasked (S2).
       tags: d.tags,
       notes: null,
-      extra: {},
+      extra: dated ? { [dated]: proposals.expires?.value ?? null } : {},
     });
     for (const m of missing) {
       const word = m.label ? lowerFirst(m.label) : (FIELD_WORDS[m.key] ?? lowerFirst(m.key));
@@ -790,7 +801,7 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
     if (
       ours(expires) &&
       (expires?.confidence ?? 0) < ITEM_SURE.expires &&
-      !missing.some((m) => m.key === 'expires')
+      !missing.some((m) => m.key === 'expires' || m.key === dated)
     ) {
       check({ code: 'expiry_unsure', kind: 'check', words: 'Expiry unsure' });
     }

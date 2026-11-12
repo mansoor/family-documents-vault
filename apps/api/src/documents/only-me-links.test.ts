@@ -597,10 +597,12 @@ describe.skipIf(!testAdminUrl())('Only me documents and links outside the family
     expect(required.statusCode, required.body).toBe(200);
     const bill = await make(olivia, 'Water bill');
     const ownerSees = json<DocumentView>(await call(olivia, 'GET', `/api/v1/documents/${bill}`));
-    expect(ownerSees.status.label).toBe('Needs an expiry date and where the original is');
+    // A bill's date is its Due date since 0.9.0 (0087): one of its own
+    // fields, named after the fixed ones, as missingFields lists them.
+    expect(ownerSees.status.label).toBe('Needs where the original is and a due date');
     const viewerSees = await call(vera, 'GET', `/api/v1/documents/${bill}`);
     expect(viewerSees.statusCode, viewerSees.body).toBe(200);
-    expect(json<DocumentView>(viewerSees).status.label).toBe('Needs an expiry date');
+    expect(json<DocumentView>(viewerSees).status.label).toBe('Needs a due date');
     expect(viewerSees.body).not.toContain('where the original');
     // Nor in a search.
     const found = await call(vera, 'GET', '/api/v1/search?q=Water');

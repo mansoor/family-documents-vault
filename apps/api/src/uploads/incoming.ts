@@ -64,6 +64,8 @@ const incomingPageKeys = (storageKey: string) =>
 export const acceptBody = z
   .object({
     owner_member_id: z.string().uuid().nullable().optional(),
+    // The household's (0.9.0): never with a person.
+    household_owned: z.boolean().optional(),
     type_key: z.string().min(1).max(64).nullable().optional(),
     title: z.string().trim().max(200).nullable().optional(),
     visibility: z.enum(['household', 'adults', 'private']).optional(),
@@ -401,6 +403,7 @@ export class IncomingService {
     if (
       into &&
       (input.owner_member_id !== undefined ||
+        input.household_owned !== undefined ||
         input.type_key !== undefined ||
         input.title !== undefined ||
         input.visibility !== undefined)
@@ -457,6 +460,9 @@ export class IncomingService {
                       ...(input.owner_member_id !== undefined
                         ? { owner_member_id: input.owner_member_id }
                         : {}),
+                      ...(input.household_owned !== undefined
+                        ? { household_owned: input.household_owned }
+                        : {}),
                       ...(input.type_key !== undefined ? { type_key: input.type_key } : {}),
                       ...(input.title !== undefined ? { title: input.title || null } : {}),
                       ...(input.visibility !== undefined ? { visibility: input.visibility } : {}),
@@ -494,7 +500,9 @@ export class IncomingService {
             ? []
             : [
                 ...(input.type_key !== undefined ? (['kind'] as const) : []),
-                ...(input.owner_member_id !== undefined ? (['person'] as const) : []),
+                ...(input.owner_member_id !== undefined || input.household_owned !== undefined
+                  ? (['person'] as const)
+                  : []),
               ],
         );
         const decided = await trx

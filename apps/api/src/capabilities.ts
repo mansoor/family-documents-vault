@@ -191,6 +191,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // text, each as the person asks in their preferences, in their own
       // quiet hours.
       sms_notifications: true,
+      // 0.9.0 (the owner's decisions of 11 Nov 2026): the household as a
+      // document's owner, and whom each kind usually belongs to.
+      household_owner: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

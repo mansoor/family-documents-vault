@@ -401,9 +401,10 @@ describe('what the pages propose, on the Edit card (5.37)', () => {
     fireEvent.click(within(expires).getByRole('button'));
     expect(screen.getByLabelText<HTMLInputElement>(/^Expires/).value).toBe('14 Mar 2031');
 
-    // Whose: the card guesses the reader for a document that says nobody,
-    // and the pages' person is offered over that guess (decision 17).
-    expect(screen.getByLabelText<HTMLSelectElement>('Whose it is').value).toBe('me');
+    // Whose: a document that says nobody stays Not sure yet — never the
+    // reader, whom saving would make it (0.9.0) — and the pages' person is
+    // offered (decision 17).
+    expect(screen.getByLabelText<HTMLSelectElement>('Whose it is').value).toBe('');
     const whose = screen.getByRole('group', { name: 'What the pages say: whose it is' });
     fireEvent.click(within(whose).getByRole('button', { name: /Aisha\?/ }));
     expect(screen.getByLabelText<HTMLSelectElement>('Whose it is').value).toBe('m-0');

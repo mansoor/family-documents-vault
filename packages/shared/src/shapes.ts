@@ -1,6 +1,7 @@
 import type { DateValue } from './documents.js';
 import {
   pageText,
+  readAsDate,
   type DetailProposal,
   type ProposalContext,
   type ProposalKind,
@@ -910,7 +911,8 @@ export function applyShapeFields(input: {
   if (shapeKind && shapeKind.value !== kind.key) return { proposal: out, clash };
   const keeps = {
     issued: showsField(kind, 'issued'),
-    expires: kind.expiry_driver !== null && showsField(kind, 'expires'),
+    // A bill's Due date is read where its expiry was (0.9.0).
+    expires: (kind.expiry_driver !== null && showsField(kind, 'expires')) || readAsDate(kind),
     identifier: showsField(kind, 'identifier'),
   };
   for (const field of ['issued', 'expires'] as const) {

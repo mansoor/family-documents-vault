@@ -256,6 +256,8 @@ describe.skipIf(!testAdminUrl())('a filter of several values, and of days (V1)',
     expect(r.statusCode).toBe(422);
     expect(r.json()).toMatchObject({ error: { code: 'validation_failed' } });
     expect((await get(owner, '/api/v1/search?q=x&expires_to=yesterday')).statusCode).toBe(422);
-    expect((await get(owner, '/api/v1/search?q=x&member_id=none')).statusCode).toBe(422);
+    // Not sure yet, and the household's, are searched since 0.9.0; a word that is neither is not.
+    expect((await get(owner, '/api/v1/search?q=x&member_id=none')).statusCode).toBe(200);
+    expect((await get(owner, '/api/v1/search?q=x&member_id=nobody')).statusCode).toBe(422);
   });
 });

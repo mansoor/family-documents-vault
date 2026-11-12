@@ -13,6 +13,7 @@ import {
   widensVisibility,
   withSealed,
   type AttributeKind,
+  type BelongsTo,
   type CoreField,
   type CoreFieldRule,
   type DocumentAttributeView,
@@ -92,6 +93,8 @@ export interface TypeInput {
   remind_leads?: number[] | undefined;
   default_visibility?: Visibility | undefined;
   usually_essential?: boolean | undefined;
+  /** Whom its documents usually belong to (0.9.0): a new document follows it. */
+  belongs_to?: BelongsTo | undefined;
   hidden?: boolean | undefined;
 }
 
@@ -362,6 +365,7 @@ export class TypeService {
             reminder_leads: reminding.leads,
             usually_essential: input.usually_essential ?? false,
             default_visibility: input.default_visibility ?? 'household',
+            belongs_to: input.belongs_to ?? 'person',
             sort_order: OWN_SORT_ORDER,
             pack_version: 1,
             created_by: p.accountId,
@@ -745,6 +749,7 @@ export class TypeService {
     if (reminding.leadsChanged) set.reminder_leads = reminding.leads;
     if (input.default_visibility !== undefined) set.default_visibility = input.default_visibility;
     if (input.usually_essential !== undefined) set.usually_essential = input.usually_essential;
+    if (input.belongs_to !== undefined) set.belongs_to = input.belongs_to;
     await trx
       .updateTable('document_type')
       .set(set as never)
@@ -793,6 +798,7 @@ export class TypeService {
       ...(input.usually_essential !== undefined
         ? { usually_essential: input.usually_essential }
         : {}),
+      ...(input.belongs_to !== undefined ? { belongs_to: input.belongs_to } : {}),
       ...(input.hidden !== undefined ? { hidden: input.hidden } : {}),
       updated_at: new Date(),
       updated_by: p.accountId,

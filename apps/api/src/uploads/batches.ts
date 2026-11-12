@@ -2419,7 +2419,8 @@ export class BatchService {
     b: BatchRow,
   ): Promise<CaptureMetadata> {
     const out: CaptureMetadata = { ...sent };
-    if (out.owner_member_id === undefined) {
+    // The household's chosen (0.9.0): nobody's, whatever the batch's person.
+    if (out.owner_member_id === undefined && out.household_owned !== true) {
       if (b.default_owner_member_id !== null) out.owner_member_id = b.default_owner_member_id;
       else if (b.default_visibility === 'private') out.owner_member_id = p.memberId;
     }

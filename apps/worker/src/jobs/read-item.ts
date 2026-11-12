@@ -772,6 +772,7 @@ export async function proposalContext(
       'issued_by_label',
       'short_label',
       'builtin',
+      'remind_from',
     ])
     .where('deleted_at', 'is', null)
     .orderBy('key')
@@ -813,6 +814,8 @@ export async function proposalContext(
           label: k.label,
           fields: (k.fields ?? []) as ProposalKind['fields'],
           expiry_driver: k.expiry_driver,
+          // A bill's Due date is read where its expiry was (0.9.0).
+          remind_from: k.remind_from,
           hidden: k.hidden,
           core: k.core as NonNullable<ProposalKind['core']>,
           issued_by_label: k.issued_by_label,

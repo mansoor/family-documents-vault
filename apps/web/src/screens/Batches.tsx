@@ -1,5 +1,6 @@
 import {
   BATCH_MAX_FILES,
+  belongsTo,
   BATCH_NAME_MAX,
   can,
   duplicateWords,
@@ -21,6 +22,7 @@ import {
   type Role,
   type Visibility,
   NOTE_KIND,
+  THE_HOUSEHOLD,
 } from '@fdv/shared';
 import {
   useEffect,
@@ -152,7 +154,15 @@ export function proposedTitle(
 }
 
 /** Whose it is, as its card starts — or both, where the pages and the batch disagree. */
-function ItemPerson({ item, members }: { item: BatchItemView; members: Member[] }) {
+function ItemPerson({
+  item,
+  members,
+  types,
+}: {
+  item: BatchItemView;
+  members: Member[];
+  types: DocumentTypeView[];
+}) {
   const nameOf = (id: string) => members.find((m) => m.id === id)?.display_name ?? 'Somebody';
   if (item.state !== 'waiting') return <span className="muted">—</span>;
   const clash = item.clashes?.find((c) => c.field === 'owner_member_id');
@@ -164,7 +174,15 @@ function ItemPerson({ item, members }: { item: BatchItemView; members: Member[] 
     );
   }
   const who = item.proposals?.owner_member_id;
-  if (!who) return <span className="muted">—</span>;
+  if (!who) {
+    // Nobody, of a kind that is usually the household's: filed as the household's (0.9.0).
+    const kind = types.find((t) => t.key === item.proposals?.type_key?.value);
+    return kind?.belongs_to !== undefined && belongsTo(kind) === 'household' ? (
+      <span className="clip">{THE_HOUSEHOLD}</span>
+    ) : (
+      <span className="muted">—</span>
+    );
+  }
   return <span className="clip">{nameOf(who.value)}</span>;
 }
 
@@ -1944,7 +1962,7 @@ export function BatchScreen() {
                         <ItemKind item={item} types={data.types} />
                       </td>
                       <td>
-                        <ItemPerson item={item} members={data.members} />
+                        <ItemPerson item={item} members={data.members} types={data.types} />
                       </td>
                       <td>
                         <ItemState item={item} />

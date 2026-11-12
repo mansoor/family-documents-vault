@@ -1122,6 +1122,9 @@ parentPort.postMessage({ ready: true });
       label: t.label,
       default_visibility: t.default_visibility,
       expiry_driver: t.expiry_driver,
+      // As typeView gives them (0.9.0): a bill's Due date, and whom it belongs to.
+      remind_from: t.remind_from,
+      belongs_to: t.belongs_to,
       core: t.core as NonNullable<LevelKind['core']>,
       fields: ((t.fields ?? []) as TypeField[]).map((f) => ({
         ...f,
@@ -1168,7 +1171,14 @@ parentPort.postMessage({ ready: true });
         if (l.level === 'ready') {
           const kind = l.proposals?.type_key?.value;
           const owner = l.proposals?.owner_member_id?.value;
-          if (kind !== f.truth.type_key || owner !== byFixtureId[f.truth.owner ?? '']) {
+          // Nobody, for a kind that is usually the household's: filed as the
+          // household's (0.9.0), which is no wrong person.
+          const household =
+            owner === undefined && types.find((k) => k.key === kind)?.belongs_to === 'household';
+          if (
+            kind !== f.truth.type_key ||
+            (owner !== byFixtureId[f.truth.owner ?? ''] && !household)
+          ) {
             wrongReady.push(f.name);
           }
           expect(
@@ -1182,9 +1192,11 @@ parentPort.postMessage({ ready: true });
     }
     // What the run found (reported with I2): no Ready item is wrong.
     expect(wrongReady).toEqual([]);
+    // Each council's letter, read with no person, is a bill: the household's
+    // since 0.9.0, never "Missing: whose it is" — Ready, and right.
     expect(tally).toEqual({
-      tuned: { ready: 13, check: 7, unrecognised: 2, problem: 0 },
-      'held out': { ready: 9, check: 3, unrecognised: 2, problem: 0 },
+      tuned: { ready: 14, check: 6, unrecognised: 2, problem: 0 },
+      'held out': { ready: 10, check: 2, unrecognised: 2, problem: 0 },
     });
   }, 120_000);
 });

@@ -1,5 +1,6 @@
 import { checkExtra } from './details.js';
 import {
+  HOUSEHOLD_OR_PERSON,
   wellFormedDate,
   type DateValue,
   type DocumentTypeView,
@@ -21,6 +22,11 @@ export interface CaptureMetadata {
   type_key?: string | null;
   title?: string | null;
   owner_member_id?: string | null;
+  /**
+   * The household's (0.9.0, `features.household_owner`): never with a
+   * person. Left out, a household's kind makes it the household's.
+   */
+  household_owned?: boolean;
   visibility?: Visibility;
   issued?: DateValue | null;
   expires?: DateValue | null;
@@ -46,6 +52,7 @@ export const CAPTURE_FIELDS = [
   'type_key',
   'title',
   'owner_member_id',
+  'household_owned',
   'visibility',
   'issued',
   'expires',
@@ -122,8 +129,19 @@ export function checkCaptureMetadata(
       status: 403,
     };
   }
+  // The household's is nobody's own: a teen's are theirs (0.9.0).
+  if (teen && meta.household_owned === true) {
+    return {
+      field: 'household_owned',
+      message: 'You can only add documents that belong to you.',
+      status: 403,
+    };
+  }
   if (meta.owner_member_id != null && !ctx.members.some((m) => m.id === meta.owner_member_id)) {
     return { field: 'owner_member_id', message: 'That person is not in the family.', status: 422 };
+  }
+  if (meta.household_owned === true && meta.owner_member_id != null) {
+    return { field: 'household_owned', message: HOUSEHOLD_OR_PERSON, status: 422 };
   }
   const type = meta.type_key != null ? ctx.types.find((t) => t.key === meta.type_key) : undefined;
   if (meta.type_key != null && !type) {

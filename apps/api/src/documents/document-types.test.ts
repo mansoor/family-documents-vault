@@ -1664,34 +1664,42 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
       );
     const theirs = await bill();
     const ours = (await typeOf('utility_bill')) as DocumentTypeView;
-    expect(ours).toMatchObject({ remind_from: 'expires', remind_leads: [7, 1] });
+    // As it ships since 0.9.0 (0087): a Due date reminding, and no Expires.
+    expect(ours).toMatchObject({
+      remind_from: 'due_date',
+      remind_leads: [7, 1],
+      expiry_driver: null,
+    });
     const moved = await ok<DocumentTypeView>(
       patch(owner, 'utility_bill', {
-        fields: [...ours.fields.map((f) => ({ key: f.key })), { key: 'due_date' }],
-        remind_from: 'due_date',
+        core: { expires: { shown: true } },
+        remind_from: 'expires',
       }),
     );
-    expect(moved).toMatchObject({ remind_from: 'due_date', remind_leads: [7], reminder_leads: [] });
+    expect(moved).toMatchObject({ remind_from: 'expires', expiry_driver: 'expires_on' });
     await runRegenerate();
     // Next door: the built-in as it ships, tag and all.
     const after = await bill();
     expect(after).toEqual(theirs);
     expect(typeEtag(after)).toBe(typeEtag(theirs));
     expect(after).toMatchObject({
-      remind_from: 'expires',
-      reminder_leads: [7, 1],
-      expiry_driver: 'expires_on',
+      remind_from: 'due_date',
+      reminder_leads: [],
+      remind_leads: [7, 1],
+      expiry_driver: null,
     });
     // The built-in itself was never written.
     const { rows } = await admin.query(
-      "select remind_from, reminder_leads from document_type where key = 'utility_bill'",
+      "select remind_from, reminder_leads, expiry_driver from document_type where key = 'utility_bill'",
     );
-    expect(rows).toEqual([{ remind_from: 'expires', reminder_leads: [7, 1] }]);
+    expect(rows).toEqual([
+      { remind_from: 'due_date', reminder_leads: [7, 1], expiry_driver: null },
+    ]);
     // Put back, for the rest of the file.
     await ok(
       patch(owner, 'utility_bill', {
-        fields: ours.fields.map((f) => ({ key: f.key })),
-        remind_from: 'expires',
+        core: { expires: { shown: false } },
+        remind_from: 'due_date',
         remind_leads: [7, 1],
       }),
     );

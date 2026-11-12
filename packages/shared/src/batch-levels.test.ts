@@ -248,6 +248,32 @@ describe('an item’s level', () => {
     expect(words(l)).toEqual(['Missing: whose it is']);
   });
 
+  it('a kind that is usually the household’s misses nobody; its read expiry is its due date (0.9.0)', () => {
+    const bill: LevelKind = {
+      key: 'utility_bill',
+      label: 'Utility / bill',
+      default_visibility: 'household',
+      expiry_driver: null,
+      remind_from: 'due_date',
+      belongs_to: 'household',
+      fields: [{ key: 'due_date', label: 'Due date', kind: 'date', required: true }],
+      core: core({ expires: { shown: false } }),
+    };
+    const read: DetailProposal = {
+      type_key: { value: 'utility_bill', confidence: 0.97, cue: 'kind_words' },
+      expires: { value: day('2026-12-20'), confidence: 0.94, cue: 'expiry_label' },
+    };
+    const l = level({ proposal: read, types: [...KINDS, bill] });
+    expect(words(l)).toEqual([]);
+    expect(l.level).toBe('ready');
+    // Without a date read, the due date is what it misses — never a person.
+    const undated = level({
+      proposal: { type_key: read.type_key } as DetailProposal,
+      types: [...KINDS, bill],
+    });
+    expect(words(undated)).toEqual(['Missing: due date (required for a utility / bill)']);
+  });
+
   it('Not recognised: no kind proposed and none chosen for the batch; a default kind levels it', () => {
     const l = level({ proposal: { owner_member_id: PASSPORT.owner_member_id } as DetailProposal });
     expect(l.level).toBe('unrecognised');

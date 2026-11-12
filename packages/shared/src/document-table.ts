@@ -95,7 +95,11 @@ export type DocumentListParams = {
   sort?: DocumentSort | (typeof OLDER_DOCUMENT_SORTS)[number] | undefined;
   /** R2: with a column sort only; ascending unless said. Blanks go last either way. */
   direction?: SortDirection | undefined;
-  /** Whose: a person's id, or `none` (R2, with a column sort) for nobody's. */
+  /**
+   * Whose: a person's id; or, with a column sort, `none` (R2) for nobody's —
+   * Not sure yet since 0.9.0 — or `household` (0.9.0, `features.household_owner`)
+   * for the household's.
+   */
   member_id?: string | undefined;
   type_key?: string | undefined;
   category?: string | undefined;
