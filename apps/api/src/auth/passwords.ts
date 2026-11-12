@@ -5,7 +5,12 @@ import { ANONYMOUS, appendAudit, withPrincipal, withScope, type Db } from '@fdv/
 import argon2 from 'argon2';
 import { sql } from 'kysely';
 import { z } from 'zod';
-import { RESET_LINK_MINUTES, suspensionInEffect, type ResetNotice } from '@fdv/shared';
+import {
+  RESET_LINK_MINUTES,
+  suspensionInEffect,
+  type ResetNotice,
+  type TextCodeSent,
+} from '@fdv/shared';
 import { ApiError } from '../errors.js';
 import { stillSignedIn, type Principal, type RequestMeta } from './service.js';
 import type { Enqueue } from '../documents/service.js';
@@ -13,6 +18,7 @@ import { SHARE_PAGES_PRUNE_JOB } from '../documents/shares.js';
 import type { StepUpService } from './step-up.js';
 import type { AlertRequest } from '../alert-job.js';
 import { endDevices, SESSION_ENDED, type PushRequest, type PushTarget } from '../push-job.js';
+import { smsCodeNotOffered, type ResetText, type TextCodeService } from '../sms/codes.js';
 
 /**
  * Changing a password, and forgetting one.
@@ -86,8 +92,14 @@ const linkToken = z.string().min(16).max(256);
  */
 export const lookupBody = z.object({ token: linkToken }).strict();
 
-/** Spending the link (5.17): its token and the new password, both in the body. */
-export const completeBody = z.object({ token: linkToken, password }).strict();
+/**
+ * Spending the link (5.17): its token and the new password, both in the
+ * body; and since 0.9.0 (SMS3) the code texted to the person's own number,
+ * when they asked for one (`ResetPreview.text_code_to`).
+ */
+export const completeBody = z
+  .object({ token: linkToken, password, code: z.string().trim().min(1).max(16).optional() })
+  .strict();
 
 export interface ResetPreview {
   household_name: string | null;
@@ -97,6 +109,8 @@ export interface ResetPreview {
   /** Who made it (5.29): the person, whoever runs the server, or an owner. */
   issued_by: 'self' | 'operator' | 'owner';
   expires_at: string;
+  /** A code by text is asked for too (SMS3): where it goes, masked; null when none is. */
+  text_code_to: string | null;
 }
 
 /** What is kept of a reset link's secret: its hash, never the secret. */
@@ -135,6 +149,11 @@ export class PasswordService {
     private readonly push: (input: PushRequest) => Promise<void> = async () => undefined,
     /** The worker's queue: an ended view-only link's pages go (5.29, as a lock's). */
     private readonly enqueue: Enqueue = async () => undefined,
+    /**
+     * Codes by text (0.9.0, SMS3): a reset of somebody who asked for one is
+     * finished with a code texted to their own confirmed number as well.
+     */
+    private readonly textCodes: TextCodeService | null = null,
   ) {}
 
   // -------------------------------------------------------- changing one
@@ -416,7 +435,27 @@ export class PasswordService {
       issued_by_operator: row.issued_by !== 'self',
       issued_by: row.issued_by,
       expires_at: row.expires_at.toISOString(),
+      text_code_to: await this.textCodeTo(row.account_id),
     };
+  }
+
+  /** Where a reset's code by text goes, masked, when the person asked for one and it can go. */
+  private async textCodeTo(accountId: string): Promise<string | null> {
+    if (!this.textCodes) return null;
+    const asked = await this.textCodes.forReset(accountId);
+    return asked.asks ? asked.to : null;
+  }
+
+  /**
+   * POST /password-resets/code (SMS3): the code that finishes a reset,
+   * texted to the person's own confirmed number — only for a live link of
+   * somebody who asked for one (`409 sms_code_not_offered` otherwise). The
+   * link is not spent, and nothing about it changes.
+   */
+  async sendResetCode(token: string): Promise<TextCodeSent> {
+    const row = await this.live(token);
+    if (!this.textCodes || !(await this.textCodeTo(row.account_id))) throw smsCodeNotOffered();
+    return this.textCodes.send(row.account_id, 'reset');
   }
 
   /**
@@ -436,13 +475,36 @@ export class PasswordService {
    * is used up, nothing else changes, and it answers as every dead link
    * does — saying nothing of why.
    */
-  async reset(token: string, newPassword: string, meta: RequestMeta): Promise<{ email: string }> {
+  async reset(
+    token: string,
+    newPassword: string,
+    meta: RequestMeta,
+    code?: string,
+  ): Promise<{ email: string }> {
     const row = await this.live(token);
     const account = await this.db
       .selectFrom('account')
       .select(['id', 'email'])
       .where('id', '=', row.account_id)
       .executeTakeFirstOrThrow();
+    // A code by text, when the person asked for one (SMS3): typed, and
+    // right, before anything is spent. Asked for and impossible — their
+    // number no longer confirmed, or the household's texts not working —
+    // the reset goes on as it would have, and their owners are told below:
+    // a phone that is off locks nobody out.
+    const textCode: ResetText = this.textCodes
+      ? await this.textCodes.forReset(account.id)
+      : { asks: false };
+    if (textCode.asks && this.textCodes) {
+      if (!code) {
+        throw new ApiError(
+          422,
+          'sms_code_required',
+          `Type the code we texted to ${textCode.to}. If you have none, ask for one here.`,
+        );
+      }
+      await this.textCodes.verify(account.id, 'reset', code);
+    }
     const membership = await withScope(
       this.db,
       { accountId: account.id, actor: ANONYMOUS },
@@ -563,7 +625,13 @@ export class PasswordService {
         householdId: membership.household_id,
         actorAccountId: account.id,
         action: 'auth.password_reset',
-        detail: { issued_by: row.issued_by, exports: Number(exports.rows[0]?.n ?? 0) },
+        detail: {
+          issued_by: row.issued_by,
+          exports: Number(exports.rows[0]?.n ?? 0),
+          // A code by text (SMS3): asked for and given, or asked for and impossible.
+          ...(textCode.asks ? { text_code: 'given' } : {}),
+          ...('cannot' in textCode ? { text_code: 'skipped' } : {}),
+        },
         ip: meta.ip,
       });
       await auditEndedLinks(trx, membership.household_id, account.id, endedLinks, meta);
@@ -580,6 +648,9 @@ export class PasswordService {
     // A link used up because they keep something private now commits as
     // used up, and is answered as any dead link: nothing says why.
     if (outcome !== 'done') throw gone();
+    if ('cannot' in textCode && this.textCodes) {
+      await this.textCodes.skipped(account.id, 'reset', textCode.cannot).catch(() => undefined);
+    }
     await this.prunePages(membership.household_id, endedLinks);
     if (resetPhones.length > 0) {
       await this.push({

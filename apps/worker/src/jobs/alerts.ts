@@ -71,6 +71,8 @@ export interface Alert {
    * people.
    */
   text_kind?: string;
+  /** Never by text (SMS3): it says a code by text could not be sent. */
+  no_text?: boolean;
 }
 
 /**

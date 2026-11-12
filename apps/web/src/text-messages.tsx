@@ -8,6 +8,7 @@ import {
   SMS_CLOUD_WARNING,
   SMS_DEFAULT_CAP,
   SMS_DEFAULT_COUNTRY,
+  SMS_FACTOR_WARNING,
   SMS_MODE_WORDS,
   SMS_MODES,
   type Member,
@@ -22,7 +23,7 @@ import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { dateTimeWords } from './family-time.js';
 import { SettingsPage } from './screens/Settings.js';
-import { Button, ConfirmDialog, ErrorNote, Field, LoadFailed } from './ui.js';
+import { Button, Check, ConfirmDialog, ErrorNote, Field, LoadFailed } from './ui.js';
 
 /**
  * Text messages (0.9.0, SMS1): Settings → Server and reading → Text
@@ -36,6 +37,21 @@ import { Button, ConfirmDialog, ErrorNote, Field, LoadFailed } from './ui.js';
  * For now the only other texts are the codes that confirm a mobile number;
  * reminders by text come later.
  */
+
+/**
+ * Whether a code can be texted now (0.9.0, SMS3): the vault offers codes by
+ * text and the household's texts are set up (GET /sms/status). False until
+ * it is known, and when it cannot be asked.
+ */
+export function useSmsCodes(): boolean {
+  const { authVersion, caps } = useApp();
+  const offered = caps?.features.sms_codes === true;
+  const { data } = useLoad(
+    async (t) => (offered ? api.smsStatus(t).catch(() => null) : null),
+    [authVersion, offered],
+  );
+  return offered && data?.ready === true;
+}
 
 /** Countries offered first for numbers typed without +; the one saved is always there too. */
 const COUNTRIES = ['GB', 'IE', 'US', 'CA', 'AU', 'NZ', 'FR', 'DE', 'ES', 'IT', 'NL', 'IN', 'PK'];
@@ -630,6 +646,91 @@ export function MobileNumberCard(props: { member: Member; name: string; owner: b
           is added and confirmed again.
         </ConfirmDialog>
       )}
+    </section>
+  );
+}
+
+/**
+ * Codes by text (0.9.0, SMS3), in Your account: whether a reset of the
+ * password, and a sign-in, also ask for a code texted to the person's own
+ * confirmed number. Each off until they turn it on; turning either on or off
+ * is changing how they sign in, so it asks to confirm it's them. A text is
+ * the weakest second step, and the card says why in plain words; an owner
+ * keeps a passkey or an authenticator app beside it.
+ */
+export function CodesByTextCard() {
+  const { authVersion, guarded, caps, session } = useApp();
+  const offered = caps?.features.sms_codes === true;
+  const me = session.info?.member_id ?? null;
+  const { data, error, reload, setData } = useLoad(
+    async (t) => (offered ? api.textCodeSettings(t) : null),
+    [authVersion, offered],
+  );
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  if (!offered) return null;
+  if (data === null && error) {
+    return <LoadFailed message={error} what="codes by text" onRetry={() => void reload()} />;
+  }
+  if (!data) return null;
+  const change = async (input: { sign_in?: boolean; reset?: boolean }) => {
+    if (busy) return;
+    setBusy(true);
+    setProblem(null);
+    try {
+      const next = await guarded((t) => api.setTextCodeSettings(t, input));
+      if (next) setData(next);
+    } catch (err) {
+      setProblem(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  // Off and impossible: said why, and where to put it right. On stays
+  // changeable, so somebody whose number went can still turn it off.
+  const off = (on: boolean) => busy || (!on && !data.can_turn_on);
+  return (
+    <section aria-labelledby="text-codes-h" className="card stack">
+      <h2 id="text-codes-h" style={{ fontSize: 18 }}>
+        Codes by text
+      </h2>
+      <p className="muted">
+        {data.phone && data.phone_confirmed
+          ? `A code texted to ${data.phone} as well, when you ask for it here.`
+          : 'A code texted to your own mobile number as well, when you ask for it here.'}
+      </p>
+      {data.why_not && (
+        <p className="muted" role="note">
+          {data.why_not}{' '}
+          {data.sms_ready && me && (
+            <Link to={`/people/${me}`}>Your mobile number is on your profile.</Link>
+          )}
+        </p>
+      )}
+      <Check
+        id="text-codes-reset"
+        checked={data.reset}
+        disabled={off(data.reset)}
+        onChange={(on) => void change({ reset: on })}
+        label="Ask for a code by text when my password is reset"
+        note="Whoever resets it — you, from an emailed link, or an owner’s link — also types the code we text you. If your number isn’t confirmed or texts aren’t working then, the reset goes ahead without it, and your owners are told."
+      />
+      <Check
+        id="text-codes-sign-in"
+        checked={data.sign_in}
+        disabled={off(data.sign_in)}
+        onChange={(on) => void change({ sign_in: on })}
+        label="Text me a code when I sign in"
+        note={
+          data.step_up
+            ? 'As well as your password. You can also use a texted code when the vault asks you to confirm it’s you.'
+            : 'As well as your password.'
+        }
+      />
+      <p className="status status-warn" role="note">
+        {SMS_FACTOR_WARNING}
+      </p>
+      <ErrorNote message={problem} />
     </section>
   );
 }

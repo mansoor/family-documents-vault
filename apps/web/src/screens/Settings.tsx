@@ -12,6 +12,7 @@ import { setShortcutsOn, useShortcutsOn } from '../shortcuts.js';
 import { ElsewhereNote, GroupName, ServerLine, useSettingsGroups } from '../settings-sections.js';
 import { ChangePassword } from './Password.js';
 import { dateTimeWords, dayWordsOf, useFamilyZone } from '../family-time.js';
+import { CodesByTextCard } from '../text-messages.js';
 
 /**
  * A section's page: its heading names the section. On a phone its bar has
@@ -101,6 +102,8 @@ export function AccountScreen() {
       <ChangePassword />
       <TwoStep />
       <Passkeys />
+      {/* A code by text at a reset and at sign-in (0.9.0, SMS3): only ever as well. */}
+      <CodesByTextCard />
       <section aria-labelledby="devices-h">
         <h2 id="devices-h" className="section-h">
           Signed-in devices

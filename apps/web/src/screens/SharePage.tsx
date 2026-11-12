@@ -194,15 +194,21 @@ export function SharePage({ token }: { token: string | null }) {
 
 /**
  * What a link asks for, in the sentence that says who sent it (5.20): a PIN
- * or a password, and a code by email.
+ * or a password, and a code by email — or, since 0.9.0 (SMS3), by text.
  */
-function asksFor(needs: { pin: boolean; password: boolean; code: boolean }): string {
+function asksFor(needs: {
+  pin: boolean;
+  password: boolean;
+  code: boolean;
+  byText?: boolean;
+}): string {
   const secret = needs.pin ? 'a PIN' : needs.password ? 'a password' : null;
+  const how = needs.byText ? 'text' : 'email';
   if (secret && needs.code) {
-    return `, and put ${secret} on it. It also asks for a code, which we email to you.`;
+    return `, and put ${secret} on it. It also asks for a code, which we ${how} to you.`;
   }
   if (secret) return `, and put ${secret} on it.`;
-  if (needs.code) return ', and it asks for a code, which we email to you.';
+  if (needs.code) return `, and it asks for a code, which we ${how} to you.`;
   return '.';
 }
 
@@ -226,6 +232,8 @@ function Preview({
   const needsPin = preview.protection.includes('pin');
   const needsPassword = preview.protection.includes('password');
   const needsCode = preview.protection.includes('code');
+  // By text, to a mobile number its sharer typed (SMS3); else by email.
+  const byText = preview.code_by === 'sms';
   const [sent, setSent] = useState<ShareCodeSent | null>(null);
   // How many codes this page has sent: what it says changes with each, so
   // a screen reader hears a second send as well as the first (W520-2).
@@ -293,7 +301,7 @@ function Preview({
       >
         <p>
           {from} shared {what} with you from {preview.household_name}
-          {asksFor({ pin: needsPin, password: needsPassword, code: needsCode })}
+          {asksFor({ pin: needsPin, password: needsPassword, code: needsCode, byText })}
         </p>
         {(preview.permission === 'view' ||
           preview.opens_left != null ||
@@ -355,25 +363,30 @@ function Preview({
         {needsCode && (
           <div className="stack" style={{ gap: 8 }} data-testid="share-code">
             <p className="share-code-sent">
-              We email a code to <strong>{preview.code_to ?? 'your inbox'}</strong>, the address{' '}
-              {preview.shared_by ?? 'whoever sent the link'} gave for you. {SHARE_NEWEST_CODE_ONLY},
-              once, for 10 minutes.
+              {byText ? 'We text a code to ' : 'We email a code to '}
+              <strong>{preview.code_to ?? (byText ? 'your phone' : 'your inbox')}</strong>, the{' '}
+              {byText ? 'mobile number' : 'address'} {preview.shared_by ?? 'whoever sent the link'}{' '}
+              gave for you. {SHARE_NEWEST_CODE_ONLY}, once, for 10 minutes.
             </p>
             {/* Always here (W520-1): a code already in the inbox — from before
                 a reload, or from the email app — is typed without sending
                 another, which would end it. */}
             <Field
               id="share-code-input"
-              label="The code from the email"
+              label={byText ? 'The code from the text' : 'The code from the email'}
               value={props.code}
               onChange={props.setCode}
               inputMode="numeric"
               autoComplete="one-time-code"
               maxLength={9}
               hint={
-                sent
-                  ? 'Six digits. If it has not come, look in junk mail, or send another.'
-                  : 'Already have a code? Type it here. Six digits, from the newest email.'
+                byText
+                  ? sent
+                    ? 'Six digits. If it has not come in a minute or two, send another.'
+                    : 'Already have a code? Type it here. Six digits, from the newest text.'
+                  : sent
+                    ? 'Six digits. If it has not come, look in junk mail, or send another.'
+                    : 'Already have a code? Type it here. Six digits, from the newest email.'
               }
             />
             {/* Always in the page, so what it says is heard when it changes
@@ -394,7 +407,13 @@ function Preview({
               disabled={sending || !secure()}
               onClick={() => void sendCode()}
             >
-              {sending ? 'Sending…' : sent ? 'Send another code' : 'Email me a code'}
+              {sending
+                ? 'Sending…'
+                : sent
+                  ? 'Send another code'
+                  : byText
+                    ? 'Text me a code'
+                    : 'Email me a code'}
             </Button>
           </div>
         )}

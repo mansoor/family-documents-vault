@@ -453,6 +453,43 @@ export class SmsService {
   }
 
   /**
+   * Sends one text and says what became of it, rather than throwing (SMS3):
+   * for a code whose failure is told to somebody else, in their own words —
+   * a link's recipient, or an invitation's maker. `not_set_up` and
+   * `cap_reached` wrote nothing and sent nothing; `not_sent` was written,
+   * and SMS Gate never took it.
+   */
+  async attempt(
+    householdId: string,
+    r: SmsRequest,
+  ): Promise<
+    { sent: SmsDone } | { failed: 'not_set_up' | 'cap_reached' | 'not_sent'; words: string }
+  > {
+    const key = this.key;
+    if (!key) return { failed: 'not_set_up', words: notSetUp().message };
+    const way: SmsWay = {
+      open: (sealed, household, to) => openSmsPassword(key, sealed, household, to),
+      provider: this.provider,
+    };
+    const d = await sendSms(this.vault(householdId), way, householdId, r);
+    if ('refused' in d) {
+      return d.refused === 'cap_reached'
+        ? {
+            failed: 'cap_reached',
+            words: `This month’s ${d.cap} texts have all been sent. An owner can raise the limit in Settings, under Text messages.`,
+          }
+        : { failed: 'not_set_up', words: notSetUp().message };
+    }
+    if ('problem' in d) {
+      return {
+        failed: 'not_sent',
+        words: smsProblemWords(d.problem.problem, d.settings.mode, d.problem.status),
+      };
+    }
+    return { sent: d.sent };
+  }
+
+  /**
    * POST /sms/settings/test: a test text to the number an owner types,
    * through the settings saved. It passes once SMS Gate has sent it, within
    * SMS_TEST_WAIT_SECONDS: then the vault sends other texts. Failed, or

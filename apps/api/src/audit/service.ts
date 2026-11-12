@@ -268,6 +268,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // 5.20: a link's code emailed, the address masked — to whoever may see
   // what the link is to, as its other lines are.
   ['share.code_sent', BY_TYPE],
+  // 0.9.0 (SMS3): a link's code could not be texted, and why in a word: to
+  // whoever may see what the link is to, as its other lines are.
+  ['share.code_not_sent', BY_TYPE],
   // 0.9.0: a link shown again to whoever made it (never the link): to
   // whoever may see what it is to, as its other lines are.
   ['share.revealed', BY_TYPE],
@@ -391,6 +394,13 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['auth.session_revoked', BY_TYPE],
   ['auth.totp_enabled', BY_TYPE],
   ['auth.totp_disabled', BY_TYPE],
+  // 0.9.0 (SMS3): codes by text turned on or off for a reset or a sign-in,
+  // as two-step sign-in's lines are.
+  ['auth.text_codes_changed', BY_TYPE],
+  // A sign-in or a reset that went on without its code by text (SMS3; the
+  // owner's decision of 12 Nov 2026): for the owners, the person and whoever
+  // did it, as the owners' sign-in lines are.
+  ['auth.text_code_skipped', ownersThePersonAndTheActor],
   ['credential.passkey_added', BY_TYPE],
   ['credential.passkey_removed', BY_TYPE],
   // kinds of document (5.11): what the family calls its papers is the

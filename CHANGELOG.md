@@ -6,6 +6,19 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.33] - 2026-11-12 — codes by text (SMS3)
+
+### Added
+
+- **A share link's code by text.** Beside **By email**, the share sheet offers **By text message** once your household's text messages are set up: type their mobile number, and when they open the link we text them a six-digit code — "Family Vault: your code to open the shared documents is 123456. It ends in 10 minutes." — never the link or what it is to. The number is never shown back in full (•••• •••456 in Sharing), and it is forgotten when the link ends. The same 10 minutes, 5 tries and limits as an emailed code; each text counts towards the month's texts. If the household's texts aren't working when they ask, the page says so plainly — the link can't be opened until whoever sent it sorts that out, or sends a new link — and the activity log says why.
+- **An invitation's code by text.** An owner inviting somebody may add their mobile number: the code is texted to them as well as shown ("Family Vault: Ahmed invited you to the family vault. Your invitation code is ABCD-EFGH. …"), never the link, which you send as before. Nothing is kept of the number.
+- **Codes by text in Your account.** Two switches, each off until you turn it on, for your own confirmed number: **Ask for a code by text when my password is reset** — a reset from an emailed link or an owner's link then also asks for the code we text you (if your number isn't confirmed or texts aren't working then, the reset goes ahead without it and your owners are told, so nobody is locked out) — and **Text me a code when I sign in**, as well as your password. The card says plainly that a text is the weakest second step: somebody who moves your number to their SIM gets your codes.
+- **"Text me a code" at sign-in and when confirming it's you.** With a text as your only second step, the code goes as your password is accepted; beside an authenticator app, **Text me a code instead**. If the code can't be sent — the household's texts aren't working, this month's are all sent, or the phone that sends them didn't take it — you're let in with your password alone, and your owners are told by email and push (never by text), as they are of a reset that went ahead without its code; both are in the activity log. Too many codes asked for is not that: it waits. Adults and teens may also confirm it's them with a texted code; it never serves what takes a passkey or an authenticator's code.
+
+### Security
+
+- A text is only ever in addition: an owner can turn on the sign-in code only beside a passkey or two-step sign-in, an owner is never offered a texted code to confirm it's them, and a session opened with a text is not one an owner's powers accept. Codes are kept only as HMACs under a key of their own, 10 minutes, 5 tries, used once; at most 3 to a number in 15 minutes and 10 a day. No code and no number reaches the server's log.
+
 ## [0.9.0-dev.32] - 2026-11-12 — The household, and what each kind usually belongs to
 
 ### Added

@@ -17,9 +17,12 @@ import {
   GUEST_DESCRIPTION_MAX,
   guestAccessEnded,
   guestEndProblem,
+  inviteCodeText,
   localToday,
+  maskPhone,
   mayBeRestricted,
   oldEnoughToSignIn,
+  parsePhone,
   refusalFor,
   ROLE_NOT_FOR_AGE,
   roleLabel,
@@ -34,6 +37,7 @@ import { sql } from 'kysely';
 import { z } from 'zod';
 import type { AuthService, Principal, RequestMeta, Tokens } from '../auth/service.js';
 import { ApiError, notFound } from '../errors.js';
+import { notSetUp, type SmsService } from '../sms/service.js';
 import {
   accessGrantBody,
   ADULTS_ONLY_OWNERS,
@@ -103,6 +107,12 @@ const inviteFields = z
      * log names them with ("Guest — Jane Smith, attorney").
      */
     relationship: z.string().trim().max(GUEST_DESCRIPTION_MAX).nullable().optional(),
+    /**
+     * The invitee's mobile number (0.9.0, SMS3), an owner's to give: the
+     * code is texted to it as well as shown, and nothing of the number is
+     * kept but what every text keeps (its last three digits).
+     */
+    invitee_phone: z.string().trim().min(1).max(40).optional(),
   })
   .strict();
 
@@ -242,6 +252,10 @@ export interface CreatedInvitation {
   /** Shown once, to be passed along. Never stored, so never shown again. */
   link_token: string;
   code: string;
+  /** The code was texted too (SMS3): to this number, masked. */
+  code_texted_to?: string;
+  /** Or it couldn't be, in plain words: the invitation stands, and the code is above. */
+  code_text_problem?: string;
 }
 
 export function newCode(): string {
@@ -273,6 +287,8 @@ export class InvitationService {
     private readonly db: Db,
     private readonly keys: ScopeKeys,
     private readonly auth: AuthService,
+    /** How an invitation's code is texted (0.9.0, SMS3); absent, it never is. */
+    private readonly sms: SmsService | null = null,
   ) {}
 
   // ------------------------------------------------------------- inviting
@@ -397,6 +413,8 @@ export class InvitationService {
     // an owner invites, ask for a passkey or a code — never the password —
     // and an owner with neither is refused it (5.34).
     if (decides) await opts.ownerDecides?.();
+    // Where its code is texted (SMS3), read before anything is made.
+    const textTo = await this.textTo(p, input.invitee_phone);
 
     // An account is global, so this is asked outside the household scope.
     const existing = await this.db
@@ -543,7 +561,50 @@ export class InvitationService {
     });
 
     const invitation = (await this.list(p)).find((i) => i.id === id) as InvitationView;
-    return { invitation, link_token: token, code };
+    const created: CreatedInvitation = { invitation, link_token: token, code };
+    if (textTo && this.sms) {
+      // The code alone, never the link, which goes as it always has; the
+      // invitation stands whatever becomes of the text.
+      const inviter = await withPrincipal(this.db, p, (trx) =>
+        trx
+          .selectFrom('member')
+          .select('display_name')
+          .where('id', '=', p.memberId)
+          .executeTakeFirst(),
+      );
+      const outcome = await this.sms.attempt(p.householdId, {
+        to: textTo,
+        memberId: invitation.member_id,
+        kind: 'invite_code',
+        text: inviteCodeText(code, inviter?.display_name),
+      });
+      if ('sent' in outcome) created.code_texted_to = maskPhone(textTo);
+      else created.code_text_problem = `The code couldn’t be texted. ${outcome.words}`;
+    }
+    return created;
+  }
+
+  /**
+   * The number an invitation's code is texted to (SMS3), as E.164, or null
+   * when none was given. An owner's to give, while the household's texts
+   * are set up; refused before the invitation is made, so nothing is half
+   * done.
+   */
+  private async textTo(p: Principal, typed: string | undefined): Promise<string | null> {
+    if (typed === undefined) return null;
+    if (p.role !== 'owner') {
+      throw new ApiError(403, 'forbidden', 'Only an owner can text an invitation’s code.');
+    }
+    if (!this.sms || !(await this.sms.ready(p))) throw notSetUp();
+    const number = parsePhone(typed, await this.sms.country(p));
+    if (!number) {
+      throw new ApiError(
+        422,
+        'phone_number_invalid',
+        'That doesn’t look like a mobile number. Type it with its country code, such as +44 7700 900123.',
+      );
+    }
+    return number;
   }
 
   private async existingMember(

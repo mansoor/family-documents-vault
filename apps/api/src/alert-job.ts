@@ -47,6 +47,11 @@ export interface AlertRequest {
    * alone is never texted.
    */
   text?: AlertTextKind;
+  /**
+   * Never by text (0.9.0, SMS3): an alert that a code by text could not be
+   * sent, which a text would not reach either.
+   */
+  noText?: boolean;
 }
 
 /**
@@ -76,5 +81,6 @@ export function alertJob(key: Buffer, a: AlertRequest): Record<string, unknown> 
     ...(a.pushType ? { push_type: a.pushType } : {}),
     ...(a.ownSignIn ? { own_sign_in: true } : {}),
     ...(a.text ? { text_kind: a.text } : {}),
+    ...(a.noText ? { no_text: true } : {}),
   };
 }

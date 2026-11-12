@@ -194,6 +194,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0 (the owner's decisions of 11 Nov 2026): the household as a
       // document's owner, and whom each kind usually belongs to.
       household_owner: true,
+      // 0.9.0 (SMS3): codes by text — a link's, an invitation's, and to one's
+      // own number at a reset, a sign-in and a step-up — only ever in addition.
+      sms_codes: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

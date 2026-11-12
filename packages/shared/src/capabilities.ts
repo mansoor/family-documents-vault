@@ -437,6 +437,24 @@ export interface CapabilityFeatures {
    */
   sms_notifications?: boolean;
   /**
+   * Codes by text (0.9.0, SMS3). A share link may ask for its code by text
+   * (`second_factor: 'sms'` and `recipient_phone` on POST /documents/{id}/share
+   * and /collections/{id}/shares; `Share.second_factor`, its `code_to` masked;
+   * POST /shared/code texts it). An owner may text an invitation's code
+   * (`invitee_phone` on POST /invitations and /members/{id}/invite;
+   * `CreatedInvitation.code_texted_to` or `code_text_problem`). And each
+   * person may ask for a code to their own confirmed number when their
+   * password is reset and at sign-in (GET and PUT /auth/text-codes): a reset
+   * then asks for it (`ResetPreview.text_code_to`; POST /password-resets/code
+   * texts it; `code` on POST /password-resets/complete), and so does a
+   * sign-in (`MfaChallenge.methods` has `text`; POST /auth/mfa/text texts it;
+   * `method: 'text'` on POST /auth/mfa). Adults and teens may confirm it's
+   * them with one (`StepUpState.text_to`; POST /auth/step-up/text; `text_code`
+   * on POST /auth/step-up). Only ever in addition: never an owner's only
+   * second step, nor what an owner's powers ask. Absent from older vaults.
+   */
+  sms_codes?: boolean;
+  /**
    * The household as a document's owner (0.9.0, the owner's decision of 11
    * Nov 2026): `DocumentView.household_owned`, sent as `household_owned` on
    * POST and PATCH /documents and a capture's metadata; `member_id=household`

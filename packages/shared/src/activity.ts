@@ -690,7 +690,21 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // which the log has only masked.
     case 'share.code_sent':
       return line(
-        `A code to open a link to ${e.object_type === 'collection' ? collection : doc} was emailed${text(detail.to) ? ` to ${text(detail.to)}` : ''}`,
+        `A code to open a link to ${e.object_type === 'collection' ? collection : doc} was ${detail.by === 'sms' ? 'texted' : 'emailed'}${text(detail.to) ? ` to ${text(detail.to)}` : ''}`,
+        false,
+        UNNAMED,
+      );
+    // 0.9.0 (SMS3): a link's code could not be texted — the household's
+    // texts not set up, this month's all sent, or the phone didn't take it.
+    case 'share.code_not_sent':
+      return line(
+        `A code to open a link to ${e.object_type === 'collection' ? collection : doc} couldn’t be texted${text(detail.to) ? ` to ${text(detail.to)}` : ''}: ${
+          detail.reason === 'cap_reached'
+            ? 'this month’s texts were all sent'
+            : detail.reason === 'not_sent'
+              ? 'the phone that sends texts didn’t take it'
+              : 'text messages aren’t set up'
+        }`,
         false,
         UNNAMED,
       );
@@ -838,6 +852,29 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return line(`${who} switched on two-step sign-in`, true);
     case 'auth.totp_disabled':
       return line(`${who} switched off two-step sign-in`, true);
+    // 0.9.0 (SMS3): a sign-in or a reset that went on without its code by
+    // text, and why in a word — never the number.
+    case 'auth.text_code_skipped':
+      return line(
+        `${who} ${detail.at === 'reset' ? 'reset their password' : 'signed in'} without the code by text they asked for: ${
+          detail.why === 'cap_reached'
+            ? 'this month’s texts were all sent'
+            : detail.why === 'not_sent'
+              ? 'the phone that sends texts didn’t take it'
+              : detail.why === 'no_number'
+                ? 'their mobile number wasn’t confirmed'
+                : 'text messages weren’t working'
+        }`,
+        true,
+      );
+    // 0.9.0 (SMS3): whether a reset and a sign-in ask for a code by text.
+    case 'auth.text_codes_changed':
+      return line(
+        `${who} changed when they’re asked for a code by text: ${
+          detail.sign_in === true ? 'at sign-in' : 'not at sign-in'
+        }, ${detail.reset === true ? 'and when their password is reset' : 'nor when their password is reset'}`,
+        true,
+      );
     case 'credential.passkey_added':
       return line(`${who} added a passkey`, true);
     case 'credential.passkey_removed':

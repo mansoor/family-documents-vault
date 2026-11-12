@@ -44,6 +44,7 @@ import { madeWith } from './made-with.js';
 import { onlyMeShareable } from './only-me-rule.js';
 import { endSessions } from './share-sessions.js';
 import { shareOpenedJob, SMS_TEXT_JOB } from '../sms/text-job.js';
+import { notSetUp, type SmsService } from '../sms/service.js';
 import { DecryptStream } from '@fdv/crypto';
 import {
   can,
@@ -57,8 +58,10 @@ import {
   FOLLOW_MAX_DAYS,
   isShareAddress,
   maskEmail,
+  maskPhone,
   NOTE_KIND,
   ONLY_ME_NOT_SHARED,
+  parsePhone,
   PREVIEW_MAX_PAGES,
   readShareCode,
   seesAdults,
@@ -73,6 +76,7 @@ import {
   SHARE_MAX_DAYS,
   SHARE_PASSWORD_MAX,
   SHARE_PASSWORD_MIN,
+  shareCodeText,
   shareEndProblem,
   shareEndWords,
   shareUses,
@@ -238,6 +242,14 @@ const shareOptions = {
     .max(254)
     .refine(isShareAddress, 'That is not an email address. Check it: name@example.com.')
     .optional(),
+  /**
+   * How its code goes (0.9.0, SMS3): `email` to `code_email`, or `sms` to
+   * `recipient_phone`. Absent: by email when there is a `code_email`, as
+   * before, and by text when there is only a `recipient_phone`.
+   */
+  second_factor: z.enum(['email', 'sms']).optional(),
+  /** The mobile number a texted code goes to (SMS3): read in the household's country without +. */
+  recipient_phone: z.string().trim().min(1).max(40).optional(),
   /** The first browser to open it is the only one it opens in (5.20). */
   this_device_only: z.boolean().optional(),
 };
@@ -332,6 +344,8 @@ export interface ShareView {
   protection: ShareProtection[];
   /** Where its code goes, masked; null when it asks for none, or has ended (5.20). */
   code_to: string | null;
+  /** How its code goes (0.9.0, SMS3): by email, or by text; null when it asks for none, or has ended. */
+  second_factor: 'email' | 'sms' | null;
   /** It opens in the first browser that opened it, and no other (5.20). */
   this_device_only: boolean;
   /**
@@ -516,6 +530,8 @@ type LinkRow = {
   secret_kind: SecretKind | null;
   /** Where its code goes (5.20), until it ends. */
   code_email: string | null;
+  /** Or the number it is texted to (0.9.0, SMS3), until it ends: never both. */
+  code_phone: string | null;
   this_device_only: boolean;
   /** The browser it was first opened in (5.20). */
   device_hash: Buffer | null;
@@ -616,10 +632,33 @@ export const protectionOf = (link: {
   pin_hash: string | null;
   secret_kind: string | null;
   code_email: string | null;
+  code_phone?: string | null;
 }): ShareProtection[] => [
   ...(link.pin_hash ? [wireKind(link.secret_kind as SecretKind | null)] : []),
-  ...(link.code_email ? (['code'] as const) : []),
+  ...(link.code_email || link.code_phone ? (['code'] as const) : []),
 ];
+
+/**
+ * Where a link's code goes, masked, and how (SMS3): the address
+ * (`j•••@e•••.com`) or the number (`•••• •••123`); null for none.
+ */
+const codeWay = (link: {
+  code_email: string | null;
+  code_phone?: string | null;
+}): { to: string; by: 'email' | 'sms' } | null =>
+  link.code_phone
+    ? { to: maskPhone(link.code_phone), by: 'sms' }
+    : link.code_email
+      ? { to: maskEmail(link.code_email), by: 'email' }
+      : null;
+
+/**
+ * What the person a link is for is told when its code cannot be texted
+ * (SMS3): not why, which is the household's, but that it cannot be opened
+ * until whoever sent it sorts it out.
+ */
+export const SHARE_TEXT_CANNOT_SEND =
+  'This link asks for a code by text, which the vault can’t send just now, so it can’t be opened yet. Ask whoever sent it to check their vault’s text messages, or to send you a new link.';
 
 /**
  * A try that did not open the link. The answer depends on what the link
@@ -749,6 +788,11 @@ export interface ShareOptions {
    * is kept, and no link can be shown again.
    */
   copyKey?: Buffer;
+  /**
+   * How a code is texted (0.9.0, SMS3): through the household's own SMS
+   * Gate, counted against its monthly cap. Absent: no link asks for one.
+   */
+  sms?: SmsService | null;
 }
 
 /** What "this device only" cookies are made with: deviceCookieKey(master, this). */
@@ -761,6 +805,7 @@ export class ShareService {
   private readonly deviceKey: Buffer;
   private readonly mail: ((m: MailRequest) => Promise<void>) | null;
   private readonly copyKey: Buffer | null;
+  private readonly sms: SmsService | null;
 
   constructor(
     private readonly db: Db,
@@ -778,6 +823,7 @@ export class ShareService {
     this.deviceKey = opts.deviceKey ?? randomBytes(32);
     this.mail = opts.mail ?? null;
     this.copyKey = opts.copyKey ?? null;
+    this.sms = opts.sms ?? null;
   }
 
   /** Whether a link can ask for an emailed code here: the operator's mail server is set (A21). */
@@ -848,7 +894,7 @@ export class ShareService {
    * one the sharer typed — and a code by email, which only the operator's
    * mail server may carry (A21): without it, asking for one is refused.
    */
-  private async secrets(input: z.infer<typeof shareBody>) {
+  private async secrets(p: Principal, input: z.infer<typeof shareBody>) {
     const asked = [
       input.with_pin === true,
       input.with_password === true,
@@ -861,7 +907,10 @@ export class ShareService {
         'Choose one: a PIN, a password made up for you, or a password of your own.',
       );
     }
-    if (input.code_email !== undefined && !this.mail) throw codeUnavailable(422);
+    const codePhone = await this.codePhone(p, input);
+    if (codePhone === null && input.code_email !== undefined && !this.mail) {
+      throw codeUnavailable(422);
+    }
     const token = randomBytes(32).toString('base64url');
     const pin = input.with_pin ? String(randomInt(0, 10000)).padStart(4, '0') : null;
     const password = input.with_password ? madeUpPassword() : null;
@@ -881,9 +930,50 @@ export class ShareService {
       password,
       secretKind,
       pinHash: secret ? await argon2.hash(secret, ARGON2) : null,
-      codeEmail: input.code_email ?? null,
+      codeEmail: codePhone === null ? (input.code_email ?? null) : null,
+      codePhone,
       thisDeviceOnly: input.this_device_only === true,
     };
+  }
+
+  /**
+   * The number a link's code is texted to (0.9.0, SMS3), as E.164, or null
+   * for a code by email or none. One way for the code, never both; a text
+   * only while the household's texts are set up and a test passed (`409
+   * sms_not_set_up`), to a number that can be one.
+   */
+  private async codePhone(p: Principal, input: z.infer<typeof shareBody>): Promise<string | null> {
+    const way =
+      input.second_factor ??
+      (input.recipient_phone !== undefined && input.code_email === undefined ? 'sms' : null);
+    const both = () =>
+      new ApiError(
+        422,
+        'validation_failed',
+        'Choose one way for the code: by email, or by text to a mobile number.',
+      );
+    if (way !== 'sms') {
+      if (input.recipient_phone !== undefined) throw both();
+      if (way === 'email' && input.code_email === undefined) {
+        throw new ApiError(422, 'validation_failed', 'Type the address the code is emailed to.');
+      }
+      return null;
+    }
+    if (input.code_email !== undefined) throw both();
+    if (input.recipient_phone === undefined) {
+      throw new ApiError(422, 'validation_failed', 'Type the mobile number the code is texted to.');
+    }
+    const sms = this.sms;
+    if (!sms || !(await sms.ready(p))) throw notSetUp();
+    const number = parsePhone(input.recipient_phone, await sms.country(p));
+    if (!number) {
+      throw new ApiError(
+        422,
+        'phone_number_invalid',
+        'That doesn’t look like a mobile number. Type it with its country code, such as +44 7700 900123.',
+      );
+    }
+    return number;
   }
 
   /**
@@ -940,6 +1030,7 @@ export class ShareService {
     pin: string | null;
     secretKind: SecretKind | null;
     codeEmail: string | null;
+    codePhone: string | null;
     thisDeviceOnly: boolean;
   }) {
     return {
@@ -948,6 +1039,8 @@ export class ShareService {
         ? { with_password: true }
         : {}),
       ...(s.codeEmail ? { code_to: maskEmail(s.codeEmail) } : {}),
+      // A texted code's number, masked as the list shows it (SMS3).
+      ...(s.codePhone ? { code_to: maskPhone(s.codePhone), code_by: 'sms' } : {}),
       ...(s.thisDeviceOnly ? { this_device_only: true } : {}),
     };
   }
@@ -960,7 +1053,7 @@ export class ShareService {
   ): Promise<CreatedShare> {
     requireCapability(p, 'document.share');
     const expiresAt = this.endOf(input);
-    const secrets = await this.secrets(input);
+    const secrets = await this.secrets(p, input);
     const { token, pinHash } = secrets;
 
     const { id, versionId, permission } = await withPrincipal(this.db, p, async (trx) => {
@@ -1040,6 +1133,7 @@ export class ShareService {
           pin_hash: pinHash,
           secret_kind: secrets.secretKind,
           code_email: secrets.codeEmail,
+          code_phone: secrets.codePhone,
           this_device_only: secrets.thisDeviceOnly,
           recipient_label: input.recipient_label ?? null,
           created_by: p.accountId,
@@ -1232,7 +1326,7 @@ export class ShareService {
       follow ? Math.min(this.maxDays, FOLLOW_MAX_DAYS) : this.maxDays,
     );
     const permission = this.permissionOf(input);
-    const secrets = await this.secrets(input);
+    const secrets = await this.secrets(p, input);
     const { token, pinHash } = secrets;
 
     const made = await withPrincipal(this.db, p, async (trx) => {
@@ -1310,6 +1404,7 @@ export class ShareService {
           pin_hash: pinHash,
           secret_kind: secrets.secretKind,
           code_email: secrets.codeEmail,
+          code_phone: secrets.codePhone,
           this_device_only: secrets.thisDeviceOnly,
           recipient_label: input.recipient_label ?? null,
           created_by: p.accountId,
@@ -1547,6 +1642,7 @@ export class ShareService {
           'share_link.pin_hash',
           'share_link.secret_kind',
           'share_link.code_email',
+          'share_link.code_phone',
           'share_link.this_device_only',
           'share_link.flow',
           'share_link.paused_at',
@@ -1683,10 +1779,9 @@ export class ShareService {
           // The address itself is the sharer's to know; the list says which
           // inbox, masked — and nothing once the link has ended, whose
           // address the worker's nightly prune has not cleared yet.
-          code_to:
-            r.code_email && (state === 'active' || state === 'paused')
-              ? maskEmail(r.code_email)
-              : null,
+          code_to: state === 'active' || state === 'paused' ? (codeWay(r)?.to ?? null) : null,
+          // By email or by text (SMS3): the number is never shown but masked.
+          second_factor: state === 'active' || state === 'paused' ? (codeWay(r)?.by ?? null) : null,
           this_device_only: r.this_device_only,
           // 0.9.0: its maker's to see again, while it still works (or is
           // only paused or used up), if a copy was kept as it was made.
@@ -2221,8 +2316,10 @@ export class ShareService {
         // Withheld with the title: behind a PIN, a code or another browser,
         // even that it is a note waits (the N1 review).
         ...(words?.type_key === NOTE_KIND && !withheld ? { note: true } : {}),
-        // Which inbox its code goes to, masked: the recipient never types it.
-        code_to: link.code_email && !elsewhere ? maskEmail(link.code_email) : null,
+        // Which inbox, or which phone (SMS3), its code goes to, masked: the
+        // recipient never types it.
+        code_to: elsewhere ? null : (codeWay(link)?.to ?? null),
+        ...(link.code_phone ? { code_by: 'sms' as const } : {}),
         this_device_only: link.this_device_only,
         other_device: elsewhere,
       };
@@ -2237,6 +2334,16 @@ export class ShareService {
    * minutes and 10 in a day, however many ask at once. Written down as
    * `share.code_sent`, the address masked. Nothing is tried or counted
    * against the link's ten: sending proves nothing.
+   *
+   * Since 0.9.0 (SMS3) a link's code may go by text instead, to the number
+   * its sharer typed, through the household's own SMS Gate — with the same
+   * code rows, limits and tries. The code is kept first (and counted), then
+   * texted once the link's transaction is over, so no lock is held while
+   * SMS Gate answers. Not sent, it ends — or goes, when nothing was sent at
+   * all (the household's texts not set up, or this month's all sent) — and
+   * `share.code_not_sent` says so in the activity log; the recipient is told
+   * in plain words that the link can't be opened until its sharer sorts it
+   * out.
    */
   async sendCode(
     token: string,
@@ -2249,13 +2356,16 @@ export class ShareService {
     const sent = await withScope(this.db, scope, async (trx) => {
       const link = await this.live(trx, scope.actor.shareId, 'v2');
       if (usedUp(link)) throw opensUsedUp();
-      if (!link.code_email) {
+      if (!link.code_email && !link.code_phone) {
         throw new ApiError(409, 'no_code_needed', 'This link does not ask for a code.');
       }
       // A link for one device, in another browser: a forwarded link cannot
       // fill its recipient's inbox with codes it could never use.
       if (otherDevice(link, devices)) throw otherDeviceRefused();
-      if (!mail) throw codeUnavailable(503);
+      const phone = link.code_phone;
+      if (phone && !this.sms)
+        throw new ApiError(503, 'sms_code_unavailable', SHARE_TEXT_CANNOT_SEND);
+      if (!phone && !mail) throw codeUnavailable(503);
       // One send at a time for the link, so its limits hold however many
       // ask at once: the second waits for the first, and counts it.
       await sql`select pg_advisory_xact_lock(hashtextextended(${`share_code:${link.id}`}, 0))`.execute(
@@ -2313,8 +2423,11 @@ export class ShareService {
           expires_at: expiresAt,
         })
         .execute();
+      // By text (SMS3): kept now, sent once this transaction is over.
+      if (phone) return { by: 'sms' as const, to: phone, code, id, expiresAt, link };
+      const address = link.code_email as string;
       await this.record(trx, householdId, link, 'share.code_sent', meta, undefined, {
-        to: maskEmail(link.code_email),
+        to: maskEmail(address),
       });
       // Asked again now the household's log is held (record() takes its
       // lock): the link may have ended since live() looked — taken back,
@@ -2330,9 +2443,9 @@ export class ShareService {
       // all undone with the transaction, and the error goes to the log.
       // Nothing in it names the vault's documents, and nothing in it is a
       // link: whoever reads it types the code where they asked for it.
-      await mail({
+      await (mail as NonNullable<typeof mail>)({
         householdId,
-        to: link.code_email,
+        to: address,
         subject: 'Your code to open a shared link',
         text:
           `Your code is ${code.slice(0, 3)} ${code.slice(3)}.\n\n` +
@@ -2352,9 +2465,70 @@ export class ShareService {
           { cause: err },
         );
       });
-      return { to: link.code_email, expiresAt };
+      return { by: 'email' as const, to: address, expiresAt };
     });
-    return { sent_to: maskEmail(sent.to), expires_at: sent.expiresAt.toISOString() };
+    if (sent.by === 'email') {
+      return { sent_to: maskEmail(sent.to), expires_at: sent.expiresAt.toISOString() };
+    }
+    return this.textCode(scope, sent, meta);
+  }
+
+  /**
+   * A link's code, kept, texted to its number (SMS3): the household's own
+   * SMS Gate, counted against its cap and logged as `share_code` — the
+   * code, never the link or what it is to. Then the activity log says it
+   * went, or why it didn't; the line is the vault's best effort, as the
+   * text has gone, or not, already.
+   */
+  private async textCode(
+    scope: LinkScope,
+    sent: { to: string; code: string; id: string; expiresAt: Date; link: LinkRow },
+    meta: RequestMeta,
+  ): Promise<ShareCodeSent> {
+    const { householdId } = scope;
+    const sms = this.sms as SmsService;
+    const outcome = await sms.attempt(householdId, {
+      to: sent.to,
+      kind: 'share_code',
+      text: shareCodeText(sent.code),
+    });
+    const to = maskPhone(sent.to);
+    if ('sent' in outcome) {
+      await withScope(this.db, scope, (trx) =>
+        this.record(trx, householdId, sent.link, 'share.code_sent', meta, undefined, {
+          to,
+          by: 'sms',
+        }),
+      ).catch(() => undefined);
+      return { sent_to: to, expires_at: sent.expiresAt.toISOString(), by: 'sms' };
+    }
+    await withScope(this.db, scope, async (trx) => {
+      // A text SMS Gate never took still counts, and its code ends; one
+      // never asked of it (not set up, or the month's all sent) counts for
+      // nothing, and its code goes.
+      if (outcome.failed === 'not_sent') {
+        await trx
+          .updateTable('share_code')
+          .set({ expires_at: new Date() })
+          .where('id', '=', sent.id)
+          .execute();
+      } else {
+        await trx.deleteFrom('share_code').where('id', '=', sent.id).execute();
+      }
+      await this.record(trx, householdId, sent.link, 'share.code_not_sent', meta, undefined, {
+        to,
+        reason: outcome.failed,
+      });
+    }).catch(() => undefined);
+    if (outcome.failed === 'not_sent') {
+      throw new ApiError(
+        503,
+        'code_not_sent',
+        'The code couldn’t be texted just now. Try again in a minute.',
+        { retriable: true, retryAfter: 60 },
+      );
+    }
+    throw new ApiError(503, 'sms_code_unavailable', SHARE_TEXT_CANNOT_SEND);
   }
 
   /**
@@ -3116,7 +3290,7 @@ export class ShareService {
     given: { secret: string | undefined; code?: string | undefined },
     meta: RequestMeta,
   ): Promise<Attempt> {
-    const needsCode = link.code_email !== null;
+    const needsCode = link.code_email !== null || link.code_phone !== null;
     if (!link.pin_hash && !needsCode) return 'no pin';
     // The code that could be right: the newest, taken with its row before
     // anything else, and held to the end, so two Opens with the same code
@@ -3567,6 +3741,7 @@ function summarise(
     pin_hash?: string | null;
     secret_kind?: SecretKind | null;
     code_email?: string | null;
+    code_phone?: string | null;
     this_device_only?: boolean;
     paused_reason?:
       'restored' | 'locked' | 'sign_in_paused' | 'limited' | 'only_me_not_shared' | null;
@@ -3584,6 +3759,7 @@ function summarise(
   const asks = [
     r.pin_hash && wireKind(r.secret_kind ?? null) === 'password' ? 'a password' : null,
     r.code_email ? `a code emailed to ${maskEmail(r.code_email)}` : null,
+    r.code_phone ? `a code texted to ${maskPhone(r.code_phone)}` : null,
   ].filter((a): a is string => a !== null);
   // One browser (F520-05): the one it was first opened in.
   const guarded =

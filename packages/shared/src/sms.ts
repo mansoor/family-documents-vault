@@ -34,12 +34,24 @@ export type SmsStatus = 'untested' | 'ok' | 'failed';
 export type SmsState = 'pending' | 'processed' | 'sent' | 'delivered' | 'failed' | 'not_sent';
 
 /**
- * Why a text was sent: a test, a code, a number changed (SMS1); and since
+ * Why a text was sent: a test, a code, a number changed (SMS1); since
  * notifications by text (SMS2) the day's reminders, an alert, and a link
- * that was opened.
+ * that was opened; and since codes by text (SMS3) a share link's code, an
+ * invitation's, and a code to somebody's own number for a reset, a sign-in
+ * or a step-up.
  */
 export type SmsKind =
-  'test' | 'phone_code' | 'phone_changed' | 'reminders' | 'alert' | 'share_opened';
+  | 'test'
+  | 'phone_code'
+  | 'phone_changed'
+  | 'reminders'
+  | 'alert'
+  | 'share_opened'
+  | 'share_code'
+  | 'invite_code'
+  | 'reset_code'
+  | 'sign_in_code'
+  | 'step_up_code';
 
 /** SMS Gate's cloud relay: the one address of `cloud`. */
 export const SMS_CLOUD_URL = 'https://api.sms-gate.app/3rdparty/v1';
@@ -381,4 +393,102 @@ export function shareOpenedText(label: string | null | undefined): string {
     .slice(0, 60)
     .trim();
   return `Family Vault: the link you shared for ${clean || 'someone'} was opened.`;
+}
+
+// ------------------------------------------------------- codes by text (SMS3)
+
+/**
+ * What a code to somebody's own confirmed number is for (SMS3): finishing a
+ * password reset, the second step of a sign-in, and confirming it's them
+ * (a step-up). Six digits, 10 minutes, 5 tries and used once, as the code
+ * that confirms a number; at most 3 to a number, and to an account, in 15
+ * minutes, and 10 in a day.
+ */
+export type TextCodePurpose = 'reset' | 'sign_in' | 'step_up';
+
+/**
+ * What the person is told of a code by text, wherever it is offered: the
+ * weakest of the second factors, and why — so nobody mistakes it for an
+ * authenticator app or a passkey.
+ */
+export const SMS_FACTOR_WARNING =
+  'A text is the weakest way to prove it’s you: somebody who talks your mobile company into moving your number to their SIM gets your codes. Use it as well as a passkey or an authenticator app if you can, not instead.';
+
+/** Why an owner cannot make a text their only second step (SMS3). */
+export const SMS_OWNER_NEEDS_FACTOR =
+  'An owner needs a passkey or two-step sign-in with an authenticator app before a code by text can be added. A text is never an owner’s only second step.';
+
+/** The text that carries a share link's code: never the link, never what it is to. */
+export function shareCodeText(code: string): string {
+  return `Family Vault: your code to open the shared documents is ${code}. It ends in ${PHONE_CODE_MINUTES} minutes.`;
+}
+
+/**
+ * The text that carries an invitation's code: never the link, which goes
+ * as it always has. Whoever reads it types the code on the page the
+ * invitation's link opens.
+ */
+export function inviteCodeText(code: string, inviter: string | null | undefined): string {
+  const who = inviter ? `${firstName(inviter)} invited you to the family vault. ` : '';
+  return `Family Vault: ${who}Your invitation code is ${code}. Type it on the page your invitation link opens.`;
+}
+
+/** The text that carries a code for one of somebody's own purposes. */
+export function textCodeText(purpose: TextCodePurpose, code: string): string {
+  const what =
+    purpose === 'reset'
+      ? 'your code to finish resetting your password'
+      : purpose === 'sign_in'
+        ? 'your sign-in code'
+        : 'your code to confirm it’s you';
+  const tail =
+    purpose === 'reset'
+      ? ' If you didn’t ask for it, tell an owner.'
+      : ' Never tell it to anybody.';
+  return `Family Vault: ${what} is ${code}. It ends in ${PHONE_CODE_MINUTES} minutes.${tail}`;
+}
+
+/**
+ * Who may confirm it's them with a code by text (SMS3): adults and teens.
+ * Never an owner — whose step-ups guard the household's own settings and
+ * the owner's powers (A54) — nor a viewer or a guest.
+ */
+export function mayStepUpByText(role: string): boolean {
+  return role === 'adult' || role === 'teen';
+}
+
+/** `POST /auth/mfa/text`, `/auth/step-up/text`, `/password-resets/code`: where a code went, masked. */
+export interface TextCodeSent {
+  /** "•••• •••123". */
+  sent_to: string;
+  expires_at: string;
+}
+
+/** `GET /auth/text-codes`: whether the person is asked for codes by text, and whether they can be. */
+export interface TextCodeSettings {
+  /** A code by text at sign-in (as well as the password), and to confirm it's them. */
+  sign_in: boolean;
+  /** A code by text to finish a password reset. */
+  reset: boolean;
+  /** Their own number, masked; null when they have none. */
+  phone: string | null;
+  /** Whether it is confirmed: only a confirmed number is sent a code. */
+  phone_confirmed: boolean;
+  /** Whether the household sends texts now (`GET /sms/status`). */
+  sms_ready: boolean;
+  /**
+   * Whether they could turn either on now: a confirmed number, texts set up,
+   * and for an owner, a passkey or two-step sign-in as well (`why_not` when not).
+   */
+  can_turn_on: boolean;
+  /** Why not, in plain words; null when they can. */
+  why_not: string | null;
+  /** Whether a code by text can confirm it's them (adults and teens alone). */
+  step_up: boolean;
+}
+
+/** `PUT /auth/text-codes`: either, or both. */
+export interface TextCodeSettingsInput {
+  sign_in?: boolean | undefined;
+  reset?: boolean | undefined;
 }

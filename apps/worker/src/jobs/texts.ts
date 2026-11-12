@@ -386,8 +386,9 @@ export function createTexter(deps: TextDeps): Texter {
     },
 
     async alert(a) {
-      // The operator's mail alone (a reset's link): never texted.
-      if (a.via === 'operator') return 0;
+      // The operator's mail alone (a reset's link): never texted; nor news
+      // that a code by text could not be sent (SMS3).
+      if (a.via === 'operator' || a.no_text === true) return 0;
       const kind: AlertTextKind = isAlertTextKind(a.text_kind) ? a.text_kind : 'news';
       let told = 0;
       for (const accountId of [...new Set(a.account_ids)]) {

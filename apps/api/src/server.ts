@@ -70,6 +70,7 @@ import { SettingsCheckService } from './settings-checks.js';
 import { LocalAiService } from './household/local-ai.js';
 import { PHONE_CODE_KEY_PURPOSE, MemberPhoneService } from './sms/phones.js';
 import { SmsService } from './sms/service.js';
+import { SMS_CODE_KEY_PURPOSE, TextCodeService } from './sms/codes.js';
 import { serverVersion } from './version.js';
 import { masterKeyOpensVault } from './master-key-check.js';
 
@@ -160,6 +161,15 @@ async function main(): Promise<void> {
   const mailKey = deriveKey(masterSecret, OPERATOR_MAIL_KEY_PURPOSE);
   const operatorMail = (m: MailRequest) => enqueue(MAIL_JOB, mailJob(mailKey, m));
 
+  // Text messages (0.9.0, SMS1): SMS Gate's password sealed as it is saved,
+  // and the codes that confirm a number HMACed under a key of their own.
+  const sms = new SmsService(db, { key: deriveKey(masterSecret, SMS_PASSWORD_PURPOSE), alert });
+  // Codes by text to one's own number (SMS3), HMACed under a key of their own.
+  const textCodes = new TextCodeService(db, sms, {
+    codeKey: deriveKey(masterSecret, SMS_CODE_KEY_PURPOSE),
+    alert,
+  });
+
   // Passkeys are bound to the address the vault is published at, so this
   // is where FDV_BASE_URL stops being cosmetic.
   const auth = new AuthService(
@@ -170,6 +180,7 @@ async function main(): Promise<void> {
     alert,
     totp,
     push,
+    textCodes,
   );
   const passkeys = new PasskeyService(
     db,
@@ -177,7 +188,7 @@ async function main(): Promise<void> {
     passkeyConfig(config.FDV_BASE_URL, config.FDV_DISPLAY_NAME, config.FDV_RP_ID),
   );
 
-  const stepUpService = new StepUpService(db, passkeys, totp);
+  const stepUpService = new StepUpService(db, passkeys, totp, textCodes);
   const passwords = new PasswordService(
     db,
     keys,
@@ -187,6 +198,7 @@ async function main(): Promise<void> {
     Boolean(config.FDV_SMTP_URL),
     push,
     enqueue,
+    textCodes,
   );
   // 5.29: a reset an owner starts goes by the operator's mail server alone,
   // or is handed over only for somebody who keeps nothing private.
@@ -219,9 +231,6 @@ async function main(): Promise<void> {
   );
   // What an owner asks the worker from Settings (0.9.0, O1): Verify, browse, Test the mailbox.
   const settingsChecks = new SettingsCheckService(db, enqueue);
-  // Text messages (0.9.0, SMS1): SMS Gate's password sealed as it is saved,
-  // and the codes that confirm a number HMACed under a key of their own.
-  const sms = new SmsService(db, { key: deriveKey(masterSecret, SMS_PASSWORD_PURPOSE), alert });
   const app = await buildApp(config, {
     serverVersion: version,
     instanceId: instanceIdReader(db),
@@ -240,6 +249,7 @@ async function main(): Promise<void> {
     phones: new MemberPhoneService(db, sms, {
       codeKey: deriveKey(masterSecret, PHONE_CODE_KEY_PURPOSE),
     }),
+    textCodes,
     // The local AI reader's switch (0.9.0, R4): the endpoint is the worker's alone.
     localAi: new LocalAiService(db, settingsChecks),
     pingDatabase: async () => {
@@ -274,7 +284,8 @@ async function main(): Promise<void> {
     photos: new PhotoService(db, keys, vaults, enqueue, config.FDV_MAX_UPLOAD_BYTES),
     // 5.26: a wider audience is told by the operator's mail server alone.
     identity: new IdentityService(db, keys, alert, Boolean(config.FDV_SMTP_URL), push),
-    invitations: new InvitationService(db, keys, auth),
+    // SMS3: an owner may text an invitation's code as well.
+    invitations: new InvitationService(db, keys, auth, sms),
     coOwners: new CoOwnerService(db, alert, push, enqueue),
     locks: new LockService(db, alert, push, enqueue),
     restrictions: new RestrictionService(db, alert),
@@ -292,6 +303,8 @@ async function main(): Promise<void> {
       deviceKey: deviceCookieKey(masterSecret, SHARE_DEVICE_KEY_PURPOSE),
       // 0.9.0: what a link's maker was handed, kept sealed to show them again.
       copyKey: deriveKey(masterSecret, SHARE_LINK_COPY_PURPOSE),
+      // SMS3: a link's code by text, through the household's own SMS Gate.
+      sms,
     }),
     uploads: new UploadRequestService(db, keys, vaults, {
       maxDays: config.FDV_SHARE_MAX_DAYS,

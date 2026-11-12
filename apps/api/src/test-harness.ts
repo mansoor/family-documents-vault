@@ -78,6 +78,7 @@ import { LocalAiService } from './household/local-ai.js';
 import { PHONE_CODE_KEY_PURPOSE, MemberPhoneService } from './sms/phones.js';
 import type { SmsProvider, SmsProviderFactory } from '@fdv/db';
 import { SmsService } from './sms/service.js';
+import { SMS_CODE_KEY_PURPOSE, TextCodeService } from './sms/codes.js';
 import { serverVersion } from './version.js';
 
 /**
@@ -293,6 +294,33 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
   // And an email to one address (5.20): the same sealed mapping as production.
   const operatorMail = (m: MailRequest) => enqueue(MAIL_JOB, mailJob(TEST_MAIL_KEY, m));
   const reminders = new ReminderService(db);
+  // Text messages (SMS1): an SMS Gate that delivers every text at once and
+  // keeps it in h.texts, unless a test brings its own.
+  const texts: SentText[] = [];
+  const delivering: SmsProviderFactory = (c): SmsProvider => ({
+    send: async (to, text) => {
+      texts.push({ to, text, baseUrl: c.baseUrl });
+      return { id: `text-${texts.length}`, state: 'delivered' };
+    },
+    state: async () => ({ state: 'delivered' }),
+  });
+  const sms = new SmsService(db, {
+    key: deriveKey(TEST_MASTER, SMS_PASSWORD_PURPOSE),
+    provider: opts.smsProvider ?? delivering,
+    alert,
+    testWaitMs: opts.smsTestWaitMs ?? 2000,
+    pollMs: 20,
+    resolve: async (host) => {
+      const found = dns.get(host);
+      if (!found) throw new Error(`ENOTFOUND ${host}`);
+      return found;
+    },
+  });
+  // Codes by text to one's own number (SMS3).
+  const textCodes = new TextCodeService(db, sms, {
+    codeKey: deriveKey(TEST_MASTER, SMS_CODE_KEY_PURPOSE),
+    alert,
+  });
   const totp = new TotpService(
     db,
     deriveKey(TEST_MASTER, 'totp-secrets'),
@@ -306,17 +334,18 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     alert,
     totp,
     push,
+    textCodes,
   );
   const passkeys = new PasskeyService(
     db,
     auth,
     passkeyConfig('http://localhost:8080', 'Test vault'),
   );
-  const invitations = new InvitationService(db, keys, auth);
+  const invitations = new InvitationService(db, keys, auth, sms);
   let joined = 1;
   /** The owning role, for `join`'s viewers: made when first asked for. */
   let admin: ReturnType<typeof createPool> | null = null;
-  const stepUp = new StepUpService(db, passkeys, totp);
+  const stepUp = new StepUpService(db, passkeys, totp, textCodes);
   // As if the operator had set FDV_SMTP_URL, unless the test said not
   // (operatorMail: false); passwords.test.ts also builds one without it.
   const passwords = new PasswordService(
@@ -328,6 +357,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     Boolean(config.FDV_SMTP_URL),
     push,
     enqueue,
+    textCodes,
   );
   const resets = new OwnerResetService(
     db,
@@ -366,28 +396,6 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
   // What an owner asks the worker from Settings (O1): the job is in h.jobs,
   // and a test answers it as the worker would.
   const settingsChecks = new SettingsCheckService(db, enqueue, opts.now);
-  // Text messages (SMS1): an SMS Gate that delivers every text at once and
-  // keeps it in h.texts, unless a test brings its own.
-  const texts: SentText[] = [];
-  const delivering: SmsProviderFactory = (c): SmsProvider => ({
-    send: async (to, text) => {
-      texts.push({ to, text, baseUrl: c.baseUrl });
-      return { id: `text-${texts.length}`, state: 'delivered' };
-    },
-    state: async () => ({ state: 'delivered' }),
-  });
-  const sms = new SmsService(db, {
-    key: deriveKey(TEST_MASTER, SMS_PASSWORD_PURPOSE),
-    provider: opts.smsProvider ?? delivering,
-    alert,
-    testWaitMs: opts.smsTestWaitMs ?? 2000,
-    pollMs: 20,
-    resolve: async (host) => {
-      const found = dns.get(host);
-      if (!found) throw new Error(`ENOTFOUND ${host}`);
-      return found;
-    },
-  });
   const app = await buildApp(config, {
     serverVersion: await serverVersion(),
     instanceId: instanceIdReader(db),
@@ -408,6 +416,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     phones: new MemberPhoneService(db, sms, {
       codeKey: deriveKey(TEST_MASTER, PHONE_CODE_KEY_PURPOSE),
     }),
+    textCodes,
     localAi: new LocalAiService(db, settingsChecks),
     pingDatabase: async () => undefined,
     auth,
@@ -430,6 +439,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       mail: config.FDV_SMTP_URL ? (opts.mail ?? operatorMail) : null,
       deviceKey: deviceCookieKey(TEST_MASTER, SHARE_DEVICE_KEY_PURPOSE),
       copyKey: deriveKey(TEST_MASTER, SHARE_LINK_COPY_PURPOSE),
+      sms,
     }),
     uploads: new UploadRequestService(db, keys, vaults, {
       maxDays: config.FDV_SHARE_MAX_DAYS,

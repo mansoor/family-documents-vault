@@ -62,6 +62,19 @@ const ALLOWED = [
   'sms/phones.ts MemberPhoneService.issue',
   'sms/phones.ts MemberPhoneService.issue',
   'sms/phones.ts MemberPhoneService.confirm',
+  // Codes by text to one's own number (0.9.0, SMS3): whose a code would be —
+  // the person's number in their newest household, and whether its texts go
+  // — read before anybody is signed in (a reset, a sign-in's second step);
+  // a code made, counted and ended, and tried, by the vault alone (sms_code
+  // is nobody's to read, 0088); and a reset that went on without its code
+  // told to the person's owners, who are found as the vault — and a sign-in
+  // that did (the owner's decision of 12 Nov 2026), written in the log as
+  // the person, before anybody is signed in.
+  'sms/codes.ts TextCodeService.target',
+  'sms/codes.ts TextCodeService.skipped',
+  'sms/codes.ts TextCodeService.send',
+  'sms/codes.ts TextCodeService.send',
+  'sms/codes.ts TextCodeService.verify',
 ];
 
 const SRC = fileURLToPath(new URL('.', import.meta.url));

@@ -210,6 +210,10 @@ export function ResetPasswordScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  // A code by text as well (0.9.0, SMS3), when the person asked for one.
+  const [code, setCode] = useState('');
+  const [texted, setTexted] = useState<string | null>(null);
+  const [texting, setTexting] = useState(false);
 
   useEffect(() => {
     if (!token) return;
@@ -233,12 +237,27 @@ export function ResetPasswordScreen() {
     setBusy(true);
     setError(null);
     try {
-      await api.completeReset(token, password);
+      await api.completeReset(token, password, textTo ? code.trim() : undefined);
       markLinkSpent();
       setDone(true);
     } catch (err) {
       setError(describeError(err));
       setBusy(false);
+    }
+  };
+
+  const textTo = preview?.text_code_to ?? null;
+  const textMe = async () => {
+    if (!token || texting) return;
+    setTexting(true);
+    setError(null);
+    try {
+      const sent = await api.sendResetCode(token);
+      setTexted(`We texted a code to ${sent.sent_to}. It works once, for 10 minutes.`);
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setTexting(false);
     }
   };
 
@@ -357,8 +376,40 @@ export function ResetPasswordScreen() {
           autoComplete="new-password"
           hint="At least 10 characters. This also unlocks your own private documents."
         />
+        {/* You asked for a code by text when your password is reset (SMS3). */}
+        {textTo && (
+          <div className="stack" style={{ gap: 8 }} data-testid="reset-text-code">
+            <p>
+              You asked for a code by text when your password is reset. We text it to{' '}
+              <strong>{textTo}</strong>.
+            </p>
+            <Field
+              id="reset-code"
+              label="The code from the text"
+              value={code}
+              onChange={setCode}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={9}
+              hint="Six digits, from the newest text."
+            />
+            <p className="status-line" role="status">
+              {texted ?? ''}
+            </p>
+            <Button
+              kind={texted ? 'quiet' : 'primary'}
+              disabled={texting}
+              onClick={() => void textMe()}
+            >
+              {texting ? 'Sending…' : texted ? 'Send another code' : 'Text me the code'}
+            </Button>
+          </div>
+        )}
         <ErrorNote message={error} />
-        <Button type="submit" disabled={busy || password.length < 10}>
+        <Button
+          type="submit"
+          disabled={busy || password.length < 10 || (textTo !== null && code.trim().length < 6)}
+        >
           {busy ? 'Setting it…' : 'Set my new password'}
         </Button>
         <p className="muted">

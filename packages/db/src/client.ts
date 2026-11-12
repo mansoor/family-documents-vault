@@ -6,6 +6,7 @@ import {
   type Generated,
   type GeneratedAlways,
 } from 'kysely';
+import type { SmsKind } from '@fdv/shared';
 import pg from 'pg';
 
 /**
@@ -198,6 +199,14 @@ export interface Schema {
      * two-step sign-in turned on after it is kept by a reset.
      */
     password_changed_at: Timestamp | null;
+    /**
+     * Whether a code by text is asked for at sign-in and when they confirm
+     * it's them (0088, SMS3): only ever beside a password, and never an
+     * owner's only second factor. Theirs alone to change.
+     */
+    sign_in_text: Generated<boolean>;
+    /** Whether a reset of their password also asks for a code by text (0088, SMS3). */
+    reset_text: Generated<boolean>;
   };
 
   account_household: {
@@ -434,6 +443,12 @@ export interface Schema {
      * only then, when the link has ended.
      */
     code_email: ColumnType<string | null, string | null | undefined, null>;
+    /**
+     * Where a texted code goes (0088, v2 only): the number the sharer typed,
+     * as E.164, beside `code_email` and never with it. Shown only masked;
+     * cleared, as the address is, when the link has ended.
+     */
+    code_phone: ColumnType<string | null, string | null | undefined, null>;
     /** The first browser to open it is the only one it opens in (0043, v2 only). */
     this_device_only: ColumnType<boolean, boolean | undefined, never>;
     /** That browser: SHA-256 of the link and its device cookie, set once (0043). */
@@ -1831,13 +1846,31 @@ export interface Schema {
     used_at: Timestamp | null;
   };
 
+  /**
+   * A code texted to somebody's own confirmed number (0088, SMS3), for a
+   * reset, a sign-in or a step-up: its HMAC, never the code. The vault's alone.
+   */
+  sms_code: {
+    id: string;
+    household_id: string;
+    account_id: string;
+    member_id: string;
+    purpose: 'reset' | 'sign_in' | 'step_up';
+    number: string;
+    code_hash: Buffer;
+    sent_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    attempts: Generated<number>;
+    used_at: Timestamp | null;
+  };
+
   /** Each text the vault asked SMS Gate to send (0084): never its words. The owners' to read. */
   sms_message: {
     id: Generated<string>;
     household_id: string;
     member_id: string | null;
     number_tail: string;
-    kind: 'test' | 'phone_code' | 'phone_changed' | 'reminders' | 'alert' | 'share_opened';
+    kind: SmsKind;
     provider_id: string | null;
     state: Generated<'pending' | 'processed' | 'sent' | 'delivered' | 'failed' | 'not_sent'>;
     error: string | null;

@@ -100,7 +100,8 @@ export async function pruneShareCodes(deps: {
   const ENDED = `(l.revoked_at is not null or l.expires_at <= now() or l.attempts >= 10
                   or (l.max_opens is not null and l.open_count >= l.max_opens))`;
   const { rows } = await deps.admin.query<{ household_id: string }>(
-    `select household_id from share_link l where l.code_email is not null and ${ENDED}
+    `select household_id from share_link l
+      where (l.code_email is not null or l.code_phone is not null) and ${ENDED}
      union
      select c.household_id from share_code c join share_link l on l.id = c.share_id
       where c.sent_at <= now() - interval '1 day' or ${ENDED}`,
@@ -109,8 +110,10 @@ export async function pruneShareCodes(deps: {
   let codes = 0;
   for (const { household_id: hh } of rows) {
     await withSystem(deps.app, hh, async (trx) => {
-      const cleared = await sql`update share_link l set code_email = null
-                                 where l.code_email is not null and ${sql.raw(ENDED)}`.execute(trx);
+      // The address, or the number a code is texted to (SMS3): both go.
+      const cleared = await sql`update share_link l set code_email = null, code_phone = null
+                                 where (l.code_email is not null or l.code_phone is not null)
+                                   and ${sql.raw(ENDED)}`.execute(trx);
       addresses += Number(cleared.numAffectedRows ?? 0);
       const gone = await sql`delete from share_code c using share_link l
                               where l.id = c.share_id

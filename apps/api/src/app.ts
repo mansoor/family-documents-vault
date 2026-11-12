@@ -63,6 +63,7 @@ import { registerSms } from './sms/routes.js';
 import type { MailInService } from './mail-in/service.js';
 import type { MemberPhoneService } from './sms/phones.js';
 import type { SmsService } from './sms/service.js';
+import type { TextCodeService } from './sms/codes.js';
 import { registerReadingCheck } from './reading-check/routes.js';
 import type { ReadingCheckService } from './reading-check/service.js';
 import { registerSettingsChecks, type SettingsCheckService } from './settings-checks.js';
@@ -136,6 +137,8 @@ export interface AppDeps {
   /** Text messages (0.9.0, SMS1): the owners' SMS Gate, and each person's mobile number. */
   sms?: SmsService;
   phones?: MemberPhoneService;
+  /** Codes by text to one's own number (0.9.0, SMS3): a reset's, a sign-in's, a step-up's. */
+  textCodes?: TextCodeService;
   /** The Reading check (0.9.0, R0): an owner's. */
   readingChecks?: ReadingCheckService;
   /** What an owner asks the worker from Settings, and its answers (0.9.0, O1). */
@@ -470,6 +473,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     deps.stepUp,
     deps.passwords,
     deps.restrictions,
+    deps.textCodes,
   );
   registerVaults(app, deps.vaults, deps.stepUp);
   registerHousehold(

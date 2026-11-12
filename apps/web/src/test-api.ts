@@ -63,6 +63,8 @@ import {
   type Preferences,
   type SmsSettingsView,
   type SmsState,
+  type MfaChallenge,
+  type TextCodeSettings,
   isDocumentSort,
   LOCATION_SORT_REFUSAL,
   seesLocation,
@@ -98,14 +100,23 @@ function factorsOf(b: {
   with_password?: boolean;
   password?: string;
   code_email?: string;
+  second_factor?: 'email' | 'sms';
+  recipient_phone?: string;
   this_device_only?: boolean;
 }) {
+  // A code by text (SMS3): to the number typed, shown masked.
+  const texted = b.second_factor === 'sms' && b.recipient_phone;
   return {
     protection: [
       ...(b.with_pin ? ['pin'] : b.with_password || b.password ? ['password'] : []),
-      ...(b.code_email ? ['code'] : []),
+      ...(b.code_email || texted ? ['code'] : []),
     ],
-    code_to: b.code_email ? maskEmail(b.code_email) : null,
+    code_to: texted
+      ? `•••• •••${(b.recipient_phone ?? '').replace(/\D/g, '').slice(-3)}`
+      : b.code_email
+        ? maskEmail(b.code_email)
+        : null,
+    second_factor: texted ? ('sms' as const) : b.code_email ? ('email' as const) : null,
     this_device_only: b.this_device_only === true,
   };
 }
@@ -309,6 +320,21 @@ export interface FakeState {
   sharePassword?: string | null;
   shareCode?: string | null;
   shareCodeTo?: string;
+  /** The link's code comes by text (SMS3): the page is told `code_by: 'sms'`. */
+  shareCodeByText?: boolean;
+  /**
+   * Codes by text (0.9.0, SMS3), with `sms` (whose `view.ready` says
+   * whether texts go): `features.sms_codes`; the person's own settings
+   * (GET and PUT /auth/text-codes), where a step-up's code would go
+   * (`stepUpTextTo`), a sign-in that asks for a texted code
+   * (`signInByText`: its MfaChallenge), and a reset's (`resetTextTo`).
+   * Every texted code is 654321.
+   */
+  smsCodes?: boolean;
+  textCodes?: TextCodeSettings;
+  stepUpTextTo?: string | null;
+  signInByText?: MfaChallenge;
+  resetTextTo?: string | null;
   shareCodesSent?: number;
   /** The vault refuses the address a code would go to (validation_failed on code_email). */
   refuseCodeEmail?: boolean;
@@ -1204,6 +1230,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.sms ? { sms_texts: true } : {}),
           // Notifications by text (0.9.0, SMS2): with them, unless a test is an older vault.
           ...(state.sms && state.smsNotifications !== false ? { sms_notifications: true } : {}),
+          // Codes by text (0.9.0, SMS3): said when a test gives them.
+          ...(state.sms && state.smsCodes ? { sms_codes: true } : {}),
           // The household as whose a document is (0.9.0): said when a test asks.
           ...(state.householdOwner ? { household_owner: true } : {}),
           // A computer that sends scans (0.8.0, D1): said when a test gives computers.
@@ -1233,6 +1261,59 @@ export function installFakeApi(state: FakeState) {
       state.setupRequired = false;
       state.displayName = (body as { household_name: string }).household_name;
       return json(TOKENS, 201);
+    }
+    // A sign-in whose second step is a texted code (SMS3).
+    if (path === '/api/v1/auth/password' && state.signInByText) {
+      return json(state.signInByText);
+    }
+    if (path === '/api/v1/auth/mfa/text' && method === 'POST') {
+      return json({
+        sent_to: state.signInByText?.text_to ?? '•••• •••404',
+        expires_at: new Date(Date.now() + 6e5).toISOString(),
+      });
+    }
+    if (path === '/api/v1/auth/mfa' && method === 'POST') {
+      if ((body as { code?: string }).code !== '654321') {
+        return refuse(422, 'sms_code_wrong', 'That code isn’t right. 4 tries left.');
+      }
+      state.refreshToken = TOKENS.refresh_token;
+      state.spentRefresh = null;
+      state.sessionEnded = false;
+      return json(TOKENS);
+    }
+    // One's own codes by text (SMS3), as the vault keeps them.
+    if (path === '/api/v1/auth/text-codes' && state.smsCodes) {
+      const now: TextCodeSettings = state.textCodes ?? {
+        sign_in: false,
+        reset: false,
+        phone: '•••• •••202',
+        phone_confirmed: true,
+        sms_ready: true,
+        can_turn_on: true,
+        why_not: null,
+        step_up: true,
+      };
+      if (method === 'PUT') {
+        const b = body as { sign_in?: boolean; reset?: boolean };
+        state.textCodes = { ...now, ...b };
+        return json(state.textCodes);
+      }
+      return json(now);
+    }
+    if (path === '/api/v1/auth/step-up/text' && method === 'POST') {
+      if (!state.stepUpTextTo) {
+        return refuse(409, 'sms_code_not_offered', 'A code by text isn’t offered here.');
+      }
+      return json({
+        sent_to: state.stepUpTextTo,
+        expires_at: new Date(Date.now() + 6e5).toISOString(),
+      });
+    }
+    if (path === '/api/v1/password-resets/code' && method === 'POST') {
+      return json({
+        sent_to: state.resetTextTo ?? '•••• •••202',
+        expires_at: new Date(Date.now() + 6e5).toISOString(),
+      });
     }
     if (path === '/api/v1/auth/password') {
       state.refreshToken = TOKENS.refresh_token;
@@ -1366,7 +1447,15 @@ export function installFakeApi(state: FakeState) {
       return json({ id: 'ex-1', state: 'queued' }, 202);
     }
     if (path === '/api/v1/auth/step-up' && method === 'POST') {
-      const b = body as { password?: string; code?: string };
+      const b = body as { password?: string; code?: string; text_code?: string };
+      // A texted code (SMS3): never a factor, so it serves what a password does.
+      if (b?.text_code !== undefined) {
+        if (b.text_code !== '654321') {
+          return refuse(422, 'sms_code_wrong', 'That code isn’t right. 4 tries left.');
+        }
+        state.stepUpNeeded = false;
+        return json({ verified_at: new Date().toISOString(), expires_in: 300 });
+      }
       // A code from the authenticator app (5.25): what the owner's powers ask.
       if (b?.code !== undefined) {
         if (b.code !== '123456') {
@@ -1402,7 +1491,9 @@ export function installFakeApi(state: FakeState) {
       state.stepUpNeeded = false;
       return json({ verified_at: new Date().toISOString(), expires_in: 300 });
     }
-    if (path === '/api/v1/auth/step-up') return json({ verified_at: null, expires_in: 0 });
+    if (path === '/api/v1/auth/step-up') {
+      return json({ verified_at: null, expires_in: 0, text_to: state.stepUpTextTo ?? null });
+    }
     if (path === '/api/v1/exports') return json({ items: [] });
     // Whoever adds papers is told the local AI reads them (R4, the review's M1).
     if (path === '/api/v1/household/reading/notice') {
@@ -2787,6 +2878,7 @@ export function installFakeApi(state: FakeState) {
         email: 'mansoor@example.test',
         issued_by_operator: state.resetByOperator || state.resetIssuedBy === 'owner',
         ...(state.resetIssuedBy ? { issued_by: state.resetIssuedBy } : {}),
+        text_code_to: state.resetTextTo ?? null,
         expires_at: new Date(Date.now() + 36e5).toISOString(),
       });
     }
@@ -3934,7 +4026,12 @@ export function installFakeApi(state: FakeState) {
               collection_name: withheld ? null : state.shareCollection.name,
             }
           : { kind: 'document' }),
-        code_to: state.shareCode ? maskEmail(state.shareCodeTo ?? 'jane.smith@example.com') : null,
+        code_to: state.shareCode
+          ? state.shareCodeByText
+            ? '•••• •••456'
+            : maskEmail(state.shareCodeTo ?? 'jane.smith@example.com')
+          : null,
+        ...(state.shareCode && state.shareCodeByText ? { code_by: 'sms' } : {}),
         this_device_only: Boolean(state.shareDeviceOnly),
         other_device: Boolean(state.shareOtherDevice),
       });
@@ -3954,8 +4051,11 @@ export function installFakeApi(state: FakeState) {
         );
       }
       return json({
-        sent_to: maskEmail(state.shareCodeTo ?? 'jane.smith@example.com'),
+        sent_to: state.shareCodeByText
+          ? '•••• •••456'
+          : maskEmail(state.shareCodeTo ?? 'jane.smith@example.com'),
         expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+        ...(state.shareCodeByText ? { by: 'sms' } : {}),
       });
     }
     if (path === '/api/v1/shared/unlock' && method === 'POST') {
@@ -4303,8 +4403,15 @@ export function installFakeApi(state: FakeState) {
         attempts_left: 5,
       };
       state.invitations.push(invitation);
+      // The code by text as well (SMS3), masked.
+      const phone = (body as { invitee_phone?: string }).invitee_phone;
       return json(
-        { invitation, link_token: 'link-secret-0123456789abcdef', code: 'ABCD-EFGH' },
+        {
+          invitation,
+          link_token: 'link-secret-0123456789abcdef',
+          code: 'ABCD-EFGH',
+          ...(phone ? { code_texted_to: `•••• •••${phone.replace(/\D/g, '').slice(-3)}` } : {}),
+        },
         201,
       );
     }

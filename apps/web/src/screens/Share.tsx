@@ -29,6 +29,7 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { Button, Check, ErrorNote, Field } from '../ui.js';
 import { endWords, familyZoneNow } from '../family-time.js';
+import { useSmsCodes } from '../text-messages.js';
 
 /**
  * Sharing one document with somebody outside the family (SHR-05).
@@ -73,6 +74,8 @@ export function SharePanel(props: {
   onCount?: (n: number) => void;
 }) {
   const { guarded, authVersion, caps } = useApp();
+  // A code by text (SMS3): offered while the household's texts are set up.
+  const texts = useSmsCodes();
   const [made, setMade] = useState<CreatedShare | null>(null);
   const options = useLinkOptions();
   const [open, setOpen] = useState(Boolean(props.onClose));
@@ -139,7 +142,7 @@ export function SharePanel(props: {
     timezone,
     maxDays: caps?.limits.share_max_days ?? SHARE_MAX_DAYS,
     viewable,
-    factors: linkFactors(caps),
+    factors: linkFactors(caps, texts),
   });
 
   const working = (on: typeof busy) => {
@@ -303,6 +306,9 @@ export interface LinkOptionsValue {
   /** A code emailed to this address when they ask (5.20). */
   withCode: boolean;
   codeEmail: string;
+  /** Or texted to this mobile number (0.9.0, SMS3), where the vault can send texts. */
+  codeBy: 'email' | 'sms';
+  codePhone: string;
   /**
    * The vault's own refusal of that address, said under it (W520-5), until
    * it is changed.
@@ -323,6 +329,8 @@ const NO_OPTIONS: LinkOptionsValue = {
   password: '',
   withCode: false,
   codeEmail: '',
+  codeBy: 'email',
+  codePhone: '',
   codeRefused: null,
   thisDeviceOnly: false,
 };
@@ -342,6 +350,7 @@ export function useLinkOptions() {
         withPassword: v.withPassword,
         passwordMode: v.passwordMode,
         withCode: v.withCode,
+        codeBy: v.codeBy,
         thisDeviceOnly: v.thisDeviceOnly,
       })),
   };
@@ -350,19 +359,27 @@ export function useLinkOptions() {
 /**
  * What this vault can ask for besides the link (5.20): a password and one
  * browser only (`share_second_factor`), and an emailed code, only when its
- * operator has given it a mail server (`share_email_code`, A21).
+ * operator has given it a mail server (`share_email_code`, A21); and since
+ * 0.9.0 a texted code, while the household's texts are set up (`sms_codes`,
+ * GET /sms/status: `useSmsCodes`).
  */
 export interface LinkFactors {
   second: boolean;
   email: boolean;
+  text?: boolean;
 }
 
-export function linkFactors(caps: Capabilities | null): LinkFactors {
+export function linkFactors(caps: Capabilities | null, texts = false): LinkFactors {
   return {
     second: caps?.features.share_second_factor === true,
     email: caps?.features.share_email_code === true,
+    text: caps?.features.sms_codes === true && texts,
   };
 }
+
+/** What a texted code proves, beside its choice (SMS3), as the emailed one's truth is said. */
+export const SHARE_TEXT_TRUTH =
+  'The code proves they have that phone. It protects against a forwarded or misposted link, not a lost phone or a number moved to somebody else’s SIM.';
 
 /**
  * The vault's refusal of what a link asks for, when it is about the address
@@ -372,6 +389,8 @@ export function linkFactors(caps: Capabilities | null): LinkFactors {
 export function codeAddressRefusal(err: unknown): string | null {
   if (!(err instanceof ApiRequestError)) return null;
   if (err.code === 'email_code_unavailable') return err.message;
+  // A number the vault cannot read, or texts no longer set up (SMS3).
+  if (err.code === 'phone_number_invalid' || err.code === 'sms_not_set_up') return err.message;
   if (err.code === 'validation_failed' && err.detail?.startsWith('code_email')) return err.message;
   return null;
 }
@@ -417,14 +436,29 @@ export function readLinkOptions(
     password && value.passwordMode === 'typed' && typed.length < SHARE_PASSWORD_MIN
       ? `At least ${SHARE_PASSWORD_MIN} characters. Something they can type, and you can say to them.`
       : null;
-  const code = factors.email && value.withCode;
+  // How a code goes (SMS3): as chosen, where the vault can send it that way.
+  const by: 'email' | 'sms' | null =
+    value.codeBy === 'sms' && factors.text
+      ? 'sms'
+      : factors.email
+        ? 'email'
+        : factors.text
+          ? 'sms'
+          : null;
+  const code = value.withCode && by !== null;
   const address = value.codeEmail.trim();
+  const phone = value.codePhone.trim();
   // The vault's own rule (isShareAddress, W520-5): nothing it would refuse
-  // is offered; and a refusal it gave anyway is said here too.
+  // is offered; and a refusal it gave anyway is said here too. A number is
+  // read by the vault, in the household's country.
   const codeProblem = code
-    ? !isShareAddress(address)
-      ? 'Their email address, which the code will go to: name@example.com.'
-      : value.codeRefused
+    ? by === 'sms'
+      ? !/^[+0-9 ()\-.]{7,40}$/.test(phone)
+        ? 'Their mobile number, which the code will be texted to: such as 07700 900123.'
+        : value.codeRefused
+      : !isShareAddress(address)
+        ? 'Their email address, which the code will go to: name@example.com.'
+        : value.codeRefused
     : null;
   const body: ShareInput | null =
     endAt && !endProblem && !opensProblem && !passwordProblem && !codeProblem
@@ -439,7 +473,10 @@ export function readLinkOptions(
               ? { with_password: true }
               : { password: typed }
             : {}),
-          ...(code ? { code_email: address } : {}),
+          ...(code && by === 'email' ? { code_email: address } : {}),
+          ...(code && by === 'sms'
+            ? { second_factor: 'sms' as const, recipient_phone: phone }
+            : {}),
           ...(factors.second && value.thisDeviceOnly ? { this_device_only: true } : {}),
         }
       : null;
@@ -455,6 +492,7 @@ export function readLinkOptions(
     body,
     maxDays,
     factors,
+    by,
   };
 }
 
@@ -800,16 +838,66 @@ function Protection(props: {
           )}
         </>
       )}
-      {factors.email ? (
+      {factors.email || factors.text ? (
         <>
           {check(
             'share-with-code',
             value.withCode,
             (on) => options.set({ withCode: on }),
-            'Also email them a code when they open it',
+            factors.email && factors.text
+              ? 'Also send them a code when they open it'
+              : factors.text
+                ? 'Also text them a code when they open it'
+                : 'Also email them a code when they open it',
             'share-code-truth',
           )}
-          {value.withCode && (
+          {/* By email or by text (SMS3), where the vault can do both. */}
+          {value.withCode && factors.email && factors.text && (
+            <fieldset className="share-indent share-code-by">
+              <legend className="field-label">How the code goes</legend>
+              {(['email', 'sms'] as const).map((way) => (
+                <div key={way} className="check">
+                  <input
+                    id={`share-code-by-${way}`}
+                    type="radio"
+                    name="share-code-by"
+                    checked={read.by === way}
+                    onChange={() => options.set({ codeBy: way, codeRefused: null })}
+                  />
+                  <label htmlFor={`share-code-by-${way}`}>
+                    {way === 'email' ? 'By email' : 'By text message'}
+                  </label>
+                </div>
+              ))}
+            </fieldset>
+          )}
+          {value.withCode && read.by === 'sms' && (
+            <div className="stack share-indent" style={{ gap: 8 }}>
+              <div className="field">
+                <label htmlFor="share-code-phone">Their mobile number</label>
+                <input
+                  id="share-code-phone"
+                  type="tel"
+                  autoComplete="off"
+                  maxLength={40}
+                  value={value.codePhone}
+                  onChange={(e) => options.set({ codePhone: e.target.value, codeRefused: null })}
+                  aria-invalid={codeProblem && value.codePhone ? true : undefined}
+                  aria-describedby="share-code-phone-note"
+                />
+                <span
+                  id="share-code-phone-note"
+                  className={codeProblem && value.codePhone ? 'field-error' : 'muted'}
+                  role={codeProblem && value.codePhone ? 'alert' : undefined}
+                >
+                  {codeProblem && value.codePhone
+                    ? codeProblem
+                    : 'The code is texted only to this number, through your household’s own text messages, and counts towards its texts this month. Nobody is shown the number again but its last three digits.'}
+                </span>
+              </div>
+            </div>
+          )}
+          {value.withCode && read.by === 'email' && (
             <div className="stack share-indent" style={{ gap: 8 }}>
               <div className="field">
                 <label htmlFor="share-code-email">Their email address</label>
@@ -836,7 +924,7 @@ function Protection(props: {
             </div>
           )}
           <span id="share-code-truth" className="muted share-indent">
-            {SHARE_CODE_TRUTH}
+            {read.by === 'sms' ? SHARE_TEXT_TRUTH : SHARE_CODE_TRUTH}
           </span>
         </>
       ) : (
@@ -963,8 +1051,8 @@ export function HandOver(props: { created: CreatedShare; timezone: string; onDon
         )}
         {share.code_to && (
           <li>
-            When they open it, a code is emailed to {share.code_to}, and they type it in. It works
-            once, for 10 minutes.
+            When they open it, a code is {share.second_factor === 'sms' ? 'texted' : 'emailed'} to{' '}
+            {share.code_to}, and they type it in. It works once, for 10 minutes.
           </li>
         )}
         {share.this_device_only && <li>It opens only in the first browser that opens it.</li>}

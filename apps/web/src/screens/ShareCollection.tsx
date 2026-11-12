@@ -20,6 +20,7 @@ import {
   useLinkOptions,
 } from './Share.js';
 import { familyZoneNow } from '../family-time.js';
+import { useSmsCodes } from '../text-messages.js';
 
 /**
  * Sharing a collection outside the family (5.19).
@@ -62,6 +63,8 @@ export function ShareCollectionPanel(props: {
   onShared?: () => void;
 }) {
   const { guarded, caps } = useApp();
+  // A code by text (SMS3): offered while the household's texts are set up.
+  const texts = useSmsCodes();
   const { data, error: loadError } = useLoad(
     async (t) => {
       const [offered, profile] = await Promise.all([
@@ -103,7 +106,7 @@ export function ShareCollectionPanel(props: {
     timezone,
     maxDays,
     viewable,
-    factors: linkFactors(caps),
+    factors: linkFactors(caps, texts),
   });
   const nothing = ticked.length === 0 && !follow;
 

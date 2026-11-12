@@ -44,6 +44,11 @@ describe('what the log may say about a request (0.5.0)', () => {
     expect(loggableUrl('/api/v1/password-resets/complete')).toBe(
       '/api/v1/password-resets/complete',
     );
+    // 0.9.0 (SMS3): texting the code that finishes a reset carries the token in its body.
+    expect(loggableUrl('/api/v1/password-resets/code')).toBe('/api/v1/password-resets/code');
+    expect(loggableUrl('/api/v1/password-resets/codeABC123')).toBe(
+      '/api/v1/password-resets/[redacted]',
+    );
     expect(loggableUrl('/api/v1/invitations/lookup')).toBe('/api/v1/invitations/lookup');
     expect(loggableUrl('/api/v1/invitations/accept')).toBe('/api/v1/invitations/accept');
     // A token that merely starts like one of them is still a token, and a
@@ -84,6 +89,18 @@ describe('what the log may say about a request (0.5.0)', () => {
     expect(errorForLog('plain words to bob@example.net')).toEqual({
       message: 'plain words to [address]',
     });
+    // A mobile number a code went to (SMS3), in SMS Gate's words or a refused row's.
+    const texted = errorForLog(new Error('SMS Gate: message to +447700900123 failed'));
+    expect(texted.message).toBe('SMS Gate: message to [number] failed');
+    expect(JSON.stringify(texted)).not.toContain('7700900123');
+    const row = errorForLog(
+      Object.assign(new Error('new row violates check constraint "x"'), {
+        code: '23514',
+        constraint: 'share_link_code_phone',
+        detail: 'Failing row contains (…, +447700900123, …).',
+      }),
+    );
+    expect(JSON.stringify(row)).not.toContain('7700900123');
     // A stack keeps its paths, packages and versions included.
     const deep = new Error('Queue alert.send does not exist');
     deep.stack =

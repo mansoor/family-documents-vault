@@ -22,6 +22,10 @@ import { clientAddressOf } from './client-address.js';
  * request's headers are logged, so no cookie is either (the session's, or
  * a link's device cookie).
  *
+ * So is 0.9.0's /api/v1/password-resets/code (SMS3), which texts the code
+ * that finishes a reset: the token in its body, the code in a text, and the
+ * number in the vault — none of them in the log.
+ *
  * So do 5.21's, a sender's (/api/v1/drop/preview, /code, /unlock,
  * /session, /files and /finish): the token, the password and the code in a
  * body, the session in a cookie, a file's name inside the upload. Anything
@@ -34,7 +38,7 @@ const SECRET_SEGMENT = new RegExp(
   '^(' +
     [
       `/api/v1/shared/${kept('preview|unlock|items|code')}`,
-      `/api/v1/password-resets/${kept('lookup|complete')}`,
+      `/api/v1/password-resets/${kept('lookup|complete|code')}`,
       `/api/v1/invitations/${kept('lookup|accept')}`,
       `/api/v1/drop/${kept('preview|code|unlock|session|files|finish')}`,
       // The pages a browser opens from links made before 0.5.14 (a share's)
@@ -83,6 +87,13 @@ export function requestForLog(req: FastifyRequest) {
  */
 const ADDRESS = /[^\s@<>"'(),;:[\]/\\]+@[^\s@<>"'(),;:[\]/\\]*\.[A-Za-z][A-Za-z0-9-]*/g;
 
+/**
+ * Anything that looks like a mobile number as the vault keeps one (E.164,
+ * SMS3): a +, then 7 to 15 digits. Cut as an address is: an error from SMS
+ * Gate, or a refused row, may name the number a code went to.
+ */
+const NUMBER = /\+[1-9][0-9]{6,14}(?![0-9])/g;
+
 /** What a logged error may keep of PostgreSQL's fields: names, never values. */
 const ERROR_FIELDS = ['code', 'statusCode', 'constraint', 'table', 'column', 'routine', 'severity'];
 
@@ -95,7 +106,7 @@ const ERROR_FIELDS = ['code', 'statusCode', 'constraint', 'table', 'column', 'ro
  * what failed (constraint, table, column), never its values.
  */
 export function errorForLog(err: unknown): Record<string, unknown> {
-  const scrub = (s: string) => s.replace(ADDRESS, '[address]');
+  const scrub = (s: string) => s.replace(ADDRESS, '[address]').replace(NUMBER, '[number]');
   if (!(err instanceof Error)) return { message: scrub(String(err)) };
   const e = err as Error & Record<string, unknown>;
   const out: Record<string, unknown> = {
