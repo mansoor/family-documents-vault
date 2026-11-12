@@ -197,6 +197,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0 (SMS3): codes by text — a link's, an invitation's, and to one's
       // own number at a reset, a sign-in and a step-up — only ever in addition.
       sms_codes: true,
+      // 0.9.0 (AIR2, the owner's ask of 12 Nov 2026): Sensitive, each kind's
+      // default per household and each document's own choice.
+      sensitive_documents: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

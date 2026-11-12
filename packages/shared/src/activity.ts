@@ -211,8 +211,25 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // ------------------------------------------------------- documents
     case 'document.created':
       return line(`${who} added ${doc}`);
-    case 'document.updated':
+    case 'document.updated': {
+      // 0.9.0 (AIR2): whether it is sensitive, said — made less so is
+      // news, as letting more people see it is.
+      const c = detail.sensitive;
+      const only = Array.isArray(detail.fields) && detail.fields.length === 1;
+      if (c === 'yes')
+        return only
+          ? line(`${who} marked ${doc} sensitive`)
+          : line(`${who} edited ${doc} and marked it sensitive`);
+      if (c === 'no')
+        return only
+          ? line(`${who} marked ${doc} not sensitive`, true)
+          : line(`${who} edited ${doc} and marked it not sensitive`, true);
+      if (c === 'as_kind')
+        return only
+          ? line(`${who} left whether ${doc} is sensitive to its kind`)
+          : line(`${who} edited ${doc} and left whether it is sensitive to its kind`);
       return line(`${who} edited ${doc}`);
+    }
     // 5.35: its note written, changed or taken away. The log never holds
     // what a note says, only which of those it was.
     case 'document.notes_changed':
@@ -291,6 +308,13 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       );
     case 'document_type.updated': {
       const to = text(detail.default_visibility);
+      // 0.9.0 (AIR2): Sensitive by default, said; switched off is news.
+      if (!to && typeof detail.sensitive_default === 'boolean') {
+        const which = kind ? `${kind} documents` : 'documents of a kind';
+        return detail.sensitive_default
+          ? line(`${who} made ${which} sensitive by default`)
+          : line(`${who} made ${which} not sensitive by default`, true);
+      }
       if (!to) return line(`${who} changed ${kind ?? 'a kind of document'}`);
       // Who sees the next one filed: letting more people see it is news.
       return line(

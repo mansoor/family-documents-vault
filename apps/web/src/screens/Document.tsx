@@ -10,6 +10,8 @@ import {
   type VersionView,
   NOT_SURE_YET,
   THE_HOUSEHOLD,
+  SENSITIVE_LABEL,
+  SENSITIVE_MEANS,
 } from '@fdv/shared';
 import { Fragment, useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router';
@@ -354,6 +356,15 @@ export function DocumentScreen() {
         />
       )}
 
+      {/* Sensitive, all said (0.9.0, AIR2): a lock, named for what it means. */}
+      {doc.sensitive_effective === true && (
+        <p className="sensitive-mark">
+          <span role="img" aria-label={SENSITIVE_LABEL} title={SENSITIVE_MEANS}>
+            <LockIcon />
+          </span>
+          <span aria-hidden="true">{SENSITIVE_LABEL}</span>
+        </p>
+      )}
       <dl className="facts" ref={facts} tabIndex={-1}>
         <dt>Type</dt>
         <dd>{type?.label ?? 'Not set'}</dd>
@@ -648,6 +659,26 @@ export function DocumentScreen() {
         <div className="doc-split">{olderPane ?? detailsPane}</div>
       )}
     </main>
+  );
+}
+
+/** A closed lock: the mark of a sensitive document (0.9.0, AIR2). */
+function LockIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="3" y="7" width="10" height="7" rx="1.5" />
+      <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
+    </svg>
   );
 }
 

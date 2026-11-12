@@ -95,6 +95,8 @@ export interface TypeInput {
   usually_essential?: boolean | undefined;
   /** Whom its documents usually belong to (0.9.0): a new document follows it. */
   belongs_to?: BelongsTo | undefined;
+  /** Sensitive by default (0.9.0, AIR2): this household's, a built-in's too. */
+  sensitive_default?: boolean | undefined;
   hidden?: boolean | undefined;
 }
 
@@ -366,6 +368,9 @@ export class TypeService {
             usually_essential: input.usually_essential ?? false,
             default_visibility: input.default_visibility ?? 'household',
             belongs_to: input.belongs_to ?? 'person',
+            // A kind the household makes is sensitive until somebody
+            // says otherwise (0.9.0, AIR2): the safer start.
+            sensitive_default: input.sensitive_default ?? true,
             sort_order: OWN_SORT_ORDER,
             pack_version: 1,
             created_by: p.accountId,
@@ -467,6 +472,8 @@ export class TypeService {
       if (reminding.fromChanged && !changed.includes('remind_from')) changed.push('remind_from');
       if (changed.length > 0) {
         const moved = after.default_visibility !== before.default_visibility;
+        // Sensitive by default switched (0.9.0, AIR2): said which way.
+        const sensitive = after.sensitive_default !== before.sensitive_default;
         await appendAudit(trx, {
           householdId: p.householdId,
           actorAccountId: p.accountId,
@@ -483,6 +490,7 @@ export class TypeService {
                   widened: widensVisibility(before.default_visibility, after.default_visibility),
                 }
               : {}),
+            ...(sensitive ? { sensitive_default: after.sensitive_default } : {}),
           },
           ip: meta.ip,
         });
@@ -750,6 +758,9 @@ export class TypeService {
     if (input.default_visibility !== undefined) set.default_visibility = input.default_visibility;
     if (input.usually_essential !== undefined) set.usually_essential = input.usually_essential;
     if (input.belongs_to !== undefined) set.belongs_to = input.belongs_to;
+    if (input.sensitive_default !== undefined) {
+      set.sensitive_default = input.sensitive_default;
+    }
     await trx
       .updateTable('document_type')
       .set(set as never)
@@ -799,6 +810,9 @@ export class TypeService {
         ? { usually_essential: input.usually_essential }
         : {}),
       ...(input.belongs_to !== undefined ? { belongs_to: input.belongs_to } : {}),
+      ...(input.sensitive_default !== undefined
+        ? { sensitive_default: input.sensitive_default }
+        : {}),
       ...(input.hidden !== undefined ? { hidden: input.hidden } : {}),
       updated_at: new Date(),
       updated_by: p.accountId,

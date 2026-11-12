@@ -774,6 +774,8 @@ export interface Schema {
     default_collection_id: string | null;
     default_tags: ColumnType<string[], string[] | undefined, string[]>;
     default_essential: Generated<boolean>;
+    /** Sensitive, for what an accept leaves unsaid (0090): null, as each kind says. */
+    default_sensitive: ColumnType<boolean | null, boolean | null | undefined, boolean | null>;
     created_at: GeneratedTimestamp;
     ends_at: Timestamp;
     /**
@@ -1026,6 +1028,12 @@ export interface Schema {
     remind_from: ColumnType<string | null, string | null | undefined, string | null>;
     /** Whom its documents usually belong to (0087): a person, or the household. */
     belongs_to: ColumnType<BelongsTo, BelongsTo | undefined, BelongsTo>;
+    /**
+     * Sensitive by default (0090): the release's default for a built-in
+     * (a household's own choice is in document_type_setting); a household's
+     * own kind's, which starts On.
+     */
+    sensitive_default: ColumnType<boolean, boolean | undefined, boolean>;
   };
 
   /** A household's changes to a built-in type; null keeps the built-in's own (0031). */
@@ -1044,6 +1052,8 @@ export interface Schema {
     remind_from: ColumnType<string | null, string | null | undefined, string | null>;
     /** As the built-in (null), or whom this household's documents of it usually belong to (0087). */
     belongs_to: ColumnType<BelongsTo | null, BelongsTo | null | undefined, BelongsTo | null>;
+    /** As the built-in (null), or whether this household's documents of it are sensitive by default (0090). */
+    sensitive_default: ColumnType<boolean | null, boolean | null | undefined, boolean | null>;
   };
 
   /** The fields a type can ask for: built-in (no household) or a household's own (0031). */
@@ -1094,6 +1104,8 @@ export interface Schema {
     remind_leads: number[];
     /** Whom its documents usually belong to, as the household has it (0087). */
     belongs_to: BelongsTo;
+    /** Sensitive by default, as the household has it (0090). */
+    sensitive_default: boolean;
   };
 
   document: {
@@ -1107,6 +1119,11 @@ export interface Schema {
      * clears it. Neither is Not sure yet.
      */
     household_owned: Generated<boolean>;
+    /**
+     * Sensitive (0090): null as its kind says (`sensitive_default`),
+     * true or false its own. Worked out by `sensitiveOf` (@fdv/shared).
+     */
+    sensitive: ColumnType<boolean | null, boolean | null | undefined, boolean | null>;
     category: string | null;
     visibility: Generated<Visibility>;
     issued_on: DateOnly | null;

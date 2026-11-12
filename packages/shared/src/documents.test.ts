@@ -11,6 +11,9 @@ import {
   reminderChoices,
   reminderOf,
   reminderWord,
+  asItsKindSays,
+  SENSITIVE_BY_DEFAULT,
+  sensitiveOf,
   widensVisibility,
   withSealed,
 } from './documents.js';
@@ -358,5 +361,32 @@ describe("a kind of document's default visibility (0.5.10)", () => {
     expect(widensVisibility('adults', 'adults')).toBe(false);
     // A value this code has never heard of reaches nobody: never a widening.
     expect(widensVisibility('adults', 'sealed' as never)).toBe(false);
+  });
+});
+
+describe('Sensitive, all said (0.9.0, AIR2)', () => {
+  const on = { sensitive_default: true };
+  const off = { sensitive_default: false };
+  it('is the document’s own choice, else its kind’s default, else yes', () => {
+    expect(sensitiveOf({ sensitive: true }, off)).toBe(true);
+    expect(sensitiveOf({ sensitive: false }, on)).toBe(false);
+    expect(sensitiveOf({ sensitive: null }, on)).toBe(true);
+    expect(sensitiveOf({ sensitive: null }, off)).toBe(false);
+    expect(sensitiveOf({}, off)).toBe(false);
+    // No kind, or a kind from a vault that does not say: the safer answer.
+    expect(sensitiveOf({ sensitive: null }, null)).toBe(true);
+    expect(sensitiveOf(null, {})).toBe(true);
+    expect(sensitiveOf(undefined, undefined)).toBe(true);
+  });
+  it('says what "as its kind says" is now', () => {
+    expect(asItsKindSays(on)).toBe('As its kind says (yes)');
+    expect(asItsKindSays(off)).toBe('As its kind says (no)');
+    expect(asItsKindSays(null)).toBe('As its kind says (yes)');
+  });
+  it('starts the papers that prove who somebody is, money, tax and health sensitive', () => {
+    for (const k of ['passport', 'drivers_licence', 'medical_record', 'prescription', 'will'])
+      expect(SENSITIVE_BY_DEFAULT).toContain(k);
+    for (const k of ['utility_bill', 'insurance_policy', 'warranty', 'vehicle_registration'])
+      expect(SENSITIVE_BY_DEFAULT).not.toContain(k);
   });
 });

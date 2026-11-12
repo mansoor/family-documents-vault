@@ -18,6 +18,11 @@ export type EffectiveType = Selectable<Schema['effective_document_type']>;
  * and `reminder_leads` already said, so every kind kept its ETag at the
  * upgrade and nobody was asked to load it again. Whom it belongs to
  * (0087) likewise, only when that is the household.
+ *
+ * Sensitive by default (0090) is not in the seed: it was not there to
+ * have changed at the upgrade, and every change a household makes to it
+ * moves the kind's `updated_at` (its own row's, or its setting's), which
+ * is — so an edit made to the kind as it was before is still refused.
  */
 export function typeEtag(t: EffectiveType): string {
   const seed = JSON.stringify([

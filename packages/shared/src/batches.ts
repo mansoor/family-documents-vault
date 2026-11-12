@@ -44,6 +44,12 @@ export interface BatchDefaults {
   collection_id: string | null;
   tags: string[];
   is_essential: boolean;
+  /**
+   * Sensitive, for every item accepted without saying (0.9.0, AIR2,
+   * `features.sensitive_documents`): null as each kind says, true yes, false no
+   * (never a teen's, 403). Absent from older vaults.
+   */
+  sensitive?: boolean | null;
 }
 
 /** `POST /api/v1/batches` and `PATCH /api/v1/batches/{id}`: a name, and defaults, each optional. */

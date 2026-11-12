@@ -24,6 +24,7 @@ import {
   NOBODY_MEMBER_FILTER,
   NOT_SURE_YET,
   THE_HOUSEHOLD,
+  SENSITIVE_LABEL,
 } from '@fdv/shared';
 import {
   Fragment,
@@ -201,6 +202,7 @@ function useKnown(): Known {
     types: types ?? [],
     collections: collections ?? [],
     tags: tags ?? [],
+    sensitive: caps?.features.sensitive_documents === true,
   };
 }
 
@@ -320,6 +322,8 @@ export interface Known {
   types: DocumentTypeView[];
   collections: CollectionView[];
   tags: string[];
+  /** Whether the vault has Sensitive (0.9.0, AIR2): then its filter is offered. */
+  sensitive?: boolean;
 }
 
 // ------------------------------------------------------------- the pages
@@ -653,6 +657,13 @@ export function filterChoices(
     case 'label':
       // Every document with a detail of this label, whatever its value (T1).
       return [{ value: '', label: 'Any detail' }, ...detailLabels(known.tags, view.label)];
+    case 'sensitive':
+      // Sensitive, all said (0.9.0, AIR2).
+      return [
+        { value: '', label: 'Sensitive or not' },
+        { value: 'yes', label: SENSITIVE_LABEL },
+        { value: 'no', label: 'Not sensitive' },
+      ];
   }
 }
 
@@ -681,6 +692,7 @@ export const FILTER_LABELS: Record<FilterKey, string> = {
   collection: 'Collection',
   tag: 'Tag',
   label: 'Detail',
+  sensitive: SENSITIVE_LABEL,
 };
 
 /**
@@ -692,7 +704,8 @@ function filtersFor(known: Known, scoped = false): FilterKey[] {
     (k) =>
       (k !== 'collection' || (!scoped && known.collections.length > 0)) &&
       (k !== 'tag' || known.tags.length > 0) &&
-      (k !== 'label' || known.tags.some((t) => tagDetail(t) !== null)),
+      (k !== 'label' || known.tags.some((t) => tagDetail(t) !== null)) &&
+      (k !== 'sensitive' || known.sensitive === true),
   );
 }
 
@@ -978,6 +991,7 @@ function TableDocuments(props: {
                 collection: '',
                 tag: '',
                 label: '',
+                sensitive: '',
               })
             }
           >
@@ -2764,6 +2778,7 @@ function PhoneDocuments(props: {
                       collection: '',
                       tag: '',
                       label: '',
+                      sensitive: '',
                     })
                   }
                 >

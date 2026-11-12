@@ -1,4 +1,6 @@
 import {
+  sensitiveOf,
+  SENSITIVE_FILTER_VALUES,
   HOUSEHOLD_MEMBER_FILTER,
   NOBODY_MEMBER_FILTER,
   NOTE_KIND,
@@ -44,6 +46,11 @@ export interface DocumentFilters {
   tags?: string[] | undefined;
   /** Notes left out (`notes=exclude`). */
   without_notes?: boolean | undefined;
+  /**
+   * Sensitive, all said, or not (0.9.0, AIR2: `sensitive=yes`, `no`,
+   * or both, which is every document).
+   */
+  sensitive?: boolean[] | undefined;
 }
 
 /** How many values one filter may hold. */
@@ -101,6 +108,8 @@ export interface RawFilters {
   /** A tag, or several: the field given once for each. */
   tag?: string | string[] | undefined;
   notes?: 'exclude' | undefined;
+  /** `yes`, `no`, or both comma-separated (0.9.0, AIR2). */
+  sensitive?: string | undefined;
 }
 
 /**
@@ -179,6 +188,15 @@ export function filtersOf(raw: RawFilters): {
     else many.tags = tags;
   }
   if (raw.notes === 'exclude') many.without_notes = true;
+  // Sensitive, all said (0.9.0, AIR2): new, so always a list.
+  const sensitive = valuesOf(raw.sensitive);
+  if (sensitive) {
+    for (const v of sensitive) {
+      if (!(SENSITIVE_FILTER_VALUES as readonly string[]).includes(v))
+        refuse('sensitive', 'Sensitive is yes or no.');
+    }
+    many.sensitive = sensitive.map((v) => v === 'yes');
+  }
   for (const d of ['added', 'issued', 'expires'] as const) {
     const from = dayOf(`${d}_from`, raw[`${d}_from`]);
     const to = dayOf(`${d}_to`, raw[`${d}_to`]);
@@ -219,6 +237,11 @@ export function filterClauses(f: DocumentFilters, table = 'd'): RawBuilder<unkno
     );
   }
   if (f.without_notes) parts.push(sql`${c('type_key')} is distinct from ${NOTE_KIND}`);
+  // Sensitive or not, all said (0.9.0, AIR2); both is every document.
+  const sensitive = [...new Set(f.sensitive ?? [])];
+  if (sensitive.length === 1) {
+    parts.push(sql`${sensitiveSql(table)} = ${sensitive[0] === true}`);
+  }
   // Added: the day it was made, on the database's calendar, both ends included.
   if (f.added_from) parts.push(sql`${c('created_at')} >= ${f.added_from}::date`);
   if (f.added_to) parts.push(sql`${c('created_at')} < (${f.added_to}::date + 1)`);
@@ -227,6 +250,29 @@ export function filterClauses(f: DocumentFilters, table = 'd'): RawBuilder<unkno
   if (f.expires_from) parts.push(sql`${c('expires_on')} >= ${f.expires_from}::date`);
   if (f.expires_to) parts.push(sql`${c('expires_on')} <= ${f.expires_to}::date`);
   return parts;
+}
+
+/**
+ * Whether a document is sensitive, all said, as SQL (0.9.0, AIR2): only
+ * so the Documents table and search can filter by it a page at a time.
+ * `sensitiveOf` (@fdv/shared) is the rule; this mirrors it, its last
+ * answer taken from it, and sensitive.test.ts holds the two to the same
+ * answers for every case — its own choice; else its
+ * kind's Sensitive by default as its household has it (a built-in's
+ * setting, else the release's; a household's own kind's row); else, with no
+ * kind, yes. Worked out here, never written down, so a kind's default
+ * changed changes every document left on "as its kind says".
+ */
+export function sensitiveSql(table = 'd'): RawBuilder<boolean> {
+  const c = (column: string) => sql.ref(`${table}.${column}`);
+  return sql<boolean>`coalesce(${c('sensitive')},
+    (select coalesce(cs.sensitive_default, ct.sensitive_default)
+       from document_type ct
+       left join document_type_setting cs
+         on ct.household_id is null and cs.type_key = ct.key
+        and cs.household_id = ${c('household_id')}
+      where ct.key = ${c('type_key')}),
+    ${sensitiveOf(null, null)})`;
 }
 
 /** The conditions above as one, or none: for a statement that adds `and …`. */

@@ -276,14 +276,11 @@ describe.skipIf(!testAdminUrl())('migration 0038: reminders from any date', () =
       let was = before.get(hh) as EffectiveType[];
       // The kinds there were: later releases add their own (0072, 0077).
       const all = (await kinds(hh)).filter((t) => was.some((w) => w.key === t.key));
-      // The columns 0038 appends aside (and 0087's, whom it belongs to),
-      // every row is as it was, byte for byte…
+      // The columns 0038 appends aside (and 0087's, whom it belongs to, and
+      // 0090's, Sensitive by default), every row is as it was, byte for byte…
+      const appended = ['remind_from', 'remind_leads', 'belongs_to', 'sensitive_default'];
       const old = (t: EffectiveType) =>
-        Object.fromEntries(
-          Object.entries(t).filter(
-            ([k]) => k !== 'remind_from' && k !== 'remind_leads' && k !== 'belongs_to',
-          ),
-        );
+        Object.fromEntries(Object.entries(t).filter(([k]) => !appended.includes(k)));
       // …but the bank's own kind, which 0077 calls what it is ("Bank
       // statement", investment statements being their own): its label and
       // when it changed, and so its ETag, and nothing else.
@@ -305,6 +302,7 @@ describe.skipIf(!testAdminUrl())('migration 0038: reminders from any date', () =
         'remind_from',
         'remind_leads',
         'belongs_to',
+        'sensitive_default',
       ]);
       // …and so is every ETag: nobody is asked to load a kind again.
       expect(now.map(typeEtag)).toEqual(was.map(typeEtag));

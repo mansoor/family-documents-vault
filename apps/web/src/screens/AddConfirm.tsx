@@ -37,6 +37,9 @@ import {
   HOUSEHOLD_MEMBER_FILTER,
   NOT_SURE_YET,
   THE_HOUSEHOLD,
+  asItsKindSays,
+  SENSITIVE_LABEL,
+  SENSITIVE_MEANS,
 } from '@fdv/shared';
 import {
   useEffect,
@@ -122,6 +125,7 @@ export function captureDetails(d: DocumentInput): CaptureMetadata {
   if (d.title !== undefined) out.title = d.title;
   if (d.owner_member_id !== undefined) out.owner_member_id = d.owner_member_id;
   if (d.household_owned !== undefined) out.household_owned = d.household_owned;
+  if (d.sensitive !== undefined) out.sensitive = d.sensitive;
   if (d.visibility !== undefined) out.visibility = d.visibility;
   if (d.issued !== undefined) out.issued = d.issued;
   if (d.expires !== undefined) out.expires = d.expires;
@@ -524,6 +528,8 @@ export function ConfirmScreen() {
       details: detailInputs(d.extra, type?.fields ?? []),
       // Whose it is, when the document says nobody: the card's own guess.
       ownerDefaulted: d.owner_member_id === null && d.household_owned !== true,
+      // Its own choice, as it is kept (0.9.0, AIR2).
+      sensitive: d.sensitive ?? null,
       // A name nobody typed — none, or the one the card would give it —
       // still follows the kind, the person, the issuer and the month.
       titleAutomatic:
@@ -707,7 +713,19 @@ interface CardValues {
   personDefault?: string;
   /** The name is one nobody typed: it follows the details until somebody does. */
   titleAutomatic?: boolean;
+  /**
+   * Sensitive as the document (or a batch's default) says it (0.9.0, AIR2):
+   * null or left out, as its kind says.
+   */
+  sensitive?: boolean | null;
 }
+
+/** Sensitive as the card's select holds it: '' as its kind says, `yes` or `no`. */
+type SensitiveChoice = '' | 'yes' | 'no';
+const sensitiveChoice = (v: boolean | null | undefined): SensitiveChoice =>
+  v === true ? 'yes' : v === false ? 'no' : '';
+const sensitiveValue = (c: SensitiveChoice): boolean | null =>
+  c === 'yes' ? true : c === 'no' ? false : null;
 
 /** How many issuers the card offers at once. */
 const ISSUER_OFFERS = 5;
@@ -1075,6 +1093,8 @@ export function ConfirmForm(props: {
   // the person, as startingVisibility says.
   const [visibilityChosen, setVisibilityChosen] = useState(false);
   const [notes, setNotes] = useState(initial.notes ?? '');
+  // Sensitive (0.9.0, AIR2): as its kind says, yes or no.
+  const [sensitive, setSensitive] = useState<SensitiveChoice>(sensitiveChoice(initial.sensitive));
   // A batch's item (I1): its collection, its tags and Essential.
   const [collectionId, setCollectionId] = useState(props.extras?.collectionId ?? '');
   const [tags, setTags] = useState(props.extras?.tags ?? '');
@@ -1152,6 +1172,16 @@ export function ConfirmForm(props: {
   // already in the vault only if they filed it, between Only me and
   // Everyone (A72).
   const people = teen ? members.filter((m) => m.is_me) : members;
+  // Sensitive (0.9.0, AIR2): where the vault has it. A teen may make a paper
+  // sensitive, never not: No is not theirs to choose, unless it is so now.
+  const sensitiveOffered = caps?.features.sensitive_documents === true;
+  const sensitiveChoices: Array<{ value: SensitiveChoice; label: string }> = [
+    { value: '', label: asItsKindSays(type) },
+    { value: 'yes', label: 'Yes' },
+    ...(!teen || sensitiveChoice(base.sensitive) === 'no'
+      ? [{ value: 'no' as const, label: 'No' }]
+      : []),
+  ];
   const visibilityLocked =
     teen &&
     !props.fileName &&
@@ -1484,6 +1514,11 @@ export function ConfirmForm(props: {
       ...(householdOffered ? { household_owned: household } : {}),
       visibility,
     };
+    // Sensitive, only where the vault has it and only when the card changed
+    // it (0.9.0, AIR2): what was kept, or a batch's default, is left as it is.
+    if (sensitiveOffered && sensitive !== sensitiveChoice(base.sensitive)) {
+      details.sensitive = sensitiveValue(sensitive);
+    }
     // A field the card does not show is left as it is.
     if (issuerShown) details.issued_by = issuer.trim() || null;
     if (identifierShown) details.identifier = identifier.trim() || null;
@@ -1994,6 +2029,16 @@ export function ConfirmForm(props: {
             </span>
           )}
         </div>
+        {sensitiveOffered && (
+          <Select
+            id="f-sensitive"
+            label={SENSITIVE_LABEL}
+            value={sensitive}
+            onChange={(v) => setSensitive(v as SensitiveChoice)}
+            options={sensitiveChoices}
+            hint={SENSITIVE_MEANS}
+          />
+        )}
         {props.more}
         <ErrorNote message={error} />
         {props.pane ? (

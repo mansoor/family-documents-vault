@@ -61,6 +61,9 @@ const typeBody = z
     usually_essential: z.boolean(),
     // Whom its documents usually belong to (0.9.0): a new one follows it.
     belongs_to: z.enum(['person', 'household']),
+    // Sensitive by default (0.9.0, AIR2): every document left on "as
+    // its kind says" follows it.
+    sensitive_default: z.boolean(),
     hidden: z.boolean(),
   })
   .partial()

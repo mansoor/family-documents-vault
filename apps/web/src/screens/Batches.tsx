@@ -23,6 +23,8 @@ import {
   type Visibility,
   NOTE_KIND,
   THE_HOUSEHOLD,
+  SENSITIVE_LABEL,
+  SENSITIVE_MEANS,
 } from '@fdv/shared';
 import {
   useEffect,
@@ -328,6 +330,8 @@ function AddMany({ visit }: { visit: string }) {
   const [collectionId, setCollectionId] = useState('');
   const [tags, setTags] = useState('');
   const [essential, setEssential] = useState(false);
+  // Sensitive for all of them (0.9.0, AIR2): '' as each kind says.
+  const [sensitive, setSensitive] = useState<'' | 'yes' | 'no'>('');
   const [over, setOver] = useState(false);
   const filesInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
@@ -366,6 +370,9 @@ function AddMany({ visit }: { visit: string }) {
       .filter(Boolean);
     if (t.length) d.tags = t;
     if (essential) d.is_essential = true;
+    if (sensitive && caps?.features.sensitive_documents === true) {
+      d.sensitive = sensitive === 'yes';
+    }
     return d;
   };
 
@@ -768,6 +775,21 @@ function AddMany({ visit }: { visit: string }) {
                 checked={essential}
                 onChange={setEssential}
               />
+              {caps?.features.sensitive_documents === true && (
+                <Select
+                  id="b-sensitive"
+                  label={SENSITIVE_LABEL}
+                  value={sensitive}
+                  onChange={(v) => setSensitive(v as '' | 'yes' | 'no')}
+                  options={[
+                    { value: '', label: 'As each kind says' },
+                    { value: 'yes', label: 'Yes' },
+                    // A teen may make papers sensitive, never not (AIR2).
+                    ...(teen ? [] : [{ value: 'no', label: 'No' }]),
+                  ]}
+                  hint={SENSITIVE_MEANS}
+                />
+              )}
             </fieldset>
           )}
           {(phase === 'choosing' || phase === 'making') && (
@@ -796,6 +818,7 @@ const NO_DEFAULTS: BatchDefaults = {
   collection_id: null,
   tags: [],
   is_essential: false,
+  sensitive: null,
 };
 
 /** A batch's choices for all of its files, said as chips: "Aisha", "Passport", "Adults only". */
@@ -815,6 +838,9 @@ function DefaultsWords(props: {
     d.collection_id && props.collections.find((c) => c.id === d.collection_id)?.name,
     ...d.tags.map((t) => `#${t}`),
     d.is_essential && 'Essential',
+    // Sensitive for all of them, or not (0.9.0, AIR2).
+    d.sensitive === true && 'Sensitive',
+    d.sensitive === false && 'Not sensitive',
   ].filter((w): w is string => typeof w === 'string' && w !== '');
   if (words.length === 0) return <p className="muted">Nothing chosen for all of them.</p>;
   return (

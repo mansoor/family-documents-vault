@@ -465,6 +465,19 @@ export interface CapabilityFeatures {
    * Not sure yet reads Needs a person. Absent from older vaults.
    */
   household_owner?: boolean;
+  /**
+   * Sensitive (0.9.0, AIR2 of the AI readers plan): each kind's
+   * `sensitive_default` (per household; set on POST and PATCH
+   * /document-types), and each document's own `sensitive` (null as its
+   * kind says, true, false) with `sensitive_effective`, all said
+   * (`sensitiveOf`) — on `DocumentView` and `SearchHit`. Sent as
+   * `sensitive` on POST and PATCH /documents, a capture's metadata, a
+   * batch item's accept, POST /incoming/{id}/accept and a batch's defaults
+   * (`BatchDefaults.sensitive`); left out, kept as it is.
+   * `sensitive=yes,no` on GET /documents and GET /search. A teen may make
+   * a document sensitive, never not. Absent from older vaults.
+   */
+  sensitive_documents?: boolean;
 }
 
 export interface CapabilityLimits {

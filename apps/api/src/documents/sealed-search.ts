@@ -1,7 +1,14 @@
 import { openPrivate, type PrivateValues, type ScopeKeys } from '@fdv/crypto';
 import { openSealedText } from './sealed-text.js';
 import { householdToday, withPrincipal, type Db } from '@fdv/db';
-import { matchText, notesPlainText, parseQuery, seesLocation, type DateValue } from '@fdv/shared';
+import {
+  sensitiveOf,
+  matchText,
+  notesPlainText,
+  parseQuery,
+  seesLocation,
+  type DateValue,
+} from '@fdv/shared';
 import { sql } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
@@ -33,6 +40,8 @@ interface SealedRow {
   type_key: string | null;
   category: string | null;
   owner_member_id: string | null;
+  /** Sensitive (0090): null as its kind says. */
+  sensitive: boolean | null;
   expires_on: string | null;
   expires_precision: DateValue['precision'] | null;
   issued_by: string | null;
@@ -74,7 +83,7 @@ export class SealedSearchService {
     return withPrincipal(this.db, p, async (trx) => {
       const rows = await sql<SealedRow>`
         select d.id as document_id, d.title, d.type_key, d.category, d.owner_member_id,
-               d.expires_on, d.expires_precision, d.updated_at,
+               d.sensitive, d.expires_on, d.expires_precision, d.updated_at,
                d.issued_by, d.issued_on, d.issued_precision,
                d.identifier, d.physical_location, d.tags, d.notes, d.extra,
                d.notes_sealed, d.extra_sealed, d.sealed_details, d.no_longer_needed_at,
@@ -114,7 +123,10 @@ export class SealedSearchService {
       // The notes and details are sealed under the owner's own key: only
       // this caller's documents are here, so it is theirs.
       let memberKey: Buffer | null = null;
-      const types = new Map<string, Parameters<typeof statusOf>[0] & object>();
+      const types = new Map<
+        string,
+        Parameters<typeof statusOf>[0] & { sensitive_default?: boolean }
+      >();
       const scored: Array<{ hit: SearchHit; hits: number; updated: number }> = [];
 
       for (const row of rows.rows) {
@@ -152,7 +164,14 @@ export class SealedSearchService {
         if (row.type_key && !types.has(row.type_key)) {
           const t = await trx
             .selectFrom('effective_document_type')
-            .select(['key', 'expiry_driver', 'reminder_leads', 'core', 'fields'])
+            .select([
+              'key',
+              'expiry_driver',
+              'reminder_leads',
+              'core',
+              'fields',
+              'sensitive_default',
+            ])
             .where('key', '=', row.type_key)
             .executeTakeFirst();
           if (t) types.set(row.type_key, t);
@@ -175,6 +194,9 @@ export class SealedSearchService {
             owner_member_id: row.owner_member_id,
             // An Only me document is always its owner's, never the household's.
             household_owned: false,
+            // Its own choice, and all said (0.9.0, AIR2), as the first pass's.
+            sensitive: row.sensitive,
+            sensitive_effective: sensitiveOf(row, type),
             issued_by: row.issued_by,
             issued,
             expires: expires && { ...expires, date: String(expires.date).slice(0, 10) },

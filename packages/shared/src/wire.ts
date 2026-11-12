@@ -1059,6 +1059,14 @@ export interface DocumentInput {
    * that says `household_owner`; true with a person is refused (422).
    */
   household_owned?: boolean;
+  /**
+   * Sensitive (0.9.0, AIR2, `features.sensitive_documents`): null as its kind
+   * says, true yes, false no. Left out — all an older client can do — the
+   * document keeps what it had (a new one: as its kind says). A teen may
+   * make a document sensitive, never less so (403, `detail:
+   * 'sensitive'`). Send only to a vault that says `sensitive_documents`.
+   */
+  sensitive?: boolean | null;
   category?: string | null;
   visibility?: Visibility;
   issued?: DateValue | null;
@@ -1104,6 +1112,12 @@ export interface SearchHit {
   owner_member_id: string | null;
   /** The household's (0.9.0, `features.household_owner`); absent from older vaults. */
   household_owned?: boolean;
+  /**
+   * Sensitive as the document says, and all said (0.9.0, AIR2,
+   * `features.sensitive_documents`): as `DocumentView`'s. Absent from older vaults.
+   */
+  sensitive?: boolean | null;
+  sensitive_effective?: boolean;
   status: DocumentView['status'];
   /** Who issued it, and when (0.4.10): "Bank statement · Barclays · Sep 2026". */
   issued_by?: string | null;

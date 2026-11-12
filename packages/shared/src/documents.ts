@@ -49,6 +49,20 @@ export interface DocumentView {
    * where every document without a person is not sure yet.
    */
   household_owned?: boolean;
+  /**
+   * Sensitive, as the document itself says (0.9.0, AIR2,
+   * `features.sensitive_documents`): null as its kind says (the kind's
+   * `sensitive_default`), true yes, false no. Absent from older vaults.
+   */
+  sensitive?: boolean | null;
+  /**
+   * Whether it is sensitive, all said (`sensitiveOf`): its own choice,
+   * else its kind's Sensitive by default as the household has it now —
+   * so a kind's default changed changes every document left on "as its kind
+   * says". A sensitive paper's words are never sent to an AI reader
+   * outside the house (AIR3). Absent from older vaults.
+   */
+  sensitive_effective?: boolean;
   category: string | null;
   visibility: Visibility;
   issued: DateValue | null;
@@ -337,6 +351,13 @@ export interface DocumentTypeView {
    * a person's kind is as before. Absent from older vaults: a person's.
    */
   belongs_to?: BelongsTo;
+  /**
+   * Sensitive by default (0.9.0, AIR2, `features.sensitive_documents`), as this
+   * household has it: what its documents left on "as its kind says" are.
+   * A built-in's starts as the release says (`SENSITIVE_BY_DEFAULT`); a
+   * kind a household makes starts On. Absent from older vaults.
+   */
+  sensitive_default?: boolean;
   /** Its short name in a line, "Bank statement"; null is its label. */
   short_label?: string | null;
   /** The noun after its issuer in a name, "statement"; null when named for its person. */
@@ -397,6 +418,91 @@ export const NOT_SURE_YET = 'Not sure yet';
  */
 export const HOUSEHOLD_MEMBER_FILTER = 'household';
 export const NOBODY_MEMBER_FILTER = 'none';
+
+/**
+ * The built-in kinds a release makes sensitive by default (0.9.0, AIR2,
+ * decision 5 of the AI readers plan; migration 0090 seeds the same): papers
+ * that prove who somebody is, certificates, a will, every financial kind,
+ * tax, and medical records. Every other built-in starts Off; a kind a
+ * household makes starts On, as a built-in a later release adds does (the
+ * Health area's, when it lands).
+ */
+export const SENSITIVE_BY_DEFAULT: readonly string[] = [
+  'passport',
+  'drivers_licence',
+  'national_id',
+  'visa',
+  'birth_certificate',
+  'marriage_certificate',
+  'diploma',
+  'will',
+  'bank_statement',
+  'investment_statement',
+  'credit_card_statement',
+  'pay_statement',
+  'loan',
+  'tax_return',
+  'tax_form',
+  'medical_record',
+  'prescription',
+];
+
+/**
+ * Whether a document is sensitive, all said (0.9.0, AIR2) — the one flag
+ * for a household's sensitive papers, which Health's protections (H1) ask
+ * too: its own
+ * choice (`sensitive`, true or false) where it made one; else its kind's
+ * Sensitive by default, as the household has it now; else — no kind, or
+ * a kind from a vault that does not say — yes, the safer answer.
+ *
+ * The one place this is worked out: the vault's views, the Documents
+ * table's filter, the web and the phone, and the AI readers' sending rule
+ * (AIR3's `mayReadWith`) all ask it.
+ */
+export function sensitiveOf(
+  document: { sensitive?: boolean | null | undefined } | null | undefined,
+  kind: { sensitive_default?: boolean | null | undefined } | null | undefined,
+): boolean {
+  const own = document?.sensitive;
+  if (own === true || own === false) return own;
+  const byKind = kind?.sensitive_default;
+  if (byKind === true || byKind === false) return byKind;
+  return true;
+}
+
+/**
+ * The Sensitive filter's values (0.9.0, AIR2, GET /documents and GET
+ * /search, `sensitive=yes,no` as V1's other filters): sensitive, all
+ * said, or not.
+ */
+export const SENSITIVE_FILTER_VALUES = ['yes', 'no'] as const;
+export type SensitiveFilter = (typeof SENSITIVE_FILTER_VALUES)[number];
+
+/** Sensitive, in words every client uses (0.9.0, AIR2). */
+export const SENSITIVE_LABEL = 'Sensitive';
+export const SENSITIVE_BY_DEFAULT_LABEL = 'Sensitive by default';
+
+/** "As its kind says (yes)": a document's choice of null, with what that is now. */
+export function asItsKindSays(
+  kind: { sensitive_default?: boolean | null | undefined } | null | undefined,
+): string {
+  return `As its kind says (${sensitiveOf(null, kind) ? 'yes' : 'no'})`;
+}
+
+/**
+ * What Sensitive means, said where it is chosen (0.9.0, AIR2). The one flag
+ * for the household's sensitive papers (the owner's decision of 12 Nov
+ * 2026): never sent to a cloud AI reader (AIR3). Health's protections (H1)
+ * will add to it; until they are built, nothing more is promised.
+ */
+export const SENSITIVE_MEANS = 'Handled with extra care. Never sent to a cloud AI reader.';
+
+/**
+ * A teen marking a document less sensitive than it was (0.9.0, AIR2;
+ * 403, `detail: 'sensitive'`): a teen may make one sensitive, never
+ * the reverse — as they may never make one the household's.
+ */
+export const TEEN_KEEPS_SENSITIVE = 'Only an adult can mark a document not sensitive.';
 
 /** A document both the household's and a person's (422, `detail: 'household_owned'`). */
 export const HOUSEHOLD_OR_PERSON =
@@ -484,6 +590,13 @@ export interface DocumentTypeInput {
    * a built-in's too, for this household. Changes no document filed already.
    */
   belongs_to?: BelongsTo;
+  /**
+   * Sensitive by default (0.9.0, AIR2, `features.sensitive_documents`): a
+   * built-in's too, for this household alone. Every document of the kind
+   * left on "as its kind says" follows it at once; one set yes or no keeps
+   * that. Left out of a new kind: On.
+   */
+  sensitive_default?: boolean;
   /** A built-in, no longer offered (or offered again). */
   hidden?: boolean;
 }

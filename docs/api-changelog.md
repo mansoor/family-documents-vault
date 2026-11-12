@@ -6101,6 +6101,65 @@ password, code?)`, `invite` with `invitee_phone`. The fake answers
       sign-in whose second step is a text (its code in
       `state.textCodesOut`), a step-up's code for an adult or a teen, and
       `404 reset_not_valid` for a reset's (it makes none).
+  - Sensitive (0.9.0-dev.34; AIR2 of the AI readers plan, the owner's ask
+    of 12 Nov 2026). Migration 0090. **Additive**: a request made as before
+    is answered as before, with two more fields.
+    - **New `features`:** `sensitive_documents`, `true` (one flag for the
+      document fields, the inputs, the filter and the kind's
+      `sensitive_default`); absent from older vaults.
+    - **New fields:** `DocumentView.sensitive` (`true | false | null`: the
+      document's own choice; null, as its kind says) and
+      `DocumentView.sensitive_effective` (boolean: all said — its own
+      choice, else its kind's `sensitive_default` as the household has it
+      now, else, with no kind, `true`). Both on `SearchHit` too (both
+      passes). A kind's default changed changes `sensitive_effective` of
+      every document left on null; nothing is rewritten.
+    - **New input:** `sensitive` (`true | false | null`) on `POST` and
+      `PATCH /api/v1/documents`, a capture's `metadata`, a batch item's
+      accept, `POST /api/v1/incoming/{id}/accept` (with `into_document_id`
+      it is `422`, as the other new-document fields are) and a batch's
+      `defaults` (`BatchDefaults.sensitive`, filling what an accept leaves
+      unsaid). Left out — all an older client can do — an edit keeps what
+      the document has, and a new one is as its kind says. A teen sending a
+      value that leaves the document not sensitive (`false`, or `null` on a
+      kind that is not) where it was is `403 forbidden` (`detail:
+'sensitive'`); `false` in a capture or a batch's defaults, the same.
+    - **Filter values:** `sensitive=yes`, `no`, or `yes,no` (either) on `GET
+/api/v1/documents`, with a column sort or without, and on `GET
+/api/v1/search`; anything else is `422` (`detail: 'sensitive'`).
+    - **New field:** `DocumentTypeView.sensitive_default` (boolean), per
+      household: `PATCH /api/v1/document-types/{key}` and `POST
+/api/v1/document-types` take it (a built-in's kept in the household's
+      setting; the built-in itself is never written). A new kind starts
+      `true`. Not in the kind's ETag (no kind's ETag changed at the
+      upgrade); a change to it moves the kind's `updated_at`, so its ETag.
+      Built-ins `true`: `passport`, `drivers_licence`, `national_id`,
+      `visa`, `birth_certificate`, `marriage_certificate`, `diploma`,
+      `will`, `bank_statement`, `investment_statement`,
+      `credit_card_statement`, `pay_statement`, `loan`, `tax_return`,
+      `tax_form`, `medical_record`, `prescription`; every other `false`.
+    - **Activity:** `document.updated` carries `sensitive` (`yes`, `no` or
+      `as_kind`) when it changed, and says so ("marked … sensitive", "not
+      sensitive", notable); `document_type.updated` carries
+      `sensitive_default` when it changed ("made … documents sensitive by
+      default", or not, notable).
+    - `@fdv/shared`: `sensitiveOf(document, kind)` — the one rule, which
+      every client and AIR3's sending rule ask — `SENSITIVE_BY_DEFAULT`,
+      `SENSITIVE_FILTER_VALUES`, `SensitiveFilter`, `SENSITIVE_LABEL`,
+      `SENSITIVE_BY_DEFAULT_LABEL`, `SENSITIVE_MEANS`, `asItsKindSays(kind)`,
+      `TEEN_KEEPS_SENSITIVE`; `DocumentView.sensitive` and
+      `.sensitive_effective`, `DocumentInput.sensitive`,
+      `CaptureMetadata.sensitive` (in `CAPTURE_FIELDS`), `SearchHit`'s two,
+      `BatchDefaults.sensitive`, `DocumentTypeView.sensitive_default`,
+      `DocumentTypeInput.sensitive_default`,
+      `DocumentListParams.sensitive`;
+      `Capabilities.features.sensitive_documents`. `checkCaptureMetadata`
+      refuses a teen's `sensitive: false`. `@fdv/client`: no new calls; the
+      fake keeps `sensitive` on every way a document is made and edited
+      (a teen's refused as the vault refuses it), answers
+      `sensitive_effective` by `sensitiveOf`, keeps each kind's
+      `sensitive_default` (its built-ins as the release seeds them; a new
+      kind `true`) and a batch's default, and filters by `sensitive`.
 
 ## Deprecations in effect
 

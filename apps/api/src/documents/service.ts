@@ -68,9 +68,11 @@ import {
 import {
   belongsTo,
   checkExtra,
+  sensitiveOf,
   deriveStatus,
   EXTRA_MAX_BYTES,
   HOUSEHOLD_OR_PERSON,
+  TEEN_KEEPS_SENSITIVE,
   extraBytes,
   missingFields,
   NO_LONGER_NEEDED_REASON_MAX,
@@ -154,6 +156,11 @@ export interface DocumentInput {
    * household's kind is the household's, and an edit keeps it as it is.
    */
   household_owned?: boolean | undefined;
+  /**
+   * Sensitive (0.9.0, AIR2): null as its kind says, true or false. Left
+   * out, kept as it is (a new document: as its kind says).
+   */
+  sensitive?: boolean | null | undefined;
   category?: string | null | undefined;
   visibility?: Visibility | undefined;
   issued?: DateValue | null | undefined;
@@ -284,6 +291,8 @@ export type DocRow = {
   owner_member_id: string | null;
   /** The household's (0087): never with a person. */
   household_owned: boolean;
+  /** Sensitive (0090): null as its kind says. */
+  sensitive: boolean | null;
   category: string | null;
   visibility: Visibility;
   issued_on: string | null;
@@ -602,6 +611,8 @@ export function typeView(t: EffectiveType): DocumentTypeView {
     // Whom its documents usually belong to (0.9.0): a new one of the
     // household's kind is the household's.
     belongs_to: t.belongs_to,
+    // Sensitive by default, as this household has it (0.9.0, AIR2).
+    sensitive_default: t.sensitive_default,
     // Each paper its own document, never a renewal of the last (0.9.0).
     periodic: periodic(t),
     etag: typeEtag(t),
@@ -1066,6 +1077,10 @@ export class DocumentService {
       title: row.title,
       owner_member_id: row.owner_member_id,
       household_owned: row.household_owned,
+      // Its own choice, and all said with its kind's default as the
+      // household has it now (0.9.0, AIR2).
+      sensitive: row.sensitive,
+      sensitive_effective: sensitiveOf(row, type),
       category: row.category,
       visibility: row.visibility,
       issued,
@@ -1527,6 +1542,15 @@ export class DocumentService {
       if (confirmDetails === true) await confirmNewest(trx, id);
       // What else it changed, by name; its note is a line of its own.
       const fields = Object.keys(input).filter((f) => f !== 'notes');
+      // Whether it is sensitive, when that changed (0.9.0, AIR2): its own
+      // choice, said in a word — the log says which, never why.
+      const sensitive =
+        row.sensitive === current.sensitive
+          ? {}
+          : {
+              sensitive:
+                row.sensitive === true ? 'yes' : row.sensitive === false ? 'no' : 'as_kind',
+            };
       if (fields.length > 0 || !('notes' in input)) {
         await appendAudit(trx, {
           householdId: p.householdId,
@@ -1534,7 +1558,7 @@ export class DocumentService {
           action: 'document.updated',
           objectType: 'document',
           objectId: id,
-          detail: { fields },
+          detail: { fields, ...sensitive },
           ip: meta.ip,
         });
       }
@@ -3460,6 +3484,7 @@ export class DocumentService {
         category: string | null;
         owner_member_id: string | null;
         household_owned: boolean;
+        sensitive: boolean | null;
         expires_on: string | null;
         expires_precision: DateValue['precision'] | null;
         issued_by: string | null;
@@ -3513,7 +3538,7 @@ export class DocumentService {
           group by id
         )
         select d.id as document_id, d.title, d.type_key, d.category, d.owner_member_id,
-               d.household_owned,
+               d.household_owned, d.sensitive,
                d.expires_on, d.expires_precision, d.issued_by, d.issued_on, d.issued_precision,
                d.identifier, d.physical_location, d.tags, d.notes, d.extra,
                d.notes_sealed is not null as notes_sealed_present, d.sealed_details,
@@ -3589,6 +3614,9 @@ export class DocumentService {
           category: r.category,
           owner_member_id: r.owner_member_id,
           household_owned: r.household_owned,
+          // Its own choice, and all said (0.9.0, AIR2), as a document's view.
+          sensitive: r.sensitive,
+          sensitive_effective: sensitiveOf(r, type),
           issued_by: r.issued_by,
           issued,
           expires,
@@ -4105,6 +4133,24 @@ export class DocumentService {
       const key = input.type_key ?? null;
       const kind = type ?? (key ? await this.typeOrThrow(key, trx) : null);
       out.household_owned = belongsTo(kind) === 'household';
+    }
+    // Sensitive (0.9.0, AIR2): null as its kind says, true or false; left
+    // out — all an older client can do — kept as it is. Whoever may change
+    // the document may change it, but a teen only towards sensitive: a
+    // choice of theirs that leaves the paper not sensitive, all said
+    // with the kind it will have, is refused (as the household's is).
+    if (input.sensitive !== undefined) {
+      const was = current?.sensitive ?? null;
+      if (p.role === 'teen' && input.sensitive !== was) {
+        const key = input.type_key !== undefined ? input.type_key : (current?.type_key ?? null);
+        const kind = type ?? (key ? await typeLookup(trx)(key) : null);
+        if (!sensitiveOf({ sensitive: input.sensitive }, kind)) {
+          throw new ApiError(403, 'forbidden', TEEN_KEEPS_SENSITIVE, {
+            detail: 'sensitive',
+          });
+        }
+      }
+      out.sensitive = input.sensitive;
     }
     if (input.visibility !== undefined) {
       if (current !== null) {

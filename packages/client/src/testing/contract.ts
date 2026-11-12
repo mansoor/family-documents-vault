@@ -3675,6 +3675,48 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'Sensitive: a kind’s default, a document’s own choice, an older edit keeps it, and the table filters by it (0.9.0, AIR2)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      if ((await api.capabilities()).features.sensitive_documents !== true) return;
+      const kinds = (await api.documentTypes(token, { all: true })).items;
+      expect(kinds.find((k) => k.key === 'passport')?.sensitive_default).toBe(true);
+      expect(kinds.find((k) => k.key === 'bank_statement')?.sensitive_default).toBe(true);
+      expect(kinds.find((k) => k.key === 'utility_bill')?.sensitive_default).toBe(false);
+      const TAG = 'sensitive-contract';
+      const passport = await api.createDocument(token, {
+        title: 'Contract sensitive passport',
+        type_key: 'passport',
+        tags: [TAG],
+      });
+      expect(passport).toMatchObject({ sensitive: null, sensitive_effective: true });
+      let policy = await api.createDocument(token, {
+        title: 'Contract sensitive bill',
+        type_key: 'utility_bill',
+        sensitive: true,
+        tags: [TAG],
+      });
+      expect(policy).toMatchObject({ sensitive: true, sensitive_effective: true });
+      // What an older client sends: the card, without the field.
+      policy = await api.updateDocument(
+        token,
+        policy.id,
+        { title: 'Contract sensitive bill, paid' },
+        policy.etag,
+      );
+      expect(policy).toMatchObject({ sensitive: true, sensitive_effective: true });
+      policy = await api.updateDocument(token, policy.id, { sensitive: null }, policy.etag);
+      expect(policy).toMatchObject({ sensitive: null, sensitive_effective: false });
+      const titles = async (sensitive: string) =>
+        (await api.documents(token, { sort: 'title', tag: TAG, sensitive })).items.map(
+          (d) => d.title,
+        );
+      expect(await titles('yes')).toEqual(['Contract sensitive passport']);
+      expect(await titles('no')).toEqual(['Contract sensitive bill, paid']);
+      expect(await titles('yes,no')).toHaveLength(2);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

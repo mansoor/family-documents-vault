@@ -721,6 +721,8 @@ describe.skipIf(!testAdminUrl())('many documents at once: batches', () => {
         collection_id: collectionId,
         tags: ['House', ' bills '],
         is_essential: true,
+        // Sensitive for all of them (0.9.0, AIR2), though the bill is not by its kind.
+        sensitive: true,
       },
     });
     expect(b.defaults).toEqual({
@@ -731,6 +733,7 @@ describe.skipIf(!testAdminUrl())('many documents at once: batches', () => {
       collection_id: collectionId,
       tags: ['house', 'bills'],
       is_essential: true,
+      sensitive: true,
     });
     const one = await sent(adult, b.id, 'ct.pdf', PDF('council tax 2026'));
     const two = await sent(adult, b.id, 'other.pdf', PDF('something else'));
@@ -744,6 +747,8 @@ describe.skipIf(!testAdminUrl())('many documents at once: batches', () => {
       physical_location: 'Filing cabinet',
       tags: ['house', 'bills'],
       is_essential: true,
+      sensitive: true,
+      sensitive_effective: true,
     });
     const c = (
       await h.app.inject({ url: `/api/v1/collections/${collectionId}`, headers: h.as(adult) })
@@ -758,6 +763,7 @@ describe.skipIf(!testAdminUrl())('many documents at once: batches', () => {
       is_essential: false,
       collection_id: null,
       visibility: 'household',
+      sensitive: null,
     });
     expect(asSent.statusCode, asSent.body).toBe(201);
     const d2 = await doc(adult, asSent.json<BatchAccepted>().document_id);
@@ -768,6 +774,7 @@ describe.skipIf(!testAdminUrl())('many documents at once: batches', () => {
       physical_location: null,
       tags: [],
       is_essential: false,
+      sensitive: null,
     });
     // A batch for Everyone, and a kind usually for the adults: Adults only.
     const wide = await made(adult, { defaults: { visibility: 'household', type_key: 'will' } });

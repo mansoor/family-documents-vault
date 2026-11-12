@@ -46,6 +46,7 @@ import {
   lockInEffect,
   PREVIEW_MAX_PAGES,
   PRIVATE_TO_THEM,
+  TEEN_KEEPS_SENSITIVE,
   refusalFor,
   seesLocation,
   isLearned,
@@ -200,6 +201,8 @@ const defaultsBody = z
     // Tidied first, then held to a document's caps, in words (T1 review, L3).
     tags: z.array(z.string().max(400)).max(500),
     is_essential: z.boolean(),
+    // Sensitive (0.9.0, AIR2): null as each kind says.
+    sensitive: z.boolean().nullable(),
   })
   .partial()
   .strict();
@@ -351,6 +354,8 @@ interface BatchRow {
   default_collection_id: string | null;
   default_tags: string[];
   default_essential: boolean;
+  /** Sensitive (0090): null, as each kind says. */
+  default_sensitive: boolean | null;
 }
 
 interface ItemRow {
@@ -437,6 +442,7 @@ const BATCH_COLUMNS = [
   'b.default_collection_id',
   'b.default_tags',
   'b.default_essential',
+  'b.default_sensitive',
 ] as const;
 
 export interface BatchOptions {
@@ -2391,6 +2397,14 @@ export class BatchService {
       out.default_tags = normaliseTags(d.tags);
     }
     if (d.is_essential !== undefined) out.default_essential = d.is_essential;
+    // Sensitive (0.9.0, AIR2): a teen may make their papers sensitive,
+    // never not — as on each one.
+    if (d.sensitive !== undefined) {
+      if (p.role === 'teen' && d.sensitive === false) {
+        throw new ApiError(403, 'forbidden', TEEN_KEEPS_SENSITIVE, { detail: 'sensitive' });
+      }
+      out.default_sensitive = d.sensitive;
+    }
     return out as {
       default_owner_member_id?: string | null;
       default_type_key?: string | null;
@@ -2399,6 +2413,7 @@ export class BatchService {
       default_collection_id?: string | null;
       default_tags?: string[];
       default_essential?: boolean;
+      default_sensitive?: boolean | null;
     };
   }
 
@@ -2432,6 +2447,10 @@ export class BatchService {
     }
     if (out.tags === undefined && b.default_tags.length > 0) out.tags = b.default_tags;
     if (out.is_essential === undefined && b.default_essential) out.is_essential = true;
+    // Sensitive, where the accept left it unsaid (0.9.0, AIR2).
+    if (out.sensitive === undefined && b.default_sensitive !== null) {
+      out.sensitive = b.default_sensitive;
+    }
     // A kind the household does not have is refused, not filed with no
     // kind as a phone's queued capture is: it is chosen now, from the list
     // as it is (as a file sent in is, incoming.ts).
@@ -2841,6 +2860,7 @@ export class BatchService {
           collection_id: b?.default_collection_id ?? null,
           tags: b?.default_tags ?? [],
           is_essential: b?.default_essential ?? false,
+          sensitive: b?.default_sensitive ?? null,
         };
       },
       open: async (
@@ -2944,6 +2964,7 @@ export class BatchService {
         collection_id: b.default_collection_id,
         tags: b.default_tags,
         is_essential: b.default_essential,
+        sensitive: b.default_sensitive,
       },
       counts,
     };

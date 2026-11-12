@@ -114,6 +114,11 @@ export type DocumentListParams = {
   /** A detail tag's label, any value: "locker" (0.9.0, `features.tag_details`). */
   tag_label?: string | undefined;
   visibility?: Visibility | undefined;
+  /**
+   * Sensitive, all said (0.9.0, AIR2, `features.sensitive_documents`): `yes`,
+   * `no`, or both comma-separated. As V1's filters, on GET /search too.
+   */
+  sensitive?: string | undefined;
   /** With a column sort, every page holds only this status, and `total` counts them. */
   status?: StatusValue | undefined;
   /** R2, with a column sort: in this collection (one the reader may see), or `none`. */
