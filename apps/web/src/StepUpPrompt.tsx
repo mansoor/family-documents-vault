@@ -1,5 +1,5 @@
 import { FACTOR_STEP_UPS } from '@fdv/shared';
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api } from './api.js';
 import { useApp } from './app-context.js';
 import * as passkeys from './passkeys.js';
@@ -29,7 +29,7 @@ export function StepUpPrompt(props: {
   // `unauthenticated` end a session. Going through the session directly
   // anyway, because this prompt must never be the thing that signs
   // somebody out, whatever the shared helper does later.
-  const { session } = useApp();
+  const { session, caps } = useApp();
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -38,6 +38,58 @@ export function StepUpPrompt(props: {
   const canUsePasskey = passkeys.supported() && passkeys.secureEnough();
   const box = useRef<HTMLElement>(null);
   useSheetFocus(box, { onEscape: () => props.onSettled(false), busy });
+  // A code by text (0.9.0, SMS3): offered to an adult or a teen who asked
+  // for codes by text — never for what takes a passkey or an
+  // authenticator's code (FACTOR_STEP_UPS).
+  const [textTo, setTextTo] = useState<string | null>(null);
+  const [texted, setTexted] = useState<string | null>(null);
+  const [textCode, setTextCode] = useState('');
+  const asksText = caps?.features.sms_codes === true && !factorOnly;
+  useEffect(() => {
+    if (!asksText) return;
+    let live = true;
+    void (async () => {
+      const got = await session.token();
+      if (got.kind !== 'ok') return;
+      const state = await api.stepUpState(got.token).catch(() => null);
+      if (live) setTextTo(state?.text_to ?? null);
+    })();
+    return () => {
+      live = false;
+    };
+  }, [asksText, session]);
+
+  const textMe = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const got = await session.token();
+      if (got.kind !== 'ok') return props.onSettled(false);
+      const sent = await api.stepUpTextCode(got.token);
+      setTexted(`We texted a code to ${sent.sent_to}.`);
+      setTextCode('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The code couldn’t be texted.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const withText = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const got = await session.token();
+      if (got.kind !== 'ok') return props.onSettled(false);
+      await api.stepUp(got.token, { text_code: textCode.replace(/\s+/g, '') });
+      props.onSettled(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "That code didn't match.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const withPassword = async (e: FormEvent) => {
     e.preventDefault();
@@ -113,7 +165,33 @@ export function StepUpPrompt(props: {
               {busy ? 'Waiting for your device…' : 'Use your passkey'}
             </Button>
           )}
-          {factorOnly ? (
+          {texted ? (
+            <form onSubmit={(e) => void withText(e)} className="stack">
+              <Field
+                id="stepup-text-code"
+                label="Code from the text"
+                value={textCode}
+                onChange={setTextCode}
+                autoComplete="one-time-code"
+                inputMode="numeric"
+              />
+              <p className="status-line" role="status">
+                {texted}
+              </p>
+              <ErrorNote message={error} />
+              <div className="row">
+                <Button type="submit" disabled={busy || textCode.replace(/\s+/g, '').length < 6}>
+                  {busy ? 'Checking…' : 'Confirm'}
+                </Button>
+                <Button kind="quiet" disabled={busy} onClick={() => void textMe()}>
+                  Send another code
+                </Button>
+                <Button kind="quiet" onClick={() => props.onSettled(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          ) : factorOnly ? (
             <form onSubmit={(e) => void withCode(e)} className="stack">
               <Field
                 id="stepup-code"
@@ -147,6 +225,11 @@ export function StepUpPrompt(props: {
                 onChange={setPassword}
                 autoComplete="current-password"
               />
+              {textTo && (
+                <Button kind="link" disabled={busy} onClick={() => void textMe()}>
+                  {`Or text me a code at ${textTo}`}
+                </Button>
+              )}
               <ErrorNote message={error} />
               <div className="row">
                 <Button type="submit" disabled={busy || !password}>

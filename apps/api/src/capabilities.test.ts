@@ -132,6 +132,8 @@ describe('buildCapabilities', () => {
       sms_notifications: true,
       // 0.9.0: the household as a document's owner, and each kind's belongs_to.
       household_owner: true,
+      // SMS3 (0.9.0): codes by text, only ever in addition.
+      sms_codes: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

@@ -1959,7 +1959,8 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
     const hh = t.owner.household_id;
     // What the rule and the trigger ask: 0042's, and 5.20's code sent, which
     // 0043 adds by redefining the two alone (F520-01) — with where the code
-    // went, masked, its line's alone.
+    // went, masked, its line's alone; and 0.9.0's (0088, SMS3) code not
+    // texted, with why, and how a code sent went.
     const said = await withSystem(h.db, hh, async (trx) => {
       const r = await sql<{
         actions: string[];
@@ -1979,9 +1980,10 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
         'share.downloaded',
         'share.locked',
         'share.code_sent',
+        'share.code_not_sent',
       ],
       keys: ['share_id', 'user_agent'],
-      code: ['share_id', 'user_agent', 'to'],
+      code: ['share_id', 'user_agent', 'to', 'by'],
       // The same for any action: one a link may not write is the rule's to refuse.
       none: ['share_id', 'user_agent'],
     });

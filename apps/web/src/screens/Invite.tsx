@@ -18,6 +18,7 @@ import { describeError, useApp } from '../app-context.js';
 import { GuestInviteForm, OutsideTheFamily } from '../guests.js';
 import { Button, Check, ErrorNote, Field, Pills, Select } from '../ui.js';
 import { familyZoneNow } from '../family-time.js';
+import { useSmsCodes } from '../text-messages.js';
 
 /**
  * Inviting somebody (SHR-02), from the People screen.
@@ -284,6 +285,9 @@ export function InviteForm(props: {
   const today = useHouseholdToday();
   const [name, setName] = useState(props.member?.display_name ?? '');
   const [email, setEmail] = useState('');
+  // Their mobile, for the code by text as well (0.9.0, SMS3): an owner's to give.
+  const [mobile, setMobile] = useState('');
+  const texts = useSmsCodes();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Family, or somebody outside it (5.34): asked first of somebody new.
@@ -301,6 +305,7 @@ export function InviteForm(props: {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => heading.current?.focus(), []);
   const choice = useRoleChoice(props.myRole, fixed ? ageOn(fixed.date_of_birth, today) : null);
+  const textsCode = texts && choice.owner;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -313,6 +318,7 @@ export function InviteForm(props: {
           ...(fixed ? { member_id: fixed.id } : { display_name: name }),
           email,
           ...roleBody(choice),
+          ...(textsCode && mobile.trim() ? { invitee_phone: mobile.trim() } : {}),
         }),
       );
       if (created) await props.onCreated(created, email);
@@ -383,6 +389,17 @@ export function InviteForm(props: {
             autoComplete="off"
             hint="This becomes their sign-in. Nothing is sent to it — you pass the invitation on yourself."
           />
+          {textsCode && (
+            <Field
+              id="invite-mobile"
+              label="Their mobile number (optional)"
+              type="tel"
+              value={mobile}
+              onChange={setMobile}
+              autoComplete="off"
+              hint="We text them the code, never the link: you still send the link yourself. Nothing is kept of the number."
+            />
+          )}
           <RoleFields idPrefix="invite" choice={choice} memberId={fixed?.id ?? null} />
           <ErrorNote message={error} />
         </>
@@ -446,6 +463,18 @@ export function HandOver(props: {
           {copied === 'link' ? 'Copied' : 'Copy the link'}
         </Button>
       </div>
+
+      {/* Texted as well (SMS3), or why not: the code is here either way. */}
+      {props.created.code_texted_to && (
+        <p className="status status-ok" role="status">
+          We texted the code to {props.created.code_texted_to}. Send them the link yourself.
+        </p>
+      )}
+      {props.created.code_text_problem && (
+        <p className="status status-warn" role="status">
+          {props.created.code_text_problem} Tell them the code yourself.
+        </p>
+      )}
 
       <div className="field">
         <span className="field-label">The code</span>

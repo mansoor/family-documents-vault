@@ -34,6 +34,20 @@ export interface Tokens {
 export interface MfaChallenge {
   mfa_required: true;
   mfa_token: string;
+  /**
+   * What the second step may be (0.9.0, SMS3): a code from an authenticator
+   * app (`totp`), a code texted to their own confirmed number (`text`, POST
+   * /auth/mfa/text sends one), or both. Absent from older vaults: `totp`.
+   */
+  methods?: ('totp' | 'text')[];
+  /** Where a texted code goes, masked ("•••• •••123"); null when there is none. */
+  text_to?: string | null;
+  /**
+   * A code was texted already (SMS3): when a text is the only second step,
+   * one goes as the password is accepted, so a client that knows only the
+   * code box still works — the code goes in it, as `code`.
+   */
+  text_sent?: boolean;
 }
 
 export interface Me {
@@ -522,6 +536,13 @@ export interface CreatedInvitation {
   invitation: Invitation;
   link_token: string;
   code: string;
+  /**
+   * The code was texted to the number given as `invitee_phone` (0.9.0,
+   * SMS3), masked. Nothing else of the number is kept.
+   */
+  code_texted_to?: string;
+  /** It could not be texted, in plain words: the invitation was made, and the code is above. */
+  code_text_problem?: string;
 }
 
 export interface InvitationPreview {
@@ -554,6 +575,13 @@ export interface ResetPreview {
    */
   issued_by?: 'self' | 'operator' | 'owner';
   expires_at: string;
+  /**
+   * The person asked for a code by text when their password is reset (0.9.0,
+   * SMS3): where it goes, masked. POST /password-resets/code texts it, and
+   * POST /password-resets/complete takes it as `code`. Null or absent when
+   * none is asked for.
+   */
+  text_code_to?: string | null;
 }
 
 export interface Share {
@@ -635,6 +663,12 @@ export interface Share {
   protection?: ShareProtection[];
   /** Where its code goes, masked; null when it asks for none or has ended (5.20). */
   code_to?: string | null;
+  /**
+   * How its code goes (0.9.0, SMS3): by email, or by text to the number its
+   * sharer typed (`code_to` is then "•••• •••123"); null when it asks for
+   * none or has ended. Absent from older vaults: by email.
+   */
+  second_factor?: 'email' | 'sms' | null;
   /** It opens in the first browser that opened it, and no other (5.20). */
   this_device_only?: boolean;
   /**
@@ -676,6 +710,15 @@ export interface ShareInput {
    * is set); any other refuses it (`422 email_code_unavailable`).
    */
   code_email?: string;
+  /**
+   * 0.9.0 (SMS3), to a vault with `features.sms_codes`: how the code goes —
+   * `email` to `code_email`, or `sms` to `recipient_phone`. Absent: by
+   * email when there is a `code_email`, as before. A text needs the
+   * household's texts set up (`409 sms_not_set_up`).
+   */
+  second_factor?: 'email' | 'sms';
+  /** The recipient's mobile number, for `second_factor: 'sms'`: never shown back but masked. */
+  recipient_phone?: string;
   /** 5.20: the first browser to open it is the only one it opens in. */
   this_device_only?: boolean;
 }
@@ -775,6 +818,8 @@ export type ShareProtection = 'pin' | 'password' | 'code';
 export interface ShareCodeSent {
   sent_to: string;
   expires_at: string;
+  /** How it went (0.9.0, SMS3): by email, or by text. Absent from older vaults: by email. */
+  by?: 'email' | 'sms';
 }
 
 /**
@@ -804,6 +849,12 @@ export interface ShareLinkPreview {
    * one (5.20). The recipient never types an address.
    */
   code_to?: string | null;
+  /**
+   * How the code comes (0.9.0, SMS3): by email, or by text to a mobile
+   * number (`code_to` is then "•••• •••123"). Absent from older vaults, and
+   * when it asks for no code: by email.
+   */
+  code_by?: 'email' | 'sms';
   /** The first browser to open it is the only one it opens in (5.20). */
   this_device_only?: boolean;
   /**
@@ -1216,6 +1267,13 @@ export interface SmtpInput {
 export interface StepUpState {
   verified_at: string | null;
   expires_in: number;
+  /**
+   * Where a code by text would go to confirm it's them (0.9.0, SMS3),
+   * masked: an adult or a teen who asked for codes by text, with a confirmed
+   * number, while the household's texts are set up. Null or absent when a
+   * text is not offered. It never serves the step-ups of FACTOR_STEP_UPS.
+   */
+  text_to?: string | null;
 }
 
 /**

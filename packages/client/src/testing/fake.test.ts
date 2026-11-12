@@ -1563,3 +1563,96 @@ describe('the fake vault, notifications by text (0.9.0, SMS2)', () => {
     });
   });
 });
+
+describe('the fake vault, codes by text (0.9.0, SMS3)', () => {
+  it('a link’s code and an invitation’s by text; a reset’s and a sign-in’s, each the person’s own to ask for', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token, member_id: me } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    expect((await api.capabilities()).features.sms_codes).toBe(true);
+
+    // A link whose code goes by text: the number only ever masked.
+    const lease = await api.createDocument(token, { title: 'Lease' });
+    const made = await api.share(token, lease.id, {
+      second_factor: 'sms',
+      recipient_phone: '07700 900456',
+    });
+    expect(made.share).toMatchObject({
+      second_factor: 'sms',
+      code_to: '•••• •••456',
+      protection: ['code'],
+    });
+    await expect(
+      api.share(token, lease.id, { second_factor: 'sms', recipient_phone: 'nope' }),
+    ).rejects.toMatchObject({ status: 422, code: 'phone_number_invalid' });
+
+    // An invitation's code, texted as well as shown.
+    const invited = await api.invite(token, {
+      display_name: 'Sam',
+      email: 'sam@example.test',
+      role: 'adult',
+      invitee_phone: '07700 900777',
+    });
+    expect(invited.code_texted_to).toBe('•••• •••777');
+    expect(vault.state.texts?.at(-1)).toEqual({
+      to: '+447700900777',
+      text: `Family Vault: Fake invited you to the family vault. Your invitation code is ${invited.code}. Type it on the page your invitation link opens.`,
+    });
+
+    // One's own: off until turned on, and only with a confirmed number.
+    expect(await api.textCodeSettings(token)).toMatchObject({
+      sign_in: false,
+      reset: false,
+      phone: null,
+      can_turn_on: false,
+    });
+    await expect(api.setTextCodeSettings(token, { reset: true })).rejects.toMatchObject({
+      status: 409,
+      code: 'sms_code_unavailable',
+    });
+    await api.setMemberPhone(token, me, '07700 900101');
+    await api.confirmMemberPhone(token, me, vault.state.phones?.get(me)?.code as string);
+    expect(await api.setTextCodeSettings(token, { reset: true })).toMatchObject({
+      reset: true,
+      phone: '•••• •••101',
+      can_turn_on: true,
+      step_up: false,
+    });
+    // Never an owner's only second step.
+    await expect(api.setTextCodeSettings(token, { sign_in: true })).rejects.toMatchObject({
+      status: 409,
+      code: 'sms_code_needs_factor',
+    });
+    vault.state.ownerTwoStep = true;
+    expect((await api.setTextCodeSettings(token, { sign_in: true })).sign_in).toBe(true);
+
+    // Signing in: the code texted with the password, typed in the one box.
+    const challenge = await api.signIn('owner@example.test', 'a long enough password');
+    expect(challenge).toMatchObject({
+      mfa_required: true,
+      methods: ['text'],
+      text_to: '•••• •••101',
+      text_sent: true,
+    });
+    const mfaToken = (challenge as { mfa_token: string }).mfa_token;
+    const code = vault.state.textCodesOut?.get(`${me}:sign_in`)?.code as string;
+    await expect(
+      api.signInMfa(mfaToken, code === '000000' ? '111111' : '000000', 'text'),
+    ).rejects.toMatchObject({ status: 422, code: 'sms_code_wrong' });
+    expect((await api.signInMfa(mfaToken, code, 'text')).access_token).toBeTruthy();
+    // An owner never confirms it's them by text; a reset the fake never made is not valid.
+    await expect(api.stepUpTextCode(token)).rejects.toMatchObject({
+      status: 409,
+      code: 'sms_code_not_offered',
+    });
+    await expect(api.sendResetCode('reset-secret-0123456789abcdef')).rejects.toMatchObject({
+      status: 404,
+      code: 'reset_not_valid',
+    });
+  });
+});

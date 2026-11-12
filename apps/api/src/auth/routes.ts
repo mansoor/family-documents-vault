@@ -7,6 +7,7 @@ import type { TotpService } from './totp.js';
 import type { PasskeyService } from './passkeys.js';
 import type { StepUpService } from './step-up.js';
 import type { RestrictionService } from '../household/restrictions.js';
+import type { TextCodeService } from '../sms/codes.js';
 import {
   changeBody,
   completeBody,
@@ -76,6 +77,7 @@ export function registerAuth(
   stepUp?: StepUpService,
   passwords?: PasswordService,
   restrictions?: RestrictionService,
+  textCodes?: TextCodeService,
 ): void {
   app.decorateRequest('principal', null);
 
@@ -111,10 +113,25 @@ export function registerAuth(
 
   app.post('/api/v1/auth/mfa', tight, async (req) => {
     const body = parse(
-      z.object({ mfa_token: z.string().min(1), code: z.string().min(6).max(10) }),
+      z.object({
+        mfa_token: z.string().min(1),
+        code: z.string().min(6).max(10),
+        // 0.9.0 (SMS3): which code it is. Absent, as from an older client:
+        // the authenticator's, or a text's when that is the only second step.
+        method: z.enum(['totp', 'text']).optional(),
+      }),
       req.body,
     );
-    return auth.signInWithMfa(body.mfa_token, body.code, metaOf(req));
+    return auth.signInWithMfa(body.mfa_token, body.code, metaOf(req), body.method);
+  });
+
+  // A code texted for a sign-in's second step (0.9.0, SMS3): only after the
+  // password was right (the interim token says so), and only to the
+  // person's own confirmed number, within its own limits.
+  app.post('/api/v1/auth/mfa/text', tight, async (req, reply) => {
+    const body = parse(z.object({ mfa_token: z.string().min(1) }).strict(), req.body);
+    void reply.headers({ 'cache-control': 'no-store' });
+    return auth.sendSignInCode(body.mfa_token);
   });
 
   app.post('/api/v1/auth/refresh', tight, async (req) => {
@@ -195,6 +212,8 @@ export function registerAuth(
           password: z.string().min(1).optional(),
           code: z.string().min(6).max(10).optional(),
           passkey: z.record(z.string(), z.unknown()).optional(),
+          // 0.9.0 (SMS3): a code texted to their own number, an adult's or a teen's.
+          text_code: z.string().min(6).max(16).optional(),
         }),
         req.body,
       );
@@ -204,10 +223,22 @@ export function registerAuth(
           ...(body.password ? { password: body.password } : {}),
           ...(body.code ? { code: body.code } : {}),
           ...(body.passkey ? { passkey: body.passkey as never } : {}),
+          ...(body.text_code ? { text_code: body.text_code } : {}),
         },
         metaOf(req),
       );
     });
+
+    // A code texted to confirm it's them (SMS3): a few a minute, on top of
+    // the limits a number and an account have of their own.
+    app.post(
+      '/api/v1/auth/step-up/text',
+      { preHandler: app.requireAuth, ...tight },
+      async (req, reply) => {
+        void reply.headers({ 'cache-control': 'no-store' });
+        return stepUp.sendTextCode(req.principal as Principal);
+      },
+    );
   }
 
   if (passkeys) {
@@ -293,6 +324,25 @@ export function registerAuth(
     });
   }
 
+  if (textCodes) {
+    // Codes by text to one's own number (0.9.0, SMS3): whether a reset and
+    // a sign-in ask for one. Each person's own; changing either is changing
+    // how they sign in, so confirmed it's them first.
+    app.get('/api/v1/auth/text-codes', { preHandler: app.requireAuth }, async (req, reply) => {
+      void reply.headers({ 'cache-control': 'no-store' });
+      return textCodes.settings(req.principal as Principal);
+    });
+    app.put('/api/v1/auth/text-codes', { preHandler: app.requireAuth }, async (req, reply) => {
+      const body = parse(
+        z.object({ sign_in: z.boolean().optional(), reset: z.boolean().optional() }).strict(),
+        req.body ?? {},
+      );
+      await stepUp?.require(req.principal as Principal, 'change_sign_in');
+      void reply.headers({ 'cache-control': 'no-store' });
+      return textCodes.set(req.principal as Principal, body, metaOf(req));
+    });
+  }
+
   if (!passwords) return;
 
   // Changing one while signed in. Not rate-limited beyond the global
@@ -325,9 +375,18 @@ export function registerAuth(
 
   app.post('/api/v1/password-resets/complete', tight, async (req, reply) => {
     const body = parse(completeBody, req.body ?? {});
-    const { email } = await passwords.reset(body.token, body.password, metaOf(req));
+    const { email } = await passwords.reset(body.token, body.password, metaOf(req), body.code);
     // No session, as below.
     return reply.status(200).send({ email });
+  });
+
+  // The code that finishes a reset, texted (0.9.0, SMS3): for a live link
+  // of somebody who asked for one, to their own confirmed number. The link
+  // is not spent.
+  app.post('/api/v1/password-resets/code', tight, async (req, reply) => {
+    const { token } = parse(lookupBody, req.body ?? {});
+    void reply.headers({ 'cache-control': 'no-store' });
+    return passwords.sendResetCode(token);
   });
 
   // The path forms, which links made before 0.5.17 (/reset/<token>) were

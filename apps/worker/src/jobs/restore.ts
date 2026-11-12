@@ -824,6 +824,11 @@ begin
   if to_regclass('public.phone_code') is not null then
     delete from public.phone_code;
   end if;
+  -- A code texted to somebody's own number for a reset, a sign-in or a
+  -- step-up (0088, SMS3): the same. A new one is asked for.
+  if to_regclass('public.sms_code') is not null then
+    delete from public.sms_code;
+  end if;
   if to_regclass('public.upload_request') is not null then
     update public.upload_request set paused_at = now(), paused_reason = 'restored'
      where paused_at is null and revoked_at is null and closed_at is null
@@ -1211,6 +1216,14 @@ const GUARDS = [
     fn: 'member_phone_account_writes',
   },
   { name: 'phone_code_writes', table: 'phone_code', fn: 'phone_code_writes' },
+  // A code texted to one's own number keeps what it was; whether somebody is
+  // asked for codes by text is theirs alone to say (0088, SMS3).
+  { name: 'sms_code_writes', table: 'sms_code', fn: 'sms_code_writes' },
+  {
+    name: 'account_text_codes_writes',
+    table: 'account',
+    fn: 'account_text_codes_writes',
+  },
 ];
 
 /**
@@ -1245,6 +1258,8 @@ const VAULTS_OWN = [
   { table: 'watch_kept', what: 'the scans the vault kept' },
   // A code texted to confirm a number (0084, SMS1): between the vault and the phone.
   { table: 'phone_code', what: 'the codes texted to confirm a number' },
+  // A code texted to one's own number (0088, SMS3): between the vault and the phone.
+  { table: 'sms_code', what: 'the codes texted for a reset, a sign-in or a step-up' },
 ];
 
 /**
@@ -1437,6 +1452,8 @@ const ACTOR_GUARDED = [
   'sms_message',
   'member_phone',
   'phone_code',
+  // And the codes texted to one's own number, the vault's (0088, SMS3).
+  'sms_code',
   // Computers that send scans, and their pairing codes (0070, D1): their
   // person's, an owner's by name; nobody else's.
   'upload_device',

@@ -146,6 +146,9 @@ import type {
   SmsSettingsView,
   SmsStatusView,
   SmsTestResult,
+  TextCodeSent,
+  TextCodeSettings,
+  TextCodeSettingsInput,
   WatchFolderInput,
   WatchFolderView,
   WatchNoticeView,
@@ -228,8 +231,25 @@ export function createApi(http: Http) {
         method: 'POST',
         body: { email, password },
       }),
-    signInMfa: (mfa_token: string, code: string) =>
-      request<Tokens>('/api/v1/auth/mfa', { method: 'POST', body: { mfa_token, code } }),
+    /**
+     * The second step. `method` (0.9.0, `features.sms_codes`) says which code
+     * it is: `totp`, or `text` for one texted to their own number (POST
+     * /auth/mfa/text). Left out, the authenticator's — or the text's, when a
+     * text is their only second step (`MfaChallenge.methods`).
+     */
+    signInMfa: (mfa_token: string, code: string, method?: 'totp' | 'text') =>
+      request<Tokens>('/api/v1/auth/mfa', {
+        method: 'POST',
+        body: method ? { mfa_token, code, method } : { mfa_token, code },
+      }),
+    /**
+     * A code texted for a sign-in's second step (0.9.0, `features.sms_codes`),
+     * when `MfaChallenge.methods` has `text`: to their own confirmed number
+     * (`409 sms_code_not_offered`, `429 sms_code_limit`, `409 sms_not_set_up`,
+     * `409 sms_cap_reached`, `503 sms_not_sent`).
+     */
+    signInTextCode: (mfa_token: string) =>
+      request<TextCodeSent>('/api/v1/auth/mfa/text', { method: 'POST', body: { mfa_token } }),
     refresh: (refresh_token: string) =>
       request<Tokens>('/api/v1/auth/refresh', { method: 'POST', body: { refresh_token } }),
     logout: (token: string) => request<void>('/api/v1/auth/logout', { method: 'POST', token }),
@@ -253,12 +273,38 @@ export function createApi(http: Http) {
     totpConfirm: (token: string, code: string) =>
       request<void>('/api/v1/auth/totp/confirm', { method: 'POST', body: { code }, token }),
     stepUpState: (token: string) => request<StepUpState>('/api/v1/auth/step-up', { token }),
-    stepUp: (token: string, body: { password?: string; code?: string; passkey?: unknown }) =>
+    /**
+     * Confirms it's them. Since 0.9.0 (`features.sms_codes`) an adult or a
+     * teen may send `text_code`, one texted by `stepUpTextCode`, when
+     * `StepUpState.text_to` says one is offered; it never serves the step-ups
+     * of FACTOR_STEP_UPS.
+     */
+    stepUp: (
+      token: string,
+      body: { password?: string; code?: string; passkey?: unknown; text_code?: string },
+    ) =>
       request<{ verified_at: string; expires_in: number }>('/api/v1/auth/step-up', {
         method: 'POST',
         body,
         token,
       }),
+    /** A code texted to confirm it's them (0.9.0, `features.sms_codes`): `409 sms_code_not_offered` when none is. */
+    stepUpTextCode: (token: string) =>
+      request<TextCodeSent>('/api/v1/auth/step-up/text', { method: 'POST', token }),
+    /**
+     * Whether a reset and a sign-in ask for a code by text, and whether they
+     * can (0.9.0, `features.sms_codes`): one's own.
+     */
+    textCodeSettings: (token: string) =>
+      request<TextCodeSettings>('/api/v1/auth/text-codes', { token }),
+    /**
+     * Either turned on or off: `step_up_required` (`change_sign_in`) first;
+     * `409 sms_code_unavailable` without a confirmed number or texts set up;
+     * `409 sms_code_needs_factor` for an owner with no passkey or two-step
+     * sign-in turning on the sign-in code.
+     */
+    setTextCodeSettings: (token: string, body: TextCodeSettingsInput) =>
+      request<TextCodeSettings>('/api/v1/auth/text-codes', { method: 'PUT', body, token }),
     passkeys: (token: string) =>
       request<{ items: PasskeyView[] }>('/api/v1/auth/passkeys', { token }),
     passkeyRegisterChallenge: (token: string) =>
@@ -309,11 +355,26 @@ export function createApi(http: Http) {
         method: 'POST',
         body: { token: linkToken },
       }),
-    /** Spends the link: the new password is set, and nobody is signed in. */
-    completeReset: (linkToken: string, password: string) =>
+    /**
+     * Spends the link: the new password is set, and nobody is signed in.
+     * Since 0.9.0 (`features.sms_codes`), `code` is the one texted when the
+     * person asked for one (`ResetPreview.text_code_to`; `422
+     * sms_code_required` without it).
+     */
+    completeReset: (linkToken: string, password: string, code?: string) =>
       request<{ email: string }>('/api/v1/password-resets/complete', {
         method: 'POST',
-        body: { token: linkToken, password },
+        body: code ? { token: linkToken, password, code } : { token: linkToken, password },
+      }),
+    /**
+     * The code that finishes a reset, texted to the person's own number
+     * (0.9.0, `features.sms_codes`), when `ResetPreview.text_code_to` says
+     * one is asked for. The link is not spent.
+     */
+    sendResetCode: (linkToken: string) =>
+      request<TextCodeSent>('/api/v1/password-resets/code', {
+        method: 'POST',
+        body: { token: linkToken },
       }),
 
     // -------------------------------------------------------------- storage
@@ -683,6 +744,11 @@ export function createApi(http: Http) {
         kind?: MemberKind;
         access_expires_at?: string;
         relationship?: string | null;
+        /**
+         * 0.9.0 (`features.sms_codes`), an owner's: the code is texted to
+         * this number as well (`CreatedInvitation.code_texted_to`).
+         */
+        invitee_phone?: string;
       },
     ) => request<CreatedInvitation>('/api/v1/invitations', { method: 'POST', body, token }),
     revokeInvitation: (token: string, id: string) =>

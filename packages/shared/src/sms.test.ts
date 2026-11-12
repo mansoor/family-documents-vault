@@ -16,6 +16,10 @@ import {
   phoneChangedText,
   phoneCodeText,
   phoneTail,
+  inviteCodeText,
+  mayStepUpByText,
+  shareCodeText,
+  textCodeText,
 } from './sms.js';
 
 /** A number as somebody types it, and the words a text says (0.9.0, SMS1). */
@@ -146,5 +150,40 @@ describe('what a text says (SMS2)', () => {
     expect(isAlertTextKind('locked')).toBe(true);
     expect(isAlertTextKind('toString')).toBe(false);
     expect(isAlertTextKind(undefined)).toBe(false);
+  });
+});
+
+describe('codes by text (SMS3)', () => {
+  it('say the code and how long it lasts, and never a link or what it opens', () => {
+    expect(shareCodeText('123456')).toBe(
+      'Family Vault: your code to open the shared documents is 123456. It ends in 10 minutes.',
+    );
+    expect(inviteCodeText('ABCD-EFGH', 'Ahmed Khan')).toBe(
+      'Family Vault: Ahmed invited you to the family vault. Your invitation code is ABCD-EFGH. Type it on the page your invitation link opens.',
+    );
+    expect(inviteCodeText('ABCD-EFGH', null)).toBe(
+      'Family Vault: Your invitation code is ABCD-EFGH. Type it on the page your invitation link opens.',
+    );
+    expect(textCodeText('reset', '123456')).toBe(
+      'Family Vault: your code to finish resetting your password is 123456. It ends in 10 minutes. If you didn’t ask for it, tell an owner.',
+    );
+    expect(textCodeText('sign_in', '123456')).toBe(
+      'Family Vault: your sign-in code is 123456. It ends in 10 minutes. Never tell it to anybody.',
+    );
+    expect(textCodeText('step_up', '123456')).toBe(
+      'Family Vault: your code to confirm it’s you is 123456. It ends in 10 minutes. Never tell it to anybody.',
+    );
+    for (const t of [shareCodeText('1'), inviteCodeText('1', 'A'), textCodeText('reset', '1')]) {
+      expect(t).not.toMatch(/https?:|\/s#|\/join/);
+    }
+  });
+
+  it('confirming it’s you by text is an adult’s or a teen’s, never an owner’s', () => {
+    expect(['owner', 'adult', 'teen', 'viewer'].map(mayStepUpByText)).toEqual([
+      false,
+      true,
+      true,
+      false,
+    ]);
   });
 });

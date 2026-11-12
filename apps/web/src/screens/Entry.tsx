@@ -5,6 +5,7 @@ import * as push from '../push.js';
 import { api } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
+import type { MfaChallenge } from '@fdv/shared';
 
 /** The Welcome board: what this is, and one primary action. */
 export function WelcomeScreen() {
@@ -56,15 +57,27 @@ export function SignInScreen() {
 
   const [mfaToken, setMfaToken] = useState<string | null>(null);
   const [code, setCode] = useState('');
+  // The second step (0.9.0, SMS3): the authenticator's code, or one texted
+  // to their own number — as the vault offers, and as they choose.
+  const [mfa, setMfa] = useState<MfaChallenge | null>(null);
+  const [byText, setByText] = useState(false);
+  const [texted, setTexted] = useState<string | null>(null);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const r = mfaToken ? await api.signInMfa(mfaToken, code) : await api.signIn(email, password);
+      const r = mfaToken
+        ? await api.signInMfa(mfaToken, code, mfa?.methods ? (byText ? 'text' : 'totp') : undefined)
+        : await api.signIn(email, password);
       if ('mfa_required' in r) {
         setMfaToken(r.mfa_token);
+        setMfa(r);
+        // A text the only second step: one went with the password.
+        const onlyText = r.methods?.length === 1 && r.methods[0] === 'text';
+        setByText(onlyText);
+        if (r.text_sent && r.text_to) setTexted(`We texted a code to ${r.text_to}.`);
         return;
       }
       session.accept(r);
@@ -98,27 +111,74 @@ export function SignInScreen() {
     }
   };
 
+  /** A code texted for the second step (SMS3): a first, or another. */
+  const textMe = async () => {
+    if (!mfaToken) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const sent = await api.signInTextCode(mfaToken);
+      setByText(true);
+      setCode('');
+      setTexted(`We texted a code to ${sent.sent_to}.`);
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (mfaToken) {
+    const offersText = mfa?.methods?.includes('text') === true;
+    const offersApp = !mfa?.methods || mfa.methods.includes('totp');
     return (
       <main className="page">
         <Logo />
         <div>
           <h1 style={{ fontSize: 32 }}>One more step</h1>
-          <p className="lede">Enter the six-digit code from your authenticator app.</p>
+          <p className="lede">
+            {byText
+              ? `Enter the six-digit code we text${texted ? 'ed' : ''} to ${mfa?.text_to ?? 'your phone'}.`
+              : 'Enter the six-digit code from your authenticator app.'}
+          </p>
         </div>
         <form onSubmit={(e) => void submit(e)} className="card stack">
           <Field
             id="code"
-            label="Code"
+            label={byText ? 'Code from the text' : 'Code'}
             value={code}
             onChange={setCode}
             autoComplete="one-time-code"
             placeholder="123 456"
           />
+          <p className="status-line" role="status">
+            {byText ? (texted ?? '') : ''}
+          </p>
           <ErrorNote message={error} />
-          <Button type="submit" disabled={busy}>
+          <Button type="submit" disabled={busy || (byText && !texted)}>
             {busy ? 'Checking…' : 'Continue'}
           </Button>
+          {offersText &&
+            (byText ? (
+              <Button kind="quiet" disabled={busy} onClick={() => void textMe()}>
+                {texted ? 'Send another code' : 'Text me a code'}
+              </Button>
+            ) : (
+              <Button kind="quiet" disabled={busy} onClick={() => void textMe()}>
+                Text me a code instead
+              </Button>
+            ))}
+          {offersText && offersApp && byText && (
+            <Button
+              kind="link"
+              onClick={() => {
+                setByText(false);
+                setCode('');
+              }}
+            >
+              Use my authenticator app instead
+            </Button>
+          )}
         </form>
       </main>
     );

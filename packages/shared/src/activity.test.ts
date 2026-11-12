@@ -683,6 +683,9 @@ describe('who did it, and what sort of thing, for the Activity table (R4)', () =
       ['invitation.accepted', { email: 'sarah@example.test' }],
       ['share.locked', {}],
       ['share.code_sent', { to: 's***@example.test' }],
+      // 0.9.0 (SMS3): a code texted, or one that could not be.
+      ['share.code_sent', { to: '•••• •••456', by: 'sms' }],
+      ['share.code_not_sent', { to: '•••• •••456', reason: 'cap_reached' }],
       ['upload_request.code_sent', {}],
       ['upload_request.locked', {}],
       ['upload_request.closed', {}],
@@ -692,6 +695,14 @@ describe('who did it, and what sort of thing, for the Activity table (R4)', () =
       expect(by({ action, detail })?.actor_member_id, action).toBeNull();
       expect(by({ action, detail, actor: 'A' })?.actor_member_id, action).toBeNull();
     }
+    // A code by text says so, and where, masked (SMS3).
+    expect(
+      by({ action: 'share.code_sent', detail: { to: '•••• •••456', by: 'sms' } })?.text,
+    ).toMatch(/was texted to •••• •••456$/);
+    expect(
+      by({ action: 'share.code_not_sent', detail: { to: '•••• •••456', reason: 'not_set_up' } })
+        ?.text,
+    ).toMatch(/couldn’t be texted to •••• •••456: text messages aren’t set up$/);
     // A name that merely begins the words, for a line that names nobody.
     expect(by({ action: 'share.locked', actor: 'A link' })?.actor_member_id).toBeNull();
     // No member behind the name: nothing to give.

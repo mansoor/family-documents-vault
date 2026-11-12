@@ -395,6 +395,9 @@ const RULES: Record<string, Rule> = {
     body: () => ({ email: NOBODY, password: 'not anybody’s password' }),
   },
   'POST /api/v1/auth/mfa': { who: 'public', body: () => ({ mfa_token: 'x', code: '000000' }) },
+  // A sign-in's code by text (0.9.0, SMS3): only after the password, by its
+  // interim token, to the person's own confirmed number.
+  'POST /api/v1/auth/mfa/text': { who: 'public', body: () => ({ mfa_token: 'x' }) },
   'POST /api/v1/auth/refresh': { who: 'public', body: () => ({ refresh_token: 'not-one' }) },
   'POST /api/v1/auth/passkey/challenge': { who: 'public', body: () => ({}) },
   'POST /api/v1/auth/passkey/verify': {
@@ -411,6 +414,11 @@ const RULES: Record<string, Rule> = {
     body: (f) => ({ token: f.resetToken, password: 'a long attacker password' }),
   },
   'GET /api/v1/password-resets/:token': { who: 'public' },
+  // A reset's code by text (SMS3): for a live link of somebody who asked for one.
+  'POST /api/v1/password-resets/code': {
+    who: 'public',
+    body: (f) => ({ token: f.resetToken }),
+  },
   'POST /api/v1/password-resets/:token': {
     who: 'public',
     body: () => ({ password: 'a long attacker password' }),
@@ -460,8 +468,19 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/auth/step-up': { who: 'signedIn' },
   'POST /api/v1/auth/step-up': {
     who: 'signedIn',
-    bodies: () => [{ password: 'wrong password' }, { code: '000000' }, { passkey: {} }],
+    bodies: () => [
+      { password: 'wrong password' },
+      { code: '000000' },
+      { passkey: {} },
+      { text_code: '000000' },
+    ],
   },
+  // A code by text to confirm it's them (SMS3): an adult's or a teen's who
+  // asked for codes by text; nobody else is offered one.
+  'POST /api/v1/auth/step-up/text': { who: 'signedIn', body: () => ({}) },
+  // Whether a reset and a sign-in ask for a code by text (SMS3): one's own.
+  'GET /api/v1/auth/text-codes': { who: 'signedIn' },
+  'PUT /api/v1/auth/text-codes': { who: 'signedIn', body: () => ({ sign_in: false }) },
   'GET /api/v1/auth/passkeys': { who: 'signedIn' },
   'POST /api/v1/auth/passkeys/challenge': { who: 'signedIn', body: () => ({}) },
   'POST /api/v1/auth/passkeys': { who: 'signedIn', body: () => ({ response: {} }) },

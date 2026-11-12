@@ -1,11 +1,12 @@
 import argon2 from 'argon2';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
-import { FACTOR_STEP_UPS } from '@fdv/shared';
+import { FACTOR_STEP_UPS, type StepUpState, type TextCodeSent } from '@fdv/shared';
 import { ApiError } from '../errors.js';
 import type { PasskeyService } from './passkeys.js';
 import type { Principal, RequestMeta } from './service.js';
 import type { TotpService } from './totp.js';
+import { smsCodeNotOffered, type TextCodeService } from '../sms/codes.js';
 
 /**
  * Step-up authentication (SEC-17).
@@ -138,6 +139,13 @@ export class StepUpService {
     private readonly db: Db,
     private readonly passkeys: PasskeyService | null,
     private readonly totp: TotpService | null,
+    /**
+     * Codes by text (0.9.0, SMS3): an adult or a teen who asked for them may
+     * confirm it's them with one. It moves only the time any credential was
+     * last seen, never a factor's: no step-up of FACTOR_STEP_UPS, and none
+     * of an owner's (who are never offered one), is served by a text.
+     */
+    private readonly textCodes: TextCodeService | null = null,
   ) {}
 
   /**
@@ -225,11 +233,29 @@ export class StepUpService {
     return Date.now() - at <= STEP_UP_WINDOW_MS;
   }
 
-  /** How long this session stays fresh, for the client to avoid asking twice. */
-  async freshness(p: Principal): Promise<{ verified_at: string | null; expires_in: number }> {
+  /**
+   * How long this session stays fresh, for the client to avoid asking twice;
+   * and since SMS3, where a code by text would go, when one is offered.
+   */
+  async freshness(p: Principal): Promise<StepUpState> {
     const at = await this.verifiedAt(p);
     const left = at ? Math.max(0, STEP_UP_WINDOW_MS - (Date.now() - at.getTime())) : 0;
-    return { verified_at: at?.toISOString() ?? null, expires_in: Math.floor(left / 1000) };
+    const text = this.textCodes ? await this.textCodes.forStepUp(p) : null;
+    return {
+      verified_at: at?.toISOString() ?? null,
+      expires_in: Math.floor(left / 1000),
+      text_to: text?.to ?? null,
+    };
+  }
+
+  /**
+   * POST /auth/step-up/text (SMS3): a code texted to confirm it's them, to
+   * their own confirmed number — an adult's or a teen's who asked for codes
+   * by text (`409 sms_code_not_offered` for anybody else, an owner always).
+   */
+  async sendTextCode(p: Principal): Promise<TextCodeSent> {
+    if (!this.textCodes || !(await this.textCodes.forStepUp(p))) throw smsCodeNotOffered();
+    return this.textCodes.send(p.accountId, 'step_up');
   }
 
   /**
@@ -238,7 +264,13 @@ export class StepUpService {
    */
   async verify(
     p: Principal,
-    input: { password?: string; code?: string; passkey?: AuthenticationResponseJSON },
+    input: {
+      password?: string;
+      code?: string;
+      passkey?: AuthenticationResponseJSON;
+      /** A code texted to their own number (SMS3): an adult's or a teen's alone. */
+      text_code?: string;
+    },
     meta: RequestMeta,
   ): Promise<{ verified_at: string; expires_in: number }> {
     let method: string;
@@ -249,6 +281,13 @@ export class StepUpService {
     } else if (input.code) {
       if (!this.totp || !(await this.totp.verify(p.accountId, input.code))) throw refused();
       method = 'totp';
+    } else if (input.text_code) {
+      // Offered to adults and teens who asked for it, never an owner
+      // (forStepUp): a text is the weakest proof, and serves only what any
+      // credential serves.
+      if (!this.textCodes || !(await this.textCodes.forStepUp(p))) throw smsCodeNotOffered();
+      await this.textCodes.verify(p.accountId, 'step_up', input.text_code);
+      method = 'text';
     } else if (input.password) {
       const account = await this.db
         .selectFrom('account')

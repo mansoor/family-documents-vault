@@ -6014,6 +6014,93 @@ phone_code_too_many`, `429 phone_code_limit` (with `Retry-After`),
       fills, levels and teaches as it did. `@fdv/client`'s fake keeps and answers
       `household_owned` and `belongs_to`, honours `member_id=household` and
       `none` on the table, and has the bill as the vault now does.
+  - Codes by text (0.9.0-dev.33; SMS3). Migration 0088. **Additive**: a
+    request made as before is answered as before, but for a person who
+    turned on a code by text (below) — their reset and their sign-in then
+    ask for it, whatever the client.
+    - **New `features`:** `sms_codes`, `true`; absent from older vaults.
+      Whether texts can go now is still `GET /api/v1/sms/status`.
+    - **A link's code by text.** `POST /api/v1/documents/{id}/share` and
+      `POST /api/v1/collections/{id}/shares` take `second_factor: 'email' |
+'sms'` and `recipient_phone` (read in the household's country without
+      +). Absent: by email when there is a `code_email`, as before; a
+      `recipient_phone` alone is by text. Both ways at once, or `sms`
+      without a number, is `422 validation_failed`; a number it cannot read
+      `422 phone_number_invalid`; texts not set up `409 sms_not_set_up`.
+      `Share.second_factor` (`'email' | 'sms' | null`) says how, and
+      `Share.code_to` is the number masked (`•••• •••456`); never the
+      number. `ShareLinkPreview.code_by` (`'sms'`) and its `code_to` masked.
+      `POST /api/v1/shared/code` texts it (`ShareCodeSent.by: 'sms'`): the
+      same `share_code` rows, limits (`429 code_limit`), 10 minutes and 5
+      tries; `503 sms_code_unavailable` when the household's texts are not
+      set up or this month's are all sent (in the recipient's words), `503
+code_not_sent` when SMS Gate did not take it. The number is cleared
+      when the link ends, as an address is.
+    - **An invitation's code by text.** `POST /api/v1/invitations` and
+      `/members/{id}/invite` take `invitee_phone`, an owner's alone (`403`
+      for anybody else; `409 sms_not_set_up` and `422
+phone_number_invalid` before anything is made).
+      `CreatedInvitation.code_texted_to` (masked) when it went, or
+      `code_text_problem` (plain words) when it could not: the invitation
+      stands either way.
+    - **One's own codes:** `GET` and `PUT /api/v1/auth/text-codes`
+      (`TextCodeSettings`: `sign_in`, `reset`, `phone` masked,
+      `phone_confirmed`, `sms_ready`, `can_turn_on`, `why_not`, `step_up`).
+      `PUT` takes `sign_in` and `reset`, after `step_up_required`
+      (`change_sign_in`); turning one on without a confirmed number or
+      texts is `409 sms_code_unavailable`; an owner turning on `sign_in`
+      with neither a passkey nor two-step sign-in `409
+sms_code_needs_factor`.
+    - **A reset:** `ResetPreview.text_code_to` (masked) when one is asked
+      for; `POST /api/v1/password-resets/code` `{ token }` texts it
+      (`TextCodeSent`; `409 sms_code_not_offered` otherwise); `POST
+/api/v1/password-resets/complete` takes `code` — without it `422
+sms_code_required`, wrong `422 sms_code_wrong`, ended `409
+sms_code_expired`, tried 5 times `409 sms_code_too_many`. The path
+      form `POST /password-resets/{token}` cannot carry one, and is refused
+      the same for such a person. Number unconfirmed or texts not working:
+      the reset goes on without it and the person's owners are alerted.
+    - **Signing in:** `MfaChallenge.methods` (`['totp']`, `['text']` or
+      both), `text_to` (masked) and `text_sent` (a text the only second
+      step goes as the password is accepted). `POST /api/v1/auth/mfa/text`
+      `{ mfa_token }` texts one; `POST /api/v1/auth/mfa` takes `method:
+'totp' | 'text'` — left out, the authenticator's, or the text's when
+      that is the only second step, so an older client's one code box
+      works. A session opened by a text has no `factor_verified_at`. A
+      text the only second step that cannot be asked for (number
+      unconfirmed, texts not ready) or sent (`sms_not_set_up`,
+      `sms_cap_reached`, `sms_not_sent`) answers `Tokens` from the password
+      alone (the owner's decision of 12 Nov 2026); past the limit on codes
+      it is still an `MfaChallenge` with `text_sent: false`.
+    - **Confirming it's you:** `StepUpState.text_to` (masked) for an adult
+      or a teen who turned on the sign-in code; `POST
+/api/v1/auth/step-up/text` texts one (`409 sms_code_not_offered` for
+      anybody else, an owner always); `POST /api/v1/auth/step-up` takes
+      `text_code`, which moves `verified_at` only — never a
+      FACTOR_STEP_UPS step-up.
+    - Limits on every code to one's own number: 3 in 15 minutes and 10 a
+      day, a number and an account (`429 sms_code_limit`); past the month's
+      cap `409 sms_cap_reached`; SMS Gate not taking it `503 sms_not_sent`.
+    - **New `sms_message` kinds:** `share_code`, `invite_code`,
+      `reset_code`, `sign_in_code`, `step_up_code`. **New activity:**
+      `share.code_not_sent` (a link's, with `to` masked and `reason`), and
+      `share.code_sent` says `by`; `auth.text_codes_changed`;
+      `auth.text_code_skipped` (`at`: `sign_in` or `reset`, `why`), for the
+      owners and the person, with an alert to the owners by email and push
+      — never by text (`no_text` on the `alert.send` job).
+    - `@fdv/shared`: `TextCodePurpose`, `TextCodeSent`, `TextCodeSettings`,
+      `TextCodeSettingsInput`, `SMS_FACTOR_WARNING`,
+      `SMS_OWNER_NEEDS_FACTOR`, `shareCodeText`, `inviteCodeText`,
+      `textCodeText`, `mayStepUpByText`; the new fields above; `SmsKind`
+      gains the five kinds; `Capabilities.features.sms_codes`.
+      `@fdv/client`: `signInMfa(token, code, method?)`, `signInTextCode`,
+      `stepUpTextCode`, `stepUp` with `text_code`, `textCodeSettings`,
+      `setTextCodeSettings`, `sendResetCode`, `completeReset(token,
+password, code?)`, `invite` with `invitee_phone`. The fake answers
+      each: a texted link's code and an invitation's, one's own settings, a
+      sign-in whose second step is a text (its code in
+      `state.textCodesOut`), a step-up's code for an adult or a teen, and
+      `404 reset_not_valid` for a reset's (it makes none).
 
 ## Deprecations in effect
 

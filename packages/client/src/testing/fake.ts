@@ -8,7 +8,14 @@ import {
   PHONE_CODE_MINUTES,
   PHONE_CODE_TRIES,
   phoneCodeText,
+  inviteCodeText,
+  mayStepUpByText,
+  SMS_OWNER_NEEDS_FACTOR,
+  textCodeText,
   type MemberPhoneView,
+  type MfaChallenge,
+  type TextCodePurpose,
+  type TextCodeSettings,
   NOTE_KIND,
   noteMatchWords,
   notePreview,
@@ -529,6 +536,16 @@ export interface FakeVaultState {
   phones?: Map<string, FakePhone>;
   /** Every text the fake sent, in order: to whom, and what it said. */
   texts?: Array<{ to: string; text: string }>;
+  /**
+   * Codes by text to one's own number (0.9.0, SMS3): whether each person,
+   * by member id, asked for one at sign-in and at a reset; the newest code
+   * out for each person and purpose (`memberId:purpose`), kept as only a
+   * fake may keep one; and the sign-ins waiting for their texted code, by
+   * interim token.
+   */
+  textCodes?: Map<string, { sign_in: boolean; reset: boolean }>;
+  textCodesOut?: Map<string, { code: string; expires: number; attempts: number }>;
+  mfaWaiting?: Map<string, { memberId: string; installation: string | null }>;
   /**
    * What each person wants to hear, and how (GET and PUT
    * /notifications/preferences), by member id: the vault's defaults until
@@ -1757,6 +1774,28 @@ export function createFakeVault(): {
       kind,
       access_expires_at: end ? new Date(end).toISOString() : null,
     };
+    // The code by text too (SMS3): an owner's to ask, while texts go.
+    let textTo: string | null = null;
+    if (typeof b.invitee_phone === 'string') {
+      if (who.role !== 'owner') {
+        return fail(403, 'forbidden', 'Only an owner can text an invitation’s code.');
+      }
+      if (!(state.smsReady ?? true)) {
+        return fail(
+          409,
+          'sms_not_set_up',
+          'Text messages aren’t set up for this household yet. An owner can set them up in Settings, under Text messages.',
+        );
+      }
+      textTo = parsePhone(b.invitee_phone, 'GB');
+      if (!textTo) {
+        return fail(
+          422,
+          'phone_number_invalid',
+          'That doesn’t look like a mobile number. Type it with its country code, such as +44 7700 900123.',
+        );
+      }
+    }
     const token = next('invitation-token');
     const code = 'ABCD-EFGH';
     state.invitations.push({
@@ -1767,6 +1806,16 @@ export function createFakeVault(): {
       by_owner: who.role === 'owner',
       by_member: who.memberId,
     });
+    if (textTo) {
+      (state.texts ??= []).push({
+        to: textTo,
+        text: inviteCodeText(code, state.members.find((m) => m.id === who.memberId)?.display_name),
+      });
+      return ok(
+        { invitation: view, link_token: token, code, code_texted_to: maskPhone(textTo) },
+        201,
+      );
+    }
     return ok({ invitation: view, link_token: token, code }, 201);
   };
 
@@ -1853,6 +1902,78 @@ export function createFakeVault(): {
    * anybody — confirmed by a six-digit code. The fake "texts" each code into
    * `state.texts` and keeps it on the number, for a test to read.
    */
+  /**
+   * Where a code by text for one of somebody's own purposes goes, masked
+   * (SMS3), or null when it is not theirs to give now: asked for, a
+   * confirmed number, the household's texts set up; to confirm it's them,
+   * an adult or a teen alone.
+   */
+  const textCodeTo = (memberId: string, purpose: TextCodePurpose): string | null => {
+    const asked = state.textCodes?.get(memberId);
+    const phone = state.phones?.get(memberId);
+    if (!phone?.confirmed_at || !(state.smsReady ?? true)) return null;
+    if (purpose === 'reset' ? !asked?.reset : !asked?.sign_in) return null;
+    if (purpose === 'step_up' && !mayStepUpByText(roleOfMember(memberId) ?? 'viewer')) {
+      return null;
+    }
+    return maskPhone(phone.number);
+  };
+  const textNotOffered = () =>
+    fail(409, 'sms_code_not_offered', 'A code by text isn’t offered here.');
+  /** A new code for one of somebody's purposes, texted: the one before it ends. */
+  const sendTextCode = (memberId: string, purpose: TextCodePurpose) => {
+    const phone = state.phones?.get(memberId) as FakePhone;
+    const texts = (state.texts ??= []);
+    const code = String(100000 + ((texts.length * 7919 + 4242) % 900000));
+    const expires = Date.now() + PHONE_CODE_MINUTES * 60_000;
+    (state.textCodesOut ??= new Map()).set(`${memberId}:${purpose}`, {
+      code,
+      expires,
+      attempts: 0,
+    });
+    texts.push({ to: phone.number, text: textCodeText(purpose, code) });
+    return { sent_to: maskPhone(phone.number), expires_at: new Date(expires).toISOString() };
+  };
+  /** A code typed back for one of somebody's purposes: null when right, else the refusal. */
+  const tryTextCode = (
+    memberId: string,
+    purpose: TextCodePurpose,
+    typed: unknown,
+  ): ResponseLike | null => {
+    const out = state.textCodesOut?.get(`${memberId}:${purpose}`);
+    if (!out || out.expires <= Date.now()) {
+      return fail(
+        409,
+        'sms_code_expired',
+        'That code has ended. Ask for a new one, and type the newest.',
+      );
+    }
+    if (out.attempts >= PHONE_CODE_TRIES) {
+      return fail(
+        409,
+        'sms_code_too_many',
+        `That code was typed wrong ${PHONE_CODE_TRIES} times, so it no longer works. Ask for a new one.`,
+      );
+    }
+    out.attempts += 1;
+    if ((typeof typed === 'string' ? typed : '').replace(/[\s-]/g, '') !== out.code) {
+      const left = PHONE_CODE_TRIES - out.attempts;
+      return left <= 0
+        ? fail(
+            409,
+            'sms_code_too_many',
+            `That code was typed wrong ${PHONE_CODE_TRIES} times, so it no longer works. Ask for a new one.`,
+          )
+        : fail(
+            422,
+            'sms_code_wrong',
+            `That code isn’t right. ${left} ${left === 1 ? 'try' : 'tries'} left.`,
+          );
+    }
+    state.textCodesOut?.delete(`${memberId}:${purpose}`);
+    return null;
+  };
+
   const phoneRoutes = (
     path: string,
     init: Parameters<FetchLike>[1],
@@ -1863,6 +1984,62 @@ export function createFakeVault(): {
       const s = sessionOf();
       if (!('id' in s)) return s;
       return ok({ ready: state.smsReady ?? true });
+    }
+    // Whether a reset and a sign-in ask for a code by text (SMS3): one's own.
+    // The fake asks nobody to confirm it's them first, as elsewhere.
+    if (path === '/api/v1/auth/text-codes') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      const all = (state.textCodes ??= new Map());
+      const now = all.get(who.memberId) ?? { sign_in: false, reset: false };
+      const phone = state.phones?.get(who.memberId);
+      const ready = state.smsReady ?? true;
+      const whyNot = !ready
+        ? 'Text messages aren’t set up for this household yet. An owner can set them up in Settings, under Text messages.'
+        : !phone
+          ? 'Add your mobile number first, and confirm it with the code we text to it.'
+          : !phone.confirmed_at
+            ? 'Confirm your mobile number first, with the code we texted to it.'
+            : null;
+      const view = (v: { sign_in: boolean; reset: boolean }): TextCodeSettings => ({
+        ...v,
+        phone: phone ? maskPhone(phone.number) : null,
+        phone_confirmed: Boolean(phone?.confirmed_at),
+        sms_ready: ready,
+        can_turn_on: whyNot === null,
+        why_not: whyNot,
+        step_up: mayStepUpByText(who.role),
+      });
+      if ((init?.method ?? 'GET') !== 'PUT') return ok(view(now));
+      const nextOne = {
+        sign_in: typeof body.sign_in === 'boolean' ? body.sign_in : now.sign_in,
+        reset: typeof body.reset === 'boolean' ? body.reset : now.reset,
+      };
+      const on = (nextOne.sign_in && !now.sign_in) || (nextOne.reset && !now.reset);
+      if (on && whyNot) return fail(409, 'sms_code_unavailable', whyNot);
+      if (nextOne.sign_in && !now.sign_in && who.role === 'owner' && !state.ownerTwoStep) {
+        return fail(409, 'sms_code_needs_factor', SMS_OWNER_NEEDS_FACTOR);
+      }
+      all.set(who.memberId, nextOne);
+      return ok(view(nextOne));
+    }
+    // A code texted to confirm it's them (SMS3), and one typed back.
+    if (path === '/api/v1/auth/step-up/text' && init.method === 'POST') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!textCodeTo(who.memberId, 'step_up')) return textNotOffered();
+      return ok(sendTextCode(who.memberId, 'step_up'));
+    }
+    if (path === '/api/v1/auth/step-up' && init.method === 'POST' && body.text_code) {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!textCodeTo(who.memberId, 'step_up')) return textNotOffered();
+      const refused = tryTextCode(who.memberId, 'step_up', body.text_code);
+      if (refused) return refused;
+      return ok({ verified_at: new Date().toISOString(), expires_in: 300 });
     }
     // What somebody wants to hear, and how (SMS2: by text too, each off
     // until turned on, and their quiet hours): theirs alone, kept as sent.
@@ -2189,6 +2366,38 @@ export function createFakeVault(): {
       const pin = body.with_pin === true ? String(1000 + (n % 9000)) : null;
       const password = body.with_password === true ? `fake-${next('pw')}-word` : null;
       const typed = typeof body.password === 'string' ? body.password : null;
+      // A code by text (SMS3): to the number typed, while texts go.
+      const byText =
+        body.second_factor === 'sms' ||
+        (body.second_factor === undefined && typeof body.recipient_phone === 'string');
+      let codePhone: string | null = null;
+      if (byText) {
+        if (typeof body.code_email === 'string') {
+          return fail(
+            422,
+            'validation_failed',
+            'Choose one way for the code: by email, or by text to a mobile number.',
+          );
+        }
+        if (!(state.smsReady ?? true)) {
+          return fail(
+            409,
+            'sms_not_set_up',
+            'Text messages aren’t set up for this household yet. An owner can set them up in Settings, under Text messages.',
+          );
+        }
+        codePhone = parsePhone(
+          typeof body.recipient_phone === 'string' ? body.recipient_phone : '',
+          'GB',
+        );
+        if (!codePhone) {
+          return fail(
+            422,
+            'phone_number_invalid',
+            'That doesn’t look like a mobile number. Type it with its country code, such as +44 7700 900123.',
+          );
+        }
+      }
       const now = new Date();
       const share: Share = {
         id: next('share'),
@@ -2209,8 +2418,12 @@ export function createFakeVault(): {
         paused_at: null,
         paused_reason: null,
         permission: body.permission === 'view' ? 'view' : 'download',
-        protection: pin ? ['pin'] : password || typed ? ['password'] : [],
-        code_to: null,
+        protection: [
+          ...(pin ? (['pin'] as const) : password || typed ? (['password'] as const) : []),
+          ...(codePhone ? (['code'] as const) : []),
+        ],
+        code_to: codePhone ? maskPhone(codePhone) : null,
+        second_factor: codePhone ? 'sms' : null,
         this_device_only: body.this_device_only === true,
         summary: 'Not opened yet',
       };
@@ -2633,6 +2846,8 @@ export function createFakeVault(): {
           sms_notifications: true,
           // The household as a document's owner, and each kind's belongs_to (0.9.0).
           household_owner: true,
+          // Codes by text (0.9.0, SMS3): a link's, an invitation's, one's own.
+          sms_codes: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -2683,7 +2898,52 @@ export function createFakeVault(): {
           },
         });
       }
+      // A code by text as the second step (SMS3), for somebody who asked for
+      // one: texted now, as the real vault does when it is the only one.
+      const signer = other ? other.member_id : ME;
+      const to = textCodeTo(signer, 'sign_in');
+      if (to) {
+        const mfaToken = next('mfa');
+        (state.mfaWaiting ??= new Map()).set(mfaToken, {
+          memberId: signer,
+          installation: init.headers['x-fdv-installation'] ?? null,
+        });
+        sendTextCode(signer, 'sign_in');
+        const challenge: MfaChallenge = {
+          mfa_required: true,
+          mfa_token: mfaToken,
+          methods: ['text'],
+          text_to: to,
+          text_sent: true,
+        };
+        return ok(challenge);
+      }
       return ok(open(init.headers['x-fdv-installation'] ?? null, other?.member_id));
+    }
+    if (path === '/api/v1/auth/mfa/text' && init.method === 'POST') {
+      const waiting = state.mfaWaiting?.get(String(body.mfa_token));
+      if (!waiting)
+        return fail(401, 'mfa_expired', 'That sign-in attempt has expired. Start again.');
+      if (!textCodeTo(waiting.memberId, 'sign_in')) return textNotOffered();
+      return ok(sendTextCode(waiting.memberId, 'sign_in'));
+    }
+    if (path === '/api/v1/auth/mfa' && init.method === 'POST') {
+      const token = String(body.mfa_token);
+      const waiting = state.mfaWaiting?.get(token);
+      if (!waiting)
+        return fail(401, 'mfa_expired', 'That sign-in attempt has expired. Start again.');
+      const refused = tryTextCode(waiting.memberId, 'sign_in', body.code);
+      if (refused) return refused;
+      state.mfaWaiting?.delete(token);
+      return ok(open(waiting.installation, waiting.memberId === ME ? undefined : waiting.memberId));
+    }
+    // A reset link the fake never makes (SMS3's code for one): not valid.
+    if (path === '/api/v1/password-resets/code' && init.method === 'POST') {
+      return fail(
+        404,
+        'reset_not_valid',
+        'That link is not valid any more. Ask for a new one from the sign-in page.',
+      );
     }
     if (path === '/api/v1/auth/refresh' && init.method === 'POST') {
       const presented = String(body.refresh_token);

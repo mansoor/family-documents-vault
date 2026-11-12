@@ -6,6 +6,8 @@ import {
   shareEndWords,
   suspensionInEffect,
   type AlertTextKind,
+  type MfaChallenge,
+  type TextCodeSent,
   type Tokens,
 } from '@fdv/shared';
 import { createHash, randomUUID } from 'node:crypto';
@@ -35,6 +37,12 @@ import {
   type AccessClaims,
 } from './tokens.js';
 import { endDevices, SESSION_ENDED, type PushRequest, type PushTarget } from '../push-job.js';
+import {
+  smsCodeNotOffered,
+  type ResetText,
+  type TextCodeService,
+  type TextSkipped,
+} from '../sms/codes.js';
 
 /**
  * Accounts, sessions and the first-run setup. Everything here runs inside
@@ -145,6 +153,27 @@ export const endedMeanwhile = (revokedReason: string | null) =>
   sessionEnded('the session ended while this waited', endReasonOf(revokedReason));
 
 /**
+ * Why a sign-in's code by text could not be sent (SMS3), in a word, or null
+ * when it is not a reason to let them in without it — a limit reached above
+ * all, which whoever has the password could reach on purpose.
+ */
+function skippedBy(err: unknown): TextSkipped | null {
+  if (!(err instanceof ApiError)) return null;
+  switch (err.code) {
+    case 'sms_not_set_up':
+      return 'not_ready';
+    case 'sms_cap_reached':
+      return 'cap_reached';
+    case 'sms_not_sent':
+      return 'not_sent';
+    case 'sms_code_not_offered':
+      return 'no_number';
+    default:
+      return null;
+  }
+}
+
+/**
  * What a password or a passkey proved, carried to where the session is
  * opened (5.29): checked again there, under the person's membership, so a
  * reset or a stopped password that commits between the proof and the
@@ -240,6 +269,12 @@ export class AuthService {
     } | null = null,
     /** Pushes the worker sends (4.13): "you were signed out" to a session's phones. */
     private readonly push: (input: PushRequest) => Promise<void> = async () => undefined,
+    /**
+     * Codes by text (0.9.0, SMS3): a second step at sign-in for somebody who
+     * asked for one, beside or instead of an authenticator app — never an
+     * owner's only one (TextCodeService.set refuses that).
+     */
+    private readonly textCodes: TextCodeService | null = null,
   ) {
     this.familyKey = refreshFamilyKey(signingKey);
   }
@@ -321,7 +356,7 @@ export class AuthService {
     email: string,
     password: string,
     meta: RequestMeta,
-  ): Promise<Tokens | { mfa_required: true; mfa_token: string }> {
+  ): Promise<Tokens | MfaChallenge> {
     const account = await this.db
       .selectFrom('account')
       .select(['id', 'password_hash', 'disabled_at'])
@@ -334,16 +369,98 @@ export class AuthService {
 
     // What the password proved goes on to where the session opens (5.29).
     const proof = passwordProof(account.password_hash);
-    if (this.mfa && (await this.mfa.isEnabled(account.id))) {
-      return { mfa_required: true, mfa_token: await this.mfa.mfaToken(account.id, proof) };
+    // A code by text that was the only second step and could not be asked
+    // for, or sent (SMS3): the password alone lets them in, and the owners
+    // are told (the owner's decision of 12 Nov 2026).
+    let skipped: TextSkipped | null = null;
+    if (this.mfa) {
+      const totp = await this.mfa.isEnabled(account.id);
+      // A code by text (SMS3): theirs to give when they asked for one, their
+      // number is confirmed and the household's texts go now.
+      const text: ResetText = this.textCodes
+        ? await this.textCodes.forSignInState(account.id)
+        : { asks: false };
+      if (!totp && 'cannot' in text) skipped = text.cannot;
+      if (totp || text.asks) {
+        const mfaToken = await this.mfa.mfaToken(account.id, proof);
+        if (!text.asks) return { mfa_required: true, mfa_token: mfaToken };
+        // A text the only second step: one goes now, so that a client that
+        // knows only the code box — an older phone's — still signs in, with
+        // the code in it. Beside an authenticator app, only when asked for.
+        let sent = false;
+        if (!totp && this.textCodes) {
+          const failed = await this.textCodes.send(account.id, 'sign_in').then(
+            () => null,
+            (err: unknown) => err,
+          );
+          sent = failed === null;
+          // The household's texts not set up, the month's all sent, or SMS
+          // Gate not taking it: in with the password alone, as above. Too
+          // many codes asked for is not that — somebody with the password
+          // could ask for them to get past — and waits, as any limit does.
+          skipped = failed === null ? null : skippedBy(failed);
+        }
+        if (!skipped) {
+          return {
+            mfa_required: true,
+            mfa_token: mfaToken,
+            methods: totp ? ['totp', 'text'] : ['text'],
+            text_to: text.to,
+            text_sent: sent,
+          };
+        }
+      }
+    }
+    if (skipped && this.textCodes) {
+      const tokens = await this.openSessionForAccount(account.id, meta, 'password', {
+        password: proof,
+      });
+      await this.textCodes.skipped(account.id, 'sign_in', skipped).catch(() => undefined);
+      return tokens;
     }
     return this.openSessionForAccount(account.id, meta, 'password', { password: proof });
   }
 
-  /** Second step: the interim token plus a code from the authenticator. */
-  async signInWithMfa(mfaToken: string, code: string, meta: RequestMeta): Promise<Tokens> {
+  /**
+   * POST /auth/mfa/text (SMS3): a code texted for the second step of a
+   * sign-in whose password was right, to the person's own confirmed number,
+   * when they asked for codes by text (`409 sms_code_not_offered` when not).
+   */
+  async sendSignInCode(mfaToken: string): Promise<TextCodeSent> {
+    if (!this.mfa || !this.textCodes) throw smsCodeNotOffered();
+    const { accountId } = await this.mfa.mfaClaims(mfaToken);
+    if (!(await this.textCodes.forSignIn(accountId))) throw smsCodeNotOffered();
+    return this.textCodes.send(accountId, 'sign_in');
+  }
+
+  /**
+   * Second step: the interim token plus a code from the authenticator — or,
+   * since 0.9.0 (SMS3), one texted to their own number: when `method` says
+   * `text`, or says nothing and a text is their only second step (what an
+   * older client sends, from its one code box). A session opened by a text
+   * is not one opened by a factor (A54): an owner's powers still ask for a
+   * passkey or an authenticator's code.
+   */
+  async signInWithMfa(
+    mfaToken: string,
+    code: string,
+    meta: RequestMeta,
+    method?: 'totp' | 'text',
+  ): Promise<Tokens> {
     if (!this.mfa) throw invalidCredentials();
     const { accountId, proof } = await this.mfa.mfaClaims(mfaToken);
+    if (method !== 'totp' && this.textCodes) {
+      const text = await this.textCodes.forSignIn(accountId);
+      const byText = method === 'text' || (text !== null && !(await this.mfa.isEnabled(accountId)));
+      if (byText) {
+        if (!text) throw smsCodeNotOffered();
+        await this.textCodes.verify(accountId, 'sign_in', code);
+        if (proof === null) throw invalidCredentials();
+        return this.openSessionForAccount(accountId, meta, 'password+text', {
+          password: proof,
+        });
+      }
+    }
     if (!(await this.mfa.verify(accountId, code))) {
       throw new ApiError(401, 'totp_invalid', "That code didn't match. Try the current one.");
     }
