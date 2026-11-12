@@ -56,6 +56,8 @@ const documentBody = z
     owner_member_id: z.string().uuid().nullable(),
     // The household's (0.9.0): never with a person.
     household_owned: z.boolean(),
+    // Sensitive (0.9.0, AIR2): null as its kind says, true or false.
+    sensitive: z.boolean().nullable(),
     category: z.string().min(1).max(64).nullable(),
     visibility: z.enum(['household', 'adults', 'private']),
     issued: dateValue,
@@ -93,6 +95,7 @@ export const captureBody = documentBody
     title: true,
     owner_member_id: true,
     household_owned: true,
+    sensitive: true,
     visibility: true,
     issued: true,
     expires: true,
@@ -187,6 +190,8 @@ const listQuery = z.object({
   type_key: values,
   tag: tagValues,
   notes: notesFilter,
+  // Sensitive, all said: yes, no, or both (0.9.0, AIR2).
+  sensitive: values,
   // A detail tag's label, any value (0.9.0, T1): every document with a locker.
   tag_label: z.string().trim().min(1).max(200).optional(),
   visibility: values,
@@ -402,6 +407,8 @@ export function registerDocuments(
     // Since 11 Nov 2026: tags, and notes left out.
     tag: tagValues,
     notes: notesFilter,
+    // Sensitive, all said (0.9.0, AIR2).
+    sensitive: values,
     issued_by: z.string().trim().min(1).max(200).optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
     ...dates,
@@ -484,8 +491,11 @@ export function registerDocuments(
     const raw = parse(listQuery, req.query);
     // One value as it always was; several, any of them; and the days (V1).
     const { single, many } = filtersOf(raw);
+    // Sensitive is read as a list (AIR2), never as the words sent.
+    const { sensitive: _sensitive, ...asked } = raw;
+    void _sensitive;
     const q = {
-      ...raw,
+      ...asked,
       member_id: single.member_id,
       type_key: single.type_key,
       category: single.category,

@@ -601,6 +601,45 @@ describe('kinds of document (0.5.10)', () => {
     });
     expect(kind('document_type.updated', { label: 'Will' })?.text).toBe('Sarah changed “Will”');
   });
+
+  it('says a kind made sensitive by default or not; switched off is news (0.9.0, AIR2)', () => {
+    expect(
+      kind('document_type.updated', { label: 'Warranty', sensitive_default: true }),
+    ).toMatchObject({
+      text: 'Sarah made “Warranty” documents sensitive by default',
+      notable: false,
+    });
+    expect(
+      kind('document_type.updated', { label: 'Passport', sensitive_default: false }),
+    ).toMatchObject({
+      text: 'Sarah made “Passport” documents not sensitive by default',
+      notable: true,
+    });
+  });
+});
+
+describe('a document marked sensitive or not (0.9.0, AIR2)', () => {
+  const said = (detail: Record<string, unknown>) =>
+    describeEvent(ev({ action: 'document.updated', detail }));
+  it('says which, alone or with the rest of an edit; made not sensitive is news', () => {
+    expect(said({ fields: ['sensitive'], sensitive: 'yes' })).toMatchObject({
+      text: 'Sarah marked “Home insurance policy” sensitive',
+      notable: false,
+    });
+    expect(said({ fields: ['sensitive'], sensitive: 'no' })).toMatchObject({
+      text: 'Sarah marked “Home insurance policy” not sensitive',
+      notable: true,
+    });
+    expect(said({ fields: ['sensitive'], sensitive: 'as_kind' })?.text).toBe(
+      'Sarah left whether “Home insurance policy” is sensitive to its kind',
+    );
+    expect(said({ fields: ['title', 'sensitive'], sensitive: 'yes' })?.text).toBe(
+      'Sarah edited “Home insurance policy” and marked it sensitive',
+    );
+    expect(said({ fields: ['title', 'sensitive'], sensitive: 'no' })?.notable).toBe(true);
+    // Sent, but the same as it was: an edit, as ever.
+    expect(said({ fields: ['sensitive'] })?.text).toBe('Sarah edited “Home insurance policy”');
+  });
 });
 
 describe('collections of documents (0.5.12)', () => {

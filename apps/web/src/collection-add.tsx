@@ -124,6 +124,7 @@ function viewOf(a: Asked): TableView {
     collection: '',
     tag: a.tag,
     label: '',
+    sensitive: '',
   };
 }
 

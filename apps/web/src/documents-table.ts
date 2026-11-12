@@ -4,6 +4,7 @@ import {
   isDocumentSort,
   mayChangeVisibilityAtAll,
   seesLocation,
+  SENSITIVE_FILTER_VALUES,
   visibilityRefusal,
   type DateValue,
   type DocumentListParams,
@@ -106,6 +107,8 @@ export interface TableView {
   tag: string;
   /** A detail tag's label, any value (0.9.0, T1): "locker". */
   label: string;
+  /** Sensitive, all said (0.9.0, AIR2): `yes`, `no`, or '' for either. */
+  sensitive: string;
 }
 
 export const FILTER_KEYS = [
@@ -116,6 +119,7 @@ export const FILTER_KEYS = [
   'collection',
   'tag',
   'label',
+  'sensitive',
 ] as const;
 export type FilterKey = (typeof FILTER_KEYS)[number];
 
@@ -151,6 +155,7 @@ export function viewFrom(params: URLSearchParams, role: Role): TableView {
     collection: pick('collection'),
     tag: pick('tag'),
     label: pick('label'),
+    sensitive: pick('sensitive', SENSITIVE_FILTER_VALUES),
   };
 }
 
@@ -178,6 +183,7 @@ export function queryOf(
     collection_id: view.collection || undefined,
     tag: view.tag || undefined,
     tag_label: view.label || undefined,
+    sensitive: view.sensitive || undefined,
     limit: opts.limit ?? PAGE_SIZE,
     cursor: opts.cursor ?? undefined,
   };

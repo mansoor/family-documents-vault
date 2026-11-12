@@ -1,6 +1,7 @@
 import { checkExtra } from './details.js';
 import {
   HOUSEHOLD_OR_PERSON,
+  TEEN_KEEPS_SENSITIVE,
   wellFormedDate,
   type DateValue,
   type DocumentTypeView,
@@ -27,6 +28,11 @@ export interface CaptureMetadata {
    * person. Left out, a household's kind makes it the household's.
    */
   household_owned?: boolean;
+  /**
+   * Sensitive (0.9.0, AIR2, `features.sensitive_documents`): null or left out,
+   * as its kind says; true yes; false no — never a teen's (403).
+   */
+  sensitive?: boolean | null;
   visibility?: Visibility;
   issued?: DateValue | null;
   expires?: DateValue | null;
@@ -53,6 +59,7 @@ export const CAPTURE_FIELDS = [
   'title',
   'owner_member_id',
   'household_owned',
+  'sensitive',
   'visibility',
   'issued',
   'expires',
@@ -136,6 +143,10 @@ export function checkCaptureMetadata(
       message: 'You can only add documents that belong to you.',
       status: 403,
     };
+  }
+  // A teen may make a paper sensitive, never not (0.9.0, AIR2).
+  if (teen && meta.sensitive === false) {
+    return { field: 'sensitive', message: TEEN_KEEPS_SENSITIVE, status: 403 };
   }
   if (meta.owner_member_id != null && !ctx.members.some((m) => m.id === meta.owner_member_id)) {
     return { field: 'owner_member_id', message: 'That person is not in the family.', status: 422 };

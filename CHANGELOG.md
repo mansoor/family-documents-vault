@@ -6,6 +6,14 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.34] - 2026-11-12 — Sensitive (AIR2)
+
+### Added
+
+- **Sensitive, for each kind and each document.** Every kind of document has **Sensitive by default** in **Kinds of document** — your household's own choice, a built-in's too — and every document has **Sensitive**: _As its kind says_ (with what that is now, yes or no), **Yes** or **No**, on the add card, **Is this right?** and a batch's defaults for all its files. Change a kind's default and every document left on _As its kind says_ follows it at once; a document set to Yes or No keeps that. A sensitive document's page shows a lock. The Documents table filters by **Sensitive** or **Not sensitive**. Sensitive papers are handled with extra care: never sent to a cloud AI reader, when the vault has those (next). (The owner's ask of 12 Nov 2026.)
+- **What starts sensitive.** Passports, driving licences, national IDs, visas and residence permits, birth, marriage and divorce certificates, diplomas, wills, every financial kind (bank, investment and credit card statements, payslips, loans), tax returns and tax forms, and medical records and prescriptions. The rest start not sensitive: bills, insurance, warranties and receipts, vehicle papers, deeds and leases, employment contracts, school reports, pet records and Something else. A kind your household makes starts sensitive — safer until somebody says otherwise — and so do the kinds you had made before.
+- A teen may mark their papers sensitive, never not sensitive. Who changed it, and which way, is in the activity log; making a document or a kind not sensitive is marked as worth a look.
+
 ## [0.9.0-dev.33] - 2026-11-12 — codes by text (SMS3)
 
 ### Added

@@ -189,6 +189,8 @@ const COLUMNS = sql.raw(
     'title',
     'owner_member_id',
     'household_owned',
+    // Sensitive (0090): its own choice; all said, as the view says.
+    'sensitive',
     'category',
     'visibility',
     'issued_on',

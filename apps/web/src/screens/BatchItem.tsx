@@ -606,6 +606,8 @@ export function BatchItemScreen() {
               // Nobody said: the kind's guess, which another kind moves (0.9.0).
               ownerDefaulted: person === '',
               personDefault: person,
+              // The batch's Sensitive (0.9.0, AIR2): what an accept leaves unsaid takes it.
+              sensitive: d.sensitive ?? null,
               issuer,
               issued: p?.issued ? formatDate(p.issued.value) : '',
               expires: p?.expires ? formatDate(p.expires.value) : '',

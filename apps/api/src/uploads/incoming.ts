@@ -66,6 +66,8 @@ export const acceptBody = z
     owner_member_id: z.string().uuid().nullable().optional(),
     // The household's (0.9.0): never with a person.
     household_owned: z.boolean().optional(),
+    // Sensitive (0.9.0, AIR2): null as its kind says.
+    sensitive: z.boolean().nullable().optional(),
     type_key: z.string().min(1).max(64).nullable().optional(),
     title: z.string().trim().max(200).nullable().optional(),
     visibility: z.enum(['household', 'adults', 'private']).optional(),
@@ -404,6 +406,7 @@ export class IncomingService {
       into &&
       (input.owner_member_id !== undefined ||
         input.household_owned !== undefined ||
+        input.sensitive !== undefined ||
         input.type_key !== undefined ||
         input.title !== undefined ||
         input.visibility !== undefined)
@@ -463,6 +466,7 @@ export class IncomingService {
                       ...(input.household_owned !== undefined
                         ? { household_owned: input.household_owned }
                         : {}),
+                      ...(input.sensitive !== undefined ? { sensitive: input.sensitive } : {}),
                       ...(input.type_key !== undefined ? { type_key: input.type_key } : {}),
                       ...(input.title !== undefined ? { title: input.title || null } : {}),
                       ...(input.visibility !== undefined ? { visibility: input.visibility } : {}),

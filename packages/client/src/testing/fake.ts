@@ -111,6 +111,9 @@ import {
   EXPIRY_ALWAYS_REQUIRED,
   GUEST_ALWAYS_LIMITED,
   HOUSEHOLD_OR_PERSON,
+  SENSITIVE_BY_DEFAULT,
+  sensitiveOf,
+  TEEN_KEEPS_SENSITIVE,
   GUEST_MAX_DAYS,
   GUEST_ONLY_VIEWER,
   guestAccessEnded,
@@ -755,6 +758,8 @@ const FAKE_EDITABLE = [
   'owner_member_id',
   // The household's, or Not sure yet (0.9.0).
   'household_owned',
+  // Sensitive: as its kind says, yes or no (0.9.0, AIR2).
+  'sensitive',
   'identifier',
   'issued_by',
   'issued',
@@ -794,6 +799,8 @@ const builtin = (
   issuer_noun: null,
   // A person's, as every kind was before 0.9.0, unless it says.
   belongs_to: 'person',
+  // Sensitive by default as the release seeds it (0.9.0, AIR2, 0090).
+  sensitive_default: SENSITIVE_BY_DEFAULT.includes(t.key),
   ...t,
   builtin: true,
   hidden: false,
@@ -2662,6 +2669,7 @@ export function createFakeVault(): {
             collection_id: null,
             tags: [],
             is_essential: false,
+            sensitive: null,
           },
           items: [],
         };
@@ -2846,6 +2854,8 @@ export function createFakeVault(): {
           sms_notifications: true,
           // The household as a document's owner, and each kind's belongs_to (0.9.0).
           household_owner: true,
+          // Sensitive, per kind and per document (0.9.0, AIR2).
+          sensitive_documents: true,
           // Codes by text (0.9.0, SMS3): a link's, an invitation's, one's own.
           sms_codes: true,
         },
@@ -3183,6 +3193,8 @@ export function createFakeVault(): {
         // Tags whatever their case (several, any of them), notes left out,
         // and a detail tag's label (0.9.0, T1).
         .filter(apart)
+        // Sensitive, all said (0.9.0, AIR2).
+        .filter(sensitiveAsked(url, state.types))
         .filter(
           (d) =>
             tagLabel === undefined ||
@@ -3377,6 +3389,10 @@ export function createFakeVault(): {
           state.types.find((t) => t.key === type_key),
         );
         const owner = whose.owner_member_id;
+        // A teen may make a paper sensitive, never not (0.9.0, AIR2).
+        if (whoOf(s).role === 'teen' && body.sensitive === false) {
+          return fail(403, 'forbidden', TEEN_KEEPS_SENSITIVE, 'sensitive');
+        }
         if (visibility === 'private' && owner !== 'fake-member') {
           return fail(
             422,
@@ -3390,6 +3406,7 @@ export function createFakeVault(): {
           title: (body.title as string | null) ?? null,
           type_key,
           ...whose,
+          ...ownSensitive(body),
           identifier: tidy(body.identifier as string | null | undefined),
           issued_by: tidy(body.issued_by as string | null | undefined),
           issued: (body.issued as DateValue | null | undefined) ?? null,
@@ -3459,6 +3476,7 @@ export function createFakeVault(): {
       const typeKeys = several('type_key');
       const listed = items
         .filter(notesAndTags(url))
+        .filter(sensitiveAsked(url, state.types))
         .filter((d) => members === undefined || members.includes(d.owner_member_id ?? ''))
         .filter((d) => typeKeys === undefined || typeKeys.includes(d.type_key ?? ''))
         .map(listedOf)
@@ -3657,6 +3675,18 @@ export function createFakeVault(): {
         if (tagProblem) return fail(422, 'validation_failed', tagProblem, 'tags');
       }
       Object.assign(doc, { type_key, extra });
+      // Sensitive (0.9.0, AIR2): a teen may make a paper sensitive, never
+      // less so, all said with the kind it will have — as the real vault.
+      if (body.sensitive !== undefined) {
+        const was = doc.sensitive ?? null;
+        const to = body.sensitive as boolean | null;
+        const kind = state.types.find((t) => t.key === type_key);
+        if (editor.role === 'teen' && to !== was && !sensitiveOf({ sensitive: to }, kind)) {
+          return fail(403, 'forbidden', TEEN_KEEPS_SENSITIVE, 'sensitive');
+        }
+      }
+      Object.assign(doc, { type_key, extra });
+      if (body.sensitive !== undefined) doc.sensitive = body.sensitive as boolean | null;
       if (body.tags !== undefined) doc.tags = tagsOf(body.tags as string[]);
       if (body.title !== undefined) doc.title = (body.title as string | null) ?? null;
       // The household's, or a person's, never both (0.9.0): null alone — an
@@ -3795,6 +3825,7 @@ export function createFakeVault(): {
             metadata,
             state.types.find((t) => t.key === metadata.type_key),
           ),
+          ...ownSensitive(metadata),
           identifier: tidy(metadata.identifier),
           issued_by: tidy(metadata.issued_by),
           issued: metadata.issued ?? null,
@@ -4271,6 +4302,8 @@ export function createFakeVault(): {
         default_visibility: (body.default_visibility as Visibility | undefined) ?? 'household',
         // Whom its documents usually belong to (0.9.0): a person's, unless it says.
         belongs_to: (body.belongs_to as BelongsTo | undefined) ?? 'person',
+        // A kind the household makes starts sensitive (0.9.0, AIR2).
+        sensitive_default: (body.sensitive_default as boolean | undefined) ?? true,
         issued_by_label: null,
         builtin: false,
         hidden: false,
@@ -4358,6 +4391,9 @@ export function createFakeVault(): {
           next.usually_essential = body.usually_essential as boolean;
         }
         if (body.belongs_to !== undefined) next.belongs_to = body.belongs_to as BelongsTo;
+        if (body.sensitive_default !== undefined) {
+          next.sensitive_default = body.sensitive_default as boolean;
+        }
         if (body.hidden !== undefined) next.hidden = body.hidden as boolean;
         // Its fields and Expires, then what it reminds from on the kind as
         // it will be — Expires switched on with no lead times: 30 days, as
@@ -4924,7 +4960,14 @@ export function createFakeVault(): {
       if (what === 'accept' && init.method === 'POST') {
         if (f.decided) return decided();
         const into = typeof body.into_document_id === 'string' ? body.into_document_id : null;
-        const fields = ['owner_member_id', 'household_owned', 'type_key', 'title', 'visibility'];
+        const fields = [
+          'owner_member_id',
+          'household_owned',
+          'sensitive',
+          'type_key',
+          'title',
+          'visibility',
+        ];
         if (into && fields.some((k) => body[k] !== undefined)) {
           return fail(
             422,
@@ -4946,6 +4989,9 @@ export function createFakeVault(): {
               : {}),
             ...(body.household_owned !== undefined
               ? { household_owned: body.household_owned as boolean }
+              : {}),
+            ...(body.sensitive !== undefined
+              ? { sensitive: body.sensitive as boolean | null }
               : {}),
             ...(body.type_key !== undefined ? { type_key: body.type_key as string | null } : {}),
             ...(body.title !== undefined ? { title: (body.title as string | null) || null } : {}),
@@ -4975,6 +5021,7 @@ export function createFakeVault(): {
               metadata,
               state.types.find((t) => t.key === metadata.type_key),
             ),
+            ...ownSensitive(metadata),
             visibility: effectiveVisibility(
               metadata,
               state.types.find((t) => t.key === metadata.type_key),
@@ -5476,6 +5523,10 @@ export function createFakeVault(): {
         if (sent.visibility === 'adults' && !can(who.role, 'document.see_adults')) {
           return fail(403, 'forbidden', 'Only an adult can make a document adults-only.');
         }
+        // Sensitive (0.9.0, AIR2): never "no" from a teen.
+        if (who.role === 'teen' && sent.sensitive === false) {
+          return fail(403, 'forbidden', TEEN_KEEPS_SENSITIVE, 'sensitive');
+        }
         // A batch made Only me is the uploader's own (the I1 review).
         if (d.visibility === 'private') {
           if (d.owner_member_id !== null && d.owner_member_id !== who.memberId) {
@@ -5509,6 +5560,7 @@ export function createFakeVault(): {
           collection_id: null,
           tags: [],
           is_essential: false,
+          sensitive: null,
         };
         const defaults = defaultsOf(body.defaults ?? {}, blank);
         if (isResponse(defaults)) return defaults;
@@ -5791,6 +5843,10 @@ export function createFakeVault(): {
           metadata.physical_location = d.physical_location;
         if (metadata.tags === undefined && d.tags.length > 0) metadata.tags = d.tags;
         if (metadata.is_essential === undefined && d.is_essential) metadata.is_essential = true;
+        // Sensitive, where the accept left it unsaid (0.9.0, AIR2).
+        if (metadata.sensitive === undefined && d.sensitive != null) {
+          metadata.sensitive = d.sensitive;
+        }
         if (who.role === 'teen' && metadata.owner_member_id == null)
           metadata.owner_member_id = who.memberId;
         const kind = state.types.find((t) => t.key === metadata.type_key);
@@ -5847,6 +5903,7 @@ export function createFakeVault(): {
             metadata,
             state.types.find((t) => t.key === metadata.type_key),
           ),
+          ...ownSensitive(metadata),
           identifier: tidy(metadata.identifier),
           issued_by: tidy(metadata.issued_by),
           issued: metadata.issued ?? null,
@@ -7202,6 +7259,11 @@ function whoseNew(
   };
 }
 
+/** A new document's Sensitive, as sent (0.9.0, AIR2): left out, as its kind says. */
+function ownSensitive(sent: Pick<CaptureMetadata, 'sensitive'>): { sensitive: boolean | null } {
+  return { sensitive: sent.sensitive ?? null };
+}
+
 /** An issuer as the real vault keeps it: spaces tidied, and blank is nothing. */
 function tidy(value: string | null | undefined): string | null {
   return value?.trim().split(/\s+/).join(' ') || null;
@@ -7430,6 +7492,24 @@ function notesAndTags(url: string): (d: FakeDocument) => boolean {
     (tags.length === 0 || (d.tags ?? []).some((t) => tags.includes(tagKey(t))));
 }
 
+/**
+ * Sensitive as the real vault filters it (0.9.0, AIR2): `sensitive=yes`,
+ * `no`, or both — each document all said, by `sensitiveOf`.
+ */
+function sensitiveAsked(
+  url: string,
+  types: ReadonlyArray<DocumentTypeView>,
+): (d: FakeDocument) => boolean {
+  const asked = new Set(listParam(url, 'sensitive') ?? []);
+  if (asked.size !== 1) return () => true;
+  const want = asked.has('yes');
+  return (d) =>
+    sensitiveOf(
+      d,
+      types.find((t) => t.key === d.type_key),
+    ) === want;
+}
+
 function param(url: string, name: string): string | undefined {
   const raw = new RegExp(`[?&]${name}=([^&]*)`).exec(url)?.[1];
   return raw === undefined ? undefined : decodeURIComponent(raw.split('+').join(' '));
@@ -7472,6 +7552,9 @@ function documentView(
     type_key: doc.type_key ?? null,
     owner_member_id: doc.owner_member_id ?? null,
     household_owned: doc.household_owned === true,
+    // Its own choice, and all said with its kind's default (0.9.0, AIR2).
+    sensitive: doc.sensitive ?? null,
+    sensitive_effective: sensitiveOf(doc, type),
     identifier: doc.identifier ?? null,
     issued_by: doc.issued_by ?? null,
     issued: doc.issued ?? null,

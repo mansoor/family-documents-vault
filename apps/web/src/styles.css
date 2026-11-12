@@ -1314,6 +1314,18 @@ fieldset.limits-set {
   text-align: center;
 }
 
+/* Sensitive (0.9.0, AIR2): a lock and the word, above a document's facts. */
+.sensitive-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0 0 0.5rem;
+  font-weight: 600;
+}
+.sensitive-mark svg {
+  display: block;
+}
+
 .facts {
   display: grid;
   grid-template-columns: 110px 1fr;

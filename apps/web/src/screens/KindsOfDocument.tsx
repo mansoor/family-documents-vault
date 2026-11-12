@@ -1,5 +1,8 @@
 import {
   belongsTo,
+  sensitiveOf,
+  SENSITIVE_BY_DEFAULT_LABEL,
+  SENSITIVE_MEANS,
   can,
   CATEGORY_LABELS,
   categoryLabel,
@@ -365,6 +368,11 @@ interface Draft {
   /** Whom a new one usually belongs to (0.9.0, `features.household_owner`). */
   belongsTo: BelongsTo;
   /**
+   * Sensitive by default (0.9.0, AIR2, `features.sensitive_documents`): a
+   * new kind starts On.
+   */
+  sensitive: boolean;
+  /**
    * Lead times, in days. Without `features.reminder_dates`, Expires's, as
    * before. With it, those of the date reminders come from — or, while none
    * does, the times Expires kept — as the vault keeps them (reminderOf).
@@ -421,6 +429,8 @@ function draftOf(kind: DocumentTypeView | null, dated: boolean): Draft {
     visibility: kind?.default_visibility ?? 'household',
     essential: kind?.usually_essential ?? false,
     belongsTo: belongsTo(kind),
+    // As the kind says; a new one, yes (sensitiveOf with nothing to go on).
+    sensitive: sensitiveOf(null, kind),
   };
 }
 
@@ -519,6 +529,8 @@ function createBody(d: Draft, dated: boolean): DocumentTypeInput {
     usually_essential: d.essential,
     // A person's, as every kind was, says nothing: an older vault takes it.
     ...(d.belongsTo === 'household' ? { belongs_to: d.belongsTo } : {}),
+    // Sensitive, as a new kind starts, says nothing: an older vault takes it.
+    ...(d.sensitive ? {} : { sensitive_default: false }),
   };
 }
 
@@ -551,6 +563,7 @@ function changeBody(kind: DocumentTypeView, d: Draft, dated: boolean): DocumentT
   if (d.visibility !== before.visibility) body.default_visibility = d.visibility;
   if (d.essential !== before.essential) body.usually_essential = d.essential;
   if (d.belongsTo !== before.belongsTo) body.belongs_to = d.belongsTo;
+  if (d.sensitive !== before.sensitive) body.sensitive_default = d.sensitive;
   return body;
 }
 
@@ -626,6 +639,8 @@ function KindEditor(props: {
   const dated = caps?.features.reminder_dates === true;
   // Whom a new one belongs to, the household's or a person's (0.9.0).
   const householdOffered = caps?.features.household_owner === true;
+  // Sensitive by default (0.9.0, AIR2): where the vault has it.
+  const sensitiveOffered = caps?.features.sensitive_documents === true;
   // The draft, the library a field added here joins, and what the editor
   // just did to the reminders by itself, said as it happens: one state, so
   // every change is made to the latest of all three, even one landing after
@@ -1367,6 +1382,23 @@ function KindEditor(props: {
             </span>
           </label>
         </div>
+        {sensitiveOffered && (
+          <div className="check">
+            <input
+              id="k-sensitive"
+              type="checkbox"
+              checked={draft.sensitive}
+              onChange={(e) => edit((d) => ({ ...d, sensitive: e.target.checked }))}
+            />
+            <label htmlFor="k-sensitive">
+              {SENSITIVE_BY_DEFAULT_LABEL}
+              <span className="muted">
+                {SENSITIVE_MEANS} Every document of this kind follows it, unless it says Yes or No
+                itself.
+              </span>
+            </label>
+          </div>
+        )}
       </section>
 
       <Preview

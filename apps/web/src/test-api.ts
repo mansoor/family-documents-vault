@@ -1,4 +1,5 @@
 import {
+  sensitiveOf,
   checkItem,
   checklistMissing,
   itemAgain,
@@ -479,6 +480,8 @@ export interface FakeState {
   mailboxSaves?: Array<Record<string, unknown>>;
   /** The household as whose a document is, and whom a kind belongs to (0.9.0): said when true. */
   householdOwner?: boolean;
+  /** Sensitive, per kind and per document (0.9.0, AIR2): said when true. */
+  sensitive?: boolean;
   /**
    * Text messages (0.9.0, SMS1): said when a test gives them. `settings` is
    * what GET /sms/settings answers (null: not set up); `test` what a test
@@ -1234,6 +1237,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.sms && state.smsCodes ? { sms_codes: true } : {}),
           // The household as whose a document is (0.9.0): said when a test asks.
           ...(state.householdOwner ? { household_owner: true } : {}),
+          // Sensitive (0.9.0, AIR2): said when a test asks.
+          ...(state.sensitive ? { sensitive_documents: true } : {}),
           // A computer that sends scans (0.8.0, D1): said when a test gives computers.
           ...(state.computers ? { device_uploads: true } : {}),
           // Tags you can use (0.9.0, T1): said when a test gives them.
@@ -4825,6 +4830,12 @@ export function installFakeApi(state: FakeState) {
         title: (metadata?.title as string | undefined) ?? null,
         owner_member_id: (metadata?.owner_member_id as string | undefined) ?? null,
         household_owned: metadata?.household_owned === true,
+        // Sensitive (0.9.0, AIR2): as sent, and all said with its kind.
+        sensitive: (metadata?.sensitive as boolean | null | undefined) ?? null,
+        sensitive_effective: sensitiveOf(
+          { sensitive: (metadata?.sensitive as boolean | null | undefined) ?? null },
+          state.types.find((t) => t.key === metadata?.type_key),
+        ),
         issued_by: (metadata?.issued_by as string | undefined) ?? null,
         visibility: (metadata?.visibility as string | undefined) ?? 'household',
         notes: (metadata?.notes as string | undefined) ?? null,
@@ -5149,6 +5160,15 @@ export function installFakeApi(state: FakeState) {
         // A person clears the household; the household, the person (0.9.0).
         if (typeof change.owner_member_id === 'string') change.household_owned = false;
         if (change.household_owned === true) change.owner_member_id = null;
+        // Sensitive, all said again with the kind it will have (0.9.0, AIR2).
+        if ('sensitive' in change || 'type_key' in change) {
+          const own = 'sensitive' in change ? change.sensitive : doc.sensitive;
+          const key = 'type_key' in change ? change.type_key : doc.type_key;
+          change.sensitive_effective = sensitiveOf(
+            { sensitive: own as boolean | null | undefined },
+            state.types.find((t) => t.key === key),
+          );
+        }
         if (change.extra && typeof change.extra === 'object') {
           const merged = { ...((doc.extra as Record<string, unknown> | undefined) ?? {}) };
           for (const [k, v] of Object.entries(change.extra)) {
@@ -6033,6 +6053,18 @@ function documentTable(
     .filter((d) => !want('type_key') || d.type_key === want('type_key'))
     .filter((d) => !want('status') || (d.status as { value: string }).value === want('status'))
     .filter((d) => !want('visibility') || d.visibility === want('visibility'))
+    // Sensitive, all said (0.9.0, AIR2): yes, no, or both.
+    .filter((d) => {
+      const asked = new Set((want('sensitive') ?? '').split(',').filter(Boolean));
+      if (asked.size !== 1) return true;
+      const kind = state.types.find((t) => t.key === d.type_key) as
+        { sensitive_default?: boolean } | undefined;
+      const is =
+        typeof d.sensitive_effective === 'boolean'
+          ? d.sensitive_effective
+          : sensitiveOf({ sensitive: d.sensitive as boolean | null | undefined }, kind);
+      return is === asked.has('yes');
+    })
     // A tag whatever its case, and a detail tag's label (0.9.0, T1).
     .filter(
       (d) =>
@@ -6152,6 +6184,8 @@ function changedKind(
     'hidden',
     // Whom a new one belongs to (0.9.0).
     'belongs_to',
+    // Sensitive by default (0.9.0, AIR2).
+    'sensitive_default',
   ]) {
     if (change[k] !== undefined) next[k] = change[k];
   }
