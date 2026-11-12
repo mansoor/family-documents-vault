@@ -185,6 +185,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // owner has set it up and a test passed (GET /sms/status says so), and
       // each person's mobile number, confirmed by a code.
       sms_texts: true,
+      // 0.9.0 (the owner's decision of 11 Nov 2026): a link shown again, to its maker.
+      share_reveal: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

@@ -56,6 +56,7 @@ const SEALED_LABEL: Record<SealedName, [one: string, many: string]> = {
   smtpPasswords: ['mail (SMTP) password', 'mail (SMTP) passwords'],
   mailInPasswords: ['household mailbox (IMAP) password', 'household mailbox (IMAP) passwords'],
   smsPasswords: ['text messages (SMS Gate) password', 'text messages (SMS Gate) passwords'],
+  shareLinkCopies: ['share link copy', 'share link copies'],
 };
 
 export interface CommandOptions {

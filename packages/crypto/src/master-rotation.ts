@@ -3,6 +3,7 @@ import type pg from 'pg';
 import { deriveKey, KEK_PURPOSE } from './master.js';
 import { mailboxPasswordAad } from './mailbox-password.js';
 import { smsPasswordAad } from './sms-password.js';
+import { shareLinkCopyAad } from './share-link-copy.js';
 import { binding, type ScopeKind } from './scope-keys.js';
 import { unwrapKey, wrapKey } from './wrap.js';
 
@@ -94,6 +95,20 @@ export const MASTER_SEALED = [
     bind: ['mode', 'base_url', 'username'],
     aad: (id: string, row: Readonly<Record<string, string>>) =>
       smsPasswordAad(id, row.mode ?? '', row.base_url ?? '', row.username ?? ''),
+  },
+  // packages/crypto/src/share-link-copy.ts (sealShareLinkCopy, used by the
+  // API's ShareService): what a link's maker was handed as it was made, kept
+  // to show them again (0.9.0, 0084)
+  {
+    name: 'shareLinkCopies',
+    purpose: 'share-link-copies',
+    table: 'share_link',
+    key: 'id',
+    column: 'link_copy_sealed',
+    // Its household is bound in with the link.
+    bind: ['household_id'],
+    aad: (id: string, row: Readonly<Record<string, string>>) =>
+      shareLinkCopyAad(row.household_id ?? '', id),
   },
 ] as const;
 
@@ -423,6 +438,7 @@ async function rekey(
     smtpPasswords: 0,
     mailInPasswords: 0,
     smsPasswords: 0,
+    shareLinkCopies: 0,
   };
   for (const s of MASTER_SEALED) {
     // A backup can be older than the column; a restore brings it up to date
@@ -475,7 +491,7 @@ function firstOpening<T>(
 }
 
 /** The tables that hold what the master key protects, and the sessions a rotation ends. */
-const PROTECTED = ['scope_key', 'account', 'vault', 'smtp_settings', 'session'];
+const PROTECTED = ['scope_key', 'account', 'vault', 'smtp_settings', 'share_link', 'session'];
 
 /**
  * Row-level security would hide other households' rows and leave them

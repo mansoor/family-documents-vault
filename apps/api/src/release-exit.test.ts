@@ -671,6 +671,8 @@ const RULES: Record<string, Rule> = {
     },
   },
   'POST /api/v1/shares/:id/resume': { who: 'owners', body: () => ({}) },
+  // A link shown again (11 Nov 2026): to whoever made it alone, after confirming it is them.
+  'POST /api/v1/shares/:id/reveal': { who: 'signedIn', body: () => ({}) },
   'GET /api/v1/after-restore': { who: 'signedIn' },
 
   // Reminders.

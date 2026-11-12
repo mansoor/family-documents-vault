@@ -385,6 +385,15 @@ export interface CapabilityFeatures {
    */
   version_details?: boolean;
   /**
+   * A share link shown again (0.9.0; the owner's decision of 11 Nov 2026):
+   * the vault keeps a sealed copy of each link as it is made, and its PIN or
+   * made-up password, and `POST /shares/{id}/reveal` shows them to the
+   * account that made it, after confirming it's them (`reveal_share`).
+   * `Share.revealable` says which. Links made before stay shown once.
+   * Absent from older vaults.
+   */
+  share_reveal?: boolean;
+  /**
    * 0.9.0 (V1, the phone's filter panel): GET /documents and GET /search
    * take several comma-separated values for `member_id`, `type_key`,
    * `category`, `status` and `visibility` (any of them), and the days

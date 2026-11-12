@@ -127,6 +127,7 @@ describe('buildCapabilities', () => {
       notes_apart: true,
       // SMS1 (0.9.0): texts through the household's own SMS Gate, once set up.
       sms_texts: true,
+      share_reveal: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

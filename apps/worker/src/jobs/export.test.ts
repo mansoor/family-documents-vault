@@ -20,7 +20,9 @@ import {
   sealMailboxPassword,
   sealPrivate,
   sealSmsPassword,
+  sealShareLinkCopy,
   sealVersionExtra,
+  SHARE_LINK_COPY_PURPOSE,
   unwrapKey,
   wrapKey,
 } from '@fdv/crypto';
@@ -261,7 +263,7 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
   }
 
   it('builds a ZIP with originals by category and three indexes, honouring visibility', async () => {
-    await addDoc("Mansoor's passport", 'household', ownerMember, 'PASSPORT BYTES');
+    const passport = await addDoc("Mansoor's passport", 'household', ownerMember, 'PASSPORT BYTES');
     await addDoc('Home insurance', 'adults', ownerMember, 'POLICY BYTES', 'insurance');
     await addDoc('My private note', 'private', ownerMember, 'PRIVATE BYTES', 'legal');
     await addDoc("Sana's private note", 'private', otherMember, 'NOT FOR OWNER', 'legal');
@@ -298,6 +300,23 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
       `insert into member_phone (member_id, household_id, number) values ($1, $2, '+447700900987')
        on conflict (member_id) do nothing`,
       [ownerMember, hh],
+    );
+    // A link to the passport, and the copy kept to show its maker again
+    // (0.9.0, 0084): never in an export, the link and its PIN neither plain
+    // nor sealed.
+    const linkToken = `export-link-${randomUUID()}`;
+    const shareId = randomUUID();
+    const sealedLink = sealShareLinkCopy(
+      deriveKey(MASTER, SHARE_LINK_COPY_PURPOSE),
+      { token: linkToken, pin: '7319' },
+      hh,
+      shareId,
+    );
+    await admin.query(
+      `insert into share_link (id, household_id, document_id, token_hash, created_by, expires_at,
+                               link_copy_sealed)
+       values ($1, $2, $3, $4, $5, now() + interval '7 days', $6)`,
+      [shareId, hh, passport, Buffer.from(randomUUID()), ownerAccount, sealedLink],
     );
 
     const exportId = await withSystem(db, hh, (trx) =>
@@ -369,6 +388,10 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
       Buffer.from('sms-signin-export'),
       Buffer.from('192.168.77.5'),
       Buffer.from('7700900987'),
+      Buffer.from(linkToken),
+      sealedLink,
+      Buffer.from(sealedLink.toString('hex')),
+      Buffer.from(sealedLink.toString('base64')),
     ]) {
       expect(all.includes(secret)).toBe(false);
     }

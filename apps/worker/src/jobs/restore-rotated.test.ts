@@ -18,6 +18,9 @@ import {
   sealMailboxPassword,
   sealSmsPassword,
   SMS_PASSWORD_PURPOSE,
+  openShareLinkCopy,
+  sealShareLinkCopy,
+  SHARE_LINK_COPY_PURPOSE,
   unwrapKey,
   wrapKey,
   type ScopeRef,
@@ -55,6 +58,8 @@ const MAILBOX = 'the household mailbox app password';
 const SMS = 'the household SMS Gate password';
 /** The SMS Gate's mode, address and sign-in: bound into its password. */
 const GATE = { mode: 'local', baseUrl: 'http://192.168.1.20:8080', username: 'sms' };
+/** A share link and its PIN, kept sealed to show its maker again (0.9.0). */
+const LINK = { token: 'the-link-secret-handed-over-as-it-was-made', pin: '4821' };
 const quiet = () => undefined;
 const backupKey = (secret: string) => deriveKey(secret, 'database-backup');
 
@@ -98,7 +103,13 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
   () => {
     const made: TestDatabase[] = [];
     let dir: string;
-    type Vault = { db: TestDatabase; household: string; account: string; vault: string };
+    type Vault = {
+      db: TestDatabase;
+      household: string;
+      account: string;
+      vault: string;
+      share: string;
+    };
     /** A vault whose keys and secrets are all under OLD. */
     let old: Vault;
 
@@ -198,7 +209,29 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
          values ($1, 'local', 'http://192.168.1.20:8080', 'sms', $2)`,
         [household, sealSmsPassword(deriveKey(secret, SMS_PASSWORD_PURPOSE), SMS, household, GATE)],
       );
-      return { db: t, household, account: accountId, vault: vaultId };
+      // A link to a document, and the copy kept to show its maker again
+      // (0.9.0, 0084): moved with the rest, and opens after.
+      const [doc] = await query<{ id: string }>(
+        t.adminUrl,
+        "insert into document (household_id, title) values ($1, 'Lease') returning id",
+        [household],
+      );
+      const shareId = randomUUID();
+      await query(
+        t.adminUrl,
+        `insert into share_link (id, household_id, document_id, token_hash, created_by, expires_at,
+                                 link_copy_sealed)
+         values ($1, $2, $3, $4, $5, now() + interval '7 days', $6)`,
+        [
+          shareId,
+          household,
+          doc?.id,
+          Buffer.from(randomUUID()),
+          accountId,
+          sealShareLinkCopy(deriveKey(secret, SHARE_LINK_COPY_PURPOSE), LINK, household, shareId),
+        ],
+      );
+      return { db: t, household, account: accountId, vault: vaultId, share: shareId };
     }
 
     const backup = async (from: TestDatabase, key: Buffer) =>
@@ -275,6 +308,18 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
           v.household,
           GATE,
         ),
+        link: openShareLinkCopy(
+          deriveKey(secret, SHARE_LINK_COPY_PURPOSE),
+          (
+            await query<{ c: Buffer }>(
+              t.adminUrl,
+              'select link_copy_sealed as c from share_link where id = $1',
+              [v.share],
+            )
+          )[0]?.c as Buffer,
+          v.household,
+          v.share,
+        ),
       };
     }
     const everything = {
@@ -284,6 +329,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
       mail: MAIL,
       mailbox: MAILBOX,
       sms: SMS,
+      link: LINK,
     };
 
     /** A restore as the command line runs it, in a vault whose master key is NEW. */
@@ -325,6 +371,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
             smtpPasswords: 1,
             mailInPasswords: 1,
             smsPasswords: 1,
+            shareLinkCopies: 1,
           },
         },
       });
@@ -369,6 +416,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
           smtpPasswords: 1,
           mailInPasswords: 1,
           smsPasswords: 1,
+          shareLinkCopies: 1,
         },
         unchanged: 3,
       });

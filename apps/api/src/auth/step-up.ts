@@ -44,7 +44,8 @@ export type StepUpAction =
   | 'renew_guest'
   | 'only_me_sharing'
   | 'change_mailbox'
-  | 'change_sms';
+  | 'change_sms'
+  | 'reveal_share';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -110,6 +111,11 @@ const WHY: Record<StepUpAction, string> = {
   // picked up from an unlocked device could otherwise send the codes that
   // confirm the family's numbers through a server of its own.
   change_sms: 'to change how the vault sends text messages',
+  // A share link shown again to whoever made it (0.9.0; the owner's
+  // decision of 11 Nov 2026): any credential, as one's own identity numbers
+  // ask. A session picked up from an unlocked device could otherwise copy
+  // every live link, and its PIN, out of Sharing.
+  reveal_share: 'to see a link you made again',
 };
 
 /**

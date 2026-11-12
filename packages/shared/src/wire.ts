@@ -637,6 +637,14 @@ export interface Share {
   code_to?: string | null;
   /** It opens in the first browser that opened it, and no other (5.20). */
   this_device_only?: boolean;
+  /**
+   * The caller made it, it still works (or is only paused or used up), and
+   * the vault kept a sealed copy of it as it was made (0.9.0,
+   * `features.share_reveal`): `POST /shares/{id}/reveal` shows it again.
+   * False for a link made before then, which stays shown once, and for
+   * anybody else's. Absent from older vaults: nothing is revealable.
+   */
+  revealable?: boolean;
   summary: string;
 }
 
@@ -688,6 +696,25 @@ export interface CreatedShare {
   link_url?: string | null;
   pin?: string;
   /** A password the vault made up (5.20, `with_password`): here, once, and nowhere else. */
+  password?: string;
+}
+
+/**
+ * `POST /shares/{id}/reveal` (0.9.0, `features.share_reveal`): a link shown
+ * again, to the account that made it and nobody else, after it has
+ * confirmed it's them (`403 step_up_required`, action `reveal_share`) —
+ * what `CreatedShare` handed over as it was made: the link, and the PIN or
+ * the password the vault made up, if it made one (a password the sharer
+ * typed is never kept). `404 not_found` for a link the caller did not make
+ * or cannot see; `409 share_not_revealable` for one made before the vault
+ * kept copies; `410 share_ended` for one taken back, run out of time or
+ * stopped by wrong tries. Never cached (`cache-control: no-store`).
+ */
+export interface RevealedShare {
+  link_token: string;
+  /** As `CreatedShare.link_url`: null when the vault has no public-only site. */
+  link_url: string | null;
+  pin?: string;
   password?: string;
 }
 

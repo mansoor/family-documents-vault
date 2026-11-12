@@ -37,6 +37,7 @@ export type {
   Provider,
   PushKey,
   ResetPreview,
+  RevealedShare,
   RoleChangeResult,
   SearchHit,
   SearchResult,

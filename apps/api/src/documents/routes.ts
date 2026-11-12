@@ -930,6 +930,26 @@ export function registerDocuments(
     return shares.setOnlyMeSharing(principal(req), body.only_me_shareable, metaOf(req));
   });
 
+  /**
+   * A link shown again to whoever made it (0.9.0; the owner's decision of
+   * 11 Nov 2026): a POST, so nothing caches or prefetches it, answered
+   * no-store, and as tight as the routes a link's secret is tried on. Whose
+   * it is, and that it can be shown, first: nobody is asked to confirm it's
+   * them about a link that is not theirs to see.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/shares/:id/reveal',
+    { ...auth, config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const id = parse(idParam, req.params).id;
+      await shares.revealable(principal(req), id);
+      if (stepUp) await stepUp.require(principal(req), 'reveal_share');
+      const shown = await shares.reveal(principal(req), id, metaOf(req));
+      reply.header('cache-control', 'no-store');
+      return shown;
+    },
+  );
+
   app.delete<{ Params: { id: string } }>('/api/v1/shares/:id', auth, async (req, reply) => {
     await shares.revoke(principal(req), parse(idParam, req.params).id, metaOf(req));
     return reply.status(204).send();

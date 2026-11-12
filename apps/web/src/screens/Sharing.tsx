@@ -1,12 +1,12 @@
 import { can, sharePagesNote, type UploadRequestView } from '@fdv/shared';
 import { useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { api, type Share } from '../api.js';
+import { api, type RevealedShare, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { None, useGrid } from '../table-grid.js';
-import { Button, ConfirmDialog, ErrorNote, TopBar } from '../ui.js';
+import { Button, ConfirmDialog, ErrorNote, Sheet, TopBar } from '../ui.js';
 import { dateTimeWords, familyZoneNow } from '../family-time.js';
 
 /**
@@ -22,6 +22,12 @@ import { dateTimeWords, familyZoneNow } from '../family-time.js';
  * (files received, visits used) and where it stands. Each can be taken
  * back, after asking; an owner turns one a restore paused back on. A teen
  * or a viewer sees none of it.
+ *
+ * Since 0.9.0 (the owner's decision of 11 Nov 2026) a link the reader made
+ * can be shown again — the link, and its PIN or the password the vault made
+ * up — after confirming it's them, from "Show the link" on its row; closed,
+ * it is hidden again. A link made before the vault kept copies stays shown
+ * once, and has no such button.
  */
 
 /** Still able to open: taken back, it opens nothing (a page opened on a used-up one lasts to its end). */
@@ -168,6 +174,8 @@ export function SharingScreen() {
     [authVersion, mayAsk],
   );
   const [asking, setAsking] = useState<Share | null>(null);
+  // A link shown again (0.9.0): held here only while its sheet is open.
+  const [shown, setShown] = useState<{ link: Share; revealed: RevealedShare } | null>(null);
   const [askingRequest, setAskingRequest] = useState<UploadRequestView | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -179,6 +187,22 @@ export function SharingScreen() {
   const askToTakeBack = (s: Share, button: HTMLButtonElement) => {
     returnTo.current = button;
     setAsking(s);
+  };
+
+  // Shown again, after confirming it's you (0.9.0): the vault asks, and the
+  // step-up sheet answers; cancelled, nothing is shown.
+  const showAgain = async (s: Share, button: HTMLButtonElement) => {
+    returnTo.current = button;
+    setBusy(true);
+    setProblem(null);
+    try {
+      const revealed = await guarded((t) => api.revealShare(t, s.id));
+      if (revealed) setShown({ link: s, revealed });
+    } catch (err) {
+      setProblem(describeError(err));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const takeBack = async (s: Share) => {
@@ -269,6 +293,7 @@ export function SharingScreen() {
               caption="Links that work now"
               busy={busy}
               onTakeBack={askToTakeBack}
+              onShow={(s, button) => void showAgain(s, button)}
             />
           )
         ) : (
@@ -279,6 +304,7 @@ export function SharingScreen() {
                 link={s}
                 busy={busy}
                 onTakeBack={(button) => askToTakeBack(s, button)}
+                onShow={(button) => void showAgain(s, button)}
               />
             ))}
           </ul>
@@ -362,6 +388,16 @@ export function SharingScreen() {
           </p>
         </ConfirmDialog>
       )}
+      {shown && (
+        <Sheet
+          label={`The link to ${linkTarget(shown.link, true)}`}
+          busy={false}
+          returnFocus={returnTo}
+          onClose={() => setShown(null)}
+        >
+          <ShownAgain link={shown.link} revealed={shown.revealed} onClose={() => setShown(null)} />
+        </Sheet>
+      )}
       {asking && (
         <ConfirmDialog
           title="Take this link back?"
@@ -389,29 +425,109 @@ function LinkRow(props: {
   link: Share;
   busy: boolean;
   onTakeBack?: (button: HTMLButtonElement) => void;
+  onShow?: (button: HTMLButtonElement) => void;
 }) {
   const s = props.link;
   const pages = s.document_id ? sharePagesNote(s.pages) : null;
+  const show = s.revealable === true ? props.onShow : undefined;
   return (
     <li className="place">
       <div className="place-title">{linkTarget(s)}</div>
       <div className="muted">{s.summary}</div>
       {s.created_by_name && <div className="muted">Made by {s.created_by_name}</div>}
       {pages && <div className="status status-warn">{pages}</div>}
-      {props.onTakeBack && (
+      {(props.onTakeBack || show) && (
         <div className="row">
-          <button
-            type="button"
-            className="btn btn-quiet"
-            disabled={props.busy}
-            aria-label={takeBackLabel(s)}
-            onClick={(e) => props.onTakeBack?.(e.currentTarget)}
-          >
-            Take it back
-          </button>
+          {show && (
+            <button
+              type="button"
+              className="btn btn-quiet"
+              disabled={props.busy}
+              aria-label={showLabel(s)}
+              onClick={(e) => show(e.currentTarget)}
+            >
+              Show the link
+            </button>
+          )}
+          {props.onTakeBack && (
+            <button
+              type="button"
+              className="btn btn-quiet"
+              disabled={props.busy}
+              aria-label={takeBackLabel(s)}
+              onClick={(e) => props.onTakeBack?.(e.currentTarget)}
+            >
+              Take it back
+            </button>
+          )}
         </div>
       )}
     </li>
+  );
+}
+
+/** "Show the link to “Mansoor’s passport”, shared with the visa agent" */
+const showLabel = (s: Share) =>
+  `Show the link to ${linkTarget(s, true)}${s.recipient_label ? `, shared with ${s.recipient_label}` : ''}`;
+
+/**
+ * A link shown again to whoever made it (0.9.0): the link, and its PIN or
+ * the password the vault made up, each with Copy — as they were shown when
+ * it was made. Nothing of it is kept on the page once it is closed.
+ */
+function ShownAgain(props: { link: Share; revealed: RevealedShare; onClose: () => void }) {
+  const { revealed } = props;
+  // As it was handed over (Share's HandOver): on the public-only site when
+  // the vault has one, the secret after the #.
+  const link = revealed.link_url ?? `${window.location.origin}/s#${revealed.link_token}`;
+  const [copied, setCopied] = useState<'link' | 'pin' | 'password' | null>(null);
+  const copy = (what: 'link' | 'pin' | 'password', text: string) => {
+    void navigator.clipboard?.writeText(text).then(
+      () => setCopied(what),
+      () => setCopied(null),
+    );
+  };
+  return (
+    <div className="card stack">
+      <h2 style={{ fontSize: 18 }}>The link to {linkTarget(props.link, true)}</h2>
+      {props.link.recipient_label && (
+        <p className="muted">Made for {props.link.recipient_label}.</p>
+      )}
+      <code style={{ wordBreak: 'break-all' }}>{link}</code>
+      <Button kind="quiet" onClick={() => copy('link', link)}>
+        {copied === 'link' ? 'Copied' : 'Copy the link'}
+      </Button>
+      {revealed.pin && (
+        <div className="field">
+          <span className="field-label">The PIN</span>
+          <code style={{ fontSize: 24, letterSpacing: 4 }}>{revealed.pin}</code>
+          <Button kind="quiet" onClick={() => copy('pin', revealed.pin as string)}>
+            {copied === 'pin' ? 'Copied' : 'Copy the PIN'}
+          </Button>
+        </div>
+      )}
+      {revealed.password && (
+        <div className="field">
+          <span className="field-label">The password</span>
+          <code style={{ fontSize: 22, letterSpacing: 2, wordBreak: 'break-all' }}>
+            {revealed.password}
+          </code>
+          <Button kind="quiet" onClick={() => copy('password', revealed.password as string)}>
+            {copied === 'password' ? 'Copied' : 'Copy the password'}
+          </Button>
+        </div>
+      )}
+      {(revealed.pin || revealed.password) && (
+        <p className="muted">
+          Tell them the {revealed.pin ? 'PIN' : 'password'} some other way — a phone call, not the
+          same message.
+        </p>
+      )}
+      <p className="muted">
+        Only you can see this again, and only after confirming it’s you. Closing hides it.
+      </p>
+      <Button onClick={props.onClose}>Hide it</Button>
+    </div>
   );
 }
 
@@ -430,8 +546,12 @@ function LinksTable(props: {
   caption: string;
   busy: boolean;
   onTakeBack?: (link: Share, button: HTMLButtonElement) => void;
+  /** Show a link the reader made again (0.9.0): on its row, when it is theirs to see. */
+  onShow?: (link: Share, button: HTMLButtonElement) => void;
 }) {
   const take = props.onTakeBack;
+  // A column of its own (one grid stop a cell), only when a row has one to show.
+  const show = take && props.links.some((s) => s.revealable === true) ? props.onShow : undefined;
   const table = useRef<HTMLTableElement>(null);
   // Never in the page: a plain table is given no grid, so no stop of its own.
   const none = useRef<HTMLTableElement>(null);
@@ -453,6 +573,7 @@ function LinksTable(props: {
           <col style={{ width: '16%' }} />
           <col style={{ width: '36%' }} />
           <col style={{ width: '13%' }} />
+          {show && <col style={{ width: 140 }} />}
           {take && <col style={{ width: 130 }} />}
         </colgroup>
         <thead>
@@ -461,6 +582,11 @@ function LinksTable(props: {
             <th scope="col">For</th>
             <th scope="col">Where it stands</th>
             <th scope="col">Made by</th>
+            {show && (
+              <th scope="col">
+                <span className="visually-hidden">Show the link</span>
+              </th>
+            )}
             {take && (
               <th scope="col">
                 <span className="visually-hidden">Take it back</span>
@@ -480,6 +606,21 @@ function LinksTable(props: {
                 <td className="wrap-any">{s.recipient_label ?? <None />}</td>
                 <td className="wrap-any">{s.summary}</td>
                 <td className="wrap-any">{s.created_by_name ?? <None />}</td>
+                {show && (
+                  <td>
+                    {s.revealable === true && (
+                      <button
+                        type="button"
+                        className="btn btn-quiet btn-small"
+                        disabled={props.busy}
+                        aria-label={showLabel(s)}
+                        onClick={(e) => show(s, e.currentTarget)}
+                      >
+                        Show the link
+                      </button>
+                    )}
+                  </td>
+                )}
                 {take && (
                   <td>
                     <button

@@ -5888,6 +5888,42 @@ phone_code_too_many`, `429 phone_code_limit` (with `Retry-After`),
       `confirmMemberPhone`, `resendMemberPhoneCode`, `removeMemberPhone`; the
       fake answers the status and mobile-number routes, keeping the code it
       texted in `state.phones` and `state.texts`.
+  - A share link shown again, to whoever made it (0.9.0-dev.30; the
+    owner's decision of 11 Nov 2026). Migration 0084: `share_link` gains
+    `link_copy_sealed`, the link's secret and the PIN or the password the
+    vault made up, sealed (AES-256-GCM) under
+    `deriveKey(master, 'share-link-copies')` with the household and the
+    link bound in. One of `MASTER_SEALED`: rotate-master-key and a restore
+    of an older backup move it (`resealed.shareLinkCopies`; the command
+    says "N share link copies sealed again"). Kept as a link is made by
+    `POST /documents/{id}/share` and `POST /collections/{id}/shares`;
+    never for a password the sharer typed; cleared when a link is taken
+    back. Links made before have none. Everything else is **additive**.
+    - **New `features`:** `share_reveal`, `true`; absent from older vaults.
+    - **New route:** `POST /api/v1/shares/{id}/reveal` (no body; rate
+      limited to 20 a minute; `cache-control: no-store`). For the account
+      that made the link alone, after confirming it's them:
+      `403 step_up_required` with `action: 'reveal_share'` (any credential).
+      Answers `200 { link_token, link_url, pin?, password? }`: `link_url`
+      built as the create answer's (`{FDV_PUBLIC_URL}/s#{link_token}`, or
+      null), `pin` or `password` only when the vault made one. Refused,
+      before any credential is asked for: `404 not_found` for a link the
+      caller did not make or cannot see (an owner's included);
+      `410 share_ended` for one taken back, past its end or locked by wrong
+      tries; `409 share_not_revealable` for one made before 0.9.0-dev.30.
+      A paused link, or one opened as often as it allows, is shown.
+      Written to the activity log as `share.revealed` (about the document
+      or the collection, `detail: { share_id }`), for whoever may see what
+      it is to.
+    - **New field:** `Share.revealable` on `GET /api/v1/shares` (and on
+      the `share` of a create answer, and After a restore's links): `true`
+      when the caller made it, a copy was kept, and it has not ended.
+    - `@fdv/shared`: `RevealedShare`, `Share.revealable`,
+      `Capabilities.features.share_reveal`. `@fdv/client`:
+      `revealShare(token, id)`. The fake makes a document's link
+      (`POST /documents/{id}/share`), lists, takes back and shows again the
+      links it made, as the vault does, without asking to confirm it's you
+      (the fake asks nowhere); `FakeShare.shown_once` is a link made before.
 
 ## Deprecations in effect
 

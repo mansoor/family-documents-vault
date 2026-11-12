@@ -522,3 +522,107 @@ describe('sharing a collection (5.19)', () => {
     expect(follow.parentElement?.contains(sheet.querySelector('#share-follow-note'))).toBe(true);
   });
 });
+
+describe('a link shown again to whoever made it (0.9.0)', () => {
+  /** A link the signed-in member made, and one somebody else made. */
+  const MINE = {
+    id: 'sh-mine',
+    document_id: null,
+    document_title: null,
+    collection_id: BROKER.id,
+    collection_name: 'For the broker',
+    recipient_label: 'Jane Smith',
+    created_by_name: 'Mansoor Seikh',
+    created_at: '2026-11-10T10:00:00Z',
+    expires_at: '2026-11-17T10:00:00Z',
+    has_pin: true,
+    open_count: 0,
+    last_opened_at: null,
+    state: 'active',
+    flow: 'v2',
+    permission: 'download',
+    revealable: true,
+    summary: 'Shared with Jane Smith, not opened yet. Stops working on 17 November at 10:00.',
+  };
+  const THEIRS = {
+    ...MINE,
+    id: 'sh-theirs',
+    collection_id: null,
+    collection_name: null,
+    document_id: PASSPORT.id,
+    document_title: "Mansoor's passport",
+    recipient_label: 'the embassy',
+    created_by_name: 'Sana',
+    revealable: false,
+    summary: 'Shared with the embassy, not opened yet.',
+  };
+  const TOKEN = 'kept-link-secret-0123456789abcdef';
+
+  it('shows the link and its PIN after confirming it’s you, with Copy, and hides them again', async () => {
+    const state = at('/settings', {
+      shares: [MINE, THEIRS],
+      revealedShares: { [MINE.id]: { link_token: TOKEN, link_url: null, pin: '4821' } },
+      stepUpNeeded: true,
+    });
+    const copied = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: copied } });
+    fireEvent.click(await screen.findByRole('link', { name: /^Sharing/ }));
+    const live = await screen.findByRole('list', { name: 'Links that work now' });
+    // Only the reader's own, and only one the vault kept a copy of.
+    expect(
+      within(live).queryByRole('button', { name: /^Show the link to “Mansoor's passport”/ }),
+    ).toBeNull();
+    const show = within(live).getByRole('button', {
+      name: 'Show the link to the collection “For the broker”, shared with Jane Smith',
+    });
+    // Nothing of it on the page before it is asked for.
+    expect(document.body.textContent).not.toContain(TOKEN);
+    await expectAccessible();
+
+    show.focus();
+    fireEvent.click(show);
+    // The vault asks who is asking first.
+    await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    expect(screen.getByText(/to see a link you made again/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Or your password'), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    const sheet = await screen.findByRole('dialog', {
+      name: 'The link to the collection “For the broker”',
+    });
+    const link = `${window.location.origin}/s#${TOKEN}`;
+    expect(within(sheet).getByText(link)).toBeInTheDocument();
+    expect(within(sheet).getByText('4821')).toBeInTheDocument();
+    expect(within(sheet).getByText('Made for Jane Smith.')).toBeInTheDocument();
+    await expectAccessible();
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Copy the link' }));
+    await within(sheet).findByRole('button', { name: 'Copied' });
+    expect(copied).toHaveBeenCalledWith(link);
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Copy the PIN' }));
+    await waitFor(() => expect(copied).toHaveBeenCalledWith('4821'));
+    const asked = state.calls.filter((c) => c.url === `/api/v1/shares/${MINE.id}/reveal`);
+    // Refused for the credential, then shown; always a POST.
+    expect(asked.map((c) => c.method)).toEqual(['POST', 'POST']);
+
+    // Closed, it is hidden again, and focus goes back to the button.
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Hide it' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(document.body.textContent).not.toContain(TOKEN);
+    expect(document.body.textContent).not.toContain('4821');
+    await waitFor(() => expect(show).toHaveFocus());
+  });
+
+  it('says why when the vault has no copy of it', async () => {
+    at('/settings', { shares: [MINE] });
+    fireEvent.click(await screen.findByRole('link', { name: /^Sharing/ }));
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Show the link to the collection “For the broker”, shared with Jane Smith',
+      }),
+    );
+    expect(await screen.findByText(/made before the vault kept a copy/)).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+});

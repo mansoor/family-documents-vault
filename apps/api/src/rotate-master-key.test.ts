@@ -15,13 +15,15 @@ import {
   openSmsPassword,
   ScopeKeys,
   SMS_PASSWORD_PURPOSE,
+  openShareLinkCopy,
+  SHARE_LINK_COPY_PURPOSE,
   unwrapKey,
   wrapKey,
   type ScopeKind,
 } from '@fdv/crypto';
 import { createDb, createPool } from '@fdv/db';
 import { TEST_APP_PASSWORD, TEST_APP_ROLE, testAdminUrl } from '@fdv/db/testing';
-import type { DocumentView } from '@fdv/shared';
+import type { CreatedShare, DocumentView } from '@fdv/shared';
 import { openCredentials, readAll, sealCredentials } from '@fdv/storage';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -79,6 +81,8 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
   let accountId: string;
   let totpSecret: string;
   let vaultId: string;
+  /** A link to a document, kept sealed to show its maker again (0.9.0). */
+  let link: CreatedShare;
 
   type Run = { code: number; out: string; err: string };
   const captured = async (
@@ -125,6 +129,7 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       ['smtp_settings', 'password_encrypted'],
       ['mail_in_mailbox', 'password_encrypted'],
       ['sms_settings', 'password_encrypted'],
+      ['share_link', 'link_copy_sealed'],
     ]) {
       const { rows } = await admin.query<{ v: string }>(
         `select encode(${column}, 'hex') as v from ${table} where ${column} is not null order by 1`,
@@ -273,6 +278,21 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
 
     // A file under each of the household's scope keys.
     for (const v of ['household', 'adults', 'private'] as const) await upload(v);
+
+    // A link to the family's one, with a PIN: a copy of both kept sealed,
+    // to show its maker again (0.9.0).
+    const household = await admin.query<{ id: string }>(
+      "select id from document where visibility = 'household' and household_id = $1",
+      [owner.household_id],
+    );
+    const shared = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${household.rows[0]?.id}/share`,
+      headers: h.as(owner),
+      payload: { with_pin: true },
+    });
+    expect(shared.statusCode, shared.body).toBe(201);
+    link = shared.json<CreatedShare>();
 
     // Identity details (5.26): the shared part under the identity key,
     // minted by this first write; Only me under the owner's member key.
@@ -479,6 +499,7 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       expect(done.out).toContain('1 mail (SMTP) password sealed again');
       expect(done.out).toContain('1 household mailbox (IMAP) password sealed again');
       expect(done.out).toContain('1 text messages (SMS Gate) password sealed again');
+      expect(done.out).toContain('1 share link copy sealed again');
       expect(done.out).toContain(`${sessions} session${sessions === 1 ? '' : 's'} ended`);
       for (const secret of [
         NEW,
@@ -488,6 +509,7 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
         MAIL_PASSWORD,
         MAILBOX_PASSWORD,
         SMS_PASSWORD,
+        link.link_token,
       ]) {
         expect(done.out).not.toContain(secret);
       }
@@ -537,6 +559,30 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       ).toThrow();
     });
 
+    it('a share link’s copy opens under the new key, as the API opens it to show its maker (0.9.0)', async () => {
+      const kept = await admin.query<{ c: Buffer }>(
+        'select link_copy_sealed as c from share_link where id = $1',
+        [link.share.id],
+      );
+      const sealed = kept.rows[0]?.c as Buffer;
+      expect(
+        openShareLinkCopy(
+          deriveKey(NEW, SHARE_LINK_COPY_PURPOSE),
+          sealed,
+          owner.household_id,
+          link.share.id,
+        ),
+      ).toEqual({ token: link.link_token, pin: link.pin });
+      expect(() =>
+        openShareLinkCopy(
+          deriveKey(TEST_MASTER, SHARE_LINK_COPY_PURPOSE),
+          sealed,
+          owner.household_id,
+          link.share.id,
+        ),
+      ).toThrow();
+    });
+
     it("an owner's two-step sign-in code verifies under the new key, and the old opens nothing", async () => {
       const totp = new TotpService(h.db, deriveKey(NEW, 'totp-secrets'), deriveSigningKey(NEW));
       expect(await totp.verify(accountId, codeFor(totpSecret))).toBe(true);
@@ -573,9 +619,9 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
     });
 
     it('every scope key opens under the new key, and opens its files', async () => {
-      // All of them: the one added while it waited too; and the five sealed
-      // secrets, SMS Gate's password among them (SMS1).
-      expect(await checkMasterKey(admin, NEW)).toEqual({ checked: scopeKeys + 5 });
+      // All of them: the one added while it waited too; and the six sealed
+      // secrets, SMS Gate's password (SMS1) and a share link's copy among them.
+      expect(await checkMasterKey(admin, NEW)).toEqual({ checked: scopeKeys + 6 });
       const keys = new ScopeKeys(new EnvKeyProvider(NEW));
       // As the owning role, which every household's rows are open to.
       const db = createDb(createPool(h.adminUrl, 1));
@@ -726,6 +772,7 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       expect(done.out).toContain('1 two-step sign-in secret sealed again');
       expect(done.out).toContain('1 storage (S3) credential sealed again');
       expect(done.out).toContain('1 mail (SMTP) password sealed again');
+      expect(done.out).toContain('1 share link copy sealed again');
       expect(done.out).toContain('1 session ended');
       expect(await liveSessions()).toBe(0);
 

@@ -6,6 +6,14 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.30] - 2026-11-11 — a share link shown again, to whoever made it
+
+### Added
+
+- **See a link you made again.** Until now a link to a document, a note or a collection was shown once, with its PIN or the password the vault made up: the vault kept only a scrambled copy it could not show again. Now it also keeps a sealed copy, locked with the vault's own key, and **Sharing** has **Show the link** on each link you made that still works (or is only paused, or opened as often as it allows). It asks you to confirm it's you, then shows the link and its PIN or password, each with Copy; closing hides them again. Only whoever made a link can see it again — not an owner, not anybody else — and each time is written to the activity log, never with the link. A password you typed yourself is never kept. Links made before this version stay shown once, and a link taken back forgets its copy. (The owner's decision of 11 Nov 2026.)
+  - Rotating the master key, and restoring a backup made under an older one, move the sealed copies with the vault's other secrets. An export never holds them.
+  - For the phone: `POST /api/v1/shares/{id}/reveal`, and `revealable` on each link in the list. The capability is `features.share_reveal`.
+
 ## [0.9.0-dev.29] - 2026-11-11 — text messages: SMS Gate, and mobile numbers
 
 ### Added

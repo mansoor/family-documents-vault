@@ -1458,3 +1458,77 @@ describe('the fake vault, mobile numbers (0.9.0, SMS1)', () => {
     expect((await api.memberPhone(token, me)).sms_ready).toBe(false);
   });
 });
+
+describe('the fake vault, a link shown again to whoever made it (0.9.0)', () => {
+  const refusal = (p: Promise<unknown>) =>
+    p.then(
+      () => null,
+      (err: { status?: number; code?: string }) => err,
+    );
+  it('shows its maker the link and its PIN again; never anybody else’s, an older one, or one taken back', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    expect((await api.capabilities()).features.share_reveal).toBe(true);
+    const lease = await api.createDocument(token, { title: 'Lease' });
+    const made = await api.share(token, lease.id, { with_pin: true, recipient_label: 'Landlord' });
+    expect(made.pin).toMatch(/^\d{4}$/);
+    expect(made.share.revealable).toBe(true);
+    const listed = (await api.shares(token)).items;
+    expect(listed.map((s) => [s.id, s.revealable])).toEqual([[made.share.id, true]]);
+    expect(await api.revealShare(token, made.share.id)).toEqual({
+      link_token: made.link_token,
+      link_url: null,
+      pin: made.pin,
+    });
+    // A password the vault made up, too; one the sharer typed is never kept.
+    const pw = await api.share(token, lease.id, { with_password: true });
+    expect(await api.revealShare(token, pw.share.id)).toEqual({
+      link_token: pw.link_token,
+      link_url: null,
+      password: pw.password,
+    });
+    const typed = await api.share(token, lease.id, { password: 'typed by me, at length' });
+    expect(await api.revealShare(token, typed.share.id)).toEqual({
+      link_token: typed.link_token,
+      link_url: null,
+    });
+
+    // Somebody else's: there is no such link, for an owner too.
+    const theirs = vault.state.shares?.find((l) => l.share.id === typed.share.id);
+    vault.state.shares?.push({
+      ...(theirs as NonNullable<typeof theirs>),
+      share: { ...made.share, id: 'theirs-1' },
+      made_by: 'someone-else',
+    });
+    expect(await refusal(api.revealShare(token, 'theirs-1'))).toMatchObject({
+      status: 404,
+      code: 'not_found',
+    });
+    // Made before the vault kept copies: shown once.
+    vault.state.shares?.push({
+      ...(theirs as NonNullable<typeof theirs>),
+      share: { ...made.share, id: 'older-1' },
+      shown_once: true,
+    });
+    expect((await api.shares(token)).items.find((s) => s.id === 'older-1')?.revealable).toBe(false);
+    expect(await refusal(api.revealShare(token, 'older-1'))).toMatchObject({
+      status: 409,
+      code: 'share_not_revealable',
+    });
+    // Taken back: it has ended.
+    await api.revokeShare(token, made.share.id);
+    expect((await api.shares(token)).items.find((s) => s.id === made.share.id)?.revealable).toBe(
+      false,
+    );
+    expect(await refusal(api.revealShare(token, made.share.id))).toMatchObject({
+      status: 410,
+      code: 'share_ended',
+    });
+  });
+});

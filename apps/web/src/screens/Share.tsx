@@ -937,9 +937,11 @@ export function HandOver(props: { created: CreatedShare; timezone: string; onDon
           <code style={{ fontSize: 22, letterSpacing: 2, wordBreak: 'break-all' }}>
             {props.created.password}
           </code>
+          {/* Since 0.9.0 a vault that keeps a sealed copy says so (`revealable`). */}
           <span className="muted">
-            Tell them this some other way — a phone call, not the same message. It is shown only
-            now: the vault keeps a scrambled copy it cannot show again.
+            {share.revealable
+              ? 'Tell them this some other way — a phone call, not the same message. You can see it again from Sharing, after confirming it’s you.'
+              : 'Tell them this some other way — a phone call, not the same message. It is shown only now: the vault keeps a scrambled copy it cannot show again.'}
           </span>
         </div>
       )}
