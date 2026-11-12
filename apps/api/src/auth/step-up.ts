@@ -46,7 +46,8 @@ export type StepUpAction =
   | 'only_me_sharing'
   | 'change_mailbox'
   | 'change_sms'
-  | 'reveal_share';
+  | 'reveal_share'
+  | 'change_ai_reader';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -117,6 +118,10 @@ const WHY: Record<StepUpAction, string> = {
   // ask. A session picked up from an unlocked device could otherwise copy
   // every live link, and its PIN, out of Sharing.
   reveal_share: 'to see a link you made again',
+  // The AI reader set in Settings (0.9.0, AIR1): a session picked up from an
+  // unlocked device could otherwise send the family's papers' words to a
+  // server of its own.
+  change_ai_reader: 'to change where the vault sends papers to be read',
 };
 
 /**

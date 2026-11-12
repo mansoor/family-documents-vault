@@ -21,6 +21,9 @@ import {
   openShareLinkCopy,
   sealShareLinkCopy,
   SHARE_LINK_COPY_PURPOSE,
+  AI_READER_KEY_PURPOSE,
+  openAiReaderKey,
+  sealAiReaderKey,
   unwrapKey,
   wrapKey,
   type ScopeRef,
@@ -58,6 +61,9 @@ const MAILBOX = 'the household mailbox app password';
 const SMS = 'the household SMS Gate password';
 /** The SMS Gate's mode, address and sign-in: bound into its password. */
 const GATE = { mode: 'local', baseUrl: 'http://192.168.1.20:8080', username: 'sms' };
+/** The household's AI reader's API key, and the reader it was typed for (0.9.0, AIR1). */
+const AI_KEY = 'the household AI reader key';
+const READER = { kind: 'ollama', baseUrl: 'http://192.168.1.30:11434' };
 /** A share link and its PIN, kept sealed to show its maker again (0.9.0). */
 const LINK = { token: 'the-link-secret-handed-over-as-it-was-made', pin: '4821' };
 const quiet = () => undefined;
@@ -209,6 +215,16 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
          values ($1, 'local', 'http://192.168.1.20:8080', 'sms', $2)`,
         [household, sealSmsPassword(deriveKey(secret, SMS_PASSWORD_PURPOSE), SMS, household, GATE)],
       );
+      // The household's AI reader set in Settings (0.9.0, AIR1): its key the same.
+      await query(
+        t.adminUrl,
+        `insert into ai_reader (household_id, kind, base_url, model, runs_at, api_key_encrypted)
+         values ($1, 'ollama', 'http://192.168.1.30:11434', 'llama3.2', 'own_network', $2)`,
+        [
+          household,
+          sealAiReaderKey(deriveKey(secret, AI_READER_KEY_PURPOSE), AI_KEY, household, READER),
+        ],
+      );
       // A link to a document, and the copy kept to show its maker again
       // (0.9.0, 0084): moved with the rest, and opens after.
       const [doc] = await query<{ id: string }>(
@@ -320,6 +336,18 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
           v.household,
           v.share,
         ),
+        ai: openAiReaderKey(
+          deriveKey(secret, AI_READER_KEY_PURPOSE),
+          (
+            await query<{ k: Buffer }>(
+              t.adminUrl,
+              'select api_key_encrypted as k from ai_reader where household_id = $1',
+              [v.household],
+            )
+          )[0]?.k as Buffer,
+          v.household,
+          READER,
+        ),
       };
     }
     const everything = {
@@ -330,6 +358,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
       mailbox: MAILBOX,
       sms: SMS,
       link: LINK,
+      ai: AI_KEY,
     };
 
     /** A restore as the command line runs it, in a vault whose master key is NEW. */
@@ -372,6 +401,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
             mailInPasswords: 1,
             smsPasswords: 1,
             shareLinkCopies: 1,
+            aiReaderKeys: 1,
           },
         },
       });
@@ -417,6 +447,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
           mailInPasswords: 1,
           smsPasswords: 1,
           shareLinkCopies: 1,
+          aiReaderKeys: 1,
         },
         unchanged: 3,
       });

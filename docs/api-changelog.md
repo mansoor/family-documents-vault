@@ -6160,6 +6160,80 @@ password, code?)`, `invite` with `invitee_phone`. The fake answers
       `sensitive_effective` by `sensitiveOf`, keeps each kind's
       `sensitive_default` (its built-ins as the release seeds them; a new
       kind `true`) and a batch's default, and filters by `sensitive`.
+  - The AI reader set in Settings (0.9.0-dev.36; AIR1). Migration 0089.
+    **Additive**: a request made as before is answered as before.
+    - **New `features`:** `ai_reader_settings` (`true` unless the operator
+      set `FDV_AI_READER_SETTINGS=off`) and `ai_reader_kinds` (the kinds this
+      vault reads with: `['ollama']`, until AIR3); both absent from older
+      vaults and where the operator keeps the reader out of Settings.
+      **Changed:** `local_ai` is `true` there too (as well as while a worker
+      has `.env`'s reader), so that every client asks `GET
+/api/v1/household/reading/notice` and tells whoever adds papers.
+    - **New routes,** an owner's (`403` for anybody else, before the body is
+      read):
+      - `GET /api/v1/household/reading/ai-reader` — `AiReaderView`:
+        `source` (`'settings' | 'env' | 'off'`), `kinds`, `env` (`.env`'s
+        reader while it wins: `kind`, `model`, `host`, `runs_at`), `reader`
+        (`AiReaderSaved`, or null) and `https_only`. Never the key:
+        `api_key: 'set' | 'not_set'` and `api_key_last4`.
+      - `PUT /api/v1/household/reading/ai-reader` — `AiReaderInput`
+        (`kind`, `base_url`, `model`, `timeout_seconds` 5–300,
+        `monthly_cap` 1–100000, `api_key` optional: left out keeps the key
+        unless the kind or address changed, when it is forgotten; `null`
+        forgets it), after `step_up_required` (`change_ai_reader`). Saved,
+        `status: 'untested'`; a new kind, address, model or key resets a
+        passed Test, a new timeout or cap alone does not.
+      - `DELETE /api/v1/household/reading/ai-reader` (step-up
+        `change_ai_reader`) — forgotten, key and all.
+      - `POST /api/v1/household/reading/ai-reader/test` and `…/models` —
+        `202` and a `SettingsCheckView` (`kind: 'ai_reader'` or
+        `'ai_models'`), answered by the worker at `GET
+/api/v1/settings-checks/{id}`: `ai_reader` (a `LocalAiTestResult`
+        with `runs_at`) or `ai_models` (`AiReaderModelsResult`: `problem`,
+        `models` — names alone — and `words`). A Test that passes marks the
+        reader `ok`, and where it runs; only the vault says so.
+    - **Errors:** `422 validation_failed` (the address not `scheme://host[:port]`
+      — a sign-in, path, query or fragment; another scheme; http on the hosted
+      edition; a model, timeout or cap out of shape), `422
+ai_reader_address_refused` (link-local, "this network", multicast; on the
+      hosted edition any address inside a network), `422
+ai_reader_kind_not_offered` (`anthropic`, `openai_compatible` for now),
+      `409 ai_reader_locked` (`.env` sets the reader), `409
+ai_reader_settings_off`, `409 ai_reader_not_saved` (Test or the models
+      with none saved), `409 local_ai_unavailable` (the household's switch
+      with neither `.env`'s reader nor a saved one whose Test passed).
+    - **Changed answers:** `GET` and `PUT /api/v1/household/reading` carry
+      `local_ai_reader` (`LocalAiReaderSummary`: `source`, `kind`, `model`,
+      `host`, `runs_at`, `ready`, or null); `local_ai: true` may be set once
+      a saved reader's Test passed. `local_ai_server` carries `kind` and
+      `runs_at`. `GET /api/v1/household/reading/notice` carries `kind` and
+      `runs_at` while the local AI reads the household's papers, and names
+      the saved reader's host where `.env` sets none. `POST
+/api/v1/household/reading/local-ai/test` tests the saved reader where
+      `.env` sets none. `LocalAiTestFound.problem` may be `not_saved`,
+      `refused` or `bad_reply`; a problem the API does not know is
+      `unreachable`, never an answer.
+    - **New activity:** `ai_reader.changed` (`kind`, `runs_at`,
+      `address_changed`, `model_changed`, `key_changed`, `timeout_seconds`,
+      `monthly_cap`; or `removed: true`) and `ai_reader.tested` (`ok`,
+      `kind`, `problem`, `runs_at`), for the owners and the person; never
+      the address, the key, or anything the reader said. The other owners
+      are alerted when the reader changes.
+    - `@fdv/shared`: `AI_READER_KINDS`, `AI_READER_KINDS_OFFERED`,
+      `AI_READER_PATHS`, `AI_READER_KIND_NAMES`, `AiReaderKind`,
+      `AiReaderRunsAt`, `AiReaderStatus`, `AiReaderSource`, `AiReaderSaved`,
+      `AiReaderView`, `AiReaderInput`, `AiReaderModelsFound`,
+      `AiReaderModelsResult`, `aiReaderAddress`, `aiReaderAddressWords`,
+      `aiReaderRunsAtByName`, `aiReaderRunsAtOf`, `aiReaderAddressAllowed`,
+      `aiReaderRunsAtWords`, `aiReaderModelsResult`, `isLinkLocalAddress`,
+      `LOCAL_AI_PROBLEMS`, `localAiProblemWords`, `LocalAiReaderSummary`;
+      the limits `AI_READER_*`; `SettingsCheckKind` gains `ai_reader` and
+      `ai_models`; `Capabilities.features.ai_reader_settings` and
+      `ai_reader_kinds`. `@fdv/client`: `aiReader`, `setAiReader`,
+      `removeAiReader`, `testAiReader`, `aiReaderModels`. The fake says both
+      features and answers `GET /household/reading/ai-reader` to an owner
+      (`state.aiReader`, none saved unless a test says; `403` to anybody
+      else); the phone reads it, and changes nothing.
 
 ## Deprecations in effect
 

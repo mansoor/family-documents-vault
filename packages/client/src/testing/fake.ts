@@ -249,6 +249,8 @@ import {
   type BatchUndoResult,
   type UndoKept,
   type BelongsTo,
+  AI_READER_KINDS_OFFERED,
+  type AiReaderView,
 } from '@fdv/shared';
 import type { FetchLike, ResponseLike } from '../http.js';
 
@@ -537,6 +539,12 @@ export interface FakeVaultState {
    */
   smsReady?: boolean;
   phones?: Map<string, FakePhone>;
+  /**
+   * The AI reader set in Settings (0.9.0, AIR1), as GET
+   * /household/reading/ai-reader answers an owner: none saved, unless a test
+   * says. The phone reads it, and changes nothing (AIR4).
+   */
+  aiReader?: AiReaderView;
   /** Every text the fake sent, in order: to whom, and what it said. */
   texts?: Array<{ to: string; text: string }>;
   /**
@@ -2760,6 +2768,23 @@ export function createFakeVault(): {
     if (mailboxAnswer) return mailboxAnswer;
     const phoneAnswer = phoneRoutes(path, init, body, session);
     if (phoneAnswer) return phoneAnswer;
+    // The AI reader set in Settings (AIR1): an owner reads it; nobody else.
+    if (path === '/api/v1/household/reading/ai-reader' && (init.method ?? 'GET') === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      if (state.role !== 'owner') {
+        return fail(403, 'forbidden', 'Only an owner can change how the vault reads papers.');
+      }
+      return ok(
+        state.aiReader ?? {
+          source: 'settings',
+          kinds: [...AI_READER_KINDS_OFFERED],
+          env: null,
+          reader: null,
+          https_only: false,
+        },
+      );
+    }
     // Links outside the family, and one shown again to its maker (0.9.0).
     const shareAnswer = shareRoutes(path, init, body, session);
     if (shareAnswer) return shareAnswer;
@@ -2858,6 +2883,9 @@ export function createFakeVault(): {
           sensitive_documents: true,
           // Codes by text (0.9.0, SMS3): a link's, an invitation's, one's own.
           sms_codes: true,
+          // The AI reader set in Settings (0.9.0, AIR1), and the kinds it reads with.
+          ai_reader_settings: true,
+          ai_reader_kinds: [...AI_READER_KINDS_OFFERED],
         },
         limits: {
           max_upload_bytes: 104_857_600,

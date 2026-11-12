@@ -1103,6 +1103,25 @@ const RULES: Record<string, Rule> = {
   'POST /api/v1/household/reading/local-ai/test': { who: 'owners', body: () => ({}) },
   // Whether the local AI reads their papers (the R4 review, M1): whoever adds them.
   'GET /api/v1/household/reading/notice': { who: 'family' },
+  // The AI reader set in Settings (0.9.0, AIR1): the owners' alone — one an
+  // attacker writes would send the family's papers' words to a server of
+  // theirs, so last; Test and the models are asked of the worker.
+  'GET /api/v1/household/reading/ai-reader': { who: 'owners' },
+  'PUT /api/v1/household/reading/ai-reader': {
+    who: 'owners',
+    last: true,
+    body: () => ({
+      kind: 'ollama',
+      base_url: 'http://192.168.66.6:11434',
+      model: 'attacker-model',
+      timeout_seconds: 300,
+      monthly_cap: 100000,
+      api_key: 'attacker-key',
+    }),
+  },
+  'DELETE /api/v1/household/reading/ai-reader': { who: 'owners', last: true },
+  'POST /api/v1/household/reading/ai-reader/test': { who: 'owners', body: () => ({}) },
+  'POST /api/v1/household/reading/ai-reader/models': { who: 'owners', body: () => ({}) },
 };
 
 /** Whether a role is among those a rule is for. */

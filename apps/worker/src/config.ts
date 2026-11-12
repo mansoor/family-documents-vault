@@ -271,6 +271,21 @@ const schema = z.object({
     .describe(
       'How long the local AI may take over one paper before it is read without it (5 to 300).',
     ),
+  FDV_AI_READER_SETTINGS: z
+    .enum(['on', 'off'])
+    .default('on')
+    .describe(
+      'Whether owners may set the AI reader in Settings → Reading (0.9.0, AIR1): on unless ' +
+        'set to off. Off, only FDV_LOCAL_AI_URL and FDV_LOCAL_AI_MODEL set one, and a reader ' +
+        'saved in Settings is never used. The API has the same setting.',
+    ),
+  FDV_EDITION: z
+    .enum(['self_hosted', 'hosted'])
+    .default('self_hosted')
+    .describe(
+      'Which edition this is, as the API has it. On the hosted edition a reader set in ' +
+        'Settings is reached only over https, and only at a public address.',
+    ),
   DATABASE_ADMIN_URL: z
     .string()
     .min(1)

@@ -26,6 +26,8 @@ export interface FakeRequest {
   method: string;
   path: string;
   host: string | undefined;
+  /** The Authorization header, as sent (AIR1): a key goes only where it was saved for. */
+  authorization: string | undefined;
   body: string;
 }
 
@@ -71,6 +73,7 @@ export async function startFakeOllama(): Promise<FakeOllama> {
         method: req.method ?? '',
         path: req.url ?? '',
         host: req.headers.host,
+        authorization: req.headers.authorization,
         body,
       });
       if (req.url === '/api/tags') {

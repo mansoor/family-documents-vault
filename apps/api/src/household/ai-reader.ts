@@ -1,0 +1,576 @@
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
+import { sealAiReaderKey } from '@fdv/crypto';
+import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import {
+  AI_READER_CAP_MAX,
+  AI_READER_CAP_MIN,
+  AI_READER_KEY_MAX,
+  AI_READER_KINDS,
+  AI_READER_KINDS_OFFERED,
+  AI_READER_KIND_NAMES,
+  AI_READER_MODEL,
+  AI_READER_TIMEOUT_MAX,
+  AI_READER_TIMEOUT_MIN,
+  aiReaderAddress,
+  aiReaderAddressAllowed,
+  aiReaderAddressWords,
+  aiReaderRunsAtByName,
+  aiReaderRunsAtOf,
+  isLoopbackName,
+  LOCAL_AI_PROBLEMS,
+  type AiReaderInput,
+  type AiReaderKind,
+  type AiReaderRunsAt,
+  type AiReaderSaved,
+  type AiReaderSource,
+  type AiReaderView,
+  type LocalAiProblem,
+  type LocalAiReaderSummary,
+  type LocalAiServerView,
+  type SettingsCheckView,
+} from '@fdv/shared';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { sql } from 'kysely';
+import { z } from 'zod';
+import type { AlertRequest } from '../alert-job.js';
+import { metaOf, parse } from '../auth/routes.js';
+import type { Principal, RequestMeta } from '../auth/service.js';
+import type { StepUpService } from '../auth/step-up.js';
+import { ApiError } from '../errors.js';
+import type { SettingsCheckService } from '../settings-checks.js';
+
+/**
+ * The AI reader set in Settings → Reading → AI reader (0.9.0, AIR1), an
+ * owner's: the kind of reader, its address, the model, how long a paper may
+ * take, its API key, and the most papers a month a cloud reader may be sent.
+ *
+ * The O1 review kept the local AI's address out of Settings: an address an
+ * owner types points the server at its own network. This lets an owner type
+ * one, with the guards the mailbox (S4) and SMS Gate (SMS1) have, held to
+ * strictly (plan-ai-readers, decision 9; `@fdv/shared` ai-reader.ts):
+ *
+ *  - The address is http(s), `scheme://host[:port]` and nothing more — no
+ *    sign-in, path, query or fragment; the worker adds the reader's own
+ *    paths and calls nothing else. On the hosted edition, https only, and a
+ *    name that resolves inside a network is refused here (and again by the
+ *    worker on every call, which is what holds: it connects).
+ *  - The API never reaches the reader. Test and the list of models are the
+ *    worker's (settings checks), and what they give back is the vault's own
+ *    words: never anything the reader said.
+ *  - The key is sealed under a master-derived key with the household, kind
+ *    and address bound in (MASTER_SEALED), never returned — `set` and its
+ *    last four characters — and forgotten when the kind or the address
+ *    changes: a key is never sent to an address it was not typed for.
+ *  - Saved, it is untested, and used for nothing until a Test passes; the
+ *    database takes that word from the vault alone (0089). Each change is in
+ *    the activity log, and the other owners are emailed.
+ *  - .env wins (decision 8): where the operator set FDV_LOCAL_AI_URL and
+ *    FDV_LOCAL_AI_MODEL, a worker says so (local_ai_state) and this is
+ *    locked; FDV_AI_READER_SETTINGS=off takes it out of Settings.
+ */
+
+/** A name resolved to its addresses: DNS, unless a test stands in. */
+export type Resolve = (host: string) => Promise<string[]>;
+const resolveHost: Resolve = async (host) =>
+  (await lookup(host, { all: true, verbatim: true })).map((a) => a.address);
+
+const ownersOnly = () =>
+  new ApiError(403, 'forbidden', 'Only an owner can change how the vault reads papers.');
+const bad = (words: string) => new ApiError(422, 'validation_failed', words);
+const refused = () =>
+  new ApiError(
+    422,
+    'ai_reader_address_refused',
+    'The vault won’t send papers to that address. Choose a reader on your own network, or a public one over https.',
+  );
+const off = () =>
+  new ApiError(
+    409,
+    'ai_reader_settings_off',
+    'Whoever runs this vault keeps the AI reader out of Settings.',
+  );
+const locked = () =>
+  new ApiError(
+    409,
+    'ai_reader_locked',
+    'The AI reader is set by whoever runs this server, in .env, and can’t be changed here.',
+  );
+const notSaved = () =>
+  new ApiError(409, 'ai_reader_not_saved', 'Save the AI reader first, then try again.');
+
+/** A control character: never in a key. */
+const CONTROL = /\p{Cc}/u;
+
+export interface AiReaderOptions {
+  /**
+   * The key the reader's API key is sealed under (deriveKey(master,
+   * AI_READER_KEY_PURPOSE)). Without it no key can be kept.
+   */
+  key?: Buffer;
+  /** FDV_EDITION: on the hosted edition, https to a public address alone. */
+  edition?: 'self_hosted' | 'hosted';
+  /** FDV_AI_READER_SETTINGS: off, and none is offered here. */
+  settings?: 'on' | 'off';
+  /** The worker's answers: Test and the list of models. */
+  checks?: SettingsCheckService | null;
+  /** .env's reader, as the workers said it lately (LocalAiService.server). */
+  server?: () => Promise<LocalAiServerView>;
+  /** Tests: DNS of their own. */
+  resolve?: Resolve;
+  /** Other owners told when the reader changes. */
+  alert?: (a: AlertRequest) => Promise<void>;
+}
+
+type Row = {
+  kind: AiReaderKind;
+  base_url: string | null;
+  model: string;
+  timeout_seconds: number;
+  runs_at: AiReaderRunsAt;
+  has_key: boolean;
+  api_key_last4: string | null;
+  monthly_cap: number;
+  status: 'untested' | 'ok' | 'failed';
+  last_tested_at: Date | null;
+  last_problem: string | null;
+  updated_at: Date;
+};
+
+const viewOf = (r: Row): AiReaderSaved => ({
+  kind: r.kind,
+  base_url: r.base_url,
+  model: r.model,
+  timeout_seconds: r.timeout_seconds,
+  runs_at: r.runs_at,
+  api_key: r.has_key ? 'set' : 'not_set',
+  api_key_last4: r.has_key ? r.api_key_last4 : null,
+  monthly_cap: r.monthly_cap,
+  status: r.status,
+  last_tested_at: r.last_tested_at?.toISOString() ?? null,
+  last_problem: LOCAL_AI_PROBLEMS.includes(r.last_problem as LocalAiProblem)
+    ? (r.last_problem as LocalAiProblem)
+    : null,
+  updated_at: r.updated_at.toISOString(),
+});
+
+export class AiReaderService {
+  private readonly key: Buffer | null;
+  private readonly httpsOnly: boolean;
+  private readonly settingsOn: boolean;
+  private readonly checks: SettingsCheckService | null;
+  private readonly envServer: () => Promise<LocalAiServerView>;
+  private readonly resolve: Resolve;
+  private readonly alert: (a: AlertRequest) => Promise<void>;
+
+  constructor(
+    private readonly db: Db,
+    opts: AiReaderOptions = {},
+  ) {
+    this.key = opts.key ?? null;
+    this.httpsOnly = opts.edition === 'hosted';
+    this.settingsOn = opts.settings !== 'off';
+    this.checks = opts.checks ?? null;
+    this.envServer = opts.server ?? (async () => ({ state: 'not_set_up' }));
+    this.resolve = opts.resolve ?? resolveHost;
+    this.alert = opts.alert ?? (async () => undefined);
+  }
+
+  /** `features.ai_reader_settings`: offered in Settings, unless the operator said off. */
+  offered(): boolean {
+    return this.settingsOn;
+  }
+
+  /** Where the reader is set now: .env wins; off takes it out of Settings. */
+  private async source(): Promise<{ source: AiReaderSource; env: LocalAiServerView }> {
+    // Asked before any transaction, never inside one (the R2 re-check).
+    const env = await this.envServer();
+    if (env.state !== 'not_set_up') return { source: 'env', env };
+    return { source: this.settingsOn ? 'settings' : 'off', env };
+  }
+
+  private async row(trx: Db): Promise<Row | undefined> {
+    return trx
+      .selectFrom('ai_reader')
+      .select([
+        'kind',
+        'base_url',
+        'model',
+        'timeout_seconds',
+        'runs_at',
+        sql<boolean>`api_key_encrypted is not null`.as('has_key'),
+        'api_key_last4',
+        'monthly_cap',
+        'status',
+        'last_tested_at',
+        'last_problem',
+        'updated_at',
+      ])
+      .executeTakeFirst();
+  }
+
+  /** GET /household/reading/ai-reader: an owner's. Never the key, only whether one is set. */
+  async get(p: Principal): Promise<AiReaderView> {
+    if (p.role !== 'owner') throw ownersOnly();
+    const { source, env } = await this.source();
+    const row = await withPrincipal(this.db, p, (trx) => this.row(trx));
+    return {
+      source,
+      kinds: [...AI_READER_KINDS_OFFERED],
+      env:
+        env.state === 'not_set_up'
+          ? null
+          : {
+              kind: env.kind ?? 'ollama',
+              model: env.model,
+              host: env.host,
+              runs_at: env.runs_at ?? null,
+            },
+      reader: row ? viewOf(row) : null,
+      https_only: this.httpsOnly,
+    };
+  }
+
+  /**
+   * The reader a household's local AI switch uses (LocalAiService): .env's
+   * where it is set, else the one saved, ready once its Test passed; or
+   * none. As whoever asks: the database gives the saved one to owners alone.
+   */
+  async summary(p: Principal, env: LocalAiServerView): Promise<LocalAiReaderSummary | null> {
+    if (env.state !== 'not_set_up') {
+      return {
+        source: 'env',
+        kind: env.kind ?? 'ollama',
+        model: env.model,
+        host: env.host,
+        runs_at: env.runs_at ?? null,
+        ready: true,
+      };
+    }
+    if (!this.settingsOn) return null;
+    const row = await withPrincipal(this.db, p, (trx) => this.row(trx));
+    if (!row) return null;
+    return {
+      source: 'settings',
+      kind: row.kind,
+      model: row.model,
+      host: row.base_url ? new URL(row.base_url).host : 'api.anthropic.com',
+      runs_at: row.runs_at,
+      ready: row.status === 'ok' && AI_READER_KINDS_OFFERED.includes(row.kind),
+    };
+  }
+
+  /**
+   * Where a reader at this address runs (decision 2), and whether the vault
+   * may send to it, as far as the API can tell: an address as it is; a name
+   * that means this machine, a `.local` name or one with no dot, the
+   * household's own network; any other name resolved — every address it
+   * gives inside a network, the household's own; any public, a cloud
+   * service; not resolved, a cloud service until a Test finds otherwise.
+   * The worker checks again on every call, at the address it connects to.
+   */
+  private async place(hostname: string): Promise<AiReaderRunsAt> {
+    const literal = isIP(hostname) ? [hostname] : null;
+    if (this.httpsOnly && isLoopbackName(hostname)) throw refused();
+    let addresses: string[] = literal ?? [];
+    if (!literal && !isLoopbackName(hostname)) {
+      try {
+        addresses = await this.resolve(hostname);
+      } catch {
+        addresses = [];
+      }
+    }
+    if (addresses.some((a) => !aiReaderAddressAllowed(a, { publicOnly: this.httpsOnly }))) {
+      throw refused();
+    }
+    const byName = aiReaderRunsAtByName(hostname);
+    if (literal) return byName ?? 'cloud';
+    if (addresses.length > 0) {
+      return addresses.every((a) => aiReaderRunsAtOf(a) === 'own_network')
+        ? 'own_network'
+        : 'cloud';
+    }
+    return byName ?? 'cloud';
+  }
+
+  /**
+   * PUT /household/reading/ai-reader (step-up `change_ai_reader`): the
+   * reader, as an owner sets it. Only the kinds this vault reads with (422
+   * ai_reader_kind_not_offered); an address refused by the guards (422
+   * ai_reader_address_refused). The key, when given, is sealed; left out,
+   * the one set is kept — unless the kind or the address changed, when it is
+   * forgotten; null forgets it. Saved, it waits for a Test if anything that
+   * reaches the reader changed; a new timeout or limit alone keeps a Test
+   * that passed.
+   */
+  async put(p: Principal, input: AiReaderInput, meta: RequestMeta): Promise<AiReaderView> {
+    if (p.role !== 'owner') throw ownersOnly();
+    const { source } = await this.source();
+    if (source === 'off') throw off();
+    if (source === 'env') throw locked();
+    if (!AI_READER_KINDS.includes(input.kind)) throw bad('Choose a kind of reader.');
+    if (!AI_READER_KINDS_OFFERED.includes(input.kind)) {
+      throw new ApiError(
+        422,
+        'ai_reader_kind_not_offered',
+        `This vault doesn’t read with ${AI_READER_KIND_NAMES[input.kind]} yet. Choose ${AI_READER_KINDS_OFFERED.map((k) => AI_READER_KIND_NAMES[k]).join(' or ')}.`,
+      );
+    }
+    const address = aiReaderAddress(input.base_url ?? '', { httpsOnly: this.httpsOnly });
+    if ('problem' in address) throw bad(aiReaderAddressWords(address.problem));
+    const model = input.model.trim();
+    if (!AI_READER_MODEL.test(model)) {
+      throw bad('Type the model’s name as the reader has it, such as qwen2.5:3b-instruct.');
+    }
+    if (
+      !Number.isInteger(input.timeout_seconds) ||
+      input.timeout_seconds < AI_READER_TIMEOUT_MIN ||
+      input.timeout_seconds > AI_READER_TIMEOUT_MAX
+    ) {
+      throw bad(
+        `How long a paper may take is a number of seconds from ${AI_READER_TIMEOUT_MIN} to ${AI_READER_TIMEOUT_MAX}.`,
+      );
+    }
+    if (
+      !Number.isInteger(input.monthly_cap) ||
+      input.monthly_cap < AI_READER_CAP_MIN ||
+      input.monthly_cap > AI_READER_CAP_MAX
+    ) {
+      throw bad(
+        `The most papers in a month is a number from ${AI_READER_CAP_MIN} to ${AI_READER_CAP_MAX}.`,
+      );
+    }
+    const apiKey = typeof input.api_key === 'string' ? input.api_key.trim() : input.api_key;
+    if (typeof apiKey === 'string') {
+      if (apiKey.length === 0 || apiKey.length > AI_READER_KEY_MAX) {
+        throw bad(`The key is 1 to ${AI_READER_KEY_MAX} characters.`);
+      }
+      if (CONTROL.test(apiKey)) throw bad('The key can’t have a line break or a tab in it.');
+    }
+    const key = this.key;
+    if (typeof apiKey === 'string' && !key) {
+      throw new ApiError(503, 'unavailable', 'The vault can’t keep a key just now.');
+    }
+    const kind = input.kind;
+    const baseUrl = address.url;
+    // Where it runs, and whether it may be sent to: asked before the
+    // transaction, never inside it.
+    const placed = await this.place(address.hostname);
+    let reached = false;
+    await withPrincipal(this.db, p, async (trx) => {
+      const before = await trx
+        .selectFrom('ai_reader')
+        .select(['kind', 'base_url', 'model', 'runs_at', 'api_key_encrypted', 'api_key_last4'])
+        .forUpdate()
+        .executeTakeFirst();
+      // The key was kept for one kind and address alone.
+      const moved = before !== undefined && (before.kind !== kind || before.base_url !== baseUrl);
+      const keyNow =
+        typeof apiKey === 'string'
+          ? {
+              api_key_encrypted: sealAiReaderKey(key as Buffer, apiKey, p.householdId, {
+                kind,
+                baseUrl,
+              }),
+              api_key_last4: apiKey.slice(-4),
+            }
+          : apiKey === null || moved || !before
+            ? { api_key_encrypted: null, api_key_last4: null }
+            : { api_key_encrypted: before.api_key_encrypted, api_key_last4: before.api_key_last4 };
+      const keyChanged =
+        typeof apiKey === 'string' ||
+        ((before?.api_key_encrypted ?? null) !== null && keyNow.api_key_encrypted === null);
+      // Where it runs is kept while the address is: a Test found it.
+      const runsAt = before && !moved ? before.runs_at : placed;
+      reached = before === undefined || moved || before.model !== model || keyChanged;
+      const values = {
+        kind,
+        base_url: baseUrl,
+        model,
+        timeout_seconds: input.timeout_seconds,
+        monthly_cap: input.monthly_cap,
+        runs_at: runsAt,
+        ...keyNow,
+        updated_by: p.accountId,
+        updated_at: new Date(),
+        ...(reached
+          ? { status: 'untested' as const, last_tested_at: null, last_problem: null }
+          : {}),
+      };
+      if (before) {
+        await trx.updateTable('ai_reader').set(values).execute();
+      } else {
+        await trx
+          .insertInto('ai_reader')
+          .values({ household_id: p.householdId, ...values })
+          .execute();
+      }
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'ai_reader.changed',
+        objectType: 'household',
+        objectId: p.householdId,
+        // Which kind, where it runs, and what changed: never the key, nor
+        // the address itself.
+        detail: {
+          kind,
+          runs_at: runsAt,
+          address_changed: before === undefined || moved,
+          model_changed: before === undefined || before.model !== model,
+          key_changed: keyChanged,
+          timeout_seconds: input.timeout_seconds,
+          monthly_cap: input.monthly_cap,
+        },
+        ip: meta.ip,
+      });
+      if (reached) await this.tellOtherOwners(trx, p, 'changed');
+    });
+    return this.get(p);
+  }
+
+  /** DELETE /household/reading/ai-reader (step-up): the reader forgotten, key and all. */
+  async remove(p: Principal, meta: RequestMeta): Promise<AiReaderView> {
+    if (p.role !== 'owner') throw ownersOnly();
+    const { source } = await this.source();
+    if (source === 'off') throw off();
+    await withPrincipal(this.db, p, async (trx) => {
+      const gone = await trx.deleteFrom('ai_reader').returning('kind').execute();
+      if (gone.length > 0) {
+        await appendAudit(trx, {
+          householdId: p.householdId,
+          actorAccountId: p.accountId,
+          action: 'ai_reader.changed',
+          objectType: 'household',
+          objectId: p.householdId,
+          detail: { removed: true },
+          ip: meta.ip,
+        });
+        await this.tellOtherOwners(trx, p, 'removed');
+      }
+    });
+    return this.get(p);
+  }
+
+  /**
+   * Whoever runs the reader reads every paper the household sends it: the
+   * other owners are told when where papers go changes, as they are of the
+   * mail server and of SMS Gate.
+   */
+  private async tellOtherOwners(trx: Db, p: Principal, what: 'changed' | 'removed') {
+    const me = await trx
+      .selectFrom('member')
+      .select('display_name')
+      .where('id', '=', p.memberId)
+      .executeTakeFirst();
+    const others = await trx
+      .selectFrom('account_household')
+      .select('account_id')
+      .where('role', '=', 'owner')
+      .where('account_id', '!=', p.accountId)
+      .execute();
+    if (others.length === 0) return;
+    const who = me?.display_name ?? 'An owner';
+    await this.alert({
+      householdId: p.householdId,
+      accountIds: others.map((o) => o.account_id),
+      subject:
+        what === 'removed'
+          ? 'The vault’s AI reader was removed'
+          : 'The vault’s AI reader was changed',
+      body:
+        what === 'removed'
+          ? `${who} removed the AI reader set in Settings. Papers are read by the vault’s rules alone, unless whoever runs the server set one.`
+          : `${who} changed the AI reader in Settings: where papers’ words are sent to be read. It is used only once a Test passes, and only while the household’s local AI is on. If that is a surprise, ask them about it.`,
+    });
+  }
+
+  /** Test, or the list of models: answered by the worker, for the reader saved. */
+  private async ask(p: Principal, kind: 'ai_reader' | 'ai_models'): Promise<SettingsCheckView> {
+    if (p.role !== 'owner') throw ownersOnly();
+    const { source } = await this.source();
+    if (source === 'off') throw off();
+    if (source === 'env') throw locked();
+    const has = await withPrincipal(this.db, p, (trx) =>
+      trx.selectFrom('ai_reader').select('kind').executeTakeFirst(),
+    );
+    if (!has) throw notSaved();
+    if (!this.checks) {
+      throw new ApiError(503, 'unavailable', 'The worker can’t be asked just now.', {
+        retriable: true,
+      });
+    }
+    return this.checks.ask(p, kind, null);
+  }
+
+  /** POST /household/reading/ai-reader/test: a tiny fixed prompt, no paper; must pass before it is used. */
+  async test(p: Principal): Promise<SettingsCheckView> {
+    return this.ask(p, 'ai_reader');
+  }
+
+  /** POST /household/reading/ai-reader/models: the saved reader's models, names alone. */
+  async models(p: Principal): Promise<SettingsCheckView> {
+    return this.ask(p, 'ai_models');
+  }
+}
+
+/**
+ * Settings → Reading → AI reader (0.9.0, AIR1): GET, PUT and DELETE
+ * /household/reading/ai-reader, POST …/test and …/models. An owner's alone:
+ * anybody else is refused before their body is read. A change asks for
+ * step-up: a session picked up from an unlocked device could otherwise send
+ * the family's papers to a server of its own.
+ */
+export function registerAiReader(
+  app: FastifyInstance,
+  ai: AiReaderService,
+  stepUp?: StepUpService,
+): void {
+  const owners = {
+    preHandler: [
+      app.requireAuth,
+      async (req: FastifyRequest) => {
+        if (req.principal && req.principal.role !== 'owner') throw ownersOnly();
+      },
+    ],
+  };
+  const principal = (req: FastifyRequest) => req.principal as Principal;
+  const noStore = { 'cache-control': 'no-store' };
+
+  app.get('/api/v1/household/reading/ai-reader', owners, async (req, reply) => {
+    void reply.headers(noStore);
+    return ai.get(principal(req));
+  });
+
+  app.put('/api/v1/household/reading/ai-reader', owners, async (req, reply) => {
+    const body = parse(
+      z
+        .object({
+          kind: z.enum(AI_READER_KINDS),
+          base_url: z.string().max(2048).nullable().optional(),
+          model: z.string().min(1).max(200),
+          timeout_seconds: z.number().int(),
+          monthly_cap: z.number().int(),
+          api_key: z.string().max(AI_READER_KEY_MAX).nullable().optional(),
+        })
+        .strict(),
+      req.body,
+    );
+    await stepUp?.require(principal(req), 'change_ai_reader');
+    void reply.headers(noStore);
+    return ai.put(principal(req), body, metaOf(req));
+  });
+
+  app.delete('/api/v1/household/reading/ai-reader', owners, async (req, reply) => {
+    await stepUp?.require(principal(req), 'change_ai_reader');
+    void reply.headers(noStore);
+    return ai.remove(principal(req), metaOf(req));
+  });
+
+  app.post('/api/v1/household/reading/ai-reader/test', owners, async (req, reply) =>
+    reply.status(202).send(await ai.test(principal(req))),
+  );
+  app.post('/api/v1/household/reading/ai-reader/models', owners, async (req, reply) =>
+    reply.status(202).send(await ai.models(principal(req))),
+  );
+}

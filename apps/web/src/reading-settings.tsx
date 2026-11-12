@@ -4,6 +4,7 @@ import { flushSync } from 'react-dom';
 import { Link } from 'react-router';
 import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
+import { AiReaderCard } from './ai-reader-settings.js';
 import { LocalAiCard } from './local-ai-settings.js';
 import { Check, LoadFailed } from './ui.js';
 
@@ -106,7 +107,9 @@ export function ReadingModelPart() {
           {said}
         </p>
       </section>
-      {/* The local AI (0.9.0, R4): set up by the operator, an owner's switch. */}
+      {/* The AI reader set in Settings (0.9.0, AIR1), where .env sets none. */}
+      <AiReaderCard />
+      {/* The local AI (0.9.0, R4): set up by the operator or above, an owner's switch. */}
       <LocalAiCard />
     </>
   );

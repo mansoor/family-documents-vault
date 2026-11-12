@@ -1,6 +1,12 @@
 import { withPrincipal, type Db } from '@fdv/db';
 import {
+  aiReaderModelsResult,
+  AI_READER_MODEL,
+  AI_READER_MODELS_MAX,
+  LOCAL_AI_PROBLEMS,
   localAiTestResult,
+  type AiReaderModelsFound,
+  type LocalAiProblem,
   mailInTestResult,
   type LocalAiTestFound,
   SETTINGS_CHECK_LATE_MS,
@@ -40,11 +46,15 @@ const tooMany = () =>
     retryAfter: 60,
   });
 
-const underWay = (what: 'mailbox' | 'local_ai') =>
+const underWay = (what: 'mailbox' | 'local_ai' | 'ai_reader' | 'ai_models') =>
   new ApiError(
     429,
     'rate_limited',
-    `${what === 'mailbox' ? 'The mailbox' : 'The local AI'} is being tested now. Wait for its answer, then test it again.`,
+    what === 'mailbox'
+      ? 'The mailbox is being tested now. Wait for its answer, then test it again.'
+      : what === 'ai_models'
+        ? 'The AI reader’s models are being asked for now. Wait for the answer, then ask again.'
+        : `${what === 'local_ai' ? 'The local AI' : 'The AI reader'} is being tested now. Wait for its answer, then test it again.`,
     { retriable: true, retryAfter: 15 },
   );
 
@@ -78,9 +88,15 @@ export class SettingsCheckService {
         .where('requested_at', '>', new Date(this.now() - 60_000))
         .executeTakeFirstOrThrow();
       if (Number(recent.n) >= SETTINGS_CHECKS_PER_MINUTE) throw tooMany();
-      if (kind === 'mailbox' || kind === 'local_ai') {
+      if (
+        kind === 'mailbox' ||
+        kind === 'local_ai' ||
+        kind === 'ai_reader' ||
+        kind === 'ai_models'
+      ) {
         // One test of the mailbox at a time: each signs in to it. And of the
-        // local AI (R4): each asks the model.
+        // local AI (R4), and the AI reader saved in Settings and its models
+        // (AIR1): each asks the reader.
         const running = await trx
           .selectFrom('settings_check')
           .select('id')
@@ -174,6 +190,23 @@ export class SettingsCheckService {
           mailbox: mailInTestResult(r as unknown as MailInTestFound, mailFolder),
           words: null,
         };
+      case 'ai_reader':
+        // Test the AI reader saved in Settings (AIR1): as the local AI's, and
+        // where it runs. Never what it said.
+        return {
+          ...base,
+          state: 'done',
+          ai_reader: localAiTestResult(localAiFound(r)),
+          words: null,
+        };
+      case 'ai_models':
+        // Its models (AIR1): names alone, each a model name's shape.
+        return {
+          ...base,
+          state: 'done',
+          ai_models: aiReaderModelsResult(modelsFound(r)),
+          words: null,
+        };
       case 'local_ai':
         // Test the local AI (R4): the model, the host and how long.
         return {
@@ -186,23 +219,41 @@ export class SettingsCheckService {
   }
 }
 
-const PROBLEMS = ['not_set_up', 'unreachable', 'timeout', 'no_model', 'http_error', 'too_big'];
+/**
+ * A problem the worker wrote, as kept: a known one, or — anything else —
+ * `unreachable`, never taken for an answer. None: null.
+ */
+function problemFound(v: unknown): LocalAiProblem | null {
+  if (v === null || v === undefined) return null;
+  return typeof v === 'string' && LOCAL_AI_PROBLEMS.includes(v as LocalAiProblem)
+    ? (v as LocalAiProblem)
+    : 'unreachable';
+}
+
+/** What the worker wrote of the AI reader's models (AIR1): names of a model's shape alone. */
+function modelsFound(r: Record<string, unknown>): AiReaderModelsFound {
+  const problem = problemFound(r.problem);
+  const models = Array.isArray(r.models)
+    ? r.models
+        .filter((m): m is string => typeof m === 'string' && AI_READER_MODEL.test(m))
+        .slice(0, AI_READER_MODELS_MAX)
+    : [];
+  return { problem, models: problem ? [] : models };
+}
 
 /** What the worker wrote of a Test of the local AI, each field kept only if well formed. */
 function localAiFound(r: Record<string, unknown>): LocalAiTestFound {
   const str = (v: unknown, max: number) =>
     typeof v === 'string' && v.length > 0 && v.length <= max ? v : null;
   return {
-    problem:
-      typeof r.problem === 'string' && PROBLEMS.includes(r.problem)
-        ? (r.problem as LocalAiTestFound['problem'])
-        : null,
+    problem: problemFound(r.problem),
     model: str(r.model, 200),
     host: str(r.host, 300),
     latency_ms:
       typeof r.latency_ms === 'number' && Number.isFinite(r.latency_ms) && r.latency_ms >= 0
         ? Math.round(r.latency_ms)
         : null,
+    ...(r.runs_at === 'own_network' || r.runs_at === 'cloud' ? { runs_at: r.runs_at } : {}),
   };
 }
 

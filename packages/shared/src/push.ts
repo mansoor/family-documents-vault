@@ -153,6 +153,35 @@ export function isPrivateAddress(ip: string): boolean {
 }
 
 /**
+ * An address nothing should ever be sent to, even where addresses inside
+ * the household's own network are allowed (0.9.0, AIR1): link-local (cloud
+ * metadata at 169.254.169.254 and fe80::/10 among it), "this network" and
+ * the unspecified address, multicast and broadcast — for IPv6 too, and an
+ * IPv4 address inside an IPv6 one. Not an address at all: true.
+ */
+export function isLinkLocalAddress(ip: string): boolean {
+  const addr = ip
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '');
+  const bad4 = (four: number[]) => {
+    const [a = 0, b = 0] = four;
+    return a === 0 || (a === 169 && b === 254) || a >= 224;
+  };
+  const four = v4(addr);
+  if (four) return bad4(four);
+  const g = v6(addr);
+  if (!g) return true;
+  const [a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, hi = 0, lo = 0] = g;
+  const zeros = a === 0 && b === 0 && c === 0 && d === 0 && e === 0;
+  // Mapped (::ffff:0:0/96): judged by the IPv4 address inside.
+  if (zeros && f === 0xffff) return bad4(embedded(hi, lo));
+  // The unspecified address (::).
+  if (zeros && f === 0 && hi === 0 && lo === 0) return true;
+  return (a & 0xffc0) === 0xfe80 || (a & 0xff00) === 0xff00;
+}
+
+/**
  * A name that means this machine whatever DNS says (RFC 6761): refused as
  * 127.0.0.1 is, without asking DNS — a resolver that does not know it must
  * not make it look fine.

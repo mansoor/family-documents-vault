@@ -1656,3 +1656,52 @@ describe('the fake vault, codes by text (0.9.0, SMS3)', () => {
     });
   });
 });
+
+describe('the fake vault, the AI reader set in Settings (0.9.0, AIR1)', () => {
+  it('says it is offered, with the kinds it reads with, and shows an owner the reader saved', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const features = (await api.capabilities()).features;
+    expect(features.ai_reader_settings).toBe(true);
+    expect(features.ai_reader_kinds).toEqual(['ollama']);
+    expect(await api.aiReader(token)).toEqual({
+      source: 'settings',
+      kinds: ['ollama'],
+      env: null,
+      reader: null,
+      https_only: false,
+    });
+    vault.state.aiReader = {
+      source: 'settings',
+      kinds: ['ollama'],
+      env: null,
+      reader: {
+        kind: 'ollama',
+        base_url: 'http://192.168.1.30:11434',
+        model: 'qwen2.5:3b-instruct',
+        timeout_seconds: 120,
+        runs_at: 'own_network',
+        api_key: 'set',
+        api_key_last4: 'WXYZ',
+        monthly_cap: 500,
+        status: 'ok',
+        last_tested_at: '2026-11-12T10:00:00.000Z',
+        last_problem: null,
+        updated_at: '2026-11-12T09:59:00.000Z',
+      },
+      https_only: false,
+    };
+    expect((await api.aiReader(token)).reader).toMatchObject({
+      runs_at: 'own_network',
+      api_key: 'set',
+    });
+    vault.state.role = 'adult';
+    await expect(api.aiReader(token)).rejects.toMatchObject({ status: 403 });
+  });
+});

@@ -85,6 +85,14 @@ const schema = z.object({
   FDV_DISPLAY_NAME: z.string().min(1).default('Our family vault'),
   FDV_TIMEZONE: timeZoneSetting,
   FDV_EDITION: z.enum(['self_hosted', 'hosted']).default('self_hosted'),
+  FDV_AI_READER_SETTINGS: z
+    .enum(['on', 'off'])
+    .default('on')
+    .describe(
+      'Whether owners may set the AI reader in Settings → Reading (0.9.0, AIR1): on unless ' +
+        'set to off, when it is not offered there at all. FDV_LOCAL_AI_URL and ' +
+        'FDV_LOCAL_AI_MODEL, set for the worker, win either way. The worker has the same setting.',
+    ),
   FDV_MAX_UPLOAD_BYTES: z.coerce
     .number()
     .int()

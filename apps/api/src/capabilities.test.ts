@@ -140,6 +140,12 @@ describe('buildCapabilities', () => {
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);
     expect(buildCapabilities({ ...config, localAi: true }).features.local_ai).toBe(true);
+    // AIR1 (0.9.0): the AI reader set in Settings, and the kinds it reads
+    // with — only while the operator has not kept it out.
+    const air1 = buildCapabilities({ ...config, aiReaderSettings: true }).features;
+    expect(air1.ai_reader_settings).toBe(true);
+    expect(air1.ai_reader_kinds).toEqual(['ollama']);
+    expect(caps.features).not.toHaveProperty('ai_reader_settings');
     // S4: email in, reserved as email_ingest since 1.0, only while the worker
     // has a mailbox set up and checked it lately.
     expect(buildCapabilities({ ...config, mailIn: true }).features.email_ingest).toBe(true);

@@ -6,6 +6,8 @@
  * must ignore fields they do not recognise.
  */
 
+import type { AiReaderKind } from './ai-reader.js';
+
 export const API_VERSION = 1 as const;
 export const PRODUCT_ID = 'family-document-vault' as const;
 
@@ -330,7 +332,9 @@ export interface CapabilityFeatures {
    * `local_ai_without`). True while a worker has one set up and said so
    * lately; GET and PUT /household/reading `{ local_ai }` turn it on or off
    * for the household, an owner's, and POST /household/reading/local-ai/test
-   * tests it. Absent from older vaults.
+   * tests it. Since AIR1 also true where an owner may set the reader in
+   * Settings (`ai_reader_settings`), so that every client asks the notice.
+   * Absent from older vaults.
    */
   local_ai?: boolean;
   /**
@@ -478,6 +482,26 @@ export interface CapabilityFeatures {
    * a document sensitive, never not. Absent from older vaults.
    */
   sensitive_documents?: boolean;
+  /**
+   * The AI reader set in Settings (0.9.0, AIR1): an owner sets the reader's
+   * kind, address, model, timeout and API key at Settings → Reading → AI
+   * reader — GET, PUT (step-up `change_ai_reader`) and DELETE
+   * /household/reading/ai-reader; POST /household/reading/ai-reader/test,
+   * which must pass before it is used, and /household/reading/ai-reader/models,
+   * both answered by the worker (GET /settings-checks/{id}: `ai_reader`,
+   * `ai_models`). The key is never returned, only `set` and its last four
+   * characters. Where the operator set FDV_LOCAL_AI_URL and
+   * FDV_LOCAL_AI_MODEL, they win and are shown locked (`source: 'env'`).
+   * Absent where the operator took it out of Settings
+   * (FDV_AI_READER_SETTINGS=off), and from older vaults.
+   */
+  ai_reader_settings?: boolean;
+  /**
+   * The kinds of reader this vault reads with (AIR1): `['ollama']` until
+   * Anthropic and OpenAI-compatible readers come (AIR3). Beside
+   * `ai_reader_settings`; absent from older vaults.
+   */
+  ai_reader_kinds?: AiReaderKind[];
 }
 
 export interface CapabilityLimits {

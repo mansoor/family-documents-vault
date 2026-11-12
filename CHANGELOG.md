@@ -6,6 +6,20 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.36] - 2026-11-13 — the AI reader set in Settings (AIR1)
+
+### Added
+
+- **Set the AI reader in Settings.** Settings → Reading has a new **The AI reader** card, for owners: the kind of reader (**Local (Ollama)** for now; Anthropic and OpenAI-compatible readers come in a later release), its address, the model, how many seconds one paper may take, an API key if it needs one, and the most papers a month (kept now, counted once the vault reads with cloud services). Changing it asks you to confirm it's you. Until now only whoever runs the server could set the reader, in `.env`.
+- **Test before it is used.** Saved, the reader waits for a **Test**: a one-line question of the vault's own — none of your papers — that says how long it took to answer and where it runs. No paper is sent to it until a Test passes, and changing its address, model or key waits for a new one. **Find its models** lists the models it has, by name, to pick one.
+- **Where it runs, said plainly.** Each reader is either **on your own network** or **a cloud service**: an address that resolves to a public one counts as a cloud service, and Settings says so in a warning. The card says exactly what the reader is sent — the words the vault read from each paper, never the page or the file, and the household's kinds of document and the family's names — and that whoever runs it may keep what it is sent. Where somebody adds papers many at a time, the note that the local AI reads them now names the kind of reader and where it runs.
+- **`.env` still wins.** Where whoever runs the server set `FDV_LOCAL_AI_URL` and `FDV_LOCAL_AI_MODEL`, Settings shows that reader, locked: "Set by whoever runs this server". `FDV_AI_READER_SETTINGS=off` (API and worker) takes the reader out of Settings altogether.
+
+### Security
+
+- An address typed in Settings is guarded as the mailbox's and SMS Gate's are, strictly: http or https and the address alone — no user name or password, path, query or fragment; resolved once a call and connected to at the address checked, never link-local (cloud metadata), "this network" or multicast; redirects and proxies never followed; only the reader's own paths called (`/api/chat` and `/api/tags` for Ollama). A reply that isn't the reader's own shape is a failure, and nothing a reader answers is ever shown back — so the reader can't be used to look at other machines on your network. A reader found to run on your own network is sent nothing if its address later resolves to a public one. On the hosted edition, only https to a public address.
+- The API key is encrypted under the master key, bound to the reader and address it was typed for — forgotten when the address changes, sent only as `Authorization: Bearer` to that reader — and never shown again, only that one is set and its last four characters. Rotating the master key and restoring a backup move it with the other secrets. Each change and each Test is in the activity log, and the other owners are emailed when the reader changes.
+
 ## [0.9.0-dev.35] - 2026-11-13 — a push address someone else holds is a plain refusal on PostgreSQL 16.16
 
 ### Fixed

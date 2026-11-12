@@ -2,6 +2,7 @@ export * from './master.js';
 export * from './master-rotation.js';
 export * from './mailbox-password.js';
 export * from './sms-password.js';
+export * from './ai-reader-key.js';
 export * from './share-link-copy.js';
 export * from './wrap.js';
 export * from './stream.js';

@@ -1,4 +1,5 @@
 import {
+  AI_READER_KINDS_OFFERED,
   API_VERSION,
   GUEST_MAX_DAYS,
   PRODUCT_ID,
@@ -28,6 +29,8 @@ export interface CapabilityConfig {
   mailIn?: boolean;
   /** The local AI reader (0.9.0, R4): a worker has one set up in .env, and said so lately. */
   localAi?: boolean;
+  /** The AI reader set in Settings (0.9.0, AIR1): FDV_AI_READER_SETTINGS is not off. */
+  aiReaderSettings?: boolean;
 }
 
 /**
@@ -200,6 +203,12 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0 (AIR2, the owner's ask of 12 Nov 2026): Sensitive, each kind's
       // default per household and each document's own choice.
       sensitive_documents: true,
+      // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
+      // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
+      // of reader this vault reads with — Ollama, until AIR3.
+      ...(config.aiReaderSettings === true
+        ? { ai_reader_settings: true, ai_reader_kinds: [...AI_READER_KINDS_OFFERED] }
+        : {}),
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

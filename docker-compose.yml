@@ -66,6 +66,9 @@ services:
       FDV_MAX_UPLOAD_BYTES: ${FDV_MAX_UPLOAD_BYTES:-}
       FDV_OFFLINE_MAX_DAYS: ${FDV_OFFLINE_MAX_DAYS:-}
       FDV_RATE_LIMIT_PER_MINUTE: ${FDV_RATE_LIMIT_PER_MINUTE:-}
+      # Whether owners may set the AI reader in Settings → Reading (on unless
+      # off). The worker has the same.
+      FDV_AI_READER_SETTINGS: ${FDV_AI_READER_SETTINGS:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - vault-data:/data
@@ -130,6 +133,9 @@ services:
       FDV_LOCAL_AI_URL: ${FDV_LOCAL_AI_URL:-}
       FDV_LOCAL_AI_MODEL: ${FDV_LOCAL_AI_MODEL:-}
       FDV_LOCAL_AI_TIMEOUT_SECONDS: ${FDV_LOCAL_AI_TIMEOUT_SECONDS:-}
+      # Or an owner sets the reader in Settings → Reading → AI reader, unless
+      # this is off; the two above win where they are set.
+      FDV_AI_READER_SETTINGS: ${FDV_AI_READER_SETTINGS:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - vault-data:/data

@@ -68,6 +68,26 @@ describe('the activity log, in sentences', () => {
     expect(said('removed')).toBe('Sarah took a tag off “Home insurance policy”');
   });
 
+  it('says the AI reader was changed, removed or tested, and where it runs, never its address or what it said (AIR1)', () => {
+    const say = (action: string, detail: Record<string, unknown>) =>
+      describeEvent(ev({ action, detail }))?.text;
+    expect(say('ai_reader.changed', { kind: 'ollama', runs_at: 'own_network' })).toBe(
+      'Sarah changed the AI reader, on your own network',
+    );
+    expect(say('ai_reader.changed', { kind: 'ollama', runs_at: 'cloud' })).toBe(
+      'Sarah changed the AI reader, a cloud service',
+    );
+    expect(say('ai_reader.changed', { removed: true })).toBe(
+      'Sarah removed the AI reader set in Settings',
+    );
+    expect(say('ai_reader.tested', { ok: true, runs_at: 'own_network' })).toBe(
+      'Sarah tested the AI reader, and it answered',
+    );
+    expect(say('ai_reader.tested', { ok: false, problem: 'bad_reply' })).toBe(
+      'Sarah tested the AI reader, and it did not answer',
+    );
+  });
+
   it('says who opened a shared link, since nobody signed in', () => {
     const line = describeEvent(
       ev({ action: 'share.opened', actor: null, actor_label: 'shared link (the letting agent)' }),
