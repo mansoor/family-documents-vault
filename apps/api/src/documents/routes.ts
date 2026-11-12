@@ -22,7 +22,7 @@ import type { PurgeService } from './purge.js';
 import type { LockService } from '../household/locks.js';
 import { NOTES_LIST_MAX, type DocumentService } from './service.js';
 import { TAG_LIST_MAX } from './tags.js';
-import { asLists, FILTER_VALUES_MAX, filtersOf } from './filters.js';
+import { asLists, FILTER_VALUES_MAX, filtersOf, NOT_A_PERSON } from './filters.js';
 import type { VisibilityService } from './visibility.js';
 import type { UploadRequestService } from '../uploads/requests.js';
 import {
@@ -54,6 +54,8 @@ const documentBody = z
     type_key: z.string().min(1).max(64).nullable(),
     title: z.string().max(200).nullable(),
     owner_member_id: z.string().uuid().nullable(),
+    // The household's (0.9.0): never with a person.
+    household_owned: z.boolean(),
     category: z.string().min(1).max(64).nullable(),
     visibility: z.enum(['household', 'adults', 'private']),
     issued: dateValue,
@@ -90,6 +92,7 @@ export const captureBody = documentBody
     type_key: true,
     title: true,
     owner_member_id: true,
+    household_owned: true,
     visibility: true,
     issued: true,
     expires: true,
@@ -406,18 +409,23 @@ export function registerDocuments(
   app.get('/api/v1/search', auth, async (req) => {
     const raw = parse(searchQuery, req.query);
     const { single, many } = filtersOf(raw);
-    if (single.member_id === 'none' || many.member_ids?.includes('none')) {
-      throw new ApiError(422, 'validation_failed', 'That is not a person in this vault.', {
-        detail: 'member_id',
-      });
+    // Not sure yet, and the household's (0.9.0): narrowed as any of several
+    // are, never as a person's id.
+    const person =
+      single.member_id !== undefined && NOT_A_PERSON.includes(single.member_id)
+        ? undefined
+        : single.member_id;
+    const filters = asLists(single, many);
+    if (single.member_id !== undefined && person === undefined) {
+      filters.member_ids = [single.member_id];
     }
     return docs.search(principal(req), {
       q: raw.q,
       issued_by: raw.issued_by,
       limit: raw.limit,
-      member_id: single.member_id,
+      member_id: person,
       category: single.category,
-      filters: asLists(single, many),
+      filters,
     });
   });
 

@@ -8,6 +8,8 @@ import {
   seesLocation,
   type CoreField,
   type VersionView,
+  NOT_SURE_YET,
+  THE_HOUSEHOLD,
 } from '@fdv/shared';
 import { Fragment, useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router';
@@ -356,7 +358,14 @@ export function DocumentScreen() {
         <dt>Type</dt>
         <dd>{type?.label ?? 'Not set'}</dd>
         <dt>Person</dt>
-        <dd>{owner?.display_name ?? 'Not set'}</dd>
+        <dd>
+          {owner?.display_name ??
+            (doc.household_owned === true
+              ? THE_HOUSEHOLD
+              : doc.household_owned === false
+                ? NOT_SURE_YET
+                : 'Not set')}
+        </dd>
         {doc.issued_by && (
           <>
             {/* The type's own word for it: "Institution", "Insurer"… */}

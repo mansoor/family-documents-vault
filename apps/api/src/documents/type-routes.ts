@@ -59,6 +59,8 @@ const typeBody = z
     remind_leads: leads,
     default_visibility: z.enum(['household', 'adults', 'private']),
     usually_essential: z.boolean(),
+    // Whom its documents usually belong to (0.9.0): a new one follows it.
+    belongs_to: z.enum(['person', 'household']),
     hidden: z.boolean(),
   })
   .partial()

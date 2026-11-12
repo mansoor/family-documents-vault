@@ -451,6 +451,8 @@ export interface FakeState {
   checksAsked?: Array<{ kind: string; path: string | null }>;
   /** The bodies the mailbox was saved with (PUT /mail-in/mailbox), in order. */
   mailboxSaves?: Array<Record<string, unknown>>;
+  /** The household as whose a document is, and whom a kind belongs to (0.9.0): said when true. */
+  householdOwner?: boolean;
   /**
    * Text messages (0.9.0, SMS1): said when a test gives them. `settings` is
    * what GET /sms/settings answers (null: not set up); `test` what a test
@@ -1202,6 +1204,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.sms ? { sms_texts: true } : {}),
           // Notifications by text (0.9.0, SMS2): with them, unless a test is an older vault.
           ...(state.sms && state.smsNotifications !== false ? { sms_notifications: true } : {}),
+          // The household as whose a document is (0.9.0): said when a test asks.
+          ...(state.householdOwner ? { household_owner: true } : {}),
           // A computer that sends scans (0.8.0, D1): said when a test gives computers.
           ...(state.computers ? { device_uploads: true } : {}),
           // Tags you can use (0.9.0, T1): said when a test gives them.
@@ -4713,6 +4717,7 @@ export function installFakeApi(state: FakeState) {
         type_key: (metadata?.type_key as string | undefined) ?? null,
         title: (metadata?.title as string | undefined) ?? null,
         owner_member_id: (metadata?.owner_member_id as string | undefined) ?? null,
+        household_owned: metadata?.household_owned === true,
         issued_by: (metadata?.issued_by as string | undefined) ?? null,
         visibility: (metadata?.visibility as string | undefined) ?? 'household',
         notes: (metadata?.notes as string | undefined) ?? null,
@@ -5034,6 +5039,9 @@ export function installFakeApi(state: FakeState) {
         }
         // Details merge, and null takes one away (0.5.7).
         const change = { ...edit };
+        // A person clears the household; the household, the person (0.9.0).
+        if (typeof change.owner_member_id === 'string') change.household_owned = false;
+        if (change.household_owned === true) change.owner_member_id = null;
         if (change.extra && typeof change.extra === 'object') {
           const merged = { ...((doc.extra as Record<string, unknown> | undefined) ?? {}) };
           for (const [k, v] of Object.entries(change.extra)) {
@@ -5910,7 +5918,9 @@ function documentTable(
     )
     .filter((d) => {
       const person = want('member_id');
-      if (person === 'none') return !d.owner_member_id;
+      // Not sure yet, and the household's (0.9.0).
+      if (person === 'none') return !d.owner_member_id && d.household_owned !== true;
+      if (person === 'household') return d.household_owned === true;
       return !person || d.owner_member_id === person;
     })
     .filter((d) => !want('type_key') || d.type_key === want('type_key'))
@@ -6027,7 +6037,15 @@ function changedKind(
   made: boolean,
 ): { kind: Record<string, unknown> } | { problem: ReminderProblem } {
   const next: Record<string, unknown> = { ...kind };
-  for (const k of ['label', 'category', 'default_visibility', 'usually_essential', 'hidden']) {
+  for (const k of [
+    'label',
+    'category',
+    'default_visibility',
+    'usually_essential',
+    'hidden',
+    // Whom a new one belongs to (0.9.0).
+    'belongs_to',
+  ]) {
     if (change[k] !== undefined) next[k] = change[k];
   }
   type Rule = { shown?: boolean; required?: boolean; label?: string | null };
@@ -6044,16 +6062,19 @@ function changedKind(
   if (core.issued_by?.label !== undefined) next.issued_by_label = core.issued_by.label;
   if (Array.isArray(change.fields)) {
     const had = (kind.fields ?? []) as Array<Record<string, unknown>>;
-    next.fields = (change.fields as Array<{ key: string; required?: boolean }>).map((f) => {
-      const was = had.find((x) => x.key === f.key);
-      const lib = library.find((a) => a.key === f.key);
-      return {
-        key: f.key,
-        label: was?.label ?? lib?.label ?? f.key,
-        kind: was?.kind ?? lib?.kind ?? 'text',
-        required: f.required ?? false,
-      };
-    });
+    next.fields = (change.fields as Array<{ key: string; required?: boolean; label?: string }>).map(
+      (f) => {
+        const was = had.find((x) => x.key === f.key);
+        const lib = library.find((a) => a.key === f.key);
+        return {
+          key: f.key,
+          // Its name as sent, else the kind's, else the library's (fieldsFor).
+          label: f.label?.trim() || was?.label || lib?.label || f.key,
+          kind: was?.kind ?? lib?.kind ?? 'text',
+          required: f.required ?? false,
+        };
+      },
+    );
   }
   // What it reminds from, worked out on the kind as it will be.
   const view = kind as unknown as DocumentTypeView;

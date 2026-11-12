@@ -997,7 +997,17 @@ export interface FamilyTimeZone {
 export interface DocumentInput {
   type_key?: string | null;
   title?: string | null;
+  /** A person: the household's no longer (0.9.0). Null alone leaves `household_owned` as it is. */
   owner_member_id?: string | null;
+  /**
+   * The household's (0.9.0, `features.household_owner`): true clears the
+   * person; false makes it Not sure yet unless a person is sent. Left out,
+   * a new document of a household's kind is the household's, and an edit
+   * keeps it as it is — so an older client's `owner_member_id: null` never
+   * turns a household's document into Not sure yet. Send only to a vault
+   * that says `household_owner`; true with a person is refused (422).
+   */
+  household_owned?: boolean;
   category?: string | null;
   visibility?: Visibility;
   issued?: DateValue | null;
@@ -1041,6 +1051,8 @@ export interface SearchHit {
   type_key: string | null;
   category: string | null;
   owner_member_id: string | null;
+  /** The household's (0.9.0, `features.household_owner`); absent from older vaults. */
+  household_owned?: boolean;
   status: DocumentView['status'];
   /** Who issued it, and when (0.4.10): "Bank statement · Barclays · Sep 2026". */
   issued_by?: string | null;

@@ -2,6 +2,7 @@ import {
   autoTitle,
   batchVisibility,
   can,
+  expiryReadInto,
   formatDate,
   LEVEL_WORDS,
   SENDER_NOT_VERIFIED,
@@ -28,7 +29,8 @@ import { useUploads } from '../batch-store.js';
 import { PageViewer } from '../page-viewer.js';
 import { storedRole } from '../session.js';
 import { ConfirmDialog, ErrorNote, TopBar } from '../ui.js';
-import { captureDetails, ConfirmForm } from './AddConfirm.js';
+import { detailInputs } from '../details.js';
+import { captureDetails, ConfirmForm, startingOwner } from './AddConfirm.js';
 import {
   addable,
   batchLabel,
@@ -402,12 +404,15 @@ export function BatchItemScreen() {
       : null;
   const type = types.find((t) => t.key === (p ? p.type_key?.value : d.type_key));
   // A batch made Only me is the uploader's own: whose these are is them.
-  const owner =
+  const person =
     role === 'teen'
       ? (me?.id ?? '')
       : p
         ? (p.owner_member_id?.value ?? (d.visibility === 'private' ? (me?.id ?? '') : ''))
         : (d.owner_member_id ?? (d.visibility === 'private' ? (me?.id ?? '') : ''));
+  // Nobody said, of a kind that is usually the household's: the household's (0.9.0).
+  const owner =
+    person === '' ? startingOwner(type, '', caps?.features.household_owner === true) : person;
   const startVisibility = (t: DocumentTypeView | undefined, o: string) => {
     // Somebody else's, chosen on the card, from a batch made Only me: Only
     // me is not for them, so the narrowest left, shown before accepting.
@@ -417,6 +422,13 @@ export function BatchItemScreen() {
     return batchVisibility({ chosen: d.visibility, type: t ?? null, role, owner: o, me: me?.id });
   };
   const issuer = p?.issued_by?.value ?? '';
+  // An expiry read for a kind that keeps it as a date of its own — a bill's
+  // Due date (0.9.0) — starts that date, as Accept all Ready files it.
+  const into = expiryReadInto(type);
+  const dated =
+    into && into !== 'expires' && p?.expires
+      ? detailInputs({ [into]: p.expires.value }, type?.fields ?? [])
+      : {};
   const dup = item.duplicate ? dupWords(item) : null;
   // Probably the same paper, or its renewal (S1): documents of theirs to add it to, best first.
   const renewals =
@@ -591,6 +603,9 @@ export function BatchItemScreen() {
                     })
                   : ''),
               owner,
+              // Nobody said: the kind's guess, which another kind moves (0.9.0).
+              ownerDefaulted: person === '',
+              personDefault: person,
               issuer,
               issued: p?.issued ? formatDate(p.issued.value) : '',
               expires: p?.expires ? formatDate(p.expires.value) : '',
@@ -599,7 +614,7 @@ export function BatchItemScreen() {
               // Never wider than the batch chose; narrower where its kind usually is.
               visibility: p?.visibility.value ?? startVisibility(type, owner),
               notes: '',
-              details: {},
+              details: dated,
             }}
             startVisibility={startVisibility}
             {...(p

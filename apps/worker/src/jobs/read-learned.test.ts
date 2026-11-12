@@ -421,6 +421,9 @@ describe.skipIf(!testAdminUrl())('an item read with its uploader’s own rules (
       label: t.label,
       default_visibility: t.default_visibility,
       expiry_driver: t.expiry_driver,
+      // As typeView gives them (0.9.0): a bill's Due date, and whom it belongs to.
+      remind_from: t.remind_from,
+      belongs_to: t.belongs_to,
       core: t.core as NonNullable<LevelKind['core']>,
       fields: ((t.fields ?? []) as TypeField[]).map((f) => ({
         ...f,
@@ -486,7 +489,14 @@ describe.skipIf(!testAdminUrl())('an item read with its uploader’s own rules (
         if (l.level === 'ready') {
           const kind = l.proposals?.type_key?.value;
           const owner = l.proposals?.owner_member_id?.value;
-          if (kind !== f.truth.type_key || owner !== byFixtureId[f.truth.owner ?? '']) {
+          // Nobody, for a kind that is usually the household's: filed as the
+          // household's (0.9.0), which is no wrong person.
+          const household =
+            owner === undefined && types.find((t) => t.key === kind)?.belongs_to === 'household';
+          if (
+            kind !== f.truth.type_key ||
+            (owner !== byFixtureId[f.truth.owner ?? ''] && !household)
+          ) {
             wrongReady.push(`${name}: ${f.name}`);
           }
         }
@@ -577,13 +587,15 @@ describe.skipIf(!testAdminUrl())('an item read with its uploader’s own rules (
       unchanged,
       council,
     }).toEqual({
+      // Each council's letter, read with no person, is a bill: the
+      // household's since 0.9.0, never "Missing: whose it is" — Ready.
       before: {
-        tuned: { ready: 13, check: 7, unrecognised: 2, problem: 0 },
-        'held out': { ready: 9, check: 3, unrecognised: 2, problem: 0 },
-      },
-      filedOnly: {
         tuned: { ready: 14, check: 6, unrecognised: 2, problem: 0 },
         'held out': { ready: 10, check: 2, unrecognised: 2, problem: 0 },
+      },
+      filedOnly: {
+        tuned: { ready: 15, check: 5, unrecognised: 2, problem: 0 },
+        'held out': { ready: 11, check: 1, unrecognised: 2, problem: 0 },
       },
       // Learned once and twice: each council's letters are Granny Ruth's — a
       // rule not sure yet, so they stay Check ("Person unsure").

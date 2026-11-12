@@ -1,4 +1,5 @@
 import {
+  belongsTo,
   can,
   CATEGORY_LABELS,
   categoryLabel,
@@ -17,6 +18,7 @@ import {
   reminderWord,
   widensVisibility,
   type AttributeKind,
+  type BelongsTo,
   type CoreField,
   type CoreFieldRule,
   type DocumentAttributeView,
@@ -27,6 +29,7 @@ import {
   type ReminderWords,
   type Visibility,
   NOTE_KIND,
+  THE_HOUSEHOLD,
 } from '@fdv/shared';
 import { Children, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
@@ -72,14 +75,20 @@ const LOCKED: ReadonlyArray<{ id: string; name: string; why: string }> = [
 ];
 
 /** The fixed fields a kind may ask for, in the editor's order, in the app's own words. */
-const OPTIONAL: ReadonlyArray<{ field: CoreField; word: string; renamable?: boolean }> = [
-  { field: 'issued_by', word: 'Issued by', renamable: true },
-  { field: 'identifier', word: 'Number', renamable: true },
+const OPTIONAL: ReadonlyArray<{ field: CoreField; word: string }> = [
+  { field: 'issued_by', word: 'Issued by' },
+  { field: 'identifier', word: 'Number' },
   { field: 'issued', word: 'Issued' },
   { field: 'expires', word: 'Expires' },
   { field: 'physical_location', word: 'Where the original is' },
   { field: 'tags', word: 'Tags' },
   { field: 'notes', word: 'Notes' },
+];
+
+/** Whom a new one usually belongs to (0.9.0), in the editor's words. */
+const BELONGS_WORDS: ReadonlyArray<[BelongsTo, string]> = [
+  ['person', 'A person'],
+  ['household', THE_HOUSEHOLD],
 ];
 
 /** The fixed fields in the order the card asks them, for the preview. */
@@ -344,7 +353,17 @@ interface Draft {
    * the family chose. The date reminders come from is required whatever
    * they chose (`asked`).
    */
-  fields: Array<{ key: string; required: boolean }>;
+  fields: Array<{
+    key: string;
+    required: boolean;
+    /**
+     * Its name on this kind's card, renamed here (0.9.0): left out, as the
+     * kind has it. The library's own word puts it back.
+     */
+    label?: string;
+  }>;
+  /** Whom a new one usually belongs to (0.9.0, `features.household_owner`). */
+  belongsTo: BelongsTo;
   /**
    * Lead times, in days. Without `features.reminder_dates`, Expires's, as
    * before. With it, those of the date reminders come from — or, while none
@@ -401,6 +420,7 @@ function draftOf(kind: DocumentTypeView | null, dated: boolean): Draft {
     chosenLeads: undefined,
     visibility: kind?.default_visibility ?? 'household',
     essential: kind?.usually_essential ?? false,
+    belongsTo: belongsTo(kind),
   };
 }
 
@@ -419,8 +439,6 @@ function asked(d: Draft): Draft['fields'] {
     ? d.fields
     : d.fields.map((f) => (f.key === from ? { ...f, required: true } : f));
 }
-
-const RENAMABLE = new Set<CoreField>(OPTIONAL.filter((o) => o.renamable).map((o) => o.field));
 
 const tidy = (s: string | null) => s?.trim().replace(/\s+/g, ' ') || null;
 
@@ -443,13 +461,19 @@ function ruleOut(
   f: CoreField,
   r: CoreFieldRule,
 ): Pick<CoreFieldRule, 'shown'> & Partial<CoreFieldRule> {
-  if (f === 'expires') return { shown: r.shown };
-  return {
-    shown: r.shown,
-    required: r.shown && r.required,
-    ...(RENAMABLE.has(f) ? { label: tidy(r.label) } : {}),
-  };
+  // Every fixed field can be renamed (0.9.0): null is the app's own word.
+  if (f === 'expires') return { shown: r.shown, label: tidy(r.label) };
+  return { shown: r.shown, required: r.shown && r.required, label: tidy(r.label) };
 }
+
+/** The kind's own fields as the vault takes them: a name only where one was given here. */
+const fieldsOut = (fields: Draft['fields']): NonNullable<DocumentTypeInput['fields']> =>
+  fields.map((f) => ({
+    key: f.key,
+    required: f.required,
+    // A box left empty changes nothing: the kind keeps its word.
+    ...(tidy(f.label ?? null) ? { label: tidy(f.label ?? null) as string } : {}),
+  }));
 
 /**
  * What reminds, as the vault takes it (5.16b): `remind_from` and its lead
@@ -483,7 +507,7 @@ function createBody(d: Draft, dated: boolean): DocumentTypeInput {
     label: tidy(d.label) ?? '',
     category: d.category,
     core: Object.fromEntries(CORE_FIELDS.map((f) => [f, ruleOut(f, d.core[f])])),
-    fields: asked(d).map((f) => ({ key: f.key, required: f.required })),
+    fields: fieldsOut(asked(d)),
     ...(dated
       ? reminds
         ? { remind_from: d.from, remind_leads: leadTimes(d.leads) }
@@ -493,6 +517,8 @@ function createBody(d: Draft, dated: boolean): DocumentTypeInput {
         : {}),
     default_visibility: d.visibility,
     usually_essential: d.essential,
+    // A person's, as every kind was, says nothing: an older vault takes it.
+    ...(d.belongsTo === 'household' ? { belongs_to: d.belongsTo } : {}),
   };
 }
 
@@ -518,12 +544,13 @@ function changeBody(kind: DocumentTypeView, d: Draft, dated: boolean): DocumentT
   if (Object.keys(core).length > 0) body.core = core;
   const fields = asked(d);
   if (JSON.stringify(fields) !== JSON.stringify(before.fields)) {
-    body.fields = fields.map((f) => ({ key: f.key, required: f.required }));
+    body.fields = fieldsOut(fields);
   }
   if (dated) Object.assign(body, remindChange(kind, d));
   else if (d.core.expires.shown && !sameLeads(d.leads, before.leads)) body.reminder_leads = d.leads;
   if (d.visibility !== before.visibility) body.default_visibility = d.visibility;
   if (d.essential !== before.essential) body.usually_essential = d.essential;
+  if (d.belongsTo !== before.belongsTo) body.belongs_to = d.belongsTo;
   return body;
 }
 
@@ -597,6 +624,8 @@ function KindEditor(props: {
   // Reminders from any date, with a section of their own (5.16b). A vault
   // without them keeps today's editor: the chips under Expires.
   const dated = caps?.features.reminder_dates === true;
+  // Whom a new one belongs to, the household's or a person's (0.9.0).
+  const householdOffered = caps?.features.household_owner === true;
   // The draft, the library a field added here joins, and what the editor
   // just did to the reminders by itself, said as it happens: one state, so
   // every change is made to the latest of all three, even one landing after
@@ -653,6 +682,37 @@ function KindEditor(props: {
       kind: had?.kind ?? known?.kind ?? 'text',
     };
   };
+
+  // ---- Rename (0.9.0): every field, in the kind's words or the app's own ----
+
+  /** Fields whose Rename was ticked here, their box open even while it is empty. */
+  const [renaming, setRenaming] = useState<ReadonlySet<string>>(() => new Set());
+  const renamingOn = (id: string, on: boolean) =>
+    setRenaming((was) => {
+      const next = new Set(was);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  /** A detail's own word: the library's. */
+  const libraryWord = (key: string) => library.find((a) => a.key === key)?.label ?? key;
+  /** A detail's name on this card now: as renamed here, or as the kind has it. */
+  const fieldName = (key: string) =>
+    draft.fields.find((f) => f.key === key)?.label ?? fieldOf(key).label;
+  const coreRenamed = (f: CoreField) => renaming.has(`core:${f}`) || draft.core[f].label !== null;
+  const fieldRenamed = (key: string) =>
+    renaming.has(`field:${key}`) || fieldName(key) !== libraryWord(key);
+  /** A detail renamed: kept only where it differs from what the kind has now. */
+  const setFieldLabel = (key: string, label: string) =>
+    edit((d) => ({
+      ...d,
+      fields: d.fields.map((f) => {
+        if (f.key !== key) return f;
+        const { label: _was, ...rest } = f;
+        void _was;
+        return label === fieldOf(key).label ? rest : { ...rest, label };
+      }),
+    }));
 
   // ---- reminders from any date (5.16b), by the vault's own rules ----
 
@@ -789,7 +849,7 @@ function KindEditor(props: {
         ? d.fields.filter((f) => f.key !== key)
         : at < 0
           ? [...d.fields, { key, required }]
-          : d.fields.map((f) => (f.key === key ? { key, required } : f)),
+          : d.fields.map((f) => (f.key === key ? { ...f, required } : f)),
     };
   };
 
@@ -1055,7 +1115,7 @@ function KindEditor(props: {
           {LOCKED.map((l) => (
             <FieldRow key={l.id} id={`k-${l.id}`} name={l.name} why={l.why} locked />
           ))}
-          {OPTIONAL.map(({ field, renamable }) => (
+          {OPTIONAL.map(({ field }) => (
             <FieldRow
               key={field}
               id={`k-${field}`}
@@ -1065,8 +1125,14 @@ function KindEditor(props: {
               requiredOffered={field !== 'expires'}
               onShown={(shown) => setRule(field, { shown })}
               onRequired={(required) => setRule(field, { required })}
+              renamed={coreRenamed(field)}
+              onRenamed={(on) => {
+                renamingOn(`core:${field}`, on);
+                // Unticked, the app's own word again.
+                if (!on) setRule(field, { label: null });
+              }}
             >
-              {renamable && (
+              {coreRenamed(field) && (
                 <Field
                   id={`k-${field}-label`}
                   label="What the card calls it"
@@ -1129,7 +1195,24 @@ function KindEditor(props: {
                 requiredLocked={reminds === key ? ALWAYS_ASKED : undefined}
                 onShown={(shown) => setField(key, shown, false)}
                 onRequired={(required) => setField(key, true, required)}
-              />
+                renamed={fieldRenamed(key)}
+                onRenamed={(on) => {
+                  renamingOn(`field:${key}`, on);
+                  // Unticked, the library's own word again.
+                  if (!on) setFieldLabel(key, libraryWord(key));
+                }}
+              >
+                {fieldRenamed(key) && (
+                  <Field
+                    id={`k-f-${key}-label`}
+                    label="What the card calls it"
+                    value={fieldName(key)}
+                    onChange={(label) => setFieldLabel(key, label)}
+                    required={false}
+                    placeholder={libraryWord(key)}
+                  />
+                )}
+              </FieldRow>
             );
           })}
         </ul>
@@ -1245,6 +1328,31 @@ function KindEditor(props: {
             </span>
           )}
         </div>
+        {householdOffered && (
+          <div className="field" role="group" aria-labelledby="k-belongs-l">
+            <span id="k-belongs-l" className="field-label">
+              Usually belongs to
+            </span>
+            <div className="pills">
+              {BELONGS_WORDS.map(([v, words]) => (
+                <button
+                  key={v}
+                  type="button"
+                  className={`pill${draft.belongsTo === v ? ' pill-on' : ''}`}
+                  aria-pressed={draft.belongsTo === v}
+                  onClick={() => edit((d) => ({ ...d, belongsTo: v }))}
+                >
+                  {words}
+                </button>
+              ))}
+            </div>
+            <span className="muted">
+              {draft.belongsTo === 'household'
+                ? 'A new one is the household’s, so it never waits for a person. Whoever files it can choose somebody instead.'
+                : 'A new one is somebody’s: whoever files it chooses who, or leaves it Not sure yet.'}
+            </span>
+          </div>
+        )}
         <div className="check">
           <input
             id="k-essential"
@@ -1265,7 +1373,7 @@ function KindEditor(props: {
         label={builtin ? (kind?.label ?? '') : draft.label}
         draft={draft}
         cardName={cardName}
-        fieldOf={fieldOf}
+        fieldOf={(key) => ({ label: tidy(fieldName(key)) ?? fieldOf(key).label })}
         reminder={dated ? cardPromise : expires.shown ? reminder : null}
         remindAt={dated ? reminds : null}
         {...(kind ? { kindKey: kind.key } : {})}
@@ -1353,6 +1461,12 @@ function FieldRow(props: {
   requiredLocked?: string | undefined;
   onShown?: (shown: boolean) => void;
   onRequired?: (required: boolean) => void;
+  /**
+   * Called something of the kind's own (0.9.0): ticked, its name box shows
+   * (the children); unticked, the app's own word. Offered on a shown field.
+   */
+  renamed?: boolean;
+  onRenamed?: (renamed: boolean) => void;
   children?: ReactNode;
 }) {
   const shown = props.locked === true || props.shown === true;
@@ -1397,6 +1511,18 @@ function FieldRow(props: {
                 onChange={(e) => lockedWhy === undefined && props.onRequired?.(e.target.checked)}
               />
               <label htmlFor={`${props.id}-required`}>Required</label>
+            </div>
+          )}
+          {/* Rename, like Required, only on a shown field. */}
+          {!props.locked && shown && props.onRenamed && (
+            <div className="check">
+              <input
+                id={`${props.id}-rename`}
+                type="checkbox"
+                checked={props.renamed === true}
+                onChange={(e) => props.onRenamed?.(e.target.checked)}
+              />
+              <label htmlFor={`${props.id}-rename`}>Rename</label>
             </div>
           )}
         </div>

@@ -276,10 +276,13 @@ describe.skipIf(!testAdminUrl())('migration 0038: reminders from any date', () =
       let was = before.get(hh) as EffectiveType[];
       // The kinds there were: later releases add their own (0072, 0077).
       const all = (await kinds(hh)).filter((t) => was.some((w) => w.key === t.key));
-      // The columns 0038 appends aside, every row is as it was, byte for byte…
+      // The columns 0038 appends aside (and 0087's, whom it belongs to),
+      // every row is as it was, byte for byte…
       const old = (t: EffectiveType) =>
         Object.fromEntries(
-          Object.entries(t).filter(([k]) => k !== 'remind_from' && k !== 'remind_leads'),
+          Object.entries(t).filter(
+            ([k]) => k !== 'remind_from' && k !== 'remind_leads' && k !== 'belongs_to',
+          ),
         );
       // …but the bank's own kind, which 0077 calls what it is ("Bank
       // statement", investment statements being their own): its label and
@@ -291,13 +294,17 @@ describe.skipIf(!testAdminUrl())('migration 0038: reminders from any date', () =
       expect({ ...old(nowBank), label: wasBank.label, updated_at: wasBank.updated_at }).toEqual(
         wasBank,
       );
-      const now = all.filter((t) => t.key !== 'bank_statement');
-      was = was.filter((t) => t.key !== 'bank_statement');
+      // …and those 0087 made the household's (and the bill a bill, with a
+      // Due date): their own test is household-owner-migration.test.ts.
+      const later = ['bank_statement', 'utility_bill', 'property_deed', 'pet_record'];
+      const now = all.filter((t) => !later.includes(t.key));
+      was = was.filter((t) => !later.includes(t.key));
       expect(now.map(old)).toEqual(was);
       expect(Object.keys(now[0] ?? {})).toEqual([
         ...Object.keys(was[0] ?? {}),
         'remind_from',
         'remind_leads',
+        'belongs_to',
       ]);
       // …and so is every ETag: nobody is asked to load a kind again.
       expect(now.map(typeEtag)).toEqual(was.map(typeEtag));
@@ -311,7 +318,8 @@ describe.skipIf(!testAdminUrl())('migration 0038: reminders from any date', () =
         remind_leads: t.remind_leads,
       };
     // As shipped: a passport nine and six months before; the Will on its
-    // review day; a bill 7 days and 1 day before; a birth certificate never.
+    // review day; a bill 7 days and 1 day before (its Due date since 0087);
+    // a birth certificate never.
     expect(says(await kind(plain, 'passport'))).toEqual({
       expiry_driver: 'expires_on',
       reminder_leads: [270, 180],
@@ -325,8 +333,8 @@ describe.skipIf(!testAdminUrl())('migration 0038: reminders from any date', () =
       remind_leads: [0],
     });
     expect(says(await kind(plain, 'utility_bill'))).toMatchObject({
-      reminder_leads: [7, 1],
-      remind_from: 'expires',
+      remind_leads: [7, 1],
+      remind_from: 'due_date',
     });
     expect(says(await kind(plain, 'birth_certificate'))).toEqual({
       expiry_driver: null,

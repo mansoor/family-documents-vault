@@ -130,6 +130,8 @@ describe('buildCapabilities', () => {
       share_reveal: true,
       // SMS2 (0.9.0): reminders, alerts and a link opened, by text, as each person asks.
       sms_notifications: true,
+      // 0.9.0: the household as a document's owner, and each kind's belongs_to.
+      household_owner: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

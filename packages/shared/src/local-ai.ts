@@ -1,5 +1,5 @@
 import type { BatchTag, ItemProposals, ItemSuggestion, LevelKind } from './batch-levels.js';
-import type { DateValue } from './documents.js';
+import { expiryReadInto, type DateValue } from './documents.js';
 import { NOTE_KIND } from './notes.js';
 import { pageText, type ProposalContext } from './proposals.js';
 import type { Role } from './roles.js';
@@ -768,10 +768,13 @@ export function applyLocalAi(x: {
   // that kind (or where it named none), and only where the kind shows them.
   const kind = x.kindOf(out.type_key?.value);
   const forKind = !f.type_key || (aiKind !== null && aiKind === out.type_key?.value);
+  // A bill's Due date takes what is read as its expiry (0.9.0).
+  const into = expiryReadInto(kind);
   const shows = (field: 'issued' | 'expires' | 'identifier' | 'issued_by') =>
     !!kind &&
-    (kind.core as Record<string, { shown?: boolean }> | undefined)?.[field]?.shown !== false &&
-    (field !== 'expires' || kind.expiry_driver !== null);
+    ((field === 'expires' && into !== null && into !== 'expires') ||
+      ((kind.core as Record<string, { shown?: boolean }> | undefined)?.[field]?.shown !== false &&
+        (field !== 'expires' || kind.expiry_driver !== null)));
   for (const field of ['issued', 'expires'] as const) {
     const v = f[field];
     if (!v) continue;

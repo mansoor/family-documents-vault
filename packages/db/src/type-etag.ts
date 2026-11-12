@@ -16,7 +16,8 @@ export type EffectiveType = Selectable<Schema['effective_document_type']>;
  * The date it reminds from (0038) is in it only when that is a date field:
  * a kind reminding from Expires, or from nothing, says what `expiry_driver`
  * and `reminder_leads` already said, so every kind kept its ETag at the
- * upgrade and nobody was asked to load it again.
+ * upgrade and nobody was asked to load it again. Whom it belongs to
+ * (0087) likewise, only when that is the household.
  */
 export function typeEtag(t: EffectiveType): string {
   const seed = JSON.stringify([
@@ -37,6 +38,8 @@ export function typeEtag(t: EffectiveType): string {
     t.updated_at ? new Date(t.updated_at).toISOString() : null,
     // Absent from a row read before 0038, as null: the same ETag.
     ...(t.remind_from && t.remind_from !== 'expires' ? [t.remind_from, t.remind_leads] : []),
+    // Absent before 0087, and a person's kind as every kind was: the same ETag.
+    ...(t.belongs_to === 'household' ? ['household'] : []),
   ]);
   return `"${createHash('sha256').update(seed).digest('hex').slice(0, 16)}"`;
 }

@@ -6,6 +6,19 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.32] - 2026-11-12 — The household, and what each kind usually belongs to
+
+### Added
+
+- **The household as a document's owner.** "Whose it is" now has three answers: **The household**, a person, or **Not sure yet**. A gas bill, the deeds or the pet's records can be the household's, and only Not sure yet reads **Needs a person** — so household bills no longer nag, and the needs-info counts and alerts follow. The Documents filters and search offer **The household** and **Not sure yet** beside each person. Choosing a person takes a document off the household, and an older phone that saves a household's document without a person keeps it the household's. (The owner's decisions of 11 Nov 2026.)
+- **Each kind says whom it usually belongs to.** In **Kinds of document**, every kind — built-in or your own — has **Usually belongs to**: A person, or The household. A new document of a household's kind starts as The household's (on the web's add card, the phone, a batch and the Inbox); a person's kind starts as before. The built-ins that are the home's: **Utility / bill**, **Property deed / lease** and **Pet records**. Documents of those kinds already filed with nobody chosen become the household's at the upgrade.
+- **Rename any field of a kind.** Each field row in Kinds of document has **Rename** beside Show and Required: tick it to give the field your own name on the card, untick it to go back to the app's own word. Every fixed field (Number, Issued by, Issued, Expires, Where the original is, Tags, Notes) and every field of the kind's own — a built-in's too, for your household only.
+
+### Changed
+
+- **A Utility / bill has a Due date.** The bill asks for a **Due date** instead of Expires, and reminds 7 days and 1 day before it, as Expires did; **Amount** is now **Bill amount**. Every bill's expiry date moves to its due date at the upgrade, and its reminders with it — none lost, none sent twice. A household that changed the bill keeps its changes: one that switched Expires on keeps it; one that gave the bill its own fields keeps them, with a Due date added.
+- **Editing a document no longer makes it yours.** On the web, a document with nobody chosen opened as the signed-in person's, and saving it gave it to them. It now opens as The household or Not sure yet, as it is.
+
 ## [0.9.0-dev.31] - 2026-11-12 — notifications by text (SMS2)
 
 ### Added

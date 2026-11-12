@@ -12,6 +12,7 @@ import type { Db } from '@fdv/db';
 import {
   ACCEPT_UNDO_MINUTES,
   correctionsOf,
+  expiryReadInto,
   familyWords,
   lessonIssuer,
   learningOf,
@@ -30,11 +31,13 @@ import {
   withoutNames,
   type BatchLearning,
   type CaptureMetadata,
+  type DateValue,
   type ItemProposals,
   type KeptShape,
   type LearnedShapeView,
   type PaperReading,
   type ShapeTaught,
+  type TypeField,
 } from '@fdv/shared';
 import { sql } from 'kysely';
 import type { Principal } from '../auth/service.js';
@@ -434,7 +437,7 @@ export async function learnFromAccept(
   const kind = x.filed.type_key
     ? ((await trx
         .selectFrom('effective_document_type')
-        .select(['core', 'expiry_driver'])
+        .select(['core', 'expiry_driver', 'remind_from', 'fields'])
         .where('key', '=', x.filed.type_key)
         .where('deleted_at', 'is', null)
         .executeTakeFirst()) ?? null)
@@ -450,14 +453,29 @@ export async function learnFromAccept(
         expiry_driver: string | null;
       } | null,
     }).length === 0;
+  // A kind that keeps the date the pages call an expiry as one of its own —
+  // a bill's Due date (0.9.0) — learns its label as the expiry's.
+  const into = kind
+    ? expiryReadInto({
+        expiry_driver: kind.expiry_driver,
+        remind_from: kind.remind_from,
+        fields: (kind.fields ?? []) as TypeField[],
+      })
+    : null;
+  const dated = into && into !== 'expires' ? into : null;
+  const due = dated ? x.filed.extra?.[dated] : undefined;
+  const filed =
+    dated && x.filed.expires == null && due && typeof due === 'object'
+      ? { ...x.filed, expires: due as DateValue }
+      : x.filed;
   const shapeTaught =
     x.shapes && kind
       ? await learnShape(trx, p, x.shapes.store, {
           paper: x.shapes.paper,
-          filed: x.filed,
+          filed,
           keeps: {
             issued: core.issued?.shown !== false,
-            expires: kind.expiry_driver !== null && core.expires?.shown !== false,
+            expires: (kind.expiry_driver !== null && core.expires?.shown !== false) || !!dated,
             identifier: core.identifier?.shown !== false,
           },
           itemId: x.itemId,

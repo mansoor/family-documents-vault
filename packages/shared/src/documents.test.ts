@@ -67,6 +67,19 @@ describe('deriveStatus', () => {
       'Needs an expiry date',
     );
   });
+  it('the household’s needs nobody; only Not sure yet needs a person (0.9.0)', () => {
+    const at = { date: '2030-01-01', precision: 'day' as const };
+    const household = { type: passport, owner_member_id: null, household_owned: true, expires: at };
+    expect(deriveStatus(household, today).value).toBe('active');
+    expect(deriveStatus({ ...household, household_owned: false }, today)).toEqual({
+      value: 'needs_info',
+      label: 'Needs a person',
+    });
+    // Left out, as an older caller does: as before.
+    expect(deriveStatus({ type: passport, owner_member_id: null, expires: at }, today).label).toBe(
+      'Needs a person',
+    );
+  });
   it('is valid with no expiry concept', () => {
     expect(deriveStatus({ type: birth, owner_member_id: 'm', expires: null }, today)).toEqual({
       value: 'valid',

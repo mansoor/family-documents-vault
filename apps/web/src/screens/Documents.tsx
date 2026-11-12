@@ -20,6 +20,10 @@ import {
   type VisibilityChange,
   documentName,
   NOTE_KIND,
+  HOUSEHOLD_MEMBER_FILTER,
+  NOBODY_MEMBER_FILTER,
+  NOT_SURE_YET,
+  THE_HOUSEHOLD,
 } from '@fdv/shared';
 import {
   Fragment,
@@ -603,8 +607,10 @@ export function filterChoices(
     case 'person':
       return [
         { value: '', label: 'All people' },
+        // The household's, and those nobody is chosen for yet (0.9.0).
+        { value: HOUSEHOLD_MEMBER_FILTER, label: THE_HOUSEHOLD },
         ...known.members.map((m) => ({ value: m.id, label: m.display_name })),
-        { value: 'none', label: 'Nobody in particular' },
+        { value: NOBODY_MEMBER_FILTER, label: NOT_SURE_YET },
       ];
     case 'kind': {
       const kinds = known.types
@@ -1355,7 +1361,11 @@ function Cell(props: { column: Column; doc: DocumentView; known: Known; offset: 
       return <td>{label ? <Clip text={label} /> : <None />}</td>;
     }
     case 'person': {
-      const name = doc.owner_member_id ? known.names.get(doc.owner_member_id) : undefined;
+      const name = doc.owner_member_id
+        ? known.names.get(doc.owner_member_id)
+        : doc.household_owned === true
+          ? THE_HOUSEHOLD
+          : undefined;
       return <td>{name ? <Clip text={name} /> : <None />}</td>;
     }
     case 'issued':

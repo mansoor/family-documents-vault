@@ -1,6 +1,7 @@
 import {
   autoTitle,
   CUE_WORDS,
+  expiryReadInto,
   formatDate,
   issuedByLabel,
   PROPOSAL_FIELDS,
@@ -173,17 +174,22 @@ export function chipWords(
   }
 }
 
-/** Whether the document already has a value for the field: then it is never offered. */
-function hasValue(doc: DocumentView, field: ProposalField): boolean {
+/**
+ * Whether the document already has a value for the field: then it is never
+ * offered. The household's is somebody's as much as a person's (0.9.0); a
+ * kind keeping its read expiry as a date of its own — a bill's Due date —
+ * has one when that date is there (`dated`).
+ */
+function hasValue(doc: DocumentView, field: ProposalField, dated: string | null = null): boolean {
   switch (field) {
     case 'type_key':
       return doc.type_key !== null;
     case 'owner_member_id':
-      return doc.owner_member_id !== null;
+      return doc.owner_member_id !== null || doc.household_owned === true;
     case 'issued':
       return doc.issued !== null;
     case 'expires':
-      return doc.expires !== null;
+      return dated ? doc.extra[dated] != null : doc.expires !== null;
     case 'identifier':
       return Boolean(doc.identifier?.trim());
     case 'issued_by':
@@ -281,20 +287,25 @@ export function PagesSuggest(props: {
   const placeOnError = useRef(false);
 
   const type = types.find((t) => t.key === doc.type_key);
+  // A bill's Due date takes what the pages read as its expiry (0.9.0).
+  const into = expiryReadInto(type);
+  const dated = into && into !== 'expires' ? into : null;
   const word = (key: 'issued' | 'expires' | 'identifier', fallback: string) =>
     coreRule(type, key).label ?? fallback;
   const fieldName: Record<ProposalField, string> = {
     type_key: 'What it is',
     owner_member_id: 'Whose it is',
     issued: word('issued', 'Issued'),
-    expires: word('expires', 'Expires'),
+    expires: dated
+      ? (type?.fields.find((f) => f.key === dated)?.label ?? 'Due date')
+      : word('expires', 'Expires'),
     identifier: word('identifier', 'Number'),
     issued_by: issuedByLabel(type),
   };
   const offers = proposal
     ? PROPOSAL_FIELDS.flatMap((field) => {
         const p = proposal[field];
-        if (!p || hasValue(doc, field)) return [];
+        if (!p || hasValue(doc, field, dated)) return [];
         const label = chipWords(field, proposal, types, members);
         return label ? [{ field, label, confidence: p.confidence, cue: p.cue }] : [];
       })
@@ -320,7 +331,7 @@ export function PagesSuggest(props: {
 
   const pick = async (field: ProposalField, index: number) => {
     const p = proposal[field];
-    if (!p || hasValue(doc, field)) return;
+    if (!p || hasValue(doc, field, dated)) return;
     // Only the newest version's pages: another version since, and they are not its.
     if (read?.versionId !== doc.latest_version_id) {
       await props.onStale();
@@ -343,8 +354,11 @@ export function PagesSuggest(props: {
     } else if (field === 'issued') {
       issued = proposal.issued?.value ?? null;
       body.issued = issued;
-    } else if (field === 'expires') body.expires = proposal.expires?.value ?? null;
-    else if (field === 'identifier') body.identifier = proposal.identifier?.value ?? null;
+    } else if (field === 'expires') {
+      const value = proposal.expires?.value ?? null;
+      if (dated) body.extra = { [dated]: value };
+      else body.expires = value;
+    } else if (field === 'identifier') body.identifier = proposal.identifier?.value ?? null;
     else {
       issuedBy = proposal.issued_by?.value ?? null;
       body.issued_by = issuedBy;

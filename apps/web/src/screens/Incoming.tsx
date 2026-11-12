@@ -9,6 +9,9 @@ import {
   type Member,
   type Visibility,
   NOTE_KIND,
+  belongsTo,
+  NOT_SURE_YET,
+  THE_HOUSEHOLD,
 } from '@fdv/shared';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
@@ -311,6 +314,13 @@ function IncomingFile(props: {
   // A note is written, not filed: never a kind to choose (the N1 review).
   const shown = types.filter((t) => t.key !== NOTE_KIND && (!t.hidden || t.key === typeKey));
   const people = members.filter((m) => !m.is_deceased);
+  // Nobody chosen, of a kind that is usually the household's, is filed as
+  // the household's (0.9.0): said so. Any other kind's, Not sure yet.
+  const kind = types.find((t) => t.key === typeKey);
+  const nobody =
+    kind?.belongs_to !== undefined && belongsTo(kind) === 'household'
+      ? THE_HOUSEHOLD
+      : NOT_SURE_YET;
 
   const saveCopy = async () => {
     setProblem(null);
@@ -489,7 +499,7 @@ function IncomingFile(props: {
               label="Whose is it?"
               value={owner}
               options={[
-                { value: '', label: 'Nobody in particular' },
+                { value: '', label: nobody },
                 ...people.map((m) => ({ value: m.id, label: m.display_name })),
               ]}
               onChange={(v) => {
@@ -579,7 +589,8 @@ function IncomingFile(props: {
 }
 
 /** A document to add a file to, as the picker shows it. */
-type Choice = Pick<DocumentView, 'id' | 'title' | 'owner_member_id' | 'type_key'>;
+type Choice = Pick<DocumentView, 'id' | 'title' | 'owner_member_id' | 'type_key'> &
+  Pick<Partial<DocumentView>, 'household_owned'>;
 
 /**
  * Which document a file is a new version of (W523-07): the most recent
@@ -615,6 +626,7 @@ function VersionPicker(props: {
               id: h.document_id,
               title: h.title,
               owner_member_id: h.owner_member_id,
+              ...(h.household_owned !== undefined ? { household_owned: h.household_owned } : {}),
               type_key: h.type_key,
             })),
           });
@@ -631,7 +643,8 @@ function VersionPicker(props: {
   const words = (d: Choice) => {
     const person = members.find((m) => m.id === d.owner_member_id)?.display_name;
     const kind = types.find((t) => t.key === d.type_key)?.label;
-    return `${d.title ?? 'Needs a name'} — ${person ?? 'Nobody in particular'}, ${kind ?? 'no kind yet'}`;
+    const nobody = d.household_owned === true ? THE_HOUSEHOLD : NOT_SURE_YET;
+    return `${d.title ?? 'Needs a name'} — ${person ?? nobody}, ${kind ?? 'no kind yet'}`;
   };
   const near = q
     ? recent.filter((d) => (d.title ?? '').toLowerCase().includes(q.toLowerCase()))

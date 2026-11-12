@@ -1,4 +1,10 @@
-import { NOTE_KIND, STATUS_ORDER, type Visibility } from '@fdv/shared';
+import {
+  HOUSEHOLD_MEMBER_FILTER,
+  NOBODY_MEMBER_FILTER,
+  NOTE_KIND,
+  STATUS_ORDER,
+  type Visibility,
+} from '@fdv/shared';
 import { sql, type RawBuilder } from 'kysely';
 import { ApiError } from '../errors.js';
 
@@ -46,6 +52,9 @@ export const FILTER_VALUES_MAX = 50;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const VISIBILITIES: readonly string[] = ['household', 'adults', 'private'];
+
+/** The person filter's values that are not a person: Not sure yet, and the household's (0.9.0). */
+export const NOT_A_PERSON: readonly string[] = [NOBODY_MEMBER_FILTER, HOUSEHOLD_MEMBER_FILTER];
 
 const refuse = (detail: string, message: string): never => {
   throw new ApiError(422, 'validation_failed', message, { detail });
@@ -97,7 +106,8 @@ export interface RawFilters {
 /**
  * One value each where one was asked for — the singular field, read as it
  * always was — and the list where several were. A person's filter may name
- * nobody's documents (`none`), which only a column sort takes.
+ * nobody's documents (`none`: Not sure yet since 0.9.0) or the household's
+ * (`household`, 0.9.0), which a column sort and search take.
  */
 export function filtersOf(raw: RawFilters): {
   single: {
@@ -119,7 +129,8 @@ export function filtersOf(raw: RawFilters): {
   if (members) {
     tooMany('member_id', members);
     for (const m of members)
-      if (m !== 'none' && !UUID.test(m)) refuse('member_id', 'That is not a person in this vault.');
+      if (!NOT_A_PERSON.includes(m) && !UUID.test(m))
+        refuse('member_id', 'That is not a person in this vault.');
     if (members.length === 1) single.member_id = members[0];
     else many.member_ids = members;
   }
@@ -180,18 +191,21 @@ export function filtersOf(raw: RawFilters): {
 
 /**
  * The filters that SQL can answer, as conditions on `d` (document): any of
- * the people (`none` for nobody's), kinds, categories and who-can-see, and
- * the date ranges. A status is worked out, not stored: `statusAllowed`.
+ * the people (`none` for Not sure yet, `household` for the household's),
+ * kinds, categories and who-can-see, and the date ranges. A status is worked out, not stored: `statusAllowed`.
  */
 export function filterClauses(f: DocumentFilters, table = 'd'): RawBuilder<unknown>[] {
   const c = (column: string) => sql.ref(`${table}.${column}`);
   const parts: RawBuilder<unknown>[] = [];
   if (f.member_ids) {
-    const people = f.member_ids.filter((m) => m !== 'none');
-    const nobody = f.member_ids.includes('none');
+    const people = f.member_ids.filter((m) => !NOT_A_PERSON.includes(m));
+    const nobody = f.member_ids.includes(NOBODY_MEMBER_FILTER);
+    const household = f.member_ids.includes(HOUSEHOLD_MEMBER_FILTER);
     const any = [
       ...(people.length > 0 ? [sql`${c('owner_member_id')} = any(${people}::uuid[])`] : []),
-      ...(nobody ? [sql`${c('owner_member_id')} is null`] : []),
+      // Not sure yet: nobody, and not the household's (0.9.0).
+      ...(nobody ? [sql`(${c('owner_member_id')} is null and not ${c('household_owned')})`] : []),
+      ...(household ? [sql`${c('household_owned')}`] : []),
     ];
     parts.push(sql`(${sql.join(any, sql` or `)})`);
   }

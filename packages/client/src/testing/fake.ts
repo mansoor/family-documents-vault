@@ -80,6 +80,7 @@ import {
   tagKey,
   tagLabelKey,
   tagsProblem,
+  belongsTo,
   canEditIdentity,
   canSee,
   canSeeCollection,
@@ -102,6 +103,7 @@ import {
   effectiveVisibility,
   EXPIRY_ALWAYS_REQUIRED,
   GUEST_ALWAYS_LIMITED,
+  HOUSEHOLD_OR_PERSON,
   GUEST_MAX_DAYS,
   GUEST_ONLY_VIEWER,
   guestAccessEnded,
@@ -236,6 +238,7 @@ import {
   type BatchLevelCounts,
   type BatchUndoResult,
   type UndoKept,
+  type BelongsTo,
 } from '@fdv/shared';
 import type { FetchLike, ResponseLike } from '../http.js';
 
@@ -733,6 +736,8 @@ const FAKE_EDITABLE = [
   'extra',
   'title',
   'owner_member_id',
+  // The household's, or Not sure yet (0.9.0).
+  'household_owned',
   'identifier',
   'issued_by',
   'issued',
@@ -770,6 +775,8 @@ const builtin = (
 ): DocumentTypeView => ({
   short_label: null,
   issuer_noun: null,
+  // A person's, as every kind was before 0.9.0, unless it says.
+  belongs_to: 'person',
   ...t,
   builtin: true,
   hidden: false,
@@ -822,21 +829,27 @@ const FAKE_TYPES: DocumentTypeView[] = [
     default_visibility: 'household',
     issued_by_label: null,
   }),
+  // A bill since 0.9.0 (0087): a Due date reminding in place of Expires,
+  // its amount a Bill amount, and usually the household's.
   builtin({
     key: 'utility_bill',
     label: 'Utility / bill',
     category: 'bills',
     fields: [
       { key: 'account', label: 'Account', kind: 'text', required: false },
-      { key: 'amount', label: 'Amount', kind: 'text', required: false },
+      { key: 'amount', label: 'Bill amount', kind: 'text', required: false },
+      { key: 'due_date', label: 'Due date', kind: 'date', required: true },
     ],
-    expiry_driver: 'expires_on',
-    reminder_leads: [7, 1],
+    expiry_driver: null,
+    reminder_leads: [],
+    remind_from: 'due_date',
+    remind_leads: [7, 1],
     usually_essential: false,
     default_visibility: 'household',
     issued_by_label: 'Provider',
     short_label: 'Bill',
     issuer_noun: 'bill',
+    belongs_to: 'household',
   }),
   // 0.8.0 (S5, 0072): kinds a client a release older than these has never seen.
   builtin(
@@ -2618,6 +2631,8 @@ export function createFakeVault(): {
           share_reveal: true,
           // Notifications by text (0.9.0, SMS2): in the preferences, each off.
           sms_notifications: true,
+          // The household as a document's owner, and each kind's belongs_to (0.9.0).
+          household_owner: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -2894,7 +2909,14 @@ export function createFakeVault(): {
         .filter(
           (d) =>
             members === undefined ||
-            members.some((m) => (m === 'none' ? !d.owner_member_id : d.owner_member_id === m)),
+            members.some((m) =>
+              // Not sure yet, the household's (0.9.0), or a person's.
+              m === 'none'
+                ? !d.owner_member_id && d.household_owned !== true
+                : m === 'household'
+                  ? d.household_owned === true
+                  : d.owner_member_id === m,
+            ),
         )
         .filter((d) => typeKeys === undefined || typeKeys.includes(d.type_key ?? ''))
         .filter((d) => categories === undefined || categories.includes(listedOf(d).category ?? ''))
@@ -3085,7 +3107,16 @@ export function createFakeVault(): {
         const visibility =
           (body.visibility as Visibility | undefined) ??
           state.types.find((t) => t.key === type_key)?.default_visibility;
-        const owner = (body.owner_member_id as string | null | undefined) ?? null;
+        if (body.household_owned === true && body.owner_member_id != null) {
+          return fail(422, 'validation_failed', HOUSEHOLD_OR_PERSON, 'household_owned');
+        }
+        // Whose it is, as the real vault decides it (0.9.0): the household's
+        // for a kind usually the household's when nobody is said.
+        const whose = whoseNew(
+          body,
+          state.types.find((t) => t.key === type_key),
+        );
+        const owner = whose.owner_member_id;
         if (visibility === 'private' && owner !== 'fake-member') {
           return fail(
             422,
@@ -3098,7 +3129,7 @@ export function createFakeVault(): {
           id: next('document'),
           title: (body.title as string | null) ?? null,
           type_key,
-          owner_member_id: owner,
+          ...whose,
           identifier: tidy(body.identifier as string | null | undefined),
           issued_by: tidy(body.issued_by as string | null | undefined),
           issued: (body.issued as DateValue | null | undefined) ?? null,
@@ -3368,8 +3399,20 @@ export function createFakeVault(): {
       Object.assign(doc, { type_key, extra });
       if (body.tags !== undefined) doc.tags = tagsOf(body.tags as string[]);
       if (body.title !== undefined) doc.title = (body.title as string | null) ?? null;
-      if (body.owner_member_id !== undefined) {
-        doc.owner_member_id = body.owner_member_id as string | null;
+      // The household's, or a person's, never both (0.9.0): null alone — an
+      // older client's — leaves the household's the household's.
+      if (body.household_owned === true && body.owner_member_id != null) {
+        return fail(422, 'validation_failed', HOUSEHOLD_OR_PERSON, 'household_owned');
+      }
+      if (body.household_owned === true) {
+        doc.owner_member_id = null;
+        doc.household_owned = true;
+      } else {
+        if (body.owner_member_id !== undefined) {
+          doc.owner_member_id = body.owner_member_id as string | null;
+        }
+        if (doc.owner_member_id) doc.household_owned = false;
+        else if (body.household_owned === false) doc.household_owned = false;
       }
       // Trimmed, as the vault keeps an identifier: its inner spaces are its own.
       if (body.identifier !== undefined) {
@@ -3488,7 +3531,10 @@ export function createFakeVault(): {
           id: next('document'),
           title: metadata.title ?? null,
           type_key: metadata.type_key ?? null,
-          owner_member_id: metadata.owner_member_id ?? null,
+          ...whoseNew(
+            metadata,
+            state.types.find((t) => t.key === metadata.type_key),
+          ),
           identifier: tidy(metadata.identifier),
           issued_by: tidy(metadata.issued_by),
           issued: metadata.issued ?? null,
@@ -3963,6 +4009,8 @@ export function createFakeVault(): {
         remind_from: null,
         usually_essential: (body.usually_essential as boolean | undefined) ?? false,
         default_visibility: (body.default_visibility as Visibility | undefined) ?? 'household',
+        // Whom its documents usually belong to (0.9.0): a person's, unless it says.
+        belongs_to: (body.belongs_to as BelongsTo | undefined) ?? 'person',
         issued_by_label: null,
         builtin: false,
         hidden: false,
@@ -4049,6 +4097,7 @@ export function createFakeVault(): {
         if (body.usually_essential !== undefined) {
           next.usually_essential = body.usually_essential as boolean;
         }
+        if (body.belongs_to !== undefined) next.belongs_to = body.belongs_to as BelongsTo;
         if (body.hidden !== undefined) next.hidden = body.hidden as boolean;
         // Its fields and Expires, then what it reminds from on the kind as
         // it will be — Expires switched on with no lead times: 30 days, as
@@ -4615,7 +4664,7 @@ export function createFakeVault(): {
       if (what === 'accept' && init.method === 'POST') {
         if (f.decided) return decided();
         const into = typeof body.into_document_id === 'string' ? body.into_document_id : null;
-        const fields = ['owner_member_id', 'type_key', 'title', 'visibility'];
+        const fields = ['owner_member_id', 'household_owned', 'type_key', 'title', 'visibility'];
         if (into && fields.some((k) => body[k] !== undefined)) {
           return fail(
             422,
@@ -4634,6 +4683,9 @@ export function createFakeVault(): {
           const metadata: CaptureMetadata = {
             ...(body.owner_member_id !== undefined
               ? { owner_member_id: body.owner_member_id as string | null }
+              : {}),
+            ...(body.household_owned !== undefined
+              ? { household_owned: body.household_owned as boolean }
               : {}),
             ...(body.type_key !== undefined ? { type_key: body.type_key as string | null } : {}),
             ...(body.title !== undefined ? { title: (body.title as string | null) || null } : {}),
@@ -4659,7 +4711,10 @@ export function createFakeVault(): {
             id: next('document'),
             title: metadata.title ?? null,
             type_key: metadata.type_key ?? null,
-            owner_member_id: metadata.owner_member_id ?? null,
+            ...whoseNew(
+              metadata,
+              state.types.find((t) => t.key === metadata.type_key),
+            ),
             visibility: effectiveVisibility(
               metadata,
               state.types.find((t) => t.key === metadata.type_key),
@@ -5528,7 +5583,10 @@ export function createFakeVault(): {
           id: next('document'),
           title: metadata.title ?? null,
           type_key: metadata.type_key ?? null,
-          owner_member_id: metadata.owner_member_id ?? null,
+          ...whoseNew(
+            metadata,
+            state.types.find((t) => t.key === metadata.type_key),
+          ),
           identifier: tidy(metadata.identifier),
           issued_by: tidy(metadata.issued_by),
           issued: metadata.issued ?? null,
@@ -6868,6 +6926,22 @@ function tooLong(names: ReadonlyArray<readonly [unknown, string]>): ResponseLike
   return null;
 }
 
+/**
+ * Whose a new document is, as the real vault decides it (0.9.0): a person
+ * sent is theirs; the household sent, or nobody said for a kind usually the
+ * household's, the household's; nobody otherwise, Not sure yet.
+ */
+function whoseNew(
+  sent: Pick<CaptureMetadata, 'owner_member_id' | 'household_owned'>,
+  kind: Pick<DocumentTypeView, 'belongs_to'> | undefined,
+): { owner_member_id: string | null; household_owned: boolean } {
+  const owner = sent.household_owned === true ? null : (sent.owner_member_id ?? null);
+  return {
+    owner_member_id: owner,
+    household_owned: owner === null && (sent.household_owned ?? belongsTo(kind) === 'household'),
+  };
+}
+
 /** An issuer as the real vault keeps it: spaces tidied, and blank is nothing. */
 function tidy(value: string | null | undefined): string | null {
   return value?.trim().split(/\s+/).join(' ') || null;
@@ -7137,6 +7211,7 @@ function documentView(
     title: doc.title,
     type_key: doc.type_key ?? null,
     owner_member_id: doc.owner_member_id ?? null,
+    household_owned: doc.household_owned === true,
     identifier: doc.identifier ?? null,
     issued_by: doc.issued_by ?? null,
     issued: doc.issued ?? null,
@@ -7187,6 +7262,7 @@ function documentView(
       {
         type: type ?? null,
         owner_member_id: doc.owner_member_id ?? null,
+        household_owned: doc.household_owned === true,
         expires,
         no_longer_needed: Boolean(doc.no_longer_needed),
         // Never, to whoever may not see where the original is kept, that a

@@ -173,6 +173,8 @@ export class SealedSearchService {
             type_key: row.type_key,
             category: row.category,
             owner_member_id: row.owner_member_id,
+            // An Only me document is always its owner's, never the household's.
+            household_owned: false,
             issued_by: row.issued_by,
             issued,
             expires: expires && { ...expires, date: String(expires.date).slice(0, 10) },

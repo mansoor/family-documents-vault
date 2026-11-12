@@ -5956,6 +5956,64 @@ phone_code_too_many`, `429 phone_code_limit` (with `Retry-After`),
       `@fdv/client`: no new calls (`preferences` and `updatePreferences`
       carry the new fields); the fake keeps each person's preferences, texts
       and quiet hours among them, and refuses a time that is not `"HH:MM"`.
+  - The household, and what each kind usually belongs to (0.9.0-dev.32;
+    the owner's decisions of 11 Nov 2026). Migration 0087. **Additive**,
+    but for the Utility / bill and the meaning of `member_id=none` (below).
+    - **New `features`:** `household_owner`, `true` (one flag for the
+      document field, the filter value and the kind's `belongs_to`); absent
+      from older vaults.
+    - **New field:** `DocumentView.household_owned` (boolean): the
+      household's, with `owner_member_id` null. Null with `false` is Not
+      sure yet, which alone reads `needs_info` "Needs a person" — a
+      household's document no longer does. Also on `SearchHit` (both
+      passes).
+    - **New input:** `household_owned` on `POST` and `PATCH
+/api/v1/documents`, a capture's `metadata`, a batch item's accept and
+      `POST /api/v1/incoming/{id}/accept`. `true` clears the person; `true`
+      with a person is `422 validation_failed` (`detail: 'household_owned'`);
+      `false` makes it Not sure yet unless a person is sent. A person sent
+      always clears it. Left out: a new document of a kind whose
+      `belongs_to` is `'household'` is the household's unless a person is
+      sent, and an edit keeps it as it is — `owner_member_id: null` alone,
+      all an older client sends, never turns a household's document into
+      Not sure yet. A teen sending `true` is `403 forbidden`.
+    - **Filter values:** `member_id=household` (the household's) on `GET
+/api/v1/documents` with a column sort and on `GET /api/v1/search`,
+      alone or among several. **Changed:** `member_id=none` now means Not
+      sure yet — nobody, and not the household's — where it meant every
+      document without a person. Search takes `none` now (it was `422`).
+      Without a column sort, both are `422` as `none` was.
+    - **New field:** `DocumentTypeView.belongs_to`, `'person' |
+'household'`; `PATCH /api/v1/document-types/{key}` and `POST
+/api/v1/document-types` take it (a built-in's kept for the household in
+      its setting). In the kind's ETag only when `'household'`, so a
+      person's kind keeps its ETag. Built-ins `'household'`: `utility_bill`,
+      `property_deed`, `pet_record`.
+    - **Changed built-in:** `utility_bill` no longer expires
+      (`expiry_driver: null`, `core.expires.shown: false`); its fields are
+      `account`, `amount` (label "Bill amount") and `due_date` (date,
+      required), and it reminds from `due_date` (`remind_from`,
+      `remind_leads: [7, 1]`; `reminder_leads: []`). Each bill's
+      `expires_on` moved to `extra.due_date` (`{ date, precision }`) and its
+      derived reminders' `source` to `due_date`, in place. A household that
+      switched Expires on for the kind keeps it; one with its own fields for
+      it gains `due_date`.
+    - **ETags:** every document's ETag changed (the epoch moved, as at
+      0025): a write made from a view read before the upgrade is `412`.
+    - `@fdv/shared`: `BelongsTo`, `BELONGS_TO`, `belongsTo()`,
+      `THE_HOUSEHOLD`, `NOT_SURE_YET`, `HOUSEHOLD_MEMBER_FILTER`,
+      `NOBODY_MEMBER_FILTER`, `HOUSEHOLD_OR_PERSON`;
+      `DocumentView.household_owned`, `DocumentInput.household_owned`,
+      `CaptureMetadata.household_owned`, `SearchHit.household_owned`,
+      `DocumentTypeView.belongs_to`, `DocumentTypeInput.belongs_to`,
+      `StatusInput.household_owned`; `Capabilities.features.household_owner`.
+      A batch item of a household's kind with nobody is no longer "Missing:
+      whose it is". `expiryReadInto(kind)`: a date the pages read as an
+      expiry goes in the bill's `due_date` (proposals, shapes, the local AI,
+      levels and `untouchedAccept` all use it), so a bill's read date still
+      fills, levels and teaches as it did. `@fdv/client`'s fake keeps and answers
+      `household_owned` and `belongs_to`, honours `member_id=household` and
+      `none` on the table, and has the bill as the vault now does.
 
 ## Deprecations in effect
 

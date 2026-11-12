@@ -23,6 +23,8 @@ export type Role = 'owner' | 'adult' | 'teen' | 'viewer';
 /** Of the family, or a guest from outside it (0056, 5.34): fixed once the person is made. */
 export type MemberKind = 'family' | 'guest';
 export type Visibility = 'household' | 'adults' | 'private';
+/** Whom a kind's documents usually belong to (0087). */
+export type BelongsTo = 'person' | 'household';
 export type DatePrecision = 'day' | 'month' | 'year';
 /** Who a collection of documents is for (0036). */
 export type CollectionAudience = 'everyone' | 'teens' | 'adults' | 'only_me';
@@ -1007,6 +1009,8 @@ export interface Schema {
      * fields' keys, with 1 to 8 lead times in reminder_leads; null, none.
      */
     remind_from: ColumnType<string | null, string | null | undefined, string | null>;
+    /** Whom its documents usually belong to (0087): a person, or the household. */
+    belongs_to: ColumnType<BelongsTo, BelongsTo | undefined, BelongsTo>;
   };
 
   /** A household's changes to a built-in type; null keeps the built-in's own (0031). */
@@ -1023,6 +1027,8 @@ export interface Schema {
     updated_by: string | null;
     /** As the built-in (null), 'none', 'expires' or a date field's key (0038). */
     remind_from: ColumnType<string | null, string | null | undefined, string | null>;
+    /** As the built-in (null), or whom this household's documents of it usually belong to (0087). */
+    belongs_to: ColumnType<BelongsTo | null, BelongsTo | null | undefined, BelongsTo | null>;
   };
 
   /** The fields a type can ask for: built-in (no household) or a household's own (0031). */
@@ -1071,6 +1077,8 @@ export interface Schema {
      */
     remind_from: string | null;
     remind_leads: number[];
+    /** Whom its documents usually belong to, as the household has it (0087). */
+    belongs_to: BelongsTo;
   };
 
   document: {
@@ -1079,6 +1087,11 @@ export interface Schema {
     type_key: string | null;
     title: string | null;
     owner_member_id: string | null;
+    /**
+     * The household's (0087): never with a person, and a person chosen
+     * clears it. Neither is Not sure yet.
+     */
+    household_owned: Generated<boolean>;
     category: string | null;
     visibility: Generated<Visibility>;
     issued_on: DateOnly | null;
