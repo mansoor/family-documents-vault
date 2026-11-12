@@ -60,6 +60,7 @@ import {
   type ResetNotice,
   type Role,
   type SmsMode,
+  type Preferences,
   type SmsSettingsView,
   type SmsState,
   isDocumentSort,
@@ -463,6 +464,15 @@ export interface FakeState {
     saves?: Array<Record<string, unknown>>;
     tested?: string[];
   };
+  /** An older vault, with text messages but not notifications by them (SMS2): false. */
+  smsNotifications?: boolean;
+  /**
+   * What GET /notifications/preferences answers, and what each PUT changes
+   * (SMS2: texts and quiet hours too); `preferenceSaves` the bodies sent.
+   * Left out, the vault's defaults.
+   */
+  preferences?: Preferences;
+  preferenceSaves?: Array<Partial<Preferences>>;
   /**
    * The household's time zone, as GET /profile gives it: reminders fall due
    * on its calendar. Left out, 'UTC', the vault's default.
@@ -1190,6 +1200,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.mailIn?.available ? { email_ingest: true } : {}),
           // Text messages (0.9.0, SMS1): said when a test gives them.
           ...(state.sms ? { sms_texts: true } : {}),
+          // Notifications by text (0.9.0, SMS2): with them, unless a test is an older vault.
+          ...(state.sms && state.smsNotifications !== false ? { sms_notifications: true } : {}),
           // A computer that sends scans (0.8.0, D1): said when a test gives computers.
           ...(state.computers ? { device_uploads: true } : {}),
           // Tags you can use (0.9.0, T1): said when a test gives them.
@@ -1916,8 +1928,28 @@ export function installFakeApi(state: FakeState) {
     }
     if (path === '/api/v1/notifications/push-key')
       return json({ public_key: null, enabled: false });
-    if (path === '/api/v1/notifications/preferences')
-      return json({ daily_push: true, daily_email: false, weekly_email: true });
+    if (path === '/api/v1/notifications/preferences') {
+      state.preferences ??= {
+        daily_push: true,
+        daily_email: false,
+        weekly_email: true,
+        // Notifications by text (SMS2): each off, and quiet from nine to eight.
+        ...(state.sms && state.smsNotifications !== false
+          ? {
+              daily_text: false,
+              alerts_text: false,
+              share_opened_text: false,
+              quiet_from: '21:00',
+              quiet_to: '08:00',
+            }
+          : {}),
+      };
+      if (method === 'PUT') {
+        (state.preferenceSaves ??= []).push(body as Partial<Preferences>);
+        state.preferences = { ...state.preferences, ...(body as Partial<Preferences>) };
+      }
+      return json(state.preferences);
+    }
     if (path === '/api/v1/devices') return json({ items: [] });
     if (path === '/api/v1/notifications/smtp')
       return json({ configured: false, status: 'untested', secure: false });

@@ -271,6 +271,7 @@ export class PasswordService {
       subject: 'Your vault password was changed',
       body: `If that was you, there is nothing to do. If it was not, whoever did it is signed in — ask another owner to take away that sign-in, and tell them to look at the activity log.${computers > 0 ? ` ${COMPUTERS_STOPPED}` : ''}`,
       emailOnly: true,
+      text: 'password_changed',
     });
   }
 
@@ -329,7 +330,7 @@ export class PasswordService {
       // Never a push: a lock screen is a poor place for a link that opens
       // an account.
       emailOnly: true,
-      ...(route === 'operator' ? { operatorMail: true } : {}),
+      ...(route === 'operator' ? { operatorMail: true } : { text: 'reset_started' as const }),
     });
   }
 
@@ -600,6 +601,7 @@ export class PasswordService {
           : 'Somebody used a reset link to set a new password, and every device has been signed out. If that was not you, whoever did it can read your email — deal with that first.') +
         (computers > 0 ? ` ${COMPUTERS_STOPPED}` : ''),
       emailOnly: true,
+      text: 'password_changed',
     });
     return { email: account.email };
   }

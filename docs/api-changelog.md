@@ -5924,6 +5924,38 @@ phone_code_too_many`, `429 phone_code_limit` (with `Retry-After`),
       (`POST /documents/{id}/share`), lists, takes back and shows again the
       links it made, as the vault does, without asking to confirm it's you
       (the fake asks nowhere); `FakeShare.shown_once` is a link made before.
+  - Notifications by text (0.9.0-dev.31; SMS2). Migration 0086. Everything
+    is **additive**: a request made as before is answered as before.
+    - **New `features`:** `sms_notifications`, `true`; absent from older
+      vaults.
+    - **Changed:** `GET` and `PUT /api/v1/notifications/preferences` carry
+      `daily_text`, `alerts_text` and `share_opened_text` (booleans, each
+      `false` until the person turns it on) and the quiet hours `quiet_from`
+      and `quiet_to` (`"HH:MM"` on the family's clock, `"21:00"` and
+      `"08:00"` until chosen; they may run past midnight, and the same time
+      for both is none). `PUT` takes any of them; one left out stays as it
+      was; a time that is not `"HH:MM"` is `422 validation_failed`.
+    - Texts go only to the person's own confirmed number, only while `GET
+/api/v1/sms/status` says `ready`, and count against the household's
+      monthly limit with every other text. The day's reminders: one text
+      with a count ("Family Vault: 2 documents need attention today. Open
+      the app to see them."). An alert: its headline, chosen by the vault,
+      never its subject ("Family Vault: a new device signed in to your
+      account."); one about the person's own sign-in comes in their quiet
+      hours too. A link opened: "Family Vault: the link you shared for the
+      letting agent was opened.", at most once an hour a link. Anything
+      else waits for the quiet hours to end. A text asked for that cannot
+      go, when nothing else reached the person, comes by email instead.
+    - **New `sms_message` kinds** in the owners' log of texts: `reminders`,
+      `alert`, `share_opened`.
+    - `@fdv/shared`: `Preferences` gains the five optional fields;
+      `CLOCK_TIME`, `QUIET_FROM_DEFAULT`, `QUIET_TO_DEFAULT`,
+      `inQuietHours`, `quietHoursEnd`, `localMinute`, `remindersText`,
+      `ALERT_TEXTS` (`AlertTextKind`) and `shareOpenedText`; `SmsKind` gains
+      the three kinds; `Capabilities.features.sms_notifications`.
+      `@fdv/client`: no new calls (`preferences` and `updatePreferences`
+      carry the new fields); the fake keeps each person's preferences, texts
+      and quiet hours among them, and refuses a time that is not `"HH:MM"`.
 
 ## Deprecations in effect
 

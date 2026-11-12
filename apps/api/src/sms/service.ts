@@ -1,13 +1,29 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { openSmsPassword, sealSmsPassword } from '@fdv/crypto';
-import { appendAudit, householdZone, withPrincipal, withSystem, type Db } from '@fdv/db';
+import {
+  appendAudit,
+  markSms,
+  sendSms,
+  smsGate,
+  smsMonthCount,
+  smsProblemWords,
+  SmsProviderError,
+  withPrincipal,
+  withSystem,
+  type Db,
+  type AsVault,
+  type SmsDone,
+  type SmsOutcome,
+  type SmsProviderFactory,
+  type SmsRequest,
+  type SmsWay,
+} from '@fdv/db';
 import {
   isLoopbackName,
   isPhoneCountry,
   isPrivateAddress,
   parsePhone,
-  phoneTail,
   SMS_CAP_MAX,
   SMS_CAP_MIN,
   SMS_CLOUD_URL,
@@ -15,7 +31,6 @@ import {
   SMS_DEFAULT_COUNTRY,
   SMS_TEST_TEXT,
   SMS_TEST_WAIT_SECONDS,
-  type SmsKind,
   type SmsMode,
   type SmsSettingsInput,
   type SmsSettingsView,
@@ -26,15 +41,7 @@ import { sql } from 'kysely';
 import type { AlertRequest } from '../alert-job.js';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
-import {
-  cleanWords,
-  smsGate,
-  SmsProviderError,
-  type SmsConnection,
-  type SmsProblem,
-  type SmsProvider,
-  type SmsProviderFactory,
-} from './provider.js';
+import { cleanWords } from '@fdv/db';
 
 /**
  * Text messages (0.9.0, SMS1): the household's own SMS Gate, as an owner
@@ -52,8 +59,8 @@ import {
  *
  * Every text is one row of sms_message — whom, what kind, what became of it,
  * never its words — counted against the household's monthly cap on the
- * family's own calendar. Notifications by text (SMS2) will send through
- * `send` as the codes that confirm a number do.
+ * family's own calendar. Since notifications by text (SMS2) the worker
+ * sends too, through the same `sendSms` (@fdv/db): one cap, one log.
  */
 
 /** Where a cloud or private server's name is, as the vault would reach it. */
@@ -74,28 +81,6 @@ export const notSetUp = () =>
 /** A control character: never in a sign-in. */
 const CONTROL = /\p{Cc}/u;
 
-/** In plain words, what went wrong with SMS Gate: for Settings, and for whoever asked for a text. */
-export function smsProblemWords(problem: SmsProblem, mode: SmsMode, status?: number): string {
-  switch (problem) {
-    case 'unauthorised':
-      return 'SMS Gate refused the username or password. Check them in the SMS Gate app, and type them again.';
-    case 'timeout':
-      return mode === 'local'
-        ? 'SMS Gate didn’t answer within 10 seconds. Check the phone is on, on the same network as the vault, and the app’s local server is running.'
-        : 'SMS Gate didn’t answer within 10 seconds. Check the address, and that the phone is on and the app is running.';
-    case 'unreachable':
-      return mode === 'local'
-        ? 'The vault couldn’t reach SMS Gate at that address. Check the address the app shows under Local server, and that the phone is on the same network.'
-        : 'The vault couldn’t reach SMS Gate at that address. Check the address.';
-    case 'address_refused':
-      return 'That address is inside the vault’s own network. Only the local server may be: choose Local server on your network for it.';
-    case 'not_found':
-      return 'SMS Gate no longer knows the text it was sent.';
-    case 'refused':
-      return `SMS Gate didn’t take the text${status ? ` (it answered ${status})` : ''}. Check the address points at SMS Gate’s API.`;
-  }
-}
-
 /** What a text that failed on the phone is said as: the phone's own words beside ours. */
 const failedWords = (error: string | undefined) =>
   `The phone couldn’t send the text. Check it has signal and credit.${error ? ` SMS Gate said: ${error}` : ''}`;
@@ -106,39 +91,6 @@ const notSent = (words: string) =>
     retriable: true,
     retryAfter: 60,
   });
-
-/** One text, as asked for. */
-export interface SmsRequest {
-  /** E.164. */
-  to: string;
-  /** Whom it is for, when it is for somebody of the family. */
-  memberId?: string | null;
-  kind: SmsKind;
-  text: string;
-}
-
-/** What `send` did: the row it wrote, and SMS Gate's id and word for it. */
-export interface SmsDone {
-  messageId: string;
-  providerId: string;
-  state: SmsState;
-}
-
-/** A household's settings, as the vault itself reads them to send. */
-interface Settings {
-  mode: SmsMode;
-  base_url: string;
-  username: string;
-  password_encrypted: Buffer | null;
-  country: string;
-  monthly_cap: number;
-  status: 'untested' | 'ok' | 'failed';
-}
-
-/** Where `dispatch` got to: sent, or a provider's problem, with the settings it used. */
-type Dispatched =
-  | { sent: SmsDone; provider: SmsProvider; settings: Settings }
-  | { problem: SmsProviderError; messageId: string; settings: Settings };
 
 export interface SmsOptions {
   /**
@@ -195,19 +147,6 @@ export class SmsService {
     });
   }
 
-  /** The start of this calendar month on the family's clock, as the database compares it. */
-  private async monthCount(trx: Db): Promise<number> {
-    const hh = await trx.selectFrom('household').select('timezone').executeTakeFirst();
-    const zone = householdZone(hh?.timezone);
-    const r = await sql<{ n: number }>`
-      select count(*)::int as n from sms_message
-       where state <> 'not_sent'
-         and created_at >= (date_trunc('month', now() at time zone ${zone}) at time zone ${zone})`.execute(
-      trx,
-    );
-    return r.rows[0]?.n ?? 0;
-  }
-
   /** GET /sms/settings: an owner's. Never the password, only whether one is set. */
   async get(p: Principal): Promise<SmsSettingsView> {
     if (p.role !== 'owner') throw ownersOnly();
@@ -227,7 +166,7 @@ export class SmsService {
           sql<boolean>`password_encrypted is not null`.as('has_password'),
         ])
         .executeTakeFirst();
-      const sent = await this.monthCount(trx);
+      const sent = await smsMonthCount(trx);
       return {
         settings: row
           ? {
@@ -464,100 +403,39 @@ export class SmsService {
 
   // ------------------------------------------------------------ sending
 
+  /** The household's scope as the vault, for `sendSms` and `markSms`: who asked was checked first. */
+  private vault(householdId: string): AsVault {
+    return (fn) => withSystem(this.db, householdId, fn);
+  }
+
   /**
-   * Writes a text's row and asks SMS Gate to send it. Refused before
-   * anything is written when the household has no SMS Gate, or one no test
-   * has passed (a test excepted), or this month's texts are all sent. One
-   * household's sends wait for each other, so the count holds however many
-   * ask at once.
+   * Writes a text's row and asks SMS Gate to send it (`sendSms`, @fdv/db,
+   * which the worker's texts go through too): refused, with nothing
+   * written, when the household has no SMS Gate, or one no test has passed
+   * (a test excepted), or this month's texts are all sent.
    */
-  private async dispatch(householdId: string, r: SmsRequest): Promise<Dispatched> {
+  private async dispatch(
+    householdId: string,
+    r: SmsRequest,
+  ): Promise<Exclude<SmsOutcome, { refused: unknown }>> {
     const key = this.key;
     if (!key) throw notSetUp();
-    const held = await withSystem(this.db, householdId, async (trx) => {
-      await sql`select pg_advisory_xact_lock(hashtextextended(${`sms:${householdId}`}, 0))`.execute(
-        trx,
-      );
-      const s = await trx
-        .selectFrom('sms_settings')
-        .select([
-          'mode',
-          'base_url',
-          'username',
-          'password_encrypted',
-          'country',
-          'monthly_cap',
-          'status',
-        ])
-        .executeTakeFirst();
-      if (!s || !s.password_encrypted) throw notSetUp();
-      if (s.status !== 'ok' && r.kind !== 'test') throw notSetUp();
-      const sent = await this.monthCount(trx);
-      if (sent >= s.monthly_cap) {
+    const way: SmsWay = {
+      open: (sealed, household, to) => openSmsPassword(key, sealed, household, to),
+      provider: this.provider,
+    };
+    const d = await sendSms(this.vault(householdId), way, householdId, r);
+    if ('refused' in d) {
+      if (d.refused === 'cap_reached') {
         throw new ApiError(
           409,
           'sms_cap_reached',
-          `This month’s ${s.monthly_cap} texts have all been sent. An owner can raise the limit in Settings, under Text messages.`,
+          `This month’s ${d.cap} texts have all been sent. An owner can raise the limit in Settings, under Text messages.`,
         );
       }
-      const row = await trx
-        .insertInto('sms_message')
-        .values({
-          household_id: householdId,
-          member_id: r.memberId ?? null,
-          number_tail: phoneTail(r.to),
-          kind: r.kind,
-        })
-        .returning('id')
-        .executeTakeFirstOrThrow();
-      return { settings: s, messageId: row.id };
-    });
-    const s = held.settings;
-    const connection: SmsConnection = {
-      mode: s.mode,
-      baseUrl: s.base_url,
-      username: s.username,
-      password: openSmsPassword(key, s.password_encrypted as Buffer, householdId, {
-        mode: s.mode,
-        baseUrl: s.base_url,
-        username: s.username,
-      }),
-    };
-    const provider = this.provider(connection);
-    try {
-      const sent = await provider.send(r.to, r.text);
-      await this.mark(householdId, held.messageId, { provider_id: sent.id, state: sent.state });
-      return {
-        sent: { messageId: held.messageId, providerId: sent.id, state: sent.state },
-        provider,
-        settings: s,
-      };
-    } catch (err) {
-      const problem =
-        err instanceof SmsProviderError
-          ? err
-          : new SmsProviderError('unreachable', (err as Error).message);
-      await this.mark(householdId, held.messageId, {
-        state: 'not_sent',
-        error: smsProblemWords(problem.problem, s.mode, problem.status),
-      });
-      return { problem, messageId: held.messageId, settings: s };
+      throw notSetUp();
     }
-  }
-
-  /** What became of a text, as SMS Gate said: the vault's to write. */
-  private async mark(
-    householdId: string,
-    messageId: string,
-    v: { provider_id?: string; state: SmsState; error?: string | null },
-  ): Promise<void> {
-    await withSystem(this.db, householdId, (trx) =>
-      trx
-        .updateTable('sms_message')
-        .set({ ...v, updated_at: new Date() })
-        .where('id', '=', messageId)
-        .execute(),
-    );
+    return d;
   }
 
   /**
@@ -630,7 +508,7 @@ export class SmsService {
       } else {
         words = `SMS Gate took the text, but the phone hadn’t sent it after ${Math.round(this.testWaitMs / 1000)} seconds. Check the phone has signal and the app is running, then test again.`;
       }
-      await this.mark(p.householdId, d.sent.messageId, {
+      await markSms(this.vault(p.householdId), d.sent.messageId, {
         state,
         ...(state === 'failed' ? { error: failedWords(cleanWords(error, 200)) } : {}),
       });

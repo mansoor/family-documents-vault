@@ -43,6 +43,7 @@ import { seenDocument, type Enqueue } from './service.js';
 import { madeWith } from './made-with.js';
 import { onlyMeShareable } from './only-me-rule.js';
 import { endSessions } from './share-sessions.js';
+import { shareOpenedJob, SMS_TEXT_JOB } from '../sms/text-job.js';
 import { DecryptStream } from '@fdv/crypto';
 import {
   can,
@@ -2477,6 +2478,7 @@ export class ShareService {
       await this.refuse(householdId, outcome.link, outcome.refused);
       throw gone();
     }
+    await this.tellOpened(householdId, scope.actor.shareId);
     return {
       cookie: outcome.cookie,
       maxAge: Math.max(1, Math.floor((outcome.expiresAt.getTime() - Date.now()) / 1000)),
@@ -3022,7 +3024,19 @@ export class ShareService {
       await this.refuse(householdId, outcome.link, outcome.refused);
       throw gone();
     }
+    await this.tellOpened(householdId, scope.actor.shareId);
     return outcome.opened;
+  }
+
+  /**
+   * A link was opened (0.9.0, SMS2): the worker texts its maker, if they
+   * asked to hear of it, at most once an hour a link and never in their
+   * quiet hours (`sms.text`). Asked for after the open is kept, and never
+   * in the way of it: whoever opened the link has it open whatever the queue
+   * says.
+   */
+  private async tellOpened(householdId: string, shareId: string): Promise<void> {
+    await this.enqueue(SMS_TEXT_JOB, shareOpenedJob(householdId, shareId)).catch(() => undefined);
   }
 
   /**

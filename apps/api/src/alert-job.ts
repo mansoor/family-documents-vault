@@ -1,4 +1,5 @@
 import { alertLinkBinding, sealBytes } from '@fdv/crypto';
+import type { AlertTextKind } from '@fdv/shared';
 
 /**
  * What the API asks the worker to send as an alert (`alert.send`).
@@ -37,6 +38,15 @@ export interface AlertRequest {
    * else does.
    */
   ownSignIn?: boolean;
+  /**
+   * What it says by text (0.9.0, SMS2), to whoever of them asked for alerts
+   * by text: a headline chosen as a word (ALERT_TEXTS), never its subject,
+   * which may name people. One about their own sign-in goes in their quiet
+   * hours too. Without one, an alert's text says only that there is news in
+   * their email, after their quiet hours. One by the operator's mail server
+   * alone is never texted.
+   */
+  text?: AlertTextKind;
 }
 
 /**
@@ -65,5 +75,6 @@ export function alertJob(key: Buffer, a: AlertRequest): Record<string, unknown> 
     ...(a.operatorMail ? { via: 'operator' } : {}),
     ...(a.pushType ? { push_type: a.pushType } : {}),
     ...(a.ownSignIn ? { own_sign_in: true } : {}),
+    ...(a.text ? { text_kind: a.text } : {}),
   };
 }

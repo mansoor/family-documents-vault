@@ -427,6 +427,15 @@ export interface CapabilityFeatures {
    * it. Absent from older vaults.
    */
   sms_texts?: boolean;
+  /**
+   * Notifications by text (0.9.0, SMS2): GET and PUT
+   * /notifications/preferences carry `daily_text`, `alerts_text` and
+   * `share_opened_text` (each off until turned on) and the quiet hours
+   * `quiet_from` and `quiet_to` ("21:00" and "08:00" until chosen). Texts go
+   * only to the person's own confirmed number, and only while the
+   * household's texts are set up (GET /sms/status). Absent from older vaults.
+   */
+  sms_notifications?: boolean;
 }
 
 export interface CapabilityLimits {

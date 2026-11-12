@@ -308,6 +308,7 @@ export class OwnerResetService {
           householdId: p.householdId,
           accountIds: [target.account_id],
           subject: `${by} started a password reset for you`,
+          text: 'reset_started',
           body:
             path === 'handover'
               ? `${by}, an owner of ${hh.name}, made a one-time link to set a new password for ${target.email}, to hand to you. It works once, for an hour.${stopped} You will be told about it when you next sign in.`

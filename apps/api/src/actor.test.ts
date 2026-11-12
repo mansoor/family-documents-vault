@@ -49,11 +49,11 @@ const ALLOWED = [
   // Text messages (0.9.0, SMS1): a text is sent by the vault, whoever asked
   // for it — the household's SMS Gate and its sealed password read, the
   // month's texts counted and one written (sms_message is the vault's to
-  // write, 0084), what became of it noted, and a test's result said on the
-  // setting (only the vault says a test passed). Who may ask is checked
-  // first, as themselves.
-  'sms/service.ts SmsService.dispatch',
-  'sms/service.ts SmsService.mark',
+  // write, 0084), what became of it noted (`sendSms` and `markSms` in
+  // @fdv/db since SMS2, which the worker's texts go through too, each handed
+  // this scope), and a test's result said on the setting (only the vault
+  // says a test passed). Who may ask is checked first, as themselves.
+  'sms/service.ts SmsService.vault',
   'sms/service.ts SmsService.test',
   // A code that confirms a number: made, counted and ended, and tried, by
   // the vault alone (phone_code is nobody's to read, 0084), once the person

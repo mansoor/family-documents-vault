@@ -199,6 +199,7 @@ export class CoOwnerService {
           householdId: p.householdId,
           accountIds: adults,
           subject: `${target.display_name} is now an owner`,
+          text: 'owner_change',
           body: `${target.display_name} can now change where your files are kept, who is in the family, and the emergency contacts. If this is a surprise, sign in and look at the activity log.`,
         });
       }
@@ -599,6 +600,7 @@ export class CoOwnerService {
         householdId: p.householdId,
         accountIds: [account],
         subject: 'You can sign in to your family vault again',
+        text: 'unlocked',
         body:
           'Your sign-in has been given back. Use the same email and password as before; your own documents are as you left them.' +
           (limited ? ` ${LIMITED_WORDS}` : ''),
@@ -655,6 +657,7 @@ export class CoOwnerService {
         householdId: p.householdId,
         accountIds: [row.requested_by],
         subject: `${row.target_name} refused the change`,
+        text: 'owner_change',
         body: `${row.target_name} stays an owner of ${row.household_name}.`,
       });
       const after = (await this.rows(trx)).find((r) => r.id === id);
@@ -777,6 +780,7 @@ export class CoOwnerService {
         householdId: p.householdId,
         accountIds: [row.target_account],
         subject: `You are no longer an owner of ${row.household_name}`,
+        text: 'owner_change',
         body: 'You are still an adult in the household: everything day to day is unchanged, and your own private documents are untouched.',
       });
       return {
@@ -901,6 +905,7 @@ export class CoOwnerService {
       householdId: p.householdId,
       accountIds: [...new Set(owners.map((o) => o.account_id))],
       subject: `A request to take away ${target.display_name}'s owner role`,
+      text: 'owner_change',
       body: `In seven days ${target.display_name} becomes an adult unless they refuse. Nothing has changed yet, and they can refuse at any time before then.`,
     });
 

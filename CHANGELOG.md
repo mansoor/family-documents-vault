@@ -6,6 +6,18 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.31] - 2026-11-12 — notifications by text (SMS2)
+
+### Added
+
+- **Reminders, alerts and links opened, by text (SMS2).** Settings → Notifications has a **By text** part once text messages are set up and your own mobile number is confirmed (until then it says where to add it). Each is off until you turn it on, and each goes only to your own confirmed number:
+  - **The day's reminders, by text:** one text a day with how many things need attention — "Family Vault: 2 documents need attention today. Open the app to see them." — never a document's name.
+  - **Security alerts, by text:** the alert's headline and nothing more, such as "Family Vault: a new device signed in to your account." Never a link or a code. A reset link that goes only by the server's own mail is never texted.
+  - **A link I shared is opened, by text:** "Family Vault: the link you shared for the letting agent was opened." (or "for someone", when the link has no label). At most once an hour for each link, and never the document's title.
+- **Quiet hours,** yours, on the family's clock: 21:00 to 08:00 unless you change them, and they may run past midnight. A text that falls in them waits until they end. Alerts about your own sign-in — a new device, your password, a lock, a change of owner — come at once.
+- **Email when a text can't go.** If a text you asked for can't be sent (this month's texts are all sent, SMS Gate refused it, texts aren't set up, or your number isn't confirmed) and nothing else reached you, the vault emails you instead, through the household's mail server: the day's reminders as the usual email. Never both.
+- Every text counts against the household's monthly limit, whatever its kind, and appears in the owners' log of texts (`reminders`, `alert`, `share_opened`). The capability is `features.sms_notifications`.
+
 ## [0.9.0-dev.30] - 2026-11-11 — a share link shown again, to whoever made it
 
 ### Added

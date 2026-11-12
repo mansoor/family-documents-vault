@@ -2,7 +2,16 @@ import { createCipheriv, randomBytes } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
-import { isLoopbackName, isPrivateAddress, pushAddressProblem } from '@fdv/shared';
+import {
+  CLOCK_TIME,
+  clockTime,
+  isLoopbackName,
+  isPrivateAddress,
+  pushAddressProblem,
+  QUIET_FROM_DEFAULT,
+  QUIET_TO_DEFAULT,
+  type Preferences,
+} from '@fdv/shared';
 import { sql } from 'kysely';
 import nodemailer from 'nodemailer';
 import { z } from 'zod';
@@ -31,8 +40,22 @@ export type Resolve = (host: string) => Promise<string[]>;
 const resolveHost: Resolve = async (host) =>
   (await lookup(host, { all: true })).map((a) => a.address);
 
+/** "21:00": a time of day on the family's clock (quiet hours, SMS2). */
+const clock = z.string().regex(CLOCK_TIME, 'Quiet hours are a time of day, such as 21:00.');
+
 export const preferenceBody = z
-  .object({ daily_push: z.boolean(), daily_email: z.boolean(), weekly_email: z.boolean() })
+  .object({
+    daily_push: z.boolean(),
+    daily_email: z.boolean(),
+    weekly_email: z.boolean(),
+    // Notifications by text (0.9.0, SMS2): each off until turned on, and
+    // the quiet hours they keep to. Left out, each stays as it was.
+    daily_text: z.boolean(),
+    alerts_text: z.boolean(),
+    share_opened_text: z.boolean(),
+    quiet_from: clock,
+    quiet_to: clock,
+  })
   .partial();
 
 export const smtpBody = z.object({
@@ -375,7 +398,12 @@ export class NotificationService {
     });
   }
 
-  async preferences(p: Principal) {
+  /**
+   * What somebody wants to hear, and how. Texts (SMS2) are each off, and
+   * the quiet hours 21:00 to 08:00, until they choose; a text goes only to
+   * their own confirmed number, while the household's texts are set up.
+   */
+  async preferences(p: Principal): Promise<Required<Preferences>> {
     const row = await withPrincipal(this.db, p, (trx) =>
       trx
         .selectFrom('notification_preference')
@@ -387,6 +415,11 @@ export class NotificationService {
       daily_push: row?.daily_push ?? true,
       daily_email: row?.daily_email ?? false,
       weekly_email: row?.weekly_email ?? true,
+      daily_text: row?.daily_text ?? false,
+      alerts_text: row?.alerts_text ?? false,
+      share_opened_text: row?.share_opened_text ?? false,
+      quiet_from: row ? clockTime(row.quiet_from) : QUIET_FROM_DEFAULT,
+      quiet_to: row ? clockTime(row.quiet_to) : QUIET_TO_DEFAULT,
     };
   }
 

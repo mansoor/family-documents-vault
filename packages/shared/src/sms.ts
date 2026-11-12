@@ -14,8 +14,13 @@ import {
  * recommended), through SMS Gate's cloud relay (`cloud`), or through a
  * server of the family's own (`private`) — and sends a test. Only once a
  * test has gone does the vault send any other text, and never more in a
- * calendar month than the owners allow. Notifications by text come later
- * (SMS2): for now a text is a test, or a code.
+ * calendar month than the owners allow.
+ *
+ * Notifications by text (SMS2): each person may ask for the day's reminders,
+ * the security alerts, and news of a link they shared being opened, by
+ * text — each off until they turn it on, only ever to their own confirmed
+ * number, and never in their quiet hours unless it is about their own
+ * account's safety. A text never names a document: a count, or a headline.
  */
 
 /** How the vault reaches SMS Gate. */
@@ -28,8 +33,13 @@ export type SmsStatus = 'untested' | 'ok' | 'failed';
 /** What became of a text, as SMS Gate last said; `not_sent`: SMS Gate never took it. */
 export type SmsState = 'pending' | 'processed' | 'sent' | 'delivered' | 'failed' | 'not_sent';
 
-/** Why a text was sent. */
-export type SmsKind = 'test' | 'phone_code' | 'phone_changed';
+/**
+ * Why a text was sent: a test, a code, a number changed (SMS1); and since
+ * notifications by text (SMS2) the day's reminders, an alert, and a link
+ * that was opened.
+ */
+export type SmsKind =
+  'test' | 'phone_code' | 'phone_changed' | 'reminders' | 'alert' | 'share_opened';
 
 /** SMS Gate's cloud relay: the one address of `cloud`. */
 export const SMS_CLOUD_URL = 'https://api.sms-gate.app/3rdparty/v1';
@@ -224,3 +234,151 @@ export interface MemberPhoneConfirmInput {
 
 /** Said when a number is saved and its code texted. */
 export const PHONE_CODE_SENT = `We texted a ${PHONE_CODE_DIGITS}-digit code to that number. Type it here within ${PHONE_CODE_MINUTES} minutes.`;
+
+// ------------------------------------------------- notifications by text
+
+/** "21:00": a time of day on the family's clock, as quiet hours are said. */
+export const CLOCK_TIME = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+
+/** Quiet hours until somebody chooses their own: nine in the evening to eight in the morning. */
+export const QUIET_FROM_DEFAULT = '21:00';
+export const QUIET_TO_DEFAULT = '08:00';
+
+/** "21:00" (or the database's "21:00:00") as minutes since midnight. */
+export function minuteOfDay(time: string): number {
+  const [h, m] = time.split(':');
+  return (Number(h) % 24) * 60 + (Number(m) % 60);
+}
+
+/** A time as the wire says it: "21:00", whatever the database gave ("21:00:00"). */
+export function clockTime(time: string): string {
+  return time.slice(0, 5);
+}
+
+/**
+ * Whether a minute of the day falls in quiet hours from `from` until `to`,
+ * which may run past midnight (21:00 to 08:00). The same time for both is
+ * no quiet hours at all.
+ */
+export function inQuietHours(minute: number, from: string, to: string): boolean {
+  const f = minuteOfDay(from);
+  const t = minuteOfDay(to);
+  if (f === t) return false;
+  return f < t ? minute >= f && minute < t : minute >= f || minute < t;
+}
+
+/** The minute of the day it is on the family's clock, 0–1439. */
+export function localMinute(timezone: string, now = new Date()): number {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(now);
+    const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? '0');
+    return (get('hour') % 24) * 60 + get('minute');
+  } catch {
+    return now.getUTCHours() * 60 + now.getUTCMinutes();
+  }
+}
+
+/**
+ * When somebody's quiet hours end, as an instant, if it is quiet for them
+ * now on the family's clock; null when it is not. Across a change of the
+ * clocks the end is put right once, so 08:00 is 08:00 on the day it falls.
+ */
+export function quietHoursEnd(
+  timezone: string,
+  from: string,
+  to: string,
+  now = new Date(),
+): Date | null {
+  const minute = localMinute(timezone, now);
+  if (!inQuietHours(minute, from, to)) return null;
+  const end = minuteOfDay(to);
+  const ahead = (end - minute + 1440) % 1440 || 1440;
+  // To the start of the minute, then the minutes ahead.
+  const base = now.getTime() - (now.getTime() % 60_000);
+  let at = new Date(base + ahead * 60_000);
+  const off = localMinute(timezone, at) - end;
+  if (off !== 0 && Math.abs(off) <= 120) at = new Date(at.getTime() - off * 60_000);
+  return at;
+}
+
+/**
+ * The day's reminders by text: how many, and nothing else of them — never
+ * a title, a person or a date. "Things" when one is not a document (a
+ * person who has turned 13).
+ */
+export function remindersText(count: number, allDocuments = true): string {
+  const noun = allDocuments ? 'document' : 'thing';
+  return count === 1
+    ? `Family Vault: 1 ${noun} needs attention today. Open the app to see it.`
+    : `Family Vault: ${count} ${noun}s need attention today. Open the app to see them.`;
+}
+
+/**
+ * What an alert says by text, as a word: its plain headline is chosen by
+ * it, never made from its email's subject (which may name people). A link
+ * is never in one, nor a code.
+ *
+ * `urgent`: about the person's own sign-in — a new device, their password,
+ * a lock, who owns the vault — and sent in their quiet hours too. The rest
+ * wait until the quiet hours end.
+ */
+export type AlertTextKind =
+  | 'new_device'
+  | 'computer_added'
+  | 'password_changed'
+  | 'reset_started'
+  | 'locked'
+  | 'unlocked'
+  | 'signed_out'
+  | 'owner_change'
+  | 'news';
+
+export const ALERT_TEXTS: Record<AlertTextKind, { text: string; urgent: boolean }> = {
+  new_device: {
+    text: 'Family Vault: a new device signed in to your account.',
+    urgent: true,
+  },
+  computer_added: {
+    text: 'Family Vault: a computer was added to your sign-in.',
+    urgent: true,
+  },
+  password_changed: {
+    text: 'Family Vault: your password was changed.',
+    urgent: true,
+  },
+  reset_started: {
+    text: 'Family Vault: a password reset was started for your account.',
+    urgent: true,
+  },
+  locked: { text: 'Family Vault: your sign-in was locked.', urgent: true },
+  unlocked: { text: 'Family Vault: you can sign in to your vault again.', urgent: true },
+  signed_out: { text: 'Family Vault: you were signed out everywhere.', urgent: true },
+  owner_change: {
+    text: 'Family Vault: there was a change to who owns your vault.',
+    urgent: true,
+  },
+  news: { text: 'Family Vault: there is news about your vault in your email.', urgent: false },
+};
+
+export function isAlertTextKind(word: unknown): word is AlertTextKind {
+  return typeof word === 'string' && Object.hasOwn(ALERT_TEXTS, word);
+}
+
+/**
+ * Whom a link was shared for, as a text says it: the family's own label,
+ * on one line and short, else "someone". Never the document.
+ */
+export function shareOpenedText(label: string | null | undefined): string {
+  const clean = (label ?? '')
+    .replace(/\p{Cc}+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 60)
+    .trim();
+  return `Family Vault: the link you shared for ${clean || 'someone'} was opened.`;
+}

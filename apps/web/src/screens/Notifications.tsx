@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { refusalFor, type DeviceRow } from '@fdv/shared';
+import { CLOCK_TIME, refusalFor, type DeviceRow, type Preferences } from '@fdv/shared';
 import { Link } from 'react-router';
 import { api, type SmtpProvider, type SmtpView } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -56,7 +56,7 @@ export function NotificationsScreen() {
     }
   };
 
-  const setPref = async (patch: Record<string, boolean>) => {
+  const setPref = async (patch: Partial<Preferences>) => {
     const next = await withToken((t) => api.updatePreferences(t, patch));
     if (next) setPrefs(next);
   };
@@ -141,6 +141,7 @@ export function NotificationsScreen() {
               checked={prefs.weekly_email}
               onChange={(v) => void setPref({ weekly_email: v })}
             />
+            <TextChoices prefs={prefs} setPref={setPref} />
           </>
         )}
         {isOwner ? (
@@ -170,6 +171,109 @@ export function EmailOutPart() {
     <SmtpSection />
   ) : (
     <p className="lede">{refusalFor('notifications.manage')}</p>
+  );
+}
+
+/**
+ * By text (0.9.0, SMS2): the day's reminders as one text with a count, the
+ * security alerts, and a link they shared being opened — each off until
+ * they turn it on — and their quiet hours. Offered once the household's
+ * texts are set up and their own number is confirmed; until then, where to
+ * add it. Texts go to that number alone.
+ */
+function TextChoices(props: {
+  prefs: Preferences;
+  setPref: (patch: Partial<Preferences>) => Promise<void>;
+}) {
+  const { caps, session, authVersion } = useApp();
+  const me = session.info?.member_id ?? null;
+  const offered = caps?.features.sms_notifications === true && me !== null;
+  const { data: phone } = useLoad(
+    async (t) => (offered && me ? api.memberPhone(t, me) : null),
+    [authVersion, offered, me],
+  );
+  const [problem, setProblem] = useState<string | null>(null);
+  const [from, setFrom] = useState(props.prefs.quiet_from ?? '21:00');
+  const [to, setTo] = useState(props.prefs.quiet_to ?? '08:00');
+  if (!offered || !phone) return null;
+  if (!phone.sms_ready) {
+    return session.info?.role === 'owner' ? (
+      <p className="muted">
+        Texts need text messages set up: <Link to="/settings/texts">Text messages</Link>, under
+        Server and reading in Settings.
+      </p>
+    ) : null;
+  }
+  if (!phone.phone?.confirmed) {
+    return (
+      <p className="muted" data-testid="texts-need-number">
+        Add and confirm your mobile number on <Link to={`/people/${me}`}>your profile</Link> to get
+        texts.
+      </p>
+    );
+  }
+  const { prefs, setPref } = props;
+  const save = async (patch: Partial<Preferences>) => {
+    setProblem(null);
+    try {
+      await setPref(patch);
+    } catch (err) {
+      setProblem(describeError(err));
+    }
+  };
+  // A time is saved once it is a whole one: "21:00", never half typed.
+  const time = (key: 'quiet_from' | 'quiet_to', value: string) => {
+    (key === 'quiet_from' ? setFrom : setTo)(value);
+    if (CLOCK_TIME.test(value)) void save({ [key]: value });
+  };
+  return (
+    <fieldset className="stack" aria-describedby="texts-to">
+      <legend style={{ fontWeight: 600 }}>By text</legend>
+      <p id="texts-to" className="muted">
+        To your number, {phone.phone.masked}. A text never names a document.
+      </p>
+      <ErrorNote message={problem} />
+      <Check
+        id="p-daily-text"
+        label="The day's reminders, by text"
+        hint="One text a day, saying how many things need attention."
+        checked={prefs.daily_text === true}
+        onChange={(v) => void save({ daily_text: v })}
+      />
+      <Check
+        id="p-alerts-text"
+        label="Security alerts, by text"
+        hint="A new sign-in, your password changed, your sign-in locked. These come in your quiet hours too."
+        checked={prefs.alerts_text === true}
+        onChange={(v) => void save({ alerts_text: v })}
+      />
+      <Check
+        id="p-share-text"
+        label="A link I shared is opened, by text"
+        hint="At most once an hour for each link."
+        checked={prefs.share_opened_text === true}
+        onChange={(v) => void save({ share_opened_text: v })}
+      />
+      <div className="row" style={{ gap: 12, flexWrap: 'wrap', alignItems: 'end' }}>
+        <Field
+          id="p-quiet-from"
+          label="Quiet hours from"
+          type="time"
+          value={from}
+          onChange={(v) => time('quiet_from', v)}
+        />
+        <Field
+          id="p-quiet-to"
+          label="Until"
+          type="time"
+          value={to}
+          onChange={(v) => time('quiet_to', v)}
+        />
+      </div>
+      <p className="muted">
+        Quiet hours are on the family&apos;s clock. A text that falls in them waits until they end.
+      </p>
+    </fieldset>
   );
 }
 

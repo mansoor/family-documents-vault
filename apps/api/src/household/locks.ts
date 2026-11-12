@@ -391,6 +391,7 @@ export class LockService {
         householdId: p.householdId,
         accountIds: [target.account_id],
         subject: `Your sign-in to ${hh.name} is locked`,
+        text: 'locked',
         body:
           `${by} locked your sign-in${end}. You cannot sign in meanwhile, and every device you ` +
           'were signed in on has been signed out. Your documents are as you left them. If you ' +
@@ -474,6 +475,7 @@ export class LockService {
         householdId: p.householdId,
         accountIds: [target.account_id],
         subject: `Your sign-in to ${hh.name} is unlocked`,
+        text: 'unlocked',
         body:
           `${by} unlocked your sign-in. You can sign in again with your own password, as before.` +
           (limited ? ` ${LIMITED_WORDS}` : ''),
@@ -525,6 +527,7 @@ export class LockService {
         householdId: p.householdId,
         accountIds: [target.account_id],
         subject: `You can sign in to ${hh.name} again`,
+        text: 'unlocked',
         body:
           'The vault was restored from a backup, and an owner has turned your sign-in back on. Sign in with your own password, as before.' +
           (limited ? ` ${LIMITED_WORDS}` : ''),
@@ -633,6 +636,7 @@ export class LockService {
         householdId: p.householdId,
         accountIds: [after.told.accountId],
         subject: `${by} signed you out of ${household} everywhere`,
+        text: 'signed_out',
         body:
           `${by} signed you out on every device you were signed in on. You can sign in again ` +
           'with your own password, and your documents are as you left them. If you did not ' +

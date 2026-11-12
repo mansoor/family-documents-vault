@@ -187,6 +187,10 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       sms_texts: true,
       // 0.9.0 (the owner's decision of 11 Nov 2026): a link shown again, to its maker.
       share_reveal: true,
+      // 0.9.0 (SMS2): the day's reminders, the alerts and a link opened, by
+      // text, each as the person asks in their preferences, in their own
+      // quiet hours.
+      sms_notifications: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

@@ -106,7 +106,17 @@ describe.skipIf(!testAdminUrl())('notifications', () => {
     const before = json<Record<string, boolean>>(
       await h.app.inject({ url: '/api/v1/notifications/preferences', headers: h.as(owner) }),
     );
-    expect(before).toEqual({ daily_push: true, daily_email: false, weekly_email: true });
+    expect(before).toEqual({
+      daily_push: true,
+      daily_email: false,
+      weekly_email: true,
+      // Notifications by text (0.9.0, SMS2): each off, quiet from nine to eight.
+      daily_text: false,
+      alerts_text: false,
+      share_opened_text: false,
+      quiet_from: '21:00',
+      quiet_to: '08:00',
+    });
     const after = json<Record<string, boolean>>(
       await h.app.inject({
         method: 'PUT',
@@ -115,7 +125,48 @@ describe.skipIf(!testAdminUrl())('notifications', () => {
         payload: { weekly_email: false },
       }),
     );
-    expect(after).toMatchObject({ weekly_email: false, daily_push: true });
+    expect(after).toMatchObject({ weekly_email: false, daily_push: true, daily_text: false });
+  });
+
+  it('texts and quiet hours are kept as sent, the rest left as they were (SMS2)', async () => {
+    const put = (payload: object) =>
+      h.app.inject({
+        method: 'PUT',
+        url: '/api/v1/notifications/preferences',
+        headers: h.as(owner),
+        payload,
+      });
+    const saved = await put({
+      daily_text: true,
+      alerts_text: true,
+      share_opened_text: true,
+      quiet_from: '22:30',
+      quiet_to: '07:15',
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({
+      daily_text: true,
+      alerts_text: true,
+      share_opened_text: true,
+      quiet_from: '22:30',
+      quiet_to: '07:15',
+      weekly_email: false,
+    });
+    // An older client's PUT, without them: they stay as they were.
+    expect((await put({ daily_email: true })).json()).toMatchObject({
+      daily_email: true,
+      daily_text: true,
+      quiet_from: '22:30',
+    });
+    expect(
+      json(await h.app.inject({ url: '/api/v1/notifications/preferences', headers: h.as(owner) })),
+    ).toMatchObject({ alerts_text: true, quiet_to: '07:15' });
+    // A time of day, and nothing else.
+    for (const quiet_from of ['25:00', '9pm', '21:00:00', '']) {
+      expect((await put({ quiet_from })).statusCode).toBe(422);
+    }
+    expect((await put({ daily_text: 'yes' })).statusCode).toBe(422);
+    await put({ daily_text: false, alerts_text: false, share_opened_text: false });
   });
 
   it('SMTP is unset, then saved as untested, and a bad server fails with a sentence', async () => {
