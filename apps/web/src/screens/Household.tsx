@@ -4,14 +4,16 @@ import { flushSync } from 'react-dom';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { TwoStepNeeded } from '../identity.js';
-import { privacyRows, SettingsRows } from '../settings-sections.js';
+import { NeutralWordingCard } from '../neutral-wording.js';
+import { privacyRows, SettingsRows, wordingCard } from '../settings-sections.js';
 import { storedRole } from '../session.js';
 import { ErrorNote, LoadFailed } from '../ui.js';
 import { SettingsPage } from './Settings.js';
 
 /**
  * Settings → Privacy (/settings/privacy; Household until 0.8.0, whose
- * address still opens it): the household's rule for Only me documents and
+ * address still opens it): neutral wording in notifications and email
+ * (0.9.0, H2), an owner's; the household's rule for Only me documents and
  * links outside the family (5.41), and the way to Family, who sees identity
  * details. Kinds of document is a section of its own since 0.8.0 (the
  * owner's ask of 17 Oct 2026). The rule is an owner's to change, with
@@ -20,9 +22,12 @@ import { SettingsPage } from './Settings.js';
  */
 export function PrivacyScreen() {
   const { caps, session } = useApp();
-  const rows = privacyRows(session.info?.role ?? storedRole(), caps);
+  const role = session.info?.role ?? storedRole();
+  const rows = privacyRows(role, caps);
   return (
     <SettingsPage title="Privacy">
+      {/* Neutral wording (0.9.0, H2): the household's, an owner's alone. */}
+      {wordingCard(role, caps) && <NeutralWordingCard />}
       <OnlyMeSharingCard />
       {/* Its page: who sees identity details, where it was shown before. */}
       <SettingsRows rows={rows} label="More about privacy" />

@@ -5,7 +5,7 @@ import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/tes
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TURNED_13_TOLD } from '@fdv/shared';
-import { createNotifier, htmlBody, pushBody, subject, textBody } from './notify.js';
+import { createNotifier, htmlBody, pushBody, subject, textBody, wordingFor } from './notify.js';
 import { deliver, weekly, type Digest } from './reminders.js';
 
 const MASTER = 'notify-test-master-secret-at-least-32-bytes';
@@ -44,6 +44,7 @@ const digest = (over: Partial<Digest> = {}): Digest => ({
   local_date: '2026-09-22',
   kind: 'daily',
   recipient: { account_id: 'acc', email: 'owner@example.test' },
+  wording: ['sensitive'],
   items: [
     {
       reminder_id: 'r1',
@@ -54,6 +55,8 @@ const digest = (over: Partial<Digest> = {}): Digest => ({
       note: null,
       overdue: true,
       private: false,
+      sensitive: false,
+      health: false,
     },
     {
       reminder_id: 'r2',
@@ -64,6 +67,8 @@ const digest = (over: Partial<Digest> = {}): Digest => ({
       note: 'Renew online',
       overdue: false,
       private: false,
+      sensitive: false,
+      health: false,
     },
   ],
   ...over,
@@ -83,6 +88,8 @@ describe('digest copy', () => {
           note: null,
           overdue: false,
           private: false,
+          sensitive: false,
+          health: false,
         },
       ],
     });
@@ -127,6 +134,8 @@ describe('digest copy', () => {
       title: 'Therapy notes',
       note: 'Bring the letter',
       private: true,
+      sensitive: false,
+      health: false,
     };
     const d = digest({ items: [secret] });
     for (const body of [textBody(d, 'x'), htmlBody(d, 'x')]) {
@@ -143,6 +152,8 @@ describe('digest copy', () => {
       label: 'Due today',
       about: 'Due date: 10 Oct, in 7 days',
       private: true,
+      sensitive: false,
+      health: false,
     };
     const d = digest({ items: [secret] });
     for (const body of [textBody(d, 'x'), htmlBody(d, 'x')]) {
@@ -153,6 +164,62 @@ describe('digest copy', () => {
       expect(body).toContain('Due today');
     }
     expect(textBody(d, 'x')).toContain('• One of your private documents — Due today');
+  });
+
+  it('neutral wording (H2) keeps only when it is due, field by field; somebody turned 13 keeps theirs', () => {
+    const item = {
+      ...(digest().items[1] as Digest['items'][number]),
+      title: 'Clinic letter',
+      about: 'Appointment: 2 Oct, in 7 days',
+      note: 'Bring the card',
+      sensitive: true,
+      health: true,
+      // A field added to items later, that nobody has decided may go.
+      extra: 'Dr Patel, oncology',
+    };
+    for (const rules of [['sensitive'], ['health'], ['all'], ['off', 'health']] as const) {
+      expect(wordingFor(item, rules)).toEqual({
+        title: 'A reminder about a document',
+        label: 'In 12 days · 2 Oct',
+        about: null,
+        note: null,
+        overdue: false,
+      });
+    }
+    // Off names it, and still never the field nobody decided on.
+    expect(JSON.stringify(wordingFor(item, ['off']))).not.toContain('Patel');
+    expect(wordingFor({ ...item, sensitive: false }, ['sensitive']).title).toBe('Clinic letter');
+    // Either choice that says so is enough: the union.
+    expect(wordingFor({ ...item, sensitive: false }, ['sensitive', 'health']).title).toBe(
+      'A reminder about a document',
+    );
+    expect(wordingFor({ ...item, health: false }, ['health']).title).toBe('Clinic letter');
+    expect(wordingFor({ ...item, private: true }, ['off']).title).toBe(
+      'One of your private documents',
+    );
+    const d = digest({ wording: ['all'], items: [item] });
+    for (const body of [textBody(d, 'x'), htmlBody(d, 'x'), pushBody(d)]) {
+      for (const words of ['Clinic', 'Appointment', 'Bring the card', 'Patel']) {
+        expect(body).not.toContain(words);
+      }
+      expect(body).toContain('A reminder about a document');
+    }
+    const turned = {
+      reminder_id: 'r13',
+      document_id: null,
+      member_id: 'm13',
+      title: TURNED_13_TOLD.title,
+      label: TURNED_13_TOLD.label,
+      about: null,
+      note: null,
+      overdue: false,
+      private: false,
+      sensitive: false,
+      health: false,
+    };
+    expect(pushBody(digest({ wording: ['all'], items: [turned] }))).toBe(
+      `${TURNED_13_TOLD.title} ${TURNED_13_TOLD.label}`,
+    );
   });
 
   it('the catch-up wording differs from the daily one', () => {
@@ -437,12 +504,15 @@ describe.skipIf(!testAdminUrl())('the digest says what each reminder is about', 
       "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'owner')",
       [a.rows[0]?.id, hh, member],
     );
+    // Not sensitive (a household's own kind starts so, 0090): its title and
+    // date are said, as Sensitive documents only (H2, the default) allows.
     await admin.query(
       `insert into document_type
-         (key, household_id, label, category, fields, reminder_leads, remind_from)
+         (key, household_id, label, category, fields, reminder_leads, remind_from,
+          sensitive_default)
        values ($1, $2, 'Council tax', 'bills',
                '[{"key": "due_date", "label": "Due date", "kind": "date", "required": true}]',
-               '{7}', 'due_date')`,
+               '{7}', 'due_date', false)`,
       [KIND, hh],
     );
   });

@@ -48,7 +48,8 @@ export type StepUpAction =
   | 'change_sms'
   | 'reveal_share'
   | 'change_ai_reader'
-  | 'send_sensitive_papers';
+  | 'send_sensitive_papers'
+  | 'neutral_wording';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -127,6 +128,11 @@ const WHY: Record<StepUpAction, string> = {
   // session picked up from an unlocked device could otherwise send the
   // words of the family's passports and bank statements to a provider.
   send_sensitive_papers: 'to change whether sensitive papers are sent to the AI reader',
+  // Notifications and email naming more of the family's documents (0.9.0,
+  // H2): a session picked up from an unlocked device could otherwise put the
+  // titles of their sensitive papers in every inbox and on every lock
+  // screen. Naming fewer never asks.
+  neutral_wording: 'to let notifications and email name more documents',
 };
 
 /**

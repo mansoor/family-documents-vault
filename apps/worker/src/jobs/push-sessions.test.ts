@@ -50,6 +50,7 @@ describe.skipIf(!testAdminUrl())('push reaches only live sign-ins', () => {
     local_date: '2026-09-22',
     kind: 'daily',
     recipient: { account_id: account, email: 'sessions@example.test' },
+    wording: ['sensitive'],
     items: [
       {
         reminder_id: randomUUID(),
@@ -60,6 +61,8 @@ describe.skipIf(!testAdminUrl())('push reaches only live sign-ins', () => {
         note: null,
         overdue: false,
         private: false,
+        sensitive: false,
+        health: false,
       },
     ],
   });

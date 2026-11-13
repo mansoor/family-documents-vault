@@ -87,6 +87,11 @@ import {
   NOTE_KIND,
   noteMatchWords,
   notePreview,
+  wordingNeedsStepUp,
+  myWordingNeedsStepUp,
+  rulesInEffect,
+  type MyWording,
+  type NeutralWording,
 } from '@fdv/shared';
 import { sha256Of } from './batch-upload.js';
 import { vi } from 'vitest';
@@ -731,6 +736,17 @@ export interface FakeState {
    */
   onlyMeShareable?: boolean;
   /**
+   * Neutral wording in notifications and email (0.9.0, H2): said in
+   * capabilities when a test gives it — the household's choice, and this
+   * person's own. `saves` the bodies of each PUT, household's and theirs.
+   * A household choice that names more asks a step-up while `stepUpNeeded`.
+   */
+  wording?: {
+    household: NeutralWording;
+    mine: MyWording;
+    saves?: Array<{ to: 'household' | 'mine'; body: unknown }>;
+  };
+  /**
    * The signed-in person's own links that would still send a document they
    * make Only me (5.41): the vault asks which way first (409
    * links_choice_needed).
@@ -1253,6 +1269,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.householdOwner ? { household_owner: true } : {}),
           // Sensitive (0.9.0, AIR2): said when a test asks.
           ...(state.sensitive ? { sensitive_documents: true } : {}),
+          // Neutral wording (0.9.0, H2): said when a test gives it.
+          ...(state.wording ? { neutral_wording: true } : {}),
           // A computer that sends scans (0.8.0, D1): said when a test gives computers.
           ...(state.computers ? { device_uploads: true } : {}),
           // Tags you can use (0.9.0, T1): said when a test gives them.
@@ -3169,6 +3187,52 @@ export function installFakeApi(state: FakeState) {
       const next = (body as { only_me_shareable: boolean }).only_me_shareable;
       state.onlyMeShareable = next;
       return json({ only_me_shareable: next, can_change: true });
+    }
+    // Neutral wording (0.9.0, H2): the household's an owner's, each person's own.
+    if (path === '/api/v1/household/neutral-wording' && state.wording) {
+      const w = state.wording;
+      if (storedRole() !== 'owner') {
+        return refuse(
+          403,
+          'forbidden',
+          'Only an owner can choose how notifications name documents for the family.',
+        );
+      }
+      if (method === 'PUT') {
+        const to = (body as { neutral_wording: NeutralWording }).neutral_wording;
+        if (wordingNeedsStepUp(w.household, to) && state.stepUpNeeded) {
+          return refuse(
+            403,
+            'step_up_required',
+            'Please confirm it is you to let notifications and email name more documents.',
+            { action: 'neutral_wording' },
+          );
+        }
+        (w.saves ??= []).push({ to: 'household', body });
+        w.household = to;
+      }
+      return json({ neutral_wording: w.household });
+    }
+    if (path === '/api/v1/notifications/wording' && state.wording) {
+      const w = state.wording;
+      if (method === 'PUT') {
+        const to = (body as { neutral_wording: MyWording }).neutral_wording;
+        if (myWordingNeedsStepUp(w.household, w.mine, to) && state.stepUpNeeded) {
+          return refuse(
+            403,
+            'step_up_required',
+            'Please confirm it is you to let notifications and email name more documents.',
+            { action: 'neutral_wording' },
+          );
+        }
+        (w.saves ??= []).push({ to: 'mine', body });
+        w.mine = to;
+      }
+      return json({
+        neutral_wording: w.mine,
+        household: w.household,
+        in_effect: rulesInEffect(w.household, w.mine),
+      });
     }
     if (path === '/api/v1/shares' && method === 'GET') return json({ items: state.shares });
     // A link shown again to whoever made it (0.9.0): theirs alone, after

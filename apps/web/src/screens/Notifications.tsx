@@ -3,6 +3,7 @@ import { CLOCK_TIME, refusalFor, type DeviceRow, type Preferences } from '@fdv/s
 import { Link } from 'react-router';
 import { api, type SmtpProvider, type SmtpView } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
+import { MyWordingChoice } from '../neutral-wording.js';
 import * as push from '../push.js';
 import { Button, ErrorNote, Field, LoadFailed } from '../ui.js';
 import { SettingsPage } from './Settings.js';
@@ -142,6 +143,8 @@ export function NotificationsScreen() {
               onChange={(v) => void setPref({ weekly_email: v })}
             />
             <TextChoices prefs={prefs} setPref={setPref} />
+            {/* Neutral wording (0.9.0, H2): their own, beside the household's. */}
+            <MyWordingChoice />
           </>
         )}
         {isOwner ? (

@@ -203,6 +203,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0 (AIR2, the owner's ask of 12 Nov 2026): Sensitive, each kind's
       // default per household and each document's own choice.
       sensitive_documents: true,
+      // 0.9.0 (H2): neutral wording in notifications and email — the
+      // household's choice, an owner's, and each person's own beside it.
+      neutral_wording: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

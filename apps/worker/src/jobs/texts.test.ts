@@ -233,6 +233,7 @@ describe.skipIf(!testAdminUrl())('notifications by text (SMS2)', () => {
     local_date: '2026-11-12',
     kind: 'daily',
     recipient: { account_id: p.account, email: `${p.account}@example.test` },
+    wording: ['sensitive'],
     items: Array.from({ length: n }, (_, i) => ({
       reminder_id: `r${i}`,
       document_id: `d${i}`,
@@ -242,6 +243,8 @@ describe.skipIf(!testAdminUrl())('notifications by text (SMS2)', () => {
       note: 'A private note',
       overdue: false,
       private: false,
+      sensitive: false,
+      health: false,
     })),
   });
 

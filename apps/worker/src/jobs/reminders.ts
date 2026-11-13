@@ -18,12 +18,18 @@ import {
   localHour,
   localToday,
   missingFields,
+  myWordingOf,
+  neutralWordingOf,
   reminderAbout,
   reminderLabel,
   seesAdults,
+  HEALTH_CATEGORY,
+  rulesFor,
+  sensitiveOf,
   TURNED_13_TOLD,
   withSealed,
   type DateValue,
+  type NeutralWording,
   type RequiredRules,
 } from '@fdv/shared';
 import { sql } from 'kysely';
@@ -87,11 +93,25 @@ export interface DigestItem {
    */
   overdue: boolean;
   /**
-   * An "Only me" document. Its title may go by push, which is encrypted to
-   * the person's own device, but never by email: the household's mail
-   * server is one an owner can point at themselves.
+   * An "Only me" document. Its title never leaves by email nor, since
+   * H2, by a browser's push: "One of your private documents" on every
+   * channel. The household's mail server is one an owner can point at
+   * themselves, and a lock screen is read by whoever holds the phone.
    */
   private: boolean;
+  /**
+   * Whether its document is sensitive (`sensitiveOf`: its own choice, else
+   * its kind's default as the household has it). Under neutral wording
+   * (H2) such a line says only "A reminder about a document". False for
+   * one about a person (0066), whose words never name anybody.
+   */
+  sensitive: boolean;
+  /**
+   * Whether its document is Health's (H2): its category, its own or else
+   * its kind's, is Medical. Under Health documents only, said in neutral
+   * words. False for one about a person (0066).
+   */
+  health: boolean;
 }
 
 export interface Digest {
@@ -106,6 +126,13 @@ export interface Digest {
    * hidden from — not a teen, not a viewer, not the other adult.
    */
   recipient: { account_id: string; email: string };
+  /**
+   * How this person's copy names documents (H2): the household's choice,
+   * and theirs beside it (`rulesFor`): a line is neutral when any of them
+   * says so. Every channel's words are made through `wordingFor`
+   * (notify.ts) with them.
+   */
+  wording: NeutralWording[];
   items: DigestItem[];
 }
 
@@ -184,6 +211,12 @@ function people(trx: Db) {
         'account.email',
         'access_restriction.include_adults_only',
         'access_restriction.expires_at',
+        // Their own wording, beside the household's (H2).
+        sql<string | null>`(select np.neutral_wording from notification_preference np
+                             where np.account_id = account_household.account_id
+                               and np.household_id = account_household.household_id)`.as(
+          'my_wording',
+        ),
       ])
       .where('account.disabled_at', 'is', null)
       .where(
@@ -204,11 +237,18 @@ function people(trx: Db) {
 async function sendToEach(
   trx: Db,
   notifier: Notifier,
-  base: Omit<Digest, 'recipient' | 'items' | 'kind'>,
+  base: Omit<Digest, 'recipient' | 'items' | 'kind' | 'wording'>,
   due: Due[],
   kindOf: (mine: Due[]) => Digest['kind'],
 ): Promise<Map<string, Set<string>>> {
   const reached = new Map<string, Set<string>>();
+  // The household's choice, read in the same transaction as the reminders.
+  const household = await trx
+    .selectFrom('household')
+    .select('neutral_wording')
+    .where('id', '=', base.household_id)
+    .executeTakeFirst();
+  const householdWording = neutralWordingOf(household?.neutral_wording);
   for (const person of await people(trx)) {
     const viewer = {
       role: person.role,
@@ -234,6 +274,7 @@ async function sendToEach(
       ...base,
       kind: kindOf(mine),
       recipient: { account_id: person.account_id, email: person.email },
+      wording: rulesFor(householdWording, myWordingOf(person.my_wording)),
       items: mine.map((r) => ({
         reminder_id: r.reminder_id,
         document_id: r.document_id,
@@ -244,6 +285,8 @@ async function sendToEach(
         note: r.note,
         overdue: r.overdue,
         private: r.visibility === 'private',
+        sensitive: r.sensitive,
+        health: r.health,
       })),
     });
     for (const r of mine) {
@@ -307,6 +350,12 @@ async function dueItems(
     type_key: string | null;
     visibility: string;
     owner_member_id: string | null;
+    /** The document's own Sensitive choice (0090): null as its kind says. */
+    sensitive: boolean | null;
+    /** Its kind's Sensitive by default, as the household has it; null without a kind. */
+    sensitive_default: boolean | null;
+    /** Its category in effect: its own, else its kind's (H2's Health). */
+    category: string | null;
   }>,
   today: string,
 ): Promise<Due[]> {
@@ -327,6 +376,11 @@ async function dueItems(
       about: about && word ? reminderAbout(word, about, today) : null,
       note: r.note,
       overdue: lapsed(on, today),
+      sensitive: sensitiveOf(
+        { sensitive: r.sensitive },
+        { sensitive_default: r.sensitive_default },
+      ),
+      health: r.category === HEALTH_CATEGORY,
       fire_at: fireAt,
       visibility: r.visibility,
       owner_member_id: r.owner_member_id,
@@ -351,6 +405,8 @@ function personItems(
       about: null,
       note: null,
       overdue: false,
+      sensitive: false,
+      health: false,
       fire_at: fireAt,
       visibility: 'household',
       owner_member_id: null,
@@ -450,6 +506,8 @@ async function deliverTo(
     const due = await trx
       .selectFrom('reminder')
       .innerJoin('document', 'document.id', 'reminder.document_id')
+      // Its kind's Sensitive by default, as the household has it (H2).
+      .leftJoin('effective_document_type as t', 't.key', 'document.type_key')
       // Delivered once per reminder: a still-open reminder is not nagged
       // daily. Escalation to the other adults is REM-09, later.
       .leftJoin('reminder_delivery', 'reminder_delivery.reminder_id', 'reminder.id')
@@ -467,6 +525,9 @@ async function deliverTo(
         'document.type_key',
         'document.visibility',
         'document.owner_member_id',
+        'document.sensitive',
+        't.sensitive_default',
+        sql<string | null>`coalesce(document.category, t.category)`.as('category'),
       ])
       .where('reminder.status', '=', 'due')
       .where('document.deleted_at', 'is', null)
@@ -570,6 +631,7 @@ export async function weekly(deps: ReminderDeps): Promise<{ digests: number }> {
       const rows = await trx
         .selectFrom('reminder')
         .innerJoin('document', 'document.id', 'reminder.document_id')
+        .leftJoin('effective_document_type as t', 't.key', 'document.type_key')
         .select([
           'reminder.id',
           'reminder.document_id',
@@ -582,6 +644,9 @@ export async function weekly(deps: ReminderDeps): Promise<{ digests: number }> {
           'document.type_key',
           'document.visibility',
           'document.owner_member_id',
+          'document.sensitive',
+          't.sensitive_default',
+          sql<string | null>`coalesce(document.category, t.category)`.as('category'),
         ])
         .where('document.deleted_at', 'is', null)
         // No longer needed (0082): not in the Sunday summary either.
