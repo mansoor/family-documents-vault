@@ -1,9 +1,15 @@
 import { createHash } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
+import { networkInterfaces } from 'node:os';
 import { openAiReaderKey } from '@fdv/crypto';
 import type { Db } from '@fdv/db';
 import {
+  AI_READER_DEFAULT_PORTS,
   AI_READER_KINDS_OFFERED,
+  AI_READER_SERVICE_NAMES,
   aiReaderAddress,
+  aiReaderPort,
+  aiReaderUnprovenProblem,
   type AiReaderKind,
   type AiReaderRunsAt,
   type LocalAiOffer,
@@ -73,6 +79,10 @@ export interface AiReaderGuard {
    * Null while not known (a Test, which finds it).
    */
   runsAt: AiReaderRunsAt | null;
+  /** FDV_AI_READER_ALLOWED_PORTS (the AIR1 review, S2a): any other port is refused. */
+  ports?: readonly number[];
+  /** The vault's own services' addresses (S2c), loopback aside: never a reader. */
+  vaultsOwn?: () => Promise<Set<string>>;
 }
 
 /** A reader of a paper's words, whichever kind. */
@@ -87,8 +97,11 @@ export interface AiReader {
     offer: LocalAiOffer,
     o: { priority: 'interactive' | 'check'; signal?: AbortSignal },
   ): Promise<LocalAiAnswer>;
-  /** Test: a tiny fixed prompt, no paper. Never rejects. */
-  test(): Promise<LocalAiAnswer>;
+  /**
+   * Test: a tiny fixed prompt, no paper. Never rejects. `findWhere`: where
+   * it runs is found, not held to where it was said to run.
+   */
+  test(o?: { findWhere?: boolean }): Promise<LocalAiAnswer>;
   /** The models it has, by name alone. Never rejects. */
   models(): Promise<AiReaderModels>;
   /** Whether it answers and has the model. */
@@ -107,6 +120,10 @@ export interface SavedAiReader {
   api_key_encrypted: Buffer | null;
   status: 'untested' | 'ok' | 'failed';
   updated_at: Date;
+  /** The hosted edition's rule, as the API stamped it (the AIR1 review, S1). */
+  https_only: boolean;
+  /** A Test has passed at this kind and address (S2b). */
+  address_proven: boolean;
 }
 
 /** The household's saved reader, whatever its status; undefined, none. As the vault. */
@@ -122,6 +139,8 @@ export async function savedAiReader(trx: Db, hh: string): Promise<SavedAiReader 
       'api_key_encrypted',
       'status',
       'updated_at',
+      'https_only',
+      'address_proven',
     ])
     .where('household_id', '=', hh)
     .executeTakeFirst();
@@ -133,8 +152,16 @@ export type NotBuilt = 'not_offered' | 'refused' | 'key';
 export interface HouseholdAiReadersOptions {
   /** deriveKey(master, AI_READER_KEY_PURPOSE): what a saved API key is opened with. */
   key: Buffer;
-  /** The hosted edition (FDV_EDITION=hosted): only https to a public address. */
+  /**
+   * The hosted edition (FDV_EDITION=hosted): only https to a public address.
+   * A reader the API saved as https-only is held to it too, whatever this
+   * says (the AIR1 review, S1).
+   */
   publicOnly: boolean;
+  /** FDV_AI_READER_ALLOWED_PORTS (S2a): the default list unless set. */
+  ports?: readonly number[];
+  /** How the vault's own service names are resolved (S2c): DNS, unless a test says. */
+  resolveAll?: (host: string) => Promise<string[]>;
   log?: Log;
   /** Tests: the network stood in for, and the clock. */
   client?: Pick<LocalAiClientOptions, 'resolve' | 'now' | 'testMs' | 'probeMs' | 'ownAddresses'>;
@@ -148,8 +175,47 @@ export interface HouseholdAiReadersOptions {
  */
 export class HouseholdAiReaders {
   private readonly kept = new Map<string, { print: string; reader: AiReader }>();
+  private own: { at: number; set: Promise<Set<string>> } | null = null;
 
   constructor(private readonly o: HouseholdAiReadersOptions) {}
+
+  /**
+   * The vault's own addresses (the AIR1 review, S2c), found again each
+   * minute: the worker's own but loopback, and what the compose file's
+   * service names resolve to — loopback aside, which a reader on a family's
+   * own server may be.
+   */
+  private vaultsOwn = (): Promise<Set<string>> => {
+    const now = Date.now();
+    if (this.own && now - this.own.at < 60_000) return this.own.set;
+    const set = (async () => {
+      const out = new Set<string>();
+      const mine = this.o.client?.ownAddresses?.() ?? workerAddresses();
+      for (const a of mine) out.add(a.toLowerCase());
+      const resolveAll = this.o.resolveAll ?? dnsAll;
+      for (const name of AI_READER_SERVICE_NAMES) {
+        try {
+          for (const a of await resolveAll(name)) out.add(a.toLowerCase());
+        } catch {
+          // Not a name here.
+        }
+      }
+      for (const a of [...out]) if (isLoopback(a)) out.delete(a);
+      return out;
+    })();
+    this.own = { at: now, set };
+    return set;
+  };
+
+  /**
+   * The reader kept for the household, when it is the one saved as it is
+   * now (AIR1 review, M5): Test and the models go through it, its line and
+   * breaker, and a Test that answers ends its rest.
+   */
+  keptFor(hh: string, row: SavedAiReader): AiReader | null {
+    const had = this.kept.get(hh);
+    return had && had.print === fingerprint(row) ? had.reader : null;
+  }
 
   /**
    * The reader a household's papers go to now: its saved one, once a Test
@@ -188,9 +254,13 @@ export class HouseholdAiReaders {
     if (!AI_READER_KINDS_OFFERED.includes(row.kind) || row.kind !== 'ollama') {
       return { not: 'not_offered' };
     }
+    // The strictest of the worker's edition and the rule saved with it (S1).
+    const publicOnly = this.o.publicOnly || row.https_only;
     // Checked again here as the API checked it: what it let through is not trusted.
-    const address = aiReaderAddress(row.base_url ?? '', { httpsOnly: this.o.publicOnly });
+    const address = aiReaderAddress(row.base_url ?? '', { httpsOnly: publicOnly });
     if ('problem' in address) return { not: 'refused' };
+    const ports = this.o.ports ?? AI_READER_DEFAULT_PORTS;
+    if (!ports.includes(aiReaderPort(address.url))) return { not: 'refused' };
     let apiKey: string | null = null;
     if (row.api_key_encrypted) {
       try {
@@ -211,7 +281,7 @@ export class HouseholdAiReaders {
           ...(this.o.client ?? {}),
           ...(this.o.log ? { log: this.o.log } : {}),
           apiKey,
-          guard: { publicOnly: this.o.publicOnly, runsAt },
+          guard: { publicOnly, runsAt, ports, vaultsOwn: this.vaultsOwn },
         },
       ),
     };
@@ -226,7 +296,26 @@ function fingerprint(row: SavedAiReader): string {
     row.model,
     String(row.timeout_seconds),
     row.runs_at,
+    String(row.https_only),
     row.updated_at.toISOString(),
     row.api_key_encrypted ? createHash('sha256').update(row.api_key_encrypted).digest('hex') : '',
   ].join('\0');
 }
+
+/** The worker's own addresses. */
+function workerAddresses(): Set<string> {
+  const out = new Set<string>();
+  for (const list of Object.values(networkInterfaces())) {
+    for (const a of list ?? []) out.add(a.address.toLowerCase());
+  }
+  return out;
+}
+
+const dnsAll = async (host: string) =>
+  (await lookup(host, { all: true, verbatim: true })).map((a) => a.address);
+
+/** Loopback: this machine, which a reader on a family's own server may be. */
+const isLoopback = (a: string) => /^127\./.test(a) || a === '::1' || /^::ffff:127\./i.test(a);
+
+/** What a Test or the models say of an address no Test has passed at (S2b): two outcomes alone. */
+export const unproven = aiReaderUnprovenProblem;

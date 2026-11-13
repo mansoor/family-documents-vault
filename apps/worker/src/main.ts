@@ -557,6 +557,7 @@ async function main(): Promise<void> {
       : new HouseholdAiReaders({
           key: deriveKey(masterSecret, AI_READER_KEY_PURPOSE),
           publicOnly: config.FDV_EDITION === 'hosted',
+          ports: config.FDV_AI_READER_ALLOWED_PORTS,
           log,
         });
   if (aiReaders) log('info', 'AI readers saved in Settings are used, once tested');

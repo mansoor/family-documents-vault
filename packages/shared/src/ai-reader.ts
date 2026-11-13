@@ -76,7 +76,16 @@ export const AI_READER_CAP_DEFAULT = 500;
 
 /** Why an address typed is not one the vault keeps. */
 export type AiReaderAddressProblem =
-  'not_url' | 'scheme' | 'credentials' | 'query' | 'path' | 'no_host' | 'https_needed';
+  | 'not_url'
+  | 'scheme'
+  | 'credentials'
+  | 'query'
+  | 'path'
+  | 'no_host'
+  | 'https_needed'
+  | 'too_long'
+  | 'port'
+  | 'own';
 
 const ADDRESS_WORDS: Readonly<Record<AiReaderAddressProblem, string>> = {
   not_url: 'Type the reader’s address, such as http://192.168.1.30:11434.',
@@ -86,6 +95,9 @@ const ADDRESS_WORDS: Readonly<Record<AiReaderAddressProblem, string>> = {
   path: 'Type only the address, such as http://192.168.1.30:11434: the vault adds the rest.',
   no_host: 'Type the reader’s address, with its host: http://192.168.1.30:11434.',
   https_needed: 'On this vault the reader’s address must start with https://.',
+  too_long: 'That address is too long. Type the reader’s address alone.',
+  port: 'The vault reaches readers only on the ports whoever runs it allows: 11434 is Ollama’s own.',
+  own: 'That is the vault’s own server, not a reader. Type the address of the machine Ollama runs on.',
 };
 
 /** What is wrong with an address, in words. */
@@ -130,11 +142,68 @@ export function aiReaderAddress(
   if (!url.hostname) return { problem: 'no_host' };
   if (url.pathname !== '/' && url.pathname !== '') return { problem: 'path' };
   if (o.httpsOnly && url.protocol !== 'https:') return { problem: 'https_needed' };
+  // The database keeps 8 to 300 characters (0089): longer is said, not a server error.
+  if (`${url.protocol}//${url.host}`.length > AI_READER_URL_MAX) return { problem: 'too_long' };
+  // The vault's own services, by name (the AIR1 review, S2c).
+  if (aiReaderNameRefused(url.hostname)) return { problem: 'own' };
   return {
     url: `${url.protocol}//${url.host}`,
     host: url.host,
     hostname: url.hostname.replace(/^\[|\]$/g, ''),
   };
+}
+
+/** The longest address kept. */
+export const AI_READER_URL_MAX = 300;
+
+/**
+ * The ports a reader set in Settings may be on unless the operator says
+ * others (FDV_AI_READER_ALLOWED_PORTS; the AIR1 review, S2): Ollama's own,
+ * LM Studio's, and the usual web ports — so Test is no port scanner.
+ */
+export const AI_READER_DEFAULT_PORTS: readonly number[] = [11434, 1234, 8000, 8080, 80, 443];
+
+/** The port an address kept (`scheme://host[:port]`) is reached on. */
+export function aiReaderPort(url: string): number {
+  const m = /^(https?):\/\/(?:\[[^\]]*\]|[^:/]*)(?::(\d+))?$/i.exec(url);
+  if (m?.[2]) return Number(m[2]);
+  return m?.[1]?.toLowerCase() === 'https' ? 443 : 80;
+}
+
+/**
+ * The vault's own services, as the compose file names them (the AIR1
+ * review, S2c): never a reader, whatever the edition. Their addresses are
+ * refused too, where they can be found.
+ */
+export const AI_READER_SERVICE_NAMES: readonly string[] = ['postgres', 'api', 'web', 'worker'];
+
+/** Whether a host is one of the vault's own services, by name: `api`, or compose's `fdv-api-1`. */
+export function aiReaderNameRefused(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/\.$/, '');
+  return AI_READER_SERVICE_NAMES.some(
+    (n) => h === n || new RegExp(`^[a-z0-9_.-]+[-_]${n}[-_]\\d+$`).test(h),
+  );
+}
+
+/**
+ * What a Test or the list of models says of an address no Test has ever
+ * passed at (the AIR1 review, S2b): only "couldn't reach it" or "reached
+ * it, but it isn't that kind of reader" — never which way it failed, so it
+ * tells nothing of what else listens on the household's network.
+ */
+export function aiReaderUnprovenProblem(p: LocalAiProblem): LocalAiProblem {
+  switch (p) {
+    case 'http_error':
+    case 'too_big':
+    case 'bad_reply':
+    case 'no_model':
+      return 'bad_reply';
+    case 'not_set_up':
+    case 'not_saved':
+      return p;
+    default:
+      return 'unreachable';
+  }
 }
 
 /** An IP literal, v4 or v6 (unbracketed). */

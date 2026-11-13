@@ -412,7 +412,10 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     key: deriveKey(TEST_MASTER, AI_READER_KEY_PURPOSE),
     edition: config.FDV_EDITION,
     settings: config.FDV_AI_READER_SETTINGS,
+    allowedPorts: config.FDV_AI_READER_ALLOWED_PORTS,
     checks: settingsChecks,
+    // The harness's own addresses: none, so a test's 192.168.x is never this machine's.
+    ownAddresses: () => new Set(),
     server: () => localAiState.server(),
     resolve:
       opts.aiResolve ??

@@ -23,6 +23,7 @@ import {
 } from '@fdv/shared';
 import {
   savedAiReader,
+  unproven,
   type AiReader,
   type HouseholdAiReaders,
   type LocalAiAnswer,
@@ -115,7 +116,7 @@ export interface SettingsCheckDeps {
    * The readers owners save in Settings (AIR1): none where .env sets one
    * (it wins) or FDV_AI_READER_SETTINGS is off, and Test says so.
    */
-  aiReaders?: Pick<HouseholdAiReaders, 'build'> | null;
+  aiReaders?: Pick<HouseholdAiReaders, 'build' | 'keptFor'> | null;
 }
 
 /** Why there is no answer, as Test says it: never anything the reader said. */
@@ -169,20 +170,26 @@ export async function testSavedAiReader(
   if (!row) return none('not_saved');
   const host = row.base_url ? new URL(row.base_url).host : undefined;
   const at = { model: row.model, ...(host ? { host } : {}) };
-  const built = deps.aiReaders.build(hh, row, null);
+  // The reader kept for it, its line and breaker, where it is the one saved
+  // as it is (M5); else one made fresh.
+  const kept = deps.aiReaders.keptFor(hh, row);
+  const built = kept ? { reader: kept } : deps.aiReaders.build(hh, row, null);
   let found: LocalAiTestFound;
   let reader: AiReader | null = null;
   if ('not' in built) {
     found = none(notBuiltProblem(built.not), at);
   } else {
     reader = built.reader;
-    const got = await reader.test();
+    const got = await reader.test({ findWhere: true });
     found =
       got.state === 'replied'
         ? { ...none('not_set_up', at), problem: null, latency_ms: got.ms }
         : none(problemOf(got), at);
     if (reader.lastRunsAt) found.runs_at = reader.lastRunsAt;
   }
+  // Never passed a Test at this address (S2b): only "couldn't reach it" or
+  // "reached it, but it isn't that kind of reader".
+  if (found.problem && !row.address_proven) found.problem = unproven(found.problem);
   const ok = found.problem === null;
   const runsAt = reader?.lastRunsAt ?? null;
   await withSystem(deps.db, hh, async (trx) => {
@@ -195,6 +202,7 @@ export async function testSavedAiReader(
               status: 'ok',
               last_tested_at: new Date(),
               last_problem: null,
+              address_proven: true,
               ...(runsAt ? { runs_at: runsAt } : {}),
             }
           : { status: 'failed', last_tested_at: new Date(), last_problem: found.problem },
@@ -234,12 +242,14 @@ export async function listSavedAiModels(
   if (!deps.aiReaders) return { problem: 'not_set_up', models: [] };
   const row = await withSystem(deps.db, hh, (trx) => savedAiReader(trx, hh));
   if (!row) return { problem: 'not_saved', models: [] };
-  const built = deps.aiReaders.build(hh, row, null);
+  const kept = deps.aiReaders.keptFor(hh, row);
+  const built = kept ? { reader: kept } : deps.aiReaders.build(hh, row, null);
   if ('not' in built) return { problem: notBuiltProblem(built.not), models: [] };
   const got = await built.reader.models();
-  return got.state === 'listed'
-    ? { problem: null, models: got.names }
-    : { problem: problemOf(got), models: [] };
+  if (got.state === 'listed') return { problem: null, models: got.names };
+  const problem = problemOf(got);
+  // Never passed a Test at this address (S2b): two outcomes alone.
+  return { problem: row.address_proven ? problem : unproven(problem), models: [] };
 }
 
 /**

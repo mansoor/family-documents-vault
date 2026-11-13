@@ -28,6 +28,8 @@ const DNS: Record<string, string[]> = {
   'nas.example.com': ['192.168.1.40'],
   'metadata.example.com': ['169.254.169.254'],
   'mixed.example.com': ['192.168.1.40', '203.0.113.10'],
+  // The vault's own worker, as the compose file names it (the review, S2c).
+  worker: ['172.18.0.4'],
 };
 const aiResolve = async (host: string) => {
   const got = DNS[host];
@@ -245,6 +247,47 @@ describe.skipIf(!testAdminUrl())('the AI reader set in Settings (AIR1)', () => {
     expect(await stored()).toBeUndefined();
   });
 
+  it('only on the ports the operator allows, and never at the vault’s own services (the review, S2)', async () => {
+    const port = await call(owner, 'PUT', AT, body({ base_url: 'http://192.168.1.30:5432' }));
+    expect([port.statusCode, codeOf(port)]).toEqual([422, 'ai_reader_port_refused']);
+    expect(port.body).toContain('11434');
+    for (const base_url of [
+      'http://api:11434',
+      'http://postgres:8080',
+      'http://fdv-web-1',
+      'http://worker:11434',
+      'http://172.18.0.4:11434',
+    ]) {
+      const r = await call(owner, 'PUT', AT, body({ base_url }));
+      expect([base_url, r.statusCode, codeOf(r)]).toEqual([
+        base_url,
+        422,
+        'ai_reader_address_refused',
+      ]);
+    }
+    expect(await stored()).toBeUndefined();
+    // Each of the default ports, and a host's own name for Docker, are fine.
+    for (const at of [
+      'http://192.168.1.30:1234',
+      'http://host.docker.internal:11434',
+      'http://a',
+    ]) {
+      expect((await call(owner, 'PUT', AT, body({ base_url: at }))).statusCode).toBe(200);
+    }
+    // Too long is said, not a server error (M3).
+    const long = await call(owner, 'PUT', AT, body({ base_url: `http://${'a'.repeat(300)}.lan` }));
+    expect([long.statusCode, codeOf(long)]).toEqual([422, 'validation_failed']);
+  });
+
+  it('keeps the last four of a long key alone: a short key is never shown back (the review, M1)', async () => {
+    expect((await save({ api_key: 'abcd' })).reader).toMatchObject({
+      api_key: 'set',
+      api_key_last4: null,
+    });
+    expect((await save({ api_key: '12345678901' })).reader?.api_key_last4).toBeNull();
+    expect((await save({ api_key: '123456789012' })).reader?.api_key_last4).toBe('9012');
+  });
+
   it('says where it runs: your own network, or a cloud service (decision 2)', async () => {
     const at = async (base_url: string) => (await save({ base_url })).reader?.runs_at;
     expect(await at('http://ollama:11434')).toBe('own_network');
@@ -452,6 +495,29 @@ describe.skipIf(!testAdminUrl())('FDV_AI_READER_SETTINGS=off (AIR1)', () => {
     const test = await h.app.inject({ method: 'POST', url: `${AT}/test`, headers: h.as(owner) });
     expect(codeOf(test)).toBe('ai_reader_settings_off');
   });
+
+  it('still lets an owner forget a reader saved before, key and all (the review, M4)', async () => {
+    const admin = createPool(h.adminUrl, 1);
+    try {
+      await admin.query(
+        `insert into ai_reader (household_id, kind, base_url, model, runs_at, api_key_encrypted)
+         values ($1, 'ollama', 'http://192.168.1.30:11434', 'm', 'own_network', $2)`,
+        [owner.household_id, Buffer.alloc(40, 1)],
+      );
+      const gone = await h.app.inject({
+        method: 'DELETE',
+        url: '/api/v1/household/reading/ai-reader',
+        headers: h.as(owner),
+      });
+      expect(gone.statusCode, gone.body).toBe(200);
+      expect(
+        (await admin.query('select 1 from ai_reader where household_id = $1', [owner.household_id]))
+          .rows,
+      ).toEqual([]);
+    } finally {
+      await admin.end();
+    }
+  });
 });
 
 describe.skipIf(!testAdminUrl())('the hosted edition (AIR1, decision 9)', () => {
@@ -498,5 +564,16 @@ describe.skipIf(!testAdminUrl())('the hosted edition (AIR1, decision 9)', () => 
       https_only: true,
       reader: { runs_at: 'cloud', base_url: 'https://reader.example.com' },
     });
+    // The rule is kept with the reader, for a worker without FDV_EDITION (the review, S1).
+    const admin = createPool(h.adminUrl, 1);
+    try {
+      const row = await admin.query<{ https_only: boolean }>(
+        'select https_only from ai_reader where household_id = $1',
+        [owner.household_id],
+      );
+      expect(row.rows).toEqual([{ https_only: true }]);
+    } finally {
+      await admin.end();
+    }
   });
 });

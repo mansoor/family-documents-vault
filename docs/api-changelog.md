@@ -6175,7 +6175,8 @@ password, code?)`, `invite` with `invitee_phone`. The fake answers
         `source` (`'settings' | 'env' | 'off'`), `kinds`, `env` (`.env`'s
         reader while it wins: `kind`, `model`, `host`, `runs_at`), `reader`
         (`AiReaderSaved`, or null) and `https_only`. Never the key:
-        `api_key: 'set' | 'not_set'` and `api_key_last4`.
+        `api_key: 'set' | 'not_set'` and `api_key_last4` (null for a key
+        shorter than 12 characters, which it would show whole).
       - `PUT /api/v1/household/reading/ai-reader` — `AiReaderInput`
         (`kind`, `base_url`, `model`, `timeout_seconds` 5–300,
         `monthly_cap` 1–100000, `api_key` optional: left out keeps the key
@@ -6184,19 +6185,27 @@ password, code?)`, `invite` with `invitee_phone`. The fake answers
         `status: 'untested'`; a new kind, address, model or key resets a
         passed Test, a new timeout or cap alone does not.
       - `DELETE /api/v1/household/reading/ai-reader` (step-up
-        `change_ai_reader`) — forgotten, key and all.
+        `change_ai_reader`) — forgotten, key and all; in every state, `.env`
+        winning or `FDV_AI_READER_SETTINGS=off` too.
       - `POST /api/v1/household/reading/ai-reader/test` and `…/models` —
         `202` and a `SettingsCheckView` (`kind: 'ai_reader'` or
         `'ai_models'`), answered by the worker at `GET
 /api/v1/settings-checks/{id}`: `ai_reader` (a `LocalAiTestResult`
         with `runs_at`) or `ai_models` (`AiReaderModelsResult`: `problem`,
         `models` — names alone — and `words`). A Test that passes marks the
-        reader `ok`, and where it runs; only the vault says so.
+        reader `ok`, and where it runs; only the vault says so. At an
+        address no Test has passed at, a failed Test or list says only
+        `unreachable` or `bad_reply`, never which way it failed; once one
+        has, in detail.
     - **Errors:** `422 validation_failed` (the address not `scheme://host[:port]`
       — a sign-in, path, query or fragment; another scheme; http on the hosted
       edition; a model, timeout or cap out of shape), `422
-ai_reader_address_refused` (link-local, "this network", multicast; on the
-      hosted edition any address inside a network), `422
+ai_reader_address_refused` (link-local, "this network", multicast, the
+      clouds' metadata addresses; the vault's own services — `postgres`,
+      `api`, `web`, `worker`, their compose names and addresses, the API's own
+      — loopback aside; on the hosted edition any address inside a network),
+      `422 ai_reader_port_refused` (a port not in `FDV_AI_READER_ALLOWED_PORTS`:
+      11434, 1234, 8000, 8080, 80 and 443 unless the operator says), `422
 ai_reader_kind_not_offered` (`anthropic`, `openai_compatible` for now),
       `409 ai_reader_locked` (`.env` sets the reader), `409
 ai_reader_settings_off`, `409 ai_reader_not_saved` (Test or the models

@@ -230,7 +230,7 @@ export class OllamaReader implements AiReader {
    * took, and why not. An answer not in Ollama's own shape is `bad_reply`
    * (AIR1): what it said is never handed on.
    */
-  async test(): Promise<LocalAiAnswer> {
+  async test(o: { findWhere?: boolean } = {}): Promise<LocalAiAnswer> {
     const body = JSON.stringify({
       model: this.settings.model,
       stream: false,
@@ -243,7 +243,8 @@ export class OllamaReader implements AiReader {
       this.now(),
       undefined,
       async (signal) => {
-        const got = await this.post('/api/chat', body, signal);
+        // A Test finds where it runs (AIR1): the address said is not held to.
+        const got = await this.request('POST', '/api/chat', body, signal, undefined, o.findWhere);
         if (got.state === 'replied' && !chatShaped(got.body)) {
           return { state: 'without', why: 'bad_reply', ms: got.ms };
         }
@@ -448,15 +449,26 @@ export class OllamaReader implements AiReader {
    * addresses; and never a public one for a reader said to be on the
    * household's own network. .env's reader is the operator's to choose.
    */
-  private allowed(address: string, secure: boolean): boolean {
+  private async allowed(
+    address: string,
+    secure: boolean,
+    port: number,
+    findWhere: boolean,
+  ): Promise<boolean> {
     const g = this.opts.guard;
     if (!g) return true;
+    // Only the ports the operator allows (the AIR1 review, S2a).
+    if (g.ports && !g.ports.includes(port)) return false;
+    // Never one of the vault's own services (S2c).
+    if (g.vaultsOwn && (await g.vaultsOwn()).has(address.toLowerCase())) return false;
     if (g.publicOnly) {
       if (!secure) return false;
       if ((this.opts.ownAddresses ?? ownAddresses)().has(address.toLowerCase())) return false;
     }
     if (!aiReaderAddressAllowed(address, { publicOnly: g.publicOnly })) return false;
-    if (g.runsAt === 'own_network' && aiReaderRunsAtOf(address) === 'cloud') return false;
+    if (!findWhere && g.runsAt === 'own_network' && aiReaderRunsAtOf(address) === 'cloud') {
+      return false;
+    }
     return true;
   }
 
@@ -472,6 +484,8 @@ export class OllamaReader implements AiReader {
     signal: AbortSignal,
     /** The most of the reply read: LOCAL_AI_REPLY_MAX_BYTES, but for the list of models. */
     maxBytes: number = LOCAL_AI_REPLY_MAX_BYTES,
+    /** A Test, which finds where it runs rather than holding it to where it was said to. */
+    findWhere = false,
   ): Promise<LocalAiAnswer> {
     const began = this.now();
     const without = (why: LocalAiWithout, status?: number): LocalAiAnswer => ({
@@ -495,11 +509,14 @@ export class OllamaReader implements AiReader {
     }
     if (signal.aborted) return without('timeout');
     const secure = base.protocol === 'https:';
+    const port = base.port ? Number(base.port) : secure ? 443 : 80;
     // The address found, checked before a byte is sent (AIR1).
-    if (!isIP(address) || !this.allowed(address, secure)) return without('refused');
+    if (!isIP(address) || !(await this.allowed(address, secure, port, findWhere))) {
+      return without('refused');
+    }
+    if (signal.aborted) return without('timeout');
     this.lastRunsAt = aiReaderRunsAtOf(address);
     const family = isIP(address) === 6 ? 6 : 4;
-    const port = base.port ? Number(base.port) : secure ? 443 : 80;
     const prefix = base.pathname.replace(/\/+$/, '');
     const payload = body === null ? null : Buffer.from(body, 'utf8');
     const key = this.opts.apiKey;

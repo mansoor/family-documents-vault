@@ -181,11 +181,32 @@ describe.skipIf(!testAdminUrl())('a reader saved in Settings, as the worker uses
   let fake: FakeOllama;
   let hh: string;
   let owner: string;
-  const readers = (publicOnly = false) =>
+  /** What names resolve to here: 127.0.0.1, unless a test says. */
+  let resolveTo = '127.0.0.1';
+  const readers = (
+    publicOnly = false,
+    o: {
+      ports?: number[];
+      services?: Readonly<Record<string, readonly string[]>>;
+      own?: readonly string[];
+    } = {},
+  ) =>
     new HouseholdAiReaders({
       key: KEY,
       publicOnly,
-      client: { resolve: async () => '127.0.0.1', ownAddresses: () => new Set(), testMs: 3_000 },
+      // The fake listens on a port of its own: allowed, unless a test says.
+      ports: o.ports ?? [fake.port],
+      resolveAll: async (name) => {
+        const got = o.services?.[name];
+        if (!got) throw new Error('not found');
+        return [...got];
+      },
+      client: {
+        resolve: async () => resolveTo,
+        ownAddresses: () => new Set(o.own ?? []),
+        testMs: 3_000,
+        probeMs: 3_000,
+      },
     });
 
   beforeAll(async () => {
@@ -204,6 +225,8 @@ describe.skipIf(!testAdminUrl())('a reader saved in Settings, as the worker uses
   afterEach(async () => {
     fake.requests.length = 0;
     fake.answers = [{ form: {} }];
+    fake.tagsStatus = 200;
+    resolveTo = '127.0.0.1';
     await admin.query('delete from settings_check');
     await admin.query('delete from ai_reader');
   });
@@ -214,12 +237,21 @@ describe.skipIf(!testAdminUrl())('a reader saved in Settings, as the worker uses
     await tdb?.drop();
   });
 
-  const save = async (o: { status?: string; key?: string; runsAt?: string } = {}) => {
-    const base = `http://reader.test:${fake.port}`;
+  const save = async (
+    o: {
+      status?: string;
+      key?: string;
+      runsAt?: string;
+      httpsOnly?: boolean;
+      proven?: boolean;
+      base?: string;
+    } = {},
+  ) => {
+    const base = o.base ?? `http://reader.test:${fake.port}`;
     await admin.query(
       `insert into ai_reader (household_id, kind, base_url, model, runs_at, status,
-                              api_key_encrypted, api_key_last4)
-       values ($1, 'ollama', $2, $3, $4, $5, $6, $7)`,
+                              api_key_encrypted, api_key_last4, https_only, address_proven)
+       values ($1, 'ollama', $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         hh,
         base,
@@ -228,6 +260,8 @@ describe.skipIf(!testAdminUrl())('a reader saved in Settings, as the worker uses
         o.status ?? 'untested',
         o.key ? sealAiReaderKey(KEY, o.key, hh, { kind: 'ollama', baseUrl: base }) : null,
         o.key ? o.key.slice(-4) : null,
+        o.httpsOnly ?? false,
+        o.proven ?? false,
       ],
     );
   };
@@ -328,7 +362,8 @@ describe.skipIf(!testAdminUrl())('a reader saved in Settings, as the worker uses
     await save();
     const real = readers();
     // The model changed by an owner while the Test was on its way.
-    const racing: Pick<HouseholdAiReaders, 'build'> = {
+    const racing: Pick<HouseholdAiReaders, 'build' | 'keptFor'> = {
+      keptFor: () => null,
       build: (h, saved, runsAt) => {
         const built = real.build(h, saved, runsAt);
         if (!('reader' in built)) return built;
@@ -392,8 +427,132 @@ describe.skipIf(!testAdminUrl())('a reader saved in Settings, as the worker uses
     await save();
     const id = await ask('ai_reader');
     await runSettingsCheck(deps({ aiReaders: readers(true) }), { household_id: hh, check_id: id });
-    // http is refused before it is built; nothing reaches the fake.
-    expect(await answer(id)).toMatchObject({ problem: 'refused' });
+    // http is refused before it is built; nothing reaches the fake. Never
+    // passed a Test there, it is said as not reached (S2b).
+    expect(await answer(id)).toMatchObject({ problem: 'unreachable' });
     expect(fake.requests).toEqual([]);
+  });
+
+  it('a reader the API saved as https-only is held to it by a worker without FDV_EDITION (the review, S1)', async () => {
+    // Saved on the hosted edition: https, at a name that now resolves inside a network.
+    await save({ httpsOnly: true, proven: true, base: `https://reader.test:${fake.port}` });
+    resolveTo = '10.0.0.5';
+    const id = await ask('ai_reader');
+    // The worker's own FDV_EDITION is self_hosted (publicOnly false).
+    await runSettingsCheck(deps({ aiReaders: readers(false) }), { household_id: hh, check_id: id });
+    expect(await answer(id)).toMatchObject({ problem: 'refused' });
+    // And http under that rule is never built at all.
+    await admin.query('delete from ai_reader');
+    await save({ httpsOnly: true, proven: true });
+    const plain = await ask('ai_reader');
+    await runSettingsCheck(deps({ aiReaders: readers(false) }), {
+      household_id: hh,
+      check_id: plain,
+    });
+    expect(await answer(plain)).toMatchObject({ problem: 'refused' });
+    expect(fake.requests).toEqual([]);
+  });
+
+  it('only the ports the operator allows (the review, S2a): any other is refused, nothing sent', async () => {
+    await save({ proven: true });
+    const id = await ask('ai_reader');
+    await runSettingsCheck(deps({ aiReaders: readers(false, { ports: [11434, 443] }) }), {
+      household_id: hh,
+      check_id: id,
+    });
+    expect(await answer(id)).toMatchObject({ problem: 'refused' });
+    const models = await ask('ai_models');
+    await runSettingsCheck(deps({ aiReaders: readers(false, { ports: [11434, 443] }) }), {
+      household_id: hh,
+      check_id: models,
+    });
+    expect(await answer(models)).toMatchObject({ problem: 'refused', models: [] });
+    expect(fake.requests).toEqual([]);
+  });
+
+  it('never the vault’s own services or the worker’s own addresses; loopback stays allowed (S2c)', async () => {
+    await save({ proven: true });
+    for (const [resolveAt, o] of [
+      ['10.9.9.9', { services: { api: ['10.9.9.9'] } }],
+      ['10.9.9.8', { services: { postgres: ['10.9.9.8', '127.0.0.1'] } }],
+      ['192.168.50.5', { own: ['192.168.50.5', '127.0.0.1'] }],
+    ] as const) {
+      resolveTo = resolveAt;
+      const id = await ask('ai_reader');
+      await runSettingsCheck(deps({ aiReaders: readers(false, o) }), {
+        household_id: hh,
+        check_id: id,
+      });
+      expect([resolveAt, await answer(id)]).toMatchObject([resolveAt, { problem: 'refused' }]);
+      await admin.query('delete from settings_check');
+    }
+    expect(fake.requests).toEqual([]);
+    // Loopback, even where a service name resolves to it, is the family's own server.
+    resolveTo = '127.0.0.1';
+    const id = await ask('ai_reader');
+    await runSettingsCheck(
+      deps({ aiReaders: readers(false, { services: { web: ['127.0.0.1'] }, own: ['127.0.0.1'] }) }),
+      { household_id: hh, check_id: id },
+    );
+    expect(await answer(id)).toMatchObject({ problem: null });
+  });
+
+  it('an address no Test has passed at is said only as not reached, or not a reader (S2b); once one has, in detail', async () => {
+    await save();
+    fake.answers = [{ status: 500 }];
+    const id = await ask('ai_reader');
+    await runSettingsCheck(deps(), { household_id: hh, check_id: id });
+    expect(await answer(id)).toMatchObject({ problem: 'bad_reply' });
+    fake.answers = [{ status: 404 }];
+    const nf = await ask('ai_reader');
+    await runSettingsCheck(deps(), { household_id: hh, check_id: nf });
+    expect(await answer(nf)).toMatchObject({ problem: 'bad_reply' });
+    fake.tagsStatus = 403;
+    const m = await ask('ai_models');
+    await runSettingsCheck(deps(), { household_id: hh, check_id: m });
+    expect(await answer(m)).toMatchObject({ problem: 'bad_reply', models: [] });
+    // Nothing listening there: not reached.
+    await admin.query('delete from ai_reader');
+    await save({ base: 'http://reader.test:1' });
+    const closed = await ask('ai_reader');
+    await runSettingsCheck(deps({ aiReaders: readers(false, { ports: [1] }) }), {
+      household_id: hh,
+      check_id: closed,
+    });
+    expect(await answer(closed)).toMatchObject({ problem: 'unreachable' });
+    // A Test passes: the address is proven, and later failures are said in detail.
+    await admin.query('delete from ai_reader');
+    await save();
+    fake.answers = [{ form: {} }];
+    const ok = await ask('ai_reader');
+    await runSettingsCheck(deps(), { household_id: hh, check_id: ok });
+    expect(await answer(ok)).toMatchObject({ problem: null });
+    expect(
+      (await admin.query('select address_proven from ai_reader where household_id = $1', [hh]))
+        .rows[0],
+    ).toEqual({ address_proven: true });
+    fake.answers = [{ status: 500 }];
+    const later = await ask('ai_reader');
+    await runSettingsCheck(deps(), { household_id: hh, check_id: later });
+    expect(await answer(later)).toMatchObject({ problem: 'http_error' });
+  });
+
+  it('Test goes through the reader papers go to, and its answer ends the breaker’s rest (M5)', async () => {
+    await save({ status: 'ok', runsAt: 'own_network', proven: true });
+    const r = readers();
+    const reader = await withSystem(db, hh, (trx) => r.readerFor(trx, hh));
+    expect(reader).not.toBeNull();
+    // Three server errors in a row: it rests.
+    fake.answers = [{ status: 500 }];
+    const offer = { kinds: [{ key: 'passport', label: 'Passport' }], names: [] };
+    for (let i = 0; i < 3; i++) await reader?.read('words', offer, { priority: 'interactive' });
+    expect(reader?.resting()).toBe(true);
+    fake.answers = [{ form: {} }];
+    const id = await ask('ai_reader');
+    await runSettingsCheck(deps({ aiReaders: r }), { household_id: hh, check_id: id });
+    expect(await answer(id)).toMatchObject({ problem: null });
+    // The same reader: its rest is over, and papers go to it again.
+    expect(reader?.resting()).toBe(false);
+    expect(await withSystem(db, hh, (trx) => r.readerFor(trx, hh))).toBe(reader);
   });
 });

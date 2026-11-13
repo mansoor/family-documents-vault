@@ -240,6 +240,7 @@ async function main(): Promise<void> {
     key: deriveKey(masterSecret, AI_READER_KEY_PURPOSE),
     edition: config.FDV_EDITION,
     settings: config.FDV_AI_READER_SETTINGS,
+    allowedPorts: config.FDV_AI_READER_ALLOWED_PORTS,
     checks: settingsChecks,
     server: () => localAiState.server(),
     alert,

@@ -1,9 +1,13 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import { networkInterfaces } from 'node:os';
 import { sealAiReaderKey } from '@fdv/crypto';
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   AI_READER_CAP_MAX,
+  AI_READER_DEFAULT_PORTS,
+  AI_READER_SERVICE_NAMES,
+  aiReaderPort,
   AI_READER_CAP_MIN,
   AI_READER_KEY_MAX,
   AI_READER_KINDS,
@@ -96,6 +100,22 @@ const locked = () =>
     'ai_reader_locked',
     'The AI reader is set by whoever runs this server, in .env, and can’t be changed here.',
   );
+const portRefused = (ports: readonly number[]) =>
+  new ApiError(
+    422,
+    'ai_reader_port_refused',
+    `The vault reaches readers only on the ports whoever runs it allows: ${ports.join(', ')}. Ollama’s own is 11434.`,
+  );
+/** A key this long or longer has its last four kept, to tell one from another; a shorter one, none. */
+export const AI_READER_KEY_TAIL_FROM = 12;
+const ownRefused = () =>
+  new ApiError(
+    422,
+    'ai_reader_address_refused',
+    'That is the vault’s own server, not a reader. Type the address of the machine Ollama runs on.',
+  );
+/** Loopback: this machine, which a reader on a family's own server may be. */
+const isLoopback = (a: string) => /^127\./.test(a) || a === '::1' || /^::ffff:127\./i.test(a);
 const notSaved = () =>
   new ApiError(409, 'ai_reader_not_saved', 'Save the AI reader first, then try again.');
 
@@ -120,6 +140,19 @@ export interface AiReaderOptions {
   resolve?: Resolve;
   /** Other owners told when the reader changes. */
   alert?: (a: AlertRequest) => Promise<void>;
+  /** FDV_AI_READER_ALLOWED_PORTS (the AIR1 review, S2a). */
+  allowedPorts?: readonly number[];
+  /** This process's own addresses: the real ones, unless a test says. */
+  ownAddresses?: () => Set<string>;
+}
+
+/** This process's own addresses but loopback: a Docker network's among them. */
+function ownAddresses(): Set<string> {
+  const out = new Set<string>();
+  for (const list of Object.values(networkInterfaces())) {
+    for (const a of list ?? []) if (!a.internal) out.add(a.address.toLowerCase());
+  }
+  return out;
 }
 
 type Row = {
@@ -162,6 +195,8 @@ export class AiReaderService {
   private readonly envServer: () => Promise<LocalAiServerView>;
   private readonly resolve: Resolve;
   private readonly alert: (a: AlertRequest) => Promise<void>;
+  private readonly allowedPorts: readonly number[];
+  private readonly own: () => Set<string>;
 
   constructor(
     private readonly db: Db,
@@ -174,6 +209,28 @@ export class AiReaderService {
     this.envServer = opts.server ?? (async () => ({ state: 'not_set_up' }));
     this.resolve = opts.resolve ?? resolveHost;
     this.alert = opts.alert ?? (async () => undefined);
+    this.allowedPorts = opts.allowedPorts ?? AI_READER_DEFAULT_PORTS;
+    this.own = opts.ownAddresses ?? ownAddresses;
+  }
+
+  /**
+   * The vault's own addresses, never a reader whatever the edition (the
+   * AIR1 review, S2c): this process's, and what the compose file's service
+   * names resolve to here — loopback aside, which stays allowed on a
+   * server of the family's own. Best effort: a name not found is nothing.
+   */
+  private async vaultsOwn(): Promise<Set<string>> {
+    const out = new Set(this.own());
+    for (const name of AI_READER_SERVICE_NAMES) {
+      try {
+        for (const a of await this.resolve(name)) out.add(a.toLowerCase());
+      } catch {
+        // Not a name here.
+      }
+    }
+    for (const a of [...out])
+      if (aiReaderRunsAtOf(a) === 'own_network' && isLoopback(a)) out.delete(a);
+    return out;
   }
 
   /** `features.ai_reader_settings`: offered in Settings, unless the operator said off. */
@@ -283,6 +340,8 @@ export class AiReaderService {
     if (addresses.some((a) => !aiReaderAddressAllowed(a, { publicOnly: this.httpsOnly }))) {
       throw refused();
     }
+    const own = await this.vaultsOwn();
+    if (addresses.some((a) => own.has(a.toLowerCase()))) throw ownRefused();
     const byName = aiReaderRunsAtByName(hostname);
     if (literal) return byName ?? 'cloud';
     if (addresses.length > 0) {
@@ -317,7 +376,13 @@ export class AiReaderService {
       );
     }
     const address = aiReaderAddress(input.base_url ?? '', { httpsOnly: this.httpsOnly });
-    if ('problem' in address) throw bad(aiReaderAddressWords(address.problem));
+    if ('problem' in address) {
+      if (address.problem === 'own') throw ownRefused();
+      throw bad(aiReaderAddressWords(address.problem));
+    }
+    if (!this.allowedPorts.includes(aiReaderPort(address.url))) {
+      throw portRefused(this.allowedPorts);
+    }
     const model = input.model.trim();
     if (!AI_READER_MODEL.test(model)) {
       throw bad('Type the model’s name as the reader has it, such as qwen2.5:3b-instruct.');
@@ -360,7 +425,15 @@ export class AiReaderService {
     await withPrincipal(this.db, p, async (trx) => {
       const before = await trx
         .selectFrom('ai_reader')
-        .select(['kind', 'base_url', 'model', 'runs_at', 'api_key_encrypted', 'api_key_last4'])
+        .select([
+          'kind',
+          'base_url',
+          'model',
+          'runs_at',
+          'api_key_encrypted',
+          'api_key_last4',
+          'https_only',
+        ])
         .forUpdate()
         .executeTakeFirst();
       // The key was kept for one kind and address alone.
@@ -372,7 +445,8 @@ export class AiReaderService {
                 kind,
                 baseUrl,
               }),
-              api_key_last4: apiKey.slice(-4),
+              // The last four of a long key alone: a short one would be shown whole.
+              api_key_last4: apiKey.length >= AI_READER_KEY_TAIL_FROM ? apiKey.slice(-4) : null,
             }
           : apiKey === null || moved || !before
             ? { api_key_encrypted: null, api_key_last4: null }
@@ -382,7 +456,12 @@ export class AiReaderService {
         ((before?.api_key_encrypted ?? null) !== null && keyNow.api_key_encrypted === null);
       // Where it runs is kept while the address is: a Test found it.
       const runsAt = before && !moved ? before.runs_at : placed;
-      reached = before === undefined || moved || before.model !== model || keyChanged;
+      reached =
+        before === undefined ||
+        moved ||
+        before.model !== model ||
+        keyChanged ||
+        before.https_only !== this.httpsOnly;
       const values = {
         kind,
         base_url: baseUrl,
@@ -390,6 +469,11 @@ export class AiReaderService {
         timeout_seconds: input.timeout_seconds,
         monthly_cap: input.monthly_cap,
         runs_at: runsAt,
+        // The hosted edition's rule, kept with the reader (the AIR1 review,
+        // S1): the worker holds it to the strictest of this and its own.
+        https_only: this.httpsOnly,
+        // A Test passed at an address goes with it (S2b).
+        ...(before === undefined || moved ? { address_proven: false } : {}),
         ...keyNow,
         updated_by: p.accountId,
         updated_at: new Date(),
@@ -432,8 +516,8 @@ export class AiReaderService {
   /** DELETE /household/reading/ai-reader (step-up): the reader forgotten, key and all. */
   async remove(p: Principal, meta: RequestMeta): Promise<AiReaderView> {
     if (p.role !== 'owner') throw ownersOnly();
-    const { source } = await this.source();
-    if (source === 'off') throw off();
+    // In every state — .env's reader winning, or the reader out of Settings
+    // (the AIR1 review, M4): a key kept can always be forgotten.
     await withPrincipal(this.db, p, async (trx) => {
       const gone = await trx.deleteFrom('ai_reader').returning('kind').execute();
       if (gone.length > 0) {

@@ -35,7 +35,7 @@ create table ai_reader (
   -- reader's own paths, and calls nothing else.
   base_url          text
                       constraint ai_reader_base_url
-                      check (char_length(base_url) between 10 and 300
+                      check (char_length(base_url) between 8 and 300
                              and base_url ~ '^https?://[^/?#@[:space:]]+$'),
   model             text not null
                       constraint ai_reader_model
@@ -66,6 +66,17 @@ create table ai_reader (
                       check (last_problem in ('not_set_up', 'unreachable', 'timeout', 'no_model',
                                               'http_error', 'too_big', 'not_saved', 'refused',
                                               'bad_reply')),
+  -- The hosted edition's rule, stamped by the API as it saves (the AIR1
+  -- review, S1): https to a public address only. The worker holds a reader
+  -- to the strictest of this and its own FDV_EDITION, so a worker started
+  -- without it still refuses an address inside a network at connect.
+  https_only        boolean not null default false,
+  -- Whether a Test has ever passed at this kind and address (the AIR1
+  -- review, S2): until one has, a Test says only "couldn't reach it" or
+  -- "reached it, but it isn't that kind of reader" — never which of the
+  -- ways it failed, so it is no scanner of the household's network. The
+  -- vault's word; cleared when the kind or the address changes.
+  address_proven    boolean not null default false,
   updated_by        uuid references account(id) on delete set null,
   updated_at        timestamptz not null default now(),
   -- Anthropic's address is fixed, and it is always a cloud service; every
@@ -109,9 +120,18 @@ begin
     raise exception 'whether a Test of the AI reader passed is the vault''s to say'
       using errcode = 'insufficient_privilege';
   end if;
+  -- That a Test passed at an address is the vault's to say, and it goes
+  -- with the address.
+  if new.address_proven
+     and (tg_op = 'INSERT' or not old.address_proven
+          or (new.kind, new.base_url) is distinct from (old.kind, old.base_url)) then
+    raise exception 'whether a Test of the AI reader passed is the vault''s to say'
+      using errcode = 'insufficient_privilege';
+  end if;
   if tg_op = 'UPDATE' and new.status <> 'untested'
-     and (new.kind, new.base_url, new.model, new.api_key_encrypted, new.runs_at)
-         is distinct from (old.kind, old.base_url, old.model, old.api_key_encrypted, old.runs_at) then
+     and (new.kind, new.base_url, new.model, new.api_key_encrypted, new.runs_at, new.https_only)
+         is distinct from (old.kind, old.base_url, old.model, old.api_key_encrypted, old.runs_at,
+                           old.https_only) then
     raise exception 'a new reader, model or key waits for a Test of its own'
       using errcode = 'insufficient_privilege';
   end if;

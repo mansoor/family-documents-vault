@@ -1865,6 +1865,10 @@ export interface Schema {
     status: Generated<'untested' | 'ok' | 'failed'>;
     last_tested_at: Timestamp | null;
     last_problem: string | null;
+    /** The hosted edition's rule, stamped as it was saved (AIR1 review, S1). */
+    https_only: Generated<boolean>;
+    /** A Test has passed at this kind and address (AIR1 review, S2): the vault's word. */
+    address_proven: Generated<boolean>;
     updated_by: string | null;
     updated_at: GeneratedTimestamp;
   };

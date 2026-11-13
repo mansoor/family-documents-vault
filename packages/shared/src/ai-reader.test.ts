@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AI_READER_DEFAULT_PORTS,
+  aiReaderNameRefused,
+  aiReaderPort,
+  aiReaderUnprovenProblem,
   aiReaderAddress,
   aiReaderAddressAllowed,
   aiReaderModelsResult,
@@ -93,6 +97,57 @@ describe('the AI reader’s address (AIR1, decision 9)', () => {
     expect(aiReaderAddressAllowed('127.0.0.1', { publicOnly: true })).toBe(false);
     expect(aiReaderAddressAllowed('::ffff:10.0.0.1', { publicOnly: true })).toBe(false);
     expect(aiReaderAddressAllowed('8.8.8.8', { publicOnly: true })).toBe(true);
+  });
+
+  it('refuses link-local however an IPv4 address is wrapped in IPv6, and the clouds’ metadata addresses (the review, M2)', () => {
+    for (const a of [
+      '::a9fe:a9fe',
+      '64:ff9b::a9fe:a9fe',
+      '2002:a9fe:a9fe::',
+      '::ffff:0:a9fe:a9fe',
+      'fd00:ec2::254',
+      '100.100.100.200',
+    ]) {
+      expect(isLinkLocalAddress(a), a).toBe(true);
+      expect(aiReaderAddressAllowed(a, { publicOnly: false }), a).toBe(false);
+    }
+    // Loopback, and an ordinary private or public address, are not.
+    for (const a of ['::1', '127.0.0.1', '192.168.1.30', 'fd00::5', '100.100.100.201', '8.8.8.8']) {
+      expect(isLinkLocalAddress(a), a).toBe(false);
+    }
+  });
+
+  it('the vault’s own services by name, the allowed ports, and the shortest and longest address (S2, M3)', () => {
+    for (const n of ['api', 'postgres', 'web', 'worker', 'fdv-api-1', 'fdv_postgres_1', 'API.']) {
+      expect(aiReaderNameRefused(n), n).toBe(true);
+      expect(aiReaderAddress(`http://${n}:11434`, self)).toEqual({ problem: 'own' });
+    }
+    for (const n of ['ollama', 'apiserver', 'my-api', 'host.docker.internal', 'localhost']) {
+      expect(aiReaderNameRefused(n), n).toBe(false);
+    }
+    expect(AI_READER_DEFAULT_PORTS).toEqual([11434, 1234, 8000, 8080, 80, 443]);
+    expect(aiReaderPort('http://ollama:11434')).toBe(11434);
+    expect(aiReaderPort('http://ollama')).toBe(80);
+    expect(aiReaderPort('https://[fd00::5]')).toBe(443);
+    expect(aiReaderPort('https://[fd00::5]:8000')).toBe(8000);
+    // 8 characters, which the database keeps; and over 300, said rather than refused there.
+    expect(aiReaderAddress('http://a', self)).toMatchObject({ url: 'http://a' });
+    expect(aiReaderAddress(`http://${'a'.repeat(300)}.example`, self)).toEqual({
+      problem: 'too_long',
+    });
+  });
+
+  it('an address no Test has passed at has two outcomes alone (S2b)', () => {
+    const two = [
+      'unreachable',
+      'timeout',
+      'refused',
+      'http_error',
+      'too_big',
+      'bad_reply',
+      'no_model',
+    ].map((p) => aiReaderUnprovenProblem(p as never));
+    expect(new Set(two)).toEqual(new Set(['unreachable', 'bad_reply']));
   });
 
   it('calls only the reader’s own paths; reads with Ollama alone until AIR3', () => {

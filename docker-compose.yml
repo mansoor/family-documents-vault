@@ -67,8 +67,11 @@ services:
       FDV_OFFLINE_MAX_DAYS: ${FDV_OFFLINE_MAX_DAYS:-}
       FDV_RATE_LIMIT_PER_MINUTE: ${FDV_RATE_LIMIT_PER_MINUTE:-}
       # Whether owners may set the AI reader in Settings → Reading (on unless
-      # off). The worker has the same.
+      # off), and the ports it may be on. The worker has the same.
       FDV_AI_READER_SETTINGS: ${FDV_AI_READER_SETTINGS:-}
+      FDV_AI_READER_ALLOWED_PORTS: ${FDV_AI_READER_ALLOWED_PORTS:-}
+      # self_hosted unless set; the worker must have the same (README).
+      FDV_EDITION: ${FDV_EDITION:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - vault-data:/data
@@ -134,8 +137,11 @@ services:
       FDV_LOCAL_AI_MODEL: ${FDV_LOCAL_AI_MODEL:-}
       FDV_LOCAL_AI_TIMEOUT_SECONDS: ${FDV_LOCAL_AI_TIMEOUT_SECONDS:-}
       # Or an owner sets the reader in Settings → Reading → AI reader, unless
-      # this is off; the two above win where they are set.
+      # this is off; the two above win where they are set. The ports such a
+      # reader may be on, and the edition, as the API has them.
       FDV_AI_READER_SETTINGS: ${FDV_AI_READER_SETTINGS:-}
+      FDV_AI_READER_ALLOWED_PORTS: ${FDV_AI_READER_ALLOWED_PORTS:-}
+      FDV_EDITION: ${FDV_EDITION:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - vault-data:/data
