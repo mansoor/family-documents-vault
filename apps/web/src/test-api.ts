@@ -63,6 +63,7 @@ import {
   type SmsMode,
   type Preferences,
   type SmsSettingsView,
+  type AiReaderView,
   type SmsState,
   type MfaChallenge,
   type TextCodeSettings,
@@ -473,6 +474,19 @@ export interface FakeState {
   localAi?: { local_ai: boolean; local_ai_server: Record<string, unknown> };
   /** The bodies PUT /household/reading was sent, in order. */
   localAiPuts?: Array<Record<string, unknown>>;
+  /**
+   * The AI reader set in Settings (0.9.0, AIR1), as GET
+   * /household/reading/ai-reader gives it to an owner (AiReaderView): said
+   * as `features.ai_reader_settings` when given. A PUT saves it untested
+   * (its key never kept, only its last four), DELETE forgets it; Test and
+   * the models are asked of the worker (`aiReaderTestAnswer`,
+   * `aiModelsAnswer`), and a Test that passes marks it ok.
+   */
+  aiReader?: AiReaderView;
+  /** The bodies the AI reader was saved with, in order. */
+  aiReaderSaves?: Array<Record<string, unknown>>;
+  aiReaderTestAnswer?: Record<string, unknown>;
+  aiModelsAnswer?: Record<string, unknown>;
   checkWaits?: number;
   /** What was asked of the worker, in order: kind and path. */
   checksAsked?: Array<{ kind: string; path: string | null }>;
@@ -1253,6 +1267,10 @@ export function installFakeApi(state: FakeState) {
           ...(state.localAi && state.localAi.local_ai_server.state !== 'not_set_up'
             ? { local_ai: true }
             : {}),
+          // The AI reader set in Settings (0.9.0, AIR1): said when a test gives it.
+          ...(state.aiReader && state.aiReader.source !== 'off'
+            ? { ai_reader_settings: true, ai_reader_kinds: state.aiReader.kinds }
+            : {}),
         },
         limits: {
           ...(state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {}),
@@ -1504,10 +1522,18 @@ export function installFakeApi(state: FakeState) {
     if (path === '/api/v1/household/reading/notice') {
       if (storedRole() === 'viewer') return refuse(403, 'forbidden', 'Not for a viewer.');
       const server = state.localAi?.local_ai_server as { state: string; host?: string } | undefined;
+      const saved = state.aiReader?.reader;
       return json(
         state.localAi?.local_ai && server && server.state !== 'not_set_up'
           ? { local_ai: true, host: server.host ?? null }
-          : { local_ai: false, host: null },
+          : state.localAi?.local_ai && saved?.status === 'ok' && saved.base_url
+            ? {
+                local_ai: true,
+                host: new URL(saved.base_url).host,
+                kind: saved.kind,
+                runs_at: saved.runs_at,
+              }
+            : { local_ai: false, host: null },
       );
     }
     // How the vault reads papers: the reading model (R2) and the local AI
@@ -1527,16 +1553,36 @@ export function installFakeApi(state: FakeState) {
         ) {
           return refuse(422, 'validation_failed', 'Only the switches can be sent.');
         }
-        if (b.local_ai === true && ai.local_ai_server.state === 'not_set_up') {
+        if (
+          b.local_ai === true &&
+          ai.local_ai_server.state === 'not_set_up' &&
+          state.aiReader?.reader?.status !== 'ok'
+        ) {
           return refuse(409, 'local_ai_unavailable', 'The local AI can’t be turned on.');
         }
         if (typeof b.reading_model === 'boolean') state.readingModel = b.reading_model;
         if (typeof b.local_ai === 'boolean') state.localAi = { ...ai, local_ai: b.local_ai };
       }
+      const saved = state.aiReader?.reader;
       return json({
         reading_model: state.readingModel ?? true,
         loaded: state.readingModelLoaded !== false,
         ...(state.localAi ?? ai),
+        ...(state.aiReader
+          ? {
+              local_ai_reader:
+                saved && saved.base_url
+                  ? {
+                      source: 'settings',
+                      kind: saved.kind,
+                      model: saved.model,
+                      host: new URL(saved.base_url).host,
+                      runs_at: saved.runs_at,
+                      ready: saved.status === 'ok',
+                    }
+                  : null,
+            }
+          : {}),
       });
     }
     if (path === '/api/v1/reading-checks' || path.startsWith('/api/v1/reading-checks/')) {
@@ -1664,7 +1710,10 @@ export function installFakeApi(state: FakeState) {
       return json(folder);
     }
     // What an owner asks the worker from Settings (O1): Verify, browse, Test the mailbox.
-    const askWorker = (kind: 'folder' | 'browse' | 'mailbox' | 'local_ai', p: string | null) => {
+    const askWorker = (
+      kind: 'folder' | 'browse' | 'mailbox' | 'local_ai' | 'ai_reader' | 'ai_models',
+      p: string | null,
+    ) => {
       if (storedRole() !== 'owner') {
         return refuse(
           403,
@@ -1699,6 +1748,61 @@ export function installFakeApi(state: FakeState) {
     if (path === '/api/v1/household/reading/local-ai/test' && method === 'POST') {
       return askWorker('local_ai', null);
     }
+    // The AI reader set in Settings (0.9.0, AIR1): an owner's.
+    if (path.startsWith('/api/v1/household/reading/ai-reader') && state.aiReader) {
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner can change how the vault reads papers.');
+      }
+      const v = state.aiReader;
+      if (path === '/api/v1/household/reading/ai-reader/test' && method === 'POST') {
+        return v.reader
+          ? askWorker('ai_reader', null)
+          : refuse(409, 'ai_reader_not_saved', 'Save it first.');
+      }
+      if (path === '/api/v1/household/reading/ai-reader/models' && method === 'POST') {
+        return v.reader
+          ? askWorker('ai_models', null)
+          : refuse(409, 'ai_reader_not_saved', 'Save it first.');
+      }
+      if (path === '/api/v1/household/reading/ai-reader') {
+        if (method === 'PUT') {
+          if (v.source === 'env') {
+            return refuse(409, 'ai_reader_locked', 'It is set by whoever runs this server.');
+          }
+          const b = body as Record<string, unknown>;
+          (state.aiReaderSaves ??= []).push(b);
+          const key = typeof b.api_key === 'string' ? b.api_key : null;
+          const before = v.reader;
+          const moved = before !== null && before.base_url !== b.base_url;
+          const keyKept = before?.api_key === 'set' && !moved && b.api_key === undefined;
+          state.aiReader = {
+            ...v,
+            reader: {
+              kind: b.kind as AiReaderView['kinds'][number],
+              base_url: String(b.base_url),
+              model: String(b.model),
+              timeout_seconds: Number(b.timeout_seconds),
+              monthly_cap: Number(b.monthly_cap),
+              runs_at: /\/\/(192\.168|10\.|127\.|localhost|ollama)/.test(String(b.base_url))
+                ? 'own_network'
+                : 'cloud',
+              api_key: key || keyKept ? 'set' : 'not_set',
+              api_key_last4: key ? key.slice(-4) : keyKept ? (before?.api_key_last4 ?? null) : null,
+              status: 'untested',
+              last_tested_at: null,
+              last_problem: null,
+              updated_at: new Date().toISOString(),
+            },
+          };
+          return json(state.aiReader);
+        }
+        if (method === 'DELETE') {
+          state.aiReader = { ...v, reader: null };
+          return json(state.aiReader);
+        }
+        return json(v);
+      }
+    }
     const checkAt = /^\/api\/v1\/settings-checks\/([^/]+)$/.exec(path);
     if (checkAt) {
       const c = checks.get(checkAt[1] as string);
@@ -1717,7 +1821,11 @@ export function installFakeApi(state: FakeState) {
             ? state.browseAnswers?.[c.path ?? '']
             : c.kind === 'local_ai'
               ? state.localAiTestAnswer
-              : state.mailboxTestAnswer;
+              : c.kind === 'ai_reader'
+                ? state.aiReaderTestAnswer
+                : c.kind === 'ai_models'
+                  ? state.aiModelsAnswer
+                  : state.mailboxTestAnswer;
       if (c.looks <= (state.checkWaits ?? 1) || answer === undefined) {
         return json({ ...base, state: 'waiting' });
       }
@@ -1727,6 +1835,21 @@ export function installFakeApi(state: FakeState) {
           state: 'done',
           browse: { path: c.path, folders: answer, truncated: false, problem: null },
         });
+      }
+      // A Test that passed marks the reader saved as working (AIR1).
+      const passed = answer as Record<string, unknown>;
+      if (c.kind === 'ai_reader' && state.aiReader?.reader && passed.problem === null) {
+        state.aiReader = {
+          ...state.aiReader,
+          reader: {
+            ...state.aiReader.reader,
+            status: 'ok',
+            last_tested_at: new Date().toISOString(),
+            ...(passed.runs_at === 'cloud' || passed.runs_at === 'own_network'
+              ? { runs_at: passed.runs_at }
+              : {}),
+          },
+        };
       }
       return json({ ...base, state: 'done', [c.kind]: answer });
     }

@@ -85,6 +85,39 @@ const schema = z.object({
   FDV_DISPLAY_NAME: z.string().min(1).default('Our family vault'),
   FDV_TIMEZONE: timeZoneSetting,
   FDV_EDITION: z.enum(['self_hosted', 'hosted']).default('self_hosted'),
+  FDV_AI_READER_ALLOWED_PORTS: z
+    .string()
+    .min(1)
+    .max(200)
+    .default('11434,1234,8000,8080,80,443')
+    .transform((s) =>
+      s
+        .split(',')
+        .map((p) => p.trim())
+        .filter((p) => p.length > 0)
+        .map(Number),
+    )
+    .refine(
+      (ports) =>
+        ports.length > 0 &&
+        ports.length <= 20 &&
+        ports.every((p) => Number.isInteger(p) && p >= 1 && p <= 65535),
+      'one to twenty port numbers',
+    )
+    .describe(
+      'The ports an AI reader set in Settings may be on (0.9.0, AIR1), comma-separated: ' +
+        "Ollama's 11434, LM Studio's 1234, and 8000, 8080, 80 and 443 by default. Any other is " +
+        'refused, so Test is no port scanner. FDV_LOCAL_AI_URL is yours, and not limited. The ' +
+        'API and the worker have the same setting.',
+    ),
+  FDV_AI_READER_SETTINGS: z
+    .enum(['on', 'off'])
+    .default('on')
+    .describe(
+      'Whether owners may set the AI reader in Settings → Reading (0.9.0, AIR1): on unless ' +
+        'set to off, when it is not offered there at all. FDV_LOCAL_AI_URL and ' +
+        'FDV_LOCAL_AI_MODEL, set for the worker, win either way. The worker has the same setting.',
+    ),
   FDV_MAX_UPLOAD_BYTES: z.coerce
     .number()
     .int()

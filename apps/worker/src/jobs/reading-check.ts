@@ -51,6 +51,8 @@ import {
   READ_DEADLINE_MS,
   sealedLocalAi,
   unread,
+  readerFor,
+  type AiReaderSource,
   type LocalAiReader,
   type ReadItemDeps,
 } from './read-item.js';
@@ -201,6 +203,8 @@ export interface ReadingOptions {
    * priority, giving way to any paper the family is waiting on.
    */
   localAi?: LocalAiReader | null;
+  /** The readers owners saved in Settings (AIR1), where .env sets none. */
+  aiReaders?: AiReaderSource | null;
 }
 
 /** Whom a check reads as: the owner who asked. */
@@ -405,6 +409,8 @@ interface RunContext {
   rules: LearnedContext | null;
   /** The household has the local AI on (0081, R4): the check reads as its batches are read. */
   localAi: boolean;
+  /** The reader its papers go to (AIR1): .env's, else the household's own once tested; or none. */
+  reader: LocalAiReader | null;
 }
 
 /**
@@ -418,7 +424,9 @@ async function runContext(
   hh: string,
   reader: Reader,
   withRules: boolean,
+  ai: { localAi?: LocalAiReader | null; aiReaders?: AiReaderSource | null } = {},
 ): Promise<RunContext> {
+  const aiReader = await readerFor(trx, hh, ai);
   const proposal = await proposalContext(trx, hh, reader.memberId, { onlyMe: withRules });
   return {
     proposal,
@@ -428,7 +436,8 @@ async function runContext(
     me: reader.memberId,
     rulesFor: withRules ? reader.accountId : null,
     rules: withRules ? await learnedContext(trx, hh, reader.memberId) : null,
-    localAi: (await localAiFor(trx, hh, reader.memberId)).on,
+    localAi: aiReader ? (await localAiFor(trx, hh, reader.memberId)).on : false,
+    reader: aiReader,
   };
 }
 
@@ -623,7 +632,7 @@ async function readDocument(
     // lowest priority. A paper the family waits on stops it, and the check
     // yields: this document is read again later.
     const offer = localAiOffer(ctx.proposal, { role: ctx.role, me: ctx.me });
-    const asked = await askLocalAi(opts.localAi, ctx.localAi, text, offer, {
+    const asked = await askLocalAi(ctx.reader, ctx.localAi, text, offer, {
       priority: 'check',
       signal,
     });
@@ -875,7 +884,7 @@ export async function workReadingCheck(
     if (check.state === 'waiting') {
       const begun = await withSystem(deps.db, hh, async (trx) => {
         const docs = await chooseDocuments(trx, reader, check.n, check.include_edited);
-        const context = await runContext(trx, hh, reader, true);
+        const context = await runContext(trx, hh, reader, true, opts);
         const fresh: Work = { v: 2, docs, rows: [], skipped: 0, tries: 0 };
         const taken = await trx
           .updateTable('reading_check')
@@ -917,7 +926,7 @@ export async function workReadingCheck(
           .where('check_id', '=', check.id)
           .executeTakeFirst();
         return row?.work_sealed
-          ? { sealed: row.work_sealed, context: await runContext(trx, hh, reader, true) }
+          ? { sealed: row.work_sealed, context: await runContext(trx, hh, reader, true, opts) }
           : null;
       });
       if (!kept) {
@@ -1101,7 +1110,7 @@ export async function readingCheckNow(
     };
     return {
       docs: await chooseDocuments(trx, null, n, true),
-      ctx: await runContext(trx, hh, reader, false),
+      ctx: await runContext(trx, hh, reader, false, opts),
     };
   });
   const work: Work = { v: 2, docs: prepared.docs, rows: [], skipped: 0, tries: 0 };

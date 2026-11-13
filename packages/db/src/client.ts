@@ -1490,6 +1490,10 @@ export interface Schema {
     host: string;
     state: 'reachable' | 'unreachable' | 'no_model';
     checked_at: GeneratedTimestamp;
+    /** The kind of reader (0089, AIR1): .env's is Ollama. */
+    kind: Generated<'ollama' | 'anthropic' | 'openai_compatible'>;
+    /** Where the worker last found it runs (0089, AIR1); null, not known. */
+    runs_at: 'own_network' | 'cloud' | null;
   };
 
   /**
@@ -1675,8 +1679,11 @@ export interface Schema {
   settings_check: {
     id: Generated<string>;
     household_id: string;
-    /** `local_ai`: Test the local AI (0081, R4). */
-    kind: 'folder' | 'browse' | 'mailbox' | 'local_ai';
+    /**
+     * `local_ai`: Test the local AI (0081, R4); `ai_reader` and `ai_models`:
+     * Test the reader saved in Settings, and its list of models (0089, AIR1).
+     */
+    kind: 'folder' | 'browse' | 'mailbox' | 'local_ai' | 'ai_reader' | 'ai_models';
     path: string | null;
     requested_by: string | null;
     requested_at: GeneratedTimestamp;
@@ -1836,6 +1843,32 @@ export interface Schema {
     status: Generated<'untested' | 'ok' | 'failed'>;
     last_verified_at: Timestamp | null;
     last_error: string | null;
+    updated_by: string | null;
+    updated_at: GeneratedTimestamp;
+  };
+
+  /**
+   * The household's AI reader, set in Settings (0089, 0.9.0 AIR1): its API
+   * key sealed under a master-derived key, never returned. An owner's alone;
+   * whether a Test passed, and where it found it runs, are the vault's word.
+   */
+  ai_reader: {
+    household_id: string;
+    kind: 'ollama' | 'anthropic' | 'openai_compatible';
+    base_url: string | null;
+    model: string;
+    timeout_seconds: Generated<number>;
+    runs_at: 'own_network' | 'cloud';
+    api_key_encrypted: Buffer | null;
+    api_key_last4: string | null;
+    monthly_cap: Generated<number>;
+    status: Generated<'untested' | 'ok' | 'failed'>;
+    last_tested_at: Timestamp | null;
+    last_problem: string | null;
+    /** The hosted edition's rule, stamped as it was saved (AIR1 review, S1). */
+    https_only: Generated<boolean>;
+    /** A Test has passed at this kind and address (AIR1 review, S2): the vault's word. */
+    address_proven: Generated<boolean>;
     updated_by: string | null;
     updated_at: GeneratedTimestamp;
   };

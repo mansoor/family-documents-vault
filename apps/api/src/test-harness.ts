@@ -12,6 +12,7 @@ import {
   operatorMailBinding,
   ScopeKeys,
   SMS_PASSWORD_PURPOSE,
+  AI_READER_KEY_PURPOSE,
   SHARE_LINK_COPY_PURPOSE,
 } from '@fdv/crypto';
 import { createDb, createPool, type Db, type Schema } from '@fdv/db';
@@ -75,6 +76,7 @@ import { ReadingCheckService } from './reading-check/service.js';
 import { MAIL_IN_CODE_KEY_PURPOSE, MailInService } from './mail-in/service.js';
 import { SettingsCheckService } from './settings-checks.js';
 import { LocalAiService } from './household/local-ai.js';
+import { AiReaderService } from './household/ai-reader.js';
 import { PHONE_CODE_KEY_PURPOSE, MemberPhoneService } from './sms/phones.js';
 import type { SmsProvider, SmsProviderFactory } from '@fdv/db';
 import { SmsService } from './sms/service.js';
@@ -211,6 +213,12 @@ export interface HarnessOptions {
   smsProvider?: SmsProviderFactory;
   /** How long a test text is waited for, and how often asked after (SMS1): short, for the tests. */
   smsTestWaitMs?: number;
+  /** FDV_EDITION: self_hosted unless a test says (AIR1's hosted guards). */
+  edition?: 'self_hosted' | 'hosted';
+  /** FDV_AI_READER_SETTINGS (AIR1): on unless a test says off. */
+  aiReaderSettings?: 'on' | 'off';
+  /** DNS for the AI reader's address (AIR1): the harness's own, a name → its addresses. */
+  aiResolve?: (host: string) => Promise<string[]>;
 }
 
 /** The key the harness's `mail.to_address` jobs are sealed under, as the worker's are. */
@@ -277,6 +285,8 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       ? { FDV_RATE_LIMIT_PER_MINUTE: String(opts.rateLimitPerMinute) }
       : {}),
     ...(opts.trustProxy ? { FDV_TRUST_PROXY: opts.trustProxy } : {}),
+    ...(opts.edition ? { FDV_EDITION: opts.edition } : {}),
+    ...(opts.aiReaderSettings ? { FDV_AI_READER_SETTINGS: opts.aiReaderSettings } : {}),
     // Nothing is ever sent to it: the harness catches every email (mailSent).
     ...(opts.operatorMail === false ? {} : { FDV_SMTP_URL: 'smtp://operator-mail.test:25' }),
   });
@@ -396,6 +406,24 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
   // What an owner asks the worker from Settings (O1): the job is in h.jobs,
   // and a test answers it as the worker would.
   const settingsChecks = new SettingsCheckService(db, enqueue, opts.now);
+  // The AI reader set in Settings (AIR1): DNS the harness's own, never the network's.
+  const localAiState = new LocalAiService(db, settingsChecks);
+  const aiReader = new AiReaderService(db, {
+    key: deriveKey(TEST_MASTER, AI_READER_KEY_PURPOSE),
+    edition: config.FDV_EDITION,
+    settings: config.FDV_AI_READER_SETTINGS,
+    allowedPorts: config.FDV_AI_READER_ALLOWED_PORTS,
+    checks: settingsChecks,
+    // The harness's own addresses: none, so a test's 192.168.x is never this machine's.
+    ownAddresses: () => new Set(),
+    server: () => localAiState.server(),
+    resolve:
+      opts.aiResolve ??
+      (async (host) => {
+        throw new Error(`no address for ${host} in the harness`);
+      }),
+    alert,
+  });
   const app = await buildApp(config, {
     serverVersion: await serverVersion(),
     instanceId: instanceIdReader(db),
@@ -417,7 +445,8 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       codeKey: deriveKey(TEST_MASTER, PHONE_CODE_KEY_PURPOSE),
     }),
     textCodes,
-    localAi: new LocalAiService(db, settingsChecks),
+    localAi: new LocalAiService(db, settingsChecks, aiReader),
+    aiReader,
     pingDatabase: async () => undefined,
     auth,
     totp,

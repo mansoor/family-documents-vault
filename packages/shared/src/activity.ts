@@ -120,6 +120,8 @@ export function activityKind(action: string): ActivityKind {
     case 'household.timezone_changed':
     case 'household.reading_model_changed':
     case 'household.local_ai_changed':
+    case 'ai_reader.changed':
+    case 'ai_reader.tested':
     case 'batch.version_undone':
       return 'changed';
   }
@@ -837,6 +839,26 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // The local AI reader on or off for the household (0.9.0, R4).
     case 'household.local_ai_changed':
       return line(`${who} turned ${detail.local_ai === true ? 'on' : 'off'} the local AI`, true);
+    // The AI reader set in Settings, changed, removed or tested (0.9.0,
+    // AIR1): which kind and where it runs — never its address, its key, or
+    // anything it said.
+    case 'ai_reader.changed':
+      return detail.removed === true
+        ? line(`${who} removed the AI reader set in Settings`, true)
+        : line(
+            `${who} changed the AI reader${
+              detail.runs_at === 'cloud'
+                ? ', a cloud service'
+                : detail.runs_at === 'own_network'
+                  ? ', on your own network'
+                  : ''
+            }`,
+            true,
+          );
+    case 'ai_reader.tested':
+      return detail.ok === true
+        ? line(`${who} tested the AI reader, and it answered`, true)
+        : line(`${who} tested the AI reader, and it did not answer`, true);
     // Which folder the scanner folder is, and how long scans are kept (0.9.0, O1).
     case 'watch_folder.folder_changed':
       return line(

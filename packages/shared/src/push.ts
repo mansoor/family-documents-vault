@@ -153,6 +153,62 @@ export function isPrivateAddress(ip: string): boolean {
 }
 
 /**
+ * An address nothing should ever be sent to, even where addresses inside
+ * the household's own network are allowed (0.9.0, AIR1): link-local (cloud
+ * metadata at 169.254.169.254 and fe80::/10 among it), "this network" and
+ * the unspecified address, multicast and broadcast — for IPv6 too, and an
+ * IPv4 address inside an IPv6 one. Not an address at all: true.
+ */
+export function isLinkLocalAddress(ip: string): boolean {
+  const addr = ip
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '');
+  const bad4 = (four: number[]) => {
+    const [a = 0, b = 0, c = 0, d = 0] = four;
+    return (
+      a === 0 ||
+      (a === 169 && b === 254) ||
+      a >= 224 ||
+      // Alibaba Cloud's metadata service.
+      (a === 100 && b === 100 && c === 100 && d === 200)
+    );
+  };
+  const four = v4(addr);
+  if (four) return bad4(four);
+  const g = v6(addr);
+  if (!g) return true;
+  const [a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, hi = 0, lo = 0] = g;
+  const zeros = a === 0 && b === 0 && c === 0 && d === 0;
+  // Loopback (::1) is this machine, judged elsewhere.
+  if (zeros && e === 0 && f === 0 && hi === 0 && lo === 1) return false;
+  // Judged by the IPv4 address inside, as isPrivateAddress judges it:
+  // compatible (::/96, the unspecified address among it), mapped
+  // (::ffff:0:0/96), translated (::ffff:0:0:0/96), NAT64 (64:ff9b::/96)
+  // and 6to4 (2002::/16).
+  if (zeros && e === 0 && (f === 0 || f === 0xffff)) return bad4(embedded(hi, lo));
+  if (zeros && e === 0xffff && f === 0) return bad4(embedded(hi, lo));
+  if (a === 0x64 && b === 0xff9b && c === 0 && d === 0 && e === 0 && f === 0) {
+    return bad4(embedded(hi, lo));
+  }
+  if (a === 0x2002) return bad4(embedded(b, c));
+  // AWS's metadata service over IPv6 (fd00:ec2::254).
+  if (
+    a === 0xfd00 &&
+    b === 0x0ec2 &&
+    c === 0 &&
+    d === 0 &&
+    e === 0 &&
+    f === 0 &&
+    hi === 0 &&
+    lo === 0x254
+  ) {
+    return true;
+  }
+  return (a & 0xffc0) === 0xfe80 || (a & 0xff00) === 0xff00;
+}
+
+/**
  * A name that means this machine whatever DNS says (RFC 6761): refused as
  * 127.0.0.1 is, without asking DNS — a resolver that does not know it must
  * not make it look fine.

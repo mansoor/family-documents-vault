@@ -7,6 +7,7 @@ import {
   OPERATOR_MAIL_KEY_PURPOSE,
   ScopeKeys,
   SMS_PASSWORD_PURPOSE,
+  AI_READER_KEY_PURPOSE,
   SHARE_LINK_COPY_PURPOSE,
 } from '@fdv/crypto';
 import { assertSchemaKnown, createDb, createPool, migrateUp } from '@fdv/db';
@@ -68,6 +69,7 @@ import { ReadingCheckService } from './reading-check/service.js';
 import { MAIL_IN_CODE_KEY_PURPOSE, MailInService } from './mail-in/service.js';
 import { SettingsCheckService } from './settings-checks.js';
 import { LocalAiService } from './household/local-ai.js';
+import { AiReaderService } from './household/ai-reader.js';
 import { PHONE_CODE_KEY_PURPOSE, MemberPhoneService } from './sms/phones.js';
 import { SmsService } from './sms/service.js';
 import { SMS_CODE_KEY_PURPOSE, TextCodeService } from './sms/codes.js';
@@ -231,6 +233,18 @@ async function main(): Promise<void> {
   );
   // What an owner asks the worker from Settings (0.9.0, O1): Verify, browse, Test the mailbox.
   const settingsChecks = new SettingsCheckService(db, enqueue);
+  // The AI reader set in Settings (0.9.0, AIR1): its key sealed here, opened
+  // by the worker alone; .env's reader, as the workers said it, wins.
+  const localAiState = new LocalAiService(db, settingsChecks);
+  const aiReader = new AiReaderService(db, {
+    key: deriveKey(masterSecret, AI_READER_KEY_PURPOSE),
+    edition: config.FDV_EDITION,
+    settings: config.FDV_AI_READER_SETTINGS,
+    allowedPorts: config.FDV_AI_READER_ALLOWED_PORTS,
+    checks: settingsChecks,
+    server: () => localAiState.server(),
+    alert,
+  });
   const app = await buildApp(config, {
     serverVersion: version,
     instanceId: instanceIdReader(db),
@@ -251,7 +265,8 @@ async function main(): Promise<void> {
     }),
     textCodes,
     // The local AI reader's switch (0.9.0, R4): the endpoint is the worker's alone.
-    localAi: new LocalAiService(db, settingsChecks),
+    localAi: new LocalAiService(db, settingsChecks, aiReader),
+    aiReader,
     pingDatabase: async () => {
       await pool.query('select 1');
     },

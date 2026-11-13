@@ -272,6 +272,12 @@ begin
     revoke execute on function public.phone_code_expires(uuid) from public;
     grant execute on function public.phone_code_expires(uuid) to fdv_app;
   end if;
+  -- Which reader the household's papers go to, for whoever adds papers
+  -- (0089, AIR1): its kind, address and where it runs, once tested.
+  if to_regprocedure('public.ai_reader_notice()') is not null then
+    revoke execute on function public.ai_reader_notice() from public;
+    grant execute on function public.ai_reader_notice() to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

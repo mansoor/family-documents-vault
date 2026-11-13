@@ -68,6 +68,7 @@ import { registerReadingCheck } from './reading-check/routes.js';
 import type { ReadingCheckService } from './reading-check/service.js';
 import { registerSettingsChecks, type SettingsCheckService } from './settings-checks.js';
 import { registerLocalAi, type LocalAiService } from './household/local-ai.js';
+import { registerAiReader, type AiReaderService } from './household/ai-reader.js';
 import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
 import { ownNetworks, trustProxyFor } from './client-address.js';
@@ -145,6 +146,8 @@ export interface AppDeps {
   settingsChecks?: SettingsCheckService;
   /** The local AI reader's switch, an owner's, and what the workers found of it (0.9.0, R4). */
   localAi?: LocalAiService;
+  /** The AI reader set in Settings → Reading, an owner's (0.9.0, AIR1). */
+  aiReader?: AiReaderService;
   logger?: boolean | object;
   /**
    * The networks this process is on, for `FDV_TRUST_PROXY=network` (5.30):
@@ -447,6 +450,8 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
         req.log.warn({ err }, 'the local AI could not be asked about');
         return false;
       }),
+      // The AI reader set in Settings (AIR1): unless the operator keeps it out.
+      aiReaderSettings: deps.aiReader?.offered() === true,
       setupRequired,
       pushEnabled: Boolean(config.FDV_VAPID_PUBLIC_KEY),
       // Without it the document is still true, only less specific; say
@@ -517,6 +522,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   if (deps.readingChecks) registerReadingCheck(app, deps.readingChecks, deps.localAi);
   if (deps.settingsChecks) registerSettingsChecks(app, deps.settingsChecks);
   if (deps.localAi) registerLocalAi(app, deps.localAi);
+  if (deps.aiReader) registerAiReader(app, deps.aiReader, deps.stepUp);
   registerDevices(app, deps.devices, deps.stepUp, config.FDV_MAX_UPLOAD_BYTES);
 
   return app;

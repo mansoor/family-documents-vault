@@ -1,3 +1,4 @@
+import type { AiReaderModelsResult } from './ai-reader.js';
 import type { LocalAiTestResult } from './local-ai.js';
 import type { MailInTestResult } from './mail-in.js';
 import type { WatchBrowseResult, WatchVerifyResult } from './watch-folder.js';
@@ -11,9 +12,11 @@ import type { WatchBrowseResult, WatchVerifyResult } from './watch-folder.js';
 
 /**
  * `folder`: Verify; `browse`: the folders inside one; `mailbox`: Test the
- * mailbox; `local_ai`: Test the local AI (0.9.0, R4).
+ * mailbox; `local_ai`: Test the local AI (0.9.0, R4); `ai_reader`: Test the
+ * AI reader saved in Settings, and `ai_models`: its list of models (AIR1).
  */
-export type SettingsCheckKind = 'folder' | 'browse' | 'mailbox' | 'local_ai';
+export type SettingsCheckKind =
+  'folder' | 'browse' | 'mailbox' | 'local_ai' | 'ai_reader' | 'ai_models';
 
 /**
  * A worker that has not answered in this long is not running, or is busy:
@@ -40,6 +43,10 @@ export interface SettingsCheckView {
   mailbox?: MailInTestResult;
   /** Test the local AI (R4): the model, the host and how long; never a paper's words. */
   local_ai?: LocalAiTestResult;
+  /** Test the AI reader saved in Settings (AIR1): as `local_ai`, and where it runs. */
+  ai_reader?: LocalAiTestResult;
+  /** The saved reader's models (AIR1): their names alone, never anything else it said. */
+  ai_models?: AiReaderModelsResult;
   /** While late: why, and what to do. */
   words: string | null;
 }

@@ -387,6 +387,10 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // The local AI reader turned on or off for the household (0.9.0, R4):
   // about the household, so for the owners alone.
   ['household.local_ai_changed', ownersAndThePerson],
+  // The AI reader set in Settings, changed or removed, and tested (0.9.0,
+  // AIR1): about the household, so for the owners alone.
+  ['ai_reader.changed', ownersAndThePerson],
+  ['ai_reader.tested', ownersAndThePerson],
   ['export.requested', BY_TYPE],
   ['export.downloaded', BY_TYPE],
   // signing in

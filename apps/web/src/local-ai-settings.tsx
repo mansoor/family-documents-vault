@@ -1,7 +1,10 @@
-import type {
-  LocalAiNotice as LocalAiNoticeView,
-  LocalAiServerView,
-  LocalAiSettingsView,
+import {
+  AI_READER_KIND_NAMES,
+  aiReaderRunsAtWords,
+  type LocalAiNotice as LocalAiNoticeView,
+  type LocalAiReaderSummary,
+  type LocalAiServerView,
+  type LocalAiSettingsView,
 } from '@fdv/shared';
 import { useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
@@ -12,12 +15,13 @@ import { useWorkerCheck } from './worker-check.js';
 
 /**
  * Said where somebody adds papers many at a time (the R4 review, M1): this
- * household's are read by its local AI too, and on which host. Nothing
- * while the vault has none, or the household has it off.
+ * household's are read by its local AI too, and on which host — and, since
+ * AIR1, which kind of reader it is and where it runs. Nothing while the
+ * vault has none, or the household has it off.
  */
 export function LocalAiNotice() {
   const { caps, authVersion, guarded } = useApp();
-  const offered = caps?.features?.local_ai === true;
+  const offered = caps?.features?.local_ai === true || caps?.features?.ai_reader_settings === true;
   const [notice, setNotice] = useState<LocalAiNoticeView | null>(null);
   useEffect(() => {
     if (!offered) return;
@@ -36,9 +40,21 @@ export function LocalAiNotice() {
   return (
     <p className="private-note" role="note">
       <span aria-hidden="true">✦</span> Read by the household’s local AI, on{' '}
-      <bdi>{notice.host}</bdi>, beside the vault’s rules.
+      <bdi>{notice.host}</bdi>
+      {notice.kind
+        ? ` (${AI_READER_KIND_NAMES[notice.kind]}, ${aiReaderRunsAtWords(notice.runs_at)})`
+        : ''}
+      , beside the vault’s rules.
     </p>
   );
+}
+
+/** The reader saved in Settings (AIR1), where .env sets none, in words. */
+function savedWords(r: LocalAiReaderSummary): string {
+  const which = `${AI_READER_KIND_NAMES[r.kind]}: ${r.model} at ${r.host}, ${aiReaderRunsAtWords(r.runs_at)}.`;
+  return r.ready
+    ? `Set in Settings: ${which} Its last Test passed.`
+    : `Set in Settings: ${which} It can be turned on once a Test passes, in The AI reader above.`;
 }
 
 /** What the workers found of the endpoint, in words. */
@@ -104,7 +120,15 @@ export function LocalAiCard() {
     }
   };
 
-  const setUp = data !== null && data.local_ai_server.state !== 'not_set_up';
+  const { caps } = useApp();
+  // Where .env sets none, an owner may set one in Settings (AIR1).
+  const settings = caps?.features?.ai_reader_settings === true;
+  const saved =
+    data !== null && data.local_ai_server.state === 'not_set_up'
+      ? (data.local_ai_reader ?? null)
+      : null;
+  const setUp =
+    data !== null && (data.local_ai_server.state !== 'not_set_up' || saved?.ready === true);
   const result = test.view?.state === 'done' ? (test.view.local_ai ?? null) : null;
   return (
     <section className="card stack" aria-labelledby="local-ai-h">
@@ -145,15 +169,23 @@ export function LocalAiCard() {
             </p>
           </div>
           <p
-            className={data.local_ai_server.state === 'reachable' ? '' : 'attention'}
+            className={
+              data.local_ai_server.state === 'reachable' || saved?.ready === true ? '' : 'attention'
+            }
             role="status"
           >
-            {serverWords(data.local_ai_server)}
+            {saved ? savedWords(saved) : serverWords(data.local_ai_server)}
           </p>
-          {!setUp && (
+          {!setUp && !saved && !settings && (
             <p className="muted">
               Whoever runs the vault sets it up in the server’s .env file (FDV_LOCAL_AI_URL and
               FDV_LOCAL_AI_MODEL): the README says how. It can’t be set from here.
+            </p>
+          )}
+          {!setUp && !saved && settings && (
+            <p className="muted">
+              Set up the AI reader above first, or whoever runs the vault sets one in the server’s
+              .env file (FDV_LOCAL_AI_URL and FDV_LOCAL_AI_MODEL).
             </p>
           )}
           <Check

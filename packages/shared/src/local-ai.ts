@@ -3,6 +3,7 @@ import { expiryReadInto, type DateValue } from './documents.js';
 import { NOTE_KIND } from './notes.js';
 import { pageText, type ProposalContext } from './proposals.js';
 import type { Role } from './roles.js';
+import type { AiReaderKind, AiReaderRunsAt } from './ai-reader.js';
 
 /**
  * The local AI reader (0.9.0, R4): an optional model on the household's own
@@ -72,6 +73,13 @@ export type LocalAiServerView =
       model: string;
       host: string;
       checked_at: string;
+      /** The kind of reader (0.9.0, AIR1): .env's is Ollama. Absent from older vaults. */
+      kind?: AiReaderKind;
+      /**
+       * Where it runs (AIR1, decision 2), by the address the worker last
+       * reached it at: null while not known. Absent from older vaults.
+       */
+      runs_at?: AiReaderRunsAt | null;
     };
 
 /**
@@ -82,6 +90,24 @@ export type LocalAiServerView =
 export interface LocalAiSettingsView {
   local_ai: boolean;
   local_ai_server: LocalAiServerView;
+  /**
+   * The reader the household's switch turns on (0.9.0, AIR1): .env's where
+   * the operator set one (it wins), else the one an owner saved in
+   * Settings → Reading → AI reader; null, none. `ready`: it can be used now
+   * (.env's said so lately; a saved one's Test passed). Absent from older
+   * vaults.
+   */
+  local_ai_reader?: LocalAiReaderSummary | null;
+}
+
+/** The reader a household's papers would go to (AIR1): which, where, and whether it can be used. */
+export interface LocalAiReaderSummary {
+  source: 'env' | 'settings';
+  kind: AiReaderKind;
+  model: string;
+  host: string;
+  runs_at: AiReaderRunsAt | null;
+  ready: boolean;
 }
 
 /**
@@ -92,11 +118,38 @@ export interface LocalAiSettingsView {
 export interface LocalAiNotice {
   local_ai: boolean;
   host: string | null;
+  /** The kind of reader, and where it runs (0.9.0, AIR1). Absent from older vaults. */
+  kind?: AiReaderKind | null;
+  runs_at?: AiReaderRunsAt | null;
 }
 
 /** Why Test the local AI found nothing to use. */
 export type LocalAiProblem =
-  'not_set_up' | 'unreachable' | 'timeout' | 'no_model' | 'http_error' | 'too_big';
+  | 'not_set_up'
+  | 'unreachable'
+  | 'timeout'
+  | 'no_model'
+  | 'http_error'
+  | 'too_big'
+  /** No reader saved for the household in Settings (0.9.0, AIR1). */
+  | 'not_saved'
+  /** The address is one the vault won't send to (AIR1, decision 9): nothing was sent. */
+  | 'refused'
+  /** Something answered, but not in the reader's own API's shape (AIR1): its words never shown. */
+  | 'bad_reply';
+
+/** Every LocalAiProblem: what the API keeps of a worker's answer, and nothing else. */
+export const LOCAL_AI_PROBLEMS: readonly LocalAiProblem[] = [
+  'not_set_up',
+  'unreachable',
+  'timeout',
+  'no_model',
+  'http_error',
+  'too_big',
+  'not_saved',
+  'refused',
+  'bad_reply',
+];
 
 /** What the worker found when Test was asked (R4): the model, the host and how long. */
 export interface LocalAiTestFound {
@@ -104,6 +157,8 @@ export interface LocalAiTestFound {
   model: string | null;
   host: string | null;
   latency_ms: number | null;
+  /** Where it runs, by the address it was reached at (0.9.0, AIR1); absent when not known. */
+  runs_at?: AiReaderRunsAt | null;
 }
 
 /** Test the local AI's answer, with its words. */
@@ -119,7 +174,15 @@ const PROBLEM_WORDS: Readonly<Record<LocalAiProblem, string>> = {
   no_model: 'It answered, but hasn’t that model. Pull it on the model’s server first.',
   http_error: 'It answered with an error. Its own log says why.',
   too_big: 'It answered with far more than asked.',
+  not_saved: 'No AI reader is saved for this household yet. Save one first, then test it.',
+  refused:
+    'The vault won’t send anything to that address. Choose an address on your own network, or a public one over https.',
+  bad_reply:
+    'Something answered, but not as that kind of reader does. Check the address is the reader’s own.',
 };
+
+/** Why a reader found nothing to use, in words: never anything the reader said. */
+export const localAiProblemWords = (p: LocalAiProblem): string => PROBLEM_WORDS[p];
 
 /** Test's answer in words. */
 export function localAiTestResult(found: LocalAiTestFound): LocalAiTestResult {

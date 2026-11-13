@@ -94,6 +94,13 @@ const ADDRESS = /[^\s@<>"'(),;:[\]/\\]+@[^\s@<>"'(),;:[\]/\\]*\.[A-Za-z][A-Za-z0
  */
 const NUMBER = /\+[1-9][0-9]{6,14}(?![0-9])/g;
 
+/**
+ * An API key as it is sent (AIR1): `Bearer` and what follows. The AI
+ * reader's key travels in a PUT body (never logged) and is kept sealed; were
+ * one ever to reach an error's words, it is cut as an address is.
+ */
+const BEARER = /\bBearer\s+[^\s"',;]+/gi;
+
 /** What a logged error may keep of PostgreSQL's fields: names, never values. */
 const ERROR_FIELDS = ['code', 'statusCode', 'constraint', 'table', 'column', 'routine', 'severity'];
 
@@ -106,7 +113,8 @@ const ERROR_FIELDS = ['code', 'statusCode', 'constraint', 'table', 'column', 'ro
  * what failed (constraint, table, column), never its values.
  */
 export function errorForLog(err: unknown): Record<string, unknown> {
-  const scrub = (s: string) => s.replace(ADDRESS, '[address]').replace(NUMBER, '[number]');
+  const scrub = (s: string) =>
+    s.replace(ADDRESS, '[address]').replace(NUMBER, '[number]').replace(BEARER, 'Bearer [key]');
   if (!(err instanceof Error)) return { message: scrub(String(err)) };
   const e = err as Error & Record<string, unknown>;
   const out: Record<string, unknown> = {

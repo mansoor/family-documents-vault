@@ -101,6 +101,22 @@ describe('what the log may say about a request (0.5.0)', () => {
       }),
     );
     expect(JSON.stringify(row)).not.toContain('7700900123');
+    // An AI reader's key as it is sent (AIR1): never in an error's words.
+    const keyed = errorForLog(new Error('refused: Authorization: Bearer sk-test-abcd-1234'));
+    expect(keyed.message).toBe('refused: Authorization: Bearer [key]');
+    expect(JSON.stringify(keyed)).not.toContain('sk-test-abcd-1234');
+    // Nor a refused row's: the key is kept sealed, and a row's values are never kept.
+    const aiRow = errorForLog(
+      Object.assign(new Error('new row violates check constraint "ai_reader_model"'), {
+        code: '23514',
+        constraint: 'ai_reader_model',
+        detail: 'Failing row contains (…, sealed-bytes, abcd, …).',
+      }),
+    );
+    expect(aiRow).not.toHaveProperty('detail');
+    expect(loggableUrl('/api/v1/household/reading/ai-reader')).toBe(
+      '/api/v1/household/reading/ai-reader',
+    );
     // A stack keeps its paths, packages and versions included.
     const deep = new Error('Queue alert.send does not exist');
     deep.stack =

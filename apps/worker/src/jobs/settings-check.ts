@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { openMailboxPassword } from '@fdv/crypto';
-import { withSystem, type Db } from '@fdv/db';
+import { appendAudit, withSystem, type Db } from '@fdv/db';
 import { sql } from 'kysely';
 import {
   SETTINGS_CHECK_KEEP_MS,
@@ -13,12 +13,22 @@ import {
   watchPathRefusal,
   watchPathWords,
   MAIL_IN_AUTHSERV_AGREE,
+  type AiReaderModelsFound,
+  type LocalAiProblem,
   type LocalAiTestFound,
   type MailInTestFound,
   type WatchBrowseResult,
   type WatchVerifyCheck,
   type WatchVerifyFound,
 } from '@fdv/shared';
+import {
+  savedAiReader,
+  unproven,
+  type AiReader,
+  type HouseholdAiReaders,
+  type LocalAiAnswer,
+  type NotBuilt,
+} from '../ai-reader.js';
 import { localAiHost, type LocalAiClient } from '../local-ai.js';
 import { whyOf } from './intake-ingest.js';
 import { mailHostAddress, type MailHostRules } from './mail-address.js';
@@ -102,6 +112,144 @@ export interface SettingsCheckDeps {
   };
   /** The local AI's client (R4), where the operator set one up; none, and Test says so. */
   localAi?: Pick<LocalAiClient, 'test' | 'settings'> | null;
+  /**
+   * The readers owners save in Settings (AIR1): none where .env sets one
+   * (it wins) or FDV_AI_READER_SETTINGS is off, and Test says so.
+   */
+  aiReaders?: Pick<HouseholdAiReaders, 'build' | 'keptFor'> | null;
+}
+
+/** Why there is no answer, as Test says it: never anything the reader said. */
+function problemOf(got: Extract<LocalAiAnswer, { state: 'without' }>): LocalAiProblem {
+  switch (got.why) {
+    case 'http_error':
+      return got.status === 404 ? 'no_model' : 'http_error';
+    case 'too_big':
+      return 'too_big';
+    case 'timeout':
+      return 'timeout';
+    case 'refused':
+      return 'refused';
+    case 'bad_reply':
+      return 'bad_reply';
+    default:
+      return 'unreachable';
+  }
+}
+
+/** Why a saved reader could not be made into one to call, as Test says it. */
+const notBuiltProblem = (not: NotBuilt): LocalAiProblem =>
+  not === 'key' ? 'not_saved' : 'refused';
+
+/**
+ * Test the reader an owner saved in Settings (AIR1): a tiny fixed prompt —
+ * no paper's words — to the address saved, with every guard (decision 9),
+ * from a reader made fresh, which finds where it runs. What it found: the
+ * model, the host, how long and where it runs — never what it said. Then,
+ * as the vault, the saved reader is marked as tested — `ok`, with where it
+ * was found to run, or `failed` and why — only if it is still as it was
+ * tested (a reader changed since waits for a Test of its own); and the Test
+ * is written to the activity log, as the owner who asked.
+ */
+export async function testSavedAiReader(
+  deps: Pick<SettingsCheckDeps, 'db' | 'aiReaders'>,
+  hh: string,
+  askedBy: string | null,
+): Promise<LocalAiTestFound> {
+  const none = (
+    problem: LocalAiProblem,
+    at: { model?: string; host?: string } = {},
+  ): LocalAiTestFound => ({
+    problem,
+    model: at.model ?? null,
+    host: at.host ?? null,
+    latency_ms: null,
+  });
+  if (!deps.aiReaders) return none('not_set_up');
+  const row = await withSystem(deps.db, hh, (trx) => savedAiReader(trx, hh));
+  if (!row) return none('not_saved');
+  const host = row.base_url ? new URL(row.base_url).host : undefined;
+  const at = { model: row.model, ...(host ? { host } : {}) };
+  // The reader kept for it, its line and breaker, where it is the one saved
+  // as it is (M5); else one made fresh.
+  const kept = deps.aiReaders.keptFor(hh, row);
+  const built = kept ? { reader: kept } : deps.aiReaders.build(hh, row, null);
+  let found: LocalAiTestFound;
+  let reader: AiReader | null = null;
+  if ('not' in built) {
+    found = none(notBuiltProblem(built.not), at);
+  } else {
+    reader = built.reader;
+    const got = await reader.test({ findWhere: true });
+    found =
+      got.state === 'replied'
+        ? { ...none('not_set_up', at), problem: null, latency_ms: got.ms }
+        : none(problemOf(got), at);
+    if (reader.lastRunsAt) found.runs_at = reader.lastRunsAt;
+  }
+  // Never passed a Test at this address (S2b): only "couldn't reach it" or
+  // "reached it, but it isn't that kind of reader".
+  if (found.problem && !row.address_proven) found.problem = unproven(found.problem);
+  const ok = found.problem === null;
+  const runsAt = reader?.lastRunsAt ?? null;
+  await withSystem(deps.db, hh, async (trx) => {
+    // The reader tested, and no other: changed since, it waits for a Test of its own.
+    await trx
+      .updateTable('ai_reader')
+      .set(
+        ok
+          ? {
+              status: 'ok',
+              last_tested_at: new Date(),
+              last_problem: null,
+              address_proven: true,
+              ...(runsAt ? { runs_at: runsAt } : {}),
+            }
+          : { status: 'failed', last_tested_at: new Date(), last_problem: found.problem },
+      )
+      .where('household_id', '=', hh)
+      .where('kind', '=', row.kind)
+      .where('model', '=', row.model)
+      .where(sql<boolean>`base_url is not distinct from ${row.base_url}`)
+      .where(sql<boolean>`api_key_encrypted is not distinct from ${row.api_key_encrypted}`)
+      .execute();
+    await appendAudit(trx, {
+      householdId: hh,
+      actorAccountId: askedBy,
+      action: 'ai_reader.tested',
+      objectType: 'household',
+      objectId: hh,
+      // Whether it answered, why not, and where it runs: never what it said.
+      detail: {
+        ok,
+        kind: row.kind,
+        ...(found.problem ? { problem: found.problem } : {}),
+        ...(found.runs_at ? { runs_at: found.runs_at } : {}),
+      },
+    });
+  });
+  return found;
+}
+
+/**
+ * The saved reader's models (AIR1): GET /api/tags at the address saved,
+ * with every guard, and the names alone. Nothing is written but the answer.
+ */
+export async function listSavedAiModels(
+  deps: Pick<SettingsCheckDeps, 'db' | 'aiReaders'>,
+  hh: string,
+): Promise<AiReaderModelsFound> {
+  if (!deps.aiReaders) return { problem: 'not_set_up', models: [] };
+  const row = await withSystem(deps.db, hh, (trx) => savedAiReader(trx, hh));
+  if (!row) return { problem: 'not_saved', models: [] };
+  const kept = deps.aiReaders.keptFor(hh, row);
+  const built = kept ? { reader: kept } : deps.aiReaders.build(hh, row, null);
+  if ('not' in built) return { problem: notBuiltProblem(built.not), models: [] };
+  const got = await built.reader.models();
+  if (got.state === 'listed') return { problem: null, models: got.names };
+  const problem = problemOf(got);
+  // Never passed a Test at this address (S2b): two outcomes alone.
+  return { problem: row.address_proven ? problem : unproven(problem), models: [] };
 }
 
 /**
@@ -118,17 +266,7 @@ export async function testLocalAi(
   const at = { model: client.settings.model, host: localAiHost(client.settings.url) };
   const got = await client.test();
   if (got.state === 'replied') return { problem: null, ...at, latency_ms: got.ms };
-  const problem: LocalAiTestFound['problem'] =
-    got.why === 'http_error'
-      ? got.status === 404
-        ? 'no_model'
-        : 'http_error'
-      : got.why === 'too_big'
-        ? 'too_big'
-        : got.why === 'timeout'
-          ? 'timeout'
-          : 'unreachable';
-  return { problem, ...at, latency_ms: null };
+  return { problem: problemOf(got), ...at, latency_ms: null };
 }
 
 /** The question answered, once: a row answered already, or gone, is left as it is. */
@@ -140,7 +278,7 @@ export async function runSettingsCheck(
   const row = await withSystem(deps.db, hh, (trx) =>
     trx
       .selectFrom('settings_check')
-      .select(['id', 'kind', 'path', 'done_at'])
+      .select(['id', 'kind', 'path', 'done_at', 'requested_by'])
       .where('id', '=', job.check_id)
       .executeTakeFirst(),
   );
@@ -148,7 +286,10 @@ export async function runSettingsCheck(
   const fsx = deps.watch.fs ?? nodeFs;
   // The roots but `/` and any holding one of the vault's own (the O1 review, M4).
   const { accepted } =
-    row.kind === 'mailbox' || row.kind === 'local_ai'
+    row.kind === 'mailbox' ||
+    row.kind === 'local_ai' ||
+    row.kind === 'ai_reader' ||
+    row.kind === 'ai_models'
       ? { accepted: [] }
       : await acceptedRoots(deps.watch.roots, deps.watch.ownDirs, fsx);
   const rules = { roots: accepted, ownDirs: deps.watch.ownDirs };
@@ -159,7 +300,26 @@ export async function runSettingsCheck(
     } else if (row.kind === 'browse') {
       result = await browseWatchFolder(row.path ?? '', rules, fsx);
     } else if (row.kind === 'local_ai') {
-      result = await testLocalAi(deps.localAi ?? null);
+      // .env's reader where it is set (it wins); else the one saved in
+      // Settings (AIR1), whose Test this is too.
+      result =
+        deps.localAi || !deps.aiReaders
+          ? await testLocalAi(deps.localAi ?? null)
+          : await testSavedAiReader(deps, hh, row.requested_by);
+    } else if (row.kind === 'ai_reader') {
+      // While .env's reader wins, the one saved is not used, nor tried.
+      result = deps.localAi
+        ? ({
+            problem: 'not_set_up',
+            model: null,
+            host: null,
+            latency_ms: null,
+          } satisfies LocalAiTestFound)
+        : await testSavedAiReader(deps, hh, row.requested_by);
+    } else if (row.kind === 'ai_models') {
+      result = deps.localAi
+        ? ({ problem: 'not_set_up', models: [] } satisfies AiReaderModelsFound)
+        : await listSavedAiModels(deps, hh);
     } else {
       result = await testMailbox(deps, hh);
     }
@@ -167,27 +327,29 @@ export async function runSettingsCheck(
     // Said as nothing could be told, never as the error's own words.
     deps.log('warn', 'a check asked for in Settings could not be finished', { err: whyOf(err) });
     result =
-      row.kind === 'local_ai'
-        ? ({
-            problem: 'unreachable',
-            model: null,
-            host: null,
-            latency_ms: null,
-          } satisfies LocalAiTestFound)
-        : row.kind === 'mailbox'
-          ? ({ ...emptyTest('none'), problem: 'unreachable' } satisfies MailInTestFound)
-          : row.kind === 'browse'
-            ? ({
-                path: row.path ?? '',
-                folders: [],
-                truncated: false,
-                problem: 'That folder couldn’t be looked in just now. Try again.',
-              } satisfies WatchBrowseResult)
-            : ({
-                path: row.path ?? '',
-                steps: WATCH_VERIFY_CHECKS.map((check) => ({ check, ok: null })),
-                free_bytes: null,
-              } satisfies WatchVerifyFound);
+      row.kind === 'ai_models'
+        ? ({ problem: 'unreachable', models: [] } satisfies AiReaderModelsFound)
+        : row.kind === 'local_ai' || row.kind === 'ai_reader'
+          ? ({
+              problem: 'unreachable',
+              model: null,
+              host: null,
+              latency_ms: null,
+            } satisfies LocalAiTestFound)
+          : row.kind === 'mailbox'
+            ? ({ ...emptyTest('none'), problem: 'unreachable' } satisfies MailInTestFound)
+            : row.kind === 'browse'
+              ? ({
+                  path: row.path ?? '',
+                  folders: [],
+                  truncated: false,
+                  problem: 'That folder couldn’t be looked in just now. Try again.',
+                } satisfies WatchBrowseResult)
+              : ({
+                  path: row.path ?? '',
+                  steps: WATCH_VERIFY_CHECKS.map((check) => ({ check, ok: null })),
+                  free_bytes: null,
+                } satisfies WatchVerifyFound);
   }
   await withSystem(deps.db, hh, async (trx) => {
     await trx

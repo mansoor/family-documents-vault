@@ -3,6 +3,7 @@ import type pg from 'pg';
 import { deriveKey, KEK_PURPOSE } from './master.js';
 import { mailboxPasswordAad } from './mailbox-password.js';
 import { smsPasswordAad } from './sms-password.js';
+import { aiReaderKeyAad } from './ai-reader-key.js';
 import { shareLinkCopyAad } from './share-link-copy.js';
 import { binding, type ScopeKind } from './scope-keys.js';
 import { unwrapKey, wrapKey } from './wrap.js';
@@ -109,6 +110,21 @@ export const MASTER_SEALED = [
     bind: ['household_id'],
     aad: (id: string, row: Readonly<Record<string, string>>) =>
       shareLinkCopyAad(row.household_id ?? '', id),
+  },
+  // packages/crypto/src/ai-reader-key.ts (sealAiReaderKey, used by the API's
+  // AiReaderService; opened by the worker alone): the household's AI reader's
+  // API key, set in Settings (0.9.0, AIR1)
+  {
+    name: 'aiReaderKeys',
+    purpose: 'ai-reader-credentials',
+    table: 'ai_reader',
+    key: 'household_id',
+    column: 'api_key_encrypted',
+    // The kind and the address it was typed for are bound in too: a key kept
+    // for one reader never opens for another.
+    bind: ['kind', 'base_url'],
+    aad: (id: string, row: Readonly<Record<string, string>>) =>
+      aiReaderKeyAad(id, row.kind ?? '', row.base_url ?? ''),
   },
 ] as const;
 
@@ -439,6 +455,7 @@ async function rekey(
     mailInPasswords: 0,
     smsPasswords: 0,
     shareLinkCopies: 0,
+    aiReaderKeys: 0,
   };
   for (const s of MASTER_SEALED) {
     // A backup can be older than the column; a restore brings it up to date

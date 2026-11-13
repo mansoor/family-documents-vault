@@ -18,7 +18,9 @@ describe.skipIf(!testAdminUrl())('the local AI’s switch (R4)', () => {
   let adult: Tokens;
   let admin: ReturnType<typeof createPool>;
   beforeAll(async () => {
-    h = await createHarness({ rateLimitPerMinute: 100_000 });
+    // .env's reader alone (R4): a reader set in Settings (AIR1) is
+    // household/ai-reader.test.ts's, and would say `local_ai` here too.
+    h = await createHarness({ rateLimitPerMinute: 100_000, aiReaderSettings: 'off' });
     owner = await h.setup();
     adult = await h.join(owner, { name: 'Ada', email: 'ada-ai@example.test', role: 'adult' });
     admin = createPool(h.adminUrl, 1);
@@ -53,6 +55,8 @@ describe.skipIf(!testAdminUrl())('the local AI’s switch (R4)', () => {
       loaded: false,
       local_ai: false,
       local_ai_server: { state: 'not_set_up' },
+      // The reader the switch would use (AIR1): none, here.
+      local_ai_reader: null,
     });
     expect((await caps()).local_ai).toBe(false);
     // Not to be turned on: there is nothing to turn on.
@@ -121,7 +125,13 @@ describe.skipIf(!testAdminUrl())('the local AI’s switch (R4)', () => {
     expect((await put(owner, { local_ai: true })).statusCode).toBe(200);
     const on = await notice(adult);
     expect(on.statusCode, on.body).toBe(200);
-    expect(on.json()).toEqual({ local_ai: true, host: 'ollama:11434' });
+    // Since AIR1, which kind of reader too, and where it runs (not known here).
+    expect(on.json()).toEqual({
+      local_ai: true,
+      host: 'ollama:11434',
+      kind: 'ollama',
+      runs_at: null,
+    });
     // Never the model, nor whether it answered.
     expect(on.body).not.toMatch(/qwen|reachable/);
     // Not set up any more: not said.

@@ -43,6 +43,7 @@ import { extractText } from './extract-text.js';
 import { adapterOf, type IncomingDeps } from './incoming.js';
 import { decryptToBuffer } from './process-version.js';
 import type { ItemProposer } from './proposal-thread.js';
+import type { HouseholdAiReaders } from '../ai-reader.js';
 import type { LocalAiAnswer, LocalAiClient } from '../local-ai.js';
 import { detectTools, pdfLocked, type Tools } from './tools.js';
 import { WORD_MIME } from './word-text.js';
@@ -161,6 +162,12 @@ export interface ReadOptions {
    */
   localAi?: LocalAiReader | null;
   /**
+   * The readers owners saved in Settings (0.9.0, AIR1): asked for a
+   * household's own, once its Test passed, where .env sets none (`localAi`
+   * wins) and FDV_AI_READER_SETTINGS is not off.
+   */
+  aiReaders?: AiReaderSource | null;
+  /**
    * The worker's clock: when an item may be read again, and when its wait
    * on the vault has gone on a day. The real one, unless a test sets it.
    */
@@ -169,6 +176,23 @@ export interface ReadOptions {
 
 /** What reading needs of the local AI's client (local-ai.ts): a test may stand in. */
 export type LocalAiReader = Pick<LocalAiClient, 'read'>;
+
+/** Where a household's own reader, saved in Settings, is found (AIR1): a test may stand in. */
+export type AiReaderSource = Pick<HouseholdAiReaders, 'readerFor'>;
+
+/**
+ * The reader a household's papers go to (AIR1, decision 8): .env's, where
+ * the operator set one; else the household's own, saved in Settings and
+ * tested; else none. Read as the vault, inside the caller's transaction.
+ */
+export async function readerFor(
+  trx: Db,
+  hh: string,
+  o: { localAi?: LocalAiReader | null; aiReaders?: AiReaderSource | null },
+): Promise<LocalAiReader | null> {
+  if (o.localAi) return o.localAi;
+  return o.aiReaders ? o.aiReaders.readerFor(trx, hh) : null;
+}
 
 /**
  * Whether a household has the local AI on (0081, R4), and what the uploader
@@ -435,6 +459,7 @@ export async function readItem(
       learned: LearnedContext | null;
       guestNames: ReadonlySet<string>;
       localAi: { on: boolean; role: Role | null };
+      reader: LocalAiReader | null;
       plain: Buffer;
     };
     let got: {
@@ -443,6 +468,7 @@ export async function readItem(
       learned: LearnedContext | null;
       guestNames: ReadonlySet<string>;
       localAi: { on: boolean; role: Role | null };
+      reader: LocalAiReader | null;
       adapter: StorageAdapter;
     };
     try {
@@ -454,10 +480,17 @@ export async function readItem(
           ctx: await proposalContext(trx, hh, f.requester_member_id),
           learned: await learnedContext(trx, hh, f.requester_member_id, deps.keys),
           guestNames: await guestNames(trx),
-          // The local AI (R4): only where the operator set one up.
-          localAi: opts.localAi
-            ? await localAiFor(trx, hh, f.requester_member_id)
-            : { on: false, role: null },
+          // The local AI (R4): only where the operator set one up, or (AIR1)
+          // an owner saved one in Settings and its Test passed.
+          ...(await (async () => {
+            const reader = await readerFor(trx, hh, opts);
+            return {
+              reader,
+              localAi: reader
+                ? await localAiFor(trx, hh, f.requester_member_id)
+                : { on: false, role: null },
+            };
+          })()),
         };
       });
     } catch (err) {
@@ -522,7 +555,7 @@ export async function readItem(
     // endpoint alone; its reply read on the thread, beside the rules. Slow
     // or down, and the paper is read without it, within its time.
     const offer = localAiOffer(had.ctx, { role: had.localAi.role, me: f.requester_member_id });
-    const asked = await askLocalAi(opts.localAi, had.localAi.on, text, offer, {
+    const asked = await askLocalAi(had.reader, had.localAi.on, text, offer, {
       priority: 'interactive',
       signal: deadline,
     });

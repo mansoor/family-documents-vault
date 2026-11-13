@@ -384,6 +384,8 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_LOCAL_AI_URL`                              | unset                                     | An Ollama-compatible model on your own server or network, e.g. `http://ollama:11434`: `http://` or `https://`, no user or password in it. Worker only. Unset: no local AI. See [A local AI reader](#a-local-ai-reader). |
 | `FDV_LOCAL_AI_MODEL`                            | unset                                     | The model it asks for, pulled there first, e.g. `qwen2.5:3b-instruct`. Needed with `FDV_LOCAL_AI_URL`.                                                                                                                  |
 | `FDV_LOCAL_AI_TIMEOUT_SECONDS`                  | `120`                                     | How long it may take over one paper before the paper is read without it (5 to 300).                                                                                                                                     |
+| `FDV_AI_READER_ALLOWED_PORTS`                   | `11434,1234,8000,8080,80,443`             | The ports an AI reader set in Settings may be on, comma-separated. Any other is refused, so its Test is no port scanner. `FDV_LOCAL_AI_URL` is yours, and not limited. API and worker.                                  |
+| `FDV_AI_READER_SETTINGS`                        | `on`                                      | `off` keeps the AI reader out of Settings: only `FDV_LOCAL_AI_URL` sets one. API and worker. See [A local AI reader](#a-local-ai-reader).                                                                               |
 | `FDV_OFFLINE_MAX_DAYS`                          | `90`                                      | How many days a phone may show the Essentials it keeps without reaching the vault (1 to 365). See [Essentials on a phone](#essentials-on-a-phone).                                                                      |
 | `FDV_RATE_LIMIT_PER_MINUTE`                     | `300`                                     | How many requests one address may make in a minute, beyond the tighter limits on signing in and opening links (60 to 100000). Raise it when many devices share one address.                                             |
 | `FDV_DISPLAY_NAME`                              | `Our family vault`                        | The vault's name until it is set up. From then on every screen, and the phone app, shows the family's name, given at setup.                                                                                             |
@@ -438,12 +440,14 @@ docker run --rm -v fdv_vault-data:/from:ro -v /mnt/big/fdv:/to alpine sh -c "cp 
 
 Then add the override and start it again (`docker compose up -d`).
 
-Three more are read by the images and are not passed by `docker-compose.yml` either, and
+Two more are read by the images and are not passed by `docker-compose.yml` either, and
 need no setting: `FDV_BACKUP_DIR` (default `/data/backups`), where the worker writes the
-nightly backups and where `restore-backup latest` looks; `FDV_EDITION` (default
-`self_hosted`), which the API reports to apps and which should stay as it is; and
-`FDV_MIGRATIONS_DIR` (`/app/migrations`, set by the images themselves), where the
-database's migrations are read from. `FDV_DB_PORT` (default `5432`) is for development
+nightly backups and where `restore-backup latest` looks; and `FDV_MIGRATIONS_DIR` (`/app/migrations`, set by the images themselves), where the
+database's migrations are read from. `FDV_EDITION` (default `self_hosted`), which the API
+reports to apps, should stay as it is on your own server; the compose file gives it to the
+API **and the worker**, which both need it: on the hosted edition a reader set in Settings
+is reached only over https at a public address, checked as it is saved and again at every
+connection (a reader saved there keeps that rule even on a worker started without it). `FDV_DB_PORT` (default `5432`) is for development
 only: the port `docker-compose.dev.yml` opens the database on (see
 [Developing](#developing)).
 
@@ -802,10 +806,25 @@ control will do too — over https where the papers cross your network
 (`FDV_LOCAL_AI_URL=https://ai.home.example:11434`, behind a TLS proxy of your
 own); plain http only on a network you trust end to end — or anything that
 answers Ollama's `/api/chat` with JSON schemas (Ollama 0.5 or later). It must
-be your own: the address is set in `.env` alone, never from the web, and may
-be a private one for that reason. `http://` or `https://`, with no user name
-or password in it. The worker resolves its name once for each paper, within
-the paper's time, talks to that address, and follows no redirect.
+be your own. `http://` or `https://`, with no user name or password in it.
+The worker resolves its name once for each paper, within the paper's time,
+talks to that address, and follows no redirect.
+
+**Or set it in Settings** (0.9.0). Where `FDV_LOCAL_AI_URL` and
+`FDV_LOCAL_AI_MODEL` are not set, an owner can set the reader in **Settings →
+Server and reading → Reading and the check → The AI reader**: its address (the
+address alone, such as `http://192.168.1.30:11434`), the model, an API key if
+it needs one (sent as `Authorization: Bearer`, kept encrypted, never shown
+again) and how long a paper may take. Saved, it is used only once its **Test**
+passes. Settings says whether it runs **on your own network** or is **a cloud
+service** (an address that resolves to a public one). The worker resolves the
+address for every call and checks it first — never link-local or cloud
+metadata, and on the hosted edition never inside a network at all — calls only
+Ollama's own `/api/chat` and `/api/tags`, and never shows what the reader
+answered, so it can't be used to look at other machines. Where the two `.env`
+settings are set they win, and Settings shows them locked;
+`FDV_AI_READER_SETTINGS=off`, given to the API and the worker, keeps the reader
+out of Settings altogether.
 
 On the vault's made-up test papers ([docs/smart-exit.md](docs/smart-exit.md),
 "A local AI (R4)"), `qwen2.5:3b-instruct` cut the papers needing typing by a

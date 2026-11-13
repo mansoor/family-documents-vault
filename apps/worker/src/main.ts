@@ -5,6 +5,7 @@ import {
   ALERT_LINK_KEY_PURPOSE,
   deriveKey,
   EnvKeyProvider,
+  AI_READER_KEY_PURPOSE,
   MAILBOX_PASSWORD_PURPOSE,
   OPERATOR_MAIL_KEY_PURPOSE,
   READING_RULES_KEY_PURPOSE,
@@ -55,6 +56,7 @@ import {
   localAiSettings,
   recordLocalAi,
 } from './local-ai.js';
+import { HouseholdAiReaders } from './ai-reader.js';
 import {
   READING_CHECK_JOB,
   READING_CHECK_SWEEP_JOB,
@@ -524,7 +526,13 @@ async function main(): Promise<void> {
   const localAiConf = localAiSettings(config);
   const recordAi = (state: 'reachable' | 'unreachable' | 'no_model') => {
     if (!localAiConf) return;
-    void recordLocalAi(dbs.admin, workerName, localAiConf, state).catch((err: unknown) =>
+    void recordLocalAi(
+      dbs.admin,
+      workerName,
+      localAiConf,
+      state,
+      localAi?.lastRunsAt ?? null,
+    ).catch((err: unknown) =>
       log('warn', 'could not record what the local AI is', {
         err: (err as Error).message.slice(0, 200),
       }),
@@ -539,8 +547,22 @@ async function main(): Promise<void> {
       timeout_seconds: localAiConf.timeoutMs / 1000,
     });
   }
+  // The readers owners save in Settings (0.9.0, AIR1): only where .env sets
+  // none — .env's wins (decision 8) — and FDV_AI_READER_SETTINGS is not
+  // off. A household's own is used once its Test passed, with every guard
+  // on the address an owner typed (decision 9).
+  const aiReaders =
+    localAi || config.FDV_AI_READER_SETTINGS === 'off'
+      ? null
+      : new HouseholdAiReaders({
+          key: deriveKey(masterSecret, AI_READER_KEY_PURPOSE),
+          publicOnly: config.FDV_EDITION === 'hosted',
+          ports: config.FDV_AI_READER_ALLOWED_PORTS,
+          log,
+        });
+  if (aiReaders) log('info', 'AI readers saved in Settings are used, once tested');
   await workBatchPreviews(boss, incomingDeps, {
-    read: { maxPages: config.FDV_OCR_MAX_PAGES, proposer: proposals, localAi },
+    read: { maxPages: config.FDV_OCR_MAX_PAGES, proposer: proposals, localAi, aiReaders },
   });
   // The Reading check (0.9.0, R0): one household's check read a document
   // at a time, on the same thread and tools, behind its batch items, and
@@ -569,6 +591,7 @@ async function main(): Promise<void> {
         maxPages: config.FDV_OCR_MAX_PAGES,
         proposer: proposals,
         localAi,
+        aiReaders,
       });
       if (r.next === 'now') await sendCheck(job.data);
       else if (r.next) await sendCheck(job.data, r.next);
@@ -701,6 +724,8 @@ async function main(): Promise<void> {
     },
     // Test the local AI (R4): through the same client, its turn the family's.
     localAi,
+    // Test a reader saved in Settings, and list its models (AIR1).
+    aiReaders,
   };
   await boss.createQueue(JOBS.settingsCheck, { retryLimit: 0, expireInSeconds: 120 });
   await boss.work(JOBS.settingsCheck, { batchSize: 1, pollingIntervalSeconds: 1 }, async (jobs) => {

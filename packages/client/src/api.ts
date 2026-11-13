@@ -139,6 +139,8 @@ import type {
   ReadingSettings,
   LocalAiNotice,
   LocalAiSettingsView,
+  AiReaderInput,
+  AiReaderView,
   MailInMailboxInput,
   MemberPhoneView,
   SettingsCheckView,
@@ -1786,6 +1788,43 @@ export function createApi(http: Http) {
     /** Test the local AI, in the worker: `202` and the check, asked after with `settingsCheck`. */
     testLocalAi: (token: string) =>
       request<SettingsCheckView>('/api/v1/household/reading/local-ai/test', {
+        method: 'POST',
+        token,
+      }),
+    // ------------------------------------ the AI reader in Settings (0.9.0, AIR1)
+    /**
+     * The AI reader set in Settings (`features.ai_reader_settings`): where it
+     * is set (`source`: here, by .env — locked — or not offered), the kinds
+     * this vault reads with, .env's reader while it wins, and the one saved.
+     * Never the key: `set` and its last four. An owner's alone.
+     */
+    aiReader: (token: string) =>
+      request<AiReaderView>('/api/v1/household/reading/ai-reader', { token }),
+    /**
+     * Saves the reader (step-up `change_ai_reader`). `422
+     * ai_reader_kind_not_offered` for a kind this vault doesn't read with yet,
+     * `422 ai_reader_address_refused` for an address it won't send to, `409
+     * ai_reader_locked` while .env sets one, `409 ai_reader_settings_off` where
+     * the operator keeps it out. Saved, it waits for a Test.
+     */
+    setAiReader: (token: string, body: AiReaderInput) =>
+      request<AiReaderView>('/api/v1/household/reading/ai-reader', {
+        method: 'PUT',
+        body,
+        token,
+      }),
+    /** Forgets the reader, key and all (step-up `change_ai_reader`). */
+    removeAiReader: (token: string) =>
+      request<AiReaderView>('/api/v1/household/reading/ai-reader', { method: 'DELETE', token }),
+    /** Test the reader saved, in the worker: `202` and the check (`ai_reader`), asked after with `settingsCheck`. */
+    testAiReader: (token: string) =>
+      request<SettingsCheckView>('/api/v1/household/reading/ai-reader/test', {
+        method: 'POST',
+        token,
+      }),
+    /** The saved reader's models, in the worker: `202` and the check (`ai_models`). */
+    aiReaderModels: (token: string) =>
+      request<SettingsCheckView>('/api/v1/household/reading/ai-reader/models', {
         method: 'POST',
         token,
       }),

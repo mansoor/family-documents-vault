@@ -1224,6 +1224,9 @@ const GUARDS = [
     table: 'account',
     fn: 'account_text_codes_writes',
   },
+  // An owner sets up the AI reader as themselves, and never says a Test
+  // passed, nor where it runs (0089, AIR1).
+  { name: 'ai_reader_account_writes', table: 'ai_reader', fn: 'ai_reader_account_writes' },
 ];
 
 /**
@@ -1247,6 +1250,8 @@ const OWNERS_SETTINGS = [
   // through it (0084, SMS1).
   { table: 'sms_settings', what: 'how the vault sends text messages' },
   { table: 'sms_message', what: 'the texts the vault sent' },
+  // The household's AI reader, its key sealed (0089, AIR1).
+  { table: 'ai_reader', what: 'the AI reader' },
 ];
 
 /**
@@ -1450,6 +1455,8 @@ const ACTOR_GUARDED = [
   // somebody's mobile number, theirs and the owners'; the codes, the vault's.
   'sms_settings',
   'sms_message',
+  // The AI reader set in Settings (0089, AIR1): the owners'.
+  'ai_reader',
   'member_phone',
   'phone_code',
   // And the codes texted to one's own number, the vault's (0088, SMS3).
