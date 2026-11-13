@@ -88,6 +88,20 @@ describe('the activity log, in sentences', () => {
     );
   });
 
+  it('says sending sensitive papers to the AI reader was turned on or off (AIR3)', () => {
+    const say = (detail: Record<string, unknown>) =>
+      describeEvent(ev({ action: 'ai_reader.send_sensitive_changed', detail }))?.text;
+    expect(say({ send_sensitive: true, kind: 'anthropic' })).toBe(
+      'Sarah turned on sending sensitive papers to the AI reader',
+    );
+    expect(say({ send_sensitive: false, kind: 'anthropic' })).toBe(
+      'Sarah turned off sending sensitive papers to the AI reader',
+    );
+    expect(say({ send_sensitive: false, reader_changed: true })).toBe(
+      'Sarah changed the AI reader, so sensitive papers are no longer sent to it',
+    );
+  });
+
   it('says who opened a shared link, since nobody signed in', () => {
     const line = describeEvent(
       ev({ action: 'share.opened', actor: null, actor_label: 'shared link (the letting agent)' }),

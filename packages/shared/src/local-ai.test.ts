@@ -7,6 +7,9 @@ import {
   LOCAL_AI_CONTENT_MAX,
   LOCAL_AI_REPLY_MAX_BYTES,
   LOCAL_AI_TEXT_MAX,
+  LOCAL_AI_TOOL,
+  anthropicRequestBody,
+  openAiRequestBody,
   localAiOffer,
   localAiPrompt,
   readLocalAiReply,
@@ -596,6 +599,29 @@ describe('the local AI on a card: one more cue, never the decider', () => {
     ]);
   });
 
+  it('held back by the sending rule or the cap (AIR3), the card says why — read here only', () => {
+    for (const [held, words] of [
+      ['sensitive', 'Read here only: sensitive'],
+      ['only_me', 'Read here only: only you can open it'],
+      ['cap', 'Read here only: this month’s limit reached'],
+    ] as const) {
+      const l = lv({ localAi: { state: 'without', held } });
+      expect(l.level).toBe('ready');
+      expect(l.tags).toEqual([
+        expect.objectContaining({ code: 'local_ai_without', kind: 'info', words }),
+      ]);
+      // Sealed and opened again, as the API reads it.
+      expect(storedLocalAi({ v: 1, local_ai: { state: 'without', held } })).toEqual({
+        state: 'without',
+        held,
+      });
+    }
+    // Anything else held is nothing more than read without it.
+    expect(storedLocalAi({ v: 1, local_ai: { state: 'without', held: 'other' } })).toEqual({
+      state: 'without',
+    });
+  });
+
   it('never makes a card Ready, alone or with anything else: over every reading of every card', () => {
     // Cards of every level the pieces make, and readings of every shape.
     const proposals: DetailProposal[] = [];
@@ -732,5 +758,82 @@ describe('what an accept of its suggestion teaches: nothing', () => {
     const pages = { value: 'allotment_lease', from: 'pages', cue: 'kind_words' };
     expect(lesson({ type_key: ai })?.steps.map((s) => s.field)).not.toContain('type_key');
     expect(lesson({ type_key: pages })?.steps.map((s) => s.field)).toContain('type_key');
+  });
+});
+
+describe('the cloud readers’ requests and replies (AIR3)', () => {
+  it('asks Anthropic through one tool it must call, its input R4’s schema', () => {
+    const body = JSON.parse(anthropicRequestBody('claude-haiku-4-5', PAGE, OFFER)) as {
+      model: string;
+      system: string;
+      messages: Array<{ role: string; content: string }>;
+      tools: Array<{ name: string; input_schema: unknown }>;
+      tool_choice: unknown;
+    };
+    const p = localAiPrompt(PAGE, OFFER);
+    expect(body.model).toBe('claude-haiku-4-5');
+    expect(body.system).toBe(p.system);
+    expect(body.messages).toEqual([{ role: 'user', content: p.user }]);
+    expect(body.tools).toEqual([
+      expect.objectContaining({ name: LOCAL_AI_TOOL, input_schema: p.schema }),
+    ]);
+    expect(body.tool_choice).toEqual({ type: 'tool', name: LOCAL_AI_TOOL });
+    // Words alone: never an image or a file.
+    expect(JSON.stringify(body)).not.toMatch(/"type":"(image|document)"/);
+  });
+
+  it('asks an OpenAI-compatible server for its schema, or for a JSON object where that is refused', () => {
+    const schema = JSON.parse(openAiRequestBody('gpt-4o-mini', PAGE, OFFER, 'json_schema')) as {
+      response_format: { type: string; json_schema: { strict: boolean; schema: unknown } };
+      messages: unknown[];
+    };
+    expect(schema.response_format.type).toBe('json_schema');
+    expect(schema.response_format.json_schema.strict).toBe(true);
+    // Strict outputs take no lengths or patterns: the thread holds the reply to them.
+    expect(JSON.stringify(schema.response_format.json_schema.schema)).not.toMatch(
+      /maxLength|pattern/,
+    );
+    expect(schema.messages).toHaveLength(2);
+    const object = JSON.parse(openAiRequestBody('gpt-4o-mini', PAGE, OFFER, 'json_object')) as {
+      response_format: unknown;
+    };
+    expect(object.response_format).toEqual({ type: 'json_object' });
+  });
+
+  it('reads each API’s own envelope, and no other', () => {
+    const openai = JSON.stringify({
+      choices: [{ message: { role: 'assistant', content: JSON.stringify(FORM) } }],
+    });
+    const anthropic = JSON.stringify({
+      type: 'message',
+      content: [{ type: 'tool_use', id: 't1', name: LOCAL_AI_TOOL, input: FORM }],
+    });
+    const want = { reading: expect.objectContaining({ type_key: 'passport' }) as unknown };
+    expect(readLocalAiReply(openai, OFFER, PAGE, 'dmy', 'openai_compatible')).toEqual(want);
+    expect(readLocalAiReply(anthropic, OFFER, PAGE, 'dmy', 'anthropic')).toEqual(want);
+    // Another API's envelope is no answer.
+    expect(readLocalAiReply(openai, OFFER, PAGE, 'dmy', 'anthropic')).toEqual({
+      refused: 'schema',
+    });
+    expect(readLocalAiReply(anthropic, OFFER, PAGE, 'dmy', 'openai_compatible')).toEqual({
+      refused: 'schema',
+    });
+    expect(readLocalAiReply(reply(FORM), OFFER, PAGE, 'dmy', 'anthropic')).toEqual({
+      refused: 'schema',
+    });
+    // Prose, another tool, or two calls: nothing.
+    const prose = JSON.stringify({ type: 'message', content: [{ type: 'text', text: 'Hi' }] });
+    expect(readLocalAiReply(prose, OFFER, PAGE, 'dmy', 'anthropic')).toEqual({ refused: 'schema' });
+    const other = JSON.stringify({
+      type: 'message',
+      content: [{ type: 'tool_use', name: 'run_command', input: FORM }],
+    });
+    expect(readLocalAiReply(other, OFFER, PAGE, 'dmy', 'anthropic')).toEqual({ refused: 'schema' });
+    // Held to the same schema as Ollama's: an extra key, and the whole answer is nothing.
+    const extra = JSON.stringify({
+      type: 'message',
+      content: [{ type: 'tool_use', name: LOCAL_AI_TOOL, input: { ...FORM, note: 'x' } }],
+    });
+    expect(readLocalAiReply(extra, OFFER, PAGE, 'dmy', 'anthropic')).toEqual({ refused: 'schema' });
   });
 });

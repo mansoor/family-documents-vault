@@ -144,7 +144,10 @@ describe('buildCapabilities', () => {
     // with — only while the operator has not kept it out.
     const air1 = buildCapabilities({ ...config, aiReaderSettings: true }).features;
     expect(air1.ai_reader_settings).toBe(true);
-    expect(air1.ai_reader_kinds).toEqual(['ollama']);
+    // AIR3: all three kinds, and who may be sent to a cloud one.
+    expect(air1.ai_reader_kinds).toEqual(['ollama', 'anthropic', 'openai_compatible']);
+    expect(air1.ai_reader_send_sensitive).toBe(true);
+    expect(caps.features).not.toHaveProperty('ai_reader_send_sensitive');
     expect(caps.features).not.toHaveProperty('ai_reader_settings');
     // S4: email in, reserved as email_ingest since 1.0, only while the worker
     // has a mailbox set up and checked it lately.

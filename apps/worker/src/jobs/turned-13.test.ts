@@ -149,7 +149,13 @@ describe.skipIf(!testAdminUrl())('somebody turning 13', () => {
     expect(await deliver({ ...deps(), digestHour: 9 })).toEqual({ digests: 1 });
     expect(sent).toHaveLength(1);
     expect(sent[0]?.recipient.account_id).toBe(accounts.Owner);
-    expect(JSON.stringify(sent[0]?.items)).not.toMatch(/Sara|2013|2026-10-12|12 Oct/);
+    // Ids stripped first: a random UUID may hold "2013".
+    expect(
+      JSON.stringify(sent[0]?.items).replace(
+        /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+        '<id>',
+      ),
+    ).not.toMatch(/Sara|2013|2026-10-12|12 Oct/);
     expect(sent[0]?.items).toEqual([
       {
         reminder_id: expect.any(String) as unknown,

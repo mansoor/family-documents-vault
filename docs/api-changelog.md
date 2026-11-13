@@ -6243,6 +6243,70 @@ ai_reader_settings_off`, `409 ai_reader_not_saved` (Test or the models
       features and answers `GET /household/reading/ai-reader` to an owner
       (`state.aiReader`, none saved unless a test says; `403` to anybody
       else); the phone reads it, and changes nothing.
+  - Anthropic and OpenAI-compatible readers, and who may be sent
+    (0.9.0-dev.37; AIR3). Migration 0092. **Additive**: a request made as
+    before is answered as before.
+    - **Changed `features`:** `ai_reader_kinds` is `['ollama', 'anthropic',
+'openai_compatible']`. **New:** `ai_reader_send_sensitive` (`true` beside
+      `ai_reader_settings`): the switch and the month's count below.
+    - **`PUT /api/v1/household/reading/ai-reader`** takes `kind:
+'anthropic'` with no `base_url` (`null` or left out; a typed one is `422
+validation_failed`) and a key it must have (`422 validation_failed`
+      without), its address fixed (`https://api.anthropic.com`) and its
+      `runs_at` always `cloud`; and `kind: 'openai_compatible'` with an
+      address and `own_network` (boolean, default `false`): `runs_at` is
+      `own_network` only when it is `true` and the address is a private one.
+      A changed `own_network` waits for a Test. On the hosted edition an
+      OpenAI-compatible reader anywhere but `https://api.openai.com` is `422
+ai_reader_provider_not_offered`. `422 ai_reader_kind_not_offered` stays
+      for any kind a vault does not offer. A new kind or address turns "Also
+      send sensitive papers" off (`ai_reader.send_sensitive_changed` with
+      `reader_changed: true`, and every owner emailed); so does `DELETE`.
+    - **New route,** an owner's: `PUT
+/api/v1/household/reading/ai-reader/send-sensitive` — `{ send_sensitive:
+boolean }` (`AiReaderSendSensitiveInput`), after `step_up_required`
+      (`send_sensitive_papers`); answers `AiReaderView`. On only while the
+      household's reader (saved, or `.env`'s) runs as a cloud service, else
+      `409 ai_reader_not_cloud`; off always. Each change emails every owner
+      and is in the activity log; the same value again changes nothing.
+    - **Changed answers:** `AiReaderView` carries `send_sensitive` and
+      `month` (`AiReaderMonth`: `month` YYYY-MM on the household's calendar,
+      `sent` — papers sent to a cloud reader this month, but those never
+      sent — `cap`, `warned`); `AiReaderSaved` carries `own_network`. A
+      batch item's sealed AI (`StoredLocalAi`) may be `{ state: 'without',
+held: 'sensitive' | 'only_me' | 'cap' }`, and its card's tag
+      (`local_ai_without`, unchanged code) says "Read here only: sensitive",
+      "… only you can open it" or "… this month's limit reached".
+    - **The sending rule** (worker, before every call, and again right
+      before the words go): a cloud reader is never sent an Only me paper,
+      nor a sensitive one (`sensitiveOf`) unless the household's switch is
+      on for that reader (`household.ai_send_sensitive_for`,
+      `aiReaderIdentity`: a mismatch — `.env`'s reader taking over, say — is
+      off, and `GET` answers `send_sensitive: false`); a batch item whose
+      batch names no kind counts as sensitive, and one naming neither kind
+      nor visibility is held as Only me; at most the reader's
+      `monthly_cap` papers a calendar month (default 500), the owners
+      emailed once at 80%. What was sent is kept in `ai_reader_send` (which
+      paper, which reader, when, how long; never a word).
+    - **New activity:** `ai_reader.send_sensitive_changed`
+      (`send_sensitive`, `kind`, `reader_changed`), for the owners and the
+      person. `ai_reader.changed` carries `own_network` for an
+      OpenAI-compatible reader.
+    - `@fdv/shared`: `mayReadWith(paper, reader)`, `AiReaderPaper`,
+      `AiReaderSending`, `AiReaderHeldBack`, `AI_READER_HELD_BACK`,
+      `AI_READER_HELD_WORDS`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_VERSION`,
+      `OPENAI_BASE_URL`, `AI_READER_HOSTED_PROVIDERS`,
+      `aiReaderHostedAllows`, `aiReaderRunsAtSaid`, `AI_READER_CAP_WARN_SHARE`,
+      `aiReaderCapWarnAt`, `AiReaderMonth`, `aiReaderMonthWords`,
+      `aiReaderProvider`, `aiReaderSendSensitiveWarning`, `aiReaderIdentity`,
+      `AiReaderSendSensitiveInput`, `LOCAL_AI_TOOL`, `CLOUD_AI_MAX_TOKENS`,
+      `anthropicRequestBody`, `openAiRequestBody`; `readLocalAiReply` takes
+      the envelope's kind; `AI_READER_PATHS.anthropic` adds `/v1/models`
+      (an addition to decision 9's paths, for its list of models).
+      `@fdv/client`: `setAiReaderSendSensitive`. The fake says
+      `ai_reader_send_sensitive`, answers `send_sensitive` and `month`, and
+      takes the switch from an owner (`409 ai_reader_not_cloud` without a
+      cloud reader saved; `403` to anybody else).
 
 ## Deprecations in effect
 

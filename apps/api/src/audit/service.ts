@@ -391,6 +391,8 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // AIR1): about the household, so for the owners alone.
   ['ai_reader.changed', ownersAndThePerson],
   ['ai_reader.tested', ownersAndThePerson],
+  // "Also send sensitive papers" on or off (0.9.0, AIR3): the owners'.
+  ['ai_reader.send_sensitive_changed', ownersAndThePerson],
   ['export.requested', BY_TYPE],
   ['export.downloaded', BY_TYPE],
   // signing in

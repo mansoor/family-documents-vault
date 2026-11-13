@@ -212,6 +212,11 @@ export async function testSavedAiReader(
       .where('model', '=', row.model)
       .where(sql<boolean>`base_url is not distinct from ${row.base_url}`)
       .where(sql<boolean>`api_key_encrypted is not distinct from ${row.api_key_encrypted}`)
+      // And the owner's word on where it runs, and the hosted rule, as they
+      // were tested (the AIR3 review, S1): a Test in flight when the owner
+      // unticked "on my own network" never marks it there.
+      .where('own_network', '=', row.own_network)
+      .where('https_only', '=', row.https_only)
       .execute();
     await appendAudit(trx, {
       householdId: hh,

@@ -1126,6 +1126,12 @@ const GUARDS = [
   },
   // Only an owner turns the local AI on or off (0081, R4).
   { name: 'household_local_ai_rule', table: 'household', fn: 'household_local_ai_rule' },
+  // Only an owner says whether sensitive papers go to a cloud AI reader (0092, AIR3).
+  {
+    name: 'household_ai_send_sensitive_rule',
+    table: 'household',
+    fn: 'household_ai_send_sensitive_rule',
+  },
   // A batch's uploader changes its name and defaults, and nothing else of
   // it (0062, Phase 6 I1).
   {
@@ -1252,6 +1258,9 @@ const OWNERS_SETTINGS = [
   { table: 'sms_message', what: 'the texts the vault sent' },
   // The household's AI reader, its key sealed (0089, AIR1).
   { table: 'ai_reader', what: 'the AI reader' },
+  // Which paper went to which reader, and the month's 80% email (0092, AIR3).
+  { table: 'ai_reader_send', what: 'which papers went to the AI reader' },
+  { table: 'ai_reader_cap_warning', what: 'the AI reader’s monthly warnings' },
 ];
 
 /**
@@ -1457,6 +1466,9 @@ const ACTOR_GUARDED = [
   'sms_message',
   // The AI reader set in Settings (0089, AIR1): the owners'.
   'ai_reader',
+  // Which papers went to it, and the month's warning (0092, AIR3): the owners'.
+  'ai_reader_send',
+  'ai_reader_cap_warning',
   'member_phone',
   'phone_code',
   // And the codes texted to one's own number, the vault's (0088, SMS3).

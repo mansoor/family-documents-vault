@@ -781,6 +781,17 @@ const FAKE_EDITABLE = [
 /** A document's version, as an If-Match names it: changed by every edit. */
 const etagOf = (doc: FakeDocument) => `"${doc.id}.${doc.revision ?? 1}"`;
 
+/** The AI reader as a vault with none saved says it (AIR1; AIR3's switch off, nothing sent). */
+const fakeAiReaderView = (): AiReaderView => ({
+  source: 'settings',
+  kinds: [...AI_READER_KINDS_OFFERED],
+  env: null,
+  reader: null,
+  https_only: false,
+  send_sensitive: false,
+  month: { month: new Date().toISOString().slice(0, 7), sent: 0, cap: 500, warned: false },
+});
+
 /**
  * The fixed fields as a built-in asks for them (0.5.6): every one shown, in
  * the app's own words — but an expiry only for a type that expires, and the
@@ -2775,15 +2786,26 @@ export function createFakeVault(): {
       if (state.role !== 'owner') {
         return fail(403, 'forbidden', 'Only an owner can change how the vault reads papers.');
       }
-      return ok(
-        state.aiReader ?? {
-          source: 'settings',
-          kinds: [...AI_READER_KINDS_OFFERED],
-          env: null,
-          reader: null,
-          https_only: false,
-        },
-      );
+      return ok(state.aiReader ?? fakeAiReaderView());
+    }
+    // "Also send sensitive papers" (AIR3): an owner's; on only with a cloud reader saved.
+    if (path === '/api/v1/household/reading/ai-reader/send-sensitive' && init.method === 'PUT') {
+      const s = session();
+      if (!('id' in s)) return s;
+      if (state.role !== 'owner') {
+        return fail(403, 'forbidden', 'Only an owner can change how the vault reads papers.');
+      }
+      const on = body.send_sensitive === true;
+      const view = state.aiReader ?? fakeAiReaderView();
+      if (on && view.reader?.runs_at !== 'cloud') {
+        return fail(
+          409,
+          'ai_reader_not_cloud',
+          'Sensitive papers are held back only from a cloud AI reader, and the household has none.',
+        );
+      }
+      state.aiReader = { ...view, send_sensitive: on };
+      return ok(state.aiReader);
     }
     // Links outside the family, and one shown again to its maker (0.9.0).
     const shareAnswer = shareRoutes(path, init, body, session);
@@ -2886,6 +2908,7 @@ export function createFakeVault(): {
           // The AI reader set in Settings (0.9.0, AIR1), and the kinds it reads with.
           ai_reader_settings: true,
           ai_reader_kinds: [...AI_READER_KINDS_OFFERED],
+          ai_reader_send_sensitive: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,

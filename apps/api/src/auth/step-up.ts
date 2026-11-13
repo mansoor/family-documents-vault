@@ -47,7 +47,8 @@ export type StepUpAction =
   | 'change_mailbox'
   | 'change_sms'
   | 'reveal_share'
-  | 'change_ai_reader';
+  | 'change_ai_reader'
+  | 'send_sensitive_papers';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -122,6 +123,10 @@ const WHY: Record<StepUpAction, string> = {
   // unlocked device could otherwise send the family's papers' words to a
   // server of its own.
   change_ai_reader: 'to change where the vault sends papers to be read',
+  // "Also send sensitive papers" to a cloud AI reader (0.9.0, AIR3): a
+  // session picked up from an unlocked device could otherwise send the
+  // words of the family's passports and bank statements to a provider.
+  send_sensitive_papers: 'to change whether sensitive papers are sent to the AI reader',
 };
 
 /**

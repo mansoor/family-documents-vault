@@ -205,9 +205,15 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       sensitive_documents: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
-      // of reader this vault reads with — Ollama, until AIR3.
+      // of reader this vault reads with — Ollama, Anthropic and an
+      // OpenAI-compatible server since AIR3, with who may be sent to a
+      // cloud one (the sensitive switch) and the month's count.
       ...(config.aiReaderSettings === true
-        ? { ai_reader_settings: true, ai_reader_kinds: [...AI_READER_KINDS_OFFERED] }
+        ? {
+            ai_reader_settings: true,
+            ai_reader_kinds: [...AI_READER_KINDS_OFFERED],
+            ai_reader_send_sensitive: true,
+          }
         : {}),
     },
     limits: {

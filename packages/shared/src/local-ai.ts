@@ -3,7 +3,13 @@ import { expiryReadInto, type DateValue } from './documents.js';
 import { NOTE_KIND } from './notes.js';
 import { pageText, type ProposalContext } from './proposals.js';
 import type { Role } from './roles.js';
-import type { AiReaderKind, AiReaderRunsAt } from './ai-reader.js';
+import {
+  AI_READER_HELD_BACK,
+  AI_READER_HELD_WORDS,
+  type AiReaderHeldBack,
+  type AiReaderKind,
+  type AiReaderRunsAt,
+} from './ai-reader.js';
 
 /**
  * The local AI reader (0.9.0, R4): an optional model on the household's own
@@ -220,9 +226,12 @@ export interface LocalAiReading {
  * What is sealed beside an item's proposal (`{ v: 1, …, local_ai }`): what
  * the local AI read; or that the household has it on and it was read
  * without it — the endpoint slow, down or resting, or its answer not one to
- * use. No local AI on, nothing is sealed.
+ * use; or (AIR3) never sent to it, `held` back by the sending rule
+ * (`mayReadWith`: sensitive, Only me) or this month's cap. No local AI on,
+ * nothing is sealed.
  */
-export type StoredLocalAi = { state: 'read'; fields: LocalAiReading } | { state: 'without' };
+export type StoredLocalAi =
+  { state: 'read'; fields: LocalAiReading } | { state: 'without'; held?: AiReaderHeldBack };
 
 /** The words for a field, mid-sentence. */
 const FIELD_WORDS = {
@@ -420,6 +429,88 @@ export function localAiRequestBody(model: string, text: string, offer: LocalAiOf
   });
 }
 
+/**
+ * The one tool an Anthropic reader is given (AIR3), and made to call
+ * (`tool_choice`): its input is the form, held to R4's schema.
+ */
+export const LOCAL_AI_TOOL = 'fill_in_form';
+
+/** How many tokens a cloud reader may answer with: the form, and room for a tool call's wrapping. */
+export const CLOUD_AI_MAX_TOKENS = 400;
+
+/**
+ * The body of the request to Anthropic's Messages API (AIR3): the same
+ * instructions and words as R4's, and the form as the one tool's input,
+ * which it must call — a structured reply, never prose.
+ */
+export function anthropicRequestBody(model: string, text: string, offer: LocalAiOffer): string {
+  const p = localAiPrompt(text, offer);
+  return JSON.stringify({
+    model,
+    max_tokens: CLOUD_AI_MAX_TOKENS,
+    temperature: 0,
+    system: p.system,
+    messages: [{ role: 'user', content: p.user }],
+    tools: [
+      {
+        name: LOCAL_AI_TOOL,
+        description: 'Fill in the short form about the paper, as the instructions say.',
+        input_schema: p.schema,
+      },
+    ],
+    tool_choice: { type: 'tool', name: LOCAL_AI_TOOL },
+  });
+}
+
+/**
+ * R4's schema as OpenAI's strict structured outputs take it (AIR3): the
+ * keywords it may not know (lengths, patterns) left out — the reply is held
+ * to them on the proposal thread all the same.
+ */
+function strictSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(strictSchema);
+  if (!schema || typeof schema !== 'object') return schema;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema as Record<string, unknown>)) {
+    if (k === 'maxLength' || k === 'pattern') continue;
+    out[k] = strictSchema(v);
+  }
+  return out;
+}
+
+/**
+ * The body of the request to an OpenAI-compatible `/v1/chat/completions`
+ * (AIR3): R4's instructions and words, the answer held to its schema
+ * (`json_schema`) — or, where the server refuses that, asked for as a JSON
+ * object (`json_object`), the schema in the instructions alone.
+ */
+export function openAiRequestBody(
+  model: string,
+  text: string,
+  offer: LocalAiOffer,
+  format: 'json_schema' | 'json_object',
+): string {
+  const p = localAiPrompt(text, offer);
+  return JSON.stringify({
+    model,
+    temperature: 0,
+    seed: 1,
+    max_tokens: CLOUD_AI_MAX_TOKENS,
+    stream: false,
+    response_format:
+      format === 'json_schema'
+        ? {
+            type: 'json_schema',
+            json_schema: { name: 'paper_form', strict: true, schema: strictSchema(p.schema) },
+          }
+        : { type: 'json_object' },
+    messages: [
+      { role: 'system', content: p.system },
+      { role: 'user', content: p.user },
+    ],
+  });
+}
+
 const KEYS = ['kind', 'whose', 'issuer', 'issued', 'expires', 'identifier'] as const;
 const ISO = /^(\d{4})-(\d{2})-(\d{2})$/;
 
@@ -565,6 +656,12 @@ export function readLocalAiReply(
   offer: LocalAiOffer,
   text: string,
   dateOrder?: 'dmy' | 'mdy',
+  /**
+   * Whose API's envelope it is (AIR3): Ollama's `{ message: { content } }`
+   * unless said; OpenAI's `{ choices: [{ message: { content } }] }`;
+   * Anthropic's tool call, `{ content: [{ type: 'tool_use', name, input }] }`.
+   */
+  shape: AiReaderKind = 'ollama',
 ): { reading: LocalAiReading } | { refused: LocalAiRefusal } {
   try {
     if (typeof body !== 'string' || body.length > LOCAL_AI_REPLY_MAX_BYTES) {
@@ -576,14 +673,34 @@ export function readLocalAiReply(
     } catch {
       return { refused: 'not_json' };
     }
-    const content = (envelope as { message?: { content?: unknown } } | null)?.message?.content;
-    if (typeof content !== 'string') return { refused: 'schema' };
-    if (content.length > LOCAL_AI_CONTENT_MAX) return { refused: 'too_big' };
     let form: unknown;
-    try {
-      form = JSON.parse(content);
-    } catch {
-      return { refused: 'not_json' };
+    if (shape === 'anthropic') {
+      // The one tool's call (AIR3): its input is the form, already JSON.
+      const blocks = (envelope as { content?: unknown } | null)?.content;
+      if (!Array.isArray(blocks)) return { refused: 'schema' };
+      const calls = blocks.filter(
+        (b: unknown) =>
+          !!b &&
+          typeof b === 'object' &&
+          (b as { type?: unknown }).type === 'tool_use' &&
+          (b as { name?: unknown }).name === LOCAL_AI_TOOL,
+      );
+      if (calls.length !== 1) return { refused: 'schema' };
+      form = (calls[0] as { input?: unknown }).input;
+      if (JSON.stringify(form ?? null).length > LOCAL_AI_CONTENT_MAX) return { refused: 'too_big' };
+    } else {
+      const content =
+        shape === 'openai_compatible'
+          ? (envelope as { choices?: Array<{ message?: { content?: unknown } }> } | null)
+              ?.choices?.[0]?.message?.content
+          : (envelope as { message?: { content?: unknown } } | null)?.message?.content;
+      if (typeof content !== 'string') return { refused: 'schema' };
+      if (content.length > LOCAL_AI_CONTENT_MAX) return { refused: 'too_big' };
+      try {
+        form = JSON.parse(content);
+      } catch {
+        return { refused: 'not_json' };
+      }
     }
     if (!form || typeof form !== 'object' || Array.isArray(form)) return { refused: 'schema' };
     const got = form as Record<string, unknown>;
@@ -671,7 +788,12 @@ export function storedLocalAi(raw: unknown): StoredLocalAi | null {
   const ai = (raw as { local_ai?: unknown }).local_ai;
   if (!ai || typeof ai !== 'object') return null;
   const state = (ai as { state?: unknown }).state;
-  if (state === 'without') return { state: 'without' };
+  if (state === 'without') {
+    const held = (ai as { held?: unknown }).held;
+    return AI_READER_HELD_BACK.includes(held as AiReaderHeldBack)
+      ? { state: 'without', held: held as AiReaderHeldBack }
+      : { state: 'without' };
+  }
   if (state !== 'read') return null;
   const f = (ai as { fields?: unknown }).fields;
   const fields: LocalAiReading = {};
@@ -776,6 +898,27 @@ export function applyLocalAi(x: {
   const fill = x.fill !== false;
   const out = { ...x.proposals };
   if (!ai) return { proposals: out, tags: [] };
+  // Held back (AIR3): never sent to the reader — said, and why. The same
+  // tag's code as any read without it, so a client that knows no more
+  // shows it as it shows those.
+  if (ai.state === 'without' && ai.held) {
+    return {
+      proposals: out,
+      tags: [
+        {
+          code: 'local_ai_without',
+          kind: 'info',
+          words: AI_READER_HELD_WORDS[ai.held],
+          detail:
+            ai.held === 'cap'
+              ? 'This month’s papers for the AI reader are all sent, so the vault’s rules read it alone, on this server.'
+              : ai.held === 'only_me'
+                ? 'Only me papers are never sent to an AI reader outside the house: the vault’s rules read it alone, on this server.'
+                : 'Sensitive papers are not sent to an AI reader outside the house: the vault’s rules read it alone, on this server.',
+        },
+      ],
+    };
+  }
   if (ai.state === 'without') {
     return {
       proposals: out,

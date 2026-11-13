@@ -65,6 +65,8 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
         'review_filing',
         // Another document, replaced by it (0082, 0.9.0): see below.
         'document',
+        // A document a Reading check sent to an AI reader (0092, AIR3).
+        'ai_reader_send',
       ]),
     );
     // 'c': on delete cascade, every one — but a document no longer needed,

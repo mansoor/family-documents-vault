@@ -1122,6 +1122,14 @@ const RULES: Record<string, Rule> = {
   'DELETE /api/v1/household/reading/ai-reader': { who: 'owners', last: true },
   'POST /api/v1/household/reading/ai-reader/test': { who: 'owners', body: () => ({}) },
   'POST /api/v1/household/reading/ai-reader/models': { who: 'owners', body: () => ({}) },
+  // "Also send sensitive papers" (0.9.0, AIR3): the owners' alone — one an
+  // attacker turns on sends the words of the family's passports to a
+  // provider — so last.
+  'PUT /api/v1/household/reading/ai-reader/send-sensitive': {
+    who: 'owners',
+    last: true,
+    body: () => ({ send_sensitive: true }),
+  },
 };
 
 /** Whether a role is among those a rule is for. */

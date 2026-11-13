@@ -167,7 +167,13 @@ describe.skipIf(!testAdminUrl())("changing a person's details (5.25)", () => {
       { fields: ['display_name', 'date_of_birth', 'relationship'] },
       { fields: ['relationship'] },
     ]);
-    expect(JSON.stringify(row.lines)).not.toMatch(/Aisha|Daughter|2016/);
+    // Ids stripped first: a random UUID may hold "2016".
+    expect(
+      JSON.stringify(row.lines).replace(
+        /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+        '<id>',
+      ),
+    ).not.toMatch(/Aisha|Daughter|2016/);
   });
 
   it('a stale version is 409, with the person as they are now, and nothing is changed', async () => {

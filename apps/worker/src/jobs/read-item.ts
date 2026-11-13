@@ -29,8 +29,6 @@ import {
   type LearnedContext,
   type LearnedShape,
   localAiOffer,
-  type LocalAiOffer,
-  type LocalAiReading,
   type PaperReading,
   type ProposalContext,
   type ProposalKind,
@@ -44,7 +42,14 @@ import { adapterOf, type IncomingDeps } from './incoming.js';
 import { decryptToBuffer } from './process-version.js';
 import type { ItemProposer } from './proposal-thread.js';
 import type { HouseholdAiReaders } from '../ai-reader.js';
-import type { LocalAiAnswer, LocalAiClient } from '../local-ai.js';
+import {
+  askAiReader,
+  itemPaperForRule,
+  sealedAi,
+  type AiAsked,
+  type AiSendDeps,
+  type GateReader,
+} from '../ai-send.js';
 import { detectTools, pdfLocked, type Tools } from './tools.js';
 import { WORD_MIME } from './word-text.js';
 
@@ -168,14 +173,22 @@ export interface ReadOptions {
    */
   aiReaders?: AiReaderSource | null;
   /**
+   * The owners emailed (the alert job) when a cloud reader has read 80% of
+   * the month's papers (AIR3, decision 10); none, and they are not.
+   */
+  tell?: AiSendDeps['tell'];
+  /**
    * The worker's clock: when an item may be read again, and when its wait
    * on the vault has gone on a day. The real one, unless a test sets it.
    */
   now?: () => Date;
 }
 
-/** What reading needs of the local AI's client (local-ai.ts): a test may stand in. */
-export type LocalAiReader = Pick<LocalAiClient, 'read'>;
+/**
+ * What reading needs of a reader (local-ai.ts, ai-reader.ts): its read, its
+ * kind and where it runs, for the sending rule (AIR3). A test may stand in.
+ */
+export type LocalAiReader = GateReader;
 
 /** Where a household's own reader, saved in Settings, is found (AIR1): a test may stand in. */
 export type AiReaderSource = Pick<HouseholdAiReaders, 'readerFor'>;
@@ -218,29 +231,25 @@ export async function localAiFor(
 }
 
 /**
- * The local AI asked about a paper's words (R4), for a household that has
- * it on: its reply, to be read on the proposal thread, or why there is none.
- * Nothing is asked of it otherwise. `null`: not asked.
+ * What a batch's item is, for the sending rule (AIR3): until it is filed it
+ * has only its batch's defaults — its visibility, its Sensitive, its kind.
+ * Read inside the household's scope.
  */
-export async function askLocalAi(
-  reader: LocalAiReader | null | undefined,
-  on: boolean,
-  text: string,
-  offer: LocalAiOffer,
-  o: { priority: 'interactive' | 'check'; signal?: AbortSignal },
-): Promise<LocalAiAnswer | null> {
-  if (!reader || !on) return null;
-  return reader.read(text, offer, o);
-}
-
-/** What is sealed of the local AI beside the proposal (R4): nothing where it was not asked. */
-export function sealedLocalAi(
-  asked: LocalAiAnswer | null,
-  read: LocalAiReading | null | undefined,
-): StoredLocalAi | undefined {
-  if (!asked) return undefined;
-  if (asked.state === 'replied' && read) return { state: 'read', fields: read };
-  return { state: 'without' };
+export async function itemBatchFacts(
+  trx: Db,
+  itemId: string,
+): Promise<{ visibility: string | null; sensitive: boolean | null; typeKey: string | null }> {
+  const b = await trx
+    .selectFrom('incoming_file as f')
+    .innerJoin('intake_batch as b', 'b.id', 'f.batch_id')
+    .select(['b.default_visibility', 'b.default_sensitive', 'b.default_type_key'])
+    .where('f.id', '=', itemId)
+    .executeTakeFirst();
+  return {
+    visibility: b?.default_visibility ?? null,
+    sensitive: b?.default_sensitive ?? null,
+    typeKey: b?.default_type_key ?? null,
+  };
 }
 
 /**
@@ -555,17 +564,34 @@ export async function readItem(
     // endpoint alone; its reply read on the thread, beside the rules. Slow
     // or down, and the paper is read without it, within its time.
     const offer = localAiOffer(had.ctx, { role: had.localAi.role, me: f.requester_member_id });
-    const asked = await askLocalAi(had.reader, had.localAi.on, text, offer, {
-      priority: 'interactive',
-      signal: deadline,
-    });
     // The thread reads untrusted words: it is given no account's hash and
     // no key to make one (the R1 re-check, N5).
+    const learnedForThread = had.learned ? withoutAccounts(had.learned) : had.learned;
+    // Who may be sent (AIR3; the review, D1 and S2): an item not yet filed
+    // is only what its batch says — its visibility, its Sensitive, its kind
+    // — read again inside the gate and once more right before its words go,
+    // so a batch made Only me or sensitive meanwhile holds it back. A batch
+    // that names no kind makes it sensitive (never the kind the rules
+    // guess), and no visibility either, Only me.
+    const ai: AiAsked = await askAiReader(
+      { db: deps.db, log: deps.log, tell: opts.tell ?? null },
+      hh,
+      had.reader,
+      had.localAi.on,
+      text,
+      offer,
+      async (trx) => itemPaperForRule(trx, await itemBatchFacts(trx, f.id)),
+      { purpose: 'item', incomingFileId: f.id },
+      { priority: 'interactive', signal: deadline },
+    );
+    const asked = ai.asked;
     const answer = await opts.proposer.propose(
       text,
       had.ctx,
-      had.learned ? withoutAccounts(had.learned) : had.learned,
-      asked?.state === 'replied' ? { reply: asked.body, offer } : undefined,
+      learnedForThread,
+      asked?.state === 'replied'
+        ? { reply: asked.body, offer, ...(asked.shape ? { shape: asked.shape } : {}) }
+        : undefined,
     );
     if (answer.state === 'unavailable') {
       throw new NotNow('the proposal thread could not be had', 'vault');
@@ -611,7 +637,7 @@ export async function readItem(
                   // P2), here: the thread is never told of a guest (I2).
                   settled.paper ? paperWithoutNames(settled.paper, had.guestNames) : undefined,
                   answer.expiryLabels ?? [],
-                  sealedLocalAi(asked, answer.localAi),
+                  sealedAi(ai, answer.localAi),
                 ),
               ),
               'utf8',
@@ -626,9 +652,10 @@ export async function readItem(
       // What was proposed, by field, never its value.
       proposed: Object.keys(settled.proposal),
       // The local AI (R4): whether it read it, which fields, and how long — never what.
+      ...(ai.held ? { local_ai: 'without', local_ai_held: ai.held } : {}),
       ...(asked
         ? {
-            local_ai: sealedLocalAi(asked, answer.localAi)?.state,
+            local_ai: sealedAi(ai, answer.localAi)?.state,
             ...(answer.localAi ? { local_ai_fields: Object.keys(answer.localAi) } : {}),
             ...(asked.state === 'without' ? { local_ai_why: asked.why } : {}),
             local_ai_ms: asked.ms,

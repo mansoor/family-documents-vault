@@ -2,8 +2,15 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { sealAiReaderKey } from '@fdv/crypto';
-import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import { aiReaderMonthCount, appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
+  AI_READER_CAP_DEFAULT,
+  ANTHROPIC_BASE_URL,
+  OPENAI_BASE_URL,
+  aiReaderHostedAllows,
+  aiReaderIdentity,
+  aiReaderProvider,
+  aiReaderRunsAtSaid,
   AI_READER_CAP_MAX,
   AI_READER_DEFAULT_PORTS,
   AI_READER_SERVICE_NAMES,
@@ -161,6 +168,7 @@ type Row = {
   model: string;
   timeout_seconds: number;
   runs_at: AiReaderRunsAt;
+  own_network: boolean;
   has_key: boolean;
   api_key_last4: string | null;
   monthly_cap: number;
@@ -176,6 +184,7 @@ const viewOf = (r: Row): AiReaderSaved => ({
   model: r.model,
   timeout_seconds: r.timeout_seconds,
   runs_at: r.runs_at,
+  own_network: r.kind === 'openai_compatible' && r.own_network,
   api_key: r.has_key ? 'set' : 'not_set',
   api_key_last4: r.has_key ? r.api_key_last4 : null,
   monthly_cap: r.monthly_cap,
@@ -246,8 +255,8 @@ export class AiReaderService {
     return { source: this.settingsOn ? 'settings' : 'off', env };
   }
 
-  private async row(trx: Db): Promise<Row | undefined> {
-    return trx
+  private async row(trx: Db, lock = false): Promise<Row | undefined> {
+    const q = trx
       .selectFrom('ai_reader')
       .select([
         'kind',
@@ -255,6 +264,7 @@ export class AiReaderService {
         'model',
         'timeout_seconds',
         'runs_at',
+        'own_network',
         sql<boolean>`api_key_encrypted is not null`.as('has_key'),
         'api_key_last4',
         'monthly_cap',
@@ -262,15 +272,62 @@ export class AiReaderService {
         'last_tested_at',
         'last_problem',
         'updated_at',
-      ])
-      .executeTakeFirst();
+      ]);
+    return (lock ? q.forUpdate() : q).executeTakeFirst();
+  }
+
+  /**
+   * The reader papers would go to now, as "Also send sensitive papers" is
+   * held to it (the AIR3 review, S3): .env's while it wins, by its kind and
+   * host; else the one saved, by its kind and address; else none.
+   */
+  private readerNow(
+    source: AiReaderSource,
+    env: LocalAiServerView,
+    row: Row | undefined,
+  ): {
+    kind: AiReaderKind;
+    base_url: string | null;
+    runs_at: AiReaderRunsAt | null;
+    identity: string;
+  } | null {
+    if (source === 'env' && env.state !== 'not_set_up') {
+      const kind = env.kind ?? 'ollama';
+      return {
+        kind,
+        base_url: null,
+        runs_at: env.runs_at ?? null,
+        identity: aiReaderIdentity('env', kind, env.host),
+      };
+    }
+    if (source === 'settings' && row) {
+      return {
+        kind: row.kind,
+        base_url: row.base_url,
+        runs_at: row.runs_at,
+        identity: aiReaderIdentity('settings', row.kind, row.base_url),
+      };
+    }
+    return null;
   }
 
   /** GET /household/reading/ai-reader: an owner's. Never the key, only whether one is set. */
   async get(p: Principal): Promise<AiReaderView> {
     if (p.role !== 'owner') throw ownersOnly();
     const { source, env } = await this.source();
-    const row = await withPrincipal(this.db, p, (trx) => this.row(trx));
+    const { row, sendSensitive, month } = await withPrincipal(this.db, p, async (trx) => {
+      const r = await this.row(trx);
+      const now = this.readerNow(source, env, r);
+      const s = await this.switchOf(trx, p.householdId);
+      return {
+        row: r,
+        // On for the reader papers go to now alone (S3): turned on for
+        // another — .env's taking over, or moving — it is off.
+        sendSensitive: s.on && now !== null && s.for === now.identity,
+        // The papers sent to a cloud reader this month (AIR3), on the household's calendar.
+        month: await aiReaderMonthCount(trx),
+      };
+    });
     return {
       source,
       kinds: [...AI_READER_KINDS_OFFERED],
@@ -285,7 +342,130 @@ export class AiReaderService {
             },
       reader: row ? viewOf(row) : null,
       https_only: this.httpsOnly,
+      send_sensitive: sendSensitive,
+      month: {
+        month: month.month.slice(0, 7),
+        sent: month.sent,
+        cap: row?.monthly_cap ?? AI_READER_CAP_DEFAULT,
+        warned: month.warned,
+      },
     };
+  }
+
+  /**
+   * The household's "Also send sensitive papers" as stored (AIR3), and the
+   * reader it was turned on for (S3). `lock`: the household's row held, so
+   * a save of the reader and the switch wait for each other (M1).
+   */
+  private async switchOf(
+    trx: Db,
+    hh: string,
+    lock = false,
+  ): Promise<{ on: boolean; for: string | null }> {
+    const q = trx
+      .selectFrom('household')
+      .select(['ai_send_sensitive', 'ai_send_sensitive_for'])
+      .where('id', '=', hh);
+    const h = await (lock ? q.forUpdate() : q).executeTakeFirst();
+    return { on: h?.ai_send_sensitive === true, for: h?.ai_send_sensitive_for ?? null };
+  }
+
+  /** Every owner of the household: the switch's email goes to each (AIR3). */
+  private async owners(trx: Db): Promise<string[]> {
+    const rows = await trx
+      .selectFrom('account_household')
+      .select('account_id')
+      .where('role', '=', 'owner')
+      .execute();
+    return rows.map((r) => r.account_id);
+  }
+
+  /**
+   * "Also send sensitive papers" set, or turned off by the vault as the
+   * reader changed (AIR3, decision 6): written to the activity log, and
+   * every owner emailed. Inside the caller's transaction, as the owner.
+   */
+  private async switched(
+    trx: Db,
+    p: Principal,
+    meta: RequestMeta,
+    on: boolean,
+    reader: { kind: AiReaderKind; base_url: string | null; identity?: string } | null,
+    readerChanged: boolean,
+  ): Promise<void> {
+    await trx
+      .updateTable('household')
+      // On for this reader alone (S3); off, for none.
+      .set({ ai_send_sensitive: on, ai_send_sensitive_for: on ? (reader?.identity ?? null) : null })
+      .where('id', '=', p.householdId)
+      .execute();
+    await appendAudit(trx, {
+      householdId: p.householdId,
+      actorAccountId: p.accountId,
+      action: 'ai_reader.send_sensitive_changed',
+      objectType: 'household',
+      objectId: p.householdId,
+      // Which way, and to which kind of reader: never its address or key.
+      detail: {
+        send_sensitive: on,
+        ...(reader ? { kind: reader.kind } : {}),
+        ...(readerChanged ? { reader_changed: true } : {}),
+      },
+      ip: meta.ip,
+    });
+    const me = await trx
+      .selectFrom('member')
+      .select('display_name')
+      .where('id', '=', p.memberId)
+      .executeTakeFirst();
+    const who = me?.display_name ?? 'An owner';
+    const provider = reader ? aiReaderProvider(reader.kind, reader.base_url).name : 'the AI reader';
+    const owners = await this.owners(trx);
+    if (owners.length === 0) return;
+    await this.alert({
+      householdId: p.householdId,
+      accountIds: owners,
+      emailOnly: true,
+      subject: on
+        ? 'Sensitive papers are now sent to the AI reader'
+        : 'Sensitive papers are no longer sent to the AI reader',
+      body: on
+        ? `${who} turned on “Also send sensitive papers” in Settings → Reading: the words of papers marked Sensitive — passports, bank statements and the like — are now sent to ${provider} to be read, as the household’s other papers are. Never the page or the file, and never an Only me paper. If that is a surprise, ask them about it, and turn it off in Settings.`
+        : readerChanged
+          ? `${who} changed the AI reader, so “Also send sensitive papers” was turned off: papers marked Sensitive are read on this server alone until an owner turns it on again.`
+          : `${who} turned off “Also send sensitive papers” in Settings → Reading: papers marked Sensitive are read on this server alone.`,
+    });
+  }
+
+  /**
+   * PUT /household/reading/ai-reader/send-sensitive (step-up
+   * `send_sensitive_papers`, AIR3): "Also send sensitive papers", an
+   * owner's. On only while the household's reader is a cloud service
+   * (`409 ai_reader_not_cloud`): on the household's own network every paper
+   * is read anyway. Off always. Each change emailed to every owner and
+   * written to the activity log; the same again changes nothing.
+   */
+  async setSendSensitive(p: Principal, on: boolean, meta: RequestMeta): Promise<AiReaderView> {
+    if (p.role !== 'owner') throw ownersOnly();
+    const { source, env } = await this.source();
+    await withPrincipal(this.db, p, async (trx) => {
+      // The household's row, then the reader's, held: a save of the reader
+      // waits for this, and this for it (the AIR3 review, M1).
+      const before = await this.switchOf(trx, p.householdId, true);
+      const reader = this.readerNow(source, env, await this.row(trx, true));
+      // On for the reader papers go to now, or not (S3).
+      const onNow = before.on && reader !== null && before.for === reader.identity;
+      if (onNow === on && (on || !before.on)) return;
+      if (on && reader?.runs_at !== 'cloud') {
+        throw new ApiError(
+          409,
+          'ai_reader_not_cloud',
+          'Sensitive papers are held back only from a cloud AI reader, and the household has none.',
+        );
+      }
+      await this.switched(trx, p, meta, on, reader, false);
+    });
+    return this.get(p);
   }
 
   /**
@@ -375,12 +555,27 @@ export class AiReaderService {
         `This vault doesn’t read with ${AI_READER_KIND_NAMES[input.kind]} yet. Choose ${AI_READER_KINDS_OFFERED.map((k) => AI_READER_KIND_NAMES[k]).join(' or ')}.`,
       );
     }
-    const address = aiReaderAddress(input.base_url ?? '', { httpsOnly: this.httpsOnly });
+    // Anthropic's address is fixed (AIR3): never typed, never kept.
+    const anthropic = input.kind === 'anthropic';
+    if (anthropic && typeof input.base_url === 'string' && input.base_url.trim() !== '') {
+      throw bad('Anthropic’s address is the vault’s own to say: leave the address out.');
+    }
+    const address = aiReaderAddress(anthropic ? ANTHROPIC_BASE_URL : (input.base_url ?? ''), {
+      httpsOnly: this.httpsOnly,
+    });
     if ('problem' in address) {
       if (address.problem === 'own') throw ownRefused();
       throw bad(aiReaderAddressWords(address.problem));
     }
-    if (!this.allowedPorts.includes(aiReaderPort(address.url))) {
+    // The hosted edition: only the providers its subprocessor list names (decision 9).
+    if (this.httpsOnly && !aiReaderHostedAllows(input.kind, address.url)) {
+      throw new ApiError(
+        422,
+        'ai_reader_provider_not_offered',
+        `On this vault an OpenAI-compatible reader can only be OpenAI itself, at ${OPENAI_BASE_URL}.`,
+      );
+    }
+    if (!anthropic && !this.allowedPorts.includes(aiReaderPort(address.url))) {
       throw portRefused(this.allowedPorts);
     }
     const model = input.model.trim();
@@ -417,12 +612,19 @@ export class AiReaderService {
       throw new ApiError(503, 'unavailable', 'The vault can’t keep a key just now.');
     }
     const kind = input.kind;
-    const baseUrl = address.url;
+    // Anthropic's is kept as none: its address is the vault's (0089).
+    const baseUrl = anthropic ? null : address.url;
+    // The owner's word that an OpenAI-compatible reader is on their own
+    // network (decision 2); the other kinds' place is never theirs to say.
+    const ownNetwork = kind === 'openai_compatible' && input.own_network === true;
     // Where it runs, and whether it may be sent to: asked before the
-    // transaction, never inside it.
-    const placed = await this.place(address.hostname);
+    // transaction, never inside it. Anthropic is a cloud service, wherever.
+    const placed = anthropic ? 'cloud' : await this.place(address.hostname);
     let reached = false;
     await withPrincipal(this.db, p, async (trx) => {
+      // The household's row first, as the switch takes it (the AIR3 review,
+      // M1): a save and "Also send sensitive papers" wait for each other.
+      await this.switchOf(trx, p.householdId, true);
       const before = await trx
         .selectFrom('ai_reader')
         .select([
@@ -433,6 +635,7 @@ export class AiReaderService {
           'api_key_encrypted',
           'api_key_last4',
           'https_only',
+          'own_network',
         ])
         .forUpdate()
         .executeTakeFirst();
@@ -454,11 +657,22 @@ export class AiReaderService {
       const keyChanged =
         typeof apiKey === 'string' ||
         ((before?.api_key_encrypted ?? null) !== null && keyNow.api_key_encrypted === null);
-      // Where it runs is kept while the address is: a Test found it.
-      const runsAt = before && !moved ? before.runs_at : placed;
+      // Anthropic answers nobody without a key (AIR3).
+      if (anthropic && keyNow.api_key_encrypted === null) {
+        throw bad('Type the API key Anthropic gave you: it reads nothing without one.');
+      }
+      const ownChanged = (before?.own_network ?? false) !== ownNetwork;
+      // Where it runs is kept while the address is: a Test found it — and
+      // the owner's word on it, which waits for a Test of its own.
+      const runsAt = aiReaderRunsAtSaid(
+        kind,
+        before && !moved && !ownChanged ? before.runs_at : placed,
+        ownNetwork,
+      );
       reached =
         before === undefined ||
         moved ||
+        ownChanged ||
         before.model !== model ||
         keyChanged ||
         before.https_only !== this.httpsOnly;
@@ -469,6 +683,7 @@ export class AiReaderService {
         timeout_seconds: input.timeout_seconds,
         monthly_cap: input.monthly_cap,
         runs_at: runsAt,
+        own_network: ownNetwork,
         // The hosted edition's rule, kept with the reader (the AIR1 review,
         // S1): the worker holds it to the strictest of this and its own.
         https_only: this.httpsOnly,
@@ -505,10 +720,20 @@ export class AiReaderService {
           key_changed: keyChanged,
           timeout_seconds: input.timeout_seconds,
           monthly_cap: input.monthly_cap,
+          ...(kind === 'openai_compatible' ? { own_network: ownNetwork } : {}),
         },
         ip: meta.ip,
       });
       if (reached) await this.tellOtherOwners(trx, p, 'changed');
+      // A new kind of reader or a new address: the switch's warning named
+      // another provider, so sensitive papers are no longer sent (AIR3) —
+      // the switch turned off where it was on for the reader replaced (S3).
+      if (before && moved) {
+        const s = await this.switchOf(trx, p.householdId);
+        if (s.on && s.for === aiReaderIdentity('settings', before.kind, before.base_url)) {
+          await this.switched(trx, p, meta, false, { kind, base_url: baseUrl }, true);
+        }
+      }
     });
     return this.get(p);
   }
@@ -519,8 +744,10 @@ export class AiReaderService {
     // In every state — .env's reader winning, or the reader out of Settings
     // (the AIR1 review, M4): a key kept can always be forgotten.
     await withPrincipal(this.db, p, async (trx) => {
-      const gone = await trx.deleteFrom('ai_reader').returning('kind').execute();
-      if (gone.length > 0) {
+      const s = await this.switchOf(trx, p.householdId, true);
+      const gone = await trx.deleteFrom('ai_reader').returning(['kind', 'base_url']).execute();
+      const was = gone[0];
+      if (was) {
         await appendAudit(trx, {
           householdId: p.householdId,
           actorAccountId: p.accountId,
@@ -531,6 +758,10 @@ export class AiReaderService {
           ip: meta.ip,
         });
         await this.tellOtherOwners(trx, p, 'removed');
+        // Gone with the reader it named (AIR3; S3): on for this one alone.
+        if (s.on && s.for === aiReaderIdentity('settings', was.kind, was.base_url)) {
+          await this.switched(trx, p, meta, false, null, true);
+        }
       }
     });
     return this.get(p);
@@ -636,6 +867,7 @@ export function registerAiReader(
           timeout_seconds: z.number().int(),
           monthly_cap: z.number().int(),
           api_key: z.string().max(AI_READER_KEY_MAX).nullable().optional(),
+          own_network: z.boolean().optional(),
         })
         .strict(),
       req.body,
@@ -649,6 +881,16 @@ export function registerAiReader(
     await stepUp?.require(principal(req), 'change_ai_reader');
     void reply.headers(noStore);
     return ai.remove(principal(req), metaOf(req));
+  });
+
+  // "Also send sensitive papers" (AIR3): an owner's, with a step-up of its
+  // own — a session picked up from an unlocked device could otherwise send
+  // the words of the family's passports to a provider.
+  app.put('/api/v1/household/reading/ai-reader/send-sensitive', owners, async (req, reply) => {
+    const body = parse(z.object({ send_sensitive: z.boolean() }).strict(), req.body);
+    await stepUp?.require(principal(req), 'send_sensitive_papers');
+    void reply.headers(noStore);
+    return ai.setSendSensitive(principal(req), body.send_sensitive, metaOf(req));
   });
 
   app.post('/api/v1/household/reading/ai-reader/test', owners, async (req, reply) =>

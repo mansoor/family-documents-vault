@@ -1669,13 +1669,16 @@ describe('the fake vault, the AI reader set in Settings (0.9.0, AIR1)', () => {
     });
     const features = (await api.capabilities()).features;
     expect(features.ai_reader_settings).toBe(true);
-    expect(features.ai_reader_kinds).toEqual(['ollama']);
-    expect(await api.aiReader(token)).toEqual({
+    expect(features.ai_reader_kinds).toEqual(['ollama', 'anthropic', 'openai_compatible']);
+    expect(features.ai_reader_send_sensitive).toBe(true);
+    expect(await api.aiReader(token)).toMatchObject({
       source: 'settings',
-      kinds: ['ollama'],
+      kinds: ['ollama', 'anthropic', 'openai_compatible'],
       env: null,
       reader: null,
       https_only: false,
+      send_sensitive: false,
+      month: { sent: 0, cap: 500, warned: false },
     });
     vault.state.aiReader = {
       source: 'settings',
@@ -1703,5 +1706,46 @@ describe('the fake vault, the AI reader set in Settings (0.9.0, AIR1)', () => {
     });
     vault.state.role = 'adult';
     await expect(api.aiReader(token)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('turns "Also send sensitive papers" on only with a cloud reader, an owner’s alone (AIR3)', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    // No cloud reader: nothing to hold sensitive papers back from.
+    await expect(
+      api.setAiReaderSendSensitive(token, { send_sensitive: true }),
+    ).rejects.toMatchObject({ status: 409, code: 'ai_reader_not_cloud' });
+    const view = await api.aiReader(token);
+    vault.state.aiReader = {
+      ...view,
+      reader: {
+        kind: 'anthropic',
+        base_url: null,
+        model: 'claude-haiku-4-5',
+        timeout_seconds: 60,
+        runs_at: 'cloud',
+        api_key: 'set',
+        api_key_last4: 'WXYZ',
+        monthly_cap: 500,
+        status: 'ok',
+        last_tested_at: null,
+        last_problem: null,
+        updated_at: '2026-11-12T09:59:00.000Z',
+      },
+    };
+    expect(
+      (await api.setAiReaderSendSensitive(token, { send_sensitive: true })).send_sensitive,
+    ).toBe(true);
+    expect((await api.aiReader(token)).send_sensitive).toBe(true);
+    vault.state.role = 'adult';
+    await expect(
+      api.setAiReaderSendSensitive(token, { send_sensitive: false }),
+    ).rejects.toMatchObject({ status: 403 });
   });
 });

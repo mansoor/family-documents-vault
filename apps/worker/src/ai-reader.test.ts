@@ -5,7 +5,7 @@ import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/tes
 import type { AiReaderModelsFound, LocalAiTestFound } from '@fdv/shared';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { HouseholdAiReaders } from './ai-reader.js';
+import { HouseholdAiReaders, type AiReader } from './ai-reader.js';
 import { loadConfig } from './config.js';
 import { startFakeOllama, type FakeOllama } from './local-ai-test-server.js';
 import { ollamaModelNames, OllamaReader } from './ollama-reader.js';
@@ -384,6 +384,35 @@ describe.skipIf(!testAdminUrl())('a reader saved in Settings, as the worker uses
     await runSettingsCheck(deps({ aiReaders: racing }), { household_id: hh, check_id: id });
     expect(await answer(id)).toMatchObject({ problem: null, model: MODEL });
     // The reader saved now is not the one tested: still untested.
+    expect(await row()).toMatchObject({ status: 'untested' });
+  });
+
+  it('a Test in flight as the owner unticks "on my own network" never marks it there (the AIR3 review, S1)', async () => {
+    await admin.query(
+      `insert into ai_reader (household_id, kind, base_url, model, runs_at, own_network, status)
+       values ($1, 'openai_compatible', $2, $3, 'own_network', true, 'untested')`,
+      [hh, `http://reader.test:${fake.port}`, MODEL],
+    );
+    // The Test answers, found on the household's own network — and the owner
+    // unticks the box while it was on its way.
+    const racing: Pick<HouseholdAiReaders, 'build' | 'keptFor'> = {
+      keptFor: () => null,
+      build: () => ({
+        reader: {
+          lastRunsAt: 'own_network',
+          test: async () => {
+            await admin.query('update ai_reader set own_network = false where household_id = $1', [
+              hh,
+            ]);
+            return { state: 'replied', body: '{}', ms: 5 };
+          },
+        } as unknown as AiReader,
+      }),
+    };
+    const id = await ask('ai_reader');
+    await runSettingsCheck(deps({ aiReaders: racing }), { household_id: hh, check_id: id });
+    expect(await answer(id)).toMatchObject({ problem: null });
+    // The reader saved now is not the one tested: still untested, never ok on your network.
     expect(await row()).toMatchObject({ status: 'untested' });
   });
 

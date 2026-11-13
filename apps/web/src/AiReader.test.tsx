@@ -266,3 +266,90 @@ describe('Settings → Reading → the AI reader (AIR1)', () => {
     );
   });
 });
+
+const KINDS: AiReaderView['kinds'] = ['ollama', 'anthropic', 'openai_compatible'];
+
+const CLAUDE: AiReaderSaved = {
+  ...SAVED,
+  kind: 'anthropic',
+  base_url: null,
+  model: 'claude-haiku-4-5',
+  runs_at: 'cloud',
+};
+
+describe('Settings → Reading → the AI reader: cloud readers and who is sent (AIR3)', () => {
+  it('offers the three kinds; Anthropic has no address, and is saved without one', async () => {
+    const state = at('/settings/reading', {
+      aiReader: { ...NONE, kinds: KINDS },
+      localAi: { local_ai: false, local_ai_server: { state: 'not_set_up' } },
+    });
+    const c = await card();
+    const kind = within(c).getByLabelText('Kind of reader');
+    expect(
+      within(kind)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['Local (Ollama)', 'Anthropic', 'OpenAI-compatible']);
+    fireEvent.change(kind, { target: { value: 'anthropic' } });
+    expect(within(c).queryByLabelText('Address')).toBeNull();
+    fireEvent.change(within(c).getByLabelText('Model'), {
+      target: { value: 'claude-haiku-4-5' },
+    });
+    fireEvent.change(within(c).getByLabelText('API key'), {
+      target: { value: 'sk-ant-test-0000-WXYZ' },
+    });
+    fireEvent.click(within(c).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(state.aiReaderSaves).toHaveLength(1));
+    expect(state.aiReaderSaves?.[0]).toMatchObject({ kind: 'anthropic', base_url: null });
+    // An OpenAI-compatible reader: its address, and the owner's word on where it is.
+    fireEvent.change(within(c).getByLabelText('Kind of reader'), {
+      target: { value: 'openai_compatible' },
+    });
+    expect(within(c).getByLabelText('Address')).toBeInTheDocument();
+    expect(within(c).getByRole('checkbox', { name: 'It is on my own network' })).not.toBeChecked();
+    await expectAccessible();
+  });
+
+  it('a cloud reader: this month’s count, and "Also send sensitive papers" behind a warning naming the provider', async () => {
+    const state = at('/settings/reading', {
+      aiReader: {
+        ...NONE,
+        kinds: KINDS,
+        reader: CLAUDE,
+        send_sensitive: false,
+        month: { month: '2026-11', sent: 120, cap: 500, warned: false },
+      },
+      localAi: { local_ai: false, local_ai_server: { state: 'not_set_up' } },
+    });
+    const c = await card();
+    expect(within(c).getByTestId('ai-reader-month')).toHaveTextContent('120 of 500 this month');
+    const box = within(c).getByRole('checkbox', { name: 'Also send sensitive papers' });
+    expect(box).not.toBeChecked();
+    fireEvent.click(box);
+    const dialog = await screen.findByRole('alertdialog');
+    // Who, what — words only, never the page — and their terms.
+    expect(dialog).toHaveTextContent('sent to Anthropic');
+    expect(dialog).toHaveTextContent('Never the page itself, nor the file');
+    expect(dialog).toHaveTextContent('Only me papers are never sent');
+    expect(within(dialog).getByRole('link', { name: 'Anthropic’s terms' })).toHaveAttribute(
+      'href',
+      'https://www.anthropic.com/legal/commercial-terms',
+    );
+    await expectAccessible();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Send them too' }));
+    await waitFor(() => expect(state.aiReader?.send_sensitive).toBe(true));
+    expect(
+      await within(c).findByRole('checkbox', { name: 'Also send sensitive papers' }),
+    ).toBeChecked();
+  });
+
+  it('a reader on your own network: no switch, nothing to hold back', async () => {
+    at('/settings/reading', {
+      aiReader: { ...NONE, kinds: KINDS, reader: SAVED },
+      localAi: { local_ai: false, local_ai_server: { state: 'not_set_up' } },
+    });
+    const c = await card();
+    expect(within(c).queryByTestId('ai-reader-send-sensitive')).toBeNull();
+    expect(within(c).queryByTestId('ai-reader-month')).toBeNull();
+  });
+});
