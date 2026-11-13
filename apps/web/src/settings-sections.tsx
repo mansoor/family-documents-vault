@@ -13,7 +13,8 @@ import { Splitter, useKeptWidth, type WidthBounds } from './splitter.js';
  *
  *  - You: Your account, Notifications, Appearance (light, dark or Auto,
  *    on this browser, for everybody: 0.9.0), Your computers, Your data.
- *  - Household: Privacy, Time zone, Kinds of document, Tags — an owner
+ *  - Household: Privacy (neutral wording in notifications and email since
+ *    H2), Time zone, Kinds of document, Tags — an owner
  *    changes them; everybody else reads what is theirs, as before.
  *  - Server and reading, an owner's: Storage, Email in and out, Scanner
  *    folder, Reading and the check. What was the For owners page's list,
@@ -116,6 +117,13 @@ export const managesKinds = (role: Role, caps: Capabilities | null): boolean =>
 export const managesTags = (role: Role, caps: Capabilities | null): boolean =>
   caps?.features.tag_management === true && can(role, 'document.edit');
 
+/**
+ * Neutral wording in notifications and email (0.9.0, H2): the household's
+ * choice, an owner's to read and change, under Privacy.
+ */
+export const wordingCard = (role: Role, caps: Capabilities | null): boolean =>
+  role === 'owner' && caps?.features.neutral_wording === true;
+
 /** The household's rule for Only me documents and links (5.41): read by owners and adults. */
 export const readsOnlyMeRule = (role: Role) => can(role, 'document.share');
 
@@ -165,13 +173,14 @@ export function settingsGroups(
 
   const household: SettingsSection[] = [];
   const privacy = privacyRows(role, caps);
-  if (readsOnlyMeRule(role) || privacy.length > 0) {
+  if (readsOnlyMeRule(role) || privacy.length > 0 || wordingCard(role, caps)) {
     household.push(
       section(
         'privacy',
         '/settings/privacy',
         'Privacy',
         [
+          wordingCard(role, caps) ? 'Neutral wording in notifications' : null,
           readsOnlyMeRule(role) ? 'Only me documents outside the family' : null,
           privacy.length > 0 ? 'who sees identity details' : null,
         ]

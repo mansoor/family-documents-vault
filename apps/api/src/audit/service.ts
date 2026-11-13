@@ -347,6 +347,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // 0.9.0 (TZ): the family's time zone, chosen or cleared by an owner: the
   // clock everybody's times are on, so for whoever reads the log.
   ['household.timezone_changed', everyone],
+  // 0.9.0 (H2): how notifications and email name documents, chosen by an
+  // owner: what is sent to everybody, so for whoever reads the log.
+  ['household.neutral_wording_changed', everyone],
   ['invitation.created', BY_TYPE],
   ['invitation.accepted', BY_TYPE],
   ['invitation.revoked', BY_TYPE],

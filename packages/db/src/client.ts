@@ -91,6 +91,12 @@ export interface Schema {
      * `aiReaderIdentity`. Another reader, and the switch counts as off.
      */
     ai_send_sensitive_for: ColumnType<string | null, string | null | undefined, string | null>;
+    /**
+     * Neutral wording in notifications and email (0093, 0.9.0 H2): an
+     * owner's. Sensitive documents only unless an owner chose otherwise;
+     * also Off, Health documents only, All documents.
+     */
+    neutral_wording: Generated<'off' | 'health' | 'sensitive' | 'all'>;
   };
 
   member: {
@@ -1784,6 +1790,15 @@ export interface Schema {
     /** Quiet hours on the family's clock, as Postgres gives a time: "21:00:00". */
     quiet_from: Generated<string>;
     quiet_to: Generated<string>;
+    /**
+     * Their own wording for what is sent to them (0093, H2): null as the
+     * household says, else one more choice beside it (the union).
+     */
+    neutral_wording: ColumnType<
+      'health' | 'sensitive' | 'all' | null,
+      'health' | 'sensitive' | 'all' | null | undefined,
+      'health' | 'sensitive' | 'all' | null
+    >;
   };
 
   suggestion_rule: {

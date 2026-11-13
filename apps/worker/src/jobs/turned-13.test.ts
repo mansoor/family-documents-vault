@@ -168,6 +168,8 @@ describe.skipIf(!testAdminUrl())('somebody turning 13', () => {
         note: null,
         overdue: false,
         private: false,
+        sensitive: false,
+        health: false,
       },
     ]);
     // Never again, though it is still due until an owner dismisses it.

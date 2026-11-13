@@ -1564,6 +1564,54 @@ describe('the fake vault, notifications by text (0.9.0, SMS2)', () => {
   });
 });
 
+describe('the fake vault, neutral wording (0.9.0, H2)', () => {
+  it('keeps the household’s choice for an owner, and each person’s own beside it', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    expect((await api.capabilities()).features.neutral_wording).toBe(true);
+    // Sensitive documents only, and as the household says, until changed.
+    expect(await api.neutralWording(token)).toEqual({ neutral_wording: 'sensitive' });
+    expect(await api.myWording(token)).toEqual({
+      neutral_wording: 'household',
+      household: 'sensitive',
+      in_effect: ['sensitive'],
+    });
+    expect(await api.setNeutralWording(token, { neutral_wording: 'health' })).toEqual({
+      neutral_wording: 'health',
+    });
+    // Their own beside the household's: both apply.
+    expect(await api.setMyWording(token, { neutral_wording: 'sensitive' })).toEqual({
+      neutral_wording: 'sensitive',
+      household: 'health',
+      in_effect: ['health', 'sensitive'],
+    });
+    await api.setNeutralWording(token, { neutral_wording: 'all' });
+    expect(await api.myWording(token)).toMatchObject({ household: 'all', in_effect: ['all'] });
+    await api.setNeutralWording(token, { neutral_wording: 'off' });
+    expect(await api.myWording(token)).toMatchObject({ in_effect: ['sensitive'] });
+    await expect(
+      api.setNeutralWording(token, { neutral_wording: 'loud' as never }),
+    ).rejects.toMatchObject({ status: 422 });
+
+    // Anybody but an owner reads their own, and never the household's alone.
+    vault.state.role = 'adult';
+    await expect(api.neutralWording(token)).rejects.toMatchObject({
+      status: 403,
+      code: 'forbidden',
+    });
+    await expect(api.setNeutralWording(token, { neutral_wording: 'off' })).rejects.toMatchObject({
+      status: 403,
+    });
+    expect(await api.myWording(token)).toMatchObject({ household: 'off' });
+  });
+});
+
 describe('the fake vault, codes by text (0.9.0, SMS3)', () => {
   it('a link’s code and an invitation’s by text; a reset’s and a sign-in’s, each the person’s own to ask for', async () => {
     const vault = createFakeVault();

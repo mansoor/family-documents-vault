@@ -155,6 +155,10 @@ import type {
   WatchFolderInput,
   WatchFolderView,
   WatchNoticeView,
+  MyWordingInput,
+  MyWordingView,
+  NeutralWordingInput,
+  NeutralWordingView,
 } from '@fdv/shared';
 import type { Http, ResponseLike, UploadBody } from './http.js';
 import {
@@ -1279,6 +1283,31 @@ export function createApi(http: Http) {
       request<Preferences>('/api/v1/notifications/preferences', { token }),
     updatePreferences: (token: string, body: Partial<Preferences>) =>
       request<Preferences>('/api/v1/notifications/preferences', { method: 'PUT', body, token }),
+    /**
+     * Neutral wording in notifications and email (`features.neutral_wording`,
+     * H2): the household's choice, an owner's to read and change — `403` to
+     * anybody else. Naming more documents than before asks step-up
+     * `neutral_wording`; naming fewer never does.
+     */
+    neutralWording: (token: string) =>
+      request<NeutralWordingView>('/api/v1/household/neutral-wording', { token }),
+    setNeutralWording: (token: string, body: NeutralWordingInput) =>
+      request<NeutralWordingView>('/api/v1/household/neutral-wording', {
+        method: 'PUT',
+        body,
+        token,
+      }),
+    /**
+     * Each person's own wording for what is sent to them (H2): as the
+     * household says, or Health, Sensitive or All besides it — a line is
+     * neutral when the household's choice or theirs says so, and
+     * `in_effect` lists what applies. A change that names more to them asks
+     * step-up `neutral_wording`.
+     */
+    myWording: (token: string) =>
+      request<MyWordingView>('/api/v1/notifications/wording', { token }),
+    setMyWording: (token: string, body: MyWordingInput) =>
+      request<MyWordingView>('/api/v1/notifications/wording', { method: 'PUT', body, token }),
     smtp: (token: string) => request<SmtpView>('/api/v1/notifications/smtp', { token }),
     smtpProviders: (token: string) =>
       request<SmtpProvider[]>('/api/v1/notifications/smtp/providers', { token }),

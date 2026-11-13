@@ -7,9 +7,20 @@ import {
   clockTime,
   isLoopbackName,
   isPrivateAddress,
+  MY_WORDINGS,
+  myWordingOf,
+  NEUTRAL_WORDINGS,
+  neutralWordingOf,
   pushAddressProblem,
   QUIET_FROM_DEFAULT,
   QUIET_TO_DEFAULT,
+  myWordingNeedsStepUp,
+  rulesInEffect,
+  wordingNeedsStepUp,
+  type MyWording,
+  type MyWordingView,
+  type NeutralWording,
+  type NeutralWordingView,
   type Preferences,
 } from '@fdv/shared';
 import { sql } from 'kysely';
@@ -57,6 +68,29 @@ export const preferenceBody = z
     quiet_to: clock,
   })
   .partial();
+
+/** PUT /household/neutral-wording (H2). */
+export const neutralWordingBody = z.object({ neutral_wording: z.enum(NEUTRAL_WORDINGS) }).strict();
+
+/** PUT /notifications/wording (H2). */
+export const myWordingBody = z.object({ neutral_wording: z.enum(MY_WORDINGS) }).strict();
+
+const wordingOwnersOnly = () =>
+  new ApiError(
+    403,
+    'forbidden',
+    'Only an owner can choose how notifications name documents for the family.',
+  );
+
+/** The household's choice, as the database has it. */
+async function householdWording(trx: Db, householdId: string): Promise<NeutralWording> {
+  const row = await trx
+    .selectFrom('household')
+    .select('neutral_wording')
+    .where('id', '=', householdId)
+    .executeTakeFirst();
+  return neutralWordingOf(row?.neutral_wording);
+}
 
 export const smtpBody = z.object({
   provider: z.string().max(32).optional(),
@@ -443,6 +477,128 @@ export class NotificationService {
         .execute(),
     );
     return this.preferences(p);
+  }
+
+  /**
+   * GET /household/neutral-wording (0.9.0, H2): how notifications and email
+   * name documents, for the household. An owner's to read and change; each
+   * person reads what it says beside their own choice
+   * (GET /notifications/wording).
+   */
+  async neutralWording(p: Principal): Promise<NeutralWordingView> {
+    if (p.role !== 'owner') throw wordingOwnersOnly();
+    return withPrincipal(this.db, p, async (trx) => ({
+      neutral_wording: await householdWording(trx, p.householdId),
+    }));
+  }
+
+  /**
+   * PUT /household/neutral-wording: an owner's — the database holds it to
+   * owners too (household_neutral_wording_rule, 0093). A change that names
+   * any document the old choice left unnamed (`wordingNeedsStepUp`: Health ↔
+   * Sensitive, either or All to Off, All to either) asks them to confirm it's
+   * them (step-up `neutral_wording`), decided under the household's row
+   * held, so a choice made meanwhile is the one compared with; to All, or
+   * from Off, never asks. Each change is in the
+   * activity log, for everybody who reads it, as it changes what is sent to
+   * all of them. The same again changes nothing.
+   */
+  async setNeutralWording(
+    p: Principal,
+    to: NeutralWording,
+    meta: RequestMeta,
+    stepUp: (trx: Db) => Promise<void>,
+  ): Promise<NeutralWordingView> {
+    if (p.role !== 'owner') throw wordingOwnersOnly();
+    return withPrincipal(this.db, p, async (trx) => {
+      const before = await trx
+        .selectFrom('household')
+        .select('neutral_wording')
+        .where('id', '=', p.householdId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const was = neutralWordingOf(before.neutral_wording);
+      if (was === to) return { neutral_wording: was };
+      if (wordingNeedsStepUp(was, to)) await stepUp(trx);
+      await trx
+        .updateTable('household')
+        .set({ neutral_wording: to })
+        .where('id', '=', p.householdId)
+        .execute();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'household.neutral_wording_changed',
+        objectType: 'household',
+        objectId: p.householdId,
+        detail: { neutral_wording: to, was },
+        ip: meta.ip,
+      });
+      return { neutral_wording: to };
+    });
+  }
+
+  /**
+   * GET /notifications/wording (H2): the person's own wording for what is
+   * sent to them, what the household says, and so what is in effect — both
+   * together (`rulesInEffect`). Anybody signed in, of their own alone.
+   */
+  async myWording(p: Principal): Promise<MyWordingView> {
+    return withPrincipal(this.db, p, async (trx) => {
+      const household = await householdWording(trx, p.householdId);
+      const row = await trx
+        .selectFrom('notification_preference')
+        .select('neutral_wording')
+        .where('account_id', '=', p.accountId)
+        .where('household_id', '=', p.householdId)
+        .executeTakeFirst();
+      const mine = myWordingOf(row?.neutral_wording);
+      return { neutral_wording: mine, household, in_effect: rulesInEffect(household, mine) };
+    });
+  }
+
+  /**
+   * PUT /notifications/wording: their own choice, stored as they made it. It
+   * only ever adds to the household's (a line is neutral when either says
+   * so), so it never names what the household's hides. A change that would
+   * name, in what is sent to them, any document their old choice left
+   * unnamed (`myWordingNeedsStepUp`, the household's counted in) asks them
+   * to confirm it's them (step-up `neutral_wording`), decided with their row
+   * held. Written as an insert that does nothing on a conflict, then an
+   * update of their own row: never `on conflict do update … where`, whose
+   * check of the row it meets PG 16.16 makes against UPDATE's policies.
+   */
+  async setMyWording(
+    p: Principal,
+    to: MyWording,
+    stepUp: (trx: Db) => Promise<void>,
+  ): Promise<MyWordingView> {
+    const stored = to === 'household' ? null : to;
+    await withPrincipal(this.db, p, async (trx) => {
+      await trx
+        .insertInto('notification_preference')
+        .values({ account_id: p.accountId, household_id: p.householdId })
+        .onConflict((oc) => oc.doNothing())
+        .execute();
+      const before = await trx
+        .selectFrom('notification_preference')
+        .select('neutral_wording')
+        .where('account_id', '=', p.accountId)
+        .where('household_id', '=', p.householdId)
+        .forUpdate()
+        .executeTakeFirst();
+      const household = await householdWording(trx, p.householdId);
+      if (myWordingNeedsStepUp(household, myWordingOf(before?.neutral_wording), to)) {
+        await stepUp(trx);
+      }
+      await trx
+        .updateTable('notification_preference')
+        .set({ neutral_wording: stored })
+        .where('account_id', '=', p.accountId)
+        .where('household_id', '=', p.householdId)
+        .execute();
+    });
+    return this.myWording(p);
   }
 
   async smtp(p: Principal): Promise<SmtpView> {

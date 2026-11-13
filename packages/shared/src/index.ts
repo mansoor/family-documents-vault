@@ -48,3 +48,4 @@ export * from './time-zone.js';
 export * from './local-ai.js';
 export * from './ai-reader.js';
 export * from './sms.js';
+export * from './wording.js';

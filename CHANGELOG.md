@@ -6,6 +6,22 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.38] - 2026-11-13 — neutral wording in notifications and email (H2)
+
+### Added
+
+- **Neutral wording in notifications and email.** Settings → Privacy has a new choice for owners: which documents the vault's emails and notifications leave unnamed. **Off**: every document is named by its title, as before. **Health documents only**: documents in the Medical category (a document's own category, else its kind's — so Health's kinds to come are covered too). **Sensitive documents only** (the default, for new households and for yours as it upgrades): documents marked Sensitive, by their own choice or their kind's default as your household has set it. **All documents**: every document. A document left unnamed is said as "A reminder about a document — Due in 7 days", with no title, kind, person, note or the date it is about. Each choice shows the lines it would send, for a passport, blood test results and car insurance. A change that would name any document the old choice left unnamed (Health to Sensitive or back, either to Off, All to anything else) asks you to confirm it's you; to All, or from Off, never does. Each change is in the activity log. (Migration 0093.)
+- **Your own choice, beside the household's.** In Settings → Notifications, each person can choose **Health documents only**, **Sensitive documents only** or **All documents** for what is sent to them, or leave it **As the household says**. A document is left unnamed when the household's choice or theirs says so: the household's always applies as well, so a person's choice can hide more, never less. A change that would name more to them asks them to confirm it's them.
+- It covers every channel that can carry a document's words: the email digest and the Sunday summary, the email sent when a text could not go, and a browser's notification. Texts and the phone app's notifications already never name a document, and stay so; the turned-13 reminder keeps its wording, which names nobody. The vault sends no calendar exports, and its other emails (codes, alerts, files waiting) name no document.
+
+### Changed
+
+- **Only me documents stay unnamed in a browser's notification too.** Since 0.5.15 an Only me document's title was left out of email but shown in a browser's notification, which is encrypted to your own device. A lock screen is read by whoever holds the phone, so a browser's notification now says "One of your private documents — Due today" as the email does, whatever the neutral wording choice.
+
+### Security
+
+- The household's choice is an owner's, held by the database too (a guard trigger; the vault itself and a restore may also write it), and the restore checks the guard is in place. Each person's own choice is theirs alone to write or delete, held the same way (a row going with its account or household still goes). What is sent to each person is worked out field by field in one place for every channel, so a detail added to a reminder later stays out of email and notifications until someone decides it may go.
+
 ## [0.9.0-dev.37] - 2026-11-13 — Anthropic and OpenAI-compatible readers, and who may be sent (AIR3)
 
 ### Added

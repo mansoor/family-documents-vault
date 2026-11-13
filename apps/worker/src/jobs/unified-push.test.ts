@@ -163,6 +163,7 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
     local_date: '2026-10-03',
     kind,
     recipient: { account_id: account, email: 'up@example.test' },
+    wording: ['sensitive'],
     items: [1, 2, 3].map((n) => ({
       reminder_id: randomUUID(),
       document_id: randomUUID(),
@@ -172,6 +173,8 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
       note: null,
       overdue: false,
       private: false,
+      sensitive: false,
+      health: false,
     })),
   });
   const notifier = () =>
@@ -210,6 +213,8 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
     note: null,
     overdue: false,
     private: false,
+    sensitive: false,
+    health: false,
   };
 
   it('a phone is told only of the reminders about documents (0066)', async () => {

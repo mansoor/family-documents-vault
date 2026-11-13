@@ -1132,6 +1132,18 @@ const GUARDS = [
     table: 'household',
     fn: 'household_ai_send_sensitive_rule',
   },
+  // Only an owner chooses how notifications name documents, and each person
+  // their own wording beside it (0093, H2).
+  {
+    name: 'household_neutral_wording_rule',
+    table: 'household',
+    fn: 'household_neutral_wording_rule',
+  },
+  {
+    name: 'notification_preference_wording_rule',
+    table: 'notification_preference',
+    fn: 'notification_preference_wording_rule',
+  },
   // A batch's uploader changes its name and defaults, and nothing else of
   // it (0062, Phase 6 I1).
   {

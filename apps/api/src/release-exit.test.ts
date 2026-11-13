@@ -883,6 +883,21 @@ const RULES: Record<string, Rule> = {
     who: 'signedIn',
     body: () => ({ daily_email: false }),
   },
+  // Neutral wording (0.9.0, H2): the household's an owner's alone, to read
+  // and to change — an attacker's Off would put the titles of the family's
+  // sensitive papers in every inbox, so it asks a step-up (and this sweep
+  // sends All, which names nothing more); each person's own, anybody's for
+  // themselves.
+  'GET /api/v1/household/neutral-wording': { who: 'owners' },
+  'PUT /api/v1/household/neutral-wording': {
+    who: 'owners',
+    body: () => ({ neutral_wording: 'all' }),
+  },
+  'GET /api/v1/notifications/wording': { who: 'signedIn' },
+  'PUT /api/v1/notifications/wording': {
+    who: 'signedIn',
+    body: () => ({ neutral_wording: 'all' }),
+  },
   'GET /api/v1/notifications/smtp/providers': { who: 'signedIn' },
   'GET /api/v1/notifications/smtp': { who: 'signedIn' },
   'PUT /api/v1/notifications/smtp': {

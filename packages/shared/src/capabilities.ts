@@ -514,6 +514,19 @@ export interface CapabilityFeatures {
    * Beside `ai_reader_settings`; absent from older vaults.
    */
   ai_reader_send_sensitive?: boolean;
+  /**
+   * Neutral wording in notifications and email (0.9.0, H2): GET and PUT
+   * /household/neutral-wording `{ neutral_wording: 'off' | 'health' |
+   * 'sensitive' | 'all' }` — the household's, an owner's (PUT asks step-up
+   * `neutral_wording` for a change that names any document the old choice
+   * left unnamed; `403` to anybody else) — and GET and PUT
+   * /notifications/wording, each person's own (`MyWordingView`:
+   * `neutral_wording` `'household' | 'health' | 'sensitive' | 'all'`,
+   * `household`, `in_effect` — the choices that apply; a line is neutral
+   * when either says so; naming more to them asks the same step-up). Absent
+   * from older vaults, which name every document but Only me by email.
+   */
+  neutral_wording?: boolean;
 }
 
 export interface CapabilityLimits {

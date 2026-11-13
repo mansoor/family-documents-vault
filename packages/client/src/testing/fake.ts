@@ -2,6 +2,15 @@ import {
   CLOCK_TIME,
   QUIET_FROM_DEFAULT,
   QUIET_TO_DEFAULT,
+  MY_WORDINGS,
+  myWordingOf,
+  NEUTRAL_WORDING_DEFAULT,
+  NEUTRAL_WORDINGS,
+  rulesInEffect,
+  type MyWording,
+  type MyWordingView,
+  type NeutralWording,
+  type NeutralWordingView,
   type Preferences,
   maskPhone,
   parsePhone,
@@ -563,6 +572,13 @@ export interface FakeVaultState {
    * they change one — texts among them since SMS2, each off.
    */
   preferences?: Map<string, Preferences>;
+  /**
+   * Neutral wording in notifications and email (0.9.0, H2): the household's
+   * choice (Sensitive documents only until an owner changes it), and each
+   * person's own by member id (as the household says until they choose).
+   */
+  neutralWording?: NeutralWording;
+  myWording?: Map<string, MyWording>;
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -2104,6 +2120,49 @@ export function createFakeVault(): {
       }
       return ok(now);
     }
+    // Neutral wording (0.9.0, H2): the household's, an owner's; each
+    // person's own, beside it. The fake asks no step-up.
+    if (path === '/api/v1/household/neutral-wording') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      if (whoOf(s).role !== 'owner') {
+        return fail(
+          403,
+          'forbidden',
+          'Only an owner can choose how notifications name documents for the family.',
+        );
+      }
+      if ((init?.method ?? 'GET') === 'PUT') {
+        if (!(NEUTRAL_WORDINGS as readonly unknown[]).includes(body.neutral_wording)) {
+          return fail(422, 'validation_failed', 'Choose one of the three.');
+        }
+        state.neutralWording = body.neutral_wording as NeutralWording;
+      }
+      const view: NeutralWordingView = {
+        neutral_wording: state.neutralWording ?? NEUTRAL_WORDING_DEFAULT,
+      };
+      return ok(view);
+    }
+    if (path === '/api/v1/notifications/wording') {
+      const s = sessionOf();
+      if (!('id' in s)) return s;
+      const me = whoOf(s).memberId;
+      const mine = (state.myWording ??= new Map());
+      if ((init?.method ?? 'GET') === 'PUT') {
+        if (!(MY_WORDINGS as readonly unknown[]).includes(body.neutral_wording)) {
+          return fail(422, 'validation_failed', 'Choose one of the three.');
+        }
+        mine.set(me, body.neutral_wording as MyWording);
+      }
+      const household = state.neutralWording ?? NEUTRAL_WORDING_DEFAULT;
+      const chosen = myWordingOf(mine.get(me));
+      const view: MyWordingView = {
+        neutral_wording: chosen,
+        household,
+        in_effect: rulesInEffect(household, chosen),
+      };
+      return ok(view);
+    }
     const m = /^\/api\/v1\/members\/([^/]+)\/phone(\/confirm|\/resend)?$/.exec(path);
     if (!m) return null;
     const s = sessionOf();
@@ -2909,6 +2968,8 @@ export function createFakeVault(): {
           ai_reader_settings: true,
           ai_reader_kinds: [...AI_READER_KINDS_OFFERED],
           ai_reader_send_sensitive: true,
+          // Neutral wording, the household's and each person's (0.9.0, H2).
+          neutral_wording: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,

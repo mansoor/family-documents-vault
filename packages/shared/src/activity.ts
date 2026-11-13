@@ -19,6 +19,7 @@
  */
 
 import { shareEndWords } from './shares.js';
+import { NEUTRAL_WORDING_WORDS, NEUTRAL_WORDINGS, type NeutralWording } from './wording.js';
 
 export interface ActivityEvent {
   id: number;
@@ -120,6 +121,7 @@ export function activityKind(action: string): ActivityKind {
     case 'household.timezone_changed':
     case 'household.reading_model_changed':
     case 'household.local_ai_changed':
+    case 'household.neutral_wording_changed':
     case 'ai_reader.changed':
     case 'ai_reader.tested':
     case 'ai_reader.send_sensitive_changed':
@@ -840,6 +842,18 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // The local AI reader on or off for the household (0.9.0, R4).
     case 'household.local_ai_changed':
       return line(`${who} turned ${detail.local_ai === true ? 'on' : 'off'} the local AI`, true);
+    // How notifications and email name documents (0.9.0, H2), from which
+    // choice to which, in Settings' own words.
+    case 'household.neutral_wording_changed': {
+      const words = (v: unknown) =>
+        (NEUTRAL_WORDINGS as readonly unknown[]).includes(v)
+          ? NEUTRAL_WORDING_WORDS[v as NeutralWording].label
+          : 'another choice';
+      return line(
+        `${who} changed neutral wording in notifications and email from ${words(detail.was)} to ${words(detail.neutral_wording)}`,
+        true,
+      );
+    }
     // The AI reader set in Settings, changed, removed or tested (0.9.0,
     // AIR1): which kind and where it runs — never its address, its key, or
     // anything it said.

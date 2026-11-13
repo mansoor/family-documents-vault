@@ -265,7 +265,14 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
       const payload = mine[0]?.payload ?? '';
       for (const title of forbidden(who))
         expect(payload, `${who} saw ${title}`).not.toContain(title);
-      for (const title of allowed[who]) expect(payload, who).toContain(title);
+      // Since H2 a private title is not on a lock screen either, even its
+      // own person's: it is named only as what it is, as by email.
+      for (const title of allowed[who]) {
+        if (title === TITLES.ownerPrivate || title === TITLES.adultPrivate) {
+          expect(payload, who).not.toContain(title);
+          expect(payload, who).toContain('One of your private documents');
+        } else expect(payload, who).toContain(title);
+      }
       // The count is theirs too: "3 things" would say something is hidden.
       expect((JSON.parse(payload) as { count: number }).count, who).toBe(allowed[who].length);
     }
@@ -312,7 +319,7 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
           expect(m.text, `${who} saw ${title}`).not.toContain(title);
         // A private title is not in the email even of the person it
         // belongs to: the mail server is one an owner can point anywhere.
-        // It is named only as what it is, and push carries the title.
+        // It is named only as what it is, as on a browser's push (H2).
         for (const title of allowed[who]) {
           if (title === TITLES.ownerPrivate || title === TITLES.adultPrivate) {
             expect(m.text, who).not.toContain(title);

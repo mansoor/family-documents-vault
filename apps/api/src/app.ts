@@ -497,7 +497,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerExports(app, deps.exports, deps.stepUp);
   registerReminders(app, deps.reminders);
   registerSuggestions(app, deps.suggestions);
-  registerNotifications(app, deps.notifications);
+  registerNotifications(app, deps.notifications, deps.stepUp);
   registerAudit(app, deps.audit);
   registerOffline(app, deps.offline);
   registerTypes(app, deps.types);

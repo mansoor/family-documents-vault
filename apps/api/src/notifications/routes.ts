@@ -2,8 +2,11 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
+import type { StepUpService } from '../auth/step-up.js';
 import {
   deviceBody,
+  myWordingBody,
+  neutralWordingBody,
   preferenceBody,
   smtpBody,
   SMTP_PRESETS,
@@ -15,6 +18,7 @@ import { needs } from '../authz.js';
 export function registerNotifications(
   app: FastifyInstance,
   notifications: NotificationService,
+  stepUp: StepUpService,
 ): void {
   const auth = { preHandler: app.requireAuth };
   const guard = (c: Capability) => ({ preHandler: [app.requireAuth, needs(c)] });
@@ -56,6 +60,32 @@ export function registerNotifications(
   app.put('/api/v1/notifications/preferences', auth, async (req) =>
     notifications.updatePreferences(principal(req), parse(preferenceBody, req.body ?? {})),
   );
+
+  // Neutral wording in notifications and email (0.9.0, H2): the household's,
+  // an owner's — naming more documents asks them to confirm it's them, in
+  // the same transaction that decides it does; and each person's own, beside
+  // the household's (a line is neutral when either says so) — naming more in
+  // what is sent to them asks the same.
+  app.get('/api/v1/household/neutral-wording', auth, async (req) =>
+    notifications.neutralWording(principal(req)),
+  );
+  app.put('/api/v1/household/neutral-wording', auth, async (req) => {
+    const body = parse(neutralWordingBody, req.body ?? {});
+    const p = principal(req);
+    return notifications.setNeutralWording(p, body.neutral_wording, metaOf(req), async (trx) =>
+      stepUp.require(p, 'neutral_wording', trx),
+    );
+  });
+  app.get('/api/v1/notifications/wording', auth, async (req) =>
+    notifications.myWording(principal(req)),
+  );
+  app.put('/api/v1/notifications/wording', auth, async (req) => {
+    const body = parse(myWordingBody, req.body ?? {});
+    const p = principal(req);
+    return notifications.setMyWording(p, body.neutral_wording, async (trx) =>
+      stepUp.require(p, 'neutral_wording', trx),
+    );
+  });
 
   app.get('/api/v1/notifications/smtp/providers', auth, async () =>
     Object.entries(SMTP_PRESETS).map(([key, p]) => ({ key, ...p })),

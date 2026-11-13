@@ -136,6 +136,8 @@ describe('buildCapabilities', () => {
       sms_codes: true,
       // 0.9.0 (AIR2): Sensitive, per kind and per document.
       sensitive_documents: true,
+      // 0.9.0 (H2): neutral wording, the household's and each person's.
+      neutral_wording: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

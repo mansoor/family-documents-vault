@@ -1,6 +1,7 @@
 import { createDecipheriv } from 'node:crypto';
 import type https from 'node:https';
 import { withSystem, type Db } from '@fdv/db';
+import { NEUTRAL_LINE, neutralUnder, PRIVATE_LINE, type NeutralWording } from '@fdv/shared';
 import { sql } from 'kysely';
 import nodemailer from 'nodemailer';
 import { deliver, pushDepsOf, unifiedPayload } from './push.js';
@@ -55,31 +56,47 @@ export function subject(d: Digest): string {
   return n === 1 ? '1 thing needs attention' : `${n} things need attention`;
 }
 
-/**
- * What an email may say about an item. Email goes through the household's
- * mail server, which an owner can point anywhere, so a private document is
- * named only as that — its title, its note, and the date it is about
- * (0.5.15), stay for push and the app: "One of your private documents —
- * Due today".
- */
-export function forEmail(i: Digest['items'][number]): {
+/** What a channel may say of an item: field by field, from `wordingFor`. */
+export interface Wording {
   title: string;
   label: string;
   about: string | null;
   note: string | null;
   overdue: boolean;
-} {
-  // Field by field, never the whole item: a field added to digest items
-  // later stays out of email until somebody decides it may go.
-  return i.private
-    ? {
-        title: 'One of your private documents',
-        label: i.label,
-        about: null,
-        note: null,
-        overdue: i.overdue,
-      }
-    : { title: i.title, label: i.label, about: i.about, note: i.note, overdue: i.overdue };
+}
+
+/**
+ * What any channel may say about an item (H2): a digest's email lines, a
+ * browser's push, and anything else that would name a document. The one
+ * place it is decided, for every channel alike.
+ *
+ *  - An Only me document is "One of your private documents" whatever the
+ *    rule — since H2 on a browser's push too (0.5.15 left its title there):
+ *    a lock screen is read by whoever holds the phone, as a mail server by
+ *    whoever runs it.
+ *  - Under neutral wording (`rules`: the household's choice, and the
+ *    person's own beside it), a document any of them says — a sensitive one,
+ *    a Health one, or with `all` every one — is "A reminder about a
+ *    document".
+ *
+ * Either way it keeps only when it falls due ("Due in 7 days"): never its
+ * title, its kind's words about its date, or its note. Somebody turned 13
+ * (0066) keeps its own words, which name nobody.
+ *
+ * Field by field, never the whole item: a field added to digest items later
+ * stays out of every channel until somebody decides it may go.
+ */
+export function wordingFor(i: Digest['items'][number], rules: readonly NeutralWording[]): Wording {
+  if (i.member_id) {
+    return { title: i.title, label: i.label, about: null, note: null, overdue: i.overdue };
+  }
+  if (i.private) {
+    return { title: PRIVATE_LINE, label: i.label, about: null, note: null, overdue: i.overdue };
+  }
+  if (neutralUnder(rules, { sensitive: i.sensitive, health: i.health })) {
+    return { title: NEUTRAL_LINE, label: i.label, about: null, note: null, overdue: i.overdue };
+  }
+  return { title: i.title, label: i.label, about: i.about, note: i.note, overdue: i.overdue };
 }
 
 /** An item's line after its title: what it is about (0.5.15), else when it fell due. */
@@ -90,9 +107,9 @@ const lineOf = (i: { label: string; about: string | null }) => i.about ?? i.labe
  * is about. Somebody turned 13 (0066) is one sentence and its ask, with no
  * name and no date (the review, INV-7).
  */
-export function itemLine(item: Digest['items'][number]): string {
-  if (item.member_id) return `${item.title} ${item.label}`;
-  const i = forEmail(item);
+export function itemLine(item: Digest['items'][number], rules: readonly NeutralWording[]): string {
+  const i = wordingFor(item, rules);
+  if (item.member_id) return `${i.title} ${i.label}`;
   return `${i.title} — ${lineOf(i)}${i.note ? ` (${i.note})` : ''}`;
 }
 
@@ -100,12 +117,16 @@ export function itemLine(item: Digest['items'][number]): string {
 export function pushBody(d: Digest): string {
   return d.items
     .slice(0, 3)
-    .map((i) => (i.member_id ? itemLine(i) : `${i.title} — ${lineOf(i)}`))
+    .map((item) => {
+      if (item.member_id) return itemLine(item, d.wording);
+      const i = wordingFor(item, d.wording);
+      return `${i.title} — ${lineOf(i)}`;
+    })
     .join('\n');
 }
 
 export function textBody(d: Digest, baseUrl: string): string {
-  const lines = d.items.map((item) => `• ${itemLine(item)}`);
+  const lines = d.items.map((item) => `• ${itemLine(item, d.wording)}`);
   const intro =
     d.kind === 'catch_up'
       ? 'While nobody was looking, these came up:'
@@ -122,7 +143,7 @@ export function htmlBody(d: Digest, baseUrl: string): string {
       (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string,
     );
   const rows = d.items
-    .map((item) => forEmail(item))
+    .map((item) => wordingFor(item, d.wording))
     .map(
       (i) =>
         `<tr><td style="padding:8px 0;border-bottom:1px solid #e6e0d6"><strong>${esc(i.title)}</strong><br><span style="color:${i.overdue ? '#b3261e' : '#5e574e'}">${esc(lineOf(i))}</span>${i.note ? `<br><span style="color:#5e574e">${esc(i.note)}</span>` : ''}</td></tr>`,

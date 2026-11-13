@@ -3301,6 +3301,26 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it('notices the guards on neutral wording gone: the household’s an owner’s, a person’s their own (0093, H2)', async () => {
+    for (const [table, trigger] of [
+      ['household', 'household_neutral_wording_rule'],
+      ['notification_preference', 'notification_preference_wording_rule'],
+    ] as const) {
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        const refused = await checkRestored(target()).then(
+          () => null,
+          (e: unknown) => (e as Error).message,
+        );
+        expect(refused, trigger).toMatch(/guard the vault relies on is missing/);
+        expect(refused, trigger).not.toMatch(new RegExp(trigger));
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it('notices the guards that keep a note a note gone: no file on one, none made one, its kind the vault’s (0078, N1)', async () => {
     for (const [table, trigger] of [
       ['document_version', 'document_version_not_on_note'],

@@ -6307,6 +6307,56 @@ held: 'sensitive' | 'only_me' | 'cap' }`, and its card's tag
       `ai_reader_send_sensitive`, answers `send_sensitive` and `month`, and
       takes the switch from an owner (`409 ai_reader_not_cloud` without a
       cloud reader saved; `403` to anybody else).
+  - Neutral wording in notifications and email (0.9.0-dev.38; H2).
+    Migration 0093. **Additive**: a request made as before is answered as
+    before.
+    - **New `features`:** `neutral_wording` (`true`).
+    - **New routes,** an owner's: `GET` and `PUT
+/api/v1/household/neutral-wording` — `{ neutral_wording: 'off' |
+'health' | 'sensitive' | 'all' }` (`NeutralWordingView`,
+      `NeutralWordingInput`); `'sensitive'` until an owner chooses. `403
+forbidden` to anybody else. Each value is a set of documents left
+      unnamed: `health` those whose category (their own, else their
+      kind's) is `medical`; `sensitive` those `sensitiveOf` says are. A
+      `PUT` whose set does not hold the old one (`wordingNeedsStepUp`:
+      `health` ↔ `sensitive`, either or `all` to `off`, `all` to either)
+      is `403 step_up_required` (`neutral_wording`, any credential) unless
+      the session confirmed it lately; to `all`, or from `off`, never asks.
+      The same value again changes nothing. `422 validation_failed` for
+      anything else in the body.
+    - **New routes,** anybody signed in, of their own: `GET` and `PUT
+/api/v1/notifications/wording` — `{ neutral_wording: 'household' |
+'health' | 'sensitive' | 'all' }` (`MyWordingInput`); answers
+      `MyWordingView` (`neutral_wording`, their own; `household`, the
+      household's; `in_effect`, the choices that apply — `['all']`,
+      `['off']`, or `health` and `sensitive`, one or both). A line is
+      neutral when the household's choice or theirs says so, so theirs never
+      names what the household's hides. A `PUT` that would name, in what is
+      sent to them, a document their old choice left unnamed
+      (`myWordingNeedsStepUp`) is `403 step_up_required`
+      (`neutral_wording`).
+    - **Changed behaviour (worker):** email digests, the Sunday summary,
+      the email sent instead of a text, and a browser's push say a
+      document left unnamed as `A reminder about a document` with its due
+      label alone (no title, note or date words). An Only me document is
+      `One of your private documents` on a browser's push too, not only by
+      email. Texts and UnifiedPush payloads are unchanged (a count).
+    - **New activity:** `household.neutral_wording_changed`
+      (`neutral_wording`, `was`), for everybody who reads the log.
+    - `@fdv/shared`: `NEUTRAL_WORDINGS`, `NeutralWording`,
+      `NEUTRAL_WORDING_DEFAULT`, `MY_WORDINGS`, `MyWording`,
+      `HEALTH_CATEGORY`, `NEUTRAL_LINE`, `PRIVATE_LINE`, `PRIVATE_EXAMPLE`,
+      `neutralWordingOf`, `myWordingOf`, `WordedDocument`,
+      `neutralByRule`, `neutralUnder`, `rulesFor`, `rulesInEffect`,
+      `ruleContains`, `rulesContain`, `wordingNeedsStepUp`,
+      `myWordingNeedsStepUp`, `wordingExamples`, `WordingExamples`,
+      `WORDING_EXAMPLE_DOCUMENTS`, `NEUTRAL_WORDING_WORDS`,
+      `MY_WORDING_WORDS`, `rulesWords`, `NeutralWordingView`,
+      `NeutralWordingInput`, `MyWordingView`, `MyWordingInput`;
+      `Capabilities.features.neutral_wording`. `@fdv/client`:
+      `neutralWording`, `setNeutralWording`, `myWording`, `setMyWording`.
+      The fake says the feature, keeps the household's choice for an owner
+      (`403` to anybody else; no step-up) and each person's own.
 
 ## Deprecations in effect
 
