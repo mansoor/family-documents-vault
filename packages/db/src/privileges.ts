@@ -200,6 +200,12 @@ begin
     revoke execute on function public.device_release_stale(text) from public;
     grant execute on function public.device_release_stale(text) to fdv_app;
   end if;
+  -- Whether a push address is somebody else's, asked before it is
+  -- registered (0091): by somebody signed in, and nobody else's by default.
+  if to_regprocedure('public.device_endpoint_held(text)') is not null then
+    revoke execute on function public.device_endpoint_held(text) from public;
+    grant execute on function public.device_endpoint_held(text) to fdv_app;
+  end if;
   -- Whether the household lets its Only me documents out (0061): asked by
   -- every link's own functions, and by the API.
   if to_regprocedure('public.app_only_me_shareable()') is not null then

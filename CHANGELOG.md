@@ -6,6 +6,12 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.35] - 2026-11-13 — a push address someone else holds is a plain refusal on PostgreSQL 16.16
+
+### Fixed
+
+- **Turning notifications on with somebody else's device address is refused plainly, for everybody.** A guest or a person limited to some documents who turned notifications on in a browser or phone where somebody else's are still on got "Something went wrong on the server" on PostgreSQL 16.16 and later; now everybody is told the device already gets somebody else's notifications, as before, and that person keeps them. (Migration 0091.)
+
 ## [0.9.0-dev.34] - 2026-11-12 — Sensitive (AIR2)
 
 ### Added

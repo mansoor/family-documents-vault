@@ -144,6 +144,14 @@ export interface SmtpView {
 
 const ownerOnly = (p: Principal) => requireCapability(p, 'notifications.manage');
 
+/** A push address somebody else holds: the same answer for every role, and never whose. */
+const deviceTaken = () =>
+  new ApiError(
+    409,
+    'device_taken',
+    'This device already gets somebody else’s notifications from this vault. Turn notifications off on it, then on again.',
+  );
+
 export function sealPassword(key: Buffer, password: string, householdId: string): Buffer {
   const iv = randomBytes(12);
   const c = createCipheriv('aes-256-gcm', key, iv);
@@ -244,7 +252,15 @@ export class NotificationService {
       // restore, the idle end): never pushed to again, so free for whoever
       // signs in on this browser or phone now (0060; the Phase 5 exit's
       // second round, C-01). Somebody else's still live stays theirs: 409.
-      await sql`select device_release_stale(${input.endpoint})`.execute(trx);
+      //
+      // Asked with the vault's rights, before the upsert, and held until
+      // this transaction ends (0091): from PostgreSQL 16.16 an upsert
+      // meeting a row the caller's rules hide — a guest's, a restricted
+      // viewer's, anybody's of another household — is an error, whatever
+      // its WHERE says, so it must never meet one. Yes or no, never whose.
+      const { rows: held } = await sql<{ held: boolean }>`
+        select device_endpoint_held(${input.endpoint}) as held`.execute(trx);
+      if (held[0]?.held !== false) throw deviceTaken();
       const row = await trx
         .insertInto('device')
         .values({
@@ -279,20 +295,15 @@ export class NotificationService {
             })
             // Only one's own (the Phase 5 exit's review, E541-02): an address
             // somebody else registered is never taken over — their lock, or
-            // their sign-out, must still reach their phone. Asked before the
-            // database's rules are, so a limited caller is refused as anybody
-            // is, never with a server error.
-            .where('device.account_id', '=', p.accountId),
+            // their sign-out, must still reach their phone. Asked above
+            // already; kept here too, so the upsert alone could never take
+            // one over either.
+            .where('device.account_id', '=', p.accountId)
+            .where('device.household_id', '=', p.householdId),
         )
         .returning(['id', 'created_at'])
         .executeTakeFirst();
-      if (!row) {
-        throw new ApiError(
-          409,
-          'device_taken',
-          'This device already gets somebody else’s notifications from this vault. Turn notifications off on it, then on again.',
-        );
-      }
+      if (!row) throw deviceTaken();
       await trx
         .insertInto('notification_preference')
         .values({ account_id: p.accountId, household_id: p.householdId })

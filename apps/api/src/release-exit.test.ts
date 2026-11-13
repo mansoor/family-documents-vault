@@ -2571,6 +2571,87 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     ]);
   });
 
+  // From PostgreSQL 16.16 an upsert meeting a row the caller's rules hide
+  // is an error, whatever its WHERE says: Ahmed's address, sent by a guest
+  // or a restricted viewer, was a 500 (CI on v0.9.0-dev.34). The vault
+  // asks first now (0091), with its own rights, and answers yes or no.
+  it("somebody else's live push address is a 409 to every role — never a server error, never theirs, never whose (0.9.0)", async () => {
+    const holder = async (endpoint: string) =>
+      (
+        await admin.query<Record<string, unknown>>(
+          `select account_id, household_id, session_id, kind, p256dh, auth
+             from device where endpoint = $1`,
+          [endpoint],
+        )
+      ).rows;
+    const endpoint = ids.deviceEndpoint as string;
+    const his = await holder(endpoint);
+    expect(his).toHaveLength(1);
+    const hisAccount = his[0]?.account_id as string;
+    const roles = [
+      ['owner', olivia],
+      ['adult', sara],
+      ['teen', tariq],
+      ['restricted viewer', vera],
+      ['guest', jane],
+      ['guest whose restriction row is gone', ned],
+    ] as const;
+    for (const [role, t] of roles) {
+      const res = await send(t, 'POST', '/api/v1/devices', {
+        kind: 'unified_push',
+        endpoint,
+        keys: { p256dh: `${role}-p256dh`, auth: `${role}-auth` },
+      });
+      expect([role, res.statusCode, codeOf(res)]).toEqual([role, 409, 'device_taken']);
+      // Nothing says whose it is.
+      for (const trace of [
+        'Ahmed',
+        'ahmed-541',
+        ahmed.member_id,
+        hisAccount,
+        ids.device as string,
+        ids.session as string,
+      ]) {
+        expect(res.body, role).not.toContain(trace);
+      }
+    }
+    // Still his, exactly as he left it.
+    expect(await holder(endpoint)).toEqual(his);
+
+    // A new address sent by two at once: one has it, the other is told so,
+    // whichever comes first — never a 500, never both.
+    for (const pair of [
+      [sara, jane],
+      [vera, sara],
+      [jane, ned],
+    ] as const) {
+      const address = `https://ntfy.example.test/race${randomUUID().slice(0, 8)}`;
+      const answers = await Promise.all(
+        pair.map((t, i) =>
+          send(t, 'POST', '/api/v1/devices', {
+            kind: 'unified_push',
+            endpoint: address,
+            keys: { p256dh: `racer${i}-p256dh`, auth: `racer${i}-auth` },
+          }),
+        ),
+      );
+      expect(
+        answers.map((r) => `${r.statusCode} ${r.statusCode === 201 ? '' : codeOf(r)}`).sort(),
+      ).toEqual(['201 ', '409 device_taken']);
+      const winner = pair[answers.findIndex((r) => r.statusCode === 201)] as Tokens;
+      const rows = await holder(address);
+      expect(rows).toHaveLength(1);
+      expect(
+        (
+          await admin.query<{ member_id: string }>(
+            'select member_id from account_household where account_id = $1',
+            [rows[0]?.account_id],
+          )
+        ).rows[0]?.member_id,
+      ).toBe(winner.member_id);
+    }
+  });
+
   it("with the household's rule off, no link, recipient or route serves an Only me document, and Keep is refused; on again, it works again (5.41)", async () => {
     const priv = doc.ahmedPrivate as { id: string };
     const tax = doc.ahmedTax as { id: string };
