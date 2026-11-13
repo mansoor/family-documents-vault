@@ -81,6 +81,16 @@ export interface Schema {
      * unless an owner turned it on; an owner's alone.
      */
     local_ai: Generated<boolean>;
+    /**
+     * "Also send sensitive papers" to a cloud AI reader (0092, AIR3): an
+     * owner's, off unless one turns it on. Never reaches an Only me paper.
+     */
+    ai_send_sensitive: Generated<boolean>;
+    /**
+     * Which reader it was turned on for (0092, the AIR3 review, S3):
+     * `aiReaderIdentity`. Another reader, and the switch counts as off.
+     */
+    ai_send_sensitive_for: ColumnType<string | null, string | null | undefined, string | null>;
   };
 
   member: {
@@ -1869,8 +1879,40 @@ export interface Schema {
     https_only: Generated<boolean>;
     /** A Test has passed at this kind and address (AIR1 review, S2): the vault's word. */
     address_proven: Generated<boolean>;
+    /**
+     * The owner's word that an OpenAI-compatible reader is on the
+     * household's own network (0092, AIR3, decision 2): it counts as one only
+     * at a private address too.
+     */
+    own_network: Generated<boolean>;
     updated_by: string | null;
     updated_at: GeneratedTimestamp;
+  };
+
+  /**
+   * One row for each paper an AI reader was asked about (0092, AIR3,
+   * decision 11): which reader, which paper, when and how long — never a
+   * word. What the monthly cap counts. The owners' to read, the vault's to write.
+   */
+  ai_reader_send: {
+    id: Generated<string>;
+    household_id: string;
+    kind: 'ollama' | 'anthropic' | 'openai_compatible';
+    runs_at: 'own_network' | 'cloud';
+    incoming_file_id: string | null;
+    document_id: string | null;
+    purpose: 'item' | 'check';
+    sent_at: GeneratedTimestamp;
+    ms: number | null;
+    outcome: 'read' | 'without' | 'not_sent' | null;
+  };
+
+  /** The month an 80% email went to the owners (0092, AIR3): one a household a month. */
+  ai_reader_cap_warning: {
+    household_id: string;
+    /** The first day of the month on the household's calendar, as the database's date. */
+    month: ColumnType<string, string, never>;
+    warned_at: GeneratedTimestamp;
   };
 
   /** Somebody's mobile number, as E.164, and when its code confirmed it (0084): theirs and the owners'. */

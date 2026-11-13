@@ -40,8 +40,8 @@ import { extractText } from './extract-text.js';
 import { adapterOf } from './incoming.js';
 import { decryptToBuffer } from './process-version.js';
 import type { ItemProposer, ThreadAnswer } from './proposal-thread.js';
+import { askAiReader, paperForRule, sealedAi, type AiSendDeps } from '../ai-send.js';
 import {
-  askLocalAi,
   BLANK_LETTERS,
   drawnOrNot,
   learnedContext,
@@ -49,7 +49,6 @@ import {
   localAiFor,
   proposalContext,
   READ_DEADLINE_MS,
-  sealedLocalAi,
   unread,
   readerFor,
   type AiReaderSource,
@@ -205,6 +204,8 @@ export interface ReadingOptions {
   localAi?: LocalAiReader | null;
   /** The readers owners saved in Settings (AIR1), where .env sets none. */
   aiReaders?: AiReaderSource | null;
+  /** The owners emailed at 80% of a cloud reader's month (AIR3); none, and they are not. */
+  tell?: AiSendDeps['tell'];
 }
 
 /** Whom a check reads as: the owner who asked. */
@@ -523,6 +524,7 @@ async function readDocument(
           'identifier',
           'issued_by',
           'deleted_at',
+          'sensitive',
         ])
         .where('id', '=', chosen.id)
         .executeTakeFirst();
@@ -631,14 +633,44 @@ async function readDocument(
     // The local AI (R4), where the household has it on: asked once, at the
     // lowest priority. A paper the family waits on stops it, and the check
     // yields: this document is read again later.
+    // Who may be sent (AIR3): the document as it is now — its visibility,
+    // its own Sensitive, its kind's default as the household has it now —
+    // asked fresh as each is read, so a kind's default changed since holds
+    // back every document left as its kind says.
     const offer = localAiOffer(ctx.proposal, { role: ctx.role, me: ctx.me });
-    const asked = await askLocalAi(ctx.reader, ctx.localAi, text, offer, {
-      priority: 'check',
-      signal,
-    });
+    const got = await askAiReader(
+      { db: deps.db, log: deps.log, tell: opts.tell ?? null },
+      hh,
+      ctx.reader,
+      ctx.localAi,
+      text,
+      offer,
+      // The document as it is now, read again in the gate and right before
+      // its words go (the review, S2): its pages took minutes to read, and
+      // it may have been made Only me or sensitive, or removed, meanwhile.
+      async (trx) => {
+        const now = await trx
+          .selectFrom('document')
+          .select(['visibility', 'sensitive', 'type_key', 'deleted_at'])
+          .where('id', '=', doc.id)
+          .executeTakeFirst();
+        if (!now || now.deleted_at) return null;
+        return paperForRule(trx, {
+          visibility: now.visibility,
+          sensitive: now.sensitive,
+          typeKey: now.type_key,
+        });
+      },
+      { purpose: 'check', documentId: doc.id },
+      { priority: 'check', signal },
+    );
+    const asked = got.asked;
     if (cancel?.aborted) throw new Cancelled();
     if (asked?.state === 'without' && asked.why === 'preempted') throw new Yielded();
-    const ai = asked?.state === 'replied' ? { reply: asked.body, offer } : undefined;
+    const ai =
+      asked?.state === 'replied'
+        ? { reply: asked.body, offer, ...(asked.shape ? { shape: asked.shape } : {}) }
+        : undefined;
     const level = (answer: ThreadAnswer): SmartSeen => {
       if (answer.state === 'unavailable') throw new Again('the proposal thread could not be had');
       if (answer.state !== 'done') return notRead;
@@ -650,7 +682,7 @@ async function readDocument(
           proposal: answer.proposal,
           learnedClash: answer.clash ?? null,
           expiryLabels: answer.expiryLabels ?? [],
-          localAi: sealedLocalAi(asked, answer.localAi) ?? null,
+          localAi: sealedAi(got, answer.localAi) ?? null,
           duplicate: null,
           renewal: null,
           folder: null,

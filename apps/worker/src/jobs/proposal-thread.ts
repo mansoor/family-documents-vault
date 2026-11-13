@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { Worker, type WorkerOptions } from 'node:worker_threads';
 import type {
+  AiReaderKind,
   DetailProposal,
   LearnedClash,
   LearnedContext,
@@ -109,7 +110,7 @@ export interface ItemProposer {
     text: string,
     ctx: ProposalContext,
     learned?: LearnedContext | null,
-    ai?: { reply: string; offer: LocalAiOffer },
+    ai?: { reply: string; offer: LocalAiOffer; shape?: AiReaderKind },
   ): Promise<ThreadAnswer>;
 }
 
@@ -151,7 +152,7 @@ export class ProposalThread implements ItemProposer {
     text: string,
     ctx: ProposalContext,
     learned: LearnedContext | null = null,
-    ai?: { reply: string; offer: LocalAiOffer },
+    ai?: { reply: string; offer: LocalAiOffer; shape?: AiReaderKind },
   ): Promise<ThreadAnswer> {
     const mine = this.turn.then(() => this.one(text, ctx, learned, ai));
     this.turn = mine.catch(() => undefined);
@@ -184,7 +185,7 @@ export class ProposalThread implements ItemProposer {
     text: string,
     ctx: ProposalContext,
     learned: LearnedContext | null,
-    ai: { reply: string; offer: LocalAiOffer } | undefined,
+    ai: { reply: string; offer: LocalAiOffer; shape?: AiReaderKind } | undefined,
   ): Promise<ThreadAnswer> {
     if (this.closed) return { state: 'unavailable' };
     if (!(await this.started())) return { state: 'unavailable' };

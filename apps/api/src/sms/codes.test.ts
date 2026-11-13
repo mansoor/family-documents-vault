@@ -727,7 +727,13 @@ describe.skipIf(!testAdminUrl())('codes by text (SMS3)', () => {
       expect(told[0]?.body).toMatch(
         /^Omar signed in on .+ with their password alone, without the code by text they asked for, because the household’s text messages aren’t set up and working now\. If it wasn’t them/,
       );
-      expect(JSON.stringify(told[0])).not.toMatch(/505|\+44/);
+      // Ids stripped first: a random UUID may hold "505" (the dev.36 flake).
+      expect(
+        JSON.stringify(told[0]).replace(
+          /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+          '<id>',
+        ),
+      ).not.toMatch(/505|\+44/);
       expect(sent).toHaveLength(0);
     });
 

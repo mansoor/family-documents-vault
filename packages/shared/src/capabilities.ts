@@ -497,11 +497,23 @@ export interface CapabilityFeatures {
    */
   ai_reader_settings?: boolean;
   /**
-   * The kinds of reader this vault reads with (AIR1): `['ollama']` until
-   * Anthropic and OpenAI-compatible readers come (AIR3). Beside
+   * The kinds of reader this vault reads with (AIR1): `['ollama']` in AIR1;
+   * since AIR3 also `anthropic` and `openai_compatible`. Beside
    * `ai_reader_settings`; absent from older vaults.
    */
   ai_reader_kinds?: AiReaderKind[];
+  /**
+   * Who may be sent to a cloud reader, and how many (0.9.0, AIR3): a
+   * sensitive paper's words only with the household's "Also send sensitive
+   * papers" on, an Only me paper's never, and at most the reader's monthly
+   * cap of papers. GET /household/reading/ai-reader says `send_sensitive`
+   * and `month` ({ month, sent, cap, warned }); PUT
+   * /household/reading/ai-reader/send-sensitive `{ send_sensitive }` sets
+   * the switch — an owner's, with step-up `send_sensitive_papers`; a phone
+   * shows both, read only. An OpenAI-compatible reader's `own_network`.
+   * Beside `ai_reader_settings`; absent from older vaults.
+   */
+  ai_reader_send_sensitive?: boolean;
 }
 
 export interface CapabilityLimits {

@@ -671,7 +671,13 @@ describe.skipIf(!testAdminUrl())('text messages, in the API', () => {
         'Ahmed Khan added their mobile number',
       ]),
     );
-    expect(JSON.stringify(texts)).not.toMatch(/900456/);
+    // Ids stripped first: a random UUID may hold "900456".
+    expect(
+      JSON.stringify(texts).replace(
+        /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+        '<id>',
+      ),
+    ).not.toMatch(/900456/);
     // A teen is told of their own number, and of nobody else's, nor of the setting.
     const theirs = (await call(teen, 'GET', '/api/v1/audit')).json<{
       items: Array<{ text: string }>;

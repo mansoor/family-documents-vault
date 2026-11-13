@@ -140,6 +140,7 @@ import type {
   LocalAiNotice,
   LocalAiSettingsView,
   AiReaderInput,
+  AiReaderSendSensitiveInput,
   AiReaderView,
   MailInMailboxInput,
   MemberPhoneView,
@@ -1809,6 +1810,19 @@ export function createApi(http: Http) {
      */
     setAiReader: (token: string, body: AiReaderInput) =>
       request<AiReaderView>('/api/v1/household/reading/ai-reader', {
+        method: 'PUT',
+        body,
+        token,
+      }),
+    /**
+     * "Also send sensitive papers" to a cloud reader (`features.ai_reader_send_sensitive`,
+     * AIR3): an owner's, step-up `send_sensitive_papers`. `409
+     * ai_reader_not_cloud` to turn it on with no cloud reader. Every owner is
+     * emailed. The view's `send_sensitive` and `month` (this month's papers
+     * of the cap) say where it stands; a phone shows them, read only.
+     */
+    setAiReaderSendSensitive: (token: string, body: AiReaderSendSensitiveInput) =>
+      request<AiReaderView>('/api/v1/household/reading/ai-reader/send-sensitive', {
         method: 'PUT',
         body,
         token,

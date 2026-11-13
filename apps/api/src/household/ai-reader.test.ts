@@ -102,20 +102,28 @@ describe.skipIf(!testAdminUrl())('the AI reader set in Settings (AIR1)', () => {
       [owner.household_id, runsAt],
     );
 
-  it('is offered, with the kinds this vault reads with: Ollama alone, until AIR3', async () => {
+  it('is offered, with the kinds this vault reads with: all three since AIR3', async () => {
     const f = await caps();
     expect(f.ai_reader_settings).toBe(true);
-    expect(f.ai_reader_kinds).toEqual(['ollama']);
+    expect(f.ai_reader_kinds).toEqual(['ollama', 'anthropic', 'openai_compatible']);
+    expect(f.ai_reader_send_sensitive).toBe(true);
     // `local_ai` too, so that every client asks whether a reader reads the
     // household's papers (the notice, the R4 review's M1).
     expect(f.local_ai).toBe(true);
     const v = (await call(owner, 'GET', AT)).json<AiReaderView>();
     expect(v).toEqual({
       source: 'settings',
-      kinds: ['ollama'],
+      kinds: ['ollama', 'anthropic', 'openai_compatible'],
       env: null,
       reader: null,
       https_only: false,
+      send_sensitive: false,
+      month: {
+        month: expect.stringMatching(/^\d{4}-\d{2}$/) as unknown,
+        sent: 0,
+        cap: 500,
+        warned: false,
+      },
     });
   });
 
@@ -126,8 +134,18 @@ describe.skipIf(!testAdminUrl())('the AI reader set in Settings (AIR1)', () => {
       ['DELETE', AT],
       ['POST', `${AT}/test`],
       ['POST', `${AT}/models`],
+      ['PUT', `${AT}/send-sensitive`],
     ] as const) {
-      const r = await call(adult, method, url, method === 'PUT' ? body() : undefined);
+      const r = await call(
+        adult,
+        method,
+        url,
+        method === 'PUT'
+          ? url.endsWith('send-sensitive')
+            ? { send_sensitive: true }
+            : body()
+          : undefined,
+      );
       expect([url, r.statusCode]).toEqual([url, 403]);
     }
     expect(await stored()).toBeUndefined();
@@ -301,14 +319,197 @@ describe.skipIf(!testAdminUrl())('the AI reader set in Settings (AIR1)', () => {
     expect(await at('https://unknown.example.org')).toBe('cloud');
   });
 
-  it('reads with Ollama alone for now: Anthropic and OpenAI-compatible are refused, plainly', async () => {
-    for (const kind of ['anthropic', 'openai_compatible']) {
-      const r = await call(owner, 'PUT', AT, body({ kind }));
-      expect([kind, r.statusCode, codeOf(r)]).toEqual([kind, 422, 'ai_reader_kind_not_offered']);
-    }
+  it('Anthropic (AIR3): its address fixed — none typed, none kept — a key it must have, always a cloud service', async () => {
+    // An address typed for it is refused; none, and no key, too.
+    const typed = await call(owner, 'PUT', AT, body({ kind: 'anthropic', api_key: KEY }));
+    expect(typed.statusCode).toBe(422);
+    const keyless = await call(owner, 'PUT', AT, body({ kind: 'anthropic', base_url: null }));
+    expect([keyless.statusCode, keyless.body]).toEqual([422, expect.stringMatching(/API key/)]);
+    expect(await stored()).toBeUndefined();
+    const v = await save({
+      kind: 'anthropic',
+      base_url: null,
+      model: 'claude-haiku-4-5',
+      api_key: KEY,
+    });
+    expect(v.reader).toMatchObject({
+      kind: 'anthropic',
+      base_url: null,
+      runs_at: 'cloud',
+      api_key: 'set',
+      status: 'untested',
+    });
+    // The key sealed for Anthropic, its address none.
+    const row = await stored();
+    expect(row?.base_url).toBeNull();
+    expect(
+      openAiReaderKey(
+        deriveKey(TEST_MASTER, AI_READER_KEY_PURPOSE),
+        row?.api_key_encrypted as Buffer,
+        owner.household_id,
+        { kind: 'anthropic', baseUrl: null },
+      ),
+    ).toBe(KEY);
+  });
+
+  it('OpenAI-compatible (AIR3): a cloud service unless the owner says it is on their network AND its address is private', async () => {
+    const at = async (base_url: string, own_network: boolean) =>
+      (await save({ kind: 'openai_compatible', base_url, model: 'gpt-4o-mini', own_network }))
+        .reader?.runs_at;
+    expect(await at('http://192.168.1.30:1234', false)).toBe('cloud');
+    expect(await at('http://192.168.1.30:1234', true)).toBe('own_network');
+    expect(await at('https://reader.example.com', true)).toBe('cloud');
+    expect((await stored())?.kind).toBe('openai_compatible');
+    // The owner's word changed waits for a Test of its own.
+    await passed('cloud');
+    const v = await save({
+      kind: 'openai_compatible',
+      base_url: 'https://reader.example.com',
+      model: 'gpt-4o-mini',
+      own_network: false,
+    });
+    expect(v.reader?.status).toBe('untested');
     const r = await call(owner, 'PUT', AT, body({ kind: 'gemini' }));
     expect(r.statusCode).toBe(422);
-    expect(await stored()).toBeUndefined();
+  });
+
+  it('"Also send sensitive papers" (AIR3): an owner’s, with step-up, only for a cloud reader; every owner emailed, and the activity log says so', async () => {
+    const SS = `${AT}/send-sensitive`;
+    const flagOf = async () =>
+      (
+        await admin.query<{ ai_send_sensitive: boolean }>(
+          'select ai_send_sensitive from household where id = $1',
+          [owner.household_id],
+        )
+      ).rows[0]?.ai_send_sensitive;
+    try {
+      // A reader on your own network: nothing is held back from it.
+      await save();
+      const local = await call(owner, 'PUT', SS, { send_sensitive: true });
+      expect([local.statusCode, codeOf(local)]).toEqual([409, 'ai_reader_not_cloud']);
+      // Anthropic, a cloud service: off until an owner turns it on.
+      await save({ kind: 'anthropic', base_url: null, model: 'claude-haiku-4-5', api_key: KEY });
+      expect((await call(owner, 'GET', AT)).json<AiReaderView>().send_sensitive).toBe(false);
+      // An adult never; Peter's step-up asked of an owner whose confirmation is old.
+      expect((await call(adult, 'PUT', SS, { send_sensitive: true })).statusCode).toBe(403);
+      await admin.query(
+        `update session set verified_at = now() - interval '1 hour', factor_verified_at = now() - interval '1 hour'
+          where account_id = (select account_id from account_household where member_id = $1)`,
+        [owner.member_id],
+      );
+      try {
+        const r = await call(owner, 'PUT', SS, { send_sensitive: true });
+        expect([r.statusCode, codeOf(r)]).toEqual([403, 'step_up_required']);
+        expect(r.body).toMatch(/whether sensitive papers are sent to the AI reader/);
+        expect(await flagOf()).toBe(false);
+      } finally {
+        await admin.query(
+          `update session set verified_at = now(), factor_verified_at = now()
+            where account_id = (select account_id from account_household where member_id = $1)`,
+          [owner.member_id],
+        );
+      }
+      const before = alertsSent(h).length;
+      const on = await call(owner, 'PUT', SS, { send_sensitive: true });
+      expect(on.statusCode, on.body).toBe(200);
+      expect(on.headers['cache-control']).toBe('no-store');
+      expect(on.json<AiReaderView>().send_sensitive).toBe(true);
+      expect(await flagOf()).toBe(true);
+      // Every owner emailed — the one who did it too — naming the provider.
+      const told = alertsSent(h).slice(before);
+      expect(told).toHaveLength(1);
+      expect(told[0]).toMatchObject({ email_only: true });
+      expect((told[0]?.account_ids as string[]).sort()).toEqual(
+        (
+          await admin.query<{ account_id: string }>(
+            "select account_id from account_household where household_id = $1 and role = 'owner'",
+            [owner.household_id],
+          )
+        ).rows
+          .map((r) => r.account_id)
+          .sort(),
+      );
+      expect(String(told[0]?.body)).toMatch(/sent to Anthropic/);
+      expect(JSON.stringify(told)).not.toContain(KEY);
+      // And in the activity log.
+      const audit = await admin.query<{ detail: Record<string, unknown> }>(
+        `select detail from audit_event where household_id = $1
+          and action = 'ai_reader.send_sensitive_changed' order by id`,
+        [owner.household_id],
+      );
+      expect(audit.rows.at(-1)?.detail).toMatchObject({ send_sensitive: true, kind: 'anthropic' });
+      // The same again changes nothing, and tells nobody.
+      await call(owner, 'PUT', SS, { send_sensitive: true });
+      expect(alertsSent(h).length).toBe(before + 1);
+      // Held to the reader it was turned on for (the review, S3): .env's
+      // reader taking over is another reader, and Settings says it is off.
+      expect(
+        (
+          await admin.query<{ ai_send_sensitive_for: string }>(
+            'select ai_send_sensitive_for from household where id = $1',
+            [owner.household_id],
+          )
+        ).rows[0]?.ai_send_sensitive_for,
+      ).toBe('settings:anthropic:https://api.anthropic.com');
+      await admin.query(
+        `insert into local_ai_state (worker, model, host, state, kind, runs_at)
+         values ('w-s3', 'qwen2.5:3b-instruct', 'ai.example.com:11434', 'reachable', 'ollama', 'cloud')`,
+      );
+      try {
+        const envView = (await call(owner, 'GET', AT)).json<AiReaderView>();
+        expect(envView.source).toBe('env');
+        expect(envView.send_sensitive).toBe(false);
+      } finally {
+        await admin.query("delete from local_ai_state where worker = 'w-s3'");
+      }
+      expect((await call(owner, 'GET', AT)).json<AiReaderView>().send_sensitive).toBe(true);
+      // Another kind of reader: the warning named Anthropic, so it is turned off.
+      await save({ kind: 'openai_compatible', base_url: 'https://reader.example.com', model: 'm' });
+      expect(await flagOf()).toBe(false);
+      const after = await admin.query<{ detail: Record<string, unknown> }>(
+        `select detail from audit_event where household_id = $1
+          and action = 'ai_reader.send_sensitive_changed' order by id`,
+        [owner.household_id],
+      );
+      expect(after.rows.at(-1)?.detail).toMatchObject({
+        send_sensitive: false,
+        reader_changed: true,
+      });
+      // Off is always allowed.
+      expect((await call(owner, 'PUT', SS, { send_sensitive: false })).statusCode).toBe(200);
+    } finally {
+      await admin.query('update household set ai_send_sensitive = false where id = $1', [
+        owner.household_id,
+      ]);
+    }
+  });
+
+  it('this month’s count, of the cap, on the household’s calendar (AIR3)', async () => {
+    await save({
+      kind: 'anthropic',
+      base_url: null,
+      model: 'claude-haiku-4-5',
+      api_key: KEY,
+      monthly_cap: 40,
+    });
+    await admin.query(
+      `insert into ai_reader_send (household_id, kind, runs_at, purpose, sent_at, outcome)
+       values ($1, 'anthropic', 'cloud', 'item', now() - interval '1 minute', 'read'),
+              ($1, 'anthropic', 'cloud', 'check', now() - interval '1 minute', 'without'),
+              ($1, 'anthropic', 'cloud', 'item', now() - interval '1 minute', 'not_sent'),
+              ($1, 'ollama', 'own_network', 'item', now() - interval '1 minute', 'read'),
+              ($1, 'anthropic', 'cloud', 'item', now() - interval '45 days', 'read')`,
+      [owner.household_id],
+    );
+    try {
+      const v = (await call(owner, 'GET', AT)).json<AiReaderView>();
+      expect(v.month).toMatchObject({ sent: 2, cap: 40, warned: false });
+      // The owners alone read what was sent: an adult is given none of it.
+      const asAdult = await call(adult, 'GET', AT);
+      expect(asAdult.statusCode).toBe(403);
+    } finally {
+      await admin.query('delete from ai_reader_send where household_id = $1', [owner.household_id]);
+    }
   });
 
   it('waits for a Test, which only the vault says passed; anything that reaches the reader changed waits again', async () => {
@@ -575,5 +776,22 @@ describe.skipIf(!testAdminUrl())('the hosted edition (AIR1, decision 9)', () => 
     } finally {
       await admin.end();
     }
+  });
+
+  it('only the providers its subprocessor list names: Anthropic, and OpenAI-compatible only at OpenAI (AIR3)', async () => {
+    const put = (payload: Record<string, unknown>) =>
+      h.app.inject({
+        method: 'PUT',
+        url: '/api/v1/household/reading/ai-reader',
+        headers: h.as(owner),
+        payload: { model: 'm-1', timeout_seconds: 120, monthly_cap: 500, ...payload },
+      });
+    const other = await put({ kind: 'openai_compatible', base_url: 'https://reader.example.com' });
+    expect([other.statusCode, codeOf(other)]).toEqual([422, 'ai_reader_provider_not_offered']);
+    const openai = await put({ kind: 'openai_compatible', base_url: 'https://api.openai.com' });
+    expect(openai.statusCode, openai.body).toBe(200);
+    expect(openai.json<AiReaderView>().reader).toMatchObject({ runs_at: 'cloud' });
+    const claude = await put({ kind: 'anthropic', base_url: null, api_key: KEY });
+    expect(claude.statusCode, claude.body).toBe(200);
   });
 });

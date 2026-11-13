@@ -7,19 +7,25 @@ import {
   AI_READER_DEFAULT_PORTS,
   AI_READER_KINDS_OFFERED,
   AI_READER_SERVICE_NAMES,
+  ANTHROPIC_BASE_URL,
   aiReaderAddress,
+  aiReaderHostedAllows,
+  aiReaderIdentity,
   aiReaderPort,
   aiReaderUnprovenProblem,
   type AiReaderKind,
   type AiReaderRunsAt,
   type LocalAiOffer,
 } from '@fdv/shared';
-import { OllamaReader, type LocalAiClientOptions } from './ollama-reader.js';
+import { AnthropicReader, OpenAiCompatibleReader } from './cloud-readers.js';
+import { OllamaReader } from './ollama-reader.js';
+import type { LocalAiClientOptions } from './pinned-reader.js';
 
 /**
  * The AI reader (0.9.0, R4; an interface since AIR1): what reads a paper's
- * words beside the rules, whichever kind it is. Ollama is the first (and,
- * until AIR3, the only) kind, `OllamaReader`; the reader a household's
+ * words beside the rules, whichever kind it is — Ollama (`OllamaReader`),
+ * and since AIR3 Anthropic (`AnthropicReader`) and an OpenAI-compatible
+ * server (`OpenAiCompatibleReader`), all on `PinnedReader`. The reader a household's
  * papers go to is .env's where the operator set one (it wins, decision 8),
  * else the one an owner saved in Settings, once a Test passed
  * (`HouseholdAiReaders`), unless FDV_AI_READER_SETTINGS=off.
@@ -55,11 +61,55 @@ export type LocalAiWithout =
   /** The address found is one the vault won't send to (AIR1, decision 9): nothing was sent. */
   | 'refused'
   /** An answer, but not in the reader's own API's shape (AIR1; Test and the models alone). */
-  | 'bad_reply';
+  | 'bad_reply'
+  /**
+   * The sending rule, asked again once the turn was its, said no (the AIR3
+   * review, S2): the paper changed while it waited, and nothing was sent.
+   */
+  | 'held';
+
+/** How a paper is asked about (AIR3): its line, and what is asked again before it goes. */
+export interface ReadAsk {
+  priority: 'interactive' | 'check';
+  signal?: AbortSignal;
+  /**
+   * Asked once the turn is the paper's, right before its words go (the
+   * AIR3 review, S2): false, and nothing is sent (`held`).
+   */
+  stillMay?: () => Promise<boolean>;
+  /**
+   * Asked before the same words are sent again (an OpenAI-compatible
+   * server's json_object retry; the review, M2): false — this month's papers
+   * all sent — and they are not.
+   */
+  again?: () => Promise<boolean>;
+  /**
+   * Where the sending rule took the reader to run (the review, M5): on the
+   * household's own network, and an address found to be public is refused,
+   * nothing sent — .env's reader included, which has no guard of its own.
+   */
+  assumed?: AiReaderRunsAt | null;
+}
 
 export type LocalAiAnswer =
-  | { state: 'replied'; body: string; ms: number }
-  | { state: 'without'; why: LocalAiWithout; ms: number; status?: number };
+  /** `shape`: whose API's envelope the body is (AIR3); Ollama's where not said. */
+  | { state: 'replied'; body: string; ms: number; shape?: AiReaderKind }
+  | {
+      state: 'without';
+      why: LocalAiWithout;
+      ms: number;
+      status?: number;
+      /**
+       * It never left the line: its turn did not come in time, and nothing
+       * was sent (the AIR3 review, M3) — not counted against the month's cap.
+       */
+      queued?: true;
+      /**
+       * A refusal (400 or 422) that speaks of the response format — its body
+       * read only to tell this, never kept or shown (the AIR3 review, M2).
+       */
+      aboutFormat?: boolean;
+    };
 
 /** The reader's list of models: names alone, or why none. */
 export type AiReaderModels =
@@ -91,12 +141,19 @@ export interface AiReader {
   readonly settings: LocalAiSettings;
   /** Where the last call found it runs; null, none made. */
   readonly lastRunsAt: AiReaderRunsAt | null;
+  /**
+   * Where it runs for the sending rule (AIR3, `mayReadWith`): where it was
+   * saved to run, else found, else its name says; null, not known — which
+   * the rule counts as a cloud service.
+   */
+  readonly runsAt: AiReaderRunsAt | null;
+  /**
+   * Which reader it is, for "Also send sensitive papers" (the AIR3 review,
+   * S3): `aiReaderIdentity` — a saved one's kind and address, .env's kind and host.
+   */
+  readonly identity: string;
   /** A paper's words read: the reply as it came, for the proposal thread to read. Never rejects. */
-  read(
-    text: string,
-    offer: LocalAiOffer,
-    o: { priority: 'interactive' | 'check'; signal?: AbortSignal },
-  ): Promise<LocalAiAnswer>;
+  read(text: string, offer: LocalAiOffer, o: ReadAsk): Promise<LocalAiAnswer>;
   /**
    * Test: a tiny fixed prompt, no paper. Never rejects. `findWhere`: where
    * it runs is found, not held to where it was said to run.
@@ -124,6 +181,8 @@ export interface SavedAiReader {
   https_only: boolean;
   /** A Test has passed at this kind and address (S2b). */
   address_proven: boolean;
+  /** The owner's word that an OpenAI-compatible reader is on their own network (0092, AIR3). */
+  own_network: boolean;
 }
 
 /** The household's saved reader, whatever its status; undefined, none. As the vault. */
@@ -141,6 +200,7 @@ export async function savedAiReader(trx: Db, hh: string): Promise<SavedAiReader 
       'updated_at',
       'https_only',
       'address_proven',
+      'own_network',
     ])
     .where('household_id', '=', hh)
     .executeTakeFirst();
@@ -165,6 +225,8 @@ export interface HouseholdAiReadersOptions {
   log?: Log;
   /** Tests: the network stood in for, and the clock. */
   client?: Pick<LocalAiClientOptions, 'resolve' | 'now' | 'testMs' | 'probeMs' | 'ownAddresses'>;
+  /** Tests alone: where Anthropic's reader is sent, in place of its fixed address. */
+  anthropicUrl?: string;
 }
 
 /**
@@ -251,16 +313,21 @@ export class HouseholdAiReaders {
     row: SavedAiReader,
     runsAt: AiReaderRunsAt | null = null,
   ): { reader: AiReader } | { not: NotBuilt } {
-    if (!AI_READER_KINDS_OFFERED.includes(row.kind) || row.kind !== 'ollama') {
-      return { not: 'not_offered' };
-    }
+    if (!AI_READER_KINDS_OFFERED.includes(row.kind)) return { not: 'not_offered' };
     // The strictest of the worker's edition and the rule saved with it (S1).
     const publicOnly = this.o.publicOnly || row.https_only;
+    // Anthropic's address is the vault's own to say, never typed (AIR3).
+    const anthropic = row.kind === 'anthropic';
     // Checked again here as the API checked it: what it let through is not trusted.
-    const address = aiReaderAddress(row.base_url ?? '', { httpsOnly: publicOnly });
+    const address = aiReaderAddress(anthropic ? ANTHROPIC_BASE_URL : (row.base_url ?? ''), {
+      httpsOnly: publicOnly,
+    });
     if ('problem' in address) return { not: 'refused' };
+    // The hosted edition: only the providers its subprocessor list names (decision 9).
+    if (publicOnly && !aiReaderHostedAllows(row.kind, address.url)) return { not: 'refused' };
     const ports = this.o.ports ?? AI_READER_DEFAULT_PORTS;
-    if (!ports.includes(aiReaderPort(address.url))) return { not: 'refused' };
+    // Anthropic's fixed address is on 443 whatever ports a typed one may use.
+    if (!anthropic && !ports.includes(aiReaderPort(address.url))) return { not: 'refused' };
     let apiKey: string | null = null;
     if (row.api_key_encrypted) {
       try {
@@ -274,17 +341,33 @@ export class HouseholdAiReaders {
         return { not: 'key' };
       }
     }
-    return {
-      reader: new OllamaReader(
-        { url: new URL(address.url), model: row.model, timeoutMs: row.timeout_seconds * 1000 },
-        {
-          ...(this.o.client ?? {}),
-          ...(this.o.log ? { log: this.o.log } : {}),
-          apiKey,
-          guard: { publicOnly, runsAt, ports, vaultsOwn: this.vaultsOwn },
-        },
-      ),
+    const settings = {
+      url: new URL(this.o.anthropicUrl && anthropic ? this.o.anthropicUrl : address.url),
+      model: row.model,
+      timeoutMs: row.timeout_seconds * 1000,
     };
+    const opts = {
+      ...(this.o.client ?? {}),
+      ...(this.o.log ? { log: this.o.log } : {}),
+      apiKey,
+      identity: aiReaderIdentity('settings', row.kind, row.base_url),
+      guard: {
+        publicOnly,
+        runsAt,
+        ...(anthropic ? {} : { ports }),
+        vaultsOwn: this.vaultsOwn,
+      },
+    };
+    switch (row.kind) {
+      case 'anthropic':
+        return { reader: new AnthropicReader(settings, opts) };
+      case 'openai_compatible':
+        return {
+          reader: new OpenAiCompatibleReader(settings, { ...opts, ownNetwork: row.own_network }),
+        };
+      default:
+        return { reader: new OllamaReader(settings, opts) };
+    }
   }
 }
 
@@ -297,6 +380,7 @@ function fingerprint(row: SavedAiReader): string {
     String(row.timeout_seconds),
     row.runs_at,
     String(row.https_only),
+    String(row.own_network),
     row.updated_at.toISOString(),
     row.api_key_encrypted ? createHash('sha256').update(row.api_key_encrypted).digest('hex') : '',
   ].join('\0');

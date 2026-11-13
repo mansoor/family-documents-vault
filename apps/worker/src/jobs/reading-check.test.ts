@@ -942,6 +942,10 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the worker (R0)', () => 
     const asked: string[] = [];
     let stopFirst = true;
     const ai: LocalAiReader = {
+      // On the household's own network (AIR3): the sending rule lets every paper go.
+      kind: 'ollama',
+      runsAt: 'own_network',
+      identity: 'env:ollama:ollama:11434',
       read: async (_text, _offer, o) => {
         asked.push(o.priority);
         if (stopFirst) {
@@ -979,6 +983,141 @@ describe.skipIf(!testAdminUrl())('the Reading check, in the worker (R0)', () => 
       await admin.query('update household set local_ai = false where id = $1', [hh]);
     }
   }, 120_000);
+
+  it('a cloud reader (AIR3): nothing sensitive or Only me ever reaches it — and a kind’s default changed is asked fresh at the next read', async () => {
+    const sent: string[] = [];
+    const cloud: LocalAiReader = {
+      kind: 'anthropic',
+      runsAt: 'cloud',
+      identity: 'settings:anthropic:https://api.anthropic.com',
+      read: async (text) => {
+        sent.push(text);
+        return { state: 'without', why: 'timeout', ms: 1 };
+      },
+    };
+    /** Which documents went to the reader in a run, by the log of what was sent; then let go. */
+    const run = async () => {
+      sent.length = 0;
+      await runAll(await ask('Olivia'), { localAi: cloud });
+      const log = await admin.query<{ kind: string; purpose: string; document_id: string }>(
+        'select kind, purpose, document_id from ai_reader_send where household_id = $1',
+        [hh],
+      );
+      await admin.query('delete from ai_reader_send where household_id = $1', [hh]);
+      // Each paper sent written down — the reader, the document — and only those.
+      expect(log.rows).toHaveLength(sent.length);
+      expect(log.rows.every((r) => r.kind === 'anthropic' && r.purpose === 'check')).toBe(true);
+      return new Set(log.rows.map((r) => r.document_id));
+    };
+    await admin.query('update household set local_ai = true where id = $1', [hh]);
+    // What the local reader was sent by the checks before this one.
+    await admin.query('delete from ai_reader_send where household_id = $1', [hh]);
+    try {
+      // Passports and medical records are sensitive by their kinds' defaults;
+      // Olivia's own is Only me besides.
+      let went = await run();
+      expect(extracted).toContain(doc.passport);
+      expect(extracted).toContain(doc.dentist);
+      expect(went.has(doc.passport as string)).toBe(false);
+      expect(went.has(doc.dentist as string)).toBe(false);
+      expect(went.has(doc.olivias as string)).toBe(false);
+
+      // The household makes medical records not sensitive: the dentist's
+      // letter, left as its kind says, goes at the next read — Olivia's
+      // Only me one, never.
+      await admin.query(
+        `insert into document_type_setting (household_id, type_key, sensitive_default)
+         values ($1, 'medical_record', false)
+         on conflict (household_id, type_key) do update set sensitive_default = false`,
+        [hh],
+      );
+      went = await run();
+      expect(went.has(doc.dentist as string)).toBe(true);
+      expect(went.has(doc.passport as string)).toBe(false);
+      expect(went.has(doc.olivias as string)).toBe(false);
+
+      // And back: held again at once.
+      await admin.query(
+        `update document_type_setting set sensitive_default = true
+          where household_id = $1 and type_key = 'medical_record'`,
+        [hh],
+      );
+      went = await run();
+      expect(went.has(doc.dentist as string)).toBe(false);
+
+      // "Also send sensitive papers": the passport and the dentist go; the
+      // Only me one never, whatever the switch says.
+      await admin.query(
+        "update household set ai_send_sensitive = true, ai_send_sensitive_for = 'settings:anthropic:https://api.anthropic.com' where id = $1",
+        [hh],
+      );
+      went = await run();
+      expect(went.has(doc.passport as string)).toBe(true);
+      expect(went.has(doc.dentist as string)).toBe(true);
+      expect(went.has(doc.olivias as string)).toBe(false);
+    } finally {
+      await admin.query(
+        'update household set local_ai = false, ai_send_sensitive = false where id = $1',
+        [hh],
+      );
+      await admin.query(
+        "delete from document_type_setting where household_id = $1 and type_key = 'medical_record'",
+        [hh],
+      );
+      await admin.query('delete from ai_reader_send where household_id = $1', [hh]);
+    }
+  }, 180_000);
+
+  it('a cloud reader (the AIR3 review, S2): a document made Only me while its pages are read is not sent', async () => {
+    const sent: string[] = [];
+    const cloud: LocalAiReader = {
+      kind: 'anthropic',
+      runsAt: 'cloud',
+      identity: 'settings:anthropic:https://api.anthropic.com',
+      read: async (text, _offer, o) => {
+        if (o.stillMay && !(await o.stillMay())) return { state: 'without', why: 'held', ms: 1 };
+        sent.push(text);
+        return { state: 'without', why: 'timeout', ms: 1 };
+      },
+    };
+    await admin.query('update household set local_ai = true where id = $1', [hh]);
+    await admin.query('delete from ai_reader_send where household_id = $1', [hh]);
+    // Medical records not sensitive here: Zain's dentist's letter would go…
+    await admin.query(
+      `insert into document_type_setting (household_id, type_key, sensitive_default)
+       values ($1, 'medical_record', false)
+       on conflict (household_id, type_key) do update set sensitive_default = false`,
+      [hh],
+    );
+    // …but as its pages are read, it is made Only me.
+    hook = async () => {
+      if (extracted[extracted.length - 1] === doc.dentist) {
+        await admin.query("update document set visibility = 'private' where id = $1", [
+          doc.dentist,
+        ]);
+      }
+    };
+    try {
+      await runAll(await ask('Olivia'), { localAi: cloud });
+      expect(extracted).toContain(doc.dentist);
+      const log = await admin.query<{ document_id: string }>(
+        'select document_id from ai_reader_send where household_id = $1',
+        [hh],
+      );
+      expect(log.rows.map((r) => r.document_id)).not.toContain(doc.dentist);
+    } finally {
+      hook = null;
+      await admin.query("update document set visibility = 'household' where id = $1", [
+        doc.dentist,
+      ]);
+      await admin.query('update household set local_ai = false where id = $1', [hh]);
+      await admin.query(
+        "delete from document_type_setting where household_id = $1 and type_key = 'medical_record'",
+        [hh],
+      );
+      await admin.query('delete from ai_reader_send where household_id = $1', [hh]);
+    }
+  }, 180_000);
 
   it('an owner locked or paused: the check stops, with nothing kept (P-3)', async () => {
     const id = await ask('Omar');

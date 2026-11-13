@@ -122,6 +122,7 @@ export function activityKind(action: string): ActivityKind {
     case 'household.local_ai_changed':
     case 'ai_reader.changed':
     case 'ai_reader.tested':
+    case 'ai_reader.send_sensitive_changed':
     case 'batch.version_undone':
       return 'changed';
   }
@@ -859,6 +860,14 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return detail.ok === true
         ? line(`${who} tested the AI reader, and it answered`, true)
         : line(`${who} tested the AI reader, and it did not answer`, true);
+    // "Also send sensitive papers" to a cloud AI reader (0.9.0, AIR3); or
+    // turned off by the vault as the reader changed.
+    case 'ai_reader.send_sensitive_changed':
+      return detail.send_sensitive === true
+        ? line(`${who} turned on sending sensitive papers to the AI reader`, true)
+        : detail.reader_changed === true
+          ? line(`${who} changed the AI reader, so sensitive papers are no longer sent to it`, true)
+          : line(`${who} turned off sending sensitive papers to the AI reader`, true);
     // Which folder the scanner folder is, and how long scans are kept (0.9.0, O1).
     case 'watch_folder.folder_changed':
       return line(

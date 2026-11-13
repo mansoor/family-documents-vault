@@ -11,6 +11,16 @@ import {
   aiReaderRunsAtOf,
   AI_READER_KINDS_OFFERED,
   AI_READER_PATHS,
+  OPENAI_BASE_URL,
+  aiReaderCapWarnAt,
+  aiReaderHostedAllows,
+  aiReaderIdentity,
+  aiReaderMonthWords,
+  aiReaderProvider,
+  aiReaderRunsAtSaid,
+  aiReaderSendSensitiveWarning,
+  mayReadWith,
+  type AiReaderRunsAt,
 } from './ai-reader.js';
 import { isLinkLocalAddress } from './push.js';
 
@@ -150,9 +160,12 @@ describe('the AI reader’s address (AIR1, decision 9)', () => {
     expect(new Set(two)).toEqual(new Set(['unreachable', 'bad_reply']));
   });
 
-  it('calls only the reader’s own paths; reads with Ollama alone until AIR3', () => {
+  it('calls only the reader’s own paths; reads with all three kinds since AIR3', () => {
     expect(AI_READER_PATHS.ollama).toEqual(['/api/chat', '/api/tags']);
-    expect(AI_READER_KINDS_OFFERED).toEqual(['ollama']);
+    expect(AI_READER_PATHS.openai_compatible).toEqual(['/v1/chat/completions', '/v1/models']);
+    // Anthropic's list of models: AIR3's addition to decision 9.
+    expect(AI_READER_PATHS.anthropic).toEqual(['/v1/messages', '/v1/models']);
+    expect(AI_READER_KINDS_OFFERED).toEqual(['ollama', 'anthropic', 'openai_compatible']);
   });
 
   it('says the list of models in the vault’s own words', () => {
@@ -162,5 +175,166 @@ describe('the AI reader’s address (AIR1, decision 9)', () => {
     expect(aiReaderModelsResult({ problem: 'bad_reply', models: [] }).words).toMatch(
       /not as that kind of reader does/,
     );
+  });
+});
+
+/**
+ * The sending rule (AIR3, decisions 4 and 6), its whole table: where the
+ * reader runs × Only me × the paper's own Sensitive and its kind's default ×
+ * "Also send sensitive papers".
+ */
+describe('mayReadWith: who may be sent to a reader (AIR3)', () => {
+  const where: Array<AiReaderRunsAt | null> = ['own_network', 'cloud', null];
+  const visibilities = ['household', 'adults', 'private', null] as const;
+  const owns = [true, false, null] as const;
+  const kinds: Array<{ sensitive_default: boolean; default_visibility?: string } | null> = [
+    { sensitive_default: true, default_visibility: 'household' },
+    { sensitive_default: false, default_visibility: 'household' },
+    { sensitive_default: false, default_visibility: 'private' },
+    // A kind whose default visibility the caller did not say.
+    { sensitive_default: false },
+    null,
+  ];
+
+  it('the full table', () => {
+    for (const runs_at of where) {
+      for (const visibility of visibilities) {
+        for (const sensitive of owns) {
+          for (const kind of kinds) {
+            for (const send_sensitive of [false, true]) {
+              const got = mayReadWith({ visibility, sensitive, kind }, { runs_at, send_sensitive });
+              const label = JSON.stringify({
+                runs_at,
+                visibility,
+                sensitive,
+                kind,
+                send_sensitive,
+              });
+              // On the household's own network: always.
+              if (runs_at === 'own_network') {
+                expect(got, label).toEqual({ may: true });
+                continue;
+              }
+              // A cloud reader (or one not known): Only me never, the switch whatever —
+              // its own visibility, else its kind's default.
+              const seen = visibility ?? kind?.default_visibility ?? null;
+              if (seen === 'private') {
+                expect(got, label).toEqual({ may: false, why: 'only_me' });
+                continue;
+              }
+              // Sensitive: its own word, else its kind's, else (a kind not known) yes.
+              const isSensitive = sensitive ?? (kind ? kind.sensitive_default : true);
+              if (isSensitive && !send_sensitive) {
+                expect(got, label).toEqual({ may: false, why: 'sensitive' });
+                continue;
+              }
+              // Who may open it not known at all: as if Only me (the review, D1).
+              expect(got, label).toEqual(
+                seen === null ? { may: false, why: 'only_me' } : { may: true },
+              );
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('a batch’s item with no visibility of its own takes its kind’s default: Only me kinds are never sent', () => {
+    const paper = {
+      visibility: null,
+      sensitive: false,
+      kind: { sensitive_default: false, default_visibility: 'private' },
+    };
+    expect(mayReadWith(paper, { runs_at: 'cloud', send_sensitive: true })).toEqual({
+      may: false,
+      why: 'only_me',
+    });
+    expect(
+      mayReadWith(
+        { ...paper, visibility: 'household' },
+        { runs_at: 'cloud', send_sensitive: false },
+      ),
+    ).toEqual({ may: true });
+  });
+
+  it('a kind’s default changed changes the answer for every paper left as its kind says', () => {
+    const left = { visibility: 'household', sensitive: null };
+    const reader = { runs_at: 'cloud' as const, send_sensitive: false };
+    expect(mayReadWith({ ...left, kind: { sensitive_default: false } }, reader).may).toBe(true);
+    expect(mayReadWith({ ...left, kind: { sensitive_default: true } }, reader).may).toBe(false);
+    // One set to no keeps it.
+    expect(
+      mayReadWith({ ...left, sensitive: false, kind: { sensitive_default: true } }, reader).may,
+    ).toBe(true);
+  });
+});
+
+describe('where a reader runs, the hosted providers and the month (AIR3)', () => {
+  it('Anthropic is a cloud service; OpenAI-compatible only on the owner’s word and a private address', () => {
+    expect(aiReaderRunsAtSaid('anthropic', 'own_network', true)).toBe('cloud');
+    expect(aiReaderRunsAtSaid('openai_compatible', 'own_network', false)).toBe('cloud');
+    expect(aiReaderRunsAtSaid('openai_compatible', 'cloud', true)).toBe('cloud');
+    expect(aiReaderRunsAtSaid('openai_compatible', 'own_network', true)).toBe('own_network');
+    expect(aiReaderRunsAtSaid('ollama', 'own_network', false)).toBe('own_network');
+    expect(aiReaderRunsAtSaid('ollama', 'cloud', true)).toBe('cloud');
+  });
+
+  it('the hosted edition: Anthropic, and OpenAI-compatible only at OpenAI’s own address', () => {
+    expect(aiReaderHostedAllows('anthropic', null)).toBe(true);
+    expect(aiReaderHostedAllows('openai_compatible', OPENAI_BASE_URL)).toBe(true);
+    expect(aiReaderHostedAllows('openai_compatible', 'https://llm.example.com')).toBe(false);
+    expect(aiReaderHostedAllows('openai_compatible', null)).toBe(false);
+  });
+
+  it('names the reader the switch was approved for: a saved one by kind and address, .env’s by kind and host (the review, S3)', () => {
+    expect(aiReaderIdentity('settings', 'anthropic', null)).toBe(
+      'settings:anthropic:https://api.anthropic.com',
+    );
+    expect(aiReaderIdentity('settings', 'openai_compatible', OPENAI_BASE_URL)).toBe(
+      'settings:openai_compatible:https://api.openai.com',
+    );
+    expect(aiReaderIdentity('env', 'ollama', 'ai.example.com:11434')).toBe(
+      'env:ollama:ai.example.com:11434',
+    );
+    // Another provider, or .env taking over, is another reader.
+    expect(aiReaderIdentity('settings', 'openai_compatible', 'https://llm.example.com')).not.toBe(
+      aiReaderIdentity('settings', 'openai_compatible', OPENAI_BASE_URL),
+    );
+  });
+
+  it('a batch’s item that names neither its visibility nor its kind is held as Only me, the switch on (the review, D1)', () => {
+    const unknown = { visibility: null, sensitive: true, kind: null };
+    expect(mayReadWith(unknown, { runs_at: 'cloud', send_sensitive: false })).toEqual({
+      may: false,
+      why: 'sensitive',
+    });
+    expect(mayReadWith(unknown, { runs_at: 'cloud', send_sensitive: true })).toEqual({
+      may: false,
+      why: 'only_me',
+    });
+    expect(mayReadWith(unknown, { runs_at: 'own_network', send_sensitive: false })).toEqual({
+      may: true,
+    });
+  });
+
+  it('the 80% mark, and the count in words', () => {
+    expect(aiReaderCapWarnAt(500)).toBe(400);
+    expect(aiReaderCapWarnAt(1)).toBe(1);
+    expect(aiReaderCapWarnAt(3)).toBe(3);
+    expect(aiReaderMonthWords({ sent: 120, cap: 500 })).toBe('120 of 500 this month');
+  });
+
+  it('the warning names the provider, says words only, and links its terms', () => {
+    const w = aiReaderSendSensitiveWarning('anthropic', null);
+    expect(w).toMatch(/sent to Anthropic/);
+    expect(w).toMatch(/the words the vault read from the page/);
+    expect(w).toMatch(/Never the page itself, nor the file/);
+    expect(w).toMatch(/Only me papers are never sent/);
+    expect(aiReaderProvider('anthropic', null).terms).toMatch(/^https:\/\/www\.anthropic\.com\//);
+    expect(aiReaderProvider('openai_compatible', OPENAI_BASE_URL).name).toBe('OpenAI');
+    expect(aiReaderProvider('openai_compatible', 'http://192.168.1.9:1234')).toEqual({
+      name: 'whoever runs 192.168.1.9:1234',
+      terms: null,
+    });
   });
 });

@@ -1,3 +1,4 @@
+import { sensitiveOf } from './documents.js';
 import { localAiProblemWords, type LocalAiProblem } from './local-ai.js';
 import { isLinkLocalAddress, isLoopbackName, isPrivateAddress } from './push.js';
 
@@ -32,16 +33,21 @@ import { isLinkLocalAddress, isLoopbackName, isPrivateAddress } from './push.js'
  *    vault says a Test passed (`ok`), and anything that reaches the reader
  *    changed waits for a Test of its own.
  *
- * Three kinds are kept (decision 1); this vault reads with those in
- * `features.ai_reader_kinds` — Ollama alone, until AIR3.
+ * Three kinds are kept (decision 1), and since AIR3 this vault reads with
+ * all three (`features.ai_reader_kinds`): Ollama, Anthropic (its address
+ * fixed) and an OpenAI-compatible server.
  */
 
 /** Every kind of reader the vault knows (decision 1). */
 export const AI_READER_KINDS = ['ollama', 'anthropic', 'openai_compatible'] as const;
 export type AiReaderKind = (typeof AI_READER_KINDS)[number];
 
-/** The kinds this vault reads with now (`features.ai_reader_kinds`): Ollama, until AIR3. */
-export const AI_READER_KINDS_OFFERED: readonly AiReaderKind[] = ['ollama'];
+/** The kinds this vault reads with now (`features.ai_reader_kinds`): all three since AIR3. */
+export const AI_READER_KINDS_OFFERED: readonly AiReaderKind[] = [
+  'ollama',
+  'anthropic',
+  'openai_compatible',
+];
 
 /** Where a reader runs (decision 2). */
 export type AiReaderRunsAt = 'own_network' | 'cloud';
@@ -51,13 +57,214 @@ export type AiReaderStatus = 'untested' | 'ok' | 'failed';
 
 /**
  * The only paths each kind of reader is ever sent to (decision 9), after its
- * address: nothing else is called.
+ * address: nothing else is called. Anthropic's list of models
+ * (`/v1/models`) is AIR3's addition to decision 9: the model is chosen from
+ * those the API lists, as it is for the other kinds.
  */
 export const AI_READER_PATHS: Readonly<Record<AiReaderKind, readonly string[]>> = {
   ollama: ['/api/chat', '/api/tags'],
   openai_compatible: ['/v1/chat/completions', '/v1/models'],
-  anthropic: ['/v1/messages'],
+  anthropic: ['/v1/messages', '/v1/models'],
 };
+
+/** Anthropic's address (AIR3): fixed, never typed, always a cloud service. */
+export const ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
+/** The Messages API's version the vault speaks (the `anthropic-version` header). */
+export const ANTHROPIC_VERSION = '2023-06-01';
+/** OpenAI's own address: the one OpenAI-compatible reader the hosted edition may use. */
+export const OPENAI_BASE_URL = 'https://api.openai.com';
+
+/**
+ * The providers the hosted edition may send a paper's words to (decision 9:
+ * only those named in its subprocessor list): Anthropic, and an
+ * OpenAI-compatible reader only at OpenAI's own address. A self-hosted
+ * vault may use any. Ollama keeps AIR1's rule there (https to a public
+ * address): it is the household's own server, not a provider of ours.
+ */
+export const AI_READER_HOSTED_PROVIDERS: Readonly<Record<AiReaderKind, readonly string[] | null>> =
+  {
+    anthropic: [ANTHROPIC_BASE_URL],
+    openai_compatible: [OPENAI_BASE_URL],
+    ollama: null,
+  };
+
+/** Whether the hosted edition may send to this reader: a provider it names (Ollama: AIR1's rule). */
+export function aiReaderHostedAllows(kind: AiReaderKind, baseUrl: string | null): boolean {
+  const named = AI_READER_HOSTED_PROVIDERS[kind];
+  if (named === null) return true;
+  return named.includes(kind === 'anthropic' ? ANTHROPIC_BASE_URL : (baseUrl ?? ''));
+}
+
+/**
+ * Where a reader counts as running (decision 2), from where its address was
+ * found to be and the owner's word: Anthropic is always a cloud service; an
+ * OpenAI-compatible reader is a cloud service unless the owner said it is
+ * on their own network AND it was found at a private address; Ollama is
+ * where its address resolves.
+ */
+export function aiReaderRunsAtSaid(
+  kind: AiReaderKind,
+  found: AiReaderRunsAt,
+  ownNetworkSaid: boolean,
+): AiReaderRunsAt {
+  if (kind === 'anthropic') return 'cloud';
+  if (kind === 'openai_compatible') {
+    return ownNetworkSaid && found === 'own_network' ? 'own_network' : 'cloud';
+  }
+  return found;
+}
+
+/**
+ * Why a paper was read without the AI though the household has it on
+ * (AIR3): the sending rule held it back (`mayReadWith`) — sensitive, or Only
+ * me — or this month's cap is reached (decision 10).
+ */
+export type AiReaderHeldBack = 'sensitive' | 'only_me' | 'cap';
+export const AI_READER_HELD_BACK: readonly AiReaderHeldBack[] = ['sensitive', 'only_me', 'cap'];
+
+/** What the proposal says of a paper held back (AIR3). */
+export const AI_READER_HELD_WORDS: Readonly<Record<AiReaderHeldBack, string>> = {
+  sensitive: 'Read here only: sensitive',
+  only_me: 'Read here only: only you can open it',
+  cap: 'Read here only: this month’s limit reached',
+};
+
+/** The paper, as the sending rule asks of it. */
+export interface AiReaderPaper {
+  /**
+   * Its visibility: a document's own; for a batch's item not yet filed, its
+   * batch's default, or null — then its kind's default visibility counts.
+   */
+  visibility: string | null | undefined;
+  /** Its own Sensitive: null as its kind says (0090). */
+  sensitive: boolean | null | undefined;
+  /** Its kind as the household keeps it; null, not known — and then it counts as sensitive. */
+  kind:
+    | {
+        sensitive_default?: boolean | null | undefined;
+        default_visibility?: string | null | undefined;
+      }
+    | null
+    | undefined;
+}
+
+/** The reader, as the sending rule asks of it. */
+export interface AiReaderSending {
+  /** Where it runs (decision 2); null — not known — counts as a cloud service. */
+  runs_at: AiReaderRunsAt | null | undefined;
+  /** The household's "Also send sensitive papers" (decision 6). */
+  send_sensitive: boolean;
+}
+
+/**
+ * THE sending rule (AIR3, decisions 4 and 6), the one place it is decided
+ * whether a paper's words may go to a reader — asked by the worker before
+ * every call:
+ *
+ *  - a reader on the household's own network: yes;
+ *  - an Only me paper (`visibility = 'private'`), to a cloud reader: never,
+ *    whatever the switch says ("Only you can open this" would not be true
+ *    otherwise);
+ *  - a sensitive paper (`sensitiveOf`: its own choice, else its kind's
+ *    default as the household has it now; a kind not known counts as
+ *    sensitive), to a cloud reader: only with "Also send sensitive papers"
+ *    on — and on for this reader (`aiReaderIdentity`), which the caller
+ *    says in `send_sensitive`;
+ *  - a paper nobody can say who may open — no visibility of its own nor
+ *    from its kind — to a cloud reader: never, as if Only me (the AIR3
+ *    review, D1);
+ *  - anything else: yes.
+ */
+export function mayReadWith(
+  paper: AiReaderPaper,
+  reader: AiReaderSending,
+): { may: true } | { may: false; why: 'only_me' | 'sensitive' } {
+  if (reader.runs_at === 'own_network') return { may: true };
+  const visibility = paper.visibility ?? paper.kind?.default_visibility ?? null;
+  if (visibility === 'private') return { may: false, why: 'only_me' };
+  if (!reader.send_sensitive && sensitiveOf({ sensitive: paper.sensitive }, paper.kind ?? null)) {
+    return { may: false, why: 'sensitive' };
+  }
+  // Who can open it not known — a batch's item whose batch names neither
+  // its visibility nor its kind (the AIR3 review, D1): it may yet be Only
+  // me, so it is held as one.
+  if (visibility === null) return { may: false, why: 'only_me' };
+  return { may: true };
+}
+
+/**
+ * Which reader "Also send sensitive papers" was approved for (the AIR3
+ * review, S3): the warning named a provider, so the switch holds for that
+ * reader alone — a saved one by its kind and address, .env's by its kind
+ * and host. Anything else, and it counts as off.
+ */
+export function aiReaderIdentity(
+  source: 'settings' | 'env',
+  kind: AiReaderKind,
+  where: string | null,
+): string {
+  if (source === 'env') return `env:${kind}:${where ?? ''}`;
+  return `settings:${kind}:${kind === 'anthropic' ? ANTHROPIC_BASE_URL : (where ?? '')}`;
+}
+
+/** At this share of the month's cap the owners are emailed, once a month (decision 10). */
+export const AI_READER_CAP_WARN_SHARE = 0.8;
+
+/** The count the 80% email goes at: 400 of 500. */
+export const aiReaderCapWarnAt = (cap: number): number =>
+  Math.max(1, Math.ceil(cap * AI_READER_CAP_WARN_SHARE));
+
+/** A cloud reader's month (AIR3): papers sent this calendar month, of the cap. */
+export interface AiReaderMonth {
+  /** The month, YYYY-MM, on the household's calendar (its time zone, else the server's). */
+  month: string;
+  sent: number;
+  cap: number;
+  /** Whether the owners were emailed at 80% this month. */
+  warned: boolean;
+}
+
+/** "120 of 500 this month". */
+export const aiReaderMonthWords = (m: Pick<AiReaderMonth, 'sent' | 'cap'>): string =>
+  `${m.sent} of ${m.cap} this month`;
+
+/** Who a provider is, and where its terms are, for the warning (decision 11). */
+export function aiReaderProvider(
+  kind: AiReaderKind,
+  baseUrl: string | null,
+): { name: string; terms: string | null } {
+  if (kind === 'anthropic') {
+    return { name: 'Anthropic', terms: 'https://www.anthropic.com/legal/commercial-terms' };
+  }
+  if (kind === 'openai_compatible' && baseUrl === OPENAI_BASE_URL) {
+    return { name: 'OpenAI', terms: 'https://openai.com/policies/business-terms/' };
+  }
+  const host = /^https?:\/\/([^/?#]+)/i.exec(baseUrl ?? '')?.[1];
+  return { name: host ? `whoever runs ${host}` : 'whoever runs the reader', terms: null };
+}
+
+/**
+ * The warning beside "Also send sensitive papers" (decisions 3, 6 and 11):
+ * who is sent what — words only, never the page or the file — and that
+ * whether it is kept is up to the provider's own terms (linked beside it).
+ */
+export function aiReaderSendSensitiveWarning(kind: AiReaderKind, baseUrl: string | null): string {
+  const p = aiReaderProvider(kind, baseUrl);
+  return [
+    `With this on, papers marked Sensitive are sent to ${p.name} to be read, as your other papers are:`,
+    'the words the vault read from the page, the names of your kinds of document and your family’s display names.',
+    'Never the page itself, nor the file. Only me papers are never sent.',
+    `Whether ${p.name} keeps what it is sent is up to its own terms.`,
+  ].join(' ');
+}
+
+/**
+ * PUT /household/reading/ai-reader/send-sensitive's body (AIR3): an
+ * owner's, with step-up `send_sensitive_papers`.
+ */
+export interface AiReaderSendSensitiveInput {
+  send_sensitive: boolean;
+}
 
 /** A model's name: as FDV_LOCAL_AI_MODEL's. */
 export const AI_READER_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
@@ -253,6 +460,12 @@ export interface AiReaderSaved {
   model: string;
   timeout_seconds: number;
   runs_at: AiReaderRunsAt;
+  /**
+   * The owner's word that an OpenAI-compatible reader is on their own
+   * network (AIR3, decision 2): it runs there only at a private address
+   * too. Absent from older vaults.
+   */
+  own_network?: boolean;
   api_key: 'set' | 'not_set';
   /** The key's last four characters, to tell one from another; null with none. */
   api_key_last4: string | null;
@@ -284,6 +497,16 @@ export interface AiReaderView {
   reader: AiReaderSaved | null;
   /** Only https to a public address (the hosted edition). */
   https_only: boolean;
+  /**
+   * "Also send sensitive papers" (AIR3, decision 6): the household's, off
+   * unless an owner turned it on. Absent from older vaults.
+   */
+  send_sensitive?: boolean;
+  /**
+   * The papers sent to a cloud reader this month, of the cap (AIR3,
+   * decision 10). Absent from older vaults.
+   */
+  month?: AiReaderMonth;
 }
 
 /**
@@ -299,6 +522,11 @@ export interface AiReaderInput {
   timeout_seconds: number;
   monthly_cap: number;
   api_key?: string | null | undefined;
+  /**
+   * An OpenAI-compatible reader on the household's own network (AIR3,
+   * decision 2): left out, false. Ignored for the other kinds.
+   */
+  own_network?: boolean | undefined;
 }
 
 /** What the worker found of the reader's list of models (AIR1): names alone, or why none. */

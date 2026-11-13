@@ -16,6 +16,7 @@ import {
   expiryLabelKinds,
   proposeOnThread,
   readLocalAiReply,
+  type AiReaderKind,
   type DetailProposal,
   type LearnedClash,
   type LearnedContext,
@@ -38,7 +39,7 @@ export interface ProposalJob {
    * and what it was offered: read here, strictly — never on the worker's
    * event loop.
    */
-  ai?: { reply: string; offer: LocalAiOffer };
+  ai?: { reply: string; offer: LocalAiOffer; shape?: AiReaderKind };
 }
 
 export type ProposalReply =
@@ -63,7 +64,13 @@ const withLabels = (labels: string[]) => (labels.length > 0 ? { expiryLabels: la
 /** The local AI's reply read (R4): what it read, borne out by the page; null if not one to use. */
 const localAiOf = (job: ProposalJob): LocalAiReading | null => {
   if (!job.ai) return null;
-  const got = readLocalAiReply(job.ai.reply, job.ai.offer, job.text, job.ctx.dateOrder);
+  const got = readLocalAiReply(
+    job.ai.reply,
+    job.ai.offer,
+    job.text,
+    job.ctx.dateOrder,
+    job.ai.shape ?? 'ollama',
+  );
   return 'reading' in got ? got.reading : null;
 };
 

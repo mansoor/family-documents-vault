@@ -6,6 +6,24 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.37] - 2026-11-13 — Anthropic and OpenAI-compatible readers, and who may be sent (AIR3)
+
+### Added
+
+- **Anthropic and OpenAI-compatible readers.** Settings → Reading → The AI reader now offers three kinds: **Local (Ollama)**, **Anthropic** (Claude: no address to type, an API key from your Anthropic account) and **OpenAI-compatible** (OpenAI itself, or LM Studio, vLLM or llama.cpp's server). Pick the model from those the reader lists. An OpenAI-compatible reader is a cloud service unless you tick **It is on my own network** and its address is a private one.
+- **Sensitive and Only me papers stay home.** A cloud reader is never sent a paper marked Sensitive — by its own choice or its kind's default — and never an Only me paper. A paper added many at a time is only what its batch says: one whose batch names no kind counts as sensitive (never the kind the vault's rules guess), and one whose batch names neither its kind nor who can see it is held back as if Only me. It is read on the server alone, and its card says why: "Read here only: sensitive". The rule is asked again right before a paper's words go, so a paper made Only me or sensitive while it was being read is not sent; changing a kind's default changes what is sent from the next paper on.
+- **Also send sensitive papers.** An owner can choose to send papers marked Sensitive to a cloud reader too. It is off until turned on, asks you to confirm it's you, and comes with a warning that names the provider, says what is sent (the words the vault read, your kinds' names and your family's display names — never the page or the file) and links to the provider's terms. Every owner is emailed each time it changes, and it is in the activity log. It holds for the reader it was turned on for alone: changing the kind of reader or its address turns it off, and a reader set in `.env` taking over (or its address changing) counts as off. Only me papers are never sent, whatever it says.
+- **A monthly limit for a cloud reader.** At most the limit you set (500 unless you change it) papers a calendar month go to a cloud reader, counted on the household's own clock. At 80% the owners are emailed, once that month; past it, papers are read without it ("Read here only: this month's limit reached") until next month. Settings shows how many so far. The vault keeps which paper went to which reader, when and how long it took — never a word. (Migration 0092.)
+
+### Security
+
+- Both new readers are held to the same guards as the local one: the address resolved and checked for every call, no redirects or proxies, only their own paths (`/v1/messages` and `/v1/models` for Anthropic; `/v1/chat/completions` and `/v1/models` for an OpenAI-compatible server), a reply not in their API's shape refused and never shown, the same timeout, queue and rest after failures. The Anthropic key is sent only as `x-api-key` to Anthropic; an OpenAI-compatible key only as `Authorization: Bearer`, and only when one is set. On the hosted edition only Anthropic and OpenAI's own `https://api.openai.com` are allowed.
+- An OpenAI-compatible server is asked again for plain JSON only when it refused the answer's format, and that second send counts against the month's limit like any other. A paper that never left the reader's queue is not counted. The 80% email is queued together with the month's mark, so it goes once — even after the limit is lowered below what was already sent. A reader taken to be on your own network (one in `.env` too) is sent nothing if its address turns out to be public. A Test that was running while "on my own network" was unticked never marks the reader as on your network.
+
+### Fixed
+
+- Four tests that checked a phone number, a birth year or a date of birth never leaks no longer fail when a random id happens to contain the same digits.
+
 ## [0.9.0-dev.36] - 2026-11-13 — the AI reader set in Settings (AIR1)
 
 ### Added

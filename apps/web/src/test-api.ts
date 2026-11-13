@@ -1269,7 +1269,11 @@ export function installFakeApi(state: FakeState) {
             : {}),
           // The AI reader set in Settings (0.9.0, AIR1): said when a test gives it.
           ...(state.aiReader && state.aiReader.source !== 'off'
-            ? { ai_reader_settings: true, ai_reader_kinds: state.aiReader.kinds }
+            ? {
+                ai_reader_settings: true,
+                ai_reader_kinds: state.aiReader.kinds,
+                ai_reader_send_sensitive: true,
+              }
             : {}),
         },
         limits: {
@@ -1764,6 +1768,15 @@ export function installFakeApi(state: FakeState) {
           ? askWorker('ai_models', null)
           : refuse(409, 'ai_reader_not_saved', 'Save it first.');
       }
+      // "Also send sensitive papers" (AIR3): on only with a cloud reader.
+      if (path === '/api/v1/household/reading/ai-reader/send-sensitive' && method === 'PUT') {
+        const on = (body as { send_sensitive?: unknown }).send_sensitive === true;
+        if (on && v.reader?.runs_at !== 'cloud' && v.env?.runs_at !== 'cloud') {
+          return refuse(409, 'ai_reader_not_cloud', 'The household has no cloud AI reader.');
+        }
+        state.aiReader = { ...v, send_sensitive: on };
+        return json(state.aiReader);
+      }
       if (path === '/api/v1/household/reading/ai-reader') {
         if (method === 'PUT') {
           if (v.source === 'env') {
@@ -1773,19 +1786,32 @@ export function installFakeApi(state: FakeState) {
           (state.aiReaderSaves ??= []).push(b);
           const key = typeof b.api_key === 'string' ? b.api_key : null;
           const before = v.reader;
-          const moved = before !== null && before.base_url !== b.base_url;
+          const kind = b.kind as AiReaderView['kinds'][number];
+          const baseUrl = kind === 'anthropic' ? null : String(b.base_url);
+          const moved = before !== null && (before.base_url !== baseUrl || before.kind !== kind);
           const keyKept = before?.api_key === 'set' && !moved && b.api_key === undefined;
+          const privateAt = /\/\/(192\.168|10\.|127\.|localhost|ollama)/.test(String(b.base_url));
           state.aiReader = {
             ...v,
+            // A new reader: the switch's warning named another provider (AIR3).
+            ...(moved ? { send_sensitive: false } : {}),
             reader: {
-              kind: b.kind as AiReaderView['kinds'][number],
-              base_url: String(b.base_url),
+              kind,
+              base_url: baseUrl,
               model: String(b.model),
               timeout_seconds: Number(b.timeout_seconds),
               monthly_cap: Number(b.monthly_cap),
-              runs_at: /\/\/(192\.168|10\.|127\.|localhost|ollama)/.test(String(b.base_url))
-                ? 'own_network'
-                : 'cloud',
+              own_network: kind === 'openai_compatible' && b.own_network === true,
+              runs_at:
+                kind === 'anthropic'
+                  ? 'cloud'
+                  : kind === 'openai_compatible'
+                    ? b.own_network === true && privateAt
+                      ? 'own_network'
+                      : 'cloud'
+                    : privateAt
+                      ? 'own_network'
+                      : 'cloud',
               api_key: key || keyKept ? 'set' : 'not_set',
               api_key_last4: key ? key.slice(-4) : keyKept ? (before?.api_key_last4 ?? null) : null,
               status: 'untested',

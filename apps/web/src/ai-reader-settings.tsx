@@ -6,9 +6,13 @@ import {
   AI_READER_TIMEOUT_DEFAULT,
   AI_READER_TIMEOUT_MAX,
   AI_READER_TIMEOUT_MIN,
+  ANTHROPIC_BASE_URL,
   aiReaderAddress,
   aiReaderAddressWords,
+  aiReaderMonthWords,
+  aiReaderProvider,
   aiReaderRunsAtWords,
+  aiReaderSendSensitiveWarning,
   localAiProblemWords,
   type AiReaderKind,
   type AiReaderView,
@@ -23,7 +27,8 @@ import { useWorkerCheck } from './worker-check.js';
 /**
  * Settings → Reading → AI reader (0.9.0, AIR1), an owner's: which reader
  * reads the family's papers' words when the household's local AI is on —
- * its kind (Local, Ollama, for now), its address, the model, how long a
+ * its kind (Local, Ollama; Anthropic, whose address is fixed; or an
+ * OpenAI-compatible server, since AIR3), its address, the model, how long a
  * paper may take, and an API key, kept encrypted and never shown again
  * (only that one is set, and its last four characters).
  *
@@ -37,6 +42,96 @@ export function AiReaderCard() {
   const { caps } = useApp();
   if (caps?.features?.ai_reader_settings !== true) return null;
   return <AiReaderPart />;
+}
+
+/** What each kind of reader is, said under the choice (AIR3). */
+const KIND_NOTES: Readonly<Record<AiReaderKind, string>> = {
+  ollama: 'An Ollama server on this machine or your network.',
+  anthropic:
+    'Anthropic’s Claude, a cloud service at api.anthropic.com. It needs an API key from your Anthropic account.',
+  openai_compatible:
+    'OpenAI itself, or a server that speaks its API — LM Studio, vLLM or llama.cpp — on your network.',
+};
+
+/** A model's name as each kind of reader writes one. */
+const MODEL_EXAMPLES: Readonly<Record<AiReaderKind, string>> = {
+  ollama: 'qwen2.5:3b-instruct',
+  anthropic: 'claude-haiku-4-5',
+  openai_compatible: 'gpt-4o-mini',
+};
+
+/**
+ * "Also send sensitive papers" (AIR3, decision 6), shown only while the
+ * reader is a cloud service: off unless an owner turns it on, with step-up,
+ * after the warning that names the provider and says what is sent. Every
+ * owner is emailed each time it changes. Only me papers are never sent.
+ */
+function SendSensitive(props: {
+  view: AiReaderView;
+  kind: AiReaderKind;
+  baseUrl: string | null;
+  onSaved: () => Promise<void>;
+}) {
+  const { guarded } = useApp();
+  const on = props.view.send_sensitive === true;
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const provider = aiReaderProvider(props.kind, props.baseUrl);
+  const set = async (to: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const done = await guarded((tk) => api.setAiReaderSendSensitive(tk, { send_sensitive: to }));
+      setAsking(false);
+      if (done !== null) await props.onSaved();
+    } catch (err) {
+      setAsking(false);
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="stack" data-testid="ai-reader-send-sensitive">
+      <h4 id="ai-reader-sensitive-h">Sensitive papers</h4>
+      <Check
+        id="ai-reader-send-sensitive"
+        checked={on}
+        disabled={busy}
+        label="Also send sensitive papers"
+        note={
+          on
+            ? `On: papers marked Sensitive are sent to ${provider.name} too. Only me papers never are.`
+            : `Off: papers marked Sensitive are read on this server alone, never sent to ${provider.name}.`
+        }
+        onChange={(to) => (to ? setAsking(true) : void set(false))}
+      />
+      <ErrorNote message={error} />
+      {asking && (
+        <ConfirmDialog
+          title="Send sensitive papers to the AI reader?"
+          confirmLabel="Send them too"
+          busyLabel="Turning on…"
+          danger
+          busy={busy}
+          onConfirm={() => void set(true)}
+          onCancel={() => setAsking(false)}
+        >
+          <p>{aiReaderSendSensitiveWarning(props.kind, props.baseUrl)}</p>
+          {provider.terms && (
+            <p>
+              <a href={provider.terms} target="_blank" rel="noreferrer noopener">
+                {provider.name}’s terms
+              </a>
+            </p>
+          )}
+          <p>Every owner is emailed that it was turned on.</p>
+        </ConfirmDialog>
+      )}
+    </div>
+  );
 }
 
 /** "Local (Ollama), on your own network, at 192.168.1.30:11434". */
@@ -80,6 +175,9 @@ function AiReaderPart() {
               A reader saved here is kept, but isn’t used while that one is set.
             </p>
           )}
+          {data.env.runs_at === 'cloud' && (
+            <SendSensitive view={data} kind={data.env.kind} baseUrl={null} onSaved={reload} />
+          )}
         </>
       ) : data.source === 'off' ? (
         <p className="muted">Whoever runs this vault keeps the AI reader out of Settings.</p>
@@ -106,7 +204,8 @@ function AiReaderPart() {
           {data.reader?.runs_at === 'cloud' && (
             <p className="attention attention-warn" role="note">
               This reader is a cloud service: your papers’ words leave your network for it. Use a
-              reader on your own network if they shouldn’t.
+              reader on your own network if they shouldn’t. Papers marked Sensitive and Only me
+              papers are never sent to it, unless you say so below for Sensitive ones.
             </p>
           )}
           <p
@@ -116,8 +215,22 @@ function AiReaderPart() {
           >
             {statusWords(data)}
           </p>
+          {data.reader?.runs_at === 'cloud' && data.month && (
+            <p className="muted" data-testid="ai-reader-month">
+              Papers sent to it: {aiReaderMonthWords(data.month)}. Past that, papers are read by the
+              vault’s own rules alone until next month.
+            </p>
+          )}
           <AiReaderForm view={data} onSaved={reload} />
           {data.reader && <AiReaderTest onTested={reload} />}
+          {data.reader?.runs_at === 'cloud' && (
+            <SendSensitive
+              view={data}
+              kind={data.reader.kind}
+              baseUrl={data.reader.base_url}
+              onSaved={reload}
+            />
+          )}
         </>
       )}
     </section>
@@ -138,6 +251,7 @@ function AiReaderForm(props: { view: AiReaderView; onSaved: () => Promise<void> 
   const [model, setModel] = useState('');
   const [key, setKey] = useState('');
   const [forgetKey, setForgetKey] = useState(false);
+  const [ownNetwork, setOwnNetwork] = useState(false);
   const [timeout, setTimeoutSecs] = useState(String(AI_READER_TIMEOUT_DEFAULT));
   const [cap, setCap] = useState(String(AI_READER_CAP_DEFAULT));
   const [busy, setBusy] = useState(false);
@@ -154,6 +268,7 @@ function AiReaderForm(props: { view: AiReaderView; onSaved: () => Promise<void> 
     setModel(r?.model ?? '');
     setKey('');
     setForgetKey(false);
+    setOwnNetwork(r?.own_network === true);
     setTimeoutSecs(String(r?.timeout_seconds ?? AI_READER_TIMEOUT_DEFAULT));
     setCap(String(r?.monthly_cap ?? AI_READER_CAP_DEFAULT));
     /* eslint-enable react-hooks/set-state-in-effect */
@@ -162,8 +277,15 @@ function AiReaderForm(props: { view: AiReaderView; onSaved: () => Promise<void> 
     if (said) line.current?.focus();
   }, [said]);
 
-  const typed = aiReaderAddress(baseUrl, { httpsOnly: props.view.https_only });
-  const moved = r !== null && r.api_key === 'set' && 'url' in typed && typed.url !== r.base_url;
+  // Anthropic's address is fixed (AIR3): never typed.
+  const anthropic = kind === 'anthropic';
+  const typed = aiReaderAddress(anthropic ? ANTHROPIC_BASE_URL : baseUrl, {
+    httpsOnly: props.view.https_only,
+  });
+  const moved =
+    r !== null &&
+    r.api_key === 'set' &&
+    (r.kind !== kind || (!anthropic && 'url' in typed && typed.url !== r.base_url));
   const found = models.view?.state === 'done' ? (models.view.ai_models ?? null) : null;
 
   const save = async (e: FormEvent) => {
@@ -200,11 +322,12 @@ function AiReaderForm(props: { view: AiReaderView; onSaved: () => Promise<void> 
       const done = await guarded((tk) =>
         api.setAiReader(tk, {
           kind,
-          base_url: typed.url,
+          base_url: anthropic ? null : typed.url,
           model: model.trim(),
           timeout_seconds: t,
           monthly_cap: c,
           ...(key !== '' ? { api_key: key } : forgetKey ? { api_key: null } : {}),
+          ...(kind === 'openai_compatible' ? { own_network: ownNetwork } : {}),
         }),
       );
       if (done !== null) {
@@ -264,31 +387,46 @@ function AiReaderForm(props: { view: AiReaderView; onSaved: () => Promise<void> 
           ))}
         </select>
         <p id="ai-reader-kind-note" className="muted field-note">
-          An Ollama server on this machine or your network. Other kinds of reader come later.
+          {KIND_NOTES[kind]}
         </p>
       </div>
-      <Field
-        id="ai-reader-url"
-        label="Address"
-        value={baseUrl}
-        placeholder={
-          props.view.https_only ? 'https://ollama.example.com' : 'http://192.168.1.30:11434'
-        }
-        autoCapitalize="off"
-        autoCorrect="off"
-        invalid={error !== null && 'problem' in typed}
-        note={
-          props.view.https_only
-            ? 'Its address alone, starting with https://. The vault adds the rest, and calls nothing else there.'
-            : 'Its address alone, such as http://192.168.1.30:11434. The vault adds the rest, and calls nothing else there.'
-        }
-        onChange={setBaseUrl}
-      />
+      {!anthropic && (
+        <Field
+          id="ai-reader-url"
+          label="Address"
+          value={baseUrl}
+          placeholder={
+            kind === 'openai_compatible'
+              ? 'https://api.openai.com'
+              : props.view.https_only
+                ? 'https://ollama.example.com'
+                : 'http://192.168.1.30:11434'
+          }
+          autoCapitalize="off"
+          autoCorrect="off"
+          invalid={error !== null && 'problem' in typed}
+          note={
+            props.view.https_only
+              ? 'Its address alone, starting with https://. The vault adds the rest, and calls nothing else there.'
+              : 'Its address alone, such as http://192.168.1.30:11434. The vault adds the rest, and calls nothing else there.'
+          }
+          onChange={setBaseUrl}
+        />
+      )}
+      {kind === 'openai_compatible' && (
+        <Check
+          id="ai-reader-own-network"
+          checked={ownNetwork}
+          label="It is on my own network"
+          note="Say so only for a server of your own, such as LM Studio or vLLM at home. It counts as on your own network only at a private address; otherwise it is a cloud service, and Sensitive papers are held back from it."
+          onChange={setOwnNetwork}
+        />
+      )}
       <Field
         id="ai-reader-model"
         label="Model"
         value={model}
-        placeholder="qwen2.5:3b-instruct"
+        placeholder={MODEL_EXAMPLES[kind]}
         autoCapitalize="off"
         autoCorrect="off"
         note={
@@ -319,17 +457,19 @@ function AiReaderForm(props: { view: AiReaderView; onSaved: () => Promise<void> 
       )}
       <Field
         id="ai-reader-key"
-        label="API key (if it needs one)"
+        label={anthropic ? 'API key' : 'API key (if it needs one)'}
         type="password"
         value={key}
         autoComplete="new-password"
         required={false}
         note={
           moved
-            ? 'You changed the address: the key saved is forgotten, and only ever sent where it was typed for. Type it again if this one needs it.'
+            ? 'You changed the kind of reader or its address: the key saved is forgotten, and only ever sent where it was typed for. Type it again if this one needs it.'
             : r?.api_key === 'set'
               ? `One is saved, ending ${r.api_key_last4 ?? '…'}, and never shown. Leave this empty to keep it, or type a new one.`
-              : 'Sent to the reader as Authorization: Bearer. It is kept encrypted, and never shown again.'
+              : anthropic
+                ? 'From your Anthropic account. Sent to Anthropic alone, kept encrypted, and never shown again.'
+                : 'Sent to the reader as Authorization: Bearer. It is kept encrypted, and never shown again.'
         }
         onChange={setKey}
       />
@@ -355,7 +495,11 @@ function AiReaderForm(props: { view: AiReaderView; onSaved: () => Promise<void> 
         label="Most papers in a month"
         value={cap}
         inputMode="numeric"
-        note="For a cloud service: kept now, and counted once the vault reads with cloud services."
+        note={
+          props.view.month
+            ? `For a cloud service: past it, papers are read without it until next month, and the owners are emailed at 80%. So far: ${aiReaderMonthWords(props.view.month)}.`
+            : 'For a cloud service: past it, papers are read without it until next month.'
+        }
         onChange={setCap}
       />
       <ErrorNote message={error} />

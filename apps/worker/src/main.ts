@@ -57,6 +57,7 @@ import {
   recordLocalAi,
 } from './local-ai.js';
 import { HouseholdAiReaders } from './ai-reader.js';
+import type { OwnersAlert, QueueDb } from './ai-send.js';
 import {
   READING_CHECK_JOB,
   READING_CHECK_SWEEP_JOB,
@@ -561,8 +562,20 @@ async function main(): Promise<void> {
           log,
         });
   if (aiReaders) log('info', 'AI readers saved in Settings are used, once tested');
+  // The owners emailed when a cloud reader has read 80% of the month's
+  // papers (AIR3, decision 10): through the alert job, as any alert —
+  // queued in the transaction that marks the month (the AIR3 review, M3).
+  const tellOwners = async (a: OwnersAlert, db: QueueDb) => {
+    await boss.send(JOBS.alertSend, { ...a }, { db });
+  };
   await workBatchPreviews(boss, incomingDeps, {
-    read: { maxPages: config.FDV_OCR_MAX_PAGES, proposer: proposals, localAi, aiReaders },
+    read: {
+      maxPages: config.FDV_OCR_MAX_PAGES,
+      proposer: proposals,
+      localAi,
+      aiReaders,
+      tell: tellOwners,
+    },
   });
   // The Reading check (0.9.0, R0): one household's check read a document
   // at a time, on the same thread and tools, behind its batch items, and
@@ -592,6 +605,7 @@ async function main(): Promise<void> {
         proposer: proposals,
         localAi,
         aiReaders,
+        tell: tellOwners,
       });
       if (r.next === 'now') await sendCheck(job.data);
       else if (r.next) await sendCheck(job.data, r.next);
