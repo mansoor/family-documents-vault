@@ -346,6 +346,16 @@ export interface CapabilityFeatures {
    */
   collection_checklist?: boolean;
   /**
+   * Collection managers (0.9.0): a collection's maker chooses people of the
+   * family who see it to manage it too, each with three switches of their
+   * own — change who it is for, delete it, choose managers. GET and POST
+   * /collections/{id}/managers, PATCH and DELETE
+   * /collections/{id}/managers/{memberId}; `my_powers` and `managers` on
+   * every collection. Absent from older vaults, where only the maker
+   * changes a collection.
+   */
+  collection_managers?: boolean;
+  /**
    * Notes kept on their own (0.9.0, N1): a document of the built-in kind
    * `note` with no file, whose words are its `notes`, written with POST
    * and PATCH /documents as any document's are; GET /notes lists the

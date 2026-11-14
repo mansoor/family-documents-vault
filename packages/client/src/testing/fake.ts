@@ -212,6 +212,8 @@ import {
   type CaptureMetadata,
   type CollectionAudience,
   type CollectionDetail,
+  type CollectionManagers,
+  type CollectionPowers,
   type CollectionView,
   type CoreField,
   type CoreFieldRule,
@@ -783,6 +785,17 @@ export interface FakeCollection {
   items: Array<{ document_id: string; added_at: string }>;
   /** Its checklist (0.9.0, C1), as its maker kept it; absent for none. */
   checklist?: { items: ChecklistItem[]; saved_at: string } | null;
+  /**
+   * Who manages it besides its maker (0.9.0), each one of `state.members`
+   * (the fake's own person is 'fake-member'), with what they may do besides.
+   */
+  managers?: Array<{
+    member_id: string;
+    may_change_audience: boolean;
+    may_delete: boolean;
+    may_choose_managers: boolean;
+    added_at: string;
+  }>;
 }
 
 /** What the fake keeps from an edit; anything else it refuses to pretend to keep. */
@@ -3025,6 +3038,8 @@ export function createFakeVault(): {
           reading_check: true,
           // A collection from a checklist (0.9.0, C1).
           collection_checklist: true,
+          // Collection managers (0.9.0).
+          collection_managers: true,
           // Notes kept on their own (0.9.0, N1).
           notes: true,
           // The family's time zone (0.9.0, TZ).
@@ -4681,13 +4696,21 @@ export function createFakeVault(): {
     // exists only for its maker and whoever is in its audience (a viewer is
     // in none); each reader is given the documents in it they can see,
     // counted as they see them; only its maker changes it, while they are
-    // in its audience, and deletes it whatever their role; an owner deletes
-    // one nobody may change any more.
+    // in its audience, or a manager they chose (0.9.0), as `my_powers`
+    // says; its maker deletes it whatever their role; an owner deletes one
+    // nobody may change any more.
     const me = { role: state.role, memberId: 'fake-member' };
     const collectionAt = /^\/api\/v1\/collections\/([^/]+)(\/items(?:\/([^/]+))?)?$/.exec(path);
     const checklistAt = /^\/api\/v1\/collections\/([^/]+)\/checklist(\/add)?$/.exec(path);
+    const managersAt = /^\/api\/v1\/collections\/([^/]+)\/managers(?:\/([^/]+))?$/.exec(path);
     const docCollections = /^\/api\/v1\/documents\/([^/]+)\/collections$/.exec(path);
-    if (path === '/api/v1/collections' || collectionAt || docCollections || checklistAt) {
+    if (
+      path === '/api/v1/collections' ||
+      collectionAt ||
+      docCollections ||
+      checklistAt ||
+      managersAt
+    ) {
       const s = session();
       if (!('id' in s)) return s;
       const shown = (l: FakeCollection) => !l.deleted && canSeeCollection(me, l);
@@ -4716,6 +4739,8 @@ export function createFakeVault(): {
         etag: collectionTag(l),
         // The fake shares nothing outside the family (5.19): no link works for any.
         shared_outside: null,
+        my_powers: powersOf(l),
+        managers: family() ? managersOf(l) : null,
       });
       /** A collection and a page of what is in it: its first, unless asked. */
       const detail = (
@@ -4733,7 +4758,7 @@ export function createFakeVault(): {
             document: listedOf(i.doc),
             added_at: i.added_at,
             hint:
-              l.owner_member_id === me.memberId
+              powersOf(l).maker || powersOf(l).manager
                 ? collectionItemHint(l.audience, {
                     visibility: i.doc.visibility ?? 'household',
                     owner_member_id: i.doc.owner_member_id ?? null,
@@ -4770,10 +4795,55 @@ export function createFakeVault(): {
         memberId === me.memberId
           ? state.role
           : (state.members.find((m) => m.id === memberId)?.role as Role | undefined);
-      /** Nobody may change it any more: its maker has no sign-in, or is outside its audience. */
-      const stranded = (l: FakeCollection) => {
+      /** Of the family, who may manage a collection and see its managers (0.9.0). */
+      const family = () => ['owner', 'adult', 'teen'].includes(state.role);
+      /** Whether somebody may manage `l` as it is for `audience`: of the family, signed in, in it. */
+      const mayManage = (memberId: string, audience: CollectionAudience) => {
+        const person = state.members.find((m) => m.id === memberId);
+        const role = roleOf(memberId);
+        return (
+          (person?.kind ?? 'family') === 'family' &&
+          role !== undefined &&
+          role !== null &&
+          audience !== 'only_me' &&
+          inCollectionAudience(role, audience)
+        );
+      };
+      /** Its managers, as the family who see it are told. */
+      const managersOf = (l: FakeCollection) =>
+        (l.managers ?? [])
+          .map((m) => ({
+            ...m,
+            display_name: state.members.find((x) => x.id === m.member_id)?.display_name ?? '',
+          }))
+          .sort((a, b) => a.display_name.localeCompare(b.display_name));
+      /** Its maker may no longer change it: no sign-in, or outside its audience. */
+      const makerStranded = (l: FakeCollection) => {
         const role = roleOf(l.owner_member_id);
-        return role === undefined || !inCollectionAudience(role, l.audience);
+        return role === undefined || role === null || !inCollectionAudience(role, l.audience);
+      };
+      /** Nobody may delete it any more: its maker may not change it, and no manager may delete it. */
+      const stranded = (l: FakeCollection) =>
+        makerStranded(l) &&
+        !(l.managers ?? []).some((m) => m.may_delete && mayManage(m.member_id, l.audience));
+      /** What the one person may do with a collection now (0.9.0), as the real vault says. */
+      const powersOf = (l: FakeCollection): CollectionPowers => {
+        const maker = l.owner_member_id === me.memberId;
+        const inIt = inCollectionAudience(state.role, l.audience);
+        const own = (l.managers ?? []).find((m) => m.member_id === me.memberId);
+        const manager = !maker && own !== undefined && family() && inIt && l.audience !== 'only_me';
+        const makerNow = maker && inIt;
+        const owner = !maker && state.role === 'owner';
+        const chooses = makerNow || (manager && own.may_choose_managers);
+        return {
+          maker,
+          manager,
+          edit: makerNow || manager,
+          change_audience: makerNow || (manager && own.may_change_audience),
+          delete: maker || (manager && own.may_delete) || (owner && stranded(l)),
+          choose_managers: chooses,
+          remove_managers: chooses || (owner && makerStranded(l)),
+        };
       };
       // By name, whatever the case; made first, first (a stable sort).
       const byName = (a: FakeCollection, b: FakeCollection) => {
@@ -4845,13 +4915,13 @@ export function createFakeVault(): {
         const refused = changing ? manage() : null;
         if (refused) return refused;
         if (!l) return fail(404, 'not_found', 'That collection does not exist.');
-        const mine =
-          l.owner_member_id === me.memberId && inCollectionAudience(state.role, l.audience);
+        // Its maker, or a manager (0.9.0).
+        const mine = powersOf(l).edit;
         if (changing && !mine) {
           return fail(
             403,
             'forbidden',
-            'Only the person who made this collection can fill it from a checklist.',
+            'Only the person who made this collection, or someone they chose to manage it, can fill it from a checklist.',
           );
         }
         const ctx: ChecklistContext = {
@@ -4999,21 +5069,83 @@ export function createFakeVault(): {
         );
         return ok({ items: on.sort(byName).map(collectionView) });
       }
+      /** Whether the one person may see a document, out of the Trash. */
+      const seesDoc = (id: string) => {
+        const d = state.documents.find((x) => x.id === id && !x.deleted_at);
+        return (
+          d !== undefined &&
+          canSee(me, {
+            visibility: d.visibility ?? 'household',
+            owner_member_id: d.owner_member_id ?? null,
+          })
+        );
+      };
+      const notYours = () =>
+        fail(
+          403,
+          'forbidden',
+          'Only the person who made this collection, or someone they chose to manage it, can change it.',
+        );
+      const noLongerYours = () =>
+        fail(
+          403,
+          'forbidden',
+          'This collection is for people you are no longer one of. You can still delete it, but not change it.',
+        );
+      /** A refusal of `power`, as the real vault words it, or null when the one person has it. */
+      const refusedFor = (
+        l: FakeCollection,
+        power: 'edit' | 'audience' | 'delete' | 'managers',
+      ): ResponseLike | null => {
+        const powers = powersOf(l);
+        const has =
+          power === 'edit'
+            ? powers.edit
+            : power === 'audience'
+              ? powers.change_audience
+              : power === 'delete'
+                ? powers.delete
+                : powers.choose_managers;
+        if (has) return null;
+        if (powers.maker) return noLongerYours();
+        if (power === 'managers') {
+          return fail(
+            403,
+            'forbidden',
+            'Only the person who made this collection, or a manager they let, can choose who manages it.',
+          );
+        }
+        if (powers.manager && power === 'audience') {
+          return fail(
+            403,
+            'forbidden',
+            'You manage this collection, but only the person who made it, or a manager they let, can change who it’s for.',
+          );
+        }
+        if (powers.manager && power === 'delete') {
+          return fail(
+            403,
+            'forbidden',
+            'You manage this collection, but only the person who made it, or a manager they let, can delete it.',
+          );
+        }
+        return notYours();
+      };
       if (collectionAt) {
         const found = state.collections.find(
           (x) => x.id === decodeURIComponent(collectionAt[1] as string),
         );
         const l = found && shown(found) ? found : undefined;
         const mine = l !== undefined && l.owner_member_id === me.memberId;
-        const notYours = () =>
-          fail(403, 'forbidden', 'Only the person who made this collection can change it.');
         // Its maker deletes it whatever their role now; anybody else needs
-        // collection.manage, and then an owner only one nobody may change any more.
+        // collection.manage, and then a manager its maker let, or an owner
+        // one nobody may change any more.
         if (!collectionAt[2] && init.method === 'DELETE') {
           const refused = mine ? null : manage();
           if (refused) return refused;
           if (!l) return fail(404, 'not_found', 'That collection does not exist.');
-          if (!mine && (state.role !== 'owner' || !stranded(l))) return notYours();
+          const no = refusedFor(l, 'delete');
+          if (no) return no;
           l.deleted = true;
           leavesGrants(l.id);
           return empty();
@@ -5026,13 +5158,9 @@ export function createFakeVault(): {
           const page = paged(l);
           return isResponse(page) ? page : respond(200, page, { etag: collectionTag(l) });
         }
-        if (changing && !mine) return notYours();
-        if (changing && !inCollectionAudience(state.role, l.audience)) {
-          return fail(
-            403,
-            'forbidden',
-            'This collection is for people you are no longer one of. You can still delete it, but not change it.',
-          );
+        if (changing) {
+          const no = refusedFor(l, 'edit');
+          if (no) return no;
         }
         if (!collectionAt[2] && init.method === 'PATCH') {
           const ifMatch = init.headers['if-match'];
@@ -5043,6 +5171,31 @@ export function createFakeVault(): {
               'This collection was changed since you opened it. Reload and try again.',
               JSON.stringify(detail(l)),
             );
+          }
+          if (body.audience !== undefined && body.audience !== l.audience) {
+            const no = refusedFor(l, 'audience');
+            if (no) return no;
+            if (body.audience === 'only_me' && !mine) {
+              return fail(
+                403,
+                'forbidden',
+                'Only the person who made this collection can make it Only me.',
+              );
+            }
+            // Never leaving its maker outside their own collection.
+            const makerRole = roleOf(l.owner_member_id);
+            if (
+              !mine &&
+              (!makerRole || !inCollectionAudience(makerRole, body.audience as CollectionAudience))
+            ) {
+              const name = state.members.find((m) => m.id === l.owner_member_id)?.display_name;
+              return fail(
+                422,
+                'validation_failed',
+                `That would leave ${name ?? 'the person who made it'} unable to see their own collection.`,
+                'audience',
+              );
+            }
           }
           const asked = fields(l);
           if (isResponse(asked)) return asked;
@@ -5056,6 +5209,10 @@ export function createFakeVault(): {
             l.revision += 1;
             // Made for fewer than Everyone, it leaves every grant (0055).
             if (wasEveryone && l.audience !== 'everyone') leavesGrants(l.id);
+            // Made for fewer people, its managers outside it go (0095).
+            if (l.managers) {
+              l.managers = l.managers.filter((m) => mayManage(m.member_id, l.audience));
+            }
           }
           return respond(200, detail(l), { etag: collectionTag(l) });
         }
@@ -5064,18 +5221,10 @@ export function createFakeVault(): {
           if (ids.length === 0) {
             return fail(422, 'validation_failed', 'Choose a document to put in the collection.');
           }
-          // Each one the maker can see, or none is put in.
-          const seen = (id: string) => {
-            const d = state.documents.find((x) => x.id === id);
-            return (
-              d !== undefined &&
-              canSee(me, {
-                visibility: d.visibility ?? 'household',
-                owner_member_id: d.owner_member_id ?? null,
-              })
-            );
-          };
-          if (!ids.every(seen)) return fail(404, 'not_found', 'That document is not in the vault.');
+          // Each one the one person can see, or none is put in.
+          if (!ids.every(seesDoc)) {
+            return fail(404, 'not_found', 'That document is not in the vault.');
+          }
           for (const id of ids) {
             if (l.items.some((i) => i.document_id === id)) continue;
             l.items.push({ document_id: id, added_at: new Date().toISOString() });
@@ -5084,12 +5233,114 @@ export function createFakeVault(): {
         }
         if (collectionAt[3] && init.method === 'DELETE') {
           const id = decodeURIComponent(collectionAt[3]);
-          if (!state.documents.some((d) => d.id === id)) {
-            return fail(404, 'not_found', 'That document is not in the vault.');
-          }
+          // One they cannot see is not there, whatever is in it.
+          if (!seesDoc(id)) return fail(404, 'not_found', 'That document is not in the vault.');
           const at = l.items.findIndex((i) => i.document_id === id);
           if (at < 0) return fail(404, 'not_found', 'That document is not in this collection.');
           l.items.splice(at, 1);
+          return empty();
+        }
+      }
+      // Who manages a collection besides its maker (0.9.0), as the real vault
+      // keeps them: the family who see it read them; its maker, or a manager
+      // who may choose managers, changes them, giving only what they may do.
+      if (managersAt) {
+        if (!family()) {
+          return fail(403, 'forbidden', 'A collection’s managers are for the family who see it.');
+        }
+        const found = state.collections.find(
+          (x) => x.id === decodeURIComponent(managersAt[1] as string),
+        );
+        const l = found && shown(found) ? found : undefined;
+        if (!l) return fail(404, 'not_found', 'That collection does not exist.');
+        const answer = (): CollectionManagers => {
+          const powers = powersOf(l);
+          const managing = new Set((l.managers ?? []).map((m) => m.member_id));
+          return {
+            items: managersOf(l),
+            eligible: powers.choose_managers
+              ? state.members
+                  .filter(
+                    (m) =>
+                      m.id !== l.owner_member_id &&
+                      !managing.has(m.id) &&
+                      mayManage(m.id, l.audience),
+                  )
+                  .map((m) => ({ member_id: m.id, display_name: m.display_name }))
+                  .sort((a, b) => a.display_name.localeCompare(b.display_name))
+              : [],
+            my_powers: powers,
+          };
+        };
+        if (init.method === 'GET' && !managersAt[2]) return ok(answer());
+        // Taking one away is also an owner's while its maker may not change it.
+        const removing = init.method === 'DELETE' && managersAt[2] !== undefined;
+        const refused =
+          manage() ?? (removing && powersOf(l).remove_managers ? null : refusedFor(l, 'managers'));
+        if (refused) return refused;
+        const powers = powersOf(l);
+        const switches = ['may_change_audience', 'may_delete', 'may_choose_managers'] as const;
+        const powerOf = {
+          may_change_audience: powers.change_audience,
+          may_delete: powers.delete,
+          may_choose_managers: powers.choose_managers,
+        };
+        const onlyWhatYouMay = () =>
+          fail(403, 'forbidden', 'You can only let a manager do what you can do yourself.');
+        const theMaker = () =>
+          fail(
+            422,
+            'validation_failed',
+            'The person who made this collection can already do everything with it, and can’t be taken away.',
+            'member_id',
+          );
+        if (init.method === 'POST' && !managersAt[2]) {
+          const memberId = body.member_id as string | undefined;
+          if (!memberId) {
+            return fail(422, 'validation_failed', 'Choose who will manage it.', 'member_id');
+          }
+          if (memberId === l.owner_member_id) return theMaker();
+          const person = state.members.find((m) => m.id === memberId);
+          if (!person || !mayManage(memberId, l.audience)) {
+            return fail(
+              422,
+              'validation_failed',
+              `${person?.display_name ?? 'That person'} can’t manage this collection: only someone in the family with a sign-in who can already see it can.`,
+              'member_id',
+            );
+          }
+          if ((l.managers ?? []).some((m) => m.member_id === memberId)) {
+            return fail(409, 'conflict', `${person.display_name} already manages this collection.`);
+          }
+          const asked = Object.fromEntries(switches.map((s) => [s, body[s] === true])) as Record<
+            (typeof switches)[number],
+            boolean
+          >;
+          if (!powers.maker && switches.some((s) => asked[s] && !powerOf[s])) {
+            return onlyWhatYouMay();
+          }
+          l.managers = [
+            ...(l.managers ?? []),
+            { member_id: memberId, ...asked, added_at: new Date().toISOString() },
+          ];
+          return respond(201, answer());
+        }
+        const memberId = decodeURIComponent(managersAt[2] ?? '');
+        if (memberId === l.owner_member_id) return theMaker();
+        const at = (l.managers ?? []).findIndex((m) => m.member_id === memberId);
+        if (at < 0) return fail(404, 'not_found', 'That person doesn’t manage this collection.');
+        const was = (l.managers ?? [])[at] as NonNullable<FakeCollection['managers']>[number];
+        if (init.method === 'PATCH') {
+          const now = { ...was };
+          for (const s of switches) if (typeof body[s] === 'boolean') now[s] = body[s];
+          if (!powers.maker && switches.some((s) => now[s] && !was[s] && !powerOf[s])) {
+            return onlyWhatYouMay();
+          }
+          (l.managers ?? []).splice(at, 1, now);
+          return ok(answer());
+        }
+        if (init.method === 'DELETE') {
+          (l.managers ?? []).splice(at, 1);
           return empty();
         }
       }

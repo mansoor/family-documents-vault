@@ -425,7 +425,9 @@ describe('collections on the web (5.15)', () => {
     expect(await screen.findByRole('heading', { name: 'Sam’s tax', level: 1 })).toBeInTheDocument();
     expect(screen.getByText('For the accountant, in March.')).toBeInTheDocument();
     expect(
-      screen.getByText('Only Sam, who made this collection, can change it.'),
+      screen.getByText(
+        'Only Sam, who made this collection, or someone they chose to manage it, can change it.',
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByText(COLLECTION_HINT_TEENS)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Edit/ })).not.toBeInTheDocument();
@@ -935,7 +937,7 @@ describe('collections on the web (5.15)', () => {
     state.members = [ME, SAM];
     await del();
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Only the person who made this collection can change it.',
+      'Only the person who made this collection, or someone they chose to manage it, can change it.',
     );
     expect(state.collections?.map((l) => l.id)).toEqual(['collection-a', 'collection-e']);
 
@@ -955,7 +957,9 @@ describe('collections on the web (5.15)', () => {
       await screen.findByRole('heading', { name: 'Sam’s revision', level: 1 }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText('Only Sam, who made this collection, can change it.'),
+      screen.getByText(
+        'Only Sam, who made this collection, or someone they chose to manage it, can change it.',
+      ),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Delete this collection' }),

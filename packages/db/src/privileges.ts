@@ -110,6 +110,18 @@ begin
   if to_regprocedure('public.doc_collection_stranded(uuid, text)') is not null then
     grant execute on function public.doc_collection_stranded(uuid, text) to fdv_app;
   end if;
+  -- Who manages a collection, and whether nobody may delete it any more
+  -- (0095): asked by the collections' rules, and by the API.
+  if to_regprocedure('public.doc_collection_manager_powers(uuid, text, uuid)') is not null then
+    revoke execute on function public.doc_collection_manager_powers(uuid, text, uuid) from public;
+    grant execute on function public.doc_collection_manager_powers(uuid, text, uuid) to fdv_app;
+    revoke execute on function public.doc_collection_nobody_deletes(uuid, uuid, text) from public;
+    grant execute on function public.doc_collection_nobody_deletes(uuid, uuid, text) to fdv_app;
+    revoke execute on function public.doc_collection_chooses_managers(uuid) from public;
+    grant execute on function public.doc_collection_chooses_managers(uuid) to fdv_app;
+    revoke execute on function public.doc_collection_clears_managers(uuid) from public;
+    grant execute on function public.doc_collection_clears_managers(uuid) to fdv_app;
+  end if;
   -- Asking someone to send documents (0044): which request a token names
   -- and which session a cookie, before either is known; an upload link's
   -- own request while it can be used, which its rules ask; and the

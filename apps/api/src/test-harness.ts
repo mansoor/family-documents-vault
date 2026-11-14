@@ -387,7 +387,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     deriveCursorKey(TEST_MASTER),
     opts.proposals,
   );
-  const collections = new CollectionService(db, documents, opts.checklistReader);
+  const collections = new CollectionService(db, documents, opts.checklistReader, alert);
   const batches = new BatchService(
     db,
     keys,

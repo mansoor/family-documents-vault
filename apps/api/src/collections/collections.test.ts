@@ -214,7 +214,8 @@ describe.skipIf(!testAdminUrl())('collections of documents', () => {
         expect(res.statusCode, `${who} ${method} ${url}`).toBe(403);
         expect(refusal(res)).toMatchObject({
           code: 'forbidden',
-          message: 'Only the person who made this collection can change it.',
+          message:
+            'Only the person who made this collection, or someone they chose to manage it, can change it.',
         });
       }
     }
@@ -291,7 +292,9 @@ describe.skipIf(!testAdminUrl())('collections of documents', () => {
       expect(ofDoc.find((x) => x.id === collection.id)?.item_count, who).toBe(expected[who].length);
       // Nothing says how many are hidden: no field but these, anywhere.
       // (shared_outside, 5.19, says whether a link outside still works for
-      // it, with whom — never what or how many.)
+      // it, with whom — never what or how many; my_powers and managers, 0.9.0,
+      // what the reader may do and who manages it — never anything of its
+      // documents.)
       expect(Object.keys(l ?? {}).sort()).toEqual(
         [
           'audience',
@@ -302,7 +305,9 @@ describe.skipIf(!testAdminUrl())('collections of documents', () => {
           'id',
           'item_count',
           'items',
+          'managers',
           'mine',
+          'my_powers',
           'name',
           'next_cursor',
           'owner_member_id',
@@ -753,7 +758,8 @@ describe.skipIf(!testAdminUrl())('collections of documents', () => {
     const notYours = {
       status: 403,
       code: 'forbidden',
-      message: 'Only the person who made this collection can change it.',
+      message:
+        'Only the person who made this collection, or someone they chose to manage it, can change it.',
     };
 
     it('its maker, made a teen and then a viewer, still sees it and deletes it, but no longer changes it; nobody else may', async () => {
@@ -994,10 +1000,10 @@ describe.skipIf(!testAdminUrl())('collections of documents', () => {
       // The owner's delete finds the collection stranded; before it is marked,
       // Jo's sign-in is given back (as an accepted invitation would).
       const proto = CollectionService.prototype as unknown as {
-        stranded: (...args: unknown[]) => Promise<boolean>;
+        nobodyChanges: (...args: unknown[]) => Promise<boolean>;
       };
-      const stranded = proto.stranded;
-      const spy = vi.spyOn(proto, 'stranded').mockImplementation(async function (
+      const stranded = proto.nobodyChanges;
+      const spy = vi.spyOn(proto, 'nobodyChanges').mockImplementation(async function (
         this: unknown,
         ...args: unknown[]
       ) {

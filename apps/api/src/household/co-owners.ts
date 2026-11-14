@@ -26,6 +26,7 @@ import { ApiError, notFound } from '../errors.js';
 import type { AlertRequest } from '../alert-job.js';
 import { endDevices, SESSION_ENDED, type PushRequest, type PushTarget } from '../push-job.js';
 import { isRestricted, restrictedRefusal } from './restrictions.js';
+import { logManagersDropped, managedBy } from '../collections/managers.js';
 
 /**
  * Co-owners (SHR-09, SHR-10).
@@ -163,6 +164,8 @@ export class CoOwnerService {
         };
       }
 
+      // The collections they manage, before their role moves (0.9.0).
+      const managing = await managedBy(trx, target.member_id);
       const changed = await trx
         .updateTable('account_household')
         .set({ role: to })
@@ -189,6 +192,9 @@ export class CoOwnerService {
       // And their computers, which the database stopped as the role changed
       // (0070): a line each (0.8.0, D1).
       await logDevicesEnded(trx, p, target, meta);
+      // And each collection they managed that their new role is outside
+      // (0.9.0), which the database let go as the role changed.
+      await logManagersDropped(trx, p, target.member_id, managing, 'role', meta);
 
       if (to === 'owner') {
         // Promotion is immediate and everybody hears about it, because a
@@ -227,6 +233,8 @@ export class CoOwnerService {
     }
     const result = await withPrincipal(this.db, p, async (trx) => {
       await holdHousehold(trx);
+      // The collections they manage, before their role moves (0.9.0).
+      const managing = await managedBy(trx, p.memberId);
       const changed = await trx
         .updateTable('account_household')
         .set({ role: to })
@@ -260,6 +268,8 @@ export class CoOwnerService {
       });
       await logEffects(trx, p, p.memberId, effects, meta);
       await logDevicesEnded(trx, p, { account_id: p.accountId, member_id: p.memberId }, meta);
+      // The collections they managed that their new role is outside (0.9.0).
+      await logManagersDropped(trx, p, p.memberId, managing, 'role', meta);
       return {
         applied: true,
         role: to,
@@ -310,6 +320,8 @@ export class CoOwnerService {
                   from account_household a
                  where a.member_id = m.id and m.id = ${memberId}
                    and suspension_in_effect(a.suspended_at, a.suspended_until)`.execute(trx);
+      // The collections they manage, before the sign-in goes (0.9.0).
+      const managing = await managedBy(trx, memberId);
       await trx
         .deleteFrom('account_household')
         .where('account_id', '=', target.account_id)
@@ -348,6 +360,8 @@ export class CoOwnerService {
       // Their computers' keys, revoked by the database as the sign-in went
       // (0070): a line each (0.8.0, D1).
       await logDevicesEnded(trx, p, { account_id: target.account_id, member_id: memberId }, meta);
+      // And each collection they managed, let go as the sign-in went (0.9.0).
+      await logManagersDropped(trx, p, memberId, managing, 'sign_in', meta);
     });
     await this.filesMove(p.householdId);
     if (removedPhones.length > 0) {

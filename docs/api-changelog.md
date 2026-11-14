@@ -6418,6 +6418,80 @@ email_link_not_sent` when the email cannot be queued (nothing kept).
     for a collection with none kept. There is still no `DELETE`: "Clear the
     checklist" saves an empty list. `@fdv/shared`: `checklistKept(c)`, which
     reads an older vault's empty kept list as none too.
+  - Collection managers (0.9.0-dev.40; the owner's decision of 13 Nov
+    2026). Migration 0095. **Additive**: a request made as before is
+    answered as before; only who may make it widened.
+    - **New `features`:** `collection_managers` (`true`).
+    - **New fields** on every collection (`CollectionView`, so the list,
+      a collection, a document's collections and `CollectionDetail`):
+      `my_powers` (`CollectionPowers`: `maker`, `manager`, `edit`,
+      `change_audience`, `delete`, `choose_managers`, `remove_managers`) —
+      what the caller may do now; enable actions by it rather than by
+      `mine`. **New clients should offer Delete by `my_powers.delete`:**
+      an older web or phone client that works out "nobody may change it"
+      for itself from the maker's role may offer an owner Delete on a
+      collection a manager may still delete, and is answered `403`; nothing
+      is deleted. `managers`
+      (`CollectionManager[]`: `member_id`, `display_name`,
+      `may_change_audience`, `may_delete`, `may_choose_managers`,
+      `added_at`) for owners, adults and teens who see it; `null` for a
+      viewer or a guest it is given to. The ETag is unchanged and the same
+      for every reader; nothing here counts documents.
+    - **New routes:** `GET /api/v1/collections/{id}/managers` — `{ items,
+eligible, my_powers }` (`CollectionManagers`; `eligible`, people of the
+      family with a sign-in in its audience who are not its maker or a
+      manager, only for a caller who may choose managers); the family who
+      see it, `403` to a viewer or a guest. `POST
+/api/v1/collections/{id}/managers` `{ member_id, may_change_audience?,
+may_delete?, may_choose_managers? }` → `201` with the same answer;
+      `PATCH /api/v1/collections/{id}/managers/{memberId}` with any of the
+      three switches → `200`; `DELETE
+/api/v1/collections/{id}/managers/{memberId}` → `204`. Its maker in its
+      audience, or a manager with `may_choose_managers`; anybody else in its
+      audience `403`, anybody outside it `404`. A manager turning on a
+      switch they have not got is `403` ("You can only let a manager do
+      what you can do yourself."). Somebody who cannot see it, a viewer, a
+      guest, nobody with a sign-in, or anybody for an Only me collection is
+      `422 validation_failed` (`detail: member_id`); the maker named is
+      `422` too (never a manager, never taken away); one already a manager
+      `409 conflict`; one who is not `404`.
+    - **Changed rules (A18):** a collection's name and words, its
+      documents (add, remove) and its checklist (`POST`, `PUT`,
+      `/checklist/add`) are its maker's or any manager's; who it is for, a
+      manager's only with `may_change_audience`, never to `only_me`
+      (`403`), and never to an audience its maker's role is outside (`422
+validation_failed`, "That would leave {maker} unable to see their own
+      collection."); `DELETE`, a manager's only with `may_delete`. While its
+      maker may not change it (no sign-in, or outside its audience), an
+      owner who sees it may `DELETE` its managers (`remove_managers`; never
+      add or change one), and may delete it unless a live manager has
+      `may_delete`. A manager whose sign-in is locked or paused has no
+      power, is not `eligible` (`422` if named) and blocks nothing. Made
+      for fewer people, its managers outside the new audience are removed
+      in the same transaction (each `collection.manager_removed`, `why:
+"audience"`); a manager whose role moves outside it or whose sign-in
+      goes is removed by the database, each with
+      `collection.manager_removed` (`why: "role"` or `"sign_in"`) in the
+      same transaction as the change. Sharing a collection outside the family is
+      unchanged: whoever may share and sees it. The refusal for a non-maker
+      now reads "Only the person who made this collection, or someone they
+      chose to manage it, can change it." `CollectionChecklist.mine` is
+      `true` for a manager too (it always meant "may change it"). The
+      per-item `hint` is given to managers as well as the maker.
+    - **New activity:** `collection.manager_added`,
+      `collection.manager_changed` (detail `member_id` and the three
+      switches) and `collection.manager_removed` (`member_id`, `why`),
+      about the collection, for whoever may see it — the person among
+      them. The maker is emailed (an alert, never the collection's name)
+      when somebody else makes a person a manager.
+    - `@fdv/shared`: `CollectionPowers`, `CollectionManager`,
+      `CollectionManagerCandidate`, `CollectionManagers`,
+      `CollectionManagerInput`, `COLLECTION_MANAGER_SWITCHES`,
+      `COLLECTION_MANAGERS_ALWAYS`, `collectionPowers` (an older vault's
+      answer read as before). `@fdv/client`: `collectionManagers`,
+      `addCollectionManager`, `updateCollectionManager`,
+      `removeCollectionManager`; the fake keeps managers on
+      `FakeCollection.managers` with the same rules.
 
 ## Deprecations in effect
 

@@ -381,6 +381,155 @@ describe('the fake vault, for somebody who is not an owner', () => {
     });
   });
 
+  it('collection managers as the real vault keeps them (0.9.0): each power by its switch, given only by who has it', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const refusal = (p: Promise<unknown>) => p.then(() => null).catch((e: unknown) => e);
+    expect((await api.capabilities()).features.collection_managers).toBe(true);
+    vault.state.members.push(
+      { id: 'sam', display_name: 'Sam', role: 'adult', is_me: false },
+      { id: 'kim', display_name: 'Kim', role: 'teen', is_me: false },
+      { id: 'val', display_name: 'Val', role: 'viewer', is_me: false },
+      { id: 'pat', display_name: 'Pat', role: 'adult', is_me: false },
+    );
+    const bill = await api.createDocument(token, { title: 'Bill' });
+    const trip = await api.createCollection(token, { name: 'Trip', audience: 'everyone' });
+
+    // Its maker: every power, and who could manage it — never a viewer.
+    expect(trip.my_powers).toEqual({
+      maker: true,
+      manager: false,
+      edit: true,
+      change_audience: true,
+      delete: true,
+      choose_managers: true,
+      remove_managers: true,
+    });
+    const offered = await api.collectionManagers(token, trip.id);
+    expect(offered.items).toEqual([]);
+    expect(offered.eligible.map((e) => e.member_id)).toEqual(['kim', 'pat', 'sam']);
+    // The maker can't be one; a viewer can't either; nobody twice.
+    expect(
+      await refusal(api.addCollectionManager(token, trip.id, { member_id: 'fake-member' })),
+    ).toMatchObject({ status: 422 });
+    expect(
+      await refusal(api.addCollectionManager(token, trip.id, { member_id: 'val' })),
+    ).toMatchObject({ status: 422 });
+    await api.addCollectionManager(token, trip.id, { member_id: 'sam', may_choose_managers: true });
+    expect(
+      await refusal(api.addCollectionManager(token, trip.id, { member_id: 'sam' })),
+    ).toMatchObject({ status: 409 });
+    const kim = await api.addCollectionManager(token, trip.id, { member_id: 'kim' });
+    expect(kim.items.map((m) => [m.display_name, m.may_delete])).toEqual([
+      ['Kim', false],
+      ['Sam', false],
+    ]);
+
+    // Made Sam's, the fake's one person a manager with no switches.
+    const kept = vault.state.collections.find((c) => c.id === trip.id);
+    if (!kept) throw new Error('no collection');
+    kept.owner_member_id = 'sam';
+    kept.managers = [
+      {
+        member_id: 'fake-member',
+        may_change_audience: false,
+        may_delete: false,
+        may_choose_managers: false,
+        added_at: new Date().toISOString(),
+      },
+      ...(kept.managers ?? []).filter((m) => m.member_id !== 'sam'),
+    ];
+    const seen = await api.getCollection(token, trip.id);
+    expect(seen.mine).toBe(false);
+    expect(seen.my_powers).toMatchObject({ manager: true, edit: true, delete: false });
+    await api.addToCollection(token, trip.id, [bill.id]);
+    await api.removeFromCollection(token, trip.id, bill.id);
+    await api.updateCollection(token, trip.id, { name: 'Our trip' });
+    for (const no of [
+      api.updateCollection(token, trip.id, { audience: 'adults' }),
+      api.deleteCollection(token, trip.id),
+      api.addCollectionManager(token, trip.id, { member_id: 'pat' }),
+    ]) {
+      expect(await refusal(no)).toMatchObject({ status: 403, code: 'forbidden' });
+    }
+    // Let choose managers, they give only what they have.
+    kept.managers = (kept.managers ?? []).map((m) =>
+      m.member_id === 'fake-member' ? { ...m, may_choose_managers: true } : m,
+    );
+    expect(
+      await refusal(
+        api.addCollectionManager(token, trip.id, { member_id: 'pat', may_delete: true }),
+      ),
+    ).toMatchObject({
+      status: 403,
+      message: 'You can only let a manager do what you can do yourself.',
+    });
+    await api.addCollectionManager(token, trip.id, { member_id: 'pat', may_choose_managers: true });
+    expect(
+      await refusal(api.updateCollectionManager(token, trip.id, 'kim', { may_delete: true })),
+    ).toMatchObject({ status: 403 });
+    // The maker is never taken away.
+    expect(await refusal(api.removeCollectionManager(token, trip.id, 'sam'))).toMatchObject({
+      status: 422,
+    });
+    // Let change who it's for: made for the adults, the teen manager goes; never Only me.
+    kept.managers = (kept.managers ?? []).map((m) =>
+      m.member_id === 'fake-member' ? { ...m, may_change_audience: true } : m,
+    );
+    expect(
+      await refusal(api.updateCollection(token, trip.id, { audience: 'only_me' })),
+    ).toMatchObject({ status: 403 });
+    // Never leaving its maker outside it: Sam made a teen, the adults' is refused.
+    const sam = vault.state.members.find((m) => m.id === 'sam');
+    if (!sam) throw new Error('no Sam');
+    sam.role = 'teen';
+    expect(
+      await refusal(api.updateCollection(token, trip.id, { audience: 'adults' })),
+    ).toMatchObject({
+      status: 422,
+      message: 'That would leave Sam unable to see their own collection.',
+    });
+    sam.role = 'adult';
+    const narrowed = await api.updateCollection(token, trip.id, { audience: 'adults' });
+    expect(narrowed.managers?.map((m) => m.member_id).sort()).toEqual(['fake-member', 'pat']);
+    await api.removeCollectionManager(token, trip.id, 'pat');
+    expect((await api.collectionManagers(token, trip.id)).items).toHaveLength(1);
+
+    // Its maker's sign-in gone, a manager left who may not delete it: an owner
+    // may delete it, and take its managers away, but not choose any.
+    sam.role = null;
+    vault.state.role = 'owner';
+    vault.state.members.push({ id: 'ann', display_name: 'Ann', role: 'adult', is_me: false });
+    kept.managers = [
+      {
+        member_id: 'ann',
+        may_change_audience: false,
+        may_delete: false,
+        may_choose_managers: false,
+        added_at: new Date().toISOString(),
+      },
+    ];
+    expect((await api.getCollection(token, trip.id)).my_powers).toMatchObject({
+      delete: true,
+      remove_managers: true,
+      choose_managers: false,
+    });
+    expect(
+      await refusal(api.addCollectionManager(token, trip.id, { member_id: 'pat' })),
+    ).toMatchObject({ status: 403 });
+    await api.removeCollectionManager(token, trip.id, 'ann');
+
+    // A viewer is told nothing of managers.
+    vault.state.role = 'viewer';
+    expect(await refusal(api.collectionManagers(token, trip.id))).toMatchObject({ status: 403 });
+  });
+
   it('removing for good as the real vault does (5.24): somebody else’s is asked about first, a day ahead', async () => {
     const vault = createFakeVault();
     const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));

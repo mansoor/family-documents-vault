@@ -434,6 +434,14 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['collection.deleted', seesTheCollection],
   ['collection.item_added', seesTheDocumentInTheCollection],
   ['collection.item_removed', seesTheDocumentInTheCollection],
+  // Who manages a collection (0.9.0): made one, what they may do changed,
+  // taken away — by somebody, or as it was made for fewer people. The
+  // collection's audience's, as its other lines are: the person it is
+  // about among them while they can see it, and never once they cannot
+  // (its name is information).
+  ['collection.manager_added', seesTheCollection],
+  ['collection.manager_changed', seesTheCollection],
+  ['collection.manager_removed', seesTheCollection],
   // asking somebody to send documents (5.21): the request's reviewers'.
   ['upload_request.created', BY_TYPE],
   ['upload_request.revoked', BY_TYPE],
@@ -582,8 +590,15 @@ export class AuditService {
             on e.object_type = 'document' and d.id = e.object_id
           left join document_tombstone gone
             on e.object_type = 'document' and gone.id = e.object_id
+          -- Whom a line is about: a person's own lines, and a collection's
+          -- manager's (0.9.0), who is named in its detail.
           left join member object_member
-            on e.object_type = 'member' and object_member.id = e.object_id
+            on object_member.id = case when e.object_type = 'member' then e.object_id
+                                       when e.action in ('collection.manager_added',
+                                                         'collection.manager_changed',
+                                                         'collection.manager_removed')
+                                         then (e.detail->>'member_id')::uuid
+                                  end
           -- A collection's own lines name it; a line about a document put in one,
           -- or taken out, keeps the collection's id in its detail (5.14).
           left join doc_collection l

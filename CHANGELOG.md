@@ -6,6 +6,25 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.40] - 2026-11-13 — collection managers
+
+### Added
+
+- **Collection managers.** On a collection's page, a new **Managers** section lets the person who made it choose others in the family to manage it with them: anyone with a sign-in who can already see the collection (never a viewer or a guest). Every manager can always add and remove documents, fill it from a checklist, change or clear the checklist, and rename it and change its words. Three more things are off until the maker turns them on, for each manager separately: **Can also change who it's for**, **Can also delete it** and **Can also choose managers**. Removing a manager asks first. (Migration 0095.)
+- A manager who may choose managers can add and remove managers too, but can only give what they can do themselves, and can never remove the person who made the collection.
+- The collection's page offers each person what they may do with it now — Edit, Add documents, the checklist, who it's for, Delete — and says when you manage a collection someone else made.
+- Being made a manager, having what you can do changed, and being taken away are in the activity log, with who did it, for everyone who can see the collection — the person concerned included. The person who made the collection is emailed when somebody else makes a person a manager (the email never names the collection).
+
+### Changed
+
+- Making a collection for fewer people removes any manager who could no longer see it, at once; making it Only me leaves only its maker. A manager whose role changes so that they can no longer see it, or whose sign-in is taken away, stops being a manager too, and the activity log says so for each collection. Only the person who made a collection can make it Only me, and a manager can never make it for people its maker is not one of ("That would leave Tia unable to see their own collection.").
+- When the person who made a collection can no longer change it (their sign-in is gone, or they are no longer one of the people it is for), an owner who can see it can take its managers away, and can delete it unless a manager may still delete it. Owners can't add managers or give them anything.
+- A manager whose sign-in is locked or paused can do nothing with the collection meanwhile, can't be newly chosen, and doesn't stop an owner deleting a collection nobody else may delete.
+
+### Security
+
+- Nothing a manager does widens who sees a document: they add only documents they can open themselves, take out only ones they can see (any other is answered as not there, never counted), and see the collection's documents as they always did. The database itself holds who may write a collection's managers, what a manager may change of a collection and its checklist, and who may be one; the restore checks those guards are in place.
+
 ## [0.9.0-dev.39] - 2026-11-13 — email a share link to its recipient
 
 ### Added

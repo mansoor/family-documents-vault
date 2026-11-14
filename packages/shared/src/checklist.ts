@@ -2033,7 +2033,10 @@ export interface CollectionChecklist {
   to_add: number;
   /** Lines or items past the limits, left out. */
   left_out: number;
-  /** The reader may change it and add from it: the collection's maker, in its audience. */
+  /**
+   * The reader may change it and add from it: the collection's maker, in its
+   * audience, or since 0.9.0 any of its managers (`my_powers.edit`).
+   */
   mine: boolean;
 }
 

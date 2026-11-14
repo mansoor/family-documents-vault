@@ -14,11 +14,14 @@ import {
   type CollectionDetail,
   type CollectionInput,
   type CollectionItemView,
+  type CollectionManager,
+  type CollectionPowers,
   type CollectionSharedOutside,
   type CollectionView,
   type DocumentView,
 } from '@fdv/shared';
 import { sql } from 'kysely';
+import type { AlertRequest } from '../alert-job.js';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
 import { ApiError } from '../errors.js';
@@ -27,6 +30,7 @@ import { madeWith } from '../documents/made-with.js';
 import { endSessions } from '../documents/share-sessions.js';
 import { proposalPool, type ChecklistReader } from '../documents/proposal-pool.js';
 import { ChecklistService } from './checklist.js';
+import { ManagerService, ofTheFamily } from './managers.js';
 import { seenCollection } from './seen.js';
 
 /**
@@ -45,19 +49,29 @@ import { seenCollection } from './seen.js';
  *    Nothing — a count, a hint, an ETag, an order — says how many are
  *    hidden. A document taken to the Trash, or made somebody else's Only
  *    me, drops out for them at once; brought back, it is there again.
- *  - **Only its maker changes it** (A18): its name, words and audience,
- *    and what is in it, while they are in its audience. Anybody else in
- *    its audience who asks is refused; anybody outside it is told there is
- *    no such collection.
+ *  - **Its maker, or a manager with that power, changes it** (A18, and the
+ *    owner's decision of 13 Nov 2026, 0095): its maker — while they are in
+ *    its audience — may do everything; each manager they chose may put
+ *    documents in and take them out, fill it from a checklist, change or
+ *    clear the checklist, and rename it and change its words, and besides,
+ *    only as its maker turned each on for them, change who it is for (never
+ *    to Only me), delete it, or choose managers. A manager is somebody of
+ *    the family with a sign-in in its audience now; made for fewer people,
+ *    those outside it are managers no more (`update`). Anybody else in its
+ *    audience who asks is refused; anybody outside it is told there is no
+ *    such collection. `my_powers` says what each reader may do.
  *  - **Its maker keeps it** (the 5.14 review): made a teen or a viewer, a
  *    maker still sees the collection they made — the documents in it as they may
- *    see them now — and may delete it, but no longer change it. When
- *    nobody may change a collection any more (its maker is outside its audience,
- *    or has no sign-in here), an owner who can see it may delete it: never
- *    change it, and never be given more of it than they see anyway. The
- *    database holds both (0036).
- *  - **You add only what you can see**: a document the maker is not given
- *    is answered as one that does not exist.
+ *    see them now — and may delete it, but no longer change it. No manager
+ *    makes it for people its maker is not one of. When its maker may no
+ *    longer change it (outside its audience, or no sign-in here), an owner
+ *    who can see it may take its managers away, and — unless a live manager
+ *    may delete it — delete it: never change it, and never be given more of
+ *    it than they see anyway. The database holds all of it (0036, 0095).
+ *  - **You add only what you can see**: a document the maker, or a manager,
+ *    is not given is answered as one that does not exist; one taken out is
+ *    one they can see, and one they cannot is answered the same way —
+ *    never how many there are.
  *  - **Shared outside, it says so** (5.19): each reader is told whether a
  *    link outside the family still works for it, with whom — only those who
  *    may share are told names — and whether it keeps up with the
@@ -149,9 +163,89 @@ const noDocument = () => new ApiError(404, 'not_found', 'That document is not in
 const invalid = (message: string, detail: string) =>
   new ApiError(422, 'validation_failed', message, { detail });
 
-/** Only its maker changes a collection (A18). */
-const notYours = () =>
-  new ApiError(403, 'forbidden', 'Only the person who made this collection can change it.');
+/** Only its maker, or a manager they chose, changes a collection (A18, 0095). */
+export const NOT_YOURS =
+  'Only the person who made this collection, or someone they chose to manage it, can change it.';
+const notYours = () => new ApiError(403, 'forbidden', NOT_YOURS);
+
+/** What somebody may be asked to do with a collection: `CollectionPowers`, by the API's name. */
+export type CollectionPower = 'edit' | 'audience' | 'delete' | 'managers' | 'unmanage';
+
+/** A manager asking for what their maker did not let them do, in plain words. */
+const NOT_LET: Record<Exclude<CollectionPower, 'edit'>, string> = {
+  audience:
+    'You manage this collection, but only the person who made it, or a manager they let, can change who it’s for.',
+  delete:
+    'You manage this collection, but only the person who made it, or a manager they let, can delete it.',
+  managers:
+    'Only the person who made this collection, or a manager they let, can choose who manages it.',
+  unmanage:
+    'Only the person who made this collection, or a manager they let, can choose who manages it.',
+};
+
+/** What an owner is told of a collection whose maker may no longer change it (0036, 0095). */
+export interface Stranded {
+  /** Its maker has no sign-in here, or is outside its audience. */
+  maker: boolean;
+  /** …and no live manager may delete it: an owner may. */
+  nobodyDeletes: boolean;
+}
+const NOT_STRANDED: Stranded = { maker: false, nobodyDeletes: false };
+
+/** Only me is its maker's alone: no manager makes it theirs. */
+const onlyTheMakerOnlyMe = () =>
+  new ApiError(403, 'forbidden', 'Only the person who made this collection can make it Only me.');
+
+/** The caller's own row as one of a collection's managers, if they are one. */
+type ManagerRow = {
+  may_change_audience: boolean;
+  may_delete: boolean;
+  may_choose_managers: boolean;
+};
+
+/**
+ * What the caller may do with a collection now (0.9.0): its maker, in its
+ * audience, everything, and out of it, still delete it; a manager — named,
+ * of the family, in its audience, never of an Only me one — edit, and the
+ * three others as their row says; an owner, while its maker may no
+ * longer change it, take its managers away, and delete it once nobody
+ * else may (`Stranded`). The database asks the same (0095).
+ */
+export function powersFor(
+  p: Principal,
+  row: { owner_member_id: string | null; audience: CollectionAudience },
+  managing: ManagerRow | undefined,
+  stranded: Stranded,
+): CollectionPowers {
+  const maker = isMaker(p, row);
+  const inIt = inCollectionAudience(p.role, row.audience);
+  const makerNow = maker && inIt;
+  const manager =
+    !maker && managing !== undefined && ofTheFamily(p) && inIt && row.audience !== 'only_me';
+  const owner = !maker && p.role === 'owner';
+  const chooses = makerNow || (manager && managing.may_choose_managers);
+  return {
+    maker,
+    manager,
+    edit: makerNow || manager,
+    change_audience: makerNow || (manager && managing.may_change_audience),
+    delete: maker || (manager && managing.may_delete) || (owner && stranded.nobodyDeletes),
+    choose_managers: chooses,
+    remove_managers: chooses || (owner && stranded.maker),
+  };
+}
+
+/** Whether the powers give what was asked. */
+const holds = (powers: CollectionPowers, power: CollectionPower) =>
+  power === 'edit'
+    ? powers.edit
+    : power === 'audience'
+      ? powers.change_audience
+      : power === 'delete'
+        ? powers.delete
+        : power === 'managers'
+          ? powers.choose_managers
+          : powers.remove_managers;
 
 /** Its maker, no longer in its audience: they keep it to see and delete (the 5.14 review). */
 const noLongerYours = () =>
@@ -212,13 +306,17 @@ export function viewerWillSee(
 export class CollectionService {
   /** A collection's checklist (0.9.0, C1): read on the proposal thread. */
   readonly checklists: ChecklistService;
+  /** Who manages a collection besides its maker (0.9.0). */
+  readonly managers: ManagerService;
 
   constructor(
     private readonly db: Db,
     private readonly documents: DocumentService,
     reader: ChecklistReader = proposalPool,
+    alert: (a: AlertRequest) => Promise<unknown> = async () => undefined,
   ) {
     this.checklists = new ChecklistService(db, this, reader, documents);
+    this.managers = new ManagerService(db, this, alert);
   }
 
   // ---------------------------------------------------------------- reading
@@ -235,14 +333,7 @@ export class CollectionService {
         .orderBy('l.created_at')
         .orderBy('l.id')
         .execute();
-      const shared = await this.sharedOutside(
-        trx,
-        p,
-        rows.map((r) => r.id),
-      );
-      return rows.map((r) =>
-        this.view(p, r as CollectionRow, r.item_count, shared.get(r.id) ?? null),
-      );
+      return this.views(trx, p, rows);
     });
   }
 
@@ -283,15 +374,127 @@ export class CollectionService {
         .orderBy('l.created_at')
         .orderBy('l.id')
         .execute();
-      const shared = await this.sharedOutside(
-        trx,
-        p,
-        rows.map((r) => r.id),
-      );
-      return rows.map((r) =>
-        this.view(p, r as CollectionRow, r.item_count, shared.get(r.id) ?? null),
-      );
+      return this.views(trx, p, rows);
     });
+  }
+
+  /** Rows as the caller is given them: whether each is shared outside, what they may do, who manages it. */
+  private async views(
+    trx: Db,
+    p: Principal,
+    rows: Array<CollectionRow & { item_count: number }>,
+  ): Promise<CollectionView[]> {
+    const ids = rows.map((r) => r.id);
+    const shared = await this.sharedOutside(trx, p, ids);
+    const { powers, managers } = await this.managing(trx, p, rows);
+    return rows.map((r) =>
+      this.view(
+        p,
+        r,
+        r.item_count,
+        shared.get(r.id) ?? null,
+        powers.get(r.id) as CollectionPowers,
+        managers.get(r.id) ?? null,
+      ),
+    );
+  }
+
+  /**
+   * What the caller may do with each collection, and who manages each — for
+   * the family who see them; a viewer or a guest is told nobody (null).
+   * One query of each, whatever the number of collections.
+   */
+  private async managing(
+    trx: Db,
+    p: Principal,
+    rows: CollectionRow[],
+  ): Promise<{
+    powers: Map<string, CollectionPowers>;
+    managers: Map<string, CollectionManager[] | null>;
+  }> {
+    const powers = new Map<string, CollectionPowers>();
+    const managers = new Map<string, CollectionManager[] | null>();
+    if (rows.length === 0) return { powers, managers };
+    const ids = rows.map((r) => r.id);
+    const family = ofTheFamily(p);
+    const all = family
+      ? await trx
+          .selectFrom('doc_collection_manager as m')
+          .innerJoin('member as who', 'who.id', 'm.member_id')
+          .select([
+            'm.collection_id',
+            'm.member_id',
+            'who.display_name',
+            'm.may_change_audience',
+            'm.may_delete',
+            'm.may_choose_managers',
+            'm.added_at',
+          ])
+          .where('m.collection_id', 'in', ids)
+          .orderBy(sql`lower(who.display_name)`)
+          .orderBy('m.member_id')
+          .execute()
+      : [];
+    // An owner, of one its maker may no longer change: the database's own answers.
+    const stranded = new Map<string, Stranded>();
+    if (p.role === 'owner') {
+      const others = rows.filter((r) => !isMaker(p, r)).map((r) => r.id);
+      if (others.length > 0) {
+        const found = await trx
+          .selectFrom('doc_collection as l')
+          .select([
+            'l.id',
+            sql<boolean>`coalesce(doc_collection_stranded(l.owner_member_id, l.audience), false)`.as(
+              'maker',
+            ),
+            sql<boolean>`coalesce(doc_collection_nobody_deletes(l.id, l.owner_member_id, l.audience), false)`.as(
+              'nobody_deletes',
+            ),
+          ])
+          .where('l.id', 'in', others)
+          .execute();
+        for (const f of found) {
+          stranded.set(f.id, { maker: f.maker, nobodyDeletes: f.nobody_deletes });
+        }
+      }
+    }
+    for (const r of rows) {
+      const theirs = all.filter((m) => m.collection_id === r.id);
+      const own = theirs.find((m) => m.member_id === p.memberId);
+      powers.set(r.id, powersFor(p, r, own, stranded.get(r.id) ?? NOT_STRANDED));
+      managers.set(
+        r.id,
+        family
+          ? theirs.map((m) => ({
+              member_id: m.member_id,
+              display_name: m.display_name,
+              may_change_audience: m.may_change_audience,
+              may_delete: m.may_delete,
+              may_choose_managers: m.may_choose_managers,
+              added_at: m.added_at.toISOString(),
+            }))
+          : null,
+      );
+    }
+    return { powers, managers };
+  }
+
+  /**
+   * What the caller may do with one collection now, read afresh: their own
+   * row as a manager, and for an owner whether its maker may no longer
+   * change it and whether nobody may delete it — the maker's membership held
+   * while it is looked at, so a role given back meanwhile waits.
+   */
+  async powersOf(trx: Db, p: Principal, row: CollectionRow): Promise<CollectionPowers> {
+    const own = await trx
+      .selectFrom('doc_collection_manager')
+      .select(['may_change_audience', 'may_delete', 'may_choose_managers'])
+      .where('collection_id', '=', row.id)
+      .where('member_id', '=', p.memberId)
+      .executeTakeFirst();
+    const stranded =
+      p.role === 'owner' && !isMaker(p, row) ? await this.nobodyChanges(trx, p, row) : NOT_STRANDED;
+    return powersFor(p, row, own, stranded);
   }
 
   // --------------------------------------------------------------- changing
@@ -332,10 +535,13 @@ export class CollectionService {
   }
 
   /**
-   * Its name, words or audience, by its maker, made to the collection as they
-   * saw it: a stale If-Match is `409 conflict`, with the collection as it now is.
-   * A new name is `collection.renamed` in the log; words or audience,
-   * `collection.updated`. Neither says what they now are.
+   * Its name, words or audience, by its maker or a manager — who it is for
+   * only by a manager its maker let, and never to Only me — made to the
+   * collection as they saw it: a stale If-Match is `409 conflict`, with the
+   * collection as it now is. A new name is `collection.renamed` in the log;
+   * words or audience, `collection.updated`. Neither says what they now are.
+   * Made for fewer people, its managers who could no longer see it are no
+   * longer its managers (0095, in this transaction), each a line of its own.
    */
   async update(
     p: Principal,
@@ -346,19 +552,29 @@ export class CollectionService {
   ): Promise<CollectionDetail> {
     requireCapability(p, 'collection.manage');
     const outcome = await withPrincipal(this.db, p, async (trx) => {
-      const current = await this.mine(trx, p, id);
+      const { row: current, powers } = await this.managed(trx, p, id, 'edit');
       if (ifMatch && ifMatch !== collectionEtag(current)) return { id: current.id, stale: true };
       const name = input.name !== undefined ? nameOf(input.name) : current.name;
       const description =
         input.description !== undefined ? descriptionOf(input.description) : current.description;
-      const audience =
-        input.audience !== undefined ? audienceFor(p, input.audience) : current.audience;
+      let audience = current.audience;
+      if (input.audience !== undefined && input.audience !== current.audience) {
+        if (!powers.change_audience) throw new ApiError(403, 'forbidden', NOT_LET.audience);
+        if (input.audience === 'only_me' && !powers.maker) throw onlyTheMakerOnlyMe();
+        audience = audienceFor(p, input.audience);
+        // A manager never pushes its maker out of their own collection.
+        if (!powers.maker) await this.keepsTheMaker(trx, p, current, audience);
+      }
       const renamed = name !== current.name;
       const changed = description !== current.description || audience !== current.audience;
       if (!renamed && !changed) return { id: current.id, stale: false };
       // Made Only me, its links end: held before the log is (endLinks).
       const ending = audience === 'only_me' && current.audience !== 'only_me';
       if (ending) await this.holdLinks(trx, current.id);
+      // Who manages it, before: made for fewer people, those who could no
+      // longer see it go (doc_collection_drops_managers), and the log says so.
+      const narrowing = audience !== current.audience;
+      const before = narrowing ? await this.managerIds(trx, current.id) : [];
 
       await trx
         .updateTable('doc_collection')
@@ -375,6 +591,20 @@ export class CollectionService {
           objectId: current.id,
           ip: meta.ip,
         });
+      }
+      if (narrowing) {
+        const after = new Set(await this.managerIds(trx, current.id));
+        for (const gone of before.filter((m) => !after.has(m))) {
+          await appendAudit(trx, {
+            householdId: p.householdId,
+            actorAccountId: p.accountId,
+            action: 'collection.manager_removed',
+            objectType: 'collection',
+            objectId: current.id,
+            detail: { member_id: gone, why: 'audience' },
+            ip: meta.ip,
+          });
+        }
       }
       // Made its maker's alone, it goes nowhere any more (5.19): its links
       // end for good, and do not come back should it be widened again.
@@ -395,8 +625,9 @@ export class CollectionService {
   }
 
   /**
-   * Gone for everybody: by its maker, whatever their role now, or by an
-   * owner when nobody may change it any more (`deletable`). The row is
+   * Gone for everybody: by its maker, whatever their role now, by a manager
+   * its maker let delete it, or by an owner when nobody may change it any
+   * more (`deletable`). The row is
    * kept, marked deleted: its lines in the log find their audience through
    * it. The documents in it are untouched.
    */
@@ -474,14 +705,14 @@ export class CollectionService {
    */
   async mayAddTo(trx: Db, p: Principal, id: string): Promise<void> {
     requireCapability(p, 'collection.manage');
-    await this.mine(trx, p, id);
+    await this.managed(trx, p, id, 'edit');
   }
 
   /**
    * A collection the caller may see, for its checklist (0.9.0, C1): its id,
-   * audience and maker, or 404 as one that never was. With `held`, one the
-   * caller may change, held until the transaction ends, or refused as a
-   * change to it would be.
+   * audience and whether the caller may change it — its maker or a manager
+   * — or 404 as one that never was. With `held`, one the caller may change,
+   * held until the transaction ends, or refused as a change to it would be.
    */
   async checklistOf(
     trx: Db,
@@ -489,12 +720,48 @@ export class CollectionService {
     id: string,
     held: boolean,
   ): Promise<{ id: string; audience: CollectionAudience; mine: boolean }> {
-    const row = held ? await this.mine(trx, p, id) : await this.find(trx, p, id);
-    return {
-      id: row.id,
-      audience: row.audience,
-      mine: isMaker(p, row) && inCollectionAudience(p.role, row.audience),
-    };
+    if (held) {
+      const { row } = await this.managed(trx, p, id, 'edit');
+      return { id: row.id, audience: row.audience, mine: true };
+    }
+    const row = await this.find(trx, p, id);
+    return { id: row.id, audience: row.audience, mine: (await this.powersOf(trx, p, row)).edit };
+  }
+
+  /**
+   * A collection the caller may do `power` with, and what else they may,
+   * held until the transaction ends (0.9.0). What anybody may do, the
+   * routes for managers ask through this too.
+   */
+  async heldFor(
+    trx: Db,
+    p: Principal,
+    id: string,
+    power: CollectionPower,
+  ): Promise<{ row: CollectionRow; powers: CollectionPowers }> {
+    return this.managed(trx, p, id, power);
+  }
+
+  /** A collection as the caller may see it, and what they may do with it, not held. */
+  async seenWith(
+    trx: Db,
+    p: Principal,
+    id: string,
+  ): Promise<{ row: CollectionRow; powers: CollectionPowers }> {
+    const row = await this.find(trx, p, id);
+    return { row, powers: await this.powersOf(trx, p, row) };
+  }
+
+  /** The members who manage a collection now, by id, as the caller is given them. */
+  private async managerIds(trx: Db, collectionId: string): Promise<string[]> {
+    return (
+      await trx
+        .selectFrom('doc_collection_manager')
+        .select('member_id')
+        .where('collection_id', '=', collectionId)
+        .orderBy('member_id')
+        .execute()
+    ).map((m) => m.member_id);
   }
 
   private async addIn(
@@ -504,7 +771,7 @@ export class CollectionService {
     documentIds: string[],
     meta: RequestMeta,
   ): Promise<{ collectionId: string; warnings: string[] }> {
-    const collection = await this.mine(trx, p, id);
+    const { row: collection } = await this.managed(trx, p, id, 'edit');
     const asked = [...new Set(documentIds.map((d) => d.toLowerCase()))];
     if (asked.length === 0)
       throw invalid('Choose a document to put in the collection.', 'document_ids');
@@ -631,7 +898,7 @@ export class CollectionService {
   async removeItem(p: Principal, id: string, documentId: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'collection.manage');
     await withPrincipal(this.db, p, async (trx) => {
-      const collection = await this.mine(trx, p, id);
+      const { row: collection } = await this.managed(trx, p, id, 'edit');
       const doc = await trx
         .selectFrom('document as d')
         .select('d.id')
@@ -699,69 +966,123 @@ export class CollectionService {
   }
 
   /**
-   * A collection the caller may change — they made it, and are in its audience —
+   * A collection the caller may do `power` with — its maker, in its
+   * audience; a manager its maker chose, with that power; for `delete`, its
+   * maker whatever their role now, or an owner when nobody may change it —
    * held until the transaction ends: every change is checked against it as
-   * it is. Outside its audience it is 404; in it, but not its maker, 403;
-   * its maker, outside it now, 403 too: theirs to see and delete, not to
-   * change.
+   * it is. Outside its audience it is 404; in it, but neither its maker nor
+   * a manager, 403; a manager without the power, 403 saying so; its maker,
+   * outside it now, 403 too: theirs to see and delete, not to change.
    *
    * Looked at, then held and looked at again: the database holds a collection
    * only for somebody who may change it, and anybody else in its audience
    * is told why not, rather than that it is not there.
    */
-  private async mine(trx: Db, p: Principal, id: string): Promise<CollectionRow> {
-    const refusal = (row: CollectionRow | null) => {
-      if (!row) return notFound();
-      if (!isMaker(p, row)) return notYours();
-      if (!inCollectionAudience(p.role, row.audience)) return noLongerYours();
-      return null;
+  private async managed(
+    trx: Db,
+    p: Principal,
+    id: string,
+    power: CollectionPower,
+  ): Promise<{ row: CollectionRow; powers: CollectionPowers }> {
+    const check = async (row: CollectionRow) => {
+      const powers = await this.powersOf(trx, p, row);
+      if (holds(powers, power)) return { powers };
+      if (powers.maker) return { refused: noLongerYours() };
+      if (power !== 'edit' && (powers.manager || power === 'managers' || power === 'unmanage')) {
+        return { refused: new ApiError(403, 'forbidden', NOT_LET[power]) };
+      }
+      return { refused: notYours() };
     };
-    const first = refusal(await this.seen(trx, p, id));
-    if (first) throw first;
+    const first = await this.seen(trx, p, id);
+    if (!first) throw notFound();
+    const looked = await check(first);
+    if (looked.refused) throw looked.refused;
     const held = await this.seen(trx, p, id, true);
-    const then = refusal(held);
-    if (then) throw then;
-    return held as CollectionRow;
+    if (!held) {
+      // The database would not hold it for them: still there, it is not theirs.
+      throw (await this.seen(trx, p, id)) ? notYours() : notFound();
+    }
+    const then = await check(held);
+    if (then.refused) throw then.refused;
+    return { row: held, powers: then.powers };
   }
 
   /**
    * A collection the caller may delete, held: one they made, whatever their role
-   * now — made a viewer, they may still take back what they named — or,
-   * for an owner, one they can see that nobody may change any more
-   * (`stranded`). Anybody else without `collection.manage` is told so, whether or
-   * not there is a collection; outside its audience it is 404; in it, 403.
+   * now — made a viewer, they may still take back what they named — one a
+   * manager its maker let delete it, or, for an owner, one they can see that
+   * nobody may change any more (`nobodyChanges`). Anybody else without
+   * `collection.manage` is told so, whether or not there is a collection;
+   * outside its audience it is 404; in it, 403.
    */
   private async deletable(trx: Db, p: Principal, id: string): Promise<CollectionRow> {
     const first = await this.seen(trx, p, id);
-    if (!first || !isMaker(p, first)) {
-      requireCapability(p, 'collection.manage');
-      if (!first) throw notFound();
-      // The database asks the same of app_role() (0036).
-      if (p.role !== 'owner') throw notYours();
-    }
-    const held = await this.seen(trx, p, id, true);
-    if (held && isMaker(p, held)) return held;
-    if (held && p.role === 'owner' && (await this.stranded(trx, p, held))) return held;
-    // The database would not hold it for them: still there, it is not theirs.
-    const there = held ?? (await this.seen(trx, p, id));
-    throw there ? notYours() : notFound();
+    if (!first || !isMaker(p, first)) requireCapability(p, 'collection.manage');
+    return (await this.managed(trx, p, id, 'delete')).row;
   }
 
   /**
-   * Whether nobody may change a collection any more: its maker has no sign-in in
-   * the household, or is no longer in its audience. Their membership is
-   * held while it is looked at, so a role given back meanwhile waits.
+   * Whether a collection's maker may no longer change it — no sign-in in the
+   * household, or no longer in its audience — and whether, besides, no live
+   * manager may delete it (the database's own answers, doc_collection_stranded
+   * and doc_collection_nobody_deletes). The maker's membership is held while
+   * it is looked at, so a role given back meanwhile waits.
    */
-  private async stranded(trx: Db, p: Principal, collection: CollectionRow): Promise<boolean> {
-    if (collection.owner_member_id === null) return true;
-    const maker = await trx
+  private async nobodyChanges(trx: Db, p: Principal, collection: CollectionRow): Promise<Stranded> {
+    if (collection.owner_member_id !== null) {
+      await trx
+        .selectFrom('account_household')
+        .select('role')
+        .where('household_id', '=', p.householdId)
+        .where('member_id', '=', collection.owner_member_id)
+        .forShare()
+        .execute();
+    }
+    const { rows } = await sql<{ maker: boolean; nobody: boolean }>`
+      select coalesce(doc_collection_stranded(${collection.owner_member_id}::uuid,
+                                              ${collection.audience}), false) as maker,
+             coalesce(doc_collection_nobody_deletes(${collection.id}::uuid,
+                                                    ${collection.owner_member_id}::uuid,
+                                                    ${collection.audience}), false) as nobody`.execute(
+      trx,
+    );
+    return { maker: rows[0]?.maker === true, nobodyDeletes: rows[0]?.nobody === true };
+  }
+
+  /**
+   * B1 of the managers review: somebody other than its maker changing who a
+   * collection is for never leaves its maker outside it — their role now,
+   * held, must be in the new audience. Refused in words.
+   */
+  private async keepsTheMaker(
+    trx: Db,
+    p: Principal,
+    collection: CollectionRow,
+    audience: CollectionAudience,
+  ): Promise<void> {
+    if (collection.owner_member_id === null) {
+      throw invalid(
+        'That would leave the person who made it unable to see their own collection.',
+        'audience',
+      );
+    }
+    const signIn = await trx
       .selectFrom('account_household')
       .select('role')
       .where('household_id', '=', p.householdId)
       .where('member_id', '=', collection.owner_member_id)
       .forShare()
       .executeTakeFirst();
-    return !maker || !inCollectionAudience(maker.role, collection.audience);
+    if (signIn && audience !== 'only_me' && inCollectionAudience(signIn.role, audience)) return;
+    const maker = await trx
+      .selectFrom('member')
+      .select('display_name')
+      .where('id', '=', collection.owner_member_id)
+      .executeTakeFirst();
+    throw invalid(
+      `That would leave ${maker?.display_name ?? 'the person who made it'} unable to see their own collection.`,
+      'audience',
+    );
   }
 
   private view(
@@ -769,6 +1090,8 @@ export class CollectionService {
     row: CollectionRow,
     itemCount: number,
     shared: CollectionSharedOutside | null,
+    powers: CollectionPowers,
+    managers: CollectionManager[] | null,
   ): CollectionView {
     return {
       id: row.id,
@@ -782,6 +1105,8 @@ export class CollectionService {
       updated_at: row.updated_at.toISOString(),
       etag: collectionEtag(row),
       shared_outside: shared,
+      my_powers: powers,
+      managers,
     };
   }
 
@@ -987,19 +1312,29 @@ export class CollectionService {
       .select(sql<number>`count(*)::int`.as('n'))
       .executeTakeFirstOrThrow();
     const documents: DocumentView[] = await this.documents.listed(trx, p, shown);
-    // Its maker is told who in its audience is not given each one; nobody
-    // else is told anything a document they cannot see would leave behind.
-    const maker = isMaker(p, collection);
+    const shared = await this.sharedOutside(trx, p, [collection.id]);
+    const { powers, managers } = await this.managing(trx, p, [collection]);
+    const mine = powers.get(collection.id) as CollectionPowers;
+    // Its maker, and its managers, are told who in its audience is not
+    // given each one they see; nobody is told anything a document they
+    // cannot see would leave behind.
+    const told = mine.maker || mine.manager;
     const items: CollectionItemView[] = shown.map((r, i) => ({
       document: documents[i] as DocumentView,
       added_at: r.on_collection_since.toISOString(),
-      hint: maker ? collectionItemHint(collection.audience, r) : null,
+      hint: told ? collectionItemHint(collection.audience, r) : null,
     }));
     const last = shown[shown.length - 1];
     const more = rows.length > limit;
-    const shared = await this.sharedOutside(trx, p, [collection.id]);
     return {
-      ...this.view(p, collection, n, shared.get(collection.id) ?? null),
+      ...this.view(
+        p,
+        collection,
+        n,
+        shared.get(collection.id) ?? null,
+        mine,
+        managers.get(collection.id) ?? null,
+      ),
       items,
       next_cursor: more && last ? encodeCursor(last.id) : null,
       has_more: more,

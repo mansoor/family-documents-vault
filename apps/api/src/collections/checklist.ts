@@ -47,7 +47,7 @@ import type { CollectionService } from './service.js';
  *   line needs them (`checklistLooksByTitle`); CHECKLIST_TITLE_LINES_MAX
  *   lines at most are looked for. Titles are matched in memory, never by a
  *   query per line.
- * - **Nothing is put in until its maker ticks it.** POST reads and matches
+ * - **Nothing is put in until its maker, or a manager, ticks it.** POST reads and matches
  *   and writes nothing; PUT keeps the list; `add` puts in the documents
  *   chosen, through the collection's own rules (`addWithin`: its links, its
  *   warnings, its log), each one the caller may still see, out of the
@@ -55,7 +55,7 @@ import type { CollectionService } from './service.js';
  * - **The checklist is the collection's**, kept in plain text as its name
  *   and words are, given only to the family who see the collection (an
  *   owner, an adult or a teen; 0077 keeps viewers, guests and every link
- *   out), and changed by its maker alone (A18).
+ *   out), and changed by its maker or its managers (A18, 0.9.0).
  */
 
 /** The family who may read a collection's checklist: never a viewer or a guest. */
@@ -67,7 +67,7 @@ const notTheMaker = () =>
   new ApiError(
     403,
     'forbidden',
-    'Only the person who made this collection can fill it from a checklist.',
+    'Only the person who made this collection, or someone they chose to manage it, can fill it from a checklist.',
   );
 const unread = () =>
   new ApiError(

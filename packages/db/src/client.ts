@@ -1392,6 +1392,24 @@ export interface Schema {
     updated_by: string | null;
   };
 
+  /**
+   * A collection's managers (0095, 0.9.0): people of the family its maker
+   * chose to manage it with them, each with what they may do besides
+   * putting documents in, the checklist, its name and words. Never its
+   * maker; somebody in its audience now; written by its maker or a manager
+   * who may choose managers.
+   */
+  doc_collection_manager: {
+    collection_id: string;
+    household_id: string;
+    member_id: string;
+    may_change_audience: Generated<boolean>;
+    may_delete: Generated<boolean>;
+    may_choose_managers: Generated<boolean>;
+    added_by: string | null;
+    added_at: GeneratedTimestamp;
+  };
+
   /** A document in a collection, in the order they were put there. */
   doc_collection_item: {
     collection_id: string;

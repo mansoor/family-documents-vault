@@ -1,5 +1,5 @@
 import type { DocumentView } from './documents.js';
-import type { CollectionAudience, Role } from './roles.js';
+import { inCollectionAudience, type CollectionAudience, type Role } from './roles.js';
 
 /**
  * Collections of documents (5.14), as the API answers them.
@@ -40,6 +40,118 @@ export interface CollectionView {
    * not. Absent from older vaults.
    */
   shared_outside?: CollectionSharedOutside | null;
+  /**
+   * What the reader may do with it now (0.9.0, collection managers): its
+   * maker, or a manager its maker chose. Clients enable each action by
+   * this rather than by `mine`. Absent from older vaults: there, only its
+   * maker in its audience changes it (`mine`).
+   */
+  my_powers?: CollectionPowers;
+  /**
+   * Who manages it besides its maker, by name, with what each may do: for
+   * the family who see it (owners, adults and teens). Null for a viewer or
+   * a guest it is given to. Absent from older vaults.
+   */
+  managers?: CollectionManager[] | null;
+}
+
+/**
+ * What a reader may do with a collection (0.9.0, collection managers). Its
+ * maker, while they are in its audience, may do all of it; made a teen or
+ * a viewer, still delete it. A manager may always `edit`; the other three
+ * only as its maker turned them on for them. An owner may delete one
+ * nobody may change any more.
+ */
+export interface CollectionPowers {
+  /** They made it. */
+  maker: boolean;
+  /** Its maker (or a manager who may) chose them to manage it, and they can see it now. */
+  manager: boolean;
+  /**
+   * Rename it and change its words; put documents in it and take them out;
+   * fill it from a checklist, change the checklist or clear it.
+   */
+  edit: boolean;
+  /** Change who it is for (never to Only me, unless they made it). */
+  change_audience: boolean;
+  delete: boolean;
+  /** Choose its managers: add them, take them away, set what they may do. */
+  choose_managers: boolean;
+  /**
+   * Take its managers away, and nothing more: whoever may choose them, and
+   * an owner while its maker may no longer change it (no sign-in, or outside
+   * its audience), so no collection keeps managers nobody can take away.
+   */
+  remove_managers: boolean;
+}
+
+/** One of a collection's managers, as the family who see it are told (0.9.0). */
+export interface CollectionManager {
+  member_id: string;
+  display_name: string;
+  /** "Can also change who it's for". */
+  may_change_audience: boolean;
+  /** "Can also delete it". */
+  may_delete: boolean;
+  /** "Can also choose managers". */
+  may_choose_managers: boolean;
+  added_at: string;
+}
+
+/** Somebody who could be made a manager: of the family, with a sign-in, who can see it. */
+export interface CollectionManagerCandidate {
+  member_id: string;
+  display_name: string;
+}
+
+/**
+ * GET /collections/{id}/managers, and the answer to every change of them:
+ * its managers, and — for a reader who may choose managers — who else could
+ * be one. Empty for anybody else.
+ */
+export interface CollectionManagers {
+  items: CollectionManager[];
+  eligible: CollectionManagerCandidate[];
+  /** What the reader may do, as the collection's own `my_powers` says. */
+  my_powers: CollectionPowers;
+}
+
+/** POST /collections/{id}/managers; PATCH /collections/{id}/managers/{memberId} takes the switches alone. */
+export interface CollectionManagerInput {
+  member_id?: string;
+  may_change_audience?: boolean;
+  may_delete?: boolean;
+  may_choose_managers?: boolean;
+}
+
+/** The three switches, in plain words, in the order they are offered. */
+export const COLLECTION_MANAGER_SWITCHES = [
+  { key: 'may_change_audience', label: 'Can also change who it’s for' },
+  { key: 'may_delete', label: 'Can also delete it' },
+  { key: 'may_choose_managers', label: 'Can also choose managers' },
+] as const;
+
+/** What every manager may always do, in a sentence. */
+export const COLLECTION_MANAGERS_ALWAYS =
+  'Managers can always add and remove documents, fill it from a checklist, and rename it.';
+
+/** The powers a reader is given by an older vault, which has no managers: its maker's, in its audience. */
+export function collectionPowers(
+  role: Role,
+  collection: Pick<CollectionView, 'mine' | 'audience' | 'my_powers'>,
+): CollectionPowers {
+  if (collection.my_powers) return collection.my_powers;
+  const maker = collection.mine;
+  const now = maker && inCollectionAudience(role, collection.audience);
+  return {
+    maker,
+    manager: false,
+    edit: now,
+    change_audience: now,
+    delete: maker,
+    choose_managers: false,
+    remove_managers: false,
+  };
 }
 
 /** A collection's links outside the family, as the family is told of them (5.19). */
@@ -79,8 +191,9 @@ export interface CollectionItemView {
   document: DocumentView;
   added_at: string;
   /**
-   * For the collection's maker only (`collectionItemHint`): who in its audience is not
-   * given this one. Null for everybody else, always.
+   * For the collection's maker and, since 0.9.0, its managers only
+   * (`collectionItemHint`): who in its audience is not given this one. Null
+   * for everybody else, always.
    */
   hint: string | null;
 }

@@ -22,7 +22,8 @@ import type { CollectionService } from './service.js';
  * Collections of documents (5.14). Everybody signed in reads them — a viewer is
  * given none (A17) — and the changes ask `collection.manage` before they read
  * the body, so somebody who may not is told that first. Only a collection's
- * maker changes it (A18): the service says so, once it has found the collection.
+ * maker, or a manager they chose with that power, changes it (A18, 0.9.0):
+ * the service says so, once it has found the collection.
  * A delete has no body, and its maker may delete their collection whatever their
  * role now, so the service asks `collection.manage` of anybody else.
  */
@@ -84,6 +85,18 @@ const checklistAdd = z
 
 const idParam = z.object({ id: z.string().uuid() });
 const itemParam = z.object({ id: z.string().uuid(), documentId: z.string().uuid() });
+
+/** A manager's three switches (0.9.0): each off unless said. */
+const managerSwitches = z
+  .object({
+    may_change_audience: z.boolean(),
+    may_delete: z.boolean(),
+    may_choose_managers: z.boolean(),
+  })
+  .partial()
+  .strict();
+const managerAdd = managerSwitches.extend({ member_id: z.string().uuid() }).strict();
+const managerParam = z.object({ id: z.string().uuid(), memberId: z.string().uuid() });
 
 /** A page of a collection's documents, as GET /documents pages its own. */
 const pageQuery = z.object({
@@ -195,4 +208,41 @@ export function registerCollections(app: FastifyInstance, collections: Collectio
       metaOf(req),
     ),
   );
+
+  // ------------------------------------------------ its managers (0.9.0)
+
+  /** Who manages it, and who else could: the family who see it. */
+  app.get('/api/v1/collections/:id/managers', auth, async (req) =>
+    collections.managers.list(principal(req), idOf(req)),
+  );
+
+  /** Somebody made a manager, by its maker or a manager who may choose managers. */
+  app.post('/api/v1/collections/:id/managers', manage, async (req, reply) => {
+    const answer = await collections.managers.add(
+      principal(req),
+      idOf(req),
+      parse(managerAdd, req.body ?? {}),
+      metaOf(req),
+    );
+    return reply.status(201).send(answer);
+  });
+
+  /** What a manager may do, changed. */
+  app.patch('/api/v1/collections/:id/managers/:memberId', manage, async (req) => {
+    const { id, memberId } = parse(managerParam, req.params);
+    return collections.managers.update(
+      principal(req),
+      id,
+      memberId,
+      parse(managerSwitches, req.body ?? {}),
+      metaOf(req),
+    );
+  });
+
+  /** A manager taken away. */
+  app.delete('/api/v1/collections/:id/managers/:memberId', manage, async (req, reply) => {
+    const { id, memberId } = parse(managerParam, req.params);
+    await collections.managers.remove(principal(req), id, memberId, metaOf(req));
+    return reply.status(204).send();
+  });
 }
