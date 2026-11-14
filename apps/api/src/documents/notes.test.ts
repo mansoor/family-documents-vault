@@ -260,7 +260,9 @@ describe.skipIf(!testAdminUrl())('notes you can write (5.35)', () => {
     await patch(owner, sarahBill.id, { notes: 'Paid by direct debit, monthly' });
     const sarahs = await activity(sarah);
     expect(sarahs).toContain('Owner changed the note on “Water bill, 2026”');
-    expect(sarahs).toContain('Owner added a note to “The will”');
+    // A will is sensitive: its line never says its title (0.9.0, H1a).
+    expect(sarahs).toContain('Owner added a note to a sensitive document');
+    expect(sarahs.filter((l) => l.includes('The will'))).toEqual([]);
     const tariqs = await activity(tariq);
     expect(tariqs).toContain('Owner changed the note on “Water bill, 2026”');
     // An Adults only document's line is not a teen's.
@@ -316,6 +318,8 @@ describe.skipIf(!testAdminUrl())('notes you can write (5.35)', () => {
       owner_member_id: owner.member_id,
       visibility: 'private',
       notes: 'First words',
+      // Not sensitive, so its snippet shows (H1a).
+      sensitive: false,
     });
     const edited = await patch(owner, mine.id, {
       notes: 'The **Pelican7731** key is under the stairs',
@@ -365,6 +369,8 @@ describe.skipIf(!testAdminUrl())('notes you can write (5.35)', () => {
   it("a search's snippet shows a note as plain text", async () => {
     const doc = await made(owner, {
       title: 'Bins',
+      // Not sensitive, so its snippet shows (H1a).
+      sensitive: false,
       notes: '**Blue** bins go out on *Mondays*: see [the rota](https://council.example/rota)',
     });
     const hit = (await search(sarah, 'Mondays')).items.find((i) => i.document_id === doc.id);

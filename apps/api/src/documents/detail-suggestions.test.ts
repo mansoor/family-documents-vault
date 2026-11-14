@@ -309,7 +309,12 @@ describe.skipIf(!testAdminUrl())('suggestions from the pages (5.37)', () => {
   });
 
   it('a teen gets suggestions for their own documents only', async () => {
-    const theirs = await capture(tariq, { title: 'My passport', owner_member_id: tariq.member_id });
+    // For everyone, said: a teen's own paper with no kind would start Only me (0.9.0, H1a).
+    const theirs = await capture(tariq, {
+      title: 'My passport',
+      owner_member_id: tariq.member_id,
+      visibility: 'household',
+    });
     await readPages(theirs, PASSPORT.replace('SARAH', 'TARIQ'));
     const own = json<DetailSuggestions>(await suggestions(tariq, theirs.document_id));
     expect(own.state).toBe('ready');

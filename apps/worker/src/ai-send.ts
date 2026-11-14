@@ -29,7 +29,10 @@ import type { AiReader, LocalAiAnswer, LocalAiWithout } from './ai-reader.js';
  *     a kind's default changed holds back the next read of every paper left
  *     as its kind says. "Also send sensitive papers" counts only for the
  *     reader it was turned on for (`identity`; S3). A paper held back is
- *     read without the AI, and its proposal says why.
+ *     read without the AI, and its proposal says why. For a sensitive
+ *     paper this is a hard line (0.9.0, H1a): read on the server, and by a
+ *     reader on the household's own network alone — held at the network
+ *     itself by jobs/sensitive-stays-home.test.ts.
  *  2. **The month's cap** (decision 10), for a cloud reader: one household's
  *     sends wait for each other (an advisory lock), so the count holds
  *     however many ask at once; a second send of the same words (an

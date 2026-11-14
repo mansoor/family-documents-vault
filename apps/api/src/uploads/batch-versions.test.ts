@@ -605,12 +605,14 @@ describe.skipIf(!testAdminUrl())('duplicates as versions (S1)', () => {
       0,
       (await activity(owner)).length - ownerSaw.length,
     );
+    // A passport is sensitive: its lines never say its title (0.9.0, H1a).
     expect(lines).toEqual(
       expect.arrayContaining([
-        'Sana uploaded a new copy of “Sana’s renewing passport”',
-        'Sana edited “Sana’s renewing passport”',
+        'Sana uploaded a new copy of a sensitive document',
+        'Sana edited a sensitive document',
       ]),
     );
+    expect(lines.filter((l) => l.includes('renewing passport'))).toEqual([]);
     // A confirmation, counted, as an accept is (I4).
     const learnedAfter = (
       await call(adult, 'GET', '/api/v1/batches/learned')
@@ -721,9 +723,7 @@ describe.skipIf(!testAdminUrl())('duplicates as versions (S1)', () => {
     expect(owed.some((k) => k.startsWith(keysOf.rows[0]?.storage_key as string))).toBe(false);
     expect(owed.length).toBeGreaterThan(0);
     // And the activity says it was taken back.
-    expect(await activity(owner)).toContain(
-      'Sana took back the new copy of “Sana’s renewing passport”',
-    );
+    expect(await activity(owner)).toContain('Sana took back the new copy of a sensitive document');
     const raw = await admin.query<{ n: string }>(
       `select count(*) as n from incoming_file where id = $1 and (as_version or prior_sealed is not null)`,
       [x.item.id],

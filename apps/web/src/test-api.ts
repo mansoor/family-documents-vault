@@ -1,5 +1,8 @@
 import {
   sensitiveOf,
+  SENSITIVE_FOLLOW_CONFIRM,
+  SENSITIVE_SHARE_CONFIRM,
+  sensitiveCollectionShareConfirm,
   checkItem,
   checklistMissing,
   itemAgain,
@@ -510,6 +513,30 @@ export interface FakeState {
   householdOwner?: boolean;
   /** Sensitive, per kind and per document (0.9.0, AIR2): said when true. */
   sensitive?: boolean;
+  /**
+   * What Sensitive protects (0.9.0, H1a): said when true. A sensitive
+   * document's link, or a collection's with one ticked, is refused `409
+   * sensitive_confirm` without `confirm_sensitive`; each link's body is kept
+   * in `shareBodies`.
+   */
+  sensitiveProtects?: boolean;
+  /** The bodies links were made with (H1a), in order. */
+  shareBodies?: Array<Record<string, unknown>>;
+  /** The bodies of POST /collections/{id}/items (H1a), in order. */
+  collectionAdds?: Array<Record<string, unknown>>;
+  /** Documents a collection's link that keeps up with it would send (H1a): asked about first. */
+  followingSensitive?: string[];
+  /**
+   * Live links outside the family still giving a document, by id (H1a): an
+   * edit that makes it sensitive says so (`sensitive_still_shared`), and
+   * POST /documents/{id}/stop-sharing answers `stopSharing`.
+   */
+  liveLinks?: Record<string, number>;
+  stopSharing?: { ended: number; left_out: number; kept: number };
+  /** A kind made sensitive by default while its documents are shared (H1a): how many. */
+  kindStillShared?: number;
+  /** Paused links, by id, that give sensitive documents (H1a): turned back on only when asked. */
+  resumeSensitive?: string[];
   /**
    * Text messages (0.9.0, SMS1): said when a test gives them. `settings` is
    * what GET /sms/settings answers (null: not set up); `test` what a test
@@ -1290,6 +1317,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.householdOwner ? { household_owner: true } : {}),
           // Sensitive (0.9.0, AIR2): said when a test asks.
           ...(state.sensitive ? { sensitive_documents: true } : {}),
+          // What Sensitive protects (0.9.0, H1a): said when a test asks.
+          ...(state.sensitiveProtects ? { sensitive_protects: true } : {}),
           // Neutral wording (0.9.0, H2): said when a test gives it.
           ...(state.wording ? { neutral_wording: true } : {}),
           // A computer that sends scans (0.8.0, D1): said when a test gives computers.
@@ -3314,6 +3343,12 @@ export function installFakeApi(state: FakeState) {
       }
       return json(shown);
     }
+    // Its links ended, made sensitive (0.9.0, H1a): as a test says.
+    if (path.endsWith('/stop-sharing') && method === 'POST') {
+      const id = path.split('/')[4] as string;
+      if (state.liveLinks) state.liveLinks[id] = 0;
+      return json(state.stopSharing ?? { ended: 0, left_out: 0, kept: 0 });
+    }
     if (path.endsWith('/share') && method === 'POST') {
       const documentId = path.split('/')[4] as string;
       const doc = state.documents.find((d) => d.id === documentId && !d.deleted_at);
@@ -3331,6 +3366,19 @@ export function installFakeApi(state: FakeState) {
           'nothing_to_share',
           'There is no file on this document yet, so there is nothing to send.',
         );
+      }
+      // Sensitive (0.9.0, H1a): asked first, made only once the sharer says so.
+      if (state.sensitiveProtects) {
+        (state.shareBodies ??= []).push({ ...(body as Record<string, unknown>) });
+        const kind = state.types.find((t) => t.key === doc.type_key) as
+          { sensitive_default?: boolean } | undefined;
+        const sensitive =
+          typeof doc.sensitive_effective === 'boolean'
+            ? doc.sensitive_effective
+            : sensitiveOf({ sensitive: doc.sensitive as boolean | null | undefined }, kind);
+        if (sensitive && (body as { confirm_sensitive?: boolean }).confirm_sensitive !== true) {
+          return refuse(409, 'sensitive_confirm', SENSITIVE_SHARE_CONFIRM);
+        }
       }
       const b = body as {
         recipient_label?: string;
@@ -3881,6 +3929,17 @@ export function installFakeApi(state: FakeState) {
     if (path.startsWith('/api/v1/shares/') && path.endsWith('/resume') && method === 'POST') {
       if (storedRole() !== 'owner') {
         return refuse(403, 'forbidden', 'Only an owner can turn things back on after a restore.');
+      }
+      // One that gives sensitive documents asks first (0.9.0, H1a).
+      if (
+        state.resumeSensitive?.includes(path.split('/')[4] as string) &&
+        (body as { confirm_sensitive?: boolean } | undefined)?.confirm_sensitive !== true
+      ) {
+        return refuse(
+          409,
+          'sensitive_confirm',
+          'This link gives a sensitive document to somebody outside the family. Turn it back on anyway?',
+        );
       }
       const link = state.shares.find((x) => x.id === path.split('/')[4]);
       // Only a restore's own pause is turned on, as the vault does: one paused
@@ -4864,6 +4923,21 @@ export function installFakeApi(state: FakeState) {
             detail: next.problem.detail,
           });
         }
+        // Sensitive by default turned on while its documents are shared (H1a).
+        const turnedOn =
+          (body as { sensitive_default?: unknown }).sensitive_default === true &&
+          state.kindStillShared;
+        if (turnedOn) {
+          const kept = keep(next.kind);
+          return kept
+            .then((r) => r.json() as Promise<Record<string, unknown>>)
+            .then((saved) =>
+              json({
+                ...saved,
+                warnings: [{ code: 'sensitive_still_shared', documents: state.kindStillShared }],
+              }),
+            );
+        }
         return keep(next.kind);
       }
     }
@@ -5452,7 +5526,14 @@ export function installFakeApi(state: FakeState) {
           change.notes_updated_by_name = 'Mansoor Seikh';
         }
         // A new ETag for every change, as the vault's comes from when it was made.
+        const wasSensitive = doc.sensitive_effective === true;
         Object.assign(doc, change, { etag: `"edit-${state.calls.length}"` });
+        // Made sensitive while links still give it (0.9.0, H1a): saved, and said.
+        const links = state.liveLinks?.[String(doc.id)] ?? 0;
+        if (!wasSensitive && (edit as { sensitive?: unknown }).sensitive === true && links > 0) {
+          doc.sensitive_effective = true;
+          return json({ ...doc, warnings: [{ code: 'sensitive_still_shared', links }] });
+        }
         return json(doc);
       }
       return json(doc);
@@ -6018,6 +6099,7 @@ function answerCollections(
             lock: offer.lock,
             reason: offer.lock ? COLLECTION_SHARE_REASONS[offer.lock] : null,
             viewable: drawable,
+            ...(state.sensitiveProtects ? { sensitive: d.sensitive_effective === true } : {}),
           };
         }),
       });
@@ -6046,6 +6128,16 @@ function answerCollections(
       };
       if (!b.document_ids.every((id) => docsOn(l).some((d) => d.id === id))) {
         return refuse(404, 'not_found', 'That document is not in this collection.');
+      }
+      // Sensitive ones ticked (0.9.0, H1a): asked first.
+      if (state.sensitiveProtects) {
+        (state.shareBodies ??= []).push({ ...(body as Record<string, unknown>) });
+        const n = docsOn(l).filter(
+          (d) => b.document_ids.includes(String(d.id)) && d.sensitive_effective === true,
+        ).length;
+        if (n > 0 && (body as { confirm_sensitive?: boolean }).confirm_sensitive !== true) {
+          return refuse(409, 'sensitive_confirm', sensitiveCollectionShareConfirm(n));
+        }
       }
       const end = new Date(b.expires_at ?? Date.now() + 7 * 864e5);
       const share = {
@@ -6414,6 +6506,16 @@ function answerCollections(
     const ids = (body as { document_ids: string[] }).document_ids;
     // All of them, or none.
     if (!ids.every((id) => seesDoc(state.documents.find((d) => d.id === id)))) return noDocument();
+    // A sensitive one its link that keeps up would send asks first (0.9.0, H1a).
+    if (state.sensitiveProtects) {
+      (state.collectionAdds ??= []).push({ ...(body as Record<string, unknown>) });
+      if (
+        ids.some((id) => state.followingSensitive?.includes(id)) &&
+        (body as { confirm_sensitive?: boolean }).confirm_sensitive !== true
+      ) {
+        return refuse(409, 'sensitive_confirm', SENSITIVE_FOLLOW_CONFIRM);
+      }
+    }
     const changed = replace({
       ...collection,
       items: [

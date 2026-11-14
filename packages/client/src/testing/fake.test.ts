@@ -1,4 +1,11 @@
-import { localToday, refusalFor, shareEndWords, type Role, type Tokens } from '@fdv/shared';
+import {
+  localToday,
+  refusalFor,
+  SENSITIVE_SHARE_CONFIRM,
+  shareEndWords,
+  type Role,
+  type Tokens,
+} from '@fdv/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { createApi } from '../api.js';
 import { createHttp } from '../http.js';
@@ -1624,7 +1631,7 @@ describe('the fake vault, a link shown again to whoever made it (0.9.0)', () => 
       password: 'a long enough password',
     });
     expect((await api.capabilities()).features.share_reveal).toBe(true);
-    const lease = await api.createDocument(token, { title: 'Lease' });
+    const lease = await api.createDocument(token, { title: 'Lease', type_key: 'school_report' });
     const made = await api.share(token, lease.id, { with_pin: true, recipient_label: 'Landlord' });
     expect(made.pin).toMatch(/^\d{4}$/);
     expect(made.share.revealable).toBe(true);
@@ -1718,7 +1725,7 @@ describe('the fake vault, a link emailed to its recipient (0.9.0)', () => {
       password: 'a long enough password',
     });
     expect((await api.capabilities()).features.share_link_email).toBe(true);
-    const lease = await api.createDocument(token, { title: 'Lease' });
+    const lease = await api.createDocument(token, { title: 'Lease', type_key: 'school_report' });
     const made = await api.share(token, lease.id, { with_pin: true });
     expect((await api.shares(token)).items[0]).toMatchObject({
       emailable: true,
@@ -1801,6 +1808,59 @@ describe('the fake vault, notifications by text (0.9.0, SMS2)', () => {
   });
 });
 
+describe('the fake vault, what Sensitive protects (0.9.0, H1a)', () => {
+  it('a sensitive document’s link asks first: 409 sensitive_confirm, then made with confirm_sensitive; any other as before', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    expect((await api.capabilities()).features.sensitive_protects).toBe(true);
+    // A passport is sensitive by its kind; so is a paper with no kind.
+    const passport = await api.createDocument(token, { title: 'Passport', type_key: 'passport' });
+    await expect(api.share(token, passport.id, {})).rejects.toMatchObject({
+      status: 409,
+      code: 'sensitive_confirm',
+      message: SENSITIVE_SHARE_CONFIRM,
+    });
+    expect(vault.state.shares ?? []).toEqual([]);
+    const made = await api.share(token, passport.id, { confirm_sensitive: true });
+    expect(made.share.document_id).toBe(passport.id);
+    // Its page's title as its maker chose; nothing said, as the document is.
+    expect(vault.state.shares?.[0]?.show_title).toBeNull();
+    await api.share(token, passport.id, { confirm_sensitive: true, show_title: true });
+    expect(vault.state.shares?.[0]?.show_title).toBe(true);
+    await expect(
+      api.share(token, (await api.createDocument(token, { title: 'Untitled kind' })).id, {}),
+    ).rejects.toMatchObject({ status: 409, code: 'sensitive_confirm' });
+    // Said not sensitive, or of a kind that is not: as before.
+    const mine = await api.createDocument(token, {
+      title: 'My passport',
+      type_key: 'passport',
+      sensitive: false,
+    });
+    expect((await api.share(token, mine.id, {})).share.document_id).toBe(mine.id);
+    const lease = await api.createDocument(token, { title: 'Lease', type_key: 'school_report' });
+    expect((await api.share(token, lease.id, {})).share.document_id).toBe(lease.id);
+
+    // Made sensitive while its link still gives it: saved, and said; then ended.
+    const edited = await api.updateDocument(token, lease.id, { sensitive: true });
+    expect(edited.sensitive_effective).toBe(true);
+    expect(edited.warnings).toEqual([{ code: 'sensitive_still_shared', links: 1 }]);
+    expect(await api.stopSharing(token, lease.id)).toEqual({ ended: 1, left_out: 0, kept: 0 });
+    expect(
+      (await api.shares(token)).items.filter((s) => s.document_id === lease.id).map((s) => s.state),
+    ).toEqual(['revoked']);
+    // Nothing shared any more: an edit says nothing.
+    expect(
+      (await api.updateDocument(token, lease.id, { title: 'Lease 2' })).warnings,
+    ).toBeUndefined();
+  });
+});
+
 describe('the fake vault, neutral wording (0.9.0, H2)', () => {
   it('keeps the household’s choice for an owner, and each person’s own beside it', async () => {
     const vault = createFakeVault();
@@ -1862,7 +1922,7 @@ describe('the fake vault, codes by text (0.9.0, SMS3)', () => {
     expect((await api.capabilities()).features.sms_codes).toBe(true);
 
     // A link whose code goes by text: the number only ever masked.
-    const lease = await api.createDocument(token, { title: 'Lease' });
+    const lease = await api.createDocument(token, { title: 'Lease', type_key: 'school_report' });
     const made = await api.share(token, lease.id, {
       second_factor: 'sms',
       recipient_phone: '07700 900456',

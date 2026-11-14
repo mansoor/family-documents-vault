@@ -18,6 +18,7 @@
  *     none it says "Somebody" and carries on rather than printing a uuid.
  */
 
+import { SENSITIVE_IN_WORDS } from './sensitive.js';
 import { shareEndWords } from './shares.js';
 import { NEUTRAL_WORDING_WORDS, NEUTRAL_WORDINGS, type NeutralWording } from './wording.js';
 
@@ -40,6 +41,12 @@ export interface ActivityEvent {
   object_id: string | null;
   /** The document's title, when the event is about one and it can be named. */
   object_title: string | null;
+  /**
+   * The document is sensitive (0.9.0, H1a; `sensitiveOf`): its line says
+   * "a sensitive document" in place of its title. Whoever may open it
+   * still taps through to it (`document_id`). Absent: not.
+   */
+  object_sensitive?: boolean;
   /**
    * The collection's name as it is now, when the event is about a collection or a
    * document in one (5.14). The line is shown only to whoever may see the
@@ -161,6 +168,12 @@ const UNNAMED = { named: false } as const;
 
 const quoted = (title: string | null) => (title ? `“${title}”` : 'a document');
 
+/** A document as a line names it: never a sensitive one's title (H1a). */
+const docWords = (e: Pick<ActivityEvent, 'object_title' | 'object_sensitive' | 'object_type'>) =>
+  e.object_type === 'document' && e.object_sensitive === true
+    ? SENSITIVE_IN_WORDS
+    : quoted(e.object_title);
+
 /**
  * One event as a sentence, or null when this event should not be shown at
  * all. The caller has already decided visibility; this decides sayability.
@@ -181,7 +194,7 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
  */
 export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }) | null {
   const who = e.actor ?? (e.actor_label ? capitalise(e.actor_label) : 'Somebody');
-  const doc = quoted(e.object_title);
+  const doc = docWords(e);
   const detail = e.detail ?? {};
   /** A kind of document or a field, by the name it had then (0.5.10). */
   const kind = text(detail.label) ? `“${text(detail.label)}”` : null;
@@ -225,7 +238,8 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       const only = Array.isArray(detail.fields) && detail.fields.length === 1;
       if (c === 'yes')
         return only
-          ? line(`${who} marked ${doc} sensitive`)
+          ? // Not "marked a sensitive document sensitive" (H1a).
+            line(`${who} marked ${e.object_sensitive === true ? 'a document' : doc} sensitive`)
           : line(`${who} edited ${doc} and marked it sensitive`);
       if (c === 'no')
         return only
@@ -719,6 +733,13 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     case 'share.followed':
       return line(
         `${who} put ${doc} in ${collection}, and a link that keeps up with it sent it outside the family`,
+        true,
+      );
+    // 0.9.0 (H1a): made sensitive, and taken out of a collection's link
+    // at its editor's word; the rest of the collection still goes.
+    case 'share.left_out':
+      return line(
+        `${who} took ${doc} out of a link to ${collection}, so it no longer goes outside the family`,
         true,
       );
     case 'share.downloaded':

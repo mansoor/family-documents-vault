@@ -11,6 +11,7 @@ import {
 import { sql } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
+import { sensitiveSql } from '../documents/filters.js';
 import { madeWith } from '../documents/made-with.js';
 
 /**
@@ -282,6 +283,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // so sent outside the family: a line about the document, in the collection,
   // on the link — for those who may know of the link.
   ['share.followed', seesTheDocumentFollowTheLink],
+  // 0.9.0 (H1a): a document made sensitive taken out of a collection's link
+  // — to those who could know it followed or was ticked.
+  ['share.left_out', seesTheDocumentFollowTheLink],
   // people
   ['member.added', BY_TYPE],
   ['member.role_changed', BY_TYPE],
@@ -529,6 +533,8 @@ interface Row {
   actor_guest: string | null;
   member_guest: string | null;
   document_title: string | null;
+  /** Sensitive, all said (H1a): its line names it "a sensitive document". */
+  document_sensitive: boolean | null;
   document_visibility: Visibility | null;
   document_owner: string | null;
   member_name: string | null;
@@ -570,6 +576,9 @@ export class AuditService {
                case when object_member.kind = 'guest'
                     then coalesce(object_member.relationship, '') end as member_guest,
                d.title                   as document_title,
+               -- Sensitive, all said (0.9.0, H1a): such a line never says
+               -- its title, to whoever reads it.
+               case when d.id is not null then ${sensitiveSql('d')} end as document_sensitive,
                -- The live row while there is one; removed for good, its
                -- tombstone (5.24); neither, nobody (the rule fails closed).
                case when d.id is not null then d.visibility
@@ -604,7 +613,7 @@ export class AuditService {
           left join doc_collection l
             on l.id = case when e.object_type = 'collection' then e.object_id
                            when e.action in ('collection.item_added', 'collection.item_removed',
-                                             'share.followed')
+                                             'share.followed', 'share.left_out')
                              then (e.detail->>'collection_id')::uuid
                       end
           -- A request to send documents, as the reader is given it (5.21):
@@ -651,6 +660,7 @@ export class AuditService {
             (r.member_name !== null && r.member_guest !== null
               ? guestLabel(r.member_name, r.member_guest)
               : r.member_name),
+          ...(r.document_sensitive === true ? { object_sensitive: true } : {}),
           collection_name: r.collection_name,
           detail: (r.detail ?? {}) as Record<string, unknown>,
           timezone: householdZone(household?.timezone),
@@ -735,7 +745,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  */
 function linkNamed(r: Row): { id: string; collections: boolean } | undefined {
   if (!r.action.startsWith('share.')) return undefined;
-  const collections = r.object_type === 'collection' || r.action === 'share.followed';
+  const collections =
+    r.object_type === 'collection' ||
+    r.action === 'share.followed' ||
+    r.action === 'share.left_out';
   const id = (r.detail as { share_id?: unknown } | null)?.share_id;
   return { id: typeof id === 'string' && UUID.test(id) ? id.toLowerCase() : '', collections };
 }

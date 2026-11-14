@@ -375,9 +375,13 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
       const own = json<{ items: ActivityLine[] }>(
         await h.app.inject({ url: '/api/v1/audit', headers: as(owner) }),
       );
+      // A passport is sensitive: even its owner's own line does not say its
+      // title (0.9.0, H1a), and taps through to it.
       expect(own.items.map((l) => l.text)).toContain(
-        'Owner opened “Adoption papers” on their phone without a connection',
+        'Owner opened a sensitive document on their phone without a connection',
       );
+      expect(own.items.some((l) => l.document_id === secretEssential)).toBe(true);
+      expect(JSON.stringify(own)).not.toContain('Adoption papers');
       const sams = json<{ items: ActivityLine[] }>(
         await h.app.inject({ url: '/api/v1/audit', headers: as(sam) }),
       );
@@ -609,7 +613,8 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
       method: 'POST',
       url: `/api/v1/documents/${secretId}/share`,
       headers: as(owner),
-      payload: { recipient_label: 'my counsellor' },
+      // Asked, and shared anyway (0.9.0, H1a): it is sensitive.
+      payload: { recipient_label: 'my counsellor', confirm_sensitive: true },
     });
     expect(made.statusCode).toBe(201);
 
@@ -2401,7 +2406,7 @@ for (const attacker of ['restricted', 'guest'] as const)
           method: 'POST',
           url: `/api/v1/documents/${hidden.document}/share`,
           headers: h.as(owner),
-          payload: { recipient_label: `the ${WORD} office` },
+          payload: { recipient_label: `the ${WORD} office`, confirm_sensitive: true },
         });
         expect(share.statusCode, share.body).toBe(201);
         hidden.share = json<{ share: { id: string } }>(share).share.id;
@@ -2428,7 +2433,11 @@ for (const attacker of ['restricted', 'guest'] as const)
           method: 'POST',
           url: `/api/v1/collections/${hidden.collection}/shares`,
           headers: h.as(owner),
-          payload: { document_ids: [hidden.document], recipient_label: 'the council' },
+          payload: {
+            document_ids: [hidden.document],
+            recipient_label: 'the council',
+            confirm_sensitive: true,
+          },
         });
         expect(collectionShare.statusCode, collectionShare.body).toBe(201);
         hidden.collectionShare = json<{ share: { id: string } }>(collectionShare).share.id;

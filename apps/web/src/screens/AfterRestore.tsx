@@ -22,6 +22,7 @@ import {
   turnedBackOnWords,
 } from './Sharing.js';
 import { dayWordsOf, familyZoneNow } from '../family-time.js';
+import { useSensitiveConfirm } from '../sensitive-confirm.js';
 
 /**
  * "1 link is paused until you turn it back on", "2 links and 1 request you
@@ -105,6 +106,10 @@ export function AfterRestoreBanner() {
  */
 export function AfterRestoreScreen() {
   const { caps, guarded, withToken, authVersion } = useApp();
+  const confirm = useSensitiveConfirm({
+    title: 'Turn on a link to sensitive documents?',
+    confirmLabel: 'Turn it back on',
+  });
   const identityKept = caps?.features.member_identity === true;
   const { data: identity } = useLoad(
     async (t) => (identityKept ? api.identityAudience(t) : null),
@@ -173,7 +178,12 @@ export function AfterRestoreScreen() {
     try {
       const done =
         how === 'resume'
-          ? await guarded((t) => api.resumeShare(t, link.id))
+          ? // One that gives sensitive documents asks first (0.9.0, H1a).
+            await confirm.ask((confirmed) =>
+              guarded((t) =>
+                api.resumeShare(t, link.id, confirmed ? { confirm_sensitive: true } : {}),
+              ),
+            )
           : await withToken((t) => api.revokeShare(t, link.id));
       if (done === null) return;
       const what = `The link to ${linkTarget(link, true)}`;
@@ -258,6 +268,7 @@ export function AfterRestoreScreen() {
         </p>
       )}
       <ErrorNote message={loadError ?? error} />
+      {confirm.dialog}
       <p className="notice" role="status" tabIndex={-1} ref={status} hidden={!said}>
         {said}
       </p>

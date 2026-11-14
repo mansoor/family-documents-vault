@@ -546,6 +546,16 @@ export interface CapabilityFeatures {
    * from older vaults, which name every document but Only me by email.
    */
   neutral_wording?: boolean;
+  /**
+   * What Sensitive protects (0.9.0, H1a): a teen's or a grown-up child's
+   * own sensitive paper starts as Only me where nobody says who can see it;
+   * a link to a sensitive document — a collection's with one ticked, and
+   * one put in a collection whose link keeps up with it — asks
+   * `confirm_sensitive: true`, else `409 sensitive_confirm`; a link's
+   * `show_title`; search hits with no snippet, and activity lines that say
+   * "a sensitive document", for a sensitive one. Absent from older vaults.
+   */
+  sensitive_protects?: boolean;
 }
 
 export interface CapabilityLimits {

@@ -38,8 +38,14 @@ import {
   NOT_SURE_YET,
   THE_HOUSEHOLD,
   asItsKindSays,
+  keepsOwnSensitive,
+  localToday,
   SENSITIVE_LABEL,
   SENSITIVE_MEANS,
+  SENSITIVE_ONLY_ME_NOTE,
+  stopSharingWords,
+  sensitiveOf,
+  sensitiveStartingVisibility,
 } from '@fdv/shared';
 import {
   useEffect,
@@ -84,9 +90,10 @@ import {
   TopBar,
 } from '../ui.js';
 import { LinksChoiceDialog, linksAsk, type LinksAsk } from './Visibility.js';
+import { StillSharedDialog } from '../sensitive-confirm.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 import { EmailInLine } from '../mail-in.js';
-import { localeReadsMonthFirst } from '../family-time.js';
+import { familyZoneNow, localeReadsMonthFirst } from '../family-time.js';
 import { mayChange } from '../DocActions.js';
 import { DocPanes } from '../doc-panes.js';
 import { useShellMode } from '../shell.js';
@@ -175,6 +182,22 @@ function startingVisibility(
   const v = effectiveVisibility({}, type, role);
   if (v !== 'private' || (owner !== '' && owner === me)) return v;
   return can(role, 'document.see_adults') ? 'adults' : 'household';
+}
+
+/**
+ * Whether the person adding papers keeps their own sensitive ones to
+ * themselves from the start (0.9.0, H1a; `keepsOwnSensitive`): a teen, or a
+ * grown-up child, by their own date of birth and relationship as the
+ * family has them, on the family's calendar.
+ */
+function keepsOwnSensitiveHere(
+  me: Pick<Member, 'role' | 'date_of_birth' | 'relationship'> | undefined,
+): boolean {
+  if (!me) return false;
+  return keepsOwnSensitive(
+    { role: me.role ?? 'owner', date_of_birth: me.date_of_birth, relationship: me.relationship },
+    localToday(familyZoneNow()),
+  );
 }
 
 /**
@@ -437,6 +460,11 @@ export function ConfirmScreen() {
   // Into Only me with links of one's own (5.41): asked here as "Who can see
   // this" asks it, and the save made again with the answer (the Phase 5
   // exit's third round, W1). Put away: nothing is saved, the card stays.
+  const [stillShared, setStillShared] = useState<{
+    links: number;
+    id: string;
+    done: () => void;
+  } | null>(null);
   const [linksAsked, setLinksAsked] = useState<{
     ask: LinksAsk;
     answer: (ownLinks: 'end' | 'keep' | null) => void;
@@ -636,10 +664,29 @@ export function ConfirmScreen() {
             setData({ doc: now, types, members });
             throw err;
           }
+          // Made sensitive while links outside the family still give it
+          // (0.9.0, H1a): saved; now asked whether to keep them or end them.
+          const shared = saved.warnings?.find((w) => w.code === 'sensitive_still_shared');
+          if (shared?.links) {
+            const links = shared.links;
+            const id = saved.id;
+            await new Promise<void>((done) => setStillShared({ links, id, done }));
+            setStillShared(null);
+          }
           if (cameFromTheApp()) void navigate(-1);
           else void navigate(`/documents/${saved.id}`, { replace: true });
         }}
       />
+      {stillShared && (
+        <StillSharedDialog
+          links={stillShared.links}
+          onEnd={async () => {
+            const r = await withToken((t) => api.stopSharing(t, stillShared.id));
+            return r ? stopSharingWords(r) : 'Nothing was changed.';
+          }}
+          onDone={stillShared.done}
+        />
+      )}
       {linksAsked && (
         <LinksChoiceDialog
           ask={linksAsked.ask}
@@ -1070,6 +1117,23 @@ export function ConfirmForm(props: {
 }) {
   const { types, members, initial } = props;
   const { caps } = useApp();
+  // What Sensitive protects (0.9.0, H1a), where the vault has it: a teen's
+  // or a grown-up child's own sensitive paper starts as Only me, and the
+  // card says why.
+  const protects = caps?.features.sensitive_protects === true;
+  const keeps = protects && keepsOwnSensitiveHere(members.find((m) => m.is_me));
+  /** Who can see it, with that rule on top of `v`, for a kind, a person and a Sensitive choice. */
+  const withSensitive = (
+    v: Visibility,
+    t: DocumentTypeView | undefined,
+    o: string,
+    s: SensitiveChoice,
+  ): Visibility =>
+    sensitiveStartingVisibility(v, {
+      sensitive: sensitiveOf({ sensitive: sensitiveValue(s) }, t ?? null),
+      own: o !== '' && o === members.find((m) => m.is_me)?.id,
+      keeps,
+    });
   // What the document held when the card was filled, which Save compares
   // with: moved on when Save finds it changed somewhere else since.
   const [base, setBase] = useState(initial);
@@ -1088,7 +1152,17 @@ export function ConfirmForm(props: {
   const [expires, setExpires] = useState(initial.expires);
   const [identifier, setIdentifier] = useState(initial.identifier);
   const [location, setLocation] = useState(initial.location);
-  const [visibility, setVisibility] = useState<Visibility>(initial.visibility);
+  // A new one starts as Only me where H1a's rule says so.
+  const [visibility, setVisibility] = useState<Visibility>(() =>
+    props.fileName
+      ? withSensitive(
+          initial.visibility,
+          types.find((t) => t.key === initial.typeKey),
+          initial.owner,
+          sensitiveChoice(initial.sensitive),
+        )
+      : initial.visibility,
+  );
   // Until somebody chooses who can see a new one, it follows the kind and
   // the person, as startingVisibility says.
   const [visibilityChosen, setVisibilityChosen] = useState(false);
@@ -1155,9 +1229,29 @@ export function ConfirmForm(props: {
   const type = types.find((t) => t.key === typeKey);
   const me = members.find((m) => m.is_me);
   const myRole = me?.role ?? 'owner';
-  const startVisibility =
+  const kindStart =
     props.startVisibility ??
     ((t: DocumentTypeView | undefined, o: string) => startingVisibility(t, myRole, o, me?.id));
+  // And H1a's rule on top (0.9.0): Only me for the adder's own sensitive paper.
+  const startVisibility = (
+    t: DocumentTypeView | undefined,
+    o: string,
+    s: SensitiveChoice = sensitive,
+  ): Visibility => withSensitive(kindStart(t, o), t, o, s);
+  // It starts as Only me by that rule now, nobody having chosen: the card says why.
+  const sensitiveOnlyMe =
+    Boolean(props.fileName) &&
+    !visibilityChosen &&
+    visibility === 'private' &&
+    keeps &&
+    owner !== '' &&
+    owner === me?.id &&
+    sensitiveOf({ sensitive: sensitiveValue(sensitive) }, type ?? null);
+  /** Sensitive chosen on the card: a new one's start follows it, nobody having chosen. */
+  const chooseSensitive = (v: SensitiveChoice) => {
+    setSensitive(v);
+    if (props.fileName && !visibilityChosen) setVisibility(startVisibility(type, owner, v));
+  };
   const teen = myRole === 'teen';
   // A teen cannot see Adults only documents, their own included.
   const adultsOnlyAllowed = !teen;
@@ -1512,7 +1606,10 @@ export function ConfirmForm(props: {
       owner_member_id: household ? null : owner || null,
       // Said either way where the vault has it: Not sure yet is a choice too (0.9.0).
       ...(householdOffered ? { household_owned: household } : {}),
-      visibility,
+      // A new one's, nobody having chosen, before the vault has said what it
+      // does (its capabilities): left to the vault, whose own default knows
+      // H1a's rule — never a guess made without it.
+      ...(props.fileName && caps === null && !visibilityChosen ? {} : { visibility }),
     };
     // Sensitive, only where the vault has it and only when the card changed
     // it (0.9.0, AIR2): what was kept, or a batch's default, is left as it is.
@@ -2028,13 +2125,18 @@ export function ConfirmForm(props: {
               Only you can open this. Nobody can open it after you, unless you leave a key.
             </span>
           )}
+          {sensitiveOnlyMe && (
+            <span className="muted sensitive-only-me" role="note">
+              {SENSITIVE_ONLY_ME_NOTE}
+            </span>
+          )}
         </div>
         {sensitiveOffered && (
           <Select
             id="f-sensitive"
             label={SENSITIVE_LABEL}
             value={sensitive}
-            onChange={(v) => setSensitive(v as SensitiveChoice)}
+            onChange={(v) => chooseSensitive(v as SensitiveChoice)}
             options={sensitiveChoices}
             hint={SENSITIVE_MEANS}
           />

@@ -121,6 +121,7 @@ import {
   GUEST_ALWAYS_LIMITED,
   HOUSEHOLD_OR_PERSON,
   SENSITIVE_BY_DEFAULT,
+  SENSITIVE_SHARE_CONFIRM,
   sensitiveOf,
   TEEN_KEEPS_SENSITIVE,
   GUEST_MAX_DAYS,
@@ -616,6 +617,11 @@ export interface FakeShare {
    * whom and with what message, in the clear as only a fake may, and when.
    */
   emailed?: { to: string; message: string | null; at: string }[];
+  /**
+   * Whether its page shows the document's title (0.9.0, H1a): as its maker
+   * chose, or null — as the document is (`linkShowsTitle`).
+   */
+  show_title?: boolean | null;
 }
 
 /** A viewer's limits, as the fake keeps them (5.33): the flags always said. */
@@ -2439,8 +2445,9 @@ export function createFakeVault(): {
     sessionOf: () => FakeSession | ResponseLike,
   ): ResponseLike | null => {
     const making = /^\/api\/v1\/documents\/([^/]+)\/share$/.exec(path);
+    const stopping = /^\/api\/v1\/documents\/([^/]+)\/stop-sharing$/.exec(path);
     const one = /^\/api\/v1\/shares\/([^/]+)(\/reveal|\/email)?$/.exec(path);
-    if (!making && !one && path !== '/api/v1/shares') return null;
+    if (!making && !stopping && !one && path !== '/api/v1/shares') return null;
     const s = sessionOf();
     if (!('id' in s)) return s;
     const who = whoOf(s);
@@ -2465,6 +2472,20 @@ export function createFakeVault(): {
     if (!can(who.role, 'document.share')) {
       return fail(403, 'forbidden', refusalFor('document.share'));
     }
+    // Its links ended, made sensitive (0.9.0, H1a): the fake keeps no
+    // collection's links, so each is its own, taken back.
+    if (stopping && init.method === 'POST') {
+      const id = decodeURIComponent(stopping[1] as string);
+      const doc = state.documents.find((d) => d.id === id && !d.deleted_at);
+      if (!doc) return fail(404, 'not_found', 'That document is not in the vault.');
+      let ended = 0;
+      for (const l of links) {
+        if (l.share.document_id !== id || l.share.state !== 'active') continue;
+        l.share = { ...l.share, state: 'revoked' };
+        ended += 1;
+      }
+      return ok({ ended, left_out: 0, kept: 0 });
+    }
     if (making && init.method === 'POST') {
       const doc = state.documents.find(
         (d) => d.id === decodeURIComponent(making[1] as string) && !d.deleted_at,
@@ -2477,6 +2498,14 @@ export function createFakeVault(): {
         })
       ) {
         return fail(404, 'not_found', 'That document is not in the vault.');
+      }
+      // Sensitive, all said (0.9.0, H1a): asked first, made only once the
+      // sharer says so.
+      if (
+        body.confirm_sensitive !== true &&
+        sensitiveOf(doc, state.types.find((t) => t.key === doc.type_key) ?? null)
+      ) {
+        return fail(409, 'sensitive_confirm', SENSITIVE_SHARE_CONFIRM);
       }
       const token = `fake-link-${next('token')}`.padEnd(43, 'x');
       const pin = body.with_pin === true ? String(1000 + (n % 9000)) : null;
@@ -2544,7 +2573,15 @@ export function createFakeVault(): {
         summary: 'Not opened yet',
       };
       // A password the sharer typed is theirs, and never kept to show again.
-      const made: FakeShare = { share, made_by: who.memberId, token, pin, password };
+      // Whether its page shows the title (H1a): as chosen, else as the document is.
+      const made: FakeShare = {
+        share,
+        made_by: who.memberId,
+        token,
+        pin,
+        password,
+        show_title: typeof body.show_title === 'boolean' ? body.show_title : null,
+      };
       links.unshift(made);
       const created: CreatedShare = {
         share: view(made),
@@ -3063,6 +3100,8 @@ export function createFakeVault(): {
           ai_reader_send_sensitive: true,
           // Neutral wording, the household's and each person's (0.9.0, H2).
           neutral_wording: true,
+          // What Sensitive protects (0.9.0, H1a): a sensitive document's link asks first.
+          sensitive_protects: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -3635,6 +3674,10 @@ export function createFakeVault(): {
           object_type: 'document',
           object_id: doc.id,
           object_title: doc.title ?? null,
+          // Its line says "a sensitive document" (0.9.0, H1a), as the vault's.
+          ...(sensitiveOf(doc, state.types.find((t) => t.key === doc.type_key) ?? null)
+            ? { object_sensitive: true }
+            : {}),
           detail: {},
         });
         return ok(viewOf(doc), 201);
@@ -3852,6 +3895,11 @@ export function createFakeVault(): {
           `The fake vault does not keep ${unkept.join(', ')} on an edit.`,
         );
       }
+      // Sensitive before the edit (0.9.0, H1a), to say whether it made it so.
+      const wasSensitive = sensitiveOf(
+        doc,
+        state.types.find((t) => t.key === doc.type_key) ?? null,
+      );
       const type_key =
         body.type_key !== undefined ? (body.type_key as string | null) : (doc.type_key ?? null);
       // As the real vault (0.9.0, N1): a note stays a note, and nothing becomes one.
@@ -3922,6 +3970,18 @@ export function createFakeVault(): {
         stampNotes(doc, before, editor.memberId);
       }
       doc.revision = (doc.revision ?? 1) + 1;
+      // Made sensitive while its links outside the family still give it
+      // (0.9.0, H1a): the edit is made, and the answer says how many.
+      const nowSensitive = sensitiveOf(
+        doc,
+        state.types.find((t) => t.key === doc.type_key) ?? null,
+      );
+      const links = (state.shares ?? []).filter(
+        (l) => l.share.document_id === doc.id && l.share.state === 'active',
+      ).length;
+      if (!wasSensitive && nowSensitive && links > 0) {
+        return ok({ ...viewOf(doc), warnings: [{ code: 'sensitive_still_shared', links }] });
+      }
       return ok(viewOf(doc));
     }
     // Uploads, the way the real vault treats their keys: a retry is answered

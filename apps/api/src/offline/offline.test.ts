@@ -184,7 +184,8 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
     await make(owner, 'Adults will', { visibility: 'adults' });
     await make(owner, 'Owner private', { visibility: 'private' });
     await make(adult, 'Adult private', { visibility: 'private' });
-    await make(teen, 'Teen passport');
+    // For everyone, said: a teen's own passport would start Only me (0.9.0, H1a).
+    await make(teen, 'Teen passport', { visibility: 'household' });
     await make(owner, 'Water bill', { is_essential: false });
     await make(owner, 'No file yet', { file: false });
     await make(owner, 'In the bin');
@@ -367,7 +368,8 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
     const lines = (await h.app.inject({ url: '/api/v1/audit', headers: h.as(owner) }))
       .json<{ items: ActivityLine[] }>()
       .items.map((l) => l.text);
-    expect(lines).toContain('Owner’s phone kept “Household passport” for offline use');
+    // A passport is sensitive: its line never says its title (0.9.0, H1a).
+    expect(lines).toContain('Owner’s phone kept a sensitive document for offline use');
   });
 
   it('opens are recorded once however often they are sent', async () => {
@@ -405,10 +407,14 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
     const lines = (await h.app.inject({ url: '/api/v1/audit', headers: h.as(owner) }))
       .json<{ items: ActivityLine[] }>()
       .items.map((l) => l.text);
+    // A passport and a will are sensitive: their lines never say their titles (0.9.0, H1a).
     expect(lines).toContain(
-      'Owner opened “Household passport” on their phone without a connection',
+      'Owner opened a sensitive document on their phone without a connection',
     );
-    expect(lines).toContain('Owner showed “Adults will” from their phone without a connection');
+    expect(lines).toContain(
+      'Owner showed a sensitive document from their phone without a connection',
+    );
+    expect(lines.filter((l) => /Household passport|Adults will/.test(l))).toEqual([]);
   });
 
   it('the phone’s time is clamped and kept in detail; the record is dated when it arrived', async () => {

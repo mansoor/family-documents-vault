@@ -71,7 +71,7 @@ describe('Sensitive on the card (0.9.0, AIR2)', () => {
     await screen.findByRole('heading', { name: 'Is this right?' });
     await waitFor(() => expect(sensitiveSelect().value).toBe(''));
     expect(optionsOf(sensitiveSelect())).toEqual(['As its kind says (yes)', 'Yes', 'No']);
-    expect(screen.getByText(/Never sent to a cloud AI reader/)).toBeInTheDocument();
+    expect(screen.getByText(/never sent to a cloud AI reader/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
     await waitFor(() => expect(window.location.pathname).toBe(`/documents/${KEPT.id}`));
     expect('sensitive' in (patchOf(state) ?? {})).toBe(false);

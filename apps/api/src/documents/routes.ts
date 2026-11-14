@@ -887,19 +887,17 @@ export function registerDocuments(
   const devicesOf = (req: FastifyRequest) =>
     presentedDeviceCookies(req.cookies, SHARE_DEVICE_COOKIE);
   const tokenParam = z.object({ token: z.string().min(16).max(256) });
+  /** A paused link turned back on (5.24): asked first when it gives sensitive documents (H1a). */
+  const resumeBody = z.object({ confirm_sensitive: z.boolean().optional() }).strict();
 
   app.post<{ Params: { id: string } }>('/api/v1/documents/:id/share', auth, async (req, reply) => {
     // A link is a way to open the document without signing in, so making
     // one asks what opening it asks (SEC-17).
     const id = parse(idParam, req.params).id;
+    const body = parse(shareBody, req.body ?? {});
     const ask = stepUp ? await docs.stepUpForDocument(principal(req), id) : null;
     if (stepUp && ask) await stepUp.require(principal(req), ask);
-    const created = await shares.create(
-      principal(req),
-      id,
-      parse(shareBody, req.body ?? {}),
-      metaOf(req),
-    );
+    const created = await shares.create(principal(req), id, body, metaOf(req));
     return reply.status(201).send(created);
   });
 
@@ -1033,8 +1031,18 @@ export function registerDocuments(
       const ask = stepUp ? await docs.stepUpForDocument(principal(req), target.document_id) : null;
       if (stepUp && ask) await stepUp.require(principal(req), ask);
     }
-    return shares.resume(principal(req), id, metaOf(req));
+    const body = parse(resumeBody, req.body ?? {});
+    return shares.resume(principal(req), id, metaOf(req), body.confirm_sensitive === true);
   });
+
+  /**
+   * A document made sensitive while links outside the family still give it
+   * (0.9.0, H1a): those links ended — its own taken back, a collection's
+   * made to leave it out — at its editor's word.
+   */
+  app.post<{ Params: { id: string } }>('/api/v1/documents/:id/stop-sharing', auth, async (req) =>
+    shares.stopSharing(principal(req), parse(idParam, req.params).id, metaOf(req)),
+  );
 
   // What the recipient calls. Nobody signs in for these, so they are
   // rate-limited like the front door.

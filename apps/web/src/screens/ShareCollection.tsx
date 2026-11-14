@@ -1,7 +1,12 @@
 import {
   can,
+  DOWNLOAD_KEEPS_DETAILS,
   FOLLOW_MAX_DAYS,
+  SENSITIVE_LABEL,
+  sensitiveCollectionShareConfirm,
   SHARE_MAX_DAYS,
+  SHOW_TITLE_COLLECTION_HINT,
+  SHOW_TITLE_LABEL,
   type Capabilities,
   type CollectionShareItem,
   type CollectionView,
@@ -10,7 +15,8 @@ import {
 import { useEffect, useRef, useState } from 'react';
 import { api, type CreatedShare } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
-import { Button, ErrorNote, LockIcon } from '../ui.js';
+import { Button, Check, ErrorNote, LockIcon } from '../ui.js';
+import { useSensitiveConfirm } from '../sensitive-confirm.js';
 import {
   codeAddressRefusal,
   HandOver,
@@ -82,6 +88,14 @@ export function ShareCollectionPanel(props: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [made, setMade] = useState<CreatedShare | null>(null);
+  // What Sensitive protects (0.9.0, H1a): a link with a sensitive one ticked
+  // asks first; their titles show on the link's page only if chosen.
+  const protects = caps?.features.sensitive_protects === true;
+  const [showTitle, setShowTitle] = useState(false);
+  const confirm = useSensitiveConfirm({
+    title: 'Share sensitive documents?',
+    confirmLabel: 'Share anyway',
+  });
   // Once what is in it has come, the first box takes the focus: the sheet
   // starts at the top, where the choosing is, not at whatever came first.
   const firstBox = useRef<HTMLInputElement | null>(null);
@@ -109,6 +123,7 @@ export function ShareCollectionPanel(props: {
     factors: linkFactors(caps, texts),
   });
   const nothing = ticked.length === 0 && !follow;
+  const sensitiveTicked = ticked.filter((i) => i.sensitive === true).length;
 
   const working = (on: boolean) => {
     setBusy(on);
@@ -120,19 +135,30 @@ export function ShareCollectionPanel(props: {
     working(true);
     setError(null);
     try {
-      const created = await guarded((t) =>
-        api.shareCollection(t, props.collection.id, {
-          ...read.body,
-          document_ids: ticked.map((i) => i.document_id),
-          // What it offered and was left unticked never follows, even if it
-          // leaves the collection while this sheet is open (5.19 review).
-          ...(follow
-            ? {
-                follow_collection: true,
-                left_out_ids: items.filter((i) => !isTicked(i)).map((i) => i.document_id),
-              }
-            : {}),
-        }),
+      const body = {
+        ...read.body,
+        document_ids: ticked.map((i) => i.document_id),
+        // What it offered and was left unticked never follows, even if it
+        // leaves the collection while this sheet is open (5.19 review).
+        ...(follow
+          ? {
+              follow_collection: true,
+              left_out_ids: items.filter((i) => !isTicked(i)).map((i) => i.document_id),
+            }
+          : {}),
+        // Its sensitive ones' titles on the link's page, only if chosen (H1a).
+        ...(protects && showTitle ? { show_title: true } : {}),
+      };
+      const created = await confirm.ask(
+        (confirmed) =>
+          guarded((t) =>
+            api.shareCollection(
+              t,
+              props.collection.id,
+              confirmed ? { ...body, confirm_sensitive: true } : body,
+            ),
+          ),
+        protects && sensitiveTicked > 0 ? sensitiveCollectionShareConfirm(sensitiveTicked) : null,
       );
       if (created) {
         setMade(created);
@@ -161,6 +187,7 @@ export function ShareCollectionPanel(props: {
         the collection, stops being sent.
       </p>
       <ErrorNote message={error ?? loadError} />
+      {confirm.dialog}
       {data === null && !loadError && (
         <p className="muted" role="status">
           Finding what is in it…
@@ -195,6 +222,9 @@ export function ShareCollectionPanel(props: {
                     <label htmlFor={id}>
                       <span>{i.title ?? 'A document'}</span>
                       {i.type_label && <span className="muted">{i.type_label}</span>}
+                      {protects && i.sensitive === true && (
+                        <span className="muted">{SENSITIVE_LABEL}</span>
+                      )}
                     </label>
                     {i.reason && (
                       <span
@@ -251,6 +281,19 @@ export function ShareCollectionPanel(props: {
             notViewable="Word and Excel files can only be shared with download: untick them to share the rest to view."
             viewNote="They will see the first 30 pages of each."
           />
+          {protects && (sensitiveTicked > 0 || follow) && (
+            <>
+              <Check
+                id="share-show-title"
+                checked={showTitle}
+                label={SHOW_TITLE_LABEL}
+                note={SHOW_TITLE_COLLECTION_HINT}
+                onChange={setShowTitle}
+              />
+              {/* The page, not the file (the H1a review, M5). */}
+              <p className="muted">{DOWNLOAD_KEEPS_DETAILS}</p>
+            </>
+          )}
           <p className="muted">
             You will be asked to confirm it is you: a collection can say a lot.
           </p>

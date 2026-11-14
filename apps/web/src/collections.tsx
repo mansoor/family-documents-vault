@@ -18,6 +18,7 @@ import { api, ApiRequestError } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { storedRole } from './session.js';
 import { Button, ErrorNote, Field, Pills, Select, TextArea } from './ui.js';
+import { useSensitiveConfirm } from './sensitive-confirm.js';
 
 /**
  * Collections of documents on the web (5.15): what the Collections screen, a collection's
@@ -365,6 +366,11 @@ export function AddToCollection(props: {
   onAdded?: (said: string) => void;
 }) {
   const { withToken } = useApp();
+  // A sensitive one its link that keeps up with it would send asks first (0.9.0, H1a).
+  const confirm = useSensitiveConfirm({
+    title: 'Put a sensitive document in?',
+    confirmLabel: 'Put it in anyway',
+  });
   const role = storedRole();
   const one = props.documentIds.length === 1 ? (props.documentIds[0] ?? null) : null;
   const {
@@ -449,8 +455,16 @@ export function AddToCollection(props: {
     setError(null);
     setNote(null);
     try {
-      const after = await withToken((t) =>
-        api.addToCollection(t, collection.id, props.documentIds),
+      // A sensitive one its link that keeps up would send asks first (H1a).
+      const after = await confirm.ask((confirmed) =>
+        withToken((t) =>
+          api.addToCollection(
+            t,
+            collection.id,
+            props.documentIds,
+            confirmed ? { confirm_sensitive: true } : {},
+          ),
+        ),
       );
       if (!after) return;
       setData((d) =>
@@ -510,6 +524,7 @@ export function AddToCollection(props: {
       <h2 id={titleId} style={{ fontSize: 20 }}>
         Add {props.what} to a collection
       </h2>
+      {confirm.dialog}
       <p ref={status} className="notice status-line" role="status" tabIndex={-1}>
         {note}
       </p>

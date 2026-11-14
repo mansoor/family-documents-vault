@@ -378,7 +378,10 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
     const lines = (await activity(teen)).map((l) => l.text);
     expect(lines).toContain('Owner added a kind of document, “Garage lease”');
     expect(lines).toContain('Owner archived “Garage lease”');
-    expect(lines).toContain('Owner added “Garage on Mill Lane”');
+    // A household's own kind starts Sensitive (AIR2): its document's line
+    // never says its title (0.9.0, H1a).
+    expect(lines).toContain('Owner added a sensitive document');
+    expect(lines.filter((l) => l.includes('Mill Lane'))).toEqual([]);
     // A viewer reads no log at all.
     expect((await call(viewer, 'GET', '/api/v1/audit')).statusCode).toBe(403);
 

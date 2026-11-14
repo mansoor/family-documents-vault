@@ -27,6 +27,7 @@ import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { OutcomeNote, type Outcome } from '../table-grid.js';
 import { ConfirmDialog, ErrorNote, Sheet, TopBar, TrashIcon } from '../ui.js';
+import { useSensitiveConfirm } from '../sensitive-confirm.js';
 import { AddDocumentsPicker } from '../collection-add.js';
 import { Toast, type ReviewToast } from '../batch-review.js';
 import type { Removed } from '../DocActions.js';
@@ -223,6 +224,11 @@ function whose(collection: CollectionView, members: Member[]): string {
 // ------------------------------------------------------------------ one collection
 
 export function CollectionScreen() {
+  // Undo: a sensitive one its link that keeps up with it would send asks first (0.9.0, H1a).
+  const confirm = useSensitiveConfirm({
+    title: 'Put a sensitive document in?',
+    confirmLabel: 'Put it in anyway',
+  });
   const { id } = useParams<{ id: string }>();
   const { withToken, authVersion, caps } = useApp();
   const navigate = useNavigate();
@@ -396,7 +402,17 @@ export function CollectionScreen() {
     const { itemIds } = was.undo;
     setToast({ ...was, busy: true });
     try {
-      const back = await withToken((t) => api.addToCollection(t, collection.id, itemIds));
+      // A sensitive one its link that keeps up would send asks again (H1a).
+      const back = await confirm.ask((confirmed) =>
+        withToken((t) =>
+          api.addToCollection(
+            t,
+            collection.id,
+            itemIds,
+            confirmed ? { confirm_sensitive: true } : {},
+          ),
+        ),
+      );
       if (!back) {
         setToast({ ...was, busy: false });
         return;
@@ -487,6 +503,7 @@ export function CollectionScreen() {
   const sentence = audienceSentence(collection.audience);
   return (
     <main className={`page page-top page-wide has-nav${toast ? ' has-toast' : ''}`}>
+      {confirm.dialog}
       <TopBar
         title={collection.name}
         back="/collections"

@@ -105,7 +105,9 @@ async function makeLink(
   const title = `Tenancy agreement ${Date.now()}`;
   const doc = await request.post('/api/v1/documents', {
     headers: auth,
-    data: { title, visibility: 'household' },
+    // A lease: not sensitive, so the link goes without asking (0.9.0, H1a),
+    // and its page shows its title.
+    data: { title, type_key: 'property_deed', visibility: 'household' },
   });
   expect(doc.ok()).toBe(true);
   const { id } = (await doc.json()) as { id: string };
@@ -372,7 +374,11 @@ test('an emailed code goes only through operator mail, and the page asks for it 
     const auth = { authorization: `Bearer ${await (signedIn ??= signIn(request))}` };
     const doc = await request.post('/api/v1/documents', {
       headers: auth,
-      data: { title: `Emailed code ${Date.now()}`, visibility: 'household' },
+      data: {
+        title: `Emailed code ${Date.now()}`,
+        type_key: 'property_deed',
+        visibility: 'household',
+      },
     });
     const { id } = (await doc.json()) as { id: string };
     const refused = await request.post(`/api/v1/documents/${id}/share`, {

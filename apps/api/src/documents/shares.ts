@@ -41,6 +41,8 @@ import { ApiError, notFound } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import { seenDocument, type Enqueue } from './service.js';
 import { madeWith } from './made-with.js';
+import { sensitiveSql } from './filters.js';
+import { documentSensitive, liveLinksGiving, sensitiveConfirm } from './sensitive-start.js';
 import { linkEmail } from './share-link-email.js';
 import { onlyMeShareable } from './only-me-rule.js';
 import { endSessions } from './share-sessions.js';
@@ -66,6 +68,9 @@ import {
   PREVIEW_MAX_PAGES,
   readShareCode,
   seesAdults,
+  sensitiveCollectionShareConfirm,
+  sensitiveResumeConfirm,
+  type StopSharing,
   SHARE_CODE_CANNOT_SEND,
   SHARE_CODE_MINUTES,
   SHARE_CODE_SENDS,
@@ -85,6 +90,7 @@ import {
   shareLinkMessage,
   shareUses,
   suspensionInEffect,
+  UNTITLED_ON_LINK,
   withinCollectionAudience,
   type CollectionAudience,
   type CollectionSharePreview,
@@ -264,6 +270,16 @@ const shareOptions = {
   recipient_phone: z.string().trim().min(1).max(40).optional(),
   /** The first browser to open it is the only one it opens in (5.20). */
   this_device_only: z.boolean().optional(),
+  /**
+   * The sharer was asked, and shares a sensitive document anyway (0.9.0,
+   * H1a). Without it a sensitive one is refused `409 sensitive_confirm`.
+   */
+  confirm_sensitive: z.boolean().optional(),
+  /**
+   * The link's page shows the document's title (0.9.0, H1a). Absent: not a
+   * sensitive one's, as linkShowsTitle says; any other's, as before.
+   */
+  show_title: z.boolean().optional(),
 };
 
 export const shareBody = z.object(shareOptions).strict();
@@ -585,6 +601,8 @@ type LinkRow = {
   this_device_only: boolean;
   /** The browser it was first opened in (5.20). */
   device_hash: Buffer | null;
+  /** Whether its page shows the title (0.9.0, H1a): null, as each document is (linkShowsTitle). */
+  show_title: boolean | null;
 };
 
 /** A collection, as its link reads it (5.19). */
@@ -860,6 +878,16 @@ export interface ShareOptions {
 
 /** What "this device only" cookies are made with: deviceCookieKey(master, this). */
 export const SHARE_DEVICE_KEY_PURPOSE = 'share-device';
+
+/**
+ * A file's name where its document's title is left out of a link's page
+ * (0.9.0, H1a): "document" and its type, never what it was called — an
+ * upload's own name ("Aisha HIV test.pdf") can say as much as a title.
+ */
+export function untitledFile(filename: string): string {
+  const ext = /\.[A-Za-z0-9]{1,8}$/.exec(filename)?.[0] ?? '';
+  return `document${ext.toLowerCase()}`;
+}
 
 export class ShareService {
   private readonly enqueue: Enqueue;
@@ -1192,6 +1220,12 @@ export class ShareService {
         );
       }
 
+      // Sensitive (0.9.0, H1a): sent only once the sharer, asked, says so —
+      // decided here, with the document held, once all else would let it go.
+      if (input.confirm_sensitive !== true && (await documentSensitive(trx, documentId))) {
+        throw sensitiveConfirm();
+      }
+
       // Always a new link (5.16): the column's default, never said here, so
       // no path through this code can make a legacy one. Its id is made here,
       // to bind its sealed copy to (0.9.0).
@@ -1215,6 +1249,7 @@ export class ShareService {
           max_opens: input.max_opens ?? null,
           max_downloads: input.max_downloads ?? null,
           link_copy_sealed: this.copyOf(p.householdId, shareId, secrets),
+          show_title: input.show_title ?? null,
         })
         .returning('id')
         .executeTakeFirstOrThrow();
@@ -1308,6 +1343,7 @@ export class ShareService {
                 ? COLLECTION_SHARE_REASONS[offer.lock]
                 : null,
             viewable: note || canShareToView(r.mime),
+            sensitive: r.sensitive === true,
           };
         }),
       };
@@ -1333,6 +1369,9 @@ export class ShareService {
         'i.position',
         't.label as type_label',
       ])
+      // Sensitive, all said (0.9.0, H1a): the sheet says so, and a link
+      // with one ticked asks first.
+      .select(sensitiveSql('d').as('sensitive'))
       .select((eb) =>
         eb
           .selectFrom('document_version as v')
@@ -1459,6 +1498,13 @@ export class ShareService {
         );
       }
 
+      // Sensitive ones ticked (0.9.0, H1a): asked, as one on its own is,
+      // once all else would let them go.
+      const sensitive = found.filter((d) => d.sensitive === true).length;
+      if (sensitive > 0 && input.confirm_sensitive !== true) {
+        throw sensitiveConfirm(sensitiveCollectionShareConfirm(sensitive));
+      }
+
       // Its id made here, to bind its sealed copy to (0.9.0).
       const shareId = randomUUID();
       const row = await trx
@@ -1486,6 +1532,7 @@ export class ShareService {
           max_opens: input.max_opens ?? null,
           max_downloads: input.max_downloads ?? null,
           link_copy_sealed: this.copyOf(p.householdId, shareId, secrets),
+          show_title: input.show_title ?? null,
         })
         .returning('id')
         .executeTakeFirstOrThrow();
@@ -2042,6 +2089,107 @@ export class ShareService {
     }
   }
 
+  // ------------------------------------- made sensitive meanwhile (H1a)
+
+  /**
+   * A document made sensitive while links outside the family still give it
+   * (0.9.0, H1a), its sharing ended at its editor's word: each link of its
+   * own taken back, as Take it back does; each collection's link that gives
+   * it made to leave it out — as if it had never been ticked, nor followed —
+   * so the rest of the collection still goes. A collection's link the
+   * caller cannot see is kept, and counted. Whoever may share and can see
+   * the document may; nothing is asked of anybody else.
+   */
+  async stopSharing(p: Principal, documentId: string, meta: RequestMeta): Promise<StopSharing> {
+    requireCapability(p, 'document.share');
+    const done = await withPrincipal(this.db, p, async (trx) => {
+      const doc = await trx
+        .selectFrom('document')
+        .select(['id', 'visibility', 'owner_member_id'])
+        .where('id', '=', documentId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
+      if (!doc || !canSee(p, doc)) throw notFound('That document');
+      const out: StopSharing = { ended: 0, left_out: 0, kept: 0 };
+      const pruned: string[] = [];
+      for (const link of await liveLinksGiving(trx, documentId)) {
+        if (link.collection_id === null) {
+          const row = await trx
+            .updateTable('share_link')
+            .set({ revoked_at: new Date(), revoked_by: p.accountId, code_email: null })
+            .where('id', '=', link.id)
+            .where('revoked_at', 'is', null)
+            .returning(['id', 'document_id', 'collection_id', 'permission'])
+            .executeTakeFirst();
+          if (!row) continue;
+          await endSessions(trx, [row.id]);
+          await appendAudit(trx, {
+            householdId: p.householdId,
+            actorAccountId: p.accountId,
+            action: 'share.revoked',
+            ...objectOf(row),
+            detail: { share_id: row.id },
+            ip: meta.ip,
+          });
+          if (row.permission === 'view') pruned.push(row.id);
+          out.ended += 1;
+          continue;
+        }
+        const c = await trx
+          .selectFrom('doc_collection as l')
+          .select(['l.id'])
+          .where('l.id', '=', link.collection_id)
+          .where(seenCollection(p))
+          .executeTakeFirst();
+        if (!c) {
+          out.kept += 1;
+          continue;
+        }
+        // What the link was made with, or followed, taken back; and kept as
+        // left out, so that it never follows again however it is taken out
+        // and put back — as one left unticked as the link was made is.
+        const left = await trx
+          .deleteFrom('share_link_item')
+          .where('share_id', '=', link.id)
+          .where('document_id', '=', documentId)
+          .where('kind', 'in', ['ticked', 'followed'])
+          .returning(['position', 'collection_id'])
+          .executeTakeFirst();
+        if (!left) continue;
+        await trx
+          .insertInto('share_link_item')
+          .values({
+            share_id: link.id,
+            household_id: p.householdId,
+            collection_id: left.collection_id,
+            document_id: documentId,
+            position: left.position,
+            kind: 'left_out',
+          })
+          .execute();
+        await appendAudit(trx, {
+          householdId: p.householdId,
+          actorAccountId: p.accountId,
+          action: 'share.left_out',
+          objectType: 'document',
+          objectId: documentId,
+          detail: { share_id: link.id, collection_id: link.collection_id },
+          ip: meta.ip,
+        });
+        out.left_out += 1;
+      }
+      return { out, pruned };
+    });
+    // Its pages go with it (5.18), as when a link is taken back.
+    for (const id of done.pruned) {
+      await this.enqueue(SHARE_PAGES_PRUNE_JOB, {
+        household_id: p.householdId,
+        share_id: id,
+      }).catch(() => undefined);
+    }
+    return done.out;
+  }
+
   // ------------------------------------------- shown again (0.9.0)
 
   /**
@@ -2451,9 +2599,27 @@ export class ShareService {
   }
 
   /** Turns a paused link back on: it opens again, as it did before. */
-  async resume(p: Principal, id: string, meta: RequestMeta): Promise<ShareView> {
+  async resume(
+    p: Principal,
+    id: string,
+    meta: RequestMeta,
+    confirmSensitive = false,
+  ): Promise<ShareView> {
     await this.resumable(p, id);
     const resumed = await withPrincipal(this.db, p, async (trx) => {
+      // Turned back on, a link to sensitive documents sends them outside
+      // the family again (0.9.0, H1a): asked first, as making it is.
+      if (!confirmSensitive) {
+        const r = await sql<{ n: number }>`
+          select count(*)::int as n from document d
+           where d.deleted_at is null and ${sensitiveSql('d')}
+             and (d.id = (select s.document_id from share_link s where s.id = ${id}::uuid)
+                  or d.id in (select t.document_id from share_link_item t
+                               where t.share_id = ${id}::uuid
+                                 and t.kind in ('ticked', 'followed')))`.execute(trx);
+        const n = r.rows[0]?.n ?? 0;
+        if (n > 0) throw sensitiveConfirm(sensitiveResumeConfirm(n));
+      }
       const row = await trx
         .updateTable('share_link')
         .set({ paused_at: null, paused_reason: null })
@@ -2539,7 +2705,7 @@ export class ShareService {
     devices: readonly DeviceCookie[] = [],
   ): Promise<ShareLinkPreview> {
     const scope = await this.linkScope(token, 'v2');
-    return withScope(this.db, scope, async (trx) => {
+    const seen = await withScope(this.db, scope, async (trx) => {
       const link = await this.live(trx, scope.actor.shareId, 'v2');
       if (usedUp(link)) throw opensUsedUp();
       // For another browser than the one it was opened in (5.20): nothing
@@ -2562,7 +2728,7 @@ export class ShareService {
       const words =
         link.document_id !== null ? await this.documentWords(trx, link.document_id) : null;
       const title = words?.title ?? null;
-      return {
+      const preview: ShareLinkPreview = {
         household_name: from.household_name,
         shared_by: from.shared_by,
         protection,
@@ -2583,7 +2749,15 @@ export class ShareService {
         this_device_only: link.this_device_only,
         other_device: elsewhere,
       };
+      return { preview, documentId: link.document_id, hidden: await this.untitled(trx) };
     });
+    // Its title only as its sharer chose (0.9.0, H1a): a sensitive one's
+    // page says "A document" unless they showed it.
+    const { preview, documentId, hidden } = seen;
+    if (documentId !== null && preview.document_title !== null && hidden.has(documentId)) {
+      preview.document_title = UNTITLED_ON_LINK;
+    }
+    return preview;
   }
 
   /**
@@ -2932,6 +3106,38 @@ export class ShareService {
   }
 
   /**
+   * Which of the documents a link gives have their titles left out of its
+   * page (0.9.0, H1a; `linkShowsTitle`): its sharer's choice, else each
+   * sensitive one's. Asked of the database as the link itself
+   * (`share_link_untitled`, 0096): a link is given no household's own kind
+   * settings (0031), so the function reads them for the link's own
+   * documents alone, and says only which.
+   */
+  private async untitled(trx: Db): Promise<Set<string>> {
+    const found = await sql<{ id: string }>`select id from share_link_untitled() as id`.execute(
+      trx,
+    );
+    return new Set(found.rows.map((r) => r.id));
+  }
+
+  /**
+   * What a session shows, each document's title as its sharer chose (H1a):
+   * one left out is "A document", with no kind, and its file named for
+   * nothing but its type.
+   */
+  private titledAsChosen(hidden: Set<string>, view: SharedSession): SharedSession {
+    if (hidden.size === 0) return view;
+    return {
+      ...view,
+      items: view.items.map((i) =>
+        hidden.has(i.id)
+          ? { ...i, title: UNTITLED_ON_LINK, type_label: null, filename: untitledFile(i.filename) }
+          : i,
+      ),
+    };
+  }
+
+  /**
    * Whether a link gives a document now: its own document, or one of what
    * its collection's link gives (5.19). Any other id is not there for it —
    * the database's rule for a link gives it no other document's row, and
@@ -3014,10 +3220,17 @@ export class ShareService {
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
       const adapter = await this.vaults.adapterById(trx, v.vault_id);
-      return { version: v, adapter, fileKey };
+      return {
+        version: v,
+        adapter,
+        fileKey,
+        untitled: (await this.untitled(trx)).has(documentId),
+      };
     });
     if (!found) throw notFound('That document');
-    return this.decrypted(found);
+    const file = await this.decrypted(found);
+    // Its file named for nothing but its type, where its title is left out (H1a).
+    return found.untitled ? { ...file, filename: untitledFile(file.filename) } : file;
   }
 
   /**
@@ -3053,7 +3266,11 @@ export class ShareService {
       if (await this.used(trx, link, session.id, documentId, 'viewed')) {
         await this.record(trx, link.household_id, link, 'share.viewed', meta, documentId);
       }
-      return { doc, householdId: link.household_id };
+      return {
+        doc,
+        householdId: link.household_id,
+        untitled: (await this.untitled(trx)).has(doc.id),
+      };
     });
     if (!found) throw notFound('That note');
     const { doc } = found;
@@ -3076,7 +3293,8 @@ export class ShareService {
     }
     return {
       id: doc.id,
-      title: doc.title,
+      // Its title as its sharer chose (H1a).
+      title: found.untitled ? UNTITLED_ON_LINK : doc.title,
       body: body ?? '',
       updated_at: doc.updated_at.toISOString(),
     };
@@ -3382,7 +3600,8 @@ export class ShareService {
         downloaded: downloaded.has(id),
       });
     }
-    return {
+    // Each title as its sharer chose (0.9.0, H1a).
+    return this.titledAsChosen(await this.untitled(trx), {
       household_name: from.household_name,
       shared_by: from.shared_by,
       expires_at: link.expires_at.toISOString(),
@@ -3395,7 +3614,7 @@ export class ShareService {
           : null,
       kind: link.collection ? 'collection' : 'document',
       ...(link.collection ? { collection_name: link.collection.name } : {}),
-    };
+    });
   }
 
   // ------------------------------------------------ the old routes (A25)
@@ -3403,11 +3622,11 @@ export class ShareService {
   /** What the recipient sees before they have typed anything. */
   async preview(token: string): Promise<SharePreview> {
     const scope = await this.linkScope(token, 'legacy');
-    return withScope(this.db, scope, async (trx) => {
+    const seen = await withScope(this.db, scope, async (trx) => {
       const link = await this.live(trx, scope.actor.shareId, 'legacy');
       const from = await this.from(trx, link.created_by);
       const words = await this.documentWords(trx, documentOf(link));
-      return {
+      const preview: SharePreview = {
         household_name: from.household_name,
         needs_pin: link.pin_hash !== null,
         expires_at: link.expires_at.toISOString(),
@@ -3417,7 +3636,13 @@ export class ShareService {
         document_title: link.pin_hash ? null : words.title,
         shared_by: from.shared_by,
       };
+      return { preview, documentId: documentOf(link), hidden: await this.untitled(trx) };
     });
+    // A sensitive one's title left out (H1a), as on a newer link's page.
+    if (seen.hidden.has(seen.documentId) && seen.preview.document_title !== null) {
+      seen.preview.document_title = UNTITLED_ON_LINK;
+    }
+    return seen.preview;
   }
 
   /**
@@ -3443,6 +3668,8 @@ export class ShareService {
       const version = await this.newestVersion(trx, documentOf(link));
       await this.record(trx, householdId, link, 'share.opened', meta);
       return {
+        documentId: documentOf(link),
+        hidden: await this.untitled(trx),
         opened: {
           document_title: words.title,
           document_type: words.type_label,
@@ -3459,7 +3686,14 @@ export class ShareService {
       throw gone();
     }
     await this.tellOpened(householdId, scope.actor.shareId);
-    return outcome.opened;
+    // A sensitive one's title and kind left out (H1a).
+    if (!outcome.hidden.has(outcome.documentId)) return outcome.opened;
+    return {
+      ...outcome.opened,
+      document_title: UNTITLED_ON_LINK,
+      document_type: null,
+      filename: untitledFile(outcome.opened.filename),
+    };
   }
 
   /**
@@ -3499,13 +3733,18 @@ export class ShareService {
       const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
       const adapter = await this.vaults.adapterById(trx, v.vault_id);
       await this.record(trx, householdId, link, 'share.downloaded', meta);
-      return { file: { version: v, adapter, fileKey } } as const;
+      return {
+        file: { version: v, adapter, fileKey },
+        // Its title left out of the page (H1a): its file's own name too.
+        untitled: (await this.untitled(trx)).has(documentOf(link)),
+      } as const;
     });
     if (isRefused(outcome)) {
       await this.refuse(householdId, outcome.link, outcome.refused);
       throw gone();
     }
-    return this.decrypted(outcome.file);
+    const file = await this.decrypted(outcome.file);
+    return outcome.untitled ? { ...file, filename: untitledFile(file.filename) } : file;
   }
 
   // ------------------------------------------- the PIN, password and code

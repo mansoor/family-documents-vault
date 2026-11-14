@@ -6492,6 +6492,114 @@ validation_failed`, "That would leave {maker} unable to see their own
       `addCollectionManager`, `updateCollectionManager`,
       `removeCollectionManager`; the fake keeps managers on
       `FakeCollection.managers` with the same rules.
+  - What Sensitive protects (0.9.0-dev.41, H1a of the health plan).
+    Migration 0096. "Sensitive" is `sensitive_effective` (`sensitiveOf`:
+    the document's own choice, else its kind's default as the household
+    has it; no kind, sensitive).
+    - **New `features`:** `sensitive_protects` (`true`).
+    - **Breaking for links to sensitive documents:** `POST
+/api/v1/documents/{id}/share` for a sensitive document, and `POST
+/api/v1/collections/{id}/shares` with a sensitive document ticked, are
+      refused `409 sensitive_confirm` unless the body says
+      `confirm_sensitive: true`. Its `message` is the question to ask ("This
+      document is sensitive. A link lets somebody outside the family open
+      it. Share it anyway?"; for a collection, how many are). It is asked
+      once everything else would let the link be made, so a `422` such as
+      `nothing_to_share` comes first; the step-up a link asks may come
+      before it. Nothing is made. **Older clients** send no flag and show
+      the refusal as an error: that is the intended answer, and nothing is
+      shared. A document that is not sensitive is shared as before.
+    - **The same for a collection that keeps up:** `POST
+/api/v1/collections/{id}/items` putting in a sensitive document that a
+      link keeping up with the collection would send is `409
+sensitive_confirm` ("This collection has a link that keeps up with it,
+      …"), and nothing is put in, unless the body says `confirm_sensitive:
+true`. With no such link, nothing is asked. A document put in with
+      nobody asked — a batch's accept naming `collection_id`, a
+      checklist's add, a file sent in through a request — is put in but
+      never sent by the link, and `warnings` says so ("“…” is sensitive, so
+      the collection's link outside the family doesn't include it.").
+    - **Emailing a link** (`POST /api/v1/shares/{id}/email`) asks nothing
+      more: the link was asked about as it was made.
+    - **A paused link turned back on** (`POST /api/v1/shares/{id}/resume`)
+      that gives sensitive documents is `409 sensitive_confirm` unless the
+      body says `confirm_sensitive: true` (the route takes an optional
+      `{ confirm_sensitive }`); `@fdv/client` `resumeShare(token, id, {
+confirm_sensitive })`.
+    - **Made sensitive while shared:** `PATCH /api/v1/documents/{id}` that
+      makes a document sensitive — its own `sensitive: true`, or a
+      `type_key` of a sensitive kind — while live links outside the family
+      still give it answers the document with `warnings: [{ code:
+"sensitive_still_shared", links: N }]`. The edit is made either way;
+      nothing is ended. **New route:** `POST
+/api/v1/documents/{id}/stop-sharing` → `{ ended, left_out, kept }`
+      (`StopSharing`): each link of the document's own taken back (`share.revoked`,
+      as Take it back), each collection's link that gives it made to leave
+      it out — its snapshot row for it becomes `left_out`, so it never follows
+      again; the rest of the collection still goes (new activity
+      `share.left_out`, about the document, with `collection_id` and
+      `share_id`, kind `shared`) — and a collection's link the caller cannot
+      see kept, and counted. Whoever may share (`document.share`) and can
+      see the document; anybody else `403` or `404`. `@fdv/client`
+      `stopSharing`. `PATCH /api/v1/document-types/{key}` that turns
+      `sensitive_default` on answers the kind with `warnings: [{ code:
+"sensitive_still_shared", documents: N }]` — how many of its documents left
+      as their kind says are still given by a live link. Nothing is ended.
+      `@fdv/shared`: `SensitiveStillShared`, `DocumentView.warnings`,
+      `DocumentTypeView.warnings`, `StopSharing`, `stopSharingWords`,
+      `sensitiveStillSharedWords`, `kindStillSharedWords`,
+      `sensitiveResumeConfirm`.
+    - **New fields:** `show_title` on `ShareInput` (a document's link and a
+      collection's): `true` shows the title on the page the recipient opens,
+      `false` says "A document". Absent: a sensitive document's page says "A
+      document", any other's shows its title, as before — worked out as the
+      page is read, so a link made before (or a document made sensitive
+      since) is covered too. A title left out also leaves out the kind
+      (`type_label: null`) and the file's own name (`filename`
+      `document.pdf`), on `POST /api/v1/shared/preview`, `/unlock`, `GET
+/api/v1/shared/items`, a note's words and a download's
+      `content-disposition` (`GET /api/v1/shared/items/{id}/content`), and on
+      every legacy route: `GET /api/v1/shared/{token}`, `POST
+/api/v1/shared/{token}/open` (`document_type: null`, `filename`) and
+      `GET /api/v1/shared/{token}/content`'s `content-disposition`. A file
+      downloaded keeps its own details (a PDF's title, a photo's data); a
+      link to view gives only the pages. `sensitive` on each
+      `CollectionShareItem` of `GET /api/v1/collections/{id}/share-preview`.
+    - **Changed answers:**
+      - A new document whose visibility nobody said — `POST
+/api/v1/documents`, `POST /api/v1/capture`, a batch's accept — starts as
+        `private` (Only me) when it is sensitive, it is the uploader's own
+        (`owner_member_id` the caller; a teen's always are), and the
+        uploader is a teen, or 13 to 17 by their date of birth, or 18 or
+        over whose relationship is child, son or daughter (any case; "my"
+        or "our" before it). A visibility sent is kept as sent; a parent's
+        upload about a teen is the parent's to choose. A child of the family
+        is a relationship with the whole word child, son or daughter in it
+        ("adopted son", "son (Ali)"), never step-, -in-law or god-; with no
+        date of birth, one who signs in as an adult counts as grown.
+        `@fdv/shared`:
+        `keepsOwnSensitive`, `sensitiveStartingVisibility` — a client that
+        always sends a visibility should start its card the same way.
+      - `GET /api/v1/search` and `/search/sealed`: a sensitive hit's
+        `snippet` is `""` — no words, no `<em>` — and a sensitive note with
+        no title has no `note_name` (its first words). Its title is given as
+        before, to whoever may open it.
+      - `GET /api/v1/audit`: a line about a sensitive document says "a
+        sensitive document" where it said its title ("Sarah downloaded a
+        sensitive document"), with its `document_id` as before; who sees a
+        line is unchanged. `ActivityEvent.object_sensitive` for
+        `describeEvent`.
+      - `SENSITIVE_MEANS` says what it protects now.
+    - Counts are unchanged: a sensitive document is counted, found and
+      tagged only for whoever may open it, as every document is.
+    - `@fdv/shared`: `SENSITIVE_ONLY_ME_NOTE`, `SENSITIVE_SHARE_CONFIRM`,
+      `sensitiveCollectionShareConfirm`, `SENSITIVE_FOLLOW_CONFIRM`,
+      `sensitiveNotFollowed`, `SENSITIVE_IN_WORDS`, `UNTITLED_ON_LINK`,
+      `SHOW_TITLE_LABEL`, `SHOW_TITLE_SENSITIVE_HINT`, `linkShowsTitle`,
+      `isChildRelationship`. `@fdv/client`: `addToCollection` takes `{
+confirm_sensitive }`; the fake says the feature, refuses a sensitive
+      document's link without the flag, and keeps `show_title`
+      (`FakeShare.show_title`).
 
 ## Deprecations in effect
 

@@ -447,6 +447,8 @@ describe.skipIf(!testAdminUrl())('a collection from a checklist (C1)', () => {
     const shared = await call('mansoor', 'POST', `/api/v1/collections/${refinance}/shares`, {
       document_ids: [docs.w2025],
       recipient_label: 'the lender',
+      // A tax form is sensitive: asked, and shared anyway (0.9.0, H1a).
+      confirm_sensitive: true,
     });
     expect(shared.statusCode, shared.body).toBe(201);
     const link = json<CreatedShare>(shared);

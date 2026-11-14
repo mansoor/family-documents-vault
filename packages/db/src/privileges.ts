@@ -192,6 +192,12 @@ begin
     revoke execute on function public.app_grant_of(uuid) from public;
     revoke execute on function public.maker_lends(uuid, uuid, public.visibility, uuid, text) from public;
   end if;
+  -- Which of a link's documents its page leaves the title out of (0096,
+  -- H1a), for the link itself: nobody else's by default.
+  if to_regprocedure('public.share_link_untitled()') is not null then
+    revoke execute on function public.share_link_untitled() from public;
+    grant execute on function public.share_link_untitled() to fdv_app;
+  end if;
   -- Which viewers given a collection would see what is put in it (0055),
   -- for whoever puts it there: asked by somebody signed in who is not
   -- restricted, and nobody else's by default.

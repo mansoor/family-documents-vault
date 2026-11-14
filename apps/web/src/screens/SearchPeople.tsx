@@ -606,7 +606,8 @@ function HitRow({
       <RowMain title={title} pick={pick} onOpen={onOpen}>
         <span className="doc-title">{title}</span>
         <span className="muted">{rowLine(hit, types)}</span>
-        <span className="snippet">{snippetParts(hit.snippet)}</span>
+        {/* None for a sensitive paper (0.9.0, H1a): its title alone. */}
+        {hit.snippet && <span className="snippet">{snippetParts(hit.snippet)}</span>}
         <StatusBadge status={hit.status} />
       </RowMain>
       {/* A hit has no version or ETag: its ⋯ fetches the document on opening. */}

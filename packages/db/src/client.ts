@@ -478,6 +478,12 @@ export interface Schema {
      * back. Set as it is made, never after.
      */
     link_copy_sealed: ColumnType<Buffer | null, Buffer | null | undefined, never>;
+    /**
+     * Whether its page shows the document's title (0096, 0.9.0, H1a): the
+     * sharer's choice; null as each document is now — not a sensitive
+     * one's (linkShowsTitle). Set as it is made, never after.
+     */
+    show_title: ColumnType<boolean | null, boolean | null | undefined, never>;
   };
 
   /**

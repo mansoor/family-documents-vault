@@ -37,6 +37,7 @@ import { FILTER_LABELS, filterChoices, type Known } from './screens/Documents.js
 import { useShellMode } from './shell.js';
 import { FilterSelect, None, PickAll, useGrid } from './table-grid.js';
 import { ConfirmDialog, ErrorNote, Sheet } from './ui.js';
+import { useSensitiveConfirm } from './sensitive-confirm.js';
 
 /**
  * Adding documents from a collection's own page (Phase 6): "Add documents"
@@ -177,6 +178,11 @@ export function AddDocumentsPicker(props: {
 }) {
   const { collection, role } = props;
   const { withToken } = useApp();
+  // A sensitive one its link that keeps up with it would send asks first (0.9.0, H1a).
+  const confirm = useSensitiveConfirm({
+    title: 'Put a sensitive document in?',
+    confirmLabel: 'Put it in anyway',
+  });
   const wide = useShellMode() !== 'phone';
   const [typed, setTyped] = useState('');
   const [asked, setAsked] = useState<Asked>({
@@ -462,7 +468,12 @@ export function AddDocumentsPicker(props: {
     setBusy(true);
     setRefused(null);
     try {
-      const after = await withToken((t) => api.addToCollection(t, collection.id, ids));
+      // A sensitive one its link that keeps up would send asks first (H1a).
+      const after = await confirm.ask((confirmed) =>
+        withToken((t) =>
+          api.addToCollection(t, collection.id, ids, confirmed ? { confirm_sensitive: true } : {}),
+        ),
+      );
       if (!after) return;
       // And who else will now see them (5.33), in the vault's words.
       props.onAdded(
@@ -541,6 +552,7 @@ export function AddDocumentsPicker(props: {
       onClose={props.onClose}
       className="card picker"
     >
+      {confirm.dialog}
       <h2 id={titleId} className="picker-h">
         Add documents to “{collection.name}”
       </h2>

@@ -1,5 +1,6 @@
 import {
   belongsTo,
+  kindStillSharedWords,
   sensitiveOf,
   SENSITIVE_BY_DEFAULT_LABEL,
   SENSITIVE_MEANS,
@@ -210,6 +211,11 @@ export function KindsScreen() {
   const [notice, setNotice] = useState<string | null>(
     (location.state as { notice?: string } | null)?.notice ?? null,
   );
+  // Made sensitive by default while its documents are still shared outside
+  // the family (0.9.0, H1a): said, with the way to Sharing. Nothing ended.
+  const [stillShared] = useState<number | null>(
+    (location.state as { stillShared?: number } | null)?.stillShared ?? null,
+  );
   const [problem, setProblem] = useState<string | null>(null);
   const busy = useRef<string | null>(null);
   const status = useRef<HTMLParagraphElement>(null);
@@ -270,6 +276,11 @@ export function KindsScreen() {
       <p role="status" ref={status} tabIndex={-1} className="notice status-line">
         {notice}
       </p>
+      {stillShared !== null && stillShared > 0 && (
+        <p className="status status-warn">
+          {kindStillSharedWords(stillShared)} <Link to="/sharing">Sharing</Link>
+        </p>
+      )}
       <ErrorNote message={problem ?? error} />
       <Link to={`${LIST}/new`} className="btn btn-primary">
         Add a kind
@@ -962,9 +973,11 @@ function KindEditor(props: {
         setError('Nothing was saved.');
         return;
       }
+      const shared = saved.warnings?.find((w) => w.code === 'sensitive_still_shared');
       void navigate(LIST, {
         state: {
           notice: kind ? `“${saved.label}” is saved.` : `“${saved.label}” is ready to use.`,
+          ...(shared?.documents ? { stillShared: shared.documents } : {}),
         },
       });
     } catch (err) {

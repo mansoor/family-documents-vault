@@ -6,6 +6,29 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.41] - 2026-11-14 — what Sensitive protects
+
+### Added
+
+- **Only me from the start, for a teen's or a grown child's own sensitive papers.** When a teen (13 to 17), or a grown-up child (18 or over, whose relationship to the family is child, son or daughter), adds a sensitive paper of their own — a passport, a medical record, or anything they mark Sensitive — it starts as **Only me**, and the card says why. They can change who can see it before they save. A parent adding a paper _about_ their teen chooses as before. This holds when adding one paper, scanning on the phone and accepting a batch.
+- **Asked before it's shared.** Making a link to a sensitive document asks first, in a plain dialog: "This document is sensitive. A link lets somebody outside the family open it. Share it anyway?" A collection's link with a sensitive document ticked asks the same, and so does putting a sensitive document into a collection whose link keeps up with it. A sensitive document put into such a collection without being asked (from a batch, a checklist or a file sent in) goes into the collection but never out by its link, and you're told so.
+- **Made sensitive while it's shared?** When you mark a shared document sensitive, or give it a kind that is, it's saved, and then you're asked: "This paper is shared outside the family by 2 links. Keep them, or end them now?" Ending them takes back its own links, and takes it out of any collection's link while the rest of the collection keeps going; you're told which. Turning a kind's **Sensitive by default** on says how many of its documents are still shared, with the way to Sharing.
+- **Turning a paused link back on** after a restore asks first when it gives a sensitive document.
+- **"Show its title on the link page."** A new choice when making a link. For a sensitive document it's off: the page the recipient opens says "A document", with no kind and a file simply named "document.pdf". Any other document's title shows as before, unless you untick it. Links made before today follow the same rule, and so does a document marked sensitive after its link was made; for a collection's link it covers sensitive papers put in it later too. A file someone downloads keeps its own details, such as a PDF's title or a photo's data: a link to view only shows the pages. (Migration 0096.)
+
+### Changed
+
+- **Search** shows a sensitive document's title, to whoever can open it, but never a snippet of its words, nor a sensitive note's first words in place of a title.
+- A grown child is anyone whose relationship has the word child, son or daughter in it ("adopted son", "eldest daughter"), but not a stepchild, a son- or daughter-in-law or a godchild; with no date of birth, one who signs in as an adult counts.
+- **The activity log** says "a sensitive document" in place of a sensitive document's title ("Sarah downloaded a sensitive document"). Anyone who can open it can still tap through to it.
+- What **Sensitive** means, where it's chosen, now says all of this.
+
+### Security
+
+- A sensitive paper is read on the server alone: the only outside reader it is ever sent to is one on the household's own network. A new test holds this at the network itself, recording every connection the worker makes while it reads one.
+- No count, search, tag list or hint tells anyone who can't open a sensitive document that it exists; new tests prove it for a grown child's Only me papers.
+- Older apps that don't know to ask are refused (`409 sensitive_confirm`) when they share a sensitive document, and show that as an error: nothing is shared.
+
 ## [0.9.0-dev.40] - 2026-11-13 — collection managers
 
 ### Added

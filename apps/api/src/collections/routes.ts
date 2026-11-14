@@ -38,7 +38,16 @@ const collectionBody = z
   .partial()
   .strict();
 
-const itemsBody = z.object({ document_ids: z.array(z.string().uuid()).min(1).max(200) }).strict();
+const itemsBody = z
+  .object({
+    document_ids: z.array(z.string().uuid()).min(1).max(200),
+    /**
+     * The adder was asked, and a sensitive document goes out by the
+     * collection's link that keeps up with it anyway (0.9.0, H1a).
+     */
+    confirm_sensitive: z.boolean().optional(),
+  })
+  .strict();
 
 /** A checklist's item, as the API gives it back and the person changes it (0.9.0, C1). */
 const checklistItem = z
@@ -157,11 +166,13 @@ export function registerCollections(app: FastifyInstance, collections: Collectio
   });
 
   app.post('/api/v1/collections/:id/items', manage, async (req, reply) => {
+    const body = parse(itemsBody, req.body ?? {});
     const collection = await collections.addItems(
       principal(req),
       idOf(req),
-      parse(itemsBody, req.body ?? {}).document_ids,
+      body.document_ids,
       metaOf(req),
+      body.confirm_sensitive === true,
     );
     reply.header('etag', collection.etag);
     return collection;

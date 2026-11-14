@@ -768,6 +768,21 @@ export interface ShareInput {
   recipient_phone?: string;
   /** 5.20: the first browser to open it is the only one it opens in. */
   this_device_only?: boolean;
+  /**
+   * 0.9.0 (H1a), to a vault with `features.sensitive_protects`: the sharer
+   * was asked, and shares a sensitive document anyway. Without it, a link
+   * to a sensitive document — or a collection's link with one ticked — is
+   * refused `409 sensitive_confirm`, its message the question to ask. An
+   * older vault ignores it.
+   */
+  confirm_sensitive?: boolean;
+  /**
+   * 0.9.0 (H1a): the link's page shows the document's title — each
+   * sensitive document's, for a collection's link. Absent: a sensitive
+   * document's page says "A document"; any other's shows its title, as
+   * before. False hides any title.
+   */
+  show_title?: boolean;
 }
 
 /**
@@ -833,6 +848,11 @@ export interface CollectionShareItem {
   reason: string | null;
   /** The vault can draw its pages, so it can go on a link to view (A22). */
   viewable: boolean;
+  /**
+   * Sensitive, all said (0.9.0, H1a): ticked, the link asks
+   * `confirm_sensitive`. Absent from older vaults.
+   */
+  sensitive?: boolean;
 }
 
 /**

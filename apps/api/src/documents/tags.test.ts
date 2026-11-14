@@ -42,6 +42,9 @@ describe.skipIf(!testAdminUrl())('tags you can use (0.9.0, T1)', () => {
   const made = async (who: Tokens, payload: Record<string, unknown>) => {
     const r = await send(who, 'POST', '/api/v1/documents', {
       owner_member_id: who.member_id,
+      // Not sensitive, so the activity log names each (0.9.0, H1a); a teen
+      // may not say so, and files a kind that is not instead.
+      ...(who === tariq ? {} : { sensitive: false }),
       ...payload,
     });
     expect(r.statusCode, r.body).toBe(201);
@@ -248,7 +251,13 @@ describe.skipIf(!testAdminUrl())('tags you can use (0.9.0, T1)', () => {
       visibility: 'private',
       tags: ['utilities'],
     });
-    tariqs = await made(tariq, { title: 'Tariq’s phone bill', tags: ['utilities'] });
+    // For everyone, and of a kind that is not sensitive: a teen's sensitive paper would start Only me (H1a).
+    tariqs = await made(tariq, {
+      title: 'Tariq’s phone bill',
+      type_key: 'warranty',
+      visibility: 'household',
+      tags: ['utilities'],
+    });
 
     // The owner sees five: never Sarah's Only me one.
     expect((await tagsOf(owner, 'q=utilities'))[0]).toMatchObject({ count: 5, changeable: 5 });

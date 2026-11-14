@@ -63,6 +63,14 @@ export interface DocumentView {
    * outside the house (AIR3). Absent from older vaults.
    */
   sensitive_effective?: boolean;
+  /**
+   * Said with an edit's answer alone (PATCH, 0.9.0, H1a): the edit made it
+   * sensitive while links outside the family still give it
+   * (`sensitive_still_shared`, with how many). The edit is made; the client
+   * asks whether to keep them or end them (POST
+   * /documents/{id}/stop-sharing). Absent otherwise.
+   */
+  warnings?: SensitiveStillShared[];
   category: string | null;
   visibility: Visibility;
   issued: DateValue | null;
@@ -358,6 +366,13 @@ export interface DocumentTypeView {
    * kind a household makes starts On. Absent from older vaults.
    */
   sensitive_default?: boolean;
+  /**
+   * Said with a change's answer alone (PATCH, 0.9.0, H1a): Sensitive by
+   * default turned on while documents it makes sensitive are still given
+   * by links outside the family (`sensitive_still_shared`, with how many
+   * documents). Absent otherwise.
+   */
+  warnings?: SensitiveStillShared[];
   /** Its short name in a line, "Bank statement"; null is its label. */
   short_label?: string | null;
   /** The noun after its issuer in a name, "statement"; null when named for its person. */
@@ -478,6 +493,17 @@ export function sensitiveOf(
 export const SENSITIVE_FILTER_VALUES = ['yes', 'no'] as const;
 export type SensitiveFilter = (typeof SENSITIVE_FILTER_VALUES)[number];
 
+/**
+ * A document made sensitive while it is still shared outside the family
+ * (0.9.0, H1a): `links`, how many live links give it, for one document's
+ * edit; `documents`, how many such documents, for a kind's default turned on.
+ */
+export interface SensitiveStillShared {
+  code: 'sensitive_still_shared';
+  links?: number;
+  documents?: number;
+}
+
 /** Sensitive, in words every client uses (0.9.0, AIR2). */
 export const SENSITIVE_LABEL = 'Sensitive';
 export const SENSITIVE_BY_DEFAULT_LABEL = 'Sensitive by default';
@@ -492,10 +518,13 @@ export function asItsKindSays(
 /**
  * What Sensitive means, said where it is chosen (0.9.0, AIR2). The one flag
  * for the household's sensitive papers (the owner's decision of 12 Nov
- * 2026): never sent to a cloud AI reader (AIR3). Health's protections (H1)
- * will add to it; until they are built, nothing more is promised.
+ * 2026): never sent to a cloud AI reader (AIR3); since H1a (sensitive.ts)
+ * asked about before it is shared by a link, kept out of search snippets,
+ * the activity log's words and a link's page, and Only me from the start
+ * for a teen's or a grown-up child's own.
  */
-export const SENSITIVE_MEANS = 'Handled with extra care. Never sent to a cloud AI reader.';
+export const SENSITIVE_MEANS =
+  'Handled with extra care: asked about before it’s shared, kept out of search snippets and the activity log’s words, and never sent to a cloud AI reader.';
 
 /**
  * A teen marking a document less sensitive than it was (0.9.0, AIR2;
