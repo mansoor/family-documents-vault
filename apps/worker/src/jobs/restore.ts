@@ -926,6 +926,24 @@ const GUARDS = [
     table: 'doc_collection',
     fn: 'doc_collection_owner_writes',
   },
+  // A collection's managers (0095): each somebody who may be one, given only
+  // what the writer may do; dropped as the collection is made for fewer
+  // people, or as their role moves outside it or their sign-in goes.
+  {
+    name: 'doc_collection_manager_rule',
+    table: 'doc_collection_manager',
+    fn: 'doc_collection_manager_rule',
+  },
+  {
+    name: 'doc_collection_drops_managers',
+    table: 'doc_collection',
+    fn: 'doc_collection_drops_managers',
+  },
+  {
+    name: 'account_household_drops_managers',
+    table: 'account_household',
+    fn: 'account_household_drops_managers',
+  },
   // A link keeps the flow it was made with: a new one never opens on an old route (0037).
   { name: 'share_link_flow_fixed', table: 'share_link', fn: 'share_link_flow_fixed' },
   // Only an owner asks, as themselves and now, to remove a document for good (0045).
@@ -1427,6 +1445,8 @@ const ACTOR_GUARDED = [
   // A collection's checklist (0077, C1): the family's who see the
   // collection — never a viewer's, a guest's or a link's.
   'collection_checklist',
+  // A collection's managers (0095): the family's who see the collection.
+  'doc_collection_manager',
   // What a share link's Open gives a browser (0037).
   'share_session',
   // People's photos: the family's, and a viewer's own (0040).
@@ -1778,6 +1798,32 @@ const REQUIRED_RULES = [
     cmd: 'd',
     what: 'who removes a collection’s checklist',
   },
+  // A collection's managers are the family's who see the collection, and
+  // chosen by its maker or a manager who may choose managers (0095).
+  {
+    table: 'doc_collection_manager',
+    name: 'doc_collection_manager_actor',
+    cmd: '*',
+    what: 'who reads a collection’s managers',
+  },
+  {
+    table: 'doc_collection_manager',
+    name: 'doc_collection_manager_collection',
+    cmd: '*',
+    what: 'whose collection its managers are read through',
+  },
+  ...(
+    [
+      ['insert', 'a', 'makes somebody a manager of a collection'],
+      ['update', 'w', 'changes what a collection’s manager may do'],
+      ['delete', 'd', 'takes a collection’s manager away'],
+    ] as const
+  ).map(([verb, cmd, does]) => ({
+    table: 'doc_collection_manager',
+    name: `doc_collection_manager_writer_${verb}`,
+    cmd,
+    what: `who ${does}`,
+  })),
   // A computer that sends scans (0070, D1, the review's F7): made by the
   // vault alone and never removed but with its person; its code made
   // untried by its person, counted by the vault alone; and a day's batch

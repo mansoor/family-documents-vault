@@ -366,6 +366,35 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return line(`${who} added ${doc} to ${collection}`);
     case 'collection.item_removed':
       return line(`${who} took ${doc} out of ${collection}`);
+    // Who manages a collection (0.9.0): the person by name, and what they may
+    // do besides what every manager may — said only to whoever may see it.
+    case 'collection.manager_added':
+      return line(
+        `${who} made ${e.object_title ?? 'somebody'} a manager of ${collection}${managerPowers(detail)}`,
+        true,
+      );
+    case 'collection.manager_changed':
+      return line(
+        `${who} changed what ${e.object_title ?? 'somebody'} can do as a manager of ${collection}${managerPowers(detail)}`,
+        true,
+      );
+    case 'collection.manager_removed': {
+      const whom = e.object_title ?? 'Somebody';
+      if (detail.why === 'audience') {
+        return line(`${whom} no longer manages ${collection}: ${who} changed who it is for`, true);
+      }
+      // Their role moved outside it, or their sign-in went (0.9.0, M1).
+      if (detail.why === 'role') {
+        return line(`${whom} no longer manages ${collection}: ${who} changed their role`, true);
+      }
+      if (detail.why === 'sign_in') {
+        return line(
+          `${whom} no longer manages ${collection}: ${who} took away their sign-in`,
+          true,
+        );
+      }
+      return line(`${who} stopped ${e.object_title ?? 'somebody'} managing ${collection}`, true);
+    }
 
     // ---------------------------------------------------------- people
     case 'member.added':
@@ -1089,6 +1118,25 @@ function dayWords(iso: string, timezone: string | null | undefined, year = false
   } catch {
     return shareEndWords(at, 'UTC', { weekday: false, year });
   }
+}
+
+/**
+ * What a collection's manager may do besides what every manager may (0.9.0),
+ * as a line's last words: ", who can also change who it's for and delete it",
+ * or nothing.
+ */
+function managerPowers(detail: Record<string, unknown>): string {
+  const also = [
+    detail.may_change_audience === true && 'change who it’s for',
+    detail.may_delete === true && 'delete it',
+    detail.may_choose_managers === true && 'choose managers',
+  ].filter((w): w is string => typeof w === 'string');
+  if (also.length === 0) return '';
+  const words =
+    also.length === 1
+      ? also[0]
+      : `${also.slice(0, -1).join(', ')} and ${also[also.length - 1] as string}`;
+  return ` (can also ${words})`;
 }
 
 function roleWords(role: unknown): string {

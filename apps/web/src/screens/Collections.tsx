@@ -1,6 +1,7 @@
 import {
   can,
   checklistKept,
+  collectionPowers,
   inCollectionAudience,
   sharedOutsideWords,
   type CollectionView,
@@ -30,6 +31,7 @@ import { AddDocumentsPicker } from '../collection-add.js';
 import { Toast, type ReviewToast } from '../batch-review.js';
 import type { Removed } from '../DocActions.js';
 import { CollectionDocuments } from './Documents.js';
+import { ManagersSection, managersOffered } from '../collection-managers.js';
 import { collectionShareOffered, ShareCollectionPanel } from './ShareCollection.js';
 import {
   checklistOffered,
@@ -46,7 +48,8 @@ import type { CollectionChecklist } from '@fdv/shared';
  * whoever opens it is given the documents in it they could see already,
  * and every count here is the vault's count of those (`item_count`). A
  * collection somebody may not see is not there at all, not even as a number.
- * Only its maker changes a collection (A18), while they are in its audience.
+ * Only its maker changes a collection (A18), while they are in its audience,
+ * or a manager they chose (0.9.0): what each may do is the vault's `my_powers`.
  */
 
 /**
@@ -212,6 +215,7 @@ function sharedWith(names: string[]): string {
 /** " · Yours", or who made it, when the reader is told who is in the family. */
 function whose(collection: CollectionView, members: Member[]): string {
   if (collection.mine) return ' · Yours';
+  if (collection.my_powers?.manager) return ' · You manage it';
   const maker = members.find((m) => m.id === collection.owner_member_id);
   return maker ? ` · Made by ${maker.display_name}` : '';
 }
@@ -316,17 +320,21 @@ export function CollectionScreen() {
   }
 
   const { collection, types, members } = first.data;
+  const powers = collectionPowers(role, collection);
   const mayChange = mayChangeCollection(role, collection);
   const maker = members.find((m) => m.id === collection.owner_member_id) ?? null;
   // Nobody may change it any more — its maker is outside its audience now,
-  // or has no sign-in — so an owner who sees it may delete it (5.14).
-  const stranded =
-    !collection.mine &&
-    role === 'owner' &&
-    (maker === null ||
-      maker.role === null ||
-      !inCollectionAudience(maker.role, collection.audience));
-  const mayDelete = collection.mine || stranded;
+  // or has no sign-in, and no manager still can — so an owner who sees it
+  // may delete it (5.14). The vault says so (`my_powers`); an older one is
+  // asked by its maker's role alone.
+  const stranded = collection.my_powers
+    ? !powers.maker && !powers.manager && powers.delete
+    : !collection.mine &&
+      role === 'owner' &&
+      (maker === null ||
+        maker.role === null ||
+        !inCollectionAudience(maker.role, collection.audience));
+  const mayDelete = powers.delete || stranded;
   // Whoever may put documents in it from a row's ⋯ (Add to a collection):
   // collections offered to them, and this one theirs to change (A18).
   const mayAdd = mayChange && collectionsOffered(caps, role);
@@ -506,6 +514,8 @@ export function CollectionScreen() {
             audience: collection.audience,
           }}
           withDescription
+          audienceFixed={!powers.change_audience}
+          noOnlyMe={!powers.maker}
           submitLabel="Save"
           busyLabel="Saving…"
           onSubmit={save}
@@ -522,6 +532,7 @@ export function CollectionScreen() {
           </p>
           <MakerNote
             mine={collection.mine}
+            manager={powers.manager}
             mayChange={mayChange}
             stranded={stranded}
             maker={maker?.display_name ?? null}
@@ -657,7 +668,8 @@ export function CollectionScreen() {
             id: collection.id,
             name: collection.name,
             audience: collection.audience,
-            mine: collection.mine,
+            // Its maker and its managers are told who of its audience is not given each one.
+            mine: powers.maker || powers.manager,
           },
           mayRemove: mayChange,
           empty: `Nothing in this collection yet.${
@@ -672,6 +684,14 @@ export function CollectionScreen() {
           },
         }}
       />
+      {managersOffered(caps, role) && (
+        <ManagersSection
+          collectionId={collection.id}
+          collectionName={collection.name}
+          version={`${collection.etag}:${collection.audience}`}
+          onChanged={() => void again()}
+        />
+      )}
       {mayDelete && (
         <button
           ref={deleteButton}
@@ -715,10 +735,21 @@ export function CollectionScreen() {
 /** Why the reader may not change this collection, when they may not, in plain words. */
 function MakerNote(props: {
   mine: boolean;
+  manager: boolean;
   mayChange: boolean;
   stranded: boolean;
   maker: string | null;
 }) {
+  if (props.manager) {
+    return (
+      <p className="muted">
+        {props.maker
+          ? `${props.maker}, who made this collection, chose you to manage it.`
+          : 'You manage this collection.'}{' '}
+        You can add and remove documents, fill it from a checklist, and rename it.
+      </p>
+    );
+  }
   if (props.mayChange) return null;
   if (props.mine) {
     return (
@@ -739,8 +770,8 @@ function MakerNote(props: {
   return (
     <p className="muted">
       {props.maker
-        ? `Only ${props.maker}, who made this collection, can change it.`
-        : 'Only the person who made this collection can change it.'}
+        ? `Only ${props.maker}, who made this collection, or someone they chose to manage it, can change it.`
+        : 'Only the person who made this collection, or someone they chose to manage it, can change it.'}
     </p>
   );
 }

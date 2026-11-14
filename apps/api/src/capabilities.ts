@@ -174,6 +174,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       local_ai: config.localAi === true,
       // 0.9.0 (C1): a collection from a checklist, read, matched and kept.
       collection_checklist: true,
+      // 0.9.0: a collection's maker chooses who else manages it, and what each may do.
+      collection_managers: true,
       // 0.9.0 (N1): notes kept on their own, a document with no file.
       notes: true,
       // 0.9.0 (TZ): the family's time zone, set in Settings or by FDV_TIMEZONE.

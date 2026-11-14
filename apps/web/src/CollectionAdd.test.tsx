@@ -197,7 +197,11 @@ describe("a collection's Add documents (Phase 6)", () => {
 
     // Somebody else's collection: the ⋯'s Add to a collection would not offer it either.
     at({ collections: [{ ...HOLIDAY, owner_member_id: 'm-1' }] });
-    expect(await screen.findByText('Only Sam, who made this collection, can change it.'));
+    expect(
+      await screen.findByText(
+        'Only Sam, who made this collection, or someone they chose to manage it, can change it.',
+      ),
+    );
     expect(screen.queryByRole('button', { name: 'Add documents' })).not.toBeInTheDocument();
     cleanup();
 
@@ -438,7 +442,7 @@ describe("a collection's Add documents (Phase 6)", () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add 2 to “Holiday”' }));
     await waitFor(() =>
       expect(within(dialog).getByRole('alert')).toHaveTextContent(
-        'None of the 2 went into “Holiday”. Only the person who made this collection can change it.',
+        'None of the 2 went into “Holiday”. Only the person who made this collection, or someone they chose to manage it, can change it.',
       ),
     );
     expect(within(dialog).getByRole('alert')).toHaveTextContent(

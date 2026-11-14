@@ -39,6 +39,8 @@ import type {
   CollectionChecklist,
   CollectionDetail,
   CollectionInput,
+  CollectionManagerInput,
+  CollectionManagers,
   CollectionSharePreview,
   CollectionShareInput,
   CollectionView,
@@ -1159,6 +1161,49 @@ export function createApi(http: Http) {
       request<ChecklistAdded>(`/api/v1/collections/${enc(id)}/checklist/add`, {
         method: 'POST',
         body: { document_ids: documentIds },
+        token,
+      }),
+
+    // ----------------------------------------- a collection's managers (0.9.0)
+    /**
+     * Who manages a collection besides its maker, and — for a caller who may
+     * choose managers — who else could (when `features.collection_managers`).
+     * The family who see it; a viewer or a guest is `403`.
+     */
+    collectionManagers: (token: string, id: string) =>
+      request<CollectionManagers>(`/api/v1/collections/${enc(id)}/managers`, { token }),
+    /**
+     * Somebody made a manager, each switch off unless said: by its maker, or
+     * a manager who may choose managers and has each switch they give
+     * (`403` otherwise). Somebody who cannot see it, a viewer or a guest is
+     * `422`; one already a manager `409`.
+     */
+    addCollectionManager: (
+      token: string,
+      id: string,
+      body: CollectionManagerInput & { member_id: string },
+    ) =>
+      request<CollectionManagers>(`/api/v1/collections/${enc(id)}/managers`, {
+        method: 'POST',
+        body,
+        token,
+      }),
+    /** What a manager may do, changed: only switches the caller has may be turned on. */
+    updateCollectionManager: (
+      token: string,
+      id: string,
+      memberId: string,
+      body: Omit<CollectionManagerInput, 'member_id'>,
+    ) =>
+      request<CollectionManagers>(`/api/v1/collections/${enc(id)}/managers/${enc(memberId)}`, {
+        method: 'PATCH',
+        body,
+        token,
+      }),
+    /** A manager taken away; never its maker (`422`). */
+    removeCollectionManager: (token: string, id: string, memberId: string) =>
+      request<void>(`/api/v1/collections/${enc(id)}/managers/${enc(memberId)}`, {
+        method: 'DELETE',
         token,
       }),
 

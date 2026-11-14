@@ -3321,6 +3321,51 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it('notices the guards on a collection’s managers gone: who may be one, and who goes as it narrows (0095)', async () => {
+    for (const [table, trigger] of [
+      ['doc_collection_manager', 'doc_collection_manager_rule'],
+      ['doc_collection', 'doc_collection_drops_managers'],
+      ['account_household', 'account_household_drops_managers'],
+    ] as const) {
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        const refused = await checkRestored(target()).then(
+          () => null,
+          (e: unknown) => (e as Error).message,
+        );
+        expect(refused, trigger).toMatch(/guard the vault relies on is missing/);
+        expect(refused, trigger).not.toMatch(new RegExp(trigger));
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    // And the rule on who takes a manager away, by name.
+    const rule = (
+      await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as rule from pg_policy
+          where polname = 'doc_collection_manager_writer_delete'`,
+      )
+    ).rows[0]?.rule as string;
+    expect(rule).toBeTruthy();
+    await sql(
+      vault.adminUrl,
+      'drop policy doc_collection_manager_writer_delete on public.doc_collection_manager',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /who takes a collection’s manager away \(doc_collection_manager_writer_delete/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy doc_collection_manager_writer_delete on public.doc_collection_manager
+           as restrictive for delete using (${rule})`,
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it('notices the guards that keep a note a note gone: no file on one, none made one, its kind the vault’s (0078, N1)', async () => {
     for (const [table, trigger] of [
       ['document_version', 'document_version_not_on_note'],

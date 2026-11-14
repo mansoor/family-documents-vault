@@ -117,6 +117,8 @@ describe('buildCapabilities', () => {
       local_ai: false,
       // C1 (0.9.0): a collection from a checklist.
       collection_checklist: true,
+      // 0.9.0: collection managers.
+      collection_managers: true,
       // N1 (0.9.0): notes kept on their own.
       notes: true,
       // TZ (0.9.0): the family's time zone.

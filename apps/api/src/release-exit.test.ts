@@ -246,6 +246,8 @@ const PARAM_KINDS: Record<string, Kind> = {
   'items/:documentId': 'document',
   'items/:doc': 'document',
   'members/:id': 'member',
+  // A collection's manager (0.9.0): a person.
+  'managers/:memberId': 'member',
   'photo/:photoId': 'photo',
   'shares/:id': 'share',
   'upload-requests/:id': 'uploadRequest',
@@ -678,6 +680,18 @@ const RULES: Record<string, Rule> = {
     who: 'adults',
     body: (f) => ({ document_ids: [f.document], follow_collection: false }),
   },
+  // A collection's managers (0.9.0): the family who see the collection read
+  // them; its maker, or a manager who may choose managers, changes them.
+  'GET /api/v1/collections/:id/managers': { who: 'family' },
+  'POST /api/v1/collections/:id/managers': {
+    who: 'family',
+    body: (f) => ({ member_id: f.member, may_choose_managers: true, may_delete: true }),
+  },
+  'PATCH /api/v1/collections/:id/managers/:memberId': {
+    who: 'family',
+    body: () => ({ may_change_audience: true, may_delete: true, may_choose_managers: true }),
+  },
+  'DELETE /api/v1/collections/:id/managers/:memberId': { who: 'family' },
 
   // Links, and what a restore paused.
   'GET /api/v1/shares': { who: 'signedIn' },

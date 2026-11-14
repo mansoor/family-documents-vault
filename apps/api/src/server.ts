@@ -221,7 +221,7 @@ async function main(): Promise<void> {
     deriveSealedKey(masterSecret),
     deriveCursorKey(masterSecret),
   );
-  const collections = new CollectionService(db, documents);
+  const collections = new CollectionService(db, documents, undefined, alert);
   const batches = new BatchService(
     db,
     keys,

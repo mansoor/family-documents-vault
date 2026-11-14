@@ -205,6 +205,15 @@ describe.skipIf(!testAdminUrl())('migration 0039: lists are called collections',
       'doc_collection_item_household_id_fkey',
       'doc_collection_item_pkey',
       'doc_collection_item_pkey',
+      // A collection's managers (0095), named for the collection they belong to.
+      'doc_collection_manager',
+      'doc_collection_manager_added_by_fkey',
+      'doc_collection_manager_collection_id_household_id_fkey',
+      'doc_collection_manager_household_id_fkey',
+      'doc_collection_manager_member_id_household_id_fkey',
+      'doc_collection_manager_member_idx',
+      'doc_collection_manager_pkey',
+      'doc_collection_manager_pkey',
       'doc_collection_name_check',
       'doc_collection_only_me_owner',
       'doc_collection_owner_member_id_fkey',
@@ -219,6 +228,12 @@ describe.skipIf(!testAdminUrl())('migration 0039: lists are called collections',
         order by 1`,
     );
     expect(guard).toEqual([
+      // Since 0095, one made for fewer people loses the managers outside it.
+      {
+        name: 'doc_collection_drops_managers',
+        tbl: 'doc_collection',
+        fn: 'doc_collection_drops_managers',
+      },
       // Since 0055, one made for fewer than Everyone leaves every grant (5.33, A17).
       {
         name: 'doc_collection_leaves_grants',

@@ -965,6 +965,16 @@ always asks you to confirm it is you; a teen cannot share one; and deleting the
 collection, or making it Only me, ends its links. Every link, to a document or a
 collection, is in **Sharing**, to take back.
 
+Whoever makes a collection can let others manage it: in **Managers** on the
+collection's page, choose someone in the family who can already see it. A
+manager can add and remove documents, use its checklist and rename it; the
+maker decides, for each manager, whether they may also change who it is for,
+delete it, or choose managers themselves. A manager never sees more than they
+could before, can never make the collection for people its maker isn't one of,
+and the activity log says who changed what. If the maker can no longer change
+it (their sign-in is gone, say), an owner can take its managers away, and can
+delete it unless a manager may still delete it.
+
 ### Notes
 
 **Notes**, in the left bar, keep what the family knows and keeps nowhere else:

@@ -226,6 +226,13 @@ export interface FakeCollection {
   shared_outside?: { with: string[]; following: boolean } | null;
   /** Its checklist (0.9.0, C1), as its maker kept it. */
   checklist?: { items: ChecklistItem[]; saved_at: string } | null;
+  /** Who manages it besides its maker (0.9.0): members of `state.members` ("me" among them). */
+  managers?: Array<{
+    member_id: string;
+    may_change_audience: boolean;
+    may_delete: boolean;
+    may_choose_managers: boolean;
+  }>;
 }
 
 export interface FakeState {
@@ -654,6 +661,12 @@ export interface FakeState {
    * could not read in time; and each POST .../checklist/add, as it came.
    */
   collectionChecklist?: boolean;
+  /**
+   * Collection managers (0.9.0, `features.collection_managers`): given with
+   * collections unless false; each call to /collections/{id}/managers kept.
+   */
+  collectionManagers?: boolean;
+  managerCalls?: Array<{ method: string; path: string; body: unknown }>;
   checklistUnavailable?: boolean;
   /** Answer a checklist kept with no lines as kept, as a vault before 0.9.0-dev.39 did. */
   checklistEmptyKept?: boolean;
@@ -1229,6 +1242,9 @@ export function installFakeApi(state: FakeState) {
           ...(state.collections ? { collections: true } : {}),
           ...(state.collections && state.collectionChecklist !== false
             ? { collection_checklist: true }
+            : {}),
+          ...(state.collections && state.collectionManagers !== false
+            ? { collection_managers: true }
             : {}),
           ...(state.collections && state.collectionShares !== false
             ? { collection_shares: true }
@@ -5795,7 +5811,54 @@ function answerCollections(
     updated_at: '2026-09-26T10:00:00Z',
     etag: l.etag,
     shared_outside: l.shared_outside ?? null,
+    my_powers: powersOf(l),
+    managers: family ? managersOf(l) : null,
   });
+  const family = role === 'owner' || role === 'adult' || role === 'teen';
+  const roleOfMember = (id: string) =>
+    (state.members.find((m) => m.id === id)?.role as Role | null | undefined) ?? null;
+  /** Somebody who may manage `l` for `audience` (0.9.0): of the family, signed in, in it. */
+  const mayManage = (id: string, audience: FakeCollection['audience']) => {
+    const r = roleOfMember(id);
+    const person = state.members.find((m) => m.id === id);
+    return (
+      person !== undefined &&
+      (person.kind ?? 'family') === 'family' &&
+      r !== null &&
+      audience !== 'only_me' &&
+      inCollectionAudience(r, audience)
+    );
+  };
+  const managersOf = (l: FakeCollection) =>
+    (l.managers ?? [])
+      .map((m) => ({
+        ...m,
+        display_name:
+          (state.members.find((x) => x.id === m.member_id)?.display_name as string | undefined) ??
+          '',
+        added_at: '2026-11-13T10:00:00Z',
+      }))
+      .sort((a, b) => a.display_name.localeCompare(b.display_name));
+  /** What "me" may do with a collection now, as the vault's `my_powers` says (0.9.0). */
+  const powersOf = (l: FakeCollection) => {
+    const maker = l.owner_member_id === 'me';
+    const inIt = inCollectionAudience(role, l.audience);
+    const own = (l.managers ?? []).find((m) => m.member_id === 'me');
+    const manager = !maker && own !== undefined && family && inIt && l.audience !== 'only_me';
+    const makerNow = maker && inIt;
+    return {
+      maker,
+      manager,
+      edit: makerNow || manager,
+      change_audience: makerNow || (manager && own.may_change_audience),
+      delete: maker || (manager && own.may_delete) || (role === 'owner' && stranded(l)),
+      choose_managers: makerNow || (manager && own.may_choose_managers),
+      remove_managers:
+        makerNow ||
+        (manager && own.may_choose_managers) ||
+        (!maker && role === 'owner' && makerStranded(l)),
+    };
+  };
   const detail = (l: FakeCollection, from = 0, limit = state.collectionPageSize ?? 50) => {
     const docs = docsOn(l);
     const more = from + limit < docs.length;
@@ -5807,7 +5870,7 @@ function answerCollections(
         document: listed(d),
         added_at: '2026-09-26T10:00:00Z',
         hint:
-          l.owner_member_id === 'me'
+          powersOf(l).maker || powersOf(l).manager
             ? collectionItemHint(l.audience, {
                 visibility: String(d.visibility),
                 owner_member_id: (d.owner_member_id as string | null | undefined) ?? null,
@@ -5835,15 +5898,19 @@ function answerCollections(
     const at = docsOn(l).findIndex((d) => d.id === after);
     return at === -1 ? null : at + 1;
   };
-  /**
-   * An owner may delete somebody else's collection only when nobody may change
-   * it any more: its maker has no sign-in, or is not one of its audience.
-   */
-  const stranded = (l: FakeCollection) => {
+  /** Its maker may no longer change it: no sign-in, or not one of its audience. */
+  const makerStranded = (l: FakeCollection) => {
     const maker = state.members.find((m) => m.id === l.owner_member_id);
     const makerRole = maker?.role as Role | null | undefined;
     return !makerRole || !inCollectionAudience(makerRole, l.audience);
   };
+  /**
+   * An owner may delete somebody else's collection only when nobody may delete
+   * it any more: its maker may not change it, and no manager may delete it.
+   */
+  const stranded = (l: FakeCollection) =>
+    makerStranded(l) &&
+    !(l.managers ?? []).some((m) => m.may_delete && mayManage(m.member_id, l.audience));
   const manage = () =>
     role === 'viewer'
       ? refuse(
@@ -5852,18 +5919,24 @@ function answerCollections(
           'Viewers can open and download documents, but not make collections of them.',
         )
       : null;
-  /** Only its maker, in its audience, changes a collection (A18). */
+  /** Only its maker, in its audience, or a manager, changes a collection (A18, 0.9.0). */
   const refusedChange = (l: FakeCollection) =>
     manage() ??
-    (l.owner_member_id !== 'me'
-      ? refuse(403, 'forbidden', 'Only the person who made this collection can change it.')
-      : !inCollectionAudience(role, l.audience)
+    (powersOf(l).edit
+      ? null
+      : l.owner_member_id !== 'me'
         ? refuse(
             403,
             'forbidden',
-            'This collection is for people you are no longer one of. You can still delete it, but not change it.',
+            'Only the person who made this collection, or someone they chose to manage it, can change it.',
           )
-        : null);
+        : !inCollectionAudience(role, l.audience)
+          ? refuse(
+              403,
+              'forbidden',
+              'This collection is for people you are no longer one of. You can still delete it, but not change it.',
+            )
+          : null);
   const tidy = (name: unknown) =>
     typeof name === 'string' ? name.trim().replace(/\s+/g, ' ') : '';
 
@@ -6036,12 +6109,13 @@ function answerCollections(
     const l = all.find((x) => x.id === checklistAt[1]);
     if (!l || !seesCollection(l)) return noCollection();
     const changing = method !== 'GET';
-    const mine = l.owner_member_id === 'me' && inCollectionAudience(role, l.audience);
+    // Its maker, or a manager (0.9.0).
+    const mine = powersOf(l).edit;
     if (changing && !mine) {
       return refuse(
         403,
         'forbidden',
-        'Only the person who made this collection can fill it from a checklist.',
+        'Only the person who made this collection, or someone they chose to manage it, can fill it from a checklist.',
       );
     }
     const ctx: ChecklistContext = {
@@ -6145,6 +6219,93 @@ function answerCollections(
       return json({ added, skipped, warnings: [], collection: detail(next) });
     }
   }
+  // Who manages a collection (0.9.0), as the vault answers it: the family
+  // who see it read them; its maker, or a manager who may choose, changes
+  // them, giving only what they may do themselves. Each call is kept.
+  const managersAt = /^\/api\/v1\/collections\/([^/]+)\/managers(?:\/([^/]+))?$/.exec(path);
+  if (managersAt) {
+    if (!family) {
+      return refuse(403, 'forbidden', 'A collection’s managers are for the family who see it.');
+    }
+    const l = all.find((x) => x.id === managersAt[1]);
+    if (!l || !seesCollection(l)) return noCollection();
+    state.managerCalls = [...(state.managerCalls ?? []), { method, path, body }];
+    const answer = (c: FakeCollection) => {
+      const powers = powersOf(c);
+      const managing = new Set((c.managers ?? []).map((m) => m.member_id));
+      return {
+        items: managersOf(c),
+        eligible: powers.choose_managers
+          ? state.members
+              .filter(
+                (m) =>
+                  m.id !== c.owner_member_id &&
+                  !managing.has(String(m.id)) &&
+                  mayManage(String(m.id), c.audience),
+              )
+              .map((m) => ({ member_id: String(m.id), display_name: String(m.display_name) }))
+              .sort((a, b) => a.display_name.localeCompare(b.display_name))
+          : [],
+        my_powers: powers,
+      };
+    };
+    if (method === 'GET') return json(answer(l));
+    const powers = powersOf(l);
+    // Taking one away is also an owner's while its maker may not change it.
+    const removing = method === 'DELETE' && managersAt[2] !== undefined;
+    if (!powers.choose_managers && !(removing && powers.remove_managers)) {
+      return refuse(
+        403,
+        'forbidden',
+        'Only the person who made this collection, or a manager they let, can choose who manages it.',
+      );
+    }
+    const keys = ['may_change_audience', 'may_delete', 'may_choose_managers'] as const;
+    const mayGive = {
+      may_change_audience: powers.change_audience,
+      may_delete: powers.delete,
+      may_choose_managers: powers.choose_managers,
+    };
+    const b = (body ?? {}) as Record<string, unknown>;
+    const save = (managers: NonNullable<FakeCollection['managers']>) => {
+      const next = { ...l, managers };
+      state.collections = all.map((x) => (x.id === l.id ? next : x));
+      return next;
+    };
+    if (method === 'POST' && !managersAt[2]) {
+      const id = typeof b.member_id === 'string' ? b.member_id : '';
+      if (!mayManage(id, l.audience) || id === l.owner_member_id) {
+        return refuse(
+          422,
+          'validation_failed',
+          'That person can’t manage this collection: only someone in the family with a sign-in who can already see it can.',
+        );
+      }
+      const asked = Object.fromEntries(keys.map((k) => [k, b[k] === true])) as Record<
+        (typeof keys)[number],
+        boolean
+      >;
+      if (!powers.maker && keys.some((k) => asked[k] && !mayGive[k])) {
+        return refuse(403, 'forbidden', 'You can only let a manager do what you can do yourself.');
+      }
+      return json(answer(save([...(l.managers ?? []), { member_id: id, ...asked }])), 201);
+    }
+    const id = decodeURIComponent(managersAt[2] ?? '');
+    const was = (l.managers ?? []).find((m) => m.member_id === id);
+    if (!was) return refuse(404, 'not_found', 'That person doesn’t manage this collection.');
+    if (method === 'PATCH') {
+      const now = { ...was };
+      for (const k of keys) if (typeof b[k] === 'boolean') now[k] = b[k];
+      if (!powers.maker && keys.some((k) => now[k] && !was[k] && !mayGive[k])) {
+        return refuse(403, 'forbidden', 'You can only let a manager do what you can do yourself.');
+      }
+      return json(answer(save((l.managers ?? []).map((m) => (m.member_id === id ? now : m)))));
+    }
+    if (method === 'DELETE') {
+      save((l.managers ?? []).filter((m) => m.member_id !== id));
+      return done();
+    }
+  }
   const at = /^\/api\/v1\/collections\/([^/]+)(\/items(?:\/([^/]+))?)?$/.exec(path);
   if (at?.[2] && !at[3] && method === 'POST') {
     // As the vault's route takes them, before it looks for the collection: one
@@ -6178,6 +6339,29 @@ function answerCollections(
     if (method === 'PATCH') {
       const refused = refusedChange(collection);
       if (refused) return refused;
+      const wanted = (body as { audience?: string }).audience;
+      if (wanted !== undefined && wanted !== collection.audience) {
+        if (!powersOf(collection).change_audience) {
+          return refuse(
+            403,
+            'forbidden',
+            'You manage this collection, but only the person who made it, or a manager they let, can change who it’s for.',
+          );
+        }
+        // Never leaving its maker outside their own collection.
+        const maker = state.members.find((m) => m.id === collection.owner_member_id);
+        const makerRole = maker?.role as Role | null | undefined;
+        if (
+          collection.owner_member_id !== 'me' &&
+          (!makerRole || !inCollectionAudience(makerRole, wanted))
+        ) {
+          return refuse(
+            422,
+            'validation_failed',
+            `That would leave ${(maker?.display_name as string | undefined) ?? 'the person who made it'} unable to see their own collection.`,
+          );
+        }
+      }
       if (ifMatch && ifMatch !== collection.etag) {
         return refuse(
           409,
@@ -6207,15 +6391,16 @@ function answerCollections(
       return json(detail(changed));
     }
     if (method === 'DELETE') {
-      // Its maker, whatever their role now; an owner, only when stranded.
+      // Its maker, whatever their role now; a manager its maker let (0.9.0);
+      // an owner, only when stranded.
       if (collection.owner_member_id !== 'me') {
         const refused = manage();
         if (refused) return refused;
-        if (role !== 'owner' || !stranded(collection)) {
+        if (!powersOf(collection).delete) {
           return refuse(
             403,
             'forbidden',
-            'Only the person who made this collection can change it.',
+            'Only the person who made this collection, or someone they chose to manage it, can change it.',
           );
         }
       }

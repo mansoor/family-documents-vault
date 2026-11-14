@@ -3,6 +3,7 @@ import {
   COLLECTION_DESCRIPTION_MAX,
   COLLECTION_NAME_MAX,
   CHECKLIST_TEXT_MAX,
+  collectionPowers,
   inCollectionAudience,
   sharedOutsideWords,
   type Capabilities,
@@ -94,15 +95,16 @@ export function collectionsOffered(caps: Capabilities | null, role: Role): boole
 }
 
 /**
- * Whether the reader may change a collection — its name, who it is for, what is
- * in it: its maker, while they are in its audience (A18). The vault decides
- * regardless; this only decides what is drawn.
+ * Whether the reader may change a collection — its name, words, what is in it,
+ * its checklist: its maker, while they are in its audience, or a manager they
+ * chose (A18, 0.9.0), as the vault's `my_powers` says; an older vault, its
+ * maker alone. The vault decides regardless; this only decides what is drawn.
  */
 export function mayChangeCollection(
   role: Role,
-  collection: Pick<CollectionView, 'mine' | 'audience'>,
+  collection: Pick<CollectionView, 'mine' | 'audience' | 'my_powers'>,
 ): boolean {
-  return collection.mine && inCollectionAudience(role, collection.audience);
+  return collectionPowers(role, collection).edit;
 }
 
 /**
@@ -152,8 +154,12 @@ export function AudiencePicker(props: {
   value: CollectionAudience | null;
   role: Role;
   onChange: (audience: CollectionAudience) => void;
+  /** A manager (0.9.0): Only me is its maker's alone, never offered. */
+  noOnlyMe?: boolean;
 }) {
-  const choices = AUDIENCE_CHOICES.filter((c) => inCollectionAudience(props.role, c.value));
+  const choices = AUDIENCE_CHOICES.filter(
+    (c) => inCollectionAudience(props.role, c.value) && !(props.noOnlyMe && c.value === 'only_me'),
+  );
   const chosen = choices.find((c) => c.value === props.value);
   return (
     <div className="stack audience">
@@ -197,6 +203,13 @@ export function CollectionForm(props: {
   withDescription: boolean;
   /** "Start from a checklist (optional)" (0.9.0, C1): only as a collection is made. */
   withChecklist?: boolean;
+  /**
+   * Who it is for, for a reader who may not change it (a manager its maker
+   * did not let, 0.9.0): said, not offered. `noOnlyMe`: a manager who may
+   * change it, offered every audience but Only me.
+   */
+  audienceFixed?: boolean;
+  noOnlyMe?: boolean;
   submitLabel: string;
   busyLabel: string;
   onSubmit: (fields: CollectionFields) => Promise<void>;
@@ -270,7 +283,19 @@ export function CollectionForm(props: {
           onChange={setDescription}
         />
       )}
-      <AudiencePicker value={audience} role={role} onChange={setAudience} />
+      {props.audienceFixed && audience ? (
+        <p className="muted">
+          Who it is for: <strong>{audienceLabel(audience)}</strong>. Only the person who made it, or
+          a manager they let, can change who it’s for.
+        </p>
+      ) : (
+        <AudiencePicker
+          value={audience}
+          role={role}
+          onChange={setAudience}
+          noOnlyMe={props.noOnlyMe ?? false}
+        />
+      )}
       {props.withChecklist && (
         // A panel that opens, plainly one: a box, its arrow at the end (the
         // owner, 23 Oct). Folded again, its list is kept but not used.
@@ -500,7 +525,7 @@ export function AddToCollection(props: {
             ? 'The collection you made is for people you are no longer one of: you can still delete it, but not put documents in it.'
             : outgrown > 1
               ? 'The collections you made are for people you are no longer one of: you can still delete them, but not put documents in them.'
-              : 'You haven’t made a collection yet. Only the person who made a collection can put documents in it.'}
+              : 'You haven’t made a collection yet. Only the person who made a collection, or someone they chose to manage it, can put documents in it.'}
         </p>
       )}
       {mine.length > 0 && (

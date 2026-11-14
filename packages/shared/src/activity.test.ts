@@ -68,6 +68,42 @@ describe('the activity log, in sentences', () => {
     expect(said('removed')).toBe('Sarah took a tag off “Home insurance policy”');
   });
 
+  it('says who was made a collection’s manager, what more they may do, and when they no longer are (0.9.0)', () => {
+    const say = (action: string, detail: Record<string, unknown>) =>
+      describeEvent(
+        ev({
+          action,
+          detail,
+          object_type: 'collection',
+          object_title: 'Tom',
+          collection_name: 'Mortgage',
+        }),
+      )?.text;
+    expect(say('collection.manager_added', { may_delete: false })).toBe(
+      'Sarah made Tom a manager of the collection “Mortgage”',
+    );
+    expect(
+      say('collection.manager_added', { may_change_audience: true, may_choose_managers: true }),
+    ).toBe(
+      'Sarah made Tom a manager of the collection “Mortgage” (can also change who it’s for and choose managers)',
+    );
+    expect(say('collection.manager_changed', { may_delete: true })).toBe(
+      'Sarah changed what Tom can do as a manager of the collection “Mortgage” (can also delete it)',
+    );
+    expect(say('collection.manager_removed', {})).toBe(
+      'Sarah stopped Tom managing the collection “Mortgage”',
+    );
+    expect(say('collection.manager_removed', { why: 'audience' })).toBe(
+      'Tom no longer manages the collection “Mortgage”: Sarah changed who it is for',
+    );
+    expect(say('collection.manager_removed', { why: 'role' })).toBe(
+      'Tom no longer manages the collection “Mortgage”: Sarah changed their role',
+    );
+    expect(say('collection.manager_removed', { why: 'sign_in' })).toBe(
+      'Tom no longer manages the collection “Mortgage”: Sarah took away their sign-in',
+    );
+  });
+
   it('says the AI reader was changed, removed or tested, and where it runs, never its address or what it said (AIR1)', () => {
     const say = (action: string, detail: Record<string, unknown>) =>
       describeEvent(ev({ action, detail }))?.text;
