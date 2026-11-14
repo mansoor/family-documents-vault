@@ -11,6 +11,9 @@ import {
   SHARE_CODE_TRUTH,
   SHARE_CODE_UNAVAILABLE,
   SHARE_LIMIT_MAX,
+  SHARE_LINK_EMAIL_MESSAGE_MAX,
+  SHARE_LINK_EMAIL_NOTE,
+  shareLinkMessage,
   SHARE_MAX_DAYS,
   SHARE_PASSWORD_MAX,
   SHARE_PASSWORD_MIN,
@@ -27,7 +30,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, ApiRequestError, type CreatedShare, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { Button, Check, ErrorNote, Field } from '../ui.js';
+import { Button, Check, ErrorNote, Field, TextArea } from '../ui.js';
 import { endWords, familyZoneNow } from '../family-time.js';
 import { useSmsCodes } from '../text-messages.js';
 
@@ -1009,6 +1012,8 @@ export function HandOver(props: { created: CreatedShare; timezone: string; onDon
       >
         {copied ? 'Copied' : 'Copy the link'}
       </Button>
+      {/* Another way to send it, beside Copy (0.9.0): never in its place. */}
+      <EmailTheLink share={share} idPrefix="made" />
       {props.created.pin && (
         <div className="field">
           <span className="field-label">The PIN</span>
@@ -1075,5 +1080,90 @@ export function HandOver(props: { created: CreatedShare; timezone: string; onDon
       </p>
       <Button onClick={props.onDone}>Done</Button>
     </section>
+  );
+}
+
+/**
+ * "Email the link" (0.9.0; the owner's decision of 13 Nov 2026): the vault
+ * emails the link to an address its maker types, through the mail server
+ * of whoever runs the vault — offered only where there is one
+ * (`features.share_link_email`) and on a link the reader made
+ * (`Share.emailable`). Beside Copy the link, never in its place: Copy stays
+ * whatever happens here. The email never carries the PIN, the password or
+ * what the link is to; those are told another way, as the sheet says.
+ */
+export function EmailTheLink(props: { share: Share; idPrefix: string }) {
+  const { guarded, caps } = useApp();
+  const [to, setTo] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  if (caps?.features.share_link_email !== true || props.share.emailable !== true) return null;
+  const id = `${props.idPrefix}-email-link`;
+  const send = async () => {
+    setProblem(null);
+    setSentTo(null);
+    const address = to.trim();
+    if (!isShareAddress(address)) {
+      setProblem('That is not an email address. Check it: name@example.com.');
+      return;
+    }
+    const words = shareLinkMessage(message);
+    if ('problem' in words) {
+      setProblem(words.problem);
+      return;
+    }
+    setBusy(true);
+    try {
+      const sent = await guarded((t) =>
+        api.emailShare(t, props.share.id, {
+          to: address,
+          ...(words.message ? { message: words.message } : {}),
+        }),
+      );
+      if (sent) {
+        setSentTo(sent.sent_to);
+        setTo('');
+        setMessage('');
+      }
+    } catch (err) {
+      setProblem(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="stack" role="group" aria-labelledby={`${id}-h`} data-testid="email-the-link">
+      <h3 id={`${id}-h`} className="field-label">
+        Or have the vault email it
+      </h3>
+      <Field
+        id={`${id}-to`}
+        label="Email the link to"
+        type="email"
+        autoComplete="off"
+        required={false}
+        value={to}
+        maxLength={254}
+        onChange={setTo}
+      />
+      <TextArea
+        id={`${id}-message`}
+        label="A short message, if you like"
+        value={message}
+        maxLength={SHARE_LINK_EMAIL_MESSAGE_MAX}
+        hint="Sent as you type it, with no web addresses or website names in it."
+        onChange={setMessage}
+      />
+      <p className="muted">{SHARE_LINK_EMAIL_NOTE}</p>
+      <Button kind="quiet" disabled={busy} onClick={() => void send()}>
+        {busy ? 'Sending…' : 'Email the link'}
+      </Button>
+      <p className="status-line" role="status">
+        {sentTo ? `Sent to ${sentTo}.` : ''}
+      </p>
+      <ErrorNote message={problem} />
+    </div>
   );
 }

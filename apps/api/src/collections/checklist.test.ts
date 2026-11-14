@@ -303,6 +303,30 @@ describe.skipIf(!testAdminUrl())('a collection from a checklist (C1)', () => {
     expect(await lines()).toBe(before);
   });
 
+  it('a list kept with no lines is none: GET and the PUT that cleared it say saved_at null (0.9.0-dev.39)', async () => {
+    const made = await makeCollection('mansoor', 'Cleared', 'everyone');
+    const c = await check('mansoor', made, { text: 'Bank statement' });
+    const put = await call('mansoor', 'PUT', `/api/v1/collections/${made}/checklist`, {
+      items: c.items,
+    });
+    expect(json<CollectionChecklist>(put).saved_at).not.toBeNull();
+    // "Clear the checklist": there is no DELETE, so an empty list is saved.
+    const cleared = await call('mansoor', 'PUT', `/api/v1/collections/${made}/checklist`, {
+      items: [],
+    });
+    expect(cleared.statusCode, cleared.body).toBe(200);
+    expect(json<CollectionChecklist>(cleared)).toMatchObject({ saved_at: null, items: [] });
+    const opened = json<CollectionChecklist>(
+      await call('mansoor', 'GET', `/api/v1/collections/${made}/checklist`),
+    );
+    expect(opened).toMatchObject({ saved_at: null, items: [], missing: [], to_add: 0 });
+    // Cleared again, the same: nothing new, and still none.
+    const again = await call('mansoor', 'PUT', `/api/v1/collections/${made}/checklist`, {
+      items: [],
+    });
+    expect(json<CollectionChecklist>(again).saved_at).toBeNull();
+  });
+
   it('keeps months named and "dated within" as the person set them', async () => {
     const made = await makeCollection('mansoor', 'Months', 'everyone');
     const c = await check('mansoor', made, {

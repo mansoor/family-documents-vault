@@ -105,7 +105,9 @@ export class ChecklistService {
         .select(['items', 'updated_at'])
         .where('collection_id', '=', id)
         .executeTakeFirst();
-      if (!kept)
+      // A list kept with no lines ("Clear the checklist" saves an empty one,
+      // as there is no DELETE) is none: the collection offers Fill again.
+      if (!kept || storedItems(kept.items).length === 0)
         return { saved_at: null, items: [], missing: [], to_add: 0, left_out: 0, mine: c.mine };
       const items = storedItems(kept.items).map((i) => itemAgain(i, c.ctx));
       return this.answer(trx, p, id, c, { items, left_out: 0 }, kept.updated_at.toISOString());
@@ -154,7 +156,7 @@ export class ChecklistService {
           id,
           c,
           { items: kept.map((i) => itemAgain(i, c.ctx)), left_out: 0 },
-          was.updated_at.toISOString(),
+          kept.length ? was.updated_at.toISOString() : null,
         );
       }
       const saved = await trx
@@ -190,7 +192,8 @@ export class ChecklistService {
         id,
         c,
         { items: kept.map((i) => itemAgain(i, c.ctx)), left_out: 0 },
-        saved.updated_at.toISOString(),
+        // Kept empty is kept as none, as GET answers it.
+        kept.length ? saved.updated_at.toISOString() : null,
       );
     });
   }

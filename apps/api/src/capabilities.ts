@@ -110,6 +110,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       share_second_factor: true,
       // 5.20: an emailed code, through the operator's mail server alone (A21).
       share_email_code: config.operatorMail === true,
+      // 0.9.0 (the owner's decision of 13 Nov 2026): a link emailed to its
+      // recipient by the vault, through the operator's mail server alone (A21).
+      share_link_email: config.operatorMail === true,
       // 5.24: an owner removes a document in the Trash for good (D1).
       remove_for_good: true,
       // 5.25: a person's details changed, made to the version seen; the

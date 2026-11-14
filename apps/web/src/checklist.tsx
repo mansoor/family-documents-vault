@@ -1,5 +1,6 @@
 import {
   can,
+  checklistKept,
   CHECKLIST_COUNT_MAX,
   CHECKLIST_ITEMS_MAX,
   CHECKLIST_LINES_MAX,
@@ -198,7 +199,8 @@ export function ChecklistSection({
     setOpenState({ key, open: now });
     writeOpen(key, now);
   };
-  const kept = checklist?.saved_at ? checklist : null;
+  // Kept with no lines is none (0.9.0-dev.39): Fill from a checklist again.
+  const kept = checklistKept(checklist) ? checklist : null;
   if (!kept && !props.mayFill) return null;
   // None kept yet: nothing here but a problem reading it, if there was
   // one. Fill from a checklist sits with the collection's own buttons (the
@@ -331,7 +333,7 @@ export function ChecklistSheet(props: {
   const navigate = useNavigate();
   const [text, setText] = useState(props.text ?? '');
   const [read, setRead] = useState<CollectionChecklist | null>(
-    props.kept?.saved_at ? props.kept : null,
+    checklistKept(props.kept) ? props.kept : null,
   );
   /** Ticks the person changed, by document: over what the vault ticked. */
   const [ticks, setTicks] = useState<Map<string, boolean>>(new Map());
@@ -430,7 +432,7 @@ export function ChecklistSheet(props: {
    */
   const keep = async (t: string): Promise<void> => {
     const items = (read?.items ?? []).map(sentItem);
-    if (props.kept?.saved_at && keptOf(props.kept.items) === keptOf(items)) return;
+    if (checklistKept(props.kept) && keptOf(props.kept.items) === keptOf(items)) return;
     await api.saveChecklist(t, props.collection.id, items);
   };
 

@@ -274,6 +274,10 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // 0.9.0: a link shown again to whoever made it (never the link): to
   // whoever may see what it is to, as its other lines are.
   ['share.revealed', BY_TYPE],
+  // 0.9.0 (13 Nov 2026): a link emailed to its recipient by the vault, the
+  // address masked (never the link): to whoever may see what it is to, as
+  // its other lines are.
+  ['share_link.emailed', BY_TYPE],
   // 5.19: a document put in a collection whose link keeps up with it, and
   // so sent outside the family: a line about the document, in the collection,
   // on the link — for those who may know of the link.

@@ -203,6 +203,12 @@ import {
   type CreatedShare,
   type RevealedShare,
   type Share,
+  type ShareEmailed,
+  isShareAddress,
+  maskEmail,
+  SHARE_LINK_EMAIL_UNAVAILABLE,
+  SHARE_LINK_EMAILS,
+  shareLinkMessage,
   type CaptureMetadata,
   type CollectionAudience,
   type CollectionDetail,
@@ -603,6 +609,11 @@ export interface FakeShare {
   pin: string | null;
   password: string | null;
   shown_once?: boolean;
+  /**
+   * The emails the vault sent of it (0.9.0, `POST /shares/{id}/email`): to
+   * whom and with what message, in the clear as only a fake may, and when.
+   */
+  emailed?: { to: string; message: string | null; at: string }[];
 }
 
 /** A viewer's limits, as the fake keeps them (5.33): the flags always said. */
@@ -2415,7 +2426,7 @@ export function createFakeVault(): {
     sessionOf: () => FakeSession | ResponseLike,
   ): ResponseLike | null => {
     const making = /^\/api\/v1\/documents\/([^/]+)\/share$/.exec(path);
-    const one = /^\/api\/v1\/shares\/([^/]+)(\/reveal)?$/.exec(path);
+    const one = /^\/api\/v1\/shares\/([^/]+)(\/reveal|\/email)?$/.exec(path);
     if (!making && !one && path !== '/api/v1/shares') return null;
     const s = sessionOf();
     if (!('id' in s)) return s;
@@ -2423,10 +2434,17 @@ export function createFakeVault(): {
     const links = (state.shares ??= []);
     const ended = (l: FakeShare) =>
       l.share.state === 'revoked' || l.share.state === 'expired' || l.share.state === 'locked';
-    const view = (l: FakeShare): Share => ({
-      ...l.share,
-      revealable: l.made_by === who.memberId && !l.shown_once && !ended(l),
-    });
+    const revealable = (l: FakeShare) => l.made_by === who.memberId && !l.shown_once && !ended(l);
+    const view = (l: FakeShare): Share => {
+      const last = l.made_by === who.memberId ? l.emailed?.at(-1) : undefined;
+      return {
+        ...l.share,
+        revealable: revealable(l),
+        // 0.9.0: emailed by the vault, with the operator's mail server alone.
+        emailable: revealable(l) && l.share.state === 'active' && state.operatorMail,
+        emailed_to: last ? maskEmail(last.to) : null,
+      };
+    };
     if (path === '/api/v1/shares' && init.method === 'GET') {
       if (!can(who.role, 'document.share')) return ok({ items: [] });
       return ok({ items: links.map(view) });
@@ -2527,7 +2545,65 @@ export function createFakeVault(): {
     const link = one
       ? links.find((l) => l.share.id === decodeURIComponent(one[1] as string))
       : null;
-    if (one && one[2] && init.method === 'POST') {
+    if (one && one[2] === '/email' && init.method === 'POST') {
+      // As the vault answers (0.9.0): no mail server, none; then the address,
+      // whose it is, that it opens, the copy, and the day's count.
+      if (!state.operatorMail) {
+        return fail(503, 'email_link_unavailable', SHARE_LINK_EMAIL_UNAVAILABLE);
+      }
+      const to = typeof body.to === 'string' ? body.to.trim() : '';
+      if (!isShareAddress(to)) {
+        return fail(
+          422,
+          'validation_failed',
+          'That is not an email address. Check it: name@example.com.',
+        );
+      }
+      const words = shareLinkMessage(typeof body.message === 'string' ? body.message : null);
+      if ('problem' in words) return fail(422, 'validation_failed', words.problem);
+      if (!link || link.made_by !== who.memberId) {
+        return fail(404, 'not_found', 'That link does not exist.');
+      }
+      if (ended(link) || link.share.state === 'used_up') {
+        return fail(
+          410,
+          'share_ended',
+          'That link no longer opens, so there is nothing to send. Make a new one if you need to.',
+        );
+      }
+      if (link.share.state === 'paused') {
+        return fail(
+          409,
+          'share_paused',
+          'That link is paused just now, so it would not open for them. Once it works again, you can email it.',
+        );
+      }
+      if (link.shown_once) {
+        return fail(
+          409,
+          'share_not_revealable',
+          'That link was made before the vault kept a copy, so the vault cannot email it. Send it yourself, or take it back and make a new one.',
+        );
+      }
+      const dayAgo = Date.now() - 864e5;
+      const today = (link.emailed ?? []).filter((e) => Date.parse(e.at) > dayAgo);
+      if (today.length >= SHARE_LINK_EMAILS.perLinkPerDay) {
+        return fail(
+          429,
+          'email_link_limit',
+          `This link has been emailed ${SHARE_LINK_EMAILS.perLinkPerDay} times today, which is as many as the vault sends. Copy it and send it yourself, or try again tomorrow.`,
+        );
+      }
+      const at = new Date().toISOString();
+      (link.emailed ??= []).push({ to, message: words.message, at });
+      const sent: ShareEmailed = {
+        sent_to: maskEmail(to),
+        sent_at: at,
+        sends_left: SHARE_LINK_EMAILS.perLinkPerDay - today.length - 1,
+      };
+      return ok(sent);
+    }
+    if (one && one[2] === '/reveal' && init.method === 'POST') {
       // Anybody else's is a link there is no such of, an owner's included.
       if (!link || link.made_by !== who.memberId) {
         return fail(404, 'not_found', 'That link does not exist.');
@@ -2909,6 +2985,8 @@ export function createFakeVault(): {
           // with the operator's mail server, which a fake has none of.
           share_second_factor: true,
           share_email_code: false,
+          // A link emailed to its recipient (0.9.0): with the operator's mail server alone.
+          share_link_email: state.operatorMail,
           // A person's details, and the owner's view of a sign-in (5.25).
           member_edit: true,
           // Asking somebody to send documents, and looking before filing (5.23).
@@ -4840,8 +4918,9 @@ export function createFakeVault(): {
           return out;
         };
         if (!checklistAt[2] && init.method === 'GET') {
+          // Kept with no lines is none, as the vault answers (0.9.0-dev.39).
           const kept = l.checklist;
-          return ok(kept ? answer(kept.items, kept.saved_at) : answer([], null));
+          return ok(kept?.items.length ? answer(kept.items, kept.saved_at) : answer([], null));
         }
         if (!checklistAt[2] && init.method === 'POST') {
           if (typeof body.text === 'string') {
@@ -4858,7 +4937,8 @@ export function createFakeVault(): {
             savedItem(itemAgain(i, ctx)),
           );
           l.checklist = { items, saved_at: new Date().toISOString() };
-          return ok(answer(items, l.checklist.saved_at));
+          // Cleared (an empty list) is none: no saved_at (0.9.0-dev.39).
+          return ok(answer(items, items.length ? l.checklist.saved_at : null));
         }
         if (checklistAt[2] && init.method === 'POST') {
           const asked = [...new Set((body.document_ids as string[] | undefined) ?? [])];

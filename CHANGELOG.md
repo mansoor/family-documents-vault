@@ -6,6 +6,21 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.39] - 2026-11-13 — email a share link to its recipient
+
+### Added
+
+- **Email the link.** Once a link is made, the share sheet offers "Email the link" beside "Copy the link": type their address, and an optional short message, and the vault emails them the link — "Sent to j•••@example.com". The same is in Sharing, on a link you made, after "Show the link". It is another way to send a link, never in place of copying it. The email names your household and who shared it, says "a document" or "a collection of documents" — never its title — gives the link and when it stops working, and says that if it asks for a PIN or password, the person who sent it will give it to them separately. The PIN, the password and any code are never in it: tell them the PIN or password another way, as before. A link that asks for a code still sends the code in an email of its own when it is opened. (Migration 0094.)
+- It goes only through the mail server of whoever runs the vault (`FDV_SMTP_URL`), never the household's own mail settings; without it, the option is not shown. Only the person who made a link can email it; more than 15 minutes after making it, they confirm it's them first. A link can be emailed 3 times a day, and one person can email 20 links a day. Each email is in the activity log with the address masked.
+
+### Fixed
+
+- **A cleared checklist is no checklist.** Clearing a collection's checklist left an empty "Checklist · 0 of 0 found" panel. A checklist kept with no lines now counts as none: the collection offers "Fill from a checklist" again.
+
+### Security
+
+- The vault keeps where a link was emailed only masked — never the address, nor the message. Who emailed which link is held by the database too: only the link's maker writes a line for it, only they read their own, and nobody changes one. A link removed for good leaves its emails counted for the day. A message is sent as plain text, at most 300 characters and five lines, and may not carry a web address or a website's name (`bit.ly/…`, `example.com`), however it is written: wide letters, hidden characters or a foreign full stop are read for what they say. Your name and the household's go in the email the same way, plainly, with any website name left out. A paused link is not emailed; it opens nothing until it works again.
+
 ## [0.9.0-dev.38] - 2026-11-13 — neutral wording in notifications and email (H2)
 
 ### Added

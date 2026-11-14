@@ -398,6 +398,15 @@ export interface CapabilityFeatures {
    */
   share_reveal?: boolean;
   /**
+   * The vault emails a share link to its recipient for whoever made it
+   * (0.9.0; the owner's decision of 13 Nov 2026): `POST /shares/{id}/email`,
+   * through the mail server of whoever runs the vault (FDV_SMTP_URL, A21)
+   * and never the household's own — false without one, and a client offers
+   * only Copy. Never the PIN, password or code, nor what the link is to.
+   * `Share.emailable` says which links. Absent from older vaults.
+   */
+  share_link_email?: boolean;
+  /**
    * 0.9.0 (V1, the phone's filter panel): GET /documents and GET /search
    * take several comma-separated values for `member_id`, `type_key`,
    * `category`, `status` and `visibility` (any of them), and the days

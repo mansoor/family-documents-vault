@@ -127,6 +127,15 @@ describe('the activity log, in sentences', () => {
       'Sarah looked again at the link they made to “Home insurance policy”',
     );
     expect(revealed?.notable).toBe(true);
+    // 0.9.0 (13 Nov 2026): a link emailed by the vault, the address masked.
+    const emailed = describeEvent(
+      ev({ action: 'share_link.emailed', detail: { share_id: 's-1', to: 'j•••@e•••.com' } }),
+    );
+    expect(emailed?.text).toBe(
+      'Sarah emailed the link to “Home insurance policy” to j•••@e•••.com',
+    );
+    expect(emailed?.notable).toBe(true);
+    expect(activityKind('share_link.emailed')).toBe('shared');
   });
 
   it('says a code was emailed, to an address it only ever has masked (5.20)', () => {
@@ -399,6 +408,14 @@ describe('the activity log, in sentences', () => {
     expect(
       describeEvent(aCollection({ action: 'share.revealed', detail: { share_id: 's-1' } }))?.text,
     ).toBe('Sarah looked again at the link they made to the collection “For the lawyer”');
+    expect(
+      describeEvent(
+        aCollection({
+          action: 'share_link.emailed',
+          detail: { share_id: 's-1', to: 'j•••@e•••.com' },
+        }),
+      )?.text,
+    ).toBe('Sarah emailed the link to the collection “For the lawyer” to j•••@e•••.com');
     const followed = describeEvent(
       ev({ action: 'share.followed', collection_name: 'For the lawyer' }),
     );

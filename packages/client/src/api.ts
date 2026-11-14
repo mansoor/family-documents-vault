@@ -29,6 +29,8 @@ import type {
   RenewalInput,
   RenewalResult,
   RevealedShare,
+  ShareEmailed,
+  ShareEmailInput,
   IssuerSuggestions,
   ChecklistAdded,
   ChecklistInput,
@@ -1362,6 +1364,17 @@ export function createApi(http: Http) {
      */
     revealShare: (token: string, id: string) =>
       request<RevealedShare>(`/api/v1/shares/${enc(id)}/reveal`, { method: 'POST', token }),
+    /**
+     * A link emailed to its recipient by the vault (0.9.0,
+     * `features.share_link_email`), for whoever made it, while
+     * `Share.emailable`: never with its PIN, password or code. `503
+     * email_link_unavailable` without the operator's mail server; `422` for
+     * an address that is not one; `404`, `409 share_not_revealable`, `410
+     * share_ended` as reveal; `403 step_up_required` (`email_share`) after
+     * the first 15 minutes; `429 email_link_limit` past 3 a link in a day.
+     */
+    emailShare: (token: string, id: string, body: ShareEmailInput) =>
+      request<ShareEmailed>(`/api/v1/shares/${enc(id)}/email`, { method: 'POST', token, body }),
     sharePreview: (linkToken: string) => request<SharePreview>(`/api/v1/shared/${enc(linkToken)}`),
     openShare: (linkToken: string, pin?: string) =>
       request<SharedDocument>(`/api/v1/shared/${enc(linkToken)}/open`, {

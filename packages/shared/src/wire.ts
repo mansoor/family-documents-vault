@@ -679,7 +679,54 @@ export interface Share {
    * anybody else's. Absent from older vaults: nothing is revealable.
    */
   revealable?: boolean;
+  /**
+   * The vault can email it to its recipient for the caller (0.9.0,
+   * `features.share_link_email`): `revealable`, and the operator's mail
+   * server is set. `POST /shares/{id}/email` sends it. Absent from older
+   * vaults: nothing is emailed.
+   */
+  emailable?: boolean;
+  /**
+   * Where the caller last emailed it, masked (`j•••@e•••.com`): never the
+   * address. Null when they have not, and for anybody else's link. Absent
+   * from older vaults.
+   */
+  emailed_to?: string | null;
   summary: string;
+}
+
+/**
+ * `POST /shares/{id}/email` (0.9.0, `features.share_link_email`; the owner's
+ * decision of 13 Nov 2026): the vault emails the link to `to`, through the
+ * operator's mail server alone (FDV_SMTP_URL, A21). The email names the
+ * household and who shared it, says "a document" or "a collection" (never
+ * its title), when the link stops working, and that a PIN or password comes
+ * separately: never the PIN, the password or a code. `message`, if given,
+ * is the sharer's own short words, sent as plain text: at most 300
+ * characters and five lines, with no web address or website name in it
+ * (`422 validation_failed`, asked before any step-up).
+ *
+ * The link's maker alone, and only while `Share.emailable`: `404
+ * not_found` for anybody else's, `410 share_ended`, `409 share_paused`
+ * for one paused, `409 share_not_revealable` for one made before the vault
+ * kept copies, `503
+ * email_link_unavailable` without the operator's mail server, `422` for an
+ * address that is not one (`isShareAddress`). Within 15 minutes of making
+ * the link it asks what making it asked; later, `403 step_up_required`
+ * with action `email_share` (any credential). At most 3 a link and 20 an
+ * account in a day: `429 email_link_limit`, with `Retry-After`.
+ */
+export interface ShareEmailInput {
+  to: string;
+  message?: string;
+}
+
+export interface ShareEmailed {
+  /** The address, masked, as the list and the activity log say it. */
+  sent_to: string;
+  sent_at: string;
+  /** How many more this link may be emailed today. */
+  sends_left: number;
 }
 
 /**

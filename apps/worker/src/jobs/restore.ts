@@ -1441,6 +1441,8 @@ const ACTOR_GUARDED = [
   'share_page_failure',
   // A link's emailed codes: its own, and the vault's; nobody else's (0043).
   'share_code',
+  // A link emailed to its recipient: its sender's, and the vault's (0094).
+  'share_link_email',
   // Requests to send documents, what they ask for, their senders' sessions
   // and codes, and the files that came in (0044).
   'upload_request',

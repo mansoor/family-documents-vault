@@ -6357,6 +6357,67 @@ forbidden` to anybody else. Each value is a set of documents left
       `neutralWording`, `setNeutralWording`, `myWording`, `setMyWording`.
       The fake says the feature, keeps the household's choice for an owner
       (`403` to anybody else; no step-up) and each person's own.
+  - A share link emailed to its recipient by the vault (0.9.0-dev.39; the
+    owner's decision of 13 Nov 2026). Migration 0094. **Additive**: a
+    request made as before is answered as before.
+    - **New `features`:** `share_link_email` — `true` only when the
+      operator's mail server is set (`FDV_SMTP_URL`, A21); the household's
+      own mail settings are never used for it. A client offers "Email the
+      link" only then, and always beside Copy, never in its place.
+    - **New route:** `POST /api/v1/shares/{id}/email` — `{ to, message? }`
+      (`ShareEmailInput`), answering `{ sent_to, sent_at, sends_left }`
+      (`ShareEmailed`; `sent_to` masked, `j•••@e•••.com`), `cache-control:
+no-store`. For the account that made the link alone, while it still
+      opens and a sealed copy was kept (`Share.emailable`). `503
+email_link_unavailable` without the operator's mail server, asked
+      first; `422 validation_failed` for an address `isShareAddress` refuses
+      or a message past 300 characters or five lines, or with a web
+      address or any dotted website name in it, read after NFKC and with
+      hidden characters taken out (`shareLinkMessage`) — both checked
+      before any step-up; `404 not_found` for anybody else's link, an
+      owner's included; `410 share_ended` for one taken back, run out,
+      locked or used up; `409 share_paused` for one paused (after a
+      restore, or by its maker's sign-in or limits); `409
+share_not_revealable` for one made before the vault kept copies. Within 15 minutes of making it, it
+      asks what making it asked (a collection's `share_collection`, a
+      document's as opening it asks); later, `403 step_up_required`
+      (`email_share`, any credential). At most 3 a link and 20 an account
+      in any day, and no household-wide limit: `429 email_link_limit` with
+      `Retry-After`. A link removed for good leaves its emails counted
+      (their `share_id` set null). `503
+email_link_not_sent` when the email cannot be queued (nothing kept).
+    - **The email** goes through the operator's mail server as a link's
+      code does (`mail.to_address`, sealed on the queue): it names the
+      household and who shared it (each made plain by `plainName`: no
+      website name, nothing hidden or turned round; left out if nothing is
+      left), says "a document" or "a collection of
+      documents" — never the title or the collection's name — the sharer's
+      message if any (plain text), the link, when it stops working, and that
+      a PIN or password comes separately. Never the PIN, the password or a
+      code: a link that asks for a code still sends it in an email (or text)
+      of its own when it is opened.
+    - **New fields on `Share`:** `emailable` (boolean) and `emailed_to`
+      (where the reader last had it emailed, masked; `null` for none and
+      for anybody else's link).
+    - **New activity:** `share_link.emailed` (`share_id`, `to` masked,
+      `with_message` when there was one — never the message), about the
+      link's document or collection, for whoever may see it; kind `shared`.
+    - **New step-up action:** `email_share` ("to email a link you made").
+    - **Changed:** `maskEmail` cuts an ending past 12 characters
+      (`j•••@e•••.aaaaaaaaaa…`).
+    - `@fdv/shared`: `plainName`, `SHARE_LINK_EMAILS`, `SHARE_LINK_EMAIL_MESSAGE_MAX`,
+      `SHARE_LINK_EMAIL_UNAVAILABLE`, `SHARE_LINK_EMAIL_NOTE`,
+      `shareLinkMessage`, `ShareEmailInput`, `ShareEmailed`;
+      `Capabilities.features.share_link_email`. `@fdv/client`:
+      `emailShare`. The fake says the feature while `state.operatorMail`,
+      keeps each email (`FakeShare.emailed`) and answers as the vault does,
+      but with no step-up.
+  - A collection's checklist kept with no lines is none (0.9.0-dev.39).
+    **Changed answers:** `GET /api/v1/collections/{id}/checklist`, and the
+    `PUT` that saved an empty list, answer `saved_at: null` and no items, as
+    for a collection with none kept. There is still no `DELETE`: "Clear the
+    checklist" saves an empty list. `@fdv/shared`: `checklistKept(c)`, which
+    reads an older vault's empty kept list as none too.
 
 ## Deprecations in effect
 
