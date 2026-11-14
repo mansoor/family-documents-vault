@@ -28,6 +28,7 @@ import type { Principal, RequestMeta } from '../auth/service.js';
 import type { StepUpService } from '../auth/step-up.js';
 import { requireCapability } from '../authz.js';
 import { ApiError } from '../errors.js';
+import { givenByLiveLink, stillShared } from './sensitive-start.js';
 import {
   forgetTypes,
   sealedOf,
@@ -501,6 +502,17 @@ export class TypeService {
       // Every document reminded anew when the date or its lead times move,
       // or reminders are switched on or off (0.5.15).
       regenerate = remindKey(before) !== remindKey(after);
+      // Sensitive by default turned on (0.9.0, H1a): the documents it makes
+      // sensitive that links outside the family still give, counted — for
+      // whoever changed it, as a warning. Nothing is ended.
+      if (after.sensitive_default === true && before.sensitive_default !== true) {
+        const r = await sql<{ n: number }>`
+          select count(*)::int as n from document d
+           where d.type_key = ${after.key} and d.sensitive is null and d.deleted_at is null
+             and ${givenByLiveLink(sql.ref('d.id'))}`.execute(trx);
+        const documents = r.rows[0]?.n ?? 0;
+        if (documents > 0) return { ...typeView(after), warnings: [stillShared({ documents })] };
+      }
       return typeView(after);
     });
     if (regenerate) await this.regenerate(p, view.key);

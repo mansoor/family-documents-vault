@@ -3,11 +3,13 @@ import {
   canShareToView,
   COLLECTION_SHARE_FILE_REMOVED,
   defaultShareEnd,
+  DOWNLOAD_KEEPS_DETAILS,
   isShareAddress,
   latestShareEnd,
   ONLY_ME_NOT_SHARED,
   ONLY_ME_SHARE_WARNING,
   PREVIEW_MAX_PAGES,
+  SENSITIVE_SHARE_CONFIRM,
   SHARE_CODE_TRUTH,
   SHARE_CODE_UNAVAILABLE,
   SHARE_LIMIT_MAX,
@@ -20,6 +22,8 @@ import {
   shareEndProblem,
   sharePagesNote,
   shareQuickPicks,
+  SHOW_TITLE_LABEL,
+  SHOW_TITLE_SENSITIVE_HINT,
   zonedParts,
   zonedTime,
   type Capabilities,
@@ -33,6 +37,7 @@ import { storedRole } from '../session.js';
 import { Button, Check, ErrorNote, Field, TextArea } from '../ui.js';
 import { endWords, familyZoneNow } from '../family-time.js';
 import { useSmsCodes } from '../text-messages.js';
+import { useSensitiveConfirm } from '../sensitive-confirm.js';
 
 /**
  * Sharing one document with somebody outside the family (SHR-05).
@@ -63,6 +68,12 @@ export function SharePanel(props: {
    */
   note?: boolean;
   /**
+   * The document is sensitive, all said (0.9.0, H1a): the sheet asks before
+   * the link is made, and the link's page says "A document" unless its
+   * title is shown.
+   */
+  sensitive?: boolean;
+  /**
    * Opened from a row's ⋯ (5.4): it starts at the form, and Cancel or Done
    * closes the sheet it is in.
    */
@@ -85,6 +96,15 @@ export function SharePanel(props: {
   const [busy, setBusy] = useState<'making' | 'taking back' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const mayShare = can(storedRole(), 'document.share');
+  // What Sensitive protects (0.9.0, H1a), where the vault has it: asked
+  // first, and the title shown on the link's page only if chosen.
+  const protects = caps?.features.sensitive_protects === true;
+  const sensitive = props.sensitive === true;
+  const [showTitle, setShowTitle] = useState(!sensitive);
+  const confirm = useSensitiveConfirm({
+    title: 'Share a sensitive document?',
+    confirmLabel: 'Share it anyway',
+  });
   // On a document's page, the form opens in Share a link's place, and
   // closes back to it: the focus goes with it, to who it is for or back to
   // the button, never to nowhere (R5's keyboard paths). The link made says
@@ -158,13 +178,24 @@ export function SharePanel(props: {
     working('making');
     setError(null);
     // A note's link is read on the page (0.9.0, N1).
-    const body: ShareInput = props.note ? { ...read.body, permission: 'view' } : read.body;
+    const plain: ShareInput = props.note ? { ...read.body, permission: 'view' } : read.body;
+    // Its title on the link's page (H1a): said only when it is not what the
+    // vault would do anyway, so a document made sensitive later is covered.
+    const body: ShareInput =
+      protects && showTitle !== !sensitive ? { ...plain, show_title: showTitle } : plain;
     try {
-      const created = await guarded((t) => api.share(t, props.documentId, body));
+      const created = await confirm.ask(
+        (confirmed) =>
+          guarded((t) =>
+            api.share(t, props.documentId, confirmed ? { ...body, confirm_sensitive: true } : body),
+          ),
+        protects && sensitive ? SENSITIVE_SHARE_CONFIRM : null,
+      );
       if (created) {
         setMade(created);
         setOpen(false);
         options.reset();
+        setShowTitle(!sensitive);
         await reload();
       }
     } catch (err) {
@@ -207,6 +238,7 @@ export function SharePanel(props: {
     <section className="card stack">
       <h2 style={{ fontSize: 18 }}>Send this to someone outside the family</h2>
       <ErrorNote message={error} />
+      {confirm.dialog}
 
       {listed.length > 0 && (
         <ul className="list">
@@ -258,6 +290,19 @@ export function SharePanel(props: {
                 : null
             }
           />
+          {protects && (
+            <>
+              <Check
+                id="share-show-title"
+                checked={showTitle}
+                label={SHOW_TITLE_LABEL}
+                note={sensitive ? SHOW_TITLE_SENSITIVE_HINT : undefined}
+                onChange={setShowTitle}
+              />
+              {/* The page, not the file (the H1a review, M5). */}
+              <p className="muted">{DOWNLOAD_KEEPS_DETAILS}</p>
+            </>
+          )}
           <div className="row">
             <Button disabled={busy !== null || !read.body} onClick={() => void create()}>
               {busy === 'making' ? 'Making the link…' : 'Make the link'}

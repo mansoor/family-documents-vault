@@ -289,7 +289,8 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       method: 'POST',
       url: `/api/v1/documents/${household.rows[0]?.id}/share`,
       headers: h.as(owner),
-      payload: { with_pin: true },
+      // Asked, and shared anyway (0.9.0, H1a): it is sensitive.
+      payload: { with_pin: true, confirm_sensitive: true },
     });
     expect(shared.statusCode, shared.body).toBe(201);
     link = shared.json<CreatedShare>();

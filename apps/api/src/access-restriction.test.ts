@@ -481,7 +481,8 @@ describe.skipIf(!testAdminUrl())('the restriction, enforced by the database (5.3
         method: 'POST',
         url: `/api/v1/documents/${docs[name]?.id}/share`,
         headers: h.as(owner),
-        payload: { recipient_label: 'the accountant' },
+        // Asked, and shared anyway (0.9.0, H1a): it is sensitive.
+        payload: { recipient_label: 'the accountant', confirm_sensitive: true },
       });
       expect(shared.statusCode, shared.body).toBe(201);
     }
@@ -895,7 +896,8 @@ describe.skipIf(!testAdminUrl())('the restriction, enforced by the database (5.3
         method: 'POST',
         url: `/api/v1/documents/${doc}/share`,
         headers: h.as(sam),
-        payload: { recipient_label: 'a friend' },
+        // Asked, and shared anyway (0.9.0, H1a): it is sensitive.
+        payload: { recipient_label: 'a friend', confirm_sensitive: true },
       });
       expect(r.statusCode, r.body).toBe(201);
       return json<{ share: { id: string }; link_token: string }>(r);
@@ -1051,7 +1053,8 @@ describe.skipIf(!testAdminUrl())('the restriction, enforced by the database (5.3
         method: 'POST',
         url: `/api/v1/documents/${docs[name]?.id}/share`,
         headers: h.as(owner),
-        payload: { recipient_label: 'the bank' },
+        // Asked, and shared anyway (0.9.0, H1a): it is sensitive.
+        payload: { recipient_label: 'the bank', confirm_sensitive: true },
       });
       expect(made.statusCode, made.body).toBe(201);
       const link = json<{ share: { id: string }; link_token: string }>(made);

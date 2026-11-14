@@ -117,6 +117,12 @@ import {
   type PriorFields,
 } from './renewal.js';
 import { signSealedToken } from './sealed-token.js';
+import {
+  documentSensitive,
+  liveLinksGiving,
+  sensitiveStart,
+  stillShared,
+} from './sensitive-start.js';
 import { openSealedText } from './sealed-text.js';
 import { askerOf } from './visibility.js';
 import { removableAtOnce, signsInHere } from './purge-rule.js';
@@ -1307,7 +1313,12 @@ export class DocumentService {
         throw new ApiError(403, 'forbidden', 'You can only add documents that belong to you.');
       }
       const whose = p.role === 'teen' ? { ...input, owner_member_id: p.memberId } : input;
-      const values = await this.columns(trx, p, await this.ownVisibility(trx, p, whose), null);
+      const values = await this.columns(
+        trx,
+        p,
+        await this.sensitiveVisibility(trx, p, whose, await this.ownVisibility(trx, p, whose)),
+        null,
+      );
       const made: Record<string, unknown> = { ...values };
       // Written with a note: whoever filed it wrote it, now (5.35).
       if (made.notes != null) Object.assign(made, noteStamp(p));
@@ -1380,6 +1391,29 @@ export class DocumentService {
   }
 
   /**
+   * A new document's visibility where nobody said one (0.9.0, H1a): Only
+   * me when it is sensitive (its own choice, else its kind's) and the
+   * caller's own, and their own sensitive papers start so — a teen's, a
+   * grown-up child's (`keepsOwnSensitive`). Asked for, it is as asked.
+   */
+  private async sensitiveVisibility(
+    trx: Db,
+    p: Principal,
+    asked: DocumentInput,
+    input: DocumentInput,
+  ): Promise<DocumentInput> {
+    if (asked.visibility !== undefined) return input;
+    const kind = input.type_key ? await this.typeOrThrow(input.type_key, trx) : null;
+    const base = input.visibility ?? kind?.default_visibility ?? 'household';
+    const v = await sensitiveStart(trx, p, base, {
+      sensitive: input.sensitive,
+      kind,
+      owner: input.household_owned === true ? null : input.owner_member_id,
+    });
+    return v === base ? input : { ...input, visibility: v };
+  }
+
+  /**
    * SEC-19: whoever makes a document Only me is told what that means, on
    * the card, before they save — so a document made private from the start
    * is recorded as told, as the visibility change records it.
@@ -1414,9 +1448,26 @@ export class DocumentService {
     this.canWrite(p);
     let drawNow: string | null = null;
     const view = await withPrincipal(this.db, p, async (trx) => {
+      // Sensitive before and after (0.9.0, H1a): its own choice, or a kind
+      // that is, may make it so.
+      const was = await documentSensitive(trx, id);
       const done = await this.edit(trx, p, id, input, ifMatch, meta);
       drawNow = done.drawNow;
-      return this.view(trx, p, done.row, typeLookup(trx), await this.opened(trx, p, done.row));
+      const seen = await this.view(
+        trx,
+        p,
+        done.row,
+        typeLookup(trx),
+        await this.opened(trx, p, done.row),
+      );
+      // Made sensitive while links outside the family still give it: the
+      // edit is made, and the answer says so, for the client to ask whether
+      // to keep them or end them (stop-sharing).
+      if (!was && (await documentSensitive(trx, id))) {
+        const links = (await liveLinksGiving(trx, id)).length;
+        if (links > 0) return { ...seen, warnings: [stillShared({ links })] };
+      }
+      return seen;
     });
     if (drawNow) {
       await this.enqueue(
@@ -3326,7 +3377,7 @@ export class DocumentService {
     // gone, as for the adult whose delete it was.
     const types = await trx
       .selectFrom('effective_document_type')
-      .select(['key', 'expiry_driver', 'default_visibility', 'fields'])
+      .select(['key', 'expiry_driver', 'default_visibility', 'fields', 'sensitive_default'])
       .where('deleted_at', 'is', null)
       .execute();
     let metadata = sent;
@@ -3377,11 +3428,17 @@ export class DocumentService {
     if (p.role === 'teen') input.owner_member_id = p.memberId;
     // Decided here, so the file is wrapped for exactly the people the
     // document will be for (never Adults only for a teen).
-    input.visibility = effectiveVisibility(
-      metadata,
-      types.find((t) => t.key === metadata.type_key),
-      p.role,
-    );
+    const kind = types.find((t) => t.key === metadata.type_key);
+    input.visibility = effectiveVisibility(metadata, kind, p.role);
+    // Left unsaid, a teen's or a grown-up child's own sensitive paper
+    // starts as Only me (0.9.0, H1a).
+    if (metadata.visibility === undefined || metadata.visibility === null) {
+      input.visibility = await sensitiveStart(trx, p, input.visibility, {
+        sensitive: metadata.sensitive,
+        kind: metadata.type_key ? (kind ?? null) : null,
+        owner: metadata.household_owned === true ? null : input.owner_member_id,
+      });
+    }
     const out = await this.columns(trx, p, input, null);
     if (loose) {
       const kept = await looseDetails(trx, loose);
@@ -3606,17 +3663,19 @@ export class DocumentService {
               precision: r.issued_precision as DateValue['precision'],
             }
           : null;
+        const sensitive = sensitiveOf(r, type);
         items.push({
           document_id: r.document_id,
           title: r.title,
-          ...noteName(r.type_key, r.title, r.words_shown ? r.notes : null),
+          // Not a sensitive note's first words either (H1a): they are its words.
+          ...noteName(r.type_key, r.title, r.words_shown && !sensitive ? r.notes : null),
           type_key: r.type_key,
           category: r.category,
           owner_member_id: r.owner_member_id,
           household_owned: r.household_owned,
           // Its own choice, and all said (0.9.0, AIR2), as a document's view.
           sensitive: r.sensitive,
-          sensitive_effective: sensitiveOf(r, type),
+          sensitive_effective: sensitive,
           issued_by: r.issued_by,
           issued,
           expires,
@@ -3628,7 +3687,9 @@ export class DocumentService {
             seesLocation(p.role),
             today,
           ),
-          snippet: snippets.get(r.document_id) ?? r.snippet,
+          // A sensitive paper's words are never shown in a snippet, nor
+          // marked (0.9.0, H1a): its title alone says what was found.
+          snippet: sensitive ? '' : (snippets.get(r.document_id) ?? r.snippet),
           matched_in: r.matched_in,
           rank: Number(r.rank),
         });

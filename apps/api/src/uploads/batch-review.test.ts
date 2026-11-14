@@ -709,6 +709,8 @@ describe.skipIf(!testAdminUrl())('the review queue: Accept all Ready and Undo (I
     await reached;
     const sharing = call(adult, 'POST', `/api/v1/documents/${docOf(first.id)}/share`, {
       recipient_label: 'the bank',
+      // Asked, and shared anyway (0.9.0, H1a): it is sensitive.
+      confirm_sensitive: true,
     });
     await new Promise((r) => setTimeout(r, 300));
     undoGate = null;
@@ -724,6 +726,8 @@ describe.skipIf(!testAdminUrl())('the review queue: Accept all Ready and Undo (I
     // A link first: the document is kept.
     const shared = await call(adult, 'POST', `/api/v1/documents/${docOf(second.id)}/share`, {
       recipient_label: 'the bank',
+      // Asked, and shared anyway (0.9.0, H1a): it is sensitive.
+      confirm_sensitive: true,
     });
     expect(shared.statusCode, shared.body).toBe(201);
     const kept = await undone(adult, b.id, [second.id]);
@@ -929,9 +933,16 @@ describe.skipIf(!testAdminUrl())('the review queue: Accept all Ready and Undo (I
       follow_collection: true,
       recipient_label: 'the accountant',
       permission: 'download',
+      confirm_sensitive: true,
     });
     expect(link.statusCode, link.body).toBe(201);
-    const { b, it, docId } = await acceptedOne({ collection_id: c.id, visibility: 'household' });
+    // Not sensitive: a sensitive one accepted into it, nobody asked, never
+    // goes out by its link (0.9.0, H1a).
+    const { b, it, docId } = await acceptedOne({
+      collection_id: c.id,
+      visibility: 'household',
+      sensitive: false,
+    });
     // The accountant opens it, and downloads it.
     const un = await h.app.inject({
       method: 'POST',
@@ -966,6 +977,8 @@ describe.skipIf(!testAdminUrl())('the review queue: Accept all Ready and Undo (I
       document_ids: [docId],
       recipient_label: 'the bank',
       permission: 'download',
+      // Asked, and shared anyway (0.9.0, H1a): it is sensitive.
+      confirm_sensitive: true,
     });
     expect(link.statusCode, link.body).toBe(201);
     await keptAs(b, it, docId);

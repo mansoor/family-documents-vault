@@ -611,7 +611,8 @@ describe.skipIf(!testAdminUrl())("a person's photo (5.17c)", () => {
       method: 'POST',
       url: `/api/v1/documents/${doc.json<{ id: string }>().id}/share`,
       headers: h.as(owner),
-      payload: { recipient_label: 'the swimming club' },
+      // Asked, and shared anyway (0.9.0, H1a): it is sensitive.
+      payload: { recipient_label: 'the swimming club', confirm_sensitive: true },
     });
     expect(shared.statusCode, shared.body).toBe(201);
     const shown = await h.app.inject({

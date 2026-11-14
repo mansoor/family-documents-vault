@@ -1326,7 +1326,7 @@ describe.skipIf(!testAdminUrl())('share links', () => {
           method: 'POST',
           url: '/api/v1/documents',
           headers: short.as(who),
-          payload: { title: 'Short-lived', visibility: 'household' },
+          payload: { title: 'Short-lived', type_key: 'utility_bill', visibility: 'household' },
         });
         const doc = res.json<DocumentView>().id;
         const form = new FormData();

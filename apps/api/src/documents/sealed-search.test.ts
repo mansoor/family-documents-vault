@@ -166,7 +166,8 @@ describe.skipIf(!testAdminUrl())('the second pass of search', () => {
     const body = res.json<{ items: SearchHit[]; searched: number }>();
     expect(body.items).toHaveLength(1);
     expect(body.items[0]).toMatchObject({ document_id: willId, matched_in: 'content' });
-    expect(body.items[0]?.snippet).toContain('<em>Executor</em>');
+    // A will is sensitive (0.9.0, H1a): found by its words, never shown in a snippet.
+    expect(body.items[0]?.snippet).toBe('');
     expect(body.searched).toBe(2);
   });
 

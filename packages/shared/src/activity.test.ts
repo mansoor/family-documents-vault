@@ -883,3 +883,42 @@ describe('who did it, and what sort of thing, for the Activity table (R4)', () =
     );
   });
 });
+
+describe('a sensitive document, in the log’s words (0.9.0, H1a)', () => {
+  it('says “a sensitive document” in place of its title, and still taps through to it', () => {
+    const said = (over: Partial<ActivityEvent>) =>
+      describeEvent(ev({ object_title: 'Aisha HIV test', object_sensitive: true, ...over }));
+    expect(said({})).toMatchObject({
+      text: 'Sarah downloaded a sensitive document',
+      document_id: 'doc-1',
+    });
+    expect(said({ action: 'document.created' })?.text).toBe('Sarah added a sensitive document');
+    // Marked sensitive: never "marked a sensitive document sensitive".
+    expect(
+      said({ action: 'document.updated', detail: { fields: ['sensitive'], sensitive: 'yes' } })
+        ?.text,
+    ).toBe('Sarah marked a document sensitive');
+    // Every line about one leaves its title out.
+    for (const action of [
+      'document.viewed',
+      'document.updated',
+      'document.notes_changed',
+      'document.deleted',
+      'document.restored',
+      'collection.item_added',
+      'share.created',
+      'share.opened',
+    ]) {
+      expect(said({ action })?.text ?? '', action).not.toContain('Aisha');
+    }
+    // Not sensitive, or not said: its title, as before.
+    expect(describeEvent(ev({ object_sensitive: false }))?.text).toBe(
+      'Sarah downloaded “Home insurance policy”',
+    );
+    expect(describeEvent(base)?.text).toBe('Sarah downloaded “Home insurance policy”');
+    // Taken out of a collection's link, made sensitive (the review, S2).
+    expect(said({ action: 'share.left_out', collection_name: 'For the lawyer' })?.text).toBe(
+      'Sarah took a sensitive document out of a link to the collection “For the lawyer”, so it no longer goes outside the family',
+    );
+  });
+});

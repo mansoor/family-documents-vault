@@ -396,7 +396,12 @@ describe.skipIf(!testAdminUrl())('many documents at once: batches', () => {
       [b.id, item.id, removed.id],
     );
     expect(raw.rows[0]?.n).toBe(0);
-    const done = await accept(adult, b.id, item.id, { title: 'P60 2024', visibility: 'household' });
+    // Not sensitive, so the log names it (a sensitive one's never, H1a).
+    const done = await accept(adult, b.id, item.id, {
+      title: 'P60 2024',
+      visibility: 'household',
+      sensitive: false,
+    });
     expect(done.statusCode, done.body).toBe(201);
     const after = await activity(owner);
     expect(after.length).toBeGreaterThan(before.owner.length);

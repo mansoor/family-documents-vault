@@ -225,7 +225,11 @@ export const contractScenarios: Scenario[] = [
     name: 'the activity log says who did it, by id where it names them, and what sort of thing (R4)',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;
-      const doc = await api.createDocument(token, { title: 'Contract activity bill' });
+      // Not sensitive: a sensitive one's line says "a sensitive document" (0.9.0, H1a).
+      const doc = await api.createDocument(token, {
+        title: 'Contract activity bill',
+        sensitive: false,
+      });
       const me = await api.me(token);
       const line = (await api.activity(token)).items.find(
         (l) => l.document_id === doc.id && l.text.endsWith('added “Contract activity bill”'),

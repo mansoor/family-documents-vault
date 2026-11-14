@@ -19,6 +19,8 @@ import {
   type CollectionSharedOutside,
   type CollectionView,
   type DocumentView,
+  SENSITIVE_FOLLOW_CONFIRM,
+  sensitiveNotFollowed,
 } from '@fdv/shared';
 import { sql } from 'kysely';
 import type { AlertRequest } from '../alert-job.js';
@@ -27,6 +29,8 @@ import { requireCapability } from '../authz.js';
 import { ApiError } from '../errors.js';
 import { seenDocument, type DocumentService } from '../documents/service.js';
 import { madeWith } from '../documents/made-with.js';
+import { sensitiveSql } from '../documents/filters.js';
+import { sensitiveConfirm } from '../documents/sensitive-start.js';
 import { endSessions } from '../documents/share-sessions.js';
 import { proposalPool, type ChecklistReader } from '../documents/proposal-pool.js';
 import { ChecklistService } from './checklist.js';
@@ -664,16 +668,21 @@ export class CollectionService {
    * is put in, and the answer is the one a document that does not exist
    * gets. One already in it stays where it is. Each document put in is a
    * line of its own in the log, about the document.
+   *
+   * A sensitive document that a link keeping up with the collection would
+   * send outside the family asks first (0.9.0, H1a): `409
+   * sensitive_confirm`, and nothing is put in, unless `confirmSensitive`.
    */
   async addItems(
     p: Principal,
     id: string,
     documentIds: string[],
     meta: RequestMeta,
+    confirmSensitive = false,
   ): Promise<CollectionDetail> {
     requireCapability(p, 'collection.manage');
     const { collectionId, warnings } = await withPrincipal(this.db, p, (trx) =>
-      this.addIn(trx, p, id, documentIds, meta),
+      this.addIn(trx, p, id, documentIds, meta, { sensitive: confirmSensitive ? 'send' : 'ask' }),
     );
     // Read afresh, the change made and let go.
     const now = await this.get(p, collectionId);
@@ -685,7 +694,9 @@ export class CollectionService {
    * batch's item accepted into the collection its card names, in the
    * transaction that files it — filed in it, or not filed at all. What it
    * answers is who else will now see it ("Jane (viewer) will be able to see
-   * this").
+   * this"). Nobody was asked about a sensitive one (0.9.0, H1a): it is put
+   * in, but a link keeping up with the collection does not send it, and
+   * the answer says so.
    */
   async addWithin(
     trx: Db,
@@ -770,6 +781,13 @@ export class CollectionService {
     id: string,
     documentIds: string[],
     meta: RequestMeta,
+    /**
+     * A sensitive document a link keeping up with the collection would
+     * send (0.9.0, H1a): `ask` refuses `409 sensitive_confirm`; `send`, the
+     * adder having been asked, sends it; `keep` puts it in without
+     * sending it, and says so.
+     */
+    opts: { sensitive: 'ask' | 'send' | 'keep' } = { sensitive: 'keep' },
   ): Promise<{ collectionId: string; warnings: string[] }> {
     const { row: collection } = await this.managed(trx, p, id, 'edit');
     const asked = [...new Set(documentIds.map((d) => d.toLowerCase()))];
@@ -792,7 +810,7 @@ export class CollectionService {
     // Only me, or taken to the Trash, meanwhile, one is not added.
     const found = await trx
       .selectFrom('document as d')
-      .select(['d.id', 'd.visibility'])
+      .select(['d.id', 'd.visibility', 'd.title'])
       .where('d.id', 'in', asked)
       .where('d.deleted_at', 'is', null)
       .where(seenDocument(p))
@@ -800,6 +818,15 @@ export class CollectionService {
       .forUpdate()
       .execute();
     if (found.length !== asked.length) throw noDocument();
+    // Which are sensitive, all said (H1a): asked only where a link may
+    // take one, of the rows now held.
+    const sensitive = new Set<string>();
+    if (following.length > 0) {
+      const marked = await sql<{ id: string }>`select d.id from document d
+         where d.id = any(${found.map((d) => d.id)}::uuid[]) and ${sensitiveSql('d')}`.execute(trx);
+      for (const r of marked.rows) sensitive.add(r.id);
+    }
+    const keptHome: string[] = [];
     // In the order asked, by the rows' own ids.
     const byId = new Map(found.map((d) => [d.id.toLowerCase(), d]));
     const ordered = asked.map((a) => byId.get(a) as (typeof found)[number]);
@@ -842,6 +869,20 @@ export class CollectionService {
       for (const link of following) {
         if (!link.follow_audience) continue;
         if (!withinCollectionAudience(link.follow_audience, visibility)) continue;
+        // Sensitive (0.9.0, H1a): sent outside the family only once its
+        // adder says so. One the link has decided already is left as it is.
+        if (sensitive.has(documentId) && opts.sensitive !== 'send') {
+          const decided = await trx
+            .selectFrom('share_link_item')
+            .select('document_id')
+            .where('share_id', '=', link.id)
+            .where('document_id', '=', documentId)
+            .executeTakeFirst();
+          if (decided) continue;
+          if (opts.sensitive === 'ask') throw sensitiveConfirm(SENSITIVE_FOLLOW_CONFIRM);
+          if (!keptHome.includes(documentId)) keptHome.push(documentId);
+          continue;
+        }
         // Once: a document the link was made with, or without (left out),
         // is not decided again; one that followed is decided again only
         // once it has been taken out (removeItem).
@@ -883,11 +924,14 @@ export class CollectionService {
                  order by g.display_name, g.member_id`.execute(trx)
           ).rows
         : [];
+    const titles = new Map(found.map((d) => [d.id, d.title]));
     return {
       collectionId: collection.id,
-      warnings: viewers.map((v) =>
-        viewerWillSee(v.display_name, v.documents, addedIds.length, v.kind),
-      ),
+      warnings: [
+        ...viewers.map((v) => viewerWillSee(v.display_name, v.documents, addedIds.length, v.kind)),
+        // Put in, but kept in the family (H1a): nobody was asked.
+        ...keptHome.map((d) => sensitiveNotFollowed(titles.get(d) ?? null)),
+      ],
     };
   }
 

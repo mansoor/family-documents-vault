@@ -535,6 +535,7 @@ export function DocActions(props: {
             documentId={props.documentId}
             documentTitle={doc?.title ?? null}
             onlyMe={doc?.visibility === 'private'}
+            sensitive={doc?.sensitive_effective === true}
             onClose={closeSheet}
             onBusy={setSheetBusy}
           />

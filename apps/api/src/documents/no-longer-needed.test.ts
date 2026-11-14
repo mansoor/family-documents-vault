@@ -152,6 +152,8 @@ describe.skipIf(!testAdminUrl())('a document no longer needed (0.9.0)', () => {
       owner_member_id: sarah.member_id,
       identifier: 'EAD-NLN-1',
       expires: { date: inDays(60), precision: 'day' },
+      // Not sensitive, so the log names it (a sensitive one's never, H1a).
+      sensitive: false,
     });
     expect(ead.status.value).toBe('expiring_soon');
     expect(ead.no_longer_needed).toBeNull();
@@ -417,7 +419,8 @@ describe.skipIf(!testAdminUrl())('a document no longer needed (0.9.0)', () => {
   });
 
   it('asked again while marked: why and what replaced it change, and when and by whom stay', async () => {
-    const card = await made(owner, { type_key: 'visa', title: 'Old visa' });
+    // Not sensitive, so the log names it (a sensitive one's never, H1a).
+    const card = await made(owner, { type_key: 'visa', title: 'Old visa', sensitive: false });
     const first = json<DocumentView>(await mark(owner, card.id, { reason: 'Expired abroad' }));
     const at = first.no_longer_needed?.at;
     const second = await mark(sarah, card.id, { reason: 'Replaced at the embassy' });

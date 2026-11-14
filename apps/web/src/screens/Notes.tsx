@@ -485,6 +485,7 @@ function NotePane(props: {
                       documentId={doc.id}
                       documentTitle={doc.title}
                       onlyMe={doc.visibility === 'private'}
+                      sensitive={doc.sensitive_effective === true}
                       note
                       onClose={done}
                       onBusy={(on) => setBusy((b) => ({ ...b, share: on }))}

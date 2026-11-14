@@ -138,6 +138,8 @@ describe('issued by', () => {
       type_key: 'bank_statement',
       issued_by: 'Nationwide',
       issued: { date: '2026-09-30', precision: 'day' },
+      // Not sensitive, so its snippet shows (a sensitive one's never does, H1a).
+      sensitive: false,
     });
     await make(owner, { title: 'Joint account', type_key: 'bank_statement', issued_by: 'Monzo' });
     const found = json<SearchResult>(await get(owner, '/api/v1/search?q=nationwide'));

@@ -142,6 +142,8 @@ describe('buildCapabilities', () => {
       sensitive_documents: true,
       // 0.9.0 (H2): neutral wording, the household's and each person's.
       neutral_wording: true,
+      // 0.9.0 (H1a): what Sensitive protects.
+      sensitive_protects: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

@@ -211,6 +211,10 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0 (H2): neutral wording in notifications and email — the
       // household's choice, an owner's, and each person's own beside it.
       neutral_wording: true,
+      // 0.9.0 (H1a): what Sensitive protects — Only me from the start for a
+      // teen's or a grown-up child's own, asked before it's shared, kept out
+      // of snippets, the activity log's words and a link's page.
+      sensitive_protects: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

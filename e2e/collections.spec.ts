@@ -66,7 +66,9 @@ test.beforeAll(async ({ browser, request }) => {
   for (const title of [PASS, HOTEL]) {
     const doc = await request.post('/api/v1/documents', {
       headers: { authorization: `Bearer ${token}` },
-      data: { title, visibility: 'household' },
+      // Something else: not sensitive, so the collection's link goes without
+      // asking (0.9.0, H1a), and its page shows each title.
+      data: { title, type_key: 'other', visibility: 'household' },
     });
     expect(doc.ok()).toBe(true);
     made.push(((await doc.json()) as { id: string }).id);

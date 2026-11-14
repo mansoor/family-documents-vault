@@ -714,6 +714,8 @@ export function ConfirmDialog(props: {
   title: string;
   children: ReactNode;
   confirmLabel: string;
+  /** What the cancel button says: Cancel unless said; null, none (a dialog that only tells). */
+  cancelLabel?: string | null;
   /** What the confirm button says while the action is on its way. */
   busyLabel?: string;
   icon?: ReactNode;
@@ -765,17 +767,19 @@ export function ConfirmDialog(props: {
               {props.icon}
               {busy && props.busyLabel ? props.busyLabel : props.confirmLabel}
             </button>
-            <button
-              ref={cancel}
-              type="button"
-              className="btn btn-quiet"
-              aria-disabled={busy}
-              onClick={() => {
-                if (!busy) props.onCancel();
-              }}
-            >
-              Cancel
-            </button>
+            {props.cancelLabel !== null && (
+              <button
+                ref={cancel}
+                type="button"
+                className="btn btn-quiet"
+                aria-disabled={busy}
+                onClick={() => {
+                  if (!busy) props.onCancel();
+                }}
+              >
+                {props.cancelLabel ?? 'Cancel'}
+              </button>
+            )}
           </div>
         </section>
       </div>

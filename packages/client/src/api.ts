@@ -109,6 +109,7 @@ import type {
   SearchResult,
   SessionRow,
   Share,
+  StopSharing,
   ShareCodeSent,
   SharedDocument,
   SharedNote,
@@ -1107,11 +1108,25 @@ export function createApi(http: Http) {
      * Documents put in a collection by its maker, at the end: each one the maker
      * can see, or `404` and none is put in. The answer is the collection's first
      * page.
+     *
+     * 0.9.0 (H1a, `features.sensitive_protects`): a sensitive document that
+     * a link keeping up with the collection would send outside the family
+     * is refused `409 sensitive_confirm` — its message the question to
+     * ask — and nothing is put in, unless `confirm_sensitive` says the
+     * person was asked.
      */
-    addToCollection: (token: string, id: string, documentIds: string[]) =>
+    addToCollection: (
+      token: string,
+      id: string,
+      documentIds: string[],
+      opts: { confirm_sensitive?: boolean } = {},
+    ) =>
       request<CollectionDetail>(`/api/v1/collections/${enc(id)}/items`, {
         method: 'POST',
-        body: { document_ids: documentIds },
+        body: {
+          document_ids: documentIds,
+          ...(opts.confirm_sensitive === true ? { confirm_sensitive: true } : {}),
+        },
         token,
       }),
     removeFromCollection: (token: string, id: string, documentId: string) =>
@@ -1498,8 +1513,24 @@ export function createApi(http: Http) {
         token,
       }),
     /** Owners only (`restore.review`): anybody else is `403 forbidden`. */
-    resumeShare: (token: string, id: string) =>
-      request<Share>(`/api/v1/shares/${id}/resume`, { method: 'POST', token }),
+    resumeShare: (token: string, id: string, opts: { confirm_sensitive?: boolean } = {}) =>
+      request<Share>(`/api/v1/shares/${id}/resume`, {
+        method: 'POST',
+        // 0.9.0 (H1a): one that gives sensitive documents is `409
+        // sensitive_confirm` unless the person was asked.
+        ...(opts.confirm_sensitive === true ? { body: { confirm_sensitive: true } } : {}),
+        token,
+      }),
+    /**
+     * A document made sensitive while links outside the family still give
+     * it (0.9.0, H1a, after an edit's `sensitive_still_shared`): its own
+     * links taken back, collections' links made to leave it out.
+     */
+    stopSharing: (token: string, documentId: string) =>
+      request<StopSharing>(`/api/v1/documents/${enc(documentId)}/stop-sharing`, {
+        method: 'POST',
+        token,
+      }),
 
     // ------------------------------- asking to be sent documents (0.5.21)
     // Owners and adults; a teen or a viewer is answered 404, as if there

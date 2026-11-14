@@ -208,7 +208,8 @@ export class SealedSearchService {
               seesLocation(p.role),
               await householdToday(trx),
             ),
-            snippet: (inOwn ?? inContent ?? m).snippet,
+            // None for a sensitive paper (0.9.0, H1a), as the first pass.
+            snippet: sensitiveOf(row, type) ? '' : (inOwn ?? inContent ?? m).snippet,
             // Its notes or details, as the first pass says of a document's
             // own words; else its pages.
             matched_in: inOwn ? 'title' : 'content',

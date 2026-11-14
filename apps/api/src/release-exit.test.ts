@@ -526,6 +526,8 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/documents/:id/issuer-suggestions': { who: 'signedIn' },
   'GET /api/v1/documents/:id/suggestions': { who: 'family' },
   'POST /api/v1/documents/:id/share': { who: 'adults', body: () => ({ permission: 'download' }) },
+  // Its links ended, made sensitive (0.9.0, H1a): whoever may share and can see it.
+  'POST /api/v1/documents/:id/stop-sharing': { who: 'adults', body: () => ({}) },
   'POST /api/v1/documents/:id/visibility': {
     who: 'adults',
     body: () => ({ visibility: 'household' }),
@@ -1438,6 +1440,8 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
         document_ids: [doc.will?.id],
         left_out_ids: [doc.deed?.id],
         recipient_label: 'the attorney',
+        // A will is sensitive: asked, and shared anyway (0.9.0, H1a).
+        confirm_sensitive: true,
       }),
       201,
     );
@@ -2036,6 +2040,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
           permission: 'download',
           max_opens: 3,
           max_downloads: 2,
+          confirm_sensitive: true,
         }),
         201,
       ),
@@ -2080,6 +2085,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
           document_ids: [doc.will?.id],
           permission: 'view',
           max_opens: 5,
+          confirm_sensitive: true,
         }),
         201,
       ),
@@ -2179,6 +2185,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       await ok(
         send(olivia, 'POST', `/api/v1/collections/${ids.attorney}/shares`, {
           document_ids: [doc.will?.id],
+          confirm_sensitive: true,
         }),
         201,
       ),
@@ -2222,6 +2229,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
         send(olivia, 'POST', `/api/v1/collections/${made.id}/shares`, {
           document_ids: [will?.id],
           left_out_ids: [deed?.id],
+          confirm_sensitive: true,
         }),
         201,
       ),
@@ -2759,7 +2767,10 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     await fresh(ahmed);
     const made = json<{ link_token: string; share: { id: string } }>(
       await ok(
-        send(ahmed, 'POST', `/api/v1/documents/${priv.id}/share`, { recipient_label: 'the GP' }),
+        send(ahmed, 'POST', `/api/v1/documents/${priv.id}/share`, {
+          recipient_label: 'the GP',
+          confirm_sensitive: true,
+        }),
         201,
       ),
     );
@@ -2796,7 +2807,10 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     // links end, or nothing changes.
     await fresh(ahmed);
     const taxLink = json<{ share: { id: string } }>(
-      await ok(send(ahmed, 'POST', `/api/v1/documents/${tax.id}/share`, {}), 201),
+      await ok(
+        send(ahmed, 'POST', `/api/v1/documents/${tax.id}/share`, { confirm_sensitive: true }),
+        201,
+      ),
     );
     await fresh(ahmed);
     const kept = await send(ahmed, 'POST', `/api/v1/documents/${tax.id}/visibility`, {

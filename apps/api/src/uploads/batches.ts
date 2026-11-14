@@ -103,6 +103,7 @@ import {
   confirmNewest,
 } from '../documents/service.js';
 import { holdDocumentRows, ownedObjects, versionObjects } from '../documents/purge.js';
+import { sensitiveStart } from '../documents/sensitive-start.js';
 import {
   changedSince,
   dateOf,
@@ -2457,7 +2458,7 @@ export class BatchService {
     const type = out.type_key
       ? await trx
           .selectFrom('effective_document_type')
-          .select('default_visibility')
+          .select(['default_visibility', 'sensitive_default'])
           .where('key', '=', out.type_key)
           .where('deleted_at', 'is', null)
           .executeTakeFirst()
@@ -2467,13 +2468,20 @@ export class BatchService {
     }
     if (out.visibility === undefined) {
       const owner = out.owner_member_id ?? (p.role === 'teen' ? p.memberId : null);
-      out.visibility = batchVisibility({
-        chosen: b.default_visibility,
-        type: type ?? null,
-        role: p.role,
-        owner,
-        me: p.memberId,
-      });
+      // And a teen's or a grown-up child's own sensitive paper starts as
+      // Only me (0.9.0, H1a): never wider than the batch's choice.
+      out.visibility = await sensitiveStart(
+        trx,
+        p,
+        batchVisibility({
+          chosen: b.default_visibility,
+          type: type ?? null,
+          role: p.role,
+          owner,
+          me: p.memberId,
+        }),
+        { sensitive: out.sensitive, kind: type ?? null, owner },
+      );
     }
     return out;
   }
