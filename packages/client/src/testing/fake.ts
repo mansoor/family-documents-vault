@@ -1,4 +1,19 @@
 import {
+  ARRANGE_BY,
+  CABINET_CHANGED,
+  CABINET_FILTER_KEYS,
+  CABINET_LIMITS,
+  CABINET_TOO_BIG,
+  drawCabinet,
+  layoutProblemOf,
+  type CabinetGroup,
+  type CabinetLayout,
+  type CabinetView,
+  type DocumentPage,
+  shortName,
+  THE_HOUSEHOLD,
+  NOT_SURE_YET,
+  HOUSEHOLD_MEMBER_FILTER,
   CLOCK_TIME,
   QUIET_FROM_DEFAULT,
   QUIET_TO_DEFAULT,
@@ -324,6 +339,11 @@ export interface FakePhone {
 
 export interface FakeVaultState {
   setupRequired: boolean;
+  /**
+   * Each person's own cabinet (0.9.0, C1), by member id, as GET /cabinet
+   * gives it: theirs alone, saved to the version last read.
+   */
+  cabinets?: Record<string, CabinetView>;
   /** The household's name, as set up: a container in a folder's name (S2). */
   householdName?: string | null;
   email: string | null;
@@ -3102,6 +3122,8 @@ export function createFakeVault(): {
           neutral_wording: true,
           // What Sensitive protects (0.9.0, H1a): a sensitive document's link asks first.
           sensitive_protects: true,
+          // My cabinet (0.9.0, C1).
+          cabinets: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -3433,7 +3455,14 @@ export function createFakeVault(): {
             ),
         )
         .filter((d) => typeKeys === undefined || typeKeys.includes(d.type_key ?? ''))
-        .filter((d) => categories === undefined || categories.includes(listedOf(d).category ?? ''))
+        // Its own topic, else its kind's, as the vault keeps it (C1).
+        .filter(
+          (d) =>
+            categories === undefined ||
+            categories.includes(
+              listedOf(d).category ?? state.types.find((t) => t.key === d.type_key)?.category ?? '',
+            ),
+        )
         // Tags whatever their case (several, any of them), notes left out,
         // and a detail tag's label (0.9.0, T1).
         .filter(apart)
@@ -3479,7 +3508,13 @@ export function createFakeVault(): {
                           ? [{ household: 0, adults: 1, private: 2 }[view.visibility]]
                           : sort === 'collections'
                             ? [low(collectionsOf(d)[0]?.name)]
-                            : [low(d.physical_location)];
+                            : sort === 'dated'
+                              ? // Issued, else added (C1); a fake document keeps no day it was added.
+                                [
+                                  issued ??
+                                    (view.created_at ?? new Date().toISOString()).slice(0, 10),
+                                ]
+                              : [low(d.physical_location)];
           return { view: { ...view, collections: collectionsOf(d) }, key, id: d.id };
         })
         .filter((r) => statuses === undefined || statuses.includes(r.view.status.value));
@@ -3605,6 +3640,187 @@ export function createFakeVault(): {
           deleted_at: d.deleted_at ?? null,
         }));
       return ok({ items, truncated: false });
+    }
+    // My cabinet (0.9.0, C1), as the real vault keeps it: each person's own,
+    // saved to the version last read; a folder's question checked as the
+    // list checks it, and what it holds the table's own answer for them
+    // (`documentTable`), so it never holds what they may not see.
+    const alsoInAt = /^\/api\/v1\/documents\/([^/]+)\/also-in$/.exec(path);
+    if (path === '/api/v1/cabinet' || path.startsWith('/api/v1/cabinet/') || alsoInAt) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      const cabinets = (state.cabinets ??= {});
+      const held: CabinetView = cabinets[who.memberId] ?? {
+        layout: null,
+        version: 0,
+        updated_at: null,
+      };
+      /** Every document the table gives this person for a folder's question, or its refusal. */
+      const tabled = async (
+        filter: Record<string, unknown>,
+      ): Promise<{ items: DocumentView[]; total: number } | ResponseLike> => {
+        const items: DocumentView[] = [];
+        let cursor: string | null = null;
+        for (;;) {
+          const q = [`sort=title`, `limit=${DOCUMENT_PAGE_MAX}`];
+          for (const [k, v] of Object.entries(filter)) {
+            for (const one of Array.isArray(v) ? v : [v]) {
+              q.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(one))}`);
+            }
+          }
+          if (cursor) q.push(`cursor=${encodeURIComponent(cursor)}`);
+          const r = documentTable(`/api/v1/documents?${q.join('&')}`, who, 'title');
+          if (!r.ok) return r;
+          const page = (await r.json()) as DocumentPage;
+          items.push(...page.items);
+          if (!page.next_cursor) return { items, total: page.total ?? items.length };
+          cursor = page.next_cursor;
+        }
+      };
+      /** The folders shown, each with where it is. */
+      const shown = (layout: CabinetLayout | null) =>
+        (layout?.cabinets ?? [])
+          .filter((c) => !c.hidden)
+          .flatMap((c) =>
+            c.drawers
+              .filter((d) => !d.hidden)
+              .flatMap((d) =>
+                d.folders
+                  .filter((f) => !f.hidden)
+                  .map((f) => ({ f, path: [c.name, d.name, f.name] as [string, string, string] })),
+              ),
+          );
+      const method = init.method ?? 'GET';
+      if (path === '/api/v1/cabinet' && method === 'GET') return ok(held);
+      if (path === '/api/v1/cabinet' && method === 'PUT') {
+        const layout = body.layout as CabinetLayout | undefined;
+        const version = body.version;
+        if (
+          typeof version !== 'number' ||
+          !layout ||
+          !Array.isArray(layout.cabinets) ||
+          layout.cabinets.some(
+            (c) => !Array.isArray(c.drawers) || c.drawers.some((d) => !Array.isArray(d.folders)),
+          )
+        ) {
+          return fail(422, 'validation_failed', 'Please check the form.');
+        }
+        if (JSON.stringify(layout).length > CABINET_LIMITS.layout_bytes) {
+          return fail(422, 'cabinet_too_big', CABINET_TOO_BIG);
+        }
+        const problem = layoutProblemOf(layout);
+        if (problem !== null) return fail(422, problem.code, problem.message);
+        for (const { f } of shown({
+          ...layout,
+          cabinets: layout.cabinets.map((c) => ({
+            ...c,
+            hidden: false,
+            drawers: c.drawers.map((d) => ({
+              ...d,
+              hidden: false,
+              folders: d.folders.map((x) => ({ ...x, hidden: false })),
+            })),
+          })),
+        })) {
+          const refuse = (message: string) =>
+            fail(422, 'validation_failed', `The folder “${f.name}”: ${message}`, `folder ${f.id}`);
+          const filter = (f.filter ?? {}) as Record<string, unknown>;
+          if (JSON.stringify(filter).length > CABINET_LIMITS.filter_bytes) {
+            return refuse('it asks for too much at once.');
+          }
+          const unknown = Object.keys(filter).filter(
+            (k) => !(CABINET_FILTER_KEYS as readonly string[]).includes(k),
+          );
+          if (unknown.length > 0) return refuse(`Unrecognized key(s): ${unknown.join(', ')}`);
+          const got = await tabled(filter);
+          if ('status' in got)
+            return refuse(((await got.json()) as { error: { message: string } }).error.message);
+        }
+        if (held.version !== version) return fail(409, 'conflict', CABINET_CHANGED);
+        const saved: CabinetView = {
+          layout,
+          version: held.version + 1,
+          updated_at: new Date().toISOString(),
+        };
+        cabinets[who.memberId] = saved;
+        return ok(saved);
+      }
+      if (path === '/api/v1/cabinet/preview' && method === 'POST') {
+        const by = body.arrange_by as (typeof ARRANGE_BY)[number];
+        if (!(ARRANGE_BY as readonly string[]).includes(by)) {
+          return fail(422, 'validation_failed', 'That is not a way to arrange a cabinet.');
+        }
+        const all = await tabled({ notes: 'exclude' });
+        if ('status' in all) return all;
+        const groups = new Map<string, CabinetGroup>();
+        for (const d of all.items) {
+          const person =
+            d.household_owned === true ? HOUSEHOLD_MEMBER_FILTER : (d.owner_member_id ?? 'none');
+          // As the dated filter reads it: a fake document keeps no day it was added.
+          const year = Number(
+            (d.issued?.date ?? d.created_at ?? new Date().toISOString()).slice(0, 4),
+          );
+          // Its own topic, else its kind's, as the vault keeps it.
+          const category =
+            d.category ?? state.types.find((t) => t.key === d.type_key)?.category ?? null;
+          const key = JSON.stringify([person, category, d.type_key, year]);
+          const g = groups.get(key);
+          if (g) g.n += 1;
+          else groups.set(key, { person, category, type_key: d.type_key, year, n: 1 });
+        }
+        const short = shortName(state.members);
+        const rank = (id: string) =>
+          id === who.memberId ? 0 : id === HOUSEHOLD_MEMBER_FILTER ? 2 : id === 'none' ? 3 : 1;
+        let n = 0;
+        const drawn = drawCabinet(
+          by,
+          [...groups.values()],
+          {
+            person: (id) =>
+              id === HOUSEHOLD_MEMBER_FILTER
+                ? THE_HOUSEHOLD
+                : id === 'none'
+                  ? NOT_SURE_YET
+                  : (short.get(id) ?? 'Someone in the family'),
+            kind: (key) => state.types.find((t) => t.key === key)?.label ?? 'Another kind',
+            personOrder: (a, b) => rank(a) - rank(b) || a.localeCompare(b),
+          },
+          () => `fake-node-${++n}`,
+        );
+        const drawnProblem = layoutProblemOf(drawn.layout);
+        if (drawnProblem !== null) return fail(422, drawnProblem.code, drawnProblem.message);
+        return ok(drawn);
+      }
+      if (path === '/api/v1/cabinet/counts' && method === 'GET') {
+        const counts: Record<string, number | null> = {};
+        for (const { f } of shown(held.layout)) {
+          const got = await tabled(f.filter);
+          counts[f.id] = 'status' in got ? null : got.total;
+        }
+        return ok({ version: held.version, counts });
+      }
+      if (alsoInAt && method === 'GET') {
+        const id = decodeURIComponent(alsoInAt[1] as string);
+        const doc = state.documents.find((d) => d.id === id);
+        if (
+          !doc ||
+          !canSee(who, {
+            visibility: doc.visibility ?? 'household',
+            owner_member_id: doc.owner_member_id ?? null,
+          })
+        ) {
+          return fail(404, 'not_found', 'That document does not exist.');
+        }
+        const items: Array<{ id: string; name: string; path: [string, string, string] }> = [];
+        for (const { f, path: where } of shown(held.layout)) {
+          const got = await tabled(f.filter);
+          if (!('status' in got) && got.items.some((d) => d.id === id)) {
+            items.push({ id: f.id, name: f.name, path: where });
+          }
+        }
+        return ok({ items });
+      }
     }
     if (path === '/api/v1/documents') {
       const s = session();
@@ -7938,6 +8154,9 @@ function v1Filters(url: string):
     ['added', (d) => d.created_at.slice(0, 10)],
     ['issued', (d) => d.issued?.date ?? null],
     ['expires', (d) => d.expires?.date ?? null],
+    // The date it is about: issued, else added (0.9.0, C1).
+    // A fake document keeps no day it was added: today, then.
+    ['dated', (d) => d.issued?.date ?? (d.created_at ?? new Date().toISOString()).slice(0, 10)],
   ];
   const asked: Array<{ from?: string; to?: string; of: (typeof ranges)[number][1] }> = [];
   for (const [name, of] of ranges) {

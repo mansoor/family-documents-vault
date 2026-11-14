@@ -7180,3 +7180,338 @@ html:has(.shell-phone):has(.has-toast) {
   color: var(--danger);
   font-weight: 600;
 }
+
+/* ---- 0.9.0, C1: My cabinet ----
+   Beside the Documents table: Table or Cabinet at the top; cabinets as
+   cards, drawers and their folders down the side, a folder's papers beside
+   them. A light metaphor — folder icons and tab-topped headings, never
+   drawn cabinets. */
+.shell-wide .page.page-table.cabinet-page,
+.shell-mid .page.page-table.cabinet-page {
+  height: auto;
+  min-height: max(460px, calc(100dvh - var(--shell-chrome)));
+}
+
+.view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border-input);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.view-toggle-btn {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  min-height: var(--tap);
+  padding: 0 16px;
+  border: 0;
+  background: var(--surface);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.view-toggle-btn[aria-pressed='true'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.view-toggle-btn:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+
+.cab-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.cab-bar p {
+  flex: 1;
+  margin: 0;
+}
+
+.cab-mine {
+  color: var(--ink);
+}
+
+.cab-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cab-card {
+  font: inherit;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 10px;
+  align-items: center;
+  min-width: 160px;
+  min-height: var(--tap);
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cab-card .icon {
+  grid-row: span 2;
+  color: var(--accent);
+}
+
+.cab-card-name {
+  font-weight: 700;
+}
+
+.cab-card[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.cab-browse {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 767px) {
+  .cab-browse {
+    grid-template-columns: 1fr;
+  }
+}
+
+.cab-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cab-drawer,
+.cab-folder {
+  font: inherit;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cab-drawer {
+  font-weight: 700;
+}
+
+.cab-folders .cab-folder {
+  padding-left: 28px;
+  color: var(--ink-soft);
+}
+
+.cab-drawer:hover,
+.cab-folder:hover {
+  background: var(--accent-soft);
+}
+
+.cab-folder[aria-current='true'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.cab-drawer:focus-visible,
+.cab-folder:focus-visible,
+.cab-card:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.cab-drawer-name,
+.cab-folder-name {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.cab-count,
+.cab-n {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.cab-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+}
+
+.cab-path {
+  margin: 0;
+  font-size: 14px;
+}
+
+.cab-pane-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+/* A folder's name on a tab, as a paper folder has. */
+.cab-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  margin: 0;
+  font-size: 22px;
+}
+
+.cab-tab .icon {
+  color: var(--accent);
+}
+
+.cab-none {
+  padding: 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-s);
+  color: var(--ink-soft);
+}
+
+.arrange-by {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.arrange-by legend {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.arrange-choice {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  cursor: pointer;
+}
+
+.arrange-choice > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.arrange-choice-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.arrange-tree,
+.arrange-tree ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.arrange-tree ol {
+  padding-left: 22px;
+}
+
+.arrange-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.arrange-cabinet .arrange-name {
+  font-weight: 700;
+}
+
+.arrange-name {
+  font: inherit;
+  flex: 1;
+  min-width: 140px;
+  min-height: var(--tap);
+  padding: 0 10px;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.arrange-hidden .arrange-name {
+  color: var(--ink-muted);
+  text-decoration: line-through;
+}
+
+.arrange-show {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: var(--tap);
+  font-size: 14px;
+}
+
+.arrange .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.also-in {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.also-in a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.folder-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: var(--tap);
+  padding: 0 4px 0 12px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+}

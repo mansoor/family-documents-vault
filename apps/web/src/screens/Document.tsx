@@ -18,6 +18,7 @@ import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-r
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { AddToCollection, audienceLabel, collectionsOffered } from '../collections.js';
+import { AlsoInRow } from '../cabinet.js';
 import { mayChange } from '../DocActions.js';
 import { asksFor, coreRule, detailText, useAttributes } from '../details.js';
 import { NotesSection } from '../notes.js';
@@ -413,6 +414,8 @@ export function DocumentScreen() {
         ))}
         <dt>Category</dt>
         <dd>{categoryLabel(doc.category)}</dd>
+        {/* The reader's own cabinet folders it is in (0.9.0, C1). */}
+        <AlsoInRow documentId={doc.id} />
         {/* Where the original is kept is the household's (5.41): never a
             viewer's or a guest's, whatever an answer carries. */}
         {seesLocation(storedRole()) && doc.physical_location && (

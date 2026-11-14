@@ -2094,3 +2094,91 @@ describe('the fake vault, the AI reader set in Settings (0.9.0, AIR1)', () => {
     ).rejects.toMatchObject({ status: 403 });
   });
 });
+
+describe('the fake vault, my cabinet (0.9.0, C1)', () => {
+  it('draws a cabinet from what its person sees, saves it to the version read, and counts each folder as the table does', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    expect((await api.capabilities()).features.cabinets).toBe(true);
+    const year = new Date().getUTCFullYear();
+    const issued = (y: number) => ({ date: `${y}-03-01`, precision: 'day' as const });
+    vault.state.members.push({ id: 'sam', display_name: 'Sam', role: 'adult', is_me: false });
+    const passport = await api.createDocument(token, {
+      title: 'Passport',
+      type_key: 'passport',
+      owner_member_id: 'fake-member',
+      issued: issued(year - 1),
+    });
+    await api.createDocument(token, {
+      title: 'Another passport',
+      type_key: 'passport',
+      owner_member_id: 'fake-member',
+      issued: issued(year),
+    });
+    const secret = await api.createDocument(token, {
+      title: 'Sam’s own',
+      type_key: 'passport',
+      owner_member_id: 'fake-member',
+      visibility: 'private',
+    });
+    // Sam's Only me, as the vault would keep it: never the fake owner's to see.
+    const sams = vault.state.documents.find((d) => d.id === secret.id);
+    if (sams) sams.owner_member_id = 'sam';
+
+    // None until saved.
+    expect(await api.cabinet(token)).toEqual({ layout: null, version: 0, updated_at: null });
+    const drawn = await api.previewCabinet(token, 'category_year_person');
+    expect(drawn.layout.cabinets.map((c) => [c.name, c.drawers.map((d) => d.name)])).toEqual([
+      ['Identity', [String(year), String(year - 1)]],
+    ]);
+    expect(drawn.layout.cabinets[0]?.drawers[0]?.folders.map((f) => f.name)).toEqual(['Fake']);
+    expect(drawn.documents).toBe(2);
+    const saved = await api.saveCabinet(token, { layout: drawn.layout, version: 0 });
+    expect(saved.version).toBe(1);
+    expect((await api.cabinetCounts(token)).counts).toEqual(drawn.counts);
+    // A second window, saving to the version it read: refused.
+    await expect(
+      api.saveCabinet(token, { layout: drawn.layout, version: 0 }),
+    ).rejects.toMatchObject({ status: 409, code: 'conflict' });
+    // Also in: its own year's folder; another's Only me is not there at all.
+    const also = await api.documentAlsoIn(token, passport.id);
+    expect(also.items.map((i) => i.path)).toEqual([['Identity', String(year - 1), 'Fake']]);
+    await expect(api.documentAlsoIn(token, secret.id)).rejects.toMatchObject({ status: 404 });
+    // A folder's question is the list's: anything else is refused.
+    const folder = (filter: Record<string, unknown>) => ({
+      arranged_by: null,
+      cabinets: [
+        {
+          id: 'c',
+          name: 'C',
+          hidden: false,
+          drawers: [
+            {
+              id: 'd',
+              name: 'D',
+              hidden: false,
+              folders: [{ id: 'f', name: 'F', hidden: false, filter }],
+            },
+          ],
+        },
+      ],
+    });
+    for (const filter of [{ sort: 'title' }, { status: 'lost' }, { issued_from: 'soon' }]) {
+      await expect(
+        api.saveCabinet(token, { layout: folder(filter), version: 1 }),
+      ).rejects.toMatchObject({ status: 422 });
+    }
+    await expect(
+      api.saveCabinet(token, {
+        layout: folder({ tag: Array.from({ length: 50 }, (_, i) => `${'x'.repeat(90)}${i}`) }),
+        version: 1,
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+});

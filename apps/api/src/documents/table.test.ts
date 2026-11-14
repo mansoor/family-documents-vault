@@ -342,6 +342,9 @@ describe.skipIf(!testAdminUrl())('the Documents table (R2)', () => {
         return low(d.collections?.[0]?.name);
       case 'location':
         return low(d.physical_location);
+      case 'dated':
+        // Issued, else added (C1): the test's family keeps UTC's calendar.
+        return d.issued?.date ?? d.created_at.slice(0, 10);
     }
   };
 

@@ -10,6 +10,7 @@ import {
   type DocumentListParams,
   type DocumentSort,
   type DocumentView,
+  type FolderFilter,
   type Role,
   type SortDirection,
   type StatusValue,
@@ -109,7 +110,44 @@ export interface TableView {
   label: string;
   /** Sensitive, all said (0.9.0, AIR2): `yes`, `no`, or '' for either. */
   sensitive: string;
+  /**
+   * The rest of what a cabinet's folder asks (0.9.0, C1), carried into the
+   * table whole: said above it as chips, each taken off by itself.
+   */
+  folder: FolderPart;
 }
+
+/** What a folder asks that the table has no select for, by the list's own names. */
+export const FOLDER_KEYS = [
+  'category',
+  'issued_by',
+  'location',
+  'essential',
+  'added_from',
+  'added_to',
+  'issued_from',
+  'issued_to',
+  'expires_from',
+  'expires_to',
+  'dated_from',
+  'dated_to',
+] as const;
+export type FolderKey = (typeof FOLDER_KEYS)[number];
+
+export interface FolderPart {
+  keys: Partial<Record<FolderKey, string>>;
+  /** Tags past the first (the Tag filter's): any of them. */
+  tags: string[];
+  /**
+   * The folder asked something the table always leaves out — its notes —
+   * so the table may count fewer than the folder does.
+   */
+  partial: boolean;
+}
+
+export const NO_FOLDER: FolderPart = { keys: {}, tags: [], partial: false };
+
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 export const FILTER_KEYS = [
   'person',
@@ -137,14 +175,27 @@ const VISIBILITIES: readonly string[] = ['household', 'adults', 'private'];
 /**
  * The view an address asks for. A sort the reader may not have — by where
  * originals are kept, for a viewer or a guest — or one that is not there is
- * the title's: a link never shows them what is not theirs, nor fails.
+ * the title's: a link never shows them what is not theirs, nor fails. A
+ * filter may hold several values, comma-separated, as a merged folder asks
+ * (any of them); each must be one there is.
  */
 export function viewFrom(params: URLSearchParams, role: Role): TableView {
   const sort = params.get('sort');
   const pick = (k: string, ok?: readonly string[]) => {
     const v = params.get(k) ?? '';
-    return ok && !ok.includes(v) ? '' : v;
+    return ok && !v.split(',').every((x) => ok.includes(x)) ? '' : v;
   };
+  const tags = params.getAll('tag').filter((t) => t !== '');
+  const keys: FolderPart['keys'] = {};
+  for (const k of FOLDER_KEYS) {
+    const v = params.get(k);
+    if (!v) continue;
+    if (k.endsWith('_from') || k.endsWith('_to')) {
+      if (DAY.test(v)) keys[k] = v;
+    } else if (k === 'essential') {
+      if (v === 'true' || v === 'false') keys[k] = v;
+    } else if (k !== 'location' || seesLocation(role)) keys[k] = v;
+  }
   return {
     sort: isDocumentSort(sort) && (sort !== 'location' || seesLocation(role)) ? sort : 'title',
     dir: params.get('dir') === 'desc' ? 'desc' : 'asc',
@@ -153,9 +204,10 @@ export function viewFrom(params: URLSearchParams, role: Role): TableView {
     status: pick('status', STATUSES),
     visibility: pick('visibility', VISIBILITIES),
     collection: pick('collection'),
-    tag: pick('tag'),
+    tag: tags[0] ?? '',
     label: pick('label'),
     sensitive: pick('sensitive', SENSITIVE_FILTER_VALUES),
+    folder: { keys, tags: tags.slice(1), partial: params.get('partial') === '1' },
   };
 }
 
@@ -165,6 +217,39 @@ export function paramsOf(view: TableView): URLSearchParams {
   if (view.sort !== 'title') out.set('sort', view.sort);
   if (view.dir === 'desc') out.set('dir', 'desc');
   for (const k of FILTER_KEYS) if (view[k]) out.set(k, view[k]);
+  for (const t of view.folder.tags) out.append('tag', t);
+  for (const k of FOLDER_KEYS) {
+    const v = view.folder.keys[k];
+    if (v) out.set(k, v);
+  }
+  if (view.folder.partial) out.set('partial', '1');
+  return out;
+}
+
+/**
+ * A cabinet folder's question as the table's address (0.9.0, C1: "Open in
+ * the table"): every filter of the list it asks, by the table's own name
+ * for it, so the table shows the same papers. The table always leaves
+ * notes out: a folder that does not is marked `partial`, and the table says
+ * its count may differ.
+ */
+export function folderView(filter: FolderFilter): URLSearchParams {
+  const out = new URLSearchParams();
+  const one = (k: string, v: string | undefined) => {
+    if (v) out.set(k, v);
+  };
+  one('person', filter.member_id);
+  one('kind', filter.type_key);
+  one('status', filter.status);
+  one('visibility', filter.visibility);
+  one('collection', filter.collection_id);
+  const tags =
+    filter.tag === undefined ? [] : Array.isArray(filter.tag) ? filter.tag : [filter.tag];
+  for (const t of tags) out.append('tag', t);
+  one('label', filter.tag_label);
+  one('sensitive', filter.sensitive);
+  for (const k of FOLDER_KEYS) one(k, filter[k]);
+  if (filter.notes !== 'exclude') out.set('partial', '1');
   return out;
 }
 
@@ -173,6 +258,8 @@ export function queryOf(
   view: TableView,
   opts: { cursor?: string | null; limit?: number } = {},
 ): DocumentListParams {
+  const k = view.folder.keys;
+  const tags = [view.tag, ...view.folder.tags].filter((t) => t !== '');
   return {
     sort: view.sort,
     direction: view.dir,
@@ -181,17 +268,42 @@ export function queryOf(
     status: (view.status || undefined) as StatusValue | undefined,
     visibility: (view.visibility || undefined) as Visibility | undefined,
     collection_id: view.collection || undefined,
-    tag: view.tag || undefined,
+    tag: tags.length > 1 ? tags : tags[0],
     tag_label: view.label || undefined,
     sensitive: view.sensitive || undefined,
+    category: k.category,
+    issued_by: k.issued_by,
+    location: k.location,
+    essential: k.essential === undefined ? undefined : k.essential === 'true',
+    added_from: k.added_from,
+    added_to: k.added_to,
+    issued_from: k.issued_from,
+    issued_to: k.issued_to,
+    expires_from: k.expires_from,
+    expires_to: k.expires_to,
+    dated_from: k.dated_from,
+    dated_to: k.dated_to,
     limit: opts.limit ?? PAGE_SIZE,
     cursor: opts.cursor ?? undefined,
   };
 }
 
+/** How many things a folder's chips say it asks. */
+export function folderChipCount(f: FolderPart): number {
+  const k = f.keys;
+  const ranges = (['added', 'issued', 'expires', 'dated'] as const).filter(
+    (r) => k[`${r}_from`] || k[`${r}_to`],
+  ).length;
+  return (
+    ranges +
+    (['category', 'issued_by', 'location', 'essential'] as const).filter((x) => k[x]).length +
+    f.tags.length
+  );
+}
+
 /** How many filters are on: what the phone's Filters button says. */
 export function filtersOn(view: TableView): number {
-  return FILTER_KEYS.filter((k) => view[k]).length;
+  return FILTER_KEYS.filter((k) => view[k]).length + folderChipCount(view.folder);
 }
 
 // ------------------------------------------------------------- remembered

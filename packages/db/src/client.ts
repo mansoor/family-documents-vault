@@ -1818,6 +1818,19 @@ export interface Schema {
     updated_at: GeneratedTimestamp;
   };
 
+  /**
+   * A person's own cabinet (0097, 0.9.0, C1): their layout of cabinets,
+   * drawers and folders, each folder a saved filter of GET /documents.
+   * Theirs alone; `version` counts each save.
+   */
+  cabinet_layout: {
+    household_id: string;
+    member_id: string;
+    layout: ColumnType<unknown, string, string>;
+    version: Generated<number>;
+    updated_at: GeneratedTimestamp;
+  };
+
   notification_preference: {
     account_id: string;
     household_id: string;

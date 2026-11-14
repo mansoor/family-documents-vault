@@ -23,6 +23,7 @@ import { stopApi } from './shutdown.js';
 import { VisibilityService } from './documents/visibility.js';
 import { TypeService } from './documents/types.js';
 import { CollectionService } from './collections/service.js';
+import { CabinetService } from './cabinet/service.js';
 import { ExportService } from './exports/service.js';
 import { NotificationService } from './notifications/service.js';
 import { ReminderService } from './reminders/service.js';
@@ -246,6 +247,7 @@ async function main(): Promise<void> {
     alert,
   });
   const app = await buildApp(config, {
+    cabinet: new CabinetService(db, documents),
     serverVersion: version,
     instanceId: instanceIdReader(db),
     watchFolder: new WatchFolderService(db, { checks: settingsChecks }),

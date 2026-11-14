@@ -164,6 +164,12 @@ import type {
   MyWordingView,
   NeutralWordingInput,
   NeutralWordingView,
+  AlsoIn,
+  ArrangeBy,
+  CabinetCounts,
+  CabinetPreview,
+  CabinetSave,
+  CabinetView,
 } from '@fdv/shared';
 import type { Http, ResponseLike, UploadBody } from './http.js';
 import {
@@ -918,6 +924,33 @@ export function createApi(http: Http) {
         token,
       }),
     counts: (token: string) => request<Counts>('/api/v1/documents/counts', { token }),
+    /**
+     * My cabinet (0.9.0, C1, `features.cabinets`): the caller's own layout
+     * of cabinets, drawers and folders — none until they save one (`version`
+     * 0). Nobody else's is ever given.
+     */
+    cabinet: (token: string) => request<CabinetView>('/api/v1/cabinet', { token }),
+    /**
+     * The whole layout saved, made to the `version` last read: `409
+     * conflict` when it changed meanwhile (another window or device),
+     * nothing saved. Each folder's `filter` is GET /documents's own
+     * parameters, checked by the list's parser (`422 validation_failed`
+     * naming the folder); a layout too big is `422 cabinet_too_big`.
+     */
+    saveCabinet: (token: string, body: CabinetSave) =>
+      request<CabinetView>('/api/v1/cabinet', { method: 'PUT', body, token }),
+    /** A layout drawn from what the caller can see (Arrange by): shown, not saved. */
+    previewCabinet: (token: string, arrangeBy: ArrangeBy) =>
+      request<CabinetPreview>('/api/v1/cabinet/preview', {
+        method: 'POST',
+        body: { arrange_by: arrangeBy },
+        token,
+      }),
+    /** How many documents each shown folder holds for the caller, by the list's own rules. */
+    cabinetCounts: (token: string) => request<CabinetCounts>('/api/v1/cabinet/counts', { token }),
+    /** The caller's shown folders this document is in ("Also in"); 404 for one they may not see. */
+    documentAlsoIn: (token: string, documentId: string) =>
+      request<AlsoIn>(`/api/v1/documents/${enc(documentId)}/also-in`, { token }),
     /**
      * The caller's notes kept on their own (0.9.0, `features.notes`):
      * newest first, each with its first words; `q` finds within them,

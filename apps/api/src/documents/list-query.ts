@@ -1,0 +1,120 @@
+import {
+  CABINET_FILTER_KEYS,
+  DOCUMENT_PAGE_MAX,
+  DOCUMENT_SORTS,
+  OLDER_DOCUMENT_SORTS,
+  SORT_DIRECTIONS,
+} from '@fdv/shared';
+import { z } from 'zod';
+import { FILTER_VALUES_MAX, filtersOf } from './filters.js';
+import type { ListQuery } from './service.js';
+
+/**
+ * What GET /documents takes, and how it is read: one parser, for the list
+ * itself and for every folder of somebody's cabinet (0.9.0, C1), whose
+ * saved question is the list's own parameters — so a folder never asks
+ * for more than the list allows.
+ */
+
+/** A filter of one value, or of several comma-separated (V1, filters.ts): checked as it is read. */
+export const values = z.string().max(4000).optional();
+/** A tag, or several: the field given once for each (11 Nov 2026), any of them. */
+export const tagValues = z
+  .union([z.string().max(400), z.array(z.string().max(400)).max(FILTER_VALUES_MAX)])
+  .optional();
+/** Notes left out (11 Nov 2026): what the Documents tab and table keep to. */
+export const notesFilter = z.enum(['exclude']).optional();
+/** A day, `YYYY-MM-DD` (V1): checked as it is read. */
+const day = z.string().max(10).optional();
+export const dates = {
+  added_from: day,
+  added_to: day,
+  issued_from: day,
+  issued_to: day,
+  expires_from: day,
+  expires_to: day,
+  // The date a paper is about: issued, else added (0.9.0, C1).
+  dated_from: day,
+  dated_to: day,
+};
+
+export const listQuery = z.object({
+  // A person's id; or, with a column sort (R2), `none`: nobody's. Several since V1.
+  member_id: values,
+  category: values,
+  issued_by: z.string().trim().min(1).max(200).optional(),
+  type_key: values,
+  tag: tagValues,
+  notes: notesFilter,
+  // Sensitive, all said: yes, no, or both (0.9.0, AIR2).
+  sensitive: values,
+  // A detail tag's label, any value (0.9.0, T1): every document with a locker.
+  tag_label: z.string().trim().min(1).max(200).optional(),
+  visibility: values,
+  essential: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .optional(),
+  status: values,
+  deleted: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .optional(),
+  // 5.24: those an owner has asked to remove for good (in the Trash), or not.
+  purge_requested: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .optional(),
+  updated_since: z.string().datetime().optional(),
+  // The older sorts, and since R2 the table's columns (document-table.ts in
+  // @fdv/shared); the table's additions below go with a column sort only.
+  sort: z.enum([...OLDER_DOCUMENT_SORTS, ...DOCUMENT_SORTS]).optional(),
+  direction: z.enum(SORT_DIRECTIONS).optional(),
+  // In this collection (one the caller may see), or in none of theirs.
+  collection_id: z.union([z.string().uuid(), z.literal('none')]).optional(),
+  // Kept there, whatever the case: only for whoever sees locations (5.41).
+  location: z.string().trim().min(1).max(500).optional(),
+  limit: z.coerce.number().int().min(1).max(DOCUMENT_PAGE_MAX).optional(),
+  // Room for the longest key a table's cursor can carry (the review's
+  // R2-API-4): a location of 500 characters, each as JSON writes the worst
+  // of them (a control character, \u0001: 6 bytes), is 3,000 bytes; with
+  // the rest at most 3,200, as base64 about 4,270, and its tag 44 more.
+  cursor: z.string().max(8192).optional(),
+  ...dates,
+});
+
+/**
+ * A cabinet folder's saved question (0.9.0, C1): the list's own filters,
+ * each read by the list's own rule, and nothing else — nothing that sorts,
+ * pages, or reaches the Trash or what an owner asked to remove. A key the
+ * list does not take, or one of those, is refused.
+ */
+export const folderQuery = listQuery
+  .pick(
+    Object.fromEntries(CABINET_FILTER_KEYS.map((k) => [k, true])) as {
+      [K in (typeof CABINET_FILTER_KEYS)[number]]: true;
+    },
+  )
+  .strict();
+
+/**
+ * The list's parameters as the service reads them: one value as it always
+ * was, several as a list, and the days (V1, filters.ts) — every value
+ * checked, a refusal (422) naming the one that is wrong.
+ */
+export function listQueryOf(raw: z.infer<typeof listQuery>): ListQuery {
+  const { single, many } = filtersOf(raw);
+  // Sensitive is read as a list (AIR2), never as the words sent.
+  const { sensitive: _sensitive, ...asked } = raw;
+  void _sensitive;
+  return {
+    ...asked,
+    member_id: single.member_id,
+    type_key: single.type_key,
+    category: single.category,
+    status: single.status,
+    visibility: single.visibility,
+    tag: single.tag,
+    ...many,
+  };
+}
