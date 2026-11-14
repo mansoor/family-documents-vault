@@ -115,7 +115,9 @@ export function activityKind(action: string): ActivityKind {
     case 'document.purge_requested':
     case 'document.purged':
       return 'trash';
+    // 0.9.0 (13 Nov 2026): a link emailed by the vault is a link sent.
     case 'household.only_me_sharing_changed':
+    case 'share_link.emailed':
       return 'shared';
     case 'household.profile_updated':
     case 'household.timezone_changed':
@@ -747,6 +749,13 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     case 'share.revealed':
       return line(
         `${who} looked again at the link they made to ${e.object_type === 'collection' ? collection : doc}`,
+        true,
+      );
+    // 0.9.0 (13 Nov 2026): a link emailed to its recipient by the vault —
+    // where, masked; never the link, its PIN or password, nor the message.
+    case 'share_link.emailed':
+      return line(
+        `${who} emailed the link to ${e.object_type === 'collection' ? collection : doc}${text(detail.to) ? ` to ${text(detail.to)}` : ''}`,
         true,
       );
 

@@ -7,6 +7,7 @@ import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { None, useGrid } from '../table-grid.js';
 import { Button, ConfirmDialog, ErrorNote, Sheet, TopBar } from '../ui.js';
+import { EmailTheLink } from './Share.js';
 import { dateTimeWords, familyZoneNow } from '../family-time.js';
 
 /**
@@ -523,6 +524,11 @@ function ShownAgain(props: { link: Share; revealed: RevealedShare; onClose: () =
           same message.
         </p>
       )}
+      {/* Another way to send it, beside Copy (0.9.0): never in its place. */}
+      {props.link.emailed_to && (
+        <p className="muted">You last had the vault email it to {props.link.emailed_to}.</p>
+      )}
+      <EmailTheLink share={props.link} idPrefix="shown" />
       <p className="muted">
         Only you can see this again, and only after confirming it’s you. Closing hides it.
       </p>

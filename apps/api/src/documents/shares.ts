@@ -41,6 +41,7 @@ import { ApiError, notFound } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import { seenDocument, type Enqueue } from './service.js';
 import { madeWith } from './made-with.js';
+import { linkEmail } from './share-link-email.js';
 import { onlyMeShareable } from './only-me-rule.js';
 import { endSessions } from './share-sessions.js';
 import { shareOpenedJob, SMS_TEXT_JOB } from '../sms/text-job.js';
@@ -73,12 +74,15 @@ import {
   SHARE_CODE_UNAVAILABLE,
   SHARE_END_GRACE_MINUTES,
   SHARE_LIMIT_MAX,
+  SHARE_LINK_EMAIL_UNAVAILABLE,
+  SHARE_LINK_EMAILS,
   SHARE_MAX_DAYS,
   SHARE_PASSWORD_MAX,
   SHARE_PASSWORD_MIN,
   shareCodeText,
   shareEndProblem,
   shareEndWords,
+  shareLinkMessage,
   shareUses,
   suspensionInEffect,
   withinCollectionAudience,
@@ -87,6 +91,7 @@ import {
   type OnlyMeSharing,
   type RevealedShare,
   type ShareCodeSent,
+  type ShareEmailed,
   type ShareLinkPreview,
   type SharePages,
   type SharePermission,
@@ -169,6 +174,13 @@ const sharerOf = (role: Role, memberId: string) => ({
  * link's secret, and the PIN or the password it made up — under a key
  * derived from the master key for this alone (0084). It is still checked
  * by its hashes alone. A link made before has no copy, and stays shown once.
+ *
+ * Since 0.9.0 (the owner's decision of 13 Nov 2026) the vault can email a
+ * link to its recipient for whoever made it, from that sealed copy: through
+ * the operator's mail server alone (A21), as a code is; never with the PIN,
+ * the password or a code, nor what the link is to. Where it went is kept
+ * masked alone, never the address (0094), and written to the activity log
+ * as `share_link.emailed`.
  */
 
 const MAX_PIN_ATTEMPTS = 10;
@@ -280,6 +292,37 @@ export const collectionShareBody = z
  */
 const SNAPSHOT_ROWS = 2000;
 
+/**
+ * A link emailed to its recipient (0.9.0): the address — the share sheet's
+ * own rule (isShareAddress) — and the sharer's own short message, made
+ * plain by shareLinkMessage before it goes. Both are checked as the body is
+ * read, before anybody is asked to confirm it's them (the review of
+ * 0.9.0-dev.39).
+ */
+export const shareEmailBody = z
+  .object({
+    to: z
+      .string()
+      .trim()
+      .max(254)
+      .refine(isShareAddress, 'That is not an email address. Check it: name@example.com.'),
+    message: z
+      .string()
+      .max(2000)
+      .superRefine((typed, ctx) => {
+        const words = shareLinkMessage(typed);
+        if ('problem' in words) ctx.addIssue({ code: 'custom', message: words.problem });
+      })
+      .optional(),
+  })
+  .strict();
+
+/**
+ * How soon after making a link its maker may email it with what making it
+ * asked (0.9.0): later, it asks what showing it again asks (`email_share`).
+ */
+export const JUST_MADE_MS = 15 * 60_000;
+
 /** A legacy link's open and download: the PIN, if it has one. */
 export const openBody = z.object({ pin: z.string().trim().max(12).optional() }).strict();
 
@@ -354,6 +397,13 @@ export interface ShareView {
    * shows it again.
    */
   revealable: boolean;
+  /**
+   * The reader may have the vault email it (0.9.0): revealable, not used up,
+   * and the operator's mail server set. POST /shares/{id}/email.
+   */
+  emailable: boolean;
+  /** Where the reader last emailed it, masked; null for none, and for anybody else's link. */
+  emailed_to: string | null;
   /** One sentence for the list on the home screen. */
   summary: string;
 }
@@ -718,6 +768,13 @@ const codeUnavailable = (status: 422 | 503) =>
     ? new ApiError(422, 'email_code_unavailable', SHARE_CODE_UNAVAILABLE)
     : new ApiError(503, 'email_code_unavailable', SHARE_CODE_CANNOT_SEND);
 
+/**
+ * A link emailed where the operator's mail server is unset (0.9.0, A21):
+ * the household's own is never used for it.
+ */
+export const linkEmailUnavailable = () =>
+  new ApiError(503, 'email_link_unavailable', SHARE_LINK_EMAIL_UNAVAILABLE);
+
 const expiryRefused = (message: string) => new ApiError(422, 'expiry_out_of_range', message);
 
 const noCollection = () => new ApiError(404, 'not_found', 'That collection does not exist.');
@@ -793,6 +850,12 @@ export interface ShareOptions {
    * Gate, counted against its monthly cap. Absent: no link asks for one.
    */
   sms?: SmsService | null;
+  /**
+   * The vault's own address (FDV_BASE_URL): what an emailed link starts
+   * with when there is no public-only site (0.9.0). Without it, and without
+   * a public-only site, no link is emailed.
+   */
+  baseUrl?: string | null;
 }
 
 /** What "this device only" cookies are made with: deviceCookieKey(master, this). */
@@ -806,6 +869,7 @@ export class ShareService {
   private readonly mail: ((m: MailRequest) => Promise<void>) | null;
   private readonly copyKey: Buffer | null;
   private readonly sms: SmsService | null;
+  private readonly baseUrl: string | null;
 
   constructor(
     private readonly db: Db,
@@ -824,6 +888,15 @@ export class ShareService {
     this.mail = opts.mail ?? null;
     this.copyKey = opts.copyKey ?? null;
     this.sms = opts.sms ?? null;
+    this.baseUrl = opts.baseUrl ?? null;
+  }
+
+  /**
+   * Whether the vault can email a link here (0.9.0): the operator's mail
+   * server is set (A21), copies are kept, and it knows its own address.
+   */
+  get emailLinks(): boolean {
+    return this.mail !== null && this.copyKey !== null && (this.publicUrl ?? this.baseUrl) !== null;
   }
 
   /** Whether a link can ask for an emailed code here: the operator's mail server is set (A21). */
@@ -1675,6 +1748,21 @@ export class ShareService {
         .selectFrom('household')
         .select('timezone')
         .executeTakeFirstOrThrow();
+      // Where the reader last emailed each of their links (0.9.0): masked,
+      // and only ever their own (0094 gives nobody else's).
+      const emailed = new Map(
+        (
+          await trx
+            .selectFrom('share_link_email')
+            .distinctOn('share_id')
+            .select(['share_id', 'to_masked'])
+            .where('sent_by', '=', p.accountId)
+            .where('share_id', 'is not', null)
+            .orderBy('share_id')
+            .orderBy('sent_at', 'desc')
+            .execute()
+        ).map((e) => [e.share_id, e.to_masked]),
+      );
       const reader = p;
       // What each collection's link was made with, and has followed: the
       // reader must be able to see every one of them, or it is not theirs
@@ -1741,6 +1829,11 @@ export class ShareService {
             : byMaker
               ? null
               : r.paused_at;
+        const revealable =
+          this.copyKey !== null &&
+          r.has_copy &&
+          r.created_by === p.accountId &&
+          !ENDED.includes(state);
         views.push({
           id: r.id,
           document_id: r.document_id,
@@ -1785,11 +1878,11 @@ export class ShareService {
           this_device_only: r.this_device_only,
           // 0.9.0: its maker's to see again, while it still works (or is
           // only paused or used up), if a copy was kept as it was made.
-          revealable:
-            this.copyKey !== null &&
-            r.has_copy &&
-            r.created_by === p.accountId &&
-            !ENDED.includes(state),
+          revealable,
+          // 0.9.0: its maker's to have emailed, while it opens now — not
+          // used up, and not paused (the review of 0.9.0-dev.39).
+          emailable: revealable && state === 'active' && this.emailLinks,
+          emailed_to: r.created_by === p.accountId ? (emailed.get(r.id) ?? null) : null,
           summary: summarise(
             { ...r, paused_reason: pausedReason },
             state,
@@ -2019,6 +2112,173 @@ export class ShareService {
       ...(copy.pin ? { pin: copy.pin } : {}),
       ...(copy.password ? { password: copy.password } : {}),
     };
+  }
+
+  // ------------------------------------------- emailed (0.9.0)
+
+  /**
+   * A link its maker may have the vault email (0.9.0; the owner's decision
+   * of 13 Nov 2026): one the caller made, can still see and that can still
+   * be opened, with a sealed copy to send — anybody else's, an owner's
+   * included, is a link there is no such of (404). Asked before the
+   * credential is (step-up). `justMade`: within JUST_MADE_MS of making it,
+   * when the route asks only what making it asked.
+   */
+  async emailable(p: Principal, id: string): Promise<LinkView & { justMade: boolean }> {
+    requireCapability(p, 'document.share');
+    if (!this.emailLinks) throw linkEmailUnavailable();
+    const link = (await this.views(p)).find((s) => s.id === id);
+    if (!link || link.created_by !== p.accountId) throw notFound('That link');
+    if (ENDED.includes(link.state) || link.state === 'used_up') {
+      throw new ApiError(
+        410,
+        'share_ended',
+        'That link no longer opens, so there is nothing to send. Make a new one if you need to.',
+      );
+    }
+    // Paused — after a restore, or by its maker's sign-in or limits — it
+    // opens nothing now, so it is not sent (the review of 0.9.0-dev.39).
+    if (link.state === 'paused') {
+      throw new ApiError(
+        409,
+        'share_paused',
+        'That link is paused just now, so it would not open for them. Once it works again, you can email it.',
+      );
+    }
+    if (!link.emailable) {
+      throw new ApiError(
+        409,
+        'share_not_revealable',
+        'That link was made before the vault kept a copy, so the vault cannot email it. Send it yourself, or take it back and make a new one.',
+      );
+    }
+    return { ...link, justMade: Date.now() - Date.parse(link.created_at) <= JUST_MADE_MS };
+  }
+
+  /**
+   * POST /shares/{id}/email (0.9.0): the link, opened from its sealed copy,
+   * emailed to the address its maker typed — through the operator's mail
+   * server alone (A21), queued as a code's email is, inside the
+   * transaction that counts it, so an email that cannot be queued keeps
+   * nothing. Plain words and the link (linkEmail): never what it is to, and
+   * never its PIN, password or code. At most SHARE_LINK_EMAILS a link and
+   * an account in a day. Written down masked, as `share_link.emailed`.
+   */
+  async emailLink(
+    p: Principal,
+    id: string,
+    input: z.infer<typeof shareEmailBody>,
+    meta: RequestMeta,
+  ): Promise<ShareEmailed> {
+    const link = await this.emailable(p, id);
+    const words = shareLinkMessage(input.message);
+    if ('problem' in words) {
+      throw new ApiError(422, 'validation_failed', words.problem, { detail: 'message' });
+    }
+    const mail = this.mail as (m: MailRequest) => Promise<void>;
+    const copyKey = this.copyKey as Buffer;
+    const base = (this.publicUrl ?? this.baseUrl ?? '').replace(/\/+$/, '');
+    const to = input.to;
+    const masked = maskEmail(to);
+    const done = await withPrincipal(this.db, p, async (trx) => {
+      // One at a time for its sender, so the counts hold however many ask at once.
+      await sql`select pg_advisory_xact_lock(hashtextextended(${`share_link_email:${p.accountId}`}, 0))`.execute(
+        trx,
+      );
+      const now = new Date();
+      const sent = await trx
+        .selectFrom('share_link_email')
+        .select(['share_id', 'sent_at'])
+        .where('sent_by', '=', p.accountId)
+        .where('sent_at', '>', new Date(now.getTime() - 864e5))
+        .orderBy('sent_at')
+        .execute();
+      const forLink = sent.filter((s) => s.share_id === id);
+      const tooMany = (oldest: Date | undefined, message: string) =>
+        new ApiError(429, 'email_link_limit', message, {
+          retriable: true,
+          retryAfter: Math.max(
+            1,
+            Math.ceil(((oldest ?? now).getTime() + 864e5 - now.getTime()) / 1000),
+          ),
+        });
+      if (forLink.length >= SHARE_LINK_EMAILS.perLinkPerDay) {
+        throw tooMany(
+          forLink[0]?.sent_at,
+          `This link has been emailed ${SHARE_LINK_EMAILS.perLinkPerDay} times today, which is as many as the vault sends. Copy it and send it yourself, or try again tomorrow.`,
+        );
+      }
+      if (sent.length >= SHARE_LINK_EMAILS.perAccountPerDay) {
+        throw tooMany(
+          sent[0]?.sent_at,
+          `You have emailed ${SHARE_LINK_EMAILS.perAccountPerDay} links today, which is as many as the vault sends for one person. Copy the link and send it yourself, or try again tomorrow.`,
+        );
+      }
+      // Read again under the caller's own rules: taken back meanwhile, it
+      // has forgotten its copy (0084).
+      const row = await trx
+        .selectFrom('share_link')
+        .select(['link_copy_sealed', 'expires_at', 'code_email', 'code_phone', 'collection_id'])
+        .where('id', '=', id)
+        .where('created_by', '=', p.accountId)
+        .where('revoked_at', 'is', null)
+        .executeTakeFirst();
+      if (!row?.link_copy_sealed) throw notFound('That link');
+      const copy = openShareLinkCopy(copyKey, row.link_copy_sealed, p.householdId, id);
+      const household = await trx
+        .selectFrom('household')
+        .select(['name', 'timezone'])
+        .executeTakeFirstOrThrow();
+      const { shared_by } = await this.from(trx, p.accountId);
+      const email = linkEmail({
+        householdName: household.name,
+        sharedBy: shared_by,
+        collection: row.collection_id !== null,
+        link: `${base}/s#${copy.token}`,
+        expiresAt: row.expires_at,
+        timezone: householdZone(household.timezone),
+        message: words.message,
+        code: row.code_phone ? 'sms' : row.code_email ? 'email' : null,
+      });
+      await trx
+        .insertInto('share_link_email')
+        .values({
+          household_id: p.householdId,
+          share_id: id,
+          sent_by: p.accountId,
+          to_masked: masked,
+          with_message: words.message !== null,
+          sent_at: now,
+        })
+        .execute();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'share_link.emailed',
+        ...objectOf(link),
+        detail: {
+          share_id: id,
+          to: masked,
+          ...(words.message !== null ? { with_message: true } : {}),
+        },
+        ip: meta.ip,
+      });
+      // Queued last (as a code's email is, M520-02): if it cannot be, the
+      // count and the line in the activity log are undone with the rest.
+      await mail({ householdId: p.householdId, to, ...email }).catch((err: unknown) => {
+        throw Object.assign(
+          new ApiError(
+            503,
+            'email_link_not_sent',
+            'The email could not be sent just now. Try again in a minute, or copy the link and send it yourself.',
+            { retriable: true, retryAfter: 60 },
+          ),
+          { cause: err },
+        );
+      });
+      return { now, left: SHARE_LINK_EMAILS.perLinkPerDay - forLink.length - 1 };
+    });
+    return { sent_to: masked, sent_at: done.now.toISOString(), sends_left: done.left };
   }
 
   // ------------------------------------- Only me documents outside (5.41)

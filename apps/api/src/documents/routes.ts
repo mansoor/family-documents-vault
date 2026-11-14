@@ -28,6 +28,7 @@ import type { UploadRequestService } from '../uploads/requests.js';
 import {
   codeBody,
   collectionShareBody,
+  linkEmailUnavailable,
   openBody,
   previewBody,
   SHARE_COOKIE,
@@ -35,6 +36,7 @@ import {
   SHARE_DEVICE_COOKIE,
   SHARE_DEVICE_MAX_AGE_S,
   shareBody,
+  shareEmailBody,
   unlockBody,
   type ShareService,
 } from './shares.js';
@@ -965,6 +967,40 @@ export function registerDocuments(
       const shown = await shares.reveal(principal(req), id, metaOf(req));
       reply.header('cache-control', 'no-store');
       return shown;
+    },
+  );
+
+  /**
+   * A link emailed to its recipient by the vault (0.9.0; the owner's
+   * decision of 13 Nov 2026), for whoever made it: through the operator's
+   * mail server alone (A21), and never with its PIN, password or code. None
+   * without that server (503), before anything else is asked. Then the
+   * address (422), whose it is and that it can be sent (404, 409, 410), and
+   * only then a credential: within JUST_MADE_MS of making it, what making it
+   * asked — a collection's always, a document's when opening it asks
+   * (SEC-17) — and after that, what showing it again asks (`email_share`).
+   */
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/shares/:id/email',
+    { ...auth, config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const id = parse(idParam, req.params).id;
+      if (!shares.emailLinks) throw linkEmailUnavailable();
+      const body = parse(shareEmailBody, req.body ?? {});
+      const link = await shares.emailable(principal(req), id);
+      if (stepUp) {
+        if (!link.justMade) {
+          await stepUp.require(principal(req), 'email_share');
+        } else if (link.collection_id !== null) {
+          await stepUp.require(principal(req), 'share_collection');
+        } else if (link.document_id !== null) {
+          const ask = await docs.stepUpForDocument(principal(req), link.document_id);
+          if (ask) await stepUp.require(principal(req), ask);
+        }
+      }
+      const sent = await shares.emailLink(principal(req), id, body, metaOf(req));
+      reply.header('cache-control', 'no-store');
+      return sent;
     },
   );
 

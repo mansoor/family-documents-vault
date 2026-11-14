@@ -13,6 +13,9 @@ import {
   pagesNotSharedNote,
   shareEndProblem,
   shareEndWords,
+  shareLinkMessage,
+  plainName,
+  SHARE_LINK_EMAIL_MESSAGE_MAX,
   sharePagesNote,
   shareQuickPicks,
   shareUses,
@@ -361,5 +364,75 @@ describe('a second factor, as every client and the vault read it (5.20)', () => 
     expect(readShareCode('482 915')).toBe('482915');
     expect(readShareCode('48-29-15')).toBe('482915');
     expect(readShareCode('48291')).toBeNull();
+  });
+});
+
+describe('a sharer’s message beside an emailed link (0.9.0)', () => {
+  it('is plain text, trimmed, with no control or bidi characters; empty is none', () => {
+    expect(shareLinkMessage(undefined)).toEqual({ message: null });
+    expect(shareLinkMessage('  \n \t ')).toEqual({ message: null });
+    expect(shareLinkMessage('  Hi  Jane,\r\n\r\n\r\n\r\nthe lease \u202eevil\u0007 ')).toEqual({
+      message: 'Hi Jane,\n\nthe lease evil',
+    });
+    // Markup is words like any other: the email is plain text, never HTML.
+    expect(shareLinkMessage('<b>bold</b> & <script>')).toEqual({
+      message: '<b>bold</b> & <script>',
+    });
+  });
+
+  it('refuses a long one, more than five lines, and any web address', () => {
+    expect(shareLinkMessage('x'.repeat(SHARE_LINK_EMAIL_MESSAGE_MAX))).toEqual({
+      message: 'x'.repeat(SHARE_LINK_EMAIL_MESSAGE_MAX),
+    });
+    expect(shareLinkMessage('x'.repeat(SHARE_LINK_EMAIL_MESSAGE_MAX + 1))).toHaveProperty(
+      'problem',
+    );
+    expect(shareLinkMessage('a\nb\nc\nd\ne\nf')).toHaveProperty('problem');
+    const cp = (...codes: number[]) => String.fromCodePoint(...codes);
+    for (const url of [
+      'see https://evil.example',
+      'www.evil.example',
+      'ftp://x.example',
+      'HTTP:x',
+      // Bare dotted names a mail program makes links of (the review).
+      'paypal-secure.com/login',
+      'Log in at bit.ly/3xYz',
+      `www${cp(0x2060)}.evil.com`,
+      `evil${cp(0x3002)}com`,
+      `evil${cp(0xff0e)}com`,
+      `${cp(0xff48, 0xff54, 0xff54, 0xff50, 0xff53, 0xff1a, 0xff0f, 0xff0f)}x`,
+      `pay${cp(0xad)}pal.com`,
+      `pay${cp(0xe0041)}pal.com`,
+    ]) {
+      expect(shareLinkMessage(url), url).toHaveProperty('problem');
+    }
+    // A sentence's full stop, and what is not a name, pass.
+    for (const fine of [
+      'Thanks. See you on Friday.',
+      'Version 2.5 of the lease',
+      'e.g. the lease',
+    ]) {
+      expect(shareLinkMessage(fine), fine).toEqual({ message: fine });
+    }
+  });
+
+  it('a name says itself plainly: no web address, nothing hidden or turned round', () => {
+    const cp = (...codes: number[]) => String.fromCodePoint(...codes);
+    expect(plainName('Mansoor Seikh')).toBe('Mansoor Seikh');
+    expect(plainName("The O'Brien family")).toBe("The O'Brien family");
+    expect(plainName(`Mum ${cp(0x202e)}moc.live`)).toBe('Mum');
+    expect(plainName('Dad (see evil.com)')).toBe('Dad');
+    expect(plainName('Dad (the elder)')).toBe('Dad (the elder)');
+    expect(plainName(`Sara${cp(0x200b)}h\n  Smith`)).toBe('Sarah Smith');
+    expect(plainName('https://evil.example')).toBeNull();
+    expect(plainName('evil.com')).toBeNull();
+    expect(plainName('  ')).toBeNull();
+    expect(plainName(null)).toBeNull();
+  });
+
+  it('masks an address with a long ending short enough to keep', () => {
+    const masked = maskEmail(`jane@example.${'a'.repeat(40)}`);
+    expect(masked).toBe(`j•••@e•••.${'a'.repeat(10)}…`);
+    expect(masked.length).toBeLessThanOrEqual(40);
   });
 });

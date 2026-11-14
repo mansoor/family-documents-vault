@@ -47,6 +47,7 @@ export type StepUpAction =
   | 'change_mailbox'
   | 'change_sms'
   | 'reveal_share'
+  | 'email_share'
   | 'change_ai_reader'
   | 'send_sensitive_papers'
   | 'neutral_wording';
@@ -120,6 +121,11 @@ const WHY: Record<StepUpAction, string> = {
   // ask. A session picked up from an unlocked device could otherwise copy
   // every live link, and its PIN, out of Sharing.
   reveal_share: 'to see a link you made again',
+  // A link emailed by the vault (0.9.0; the owner's decision of 13 Nov
+  // 2026), later than the few minutes after it was made: any credential, as
+  // showing it again asks. A session picked up from an unlocked device
+  // could otherwise send every live link to an inbox of its own.
+  email_share: 'to email a link you made',
   // The AI reader set in Settings (0.9.0, AIR1): a session picked up from an
   // unlocked device could otherwise send the family's papers' words to a
   // server of its own.

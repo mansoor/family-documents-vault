@@ -576,6 +576,18 @@ describe('a collection from a checklist (C1)', () => {
     expect(await screen.findByRole('dialog', { name: /from a checklist/ })).toBeInTheDocument();
   });
 
+  it('a checklist kept with no lines is none: Fill from a checklist again, never an empty “0 of 0 found” panel (0.9.0-dev.39)', async () => {
+    // As an older vault answers a cleared list: saved, with no lines.
+    at('/collections/col-refi', {
+      checklistEmptyKept: true,
+      collections: [{ ...REFI, checklist: { items: [], saved_at: '2026-10-18T09:00:00Z' } }],
+    });
+    const fill = await screen.findByRole('button', { name: 'Fill from a checklist' });
+    expect(fill).toBeVisible();
+    expect(screen.queryByRole('heading', { name: /Checklist/ })).toBeNull();
+    expect(screen.queryByText(/0 of 0/)).toBeNull();
+  });
+
   it('remembering it never stops the page when this device keeps nothing', async () => {
     const kept = {
       items: [

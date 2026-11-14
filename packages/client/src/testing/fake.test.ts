@@ -1533,6 +1533,94 @@ describe('the fake vault, a link shown again to whoever made it (0.9.0)', () => 
   });
 });
 
+describe('the fake vault, a checklist cleared (0.9.0-dev.39)', () => {
+  it('answers a list kept with no lines as none, as the vault does', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const c = await api.createCollection(token, { name: 'Papers', audience: 'everyone' });
+    const read = await api.checkChecklist(token, c.id, { text: 'Bank statement' });
+    expect((await api.saveChecklist(token, c.id, read.items)).saved_at).not.toBeNull();
+    expect((await api.collectionChecklist(token, c.id)).saved_at).not.toBeNull();
+    const cleared = await api.saveChecklist(token, c.id, []);
+    expect(cleared).toMatchObject({ saved_at: null, items: [] });
+    expect(await api.collectionChecklist(token, c.id)).toMatchObject({ saved_at: null, items: [] });
+  });
+});
+
+describe('the fake vault, a link emailed to its recipient (0.9.0)', () => {
+  const refusal = (p: Promise<unknown>) =>
+    p.then(
+      () => null,
+      (err: { status?: number; code?: string }) => err,
+    );
+  it('emails its maker’s link three times a day at most, masked after; none without the operator’s mail server', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    expect((await api.capabilities()).features.share_link_email).toBe(true);
+    const lease = await api.createDocument(token, { title: 'Lease' });
+    const made = await api.share(token, lease.id, { with_pin: true });
+    expect((await api.shares(token)).items[0]).toMatchObject({
+      emailable: true,
+      emailed_to: null,
+    });
+    expect(
+      await refusal(api.emailShare(token, made.share.id, { to: 'not an address' })),
+    ).toMatchObject({ status: 422 });
+    expect(
+      await refusal(
+        api.emailShare(token, made.share.id, {
+          to: 'jane@example.com',
+          message: 'See https://elsewhere.example',
+        }),
+      ),
+    ).toMatchObject({ status: 422 });
+    for (const left of [2, 1, 0]) {
+      const sent = await api.emailShare(token, made.share.id, {
+        to: 'jane.smith@example.com',
+        message: 'For the flat',
+      });
+      expect(sent).toMatchObject({ sent_to: 'j•••@e•••.com', sends_left: left });
+    }
+    expect(
+      await refusal(api.emailShare(token, made.share.id, { to: 'jane@example.com' })),
+    ).toMatchObject({ status: 429, code: 'email_link_limit' });
+    expect((await api.shares(token)).items[0]?.emailed_to).toBe('j•••@e•••.com');
+
+    // Somebody else's: there is no such link.
+    const mine = vault.state.shares?.find((l) => l.share.id === made.share.id);
+    vault.state.shares?.push({
+      ...(mine as NonNullable<typeof mine>),
+      share: { ...made.share, id: 'theirs-1' },
+      made_by: 'someone-else',
+      emailed: [],
+    });
+    expect(
+      await refusal(api.emailShare(token, 'theirs-1', { to: 'jane@example.com' })),
+    ).toMatchObject({ status: 404 });
+    // Without the operator's mail server: not offered, and refused.
+    vault.state.operatorMail = false;
+    expect((await api.capabilities()).features.share_link_email).toBe(false);
+    expect((await api.shares(token)).items.find((s) => s.id === made.share.id)?.emailable).toBe(
+      false,
+    );
+    expect(
+      await refusal(api.emailShare(token, made.share.id, { to: 'jane@example.com' })),
+    ).toMatchObject({ status: 503, code: 'email_link_unavailable' });
+  });
+});
+
 describe('the fake vault, notifications by text (0.9.0, SMS2)', () => {
   it('keeps each person’s texts and quiet hours, off and nine to eight until changed', async () => {
     const vault = createFakeVault();

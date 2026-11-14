@@ -244,6 +244,8 @@ export interface FakeState {
    * and its PIN or password. One not here, though `revealable`, is answered
    * as a link made before the vault kept copies.
    */
+  /** Each link the vault was asked to email (0.9.0): which, to whom, and the message. */
+  linkEmails?: { share_id: string; to: string; message: string | null }[];
   revealedShares?: Record<
     string,
     { link_token: string; link_url: string | null; pin?: string; password?: string }
@@ -653,6 +655,8 @@ export interface FakeState {
    */
   collectionChecklist?: boolean;
   checklistUnavailable?: boolean;
+  /** Answer a checklist kept with no lines as kept, as a vault before 0.9.0-dev.39 did. */
+  checklistEmptyKept?: boolean;
   checklistAdds?: string[][];
   /**
    * People's photos (5.17c): how many GET /members a photo on its way waits
@@ -1233,6 +1237,7 @@ export function installFakeApi(state: FakeState) {
           share_options: true,
           share_second_factor: state.shareSecondFactor ?? true,
           share_email_code: state.operatorMail === true,
+          share_link_email: state.operatorMail === true,
           member_edit: true,
           ...(state.memberAdmin !== false ? { member_admin: true } : {}),
           ...(state.signOutEverywhere !== false ? { sign_out_everywhere: true } : {}),
@@ -3237,6 +3242,38 @@ export function installFakeApi(state: FakeState) {
     if (path === '/api/v1/shares' && method === 'GET') return json({ items: state.shares });
     // A link shown again to whoever made it (0.9.0): theirs alone, after
     // confirming it's them, as the vault answers.
+    // A link emailed by the vault (0.9.0): with the operator's mail server
+    // alone, its maker's, and every one kept as it was asked for.
+    if (path.startsWith('/api/v1/shares/') && path.endsWith('/email') && method === 'POST') {
+      const id = path.split('/')[4] as string;
+      if (state.operatorMail !== true) {
+        return refuse(
+          503,
+          'email_link_unavailable',
+          'Emailing a link needs the mail server of whoever runs this vault, and none is set up.',
+        );
+      }
+      const link = state.shares.find((x) => x.id === id);
+      if (!link || link.emailable !== true) {
+        return refuse(404, 'not_found', 'That link does not exist.');
+      }
+      if (state.stepUpNeeded) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to email a link you made.',
+          {
+            action: 'email_share',
+          },
+        );
+      }
+      const b = body as { to: string; message?: string };
+      (state.linkEmails ??= []).push({ share_id: id, to: b.to, message: b.message ?? null });
+      const at = b.to.lastIndexOf('@');
+      const domain = b.to.slice(at + 1);
+      const sentTo = `${b.to.charAt(0)}•••@${domain.charAt(0)}•••${domain.slice(domain.lastIndexOf('.'))}`;
+      return json({ sent_to: sentTo, sent_at: new Date().toISOString(), sends_left: 2 });
+    }
     if (path.startsWith('/api/v1/shares/') && path.endsWith('/reveal') && method === 'POST') {
       const id = path.split('/')[4] as string;
       const link = state.shares.find((x) => x.id === id);
@@ -3353,6 +3390,8 @@ export function installFakeApi(state: FakeState) {
               })
             : null,
         ...factorsOf(b),
+        // 0.9.0: its maker's to have the vault email, with the operator's mail server.
+        emailable: state.operatorMail === true,
         summary: `${b.recipient_label ? `Shared with ${b.recipient_label}` : 'Shared by link'}, ${opened}${b.permission === 'view' ? '; to view only' : ''}. Stops working on 30 September at 17:00.`,
       };
       state.shares.push(share);
@@ -5958,6 +5997,8 @@ function answerCollections(
         downloads_used: 0,
         pages: null,
         ...factorsOf(b),
+        // 0.9.0: its maker's to have the vault email, with the operator's mail server.
+        emailable: state.operatorMail === true,
         summary: `${b.recipient_label ? `Shared with ${b.recipient_label}` : 'Shared by link'}, not opened yet. Stops working on 30 September at 17:00.${b.follow_collection ? ' Keeps up with the collection.' : ''}`,
       };
       state.shares.push(share);
@@ -6055,7 +6096,14 @@ function answerCollections(
     };
     const b = (body ?? {}) as { text?: string; items?: ChecklistItem[]; document_ids?: string[] };
     if (!checklistAt[2] && method === 'GET') {
-      return json(l.checklist ? answer(l.checklist.items, l.checklist.saved_at) : answer([], null));
+      // Kept with no lines is none, as the vault answers since 0.9.0-dev.39;
+      // `checklistEmptyKept` answers as a vault before it did.
+      const kept = l.checklist;
+      return json(
+        kept && (kept.items.length || state.checklistEmptyKept)
+          ? answer(kept.items, kept.saved_at)
+          : answer([], null),
+      );
     }
     if (!checklistAt[2] && method === 'POST') {
       if (state.checklistUnavailable) {
@@ -6075,7 +6123,7 @@ function answerCollections(
       const items = (b.items ?? []).map((i) => savedItem(itemAgain(i, ctx)));
       const kept = { items, saved_at: '2026-10-18T09:00:00Z' };
       state.collections = all.map((x) => (x.id === l.id ? { ...x, checklist: kept } : x));
-      return json(answer(items, kept.saved_at));
+      return json(answer(items, items.length || state.checklistEmptyKept ? kept.saved_at : null));
     }
     if (checklistAt[2] && method === 'POST') {
       // As the vault's route takes them: at most 200 at once.

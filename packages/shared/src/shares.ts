@@ -479,6 +479,117 @@ export const SHARE_CODE_CANNOT_SEND =
  */
 export const SHARE_NEWEST_CODE_ONLY = 'Only the newest code works';
 
+// ------------------------------------- a link emailed (0.9.0, 13 Nov 2026)
+
+/**
+ * A link emailed to its recipient by the vault (the owner's decision of 13
+ * Nov 2026): at most 3 emails a link, and 20 an account, in any day.
+ */
+export const SHARE_LINK_EMAILS = { perLinkPerDay: 3, perAccountPerDay: 20 } as const;
+
+/** The most a sharer's own short message beside the link may be, in characters. */
+export const SHARE_LINK_EMAIL_MESSAGE_MAX = 300;
+
+/**
+ * Why a vault without the operator's mail server offers no "Email the link"
+ * (A21): the same server, and the same reason, as an emailed code.
+ */
+export const SHARE_LINK_EMAIL_UNAVAILABLE =
+  'Emailing a link needs the mail server of whoever runs this vault, and none is set up. Copy the link and send it yourself.';
+
+/**
+ * What the sheet says beside "Email the link": what goes in the email, and
+ * what never does.
+ */
+export const SHARE_LINK_EMAIL_NOTE =
+  'The vault emails the link, who it is from and when it stops working — never what it is to, and never its PIN or password. Tell them those another way.';
+
+/**
+ * A sharer's short message as it goes in the email, or why it cannot:
+ * plain text, its lines trimmed, no control characters, at most
+ * SHARE_LINK_EMAIL_MESSAGE_MAX characters and five lines — and no web
+ * address, so the only link in the email is the vault's own.
+ */
+export function shareLinkMessage(
+  typed: string | null | undefined,
+): { message: string | null } | { problem: string } {
+  const lines = plainText((typed ?? '').replace(/\r\n?/g, '\n'))
+    .split('\n')
+    .map((l) => l.replace(/\s+/g, ' ').trim());
+  while (lines.length && lines[0] === '') lines.shift();
+  while (lines.length && lines.at(-1) === '') lines.pop();
+  const message = lines.join('\n').replace(/\n{3,}/g, '\n\n');
+  if (!message) return { message: null };
+  if (message.length > SHARE_LINK_EMAIL_MESSAGE_MAX) {
+    return {
+      problem: `Keep the message to ${SHARE_LINK_EMAIL_MESSAGE_MAX} characters or fewer.`,
+    };
+  }
+  if (message.split('\n').length > 5) {
+    return { problem: 'Keep the message to five lines or fewer.' };
+  }
+  if (looksLikeAWebAddress(message)) {
+    return {
+      problem:
+        'Leave web addresses and website names out of the message: the only link in the email is the vault’s.',
+    };
+  }
+  return { message };
+}
+
+/**
+ * Text as an email of the vault's may carry it (the review of 0.9.0-dev.39):
+ * NFKC-normalised, so a fullwidth `ｈｔｔｐｓ：／／` is read as what it says,
+ * with every control character but the line break gone, and the invisible
+ * ones — zero-width spaces and joiners, the soft hyphen, word joiners, bidi
+ * marks and overrides, and tag characters — that could hide or turn round
+ * what it says.
+ */
+function plainText(s: string): string {
+  return (
+    s
+      .normalize('NFKC')
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, (c) => (c === '\t' ? ' ' : ''))
+      .replace(
+        /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/gu,
+        '',
+      )
+  );
+}
+
+/**
+ * Whether text names a place on the web: a scheme (`https:`, `ftp://`),
+ * `www.`, or any dotted name a mail program would make a link of —
+ * `paypal-secure.com/login`, `bit.ly/3xYz`, `evil。com`. A full stop with a
+ * space after it ("Thanks. See you") is a sentence, and passes.
+ */
+function looksLikeAWebAddress(s: string): boolean {
+  return (
+    /[a-z][a-z0-9+.-]*:\/\/|www\.|\bhttps?:/iu.test(s) ||
+    /[\p{L}\p{N}-]+[.\u3002\uff0e\uff61][\p{L}]{2,}/u.test(s)
+  );
+}
+
+/**
+ * A name as an email of the vault's says it (the household's, or the
+ * sharer's): plain text on one line, with any web address or dotted name
+ * taken out — a bracket holding one goes whole — so a display name such as
+ * "Dad (see evil.com)" is "Dad". Null when nothing sensible is left; the
+ * email then says "Somebody", or names no household.
+ */
+export function plainName(name: string | null | undefined): string | null {
+  const one = plainText(name ?? '')
+    .replace(/\s+/g, ' ')
+    .replace(/[([{][^)\]}]*[)\]}]/g, (bracket) => (looksLikeAWebAddress(bracket) ? ' ' : bracket))
+    .split(' ')
+    .filter((word) => word && !looksLikeAWebAddress(word))
+    .join(' ')
+    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N})\]'’.]+$/gu, '')
+    .trim();
+  return /[\p{L}\p{N}]/u.test(one) ? one.slice(0, 80) : null;
+}
+
 /**
  * An address a code can be sent to (the 5.20 review, W520-5): the rule the
  * API holds `code_email` to, and the one the share sheet checks before it
@@ -503,7 +614,10 @@ export function maskEmail(address: string): string {
   const domain = address.slice(at + 1);
   const dot = domain.lastIndexOf('.');
   const name = dot > 0 ? domain.slice(0, dot) : domain;
-  const tld = dot > 0 ? domain.slice(dot) : '';
+  const whole = dot > 0 ? domain.slice(dot) : '';
+  // A long ending (`.photography`, or longer) is cut, so the mask stays short
+  // wherever it is kept (0094 holds it to 40 characters).
+  const tld = whole.length > 12 ? `${whole.slice(0, 11)}…` : whole;
   return `${local.charAt(0)}•••@${name.charAt(0)}•••${tld}`;
 }
 

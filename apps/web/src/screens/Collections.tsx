@@ -1,5 +1,6 @@
 import {
   can,
+  checklistKept,
   inCollectionAudience,
   sharedOutsideWords,
   type CollectionView,
@@ -557,7 +558,7 @@ export function CollectionScreen() {
               )}
               {/* With no checklist kept yet, filling one is a button here,
                   not a section of its own (the owner, 24 Oct). */}
-              {offered && mayAdd && kept.data !== null && !kept.data.saved_at && (
+              {offered && mayAdd && kept.data !== null && !checklistKept(kept.data) && (
                 <button
                   ref={fillButton}
                   type="button"

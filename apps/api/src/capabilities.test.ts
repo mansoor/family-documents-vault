@@ -73,6 +73,8 @@ describe('buildCapabilities', () => {
       share_second_factor: true,
       // 5.20: an emailed code, only with the operator's mail server (A21).
       share_email_code: false,
+      // 0.9.0: a link emailed to its recipient, only with the operator's mail server.
+      share_link_email: false,
       // 5.24: an owner removes a document in the Trash for good.
       remove_for_good: true,
       // 5.25: a person's details changed; the owner's view of a sign-in (A54).
@@ -166,6 +168,16 @@ describe('buildCapabilities', () => {
       { field: 'GET /api/v1/invitations/{token}', removed_in: '0.9.0' },
       { field: 'POST /api/v1/invitations/{token}/accept', removed_in: '0.9.0' },
     ]);
+  });
+
+  it("a link is emailed only with the operator's mail server (0.9.0, A21)", () => {
+    expect(buildCapabilities(config).features.share_link_email).toBe(false);
+    expect(buildCapabilities({ ...config, operatorMail: false }).features.share_link_email).toBe(
+      false,
+    );
+    expect(buildCapabilities({ ...config, operatorMail: true }).features.share_link_email).toBe(
+      true,
+    );
   });
 
   it("an emailed code is offered only with the operator's mail server (5.20, A21)", () => {

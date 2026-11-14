@@ -498,6 +498,23 @@ export interface Schema {
   };
 
   /**
+   * A link emailed to its recipient (0094, 0.9.0): where it went, masked —
+   * never the address, nor any message sent with it. Its sender's own, and
+   * the vault's; written once. `share_id` null once the link is removed for
+   * good: the row stays, to be counted.
+   */
+  share_link_email: {
+    id: Generated<string>;
+    household_id: string;
+    share_id: string | null;
+    flow: Generated<'v2'>;
+    sent_by: string;
+    to_masked: string;
+    with_message: Generated<boolean>;
+    sent_at: GeneratedTimestamp;
+  };
+
+  /**
    * What a collection's link was made with (0042): the documents its sharer
    * ticked, in the collection's order. Checked again on every request.
    */

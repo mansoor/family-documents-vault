@@ -2037,6 +2037,16 @@ export interface CollectionChecklist {
   mine: boolean;
 }
 
+/**
+ * Whether a collection has a checklist kept: saved, with at least one line.
+ * A list saved empty ("Clear the checklist", as there is no DELETE) is none,
+ * so the collection offers "Fill from a checklist" again — said so by a vault
+ * since 0.9.0-dev.39 (`saved_at` null), and read so here for older ones.
+ */
+export function checklistKept(c: CollectionChecklist | null | undefined): c is CollectionChecklist {
+  return Boolean(c?.saved_at) && (c?.items.length ?? 0) > 0;
+}
+
 /** `POST /collections/{id}/checklist`: a list to read, or items as the person set them. */
 export interface ChecklistInput {
   text?: string;

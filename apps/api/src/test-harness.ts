@@ -469,6 +469,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       deviceKey: deviceCookieKey(TEST_MASTER, SHARE_DEVICE_KEY_PURPOSE),
       copyKey: deriveKey(TEST_MASTER, SHARE_LINK_COPY_PURPOSE),
       sms,
+      baseUrl: config.FDV_BASE_URL,
     }),
     uploads: new UploadRequestService(db, keys, vaults, {
       maxDays: config.FDV_SHARE_MAX_DAYS,

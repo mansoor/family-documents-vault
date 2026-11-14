@@ -320,6 +320,9 @@ async function main(): Promise<void> {
       copyKey: deriveKey(masterSecret, SHARE_LINK_COPY_PURPOSE),
       // SMS3: a link's code by text, through the household's own SMS Gate.
       sms,
+      // 0.9.0: an emailed link starts with the vault's own address when
+      // there is no public-only site.
+      baseUrl: config.FDV_BASE_URL,
     }),
     uploads: new UploadRequestService(db, keys, vaults, {
       maxDays: config.FDV_SHARE_MAX_DAYS,
