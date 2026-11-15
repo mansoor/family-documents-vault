@@ -422,10 +422,18 @@ export function bulkOffer(who: Chooser, docs: readonly DocumentView[]): BulkOffe
       'Who can see it is offered when it can be changed the same way for every one you chose.',
     );
   }
+  // A paper seen as its person's caregiver (0.9.0, H1b) goes in no
+  // collection, and is changed by nothing done to many: it is read-only.
+  const caregiver = docs.filter((d) => d.caregiver === true).length;
+  if (caregiver > 0) {
+    notes.push(
+      `${caregiver === 1 ? 'One paper you chose is' : `${caregiver} papers you chose are`} shared with you as a caregiver: Add to a collection and Who can see it are offered when none is.`,
+    );
+  }
   return {
-    collect: n > 0 && who.collections,
+    collect: n > 0 && who.collections && caregiver === 0,
     location: n > 0 && changeAll && seesLocation(who.role),
-    visibility: n > 0 ? visibility : [],
+    visibility: n > 0 && caregiver === 0 ? visibility : [],
     trash: n > 0 && changeAll,
     tags: n > 0 && editor && notMine < n,
     notes,

@@ -83,364 +83,385 @@ export class VisibilityService {
     // A viewer is refused before anything is looked up, as always. A teen
     // may change their own (A72): which, the document says.
     if (!mayChangeVisibilityAtAll(p.role)) requireCapability(p, 'document.visibility');
-    const result = await withPrincipal(this.db, p, async (trx) => {
-      // Locked before its versions are read: an upload committing a new
-      // version holds the same lock, so every version is rewrapped, the new
-      // one included (documents/service.ts accept()).
-      const doc = await trx
-        .selectFrom('document')
-        .select([
-          'id',
-          'visibility',
-          'owner_member_id',
-          'created_by',
-          'notes',
-          'extra',
-          'notes_sealed',
-          'extra_sealed',
-          'no_longer_needed_reason',
-          'no_longer_needed_reason_sealed',
-        ])
-        .where('id', '=', documentId)
-        .where('deleted_at', 'is', null)
-        .forUpdate()
-        .executeTakeFirst();
-      // Somebody else's private document is not there, as it is everywhere
-      // else — a 403 here would confirm that it exists.
-      if (!doc || !canSee(p, doc)) {
-        throw new ApiError(404, 'not_found', 'That document is not in the vault.');
-      }
-      // Sealed and wrapped for the id as the database writes it: the one in
-      // the address may be in capitals, or without its hyphens, and every
-      // reader opens by the row's own (5.9 review).
-      documentId = doc.id;
-      // Only the owning member may see a private document, so only they may
-      // move one in or out of private; a teen, only their own that they
-      // filed, between Only me and Everyone (A72). The rule and its
-      // sentences: roles.ts.
-      const refusal = visibilityRefusal(askerOf(p, doc), doc.visibility, to);
-      if (refusal) throw new ApiError(403, 'forbidden', refusal);
-      if (doc.visibility === to) return { notice: null, prune: [] as string[] };
+    const result = await withPrincipal(this.db, p, (trx) =>
+      this.changeWithin(trx, p, documentId, to, meta, ownLinks),
+    );
+    await this.pruneEnded(p, result.prune);
+    return {
+      notice: result.notice,
+      ...(result.links ? { links: result.links } : {}),
+    };
+  }
 
-      // Into Only me: the person's own links that would still send it, and
-      // how many of everybody else's stop with it.
-      const into = to === 'private' && doc.visibility !== 'private';
-      const own = into ? await ownLinksServing(trx, p, documentId) : [];
-      const others = into ? await othersLinksServing(trx, p, documentId) : 0;
-      // A link a restore paused waits for an owner to turn it back on (A55),
-      // and no owner can see somebody else's Only me document: for anybody
-      // but an owner, it can never send again once this is Only me. Named,
-      // it ends whichever is chosen; only a link that can send is kept, and
-      // said to be (the Phase 5 exit's fourth round, API-1).
-      const resumes = can(p.role, 'restore.review');
-      const canSend = (l: OwnLink) => l.paused_reason !== 'restored' || resumes;
-      let ending: OwnLink[] = [];
-      let kept: OwnLink[] = [];
-      let yoursNow: 'ended' | 'kept' | null = null;
-      if (own.length > 0) {
-        const shareable = await onlyMeShareable(trx);
-        if (ownLinks === 'keep' && !shareable) {
-          throw new ApiError(409, 'only_me_not_shared', ONLY_ME_KEEP_REFUSED);
-        }
-        if (ownLinks === undefined) {
-          const links: OwnLinkToEnd[] = own.map((l) => ({
-            id: l.id,
-            kind: l.kind,
-            recipient_label: l.recipient_label,
-            collection_name: l.collection_name,
-            expires_at: l.expires_at.toISOString(),
-            protection: protectionOf(l),
-            ...(canSend(l) ? {} : { will_end: true }),
-          }));
-          throw new ApiError(
-            409,
-            'links_choice_needed',
-            own.length === 1
-              ? 'You have a link that sends this outside the family. Choose whether it ends or is kept, now that it is Only me.'
-              : `You have ${own.length} links that send this outside the family. Choose whether they end or are kept, now that it is Only me.`,
-            { detail: JSON.stringify({ links, keep_allowed: shareable, others }) },
-          );
-        }
-        ending = ownLinks === 'end' ? own : own.filter((l) => !canSend(l));
-        kept = ownLinks === 'keep' ? own.filter(canSend) : [];
-        yoursNow = kept.length > 0 ? 'kept' : 'ended';
-      }
-      const prune: string[] = [];
-      if (ending.length > 0) {
-        // A document's link ends, as Take it back ends it — its code's
-        // address with it; a collection's link leaves this one out, and
-        // gives the rest as before.
-        const single = ending.filter((l) => l.kind === 'document').map((l) => l.id);
-        if (single.length > 0) {
-          await trx
-            .updateTable('share_link')
-            .set({ revoked_at: new Date(), revoked_by: p.accountId, code_email: null })
-            .where('id', 'in', single)
-            .where('revoked_at', 'is', null)
-            .execute();
-          await endSessions(trx, single);
-        }
-        const collections = ending.filter((l) => l.kind === 'collection').map((l) => l.id);
-        if (collections.length > 0) {
-          // Left out, as one not ticked when the link was made: it never
-          // goes with this link again, whatever it is made later.
-          await sql`update share_link_item set kind = 'left_out'
-                     where share_id = any(${collections}::uuid[])
-                       and document_id = ${documentId} and kind = 'ticked'`.execute(trx);
-        }
-        prune.push(
-          ...ending
-            .filter((l) => l.kind === 'document' && l.permission === 'view')
-            .map((l) => l.id),
-        );
-      }
-      const links = into ? { yours: own.length, yours_now: yoursNow, others } : undefined;
-      // Made private, it leaves every export somebody else asked for:
-      // those were built while they could see it.
-      if (to === 'private') {
-        await trx
-          .updateTable('export')
-          .set({ expires_at: new Date() })
-          .where('requested_by', '!=', p.accountId)
-          .where((eb) => eb.or([eb('expires_at', 'is', null), eb('expires_at', '>', new Date())]))
-          .execute();
-      }
-
-      const from = await this.keys.unwrap(
-        trx,
-        scopeRef(p.householdId, doc.visibility, doc.owner_member_id),
-      );
-      const target = await this.keys.unwrap(trx, scopeRef(p.householdId, to, doc.owner_member_id));
-
-      const versions = await trx
-        .selectFrom('document_version')
-        .select(['id', 'file_key_wrapped', 'details_kept_at', 'extra', 'extra_sealed'])
-        .where('document_id', '=', documentId)
-        .execute();
-      // An older version's own details (0.9.0, 0083) move as the document's
-      // do: sealed under its owner's key on the way into Only me, bound to
-      // the version; opened and put back on the way out.
-      const intoPrivate = to === 'private' && doc.visibility !== 'private';
-      const outOfPrivate = doc.visibility === 'private' && to !== 'private';
-      for (const v of versions) {
-        const fileKey = unwrapKey(v.file_key_wrapped, from.key, `version:${documentId}`);
-        let details = {};
-        if (v.details_kept_at && (intoPrivate || outOfPrivate)) {
-          const extra = {
-            ...openVersionExtra(from.key, v.id, v.extra_sealed),
-            ...extraOf(v.extra),
-          };
-          details = intoPrivate
-            ? { extra: '{}', extra_sealed: sealVersionExtra(target.key, v.id, extra) }
-            : { extra: JSON.stringify(extra), extra_sealed: null };
-        }
-        await trx
-          .updateTable('document_version')
-          .set({
-            file_key_wrapped: wrapKey(fileKey, target.key, `version:${documentId}`),
-            wrapped_by_scope: target.id,
-            ...details,
-          })
-          .where('id', '=', v.id)
-          .execute();
-      }
-
-      // Move the text.
-      if (to === 'private') {
-        const plain = await trx
-          .selectFrom('document_text')
-          .selectAll()
-          .where('document_id', '=', documentId)
-          .execute();
-        for (const row of plain) {
-          const prefix = randomBytes(8);
-          const bytes = Buffer.from(row.content, 'utf8');
-          const sealed = sealChunk(
-            target.key,
-            { prefix, chunkSize: bytes.length || 1 },
-            0,
-            true,
-            bytes,
-          );
-          await trx
-            .insertInto('document_text_sealed')
-            .values({
-              version_id: row.version_id,
-              household_id: p.householdId,
-              document_id: documentId,
-              content_cipher: Buffer.concat([prefix, sealed]),
-            })
-            .execute();
-        }
-        await trx.deleteFrom('document_text').where('document_id', '=', documentId).execute();
-      } else if (doc.visibility === 'private') {
-        const sealed = await trx
-          .selectFrom('document_text_sealed')
-          .selectAll()
-          .where('document_id', '=', documentId)
-          .execute();
-        for (const row of sealed) {
-          const prefix = row.content_cipher.subarray(0, 8);
-          const body = row.content_cipher.subarray(8);
-          const content = openChunk(
-            from.key,
-            { prefix, chunkSize: body.length - 16 },
-            0,
-            true,
-            body,
-          ).toString('utf8');
-          await trx
-            .insertInto('document_text')
-            .values({
-              version_id: row.version_id,
-              household_id: p.householdId,
-              document_id: documentId,
-              content,
-            })
-            .execute();
-        }
-        await trx
-          .deleteFrom('document_text_sealed')
-          .where('document_id', '=', documentId)
-          .execute();
-      }
-
-      // Move the notes and details, in the same statement that hides or
-      // shows the document: sealed under the owner's key on the way in (the
-      // plain columns emptied, and which details have a value written down
-      // for its status), opened and put back on the way out.
-      let moved = {};
-      if (to === 'private' || doc.visibility === 'private') {
-        const plain = { notes: doc.notes, extra: extraOf(doc.extra) };
-        const sealed =
-          doc.notes_sealed || doc.extra_sealed
-            ? openPrivate(from.key, documentId, doc)
-            : { notes: null, extra: {} };
-        // Anything the private.seal job had not reached yet, as it is.
-        const values = {
-          notes: plain.notes ?? sealed.notes,
-          extra: { ...sealed.extra, ...plain.extra },
-        };
-        moved =
-          to === 'private'
-            ? { ...sealPrivate(target.key, documentId, values), notes: null, extra: '{}' }
-            : {
-                notes: values.notes,
-                extra: JSON.stringify(values.extra),
-                notes_sealed: null,
-                extra_sealed: null,
-                sealed_details: [],
-              };
-        // Why it is no longer needed (0082) goes where its notes go: sealed
-        // under its owner's key into Only me, opened and plain out of it.
-        const why = doc.no_longer_needed_reason_sealed
-          ? openBytes(
-              from.key,
-              doc.no_longer_needed_reason_sealed,
-              noLongerNeededBinding(documentId),
-            ).toString('utf8')
-          : doc.no_longer_needed_reason;
-        moved = {
-          ...moved,
-          ...(to === 'private'
-            ? {
-                no_longer_needed_reason: null,
-                no_longer_needed_reason_sealed: why
-                  ? sealBytes(
-                      target.key,
-                      Buffer.from(why, 'utf8'),
-                      noLongerNeededBinding(documentId),
-                    )
-                  : null,
-              }
-            : { no_longer_needed_reason: why, no_longer_needed_reason_sealed: null }),
-        };
-      }
-
-      await trx
-        .updateTable('document')
-        .set({ visibility: to, updated_at: new Date(), updated_by: p.accountId, ...moved })
-        .where('id', '=', documentId)
-        .execute();
-      await appendAudit(trx, {
-        householdId: p.householdId,
-        actorAccountId: p.accountId,
-        action: 'document.visibility_changed',
-        objectType: 'document',
-        objectId: documentId,
-        // What happened to the links, as counts: never whom they were for,
-        // nor a token.
-        detail: {
-          from: doc.visibility,
-          to,
-          versions: versions.length,
-          ...(links
-            ? {
-                links_others_stopped: others,
-                ...(ending.length > 0 ? { links_ended: ending.length } : {}),
-                ...(kept.length > 0 ? { links_kept: kept.length } : {}),
-              }
-            : {}),
-        },
-        ip: meta.ip,
-      });
-
-      if (to !== 'private') return { notice: null, prune };
-      // Told once per document, per person. A second visit to the same
-      // decision is not a second chance to warn somebody; it is a nag.
-      const already = await trx
-        .selectFrom('private_notice')
-        .select(['document_id'])
-        .where('document_id', '=', documentId)
-        .where('member_id', '=', p.memberId)
-        .executeTakeFirst();
-      if (!already) {
-        await trx
-          .insertInto('private_notice')
-          .values({
-            household_id: p.householdId,
-            document_id: documentId,
-            member_id: p.memberId,
-          })
-          .execute();
-      }
-      // With links of their own, what is true now is said every time: who
-      // else can open it, or that the links ended; and that links somebody
-      // else made have stopped.
-      const notice = yoursNow
-        ? {
-            // Who else can open it: the people the links kept are for, and
-            // only those that can send.
-            title:
-              yoursNow === 'kept'
-                ? privateTitle('kept', kept.length)
-                : privateTitle('ended', ending.length),
-            body:
-              (already
-                ? 'Nobody else in the family can open it.'
-                : VisibilityService.PRIVATE_NOTICE.body) +
-              (kept.length > 0 ? pausedEndedWords(ending.length) : '') +
-              stoppedWords(others),
-          }
-        : already
-          ? null
-          : {
-              ...VisibilityService.PRIVATE_NOTICE,
-              body: VisibilityService.PRIVATE_NOTICE.body + stoppedWords(others),
-            };
-      return { notice, links, prune };
-    });
-    // A view-only link ended here: its pages go, as when it is taken back.
-    for (const id of result.prune) {
+  /**
+   * A view-only link ended by a change: its pages go, as when it is taken
+   * back. After the change's transaction has committed.
+   */
+  async pruneEnded(p: Principal, prune: readonly string[]): Promise<void> {
+    for (const id of prune) {
       await this.enqueue(SHARE_PAGES_PRUNE_JOB, {
         household_id: p.householdId,
         share_id: id,
       }).catch(() => undefined);
     }
-    return {
-      notice: result.notice,
-      ...('links' in result && result.links ? { links: result.links } : {}),
-    };
+  }
+
+  /**
+   * `change`, inside the caller's transaction (0.9.0, H1b: somebody turned
+   * 18 makes all their medical papers Only me in one). The links it ended
+   * whose pages are to go are returned, for `pruneEnded` once it commits.
+   * `inTrash`: a document in the Trash too (that answer alone: one the
+   * family can still see there, and bring back as it was).
+   */
+  async changeWithin(
+    trx: Db,
+    p: Principal,
+    documentId: string,
+    to: Visibility,
+    meta: RequestMeta,
+    ownLinks?: 'end' | 'keep',
+    opts: { inTrash?: boolean } = {},
+  ): Promise<{
+    notice: VisibilityChange['notice'];
+    links?: VisibilityChange['links'];
+    prune: string[];
+  }> {
+    // Locked before its versions are read: an upload committing a new
+    // version holds the same lock, so every version is rewrapped, the new
+    // one included (documents/service.ts accept()).
+    const doc = await trx
+      .selectFrom('document')
+      .select([
+        'id',
+        'visibility',
+        'owner_member_id',
+        'created_by',
+        'notes',
+        'extra',
+        'notes_sealed',
+        'extra_sealed',
+        'no_longer_needed_reason',
+        'no_longer_needed_reason_sealed',
+      ])
+      .where('id', '=', documentId)
+      .$if(opts.inTrash !== true, (q) => q.where('deleted_at', 'is', null))
+      .forUpdate()
+      .executeTakeFirst();
+    // Somebody else's private document is not there, as it is everywhere
+    // else — a 403 here would confirm that it exists.
+    if (!doc || !canSee(p, doc)) {
+      throw new ApiError(404, 'not_found', 'That document is not in the vault.');
+    }
+    // Sealed and wrapped for the id as the database writes it: the one in
+    // the address may be in capitals, or without its hyphens, and every
+    // reader opens by the row's own (5.9 review).
+    documentId = doc.id;
+    // Only the owning member may see a private document, so only they may
+    // move one in or out of private; a teen, only their own that they
+    // filed, between Only me and Everyone (A72). The rule and its
+    // sentences: roles.ts.
+    const refusal = visibilityRefusal(askerOf(p, doc), doc.visibility, to);
+    if (refusal) throw new ApiError(403, 'forbidden', refusal);
+    if (doc.visibility === to) return { notice: null, prune: [] as string[] };
+
+    // Into Only me: the person's own links that would still send it, and
+    // how many of everybody else's stop with it.
+    const into = to === 'private' && doc.visibility !== 'private';
+    const own = into ? await ownLinksServing(trx, p, documentId) : [];
+    const others = into ? await othersLinksServing(trx, p, documentId) : 0;
+    // A link a restore paused waits for an owner to turn it back on (A55),
+    // and no owner can see somebody else's Only me document: for anybody
+    // but an owner, it can never send again once this is Only me. Named,
+    // it ends whichever is chosen; only a link that can send is kept, and
+    // said to be (the Phase 5 exit's fourth round, API-1).
+    const resumes = can(p.role, 'restore.review');
+    const canSend = (l: OwnLink) => l.paused_reason !== 'restored' || resumes;
+    let ending: OwnLink[] = [];
+    let kept: OwnLink[] = [];
+    let yoursNow: 'ended' | 'kept' | null = null;
+    if (own.length > 0) {
+      const shareable = await onlyMeShareable(trx);
+      if (ownLinks === 'keep' && !shareable) {
+        throw new ApiError(409, 'only_me_not_shared', ONLY_ME_KEEP_REFUSED);
+      }
+      if (ownLinks === undefined) {
+        const links: OwnLinkToEnd[] = own.map((l) => ({
+          id: l.id,
+          kind: l.kind,
+          recipient_label: l.recipient_label,
+          collection_name: l.collection_name,
+          expires_at: l.expires_at.toISOString(),
+          protection: protectionOf(l),
+          ...(canSend(l) ? {} : { will_end: true }),
+        }));
+        throw new ApiError(
+          409,
+          'links_choice_needed',
+          own.length === 1
+            ? 'You have a link that sends this outside the family. Choose whether it ends or is kept, now that it is Only me.'
+            : `You have ${own.length} links that send this outside the family. Choose whether they end or are kept, now that it is Only me.`,
+          { detail: JSON.stringify({ links, keep_allowed: shareable, others }) },
+        );
+      }
+      ending = ownLinks === 'end' ? own : own.filter((l) => !canSend(l));
+      kept = ownLinks === 'keep' ? own.filter(canSend) : [];
+      yoursNow = kept.length > 0 ? 'kept' : 'ended';
+    }
+    const prune: string[] = [];
+    if (ending.length > 0) {
+      // A document's link ends, as Take it back ends it — its code's
+      // address with it; a collection's link leaves this one out, and
+      // gives the rest as before.
+      const single = ending.filter((l) => l.kind === 'document').map((l) => l.id);
+      if (single.length > 0) {
+        await trx
+          .updateTable('share_link')
+          .set({ revoked_at: new Date(), revoked_by: p.accountId, code_email: null })
+          .where('id', 'in', single)
+          .where('revoked_at', 'is', null)
+          .execute();
+        await endSessions(trx, single);
+      }
+      const collections = ending.filter((l) => l.kind === 'collection').map((l) => l.id);
+      if (collections.length > 0) {
+        // Left out, as one not ticked when the link was made: it never
+        // goes with this link again, whatever it is made later.
+        await sql`update share_link_item set kind = 'left_out'
+                   where share_id = any(${collections}::uuid[])
+                     and document_id = ${documentId} and kind = 'ticked'`.execute(trx);
+      }
+      prune.push(
+        ...ending.filter((l) => l.kind === 'document' && l.permission === 'view').map((l) => l.id),
+      );
+    }
+    const links = into ? { yours: own.length, yours_now: yoursNow, others } : undefined;
+    // Made private, it leaves every export somebody else asked for:
+    // those were built while they could see it.
+    if (to === 'private') {
+      await trx
+        .updateTable('export')
+        .set({ expires_at: new Date() })
+        .where('requested_by', '!=', p.accountId)
+        .where((eb) => eb.or([eb('expires_at', 'is', null), eb('expires_at', '>', new Date())]))
+        .execute();
+    }
+
+    const from = await this.keys.unwrap(
+      trx,
+      scopeRef(p.householdId, doc.visibility, doc.owner_member_id),
+    );
+    const target = await this.keys.unwrap(trx, scopeRef(p.householdId, to, doc.owner_member_id));
+
+    const versions = await trx
+      .selectFrom('document_version')
+      .select(['id', 'file_key_wrapped', 'details_kept_at', 'extra', 'extra_sealed'])
+      .where('document_id', '=', documentId)
+      .execute();
+    // An older version's own details (0.9.0, 0083) move as the document's
+    // do: sealed under its owner's key on the way into Only me, bound to
+    // the version; opened and put back on the way out.
+    const intoPrivate = to === 'private' && doc.visibility !== 'private';
+    const outOfPrivate = doc.visibility === 'private' && to !== 'private';
+    for (const v of versions) {
+      const fileKey = unwrapKey(v.file_key_wrapped, from.key, `version:${documentId}`);
+      let details = {};
+      if (v.details_kept_at && (intoPrivate || outOfPrivate)) {
+        const extra = {
+          ...openVersionExtra(from.key, v.id, v.extra_sealed),
+          ...extraOf(v.extra),
+        };
+        details = intoPrivate
+          ? { extra: '{}', extra_sealed: sealVersionExtra(target.key, v.id, extra) }
+          : { extra: JSON.stringify(extra), extra_sealed: null };
+      }
+      await trx
+        .updateTable('document_version')
+        .set({
+          file_key_wrapped: wrapKey(fileKey, target.key, `version:${documentId}`),
+          wrapped_by_scope: target.id,
+          ...details,
+        })
+        .where('id', '=', v.id)
+        .execute();
+    }
+
+    // Move the text.
+    if (to === 'private') {
+      const plain = await trx
+        .selectFrom('document_text')
+        .selectAll()
+        .where('document_id', '=', documentId)
+        .execute();
+      for (const row of plain) {
+        const prefix = randomBytes(8);
+        const bytes = Buffer.from(row.content, 'utf8');
+        const sealed = sealChunk(
+          target.key,
+          { prefix, chunkSize: bytes.length || 1 },
+          0,
+          true,
+          bytes,
+        );
+        await trx
+          .insertInto('document_text_sealed')
+          .values({
+            version_id: row.version_id,
+            household_id: p.householdId,
+            document_id: documentId,
+            content_cipher: Buffer.concat([prefix, sealed]),
+          })
+          .execute();
+      }
+      await trx.deleteFrom('document_text').where('document_id', '=', documentId).execute();
+    } else if (doc.visibility === 'private') {
+      const sealed = await trx
+        .selectFrom('document_text_sealed')
+        .selectAll()
+        .where('document_id', '=', documentId)
+        .execute();
+      for (const row of sealed) {
+        const prefix = row.content_cipher.subarray(0, 8);
+        const body = row.content_cipher.subarray(8);
+        const content = openChunk(
+          from.key,
+          { prefix, chunkSize: body.length - 16 },
+          0,
+          true,
+          body,
+        ).toString('utf8');
+        await trx
+          .insertInto('document_text')
+          .values({
+            version_id: row.version_id,
+            household_id: p.householdId,
+            document_id: documentId,
+            content,
+          })
+          .execute();
+      }
+      await trx.deleteFrom('document_text_sealed').where('document_id', '=', documentId).execute();
+    }
+
+    // Move the notes and details, in the same statement that hides or
+    // shows the document: sealed under the owner's key on the way in (the
+    // plain columns emptied, and which details have a value written down
+    // for its status), opened and put back on the way out.
+    let moved = {};
+    if (to === 'private' || doc.visibility === 'private') {
+      const plain = { notes: doc.notes, extra: extraOf(doc.extra) };
+      const sealed =
+        doc.notes_sealed || doc.extra_sealed
+          ? openPrivate(from.key, documentId, doc)
+          : { notes: null, extra: {} };
+      // Anything the private.seal job had not reached yet, as it is.
+      const values = {
+        notes: plain.notes ?? sealed.notes,
+        extra: { ...sealed.extra, ...plain.extra },
+      };
+      moved =
+        to === 'private'
+          ? { ...sealPrivate(target.key, documentId, values), notes: null, extra: '{}' }
+          : {
+              notes: values.notes,
+              extra: JSON.stringify(values.extra),
+              notes_sealed: null,
+              extra_sealed: null,
+              sealed_details: [],
+            };
+      // Why it is no longer needed (0082) goes where its notes go: sealed
+      // under its owner's key into Only me, opened and plain out of it.
+      const why = doc.no_longer_needed_reason_sealed
+        ? openBytes(
+            from.key,
+            doc.no_longer_needed_reason_sealed,
+            noLongerNeededBinding(documentId),
+          ).toString('utf8')
+        : doc.no_longer_needed_reason;
+      moved = {
+        ...moved,
+        ...(to === 'private'
+          ? {
+              no_longer_needed_reason: null,
+              no_longer_needed_reason_sealed: why
+                ? sealBytes(target.key, Buffer.from(why, 'utf8'), noLongerNeededBinding(documentId))
+                : null,
+            }
+          : { no_longer_needed_reason: why, no_longer_needed_reason_sealed: null }),
+      };
+    }
+
+    await trx
+      .updateTable('document')
+      .set({ visibility: to, updated_at: new Date(), updated_by: p.accountId, ...moved })
+      .where('id', '=', documentId)
+      .execute();
+    await appendAudit(trx, {
+      householdId: p.householdId,
+      actorAccountId: p.accountId,
+      action: 'document.visibility_changed',
+      objectType: 'document',
+      objectId: documentId,
+      // What happened to the links, as counts: never whom they were for,
+      // nor a token.
+      detail: {
+        from: doc.visibility,
+        to,
+        versions: versions.length,
+        ...(links
+          ? {
+              links_others_stopped: others,
+              ...(ending.length > 0 ? { links_ended: ending.length } : {}),
+              ...(kept.length > 0 ? { links_kept: kept.length } : {}),
+            }
+          : {}),
+      },
+      ip: meta.ip,
+    });
+
+    if (to !== 'private') return { notice: null, prune };
+    // Told once per document, per person. A second visit to the same
+    // decision is not a second chance to warn somebody; it is a nag.
+    const already = await trx
+      .selectFrom('private_notice')
+      .select(['document_id'])
+      .where('document_id', '=', documentId)
+      .where('member_id', '=', p.memberId)
+      .executeTakeFirst();
+    if (!already) {
+      await trx
+        .insertInto('private_notice')
+        .values({
+          household_id: p.householdId,
+          document_id: documentId,
+          member_id: p.memberId,
+        })
+        .execute();
+    }
+    // With links of their own, what is true now is said every time: who
+    // else can open it, or that the links ended; and that links somebody
+    // else made have stopped.
+    const notice = yoursNow
+      ? {
+          // Who else can open it: the people the links kept are for, and
+          // only those that can send.
+          title:
+            yoursNow === 'kept'
+              ? privateTitle('kept', kept.length)
+              : privateTitle('ended', ending.length),
+          body:
+            (already
+              ? 'Nobody else in the family can open it.'
+              : VisibilityService.PRIVATE_NOTICE.body) +
+            (kept.length > 0 ? pausedEndedWords(ending.length) : '') +
+            stoppedWords(others),
+        }
+      : already
+        ? null
+        : {
+            ...VisibilityService.PRIVATE_NOTICE,
+            body: VisibilityService.PRIVATE_NOTICE.body + stoppedWords(others),
+          };
+    return { notice, links, prune };
   }
 }
 

@@ -173,6 +173,13 @@ export interface DocumentView {
    * status is then `no_longer_needed`, and nothing reminds of it.
    */
   no_longer_needed?: NoLongerNeededView | null;
+  /**
+   * The reader sees it only as its person's caregiver (0.9.0, H1b,
+   * `features.caregivers`): one of their Only me Medical papers, given by a
+   * grant — read-only, said "Shared with you as caregiver". Absent for every
+   * other document, and from older vaults.
+   */
+  caregiver?: true;
   etag: string;
 }
 

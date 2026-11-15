@@ -146,6 +146,8 @@ describe('buildCapabilities', () => {
       sensitive_protects: true,
       // 0.9.0 (C1): My cabinet.
       cabinets: true,
+      // 0.9.0 (H1b): caregivers, and turning 18.
+      caregivers: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

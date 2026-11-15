@@ -2182,3 +2182,76 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
     ).rejects.toMatchObject({ status: 422 });
   });
 });
+
+describe('the fake vault, caregivers and turning 18 (0.9.0, H1b)', () => {
+  it('names, keeps and revokes a caregiver as the vault does, and asks the turning-18 question once', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    expect((await api.capabilities()).features.caregivers).toBe(true);
+    vault.state.members.push(
+      { id: 'sam', display_name: 'Sam', role: 'adult', is_me: false },
+      { id: 'tia', display_name: 'Tia', role: 'teen', is_me: false },
+      { id: 'omar', display_name: 'Omar', role: null, is_me: false },
+    );
+    const mine = await api.caregiversOf(token, 'fake-member');
+    expect(mine.may_add).toBe(true);
+    expect(mine.candidates.map((c) => c.member_id)).toEqual(['sam']);
+    // A teen is never a caregiver.
+    await expect(api.nameCaregiver(token, 'fake-member', 'tia')).rejects.toMatchObject({
+      status: 422,
+      code: 'caregiver_not_eligible',
+    });
+    const g = await api.nameCaregiver(token, 'fake-member', 'sam');
+    expect(g).toMatchObject({ caregiver_name: 'Sam', confirmed: true, may_revoke: true });
+    expect((await api.myCaregivers(token)).about_me.map((x) => x.caregiver_name)).toEqual(['Sam']);
+    // An owner names one for Omar, with no sign-in: unkept, and theirs alone to keep.
+    const forOmar = await api.nameCaregiver(token, 'omar', 'sam');
+    expect(forOmar.confirmed).toBe(false);
+    await expect(api.keepCaregiver(token, 'omar', 'sam')).rejects.toMatchObject({ status: 403 });
+    await api.revokeCaregiver(token, 'fake-member', 'sam');
+    expect((await api.caregiversOf(token, 'fake-member')).items).toEqual([]);
+    expect((await api.caregiverLooks(token, 'fake-member')).items).toEqual([]);
+    // Who looked at Sam's papers: the owners' to read too (14 Nov 2026), never which paper.
+    vault.state.caregiverLooks = [
+      {
+        person: 'sam',
+        caregiver: 'fake-member',
+        document_id: 'd-x',
+        action: 'opened',
+        at: '2026-11-14T10:00:00Z',
+      },
+    ];
+    expect((await api.caregiverLooks(token, 'sam')).items).toEqual([
+      {
+        caregiver_name: 'Fake Owner',
+        document_id: null,
+        title: null,
+        sensitive: false,
+        only_me: true,
+        action: 'opened',
+        at: '2026-11-14T10:00:00Z',
+      },
+    ]);
+
+    // Turning 18: Omar, with no sign-in, asked in person; keep only.
+    vault.state.grownUp = [{ member_id: 'omar', turned_on: '2026-11-14', papers: 1, answer: null }];
+    const asked = await api.grownUpQuestions(token);
+    expect(asked.items).toMatchObject([{ member_id: 'omar', asks: 'in_person' }]);
+    await expect(api.answerGrownUp(token, 'omar', 'only_me')).rejects.toMatchObject({
+      status: 403,
+      code: 'only_the_person',
+    });
+    expect(await api.answerGrownUp(token, 'omar', 'keep')).toEqual({
+      answer: 'keep',
+      made_private: 0,
+    });
+    await expect(api.answerGrownUp(token, 'omar', 'keep')).rejects.toMatchObject({ status: 409 });
+    expect((await api.grownUpQuestions(token)).items).toEqual([]);
+  });
+});

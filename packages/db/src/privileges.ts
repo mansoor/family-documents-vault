@@ -296,6 +296,26 @@ begin
     revoke execute on function public.ai_reader_notice() from public;
     grant execute on function public.ai_reader_notice() to fdv_app;
   end if;
+  -- A caregiver for somebody's medical papers, and turning 18 (0098, H1b):
+  -- the reading rule, who may name or answer, and a caregiver's look written.
+  if to_regprocedure('public.caregiver_reads(uuid, text, text)') is not null then
+    revoke execute on function public.member_answers_for_self(uuid) from public;
+    grant execute on function public.member_answers_for_self(uuid) to fdv_app;
+    revoke execute on function public.member_may_give_care(uuid) from public;
+    grant execute on function public.member_may_give_care(uuid) to fdv_app;
+    revoke execute on function public.caregiver_reads(uuid, text, text) from public;
+    grant execute on function public.caregiver_reads(uuid, text, text) to fdv_app;
+    revoke execute on function public.caregiver_only_document(uuid) from public;
+    grant execute on function public.caregiver_only_document(uuid) to fdv_app;
+    revoke execute on function public.record_caregiver_view(uuid, text) from public;
+    grant execute on function public.record_caregiver_view(uuid, text) to fdv_app;
+    revoke execute on function public.member_signs_in_grown_up(uuid) from public;
+    grant execute on function public.member_signs_in_grown_up(uuid) to fdv_app;
+    revoke execute on function public.member_has_sign_in(uuid) from public;
+    grant execute on function public.member_has_sign_in(uuid) to fdv_app;
+    revoke execute on function public.not_by_caregiver(uuid) from public;
+    grant execute on function public.not_by_caregiver(uuid) to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

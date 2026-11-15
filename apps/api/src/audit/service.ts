@@ -182,6 +182,21 @@ const ownersThePersonAndTheActor: Audience = (reader, line) =>
   (line.actor_account_id != null && line.actor_account_id === reader.accountId);
 
 /**
+ * A caregiver for somebody's medical papers (0.9.0, H1b): named, kept,
+ * revoked or given up. For the owners, the person it is about, whoever did
+ * it, and the caregiver it names — nobody else, not another adult, not a
+ * teen (a viewer reads no log). Never a paper, so never a title.
+ */
+const caregiverLine: Audience = (reader, line) => {
+  const carer = (line.detail as { caregiver_member_id?: unknown } | null | undefined)
+    ?.caregiver_member_id;
+  return (
+    ownersThePersonAndTheActor(reader, line) ||
+    (typeof carer === 'string' && carer === reader.memberId)
+  );
+};
+
+/**
  * A line about somebody's identity details (5.26): who looked at them, showed
  * their numbers or changed them. For the owners, the person it is about —
  * who sees a line whenever somebody else shows their numbers, with no values
@@ -303,6 +318,16 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['member.deceased', BY_TYPE],
   // 5.25: an owner looked at somebody's sign-in — never what it said.
   ['member.account_viewed', ownersAndThePerson],
+  // 0.9.0 (H1b): a caregiver for somebody's medical papers named, kept,
+  // revoked or given up — for the owners, the person, whoever did it and
+  // the caregiver.
+  ['caregiver.granted', caregiverLine],
+  ['caregiver.kept', caregiverLine],
+  ['caregiver.revoked', caregiverLine],
+  ['caregiver.given_up', caregiverLine],
+  // Turning 18 (H1b): the question answered, how many papers made Only me
+  // and never which — for the owners, the person and whoever answered.
+  ['grown_up.answered', ownersThePersonAndTheActor],
   // 5.28: a sign-in locked, unlocked, or turned back on after a restore: for
   // the owners — whoever did it is one — and the person it is about. Not
   // another adult, not a teen (a viewer reads no log).

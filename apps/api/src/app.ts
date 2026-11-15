@@ -40,6 +40,8 @@ import type { TypeService } from './documents/types.js';
 import { registerCollections } from './collections/routes.js';
 import { registerCabinet } from './cabinet/routes.js';
 import type { CabinetService } from './cabinet/service.js';
+import { registerCaregivers } from './caregivers/routes.js';
+import type { CaregiverService } from './caregivers/service.js';
 import type { CollectionService } from './collections/service.js';
 import type { VisibilityService } from './documents/visibility.js';
 import type { TotpService } from './auth/totp.js';
@@ -98,6 +100,8 @@ export interface AppDeps {
   collections: CollectionService;
   /** Each person's own cabinet (0.9.0, C1). */
   cabinet?: CabinetService;
+  /** Caregivers for somebody's medical papers, and turning 18 (0.9.0, H1b). */
+  caregivers?: CaregiverService;
   sealedSearch: SealedSearchService;
   visibility: VisibilityService;
   totp: TotpService;
@@ -507,6 +511,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerTypes(app, deps.types);
   registerCollections(app, deps.collections);
   if (deps.cabinet) registerCabinet(app, deps.cabinet);
+  if (deps.caregivers) registerCaregivers(app, deps.caregivers);
   registerDocuments(
     app,
     deps.documents,

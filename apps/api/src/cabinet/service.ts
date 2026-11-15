@@ -30,7 +30,7 @@ import type { Principal } from '../auth/service.js';
 import { ApiError, notFound } from '../errors.js';
 import { datedSql } from '../documents/filters.js';
 import { folderQuery, listQueryOf } from '../documents/list-query.js';
-import { seenDocument, type DocumentService, type ListQuery } from '../documents/service.js';
+import { readDocument, type DocumentService, type ListQuery } from '../documents/service.js';
 import { documentCounts, documentMatches } from '../documents/table.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -178,7 +178,7 @@ export class CabinetService {
           select d.owner_member_id, d.household_owned, d.category, d.type_key,
                  extract(year from ${datedSql('d')})::int as year, count(*)::int as n
             from document d
-           where ${seenDocument(p)} and d.deleted_at is null
+           where ${readDocument(p)} and d.deleted_at is null
              and d.type_key is distinct from ${NOTE_KIND}
            group by 1, 2, 3, 4, 5`.execute(trx)
       ).rows;
@@ -274,7 +274,7 @@ export class CabinetService {
     return withPrincipal(this.db, p, async (trx) => {
       const seen = (
         await sql<{ id: string }>`
-          select d.id from document d where d.id = ${id}::uuid and ${seenDocument(p)}`.execute(trx)
+          select d.id from document d where d.id = ${id}::uuid and ${readDocument(p)}`.execute(trx)
       ).rows[0];
       if (!seen) throw notFound('That document');
       const row = await trx

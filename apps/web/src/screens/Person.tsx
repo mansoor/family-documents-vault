@@ -49,6 +49,7 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { ViewerLimits } from '../access.js';
 import { IdentityCard } from '../identity.js';
 import { MobileNumberCard } from '../text-messages.js';
+import { CaregiversCard } from '../caregivers.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
 import {
@@ -273,6 +274,15 @@ export function ProfileScreen() {
               add for anybody; once the household's texts are set up. */}
           <MobileNumberCard
             key={`mobile-${member.id}`}
+            member={member}
+            name={name}
+            owner={myRole === 'owner'}
+          />
+
+          {/* Who can see their medical papers (0.9.0, H1b): for the person,
+              an owner, or a caregiver of theirs. */}
+          <CaregiversCard
+            key={`care-${member.id}`}
             member={member}
             name={name}
             owner={myRole === 'owner'}

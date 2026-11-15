@@ -6676,6 +6676,112 @@ name, path: [cabinet, drawer, folder] }] }`: the caller's shown folders
       `saveCabinet`, `previewCabinet`, `cabinetCounts`, `documentAlsoIn`;
       the fake keeps each person's cabinet (`FakeVaultState.cabinets`) and
       counts by its own table.
+  - Caregivers and turning 18 (0.9.0-dev.43, H1b of the health plan).
+    Migration 0098. Everything here is **additive**.
+    - **New `features`:** `caregivers` (`true`).
+    - **A new, narrow exception to who sees a document.** A person names a
+      caregiver; while the grant is live and kept by its person, the
+      caregiver (signed in as an owner or an adult) reads that person's
+      Medical papers (the document's own `category` alone — never its kind's,
+      so changing a kind widens no grant; 0098 writes its kind's category on
+      any older paper that had none — never a note), their Only me ones
+      included, out of the Trash. Read-only: every change to the paper, its
+      versions or words, a link between papers made or taken away, a
+      reminder set, changed or removed, a collection's place for it, a link
+      outside the family made or changed, through a grant, is refused — by
+      the API (`404`, as for any document the caller may not change) and by
+      the database. Nothing else of the
+      person's is opened. It is the database's rule (`caregiver_reads`),
+      asked by: GET /documents (both lists), GET /documents/{id}, its
+      versions, a version's content, pages and thumbnail, GET /search (by
+      what is plain: never the words of an Only me file, which stay sealed
+      for its owner), GET /documents/counts, GET /cabinet/counts and the
+      cabinet's preview, and GET /documents/{id}/also-in. Not by
+      notifications, the digest, reminders, exports, the activity log's
+      lines about a document, collections, tags, kinds or links. Under the
+      reserved `private` protection mode a grant gives no Only me paper.
+    - **`DocumentView.caregiver`**: `true` on a document the caller sees only
+      as its person's caregiver ("Shared with you as caregiver"); absent on
+      every other. Such a document's `notes`, `notes_updated_at` and
+      `notes_updated_by_name` are null, `has_notes` false, and its
+      `no_longer_needed.has_reason` false (its person's own words), its
+      `extra` (the paper's details) given in
+      GET /documents/{id} as to its owner. Opening one asks the step-up an
+      Only me document asks.
+    - **New routes:**
+      - `GET /api/v1/caregivers` → `MyCaregivers` `{ about_me, for_others }`:
+        the caller's live grants, each a `CaregiverGrantView` `{ id,
+person_member_id, person_name, caregiver_member_id, caregiver_name,
+granted_at, granted_by_name, confirmed, may_revoke, may_keep,
+may_give_up }`.
+      - `GET /api/v1/members/{id}/caregivers` → `PersonCaregivers` `{ items,
+may_add, candidates }`: for the person, an owner, or a caregiver of
+        theirs (given their own grant); `403` for anybody else.
+        `candidates` (when `may_add`): of the family, signed in as an owner
+        or an adult, not locked, not the person, not named already.
+      - `POST /api/v1/members/{id}/caregivers` `{ caregiver_member_id }` →
+        `201 CaregiverGrantView`. By the person (an owner, an adult or a
+        teen), kept as made; or by an owner for somebody who does not sign
+        in as an owner, an adult or a teen, unkept (`confirmed: false`) —
+        it reaches none of their Only me papers until they keep it. Naming
+        one already named gives that grant (kept, if its person names them).
+        `403` for anybody else; `422 caregiver_not_eligible` for a caregiver
+        who is not of the family, signed in as an owner or an adult, and not
+        locked; `422 validation_failed` for the person themselves.
+      - `POST /api/v1/members/{id}/caregivers/{caregiverId}/keep` → the
+        grant, kept: the person's alone (`403` otherwise).
+      - `POST /api/v1/members/{id}/caregivers/{caregiverId}/revoke` → `204`.
+        By the person, the caregiver (giving it up), or an owner for
+        somebody who cannot answer for themselves; `404` when there is no
+        live grant the caller is given. It takes effect at once.
+      - `GET /api/v1/members/{id}/caregiver-views` → `{ items: CaregiverLook[]
+}` `{ caregiver_name, document_id, title, sensitive, only_me?, action,
+at }`, newest first, at most 200: the person's and the owners' (`403`
+        for anybody else, the caregiver included). To an owner each look is
+        `only_me: true`, its `document_id` and `title` null: who looked and
+        when, never which paper. A look is written by the vault alone. `action` is `opened`, `downloaded` or `previewed`; a look is
+        written once a sitting (ten minutes) per paper and action. A
+        sensitive paper's `title` is null, as the activity log says it.
+      - `GET /api/v1/grown-up/questions` → `{ items: GrownUpQuestionView[] }`
+        `{ member_id, display_name, turned_on, papers, asks, title, label }`:
+        the caller's own (`asks: 'self'`, while they sign in as an owner or
+        an adult) and, for an owner, those of anybody with no sign-in at all
+        (`asks: 'in_person'`) or one still a teen's (`asks: 'role_first'`:
+        no answer is taken until their role is an adult's); only while there
+        are Medical papers the family can see (`papers` counts those in the
+        Trash too). The first time the worker's job runs for a household
+        (`household.grown_ups_asked_at`, new), everybody already 18 or over
+        with such papers is asked once too.
+      - `POST /api/v1/members/{id}/grown-up-answer` `{ answer: 'keep' |
+'only_me' }` → `{ answer, made_private }`. Once and final: `409
+already_answered` after. `only_me` (the person's own answer alone)
+        makes each of their Medical papers the family can see Only me, those
+        in the Trash too, in one transaction, as any change to Only me does
+        (keys rewrapped, words sealed, their own links to them ended,
+        others' stopped). An owner answers only for somebody with no sign-in
+        at all, and only `keep` (`403 only_the_person`; `403
+ask_them_themselves` for somebody with a sign-in); `404` for anybody
+        else.
+    - **Activity log** actions, about the person (never a document):
+      `caregiver.granted`, `caregiver.kept`, `caregiver.revoked`,
+      `caregiver.given_up` (for the owners, the person, whoever did it and
+      the caregiver), and `grown_up.answered` (the owners, the person and
+      whoever answered; never which papers, nor how many).
+    - **The worker** asks the turning-18 question in `reminders.tick`, on the
+      household's calendar, within a week of the birthday; for somebody
+      with no grown-up sign-in, the owners get a reminder (kind
+      `turned_18`, delivered in the daily digest without a name, as
+      `turned_13`); GET /reminders/people still gives only `turned_13`.
+    - `@fdv/shared`: `CAREGIVER_MARK`, `CAREGIVER_READ_ONLY`,
+      `CAREGIVER_ROLES`, `mayGiveCare`, `mayNameOwnCaregiver`,
+      `GROWN_UP_QUESTION`, `GROWN_UP_EXPLAINED`, `GROWN_UP_ONLY_ME_THEIRS`,
+      `GROWN_UP_ANSWERED`, `GROWN_UP_THEIRS_TO_ANSWER`, `TURNED_18_TOLD`,
+      `turnedEighteenWords`, `roleFirstWords`,
+      `caregiverLookWords`, and the types above. `@fdv/client`:
+      `myCaregivers`, `caregiversOf`, `nameCaregiver`, `keepCaregiver`,
+      `revokeCaregiver`, `caregiverLooks`, `grownUpQuestions`,
+      `answerGrownUp`; the fake keeps grants (`FakeVaultState.caregivers`),
+      looks and questions (`grownUp`), but not the reading exception itself.
 
 ## Deprecations in effect
 

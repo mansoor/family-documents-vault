@@ -1,4 +1,5 @@
 import {
+  CAREGIVER_MARK,
   can,
   documentLine,
   initialsFor,
@@ -35,6 +36,7 @@ import { OnlyYou, useMayBatch } from './Batches.js';
 import { mayBringBack, purgeAskedWords } from './Trash.js';
 import { loadScannerNotices, ScannerNotices } from '../watch-folder.js';
 import { EmailInLine } from '../mail-in.js';
+import { GrownUpQuestions } from '../caregivers.js';
 import { dayWordsOf, familyZoneNow } from '../family-time.js';
 
 /**
@@ -270,6 +272,9 @@ export function HomeScreen() {
   const attention = (
     <>
       <TurnedThirteen items={data?.people ?? []} onDismissed={reload} />
+      {/* Turning 18 (0.9.0, H1b): somebody's own question about their
+          medical papers, and the owners' card to ask in person. */}
+      <GrownUpQuestions />
       <ScannerNotices items={data?.scans ?? []} onDismissed={reload} />
       <AttentionStrip
         items={data?.attention ?? null}
@@ -763,8 +768,15 @@ export function DocRow({
   /** Its ⋯ took it out of `collection` (0.9.0): the page says so, with Undo. */
   onRemoved?: ((removed: Removed) => void) | undefined;
 }) {
+  // Somebody else's Only me, seen as their caregiver (H1b), says so.
   const who =
-    doc.visibility === 'adults' ? 'Adults only' : doc.visibility === 'private' ? 'Only me' : null;
+    doc.caregiver === true
+      ? CAREGIVER_MARK
+      : doc.visibility === 'adults'
+        ? 'Adults only'
+        : doc.visibility === 'private'
+          ? 'Only me'
+          : null;
   const title = doc.title ?? 'Scan · needs a name';
   return (
     <li className="docrow" data-doc={doc.id}>

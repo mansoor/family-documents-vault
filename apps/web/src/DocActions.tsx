@@ -74,8 +74,10 @@ export interface Removed {
 export function mayChange(
   role: Role,
   memberId: string | null | undefined,
-  doc: Pick<DocumentView, 'owner_member_id'>,
+  doc: Pick<DocumentView, 'owner_member_id'> & { caregiver?: true | undefined },
 ): boolean {
+  // Seen only as its person's caregiver (0.9.0, H1b): read-only.
+  if (doc.caregiver === true) return false;
   const mine = Boolean(memberId) && doc.owner_member_id === memberId;
   return can(role, 'document.edit') && (role !== 'teen' || mine);
 }
@@ -96,7 +98,7 @@ export function actionsFor(
     | (Pick<
         DocumentView,
         'owner_member_id' | 'visibility' | 'latest_version_id' | 'filed_by_me' | 'file_removed'
-      > & { type_key?: string | null })
+      > & { type_key?: string | null; caregiver?: true | undefined })
     | null,
   collections: { collections: boolean; uncollect: boolean } = {
     collections: false,
@@ -110,8 +112,12 @@ export function actionsFor(
   const hasFile = doc.latest_version_id !== null && doc.file_removed !== true;
   if (hasFile) actions.push('download');
   // Somebody who can change nothing (a viewer) is given what they came
-  // for: Open and Download.
-  if (!can(role, 'document.edit')) return actions;
+  // for: Open and Download. So is a caregiver, of a paper a grant gives
+  // them (0.9.0, H1b): to read it, nothing more.
+  if (!can(role, 'document.edit') || doc.caregiver === true) {
+    if (hasFile && doc.caregiver === true) actions.push('read');
+    return actions;
+  }
   const changes = mayChange(role, memberId, doc);
   const mine = Boolean(memberId) && doc.owner_member_id === memberId;
   if (hasFile) actions.push('read');

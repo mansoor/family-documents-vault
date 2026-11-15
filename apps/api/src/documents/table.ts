@@ -23,7 +23,7 @@ import { asksStatus, datedSql, filterClauses, statusAllowed } from './filters.js
 import {
   kindGiven,
   rowStatus,
-  seenDocument,
+  readDocument,
   tagFilter,
   tagLabelFilter,
   typeLookup,
@@ -38,8 +38,9 @@ import {
  * nothing is decided here about who sees what: the household's rules in
  * the database (row-level security: the tenant, the actor, a viewer's
  * restriction) and the list's own rule for Adults only and Only me
- * (`seenDocument`) narrow the rows; a collection is one the collections
- * themselves would show the reader (`seenCollection`); a kind is named as
+ * (`readDocument`: `seenDocument`, and a caregiver's grant, H1b) narrow
+ * the rows; a collection is one the collections themselves would show the
+ * reader (`seenCollection`); a kind is named as
  * `types()` would name it to them (`kindGiven`); a person is one the
  * database gives them. A sort or a filter only orders and narrows that.
  *
@@ -234,7 +235,7 @@ export async function documentCounts(
         await sql<Row>`
           select ${at === 0 ? STATUS_COLUMNS : sql`d.id`}, ${sql.join(columns, sql`, `)}
             from document d
-           where ${seenDocument(p)} and d.deleted_at is null`.execute(trx)
+           where ${readDocument(p)} and d.deleted_at is null`.execute(trx)
       ).rows;
       for (const r of read) rows.set(r.id, { ...(rows.get(r.id) ?? {}), ...r });
     }
@@ -256,7 +257,7 @@ export async function documentCounts(
       await sql<Record<string, number>>`
         select ${sql.join(columns, sql`, `)}
           from document d
-         where ${seenDocument(p)} and d.deleted_at is null`.execute(trx)
+         where ${readDocument(p)} and d.deleted_at is null`.execute(trx)
     ).rows[0];
     some.forEach((i, n) => {
       out[i] = row?.[`c${n}`] ?? 0;
@@ -359,7 +360,7 @@ async function rowsOf(trx: Db, p: Principal, ids: string[]): Promise<DocRow[]> {
   if (ids.length === 0) return [];
   const rows = (
     await sql<DocRow>`select ${COLUMNS} from document d
-                       where d.id = any(${ids}::uuid[]) and ${seenDocument(p)}`.execute(trx)
+                       where d.id = any(${ids}::uuid[]) and ${readDocument(p)}`.execute(trx)
   ).rows;
   const byId = new Map(rows.map((r) => [r.id, r]));
   return ids.map((id) => byId.get(id)).filter((r): r is DocRow => r !== undefined);
@@ -375,7 +376,7 @@ const inSeenCollection = (p: Principal) =>
 /** Every filter, as one condition on `d`: each only narrows what the caller may see. */
 function whereOf(p: Principal, q: ListQuery): RawBuilder<boolean> {
   const parts: RawBuilder<unknown>[] = [
-    seenDocument(p),
+    readDocument(p),
     q.deleted ? sql`d.deleted_at is not null` : sql`d.deleted_at is null`,
   ];
   // Not sure yet: nobody, and not the household's; or the household's (0.9.0).

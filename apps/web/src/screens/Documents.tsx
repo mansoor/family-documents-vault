@@ -1,4 +1,5 @@
 import {
+  CAREGIVER_MARK,
   collectionItemHint,
   COLLECTION_HINT_PRIVATE,
   COLLECTION_HINT_TEENS,
@@ -1551,10 +1552,11 @@ function Cell(props: { column: Column; doc: DocumentView; known: Known; offset: 
     case 'visibility':
       return (
         <td className="nowrap">
-          <Clip text={VISIBILITY_WORDS[doc.visibility]}>
+          {/* Somebody else's Only me, seen as their caregiver (H1b), says so. */}
+          <Clip text={doc.caregiver === true ? CAREGIVER_MARK : VISIBILITY_WORDS[doc.visibility]}>
             <span className="vis">
               {doc.visibility === 'private' && <LockIcon />}
-              {VISIBILITY_WORDS[doc.visibility]}
+              {doc.caregiver === true ? CAREGIVER_MARK : VISIBILITY_WORDS[doc.visibility]}
             </span>
           </Clip>
         </td>

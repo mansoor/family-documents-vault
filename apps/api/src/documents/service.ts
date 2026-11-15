@@ -635,6 +635,44 @@ export const seenDocument = (p: Principal) => sql<boolean>`(d.visibility = 'hous
   or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))`;
 
 /**
+ * "This caller may read document `d`" (0.9.0, H1b): the rule every list
+ * keeps (`seenDocument`), and its one exception — somebody's Only me
+ * Medical papers, out of the Trash, for their caregiver while the database
+ * says so (`caregiver_reads`, 0098). For reading and finding a document
+ * only: a change, a link, a collection, a reminder or anything sent keeps
+ * `seenDocument`, and the database refuses a write through a grant too.
+ * `alias` is the row's name in the query: `d`, or `document`.
+ */
+export const readDocument = (p: Principal, alias: 'd' | 'document' = 'd') => {
+  const t = sql.raw(alias);
+  return sql<boolean>`(${t}.visibility = 'household'
+  or (${t}.visibility = 'adults' and ${p.seesAdults})
+  or (${t}.visibility = 'private'
+      and (${t}.owner_member_id = ${p.memberId}::uuid
+           or (${t}.deleted_at is null
+               and caregiver_reads(${t}.owner_member_id, ${t}.type_key, ${t}.category)))))`;
+};
+
+/** Whether the caller is given this row only as its person's caregiver: somebody else's Only me. */
+export const byGrant = (
+  p: Pick<Principal, 'memberId'>,
+  row: { visibility: string; owner_member_id: string | null },
+): boolean => row.visibility === 'private' && row.owner_member_id !== p.memberId;
+
+/**
+ * A caregiver's look at a paper a grant gave them, written for the person
+ * to read (0098): once a sitting, by the database, and only while the grant
+ * gives it. Nothing for anybody else.
+ */
+export async function recordCaregiverLook(
+  trx: Db,
+  documentId: string,
+  action: 'opened' | 'downloaded' | 'previewed',
+): Promise<void> {
+  await sql`select record_caregiver_view(${documentId}::uuid, ${action})`.execute(trx);
+}
+
+/**
  * The filter by a tag, as SQL on the document table (0.9.0, T1): the tag
  * whatever its case and spacing, keyed by the database on both sides (0073:
  * the stored `tag_keys`, and `fdv_tag_key` of what is asked) — never by
@@ -945,6 +983,28 @@ export class DocumentService {
     return row;
   }
 
+  /**
+   * A document to read (0.9.0, H1b): as `fetch`, by the reading rule
+   * (`readDocument`) — so a caregiver is given the Only me Medical papers a
+   * grant gives them. Never for a change: those `fetch`.
+   */
+  private async fetchToRead(
+    trx: Db,
+    p: Principal,
+    id: string,
+    includeDeleted = false,
+  ): Promise<DocRow> {
+    let q = trx
+      .selectFrom('document')
+      .selectAll()
+      .where('id', '=', id)
+      .where(readDocument(p, 'document'));
+    if (!includeDeleted) q = q.where('deleted_at', 'is', null);
+    const row = await q.executeTakeFirst();
+    if (!row) throw notFound();
+    return row;
+  }
+
   // ------------------------------------------------------ sealed (0.5.8)
 
   /**
@@ -953,8 +1013,13 @@ export class DocumentService {
    * list. Null for anybody else, and for any other document.
    */
   private async opened(trx: Db, p: Principal, row: DocRow): Promise<Opened | null> {
-    if (row.visibility !== 'private' || row.owner_member_id !== p.memberId) return null;
-    return this.openRow(trx, p.householdId, row);
+    if (row.visibility !== 'private') return null;
+    if (row.owner_member_id === p.memberId) return this.openRow(trx, p.householdId, row);
+    // A caregiver's look at it (H1b): its details, which are the paper's —
+    // never its notes, nor why it is no longer needed, which are its
+    // person's own words.
+    const opened = await this.openRow(trx, p.householdId, row);
+    return { notes: null, extra: opened.extra };
   }
 
   /**
@@ -1099,16 +1164,17 @@ export class DocumentService {
       is_essential: row.is_essential,
       tags: row.tags,
       notes: onlyMe ? (opened?.notes ?? null) : row.notes,
-      has_notes: row.notes !== null || row.notes_sealed !== null,
+      // A caregiver is not told whether their person wrote a note on it.
+      has_notes: byGrant(p, row) ? false : row.notes !== null || row.notes_sealed !== null,
       // A note with no title, named by its first words where its words are
       // given (the N1 re-check): never an Only me one's in a list.
       ...noteName(row.type_key, row.title, onlyMe ? (opened?.notes ?? null) : row.notes),
       // Who last changed its note's words, and when (5.35): the moment to
       // whoever sees the document, the name on the activity log's terms.
-      notes_updated_at: row.notes_updated_at?.toISOString() ?? null,
-      notes_updated_by_name: row.notes_updated_by
-        ? (named.get(row.notes_updated_by) ?? null)
-        : null,
+      // A caregiver is told nothing of their person's note: not when, nor by whom.
+      notes_updated_at: byGrant(p, row) ? null : (row.notes_updated_at?.toISOString() ?? null),
+      notes_updated_by_name:
+        !byGrant(p, row) && row.notes_updated_by ? (named.get(row.notes_updated_by) ?? null) : null,
       extra: onlyMe ? (opened?.extra ?? {}) : plainExtra,
       // Worked out the same way whoever asks, and however it is asked:
       // from what is plain, and what was written down of what is sealed.
@@ -1139,6 +1205,8 @@ export class DocumentService {
       // A restore from before its removal brought the record back, not the file.
       file_removed: versions[0]?.file_removed_at != null,
       no_longer_needed: this.noLongerNeededView(p, row, named, replacing, opened),
+      // Seen only as its person's caregiver (0.9.0, H1b): read-only.
+      ...(byGrant(p, row) ? { caregiver: true as const } : {}),
       etag: etagOf(row.id, row.updated_at),
     };
   }
@@ -1168,7 +1236,8 @@ export class DocumentService {
       at: row.no_longer_needed_at.toISOString(),
       by_name: row.no_longer_needed_by ? (named.get(row.no_longer_needed_by) ?? null) : null,
       reason,
-      has_reason: reason !== null || sealed !== null,
+      // Why is its person's own word: a caregiver is not told there is one.
+      has_reason: !byGrant(p, row) && (reason !== null || sealed !== null),
       replaced_by: row.replaced_by
         ? seen
           ? { id: seen.id, title: seen.title }
@@ -1433,7 +1502,9 @@ export class DocumentService {
 
   async get(p: Principal, id: string): Promise<DocumentView> {
     return withPrincipal(this.db, p, async (trx) => {
-      const row = await this.fetch(trx, p, id, true);
+      const row = await this.fetchToRead(trx, p, id, true);
+      // A caregiver's look, for its person to read (H1b).
+      if (byGrant(p, row)) await recordCaregiverLook(trx, row.id, 'opened');
       return this.view(trx, p, row, typeLookup(trx), await this.opened(trx, p, row));
     });
   }
@@ -2099,10 +2170,7 @@ export class DocumentService {
     }
     const limit = Math.min(Math.max(q.limit ?? 50, 1), 200);
     return withPrincipal(this.db, p, async (trx) => {
-      let query = trx
-        .selectFrom('document')
-        .selectAll()
-        .where(this.visibleTo(p) as never);
+      let query = trx.selectFrom('document').selectAll().where(readDocument(p, 'document'));
       query = q.deleted
         ? query.where('deleted_at', 'is not', null)
         : query.where('deleted_at', 'is', null);
@@ -2606,7 +2674,7 @@ export class DocumentService {
     return withPrincipal(this.db, p, async (trx) => {
       const base = trx
         .selectFrom('document')
-        .where(this.visibleTo(p) as never)
+        .where(readDocument(p, 'document'))
         .where('deleted_at', 'is', null);
       const byMember = await base
         .select(['owner_member_id', sql<number>`count(*)::int`.as('count')])
@@ -2627,7 +2695,7 @@ export class DocumentService {
 
   async versions(p: Principal, documentId: string): Promise<VersionView[]> {
     return withPrincipal(this.db, p, async (trx) => {
-      const doc = await this.fetch(trx, p, documentId, true);
+      const doc = await this.fetchToRead(trx, p, documentId, true);
       // Who added each version, by the name the household knows them by
       // (5.1) — on the activity log's terms: a viewer, an outsider, is not
       // told what the family has been doing. Somebody whose sign-in was
@@ -2665,14 +2733,16 @@ export class DocumentService {
       // Each older version's own details (0.9.0, 0083), as the document's
       // are given: an Only me one's kind's details opened only in its
       // owner's own request — nobody else is given that document at all.
-      const own = doc.visibility === 'private' && doc.owner_member_id === p.memberId;
+      // Its owner's, or its person's caregiver's (H1b): a paper's details
+      // are the paper's. Nobody else is given an Only me document at all.
+      const own = doc.visibility === 'private';
       const key =
         own && rows.some((r) => r.extra_sealed !== null)
           ? (
               await this.keys.unwrap(trx, {
                 householdId: p.householdId,
                 kind: 'member',
-                memberId: p.memberId,
+                memberId: doc.owner_member_id,
               })
             ).key
           : null;
@@ -3608,7 +3678,10 @@ export class DocumentService {
         where d.deleted_at is null
           and (d.visibility = 'household'
                or (d.visibility = 'adults' and ${adultsOk})
-               or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))
+               or (d.visibility = 'private'
+                   and (d.owner_member_id = ${p.memberId}::uuid
+                        -- Found by its person's caregiver too (H1b).
+                        or caregiver_reads(d.owner_member_id, d.type_key, d.category))))
           ${q.member_id ? sql`and d.owner_member_id = ${q.member_id}::uuid` : sql``}
           ${q.category ? sql`and d.category = ${q.category}` : sql``}
           ${q.issued_by ? sql`and lower(d.issued_by) = lower(${q.issued_by.trim()})` : sql``}
@@ -3740,16 +3813,19 @@ export class DocumentService {
    */
   async stepUpFor(p: Principal, versionId: string): Promise<SensitiveAction | null> {
     return withPrincipal(this.db, p, async (trx) => {
+      // By the reading rule: an Only me paper its person's caregiver opens
+      // asks what it asks its person (H1b).
       const row = await trx
         .selectFrom('document_version')
         .innerJoin('document', 'document.id', 'document_version.document_id')
         .select(['document.visibility', 'document.is_essential', 'document.owner_member_id'])
         .where('document_version.id', '=', versionId)
+        .where(readDocument(p, 'document'))
         .executeTakeFirst();
       // A missing version, and one the caller may not see, are both a 404
       // further down. Asking for a credential first would answer "it is
       // there, and it is private" to somebody who must not know.
-      if (!row || !canSee(p, row)) return null;
+      if (!row) return null;
       return sensitiveAction(row);
     });
   }
@@ -3824,10 +3900,12 @@ export class DocumentService {
         .where('id', '=', versionId)
         .executeTakeFirst();
       if (!v) throw notFound();
-      // Visibility first: a document this person may not see is a 404.
-      await this.fetch(trx, p, v.document_id, true);
+      // Visibility first: a document this person may not see is a 404. Its
+      // person's caregiver sees it (H1b), and their look is written down.
+      const doc = await this.fetchToRead(trx, p, v.document_id, true);
       if (v.file_removed_at) throw fileRemoved();
       if (!v.thumbnail_key) return null;
+      if (byGrant(p, doc)) await recordCaregiverLook(trx, doc.id, 'previewed');
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       return {
         key: v.thumbnail_key,
@@ -3975,7 +4053,8 @@ export class DocumentService {
         .where('id', '=', versionId)
         .executeTakeFirst();
       if (!v) throw notFound();
-      await this.fetch(trx, p, v.document_id, true); // applies the visibility rule
+      // The reading rule: its person's caregiver too (H1b).
+      const doc = await this.fetchToRead(trx, p, v.document_id, true);
       // Its record came back with a restore, its file did not (5.24).
       if (v.file_removed_at) throw fileRemoved();
       if (v.preview_state === 'unsupported') return { kind: 'none', why: 'kind' } as const;
@@ -4003,6 +4082,7 @@ export class DocumentService {
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
       const adapter = await this.vaults.adapterById(trx, v.vault_id);
+      if (byGrant(p, doc)) await recordCaregiverLook(trx, doc.id, 'previewed');
       if (opts.audit !== false) {
         await holdForReading(trx, v.document_id);
         await appendAudit(trx, {
@@ -4061,7 +4141,7 @@ export class DocumentService {
         .where('id', '=', versionId)
         .executeTakeFirst();
       if (!v) throw notFound();
-      await this.fetch(trx, p, v.document_id, true);
+      await this.fetchToRead(trx, p, v.document_id, true);
       return versionView(v);
     });
   }
@@ -4088,10 +4168,12 @@ export class DocumentService {
         .where('id', '=', versionId)
         .executeTakeFirst();
       if (!v) throw notFound();
-      await this.fetch(trx, p, v.document_id, true); // applies the visibility rule
+      // The reading rule: its person's caregiver too (H1b).
+      const doc = await this.fetchToRead(trx, p, v.document_id, true);
       // Its record came back with a restore, its file did not (5.24): said
       // so, and no download is written down that could not happen.
       if (v.file_removed_at) throw fileRemoved();
+      if (byGrant(p, doc)) await recordCaregiverLook(trx, doc.id, 'downloaded');
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
       const adapter = await this.vaults.adapterById(trx, v.vault_id);
