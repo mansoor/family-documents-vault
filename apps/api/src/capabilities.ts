@@ -222,6 +222,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       cabinet_pins: true,
       // 0.9.0 (H1b): caregivers for somebody's medical papers, and turning 18.
       caregivers: true,
+      // 0.9.0-dev.45: POST /documents takes an Idempotency-Key.
+      idempotent_create: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

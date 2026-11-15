@@ -21,7 +21,13 @@ import {
 import FormData from 'form-data';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createHarness, mailSent, TEST_MASTER, type Harness } from '../test-harness.js';
+import {
+  createHarness,
+  holdsDigits,
+  mailSent,
+  TEST_MASTER,
+  type Harness,
+} from '../test-harness.js';
 import { deviceCookieKey, deviceCookieName, mintDeviceCookie } from '../public/device-cookie.js';
 import { EXCEL_MIME, WORD_MIME } from './office.js';
 
@@ -797,7 +803,6 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     for (const secret of [
       made.link_token,
       password,
-      code,
       ...Object.values(cookie),
       'very-private-name',
       'jane.secret',
@@ -805,6 +810,11 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     ]) {
       expect(log, secret).not.toContain(secret);
     }
+    // The six-digit code as a token of its own: a random id, a time or a
+    // response time in the log may hold any six digits by chance.
+    expect(holdsDigits(log, code), code).toBe(false);
+    // And as the email spaces it ("123 456").
+    expect(holdsDigits(log, `${code.slice(0, 3)} ${code.slice(3)}`), code).toBe(false);
   });
 
   it('wrong passwords and codes share one counter of ten, also in parallel', async () => {

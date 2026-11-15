@@ -126,7 +126,7 @@ describe.skipIf(!testAdminUrl())('pruning upload keys', () => {
       localRoot: root,
       now: () => now,
     });
-    expect(r).toEqual({ done: 1, abandoned: 1, photos: 0, incoming: 0 });
+    expect(r).toEqual({ done: 1, abandoned: 1, photos: 0, incoming: 0, createKeys: 0 });
     const left = await admin.query<{ idempotency_key: string }>(
       'select idempotency_key from upload_idempotency where household_id = $1 order by idempotency_key',
       [hh],
@@ -182,7 +182,7 @@ describe.skipIf(!testAdminUrl())('pruning upload keys', () => {
         localRoot: root,
         now: () => now,
       });
-    expect(await prune()).toEqual({ done: 0, abandoned: 0, photos: 1, incoming: 0 });
+    expect(await prune()).toEqual({ done: 0, abandoned: 0, photos: 1, incoming: 0, createKeys: 0 });
     expect(await exists(upload('stale'))).toBe(false);
     const left = async () =>
       (
@@ -195,7 +195,7 @@ describe.skipIf(!testAdminUrl())('pruning upload keys', () => {
 
     // One still on its way, sent an hour ago, keeps its bytes.
     await photo('processing', ago(1 / 24), upload('recent'));
-    expect(await prune()).toEqual({ done: 0, abandoned: 0, photos: 0, incoming: 0 });
+    expect(await prune()).toEqual({ done: 0, abandoned: 0, photos: 0, incoming: 0, createKeys: 0 });
     expect(await exists(upload('recent'))).toBe(true);
     expect((await left()).map((r) => r.state)).toEqual(['processing', 'ready']);
   });
@@ -265,7 +265,7 @@ describe.skipIf(!testAdminUrl())('pruning upload keys', () => {
       localRoot: root,
       now: () => now,
     });
-    expect(r).toEqual({ done: 0, abandoned: 0, photos: 0, incoming: 1 });
+    expect(r).toEqual({ done: 0, abandoned: 0, photos: 0, incoming: 1, createKeys: 0 });
     expect(await exists(dead)).toBe(false);
     expect(await exists(running)).toBe(true);
     const emails = await admin.query<{ id: string; recipient_email: string | null }>(
@@ -277,5 +277,55 @@ describe.skipIf(!testAdminUrl())('pruning upload keys', () => {
       [takenBack]: null,
       [usedUp]: null,
     });
+  });
+
+  it("a create's Idempotency-Key goes once its 24 hours are up, as the vault itself (0.9.0-dev.45)", async () => {
+    const member = (
+      await admin.query<{ id: string }>(
+        "insert into member (household_id, display_name) values ($1, 'Keyed') returning id",
+        [hh],
+      )
+    ).rows[0]?.id as string;
+    const account = (
+      await admin.query<{ id: string }>('insert into account (email) values ($1) returning id', [
+        `keyed-${hh}@example.test`,
+      ])
+    ).rows[0]?.id as string;
+    const doc = (
+      await admin.query<{ id: string }>(
+        'insert into document (household_id, title) values ($1, $2) returning id',
+        [hh, 'Made once'],
+      )
+    ).rows[0]?.id as string;
+    const key = async (hours: number) => {
+      const k = randomUUID();
+      await admin.query(
+        `insert into create_idempotency
+           (household_id, account_id, member_id, idempotency_key, request_fingerprint,
+            document_id, created_at)
+         values ($1, $2, $3, $4, repeat('0', 64), $5, $6)`,
+        [hh, account, member, k, doc, new Date(now.getTime() - hours * 60 * 60 * 1000)],
+      );
+      return k;
+    };
+    await key(25);
+    await key(24);
+    const fresh = await key(23.9);
+    const r = await pruneUploads({
+      admin,
+      app: db,
+      credentialsKey: Buffer.alloc(32),
+      localRoot: root,
+      now: () => now,
+    });
+    expect(r).toEqual({ done: 0, abandoned: 0, photos: 0, incoming: 0, createKeys: 2 });
+    const left = await admin.query<{ idempotency_key: string }>(
+      'select idempotency_key from create_idempotency where household_id = $1',
+      [hh],
+    );
+    expect(left.rows.map((x) => x.idempotency_key)).toEqual([fresh]);
+    // The document it made is untouched.
+    const kept = await admin.query('select 1 from document where id = $1', [doc]);
+    expect(kept.rowCount).toBe(1);
   });
 });

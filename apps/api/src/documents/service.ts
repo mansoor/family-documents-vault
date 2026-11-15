@@ -37,6 +37,7 @@ import {
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { PassThrough, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { claimCreateKey, keepCreateKey, type CreateKey } from './create-once.js';
 import {
   DecryptStream,
   decryptRange,
@@ -1392,79 +1393,119 @@ export class DocumentService {
 
   async create(p: Principal, input: DocumentInput, meta: RequestMeta): Promise<DocumentView> {
     this.canWrite(p);
-    return withPrincipal(this.db, p, async (trx) => {
-      // A teen's documents are their own, and only their own. Without
-      // this, adding one without naming a person makes a family document
-      // they are immediately unable to change — which is what the rule
-      // says if nobody asks what "their own" means at the moment of
-      // creation. Naming somebody else is refused for the same reason:
-      // it would put the document out of their reach as they filed it.
-      // Theirs from the start, so Only me — asked for, or their type's
-      // default — is theirs to have, as a capture's is (0.5.10).
-      if (
-        p.role === 'teen' &&
-        input.owner_member_id != null &&
-        input.owner_member_id !== p.memberId
-      ) {
-        throw new ApiError(403, 'forbidden', 'You can only add documents that belong to you.');
-      }
-      if (p.role === 'teen' && input.household_owned === true) {
-        throw new ApiError(403, 'forbidden', 'You can only add documents that belong to you.');
-      }
-      const whose = p.role === 'teen' ? { ...input, owner_member_id: p.memberId } : input;
-      const values = await this.columns(
-        trx,
-        p,
-        await this.sensitiveVisibility(trx, p, whose, await this.ownVisibility(trx, p, whose)),
-        null,
-      );
-      const made: Record<string, unknown> = { ...values };
-      // Written with a note: whoever filed it wrote it, now (5.35).
-      if (made.notes != null) Object.assign(made, noteStamp(p));
-      // Only me from the start: its notes and details are sealed as they
-      // are written, and never kept plain (0.5.8). The id is minted here,
-      // so they are sealed for this document and no other.
-      const id = randomUUID();
-      // The details as written, before they are sealed: the date its kind
-      // reminds from may be one of them (0.5.15, A62).
-      let details: Record<string, unknown> | undefined;
-      if (made.visibility === 'private') {
-        details = extraOf(made.extra);
-        Object.assign(
-          made,
-          await this.sealFor(
-            trx,
-            p.householdId,
-            id,
-            (made.owner_member_id ?? null) as string | null,
-            { notes: (made.notes ?? null) as string | null, extra: details },
-          ),
-        );
-      }
-      const row = await trx
-        .insertInto('document')
-        .values({
-          id,
-          household_id: p.householdId,
-          created_by: p.accountId,
-          updated_by: p.accountId,
-          ...(made as Record<string, never>),
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      await this.reminders?.regenerateDerived(trx, p.householdId, row.id, { details });
-      await this.toldPrivate(trx, p, row);
-      await appendAudit(trx, {
-        householdId: p.householdId,
-        actorAccountId: p.accountId,
-        action: 'document.created',
-        objectType: 'document',
-        objectId: row.id,
-        detail: { title: row.title, type_key: row.type_key },
-        ip: meta.ip,
-      });
-      return this.view(trx, p, row, typeLookup(trx), await this.opened(trx, p, row));
+    return withPrincipal(this.db, p, (trx) => this.createWithin(trx, p, input, meta));
+  }
+
+  /**
+   * POST /documents under an Idempotency-Key (0.9.0-dev.45,
+   * `features.idempotent_create`; see create-once.ts): the key is claimed,
+   * the document made and the key given its id in one transaction. The same
+   * request again is answered with what the first made, as the caller may
+   * see it now — `document: null` when they may no longer see it (made Only
+   * me by its person, kept to the adults from a teen), which the route
+   * answers 404, telling nothing of it.
+   */
+  async createOnce(
+    p: Principal,
+    input: DocumentInput,
+    meta: RequestMeta,
+    once: CreateKey,
+  ): Promise<{ document: DocumentView | null; replayed: boolean; status: number }> {
+    this.canWrite(p);
+    const done = await withPrincipal(this.db, p, async (trx) => {
+      const claim = await claimCreateKey(trx, p, once);
+      if (claim.kind === 'replay') return claim;
+      const document = await this.createWithin(trx, p, input, meta);
+      await keepCreateKey(trx, p, once.key, document.id, 201);
+      return { kind: 'made' as const, document };
     });
+    if (done.kind === 'made') return { document: done.document, replayed: false, status: 201 };
+    if (!done.documentId) return { document: null, replayed: true, status: done.status };
+    // As GET /documents/{id} would answer it now: the caller's rules today.
+    const document = await this.get(p, done.documentId).catch((err: unknown) => {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    });
+    return { document, replayed: true, status: done.status };
+  }
+
+  private async createWithin(
+    trx: Db,
+    p: Principal,
+    input: DocumentInput,
+    meta: RequestMeta,
+  ): Promise<DocumentView> {
+    // A teen's documents are their own, and only their own. Without
+    // this, adding one without naming a person makes a family document
+    // they are immediately unable to change — which is what the rule
+    // says if nobody asks what "their own" means at the moment of
+    // creation. Naming somebody else is refused for the same reason:
+    // it would put the document out of their reach as they filed it.
+    // Theirs from the start, so Only me — asked for, or their type's
+    // default — is theirs to have, as a capture's is (0.5.10).
+    if (
+      p.role === 'teen' &&
+      input.owner_member_id != null &&
+      input.owner_member_id !== p.memberId
+    ) {
+      throw new ApiError(403, 'forbidden', 'You can only add documents that belong to you.');
+    }
+    if (p.role === 'teen' && input.household_owned === true) {
+      throw new ApiError(403, 'forbidden', 'You can only add documents that belong to you.');
+    }
+    const whose = p.role === 'teen' ? { ...input, owner_member_id: p.memberId } : input;
+    const values = await this.columns(
+      trx,
+      p,
+      await this.sensitiveVisibility(trx, p, whose, await this.ownVisibility(trx, p, whose)),
+      null,
+    );
+    const made: Record<string, unknown> = { ...values };
+    // Written with a note: whoever filed it wrote it, now (5.35).
+    if (made.notes != null) Object.assign(made, noteStamp(p));
+    // Only me from the start: its notes and details are sealed as they
+    // are written, and never kept plain (0.5.8). The id is minted here,
+    // so they are sealed for this document and no other.
+    const id = randomUUID();
+    // The details as written, before they are sealed: the date its kind
+    // reminds from may be one of them (0.5.15, A62).
+    let details: Record<string, unknown> | undefined;
+    if (made.visibility === 'private') {
+      details = extraOf(made.extra);
+      Object.assign(
+        made,
+        await this.sealFor(
+          trx,
+          p.householdId,
+          id,
+          (made.owner_member_id ?? null) as string | null,
+          { notes: (made.notes ?? null) as string | null, extra: details },
+        ),
+      );
+    }
+    const row = await trx
+      .insertInto('document')
+      .values({
+        id,
+        household_id: p.householdId,
+        created_by: p.accountId,
+        updated_by: p.accountId,
+        ...(made as Record<string, never>),
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    await this.reminders?.regenerateDerived(trx, p.householdId, row.id, { details });
+    await this.toldPrivate(trx, p, row);
+    await appendAudit(trx, {
+      householdId: p.householdId,
+      actorAccountId: p.accountId,
+      action: 'document.created',
+      objectType: 'document',
+      objectId: row.id,
+      detail: { title: row.title, type_key: row.type_key },
+      ip: meta.ip,
+    });
+    return this.view(trx, p, row, typeLookup(trx), await this.opened(trx, p, row));
   }
 
   /**

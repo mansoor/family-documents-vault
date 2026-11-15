@@ -6896,6 +6896,83 @@ cabinet_too_many_pins`, nothing saved — counting only the pins of
       `unpinFromFolder`; the fake groups and pins as the vault does
       (`FakeVaultState.cabinetPins`), the caps, moves and refusals too (it
       has no search, and no caregiver reading).
+  - A create made twice is made once (0.9.0-dev.45): an `Idempotency-Key`
+    on `POST /api/v1/documents`. Migration 0100. **Additive**: a request
+    without the header is answered as before, and an older vault ignores
+    it (there a create sent twice is made twice).
+    - **New `features`:** `idempotent_create` (`true`).
+    - **The header** is optional: 1 to 255 printable ASCII characters
+      (`0x20`–`0x7E`; a UUID is usual), sent once. Anything else — empty,
+      only spaces, longer, a tab or a character past ASCII, or the header
+      sent more than once (counted as it came, never joined into "k1, k2")
+      — is `400 invalid_idempotency_key`, before the body is read and
+      before anything is made.
+    - **A key is the caller's own**: its household, the signed-in account
+      as the person it is there, and the key. Another account, or another
+      household, sending the same value makes its own document; nothing is
+      told between them. An account whose sign-in is later somebody else's
+      in the household (removed, and invited again as another person)
+      neither replays what it made before nor is held up by those keys.
+    - **The first request** claims the key, makes the document and writes
+      its id on the key in **one transaction**, with the request's
+      fingerprint (a SHA-256 of `POST /api/v1/documents` and the body as
+      the vault reads it, its keys in any order). A request the vault
+      refuses (a `4xx`: validation, a teen naming somebody else, a viewer)
+      keeps no key, so it can be put right and sent again under the same
+      key. Its answer is `201` with the document, as without a key.
+    - **The same key and body again** (within 24 hours) makes nothing: it
+      is answered `201` with `Idempotent-Replayed: true` and the document
+      **as it is now**, read with the caller's rules now — exactly what
+      `GET /api/v1/documents/{id}` would answer, the Trash included
+      (`deleted_at` set). It is a real reading of the document: read
+      through a caregiver grant, it writes a look in its person's **Who
+      looked**, as GET does.
+    - **What it made, no longer the caller's to see** (made Only me by its
+      person since, say): `404` with its own code, **`created_not_visible`**
+      (and `Idempotent-Replayed: true`), and nothing of it — not its title,
+      not its id. The code alone says the first try made it, so a client
+      that reads no headers knows to stop sending it. A document removed
+      for good takes its keys with it, so a later try under such a key
+      makes a new one.
+    - **The same key with a different body** is `422
+idempotency_key_reused`, and makes nothing.
+    - **The same key while the first is still being made**: tries of one
+      key take turns on a lock of the key's own. The second waits for the
+      first (up to 5 seconds) and is then answered as above, or — if the
+      first failed — makes the document itself. Still running after that,
+      `409 idempotency_in_progress`, `retriable: true`, `Retry-After: 2`.
+      Only a try of that same key holds that lock, so a `409` always means
+      an earlier request of the key is on its way. Any other wait — the
+      household, the person or the account held a moment by a change to
+      them — is waited out as by any create, never a `409`; should the key
+      be there and not there twice over (its document removed for good at
+      that moment), the answer is `503 busy_try_again`, `retriable: true`,
+      `Retry-After: 1`.
+    - **Many at once:** each duplicate holds a database connection while it
+      waits its turn (up to the 5 seconds), so a client that fires many
+      copies of one request at once spends that many connections; send
+      one, and repeat it only once its answer is lost.
+    - **Expiry:** a key answers for 24 hours from the first request. After
+      that the same key is a new request; the worker's daily sweep
+      (`uploads.prune`) deletes old keys, in a short transaction of their
+      own.
+    - **Storage:** `create_idempotency`, its account's alone in the
+      database (row-level security as the person signed in; the vault's
+      own sweep reads them all). It holds the fingerprint, the document's
+      id and the status — no title, words or details. It is kept in a
+      backup and comes back with a restore (a key whose document is not in
+      the backup is not either), and the restore check holds it to its
+      rules.
+    - **Covered:** `POST /api/v1/documents`, every create through it — a
+      note (`type_key: "note"`) and any document made from its details.
+      Uploads (`POST /api/v1/capture`, `POST /api/v1/documents/{id}/versions`,
+      a batch's items, a computer's uploads) already take their own
+      Idempotency-Key, unchanged.
+    - **Shared and client:** `CapabilityFeatures.idempotent_create`.
+      `@fdv/client`: `createDocument(token, body, { idempotencyKey })`; the
+      fake keeps keys as the vault does (`FakeVaultState.createKeys`): the
+      replay, the refusals, `404 created_not_visible` for a document gone,
+      24 hours.
 
 ## Deprecations in effect
 

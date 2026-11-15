@@ -1857,6 +1857,23 @@ export interface Schema {
   };
 
   /**
+   * An Idempotency-Key sent with POST /documents (0100, 0.9.0-dev.45): what
+   * the first request was (a hash) and the document it made, its account's
+   * alone, for 24 hours. Written in the transaction that makes the document.
+   */
+  create_idempotency: {
+    household_id: string;
+    account_id: string;
+    member_id: string;
+    idempotency_key: string;
+    request_fingerprint: string;
+    /** Null only inside the transaction that is making it. */
+    document_id: string | null;
+    status: ColumnType<number, number | undefined, number>;
+    created_at: GeneratedTimestamp;
+  };
+
+  /**
    * A caregiver for somebody's medical papers (0098, 0.9.0, H1b): while it
    * is live and kept by its person, the caregiver reads that person's
    * Medical papers, their Only me ones included, and writes none of them

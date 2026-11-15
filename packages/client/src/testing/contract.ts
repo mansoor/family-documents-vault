@@ -132,6 +132,7 @@ const REFUSED_EXTRA_KEY = '5e6f7081-92a3-4b45-8c6d-7e8f90123456';
 const GONE_KIND_KEY = '6f708192-a3b4-4c56-9d7e-8f9012345678';
 const OWN_KIND_KEY = '708192a3-b4c5-4d67-8e8f-90123456789a';
 const SUGGESTIONS_KEY = '8192a3b4-c5d6-4e78-9f80-123456789abc';
+const CREATE_KEY = '92a3b4c5-d6e7-4f89-8a91-23456789abcd';
 
 async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
   try {
@@ -219,6 +220,30 @@ export const contractScenarios: Scenario[] = [
       const doc = await api.createDocument(t.access_token, { title: 'Contract water bill' });
       const page = await api.documents(t.access_token);
       expect(page.items.map((d) => d.id)).toContain(doc.id);
+    },
+  },
+  {
+    name: 'a create sent twice under one Idempotency-Key is made once (0.9.0-dev.45)',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      expect((await api.capabilities()).features.idempotent_create).toBe(true);
+      const before = (await api.documents(token)).items.length;
+      const body = { title: 'Contract note, sent twice', notes: 'Under the **sink**' };
+      const first = await api.createDocument(token, body, { idempotencyKey: CREATE_KEY });
+      const again = await api.createDocument(token, body, { idempotencyKey: CREATE_KEY });
+      expect(again.id).toBe(first.id);
+      expect((await api.documents(token)).items.length).toBe(before + 1);
+      // Another body under the same key is refused, and makes nothing.
+      const reused = await refusal(
+        api.createDocument(token, { ...body, title: 'Another' }, { idempotencyKey: CREATE_KEY }),
+      );
+      expect([reused.status, reused.code]).toEqual([422, 'idempotency_key_reused']);
+      // A key past 255 characters is no key at all.
+      const bad = await refusal(
+        api.createDocument(token, body, { idempotencyKey: 'k'.repeat(256) }),
+      );
+      expect([bad.status, bad.code]).toEqual([400, 'invalid_idempotency_key']);
+      expect((await api.documents(token)).items.length).toBe(before + 1);
     },
   },
   {

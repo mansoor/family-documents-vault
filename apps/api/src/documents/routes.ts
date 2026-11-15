@@ -13,6 +13,7 @@ import type { StepUpService } from '../auth/step-up.js';
 import type { PurgeService } from './purge.js';
 import type { LockService } from '../household/locks.js';
 import { NOTES_LIST_MAX, type DocumentService } from './service.js';
+import { createKeyOf, requestFingerprint } from './create-once.js';
 import { TAG_LIST_MAX } from './tags.js';
 import { asLists, filtersOf, NOT_A_PERSON } from './filters.js';
 import { dates, listQuery, listQueryOf, notesFilter, tagValues, values } from './list-query.js';
@@ -443,12 +444,37 @@ export function registerDocuments(
   );
 
   app.post('/api/v1/documents', auth, async (req, reply) => {
+    // An Idempotency-Key, when one is sent (0.9.0-dev.45): checked first,
+    // as it came (two of them are refused, not joined).
+    const key = createKeyOf(req.raw.rawHeaders);
+    const body = parse(documentBody, req.body ?? {});
     // Confirming is an edit's: a new document's first version has nothing to confirm.
-    const { confirm_details: _confirm, ...input } = parse(documentBody, req.body ?? {});
+    const { confirm_details: _confirm, ...input } = body;
     void _confirm;
-    const created = await docs.create(principal(req), input, metaOf(req));
-    reply.header('etag', created.etag);
-    return reply.status(201).send(created);
+    if (key === undefined) {
+      const created = await docs.create(principal(req), input, metaOf(req));
+      reply.header('etag', created.etag);
+      return reply.status(201).send(created);
+    }
+    // The same request again is the same body as the vault reads it: its
+    // keys in any order, the same values.
+    const done = await docs.createOnce(principal(req), input, metaOf(req), {
+      key,
+      fingerprint: requestFingerprint('POST', '/api/v1/documents', body),
+    });
+    if (done.replayed) void reply.header('idempotent-replayed', 'true');
+    // What it made is no longer the caller's to see: a 404 of its own, so a
+    // client that reads no headers still knows the first try was made
+    // (stop sending it), and nothing of it — not its id, not its title.
+    if (!done.document) {
+      throw new ApiError(
+        404,
+        'created_not_visible',
+        'What this Idempotency-Key made is no longer there for you.',
+      );
+    }
+    reply.header('etag', done.document.etag);
+    return reply.status(done.status).send(done.document);
   });
 
   app.get<{ Params: { id: string } }>('/api/v1/documents/:id', auth, async (req, reply) => {

@@ -496,7 +496,7 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
         async () => {
           expect(
             await pruneUploads({ admin, app, credentialsKey, localRoot: vaultDir, now: () => now }),
-          ).toEqual({ done: 0, abandoned: 1, photos: 0, incoming: 0 });
+          ).toEqual({ done: 0, abandoned: 1, photos: 0, incoming: 0, createKeys: 0 });
         },
       ],
       [

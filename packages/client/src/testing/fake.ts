@@ -507,6 +507,12 @@ export interface FakeVaultState {
   role: Role;
   /** Upload keys and what each made; a key is for one kind of request. */
   captures: Map<string, FakeUpload>;
+  /**
+   * POST /documents' Idempotency-Keys (0.9.0-dev.45), by the person who sent
+   * each and the key: the body it came with (canonical JSON), the document it
+   * made and when. A key answers for 24 hours, as the vault's.
+   */
+  createKeys?: Map<string, { body: string; document_id: string; at: number }>;
   /** What GET /reminders answers, whatever the state asked for. */
   reminders: ReminderView[];
   /** What GET /documents/{id}/issuer-suggestions answers, by document; "unavailable" if unset. */
@@ -3188,6 +3194,8 @@ export function createFakeVault(): {
           cabinet_dividers: true,
           cabinet_pins: true,
           caregivers: true,
+          // An Idempotency-Key on POST /documents (0.9.0-dev.45), as the vault keeps it.
+          idempotent_create: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -4111,6 +4119,43 @@ export function createFakeVault(): {
       const s = session();
       if (!('id' in s)) return s;
       if (init.method === 'POST') {
+        // An Idempotency-Key (0.9.0-dev.45), as the vault keeps it: the
+        // caller's own for 24 hours; the same body again is answered with
+        // what the first made, as it is now; another body is refused.
+        const sentKey = init.headers['idempotency-key'];
+        let createKey: { at: string; body: string } | null = null;
+        if (sentKey !== undefined) {
+          if (!/^[ -~]{1,255}$/.test(sentKey) || sentKey.trim() === '') {
+            return fail(
+              400,
+              'invalid_idempotency_key',
+              'An Idempotency-Key is 1 to 255 printable ASCII characters, sent once; a UUID is usual.',
+              'idempotency-key',
+            );
+          }
+          createKey = { at: `${whoOf(s).memberId}|${sentKey}`, body: canonicalJson(body) };
+          const prior = state.createKeys?.get(createKey.at);
+          if (prior && Date.now() - prior.at < CREATE_KEY_MS) {
+            if (prior.body !== createKey.body) {
+              return fail(
+                422,
+                'idempotency_key_reused',
+                'That Idempotency-Key was already used for a different request. Send a new key with a new request.',
+              );
+            }
+            const made = state.documents.find((d) => d.id === prior.document_id);
+            const replayed = { 'idempotent-replayed': 'true' };
+            if (!made) {
+              const gone = fail(
+                404,
+                'created_not_visible',
+                'What this Idempotency-Key made is no longer there for you.',
+              );
+              return respond(gone.status, await gone.json(), replayed);
+            }
+            return respond(201, viewOf(made), replayed);
+          }
+        }
         const type_key = (body.type_key as string | null | undefined) ?? null;
         if (type_key !== null && !state.types.some((t) => t.key === type_key)) {
           return fail(422, 'validation_failed', 'That kind of document is not on the list.');
@@ -4181,6 +4226,13 @@ export function createFakeVault(): {
             : {}),
           detail: {},
         });
+        if (createKey) {
+          (state.createKeys ??= new Map()).set(createKey.at, {
+            body: createKey.body,
+            document_id: doc.id,
+            at: Date.now(),
+          });
+        }
         return ok(viewOf(doc), 201);
       }
       // Sorted by a column (R2): the Documents table, as the real vault pages it.
@@ -8896,6 +8948,19 @@ function memberAnswer(m: FakeVaultState['members'][number]) {
     version: m.version ?? 1,
     can_edit: m.can_edit ?? m.role !== 'viewer',
   };
+}
+
+/** How long a POST /documents Idempotency-Key answers (0.9.0-dev.45). */
+const CREATE_KEY_MS = 24 * 60 * 60 * 1000;
+
+/** JSON with every object's keys in order, as the vault fingerprints a body. */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
 }
 
 /** A note keeps no file (0.9.0, N1), in the real vault's words. */

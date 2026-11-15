@@ -23,7 +23,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import type { CreatedShare } from '../documents/shares.js';
 import { SHARE_TEXT_CANNOT_SEND } from '../documents/shares.js';
-import { alertsSent, createHarness, type Harness } from '../test-harness.js';
+import { alertsSent, createHarness, holdsDigits, type Harness } from '../test-harness.js';
 
 /**
  * Codes by text (0.9.0, SMS3), end to end: a share link's code texted to the
@@ -833,7 +833,10 @@ describe.skipIf(!testAdminUrl())('codes by text (SMS3)', () => {
     const all = logged.join('\n');
     for (const t of everySent) {
       const code = /(\d{6})/.exec(t.text)?.[1];
-      if (code) expect(all).not.toContain(code);
+      // As a token of its own: a random id, a time or a response time in
+      // the log may hold any six digits by chance ("024137", once).
+      if (code) expect(holdsDigits(all, code), code).toBe(false);
+      if (code) expect(holdsDigits(all, `${code.slice(0, 3)} ${code.slice(3)}`), code).toBe(false);
       expect(all).not.toContain(t.to);
       expect(all).not.toContain(t.to.slice(1));
     }

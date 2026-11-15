@@ -592,6 +592,22 @@ export interface CapabilityFeatures {
    * Absent from older vaults.
    */
   caregivers?: boolean;
+  /**
+   * POST /documents takes an optional `Idempotency-Key` header
+   * (0.9.0-dev.45): 1 to 255 printable ASCII characters, a UUID usually,
+   * sent once; the caller's own (household, account and the person it is
+   * there) for 24 hours. The same key and request again makes nothing new:
+   * it is answered with the first status and the document as the caller may
+   * see it now, `Idempotent-Replayed: true` — or `404
+   * created_not_visible` (no id, no title) if they may no longer see it:
+   * it was made, so stop sending it. The same key with another request is
+   * `422 idempotency_key_reused`; while the first is still being made,
+   * `409 idempotency_in_progress` (retriable). A malformed key, or the
+   * header sent twice, is `400 invalid_idempotency_key`. A refused create
+   * keeps no key. Absent from older vaults, which ignore the header: there
+   * a create sent twice is made twice.
+   */
+  idempotent_create?: boolean;
 }
 
 export interface CapabilityLimits {

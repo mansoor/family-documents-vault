@@ -16,7 +16,10 @@ import type pg from 'pg';
  *  - a file sent through a request whose try died before it was whole
  *    (5.21), a day on, with its object; the senders' sessions and codes
  *    that have ended; and the address of a request that has ended, which is
- *    kept no longer than it can be used.
+ *    kept no longer than it can be used;
+ *  - POST /documents' Idempotency-Keys (0.9.0-dev.45, create_idempotency)
+ *    past their 24 hours: the API already takes one so old for no key, and
+ *    this deletes them.
  */
 export interface PruneUploadsDeps {
   admin: pg.Pool;
@@ -28,6 +31,8 @@ export interface PruneUploadsDeps {
 
 const DAY = 24 * 60 * 60 * 1000;
 export const DONE_KEPT_DAYS = 180;
+/** How long a POST /documents Idempotency-Key answers (the API's CREATE_KEY_HOURS). */
+export const CREATE_KEY_KEPT_MS = DAY;
 
 /**
  * A vault's object gone, or known gone: true when deleted, or when there is
@@ -55,9 +60,13 @@ async function deleteObject(
     );
 }
 
-export async function pruneUploads(
-  deps: PruneUploadsDeps,
-): Promise<{ done: number; abandoned: number; photos: number; incoming: number }> {
+export async function pruneUploads(deps: PruneUploadsDeps): Promise<{
+  done: number;
+  abandoned: number;
+  photos: number;
+  incoming: number;
+  createKeys: number;
+}> {
   const now = deps.now?.() ?? new Date();
   const doneBefore = new Date(now.getTime() - DONE_KEPT_DAYS * DAY);
   const claimedBefore = new Date(now.getTime() - DAY);
@@ -65,8 +74,22 @@ export async function pruneUploads(
   let abandoned = 0;
   let photos = 0;
   let incoming = 0;
+  let createKeys = 0;
+  const createdBefore = new Date(now.getTime() - CREATE_KEY_KEPT_MS);
   const { rows } = await deps.admin.query<{ id: string }>('select id from household');
   for (const hh of rows) {
+    // A create's keys past their 24 hours (0.9.0-dev.45): in a short
+    // transaction of their own, never held open by the object store below.
+    createKeys += await withSystem(deps.app, hh.id, async (trx) =>
+      Number(
+        (
+          await trx
+            .deleteFrom('create_idempotency')
+            .where('created_at', '<=', createdBefore)
+            .executeTakeFirst()
+        ).numDeletedRows,
+      ),
+    );
     await withSystem(deps.app, hh.id, async (trx) => {
       // A person's photo left half made for a day (5.17c) — its job lost, a
       // restore that marked it failed, a refusal kept for its reason — goes,
@@ -162,5 +185,5 @@ export async function pruneUploads(
       }
     });
   }
-  return { done, abandoned, photos, incoming };
+  return { done, abandoned, photos, incoming, createKeys };
 }

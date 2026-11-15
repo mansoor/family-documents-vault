@@ -1004,8 +1004,24 @@ export function createApi(http: Http) {
       request<NotesList>(`/api/v1/notes${qs(params)}`, { token }),
     document: (token: string, id: string) =>
       request<DocumentView>(`/api/v1/documents/${id}`, { token }),
-    createDocument: (token: string, body: DocumentInput) =>
-      request<DocumentView>('/api/v1/documents', { method: 'POST', body, token }),
+    /**
+     * A new document, or a note. `idempotencyKey` (a vault with
+     * `features.idempotent_create`, 0.9.0-dev.45): the same key and body sent
+     * again — after an answer that never came — makes nothing new, and is
+     * answered with what the first made. Use a new key for each new document
+     * (a UUID), and the same one for every try of it. An older vault ignores
+     * the key. Refusals of a key: `400 invalid_idempotency_key`, `422
+     * idempotency_key_reused`, `409 idempotency_in_progress` (retriable),
+     * and `404 created_not_visible` — the first try made it, and the caller
+     * may no longer see it: don't send it again.
+     */
+    createDocument: (token: string, body: DocumentInput, opts: { idempotencyKey?: string } = {}) =>
+      request<DocumentView>('/api/v1/documents', {
+        method: 'POST',
+        body,
+        token,
+        ...(opts.idempotencyKey ? { headers: { 'idempotency-key': opts.idempotencyKey } } : {}),
+      }),
     updateDocument: (token: string, id: string, body: DocumentInput, etag?: string) =>
       request<DocumentView>(`/api/v1/documents/${id}`, {
         method: 'PATCH',
