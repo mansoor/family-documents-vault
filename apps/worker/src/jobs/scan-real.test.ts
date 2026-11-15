@@ -108,12 +108,15 @@ describe.skipIf(!real)('scans read better, with the real tools (R3)', () => {
    * `fn` with a second look that has as long as the test has, rather than
    * SECOND_LOOK_MS's 45 s of wall clock. What is asked here is what the
    * second look reads, not how fast; the budget itself is scan-read.test.ts's
-   * ("the whole second look has one budget"). The upside-down page is turned,
-   * doubled and cleaned — 24 to 30 s of ImageMagick on a quiet four-core
-   * machine, as its upside-down reading was unsure — and on a runner busy
-   * with the whole suite that ran past the budget, so the page was kept as
-   * it came, upside down. A slow or busy server does the same to such a
-   * page: that is the product's to mend, not this test's to hide.
+   * ("the whole second look has one budget", and "a page turned whose second
+   * look runs out of time keeps its turned reading"). Before that fix the
+   * upside-down page was turned, doubled and cleaned at once — 24 to 30 s of
+   * ImageMagick on a quiet four-core machine — and on a runner busy with the
+   * whole suite ran past the budget, kept upside down. Now it is turned and
+   * read as it is first (some 7 s), and a page out of time keeps its turned
+   * reading; these pages read within the budget on a quiet machine. The time
+   * stays so that a runner busy with the whole suite never decides what a
+   * second look reads here.
    */
   const withTimeToLook = async <T>(fn: () => Promise<T>): Promise<T> => {
     const timeout = AbortSignal.timeout.bind(AbortSignal);

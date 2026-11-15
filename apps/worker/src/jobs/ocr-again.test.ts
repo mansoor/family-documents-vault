@@ -111,6 +111,32 @@ describe('a scan read again, cleaned (S5)', () => {
   );
 
   it.skipIf(!tools.pdftoppm)(
+    'a cleaned copy Tesseract fails on, or runs out of time on, leaves the first reading (the R3 budget)',
+    async () => {
+      const file = path.join(dir, 'grainy-fails.pdf');
+      await writeFile(file, await certificate(GRAINY));
+      const logged: Array<[string, string, Record<string, unknown> | undefined]> = [];
+      const got = await extractText(file, 'application/pdf', {
+        maxPages: 5,
+        workDir: dir,
+        tools: { ...tools, magick: true, tesseract: true },
+        ocr: (image) =>
+          image.endsWith('-clean.png')
+            ? Promise.reject(new Error('tesseract: timed out'))
+            : Promise.resolve('Willowbank'),
+        clean: async () => undefined,
+        log: (level, msg, extra) => {
+          logged.push([level, msg, extra]);
+        },
+      });
+      expect(got?.text).toBe('Willowbank');
+      expect(logged).toHaveLength(1);
+      expect(logged[0]?.[0]).toBe('warn');
+      expect(JSON.stringify(logged)).not.toMatch(/Willowbank/);
+    },
+  );
+
+  it.skipIf(!tools.pdftoppm)(
     'a page read well is never read again; a blank one keeps its first reading',
     async () => {
       const file = path.join(dir, 'clean.pdf');

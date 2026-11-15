@@ -560,6 +560,11 @@ export interface ScanReadOptions {
   until?: AbortSignal;
   /** Told when the second look has read a cleaned copy, so S5 need not clean it again. */
   onCleaned?: () => void;
+  /**
+   * Told when the second look runs out of its budget: the turn, which
+   * reading was kept and how long it took — never a word of the page.
+   */
+  log?: (level: string, msg: string, extra?: Record<string, unknown>) => void;
 }
 
 /**
@@ -572,11 +577,13 @@ export interface ScanReadOptions {
  * so; a page the right way up is turned back by the slant a small copy
  * shows; then it is evened out, made bigger if its letters are small (never
  * past PREPARE_MAX_PIXELS), cleaned of speckle if it was read unsurely, and
- * read again — kept only if it reads clearly more (REREAD_MARGIN), and a
- * page turned always. The whole second look has one budget
- * (SECOND_LOOK_MS), and ends early when `until` does; a step of it that
- * fails, or runs past either, leaves the best reading so far. Only the
- * read's own signal ending stops it. Its words laid out in rows,
+ * read again — kept only if it reads clearly more (REREAD_MARGIN). A page
+ * turned is read turned first, as it is, and made bigger or cleaned only if
+ * it still reads poorly so; its turned reading is kept. The whole second
+ * look has one budget (SECOND_LOOK_MS), and ends early when `until` does; a
+ * step of it that fails, or runs past either, leaves the best reading so
+ * far — a page's turned reading, once there is one, over its first. Only
+ * the read's own signal ending stops it. Its words laid out in rows,
  * straightened by the slant of its lines.
  */
 export async function readScanPage(
@@ -587,6 +594,7 @@ export async function readScanPage(
 ): Promise<string> {
   const first = await tools.words(image, signal);
   if (opts.once) return laidOut(first);
+  const began = Date.now();
   const q = readingQuality(first.words);
   const { small, prepare } = tools;
   const budget = AbortSignal.any([
@@ -678,15 +686,9 @@ export async function readScanPage(
       (await step(() => (tools.skew as NonNullable<ScanTools['skew']>)(image, budget))) ?? 0;
     if (Math.abs(m) >= MIN_SKEW && Math.abs(m) <= MAX_SKEW) angle = m;
   }
-  // The letters' height as read upright: from the first reading, unless it was the wrong way up.
-  const clean = q.words < 6 || q.conf < CLEAN_BELOW_CONF;
+  // The page's size upright: its width and height swapped by a quarter turn.
   const size =
     turn === 90 || turn === 270 ? [first.height, first.width] : [first.width, first.height];
-  const scale = cappedScale(
-    Math.max(clean ? 2 : 1, turn === 0 ? scaleFor(q.height) : 1),
-    size[0],
-    size[1],
-  );
   /** The page made ready `how`, and read: null where either failed or ran past the budget. */
   const ready = (how: Preparation, out: string) =>
     step(async () => {
@@ -695,19 +697,45 @@ export async function readScanPage(
       if (how.clean) opts.onCleaned?.();
       return read;
     });
-  let again = await ready({ turn, angle, scale, clean }, `${base}-ready.png`);
-  if (!again) return turn !== 0 ? laidOut(first) : asItCame();
+  /** Told, without a word of the page: the second look ran out of time, and what was kept. */
+  const ranOut = (kept: 'first' | 'turned') =>
+    opts.log?.('warn', 'a scanned page’s second look ran out of time', {
+      turn,
+      kept,
+      ms: Date.now() - began,
+    });
   if (turn !== 0) {
-    // Turned, its letters can now be measured: made bigger too, if small.
-    const s = cappedScale(scaleFor(readingQuality(again.words).height), size[0], size[1]);
-    if (s > scale) {
-      const bigger = await ready({ turn, scale: s, clean }, `${base}-ready2.png`);
-      if (bigger) again = better(again, bigger);
+    // Turned, and read just so, first: the first reading, the wrong way up,
+    // says nothing of how well the page reads. Most pages turned read well
+    // as they are; made bigger and cleaned too takes ImageMagick several
+    // times as long — on a modest server past the budget, and the turn,
+    // known, was lost with it.
+    const turned = await ready({ turn, scale: 1, clean: false }, `${base}-ready.png`);
+    if (!turned) {
+      if (budget.aborted) ranOut('first');
+      return laidOut(first);
+    }
+    // Turned, its letters can be measured, and how surely it reads: made
+    // bigger if they are small, cleaned of speckle if it still reads unsurely.
+    const tq = readingQuality(turned.words);
+    const clean = tq.words < 6 || tq.conf < CLEAN_BELOW_CONF;
+    const scale = cappedScale(Math.max(clean ? 2 : 1, scaleFor(tq.height)), size[0], size[1]);
+    let again = turned;
+    if (clean || scale > 1) {
+      const more = await ready({ turn, scale, clean }, `${base}-ready2.png`);
+      if (more) again = better(turned, more);
+      // Out of time: the page turned is kept, never its reading the wrong way up.
+      else if (budget.aborted) ranOut('turned');
     }
     // Turned, the first reading's words stood in the wrong places: the turned
     // one's, unless it read next to nothing.
     return laidOut(readingQuality(again.words).good >= 8 ? again : better(again, first));
   }
+  // Read unsurely, or next to nothing read: cleaned of speckle too.
+  const clean = q.words < 6 || q.conf < CLEAN_BELOW_CONF;
+  const scale = cappedScale(Math.max(clean ? 2 : 1, scaleFor(q.height)), size[0], size[1]);
+  const again = await ready({ turn, angle, scale, clean }, `${base}-ready.png`);
+  if (!again) return asItCame();
   // The page as it came is kept unless the second look reads clearly more:
   // two readings a word or two apart differ as much in which words they get
   // wrong — a name, say — as in how many.

@@ -195,6 +195,7 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
         tools,
         signal: deadline,
         looksUntil: AbortSignal.timeout(Math.round(readMs / 2)),
+        log: (level, msg, extra) => deps.log(level, msg, { version_id, ...extra }),
       });
       if (got) {
         await storeText(deps.db, hh, version.id, doc, scopeKey, got.text);

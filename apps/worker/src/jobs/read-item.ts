@@ -532,6 +532,7 @@ export async function readItem(
         tools,
         signal: deadline,
         looksUntil,
+        log: (level, msg, extra) => deps.log(level, msg, { item: f.id, ...extra }),
       });
       deadline.throwIfAborted();
       if (!got) {
