@@ -1,4 +1,9 @@
 import {
+  type CaregiverGrantView,
+  type CaregiverLook,
+  type GrownUpQuestionView,
+  type MyCaregivers,
+  type PersonCaregivers,
   type ArrangeBy,
   type CabinetLayout,
   type CabinetPreview,
@@ -243,6 +248,16 @@ export interface FakeCollection {
 }
 
 export interface FakeState {
+  /** Caregivers and turning 18 (0.9.0, H1b): said when a test asks. */
+  caregivers?: boolean;
+  /** GET /members/{id}/caregivers, by person: none is a 403, as the vault refuses anybody else. */
+  caregiversOf?: Record<string, PersonCaregivers>;
+  /** GET /caregivers. */
+  myCaregivers?: MyCaregivers;
+  /** GET /members/{me}/caregiver-views. */
+  caregiverLooks?: CaregiverLook[];
+  /** GET /grown-up/questions. */
+  grownUp?: GrownUpQuestionView[];
   /** My cabinet (0.9.0, C1): said when a test asks. */
   cabinets?: boolean;
   /** The signed-in person's cabinet, as GET /cabinet gives it. */
@@ -1333,6 +1348,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.sensitiveProtects ? { sensitive_protects: true } : {}),
           // My cabinet (0.9.0, C1): said when a test asks.
           ...(state.cabinets ? { cabinets: true } : {}),
+          // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
+          ...(state.caregivers ? { caregivers: true } : {}),
           // Neutral wording (0.9.0, H2): said when a test gives it.
           ...(state.wording ? { neutral_wording: true } : {}),
           // A computer that sends scans (0.8.0, D1): said when a test gives computers.
@@ -2193,6 +2210,72 @@ export function installFakeApi(state: FakeState) {
       if (!had) return refuse(404, 'not_found', 'That note is not here.');
       state.watchNotices = (state.watchNotices ?? []).filter((n) => n.id !== noticeAt[1]);
       return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    // Caregivers and turning 18 (0.9.0, H1b): as a test sets them.
+    if (path === '/api/v1/caregivers' && method === 'GET') {
+      return json(state.myCaregivers ?? { about_me: [], for_others: [] });
+    }
+    if (path === '/api/v1/grown-up/questions' && method === 'GET') {
+      return json({ items: state.grownUp ?? [] });
+    }
+    const careAt =
+      /^\/api\/v1\/members\/([^/]+)\/(caregivers|caregiver-views|grown-up-answer)(?:\/([^/]+)\/(keep|revoke))?$/.exec(
+        path,
+      );
+    if (careAt) {
+      const person = careAt[1] as string;
+      const theirs = state.caregiversOf?.[person];
+      if (careAt[2] === 'caregiver-views') return json({ items: state.caregiverLooks ?? [] });
+      if (careAt[2] === 'grown-up-answer' && method === 'POST') {
+        const q = (state.grownUp ?? []).find((x) => x.member_id === person);
+        if (!q) return refuse(404, 'not_found', 'There is no question waiting for that person.');
+        state.grownUp = (state.grownUp ?? []).filter((x) => x.member_id !== person);
+        const answer = (body as { answer?: string } | undefined)?.answer;
+        return json({ answer, made_private: answer === 'only_me' ? q.papers : 0 });
+      }
+      if (!theirs) {
+        return refuse(
+          403,
+          'forbidden',
+          'Only the person themselves and the owners can see who their caregivers are.',
+        );
+      }
+      if (careAt[2] === 'caregivers' && !careAt[3] && method === 'GET') return json(theirs);
+      if (careAt[2] === 'caregivers' && !careAt[3] && method === 'POST') {
+        const carer = String(
+          (body as { caregiver_member_id?: string } | undefined)?.caregiver_member_id,
+        );
+        const c = theirs.candidates.find((x) => x.member_id === carer);
+        if (!c) return refuse(422, 'caregiver_not_eligible', 'That person can’t be a caregiver.');
+        const me = person === ME.id;
+        const made: CaregiverGrantView = {
+          id: `grant-${carer}`,
+          person_member_id: person,
+          person_name: me ? ME.display_name : person,
+          caregiver_member_id: carer,
+          caregiver_name: c.display_name,
+          granted_at: new Date().toISOString(),
+          granted_by_name: ME.display_name,
+          confirmed: me,
+          may_revoke: true,
+          may_keep: false,
+          may_give_up: false,
+        };
+        theirs.items = [...theirs.items, made];
+        theirs.candidates = theirs.candidates.filter((x) => x.member_id !== carer);
+        return json(made, 201);
+      }
+      const g = theirs.items.find((x) => x.caregiver_member_id === careAt[3]);
+      if (!g) return refuse(404, 'not_found', 'That caregiver does not exist.');
+      if (careAt[4] === 'keep' && method === 'POST') {
+        g.confirmed = true;
+        g.may_keep = false;
+        return json(g);
+      }
+      if (careAt[4] === 'revoke' && method === 'POST') {
+        theirs.items = theirs.items.filter((x) => x !== g);
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
     }
     if (path === '/api/v1/reminders/people') {
       if (storedRole() !== 'owner') {

@@ -746,6 +746,31 @@ async function seed(url: string): Promise<string> {
         [hh, m.rows[0]?.id],
       );
     }
+    // A caregiver for Two's medical papers, a look they took, and Two's
+    // turning-18 question, where the schema has them (0098, H1b).
+    const care = await c.query<{ has: boolean }>(
+      "select to_regclass('public.caregiver_grant') is not null as has",
+    );
+    if (care.rows[0]?.has) {
+      const g = await c.query<{ id: string }>(
+        `insert into caregiver_grant
+           (household_id, person_member_id, caregiver_member_id, granted_by, person_confirmed_at)
+         values ($1, $2, $3, $4, now()) returning id`,
+        [hh, m.rows[1]?.id, m.rows[0]?.id, account],
+      );
+      await c.query(
+        `insert into caregiver_view
+           (household_id, grant_id, person_member_id, caregiver_member_id, document_id, action)
+         values ($1, $2, $3, $4,
+                 (select id from document where household_id = $1 order by id limit 1), 'opened')`,
+        [hh, g.rows[0]?.id, m.rows[1]?.id, m.rows[0]?.id],
+      );
+      await c.query(
+        `insert into grown_up_question (household_id, member_id, turned_on)
+         values ($1, $2, current_date)`,
+        [hh, m.rows[1]?.id],
+      );
+    }
   });
   return hh;
 }
@@ -3376,6 +3401,98 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
+
+  it('notices a caregiver grant, a caregiver’s looks or a turning-18 question open to anybody else, or a guard of them gone (0098, H1b)', async () => {
+    for (const t of ['caregiver_grant', 'caregiver_view', 'grown_up_question']) {
+      const seeded = await sql(vault.adminUrl, `select count(*)::int as n from ${t}`);
+      expect(seeded.rows[0]?.n, t).toBe(1);
+    }
+    const ruleOf = async (policy: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${policy}'`,
+        )
+      ).rows[0]?.rule as string;
+    for (const table of ['caregiver_grant', 'caregiver_view', 'grown_up_question']) {
+      const policy = `${table}_actor`;
+      const rule = await ruleOf(policy);
+      expect(rule, table).toMatch(/app_member\(\)/);
+      // Its rule gone: every caller of the household given every row.
+      await sql(vault.adminUrl, `drop policy ${policy} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(
+          new RegExp(`no rule for each kind of caller on .*${table}`),
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${policy} on public.${table} as restrictive using (${rule})`,
+        );
+      }
+      // Every member given everybody's.
+      await sql(
+        vault.adminUrl,
+        `alter policy ${policy} on public.${table}
+           using (case app_actor() when 'account' then true when 'system' then true else false end)`,
+      );
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(
+          new RegExp(`no rule keeps a member's own to them on .*${table}`),
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter policy ${policy} on public.${table} using (${rule})`);
+      }
+    }
+    // A look written by somebody signed in, the person themselves: caught.
+    await sql(vault.adminUrl, 'drop policy caregiver_view_insert on public.caregiver_view');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/who writes a caregiver's look/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy caregiver_view_insert on public.caregiver_view as restrictive for insert
+           with check (case app_actor() when 'system' then true else false end)`,
+      );
+    }
+    // A guard gone: a caregiver could change the papers a grant gives.
+    await sql(
+      vault.adminUrl,
+      'alter table public.document disable trigger document_not_by_caregiver',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.document enable trigger document_not_by_caregiver',
+      );
+    }
+    // A write rule gone: a caregiver could share a paper a grant gives.
+    const shared = (
+      await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polwithcheck, polrelid) as rule from pg_policy
+          where polname = 'share_link_not_by_caregiver_insert'`,
+      )
+    ).rows[0]?.rule as string;
+    await sql(
+      vault.adminUrl,
+      'drop policy share_link_not_by_caregiver_insert on public.share_link',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a caregiver writes nothing through a grant \(share_link\)/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy share_link_not_by_caregiver_insert on public.share_link
+           as restrictive for insert with check (${shared})`,
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  }, 60_000);
 
   it('notices somebody’s cabinet open to anybody else, an owner included, or its rule gone (0097, C1)', async () => {
     const seeded = await sql(vault.adminUrl, 'select count(*)::int as n from cabinet_layout');

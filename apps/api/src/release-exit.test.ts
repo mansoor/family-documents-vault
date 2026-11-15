@@ -248,6 +248,8 @@ const PARAM_KINDS: Record<string, Kind> = {
   'members/:id': 'member',
   // A collection's manager (0.9.0): a person.
   'managers/:memberId': 'member',
+  // A person's caregiver (0.9.0, H1b): a person.
+  'caregivers/:caregiverId': 'member',
   'photo/:photoId': 'photo',
   'shares/:id': 'share',
   'upload-requests/:id': 'uploadRequest',
@@ -751,6 +753,37 @@ const RULES: Record<string, Rule> = {
   },
   'GET /api/v1/cabinet/counts': { who: 'signedIn' },
   'GET /api/v1/documents/:id/also-in': { who: 'signedIn' },
+
+  // Caregivers for somebody's medical papers, and turning 18 (0.9.0, H1b):
+  // a person's grants are theirs, their caregiver's and the owners'; who
+  // looked, theirs alone; a grant is named, kept and revoked by the person
+  // (or an owner for somebody with no sign-in — Ahmed signs in); the
+  // turning-18 question is answered by the person (or an owner, keep only,
+  // for somebody who cannot answer). Nobody here has a grant or a question.
+  'GET /api/v1/caregivers': { who: 'signedIn' },
+  'GET /api/v1/members/:id/caregivers': {
+    who: 'signedIn',
+    theirs: {
+      passwordOnlyOwner: 'the owners see who is somebody’s caregiver (H1b)',
+      otherAdult: 'Sara is Ahmed’s caregiver: she is given her own grant (H1b)',
+    },
+  },
+  'POST /api/v1/members/:id/caregivers': {
+    who: 'signedIn',
+    bodies: (f) => [{ caregiver_member_id: f.member }, { caregiver_member_id: randomUUID() }],
+  },
+  'POST /api/v1/members/:id/caregivers/:caregiverId/keep': { who: 'signedIn' },
+  'POST /api/v1/members/:id/caregivers/:caregiverId/revoke': { who: 'signedIn' },
+  // Who looked: the person's and the owners' (14 Nov 2026), never which Only me paper.
+  'GET /api/v1/members/:id/caregiver-views': {
+    who: 'signedIn',
+    theirs: { passwordOnlyOwner: 'the owners see who looked, never which paper (H1b)' },
+  },
+  'GET /api/v1/grown-up/questions': { who: 'signedIn' },
+  'POST /api/v1/members/:id/grown-up-answer': {
+    who: 'signedIn',
+    bodies: () => [{ answer: 'keep' }, { answer: 'only_me' }],
+  },
 
   // Links, and what a restore paused.
   'GET /api/v1/shares': { who: 'signedIn' },
@@ -2054,6 +2087,27 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       `update account_household set suspended_at = now(), suspend_reason = 'restored'
         where member_id = $1`,
       [lina.member_id],
+    );
+
+    // A live caregiver grant and a turning-18 question waiting (0.9.0, H1b):
+    // Ahmed lets Sara — the other adult attacker — see his medical papers,
+    // and is asked about them. His Only me papers are not Medical, so the
+    // grant gives her none of them: every secret of his stays hers to miss.
+    await ok(
+      send(ahmed, 'POST', `/api/v1/members/${ahmed.member_id}/caregivers`, {
+        caregiver_member_id: sara.member_id,
+      }),
+      201,
+    );
+    await withSystem(h.db, olivia.household_id, (trx) =>
+      trx
+        .insertInto('grown_up_question')
+        .values({
+          household_id: olivia.household_id,
+          member_id: ahmed.member_id,
+          turned_on: '2026-11-14',
+        })
+        .execute(),
     );
   }, 180_000);
 

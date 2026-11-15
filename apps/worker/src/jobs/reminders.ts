@@ -1,4 +1,5 @@
 import {
+  askGrownUps,
   householdZone,
   mayYetSignUp,
   readAs,
@@ -27,6 +28,7 @@ import {
   rulesFor,
   sensitiveOf,
   TURNED_13_TOLD,
+  TURNED_18_TOLD,
   withSealed,
   type DateValue,
   type NeutralWording,
@@ -341,7 +343,7 @@ async function dueItems(
     id: string;
     /** Every row here is a document's: each query joins its document (0066). */
     document_id: string | null;
-    kind: 'derived' | 'manual' | 'turned_13';
+    kind: 'derived' | 'manual' | 'turned_13' | 'turned_18';
     fire_at: string;
     lead_days: number | null;
     source: string | null;
@@ -361,7 +363,7 @@ async function dueItems(
 ): Promise<Due[]> {
   const words = await reminderWords(trx, rows);
   return rows.map((r) => {
-    if (r.document_id === null || r.kind === 'turned_13') {
+    if (r.document_id === null || r.kind === 'turned_13' || r.kind === 'turned_18') {
       throw new Error('a reminder about a person among a document’s');
     }
     const fireAt = String(r.fire_at).slice(0, 10);
@@ -389,9 +391,13 @@ async function dueItems(
   });
 }
 
-/** The digest's lines for turning-13 reminders (0066), as of `today`: an owner's alone. */
+/**
+ * The digest's lines for turning-13 reminders (0066), and turning-18 ones
+ * (0098, H1b), as of `today`: an owner's alone, in `told`'s words.
+ */
 function personItems(
   rows: ReadonlyArray<{ id: string; member_id: string | null; fire_at: string }>,
+  told: { title: string; label: string } = TURNED_13_TOLD,
 ): Due[] {
   return rows.map((r) => {
     const fireAt = String(r.fire_at).slice(0, 10);
@@ -400,8 +406,8 @@ function personItems(
     return {
       reminder_id: r.id,
       document_id: null,
-      title: TURNED_13_TOLD.title,
-      label: TURNED_13_TOLD.label,
+      title: told.title,
+      label: told.label,
       about: null,
       note: null,
       overdue: false,
@@ -432,6 +438,10 @@ export async function tick(deps: ReminderDeps): Promise<{ became_due: number }> 
     total += await withSystem(deps.app, hh.id, async (trx) => {
       // Somebody who turns 13 today, for the owners (0066): made due.
       const turned = await remindTurned13(trx, hh.id, hh.timezone, now);
+      // Somebody who turns 18 with medical papers the family can see (0098,
+      // H1b): asked once, and for one with no sign-in of their own, the
+      // owners' reminder to ask in person, made due.
+      const grown = await askGrownUps(trx, hh.id, hh.timezone, now);
       const a = await trx
         .updateTable('reminder')
         .set({ status: 'due' })
@@ -446,7 +456,7 @@ export async function tick(deps: ReminderDeps): Promise<{ became_due: number }> 
         .where('snoozed_until', '<=', today)
         .where(stillNeeded)
         .executeTakeFirst();
-      return turned + Number(a.numUpdatedRows) + Number(b.numUpdatedRows);
+      return turned + grown + Number(a.numUpdatedRows) + Number(b.numUpdatedRows);
     });
   }
   return { became_due: total };
@@ -561,9 +571,30 @@ async function deliverTo(
     // Still about their 13th birthday (INV-3): a date of birth corrected
     // since is not, and waits for the tick to be done with it.
     const people = found.filter(stillTurned13);
-    if (due.length === 0 && people.length === 0) return false;
+    // Somebody turned 18 with no sign-in of their own (0098, H1b), told once
+    // to the owners while their question waits: held as the others are.
+    const grown = await trx
+      .selectFrom('reminder')
+      .leftJoin('reminder_delivery', 'reminder_delivery.reminder_id', 'reminder.id')
+      .select(['reminder.id', 'reminder.member_id', 'reminder.fire_at'])
+      .where('reminder.kind', '=', 'turned_18')
+      .where('reminder.status', '=', 'due')
+      .where('reminder_delivery.reminder_id', 'is', null)
+      .where(
+        sql<boolean>`exists (select 1 from grown_up_question q
+                              where q.member_id = reminder.member_id and q.answered_at is null)`,
+      )
+      .where(sql<boolean>`not member_signs_in_grown_up(reminder.member_id)`)
+      .orderBy('reminder.fire_at')
+      .forKeyShare('reminder')
+      .execute();
+    if (due.length === 0 && people.length === 0 && grown.length === 0) return false;
 
-    const items = [...(await dueItems(trx, due, today)), ...personItems(people)];
+    const items = [
+      ...(await dueItems(trx, due, today)),
+      ...personItems(people),
+      ...personItems(grown, TURNED_18_TOLD),
+    ];
     const reached = await sendToEach(
       trx,
       deps.notifier,
@@ -576,7 +607,7 @@ async function deliverTo(
         return daysBetween(oldest, today) > 1 ? 'catch_up' : 'daily';
       },
     );
-    for (const r of [...due, ...people]) {
+    for (const r of [...due, ...people, ...grown]) {
       const channels = [...(reached.get(r.id) ?? [])];
       for (const channel of channels.length ? channels : ['none']) {
         await trx
@@ -592,7 +623,7 @@ async function deliverTo(
         household_id: hh.id,
         local_date: today,
         kind: 'daily',
-        item_count: due.length + people.length,
+        item_count: due.length + people.length + grown.length,
         channels: union(reached),
       })
       .execute();

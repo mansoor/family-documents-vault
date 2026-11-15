@@ -6,6 +6,20 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.43] - 2026-11-14 — caregivers, and turning 18
+
+### Added
+
+- **Caregivers for medical papers.** Anyone can let someone in the family see their medical papers: on your own page, or in **Settings → Caregivers**, choose **Let someone see my medical papers**. Your caregiver then sees your medical papers, your **Only me** ones included, marked **Shared with you as caregiver**. They can read them and save a copy, but can't change them, share them, add them to a collection or set reminders on them. Nothing else of yours is opened to them. You can **Revoke** at any time, and it takes effect at once; a caregiver can stop seeing them too. A caregiver signs in as an owner or an adult. (Migration 0098.)
+- **Who looked.** Your Caregivers section lists each time a caregiver opened, previewed or saved a copy of one of your papers, and when. A sensitive paper is said as "a sensitive document", as in the activity log. Owners see the same list on your page, with who looked and when but never which Only me paper.
+- **An owner can name a caregiver for someone without a sign-in.** It covers the papers the family already sees; their Only me papers are included only once they keep it themselves, after they sign in.
+- **Turning 18.** When someone turns 18 with medical papers the family can see, they are asked once, on Home: **keep them visible to the family, or make them Only me?** Nothing changes until they answer. **Make them Only me** asks first, then makes every one of those papers Only me, those in the Trash too: nobody else in the family can open them, owners included (a caregiver they keep still can). Either answer is final for that question; each paper can still be changed one by one later. If they have no sign-in of their own, the owners are reminded, on Home and in the daily email, to ask them in person — and can record that they want them kept as they are, or name a caregiver. If they still sign in as a teen, the owners are asked to change their role to adult first; then they answer themselves.
+- **Everyone already 18 or over is asked too, once.** The first time this version runs, anyone 18 or over with medical papers the family can see gets the same question (or, without a sign-in, the owners' reminder). Nobody is asked twice.
+
+### Security
+
+- The caregiver exception is the database's own rule, asked by every list, count, search, cabinet count and page that shows a document, so they all agree; it never reaches notifications, the daily email, exports or the activity log's lines about a paper. Nothing can be written through a grant, in the database as well as the app. Every grant, revoke and look is written down. A grant to someone whose role changes to a teen's or a viewer's, or whose sign-in is taken away, ends by itself. New tests prove this from the side of each person who must not see: another adult, a teen, an owner, the caregiver after a revoke, the caregiver for a paper that isn't medical, another household. A restored vault is checked for the new tables and rules.
+
 ## [0.9.0-dev.42] - 2026-11-14 — My cabinet
 
 ### Added

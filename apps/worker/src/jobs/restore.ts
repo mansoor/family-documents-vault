@@ -1263,6 +1263,23 @@ const GUARDS = [
   // An owner sets up the AI reader as themselves, and never says a Test
   // passed, nor where it runs (0089, AIR1).
   { name: 'ai_reader_account_writes', table: 'ai_reader', fn: 'ai_reader_account_writes' },
+  // A caregiver grant names its person and caregiver once, is kept by its
+  // person alone and revoked once; a caregiver whose role or sign-in goes
+  // is one no more; a caregiver changes none of the papers a grant gives
+  // them; a turning-18 question is answered once, Only me by the person
+  // alone (0098, H1b).
+  { name: 'caregiver_grant_rule', table: 'caregiver_grant', fn: 'caregiver_grant_rule' },
+  {
+    name: 'account_household_ends_care',
+    table: 'account_household',
+    fn: 'account_household_ends_care',
+  },
+  {
+    name: 'document_not_by_caregiver',
+    table: 'document',
+    fn: 'document_not_by_caregiver',
+  },
+  { name: 'grown_up_question_rule', table: 'grown_up_question', fn: 'grown_up_question_rule' },
 ];
 
 /**
@@ -1355,6 +1372,12 @@ const UNIQUE_INDEXES = [
     name: 'reading_check_one_running',
     table: 'reading_check',
     what: 'one Reading check a household at a time',
+  },
+  // One live grant a person and caregiver (0098, H1b).
+  {
+    name: 'caregiver_grant_live',
+    table: 'caregiver_grant',
+    what: 'one live caregiver grant a person and caregiver',
   },
 ];
 
@@ -1529,6 +1552,12 @@ const ACTOR_GUARDED = [
   ...RESTRICTION_TABLES,
   // A person's own cabinet (0097, C1): theirs alone, and the vault's.
   'cabinet_layout',
+  // A caregiver for somebody's medical papers, each look they took, and
+  // the turning-18 question (0098, H1b): the person's, the caregiver's and
+  // the owners'; the looks the person's alone.
+  'caregiver_grant',
+  'caregiver_view',
+  'grown_up_question',
 ];
 
 /**
@@ -1626,6 +1655,12 @@ const MAKER_ONLY = [
   { table: 'access_restriction', where: 'true', what: "a person's restriction" },
   // A person's own cabinet (0097, C1).
   { table: 'cabinet_layout', where: 'true', what: "somebody's cabinet" },
+  // A caregiver grant: its person's, its caregiver's and the owners' (0098, H1b).
+  { table: 'caregiver_grant', where: 'true', what: "somebody's caregiver" },
+  // A caregiver's looks at somebody's papers: that person's and the owners' (0098).
+  { table: 'caregiver_view', where: 'true', what: "a caregiver's looks at somebody's papers" },
+  // Somebody's turning-18 question: theirs, and the owners' (0098).
+  { table: 'grown_up_question', where: 'true', what: "somebody's turning-18 question" },
 ];
 
 /**
@@ -2018,6 +2053,83 @@ const REQUIRED_RULES = [
       what: `who ${does} a restriction (${table})`,
     })),
   ),
+  // A caregiver grant: made by its person, or an owner for somebody with no
+  // sign-in; changed by them or its caregiver; removed by nobody signed in.
+  // A turning-18 question: asked and removed by the vault alone. And
+  // nothing of a paper a grant gives is written through it (0098, H1b).
+  {
+    table: 'caregiver_grant',
+    name: 'caregiver_grant_insert',
+    cmd: 'a',
+    what: 'who names a caregiver',
+  },
+  {
+    table: 'caregiver_grant',
+    name: 'caregiver_grant_update',
+    cmd: 'w',
+    what: 'who keeps or revokes a caregiver',
+  },
+  {
+    table: 'caregiver_grant',
+    name: 'caregiver_grant_delete',
+    cmd: 'd',
+    what: 'who removes a caregiver grant',
+  },
+  {
+    table: 'grown_up_question',
+    name: 'grown_up_question_insert',
+    cmd: 'a',
+    what: 'who asks the turning-18 question',
+  },
+  {
+    table: 'grown_up_question',
+    name: 'grown_up_question_delete',
+    cmd: 'd',
+    what: 'who removes a turning-18 question',
+  },
+  // A caregiver's look: written by the vault alone, never by anybody signed
+  // in, the person included (0098).
+  {
+    table: 'caregiver_view',
+    name: 'caregiver_view_insert',
+    cmd: 'a',
+    what: "who writes a caregiver's look",
+  },
+  {
+    table: 'caregiver_view',
+    name: 'caregiver_view_update',
+    cmd: 'w',
+    what: "who changes a caregiver's look",
+  },
+  {
+    table: 'caregiver_view',
+    name: 'caregiver_view_delete',
+    cmd: 'd',
+    what: "who removes a caregiver's look",
+  },
+  ...(
+    [
+      ['document_version', 'document_version_not_by_caregiver_insert', 'a'],
+      ['document_version', 'document_version_not_by_caregiver_update', 'w'],
+      ['document_version', 'document_version_not_by_caregiver_delete', 'd'],
+      ['document_text', 'document_text_not_by_caregiver_write', 'w'],
+      ['document_text_sealed', 'document_text_sealed_not_by_caregiver_write', 'w'],
+      ['document_link', 'document_link_not_by_caregiver_insert', 'a'],
+      ['document_link', 'document_link_not_by_caregiver_delete', 'd'],
+      ['reminder', 'reminder_not_by_caregiver_insert', 'a'],
+      ['reminder', 'reminder_not_by_caregiver_update', 'w'],
+      ['reminder', 'reminder_not_by_caregiver_delete', 'd'],
+      ['doc_collection_item', 'doc_collection_item_not_by_caregiver_insert', 'a'],
+      ['doc_collection_item', 'doc_collection_item_not_by_caregiver_delete', 'd'],
+      ['share_link', 'share_link_not_by_caregiver_insert', 'a'],
+      ['share_link', 'share_link_not_by_caregiver_update', 'w'],
+    ] as const
+  ).map(([table, name, cmd]) => ({
+    table,
+    name,
+    cmd,
+    what: `that a caregiver writes nothing through a grant (${table})`,
+  })),
 ];
 
 /** The rows of a guarded table that are a household's: the built-ins are everybody's. */

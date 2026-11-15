@@ -568,6 +568,15 @@ export interface CapabilityFeatures {
    * older vaults.
    */
   cabinets?: boolean;
+  /**
+   * Caregivers and turning 18 (0.9.0, H1b): GET /caregivers, GET and POST
+   * /members/{id}/caregivers, POST /members/{id}/caregivers/{caregiverId}/
+   * keep and /revoke, GET /members/{id}/caregiver-views; GET
+   * /grown-up/questions and POST /members/{id}/grown-up-answer. A document
+   * a caregiver reads only through a grant carries `caregiver: true`.
+   * Absent from older vaults.
+   */
+  caregivers?: boolean;
 }
 
 export interface CapabilityLimits {

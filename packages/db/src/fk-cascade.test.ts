@@ -67,6 +67,8 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
         'document',
         // A document a Reading check sent to an AI reader (0092, AIR3).
         'ai_reader_send',
+        // A caregiver's look at it (0098, H1b): goes with it.
+        'caregiver_view',
       ]),
     );
     // 'c': on delete cascade, every one — but a document no longer needed,

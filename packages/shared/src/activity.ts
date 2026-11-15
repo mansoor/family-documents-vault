@@ -487,6 +487,47 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
           : `${who} removed ${possessive(personOf(e))} mobile number`,
         true,
       );
+    // A caregiver for somebody's medical papers (0.9.0, H1b): named, kept,
+    // revoked, given up — whom, never a paper. To the owners, the person,
+    // the caregiver and whoever did it.
+    case 'caregiver.granted': {
+      const carer = nameOf(detail, 'caregiver');
+      return line(
+        isOwn(e)
+          ? `${who} let ${carer} see their medical papers`
+          : `${who} named ${carer} to see ${possessive(personOf(e))} medical papers`,
+        true,
+      );
+    }
+    case 'caregiver.kept':
+      return line(
+        `${who} kept ${nameOf(detail, 'caregiver')} as someone who can see their medical papers, Only me ones included`,
+        true,
+      );
+    case 'caregiver.revoked': {
+      const carer = nameOf(detail, 'caregiver');
+      return line(
+        isOwn(e)
+          ? `${who} stopped ${carer} seeing their medical papers`
+          : `${who} stopped ${carer} seeing ${possessive(personOf(e))} medical papers`,
+        true,
+      );
+    }
+    case 'caregiver.given_up':
+      return line(`${who} stopped seeing ${possessive(personOf(e))} medical papers`, true);
+    // Turning 18 (H1b): the one question answered — never which papers, nor
+    // how many (the owners read this line too).
+    case 'grown_up.answered': {
+      if (detail.answer === 'only_me') {
+        return line(`${who} made their medical papers Only me`, true);
+      }
+      return line(
+        isOwn(e)
+          ? `${who} kept their medical papers visible to the family`
+          : `${who} kept ${possessive(personOf(e))} medical papers visible to the family, as they asked`,
+        true,
+      );
+    }
     // An owner's look at somebody's sign-in (5.25): news, to the owners and
     // to them, and never what the card said.
     case 'member.account_viewed':

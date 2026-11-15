@@ -50,6 +50,15 @@ export interface Schema {
     name: string;
     active_vault_id: string | null;
     protection_mode: Generated<'standard' | 'private'>;
+    /**
+     * When the vault's job first asked everybody already 18 or over about
+     * their medical papers (0098, H1b): the one-off catch-up; null until it has.
+     */
+    grown_ups_asked_at: ColumnType<
+      Date | null,
+      Date | string | null | undefined,
+      Date | string | null
+    >;
     plan: Generated<string>;
     plan_state: Generated<'active' | 'read_only' | 'export_only'>;
     plan_state_since: Timestamp | null;
@@ -1494,9 +1503,12 @@ export interface Schema {
     household_id: string;
     /** The document it is about; null for one about a person (0066). */
     document_id: string | null;
-    /** The person a `turned_13` reminder is about (0066): the owners' alone; null otherwise. */
+    /**
+     * The person a `turned_13` reminder (0066), or a `turned_18` one (0098),
+     * is about: the owners' alone; null otherwise.
+     */
     member_id: ColumnType<string | null, string | null | undefined, string | null>;
-    kind: 'derived' | 'manual' | 'turned_13';
+    kind: 'derived' | 'manual' | 'turned_13' | 'turned_18';
     fire_at: ColumnType<string, string, string>;
     lead_days: number | null;
     /** A derived reminder's date: 'expires' or a date field's key; null for a manual one (0038). */
@@ -1829,6 +1841,64 @@ export interface Schema {
     layout: ColumnType<unknown, string, string>;
     version: Generated<number>;
     updated_at: GeneratedTimestamp;
+  };
+
+  /**
+   * A caregiver for somebody's medical papers (0098, 0.9.0, H1b): while it
+   * is live and kept by its person, the caregiver reads that person's
+   * Medical papers, their Only me ones included, and writes none of them
+   * (`caregiver_reads`). The person, the caregiver and the owners are given
+   * it.
+   */
+  caregiver_grant: {
+    id: Generated<string>;
+    household_id: string;
+    person_member_id: string;
+    caregiver_member_id: string;
+    granted_by: string | null;
+    granted_at: GeneratedTimestamp;
+    person_confirmed_at: ColumnType<
+      Date | null,
+      Date | string | null | undefined,
+      Date | string | null
+    >;
+    revoked_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+    revoked_by: ColumnType<string | null, string | null | undefined, string | null>;
+  };
+
+  /**
+   * A caregiver's look at a paper a grant gave them (0098): written by
+   * `record_caregiver_view` alone, and given to the person it was about.
+   */
+  caregiver_view: {
+    id: Generated<string>;
+    household_id: string;
+    grant_id: string;
+    person_member_id: string;
+    caregiver_member_id: string;
+    document_id: string;
+    action: 'opened' | 'downloaded' | 'previewed';
+    at: GeneratedTimestamp;
+  };
+
+  /**
+   * The one question somebody is asked as they turn 18 with Medical papers
+   * the family can see (0098, H1b): keep them as they are, or make them
+   * Only me. Asked by the vault, answered once.
+   */
+  grown_up_question: {
+    household_id: string;
+    member_id: string;
+    turned_on: ColumnType<string, string, string>;
+    asked_at: GeneratedTimestamp;
+    answered_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+    answer: ColumnType<
+      'keep' | 'only_me' | null,
+      'keep' | 'only_me' | null | undefined,
+      'keep' | 'only_me' | null
+    >;
+    answered_by: ColumnType<string | null, string | null | undefined, string | null>;
+    made_private: ColumnType<number, number | undefined, number>;
   };
 
   notification_preference: {

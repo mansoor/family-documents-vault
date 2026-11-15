@@ -992,6 +992,25 @@ else's. A folder only ever narrows what its person can already open: its
 count and its contents follow the same rules as the table and search. It
 needs no setting of its own.
 
+### Caregivers, and turning 18
+
+Anyone can let someone in the family see their medical papers — **Let
+someone see my medical papers**, on their own page or in **Settings →
+Caregivers**. The caregiver (an owner or an adult) then sees those papers,
+Only me ones included, marked **Shared with you as caregiver**, and can read
+them and save a copy, never change or share them. Nothing else is opened.
+Revoke at any time; every look is listed for the person, with when, and for
+the owners (who looked and when, never which paper). An owner can name a
+caregiver for someone without a sign-in; it reaches their Only me papers only
+once they keep it themselves.
+
+When someone turns 18 with medical papers the family can see, they are asked
+once whether to keep them visible to the family or make them Only me; if
+they have no sign-in, the owners are reminded to ask them in person, and if
+they still sign in as a teen, to change their role to adult first. Everyone
+already 18 or over is asked once too, the first time. It needs no setting of
+its own.
+
 ### Notes
 
 **Notes**, in the left bar, keep what the family knows and keeps nowhere else:

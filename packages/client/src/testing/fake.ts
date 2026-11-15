@@ -284,6 +284,17 @@ import {
   type BelongsTo,
   AI_READER_KINDS_OFFERED,
   type AiReaderView,
+  GROWN_UP_ANSWERED,
+  GROWN_UP_EXPLAINED,
+  GROWN_UP_ONLY_ME_THEIRS,
+  GROWN_UP_QUESTION,
+  GROWN_UP_THEIRS_TO_ANSWER,
+  roleFirstWords,
+  mayGiveCare,
+  mayNameOwnCaregiver,
+  turnedEighteenWords,
+  type CaregiverGrantView,
+  type GrownUpQuestionView,
 } from '@fdv/shared';
 import type { FetchLike, ResponseLike } from '../http.js';
 
@@ -541,6 +552,28 @@ export interface FakeVaultState {
    */
   personReminders: Array<{ id: string; member_id: string; fire_at: string; dismissed: boolean }>;
   /**
+   * Caregivers for somebody's medical papers (0.9.0, H1b), as the real vault
+   * keeps them: named by the person (kept as made) or by an owner for
+   * somebody without a sign-in (kept once the person says so); revoked by
+   * the person, an owner for somebody without a sign-in, or the caregiver.
+   */
+  caregivers?: FakeCaregiver[];
+  /** The caregivers' looks, as GET /members/{id}/caregiver-views gives them to the person. */
+  caregiverLooks?: Array<{
+    person: string;
+    caregiver: string;
+    document_id: string | null;
+    action: 'opened' | 'downloaded' | 'previewed';
+    at: string;
+  }>;
+  /** Turning-18 questions (H1b), as the vault's worker asks them; a test seeds them. */
+  grownUp?: Array<{
+    member_id: string;
+    turned_on: string;
+    papers: number;
+    answer: 'keep' | 'only_me' | null;
+  }>;
+  /**
    * Computers that send scans (0.8.0, D1), with their keys in the clear, as
    * only a fake may keep them; a revoked one kept, as the vault keeps it.
    */
@@ -646,6 +679,17 @@ export interface FakeShare {
 
 /** A viewer's limits, as the fake keeps them (5.33): the flags always said. */
 /** An invitation as the fake keeps it (5.34): its secrets in the clear, as only a fake may. */
+/** A caregiver grant, as the fake keeps it (H1b). */
+export interface FakeCaregiver {
+  id: string;
+  person: string;
+  caregiver: string;
+  granted_by: string;
+  granted_at: string;
+  confirmed: boolean;
+  revoked: boolean;
+}
+
 export interface FakeInvitation {
   view: Invitation;
   token: string;
@@ -3124,6 +3168,7 @@ export function createFakeVault(): {
           sensitive_protects: true,
           // My cabinet (0.9.0, C1).
           cabinets: true,
+          caregivers: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -7751,6 +7796,258 @@ export function createFakeVault(): {
         next.is_deceased !== (m.is_deceased ?? false);
       if (moved) Object.assign(m, next, { version: version + 1 });
       return respond(200, memberAnswer(m), { etag: `"${m.version ?? 1}"` });
+    }
+    // Caregivers and turning 18 (0.9.0, H1b), as the real vault answers them.
+    const careAt =
+      /^\/api\/v1\/members\/([^/]+)\/(caregivers|caregiver-views|grown-up-answer)(?:\/([^/]+)\/(keep|revoke))?$/.exec(
+        path,
+      );
+    if (path === '/api/v1/caregivers' || path === '/api/v1/grown-up/questions' || careAt) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      const grants = (state.caregivers ??= []);
+      const nameOf = (id: string) => state.members.find((m) => m.id === id)?.display_name ?? '';
+      /** Somebody who answers for their own papers: an owner, an adult or a teen, signed in. */
+      const answersForSelf = (id: string) => {
+        const r = roleOfMember(id);
+        return r === 'owner' || r === 'adult' || r === 'teen';
+      };
+      const viewOfGrant = (g: FakeCaregiver): CaregiverGrantView => {
+        const self = g.person === who.memberId;
+        const forThem = who.role === 'owner' && !self && !answersForSelf(g.person);
+        return {
+          id: g.id,
+          person_member_id: g.person,
+          person_name: nameOf(g.person),
+          caregiver_member_id: g.caregiver,
+          caregiver_name: nameOf(g.caregiver),
+          granted_at: g.granted_at,
+          granted_by_name: nameOf(g.granted_by) || null,
+          confirmed: g.confirmed,
+          may_revoke: self || forThem,
+          may_keep: self && !g.confirmed,
+          may_give_up: g.caregiver === who.memberId,
+        };
+      };
+      const live = grants.filter((g) => !g.revoked);
+      if (path === '/api/v1/caregivers' && init.method === 'GET') {
+        return ok({
+          about_me: live.filter((g) => g.person === who.memberId).map(viewOfGrant),
+          for_others: live.filter((g) => g.caregiver === who.memberId).map(viewOfGrant),
+        });
+      }
+      if (path === '/api/v1/grown-up/questions' && init.method === 'GET') {
+        const today = localToday(state.timezone);
+        const items: GrownUpQuestionView[] = [];
+        for (const q of state.grownUp ?? []) {
+          if (q.answer !== null || q.papers === 0) continue;
+          const r = roleOfMember(q.member_id);
+          const self = r === 'owner' || r === 'adult';
+          const name = nameOf(q.member_id);
+          if (q.member_id === who.memberId && self) {
+            items.push({
+              member_id: q.member_id,
+              display_name: name,
+              turned_on: q.turned_on,
+              papers: q.papers,
+              asks: 'self',
+              title: GROWN_UP_QUESTION,
+              label: GROWN_UP_EXPLAINED,
+            });
+          } else if (q.member_id !== who.memberId && !self && who.role === 'owner') {
+            // No sign-in at all: in person; a teen's still: their role first.
+            items.push({
+              member_id: q.member_id,
+              display_name: name,
+              turned_on: q.turned_on,
+              papers: q.papers,
+              asks: r ? 'role_first' : 'in_person',
+              ...(r ? roleFirstWords(name) : turnedEighteenWords(name, q.turned_on, today)),
+            });
+          }
+        }
+        return ok({ items });
+      }
+      if (careAt) {
+        const person = decodeURIComponent(careAt[1] as string);
+        const what = careAt[2];
+        const other = careAt[3] ? decodeURIComponent(careAt[3]) : null;
+        const m = state.members.find((x) => x.id === person);
+        if (what === 'grown-up-answer' && init.method === 'POST') {
+          const q = (state.grownUp ?? []).find((x) => x.member_id === person);
+          if (!q || !m)
+            return fail(404, 'not_found', 'There is no question waiting for that person.');
+          if (q.answer !== null) return fail(409, 'already_answered', GROWN_UP_ANSWERED);
+          const r = roleOfMember(person);
+          const self = r === 'owner' || r === 'adult';
+          const answer = body.answer;
+          if (answer !== 'keep' && answer !== 'only_me') {
+            return fail(422, 'validation_failed', 'Choose keep or only_me.', 'answer');
+          }
+          if (person === who.memberId) {
+            if (!self)
+              return fail(404, 'not_found', 'There is no question waiting for that person.');
+          } else {
+            if (who.role !== 'owner') {
+              return fail(404, 'not_found', 'There is no question waiting for that person.');
+            }
+            // An owner answers only for somebody with no sign-in at all.
+            if (r) return fail(403, 'ask_them_themselves', GROWN_UP_THEIRS_TO_ANSWER);
+            if (answer === 'only_me') return fail(403, 'only_the_person', GROWN_UP_ONLY_ME_THEIRS);
+          }
+          let made = 0;
+          if (answer === 'only_me') {
+            for (const d of state.documents) {
+              if (
+                d.owner_member_id === person &&
+                (d.visibility ?? 'household') !== 'private' &&
+                d.type_key !== 'note' &&
+                state.types.find((t) => t.key === d.type_key)?.category === 'medical'
+              ) {
+                d.visibility = 'private';
+                made++;
+              }
+            }
+          }
+          q.answer = answer;
+          return ok({ answer, made_private: made });
+        }
+        if (!m) return fail(404, 'not_found', 'That person does not exist.');
+        if (what === 'caregiver-views' && init.method === 'GET') {
+          const own = person === who.memberId;
+          if (!own && who.role !== 'owner') {
+            return fail(
+              403,
+              'forbidden',
+              'Only the person themselves and the owners can see who looked at their papers.',
+            );
+          }
+          const items = (state.caregiverLooks ?? [])
+            .filter((l) => l.person === person)
+            .map((l) => {
+              // An owner is told who looked, never which Only me paper.
+              if (!own) {
+                return {
+                  caregiver_name: nameOf(l.caregiver),
+                  document_id: null,
+                  title: null,
+                  sensitive: false,
+                  only_me: true,
+                  action: l.action,
+                  at: l.at,
+                };
+              }
+              const d = state.documents.find((x) => x.id === l.document_id);
+              const sensitive =
+                d !== undefined &&
+                sensitiveOf(d, state.types.find((t) => t.key === d.type_key) ?? null);
+              return {
+                caregiver_name: nameOf(l.caregiver),
+                document_id: d ? d.id : null,
+                title: d && !sensitive ? (d.title ?? null) : null,
+                sensitive,
+                action: l.action,
+                at: l.at,
+              };
+            })
+            .reverse();
+          return ok({ items });
+        }
+        const self = person === who.memberId;
+        const forThem = who.role === 'owner' && !self && !answersForSelf(person);
+        const mayAdd =
+          (m.kind ?? 'family') === 'family' &&
+          !m.is_deceased &&
+          (self ? mayNameOwnCaregiver(who.role) : forThem);
+        const theirs = live.filter((g) => g.person === person);
+        if (what === 'caregivers' && other === null && init.method === 'GET') {
+          if (!self && who.role !== 'owner' && !theirs.some((g) => g.caregiver === who.memberId)) {
+            return fail(
+              403,
+              'forbidden',
+              'Only the person themselves and the owners can see who their caregivers are.',
+            );
+          }
+          const named = new Set(theirs.map((g) => g.caregiver));
+          const candidates = mayAdd
+            ? state.members
+                .filter(
+                  (x) =>
+                    (x.kind ?? 'family') === 'family' &&
+                    x.id !== person &&
+                    !named.has(x.id) &&
+                    mayGiveCare(roleOfMember(x.id)) &&
+                    suspensionOf(x.id) === null,
+                )
+                .map((x) => ({ member_id: x.id, display_name: x.display_name }))
+            : [];
+          return ok({ items: theirs.map(viewOfGrant), may_add: mayAdd, candidates });
+        }
+        if (what === 'caregivers' && other === null && init.method === 'POST') {
+          if (!mayAdd) {
+            return fail(
+              403,
+              'forbidden',
+              'Only the person themselves, or an owner for somebody without a sign-in, can change who their caregivers are.',
+            );
+          }
+          const carer =
+            typeof body.caregiver_member_id === 'string' ? body.caregiver_member_id : '';
+          if (carer === person) {
+            return fail(422, 'validation_failed', 'Somebody can’t be their own caregiver.');
+          }
+          const c = state.members.find((x) => x.id === carer);
+          if (
+            !c ||
+            (c.kind ?? 'family') !== 'family' ||
+            !mayGiveCare(roleOfMember(carer)) ||
+            suspensionOf(carer) !== null
+          ) {
+            return fail(
+              422,
+              'caregiver_not_eligible',
+              'A caregiver must be somebody in the family who signs in as an owner or an adult, and isn’t locked out.',
+            );
+          }
+          let g = theirs.find((x) => x.caregiver === carer);
+          if (!g) {
+            g = {
+              id: next('caregiver'),
+              person,
+              caregiver: carer,
+              granted_by: who.memberId,
+              granted_at: new Date().toISOString(),
+              confirmed: self,
+              revoked: false,
+            };
+            grants.push(g);
+          } else if (self) {
+            g.confirmed = true;
+          }
+          return ok(viewOfGrant(g), 201);
+        }
+        const g = other ? theirs.find((x) => x.caregiver === other) : undefined;
+        if (careAt[4] === 'keep' && init.method === 'POST') {
+          if (!self)
+            return fail(403, 'forbidden', 'Only the person themselves can keep a caregiver.');
+          if (!g) return fail(404, 'not_found', 'That caregiver does not exist.');
+          g.confirmed = true;
+          return ok(viewOfGrant(g));
+        }
+        if (careAt[4] === 'revoke' && init.method === 'POST') {
+          if (!g) return fail(404, 'not_found', 'That caregiver does not exist.');
+          if (!self && g.caregiver !== who.memberId && !forThem) {
+            return fail(
+              403,
+              'forbidden',
+              'Only the person themselves, or an owner for somebody without a sign-in, can change who their caregivers are.',
+            );
+          }
+          g.revoked = true;
+          return empty();
+        }
+      }
     }
     // Somebody turned 13 (after 0.7.0): the owners' reminders, as the real
     // vault answers them — while the person may still be invited.

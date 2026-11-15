@@ -12,6 +12,7 @@ import {
   THE_HOUSEHOLD,
   SENSITIVE_LABEL,
   SENSITIVE_MEANS,
+  CAREGIVER_MARK,
 } from '@fdv/shared';
 import { Fragment, useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router';
@@ -263,6 +264,9 @@ export function DocumentScreen() {
   const memberId = session.info?.member_id ?? null;
   const isMine = doc.owner_member_id !== null && doc.owner_member_id === memberId;
   const filedByMe = doc.filed_by_me === true;
+  // Seen only as its person's caregiver (0.9.0, H1b): read, downloaded,
+  // nothing more — no change, no link, no collection, no new version.
+  const caregiver = doc.caregiver === true;
   const history = (
     <HistorySection
       versions={versions}
@@ -270,7 +274,7 @@ export function DocumentScreen() {
       onDownload={(v) => void download(v)}
       onView={(v) => viewVersion(v)}
       ref={versionInput}
-      onAdd={(file) => void addVersion(file)}
+      onAdd={caregiver ? null : (file) => void addVersion(file)}
     />
   );
   // An older version looked at: its banner, its own details, its pages, its
@@ -357,6 +361,17 @@ export function DocumentScreen() {
         />
       )}
 
+      {/* A paper seen as its person's caregiver (0.9.0, H1b): said so, plainly. */}
+      {caregiver && (
+        <p className="caregiver-mark" role="note">
+          <strong>{CAREGIVER_MARK}.</strong>{' '}
+          <span className="muted">
+            {owner
+              ? `${owner.display_name} lets you see their medical papers. You can read this and save a copy, but not change or share it.`
+              : 'You can read this and save a copy, but not change or share it.'}
+          </span>
+        </p>
+      )}
       {/* Sensitive, all said (0.9.0, AIR2): a lock, named for what it means. */}
       {doc.sensitive_effective === true && (
         <p className="sensitive-mark">
@@ -522,7 +537,7 @@ export function DocumentScreen() {
             badge: countBadge(versions.length, 'version', 'versions'),
             render: () => history,
           },
-          ...(mayChangeWhoSees({ current: doc.visibility, isMine, filedByMe })
+          ...(!caregiver && mayChangeWhoSees({ current: doc.visibility, isMine, filedByMe })
             ? [
                 {
                   key: 'visibility' as const,
@@ -568,7 +583,7 @@ export function DocumentScreen() {
                 },
               ]
             : []),
-          ...(collectionsOffered(caps, storedRole())
+          ...(!caregiver && collectionsOffered(caps, storedRole())
             ? [
                 {
                   key: 'collections' as const,
@@ -589,7 +604,7 @@ export function DocumentScreen() {
               ]
             : []),
           // A link sends the file: with none yet, there is nothing to send (5.4).
-          ...(doc.latest_version_id !== null && can(storedRole(), 'document.share')
+          ...(!caregiver && doc.latest_version_id !== null && can(storedRole(), 'document.share')
             ? [
                 {
                   key: 'share' as const,
@@ -702,9 +717,10 @@ function HistorySection({
   onView: (v: VersionView | null) => void;
   /** Add a new version: where the focus goes back to after asking about it. */
   ref: RefObject<HTMLLabelElement | null>;
-  onAdd: (file: File | undefined) => void;
+  /** Null for somebody who may not add one: a caregiver (H1b). */
+  onAdd: ((file: File | undefined) => void) | null;
 }) {
-  const { versions } = props;
+  const { versions, onAdd } = props;
   return (
     <section aria-labelledby="history-h">
       <h2 id="history-h" className="section-h">
@@ -760,24 +776,26 @@ function HistorySection({
           </li>
         ))}
       </ul>
-      <label
-        ref={ref}
-        className="btn btn-quiet"
-        style={{ display: 'inline-flex', alignItems: 'center' }}
-      >
-        Add a new version
-        <input
-          type="file"
-          accept="image/*,application/pdf"
-          style={{ display: 'none' }}
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            // Cleared, so the same file chosen again is a retry, not nothing.
-            e.target.value = '';
-            props.onAdd(file);
-          }}
-        />
-      </label>
+      {onAdd && (
+        <label
+          ref={ref}
+          className="btn btn-quiet"
+          style={{ display: 'inline-flex', alignItems: 'center' }}
+        >
+          Add a new version
+          <input
+            type="file"
+            accept="image/*,application/pdf"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              // Cleared, so the same file chosen again is a retry, not nothing.
+              e.target.value = '';
+              onAdd(file);
+            }}
+          />
+        </label>
+      )}
     </section>
   );
 }

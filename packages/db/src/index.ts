@@ -4,6 +4,7 @@ export * from './migrate.js';
 export * from './privileges.js';
 export * from './audit.js';
 export * from './reminders.js';
+export * from './grown-up.js';
 export * from './type-etag.js';
 export * from './zone.js';
 export * from './sms-gate.js';

@@ -1,4 +1,4 @@
-import { can, type Capabilities, type Role } from '@fdv/shared';
+import { can, mayNameOwnCaregiver, type Capabilities, type Role } from '@fdv/shared';
 import { useEffect, useRef, type ReactNode } from 'react';
 import { Link, Outlet, useLocation } from 'react-router';
 import { useApp } from './app-context.js';
@@ -49,7 +49,8 @@ export type SectionKey =
   | 'email'
   | 'scanner'
   | 'reading'
-  | 'texts';
+  | 'texts'
+  | 'caregivers';
 
 export type GroupKey = 'you' | 'household' | 'server';
 
@@ -154,6 +155,18 @@ export function settingsGroups(
       'Light, dark, or as your device is',
     ),
   ];
+  // Who can see your medical papers (0.9.0, H1b): whoever may name their
+  // own caregiver or be one — owners, adults and teens.
+  if (caps?.features.caregivers === true && mayNameOwnCaregiver(role)) {
+    you.push(
+      section(
+        'caregivers',
+        '/settings/caregivers',
+        'Caregivers',
+        'Who can see your medical papers',
+      ),
+    );
+  }
   // A computer that sends scans (0.8.0, D1): whoever may add documents.
   if (caps?.features.device_uploads === true && can(role, 'document.add')) {
     you.push(
@@ -509,6 +522,13 @@ const DRAWN: Record<SectionKey, ReactNode> = {
     <>
       <path d="M4.5 6a1.5 1.5 0 0 1 1.5-1.5h12A1.5 1.5 0 0 1 19.5 6v8.5A1.5 1.5 0 0 1 18 16h-7.5l-4 3.5V16h-.5a1.5 1.5 0 0 1-1.5-1.5z" />
       <path d="M8.5 9.5h7M8.5 12.5h4.5" />
+    </>
+  ),
+  // A heart in a hand's keeping: someone who may see your medical papers.
+  caregivers: (
+    <>
+      <path d="M12 18.5s-6.5-3.9-6.5-8.4A3.6 3.6 0 0 1 12 8.2a3.6 3.6 0 0 1 6.5 1.9c0 4.5-6.5 8.4-6.5 8.4z" />
+      <path d="M12 11v3M10.5 12.5h3" />
     </>
   ),
 };

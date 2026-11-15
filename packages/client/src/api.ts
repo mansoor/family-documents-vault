@@ -170,6 +170,13 @@ import type {
   CabinetPreview,
   CabinetSave,
   CabinetView,
+  CaregiverGrantView,
+  CaregiverLook,
+  GrownUpAnswerChoice,
+  GrownUpAnswerResult,
+  GrownUpQuestionView,
+  MyCaregivers,
+  PersonCaregivers,
 } from '@fdv/shared';
 import type { Http, ResponseLike, UploadBody } from './http.js';
 import {
@@ -1352,6 +1359,57 @@ export function createApi(http: Http) {
     /** An owner done with one of those: it is not made again (`204`). */
     dismissPersonReminder: (token: string, id: string) =>
       request<void>(`/api/v1/reminders/people/${enc(id)}/dismiss`, { method: 'POST', token }),
+
+    // ------------------------------------------- caregivers (0.9.0, H1b)
+    /**
+     * The caller's own caregiver grants (`features.caregivers`): those
+     * about them, and those they are caregiver in.
+     */
+    myCaregivers: (token: string) => request<MyCaregivers>('/api/v1/caregivers', { token }),
+    /**
+     * A person's caregivers, for the person, an owner, or a caregiver of
+     * theirs (`403` for anybody else); who may be named, when the caller may.
+     */
+    caregiversOf: (token: string, memberId: string) =>
+      request<PersonCaregivers>(`/api/v1/members/${enc(memberId)}/caregivers`, { token }),
+    /**
+     * "Let them see my medical papers": by the person, or an owner for
+     * somebody without a sign-in (kept once the person says so). `422
+     * caregiver_not_eligible` for somebody who may not be one.
+     */
+    nameCaregiver: (token: string, memberId: string, caregiverMemberId: string) =>
+      request<CaregiverGrantView>(`/api/v1/members/${enc(memberId)}/caregivers`, {
+        method: 'POST',
+        body: { caregiver_member_id: caregiverMemberId },
+        token,
+      }),
+    /** The person keeps a caregiver an owner named: their Only me medical papers included. */
+    keepCaregiver: (token: string, memberId: string, caregiverMemberId: string) =>
+      request<CaregiverGrantView>(
+        `/api/v1/members/${enc(memberId)}/caregivers/${enc(caregiverMemberId)}/keep`,
+        { method: 'POST', token },
+      ),
+    /** Revoked by the person (or an owner, for somebody without a sign-in), or given up by the caregiver: `204`. */
+    revokeCaregiver: (token: string, memberId: string, caregiverMemberId: string) =>
+      request<void>(
+        `/api/v1/members/${enc(memberId)}/caregivers/${enc(caregiverMemberId)}/revoke`,
+        { method: 'POST', token },
+      ),
+    /** Who looked at which of the caller's papers as their caregiver, newest first: theirs alone. */
+    caregiverLooks: (token: string, memberId: string) =>
+      request<{ items: CaregiverLook[] }>(`/api/v1/members/${enc(memberId)}/caregiver-views`, {
+        token,
+      }),
+    /** The turning-18 questions waiting for the caller: their own, and an owner's to ask in person. */
+    grownUpQuestions: (token: string) =>
+      request<{ items: GrownUpQuestionView[] }>('/api/v1/grown-up/questions', { token }),
+    /** The answer, once and final: `409 already_answered` after; Only me by the person alone. */
+    answerGrownUp: (token: string, memberId: string, answer: GrownUpAnswerChoice) =>
+      request<GrownUpAnswerResult>(`/api/v1/members/${enc(memberId)}/grown-up-answer`, {
+        method: 'POST',
+        body: { answer },
+        token,
+      }),
 
     // ------------------------------------------------------- notifications
     pushKey: () => request<PushKey>('/api/v1/notifications/push-key'),

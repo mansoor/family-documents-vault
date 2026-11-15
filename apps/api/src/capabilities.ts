@@ -217,6 +217,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       sensitive_protects: true,
       // 0.9.0 (C1): each person's own cabinet, its folders saved filters of the list.
       cabinets: true,
+      // 0.9.0 (H1b): caregivers for somebody's medical papers, and turning 18.
+      caregivers: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an
