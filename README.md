@@ -992,6 +992,13 @@ else's. A folder only ever narrows what its person can already open: its
 count and its contents follow the same rules as the table and search. It
 needs no setting of its own.
 
+Inside a folder, papers sit behind **dividers**: a year each, newest first,
+or the folder's own named date ranges ("Elementary", "Middle school"…, from
+a person's date of birth if you like), with **Other years** for the rest.
+A paper that fits no folder's rule can be **pinned** into one by hand from
+its page or the table's bar: it shows first there, counted once, and stops
+showing by itself if you can no longer open it.
+
 ### Caregivers, and turning 18
 
 Anyone can let someone in the family see their medical papers — **Let

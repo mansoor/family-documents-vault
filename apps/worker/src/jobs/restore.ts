@@ -1552,6 +1552,8 @@ const ACTOR_GUARDED = [
   ...RESTRICTION_TABLES,
   // A person's own cabinet (0097, C1): theirs alone, and the vault's.
   'cabinet_layout',
+  // The papers they pinned into its folders (0099, C2): theirs alone too.
+  'cabinet_pin',
   // A caregiver for somebody's medical papers, each look they took, and
   // the turning-18 question (0098, H1b): the person's, the caregiver's and
   // the owners'; the looks the person's alone.
@@ -1655,6 +1657,8 @@ const MAKER_ONLY = [
   { table: 'access_restriction', where: 'true', what: "a person's restriction" },
   // A person's own cabinet (0097, C1).
   { table: 'cabinet_layout', where: 'true', what: "somebody's cabinet" },
+  // The papers somebody pinned into their folders (0099, C2).
+  { table: 'cabinet_pin', where: 'true', what: "a pin of somebody's" },
   // A caregiver grant: its person's, its caregiver's and the owners' (0098, H1b).
   { table: 'caregiver_grant', where: 'true', what: "somebody's caregiver" },
   // A caregiver's looks at somebody's papers: that person's and the owners' (0098).
@@ -1688,6 +1692,8 @@ const NOT_EVEN_OWNERS = [
   // How somebody files their papers, theirs alone (0097, C1): an owner
   // arranges only their own cabinet.
   { table: 'cabinet_layout', what: "somebody's cabinet" },
+  // Which papers somebody pinned where (0099, C2): their arrangement alone.
+  { table: 'cabinet_pin', what: "a pin of somebody's" },
 ];
 
 /**

@@ -127,7 +127,13 @@ import { openSealedText } from './sealed-text.js';
 import { askerOf } from './visibility.js';
 import { removableAtOnce, signsInHere } from './purge-rule.js';
 import { documentTable } from './table.js';
-import { andFilters, filterClauses, statusAllowed, type DocumentFilters } from './filters.js';
+import {
+  andFilters,
+  filterClauses,
+  statusAllowed,
+  visibilitySql,
+  type DocumentFilters,
+} from './filters.js';
 import { deleteTag, listTags, renameTag } from './tags.js';
 import { allows, requireCapability } from '../authz.js';
 import {
@@ -211,6 +217,30 @@ export interface ListQuery extends DocumentFilters {
   location?: string | undefined;
   limit?: number | undefined;
   cursor?: string | undefined;
+  /**
+   * A cabinet's own conditions (0.9.0, C2: a folder's dividers and pins):
+   * the cabinet's to set, never read from an address (the list's parser
+   * gives no such key).
+   */
+  cabinet?: CabinetConditions | undefined;
+}
+
+/** Days, both included, either end open: a divider's. */
+export interface DaySpan {
+  from: string | null;
+  to: string | null;
+}
+
+/** What a cabinet folder asks beside its question (0.9.0, C2). */
+export interface CabinetConditions {
+  /** Only these documents (a folder's pinned papers). */
+  only?: string[] | undefined;
+  /** Not these (a folder's pinned papers, listed apart from its dividers). */
+  except?: string[] | undefined;
+  /** Dated within these days (a divider's): the date a paper is about. */
+  within?: DaySpan | undefined;
+  /** Dated within none of these (Other years: a paper in none of a folder's ranges). */
+  outside?: DaySpan[] | undefined;
 }
 
 export interface UploadInput {
@@ -2177,7 +2207,8 @@ export class DocumentService {
       if (q.member_id) query = query.where('owner_member_id', '=', q.member_id);
       if (q.category) query = query.where('category', '=', q.category);
       if (q.type_key) query = query.where('type_key', '=', q.type_key);
-      if (q.visibility) query = query.where('visibility', '=', q.visibility);
+      // Only me is the caller's own, never a paper read through a grant (C2 review).
+      if (q.visibility) query = query.where(visibilitySql([q.visibility], 'document') as never);
       if (q.essential !== undefined) query = query.where('is_essential', '=', q.essential);
       if (q.purge_requested !== undefined) {
         query = query.where('purge_requested_at', q.purge_requested ? 'is not' : 'is', null);
@@ -3630,6 +3661,7 @@ export class DocumentService {
         rank: number;
         snippet: string;
         matched_in: 'title' | 'content';
+        visibility: string;
       }>`
         with query as (select websearch_to_tsquery('simple', ${q.q}) as tsq),
         doc_hits as (
@@ -3673,7 +3705,7 @@ export class DocumentService {
                d.visibility in ('household', 'adults') as words_shown,
                case when d.visibility in ('household', 'adults')
                     then fdv_details_text(d.extra) else '' end as details_text,
-               h.rank, h.snippet, h.matched_in
+               h.rank, h.snippet, h.matched_in, d.visibility
         from hits h join document d on d.id = h.id
         where d.deleted_at is null
           and (d.visibility = 'household'
@@ -3765,6 +3797,9 @@ export class DocumentService {
           snippet: sensitive ? '' : (snippets.get(r.document_id) ?? r.snippet),
           matched_in: r.matched_in,
           rank: Number(r.rank),
+          // Found only as its person's caregiver (H1b), as a list says it
+          // (the C2 review): worked out from the row, no look written.
+          ...(byGrant(p, r) ? { caregiver: true as const } : {}),
         });
       }
       // A status asked for (V1) is worked out, not stored: the hits are narrowed to it here.

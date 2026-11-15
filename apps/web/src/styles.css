@@ -7398,6 +7398,134 @@ html:has(.shell-phone):has(.has-toast) {
   color: var(--ink-soft);
 }
 
+/* C2: papers pinned into a folder, first; then its dividers, each a tab
+   that opens the papers behind it, as a paper folder's dividers do. */
+.list li.docrow-pinned {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.pin-mark {
+  font-weight: 600;
+}
+
+.cab-pinned {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius-s);
+  background: var(--surface-sunk, var(--surface));
+}
+
+.cab-pinned h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 16px;
+}
+
+.cab-divider {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cab-divider-head {
+  margin: 0;
+  font-size: 16px;
+}
+
+.cab-divider-tab {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-top-left-radius: var(--radius-m);
+  border-top-right-radius: var(--radius-m);
+  border-bottom: 3px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cab-divider-tab:hover {
+  background: var(--surface-hover, var(--surface));
+}
+
+.cab-divider-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cab-divider-days {
+  font-weight: 400;
+  font-size: 14px;
+}
+
+.cab-divider-none {
+  margin: 0 0 0 12px;
+}
+
+.divider-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 12px 32px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+}
+
+.divider-editor legend {
+  font-weight: 700;
+}
+
+.divider-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.divider-ranges {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.divider-range {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+@media (max-width: 640px) {
+  .divider-range {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+.also-in-none {
+  margin: 0;
+}
+
+/* The days a divider covers, as resolved, under its row. */
+.divider-covers {
+  grid-column: 1 / -1;
+  font-size: 14px;
+}
+
 .arrange-by {
   display: flex;
   flex-direction: column;

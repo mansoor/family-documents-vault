@@ -1844,6 +1844,19 @@ export interface Schema {
   };
 
   /**
+   * A paper pinned into one of a person's own folders by hand (0099, 0.9.0,
+   * C2): theirs alone, gone with the paper or their layout. Shown only
+   * while they may still open the paper.
+   */
+  cabinet_pin: {
+    household_id: string;
+    member_id: string;
+    folder_id: string;
+    document_id: string;
+    pinned_at: GeneratedTimestamp;
+  };
+
+  /**
    * A caregiver for somebody's medical papers (0098, 0.9.0, H1b): while it
    * is live and kept by its person, the caregiver reads that person's
    * Medical papers, their Only me ones included, and writes none of them

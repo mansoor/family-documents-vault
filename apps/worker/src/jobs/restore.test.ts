@@ -745,6 +745,18 @@ async function seed(url: string): Promise<string> {
          values ($1, $2, '{"arranged_by": null, "cabinets": []}')`,
         [hh, m.rows[0]?.id],
       );
+      // A paper pinned into one of their folders, where the schema has it (0099, C2).
+      const pins = await c.query<{ has: boolean }>(
+        "select to_regclass('public.cabinet_pin') is not null as has",
+      );
+      if (pins.rows[0]?.has) {
+        await c.query(
+          `insert into cabinet_pin (household_id, member_id, folder_id, document_id)
+           values ($1, $2, 'pinned-here',
+                   (select id from document where household_id = $1 order by id limit 1))`,
+          [hh, m.rows[0]?.id],
+        );
+      }
     }
     // A caregiver for Two's medical papers, a look they took, and Two's
     // turning-18 question, where the schema has them (0098, H1b).
@@ -3556,6 +3568,74 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
       );
     } finally {
       await sql(vault.adminUrl, `alter policy ${policy} on public.cabinet_layout using (${rule})`);
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  }, 60_000);
+
+  it('notices somebody’s pinned papers open to anybody else, an owner included, or their rule gone (0099, C2)', async () => {
+    const seeded = await sql(vault.adminUrl, 'select count(*)::int as n from cabinet_pin');
+    expect(seeded.rows[0]?.n).toBe(1);
+    const policy = 'cabinet_pin_actor';
+    const rule = (
+      await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${policy}'`,
+      )
+    ).rows[0]?.rule as string;
+    expect(rule).toMatch(/app_member\(\)/);
+    const restore = () =>
+      sql(vault.adminUrl, `alter policy ${policy} on public.cabinet_pin using (${rule})`);
+    // Its rule gone: every caller of the household given every pin.
+    await sql(vault.adminUrl, `drop policy ${policy} on public.cabinet_pin`);
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on cabinet_pin/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy ${policy} on public.cabinet_pin as restrictive using (${rule})`,
+      );
+    }
+    // Every member given everybody's.
+    await sql(
+      vault.adminUrl,
+      `alter policy ${policy} on public.cabinet_pin
+         using (case app_actor() when 'account' then true when 'system' then true else false end)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule keeps a member's own to them on .*cabinet_pin/,
+      );
+    } finally {
+      await restore();
+    }
+    // An owner given everybody's, the rest kept to their own: still caught.
+    await sql(
+      vault.adminUrl,
+      `alter policy ${policy} on public.cabinet_pin
+         using (case app_actor()
+                  when 'account' then app_role() = 'owner' or member_id = app_member()
+                  when 'system' then true else false end)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a pin of somebody's is open to an owner who is not them/,
+      );
+    } finally {
+      await restore();
+    }
+    // A caller who says nothing given every pin.
+    await sql(
+      vault.adminUrl,
+      `alter policy ${policy} on public.cabinet_pin using ((${rule}) or app_actor() is null)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a caller who says nothing is given its documents \(.*cabinet_pin/,
+      );
+    } finally {
+      await restore();
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   }, 60_000);

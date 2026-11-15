@@ -5,7 +5,16 @@ import {
   CABINET_LIMITS,
   CABINET_TOO_BIG,
   drawCabinet,
+  dividerKeyOf,
+  dividerMode,
   layoutProblemOf,
+  OTHER_YEARS,
+  PIN_IN_TRASH,
+  PIN_LIMITS,
+  rangesNewestFirst,
+  TOO_MANY_PINS,
+  type FolderDivider,
+  type PinsMoved,
   type CabinetGroup,
   type CabinetLayout,
   type CabinetView,
@@ -355,6 +364,14 @@ export interface FakeVaultState {
    * gives it: theirs alone, saved to the version last read.
    */
   cabinets?: Record<string, CabinetView>;
+  /**
+   * The papers each person pinned into their folders (0.9.0, C2), by
+   * member id: shown only while they may open the paper, out of the Trash.
+   */
+  cabinetPins?: Record<
+    string,
+    Array<{ folder_id: string; document_id: string; pinned_at: string }>
+  >;
   /** The household's name, as set up: a container in a folder's name (S2). */
   householdName?: string | null;
   email: string | null;
@@ -3166,8 +3183,10 @@ export function createFakeVault(): {
           neutral_wording: true,
           // What Sensitive protects (0.9.0, H1a): a sensitive document's link asks first.
           sensitive_protects: true,
-          // My cabinet (0.9.0, C1).
+          // My cabinet (0.9.0, C1), its dividers and pins (C2).
           cabinets: true,
+          cabinet_dividers: true,
+          cabinet_pins: true,
           caregivers: true,
         },
         limits: {
@@ -3736,6 +3755,34 @@ export function createFakeVault(): {
                   .map((f) => ({ f, path: [c.name, d.name, f.name] as [string, string, string] })),
               ),
           );
+      // Pins (C2): this person's, those of papers they may still open, out of the Trash.
+      const allPins = (state.cabinetPins ??= {});
+      const pinsOf = () => (allPins[who.memberId] ??= []);
+      const readable = (id: string) => {
+        const doc = state.documents.find((d) => d.id === id);
+        return doc &&
+          canSee(who, {
+            visibility: doc.visibility ?? 'household',
+            owner_member_id: doc.owner_member_id ?? null,
+          })
+          ? doc
+          : null;
+      };
+      const livePins = (folderId?: string) =>
+        pinsOf()
+          .filter((x) => folderId === undefined || x.folder_id === folderId)
+          .filter((x) => {
+            const doc = readable(x.document_id);
+            return doc !== null && !doc.deleted_at;
+          })
+          .map((x) => x.document_id);
+      /** The day a paper is about, as the dated filter reads it. */
+      const datedOf = (d: DocumentView) =>
+        (d.issued?.date ?? d.created_at ?? new Date().toISOString()).slice(0, 10);
+      const newestFirst = (a: DocumentView, b: DocumentView) =>
+        datedOf(b).localeCompare(datedOf(a)) || b.id.localeCompare(a.id);
+      const folderAt =
+        /^\/api\/v1\/cabinet\/folders\/([^/]+)(\/documents|\/pins|\/pins\/([^/]+))?$/.exec(path);
       const method = init.method ?? 'GET';
       if (path === '/api/v1/cabinet' && method === 'GET') return ok(held);
       if (path === '/api/v1/cabinet' && method === 'PUT') {
@@ -3783,6 +3830,35 @@ export function createFakeVault(): {
             return refuse(((await got.json()) as { error: { message: string } }).error.message);
         }
         if (held.version !== version) return fail(409, 'conflict', CABINET_CHANGED);
+        // Pins (C2): those of a folder merged moved with it; those of a folder gone, let go.
+        const folderIds = new Set(
+          layout.cabinets.flatMap((c) => c.drawers.flatMap((d) => d.folders.map((f) => f.id))),
+        );
+        // Only a folder the layout no longer has moves: one it keeps would be copied.
+        const pins = pinsOf().map((x) => ({ ...x }));
+        for (const m of (body.pins_moved as PinsMoved[] | undefined) ?? []) {
+          if (folderIds.has(m.from)) continue;
+          for (const x of pins.filter((y) => y.folder_id === m.from)) {
+            if (!pins.some((y) => y.folder_id === m.to && y.document_id === x.document_id)) {
+              pins.push({ ...x, folder_id: m.to });
+            }
+          }
+        }
+        const kept = pins.filter((x) => folderIds.has(x.folder_id));
+        // The caps, as the vault counts them: only pins of papers still seen, out of the Trash.
+        const live = kept.filter((x) => {
+          const doc = readable(x.document_id);
+          return doc !== null && !doc.deleted_at;
+        });
+        const perFolder = new Map<string, number>();
+        for (const x of live) perFolder.set(x.folder_id, (perFolder.get(x.folder_id) ?? 0) + 1);
+        if (
+          Math.max(0, ...perFolder.values()) > PIN_LIMITS.folder ||
+          live.length > PIN_LIMITS.total
+        ) {
+          return fail(422, 'cabinet_too_many_pins', TOO_MANY_PINS);
+        }
+        allPins[who.memberId] = kept;
         const saved: CabinetView = {
           layout,
           version: held.version + 1,
@@ -3841,9 +3917,18 @@ export function createFakeVault(): {
         const counts: Record<string, number | null> = {};
         for (const { f } of shown(held.layout)) {
           const got = await tabled(f.filter);
-          counts[f.id] = 'status' in got ? null : got.total;
+          const pinned = livePins(f.id);
+          counts[f.id] =
+            'status' in got
+              ? null
+              : got.items.filter((d) => !pinned.includes(d.id)).length + pinned.length;
         }
-        return ok({ version: held.version, counts });
+        const pinCounts: Record<string, number> = {};
+        for (const x of pinsOf()) {
+          const doc = readable(x.document_id);
+          if (doc && !doc.deleted_at) pinCounts[x.folder_id] = (pinCounts[x.folder_id] ?? 0) + 1;
+        }
+        return ok({ version: held.version, counts, pins: pinCounts });
       }
       if (alsoInAt && method === 'GET') {
         const id = decodeURIComponent(alsoInAt[1] as string);
@@ -3857,14 +3942,169 @@ export function createFakeVault(): {
         ) {
           return fail(404, 'not_found', 'That document does not exist.');
         }
-        const items: Array<{ id: string; name: string; path: [string, string, string] }> = [];
+        const items: Array<{
+          id: string;
+          name: string;
+          path: [string, string, string];
+          pinned?: boolean;
+        }> = [];
         for (const { f, path: where } of shown(held.layout)) {
           const got = await tabled(f.filter);
-          if (!('status' in got) && got.items.some((d) => d.id === id)) {
-            items.push({ id: f.id, name: f.name, path: where });
+          const pinned = livePins(f.id).includes(id);
+          if (pinned || (!('status' in got) && got.items.some((d) => d.id === id))) {
+            items.push({
+              id: f.id,
+              name: f.name,
+              path: where,
+              ...(pinned ? { pinned: true } : {}),
+            });
           }
         }
         return ok({ items });
+      }
+      // A folder opened, a divider's papers, and pins (0.9.0, C2).
+      if (folderAt) {
+        const folderId = decodeURIComponent(folderAt[1] as string);
+        const placed = shown(held.layout).find(({ f }) => f.id === folderId);
+        if (folderAt[2] === '/pins' && method === 'POST') {
+          // A shown folder of theirs: a hidden one is not taken, as the vault refuses it.
+          if (!placed) return fail(404, 'not_found', 'That folder does not exist.');
+          const ids = [...new Set((body.document_ids as string[] | undefined) ?? [])];
+          const docs = ids.map(readable);
+          if (ids.length === 0 || docs.some((d) => d === null)) {
+            return fail(404, 'not_found', 'That document does not exist.');
+          }
+          if (docs.some((d) => d?.deleted_at)) {
+            return fail(422, 'cabinet_pin_in_trash', PIN_IN_TRASH);
+          }
+          // Room first, from pins of papers they may no longer open, as the vault makes it.
+          allPins[who.memberId] = pinsOf().filter((x) => readable(x.document_id) !== null);
+          const pins = pinsOf();
+          const added = ids.filter(
+            (id) => !pins.some((x) => x.folder_id === folderId && x.document_id === id),
+          );
+          if (
+            pins.filter((x) => x.folder_id === folderId).length + added.length >
+              PIN_LIMITS.folder ||
+            pins.length + added.length > PIN_LIMITS.total
+          ) {
+            return fail(422, 'cabinet_too_many_pins', TOO_MANY_PINS);
+          }
+          const now = new Date().toISOString();
+          for (const id of added)
+            pins.push({ folder_id: folderId, document_id: id, pinned_at: now });
+          return ok({ pinned: ids.length });
+        }
+        if (folderAt[3] !== undefined && method === 'DELETE') {
+          // Their own row taken away, whatever the paper: 204 for any id.
+          const documentId = decodeURIComponent(folderAt[3]);
+          allPins[who.memberId] = pinsOf().filter(
+            (x) => !(x.folder_id === folderId && x.document_id === documentId),
+          );
+          return empty();
+        }
+        if (!placed) return fail(404, 'not_found', 'That folder does not exist.');
+        const f = placed.f;
+        const got = await tabled(f.filter);
+        const pinnedIds = livePins(folderId);
+        const rest = 'status' in got ? [] : got.items.filter((d) => !pinnedIds.includes(d.id));
+        const byKey = new Map<string, DocumentView[]>();
+        for (const d of rest) {
+          const key = dividerKeyOf(f.dividers, datedOf(d));
+          byKey.set(key, [...(byKey.get(key) ?? []), d]);
+        }
+        if (folderAt[2] === '/documents' && method === 'GET') {
+          const q = { get: (name: string) => param(url, name) ?? null };
+          const divider = q.get('divider') ?? '';
+          const mode = dividerMode(f.dividers);
+          const known =
+            (mode === 'none' && divider === 'all') ||
+            (mode === 'years' && (divider === 'other' || /^year:[1-9]\d{3}$/.test(divider))) ||
+            (mode === 'ranges' &&
+              (divider === 'other' ||
+                rangesNewestFirst(f.dividers).some((r) => r.key === divider)));
+          if ('status' in got || !known)
+            return fail(404, 'not_found', 'That divider does not exist.');
+          const items = [...(byKey.get(divider) ?? [])].sort(newestFirst);
+          const limit = Number(q.get('limit') ?? 50);
+          const start = Number(q.get('cursor') ?? 0);
+          const page = items.slice(start, start + limit);
+          const more = start + limit < items.length;
+          return ok({
+            items: page,
+            total: items.length,
+            has_more: more,
+            next_cursor: more ? String(start + limit) : null,
+          } satisfies DocumentPage);
+        }
+        if (method === 'GET' && folderAt[2] === undefined) {
+          const everything = await tabled({});
+          const pinned =
+            'status' in everything ? [] : everything.items.filter((d) => pinnedIds.includes(d.id));
+          const count = (key: string) => byKey.get(key)?.length ?? 0;
+          const other: FolderDivider[] =
+            count('other') > 0
+              ? [
+                  {
+                    key: 'other',
+                    kind: 'other',
+                    name: OTHER_YEARS,
+                    from: null,
+                    to: null,
+                    count: count('other'),
+                  },
+                ]
+              : [];
+          let dividers: FolderDivider[];
+          switch (dividerMode(f.dividers)) {
+            case 'none':
+              dividers = [
+                { key: 'all', kind: 'all', name: '', from: null, to: null, count: count('all') },
+              ];
+              break;
+            case 'years':
+              dividers = [
+                ...[...byKey.keys()]
+                  .filter((key) => key !== 'other')
+                  .sort()
+                  .reverse()
+                  .map((key): FolderDivider => {
+                    const y = key.slice(5);
+                    return {
+                      key,
+                      kind: 'year',
+                      name: y,
+                      from: `${y}-01-01`,
+                      to: `${y}-12-31`,
+                      count: count(key),
+                    };
+                  }),
+                ...other,
+              ];
+              break;
+            case 'ranges':
+              dividers = [
+                ...rangesNewestFirst(f.dividers).map(({ key, range }) => ({
+                  key,
+                  kind: 'range' as const,
+                  name: range.name,
+                  from: range.from,
+                  to: range.to,
+                  count: count(key),
+                })),
+                ...other,
+              ];
+              break;
+          }
+          return ok({
+            folder_id: folderId,
+            version: held.version,
+            total: 'status' in got ? null : pinned.length + rest.length,
+            pinned: pinned.sort(newestFirst),
+            // A question the list would now refuse: its pins, and no dividers, as the vault says.
+            dividers: 'status' in got ? [] : dividers,
+          });
+        }
       }
     }
     if (path === '/api/v1/documents') {

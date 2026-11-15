@@ -6782,6 +6782,120 @@ ask_them_themselves` for somebody with a sign-in); `404` for anybody
       `revokeCaregiver`, `caregiverLooks`, `grownUpQuestions`,
       `answerGrownUp`; the fake keeps grants (`FakeVaultState.caregivers`),
       looks and questions (`grownUp`), but not the reading exception itself.
+  - Dividers and pins in My cabinet (0.9.0-dev.44, C2 of the cabinets plan).
+    Migration 0099. Everything here is **additive**: a layout saved by an
+    older client keeps its folders as they were (year dividers), and an
+    older vault has none of it.
+    - **New `features`:** `cabinet_dividers` and `cabinet_pins` (`true`).
+    - **A folder's `dividers`** (optional, `FolderDividers` `{ years,
+ranges: [{ name, from, to }] }`): absent, a folder's papers are grouped
+      by the year each is about (issued, else added, as `dated_`), a year of
+      four figures each — a paper dated before 1000 or after 9999 is behind
+      "Other years"; `years: false` with no ranges, no dividers; with
+      `ranges`, the folder's own named date ranges replace the years.
+      `from`/`to` are each a day (`YYYY-MM-DD`) or a whole year (`YYYY`),
+      years 1000 to 9999, either open (`null`), not both; kept as sent. A
+      year as `from` is its 1 January; a year as `to` its 31 December —
+      unless another range's `from` is that same year, also as a year (the
+      owner's decision of 14 Nov 2026: "Elementary 2014–2020", "Middle
+      2020–2023"): the shared year is the later range's, and this one ends
+      on 31 December of the year before (`resolvedRanges`). Validation,
+      grouping and counts all use those days. PUT /api/v1/cabinet refuses,
+      each with its own code (`422`): `cabinet_too_many_dividers` (more than
+      20 ranges in a folder), `cabinet_divider_name_missing`,
+      `cabinet_divider_name_too_long` (80 characters),
+      `cabinet_divider_dates` (neither a day nor a year of 1000 to 9999,
+      both ends open, or the start after the end) and
+      `cabinet_divider_overlap` — two ranges that share a day once resolved
+      (two typed as full dates included) are **refused**, never resolved by
+      which comes first, so a paper is behind one divider only; the message
+      names both. A paper in no range is behind "Other years"
+      (`OTHER_YEARS`).
+    - **New routes**, each the caller's own, for anybody signed in; a folder
+      is named by its id in the caller's own layout, and one they do not
+      have (or have hidden) is `404`:
+      - `GET /api/v1/cabinet/folders/{id}` → `FolderContents` `{ folder_id,
+version, total, pinned, dividers }`. `pinned`: the papers the caller
+        pinned there that they may still open, out of the Trash, newest
+        first (`DocumentView`s, at most 200, `caregiver: true` on one read
+        through a grant). `dividers`: newest first, each `FolderDivider`
+        `{ key, kind, name, from, to, count }` — `kind` `year` (`key`
+        `year:2025`; only years with papers), `range` (`key` `range:N`, N its
+        place in the folder's own `ranges`; `from`/`to` the days it covers;
+        shown empty too), `other` (only with papers; in a folder by year,
+        the papers dated outside 1000 to 9999) or `all` (a folder with no
+        dividers). Each `count` is what the table counts for the folder's
+        question within it, the pinned papers left out; `total` is the
+        pinned and every divider's, each paper once — exactly GET
+        /cabinet/counts's for the folder; `null`, and no dividers, for a
+        question the list would now refuse (its pins are still listed).
+      - `GET /api/v1/cabinet/folders/{id}/documents?divider=KEY` (`cursor`,
+        `limit` up to 200) → `DocumentPage`: the papers behind one divider,
+        newest first by the date each is about, a page at a time, as the
+        table lists them (`total`, `collections`); the folder's pinned
+        papers are left out. A divider the folder does not have — a year
+        outside 1000 to 9999 among them — is `404`.
+      - `POST /api/v1/cabinet/folders/{id}/pins` `{ document_ids }` (1 to 200) → `{ pinned }`. A pin is the caller's own arrangement, never a
+        change to the paper: anybody signed in may pin a paper they may open
+        (a caregiver one a grant gives them; a viewer one they are given),
+        into a shown folder of their layout (a hidden one is `404`). Every
+        id must be one they may open — else `404`, nothing pinned — and out
+        of the Trash (`422 cabinet_pin_in_trash`). Pinning one already
+        pinned is nothing new. A folder holds at most 200 pins, a person
+        2,000 (`422 cabinet_too_many_pins`); pins of papers they may no
+        longer open are let go first. Pins and saves of one person are made
+        one at a time.
+      - `DELETE /api/v1/cabinet/folders/{id}/pins/{documentId}` → `204`,
+        always: the caller's own row is taken away, whatever the paper — one
+        they may no longer open included — and the answer says nothing of
+        whether there was a pin, or such a paper.
+    - **A pin never says more than its person may open.** It is read only
+      joined to its paper under the reader's own rules, out of the Trash: a
+      paper made Only me by somebody else, kept to the adults from a teen,
+      a caregiver's after the grant ends, or in the Trash, shows, counts
+      and is "also in" nothing, with nothing said — and comes back if it is
+      given back (made the family's again, restored). A paper removed for
+      good takes its pins with it (a foreign key); a person's pins go with
+      their layout.
+    - **Changed (additive):** GET /cabinet/counts counts each folder's live
+      pins, each paper once, and gives `pins` (`{ [folderId]: n }`, every
+      folder with live pins, hidden ones too: what saving an arrangement
+      without them lets go of). GET /documents/{id}/also-in lists folders a
+      paper is pinned in too, `AlsoInFolder.pinned: true`. PUT /cabinet
+      takes `pins_moved` `[{ from, to }]` (folders merged, in the order
+      merged): the pins of a `from` folder the saved layout no longer has
+      move to the folder it joined (one it still has is no move: nothing is
+      copied); the pins of a folder the saved layout no longer has are let
+      go. A folder over 200 pins, or a person over 2,000, is `422
+cabinet_too_many_pins`, nothing saved — counting only the pins of
+      papers they may still open, out of the Trash, so a refusal never
+      tells of a pin they cannot see.
+    - **`SearchHit.caregiver`** (`true`): GET /search marks a hit the caller
+      finds only as its person's caregiver, as the document lists'
+      `DocumentView.caregiver` does (H1b). Worked out from the row; finding
+      one writes no caregiver look. Absent on every other hit.
+    - **Behaviour fix — `visibility=private` is the caller's own Only me.**
+      On GET /documents (both lists), GET /search and a cabinet folder (its
+      count and its papers), `visibility=private` now gives only documents
+      whose person is the caller (`owner_member_id` = theirs): never
+      somebody else's Only me paper they read as its caregiver (H1b), which
+      before this appeared under the web's "Only me". Such a paper is still
+      listed without the filter, marked `caregiver: true`. Nothing changes
+      for anybody who is nobody's caregiver.
+    - `@fdv/shared`: `FolderDividers`, `DividerRange`, `DividerMode`,
+      `FolderDivider`, `FolderContents`, `CabinetPinsAdd`, `CabinetPinned`,
+      `PinsMoved`, `DaySpan`, `DIVIDER_LIMITS`, `DIVIDER_YEARS`,
+      `PIN_LIMITS`, `OTHER_YEARS`, `TOO_MANY_PINS`, `PIN_IN_TRASH`,
+      `DividerProblemCode`, `dividerMode`, `dividersProblemOf`,
+      `resolvedRanges`, `rangesNewestFirst`, `dividerKeyOf`, `daySpanWords`,
+      `isDay`, `isDividerEnd` and `schoolStages` (the American school
+      stages, from 1 September of the year somebody is five, as full
+      dates); `CabinetFolder.dividers`, `CabinetSave.pins_moved`,
+      `CabinetCounts.pins`, `SearchHit.caregiver`. `@fdv/client`:
+      `cabinetFolder`, `cabinetFolderDocuments`, `pinToFolder`,
+      `unpinFromFolder`; the fake groups and pins as the vault does
+      (`FakeVaultState.cabinetPins`), the caps, moves and refusals too (it
+      has no search, and no caregiver reading).
 
 ## Deprecations in effect
 

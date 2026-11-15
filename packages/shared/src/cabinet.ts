@@ -16,6 +16,12 @@
  * list; a node hidden is kept, and shown only while arranging.
  */
 
+import {
+  dividersProblemOf,
+  type DividerProblemCode,
+  type FolderDividers,
+  type PinsMoved,
+} from './cabinet-dividers.js';
 import { CATEGORY_LABELS } from './tokens.js';
 
 /** The ways the vault draws a cabinet from what it knows ("Arrange by"). */
@@ -85,6 +91,11 @@ interface Node {
 
 export interface CabinetFolder extends Node {
   filter: FolderFilter;
+  /**
+   * How its papers are grouped inside (0.9.0, C2): year dividers when it
+   * is absent; turned off, or the folder's own date ranges.
+   */
+  dividers?: FolderDividers | undefined;
 }
 
 export interface CabinetDrawer extends Node {
@@ -113,6 +124,12 @@ export interface CabinetView {
 export interface CabinetSave {
   layout: CabinetLayout;
   version: number;
+  /**
+   * Folders merged into others (0.9.0, C2): each one's pinned papers moved
+   * to the folder it joined. A pin of a folder the layout no longer has is
+   * let go.
+   */
+  pins_moved?: PinsMoved[];
 }
 
 /** POST /cabinet/preview: a layout drawn, not saved, and how many each folder holds. */
@@ -133,6 +150,13 @@ export interface CabinetPreview {
 export interface CabinetCounts {
   version: number;
   counts: Record<string, number | null>;
+  /**
+   * How many papers are pinned in each folder that has any (0.9.0, C2),
+   * hidden folders too — those the caller may still open, out of the
+   * Trash: what saving an arrangement without that folder lets go of.
+   * Absent from older vaults.
+   */
+  pins?: Record<string, number>;
 }
 
 /** A folder a document is in, as GET /documents/{id}/also-in names it. */
@@ -141,6 +165,8 @@ export interface AlsoInFolder {
   name: string;
   /** Its cabinet's, its drawer's and its own name. */
   path: [string, string, string];
+  /** Pinned there by hand (0.9.0, C2), whether or not its question holds it too. */
+  pinned?: boolean;
 }
 
 export interface AlsoIn {
@@ -211,7 +237,8 @@ export type CabinetProblemCode =
   | 'cabinet_too_many_status_folders'
   | 'cabinet_node_id'
   | 'cabinet_name_missing'
-  | 'cabinet_name_too_long';
+  | 'cabinet_name_too_long'
+  | DividerProblemCode;
 
 export const CABINET_TOO_MANY_STATUS = `A cabinet can have at most ${CABINET_LIMITS.status_folders} folders that ask for a status. Merge or remove some.`;
 
@@ -257,6 +284,17 @@ export function layoutProblemOf(
         code: 'cabinet_name_too_long',
         message: `Keep each name to ${CABINET_LIMITS.name} characters.`,
       };
+    }
+  }
+  // Each folder's own dividers (C2), the folder named.
+  for (const c of layout.cabinets) {
+    for (const d of c.drawers) {
+      for (const f of d.folders) {
+        if (f.dividers === undefined) continue;
+        const wrong = dividersProblemOf(f.dividers);
+        if (wrong)
+          return { code: wrong.code, message: `The folder “${f.name.trim()}”: ${wrong.message}` };
+      }
     }
   }
   return null;

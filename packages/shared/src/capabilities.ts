@@ -569,6 +569,21 @@ export interface CapabilityFeatures {
    */
   cabinets?: boolean;
   /**
+   * Dividers in a cabinet's folders (0.9.0, C2): a folder's `dividers`
+   * (years by themselves, turned off, or its own date ranges), GET
+   * /cabinet/folders/{id} (its pinned papers and its dividers, each counted)
+   * and GET /cabinet/folders/{id}/documents (one divider's papers, a page at
+   * a time). Absent from older vaults, whose folders have no dividers.
+   */
+  cabinet_dividers?: boolean;
+  /**
+   * Pins (0.9.0, C2): POST /cabinet/folders/{id}/pins and DELETE
+   * /cabinet/folders/{id}/pins/{documentId} — a paper pinned into one of the
+   * caller's folders, shown first and counted there, and `AlsoInFolder.pinned`;
+   * PUT /cabinet's `pins_moved`. Absent from older vaults.
+   */
+  cabinet_pins?: boolean;
+  /**
    * Caregivers and turning 18 (0.9.0, H1b): GET /caregivers, GET and POST
    * /members/{id}/caregivers, POST /members/{id}/caregivers/{caregiverId}/
    * keep and /revoke, GET /members/{id}/caregiver-views; GET

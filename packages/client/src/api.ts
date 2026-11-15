@@ -168,8 +168,10 @@ import type {
   ArrangeBy,
   CabinetCounts,
   CabinetPreview,
+  CabinetPinned,
   CabinetSave,
   CabinetView,
+  FolderContents,
   CaregiverGrantView,
   CaregiverLook,
   GrownUpAnswerChoice,
@@ -958,6 +960,39 @@ export function createApi(http: Http) {
     /** The caller's shown folders this document is in ("Also in"); 404 for one they may not see. */
     documentAlsoIn: (token: string, documentId: string) =>
       request<AlsoIn>(`/api/v1/documents/${enc(documentId)}/also-in`, { token }),
+    /**
+     * One of the caller's shown folders, opened (0.9.0, C2,
+     * `features.cabinet_dividers`): its pinned papers, then its dividers
+     * newest first, each counted; 404 for a folder they do not have.
+     */
+    cabinetFolder: (token: string, folderId: string) =>
+      request<FolderContents>(`/api/v1/cabinet/folders/${enc(folderId)}`, { token }),
+    /** The papers behind one of a folder's dividers (its `key`), newest first, a page at a time. */
+    cabinetFolderDocuments: (
+      token: string,
+      folderId: string,
+      params: { divider: string; cursor?: string; limit?: number },
+    ) =>
+      request<DocumentPage>(`/api/v1/cabinet/folders/${enc(folderId)}/documents${qs(params)}`, {
+        token,
+      }),
+    /**
+     * Papers pinned into one of the caller's folders (`features.cabinet_pins`):
+     * their own arrangement. 404 when one is not theirs to open (nothing is
+     * pinned), `422 cabinet_pin_in_trash`, `422 cabinet_too_many_pins`.
+     */
+    pinToFolder: (token: string, folderId: string, documentIds: string[]) =>
+      request<CabinetPinned>(`/api/v1/cabinet/folders/${enc(folderId)}/pins`, {
+        method: 'POST',
+        body: { document_ids: documentIds },
+        token,
+      }),
+    /** And unpinned: `204`, pinned there or not. */
+    unpinFromFolder: (token: string, folderId: string, documentId: string) =>
+      request<void>(`/api/v1/cabinet/folders/${enc(folderId)}/pins/${enc(documentId)}`, {
+        method: 'DELETE',
+        token,
+      }),
     /**
      * The caller's notes kept on their own (0.9.0, `features.notes`):
      * newest first, each with its first words; `q` finds within them,
