@@ -274,6 +274,23 @@ export const CHECKLIST_KIND_WORDS: Readonly<Record<string, readonly string[]>> =
   loan: ['mortgage statement', 'loan statement'],
   property_deed: ['deed', 'lease', 'rental agreement'],
   employment_contract: ['offer letter', 'employment letter', 'employment verification'],
+  // 0.9.0 (H3, 0101): what a school, a camp or a clinic asks a family for.
+  vaccination_record: [
+    'immunization form',
+    'immunisation form',
+    'shot record',
+    'proof of vaccination',
+    'vaccination proof',
+  ],
+  insurance_card: [
+    'insurance card',
+    'copy of insurance card',
+    'proof of insurance',
+    'insurance id',
+  ],
+  healthcare_proxy: ['healthcare proxy', 'health care proxy', 'medical power of attorney'],
+  advance_directive: ['advance directive', 'living will'],
+  hipaa_authorization: ['hipaa form', 'hipaa release', 'hipaa authorization'],
 };
 
 /** The kinds a tax form's own name, and a tax year, belong to. */

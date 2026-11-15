@@ -79,6 +79,9 @@ import {
   NO_LONGER_NEEDED_REASON_MAX,
   OFFLINE_SET_MAX,
   periodic,
+  remindingDateOptional,
+  teenOwnStart,
+  yearlyReviewOffered,
   type DateValue,
   type DetailProblem,
   type DocumentAttributeView,
@@ -628,15 +631,20 @@ export function typeView(t: EffectiveType): DocumentTypeView {
     label: t.label,
     category: t.category,
     // The date reminders come from is always asked for (0.5.15): an older
-    // phone requires it through this, as it requires any other field.
+    // phone requires it through this, as it requires any other field — but
+    // for a built-in's the family adds only if there is one (0.9.0, H3).
     fields: ((t.fields ?? []) as TypeField[]).map((f) => ({
       ...f,
-      required: f.required === true || f.key === t.remind_from,
+      required:
+        f.required === true ||
+        (f.key === t.remind_from && !remindingDateOptional(t.builtin ? t : null, f.key)),
     })),
     expiry_driver: t.expiry_driver,
     reminder_leads: t.reminder_leads,
     remind_from: t.remind_from,
     remind_leads: t.remind_leads,
+    // The date it falls back on, for a document with none of that (H3).
+    remind_fallback: t.remind_fallback,
     usually_essential: t.usually_essential,
     default_visibility: t.default_visibility,
     issued_by_label: t.issued_by_label,
@@ -1527,14 +1535,17 @@ export class DocumentService {
     const t = await this.typeOrThrow(input.type_key, trx);
     if (t.default_visibility !== 'adults') return input;
     const own = input.owner_member_id != null && input.owner_member_id === p.memberId;
-    return { ...input, visibility: own ? 'private' : 'household' };
+    // Their own vaccination record is Everyone, where their parents see it
+    // too (0.9.0, H3): `teenOwnStart`.
+    return { ...input, visibility: own ? teenOwnStart('adults', t) : 'household' };
   }
 
   /**
    * A new document's visibility where nobody said one (0.9.0, H1a): Only
    * me when it is sensitive (its own choice, else its kind's) and the
    * caller's own, and their own sensitive papers start so — a teen's, a
-   * grown-up child's (`keepsOwnSensitive`). Asked for, it is as asked.
+   * grown-up child's (`keepsOwnSensitive`); never a teen's own vaccination
+   * record (H3, `parentsKeep`). Asked for, it is as asked.
    */
   private async sensitiveVisibility(
     trx: Db,
@@ -1728,6 +1739,17 @@ export class DocumentService {
         Object.prototype.hasOwnProperty.call(input.extra, remindsFrom);
       if (input.expires !== undefined || input.type_key !== undefined || dateEdited) {
         await this.reminders?.regenerateDerived(trx, p.householdId, id, { details });
+      }
+      // Moved to a kind a yearly review is not for (0.9.0, H3): its review
+      // ends with the kind it was for, done with as a renewal's are.
+      if (row.type_key !== current.type_key && !yearlyReviewOffered({ key: row.type_key })) {
+        await trx
+          .updateTable('reminder')
+          .set({ status: 'resolved', acknowledged_by: p.accountId, acknowledged_at: new Date() })
+          .where('document_id', '=', id)
+          .where('review', '=', true)
+          .where('status', 'in', ['scheduled', 'due', 'snoozed'])
+          .execute();
       }
       if (current.type_key && row.type_key !== current.type_key) {
         await dropDeletedType(trx, current.type_key);

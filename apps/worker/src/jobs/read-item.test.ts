@@ -1193,10 +1193,12 @@ parentPort.postMessage({ ready: true });
     // What the run found (reported with I2): no Ready item is wrong.
     expect(wrongReady).toEqual([]);
     // Each council's letter, read with no person, is a bill: the household's
-    // since 0.9.0, never "Missing: whose it is" — Ready, and right.
+    // since 0.9.0, never "Missing: whose it is" — Ready, and right. Since H3
+    // (0101) the GP's letter with Zain's immunisation record could be his
+    // vaccination record as well as the medical record 5.37 called it: Check.
     expect(tally).toEqual({
       tuned: { ready: 14, check: 6, unrecognised: 2, problem: 0 },
-      'held out': { ready: 10, check: 2, unrecognised: 2, problem: 0 },
+      'held out': { ready: 9, check: 3, unrecognised: 2, problem: 0 },
     });
   }, 120_000);
 });

@@ -296,7 +296,11 @@ const NARROW: Record<Visibility, number> = { private: 0, adults: 1, household: 2
  */
 export function batchVisibility(opts: {
   chosen: BatchVisibility;
-  type: Pick<DocumentTypeView, 'default_visibility'> | null | undefined;
+  /** Its kind: who sees it by default, and its key (a teen's vaccination record, H3). */
+  type:
+    | (Pick<DocumentTypeView, 'default_visibility'> & { key?: string | null | undefined })
+    | null
+    | undefined;
   role: Role;
   /** Whose the document is ('' or null: nobody's yet). */
   owner: string | null;

@@ -1,9 +1,13 @@
 import {
   can,
   FILE_REMOVED,
+  firstReview,
   formatDate,
   issuedByLabel,
+  localToday,
   NOTE_KIND,
+  REVIEW_LABEL,
+  yearlyReviewOffered,
   PREVIEW_MAX_PAGES,
   seesLocation,
   type CoreField,
@@ -51,7 +55,7 @@ import {
 } from './Visibility.js';
 import { ActionIcon, ActionRow, countBadge } from '../action-row.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
-import { exactWords } from '../family-time.js';
+import { exactWords, familyZoneNow } from '../family-time.js';
 
 /**
  * Document detail: the facts in a plain two-column list, its notes, the
@@ -441,6 +445,21 @@ export function DocumentScreen() {
         )}
       </dl>
 
+      {/* A yearly review (0.9.0, H3): on an advance directive, a proxy or a
+          HIPAA authorization, off until somebody turns it on. */}
+      {caps?.features.health_kinds === true &&
+        !caregiver &&
+        !doc.deleted_at &&
+        !doc.no_longer_needed &&
+        can(storedRole(), 'reminder.manage') && (
+          <YearlyReview
+            key={`review-${doc.id}`}
+            documentId={doc.id}
+            signed={doc.issued?.date ?? null}
+            offered={yearlyReviewOffered(type)}
+          />
+        )}
+
       {/* On a phone, the pages within reach: right after the facts, before
               the notes, the history and the rest (R3, as the prototype). */}
       {!panes && (
@@ -797,6 +816,77 @@ function HistorySection({
         </label>
       )}
     </section>
+  );
+}
+
+/**
+ * A yearly review (0.9.0, H3): a reminder that comes back every year to read
+ * the paper again — its wishes, its agent, who it lets see what. Off until
+ * somebody turns it on; on, it is one of the family's reminders like any
+ * other (Home, Attention, the digest), first on the next anniversary of the
+ * day it was signed, else a year from today, and Done brings the next one a
+ * year on. Off removes it. The vault never says what to change.
+ */
+function YearlyReview(props: { documentId: string; signed: string | null; offered: boolean }) {
+  const { withToken, authVersion } = useApp();
+  // Its own reminders: an older vault answers them all, so asked again here.
+  const { data, error, reload } = useLoad(
+    async (t) => ({
+      review:
+        (await api.reminders(t, 'all', props.documentId)).items.find(
+          (r) => r.document_id === props.documentId && r.review === true,
+        ) ?? null,
+    }),
+    [props.documentId, authVersion],
+  );
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const review = data?.review ?? null;
+  const turn = async (want: boolean) => {
+    setBusy(true);
+    setProblem(null);
+    try {
+      await withToken<unknown>((t) =>
+        want
+          ? api.createReminder(t, {
+              document_id: props.documentId,
+              fire_at: firstReview(props.signed, localToday(familyZoneNow())),
+              review: true,
+            })
+          : review
+            ? api.deleteReminder(t, review.id)
+            : Promise.resolve(),
+      );
+      await reload();
+    } catch (err) {
+      setProblem(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  // Shown on the kinds it is for, and wherever one is on (a paper moved to
+  // another kind since): there it can be turned off.
+  if (!props.offered && review === null) return null;
+  return (
+    <div className="yearly-review stack">
+      <ErrorNote message={error ?? problem} />
+      <div className="check">
+        <input
+          id="yearly-review"
+          type="checkbox"
+          checked={review !== null}
+          disabled={busy || data === null}
+          aria-describedby={review ? 'yearly-review-next' : undefined}
+          onChange={(e) => void turn(e.currentTarget.checked)}
+        />
+        <label htmlFor="yearly-review">{REVIEW_LABEL}</label>
+      </div>
+      {review && (
+        <span id="yearly-review-next" className="muted">
+          Next review: {formatDate({ date: review.fire_at, precision: 'day' })}
+        </span>
+      )}
+    </div>
   );
 }
 

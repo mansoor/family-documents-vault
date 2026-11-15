@@ -10,6 +10,7 @@ import {
 } from './documents.js';
 import { NOTES_MAX } from './notes.js';
 import { can, type Role } from './roles.js';
+import { teenOwnStart } from './sensitive.js';
 import { tagsProblem } from './tags.js';
 import { issuerNoun, monthYear } from './titles.js';
 
@@ -239,12 +240,18 @@ const LIMITS = [
  */
 export function effectiveVisibility(
   meta: Pick<CaptureMetadata, 'visibility'>,
-  type: Pick<DocumentTypeView, 'default_visibility'> | null | undefined,
+  type:
+    | (Pick<DocumentTypeView, 'default_visibility'> & { key?: string | null | undefined })
+    | null
+    | undefined,
   role: Role,
 ): Visibility {
   if (meta.visibility) return meta.visibility;
   const fallback = type?.default_visibility ?? 'household';
-  return fallback === 'adults' && !can(role, 'document.see_adults') ? 'private' : fallback;
+  // A teen's own (5.17c), but for a vaccination record (H3): `teenOwnStart`.
+  return fallback === 'adults' && !can(role, 'document.see_adults')
+    ? teenOwnStart(fallback, type)
+    : fallback;
 }
 
 /**

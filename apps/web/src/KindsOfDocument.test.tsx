@@ -867,6 +867,40 @@ describe('Kinds of document: Reminders, from any date (5.16b)', () => {
     said('Reminders are on: 9 months and 6 months before it expires.');
   });
 
+  it('a vaccination record’s next dose reminds, but is the family’s to require (0.9.0, H3)', async () => {
+    const VACCINATION = {
+      ...COUNCIL,
+      key: 'vaccination_record',
+      label: 'Vaccination record',
+      category: 'medical',
+      fields: [{ key: 'next_dose_due', label: 'Next dose due', kind: 'date', required: false }],
+      remind_from: 'next_dose_due',
+      remind_leads: [30, 7],
+      default_visibility: 'adults',
+      builtin: true,
+      etag: '"vaccination_record.1"',
+    };
+    open('/settings/kinds/vaccination_record', 'owner', {
+      types: [PASSPORT, WILL, ALLOTMENT, VACCINATION],
+      attributes: [
+        ...LIBRARY,
+        {
+          key: 'next_dose_due',
+          label: 'Next dose due',
+          kind: 'date',
+          choices: null,
+          builtin: true,
+        },
+      ],
+    });
+    await screen.findByRole('heading', { name: 'Vaccination record', level: 1 });
+    expect(theDate()).toHaveValue('next_dose_due');
+    const required = within(group('Next dose due')).getByRole('checkbox', { name: 'Required' });
+    expect(required).toBeEnabled();
+    expect(required).not.toBeChecked();
+    expect(required).not.toHaveAccessibleDescription(ALWAYS_ASKED);
+  });
+
   it('the reminding date is required and locked, with the reason', async () => {
     const state = open('/settings/kinds/h_council1', 'owner', withCouncil);
     await screen.findByRole('heading', { name: 'Council tax', level: 1 });

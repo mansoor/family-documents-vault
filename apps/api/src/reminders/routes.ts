@@ -13,10 +13,16 @@ export function registerReminders(app: FastifyInstance, reminders: ReminderServi
   const guard = (c: Capability) => ({ preHandler: [app.requireAuth, needs(c)] });
   const principal = (req: FastifyRequest) => req.principal as Principal;
 
-  app.get<{ Querystring: { state?: string } }>('/api/v1/reminders', auth, async (req) => {
-    const state = parse(z.enum(['due', 'upcoming', 'all']).default('all'), req.query.state);
-    return { items: await reminders.list(principal(req), state) };
-  });
+  app.get<{ Querystring: { state?: string; document_id?: string } }>(
+    '/api/v1/reminders',
+    auth,
+    async (req) => {
+      const state = parse(z.enum(['due', 'upcoming', 'all']).default('all'), req.query.state);
+      // One document's (0.9.0, H3): none for one the caller cannot see.
+      const documentId = parse(z.string().uuid().optional(), req.query.document_id);
+      return { items: await reminders.list(principal(req), state, documentId) };
+    },
+  );
 
   // Somebody turned 13 (0066): the owners' reminders, and dismissing one.
   app.get('/api/v1/reminders/people', auth, async (req) => ({
@@ -39,6 +45,8 @@ export function registerReminders(app: FastifyInstance, reminders: ReminderServi
         fire_at: isoDate,
         note: z.string().max(500).nullable().optional(),
         recurrence: z.string().max(20).nullable().optional(),
+        // A yearly review (0.9.0, H3).
+        review: z.boolean().optional(),
       }),
       req.body,
     );

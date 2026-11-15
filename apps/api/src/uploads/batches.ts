@@ -2458,7 +2458,7 @@ export class BatchService {
     const type = out.type_key
       ? await trx
           .selectFrom('effective_document_type')
-          .select(['default_visibility', 'sensitive_default'])
+          .select(['key', 'default_visibility', 'sensitive_default'])
           .where('key', '=', out.type_key)
           .where('deleted_at', 'is', null)
           .executeTakeFirst()

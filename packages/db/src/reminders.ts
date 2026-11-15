@@ -142,6 +142,12 @@ const has = (o: object, key: string) => Object.prototype.hasOwnProperty.call(o, 
  *    still ahead are made: a lead added to Passport is about what is
  *    coming, not a due reminder for every passport kept for the record.
  *
+ * A document with no value for the date its kind reminds from is reminded
+ * from the kind's date to fall back on, where it has one (0.9.0, H3,
+ * `remind_fallback`: a prescription's Expires when it has no Next refill),
+ * on the same lead times, its reminders saying that date is what they are
+ * about.
+ *
  * An Only me document's details are sealed: its reminding date is read
  * from `opts.details`, and one that lists the date as sealed with none
  * passed throws SealedDateNeeded. In the Trash it has no reminders, and
@@ -178,25 +184,28 @@ export async function regenerateDerived(
     doc?.type_key && !doc.deleted_at
       ? await trx
           .selectFrom('effective_document_type')
-          .select(['remind_from', 'remind_leads'])
+          .select(['remind_from', 'remind_leads', 'remind_fallback'])
           .where('key', '=', doc.type_key)
           .executeTakeFirst()
       : undefined;
-  const source = type?.remind_from ?? null;
+  let source = type?.remind_from ?? null;
   const leads = type?.remind_leads ?? [];
 
-  let date: string | null = null;
-  if (doc && source === 'expires') {
-    date = doc.expires_on ? String(doc.expires_on).slice(0, 10) : null;
-  } else if (doc && source) {
-    if (opts.details && has(opts.details, source)) {
-      date = dayOf(opts.details[source]);
-    } else if ((doc.sealed_details ?? []).includes(source)) {
-      throw new SealedDateNeeded(doc.id, source);
-    } else {
-      const extra = doc.extra && typeof doc.extra === 'object' ? doc.extra : {};
-      date = dayOf((extra as Record<string, unknown>)[source]);
-    }
+  /** The document's day for a date its kind may remind from. */
+  const dateFor = (key: string): string | null => {
+    if (!doc) return null;
+    if (key === 'expires') return doc.expires_on ? String(doc.expires_on).slice(0, 10) : null;
+    if (opts.details && has(opts.details, key)) return dayOf(opts.details[key]);
+    if ((doc.sealed_details ?? []).includes(key)) throw new SealedDateNeeded(doc.id, key);
+    const extra = doc.extra && typeof doc.extra === 'object' ? doc.extra : {};
+    return dayOf((extra as Record<string, unknown>)[key]);
+  };
+  let date: string | null = source ? dateFor(source) : null;
+  // None of it: the kind's date to fall back on, where it has one (H3).
+  const fallback = type?.remind_fallback ?? null;
+  if (source && date === null && fallback) {
+    source = fallback;
+    date = dateFor(fallback);
   }
 
   const held = await trx

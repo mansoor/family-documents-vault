@@ -1365,8 +1365,16 @@ export function createApi(http: Http) {
       request<void>(`/api/v1/suggestions/${enc(key)}/dismiss`, { method: 'DELETE', token }),
 
     // ----------------------------------------------------------- reminders
-    reminders: (token: string, state: 'due' | 'upcoming' | 'all' = 'all') =>
-      request<{ items: ReminderView[] }>(`/api/v1/reminders?state=${state}`, { token }),
+    /**
+     * The caller's reminders; with `documentId` (0.9.0, H3), one
+     * document's alone — none for one they cannot see. An older vault
+     * ignores it and answers them all: filter by `document_id` to be sure.
+     */
+    reminders: (token: string, state: 'due' | 'upcoming' | 'all' = 'all', documentId?: string) =>
+      request<{ items: ReminderView[] }>(
+        `/api/v1/reminders?state=${state}${documentId ? `&document_id=${enc(documentId)}` : ''}`,
+        { token },
+      ),
     snoozeReminder: (token: string, id: string, until: string) =>
       request<ReminderView>(`/api/v1/reminders/${id}/snooze`, {
         method: 'POST',
@@ -1383,6 +1391,12 @@ export function createApi(http: Http) {
      * `201` with it: `due` if the day has come on the family's calendar,
      * else `scheduled`. A document no longer needed is `409
      * no_longer_needed`; one they cannot see, `404`.
+     *
+     * `review: true` (0.9.0, H3) is a yearly review on an advance
+     * directive, a healthcare proxy or a HIPAA authorization (else `422`,
+     * `detail: 'review'`): repeating every year, its note the vault's
+     * ("Yearly review"), one open a document — asked again, the one there
+     * is. `deleteReminder` turns it off.
      */
     createReminder: (
       token: string,
@@ -1391,6 +1405,7 @@ export function createApi(http: Http) {
         fire_at: string;
         note?: string | null;
         recurrence?: string | null;
+        review?: boolean;
       },
     ) => request<ReminderView>('/api/v1/reminders', { method: 'POST', body, token }),
     /**

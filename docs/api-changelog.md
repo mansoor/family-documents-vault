@@ -6973,6 +6973,139 @@ idempotency_key_reused`, and makes nothing.
       fake keeps keys as the vault does (`FakeVaultState.createKeys`): the
       replay, the refusals, `404 created_not_visible` for a document gone,
       24 hours.
+  - Health's kinds, their details and reminders (0.9.0-dev.46, H3 of the
+    health plan). Migration 0101. **Additive**: nothing an older client
+    sends is answered differently, but where "Changed answers" says.
+    - **New `features`:** `health_kinds` (`true`).
+    - **Nine new built-in kinds**, each `category: "medical"`,
+      `default_visibility: "adults"`, `sensitive_default: true`,
+      `belongs_to: "person"`: `insurance_card` (Insurer, Member ID as the
+      identifier's label, `group_number`; Expires, optional, reminding 30
+      and 7 days before), `explanation_of_benefits` (Insurer, Claim number,
+      `date_of_service`, `amount_you_owe`; `issuer_noun: "explanation of
+benefits"`), `lab_result`, `visit_summary` and `imaging_report`
+      (Provider, `date_of_service`), `vaccination_record` (`vaccines`,
+      `date_given`, `next_dose_due`, which it reminds from, 30 and 7 days
+      before), `advance_directive` and `healthcare_proxy` (Issued called
+      "Signed", Issued by hidden, `agent`), `hipaa_authorization` (Provider,
+      Signed, `authorized_person`; Expires, optional, 30 days before). The
+      library (`GET /document-attributes`) gains `group_number`,
+      `amount_you_owe`, `vaccines`, `date_given`, `next_dose_due`, `agent`,
+      `authorized_person` and `refill_date`. A household that already kept
+      a kind of its own by one of their names (or a close one: "Vaccinations",
+      "Living will", "EOB", "HIPAA release"…) has the new built-in `hidden`,
+      as 0077 did for payslips; it can show it in Kinds of document.
+      `lab_result`, `visit_summary`, `imaging_report` and
+      `explanation_of_benefits` are `periodic: true`.
+    - **Changed answers:**
+      - `medical_record` is labelled **"Medical record"** (was "Medical
+        record / immunisation"); its ETag moves.
+      - `prescription` gains `refill_date` ("Next refill", a date) and now
+        reminds from it (`remind_from: "refill_date"`, `remind_leads:
+[7, 1]`), so `reminder_leads` reads `[]` — and, for a prescription
+        with no `refill_date`, from its Expires on the same lead times
+        (**new `DocumentTypeView.remind_fallback`**: `"expires"` here, null
+        for every other kind and for a household that chose its own
+        `remind_from`). Its derived reminders say which (`source:
+"refill_date"` or `"expires"`). Expires is still shown and still
+        required. A household that gave the kind fields of its own gains
+        `refill_date` among them; one that chose its own date to remind
+        from keeps it, with no fallback. A prescription's reminders made
+        before, 7 days before its Expires, are the same reminders after an
+        edit while it has no Next refill.
+      - A vaccination record's `next_dose_due` and a prescription's
+        `refill_date` are the dates their kinds remind from, but answered
+        `required: false` (`REMINDING_DATE_OPTIONAL`), unlike every other
+        reminding date: a document without one is not `needs_info`, and
+        `PATCH /document-types/{key}` neither requires it nor refuses it
+        unrequired.
+      - A **teen's own vaccination record** starts where their parents can
+        see it, where nobody says who: `household` (Everyone, viewers
+        included: the owner's decision) for a caller signed in as a teen
+        (who cannot see Adults only), else the kind's `adults` — never
+        Only me by H1a's rule (`POST /documents`, `POST /capture`, a
+        batch's accept). Any other sensitive paper of a teen's own is Only
+        me as before; a grown-up child's own vaccination record is Only me
+        too (turning 18, H1b, governs their parents' sight), and so is
+        anybody's who is 18 or over by their date of birth while still
+        signed in as a teen. The teen may make it Only me later (`POST
+/documents/{id}/visibility`).
+    - **A yearly review:** `POST /api/v1/reminders` takes `review: true`
+      on a document of `advance_directive`, `healthcare_proxy` or
+      `hipaa_authorization` (any other is `422 validation_failed`, `detail:
+"review"`; a `recurrence` other than `annual` with it, `422`, `detail:
+"recurrence"`). It is a `manual` reminder, `recurrence: "annual"`,
+      `note: "Yearly review"`, `review: true`; one open a document — asked
+      again, the open one is answered (`201`). A `fire_at` before today
+      is taken as today. Done (`POST /reminders/{id}/acknowledge`) brings
+      the next a year on from its day, by the household's calendar, even
+      when done early; Snooze is as any reminder's; a new version of the
+      document (REM-08) leaves it open; the document moved to a kind a
+      review is not for (`PATCH /documents/{id}` `type_key`) resolves it.
+      `DELETE /api/v1/reminders/{id}` turns it off — for a review, only by
+      whoever set it or an owner (else `403 forbidden`). In the rare case
+      the open review vanishes as another is set, the answer is `409
+conflict`, `retriable: true`. `ReminderView.review` (`true` for one,
+      `false` otherwise; absent from older vaults).
+    - **Changed:** `DELETE /api/v1/reminders/{id}`'s `404` says what it
+      means ("Only a reminder somebody set by hand can be removed, never
+      one made from a date."); who may remove an ordinary one is as
+      before.
+    - **Behaviour fix — no drift.** A repeating reminder's next instance
+      (Done) is counted in whole steps from the day it was first set for
+      (`reminder.recur_from`), not from the last one: the 31st and 29
+      February no longer creep earlier for good.
+    - **`GET /api/v1/reminders?document_id=`** gives that document's
+      reminders alone (none for one the caller cannot see; a malformed id
+      is `422`). An older vault ignores it: filter by `document_id`.
+    - **Behaviour fix — a repeating reminder is sent again.** The digest
+      sent a reminder once for good, so a repeating one (`recurrence`,
+      a yearly review) done and due again was never in an email again. It
+      is now sent once a day it falls due: a reminder snoozed and due again
+      on the same occurrence is still not sent twice, and the job run twice
+      sends nothing twice. Existing `monthly`, `quarterly` and `every:Nm`
+      manual reminders are emailed on every occurrence from now on. The
+      ledger's `fire_date` is never before the reminder's own day, so a
+      household whose time zone moves west is not sent the same one
+      again.
+    - **Reading:** cues for each new kind, scored beside every other kind;
+      a page is offered as one of them surely only with its own marks and
+      none of another's, and only while the general kind it could be
+      mistaken for (a medical record, a will, an insurance policy, a
+      national ID, a bill) neither has its strongest cue on the page nor
+      scores enough to be proposed on what the page says besides the
+      health kind's title — else `type_key` at most 0.79: Check. A general
+      kind proposed is unsure where a health kind the household keeps has
+      its mark and scores as much, unless the general kind's strongest cue
+      is there too (a policy schedule that mentions a member ID card stays
+      a sure policy).
+    - **Hiding:** a household kind hides a new built-in by a name that
+      says the paper itself in any category; by a name that could be
+      anything ("Imaging", "Vaccinations") only in Medical (or Insurance,
+      for the card).
+    - **Storage:** `reminder.review` (boolean, default `false`; only a
+      manual, annual reminder about a document); `reminder_one_review`,
+      one open review a document, which a restore checks;
+      `reminder.recur_from` (the day a repeating reminder is counted
+      from); `document_type.remind_fallback` and
+      `effective_document_type.remind_fallback`.
+    - **Shared and client:** `CapabilityFeatures.health_kinds`,
+      `ReminderView.review`, `YEARLY_REVIEW_KINDS`, `yearlyReviewOffered`,
+      `REVIEW_NOTE`, `REVIEW_LABEL`, `firstReview`, `nextReview`,
+      `REMINDING_DATE_OPTIONAL`, `remindingDateOptional`,
+      `PARENTS_KEEP_KINDS`, `parentsKeep`, `teenUploader`, `teenOwnStart`,
+      `PARENTS_KEEP_NOTE`; `sensitiveStartingVisibility` takes
+      `parentsKept`; `nextReminder`'s `after` takes the kind's `key`;
+      `effectiveVisibility` and `batchVisibility` read the kind's `key`.
+      `@fdv/client`: `reminders(token, state, documentId)`,
+      `createReminder({ review })`; the fake has the nine kinds and keeps
+      reviews as the vault does. `DocumentTypeView.remind_fallback`;
+      `nextOccurrence(anchor, …)` and `nextReview(fireAt, today, anchor?)`
+      count from the anchor. The fake's create Idempotency-Key follows the
+      vault's order (the body checked, and a role that may not add
+      documents refused, before a key is claimed or answered: a refused
+      create keeps none), keeps keys by household, account, person and
+      key, and times them by `FakeVaultState.now` when a test sets it.
 
 ## Deprecations in effect
 

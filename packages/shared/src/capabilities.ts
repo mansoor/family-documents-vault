@@ -608,6 +608,16 @@ export interface CapabilityFeatures {
    * a create sent twice is made twice.
    */
   idempotent_create?: boolean;
+  /**
+   * Health's kinds, their details and reminders (0.9.0, H3): an insurance
+   * card, an explanation of benefits, a lab result, a visit summary, an
+   * imaging report, a vaccination record (a teen's own starting where
+   * their parents see it), an advance directive, a healthcare proxy and a
+   * HIPAA authorization; a prescription's Next refill. And a yearly review:
+   * POST /reminders with `review: true` on the last three kinds, GET
+   * /reminders?document_id= for one document's. Absent from older vaults.
+   */
+  health_kinds?: boolean;
 }
 
 export interface CapabilityLimits {

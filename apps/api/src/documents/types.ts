@@ -6,6 +6,7 @@ import {
   EXPIRY_ALWAYS_REQUIRED,
   libraryHasName,
   nextReminder,
+  remindingDateOptional,
   NOTE_KIND,
   TYPE_IN_USE,
   TYPE_LABEL_MAX,
@@ -453,7 +454,7 @@ export class TypeService {
         expires: input.core?.expires?.shown ?? before.expiry_driver !== null,
         fields: afterFields,
       });
-      const required = requireReminding(afterFields, reminding.from);
+      const required = requireReminding(afterFields, reminding.from, before.key);
       const fields = required ?? sentFields;
       if (before.builtin) {
         await this.writeSetting(trx, p, before, input, fields, reminding);
@@ -948,6 +949,7 @@ function reminderFor(
   before: EffectiveType | null,
   after: { expires: boolean; fields: ReadonlyArray<TypeField> },
 ): ReminderWrite {
+  const key = before?.builtin ? before.key : undefined;
   const was: Reminding = {
     from: before?.remind_from ?? null,
     leads: leadsOf(before?.remind_leads ?? []),
@@ -958,6 +960,7 @@ function reminderFor(
     {
       expires: after.expires,
       dates: after.fields.filter((f) => f.kind === 'date').map((f) => f.key),
+      key,
     },
   );
   if ('problem' in next) throw invalid(next.problem.message, next.problem.detail);
@@ -971,10 +974,16 @@ function reminderFor(
 /**
  * The kind's fields with the one it reminds from required, as it always
  * is (0.5.15): older phones ask for it through `fields[].required`. Null
- * when they need no change.
+ * when they need no change — and for a built-in's date the family adds only
+ * if there is one (0.9.0, H3, `remindingDateOptional`).
  */
-function requireReminding(fields: TypeField[], from: string | null): TypeField[] | null {
+function requireReminding(
+  fields: TypeField[],
+  from: string | null,
+  builtinKey?: string,
+): TypeField[] | null {
   if (from === null || from === 'expires') return null;
+  if (remindingDateOptional({ key: builtinKey }, from)) return null;
   if (fields.every((f) => f.key !== from || f.required === true)) return null;
   return fields.map((f) => (f.key === from ? { ...f, required: true } : f));
 }

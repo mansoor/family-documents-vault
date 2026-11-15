@@ -278,7 +278,13 @@ describe.skipIf(!testAdminUrl())('migration 0038: reminders from any date', () =
       const all = (await kinds(hh)).filter((t) => was.some((w) => w.key === t.key));
       // The columns 0038 appends aside (and 0087's, whom it belongs to, and
       // 0090's, Sensitive by default), every row is as it was, byte for byte…
-      const appended = ['remind_from', 'remind_leads', 'belongs_to', 'sensitive_default'];
+      const appended = [
+        'remind_from',
+        'remind_leads',
+        'belongs_to',
+        'sensitive_default',
+        'remind_fallback',
+      ];
       const old = (t: EffectiveType) =>
         Object.fromEntries(Object.entries(t).filter(([k]) => !appended.includes(k)));
       // …but the bank's own kind, which 0077 calls what it is ("Bank
@@ -292,8 +298,17 @@ describe.skipIf(!testAdminUrl())('migration 0038: reminders from any date', () =
         wasBank,
       );
       // …and those 0087 made the household's (and the bill a bill, with a
-      // Due date): their own test is household-owner-migration.test.ts.
-      const later = ['bank_statement', 'utility_bill', 'property_deed', 'pet_record'];
+      // Due date): their own test is household-owner-migration.test.ts; and
+      // the two 0101 changed (a medical record called what it is, and a
+      // prescription reminding from its Next refill): health-kinds-migration.test.ts.
+      const later = [
+        'bank_statement',
+        'utility_bill',
+        'property_deed',
+        'pet_record',
+        'medical_record',
+        'prescription',
+      ];
       const now = all.filter((t) => !later.includes(t.key));
       was = was.filter((t) => !later.includes(t.key));
       expect(now.map(old)).toEqual(was);
@@ -303,6 +318,8 @@ describe.skipIf(!testAdminUrl())('migration 0038: reminders from any date', () =
         'remind_leads',
         'belongs_to',
         'sensitive_default',
+        // A date to fall back on (0101, H3).
+        'remind_fallback',
       ]);
       // …and so is every ETag: nobody is asked to load a kind again.
       expect(now.map(typeEtag)).toEqual(was.map(typeEtag));
