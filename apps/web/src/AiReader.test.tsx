@@ -74,6 +74,21 @@ const card = async () => {
   return c;
 };
 
+/**
+ * Typed or picked in the form, and made sure it holds. The form takes what
+ * the vault has in an effect, once the card has drawn (AiReaderForm). On a
+ * busy machine React may not have run it yet when the card shows: it then
+ * runs as the first thing is typed, and puts that field back to what the
+ * vault has — an empty Address, so Save said to type one (the CI flake).
+ * Typed again until it holds; a person cannot type before the form has drawn.
+ */
+async function put(field: HTMLElement, value: string) {
+  await waitFor(() => {
+    if ((field as HTMLInputElement).value !== value) fireEvent.change(field, { target: { value } });
+    expect(field).toHaveValue(value);
+  });
+}
+
 describe('Settings → Reading → the AI reader (AIR1)', () => {
   it('is set here, saved untested, its key never shown back; Test says how long and where it runs', async () => {
     const state = at('/settings/reading', {
@@ -93,15 +108,9 @@ describe('Settings → Reading → the AI reader (AIR1)', () => {
     // What is sent, and to whom: the words, never the page; kinds and names.
     expect(c).toHaveTextContent('never the page itself, or the file');
     expect(c).toHaveTextContent('the household’s kinds of document, and the family’s names');
-    fireEvent.change(within(c).getByLabelText('Address'), {
-      target: { value: 'http://192.168.1.30:11434' },
-    });
-    fireEvent.change(within(c).getByLabelText('Model'), {
-      target: { value: 'qwen2.5:3b-instruct' },
-    });
-    fireEvent.change(within(c).getByLabelText('API key (if it needs one)'), {
-      target: { value: 'sk-test-abcd-WXYZ' },
-    });
+    await put(within(c).getByLabelText('Address'), 'http://192.168.1.30:11434');
+    await put(within(c).getByLabelText('Model'), 'qwen2.5:3b-instruct');
+    await put(within(c).getByLabelText('API key (if it needs one)'), 'sk-test-abcd-WXYZ');
     fireEvent.click(within(c).getByRole('button', { name: 'Save' }));
     expect(
       await within(c).findByText('Saved. Now test it: no paper is sent to it until a Test passes.'),
@@ -141,13 +150,13 @@ describe('Settings → Reading → the AI reader (AIR1)', () => {
   it('takes the address alone: a path, a sign-in or another scheme is refused before it is sent', async () => {
     const state = at('/settings/reading', { aiReader: NONE });
     const c = await card();
-    fireEvent.change(within(c).getByLabelText('Model'), { target: { value: 'llama3.2' } });
+    await put(within(c).getByLabelText('Model'), 'llama3.2');
     for (const [typed, words] of [
       ['http://192.168.1.30:11434/api/chat', /the vault adds the rest/],
       ['http://me:pw@192.168.1.30:11434', /no user name or password/],
       ['ftp://192.168.1.30', /starts with http:\/\/ or https:\/\//],
     ] as const) {
-      fireEvent.change(within(c).getByLabelText('Address'), { target: { value: typed } });
+      await put(within(c).getByLabelText('Address'), typed);
       fireEvent.click(within(c).getByRole('button', { name: 'Save' }));
       expect(await within(c).findByRole('alert')).toHaveTextContent(words);
     }
@@ -185,7 +194,7 @@ describe('Settings → Reading → the AI reader (AIR1)', () => {
     const c = await card();
     fireEvent.click(within(c).getByRole('button', { name: 'Find its models' }));
     const pick = await within(c).findByLabelText('Models it has', {}, { timeout: 4000 });
-    fireEvent.change(pick, { target: { value: 'llama3.2:3b' } });
+    await put(pick, 'llama3.2:3b');
     expect(within(c).getByLabelText('Model')).toHaveValue('llama3.2:3b');
     expect(c).toHaveTextContent('It has 2 models.');
   });
@@ -290,21 +299,15 @@ describe('Settings → Reading → the AI reader: cloud readers and who is sent 
         .getAllByRole('option')
         .map((o) => o.textContent),
     ).toEqual(['Local (Ollama)', 'Anthropic', 'OpenAI-compatible']);
-    fireEvent.change(kind, { target: { value: 'anthropic' } });
+    await put(kind, 'anthropic');
     expect(within(c).queryByLabelText('Address')).toBeNull();
-    fireEvent.change(within(c).getByLabelText('Model'), {
-      target: { value: 'claude-haiku-4-5' },
-    });
-    fireEvent.change(within(c).getByLabelText('API key'), {
-      target: { value: 'sk-ant-test-0000-WXYZ' },
-    });
+    await put(within(c).getByLabelText('Model'), 'claude-haiku-4-5');
+    await put(within(c).getByLabelText('API key'), 'sk-ant-test-0000-WXYZ');
     fireEvent.click(within(c).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(state.aiReaderSaves).toHaveLength(1));
     expect(state.aiReaderSaves?.[0]).toMatchObject({ kind: 'anthropic', base_url: null });
     // An OpenAI-compatible reader: its address, and the owner's word on where it is.
-    fireEvent.change(within(c).getByLabelText('Kind of reader'), {
-      target: { value: 'openai_compatible' },
-    });
+    await put(within(c).getByLabelText('Kind of reader'), 'openai_compatible');
     expect(within(c).getByLabelText('Address')).toBeInTheDocument();
     expect(within(c).getByRole('checkbox', { name: 'It is on my own network' })).not.toBeChecked();
     await expectAccessible();
