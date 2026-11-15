@@ -26,6 +26,9 @@ export const DOCUMENT_SORTS = [
   'visibility',
   'collections',
   'location',
+  // The date a paper is about: issued, else added (0.9.0, C1, `features.cabinets`):
+  // a cabinet's folder, newest first. No column of its own.
+  'dated',
 ] as const;
 export type DocumentSort = (typeof DOCUMENT_SORTS)[number];
 
@@ -141,6 +144,13 @@ export type DocumentListParams = {
   issued_to?: string | undefined;
   expires_from?: string | undefined;
   expires_to?: string | undefined;
+  /**
+   * 0.9.0 (C1, `features.cabinets`): the days the date a paper is about
+   * falls within — when it was issued, else when it was added — both
+   * included: what a cabinet's year folder asks.
+   */
+  dated_from?: string | undefined;
+  dated_to?: string | undefined;
   /** At most `DOCUMENT_PAGE_MAX`. */
   limit?: number | undefined;
   /** The `next_cursor` of the page before, asked the same way. */

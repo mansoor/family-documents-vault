@@ -6,6 +6,21 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.42] - 2026-11-14 — My cabinet
+
+### Added
+
+- **My cabinet.** Documents now has two ways to look: **Table**, as before, and **Cabinet**, which lays the same papers out the way you file them at home — cabinets, drawers and folders. Each person arranges their own, and nobody else sees it, an owner included. (Migration 0097.)
+- **Folders fill themselves.** A folder is a saved question, such as "Tax papers dated 2025, for Ahmed", not a place papers are moved to. A new paper is in its folders as soon as its details say so, and one paper can sit in several folders without being copied. An empty folder says so plainly.
+- **Arrange my cabinet.** Pick how the vault draws it — **by person, then topic, then year**; **by topic, then year, then person** (a Tax cabinet with a drawer for each year); or **by person, then kind** — and see it before you keep it, with how many papers each folder holds. Then rename, hide, reorder and merge drawers and folders (merging 2024 and 2025 makes one folder for both years), and choose **Use this arrangement**. Papers with no topic or kind yet are counted and said, and join their folders once their details are filled in. If your cabinet was changed in another window meanwhile, you can save yours over it or load the newer one instead.
+- **Open in the table.** From any folder, the table opens with the whole of the folder's question as its filters, so it shows the same papers. A merged folder's people, kinds or statuses show as one choice in words ("Sara or Tariq"), and what has no filter of its own — a topic, a date range, who issued it, where it's kept, Essential, more tags — shows as its own filter above the table, on a phone too, each taken off by itself. A folder's papers are listed newest first, by the date each is about.
+- **Also in.** A document's page lists the folders of your cabinet it is in, each a way to that folder.
+
+### Security
+
+- A cabinet only ever narrows what you can already open. Each folder's count and contents come from the same rules as the Documents table and search: nobody else's Only me papers, nothing kept to the adults from a teen, nothing outside a limited viewer's or a guest's access, and nothing in the Trash. A folder asks only what the Documents list itself accepts, checked by the same code. New tests prove this from the side of each person who must not see.
+- Each person's arrangement is theirs alone in the database itself, and a restored vault is checked for it. Two windows saving at once can't overwrite each other: the second is told, and chooses. A cabinet's size is measured in bytes, as it is stored, and folders that ask for a status are counted together in one reading, so no arrangement can make the vault work harder than it should.
+
 ## [0.9.0-dev.41] - 2026-11-14 — what Sensitive protects
 
 ### Added

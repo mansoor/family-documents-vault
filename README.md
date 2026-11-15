@@ -976,6 +976,22 @@ and the activity log says who changed what. If the maker can no longer change
 it (their sign-in is gone, say), an owner can take its managers away, and can
 delete it unless a manager may still delete it.
 
+### My cabinet
+
+**Documents** can also be seen as a **Cabinet**: the same papers laid out the
+way you file them at home, in cabinets, drawers and folders. **Arrange my
+cabinet** draws one from what the vault already knows — by person, then topic,
+then year; by topic, then year, then person; or by person, then kind — and
+shows it before you keep it; then rename, hide, reorder or merge its drawers
+and folders. A folder is a saved question ("Tax papers dated 2025, for Ahmed"),
+so it fills itself as papers are added, and one paper can be in several
+folders without being copied; **Open in the table** shows a folder's question
+as the table's filters, and a document's page says which of your folders it
+is in. Each person's cabinet is their own, and an owner can't see anyone
+else's. A folder only ever narrows what its person can already open: its
+count and its contents follow the same rules as the table and search. It
+needs no setting of its own.
+
 ### Notes
 
 **Notes**, in the left bar, keep what the family knows and keeps nowhere else:

@@ -6600,6 +6600,82 @@ confirm_sensitive })`.
 confirm_sensitive }`; the fake says the feature, refuses a sensitive
       document's link without the flag, and keeps `show_title`
       (`FakeShare.show_title`).
+  - My cabinet (0.9.0-dev.42, C1 of the cabinets plan). Migration 0097.
+    Everything here is **additive**.
+    - **New `features`:** `cabinets` (`true`).
+    - **New routes**, each the caller's own, for anybody signed in (a
+      viewer and a guest too); nobody is ever given another's:
+      - `GET /api/v1/cabinet` → `CabinetView` `{ layout, version,
+updated_at }`: `layout` null and `version` 0 until the first save.
+        A layout is `{ arranged_by, cabinets: [{ id, name, hidden, drawers:
+[{ id, name, hidden, folders: [{ id, name, hidden, filter }] }] }] }`,
+        each list in its order; `arranged_by` one of `ARRANGE_BY` or null.
+      - `PUT /api/v1/cabinet` `{ layout, version }` (`CabinetSave`) → the
+        same answer, `version` one more. `version` is the one last read (0
+        for none yet); another is `409 conflict`, nothing saved. A
+        folder's `filter` is GET /documents's own parameters by their own
+        names (`CABINET_FILTER_KEYS`: `member_id`, `category`, `type_key`,
+        `issued_by`, `tag`, `tag_label`, `notes`, `sensitive`,
+        `visibility`, `essential`, `status`, `collection_id`, `location`
+        and the `_from`/`_to` days), read by the list's own parser: any
+        other key (`sort`, `limit`, `cursor`, `deleted`, …) or a value the
+        list refuses is `422 validation_failed`, its `message` naming the
+        folder; one over 4 KiB as JSON (in UTF-8 bytes) too; `location` only
+        for whoever may filter by it. Sizes (`CABINET_LIMITS`): 50 cabinets,
+        200 drawers a cabinet, 300 folders a drawer, 1,000 folders and 1,500
+        parts in all, at most 200 folders that ask a `status`, names of 1 to
+        80 characters, ids of `[A-Za-z0-9_-]{1,40}` unique in the layout,
+        512 KiB in all as UTF-8 JSON. Each refusal has its own code: `422
+cabinet_too_big` (sizes, the bytes among them),
+        `cabinet_too_many_status_folders`, `cabinet_node_id`,
+        `cabinet_name_missing`, `cabinet_name_too_long`. A name the vault
+        draws is cut to 80 characters with "…", never refused.
+      - `POST /api/v1/cabinet/preview` `{ arrange_by }` →
+        `CabinetPreview` `{ layout, counts, documents, left_out }`: a layout
+        drawn from what the caller can see (out of the Trash, notes left
+        out), not saved. `person_category_year`: a cabinet a person (`The
+household`, `Not sure yet` too), a drawer a topic, a folder a year;
+        `category_year_person`: a cabinet a topic, a drawer a year, a folder
+        a person; `person_kind`: one cabinet, a drawer a person, a folder a
+        kind. A year is the date a paper is about: issued, else added.
+        `counts` by folder id; `left_out` those with no topic (or kind).
+      - `GET /api/v1/cabinet/counts` → `CabinetCounts` `{ version, counts }`:
+        each shown folder's count (hidden ones, and those in a hidden
+        drawer or cabinet, left out) — exactly the `total` GET /documents
+        sorted by a column gives the caller for its `filter`, status worked
+        out as there; `null` for one the list would now refuse them. Folders
+        that ask a status are read together: the caller's documents once a
+        hundred folders, each one's status worked out once.
+      - `GET /api/v1/documents/{id}/also-in` → `AlsoIn` `{ items: [{ id,
+name, path: [cabinet, drawer, folder] }] }`: the caller's shown folders
+        the document is in, by the same rules; `404` for a document they
+        may not see; none for one in the Trash.
+    - **New list filter:** GET /documents and GET /search take `dated_from`
+      and `dated_to` (`YYYY-MM-DD`, both included): the date a paper is
+      about, issued else added. Checked as the other days are. "Added" here
+      is the day on the family's calendar (the household's time zone, else
+      `FDV_TIMEZONE`), as Arrange by draws its years. **Known limitation:**
+      the older `added_from`/`added_to` still read the database's calendar
+      (UTC unless the server says otherwise), as they always have, so a
+      paper added near midnight may fall on a different day for `added_`
+      than for `dated_`.
+    - **New sort:** `sort=dated` (`DOCUMENT_SORTS`), with `direction`, by the
+      same date: a cabinet folder's papers, newest first. It has no column
+      of its own on the web; an older vault refuses it (`422`), as any sort
+      it does not know.
+    - `@fdv/shared`: `ARRANGE_BY`, `ARRANGE_BY_WORDS`, `CABINET_FILTER_KEYS`,
+      `CABINET_LIMITS`, `CABINET_NODE_ID`, `CABINET_TOO_BIG`,
+      `CABINET_CHANGED`, `FolderFilter`, `Cabinet`, `CabinetDrawer`,
+      `CabinetFolder`, `CabinetLayout`, `CabinetView`, `CabinetSave`,
+      `CabinetPreview`, `CabinetCounts`, `AlsoIn`, `AlsoInFolder`,
+      `layoutSize`, `layoutProblem`, `layoutProblemOf`, `CabinetProblemCode`,
+      `CABINET_TOO_MANY_STATUS`, `cabinetName`, `mergeFolderFilters`, `mergedName`,
+      `rangeWords`, `categoriesWords`, `folderQuestionWords`, and
+      `drawCabinet` (the drawing, shared by the vault and the fake);
+      `DocumentListParams.dated_from`/`dated_to`. `@fdv/client`: `cabinet`,
+      `saveCabinet`, `previewCabinet`, `cabinetCounts`, `documentAlsoIn`;
+      the fake keeps each person's cabinet (`FakeVaultState.cabinets`) and
+      counts by its own table.
 
 ## Deprecations in effect
 

@@ -695,6 +695,63 @@ const RULES: Record<string, Rule> = {
   },
   'DELETE /api/v1/collections/:id/managers/:memberId': { who: 'family' },
 
+  // My cabinet (0.9.0, C1): everybody signed in has their own, and nothing
+  // else; its folders ask the list's own questions, so a folder naming
+  // somebody else's person, kind or year counts only what its maker sees.
+  // (Nothing forbidden goes in a layout: it is answered back to its maker.)
+  'GET /api/v1/cabinet': { who: 'signedIn' },
+  'PUT /api/v1/cabinet': {
+    who: 'signedIn',
+    bodies: (f) =>
+      [0, 1, 2].map((version) => ({
+        version,
+        layout: {
+          arranged_by: null,
+          cabinets: [
+            {
+              id: 'c',
+              name: 'Theirs',
+              hidden: false,
+              drawers: [
+                {
+                  id: 'd',
+                  name: 'Everything',
+                  hidden: false,
+                  folders: [
+                    { id: 'whose', name: 'Whose', hidden: false, filter: { member_id: f.member } },
+                    { id: 'tax', name: 'Tax', hidden: false, filter: { category: 'tax' } },
+                    {
+                      id: 'private',
+                      name: 'Only me',
+                      hidden: false,
+                      filter: { visibility: 'private', sensitive: 'yes' },
+                    },
+                    { id: 'late', name: 'Late', hidden: false, filter: { status: 'expired' } },
+                    {
+                      id: 'dated',
+                      name: 'Dated',
+                      hidden: false,
+                      filter: { dated_from: '2000-01-01', dated_to: IS_DAY },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      })),
+  },
+  'POST /api/v1/cabinet/preview': {
+    who: 'signedIn',
+    bodies: () => [
+      { arrange_by: 'person_category_year' },
+      { arrange_by: 'category_year_person' },
+      { arrange_by: 'person_kind' },
+    ],
+  },
+  'GET /api/v1/cabinet/counts': { who: 'signedIn' },
+  'GET /api/v1/documents/:id/also-in': { who: 'signedIn' },
+
   // Links, and what a restore paused.
   'GET /api/v1/shares': { who: 'signedIn' },
   'DELETE /api/v1/shares/:id': {
@@ -3251,6 +3308,71 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       for (const i of got.items) {
         expect(i, name).toMatchObject({ understood: false, found: 0, found_not_added: 0 });
         expect(i.matches, name).toEqual([]);
+      }
+    }
+  });
+
+  it("somebody else's Only me document is in nobody else's cabinet: never counted, listed or said to be also in a folder (0.9.0, cabinets C1)", async () => {
+    const priv = doc.ahmedPrivate as { id: string; version: string; title: string; marker: string };
+    const layout = {
+      arranged_by: null,
+      cabinets: [
+        {
+          id: 'c',
+          name: 'Cabinet',
+          hidden: false,
+          drawers: [
+            {
+              id: 'd',
+              name: 'Drawer',
+              hidden: false,
+              folders: [
+                {
+                  id: 'his-own',
+                  name: 'His Only me',
+                  hidden: false,
+                  filter: { member_id: ahmed.member_id, visibility: 'private' },
+                },
+                { id: 'his', name: 'His', hidden: false, filter: { member_id: ahmed.member_id } },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const counted = async (who: Tokens) => {
+      const at = json<{ version: number }>(await ok(send(who, 'GET', '/api/v1/cabinet'), 200));
+      await ok(send(who, 'PUT', '/api/v1/cabinet', { layout, version: at.version }), 200);
+      return json<{ counts: Record<string, number | null> }>(
+        await ok(send(who, 'GET', '/api/v1/cabinet/counts'), 200),
+      ).counts;
+    };
+    // The test of the test: to Ahmed, it is counted, and also in both.
+    expect((await counted(ahmed))['his-own']).toBeGreaterThanOrEqual(1);
+    const also = json<{ items: Array<{ id: string }> }>(
+      await ok(send(ahmed, 'GET', `/api/v1/documents/${priv.id}/also-in`), 200),
+    );
+    expect(also.items.map((i) => i.id).sort()).toEqual(['his', 'his-own']);
+    for (const [name, who] of [
+      ['an owner', olivia],
+      ['a password-only owner', peter],
+      ['another adult', sara],
+      ['a teen', tariq],
+    ] as const) {
+      const got = await counted(who);
+      expect(got['his-own'], name).toBe(0);
+      // What the folder counts is what the table lists them, his Only me not among it.
+      const listed = await ok(
+        send(who, 'GET', `/api/v1/documents?sort=title&limit=200&member_id=${ahmed.member_id}`),
+        200,
+      );
+      const page = json<{ total: number; items: Array<{ id: string }> }>(listed);
+      expect(got.his, name).toBe(page.total);
+      expect(page.items.map((d) => d.id)).not.toContain(priv.id);
+      const asked = await send(who, 'GET', `/api/v1/documents/${priv.id}/also-in`);
+      expect(asked.statusCode, name).toBe(404);
+      for (const secret of [priv.version, priv.title, priv.marker]) {
+        expect(asked.body, name).not.toContain(secret);
       }
     }
   });

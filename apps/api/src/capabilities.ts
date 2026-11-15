@@ -215,6 +215,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // teen's or a grown-up child's own, asked before it's shared, kept out
       // of snippets, the activity log's words and a link's page.
       sensitive_protects: true,
+      // 0.9.0 (C1): each person's own cabinet, its folders saved filters of the list.
+      cabinets: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

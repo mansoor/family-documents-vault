@@ -19,7 +19,7 @@ import { sql, type RawBuilder } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { seenCollection } from '../collections/seen.js';
 import { ApiError } from '../errors.js';
-import { asksStatus, filterClauses, statusAllowed } from './filters.js';
+import { asksStatus, datedSql, filterClauses, statusAllowed } from './filters.js';
 import {
   kindGiven,
   rowStatus,
@@ -181,6 +181,135 @@ export async function documentTable(
   };
 }
 
+/**
+ * Whether the table would answer `q` for this reader, or refuse it (422):
+ * by where originals are kept, to whoever may not see one, or by a status
+ * there is none of. A folder that asks what its person may no longer ask is
+ * counted as nothing to say (0.9.0, C1), never as somebody else's answer.
+ */
+function tableRefuses(p: Principal, q: ListQuery): boolean {
+  if (q.location !== undefined && !maySortByLocation(p.role)) return true;
+  return q.status !== undefined && !(STATUS_ORDER as readonly string[]).includes(q.status);
+}
+
+/** How many folders' counts one statement works out at once. */
+const COUNTS_AT_ONCE = 100;
+
+/**
+ * How many documents each of `queries` gives this reader (0.9.0, C1: a
+ * cabinet's folders): exactly the `total` the table would give each — the
+ * same conditions (`whereOf`: the reader's rules, out of the Trash, each
+ * filter), the same worked-out status — or null for one the table would
+ * refuse them. Those that ask no status are counted together, a statement
+ * for each hundred; one that does reads what a status is made from, as the
+ * table does.
+ */
+export async function documentCounts(
+  trx: Db,
+  p: Principal,
+  queries: readonly ListQuery[],
+): Promise<Array<number | null>> {
+  const out: Array<number | null> = queries.map(() => null);
+  const plain: number[] = [];
+  const byStatus: number[] = [];
+  for (const [i, q] of queries.entries()) {
+    if (tableRefuses(p, q)) continue;
+    (asksStatus(q, q.status) ? byStatus : plain).push(i);
+  }
+  if (byStatus.length > 0) {
+    // Those that ask a status, all in one reading: what a status is made
+    // from, of every document the reader may see out of the Trash, once,
+    // with whether each folder's other conditions hold — a column a folder,
+    // a statement for each hundred — then each row's status worked out once
+    // and counted against each folder's.
+    type Row = StatusRow & Record<string, unknown>;
+    const rows = new Map<string, Row>();
+    for (let at = 0; at < byStatus.length; at += COUNTS_AT_ONCE) {
+      const some = byStatus.slice(at, at + COUNTS_AT_ONCE);
+      const columns = some.map(
+        (i, n) =>
+          sql`coalesce(${whereOf(p, queries[i] as ListQuery)}, false) as ${sql.ref(`m${at + n}`)}`,
+      );
+      const read = (
+        await sql<Row>`
+          select ${at === 0 ? STATUS_COLUMNS : sql`d.id`}, ${sql.join(columns, sql`, `)}
+            from document d
+           where ${seenDocument(p)} and d.deleted_at is null`.execute(trx)
+      ).rows;
+      for (const r of read) rows.set(r.id, { ...(rows.get(r.id) ?? {}), ...r });
+    }
+    const ranked = await withStatus(trx, [...rows.values()], seesLocation(p.role));
+    byStatus.forEach((i, n) => {
+      const q = queries[i] as ListQuery;
+      const allowed = statusAllowed(q, q.status);
+      out[i] = ranked.filter((r) => r.row[`m${n}`] === true && allowed(r.status)).length;
+    });
+  }
+  for (let at = 0; at < plain.length; at += COUNTS_AT_ONCE) {
+    const some = plain.slice(at, at + COUNTS_AT_ONCE);
+    const columns = some.map(
+      (i, n) =>
+        sql`(count(*) filter (where ${whereOf(p, queries[i] as ListQuery)}))::int as ${sql.ref(`c${n}`)}`,
+    );
+    // Only what the reader may see, out of the Trash, is read at all.
+    const row = (
+      await sql<Record<string, number>>`
+        select ${sql.join(columns, sql`, `)}
+          from document d
+         where ${seenDocument(p)} and d.deleted_at is null`.execute(trx)
+    ).rows[0];
+    some.forEach((i, n) => {
+      out[i] = row?.[`c${n}`] ?? 0;
+    });
+  }
+  return out;
+}
+
+/**
+ * Which of `queries` would list document `id` for this reader (0.9.0, C1:
+ * "Also in"), by the table's own conditions: none for a document in the
+ * Trash, and none the table would refuse them. Whether they may see it at
+ * all is the caller's to have asked first.
+ */
+export async function documentMatches(
+  trx: Db,
+  p: Principal,
+  id: string,
+  queries: readonly ListQuery[],
+): Promise<boolean[]> {
+  const out = queries.map(() => false);
+  const asked = queries.map((q, i) => ({ q, i })).filter(({ q }) => !tableRefuses(p, q));
+  for (let at = 0; at < asked.length; at += COUNTS_AT_ONCE) {
+    const some = asked.slice(at, at + COUNTS_AT_ONCE);
+    const columns = some.map(
+      ({ q }, n) => sql`coalesce(${whereOf(p, q)}, false) as ${sql.ref(`m${n}`)}`,
+    );
+    const row = (
+      await sql<Record<string, boolean>>`
+        select ${sql.join(columns, sql`, `)} from document d where d.id = ${id}::uuid`.execute(trx)
+    ).rows[0];
+    if (!row) return out;
+    some.forEach(({ i }, n) => {
+      out[i] = row[`m${n}`] === true;
+    });
+  }
+  // A status is worked out, not stored: for those that ask one, this
+  // document's, once.
+  const byStatus = asked.filter(({ q, i }) => out[i] && asksStatus(q, q.status));
+  if (byStatus.length > 0) {
+    const rows = (
+      await sql<StatusRow>`select ${STATUS_COLUMNS} from document d where d.id = ${id}::uuid`.execute(
+        trx,
+      )
+    ).rows;
+    const [ranked] = await withStatus(trx, rows, seesLocation(p.role));
+    for (const { q, i } of byStatus) {
+      out[i] = ranked !== undefined && statusAllowed(q, q.status)(ranked.status);
+    }
+  }
+  return out;
+}
+
 /** The columns of a document a list is made from (`DocRow`): never its search index. */
 const COLUMNS = sql.raw(
   [
@@ -325,6 +454,9 @@ function keyOf(p: Principal, sort: Exclude<DocumentSort, 'status'>): Key {
       return { expr: sql`d.issued_on`, type: 'date', join: NO_JOIN };
     case 'expires':
       return { expr: sql`d.expires_on`, type: 'date', join: NO_JOIN };
+    case 'dated':
+      // The date it is about: issued, else added (0.9.0, C1).
+      return { expr: datedSql('d'), type: 'date', join: NO_JOIN };
     case 'visibility':
       // Everyone, then Adults only, then Only me: from the widest.
       return {

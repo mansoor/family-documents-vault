@@ -1527,6 +1527,8 @@ const ACTOR_GUARDED = [
   // What a restricted viewer may see, and whom, which kinds and which
   // collections it names (0054).
   ...RESTRICTION_TABLES,
+  // A person's own cabinet (0097, C1): theirs alone, and the vault's.
+  'cabinet_layout',
 ];
 
 /**
@@ -1622,6 +1624,8 @@ const MAKER_ONLY = [
   },
   // A restriction: the owners', and the person's own (0054).
   { table: 'access_restriction', where: 'true', what: "a person's restriction" },
+  // A person's own cabinet (0097, C1).
+  { table: 'cabinet_layout', where: 'true', what: "somebody's cabinet" },
 ];
 
 /**
@@ -1646,6 +1650,9 @@ const NOT_EVEN_OWNERS = [
   // Only me documents, the numbers their own learning.
   { table: 'reading_check', what: 'a Reading check' },
   { table: 'reading_check_sealed', what: 'a Reading check’s misses' },
+  // How somebody files their papers, theirs alone (0097, C1): an owner
+  // arranges only their own cabinet.
+  { table: 'cabinet_layout', what: "somebody's cabinet" },
 ];
 
 /**

@@ -7,6 +7,7 @@ import {
   STATUS_ORDER,
   type Visibility,
 } from '@fdv/shared';
+import { serverZone } from '@fdv/db';
 import { sql, type RawBuilder } from 'kysely';
 import { ApiError } from '../errors.js';
 
@@ -42,6 +43,12 @@ export interface DocumentFilters {
   issued_to?: string | undefined;
   expires_from?: string | undefined;
   expires_to?: string | undefined;
+  /**
+   * The date a paper is about — issued, else added — within these days
+   * (0.9.0, C1): what a cabinet's year folder asks (`datedSql`).
+   */
+  dated_from?: string | undefined;
+  dated_to?: string | undefined;
   /** Any of these tags, whatever their case (several since 11 Nov 2026). */
   tags?: string[] | undefined;
   /** Notes left out (`notes=exclude`). */
@@ -105,6 +112,8 @@ export interface RawFilters {
   issued_to?: string | undefined;
   expires_from?: string | undefined;
   expires_to?: string | undefined;
+  dated_from?: string | undefined;
+  dated_to?: string | undefined;
   /** A tag, or several: the field given once for each. */
   tag?: string | string[] | undefined;
   notes?: 'exclude' | undefined;
@@ -197,7 +206,7 @@ export function filtersOf(raw: RawFilters): {
     }
     many.sensitive = sensitive.map((v) => v === 'yes');
   }
-  for (const d of ['added', 'issued', 'expires'] as const) {
+  for (const d of ['added', 'issued', 'expires', 'dated'] as const) {
     const from = dayOf(`${d}_from`, raw[`${d}_from`]);
     const to = dayOf(`${d}_to`, raw[`${d}_to`]);
     if (from && to && from > to) refuse(`${d}_from`, 'The first day is after the last.');
@@ -249,7 +258,27 @@ export function filterClauses(f: DocumentFilters, table = 'd'): RawBuilder<unkno
   if (f.issued_to) parts.push(sql`${c('issued_on')} <= ${f.issued_to}::date`);
   if (f.expires_from) parts.push(sql`${c('expires_on')} >= ${f.expires_from}::date`);
   if (f.expires_to) parts.push(sql`${c('expires_on')} <= ${f.expires_to}::date`);
+  // The date it is about: issued, else added (0.9.0, C1).
+  if (f.dated_from) parts.push(sql`${datedSql(table)} >= ${f.dated_from}::date`);
+  if (f.dated_to) parts.push(sql`${datedSql(table)} <= ${f.dated_to}::date`);
   return parts;
+}
+
+/**
+ * The day a paper is about, as SQL (0.9.0, C1): when it was issued, else
+ * the day it was added on the family's own calendar — the household's time
+ * zone, else the server's (FDV_TIMEZONE) — so a paper added late on New
+ * Year's Eve in Auckland is that year's. What the `dated_` filters ask, and
+ * what Arrange by draws a cabinet's years from: one expression, so a folder
+ * holds exactly what its drawing counted. (The `added_` filters read the
+ * database's calendar, as they always have.)
+ */
+export function datedSql(table = 'd'): RawBuilder<string> {
+  const c = (column: string) => sql.ref(`${table}.${column}`);
+  return sql<string>`coalesce(${c('issued_on')},
+    (${c('created_at')} at time zone coalesce(
+       (select h.timezone from household h where h.id = ${c('household_id')}),
+       ${serverZone()}))::date)`;
 }
 
 /**

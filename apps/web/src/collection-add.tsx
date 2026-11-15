@@ -32,6 +32,7 @@ import {
   TITLE_MIN,
   type ColumnKey,
   type TableView,
+  NO_FOLDER,
 } from './documents-table.js';
 import { FILTER_LABELS, filterChoices, type Known } from './screens/Documents.js';
 import { useShellMode } from './shell.js';
@@ -126,6 +127,7 @@ function viewOf(a: Asked): TableView {
     tag: a.tag,
     label: '',
     sensitive: '',
+    folder: NO_FOLDER,
   };
 }
 

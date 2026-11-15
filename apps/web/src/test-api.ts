@@ -1,4 +1,8 @@
 import {
+  type ArrangeBy,
+  type CabinetLayout,
+  type CabinetPreview,
+  type CabinetView,
   sensitiveOf,
   SENSITIVE_FOLLOW_CONFIRM,
   SENSITIVE_SHARE_CONFIRM,
@@ -239,6 +243,14 @@ export interface FakeCollection {
 }
 
 export interface FakeState {
+  /** My cabinet (0.9.0, C1): said when a test asks. */
+  cabinets?: boolean;
+  /** The signed-in person's cabinet, as GET /cabinet gives it. */
+  cabinet?: CabinetView;
+  /** What Arrange by draws, by its way, as POST /cabinet/preview gives it. */
+  cabinetPreviews?: Partial<Record<ArrangeBy, CabinetPreview>>;
+  /** Each PUT /cabinet, as sent. */
+  cabinetSaves?: Array<{ layout: CabinetLayout; version: number }>;
   /** Each POST and DELETE of /documents/{id}/no-longer-needed (0.9.0), as sent. */
   unneededCalls?: Array<{ method: string; id: string; body: unknown }>;
   /** Refuse them so, to see what the dialog says. */
@@ -1319,6 +1331,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.sensitive ? { sensitive_documents: true } : {}),
           // What Sensitive protects (0.9.0, H1a): said when a test asks.
           ...(state.sensitiveProtects ? { sensitive_protects: true } : {}),
+          // My cabinet (0.9.0, C1): said when a test asks.
+          ...(state.cabinets ? { cabinets: true } : {}),
           // Neutral wording (0.9.0, H2): said when a test gives it.
           ...(state.wording ? { neutral_wording: true } : {}),
           // A computer that sends scans (0.8.0, D1): said when a test gives computers.
@@ -5093,6 +5107,69 @@ export function installFakeApi(state: FakeState) {
       state.documents.unshift(made);
       return json(made, 201);
     }
+    // My cabinet (0.9.0, C1): the signed-in person's own, saved to the version
+    // read; each folder counted, and a document's folders found, by the
+    // table's own answer for them.
+    const alsoInAt = /^\/api\/v1\/documents\/([^/]+)\/also-in$/.exec(path);
+    if (path.startsWith('/api/v1/cabinet') || alsoInAt) {
+      const held: CabinetView = state.cabinet ?? { layout: null, version: 0, updated_at: null };
+      const folders = (held.layout?.cabinets ?? [])
+        .filter((c) => !c.hidden)
+        .flatMap((c) =>
+          c.drawers
+            .filter((d) => !d.hidden)
+            .flatMap((d) =>
+              d.folders
+                .filter((f) => !f.hidden)
+                .map((f) => ({ f, path: [c.name, d.name, f.name] })),
+            ),
+        );
+      const tabled = (filter: Record<string, unknown>) => {
+        const q = new URLSearchParams({ sort: 'title', limit: '1000' });
+        for (const [k, v] of Object.entries(filter)) {
+          for (const one of Array.isArray(v) ? v : [v]) q.append(k, String(one));
+        }
+        const got = documentTable(state, q, storedRole() as Role);
+        return 'refused' in got
+          ? null
+          : (got.page as { items: Array<{ id: string }>; total: number });
+      };
+      if (path === '/api/v1/cabinet' && method === 'GET') return json(held);
+      if (path === '/api/v1/cabinet' && method === 'PUT') {
+        const sent = body as { layout: CabinetLayout; version: number };
+        (state.cabinetSaves ??= []).push(sent);
+        if (sent.version !== held.version) {
+          return refuse(409, 'conflict', 'Your cabinet was changed somewhere else.');
+        }
+        state.cabinet = {
+          layout: sent.layout,
+          version: held.version + 1,
+          updated_at: new Date().toISOString(),
+        };
+        return json(state.cabinet);
+      }
+      if (path === '/api/v1/cabinet/preview' && method === 'POST') {
+        const by = (body as { arrange_by: ArrangeBy }).arrange_by;
+        const drawn = state.cabinetPreviews?.[by];
+        return drawn ? json(drawn) : refuse(422, 'validation_failed', 'Nothing to draw.');
+      }
+      if (path === '/api/v1/cabinet/counts' && method === 'GET') {
+        return json({
+          version: held.version,
+          counts: Object.fromEntries(
+            folders.map(({ f }) => [f.id, tabled(f.filter)?.total ?? null]),
+          ),
+        });
+      }
+      if (alsoInAt && method === 'GET') {
+        const id = decodeURIComponent(alsoInAt[1] as string);
+        return json({
+          items: folders
+            .filter(({ f }) => tabled(f.filter)?.items.some((d) => d.id === id))
+            .map(({ f, path: where }) => ({ id: f.id, name: f.name, path: where })),
+        });
+      }
+    }
     if (path === '/api/v1/documents' && method === 'GET' && isDocumentSort(query.get('sort'))) {
       const answered = documentTable(state, query, storedRole() as Role);
       return 'refused' in answered
@@ -6592,15 +6669,53 @@ function documentTable(
       ),
     )
     .filter((d) => {
-      const person = want('member_id');
-      // Not sure yet, and the household's (0.9.0).
-      if (person === 'none') return !d.owner_member_id && d.household_owned !== true;
-      if (person === 'household') return d.household_owned === true;
-      return !person || d.owner_member_id === person;
+      const asked = want('member_id');
+      // Several, any of them (V1; a merged cabinet folder, C1).
+      return (
+        !asked ||
+        asked.split(',').some((person) =>
+          // Not sure yet, and the household's (0.9.0).
+          person === 'none'
+            ? !d.owner_member_id && d.household_owned !== true
+            : person === 'household'
+              ? d.household_owned === true
+              : d.owner_member_id === person,
+        )
+      );
     })
-    .filter((d) => !want('type_key') || d.type_key === want('type_key'))
-    .filter((d) => !want('status') || (d.status as { value: string }).value === want('status'))
-    .filter((d) => !want('visibility') || d.visibility === want('visibility'))
+    .filter(
+      (d) => !want('type_key') || (want('type_key') ?? '').split(',').includes(String(d.type_key)),
+    )
+    // A topic, or several (0.9.0, C1): its own, else its kind's.
+    .filter((d) => {
+      const asked = want('category');
+      if (!asked) return true;
+      const topic =
+        (d.category as string | null | undefined) ??
+        (state.types.find((t) => t.key === d.type_key) as { category?: string } | undefined)
+          ?.category ??
+        '';
+      return asked.split(',').includes(topic);
+    })
+    // The date a paper is about: issued, else added (0.9.0, C1).
+    .filter((d) => {
+      const from = want('dated_from');
+      const to = want('dated_to');
+      if (!from && !to) return true;
+      const day =
+        (d.issued as { date?: string } | null | undefined)?.date ??
+        String((d.created_at as string | undefined) ?? '').slice(0, 10);
+      return (!from || day >= from) && (!to || day <= to);
+    })
+    .filter(
+      (d) =>
+        !want('status') ||
+        (want('status') ?? '').split(',').includes((d.status as { value: string }).value),
+    )
+    .filter(
+      (d) =>
+        !want('visibility') || (want('visibility') ?? '').split(',').includes(String(d.visibility)),
+    )
     // Sensitive, all said (0.9.0, AIR2): yes, no, or both.
     .filter((d) => {
       const asked = new Set((want('sensitive') ?? '').split(',').filter(Boolean));
@@ -6617,8 +6732,9 @@ function documentTable(
     .filter(
       (d) =>
         !want('tag') ||
-        ((d.tags as string[] | undefined) ?? []).some(
-          (t) => tagKey(t) === tagKey(want('tag') ?? ''),
+        // Several, any of them (11 Nov 2026; a cabinet folder's, C1).
+        ((d.tags as string[] | undefined) ?? []).some((t) =>
+          query.getAll('tag').some((asked) => tagKey(t) === tagKey(asked)),
         ),
     )
     .filter(
@@ -6657,7 +6773,13 @@ function documentTable(
                       ? [{ household: 0, adults: 1, private: 2 }[String(d.visibility)] ?? 3]
                       : sort === 'collections'
                         ? [low(collectionsOf(d)[0]?.name)]
-                        : [low(d.physical_location)];
+                        : sort === 'dated'
+                          ? // Issued, else added (C1).
+                            [
+                              date(d.issued) ??
+                                ((d.created_at as string | undefined) ?? '').slice(0, 10),
+                            ]
+                          : [low(d.physical_location)];
       return { d, key };
     });
   rows.sort((a, b) => {

@@ -556,6 +556,18 @@ export interface CapabilityFeatures {
    * "a sensitive document", for a sensitive one. Absent from older vaults.
    */
   sensitive_protects?: boolean;
+  /**
+   * My cabinet (0.9.0, C1): each person's own cabinets, drawers and
+   * folders, every folder a saved filter of GET /documents. GET and PUT
+   * /cabinet (the layout, made to the `version` last read, else `409
+   * conflict`), POST /cabinet/preview (`arrange_by`: a layout drawn from
+   * what the caller can see, not saved), GET /cabinet/counts and GET
+   * /documents/{id}/also-in, both by the list's own rules; and the list's
+   * `dated_from` and `dated_to` (the date a paper is about: issued, else
+   * added, on the family's calendar) and its sort, `sort=dated`. Absent from
+   * older vaults.
+   */
+  cabinets?: boolean;
 }
 
 export interface CapabilityLimits {

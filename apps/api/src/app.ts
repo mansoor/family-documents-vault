@@ -38,6 +38,8 @@ import type { PurgeService } from './documents/purge.js';
 import { registerTypes } from './documents/type-routes.js';
 import type { TypeService } from './documents/types.js';
 import { registerCollections } from './collections/routes.js';
+import { registerCabinet } from './cabinet/routes.js';
+import type { CabinetService } from './cabinet/service.js';
 import type { CollectionService } from './collections/service.js';
 import type { VisibilityService } from './documents/visibility.js';
 import type { TotpService } from './auth/totp.js';
@@ -94,6 +96,8 @@ export interface AppDeps {
   types: TypeService;
   /** Collections of documents (5.14). */
   collections: CollectionService;
+  /** Each person's own cabinet (0.9.0, C1). */
+  cabinet?: CabinetService;
   sealedSearch: SealedSearchService;
   visibility: VisibilityService;
   totp: TotpService;
@@ -502,6 +506,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerOffline(app, deps.offline);
   registerTypes(app, deps.types);
   registerCollections(app, deps.collections);
+  if (deps.cabinet) registerCabinet(app, deps.cabinet);
   registerDocuments(
     app,
     deps.documents,
