@@ -519,8 +519,15 @@ async function deliverTo(
       // Its kind's Sensitive by default, as the household has it (H2).
       .leftJoin('effective_document_type as t', 't.key', 'document.type_key')
       // Delivered once per reminder: a still-open reminder is not nagged
-      // daily. Escalation to the other adults is REM-09, later.
-      .leftJoin('reminder_delivery', 'reminder_delivery.reminder_id', 'reminder.id')
+      // daily. Escalation to the other adults is REM-09, later. Once per
+      // day it falls due, that is: one that repeats (a yearly review, H3)
+      // and was done is due again on a later day, which no line of the
+      // ledger covers yet — a line is written on or after the day it was for.
+      .leftJoin('reminder_delivery', (join) =>
+        join
+          .onRef('reminder_delivery.reminder_id', '=', 'reminder.id')
+          .onRef('reminder_delivery.fire_date', '>=', 'reminder.fire_at'),
+      )
       .select([
         'reminder.id',
         'reminder.document_id',
@@ -609,10 +616,14 @@ async function deliverTo(
     );
     for (const r of [...due, ...people, ...grown]) {
       const channels = [...(reached.get(r.id) ?? [])];
+      // Never a day before the one it fell due on (H3): a household whose
+      // clock moved west since is not told of the same occurrence again.
+      const fireAt = String(r.fire_at).slice(0, 10);
+      const fireDate = fireAt > today ? fireAt : today;
       for (const channel of channels.length ? channels : ['none']) {
         await trx
           .insertInto('reminder_delivery')
-          .values({ reminder_id: r.id, household_id: hh.id, fire_date: today, channel })
+          .values({ reminder_id: r.id, household_id: hh.id, fire_date: fireDate, channel })
           .onConflict((oc) => oc.doNothing())
           .execute();
       }

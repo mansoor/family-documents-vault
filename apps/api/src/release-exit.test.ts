@@ -841,10 +841,18 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/after-restore': { who: 'signedIn' },
 
   // Reminders.
-  'GET /api/v1/reminders': { who: 'signedIn' },
+  // One document's (0.9.0, H3): never another's Only me paper's.
+  'GET /api/v1/reminders': {
+    who: 'signedIn',
+    queries: (f) => ['', 'state=all', `state=all&document_id=${f.document}`],
+  },
+  // And a yearly review (0.9.0, H3), on a paper the attacker cannot see.
   'POST /api/v1/reminders': {
     who: 'family',
-    body: (f) => ({ document_id: f.document, fire_at: IS_DAY }),
+    bodies: (f) => [
+      { document_id: f.document, fire_at: IS_DAY },
+      { document_id: f.document, fire_at: IS_DAY, review: true },
+    ],
   },
   'POST /api/v1/reminders/:id/snooze': { who: 'family', body: () => ({ until: IS_DAY }) },
   'POST /api/v1/reminders/:id/acknowledge': { who: 'family', body: () => ({}) },

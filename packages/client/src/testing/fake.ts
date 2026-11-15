@@ -176,7 +176,10 @@ import {
   missingFields,
   NO_LONGER_NEEDED_REASON_MAX,
   nextReminder,
+  remindingDateOptional,
   parseRecurrence,
+  REVIEW_NOTE,
+  yearlyReviewOffered,
   reminderLabel,
   ageOn,
   CHILD_BIRTHDAY_REFUSAL,
@@ -508,11 +511,18 @@ export interface FakeVaultState {
   /** Upload keys and what each made; a key is for one kind of request. */
   captures: Map<string, FakeUpload>;
   /**
-   * POST /documents' Idempotency-Keys (0.9.0-dev.45), by the person who sent
-   * each and the key: the body it came with (canonical JSON), the document it
-   * made and when. A key answers for 24 hours, as the vault's.
+   * POST /documents' Idempotency-Keys (0.9.0-dev.45), by household, account,
+   * person and key, as the vault scopes them: the body it came with
+   * (canonical JSON), the document it made and when. A key answers for 24
+   * hours, as the vault's, by `now`.
    */
   createKeys?: Map<string, { body: string; document_id: string; at: number }>;
+  /**
+   * The fake's clock, in milliseconds, for what it times by it (a create's
+   * Idempotency-Key's 24 hours): set it to see time pass. Left out, the
+   * real one (`Date.now()`).
+   */
+  now?: () => number;
   /** What GET /reminders answers, whatever the state asked for. */
   reminders: ReminderView[];
   /** What GET /documents/{id}/issuer-suggestions answers, by document; "unavailable" if unset. */
@@ -959,6 +969,133 @@ const builtin = (
   core: coreOf(t, core),
 });
 
+/** Health's kinds as the real vault seeds them (0.9.0, H3, 0101). */
+function healthKinds(): DocumentTypeView[] {
+  const text = (key: string, label: string) => ({
+    key,
+    label,
+    kind: 'text' as const,
+    required: false,
+  });
+  const date = (key: string, label: string) => ({
+    key,
+    label,
+    kind: 'date' as const,
+    required: false,
+  });
+  const medical = {
+    category: 'medical',
+    reminder_leads: [] as number[],
+    usually_essential: false,
+    default_visibility: 'adults' as const,
+  };
+  const signed = { issued: { label: 'Signed' }, issued_by: { shown: false } };
+  return [
+    builtin(
+      {
+        ...medical,
+        key: 'insurance_card',
+        label: 'Health insurance card',
+        fields: [text('group_number', 'Group number')],
+        expiry_driver: 'expires_on',
+        reminder_leads: [30, 7],
+        usually_essential: true,
+        issued_by_label: 'Insurer',
+        short_label: 'Insurance card',
+      },
+      { identifier: { label: 'Member ID' } },
+    ),
+    builtin(
+      {
+        ...medical,
+        key: 'explanation_of_benefits',
+        label: 'Explanation of benefits',
+        fields: [
+          date('date_of_service', 'Date of service'),
+          text('amount_you_owe', 'Amount you may owe'),
+        ],
+        expiry_driver: null,
+        issued_by_label: 'Insurer',
+        short_label: 'Explanation of benefits',
+        issuer_noun: 'explanation of benefits',
+      },
+      { identifier: { label: 'Claim number' } },
+    ),
+    ...(
+      [
+        ['lab_result', 'Lab result'],
+        ['visit_summary', 'Visit summary'],
+        ['imaging_report', 'Imaging report'],
+      ] as const
+    ).map(([key, label]) =>
+      builtin({
+        ...medical,
+        key,
+        label,
+        fields: [date('date_of_service', 'Date of service')],
+        expiry_driver: null,
+        issued_by_label: 'Provider',
+        short_label: label,
+      }),
+    ),
+    builtin({
+      ...medical,
+      key: 'vaccination_record',
+      label: 'Vaccination record',
+      fields: [
+        text('vaccines', 'Vaccines'),
+        date('date_given', 'Date given'),
+        date('next_dose_due', 'Next dose due'),
+      ],
+      expiry_driver: null,
+      remind_from: 'next_dose_due',
+      // The fake keeps a date field's lead times here, as it answers them (remindingFrom).
+      reminder_leads: [30, 7],
+      issued_by_label: 'Provider',
+      short_label: 'Vaccination record',
+    }),
+    builtin(
+      {
+        ...medical,
+        key: 'advance_directive',
+        label: 'Advance directive / living will',
+        fields: [text('agent', 'Health care agent')],
+        expiry_driver: null,
+        usually_essential: true,
+        issued_by_label: null,
+        short_label: 'Advance directive',
+      },
+      signed,
+    ),
+    builtin(
+      {
+        ...medical,
+        key: 'healthcare_proxy',
+        label: 'Healthcare proxy / power of attorney',
+        fields: [text('agent', 'Agent')],
+        expiry_driver: null,
+        usually_essential: true,
+        issued_by_label: null,
+        short_label: 'Healthcare proxy',
+      },
+      signed,
+    ),
+    builtin(
+      {
+        ...medical,
+        key: 'hipaa_authorization',
+        label: 'HIPAA authorization',
+        fields: [text('authorized_person', 'Shared with')],
+        expiry_driver: 'expires_on',
+        reminder_leads: [30],
+        issued_by_label: 'Provider',
+        short_label: 'HIPAA authorization',
+      },
+      { issued: { label: 'Signed' } },
+    ),
+  ];
+}
+
 const FAKE_TYPES: DocumentTypeView[] = [
   builtin(
     {
@@ -1093,6 +1230,8 @@ const FAKE_TYPES: DocumentTypeView[] = [
     issued_by_label: 'School',
     short_label: 'School report',
   }),
+  // 0.9.0 (H3, 0101): Health's kinds, kept for adults and Sensitive by default.
+  ...healthKinds(),
   // 0.9.0 (N1, 0078): a note kept on its own — the vault's kind, hidden from
   // the kinds to file a paper as, and listed where a note uses it.
   {
@@ -1280,10 +1419,16 @@ export function createFakeVault(): {
     pages: new Map(),
     offlineEssentials: { items: [], received: new Set() },
     // Each reminds from Expires where it expires and has lead times, as
-    // every kind did before 0.5.15.
+    // every kind did before 0.5.15 — but a vaccination record, from its
+    // next dose (0.9.0, H3).
     types: FAKE_TYPES.map((t) => ({
       ...t,
-      remind_from: t.expiry_driver !== null && t.reminder_leads.length > 0 ? 'expires' : null,
+      remind_from:
+        t.key === 'vaccination_record'
+          ? 'next_dose_due'
+          : t.expiry_driver !== null && t.reminder_leads.length > 0
+            ? 'expires'
+            : null,
     })),
     attributes: FAKE_ATTRIBUTES.map((a) => ({ ...a })),
     members: [{ id: 'fake-member', display_name: 'Fake Owner', role: 'owner', is_me: true }],
@@ -1346,7 +1491,12 @@ export function createFakeVault(): {
     const from = remindingFrom(t);
     return {
       ...t,
-      fields: t.fields.map((f) => (f.key === from ? { ...f, required: true } : f)),
+      // But a built-in's the family adds only if there is one (0.9.0, H3).
+      fields: t.fields.map((f) =>
+        f.key === from && !remindingDateOptional(t.builtin ? t : null, f.key)
+          ? { ...f, required: true }
+          : f,
+      ),
       reminder_leads: t.remind_from && t.remind_from !== 'expires' ? [] : [...t.reminder_leads],
       remind_from: from,
       remind_leads: [...t.reminder_leads],
@@ -1389,6 +1539,7 @@ export function createFakeVault(): {
       {
         expires: next.expiry_driver !== null,
         dates: next.fields.filter((f) => f.kind === 'date').map((f) => f.key),
+        key: next.builtin ? next.key : undefined,
       },
     );
     if ('problem' in out) {
@@ -1396,7 +1547,12 @@ export function createFakeVault(): {
     }
     next.remind_from = out.from;
     next.reminder_leads = out.leads;
-    if (out.from !== null && out.from !== 'expires') {
+    // Required, but for a built-in's date the family adds only if there is one (H3).
+    if (
+      out.from !== null &&
+      out.from !== 'expires' &&
+      !remindingDateOptional(next.builtin ? next : null, out.from)
+    ) {
       next.fields = next.fields.map((f) => (f.key === out.from ? { ...f, required: true } : f));
     }
     return null;
@@ -3196,6 +3352,8 @@ export function createFakeVault(): {
           caregivers: true,
           // An Idempotency-Key on POST /documents (0.9.0-dev.45), as the vault keeps it.
           idempotent_create: true,
+          // Health's kinds and a yearly review (0.9.0, H3).
+          health_kinds: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -4122,6 +4280,7 @@ export function createFakeVault(): {
         // An Idempotency-Key (0.9.0-dev.45), as the vault keeps it: the
         // caller's own for 24 hours; the same body again is answered with
         // what the first made, as it is now; another body is refused.
+        // Its form first, before the body is read, as the vault checks it.
         const sentKey = init.headers['idempotency-key'];
         let createKey: { at: string; body: string } | null = null;
         if (sentKey !== undefined) {
@@ -4133,28 +4292,20 @@ export function createFakeVault(): {
               'idempotency-key',
             );
           }
-          createKey = { at: `${whoOf(s).memberId}|${sentKey}`, body: canonicalJson(body) };
-          const prior = state.createKeys?.get(createKey.at);
-          if (prior && Date.now() - prior.at < CREATE_KEY_MS) {
-            if (prior.body !== createKey.body) {
-              return fail(
-                422,
-                'idempotency_key_reused',
-                'That Idempotency-Key was already used for a different request. Send a new key with a new request.',
-              );
-            }
-            const made = state.documents.find((d) => d.id === prior.document_id);
-            const replayed = { 'idempotent-replayed': 'true' };
-            if (!made) {
-              const gone = fail(
-                404,
-                'created_not_visible',
-                'What this Idempotency-Key made is no longer there for you.',
-              );
-              return respond(gone.status, await gone.json(), replayed);
-            }
-            return respond(201, viewOf(made), replayed);
-          }
+          // Whose it is, as the vault scopes it: household, account, person, key.
+          const who = whoOf(s);
+          const account =
+            s.memberId === undefined ? `account:${state.email ?? ''}` : `account:${s.memberId}`;
+          createKey = {
+            at: `fake-household|${account}|${who.memberId}|${sentKey}`,
+            body: canonicalJson(body),
+          };
+        }
+        const clock = state.now ?? Date.now;
+        // A role that may not add documents is refused first, as the vault's
+        // canWrite does: before any key is claimed or answered.
+        if (!can(whoOf(s).role, 'document.edit')) {
+          return fail(403, 'forbidden', refusalFor('document.edit'));
         }
         const type_key = (body.type_key as string | null | undefined) ?? null;
         if (type_key !== null && !state.types.some((t) => t.key === type_key)) {
@@ -4190,6 +4341,31 @@ export function createFakeVault(): {
             body.visibility === 'private' ? PRIVATE_TO_THEM : PRIVATE_BY_DEFAULT,
             'visibility',
           );
+        }
+        // Only now, the body read and found good, is the key claimed: a
+        // refused create keeps none (0.9.0-dev.45), as the vault's.
+        if (createKey) {
+          const prior = state.createKeys?.get(createKey.at);
+          if (prior && clock() - prior.at < CREATE_KEY_MS) {
+            if (prior.body !== createKey.body) {
+              return fail(
+                422,
+                'idempotency_key_reused',
+                'That Idempotency-Key was already used for a different request. Send a new key with a new request.',
+              );
+            }
+            const made = state.documents.find((d) => d.id === prior.document_id);
+            const replayed = { 'idempotent-replayed': 'true' };
+            if (!made) {
+              const gone = fail(
+                404,
+                'created_not_visible',
+                'What this Idempotency-Key made is no longer there for you.',
+              );
+              return respond(gone.status, await gone.json(), replayed);
+            }
+            return respond(201, viewOf(made), replayed);
+          }
         }
         const doc: FakeDocument = {
           id: next('document'),
@@ -4230,7 +4406,7 @@ export function createFakeVault(): {
           (state.createKeys ??= new Map()).set(createKey.at, {
             body: createKey.body,
             document_id: doc.id,
-            at: Date.now(),
+            at: clock(),
           });
         }
         return ok(viewOf(doc), 201);
@@ -8387,7 +8563,13 @@ export function createFakeVault(): {
       if (!('id' in s)) return s;
       // Nothing reminds of a document no longer needed (0.9.0).
       const unneeded = new Set(state.documents.filter((d) => d.no_longer_needed).map((d) => d.id));
-      return ok({ items: state.reminders.filter((r) => !unneeded.has(r.document_id)) });
+      // One document's (0.9.0, H3).
+      const only = param(url, 'document_id') ?? null;
+      return ok({
+        items: state.reminders.filter(
+          (r) => !unneeded.has(r.document_id) && (only === null || r.document_id === only),
+        ),
+      });
     }
     // A reminder somebody sets themselves, and removing it, as the real
     // vault answers (reminders/routes.ts): on a document they can see.
@@ -8402,7 +8584,9 @@ export function createFakeVault(): {
         fire_at?: unknown;
         note?: unknown;
         recurrence?: unknown;
+        review?: unknown;
       };
+      const review = b.review === true;
       if (typeof b.fire_at !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(b.fire_at)) {
         return fail(422, 'validation_failed', 'Invalid date', 'fire_at');
       }
@@ -8429,6 +8613,33 @@ export function createFakeVault(): {
           'This document is no longer needed, so nothing reminds of it. Mark it needed again to be reminded.',
         );
       }
+      // A yearly review (0.9.0, H3): on the kinds it is for, one open a
+      // document — asked again, the one there is.
+      if (review) {
+        if (typeof b.recurrence === 'string' && b.recurrence !== 'annual') {
+          return fail(
+            422,
+            'validation_failed',
+            'A yearly review repeats every year.',
+            'recurrence',
+          );
+        }
+        if (!yearlyReviewOffered({ key: doc.type_key })) {
+          return fail(
+            422,
+            'validation_failed',
+            'A yearly review is for an advance directive, a healthcare proxy or a HIPAA authorization.',
+            'review',
+          );
+        }
+        const on = state.reminders.find(
+          (r) =>
+            r.document_id === doc.id &&
+            r.review === true &&
+            ['scheduled', 'due', 'snoozed'].includes(r.status),
+        );
+        if (on) return ok(on, 201);
+      }
       const today = new Date().toISOString().slice(0, 10);
       const status = b.fire_at <= today ? 'due' : 'scheduled';
       const made: ReminderView = {
@@ -8438,8 +8649,9 @@ export function createFakeVault(): {
         kind: 'manual',
         fire_at: b.fire_at,
         lead_days: null,
-        note: typeof b.note === 'string' ? b.note : null,
-        recurrence: typeof b.recurrence === 'string' ? b.recurrence : null,
+        note: review ? REVIEW_NOTE : typeof b.note === 'string' ? b.note : null,
+        recurrence: review ? 'annual' : typeof b.recurrence === 'string' ? b.recurrence : null,
+        review,
         status,
         snoozed_until: null,
         label: reminderLabel(b.fire_at, today, status, null),
@@ -8457,7 +8669,12 @@ export function createFakeVault(): {
         return fail(403, 'forbidden', refusalFor('reminder.manage'));
       const id = decodeURIComponent(reminderAt[1] as string);
       const at = state.reminders.findIndex((r) => r.id === id && r.kind === 'manual');
-      if (at < 0) return fail(404, 'not_found', 'Only reminders you set yourself can be removed.');
+      if (at < 0)
+        return fail(
+          404,
+          'not_found',
+          'Only a reminder somebody set by hand can be removed, never one made from a date.',
+        );
       state.reminders.splice(at, 1);
       return empty();
     }

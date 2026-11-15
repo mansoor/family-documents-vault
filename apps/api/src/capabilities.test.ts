@@ -153,6 +153,8 @@ describe('buildCapabilities', () => {
       caregivers: true,
       // 0.9.0-dev.45: an Idempotency-Key on POST /documents.
       idempotent_create: true,
+      // 0.9.0 (H3): Health's kinds and a yearly review.
+      health_kinds: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

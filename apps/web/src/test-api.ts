@@ -63,6 +63,9 @@ import {
   LOCK_NOTE_MAX,
   maskEmail,
   nextReminder,
+  remindingDateOptional,
+  REVIEW_NOTE,
+  yearlyReviewOffered,
   resetCommand,
   reminderOf,
   restrictionSummary,
@@ -256,6 +259,8 @@ export interface FakeCollection {
 export interface FakeState {
   /** Caregivers and turning 18 (0.9.0, H1b): said when a test asks. */
   caregivers?: boolean;
+  /** Health's kinds and a yearly review (0.9.0, H3): said when a test asks. */
+  healthKinds?: boolean;
   /** GET /members/{id}/caregivers, by person: none is a 403, as the vault refuses anybody else. */
   caregiversOf?: Record<string, PersonCaregivers>;
   /** GET /caregivers. */
@@ -1360,6 +1365,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.cabinets ? { cabinets: true, cabinet_dividers: true, cabinet_pins: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
           ...(state.caregivers ? { caregivers: true } : {}),
+          // Health's kinds and a yearly review (0.9.0, H3): said when a test asks.
+          ...(state.healthKinds ? { health_kinds: true } : {}),
           // Neutral wording (0.9.0, H2): said when a test gives it.
           ...(state.wording ? { neutral_wording: true } : {}),
           // A computer that sends scans (0.8.0, D1): said when a test gives computers.
@@ -2303,15 +2310,80 @@ export function installFakeApi(state: FakeState) {
       state.personReminders = (state.personReminders ?? []).filter((r) => r.id !== dismissAt[1]);
       return Promise.resolve(new Response(null, { status: 204 }));
     }
+    if (path === '/api/v1/reminders' && method === 'POST') {
+      // One set by hand; a yearly review (0.9.0, H3) on the kinds it is for,
+      // one open a document.
+      const b = body as {
+        document_id: string;
+        fire_at: string;
+        note?: string | null;
+        recurrence?: string | null;
+        review?: boolean;
+      };
+      const doc = state.documents.find((d) => d.id === b.document_id);
+      if (!doc) return refuse(404, 'not_found', 'That document is not in the vault.');
+      if (b.review === true) {
+        if (!yearlyReviewOffered({ key: typeof doc.type_key === 'string' ? doc.type_key : null })) {
+          return refuse(
+            422,
+            'validation_failed',
+            'A yearly review is for an advance directive, a healthcare proxy or a HIPAA authorization.',
+          );
+        }
+        const on = (state.reminders ?? []).find(
+          (r) =>
+            r.document_id === doc.id &&
+            r.review === true &&
+            ['scheduled', 'due', 'snoozed'].includes(String(r.status)),
+        );
+        if (on) return json(on, 201);
+      }
+      const made: Record<string, unknown> = {
+        id: `rem-${(state.reminders ?? []).length + 1}`,
+        document_id: doc.id,
+        document_title: doc.title,
+        kind: 'manual',
+        fire_at: b.fire_at,
+        lead_days: null,
+        note: b.review === true ? REVIEW_NOTE : (b.note ?? null),
+        recurrence: b.review === true ? 'annual' : (b.recurrence ?? null),
+        review: b.review === true,
+        status: 'scheduled',
+        snoozed_until: null,
+        label: `In a while · ${b.fire_at}`,
+        source: null,
+        about: null,
+      };
+      state.reminders = [...(state.reminders ?? []), made];
+      return json(made, 201);
+    }
+    const removeAt = /^\/api\/v1\/reminders\/([^/]+)$/.exec(path);
+    if (removeAt && method === 'DELETE') {
+      const at = (state.reminders ?? []).findIndex(
+        (r) => r.id === decodeURIComponent(removeAt[1] as string) && r.kind === 'manual',
+      );
+      if (at < 0)
+        return refuse(
+          404,
+          'not_found',
+          'Only a reminder somebody set by hand can be removed, never one made from a date.',
+        );
+      state.reminders = (state.reminders ?? []).filter((_, i) => i !== at);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
     if (path === '/api/v1/reminders') {
-      // As the vault lists them: due, or coming up (scheduled, snoozed).
+      // As the vault lists them: due, or coming up (scheduled, snoozed);
+      // one document's when asked (0.9.0, H3).
       const want = query.get('state') ?? 'all';
-      const items = (state.reminders ?? []).filter((r) =>
-        want === 'due'
-          ? r.status === 'due'
-          : want === 'upcoming'
-            ? r.status === 'scheduled' || r.status === 'snoozed'
-            : ['scheduled', 'due', 'snoozed'].includes(String(r.status)),
+      const only = query.get('document_id');
+      const items = (state.reminders ?? []).filter(
+        (r) =>
+          (only === null || r.document_id === only) &&
+          (want === 'due'
+            ? r.status === 'due'
+            : want === 'upcoming'
+              ? r.status === 'scheduled' || r.status === 'snoozed'
+              : ['scheduled', 'due', 'snoozed'].includes(String(r.status))),
       );
       return json({ items });
     }
@@ -7144,13 +7216,18 @@ function changedKind(
     {
       expires: next.expiry_driver !== null,
       dates: fields.filter((f) => f.kind === 'date').map((f) => f.key),
+      key: view.builtin ? view.key : undefined,
     },
   );
   if ('problem' in out) return out;
   next.remind_from = out.from;
   next.remind_leads = out.leads;
   next.reminder_leads = out.from !== null && out.from !== 'expires' ? [] : out.leads;
-  if (out.from !== null && out.from !== 'expires') {
+  if (
+    out.from !== null &&
+    out.from !== 'expires' &&
+    !remindingDateOptional(view.builtin ? view : null, out.from)
+  ) {
     next.fields = fields.map((f) => (f.key === out.from ? { ...f, required: true } : f));
   }
   return { kind: next };

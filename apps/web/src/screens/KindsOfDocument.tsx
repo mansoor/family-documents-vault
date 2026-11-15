@@ -11,6 +11,7 @@ import {
   dateReminderSentence,
   deriveStatus,
   expiryOptional,
+  remindingDateOptional,
   leadTimes,
   leadWords,
   nextReminder,
@@ -452,11 +453,13 @@ const asksForDate = (d: Draft, key: string) =>
 /**
  * The details as the vault will keep them: the date reminders come from is
  * always asked for, so it is required, while it reminds. Moved to another
- * date, it is required as the family chose again.
+ * date, it is required as the family chose again. A built-in's date the
+ * family adds only if there is one (0.9.0, H3: a vaccination record's Next
+ * dose due, a prescription's Next refill) is required as they chose.
  */
-function asked(d: Draft): Draft['fields'] {
+function asked(d: Draft, kindKey?: string): Draft['fields'] {
   const from = d.reminding ? d.from : null;
-  return from === null || from === 'expires'
+  return from === null || from === 'expires' || remindingDateOptional({ key: kindKey }, from)
     ? d.fields
     : d.fields.map((f) => (f.key === from ? { ...f, required: true } : f));
 }
@@ -565,7 +568,7 @@ function changeBody(kind: DocumentTypeView, d: Draft, dated: boolean): DocumentT
     if (Object.keys(change).length > 0) core[f] = change;
   }
   if (Object.keys(core).length > 0) body.core = core;
-  const fields = asked(d);
+  const fields = asked(d, kind.key);
   if (JSON.stringify(fields) !== JSON.stringify(before.fields)) {
     body.fields = fieldsOut(fields);
   }
@@ -789,7 +792,7 @@ function KindEditor(props: {
         ? {}
         : { remind_from: chosen !== null && !keys.includes(chosen) ? null : chosen },
       asSaved,
-      shape,
+      { ...shape, key: kind?.builtin ? kind.key : undefined },
     );
     if ('problem' in out) return { ...d, chosen };
     return {
@@ -1220,7 +1223,9 @@ function KindEditor(props: {
                 shown={shownKeys.has(key)}
                 required={mine?.required ?? false}
                 requiredOffered
-                requiredLocked={reminds === key ? ALWAYS_ASKED : undefined}
+                requiredLocked={
+                  reminds === key && !remindingDateOptional(kind, key) ? ALWAYS_ASKED : undefined
+                }
                 onShown={(shown) => setField(key, shown, false)}
                 onRequired={(required) => setField(key, true, required)}
                 renamed={fieldRenamed(key)}
@@ -1784,7 +1789,7 @@ function Preview(props: {
             remindAt === f ? f : null,
           ),
         )}
-        {asked(draft).map((f) =>
+        {asked(draft, props.kindKey).map((f) =>
           row(
             `f-${f.key}`,
             props.fieldOf(f.key).label,
@@ -1885,7 +1890,7 @@ function warningsFor(
     }
     if (was.shown && !now.shown) kept(f, counts.with_value, savedName(f), 'on each of them');
   }
-  for (const f of asked(draft)) {
+  for (const f of asked(draft, kind.key)) {
     const had = before.fields.find((x) => x.key === f.key);
     // Reminders moving to it say how many have it, below.
     if (f.required && !had?.required && f.key !== moved) {

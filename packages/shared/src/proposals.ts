@@ -600,16 +600,244 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
     [2, /expected standard|\battainment\b|\beffort\b|\battendance\b/],
     [1, /\bterm\b|\byear \d{1,2}\b|\bschool\b/],
   ],
+  // Health's kinds (0.9.0, H3, 0101): what kind of paper it is, read from
+  // how such papers are laid out and titled — never what a result, a
+  // finding or a wish means. A page that could be two of them is offered
+  // unsure (`healthSure`), never a wrong Ready.
+  insurance_card: [
+    [
+      3,
+      /(?:health|medical|dental|vision) (?:insurance|plan|benefits?) (?:id )?card|insurance (?:id )?card|member id card|european health insurance card|\behic\b|\bghic\b/,
+    ],
+    [3, /\brx ?bin\b|\brx ?pcn\b|\brx ?gr(?:ou)?p\b/],
+    [2, /member (?:id|number|no\b)|subscriber (?:id|number|no\b)|group (?:number|no\b|#)|\bgrp\b/],
+    [2, /\bco-?pays?\b|\bpcp\b|urgent care|in-network|out-of-network/],
+    [1, /\bppo\b|\bhmo\b|\bdependents?\b|\bpayer\b|member services/],
+  ],
+  explanation_of_benefits: [
+    [3, /explanation of benefits|\beob\b|this is not a bill/],
+    [
+      2,
+      /amount (?:you|patient) (?:may )?owe|patient responsibility|your (?:share|responsibility)|plan (?:paid|discount)|amount billed|allowed amount/,
+    ],
+    [2, /claim (?:number|no\b|id)|date(?:s)? of service|service date/],
+    [1, /\bclaims?\b|\bcoinsurance\b|\bco-?pay\b|\bdeductible\b/],
+  ],
+  lab_result: [
+    [
+      3,
+      /(?:laboratory|lab|pathology|blood test|test) (?:report|results?)|\bspecimen\b|reference (?:range|interval)/,
+    ],
+    [
+      2,
+      /full blood count|complete blood count|\bcbc\b|\bfbc\b|\bhba1c\b|\bcholesterol\b|\bglucose\b|ha?emoglobin|\bplatelets?\b|lipid (?:panel|profile)|\burinalysis\b/,
+    ],
+    [2, /\bcollected\b|date (?:collected|reported)|\breported\b|\bfasting\b/],
+    [1, /\bpatient\b|ordering (?:physician|provider|clinician)|\blaboratory\b|\bresults?\b/],
+  ],
+  visit_summary: [
+    [
+      3,
+      /after[- ]visit summary|visit summary|summary of (?:your )?visit|encounter summary|discharge summary|appointment summary/,
+    ],
+    [
+      2,
+      /reason for (?:your )?visit|chief complaint|follow[- ]up (?:appointment|instructions)|your next appointment|visit date|seen by/,
+    ],
+    [2, /\bclinic\b|\bhospital\b|medical (?:centre|center|group|practice)/],
+    [1, /\bpatient\b|\bprovider\b|\bvitals?\b|blood pressure|\bmedications?\b/],
+  ],
+  imaging_report: [
+    [
+      3,
+      /radiology|imaging report|\bx-?ray\b|\bmri\b|\bct scan\b|\bultrasound\b|\bmammogra|\bsonograph/,
+    ],
+    [2, /\bimpression\b|\bfindings\b|\bradiologist\b|\btechnique\b/],
+    [2, /clinical (?:history|indication)|\bcomparison\b|\bcontrast\b/],
+    [1, /\bpatient\b|\breferr(?:ing|ed)\b|\bimaging\b/],
+  ],
+  vaccination_record: [
+    [
+      3,
+      /(?:vaccination|immuni[sz]ation|vaccine) (?:record|certificate|history|card)|certificate of (?:vaccination|immuni[sz]ation)|record of (?:vaccinations?|immuni[sz]ations?)|proof of vaccination/,
+    ],
+    [
+      3,
+      /date (?:given|administered|of vaccination)|vaccinated on|lot (?:number|no\b|#)|\b(?:1st|2nd|3rd) dose\b/,
+    ],
+    [
+      2,
+      /\bmmr\b|\bdtap\b|\btdap\b|\bbooster\b|\bhpv\b|\bmenacwy\b|\bpolio\b|\bipv\b|\bvaricella\b|\binfluenza\b/,
+    ],
+    [2, /next dose|booster due|next vaccination|revaccination/],
+    [1, /\bvaccines?\b|\bvaccinations?\b|immuni[sz]ations?/],
+  ],
+  advance_directive: [
+    [
+      3,
+      /advance (?:health ?care )?directive|living will|advance decision|advance care plan|five wishes|\bpolst\b|\bmolst\b/,
+    ],
+    [
+      2,
+      /life[- ]sustaining (?:treatment|procedures)|artificial(?:ly provided)? (?:nutrition|hydration)|terminal condition|persistent vegetative|end[- ]of[- ]life/,
+    ],
+    [2, /my wishes|i direct that|if i am (?:unable|no longer able) to (?:make|communicate)/],
+    [1, /\bwitness(?:es)?\b|\bnotary\b|\bdeclarant\b|\bprincipal\b/],
+  ],
+  healthcare_proxy: [
+    [
+      3,
+      /health ?care proxy|health ?care (?:power of attorney|agent|surrogate)|medical power of attorney|power of attorney for (?:health ?care|medical)|durable power of attorney for health|health and welfare/,
+    ],
+    [2, /\bmy agent\b|alternate agent|\bsurrogate\b|\bproxy\b/],
+    [2, /medical (?:decisions|treatment)|health ?care decisions/],
+    [1, /\bprincipal\b|\bwitness(?:es)?\b|\bnotary\b|\battorneys?\b/],
+  ],
+  hipaa_authorization: [
+    [
+      3,
+      /\bhipaa\b|authori[sz]ation (?:for|to) (?:the )?(?:use|release|disclos|obtain)|release of (?:medical|health|protected) (?:information|records)|protected health information/,
+    ],
+    [2, /\bdisclos(?:e|ure)\b|\brevoke\b|this authori[sz]ation (?:will )?expires?|\bredisclos/],
+    [1, /\bpatient\b|\brecipient\b|\bprovider\b|\brecords\b/],
+  ],
 };
+
+/**
+ * What says each of Health's kinds by name (0.9.0, H3): its title, or the
+ * marks only it carries. A page proposed as one of them is sure only with
+ * its own and none of another's (`healthSure`): an advance directive that
+ * names a health care agent, a visit summary that lists an X-ray, an
+ * explanation of benefits with a HIPAA notice — each is offered unsure, and
+ * the card is Check.
+ */
+const HEALTH_MARKS: Readonly<Record<string, RegExp>> = {
+  insurance_card:
+    /(?:health|medical|dental|vision) (?:insurance|plan|benefits?) (?:id )?card|insurance (?:id )?card|member id card|european health insurance card|\behic\b|\bghic\b|\brx ?bin\b|\brx ?pcn\b/,
+  explanation_of_benefits: /explanation of benefits|\beob\b|this is not a bill/,
+  lab_result:
+    /(?:laboratory|lab|pathology|blood test) (?:report|results?)|\bspecimen\b|reference (?:range|interval)/,
+  visit_summary:
+    /after[- ]visit summary|visit summary|summary of (?:your )?visit|encounter summary|discharge summary|appointment summary/,
+  imaging_report:
+    /radiology|imaging report|\bx-?ray\b|\bmri\b|\bct scan\b|\bultrasound\b|\bmammogra|\bsonograph/,
+  vaccination_record:
+    /(?:vaccination|immuni[sz]ation|vaccine) (?:record|certificate|history|card)|certificate of (?:vaccination|immuni[sz]ation)|record of (?:vaccinations?|immuni[sz]ations?)|proof of vaccination/,
+  advance_directive:
+    /advance (?:health ?care )?directive|living will|advance decision|advance care plan|five wishes|\bpolst\b|\bmolst\b/,
+  healthcare_proxy:
+    /health ?care proxy|health ?care (?:power of attorney|agent|surrogate)|medical power of attorney|power of attorney for (?:health ?care|medical)|durable power of attorney for health|health and welfare/,
+  hipaa_authorization:
+    /\bhipaa\b|authori[sz]ation (?:for|to) (?:the )?(?:use|release|disclos|obtain)|release of (?:medical|health|protected) (?:information|records)/,
+};
+
+/** Whether a Health kind proposed may be sure: its own mark, and no other's (see HEALTH_MARKS). */
+function healthSure(key: string, hay: string): boolean {
+  const own = HEALTH_MARKS[key];
+  if (!own) return true;
+  if (!own.test(hay)) return false;
+  return Object.entries(HEALTH_MARKS).every(([k, re]) => k === key || !re.test(hay));
+}
+
+/**
+ * The general kinds a specific one of Health's could be mistaken for, and
+ * the other way round (0.9.0, H3): a vaccination record and a medical
+ * record, a living will and a will, an insurance card and a policy or a
+ * national ID ("Member ID card"), an explanation of benefits and a policy
+ * or a bill ("This is not a bill"). Both are scored, as every kind is; the
+ * one ahead is proposed, but sure only where the other is not in the
+ * running (`healthContested`).
+ */
+const HEALTH_GENERALS: Readonly<Record<string, readonly string[]>> = {
+  vaccination_record: ['medical_record'],
+  lab_result: ['medical_record'],
+  visit_summary: ['medical_record'],
+  imaging_report: ['medical_record'],
+  advance_directive: ['will'],
+  healthcare_proxy: ['will'],
+  insurance_card: ['insurance_policy', 'national_id'],
+  explanation_of_benefits: ['insurance_policy', 'utility_bill'],
+};
+
+/**
+ * What says a general kind most surely (H3): a policy's schedule and
+ * premium, a will's testator and executors and an LPA's property and
+ * financial affairs, a bill's amount due. On a page with one, a Health
+ * kind is never sure — and the general kind is not unsettled by a mere
+ * mention of a health paper ("your member ID card is enclosed", "I have
+ * made a separate living will", "This is not a bill").
+ */
+const GENERAL_STRONG: Readonly<Record<string, RegExp>> = {
+  medical_record: /clinic letter|referral letter|dental (?:check-?up|recall|examination|treatment)/,
+  will: /last will and testament|property and financial affairs|\btestat(?:or|rix)\b|\bexecutors?\b|residue of my estate|\bbequeath\b/,
+  insurance_policy:
+    /policy schedule|schedule of cover|policy (?:number|no\b)|\bpremium\b|period of (?:cover|insurance)|declarations? page|policy summary/,
+  national_id:
+    /national insurance (?:number|card)|social security (?:card|number|administration)|identity card|national identity/,
+  utility_bill:
+    /amount due|total due|balance due|amount to pay|please pay|meter reading|\bkwh\b|standing charge|payment due/,
+};
+
+/** What a vault kind's own cues score on a folded page (as `scoreKinds` counts them). */
+function cueScore(key: string, hay: string): number {
+  let score = 0;
+  for (const [weight, re] of KIND_CUES[key] ?? []) if (re.test(hay)) score += weight;
+  return score;
+}
+
+/** The Health kinds each general kind could be (HEALTH_GENERALS, turned round). */
+const HEALTH_SPECIFICS: Readonly<Record<string, readonly string[]>> = Object.entries(
+  HEALTH_GENERALS,
+).reduce<Record<string, string[]>>((out, [specific, generals]) => {
+  for (const g of generals) (out[g] ??= []).push(specific);
+  return out;
+}, {});
+
+/**
+ * Whether the kind proposed is in doubt with its general or specific
+ * counterpart (H3), so offered unsure — Check, never a wrong Ready:
+ *
+ *  - a Health kind, when a general kind it could be mistaken for has its
+ *    strongest cue on the page, or scores as much as a kind needs to be
+ *    proposed (KIND_MIN_SCORE) on what the page says besides the Health
+ *    kind's own title ("Vaccination record" is a medical record's cue too:
+ *    it says this kind, not that one);
+ *  - a general kind, when a Health kind the household keeps has its mark on
+ *    the page and scores as much — unless the general kind's own strongest
+ *    cue is there too.
+ *
+ * `scored` holds only the kinds the household keeps, shown, so a Health
+ * kind it hid (0101) unsettles nothing.
+ */
+function healthContested(key: string, hay: string, scored: readonly KindScore[]): boolean {
+  const scoreOf = (k: string) => scored.find((s) => s.kind.key === k)?.score ?? 0;
+  const generals = HEALTH_GENERALS[key];
+  if (generals) {
+    const mark = HEALTH_MARKS[key];
+    const besides = mark ? hay.replace(new RegExp(mark.source, 'g'), ' ') : hay;
+    return generals.some(
+      (g) =>
+        GENERAL_STRONG[g]?.test(hay) ||
+        (scoreOf(g) >= KIND_MIN_SCORE && cueScore(g, besides) >= KIND_MIN_SCORE),
+    );
+  }
+  const specifics = HEALTH_SPECIFICS[key];
+  if (!specifics || GENERAL_STRONG[key]?.test(hay)) return false;
+  return specifics.some((s) => HEALTH_MARKS[s]?.test(hay) && scoreOf(s) >= KIND_MIN_SCORE);
+}
 
 /**
  * Kinds a strong cue of another kind rules out, whatever they score: a
  * vet's vaccination certificate is not a person's medical record, however
  * many "hospital"s and "vaccination"s it has (the 5.37 review).
  */
+const PET_WORDS =
+  /\bveterinar(?:y|ian)\b|\bvet\b|\bmrcvs\b|\bdvm\b|pet'?s name|\bspecies\b|\bmicrochip|\bcanine\b|\bfeline\b|animal hospital|pet hospital|\bkennel cough\b/;
+
 const KIND_VETOES: Readonly<Record<string, RegExp>> = {
-  medical_record:
-    /\bveterinar(?:y|ian)\b|\bvet\b|\bmrcvs\b|\bdvm\b|pet'?s name|\bspecies\b|\bmicrochip|\bcanine\b|\bfeline\b|animal hospital|pet hospital|\bkennel cough\b/,
+  medical_record: PET_WORDS,
+  // Nor a person's vaccination record (H3, 0101).
+  vaccination_record: PET_WORDS,
   // A bill has no credit limit, nor a minimum payment: a card's statement does (S5).
   utility_bill: /credit limit|minimum (?:payment|repayment)/,
   // A contract that says what the pay will be is never a payslip (C1 and
@@ -1258,6 +1486,43 @@ const KIND_LABELS: Readonly<Record<string, readonly LabelSpec[]>> = {
     label('issued', 3, 'issue_label', /date (?:given|administered|of vaccination)|vaccinated on/),
     label('expires', 3, 'expiry_label', /(?:booster|next vaccination|revaccination) (?:due|date)/),
   ],
+  // Health's (H3, 0101): the day a paper is about, and an end where it has one.
+  insurance_card: [
+    label(
+      'issued',
+      3,
+      'issue_label',
+      /effective (?:date|from)|coverage (?:begins|effective|start)/,
+    ),
+    label('expires', 3, 'expiry_label', /coverage (?:ends|end date)|termination date/),
+  ],
+  explanation_of_benefits: [
+    label('issued', 3, 'issue_label', /statement date|date of (?:this )?statement|processed on/),
+  ],
+  lab_result: [
+    label(
+      'issued',
+      3,
+      'issue_label',
+      /date (?:collected|of collection)|(?:specimen )?collected(?: on)?/,
+    ),
+  ],
+  visit_summary: [label('issued', 3, 'issue_label', /visit date|date of visit|seen on/)],
+  imaging_report: [
+    label('issued', 3, 'issue_label', /exam date|date of (?:exam|examination|study)|study date/),
+  ],
+  // A vaccination record's next dose is the date it reminds from (`expiryReadInto`).
+  vaccination_record: [
+    label(
+      'expires',
+      3,
+      'expiry_label',
+      /(?:next dose|booster|next vaccination|revaccination) (?:due|date)/,
+    ),
+  ],
+  hipaa_authorization: [
+    label('expires', 3, 'expiry_label', /(?:this )?authori[sz]ation (?:will )?expires?(?: on)?/),
+  ],
 };
 
 /** Kinds whose "from … to …" is the document's own life: its start issued, its end expiring. */
@@ -1520,6 +1785,9 @@ const NUMBER_LABELS: Readonly<Record<string, RegExp>> = {
   // Not the registration mark: that is the kind's own Plate.
   vehicle_registration: /(?:title|document reference) (?:no|number)\b\.?/g,
   prescription: /(?:rx|prescription) ?(?:no|number|#)\.?/g,
+  // Health's (H3, 0101).
+  insurance_card: /member (?:id|no|number|#)\b\.?|subscriber (?:id|no|number)\b\.?/g,
+  explanation_of_benefits: /claim (?:no|number|id|#)\b\.?/g,
 };
 
 /** A UK postcode at the start of what follows a label: an address, not a number. */
@@ -2257,7 +2525,12 @@ export function proposeWithTie(
       if (confidence >= PROPOSAL_THRESHOLDS.type_key) {
         kind = best.kind;
         kindFactor = 0.6 + 0.4 * confidence;
-        const guarded = !(cardOrBankSure(best.kind.key, hay) && statementSure(best.kind.key, hay));
+        const guarded =
+          !(
+            cardOrBankSure(best.kind.key, hay) &&
+            statementSure(best.kind.key, hay) &&
+            healthSure(best.kind.key, hay)
+          ) || healthContested(best.kind.key, hay, scored);
         out.type_key = {
           value: best.kind.key,
           confidence: guarded ? Math.min(confidence, CARD_OR_BANK_UNSURE) : confidence,

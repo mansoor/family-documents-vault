@@ -588,21 +588,26 @@ describe.skipIf(!testAdminUrl())('an item read with its uploader’s own rules (
       council,
     }).toEqual({
       // Each council's letter, read with no person, is a bill: the
-      // household's since 0.9.0, never "Missing: whose it is" — Ready.
+      // household's since 0.9.0, never "Missing: whose it is" — Ready. And
+      // since H3 (0101) the GP's letter with Zain's immunisation record could
+      // be his vaccination record as much as the medical record 5.37 called
+      // it: the two kinds tie, and it is not recognised until the practice's
+      // letters, filed as medical records, teach it — then Check, then sure
+      // and right.
       before: {
         tuned: { ready: 14, check: 6, unrecognised: 2, problem: 0 },
-        'held out': { ready: 10, check: 2, unrecognised: 2, problem: 0 },
+        'held out': { ready: 9, check: 2, unrecognised: 3, problem: 0 },
       },
       filedOnly: {
         tuned: { ready: 15, check: 5, unrecognised: 2, problem: 0 },
-        'held out': { ready: 11, check: 1, unrecognised: 2, problem: 0 },
+        'held out': { ready: 10, check: 1, unrecognised: 3, problem: 0 },
       },
       // Learned once and twice: each council's letters are Granny Ruth's — a
       // rule not sure yet, so they stay Check ("Person unsure").
       learned: [
         {
           tuned: { ready: 14, check: 6, unrecognised: 2, problem: 0 },
-          'held out': { ready: 10, check: 2, unrecognised: 2, problem: 0 },
+          'held out': { ready: 9, check: 3, unrecognised: 2, problem: 0 },
         },
         {
           tuned: { ready: 14, check: 6, unrecognised: 2, problem: 0 },
@@ -617,9 +622,11 @@ describe.skipIf(!testAdminUrl())('an item read with its uploader’s own rules (
       rules: [
         'london borough of camden owner_member_id 3/0',
         'london borough of lewisham owner_member_id 3/0',
+        // The practice's letters filed as medical records, as 5.37 has them.
+        'riverside medical practice type_key 5/0',
       ],
       // Of 36, how many had their kind and person accepted as proposed.
-      unchanged: [34, 36, 36],
+      unchanged: [33, 36, 36],
       council: [
         { level: 'ready', ruth: true, from: 'learned' },
         { level: 'ready', ruth: true, from: 'learned' },

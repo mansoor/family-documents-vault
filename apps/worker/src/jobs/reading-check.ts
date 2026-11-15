@@ -18,6 +18,7 @@ import {
   READING_FIELDS,
   READING_MISSES_KEEP_DAYS,
   READING_SCORED_FIELDS,
+  remindingDateOptional,
   scoreReading,
   suspensionInEffect,
   type BatchDefaults,
@@ -367,6 +368,7 @@ async function levelKinds(trx: Db): Promise<LevelKind[]> {
       'core',
       'short_label',
       'remind_from',
+      'builtin',
       'belongs_to',
     ])
     .where('deleted_at', 'is', null)
@@ -385,10 +387,13 @@ async function levelKinds(trx: Db): Promise<LevelKind[]> {
       remind_from: k.remind_from,
       belongs_to: k.belongs_to,
       core,
-      // The date reminders come from is always asked for, as typeView says.
+      // The date reminders come from is always asked for, as typeView says
+      // (but for a built-in's the family adds only if there is one, H3).
       fields: ((k.fields ?? []) as TypeField[]).map((f) => ({
         ...f,
-        required: f.required === true || f.key === k.remind_from,
+        required:
+          f.required === true ||
+          (f.key === k.remind_from && !remindingDateOptional(k.builtin ? k : null, f.key)),
       })),
     };
   });

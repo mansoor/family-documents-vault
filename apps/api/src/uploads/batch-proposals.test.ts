@@ -333,7 +333,7 @@ describe.skipIf(!testAdminUrl())('what the pages propose, for a batch’s upload
         {
           code: 'narrowed',
           kind: 'info',
-          words: 'Kept to adults: it looks like a medical record / immunisation',
+          words: 'Kept to adults: it looks like a medical record',
         },
       ],
     });

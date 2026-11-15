@@ -1074,6 +1074,8 @@ export interface Schema {
      * fields' keys, with 1 to 8 lead times in reminder_leads; null, none.
      */
     remind_from: ColumnType<string | null, string | null | undefined, string | null>;
+    /** The date to fall back on when a document has none of remind_from (0101, H3). */
+    remind_fallback: ColumnType<string | null, string | null | undefined, string | null>;
     /** Whom its documents usually belong to (0087): a person, or the household. */
     belongs_to: ColumnType<BelongsTo, BelongsTo | undefined, BelongsTo>;
     /**
@@ -1154,6 +1156,13 @@ export interface Schema {
     belongs_to: BelongsTo;
     /** Sensitive by default, as the household has it (0090). */
     sensitive_default: boolean;
+    /**
+     * The date it reminds from when a document has none of `remind_from`
+     * (0101, H3: a prescription's Expires when it has no Next refill), on
+     * the same lead times; null for every other kind, and for a household
+     * that chose its own date to remind from.
+     */
+    remind_fallback: string | null;
   };
 
   document: {
@@ -1515,6 +1524,13 @@ export interface Schema {
     source: ColumnType<string | null, string | null | undefined, string | null>;
     note: string | null;
     recurrence: string | null;
+    /**
+     * A yearly review (0101, H3): somebody's own reminder repeating every
+     * year to look the paper over again. At most one open a document.
+     */
+    review: Generated<boolean>;
+    /** The day a repeating reminder is counted from (0101); null, its fire_at. */
+    recur_from: ColumnType<string | null, string | null | undefined, string | null>;
     channel: Generated<string[]>;
     status: Generated<'scheduled' | 'due' | 'snoozed' | 'acknowledged' | 'resolved'>;
     snoozed_until: ColumnType<string, string | null, string | null> | null;

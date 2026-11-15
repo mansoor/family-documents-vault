@@ -1379,6 +1379,12 @@ const UNIQUE_INDEXES = [
     table: 'caregiver_grant',
     what: 'one live caregiver grant a person and caregiver',
   },
+  // One open yearly review a document (0101, H3).
+  {
+    name: 'reminder_one_review',
+    table: 'reminder',
+    what: 'one yearly review a document',
+  },
 ];
 
 /**

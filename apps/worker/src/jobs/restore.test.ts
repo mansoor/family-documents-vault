@@ -783,6 +783,19 @@ async function seed(url: string): Promise<string> {
         [hh, m.rows[1]?.id],
       );
     }
+    // A yearly review on the second document, where the schema has it (0101, H3).
+    const reviews = await c.query<{ has: boolean }>(
+      `select exists (select 1 from information_schema.columns
+                       where table_name = 'reminder' and column_name = 'review') as has`,
+    );
+    if (reviews.rows[0]?.has) {
+      await c.query(
+        `insert into reminder (household_id, document_id, kind, fire_at, recurrence, review, note, recur_from)
+         values ($1, (select id from document where household_id = $1 order by id offset 1 limit 1),
+                 'manual', current_date + 200, 'annual', true, 'Yearly review', '2024-02-29')`,
+        [hh],
+      );
+    }
     // A create made under an Idempotency-Key, where the schema has it (0100).
     const keyed = await c.query<{ has: boolean }>(
       "select to_regclass('public.create_idempotency') is not null as has",
@@ -1993,8 +2006,14 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
       }
     }
     // And the unique indexes its rules rest on: one note a file, one
-    // household on, one scanner batch a person a day.
+    // household on, one scanner batch a person a day; one open yearly
+    // review a document (0101, H3).
     for (const [index, table, columns] of [
+      [
+        'reminder_one_review',
+        'reminder',
+        "(document_id) where review and status in ('scheduled', 'due', 'snoozed')",
+      ],
       ['watch_notice_file_idx', 'watch_notice', '(household_id, member_id, file_key)'],
       ['watch_folder_one_on', 'watch_folder', '((true)) where enabled'],
       [
@@ -4077,6 +4096,20 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
          from document where no_longer_needed_at is not null`,
     );
     expect(unneeded.rows).toEqual([{ reason: 'The green card came', replaced: true }]);
+    // A yearly review comes back one, repeating every year (0101, H3).
+    const reviews = await sql(
+      t.adminUrl,
+      'select kind, recurrence, note, status, recur_from::text as recur_from from reminder where review',
+    );
+    expect(reviews.rows).toEqual([
+      {
+        kind: 'manual',
+        recurrence: 'annual',
+        note: 'Yearly review',
+        status: 'scheduled',
+        recur_from: '2024-02-29',
+      },
+    ]);
     // The job queue came back too, and the vault can use it.
     const jobs = await sql(
       t.appUrl,

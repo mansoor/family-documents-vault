@@ -6,6 +6,37 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.46] - 2026-11-15 — health papers, and a review every year
+
+### Added
+
+- **Nine kinds for health papers**, under Medical: **Health insurance card**, **Explanation of benefits**, **Lab result**, **Visit summary**, **Imaging report**, **Vaccination record**, **Advance directive / living will**, **Healthcare proxy / power of attorney** and **HIPAA authorization**. Each is kept for the adults and is Sensitive unless you say otherwise, and each asks for the details that paper has: an insurance card its insurer, member ID, group number and when it ends; an explanation of benefits its claim number, date of service and the amount you may owe; a lab result, visit summary or imaging report who it is from and the date of service; a vaccination record the vaccines, the date given and when the next dose is due; an advance directive or a proxy when it was signed and who the agent is; a HIPAA authorization when it was signed, who it lets see your records, and when it ends. The vault files and finds these papers — it never reads what a result means.
+- **Reminders for them.** A vaccination record reminds you 30 and 7 days before the next dose is due, an insurance card or a HIPAA authorization before it ends, and a prescription 7 days and a day before its **Next refill** (a new detail) — or, for a prescription with no Next refill, before its expiry date, as before. None of these dates is required: a record with no next dose isn't flagged as missing anything.
+- **A review every year.** On an advance directive, a healthcare proxy or a HIPAA authorization, tick **Remind us to review it every year**. The reminder comes on the anniversary of the day it was signed (or a year from today), shows wherever your other reminders do, and **Done** brings the next one a year later — even if you review it early, and on 29 February in a leap year if that's its day. Untick it to stop: whoever turned it on, or an owner, can. It's off until you turn it on, and it ends if the paper is moved to a kind it isn't for.
+- **A teen's vaccination record stays visible to their parents**, because schools and doctors ask the family for it. When a teen adds their own, it starts as **Everyone** — everybody in the family who uses the vault, viewers too — and the card says so plainly; the teen can choose Only me there, or later. Any other health paper of theirs still starts as Only me. Someone 18 or over by their date of birth starts as Only me, even if they still sign in as a teen; for them the turning-18 question decides.
+- **Reading health papers.** The vault recognises these papers from their pages. When a page could be two kinds — an advance directive that also appoints an agent, a visit summary that lists an X-ray, a GP's letter that is also a vaccination record — it asks you to check rather than guess. A paper that only mentions a health paper stays what it is: a policy schedule that says "your member ID card is enclosed", a will that mentions a living will, an energy statement that says "this is not a bill".
+- If your family already had a kind of its own with one of these names ("Vaccinations", "Living will", "EOB"…), you keep using yours: the new one is hidden for you, and you can show it in **Kinds of document**. A name that could mean anything ("Imaging", "Vaccinations") counts only on a kind your family keeps under Medical (or Insurance, for an insurance card): a gym's "Member card" or a school's "Test results" hides nothing. (Migration 0101.)
+
+### Changed
+
+- **Medical record** is now just "Medical record": vaccinations have their own kind.
+- **A prescription reminds from its Next refill**, and from its expiry date when it has none, 7 days and a day before either. A prescription you already have goes on reminding from its expiry date until you give it a Next refill. If your family chose its own date for prescriptions in **Kinds of document**, that choice stands.
+- **Removing a reminder** says plainly what it can remove: one somebody set by hand, never one made from a date.
+
+### Security
+
+- Health papers follow every rule a sensitive paper does: who sees them is tested from the side of the other adults, a teen, and a grown-up child; a reminder about one, by email or push, says only "A reminder about a document" under the default neutral wording — never the title, the kind, the person or "Yearly review". A yearly review can't be seen, set or changed by anyone who can't see the paper.
+
+### Fixed
+
+- **A repeating reminder is emailed again.** A reminder that repeats, once done and due again, was never in the daily email again. It now is, once each time it comes round — and still never twice for the same day. This includes reminders you already set to repeat monthly or quarterly: they are now emailed every time.
+- **A family that moves its time zone west isn't told twice.** A reminder emailed just before the change is not emailed again the next day.
+- **A repeating reminder no longer drifts.** One set for the 31st, or 29 February, comes back on the 31st (or the last day of a shorter month) and on 29 February in leap years, instead of creeping to an earlier day for good.
+
+### Client (`@fdv/client`)
+
+- The fake vault's Idempotency-Key on `POST /documents` now behaves as the real vault's: it reads and checks the request (and refuses a role that may not add documents) before it claims or answers a key, so a refused create keeps no key; it keeps keys per household, account, person and key; and its 24 hours run by the fake's own clock, `state.now`, when a test sets one (the real clock otherwise). The client contract checks that a refused create leaves no key behind, against the fake and the real vault.
+
 ## [0.9.0-dev.45] - 2026-11-15 — a note sent twice is made once
 
 ### Added

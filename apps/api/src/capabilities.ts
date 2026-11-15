@@ -224,6 +224,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       caregivers: true,
       // 0.9.0-dev.45: POST /documents takes an Idempotency-Key.
       idempotent_create: true,
+      // 0.9.0 (H3): Health's kinds, their details, and a yearly review.
+      health_kinds: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

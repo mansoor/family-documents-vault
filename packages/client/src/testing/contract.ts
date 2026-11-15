@@ -244,6 +244,24 @@ export const contractScenarios: Scenario[] = [
       );
       expect([bad.status, bad.code]).toEqual([400, 'invalid_idempotency_key']);
       expect((await api.documents(token)).items.length).toBe(before + 1);
+      // A create refused (here, a kind the vault does not have) keeps no
+      // key: put right, the same key makes it, never "reused".
+      const refusedKey = `${CREATE_KEY}-refused`;
+      const refused = await refusal(
+        api.createDocument(
+          token,
+          { title: 'Contract note, refused', type_key: 'no_such_kind' },
+          { idempotencyKey: refusedKey },
+        ),
+      );
+      expect(refused.status).toBe(422);
+      const putRight = await api.createDocument(
+        token,
+        { title: 'Contract note, put right' },
+        { idempotencyKey: refusedKey },
+      );
+      expect(putRight.title).toBe('Contract note, put right');
+      await api.deleteDocument(token, putRight.id);
     },
   },
   {
@@ -3743,6 +3761,78 @@ export const contractScenarios: Scenario[] = [
       expect(await titles('yes')).toEqual(['Contract sensitive passport']);
       expect(await titles('no')).toEqual(['Contract sensitive bill, paid']);
       expect(await titles('yes,no')).toHaveLength(2);
+    },
+  },
+  {
+    name: 'Health’s kinds, listed and filed; a yearly review on, once, and off (0.9.0, H3)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.health_kinds).toBe(true);
+      const kinds = (await api.documentTypes(token)).items;
+      const of = (key: string) => kinds.find((t) => t.key === key);
+      for (const key of [
+        'insurance_card',
+        'lab_result',
+        'vaccination_record',
+        'advance_directive',
+      ]) {
+        expect(of(key), key).toMatchObject({
+          category: 'medical',
+          default_visibility: 'adults',
+          sensitive_default: true,
+          builtin: true,
+        });
+      }
+      // A vaccination record reminds from its next dose, which is never required.
+      expect(of('vaccination_record')?.remind_from).toBe('next_dose_due');
+      expect(of('vaccination_record')?.fields.find((f) => f.key === 'next_dose_due')).toMatchObject(
+        { kind: 'date', required: false },
+      );
+      const me = await api.me(token);
+      const make = (title: string, type_key: string) =>
+        api.createDocument(token, {
+          title,
+          type_key,
+          owner_member_id: me.member_id,
+          visibility: 'adults',
+        });
+      const directive = await make('Contract living will', 'advance_directive');
+      const lab = await make('Contract bloods', 'lab_result');
+      expect(directive.sensitive_effective).toBe(true);
+      const on = await api.createReminder(token, {
+        document_id: directive.id,
+        fire_at: '2031-03-10',
+        review: true,
+      });
+      expect(on).toMatchObject({
+        kind: 'manual',
+        recurrence: 'annual',
+        review: true,
+        note: 'Yearly review',
+        fire_at: '2031-03-10',
+      });
+      // On again: the one there is.
+      const again = await api.createReminder(token, {
+        document_id: directive.id,
+        fire_at: '2031-04-01',
+        review: true,
+      });
+      expect(again.id).toBe(on.id);
+      // Not on a lab result.
+      const refused = await refusal(
+        api.createReminder(token, { document_id: lab.id, fire_at: '2031-03-10', review: true }),
+      );
+      expect(refused.status).toBe(422);
+      expect(refused.detail).toBe('review');
+      // One document's reminders.
+      const mine = (await api.reminders(token, 'all', directive.id)).items;
+      expect(mine.map((r) => r.id)).toEqual([on.id]);
+      expect((await api.reminders(token, 'all', lab.id)).items).toEqual([]);
+      // Off.
+      await api.deleteReminder(token, on.id);
+      expect((await api.reminders(token, 'all', directive.id)).items).toEqual([]);
+      await api.deleteDocument(token, directive.id);
+      await api.deleteDocument(token, lab.id);
     },
   },
   {

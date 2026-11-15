@@ -23,6 +23,9 @@ describe('an expiry the family adds (S5)', () => {
   it('is the will’s, the logbook’s, the contract’s and the deed’s, and no other kind’s', () => {
     expect([...EXPIRY_OPTIONAL_KINDS].sort()).toEqual([
       'employment_contract',
+      // A health insurance card and a HIPAA authorization (0.9.0, H3).
+      'hipaa_authorization',
+      'insurance_card',
       'property_deed',
       'vehicle_registration',
       'will',

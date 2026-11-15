@@ -34,6 +34,16 @@ const SHORT_LABELS: Record<string, string> = {
   // 0.9.0 (C1, 0077).
   pay_statement: 'Pay statement',
   investment_statement: 'Investment statement',
+  // 0.9.0 (H3, 0101).
+  insurance_card: 'Insurance card',
+  explanation_of_benefits: 'Explanation of benefits',
+  lab_result: 'Lab result',
+  visit_summary: 'Visit summary',
+  imaging_report: 'Imaging report',
+  vaccination_record: 'Vaccination record',
+  advance_directive: 'Advance directive',
+  healthcare_proxy: 'Healthcare proxy',
+  hipaa_authorization: 'HIPAA authorization',
 };
 
 /**
@@ -74,6 +84,8 @@ const ISSUER_NOUNS: Record<string, string> = {
   loan: 'loan statement',
   employment_contract: 'contract',
   warranty: 'receipt',
+  // 0.9.0 (H3, 0101): an insurer's, named as a statement is.
+  explanation_of_benefits: 'explanation of benefits',
 };
 
 /** True when documents of this type are named for their issuer, not their person. */

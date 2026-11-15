@@ -211,7 +211,11 @@ describe.skipIf(!testAdminUrl())('migration 0087: the household, and a bill’s 
     const now = (
       await admin.query('select * from reminder where document_id = $1 order by id', [doc.bill])
     ).rows;
-    expect(now).toEqual(
+    // 0101 appends whether a reminder is a yearly review (H3), none of these, and the day a repeating one counts from.
+    expect(now.every((r: { review: boolean }) => r.review === false)).toBe(true);
+    expect(
+      now.map((r: Record<string, unknown>) => ({ ...r, review: undefined, recur_from: undefined })),
+    ).toEqual(
       remindersBefore.map((row) => (row.kind === 'derived' ? { ...row, source: 'due_date' } : row)),
     );
     expect((await admin.query('select * from reminder_delivery order by channel')).rows).toEqual(

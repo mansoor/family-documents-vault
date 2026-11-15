@@ -404,6 +404,13 @@ export interface DocumentTypeView {
    */
   remind_leads?: number[];
   /**
+   * The date it reminds from, on the same lead times, for a document with
+   * no value for `remind_from` (0.9.0, H3): a prescription's `'expires'`
+   * when it has no Next refill. Null for every other kind, and where the
+   * household chose its own date to remind from. Absent from older vaults.
+   */
+  remind_fallback?: string | null;
+  /**
    * Each paper of it is a document of its own, one after another — a
    * month's statement, a quarter's bill, a year's P60, a letter (0.9.0,
    * `PERIODIC_KINDS`): never a new version of the last one, so never
@@ -467,6 +474,16 @@ export const SENSITIVE_BY_DEFAULT: readonly string[] = [
   'tax_form',
   'medical_record',
   'prescription',
+  // 0.9.0 (H3, 0101): Health's kinds, each On as a built-in a release adds is.
+  'insurance_card',
+  'explanation_of_benefits',
+  'lab_result',
+  'visit_summary',
+  'imaging_report',
+  'vaccination_record',
+  'advance_directive',
+  'healthcare_proxy',
+  'hipaa_authorization',
 ];
 
 /**
@@ -573,6 +590,15 @@ export const PERIODIC_KINDS: ReadonlySet<string> = new Set([
   'tax_return',
   'medical_record',
   'school_report',
+  // Health's (H3, 0101): a lab's results, a visit's summary, an imaging
+  // report and an insurer's explanation of benefits come one after another,
+  // and a new one never replaces the last. Not a vaccination record, an
+  // insurance card, an advance directive, a proxy or a HIPAA authorization:
+  // a new one of each replaces the one before, and is renewed as before.
+  'lab_result',
+  'visit_summary',
+  'imaging_report',
+  'explanation_of_benefits',
 ]);
 
 /** Whether each paper of a kind is a document of its own (see PERIODIC_KINDS). */
@@ -895,15 +921,18 @@ export interface ReminderProblem {
  *    its lead times, as it always has; any other date's are cleared, and
  *    so are they when `remind_from` is null.
  *  - The reminding date is always required: a change that makes it
- *    optional is refused (REMINDING_DATE_REQUIRED, naming it).
+ *    optional is refused (REMINDING_DATE_REQUIRED, naming it) — but for
+ *    the few a built-in asks for without requiring (`after.key`,
+ *    REMINDING_DATE_OPTIONAL, 0.9.0).
  *
  * `before` is the kind as it is (null for a new one); `after`, whether it
- * will show Expires and the keys of the `date` fields it will show.
+ * will show Expires and the keys of the `date` fields it will show, and
+ * the kind's key where it has one.
  */
 export function nextReminder(
   sent: ReminderChange,
   before: { reminding: Reminding; expires: boolean } | null,
-  after: { expires: boolean; dates: ReadonlyArray<string> },
+  after: { expires: boolean; dates: ReadonlyArray<string>; key?: string | undefined },
 ): Reminding | { problem: ReminderProblem } {
   if (sent.remind_leads !== undefined && sent.reminder_leads !== undefined) {
     return { problem: { message: ONE_SET_OF_LEADS, detail: 'remind_leads' } };
@@ -950,7 +979,7 @@ export function nextReminder(
       if (leads.length === 0) leads = [30];
     }
   }
-  if (from !== null && from !== 'expires') {
+  if (from !== null && from !== 'expires' && !remindingDateOptional({ key: after.key }, from)) {
     if (sent.fields?.some((f) => f.key === from && f.required === false)) {
       return { problem: { message: REMINDING_DATE_REQUIRED, detail: from } };
     }
@@ -1155,14 +1184,36 @@ export interface MissingField {
  * still shows Expires, and reminds from it once somebody fills it in; a
  * document of one without it is not missing anything. Every other kind that
  * expires still requires the date. A household's own kinds are never among
- * them: their keys are their own (`h_…`).
+ * them: their keys are their own (`h_…`). Since 0.9.0 (H3) a health
+ * insurance card and a HIPAA authorization too: many print no end date.
  */
 export const EXPIRY_OPTIONAL_KINDS: ReadonlySet<string> = new Set([
   'will',
   'vehicle_registration',
   'employment_contract',
   'property_deed',
+  'insurance_card',
+  'hipaa_authorization',
 ]);
+
+/**
+ * Dates a built-in reminds from that are the family's to add, never
+ * required (0.9.0, H3): a vaccination record's Next dose due — most records
+ * have none — and a prescription's Next refill. Every other date a kind
+ * reminds from is required, as it has been since 0.5.15
+ * (REMINDING_DATE_REQUIRED); these are asked for, and a document without
+ * one is not Needs info. A household's own kinds are never among them.
+ */
+export const REMINDING_DATE_OPTIONAL: Readonly<Record<string, string>> = {
+  vaccination_record: 'next_dose_due',
+  prescription: 'refill_date',
+};
+
+/** Whether a kind's date `field` reminds without being required (see REMINDING_DATE_OPTIONAL). */
+export const remindingDateOptional = (
+  type: { key?: string | null | undefined } | null | undefined,
+  field: string | null | undefined,
+): boolean => !!type?.key && !!field && REMINDING_DATE_OPTIONAL[type.key] === field;
 
 /** Whether a kind's expiry is the family's to add, never asked for (see EXPIRY_OPTIONAL_KINDS). */
 export const expiryOptional = (

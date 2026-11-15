@@ -1,9 +1,11 @@
 import { householdToday, type Db, type Visibility } from '@fdv/db';
 import {
   keepsOwnSensitive,
+  parentsKeep,
   SENSITIVE_SHARE_CONFIRM,
   sensitiveOf,
   sensitiveStartingVisibility,
+  teenUploader,
   type SensitiveStillShared,
 } from '@fdv/shared';
 import { sql, type RawBuilder } from 'kysely';
@@ -83,26 +85,39 @@ export async function documentSensitive(trx: Db, documentId: string): Promise<bo
  */
 export async function keepsOwnSensitiveOf(trx: Db, p: Principal): Promise<boolean> {
   if (p.role === 'teen') return true;
+  return (await ownSensitiveOf(trx, p)).keeps;
+}
+
+/**
+ * The same, and whether the caller is a teen by H1a's count
+ * (`teenUploader`): signed in as one, or 13 to 17 by their date of birth —
+ * whose own vaccination record is never Only me by the rule (H3).
+ */
+export async function ownSensitiveOf(
+  trx: Db,
+  p: Principal,
+): Promise<{ keeps: boolean; teen: boolean }> {
   const m = await trx
     .selectFrom('member')
     .select(['date_of_birth', 'relationship'])
     .where('id', '=', p.memberId)
     .executeTakeFirst();
-  if (!m) return false;
-  return keepsOwnSensitive(
-    {
-      role: p.role,
-      date_of_birth: m.date_of_birth ? String(m.date_of_birth).slice(0, 10) : null,
-      relationship: m.relationship,
-    },
-    await householdToday(trx),
-  );
+  if (!m) return { keeps: p.role === 'teen', teen: p.role === 'teen' };
+  const who = {
+    role: p.role,
+    date_of_birth: m.date_of_birth ? String(m.date_of_birth).slice(0, 10) : null,
+    relationship: m.relationship,
+  };
+  const today = await householdToday(trx);
+  return { keeps: keepsOwnSensitive(who, today), teen: teenUploader(who, today) };
 }
 
 /**
  * A new paper's visibility with H1a's rule on top of `base`, where nobody
  * said one: Only me for the caller's own sensitive paper when their papers
- * start so. `own` is whose it will be: the caller.
+ * start so. `own` is whose it will be: the caller. Never a teen's own
+ * vaccination record (H3, `parentsKeep`): it stays `base`, where their
+ * parents see it.
  */
 export async function sensitiveStart(
   trx: Db,
@@ -110,7 +125,10 @@ export async function sensitiveStart(
   base: Visibility,
   paper: {
     sensitive: boolean | null | undefined;
-    kind: { sensitive_default?: boolean | null | undefined } | null | undefined;
+    kind:
+      | { key?: string | null | undefined; sensitive_default?: boolean | null | undefined }
+      | null
+      | undefined;
     owner: string | null | undefined;
   },
 ): Promise<Visibility> {
@@ -119,9 +137,11 @@ export async function sensitiveStart(
   if (!own) return base;
   const sensitive = sensitiveOf({ sensitive: paper.sensitive ?? null }, paper.kind ?? null);
   if (!sensitive) return base;
+  const who = await ownSensitiveOf(trx, p);
   return sensitiveStartingVisibility(base, {
     sensitive,
     own,
-    keeps: await keepsOwnSensitiveOf(trx, p),
+    keeps: who.keeps,
+    parentsKept: who.teen && parentsKeep(paper.kind),
   });
 }

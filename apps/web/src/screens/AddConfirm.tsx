@@ -40,12 +40,15 @@ import {
   asItsKindSays,
   keepsOwnSensitive,
   localToday,
+  PARENTS_KEEP_NOTE,
+  parentsKeep,
   SENSITIVE_LABEL,
   SENSITIVE_MEANS,
   SENSITIVE_ONLY_ME_NOTE,
   stopSharingWords,
   sensitiveOf,
   sensitiveStartingVisibility,
+  teenUploader,
 } from '@fdv/shared';
 import {
   useEffect,
@@ -195,6 +198,21 @@ function keepsOwnSensitiveHere(
 ): boolean {
   if (!me) return false;
   return keepsOwnSensitive(
+    { role: me.role ?? 'owner', date_of_birth: me.date_of_birth, relationship: me.relationship },
+    localToday(familyZoneNow()),
+  );
+}
+
+/**
+ * Whether the person adding papers is a teen, as H1a counts one (0.9.0,
+ * H3; `teenUploader`): their own vaccination record starts where their
+ * parents can see it, never Only me.
+ */
+function teenHere(
+  me: Pick<Member, 'role' | 'date_of_birth' | 'relationship'> | undefined,
+): boolean {
+  if (!me) return false;
+  return teenUploader(
     { role: me.role ?? 'owner', date_of_birth: me.date_of_birth, relationship: me.relationship },
     localToday(familyZoneNow()),
   );
@@ -1122,6 +1140,8 @@ export function ConfirmForm(props: {
   // card says why.
   const protects = caps?.features.sensitive_protects === true;
   const keeps = protects && keepsOwnSensitiveHere(members.find((m) => m.is_me));
+  // But a teen's own vaccination record stays where their parents see it (H3).
+  const teenAdding = protects && teenHere(members.find((m) => m.is_me));
   /** Who can see it, with that rule on top of `v`, for a kind, a person and a Sensitive choice. */
   const withSensitive = (
     v: Visibility,
@@ -1133,6 +1153,7 @@ export function ConfirmForm(props: {
       sensitive: sensitiveOf({ sensitive: sensitiveValue(s) }, t ?? null),
       own: o !== '' && o === members.find((m) => m.is_me)?.id,
       keeps,
+      parentsKept: teenAdding && parentsKeep(t),
     });
   // What the document held when the card was filled, which Save compares
   // with: moved on when Save finds it changed somewhere else since.
@@ -1247,6 +1268,15 @@ export function ConfirmForm(props: {
     owner !== '' &&
     owner === me?.id &&
     sensitiveOf({ sensitive: sensitiveValue(sensitive) }, type ?? null);
+  // A teen's own vaccination record starts where their parents see it (H3): the card says why.
+  const parentsKeptNote =
+    Boolean(props.fileName) &&
+    !visibilityChosen &&
+    visibility !== 'private' &&
+    teenAdding &&
+    parentsKeep(type) &&
+    owner !== '' &&
+    owner === me?.id;
   /** Sensitive chosen on the card: a new one's start follows it, nobody having chosen. */
   const chooseSensitive = (v: SensitiveChoice) => {
     setSensitive(v);
@@ -2128,6 +2158,11 @@ export function ConfirmForm(props: {
           {sensitiveOnlyMe && (
             <span className="muted sensitive-only-me" role="note">
               {SENSITIVE_ONLY_ME_NOTE}
+            </span>
+          )}
+          {parentsKeptNote && (
+            <span className="muted parents-keep" role="note">
+              {PARENTS_KEEP_NOTE}
             </span>
           )}
         </div>

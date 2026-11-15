@@ -32,6 +32,60 @@ export interface ReminderView {
    * older vaults.
    */
   about?: string | null;
+  /**
+   * A yearly review (0.9.0, H3): somebody's own reminder (`manual`,
+   * `recurrence: 'annual'`) to look the paper over again every year, its
+   * note `REVIEW_NOTE`. Done brings the next one a year on. Absent from
+   * older vaults.
+   */
+  review?: boolean;
+}
+
+/**
+ * Kinds a yearly review may be set on (0.9.0, H3): an advance directive, a
+ * healthcare proxy and a HIPAA authorization — papers whose wishes or
+ * permissions are worth reading again every year. Off until somebody turns
+ * it on for a document.
+ */
+export const YEARLY_REVIEW_KINDS: ReadonlySet<string> = new Set([
+  'advance_directive',
+  'healthcare_proxy',
+  'hipaa_authorization',
+]);
+
+/** Whether a yearly review may be set on a document of this kind (YEARLY_REVIEW_KINDS). */
+export const yearlyReviewOffered = (
+  type: { key?: string | null | undefined } | null | undefined,
+): boolean => !!type?.key && YEARLY_REVIEW_KINDS.has(type.key);
+
+/** A yearly review's note, as every reminder list and digest says it (outside neutral wording). */
+export const REVIEW_NOTE = 'Yearly review';
+
+/** The switch on the document's page (H3). */
+export const REVIEW_LABEL = 'Remind us to review it every year';
+
+/**
+ * A yearly review's first day (H3): the next anniversary of the day it was
+ * signed, after today; with no such day, a year from today.
+ */
+export function firstReview(signed: string | null | undefined, today: string): string {
+  const from = signed?.slice(0, 10);
+  if (from && /^\d{4}-\d{2}-\d{2}$/.test(from)) {
+    return nextOccurrence(from, 'annual', today) ?? addMonths(today, 12);
+  }
+  return addMonths(today, 12);
+}
+
+/**
+ * The day a yearly review comes back after Done (H3): a year on from its
+ * day — never today or before, nor its own day again when it was done
+ * early. On the household's calendar (`today`). Counted from the day it
+ * was first set for (`anchor`, `reminder.recur_from`), so a review on 29
+ * February is on the 28th in other years and the 29th in a leap year.
+ */
+export function nextReview(fireAt: string, today: string, anchor: string = fireAt): string {
+  const after = fireAt > today ? fireAt : today;
+  return nextOccurrence(anchor, 'annual', after) ?? addMonths(after, 12);
 }
 
 /** ISO date arithmetic without time zones: dates are calendar days. */
@@ -66,12 +120,18 @@ export function parseRecurrence(r: string | null | undefined): number | null {
   return m ? Number(m[1]) : null;
 }
 
-/** The next instance of a recurring reminder, strictly after `after`. */
-export function nextOccurrence(fireAt: string, recurrence: string, after: string): string | null {
+/**
+ * The next instance of a recurring reminder, strictly after `after`:
+ * counted in whole steps from `anchor`, the day it was first set for —
+ * never from the last instance, so the 31st and 29 February do not drift
+ * to the 30th or the 28th for good (`addMonths` gives the last day of a
+ * shorter month, and the day itself again in the next long one).
+ */
+export function nextOccurrence(anchor: string, recurrence: string, after: string): string | null {
   const months = parseRecurrence(recurrence);
   if (!months) return null;
-  let next = fireAt;
-  for (let i = 0; i < 1200 && next <= after; i++) next = addMonths(next, months);
+  let next = anchor;
+  for (let k = 1; k <= 1200 && next <= after; k++) next = addMonths(anchor, months * k);
   return next;
 }
 

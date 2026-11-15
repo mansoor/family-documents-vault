@@ -2448,10 +2448,20 @@ describe('the fake vault, an Idempotency-Key on POST /documents (0.9.0-dev.45)',
     expect(gone.headers.get('idempotent-replayed')).toBe('true');
     expect(await gone.json()).toMatchObject({ error: { code: 'created_not_visible' } });
     expect(vault.state.documents.some((d) => d.notes === 'Behind the bleach')).toBe(false);
-    // A day on, the key is no key.
-    const kept = vault.state.createKeys?.get('fake-member|note-1');
-    expect(kept).toBeDefined();
-    if (kept) kept.at -= 24 * 60 * 60 * 1000;
+    // Kept by household, account, person and key, as the vault's.
+    expect([...(vault.state.createKeys?.keys() ?? [])]).toEqual([
+      expect.stringMatching(/^fake-household\|account:.*\|fake-member\|note-1$/),
+    ]);
+    // A day on, by the fake's own clock, the key is no key.
+    const start = Date.now();
+    vault.state.now = () => start + 24 * 60 * 60 * 1000 + 1;
     expect((await post({ ...body, notes: 'A day later' }, 'note-1')).status).toBe(201);
+    // A key is claimed only for a create it makes: a refused one keeps none.
+    const before = vault.state.createKeys?.size ?? 0;
+    const refused = await post({ type_key: 'no_such_kind', title: 'Refused' }, 'refused-1');
+    expect(refused.status).toBe(422);
+    expect(vault.state.createKeys?.size ?? 0).toBe(before);
+    // Put right, the same key makes it.
+    expect((await post({ title: 'Put right' }, 'refused-1')).status).toBe(201);
   });
 });

@@ -15,10 +15,13 @@ import {
   addMonths,
   localToday,
   nextOccurrence,
+  nextReview,
   parseRecurrence,
   reminderAbout,
   reminderLabel,
+  REVIEW_NOTE,
   turnedThirteenWords,
+  yearlyReviewOffered,
   type PersonReminderView,
   type ReminderView,
 } from '@fdv/shared';
@@ -39,6 +42,11 @@ import { requireCapability } from '../authz.js';
  * - Acknowledging a recurring reminder schedules its next instance.
  * - A derived reminder says which date it is about (`source`), in the
  *   kind's words (`about`: "Due date: 10 Oct, in 7 days", 0.5.15).
+ * - A yearly review (0.9.0, H3, `review`) is somebody's own reminder on an
+ *   advance directive, a healthcare proxy or a HIPAA authorization,
+ *   repeating every year: one open a document, Done bringing the next a
+ *   year on (`nextReview`) even when it is done early, and a new version
+ *   of the paper leaving it be. Removing it turns it off.
  */
 
 export interface ManualReminderInput {
@@ -46,6 +54,8 @@ export interface ManualReminderInput {
   fire_at: string;
   note?: string | null | undefined;
   recurrence?: string | null | undefined;
+  /** A yearly review (H3): its note and its repeat are the vault's. */
+  review?: boolean | undefined;
 }
 
 type Row = {
@@ -57,6 +67,8 @@ type Row = {
   source: string | null;
   note: string | null;
   recurrence: string | null;
+  review: boolean;
+  recur_from?: string | null;
   status: ReminderView['status'];
   snoozed_until: string | null;
 };
@@ -97,7 +109,10 @@ export class ReminderService {
     await regenerateDerived(trx, householdId, documentId, opts);
   }
 
-  /** REM-08: a renewed document resolves its open reminders. */
+  /**
+   * REM-08: a renewed document resolves its open reminders — but its
+   * yearly review (H3), which is about the paper, not this copy of it.
+   */
   async resolveOpen(
     trx: Db,
     householdId: string,
@@ -109,12 +124,22 @@ export class ReminderService {
       .set({ status: 'resolved', acknowledged_by: accountId, acknowledged_at: new Date() })
       .where('document_id', '=', documentId)
       .where('status', 'in', ['scheduled', 'due', 'snoozed'])
+      .where('review', '=', false)
       .executeTakeFirst();
     void householdId;
     return Number(r.numUpdatedRows);
   }
 
-  async list(p: Principal, state: 'due' | 'upcoming' | 'all'): Promise<ReminderView[]> {
+  /**
+   * The caller's reminders, of documents they can see; with `documentId`,
+   * that document's alone (H3: its page asks whether its yearly review is
+   * on) — none, for one they cannot see.
+   */
+  async list(
+    p: Principal,
+    state: 'due' | 'upcoming' | 'all',
+    documentId?: string,
+  ): Promise<ReminderView[]> {
     return withPrincipal(this.db, p, async (trx) => {
       const today = await this.today(trx, p.householdId);
       let q = trx
@@ -129,6 +154,7 @@ export class ReminderService {
           'reminder.source',
           'reminder.note',
           'reminder.recurrence',
+          'reminder.review',
           'reminder.status',
           'reminder.snoozed_until',
           'document.title',
@@ -139,6 +165,7 @@ export class ReminderService {
         .where('document.no_longer_needed_at', 'is', null)
         .where(visibleTo(p))
         .orderBy('reminder.fire_at');
+      if (documentId !== undefined) q = q.where('reminder.document_id', '=', documentId);
       if (state === 'due') q = q.where('reminder.status', '=', 'due');
       else if (state === 'upcoming')
         q = q
@@ -166,10 +193,16 @@ export class ReminderService {
         'Repeat can be monthly, quarterly, annual, or every:Nm.',
       );
     }
+    const review = input.review === true;
+    if (review && input.recurrence && input.recurrence !== 'annual') {
+      throw new ApiError(422, 'validation_failed', 'A yearly review repeats every year.', {
+        detail: 'recurrence',
+      });
+    }
     return withPrincipal(this.db, p, async (trx) => {
       const doc = await trx
         .selectFrom('document')
-        .select(['id', 'title', 'no_longer_needed_at'])
+        .select(['id', 'title', 'type_key', 'no_longer_needed_at'])
         .where('id', '=', input.document_id)
         .where(visibleTo(p))
         .where('deleted_at', 'is', null)
@@ -178,27 +211,75 @@ export class ReminderService {
       // No longer needed (0082): nothing reminds of it until it is needed again.
       if (doc.no_longer_needed_at) throw noLongerNeeded();
       const today = await this.today(trx, p.householdId);
-      const row = await trx
-        .insertInto('reminder')
-        .values({
-          household_id: p.householdId,
-          document_id: doc.id,
-          kind: 'manual',
-          fire_at: input.fire_at,
-          note: input.note ?? null,
-          recurrence: input.recurrence ?? null,
-          status: input.fire_at <= today ? 'due' : 'scheduled',
-          created_by: p.accountId,
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
+      if (review) {
+        // Only on a paper worth reading again every year (H3).
+        if (!yearlyReviewOffered({ key: doc.type_key })) {
+          throw new ApiError(
+            422,
+            'validation_failed',
+            'A yearly review is for an advance directive, a healthcare proxy or a HIPAA authorization.',
+            { detail: 'review' },
+          );
+        }
+      }
+      // Turned on twice is on: the one there is (one open a document,
+      // reminder_one_review — two at once, the second waits for the first).
+      const theOpenReview = () =>
+        trx
+          .selectFrom('reminder')
+          .selectAll()
+          .where('document_id', '=', doc.id)
+          .where('review', '=', true)
+          .where('status', 'in', ['scheduled', 'due', 'snoozed'])
+          .executeTakeFirst();
+      // A review's first day is never one gone by (H3): today at the earliest.
+      const fireAt = review && input.fire_at < today ? today : input.fire_at;
+      const insert = () =>
+        trx
+          .insertInto('reminder')
+          .values({
+            household_id: p.householdId,
+            document_id: doc.id,
+            kind: 'manual',
+            fire_at: fireAt,
+            note: review ? REVIEW_NOTE : (input.note ?? null),
+            recurrence: review ? 'annual' : (input.recurrence ?? null),
+            review,
+            status: fireAt <= today ? 'due' : 'scheduled',
+            created_by: p.accountId,
+          })
+          .onConflict((oc) =>
+            oc
+              .column('document_id')
+              .where(sql<boolean>`review and status in ('scheduled', 'due', 'snoozed')`)
+              .doNothing(),
+          )
+          .returningAll()
+          .executeTakeFirst();
+      let row: Awaited<ReturnType<typeof insert>>;
+      // An open one there: that one. One there as this was made, and gone
+      // again before it could be read (turned off at that moment): made
+      // once more, once.
+      for (let tries = 0; ; tries++) {
+        if (review) {
+          const on = await theOpenReview();
+          if (on) return view(ofDocument(on), doc.title, today, null);
+        }
+        row = await insert();
+        if (row || tries === 1) break;
+      }
+      if (!row) {
+        throw new ApiError(409, 'conflict', 'The yearly review changed as it was set. Try again.', {
+          retriable: true,
+        });
+      }
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
         action: 'reminder.created',
         objectType: 'reminder',
         objectId: row.id,
-        detail: { document_id: doc.id, fire_at: input.fire_at },
+        detail: { document_id: doc.id, fire_at: fireAt, ...(review ? { review } : {}) },
         ip: meta.ip,
       });
       return view(ofDocument(row), doc.title, today, null);
@@ -242,16 +323,21 @@ export class ReminderService {
   /**
    * Done. A recurring reminder schedules its next instance immediately;
    * a one-off is finished. There is no permanent dismiss that hides an
-   * expired passport: the document's status still says so.
+   * expired passport: the document's status still says so. A yearly
+   * review (H3) comes back a year on, done early or late (`nextReview`).
    */
   async acknowledge(p: Principal, id: string, meta: RequestMeta): Promise<ReminderView> {
     return this.transition(p, id, meta, 'done', async (_trx, r, today) => {
       if (r.recurrence) {
-        const next =
-          nextOccurrence(iso(r.fire_at) as string, r.recurrence, today) ?? addMonths(today, 1);
+        // Counted from the day it was first set for, so it never drifts (H3).
+        const anchor = iso(r.recur_from ?? null) ?? r.fire_at.slice(0, 10);
+        const next = r.review
+          ? nextReview(iso(r.fire_at) as string, today, anchor)
+          : (nextOccurrence(anchor, r.recurrence, today) ?? addMonths(today, 1));
         return {
           status: 'scheduled',
           fire_at: next,
+          recur_from: anchor,
           snoozed_until: null,
           action: 'reminder.acknowledged',
         };
@@ -265,13 +351,19 @@ export class ReminderService {
     });
   }
 
+  /**
+   * A reminder set by hand, removed: by whoever may manage reminders and
+   * sees its document. A yearly review (H3) is turned off by whoever turned
+   * it on, or an owner.
+   */
   async remove(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'reminder.manage');
     await withPrincipal(this.db, p, async (trx) => {
       // Only on a document the caller can see: a reminder on somebody
       // else's private document is not there, not "not yours".
-      const r = await trx
-        .deleteFrom('reminder')
+      const mine = await trx
+        .selectFrom('reminder')
+        .select(['id', 'review', 'created_by'])
         .where('id', '=', id)
         .where('kind', '=', 'manual')
         .where((eb) =>
@@ -284,8 +376,20 @@ export class ReminderService {
           ),
         )
         .executeTakeFirst();
-      if (Number(r.numDeletedRows) === 0)
-        throw new ApiError(404, 'not_found', 'Only reminders you set yourself can be removed.');
+      if (!mine)
+        throw new ApiError(
+          404,
+          'not_found',
+          'Only a reminder somebody set by hand can be removed, never one made from a date.',
+        );
+      if (mine.review && mine.created_by !== p.accountId && p.role !== 'owner') {
+        throw new ApiError(
+          403,
+          'forbidden',
+          'Only whoever turned the yearly review on, or an owner, can turn it off.',
+        );
+      }
+      await trx.deleteFrom('reminder').where('id', '=', id).execute();
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -479,6 +583,7 @@ function view(r: Row, title: string | null, today: string, word: string | null):
     lead_days: r.lead_days,
     note: r.note,
     recurrence: r.recurrence,
+    review: r.review,
     status: r.status,
     snoozed_until: snoozed,
     label: reminderLabel(fireAt, today, r.status, snoozed),

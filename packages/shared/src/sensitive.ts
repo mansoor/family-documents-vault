@@ -56,12 +56,40 @@ export interface SensitiveUploader {
  * `ageOn` counts them.
  */
 export function keepsOwnSensitive(who: SensitiveUploader, today: string): boolean {
-  if (who.role === 'teen') return true;
+  if (who.role === 'teen' || teenUploader(who, today)) return true;
   const age = ageOn(who.date_of_birth ?? null, today);
-  if (age !== null && age >= OWN_SIGN_IN_AGE && age < GROWN_UP_AGE) return true;
   if (!isChildRelationship(who.relationship)) return false;
   return age === null ? who.role === 'adult' : age >= GROWN_UP_AGE;
 }
+
+/**
+ * Whether somebody adding papers is a teen, as H1a counts one: signed in as
+ * a teen, or 13 to 17 by their date of birth on the household's calendar.
+ * Never somebody 18 or over by their date of birth, whatever their sign-in
+ * still says: a grown-up child, whose papers turning 18 governs (H1b).
+ */
+export function teenUploader(who: SensitiveUploader, today: string): boolean {
+  const age = ageOn(who.date_of_birth ?? null, today);
+  if (age !== null && age >= GROWN_UP_AGE) return false;
+  if (who.role === 'teen') return true;
+  return age !== null && age >= OWN_SIGN_IN_AGE;
+}
+
+/**
+ * Kinds a teen's own paper of stays where their parents can see it (0.9.0,
+ * H3 of plan-health): a vaccination record, which schools, camps and
+ * clinics ask the family for. Only these, only a teen's own, and only how
+ * it starts: anybody may still choose Only me on the card. A grown-up
+ * child's own is Only me by H1a's rule as before — turning 18 (H1b) is
+ * where their parents' sight of their medical papers is asked about. A
+ * household's own kinds are never among them: their keys are their own.
+ */
+export const PARENTS_KEEP_KINDS: ReadonlySet<string> = new Set(['vaccination_record']);
+
+/** Whether a kind is one a teen's own paper of stays where their parents see it (PARENTS_KEEP_KINDS). */
+export const parentsKeep = (
+  kind: { key?: string | null | undefined } | null | undefined,
+): boolean => !!kind?.key && PARENTS_KEEP_KINDS.has(kind.key);
 
 /**
  * Who can see a new paper before anybody chooses, with H1a's rule on top
@@ -70,17 +98,48 @@ export function keepsOwnSensitive(who: SensitiveUploader, today: string): boolea
  * `keepsOwnSensitive` says so for them. Never wider than `base`: anything
  * else is `base` as it was. A parent's paper *about* a teen is the
  * parent's, not the teen's own, and follows the parent's choice.
+ *
+ * But a teen's own paper of a kind their parents keep (`parentsKept`: H3,
+ * a vaccination record, PARENTS_KEEP_KINDS with `teenUploader`) is never
+ * made Only me by this rule: it stays `base`, where its parents see it.
  */
 export function sensitiveStartingVisibility(
   base: Visibility,
-  o: { sensitive: boolean; own: boolean; keeps: boolean },
+  o: { sensitive: boolean; own: boolean; keeps: boolean; parentsKept?: boolean | undefined },
 ): Visibility {
+  if (o.parentsKept === true) return base;
   return o.sensitive && o.own && o.keeps ? 'private' : base;
+}
+
+/**
+ * Where a teen's own paper of a kind kept for adults starts, when they
+ * cannot see Adults only themselves (a teen signed in as one): Only me, as
+ * every such paper of theirs has since 5.17c — their own would vanish from
+ * them as they filed it — but for a kind their parents keep (H3: a
+ * vaccination record), Everyone, so that both the teen and their parents
+ * see it (the owner's decision of 15 Nov 2026: everyone in the family who
+ * uses the vault, viewers too). Anything else is `kindDefault` as it is.
+ * Somebody signed in as a teen who is 18 by their date of birth is made
+ * Only me by H1a's rule on top (`teenUploader` is false for them).
+ */
+export function teenOwnStart(
+  kindDefault: Visibility,
+  kind: { key?: string | null | undefined } | null | undefined,
+): Visibility {
+  if (kindDefault !== 'adults') return kindDefault;
+  return parentsKeep(kind) ? 'household' : 'private';
 }
 
 /** Said on the capture and confirm cards when a paper starts as Only me by H1a's rule. */
 export const SENSITIVE_ONLY_ME_NOTE =
   'This is sensitive and it’s yours, so it starts as Only me: only you can see it. You can change who can see it before you save.';
+
+/**
+ * Said on the cards when a teen's own vaccination record starts where their
+ * parents can see it (H3), in place of SENSITIVE_ONLY_ME_NOTE.
+ */
+export const PARENTS_KEEP_NOTE =
+  'Vaccination records start as Everyone, so your parents can see them: schools and doctors ask the family for them. Everyone means everybody in the family who uses the vault, viewers too. You can change who can see it, now or later.';
 
 /**
  * `409 sensitive_confirm` (H1a): a sensitive document shared outside the
