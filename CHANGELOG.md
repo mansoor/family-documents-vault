@@ -6,6 +6,20 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.45] - 2026-11-15 — a note sent twice is made once
+
+### Added
+
+- **A note sent twice is made once.** When the phone sends a note written offline and the answer never comes back — the connection drops, or a proxy in front of the vault times out — it can now simply send it again: the vault recognises the second try and answers with the note the first one made, instead of making a second copy. Until now the phone had to ask you whether the note had arrived. (For app developers: `POST /api/v1/documents` takes an `Idempotency-Key`, and `features.idempotent_create` says so; see the API changelog. Migration 0100.)
+
+### Security
+
+- **A retry tells nothing new.** The answer to a repeated send is the note as you may see it now: if it has since been made Only me by the person it belongs to, the answer says only that it was made and isn't there for you any more — never its title. Each person's keys are their own, and stay with the person, not just the sign-in, in the database itself — another person, or another household, sending the same key makes their own note and learns nothing — and the vault keeps no words of the note with the key, only which note it made, for 24 hours. A restored vault is checked for this too.
+
+### Fixed
+
+- **A test that failed by chance now can't.** The check that no texted code ever reaches the request log could find the six random digits of a code inside a time or an id in the log ("024137", once). It, and the same kind of check for emailed codes and PINs, now take the ids, hashes, times and timings out first and ignore digits that are part of a longer number — while still catching a code written straight after a line break or a word, or spaced as the email writes it ("123 456").
+
 ## [0.9.0-dev.44] - 2026-11-14 — dividers and pins in My cabinet
 
 ### Added

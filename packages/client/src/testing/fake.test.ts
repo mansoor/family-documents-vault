@@ -2400,3 +2400,58 @@ describe('the fake vault, caregivers and turning 18 (0.9.0, H1b)', () => {
     expect((await api.grownUpQuestions(token)).items).toEqual([]);
   });
 });
+
+describe('the fake vault, an Idempotency-Key on POST /documents (0.9.0-dev.45)', () => {
+  it('answers a repeat with what the first made, as it is now, and refuses another body', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    expect((await api.capabilities()).features.idempotent_create).toBe(true);
+    const post = (body: object, key: string) =>
+      vault.fetch('https://fake.example/api/v1/documents', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+          'idempotency-key': key,
+        },
+        body: JSON.stringify(body),
+      });
+    const body = { type_key: 'note', title: null, notes: 'Behind the bleach' };
+    const first = await post(body, 'note-1');
+    expect(first.status).toBe(201);
+    expect(first.headers.get('idempotent-replayed')).toBeNull();
+    const made = (await first.json()) as { id: string };
+    await api.updateDocument(token, made.id, { notes: 'Under the sink' });
+    // Its keys in another order: the same request, answered as it is now.
+    const again = await post(
+      { notes: 'Behind the bleach', title: null, type_key: 'note' },
+      'note-1',
+    );
+    expect(again.status).toBe(201);
+    expect(again.headers.get('idempotent-replayed')).toBe('true');
+    expect(await again.json()).toMatchObject({ id: made.id, notes: 'Under the sink' });
+    expect(vault.state.documents.filter((d) => d.id === made.id)).toHaveLength(1);
+    const other = await post({ ...body, notes: 'Other words' }, 'note-1');
+    expect(other.status).toBe(422);
+    expect(await other.json()).toMatchObject({ error: { code: 'idempotency_key_reused' } });
+    expect((await post(body, '')).status).toBe(400);
+    // Gone: told so, as a replay, and nothing new is made.
+    vault.state.documents = vault.state.documents.filter((d) => d.id !== made.id);
+    const gone = await post(body, 'note-1');
+    expect(gone.status).toBe(404);
+    expect(gone.headers.get('idempotent-replayed')).toBe('true');
+    expect(await gone.json()).toMatchObject({ error: { code: 'created_not_visible' } });
+    expect(vault.state.documents.some((d) => d.notes === 'Behind the bleach')).toBe(false);
+    // A day on, the key is no key.
+    const kept = vault.state.createKeys?.get('fake-member|note-1');
+    expect(kept).toBeDefined();
+    if (kept) kept.at -= 24 * 60 * 60 * 1000;
+    expect((await post({ ...body, notes: 'A day later' }, 'note-1')).status).toBe(201);
+  });
+});

@@ -26,8 +26,17 @@ import {
   mintDeviceCookie,
   verifiedDeviceCookie,
 } from '../public/device-cookie.js';
-import { createHarness, mailSent, TEST_MASTER, type Harness } from '../test-harness.js';
+import {
+  createHarness,
+  holdsDigits,
+  mailSent,
+  TEST_MASTER,
+  type Harness,
+} from '../test-harness.js';
 import { SHARE_CODE_KEY_PURPOSE, type CreatedShare, type ShareView } from './shares.js';
+
+/** A six-digit code as the email writes it: "123 456". */
+const spaced = (code: string) => `${code.slice(0, 3)} ${code.slice(3)}`;
 
 /** What "this device only" cookies are made with (shares.ts SHARE_DEVICE_KEY_PURPOSE). */
 const SHARE_DEVICE_KEY_PURPOSE = 'share-device';
@@ -298,7 +307,8 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
       // And the queue holds no address and no code: they are sealed.
       const onQueue = JSON.stringify(jobs[0]?.data);
       expect(onQueue).not.toContain('@');
-      expect(onQueue).not.toContain(codeSentTo(to));
+      expect(holdsDigits(onQueue, codeSentTo(to))).toBe(false);
+      expect(holdsDigits(onQueue, spaced(codeSentTo(to)))).toBe(false);
       expect(codeSentTo(to)).toMatch(/^\d{6}$/);
     }
   });
@@ -674,7 +684,8 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
     // And the line saying it was sent does not hold it either.
     const sent = (await auditOf(created.share.id)).find((a) => a.action === 'share.code_sent');
     expect(sent).toBeDefined();
-    expect(JSON.stringify(sent?.detail)).not.toContain(code);
+    expect(holdsDigits(JSON.stringify(sent?.detail), code)).toBe(false);
+    expect(holdsDigits(JSON.stringify(sent?.detail), spaced(code))).toBe(false);
   }, 60_000);
 
   it('the email has no link and no title', async () => {
@@ -1309,7 +1320,6 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
       'lantern fjord cobalt',
       'lantern fjord wrong',
       madeUp.password as string,
-      code,
       to,
       'logged.person',
       session,
@@ -1319,6 +1329,11 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
       'forged-device',
     ];
     for (const s of secrets) expect(text, 'a secret in the log').not.toContain(s);
+    // The six-digit code as a token of its own: a random id, a time or a
+    // response time in the log may hold any six digits by chance.
+    expect(holdsDigits(text, code), 'the code in the log').toBe(false);
+    // And as the email spaces it ("123 456").
+    expect(holdsDigits(text, spaced(code)), 'the spaced code in the log').toBe(false);
     expect(text).not.toContain(`"${pin.pin}"`);
     expect(text).not.toMatch(/secret|"pin"|pin=|fdv_share|code_email|"code"|@example\.test/);
   });

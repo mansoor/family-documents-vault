@@ -8,7 +8,7 @@ import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import type { MailRequest } from '../mail-job.js';
-import { createHarness, mailSent, type Harness } from '../test-harness.js';
+import { createHarness, holdsDigits, mailSent, type Harness } from '../test-harness.js';
 import type { CreatedShare, ShareView } from './shares.js';
 
 const PDF = Buffer.from(
@@ -197,10 +197,11 @@ describe.skipIf(!testAdminUrl())('a share link emailed to its recipient (0.9.0)'
     expect(words).not.toContain(codeTo);
     // Only the one link: the vault's own, and nothing else that is one.
     expect(words.match(/https?:\/\//g)).toHaveLength(1);
-    // Its PIN is four digits; with the link and the dates taken out, none
-    // are left in it (a UUID-free, link-free copy is what is searched).
+    // Its PIN is four digits; with the link, the ids and the times taken
+    // out, it is not there as a token of its own (a link-free copy is what
+    // is searched; holdsDigits takes the ids and times out).
     const bare = words.replace(link, '').replace(/[0-9a-f]{8}-[0-9a-f-]{27}/gi, '');
-    expect(bare).not.toContain(made.pin as string);
+    expect(holdsDigits(bare, made.pin as string)).toBe(false);
     expect(bare).not.toMatch(/\b\d{3} ?\d{3}\b/);
 
     // Opened, its code goes in an email of its own, to its own address.

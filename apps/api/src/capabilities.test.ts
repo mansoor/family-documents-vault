@@ -151,6 +151,8 @@ describe('buildCapabilities', () => {
       cabinet_pins: true,
       // 0.9.0 (H1b): caregivers, and turning 18.
       caregivers: true,
+      // 0.9.0-dev.45: an Idempotency-Key on POST /documents.
+      idempotent_create: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

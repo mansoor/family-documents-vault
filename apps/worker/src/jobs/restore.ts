@@ -1560,6 +1560,9 @@ const ACTOR_GUARDED = [
   'caregiver_grant',
   'caregiver_view',
   'grown_up_question',
+  // A create's Idempotency-Key (0100, 0.9.0-dev.45): its account's alone,
+  // and the vault's.
+  'create_idempotency',
 ];
 
 /**
@@ -1665,6 +1668,8 @@ const MAKER_ONLY = [
   { table: 'caregiver_view', where: 'true', what: "a caregiver's looks at somebody's papers" },
   // Somebody's turning-18 question: theirs, and the owners' (0098).
   { table: 'grown_up_question', where: 'true', what: "somebody's turning-18 question" },
+  // The Idempotency-Keys somebody sent with a create (0100, 0.9.0-dev.45).
+  { table: 'create_idempotency', where: 'true', what: "somebody's key for a create" },
 ];
 
 /**
@@ -1694,6 +1699,8 @@ const NOT_EVEN_OWNERS = [
   { table: 'cabinet_layout', what: "somebody's cabinet" },
   // Which papers somebody pinned where (0099, C2): their arrangement alone.
   { table: 'cabinet_pin', what: "a pin of somebody's" },
+  // What somebody made under a key (0100): which document, and when.
+  { table: 'create_idempotency', what: "somebody's key for a create" },
 ];
 
 /**

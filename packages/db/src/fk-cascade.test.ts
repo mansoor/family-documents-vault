@@ -71,6 +71,9 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
         'caregiver_view',
         // A paper pinned into somebody's folder (0099, C2): goes with it.
         'cabinet_pin',
+        // A create's Idempotency-Key (0100, 0.9.0-dev.45): goes with what it
+        // made; a later try under it makes a new one.
+        'create_idempotency',
       ]),
     );
     // 'c': on delete cascade, every one — but a document no longer needed,

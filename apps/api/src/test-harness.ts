@@ -247,6 +247,40 @@ export function mailSent(h: Pick<Harness, 'jobs'>): Array<MailRequest> {
     });
 }
 
+/**
+ * A log, a job or a JSON answer with what may hold a short run of digits by
+ * chance taken out, and JSON's escapes undone first (`\n`, `\r`, `\t`, `\"`,
+ * `\\`, `\/` and `\uXXXX` become a space, so "\n123456" in a stringified log
+ * is the code after a line break, not after an "n"): random ids (UUIDs),
+ * other hex ids of 16 characters or more (hashes, tokens), times (ISO 8601)
+ * and numbers with a fractional part (a response time). None of them can
+ * carry a code or a PIN a test is making sure never reaches it.
+ */
+export function withoutChanceDigits(text: string): string {
+  return text
+    .replace(/\\u[0-9a-fA-F]{4}|\\[nrt"\\/bf]/g, ' ')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '<id>')
+    .replace(/(?<![0-9A-Za-z])[0-9a-f]{16,}(?![0-9A-Za-z])/gi, '<hex>')
+    .replace(
+      /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g,
+      '<time>',
+    )
+    .replace(/\d+\.\d+(?:e[+-]?\d+)?/gi, '<n>');
+}
+
+/**
+ * Whether a short secret of digits — a code by text or email, a PIN; pass a
+ * spaced form ("123 456") to look for that too — is in `text`, with nothing
+ * but other digits ruled out around it: not inside a longer number, nor in
+ * an id, a time or a timing (taken out first), where a random collision put
+ * "024137" in a request log once (the dev.44 flake; the dev.36 one was "505"
+ * in a UUID). A letter before or after is no cover: "code123456" is a leak.
+ */
+export function holdsDigits(text: string, digits: string): boolean {
+  const escaped = digits.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![0-9])${escaped}(?![0-9])`).test(withoutChanceDigits(text));
+}
+
 /** The key the harness's `alert.send` links are sealed under, as the worker's are (F529-11). */
 export const TEST_ALERT_KEY = deriveKey(TEST_MASTER, ALERT_LINK_KEY_PURPOSE);
 

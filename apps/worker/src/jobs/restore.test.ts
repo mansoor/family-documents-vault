@@ -783,6 +783,19 @@ async function seed(url: string): Promise<string> {
         [hh, m.rows[1]?.id],
       );
     }
+    // A create made under an Idempotency-Key, where the schema has it (0100).
+    const keyed = await c.query<{ has: boolean }>(
+      "select to_regclass('public.create_idempotency') is not null as has",
+    );
+    if (keyed.rows[0]?.has) {
+      await c.query(
+        `insert into create_idempotency
+           (household_id, account_id, member_id, idempotency_key, request_fingerprint, document_id)
+         values ($1, $2, $3, $4, repeat('a', 64),
+                 (select id from document where household_id = $1 order by id limit 1))`,
+        [hh, account, m.rows[0]?.id, randomUUID()],
+      );
+    }
   });
   return hh;
 }
@@ -3633,6 +3646,76 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     try {
       await expect(checkRestored(target())).rejects.toThrow(
         /a caller who says nothing is given its documents \(.*cabinet_pin/,
+      );
+    } finally {
+      await restore();
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  }, 60_000);
+
+  it('notices somebody’s keys for a create open to anybody else, an owner included, or their rule gone (0100)', async () => {
+    const seeded = await sql(vault.adminUrl, 'select count(*)::int as n from create_idempotency');
+    expect(seeded.rows[0]?.n).toBe(1);
+    const policy = 'create_idempotency_actor';
+    const rule = (
+      await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${policy}'`,
+      )
+    ).rows[0]?.rule as string;
+    expect(rule).toMatch(/app_account\(\)/);
+    expect(rule).toMatch(/app_member\(\)/);
+    const restore = () =>
+      sql(vault.adminUrl, `alter policy ${policy} on public.create_idempotency using (${rule})`);
+    // Its rule gone: every caller of the household given every key.
+    await sql(vault.adminUrl, `drop policy ${policy} on public.create_idempotency`);
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on create_idempotency/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy ${policy} on public.create_idempotency as restrictive using (${rule})`,
+      );
+    }
+    // Everybody signed in given everybody's.
+    await sql(
+      vault.adminUrl,
+      `alter policy ${policy} on public.create_idempotency
+         using (case app_actor() when 'account' then true when 'system' then true else false end)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule keeps a member's own to them on .*create_idempotency/,
+      );
+    } finally {
+      await restore();
+    }
+    // An owner given everybody's, the rest kept to their own: still caught.
+    await sql(
+      vault.adminUrl,
+      `alter policy ${policy} on public.create_idempotency
+         using (case app_actor()
+                  when 'account' then app_role() = 'owner'
+                    or (account_id = app_account() and member_id = app_member())
+                  when 'system' then true else false end)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /somebody's key for a create is open to an owner who is not them/,
+      );
+    } finally {
+      await restore();
+    }
+    // A caller who says nothing given every key.
+    await sql(
+      vault.adminUrl,
+      `alter policy ${policy} on public.create_idempotency using ((${rule}) or app_actor() is null)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a caller who says nothing is given its documents \(.*create_idempotency/,
       );
     } finally {
       await restore();
