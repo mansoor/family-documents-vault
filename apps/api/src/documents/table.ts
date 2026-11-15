@@ -19,7 +19,7 @@ import { sql, type RawBuilder } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { seenCollection } from '../collections/seen.js';
 import { ApiError } from '../errors.js';
-import { asksStatus, datedSql, filterClauses, statusAllowed } from './filters.js';
+import { asksStatus, datedSql, filterClauses, statusAllowed, visibilitySql } from './filters.js';
 import {
   kindGiven,
   rowStatus,
@@ -27,6 +27,8 @@ import {
   tagFilter,
   tagLabelFilter,
   typeLookup,
+  type CabinetConditions,
+  type DaySpan,
   type DocRow,
   type ListQuery,
 } from './service.js';
@@ -386,7 +388,8 @@ function whereOf(p: Principal, q: ListQuery): RawBuilder<boolean> {
   else if (q.member_id) parts.push(sql`d.owner_member_id = ${q.member_id}::uuid`);
   if (q.category) parts.push(sql`d.category = ${q.category}`);
   if (q.type_key) parts.push(sql`d.type_key = ${q.type_key}`);
-  if (q.visibility) parts.push(sql`d.visibility = ${q.visibility}`);
+  // Only me is the caller's own, never a paper read through a grant (C2 review).
+  if (q.visibility) parts.push(visibilitySql([q.visibility]));
   if (q.essential !== undefined) parts.push(sql`d.is_essential = ${q.essential}`);
   if (q.purge_requested !== undefined) {
     parts.push(
@@ -403,6 +406,8 @@ function whereOf(p: Principal, q: ListQuery): RawBuilder<boolean> {
   if (q.location !== undefined) {
     parts.push(sql`lower(btrim(d.physical_location)) = lower(btrim(${q.location}))`);
   }
+  // A cabinet folder's pins and dividers (0.9.0, C2): only ever narrower.
+  if (q.cabinet) parts.push(...cabinetClauses(q.cabinet));
   // A document in the Trash is in no collection until it is brought back,
   // as GET /documents/{id}/collections says of it: in the Trash, every one
   // is in none, and none is in one.
@@ -416,6 +421,49 @@ function whereOf(p: Principal, q: ListQuery): RawBuilder<boolean> {
     );
   }
   return sql<boolean>`${sql.join(parts, sql` and `)}`;
+}
+
+/** A divider's days, as one condition on the date `d` is about. */
+function spanSql(span: DaySpan): RawBuilder<boolean> {
+  const parts: RawBuilder<unknown>[] = [];
+  if (span.from !== null) parts.push(sql`${datedSql('d')} >= ${span.from}::date`);
+  if (span.to !== null) parts.push(sql`${datedSql('d')} <= ${span.to}::date`);
+  return parts.length === 0 ? sql<boolean>`true` : sql<boolean>`(${sql.join(parts, sql` and `)})`;
+}
+
+/** A cabinet folder's own conditions (C2), each narrowing what `whereOf` gives. */
+function cabinetClauses(c: CabinetConditions): RawBuilder<unknown>[] {
+  const parts: RawBuilder<unknown>[] = [];
+  if (c.only !== undefined) parts.push(sql`d.id = any(${c.only}::uuid[])`);
+  if (c.except !== undefined && c.except.length > 0) {
+    parts.push(sql`not (d.id = any(${c.except}::uuid[]))`);
+  }
+  if (c.within) parts.push(spanSql(c.within));
+  for (const span of c.outside ?? []) parts.push(sql`not ${spanSql(span)}`);
+  return parts;
+}
+
+/**
+ * The years the documents `q` gives this reader are about (0.9.0, C2: a
+ * folder's year dividers), newest first; none for a question the table
+ * would refuse them. A year whose papers a status leaves out is still
+ * here: it is counted, by `documentCounts`, as none.
+ */
+export async function documentYears(trx: Db, p: Principal, q: ListQuery): Promise<number[]> {
+  if (tableRefuses(p, q)) return [];
+  const rows = (
+    await sql<{ y: number }>`
+      select distinct extract(year from ${datedSql('d')})::int as y
+        from document d
+       where ${whereOf(p, q)}
+       order by 1 desc`.execute(trx)
+  ).rows;
+  return rows.map((r) => r.y);
+}
+
+/** Whether the table would refuse `q` for this reader (C1's rule, for the cabinet). */
+export function refusedForCabinet(p: Principal, q: ListQuery): boolean {
+  return tableRefuses(p, q);
 }
 
 /** A sort's key on `d`, its type as a cursor writes it, and what it reads beside the row. */

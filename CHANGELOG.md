@@ -6,6 +6,23 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.44] - 2026-11-14 — dividers and pins in My cabinet
+
+### Added
+
+- **Year dividers.** Inside every folder of your cabinet, papers are grouped behind a divider for each year, by the date each is about (when it was issued, or else when it was added), newest first. Each divider says how many papers are behind it; click it to open or close it. A folder can turn its dividers off in **Arrange my cabinet** → **Dividers**.
+- **Your own dividers.** A folder can have its own named date ranges instead — "Elementary", "Middle school", "High school", "College" — each from a year or a full date to another, or with no end yet. Each paper goes behind the divider whose dates hold it; anything outside them goes behind **Other years**. What you type is kept as you typed it, and the days each divider covers are shown under it. A year that ends one divider and starts the next belongs to the later one — "Elementary 2014–2020" then "Middle school 2020–2023" means Elementary runs to the end of 2019 and Middle school starts on 1 January 2020. Otherwise two dividers can't share a day: the vault says which two and asks you to end one before the other starts. For a folder about one person with a date of birth, **Use school stages from Sara's birthday** fills in the four school stages for you (school years starting on 1 September), asking first if the folder already has dividers. Years run from 1000 to 9999; a paper dated outside them goes behind **Other years**. (Migration 0099.)
+- **Pins.** For a paper that fits no folder's rule, choose **Pin to a folder…** on its page — or for several at once, in the Documents table's bar. A pinned paper shows first in that folder, marked **Pinned here**, and counts in it once; **Unpin** takes it out. Pinning is your own arrangement: the paper itself doesn't change, and nobody else sees it. **Also in** on a paper's page says which folders it is pinned in. Merging folders keeps their pins. A new arrangement that leaves out folders with pins asks first, saying how many pins would go. You can always unpin a paper, even one you can no longer open.
+
+### Security
+
+- A pin never shows more than you can open. If a paper you pinned is made Only me by someone else, kept to the adults while you're a teen, put in the Trash, or was yours to see only as a caregiver and the grant ends, it quietly stops showing and counting — no title, no "1 hidden". A paper removed for good takes its pins with it. Divider counts follow the same rules as the table and search, so a folder's dividers always add up to its count. New tests prove this from the side of each person who must not see, as well as another household, in the database and through the app; pins are each person's own in the database itself, and a restored vault is checked for it. Unpinning answers the same whatever you name, so it tells nobody whether a paper or a pin is there, and a merge is never refused because of pins you can no longer see.
+
+### Fixed
+
+- **Only me means yours.** The Documents table's and search's **Only me** filter, and a cabinet folder that asks for Only me, now show only your own Only me papers — never someone else's medical paper you see as their caregiver. Those still show everywhere else, marked **Shared with you as caregiver**.
+- **Search marks a caregiver's papers.** A search result you can see only as someone's caregiver now says so, as the document lists do. Searching writes nothing in their **Who looked** list.
+
 ## [0.9.0-dev.43] - 2026-11-14 — caregivers, and turning 18
 
 ### Added

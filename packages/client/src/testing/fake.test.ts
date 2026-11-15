@@ -3,6 +3,7 @@ import {
   refusalFor,
   SENSITIVE_SHARE_CONFIRM,
   shareEndWords,
+  type FolderDividers,
   type Role,
   type Tokens,
 } from '@fdv/shared';
@@ -2180,6 +2181,150 @@ describe('the fake vault, my cabinet (0.9.0, C1)', () => {
         version: 1,
       }),
     ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it('groups a folder behind dividers and keeps pins as the vault does (C2)', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const caps = (await api.capabilities()).features;
+    expect([caps.cabinet_dividers, caps.cabinet_pins]).toEqual([true, true]);
+    const make = (title: string, date: string, extra: object = {}) =>
+      api.createDocument(token, {
+        title,
+        type_key: 'school_report',
+        owner_member_id: 'fake-member',
+        issued: { date, precision: 'day' },
+        ...extra,
+      });
+    await make('Elementary', '2015-03-01');
+    await make('Middle', '2021-02-01');
+    const nursery = await make('Nursery', '2010-06-01');
+    const letter = await api.createDocument(token, { title: 'Letter', type_key: 'passport' });
+    const secret = await make('Not mine', '2016-01-01', { visibility: 'private' });
+    const theirs = vault.state.documents.find((d) => d.id === secret.id);
+    if (theirs) theirs.owner_member_id = 'sam';
+    const layout = (dividers?: FolderDividers) => ({
+      arranged_by: null,
+      cabinets: [
+        {
+          id: 'c',
+          name: 'C',
+          hidden: false,
+          drawers: [
+            {
+              id: 'd',
+              name: 'D',
+              hidden: false,
+              folders: [
+                {
+                  id: 'f',
+                  name: 'School',
+                  hidden: false,
+                  filter: { category: 'education' },
+                  ...(dividers ? { dividers } : {}),
+                },
+                { id: 'g', name: 'Gone', hidden: false, filter: {} },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    let v = (await api.saveCabinet(token, { layout: layout(), version: 0 })).version;
+    const years = await api.cabinetFolder(token, 'f');
+    expect(years.dividers.map((d) => [d.key, d.count])).toEqual([
+      ['year:2021', 1],
+      ['year:2015', 1],
+      ['year:2010', 1],
+    ]);
+    expect(years.total).toBe(3);
+    const ranges = {
+      years: true,
+      ranges: [
+        { name: 'Elementary', from: '2014-09-01', to: '2020-08-31' },
+        { name: 'Middle school', from: '2020-09-01', to: '2023-08-31' },
+      ],
+    };
+    v = (await api.saveCabinet(token, { layout: layout(ranges), version: v })).version;
+    const opened = await api.cabinetFolder(token, 'f');
+    expect(opened.dividers.map((d) => [d.name, d.count])).toEqual([
+      ['Middle school', 1],
+      ['Elementary', 1],
+      ['Other years', 1],
+    ]);
+    expect(
+      (await api.cabinetFolderDocuments(token, 'f', { divider: 'other' })).items.map((d) => d.id),
+    ).toEqual([nursery.id]);
+    // Overlapping ranges are refused, as the vault refuses them.
+    await expect(
+      api.saveCabinet(token, {
+        layout: layout({
+          years: true,
+          ranges: [
+            { name: 'A', from: '2014-01-01', to: '2020-12-31' },
+            { name: 'B', from: '2020-01-01', to: null },
+          ],
+        }),
+        version: v,
+      }),
+    ).rejects.toMatchObject({ status: 422, code: 'cabinet_divider_overlap' });
+    // A pin: first, counted once, also in; nobody else's Only me.
+    await api.pinToFolder(token, 'f', [letter.id]);
+    const pinned = await api.cabinetFolder(token, 'f');
+    expect(pinned.pinned.map((d) => d.id)).toEqual([letter.id]);
+    expect(pinned.total).toBe(4);
+    expect((await api.cabinetCounts(token)).counts.f).toBe(4);
+    expect((await api.documentAlsoIn(token, letter.id)).items).toContainEqual({
+      id: 'f',
+      name: 'School',
+      path: ['C', 'D', 'School'],
+      pinned: true,
+    });
+    await expect(api.pinToFolder(token, 'f', [secret.id])).rejects.toMatchObject({ status: 404 });
+    // Its folder merged away: the pin moves with it; unpinned, it goes.
+    const merged = layout(ranges);
+    const drawer = merged.cabinets[0]?.drawers[0];
+    if (drawer) drawer.folders = drawer.folders.filter((f) => f.id !== 'f');
+    await api.saveCabinet(token, {
+      layout: merged,
+      version: v,
+      pins_moved: [{ from: 'f', to: 'g' }],
+    });
+    expect((await api.cabinetFolder(token, 'g')).pinned.map((d) => d.id)).toEqual([letter.id]);
+    expect((await api.cabinetCounts(token)).pins).toEqual({ g: 1 });
+    await api.unpinFromFolder(token, 'g', letter.id);
+    expect((await api.cabinetFolder(token, 'g')).pinned).toEqual([]);
+    // The review's parity (C2): any unpin is 204, another's Only me included.
+    await expect(api.unpinFromFolder(token, 'g', secret.id)).resolves.toBeUndefined();
+    // A move from a folder the layout keeps copies nothing.
+    await api.pinToFolder(token, 'g', [letter.id]);
+    const both = layout(ranges);
+    const v2 = (await api.cabinet(token)).version;
+    await api.saveCabinet(token, {
+      layout: both,
+      version: v2,
+      pins_moved: [{ from: 'g', to: 'f' }],
+    });
+    expect((await api.cabinetFolder(token, 'f')).pinned).toEqual([]);
+    // A hidden folder is not one to pin into.
+    const hidden = layout(ranges);
+    const g = hidden.cabinets[0]?.drawers[0]?.folders[1];
+    if (g) g.hidden = true;
+    await api.saveCabinet(token, { layout: hidden, version: v2 + 1 });
+    await expect(api.pinToFolder(token, 'g', [nursery.id])).rejects.toMatchObject({ status: 404 });
+    // Years outside four figures are refused as they are saved.
+    await expect(
+      api.saveCabinet(token, {
+        layout: layout({ years: true, ranges: [{ name: 'Old', from: '0000-01-01', to: null }] }),
+        version: v2 + 2,
+      }),
+    ).rejects.toMatchObject({ status: 422, code: 'cabinet_divider_dates' });
   });
 });
 

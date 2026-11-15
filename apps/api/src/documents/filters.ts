@@ -238,7 +238,7 @@ export function filterClauses(f: DocumentFilters, table = 'd'): RawBuilder<unkno
   }
   if (f.type_keys) parts.push(sql`${c('type_key')} = any(${f.type_keys}::text[])`);
   if (f.categories) parts.push(sql`${c('category')} = any(${f.categories}::text[])`);
-  if (f.visibilities) parts.push(sql`${c('visibility')}::text = any(${f.visibilities}::text[])`);
+  if (f.visibilities) parts.push(visibilitySql(f.visibilities, table));
   // Any of the tags, keyed by the database as one tag is (tagFilter, 0073).
   if (f.tags) {
     parts.push(
@@ -302,6 +302,18 @@ export function sensitiveSql(table = 'd'): RawBuilder<boolean> {
         and cs.household_id = ${c('household_id')}
       where ct.key = ${c('type_key')}),
     ${sensitiveOf(null, null)})`;
+}
+
+/**
+ * Who can see it, as a list or a search asks it: any of these. Only me is
+ * the caller's own Only me (0.9.0, the C2 review) — never somebody else's
+ * paper they read only as its person's caregiver (H1b), which is that
+ * person's Only me, not theirs. `app_member()` is the caller signed in.
+ */
+export function visibilitySql(values: readonly string[], table = 'd'): RawBuilder<boolean> {
+  const c = (column: string) => sql.ref(`${table}.${column}`);
+  return sql<boolean>`(${c('visibility')}::text = any(${[...values]}::text[])
+    and (${c('visibility')} <> 'private' or ${c('owner_member_id')} = app_member()))`;
 }
 
 /** The conditions above as one, or none: for a statement that adds `and …`. */

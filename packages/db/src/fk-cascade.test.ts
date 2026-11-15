@@ -69,6 +69,8 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
         'ai_reader_send',
         // A caregiver's look at it (0098, H1b): goes with it.
         'caregiver_view',
+        // A paper pinned into somebody's folder (0099, C2): goes with it.
+        'cabinet_pin',
       ]),
     );
     // 'c': on delete cascade, every one — but a document no longer needed,

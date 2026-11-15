@@ -52,4 +52,5 @@ export * from './wording.js';
 export * from './sensitive.js';
 export * from './cabinet.js';
 export * from './cabinet-draw.js';
+export * from './cabinet-dividers.js';
 export * from './caregivers.js';

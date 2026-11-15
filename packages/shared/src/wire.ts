@@ -1203,6 +1203,12 @@ export interface SearchHit {
   matched_in: 'title' | 'content';
   /** How well it matched; results arrive already ordered by it. */
   rank?: number;
+  /**
+   * Found only as its person's caregiver (0.9.0, H1b; given in search since
+   * the C2 review), as `DocumentView.caregiver`: read-only. Absent on every
+   * other hit, and from older vaults.
+   */
+  caregiver?: true;
 }
 
 /** GET /issuers: the household's issuers the caller can see, most used first (0.4.10). */

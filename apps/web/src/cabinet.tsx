@@ -3,10 +3,16 @@ import {
   ARRANGE_BY_WORDS,
   CABINET_CHANGED,
   folderQuestionWords,
+  daySpanWords,
+  dividerMode,
+  dividersProblemOf,
   layoutProblem,
   mergedName,
   mergeFolderFilters,
   NOT_SURE_YET,
+  rangeWords,
+  resolvedRanges,
+  schoolStages,
   THE_HOUSEHOLD,
   type ArrangeBy,
   type Cabinet,
@@ -14,15 +20,19 @@ import {
   type CabinetFolder,
   type CabinetLayout,
   type CabinetView,
+  type DividerRange,
   type DocumentView,
-  type FolderFilter,
+  type FolderContents,
+  type FolderDivider,
+  type FolderDividers,
+  type PinsMoved,
 } from '@fdv/shared';
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { api, ApiRequestError } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { documentsCount, folderView } from './documents-table.js';
-import { Button, ErrorNote, LoadFailed } from './ui.js';
+import { Button, ConfirmDialog, ErrorNote, LoadFailed, Sheet } from './ui.js';
 import { DocRow } from './screens/Home.js';
 
 /**
@@ -136,6 +146,8 @@ function useNames() {
           ? NOT_SURE_YET
           : (members?.find((m) => m.id === id)?.display_name ?? 'someone in the family'),
     kind: (key: string) => types?.find((t) => t.key === key)?.label ?? 'another kind',
+    /** A person of the family, as the reader is given them: their date of birth, for school stages. */
+    member: (id: string) => members?.find((m) => m.id === id),
   };
 }
 
@@ -162,10 +174,11 @@ export function CabinetDocuments() {
   const mine = useLoad(async (t) => api.cabinet(t), [authVersion]);
   const layout = mine.data?.layout ?? null;
   const version = mine.data?.version ?? 0;
-  const counts = useLoad(
-    async (t) => (layout ? (await api.cabinetCounts(t)).counts : {}),
+  const told = useLoad(
+    async (t) => (layout ? await api.cabinetCounts(t) : null),
     [authVersion, version, layout !== null],
   );
+  const counts = { ...told, data: told.data?.counts ?? null };
   const names = useNames();
   const heading = useRef<HTMLHeadingElement>(null);
 
@@ -184,6 +197,8 @@ export function CabinetDocuments() {
       <ArrangeCabinet
         saved={mine.data}
         counts={counts.data ?? {}}
+        pins={told.data?.pins ?? {}}
+        names={names}
         onCancel={() => go({})}
         onSaved={(saved) => {
           mine.setData(saved);
@@ -217,6 +232,7 @@ export function CabinetDocuments() {
         folderId={params.get('folder')}
         names={names}
         onChoose={(cabinet, folder) => go({ cabinet, ...(folder ? { folder } : {}) })}
+        onChanged={() => void counts.reload()}
       />
     );
   }
@@ -266,6 +282,8 @@ function Browse(props: {
   folderId: string | null;
   names: ReturnType<typeof useNames>;
   onChoose: (cabinet: string, folder?: string) => void;
+  /** A folder's papers changed (a pin taken away): its counts asked again. */
+  onChanged: () => void;
 }) {
   const { layout, counts, names } = props;
   const cabinets = shownOf(layout.cabinets);
@@ -375,6 +393,7 @@ function Browse(props: {
             folder={found.f}
             count={counts[found.f.id]}
             names={names}
+            onChanged={props.onChanged}
           />
         ) : (
           <section className="cab-pane" aria-label="Folder">
@@ -386,39 +405,39 @@ function Browse(props: {
   );
 }
 
-/** A folder's papers: newest first, a page at a time. */
+/**
+ * A folder's papers (C2): those pinned into it first, marked, each with
+ * Unpin; then its dividers, newest first — years, or the folder's own date
+ * ranges — each with how many are behind it, opened to its papers a page
+ * at a time. What it holds, and every count, is the vault's answer for this
+ * person (GET /cabinet/folders/{id}).
+ */
 function FolderPane(props: {
   path: [string, string, string];
   folder: CabinetFolder;
   count: number | null | undefined;
   names: ReturnType<typeof useNames>;
+  /** Something in it changed (a pin taken away): the counts are asked again. */
+  onChanged: () => void;
 }) {
   const { folder, names } = props;
   const { withToken } = useApp();
   const navigate = useNavigate();
   const headingId = useId();
-  const [items, setItems] = useState<DocumentView[] | null>(null);
-  const [next, setNext] = useState<string | null>(null);
-  const [total, setTotal] = useState<number | null>(null);
+  const [contents, setContents] = useState<FolderContents | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [asked, setAsked] = useState(0);
-  const filterKey = JSON.stringify(folder.filter);
+  const [said, setSaid] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  // Asked again whenever what it asks, or how it is divided, changes.
+  const shape = JSON.stringify([folder.filter, folder.dividers ?? null]);
 
   useEffect(() => {
     let cancelled = false;
-    void withToken((t) =>
-      api.documents(t, {
-        ...(JSON.parse(filterKey) as FolderFilter),
-        sort: 'dated',
-        direction: 'desc',
-        limit: 50,
-      }),
-    )
-      .then((page) => {
-        if (cancelled || !page) return;
-        setItems(page.items);
-        setNext(page.next_cursor);
-        setTotal(page.total ?? page.items.length);
+    void withToken((t) => api.cabinetFolder(t, folder.id))
+      .then((c) => {
+        if (cancelled || !c) return;
+        setContents(c);
         setError(null);
       })
       .catch((err: unknown) => {
@@ -427,29 +446,32 @@ function FolderPane(props: {
     return () => {
       cancelled = true;
     };
-  }, [filterKey, withToken, asked]);
+  }, [folder.id, shape, withToken, asked]);
 
-  const more = async () => {
-    if (!next) return;
+  const changed = () => {
+    setAsked((n) => n + 1);
+    props.onChanged();
+  };
+  const unpin = async (d: DocumentView) => {
+    const title = d.title ?? 'This paper';
+    setBusy(d.id);
     try {
-      const page = await withToken((t) =>
-        api.documents(t, {
-          ...folder.filter,
-          sort: 'dated',
-          direction: 'desc',
-          limit: 50,
-          cursor: next,
-        }),
-      );
-      if (!page) return;
-      setItems((had) => [...(had ?? []), ...page.items]);
-      setNext(page.next_cursor);
+      await withToken((t) => api.unpinFromFolder(t, folder.id, d.id));
+      setSaid(`${title} is unpinned from ${folder.name}.`);
+      changed();
     } catch (err) {
       setError(describeError(err));
+    } finally {
+      setBusy(null);
     }
   };
 
-  const shown = total ?? props.count;
+  const total = contents?.total ?? props.count;
+  const dividers = contents?.dividers ?? [];
+  const pinned = contents?.pinned ?? [];
+  const empty = contents !== null && pinned.length === 0 && dividers.every((d) => d.count === 0);
+  // The newest divider with something behind it starts open; the rest closed.
+  const firstOpen = dividers.find((d) => d.count > 0)?.key;
   return (
     <section className="cab-pane" aria-labelledby={headingId}>
       <p className="cab-path muted">{props.path.join(' › ')}</p>
@@ -467,24 +489,156 @@ function FolderPane(props: {
       </div>
       <p className="muted">
         Fills itself: {folderQuestionWords(folder.filter, names)}
-        {typeof shown === 'number' && ` ${documentsCount(shown)}.`}
+        {typeof total === 'number' && ` ${documentsCount(total)}.`}
       </p>
       <ErrorNote message={error} />
-      {items === null && !error && <p className="muted">Opening the folder…</p>}
-      {items !== null && items.length === 0 && (
+      {contents === null && !error && <p className="muted">Opening the folder…</p>}
+      {empty && dividers.every((d) => d.kind !== 'range') && (
         <p className="cab-none">
           Nothing in this folder yet. Papers that fit will appear here by themselves.
         </p>
       )}
+      {pinned.length > 0 && (
+        <section className="cab-pinned" aria-labelledby={`${headingId}-pinned`}>
+          <h3 id={`${headingId}-pinned`} className="cab-divider-name">
+            <PinIcon />
+            Pinned here
+          </h3>
+          <ul className="list doclist">
+            {pinned.map((d) => (
+              <DocRow
+                key={d.id}
+                doc={d}
+                types={names.types}
+                onOpen={() => void navigate(`/documents/${d.id}`)}
+                onChanged={changed}
+                pinned={{ onUnpin: () => void unpin(d), busy: busy === d.id }}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
+      {contents !== null &&
+        dividers.map((d) => (
+          <DividerSection
+            key={`${d.key}:${asked}`}
+            folderId={folder.id}
+            divider={d}
+            startOpen={d.key === firstOpen || d.kind === 'all'}
+            names={names}
+            onChanged={changed}
+          />
+        ))}
+      <p className="visually-hidden" role="status" aria-live="polite">
+        {said}
+      </p>
+    </section>
+  );
+}
+
+/** A paper pin, drawn: what marks a pinned paper. */
+function PinIcon() {
+  return (
+    <svg
+      className="icon"
+      aria-hidden="true"
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7" />
+    </svg>
+  );
+}
+
+/** A divider's days, in words: "2025", "1 Sep 2014 to 31 Aug 2020", "since 2027". */
+function dividerWords(d: FolderDivider): string | null {
+  if (d.kind === 'year' || d.kind === 'all') return null;
+  if (d.kind === 'other') return 'Papers in none of the ranges';
+  return rangeWords(d.from ?? undefined, d.to ?? undefined);
+}
+
+/**
+ * One divider of a folder, and the papers behind it: a tab that opens and
+ * closes them, its count beside its name; its papers newest first, a page
+ * at a time. A folder with no dividers is one list, with no tab.
+ */
+function DividerSection(props: {
+  folderId: string;
+  divider: FolderDivider;
+  startOpen: boolean;
+  names: ReturnType<typeof useNames>;
+  onChanged: () => void;
+}) {
+  const { divider, names } = props;
+  const { withToken } = useApp();
+  const navigate = useNavigate();
+  const listId = useId();
+  const [open, setOpen] = useState(props.startOpen);
+  const [items, setItems] = useState<DocumentView[] | null>(null);
+  const [next, setNext] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const page = (cursor?: string) =>
+    withToken((t) =>
+      api.cabinetFolderDocuments(t, props.folderId, {
+        divider: divider.key,
+        limit: 50,
+        ...(cursor ? { cursor } : {}),
+      }),
+    );
+  useEffect(() => {
+    if (!open || items !== null || divider.count === 0) return;
+    let cancelled = false;
+    void page()
+      .then((p) => {
+        if (cancelled || !p) return;
+        setItems(p.items);
+        setNext(p.next_cursor);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(describeError(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+    // The divider's own papers, asked once it is opened.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const more = async () => {
+    if (!next) return;
+    try {
+      const p = await page(next);
+      if (!p) return;
+      setItems((had) => [...(had ?? []), ...p.items]);
+      setNext(p.next_cursor);
+    } catch (err) {
+      setError(describeError(err));
+    }
+  };
+
+  const list = (
+    <>
+      <ErrorNote message={error} />
+      {divider.count === 0 && divider.kind !== 'all' && (
+        <p className="muted cab-divider-none">Nothing behind this divider yet.</p>
+      )}
+      {divider.count > 0 && items === null && !error && <p className="muted">Opening…</p>}
       {items !== null && items.length > 0 && (
-        <ul className="list doclist">
+        <ul className="list doclist" id={listId}>
           {items.map((d) => (
             <DocRow
               key={d.id}
               doc={d}
               types={names.types}
               onOpen={() => void navigate(`/documents/${d.id}`)}
-              onChanged={() => setAsked((n) => n + 1)}
+              onChanged={props.onChanged}
             />
           ))}
         </ul>
@@ -494,6 +648,29 @@ function FolderPane(props: {
           Show more
         </Button>
       )}
+    </>
+  );
+  if (divider.kind === 'all') return <div className="cab-divider-all">{list}</div>;
+  const words = dividerWords(divider);
+  return (
+    <section className="cab-divider">
+      <h3 className="cab-divider-head">
+        <button
+          type="button"
+          className="cab-divider-tab"
+          aria-expanded={open}
+          aria-controls={open && items !== null && items.length > 0 ? listId : undefined}
+          onClick={() => setOpen((o) => !o)}
+        >
+          <span aria-hidden="true" className="cab-caret">
+            {open ? '▾' : '▸'}
+          </span>
+          <span className="cab-divider-name">{divider.name}</span>
+          {words && <span className="muted cab-divider-days">{words}</span>}
+          <Count n={divider.count} />
+        </button>
+      </h3>
+      {open && list}
     </section>
   );
 }
@@ -517,7 +694,12 @@ function moved<T>(xs: readonly T[], i: number, by: -1 | 1): T[] {
 }
 
 /** Two drawers as one: the second's folders in the first, a folder of the same name and a question that can join, joined. */
-export function mergeDrawers(a: CabinetDrawer, b: CabinetDrawer): CabinetDrawer {
+export function mergeDrawers(
+  a: CabinetDrawer,
+  b: CabinetDrawer,
+  /** Where each folder that joined another went, for its pins to follow (C2). */
+  moves: PinsMoved[] = [],
+): CabinetDrawer {
   const folders = [...a.folders];
   for (const f of b.folders) {
     const at = folders.findIndex(
@@ -525,8 +707,11 @@ export function mergeDrawers(a: CabinetDrawer, b: CabinetDrawer): CabinetDrawer 
     );
     const joined =
       at === -1 ? null : mergeFolderFilters((folders[at] as CabinetFolder).filter, f.filter);
-    if (at !== -1 && joined) folders[at] = { ...(folders[at] as CabinetFolder), filter: joined };
-    else folders.push(f);
+    if (at !== -1 && joined) {
+      const into = folders[at] as CabinetFolder;
+      folders[at] = { ...into, filter: joined };
+      moves.push({ from: f.id, to: into.id });
+    } else folders.push(f);
   }
   return { ...a, folders };
 }
@@ -537,6 +722,9 @@ const clone = (l: CabinetLayout): CabinetLayout => JSON.parse(JSON.stringify(l))
 function ArrangeCabinet(props: {
   saved: CabinetView;
   counts: Record<string, number | null>;
+  /** Each folder's pinned papers, by its id (GET /cabinet/counts' `pins`). */
+  pins: Record<string, number>;
+  names: ReturnType<typeof useNames>;
   onCancel: () => void;
   onSaved: (saved: CabinetView) => void;
 }) {
@@ -552,6 +740,10 @@ function ArrangeCabinet(props: {
   const [error, setError] = useState<string | null>(null);
   const [said, setSaid] = useState('');
   const [version, setVersion] = useState(saved.version);
+  /** Folders merged into others, in order: their pins go with them (C2). */
+  const [pinsMoved, setMoved] = useState<PinsMoved[]>([]);
+  /** The folder whose dividers are being set, if any. */
+  const [dividing, setDividing] = useState<string | null>(null);
   /** The arrangement saved elsewhere meanwhile, when a save found one (409). */
   const [newer, setNewer] = useState<CabinetView | null>(null);
   /** Mine let go: the newer arrangement, as it was saved, to work on instead. */
@@ -562,6 +754,7 @@ function ArrangeCabinet(props: {
     setCounts({});
     setDrawn(null);
     setVersion(newer.version);
+    setMoved([]);
     setNewer(null);
     setError(null);
     setSaid('The newer arrangement is loaded. Your changes here were let go.');
@@ -575,6 +768,7 @@ function ArrangeCabinet(props: {
     if (choice === 'mine') return;
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMoved([]);
     setLoading(true);
     void withToken((t) => api.previewCabinet(t, choice))
       .then((p) => {
@@ -625,16 +819,57 @@ function ArrangeCabinet(props: {
     if (focus) setFocusOn(focus);
   };
 
-  const use = async () => {
+  /** Pinned papers in all: what a new arrangement may let go of. */
+  const pinnedAll = Object.values(props.pins).reduce((n, x) => n + x, 0);
+  /** Those this arrangement lets go of: in folders it no longer has, not moved by a merge. */
+  const pinsLost = (layout: CabinetLayout): number => {
+    const kept = new Set(
+      layout.cabinets.flatMap((c) => c.drawers.flatMap((d) => d.folders.map((f) => f.id))),
+    );
+    // As the vault follows merges: B into A, then A into Z, takes B's to Z.
+    const target = new Map<string, string>();
+    for (const m of pinsMoved.filter((x) => !kept.has(x.from))) {
+      for (const [from, to] of target) if (to === m.from) target.set(from, m.to);
+      if (!target.has(m.from)) target.set(m.from, m.to);
+    }
+    return Object.entries(props.pins)
+      .filter(([folder]) => !kept.has(folder) && !kept.has(target.get(folder) ?? ''))
+      .reduce((n, [, x]) => n + x, 0);
+  };
+  /** The pins a save would let go of, asked about first (the owner's rule: confirm what is destructive). */
+  const [losing, setLosing] = useState<number | null>(null);
+
+  const use = async (sure = false) => {
     if (!draft) return;
-    const problem = layoutProblem(draft);
+    // What was typed into a divider, tidied as it is kept: an end left empty is open.
+    const tidy = clone(draft);
+    for (const f of tidy.cabinets.flatMap((c) => c.drawers.flatMap((d) => d.folders))) {
+      for (const r of f.dividers?.ranges ?? []) {
+        r.name = r.name.trim();
+        r.from = r.from?.trim() ? r.from.trim() : null;
+        r.to = r.to?.trim() ? r.to.trim() : null;
+      }
+    }
+    const problem = layoutProblem(tidy);
     if (problem) {
       setError(problem);
       return;
     }
+    const lost = pinsLost(tidy);
+    if (lost > 0 && !sure) {
+      setLosing(lost);
+      return;
+    }
+    setLosing(null);
     setBusy(true);
     try {
-      const done = await withToken((t) => api.saveCabinet(t, { layout: draft, version }));
+      const done = await withToken((t) =>
+        api.saveCabinet(t, {
+          layout: tidy,
+          version,
+          ...(pinsMoved.length > 0 ? { pins_moved: pinsMoved } : {}),
+        }),
+      );
       if (done) props.onSaved(done);
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 409) {
@@ -664,7 +899,7 @@ function ArrangeCabinet(props: {
     rename: (l: CabinetLayout, name: string) => void;
     hide: (l: CabinetLayout, hidden: boolean) => void;
     move: (l: CabinetLayout, by: -1 | 1) => void;
-    merge?: { into: string; apply: (l: CabinetLayout) => string | null };
+    merge?: { into: string; apply: (l: CabinetLayout, moves: PinsMoved[]) => string | null };
     extra?: ReactNode;
   }) => {
     const { level, node, index, count } = opts;
@@ -734,7 +969,8 @@ function ArrangeCabinet(props: {
               const m = opts.merge;
               if (!m || !draft) return;
               const trial = clone(draft);
-              const refused = m.apply(trial);
+              const moves: PinsMoved[] = [];
+              const refused = m.apply(trial, moves);
               if (refused) {
                 setSaid('');
                 setError(refused);
@@ -742,6 +978,7 @@ function ArrangeCabinet(props: {
               }
               setError(null);
               setDraft(trial);
+              setMoved((had) => [...had, ...moves]);
               setSaid(`${name} merged into ${m.into}.`);
             }}
           >
@@ -804,6 +1041,12 @@ function ArrangeCabinet(props: {
 
       <section className="arrange-preview" aria-labelledby="arrange-preview-h" aria-busy={loading}>
         <h3 id="arrange-preview-h">Your cabinet will look like this</h3>
+        {choice !== 'mine' && pinnedAll > 0 && (
+          <p className="muted">
+            {pinnedAll === 1 ? 'You have 1 pinned paper' : `You have ${pinnedAll} pinned papers`}: a
+            new arrangement lets go of the pins in folders it doesn’t keep, and asks first.
+          </p>
+        )}
         {loading && <p className="muted">Drawing your cabinet…</p>}
         {drawn && !loading && (
           <p className="muted">
@@ -857,12 +1100,13 @@ function ArrangeCabinet(props: {
                           ? {
                               merge: {
                                 into: (c.drawers[di - 1] as CabinetDrawer).name,
-                                apply: (l: CabinetLayout) => {
+                                apply: (l: CabinetLayout, moves: PinsMoved[]) => {
                                   const cab = l.cabinets[ci] as Cabinet;
                                   const above = cab.drawers[di - 1] as CabinetDrawer;
                                   cab.drawers[di - 1] = mergeDrawers(
                                     above,
                                     cab.drawers[di] as CabinetDrawer,
+                                    moves,
                                   );
                                   cab.drawers.splice(di, 1);
                                   return null;
@@ -880,7 +1124,20 @@ function ArrangeCabinet(props: {
                               index: fi,
                               count: d.folders.length,
                               where: `${c.name} › ${d.name}`,
-                              extra: <Count n={counts[f.id]} />,
+                              extra: (
+                                <>
+                                  <Count n={counts[f.id]} />
+                                  <button
+                                    type="button"
+                                    className="btn btn-quiet btn-small"
+                                    aria-expanded={dividing === f.id}
+                                    aria-label={`Dividers: ${dividersSummary(f.dividers)}, for ${f.name} in ${c.name} › ${d.name}`}
+                                    onClick={() => setDividing((x) => (x === f.id ? null : f.id))}
+                                  >
+                                    Dividers: {dividersSummary(f.dividers)}
+                                  </button>
+                                </>
+                              ),
                               rename: (l, v) => {
                                 (
                                   ((l.cabinets[ci] as Cabinet).drawers[di] as CabinetDrawer)
@@ -901,7 +1158,7 @@ function ArrangeCabinet(props: {
                                 ? {
                                     merge: {
                                       into: (d.folders[fi - 1] as CabinetFolder).name,
-                                      apply: (l: CabinetLayout) => {
+                                      apply: (l: CabinetLayout, moves: PinsMoved[]) => {
                                         const dr = (l.cabinets[ci] as Cabinet).drawers[
                                           di
                                         ] as CabinetDrawer;
@@ -917,12 +1174,28 @@ function ArrangeCabinet(props: {
                                           filter: joined,
                                         };
                                         dr.folders.splice(fi, 1);
+                                        moves.push({ from: it.id, to: above.id });
                                         return null;
                                       },
                                     },
                                   }
                                 : {}),
                             })}
+                            {dividing === f.id && (
+                              <DividerEditor
+                                folder={f}
+                                names={props.names}
+                                onChange={(dividers, words) =>
+                                  change((l) => {
+                                    const it = (
+                                      (l.cabinets[ci] as Cabinet).drawers[di] as CabinetDrawer
+                                    ).folders[fi] as CabinetFolder;
+                                    if (dividers === undefined) delete it.dividers;
+                                    else it.dividers = dividers;
+                                  }, words)
+                                }
+                              />
+                            )}
                           </li>
                         ))}
                       </ol>
@@ -951,7 +1224,222 @@ function ArrangeCabinet(props: {
           {busy ? 'Saving…' : 'Use this arrangement'}
         </Button>
       </div>
+      {losing !== null && (
+        <ConfirmDialog
+          title={losing === 1 ? 'Let 1 pinned paper go?' : `Let ${losing} pinned papers go?`}
+          confirmLabel="Use this arrangement"
+          busyLabel="Saving…"
+          busy={busy}
+          onConfirm={() => void use(true)}
+          onCancel={() => setLosing(null)}
+        >
+          {losing === 1 ? 'It is' : 'They are'} pinned in folders this arrangement doesn’t keep, so{' '}
+          {losing === 1 ? 'its pin goes' : 'their pins go'}. The papers themselves stay as they are,
+          and you can pin them again.
+        </ConfirmDialog>
+      )}
     </section>
+  );
+}
+
+/** A folder's dividers in a word or two: "years", "none", "3 ranges". */
+function dividersSummary(d: FolderDividers | undefined): string {
+  switch (dividerMode(d)) {
+    case 'years':
+      return 'by year';
+    case 'none':
+      return 'none';
+    case 'ranges': {
+      const n = d?.ranges.length ?? 0;
+      return n === 1 ? '1 range' : `${n} ranges`;
+    }
+  }
+}
+
+/**
+ * How a folder's papers are divided (C2): by year, by themselves; none; or
+ * the folder's own date ranges, each named, its ends a year ("2014") or a
+ * full date ("2014-09-01"), either left open. What is typed is kept as it is
+ * typed (tidied only as it is left, and saved); the days it covers are said
+ * under it — a year that ends one range and starts the next belongs to the
+ * later one. A folder for one person with a date of birth offers their
+ * school stages, asked first when it would replace dividers already there.
+ * What is wrong is said as it is typed; the vault checks it again.
+ */
+function DividerEditor(props: {
+  folder: CabinetFolder;
+  names: ReturnType<typeof useNames>;
+  onChange: (dividers: FolderDividers | undefined, words: string) => void;
+}) {
+  const { folder } = props;
+  const groupId = useId();
+  const [replacing, setReplacing] = useState(false);
+  const mode = dividerMode(folder.dividers);
+  const ranges = folder.dividers?.ranges ?? [];
+  const spans = resolvedRanges(folder.dividers);
+  const set = (next: DividerRange[], words: string) =>
+    props.onChange({ years: true, ranges: next }, words);
+  const at = (i: number, change: Partial<DividerRange>) =>
+    set(
+      ranges.map((r, j) => (j === i ? { ...r, ...change } : r)),
+      '',
+    );
+  /** An end as it is left: trimmed, and open when nothing is typed. */
+  const tidied = (v: string | null) => (v?.trim() ? v.trim() : null);
+  // One person's folder, with a date of birth: their school stages, offered.
+  const personId = folder.filter.member_id;
+  const person = personId && !personId.includes(',') ? props.names.member(personId) : undefined;
+  const stages = person?.date_of_birth ? schoolStages(person.date_of_birth) : null;
+  const applyStages = () => {
+    if (!stages || !person) return;
+    setReplacing(false);
+    set(
+      stages,
+      `School stages from ${person.display_name}’s birthday: ${stages.map((x) => x.name).join(', ')}.`,
+    );
+  };
+  const problem = folder.dividers ? dividersProblemOf(folder.dividers) : null;
+  return (
+    <fieldset className="divider-editor" aria-labelledby={`${groupId}-l`}>
+      <legend id={`${groupId}-l`}>Dividers in {folder.name}</legend>
+      {(['years', 'none', 'ranges'] as const).map((m) => (
+        <label key={m} className="divider-choice">
+          <input
+            type="radio"
+            name={`${groupId}-mode`}
+            checked={mode === m}
+            onChange={() =>
+              m === 'years'
+                ? props.onChange(undefined, 'Divided by year.')
+                : m === 'none'
+                  ? props.onChange({ years: false, ranges: [] }, 'No dividers.')
+                  : set(
+                      ranges.length > 0 ? ranges : [{ name: '', from: null, to: null }],
+                      'Your own dividers: name each, and when it starts and ends.',
+                    )
+            }
+          />
+          {m === 'years'
+            ? 'By year, by themselves'
+            : m === 'none'
+              ? 'No dividers'
+              : 'My own date ranges'}
+        </label>
+      ))}
+      {mode === 'ranges' && (
+        <>
+          <p className="muted">
+            A year (2014) or a full date (2014-09-01); leave an end empty to keep it open. Ranges
+            can’t share a day, but a year that ends one and starts the next belongs to the later
+            one. Papers in none of them go behind “Other years”.
+          </p>
+          <ol className="divider-ranges">
+            {ranges.map((r, i) => {
+              const label = r.name.trim() || `divider ${i + 1}`;
+              const span = spans[i];
+              const covers =
+                span &&
+                (span.from === null || /^\d{4}-\d{2}-\d{2}$/.test(span.from)) &&
+                (span.to === null || /^\d{4}-\d{2}-\d{2}$/.test(span.to)) &&
+                (span.from !== null || span.to !== null)
+                  ? daySpanWords(span)
+                  : '';
+              return (
+                <li key={i} className="divider-range">
+                  <input
+                    type="text"
+                    aria-label={`Name of ${label}`}
+                    placeholder="Name, e.g. Middle school"
+                    maxLength={80}
+                    value={r.name}
+                    onChange={(e) => at(i, { name: e.target.value })}
+                  />
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    aria-label={`${label} starts`}
+                    placeholder="From"
+                    maxLength={10}
+                    value={r.from ?? ''}
+                    onChange={(e) => at(i, { from: e.target.value === '' ? null : e.target.value })}
+                    onBlur={() => {
+                      if (tidied(r.from) !== r.from) at(i, { from: tidied(r.from) });
+                    }}
+                  />
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    aria-label={`${label} ends`}
+                    placeholder="To"
+                    maxLength={10}
+                    value={r.to ?? ''}
+                    onChange={(e) => at(i, { to: e.target.value === '' ? null : e.target.value })}
+                    onBlur={() => {
+                      if (tidied(r.to) !== r.to) at(i, { to: tidied(r.to) });
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-quiet btn-small"
+                    aria-label={`Remove ${label}`}
+                    onClick={() =>
+                      ranges.length === 1
+                        ? props.onChange(undefined, `${label} removed. Divided by year.`)
+                        : set(
+                            ranges.filter((_, j) => j !== i),
+                            `${label} removed.`,
+                          )
+                    }
+                  >
+                    Remove
+                  </button>
+                  {covers && <span className="muted divider-covers">{covers}</span>}
+                </li>
+              );
+            })}
+          </ol>
+          <div className="row">
+            <Button
+              kind="quiet"
+              onClick={() =>
+                set([...ranges, { name: '', from: null, to: null }], 'A divider is added.')
+              }
+            >
+              Add a divider
+            </Button>
+          </div>
+        </>
+      )}
+      {stages && person && (
+        <div className="row">
+          <Button
+            kind="quiet"
+            onClick={() =>
+              mode === 'ranges' && ranges.length > 0 ? setReplacing(true) : applyStages()
+            }
+          >
+            Use school stages from {person.display_name}’s birthday
+          </Button>
+        </div>
+      )}
+      {replacing && person && (
+        <ConfirmDialog
+          title={`Replace the dividers of ${folder.name}?`}
+          confirmLabel="Use school stages"
+          onConfirm={applyStages}
+          onCancel={() => setReplacing(false)}
+        >
+          {ranges.length === 1 ? 'Its own divider goes' : `Its ${ranges.length} dividers go`}, and{' '}
+          {person.display_name}’s school stages take {ranges.length === 1 ? 'its' : 'their'} place:
+          Elementary, Middle school, High school and College.
+        </ConfirmDialog>
+      )}
+      {problem && (
+        <p className="field-error" role="status">
+          {problem.message}
+        </p>
+      )}
+    </fieldset>
   );
 }
 
@@ -959,32 +1447,170 @@ function ArrangeCabinet(props: {
 
 /**
  * "Also in" on a document's page (C1): the reader's own folders it is in,
- * each a way to that folder — so nobody wonders where "the" copy is.
- * Nothing at all where they have no cabinet, or it is in none of theirs.
+ * each a way to that folder — so nobody wonders where "the" copy is —
+ * those it is pinned in marked (C2), and "Pin to a folder…" for a paper
+ * out of the Trash. Nothing at all where they have no cabinet, or it is in
+ * none of theirs and there is nowhere to pin it.
  */
-export function AlsoInRow({ documentId }: { documentId: string }) {
+export function AlsoInRow({ documentId, inTrash }: { documentId: string; inTrash?: boolean }) {
   const { authVersion, caps } = useApp();
   const on = caps?.features.cabinets === true;
+  const pins = on && caps?.features.cabinet_pins === true && !inTrash;
+  const [asked, setAsked] = useState(0);
+  const [said, setSaid] = useState('');
+  const [picking, setPicking] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
   const { data } = useLoad(
     async (t) => (on ? (await api.documentAlsoIn(t, documentId)).items : []),
-    [documentId, authVersion, on],
+    [documentId, authVersion, on, asked],
   );
-  if (!data || data.length === 0) return null;
+  const { data: layout } = useLoad(
+    async (t) => (pins ? (await api.cabinet(t)).layout : null),
+    [authVersion, pins],
+  );
+  const folders = layout ? folderChoices(layout) : [];
+  if (!data || (data.length === 0 && folders.length === 0)) return null;
   return (
     <>
       <dt>Also in</dt>
       <dd>
-        <ul className="also-in">
-          {data.map((f) => (
-            <li key={f.id}>
-              <Link to={cabinetHref({ folder: f.id })}>
-                <FolderIcon />
-                <span>{f.path.join(' › ')}</span>
-              </Link>
-            </li>
-          ))}
-        </ul>
+        {data.length > 0 ? (
+          <ul className="also-in">
+            {data.map((f) => (
+              <li key={f.id}>
+                <Link to={cabinetHref({ folder: f.id })}>
+                  <FolderIcon />
+                  <span>{f.path.join(' › ')}</span>
+                </Link>
+                {f.pinned && <span className="pin-mark muted"> · Pinned</span>}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted also-in-none">In none of your folders.</p>
+        )}
+        {pins && folders.length > 0 && (
+          <button
+            ref={button}
+            type="button"
+            className="btn btn-quiet btn-small"
+            onClick={() => setPicking(true)}
+          >
+            Pin to a folder…
+          </button>
+        )}
+        <span className="visually-hidden" role="status" aria-live="polite">
+          {said}
+        </span>
+        {picking && (
+          <PinSheet
+            documentIds={[documentId]}
+            what="this paper"
+            returnFocus={button}
+            onClose={(news) => {
+              setPicking(false);
+              if (news) {
+                setSaid(news);
+                setAsked((n) => n + 1);
+              }
+            }}
+          />
+        )}
       </dd>
     </>
+  );
+}
+
+/** The folders a paper may be pinned into: the shown ones, by where they are. */
+function folderChoices(layout: CabinetLayout): Array<{ id: string; path: string }> {
+  return shownOf(layout.cabinets).flatMap((c) =>
+    shownOf(c.drawers).flatMap((d) =>
+      shownOf(d.folders).map((f) => ({ id: f.id, path: `${c.name} › ${d.name} › ${f.name}` })),
+    ),
+  );
+}
+
+/**
+ * Pin to a folder… (C2): one of the reader's own folders chosen, and the
+ * paper — or every one chosen in the table — pinned there, shown first in
+ * it. Their own arrangement: nothing about a paper changes.
+ */
+export function PinSheet(props: {
+  documentIds: string[];
+  /** "this paper", "3 documents". */
+  what: string;
+  returnFocus: RefObject<HTMLElement | null>;
+  onClose: (said: string | null) => void;
+}) {
+  const { authVersion, withToken } = useApp();
+  const selectId = useId();
+  const { data: layout, error: loadError } = useLoad(
+    async (t) => (await api.cabinet(t)).layout,
+    [authVersion],
+  );
+  const folders = layout ? folderChoices(layout) : [];
+  const [choice, setChoice] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const chosen = choice || folders[0]?.id || '';
+  const pin = async () => {
+    const to = folders.find((f) => f.id === chosen);
+    if (!to) return;
+    setBusy(true);
+    try {
+      const done = await withToken((t) => api.pinToFolder(t, to.id, props.documentIds));
+      if (done)
+        props.onClose(
+          `${props.what[0]?.toUpperCase() ?? ''}${props.what.slice(1)} pinned to ${to.path}.`,
+        );
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Sheet
+      label={`Pin ${props.what} to a folder`}
+      busy={busy}
+      returnFocus={props.returnFocus}
+      onClose={() => props.onClose(null)}
+    >
+      <div className="card stack">
+        <h2 style={{ fontSize: 20 }}>Pin {props.what} to a folder</h2>
+        <p className="muted">
+          A pinned paper shows first in that folder of your cabinet, whatever the folder asks for.
+          Only you see your cabinet; nothing about the paper changes.
+        </p>
+        {loadError && <ErrorNote message={loadError} />}
+        {layout !== null && folders.length === 0 && (
+          <p className="cab-none">
+            Your cabinet has no folders yet.{' '}
+            <Link to={cabinetHref({ arrange: true })}>Arrange my cabinet</Link> first.
+          </p>
+        )}
+        {folders.length > 0 && (
+          <div className="field">
+            <label htmlFor={selectId}>Folder</label>
+            <select id={selectId} value={chosen} onChange={(e) => setChoice(e.target.value)}>
+              {folders.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.path}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        <ErrorNote message={error} />
+        <div className="row">
+          <Button disabled={busy || folders.length === 0} onClick={() => void pin()}>
+            {busy ? 'Pinning…' : 'Pin'}
+          </Button>
+          <Button kind="quiet" disabled={busy} onClick={() => props.onClose(null)}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </Sheet>
   );
 }

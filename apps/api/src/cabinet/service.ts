@@ -2,6 +2,15 @@ import { randomBytes } from 'node:crypto';
 import { withPrincipal, type Db } from '@fdv/db';
 import {
   drawCabinet,
+  DIVIDER_YEARS,
+  dividerMode,
+  dividersProblemOf,
+  OTHER_YEARS,
+  resolvedRanges,
+  PIN_IN_TRASH,
+  PIN_LIMITS,
+  rangesNewestFirst,
+  TOO_MANY_PINS,
   CABINET_CHANGED,
   CABINET_LIMITS,
   CABINET_TOO_BIG,
@@ -23,6 +32,10 @@ import {
   type CabinetLayout,
   type CabinetPreview,
   type CabinetView,
+  type DocumentPage,
+  type FolderContents,
+  type FolderDivider,
+  type PinsMoved,
 } from '@fdv/shared';
 import { sql } from 'kysely';
 import { parse } from '../auth/routes.js';
@@ -30,8 +43,19 @@ import type { Principal } from '../auth/service.js';
 import { ApiError, notFound } from '../errors.js';
 import { datedSql } from '../documents/filters.js';
 import { folderQuery, listQueryOf } from '../documents/list-query.js';
-import { readDocument, type DocumentService, type ListQuery } from '../documents/service.js';
-import { documentCounts, documentMatches } from '../documents/table.js';
+import {
+  readDocument,
+  type CabinetConditions,
+  type DaySpan,
+  type DocumentService,
+  type ListQuery,
+} from '../documents/service.js';
+import {
+  documentCounts,
+  documentMatches,
+  documentYears,
+  refusedForCabinet,
+} from '../documents/table.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -56,6 +80,114 @@ function shownFolders(layout: CabinetLayout): Placed[] {
             .map((folder): Placed => ({ folder, path: [c.name, d.name, folder.name] })),
         ),
     );
+}
+
+/** Every folder of a layout, shown or hidden: what a pin may be put in. */
+function everyFolder(layout: CabinetLayout): CabinetFolder[] {
+  if (!Array.isArray(layout?.cabinets)) return [];
+  return layout.cabinets.flatMap((c) => c.drawers.flatMap((d) => d.folders));
+}
+
+/** A divider's question: one of a folder's, the folder's pins left out. */
+interface DividerAsk {
+  divider: Omit<FolderDivider, 'count'>;
+  cabinet: CabinetConditions;
+}
+
+/**
+ * The dividers a folder is drawn with (C2), each with what it asks beside
+ * the folder's question: a year's days, a range's, or none of the ranges'
+ * (Other years) — so that, its pins left out, every paper of the folder is
+ * behind exactly one of them. Years are those the folder's papers are about.
+ */
+async function dividerAsks(
+  trx: Db,
+  p: Principal,
+  folder: CabinetFolder,
+  q: ListQuery,
+): Promise<DividerAsk[]> {
+  const except = q.cabinet?.except;
+  const dividers = dividersOf(folder);
+  const ask = (divider: Omit<FolderDivider, 'count'>, more: CabinetConditions): DividerAsk => ({
+    divider,
+    cabinet: { ...(except ? { except } : {}), ...more },
+  });
+  switch (dividerMode(dividers)) {
+    case 'none':
+      return [ask({ key: 'all', kind: 'all', name: '', from: null, to: null }, {})];
+    case 'years': {
+      // A year of four figures has its divider; any other is behind Other years.
+      const years = (await documentYears(trx, p, q)).filter(
+        (y) => y >= DIVIDER_YEARS.first && y <= DIVIDER_YEARS.last,
+      );
+      return [
+        ...years.map((y) => {
+          const span: DaySpan = { from: `${y}-01-01`, to: `${y}-12-31` };
+          return ask(
+            { key: `year:${y}`, kind: 'year', name: String(y), ...span },
+            { within: span },
+          );
+        }),
+        ask(
+          { key: 'other', kind: 'other', name: OTHER_YEARS, from: null, to: null },
+          { outside: [EVERY_YEAR] },
+        ),
+      ];
+    }
+    case 'ranges': {
+      const ranges = rangesNewestFirst(dividers);
+      const spans = ranges.map(({ range }): DaySpan => ({ from: range.from, to: range.to }));
+      return [
+        ...ranges.map(({ key, range }) =>
+          ask(
+            { key, kind: 'range', name: range.name, from: range.from, to: range.to },
+            { within: { from: range.from, to: range.to } },
+          ),
+        ),
+        ask(
+          { key: 'other', kind: 'other', name: OTHER_YEARS, from: null, to: null },
+          { outside: spans },
+        ),
+      ];
+    }
+  }
+}
+
+/** The years that have a divider of their own: four figures, as Postgres and the vault take a day. */
+const EVERY_YEAR: DaySpan = {
+  from: `${DIVIDER_YEARS.first}-01-01`,
+  to: `${DIVIDER_YEARS.last}-12-31`,
+};
+
+/**
+ * A folder's dividers, as they may be asked: a layout is checked as it is
+ * saved, but one that would no longer pass (saved by a build before the
+ * checks) is divided by year rather than asked what Postgres cannot read.
+ */
+function dividersOf(folder: CabinetFolder) {
+  return folder.dividers && dividersProblemOf(folder.dividers) === null
+    ? folder.dividers
+    : undefined;
+}
+
+/** What one divider of a folder asks beside its question, by its key; null for none of its. */
+function dividerOf(folder: CabinetFolder, key: string): CabinetConditions | null {
+  const dividers = dividersOf(folder);
+  const mode = dividerMode(dividers);
+  if (mode === 'none') return key === 'all' ? {} : null;
+  if (mode === 'years') {
+    if (key === 'other') return { outside: [EVERY_YEAR] };
+    const year = /^year:(\d{4})$/.exec(key);
+    const y = Number(year?.[1]);
+    return year && y >= DIVIDER_YEARS.first && y <= DIVIDER_YEARS.last
+      ? { within: { from: `${year[1]}-01-01`, to: `${year[1]}-12-31` } }
+      : null;
+  }
+  const spans = resolvedRanges(dividers);
+  if (key === 'other') return { outside: spans };
+  const at = /^range:(\d{1,2})$/.exec(key);
+  const r = at ? spans[Number(at[1])] : undefined;
+  return r ? { within: r } : null;
 }
 
 /**
@@ -110,7 +242,12 @@ export class CabinetService {
    * and size are checked, and each folder's question by the list's own
    * parser: a folder never asks what the list would refuse its person.
    */
-  async save(p: Principal, layout: CabinetLayout, version: number): Promise<CabinetView> {
+  async save(
+    p: Principal,
+    layout: CabinetLayout,
+    version: number,
+    pinsMoved: PinsMoved[] = [],
+  ): Promise<CabinetView> {
     checkLayout(p, layout);
     const json = JSON.stringify(layout);
     return withPrincipal(this.db, p, async (trx) => {
@@ -151,6 +288,7 @@ export class CabinetService {
           detail: `version ${version} is not the cabinet's`,
         });
       }
+      await keepPins(trx, p, layout, pinsMoved);
       return { layout, version: saved.version, updated_at: saved.updated_at.toISOString() };
     });
   }
@@ -248,7 +386,14 @@ export class CabinetService {
         .executeTakeFirst();
       if (!row) return { version: 0, counts: {} };
       const shown = shownFolders(row.layout as CabinetLayout);
-      const questions = shown.map((s) => questionOf(s.folder));
+      // Each folder's pins the caller may still open, counted once: its
+      // question counts what it holds besides them (C2).
+      const pins = await livePins(trx, p);
+      const questions = shown.map((s) => {
+        const q = questionOf(s.folder);
+        const pinned = pins.get(s.folder.id);
+        return q && pinned ? { ...q, cabinet: { except: pinned } } : q;
+      });
       const asked = questions.flatMap((q, i) => (q ? [{ q, i }] : []));
       const got = await documentCounts(
         trx,
@@ -258,9 +403,16 @@ export class CabinetService {
       const counts: Record<string, number | null> = {};
       for (const s of shown) counts[s.folder.id] = null;
       asked.forEach(({ i }, n) => {
-        counts[(shown[i] as Placed).folder.id] = got[n] ?? null;
+        const id = (shown[i] as Placed).folder.id;
+        const held = got[n];
+        counts[id] =
+          held === null || held === undefined ? null : held + (pins.get(id)?.length ?? 0);
       });
-      return { version: row.version, counts };
+      // Every folder's live pins, hidden ones too: what saving a new
+      // arrangement would let go of, said before it is (C2 review).
+      const pinsOf: Record<string, number> = {};
+      for (const [folder, docs] of pins) pinsOf[folder] = docs.length;
+      return { version: row.version, counts, pins: pinsOf };
     });
   }
 
@@ -295,12 +447,283 @@ export class CabinetService {
         id,
         asked.map((a) => a.q),
       );
+      const matched = new Set(asked.filter((_, n) => matches[n]).map(({ s }) => s.folder.id));
+      // Pinned there too (C2): only while it may be opened, out of the Trash.
+      const pinnedIn = new Set((await livePins(trx, p, { document: id })).keys());
       return {
-        items: asked
-          .filter((_, n) => matches[n])
-          .map(({ s }) => ({ id: s.folder.id, name: s.folder.name, path: s.path })),
+        items: shown
+          .filter((s) => matched.has(s.folder.id) || pinnedIn.has(s.folder.id))
+          .map((s) => ({
+            id: s.folder.id,
+            name: s.folder.name,
+            path: s.path,
+            ...(pinnedIn.has(s.folder.id) ? { pinned: true } : {}),
+          })),
       };
     });
+  }
+
+  /**
+   * GET /cabinet/folders/{id} (C2): one of the caller's shown folders,
+   * opened — its pinned papers they may still open, then its dividers
+   * newest first, each counted by the table's own conditions, the pinned
+   * left out of them; `total` exactly GET /cabinet/counts's for it.
+   */
+  async folder(p: Principal, folderId: string): Promise<FolderContents> {
+    const found = await withPrincipal(this.db, p, async (trx) => {
+      const { folder, version } = await shownFolder(trx, p, folderId);
+      const pinned = (await livePins(trx, p, { folder: folderId })).get(folderId) ?? [];
+      const q = questionOf(folder);
+      if (!q || refusedForCabinet(p, q)) return { version, pinned, dividers: null };
+      const asks = await dividerAsks(trx, p, folder, { ...q, cabinet: { except: pinned } });
+      const got = await documentCounts(
+        trx,
+        p,
+        asks.map((a) => ({ ...q, cabinet: a.cabinet })),
+      );
+      const dividers = asks
+        .map((a, i): FolderDivider => ({ ...a.divider, count: got[i] ?? 0 }))
+        // A year a status leaves nothing behind is no divider; a range of the
+        // folder's own is one, empty or not; Other years, only with something.
+        .filter((d) => d.count > 0 || d.kind === 'range' || d.kind === 'all');
+      return { version, pinned, dividers };
+    });
+    const pinned =
+      found.pinned.length === 0
+        ? []
+        : (
+            await this.docs.table(p, {
+              cabinet: { only: found.pinned },
+              sort: 'dated',
+              direction: 'desc',
+              limit: PIN_LIMITS.folder,
+            })
+          ).items;
+    return {
+      folder_id: folderId,
+      version: found.version,
+      total:
+        found.dividers === null
+          ? null
+          : pinned.length + found.dividers.reduce((n, d) => n + d.count, 0),
+      pinned,
+      dividers: found.dividers ?? [],
+    };
+  }
+
+  /**
+   * GET /cabinet/folders/{id}/documents (C2): the papers behind one of a
+   * folder's dividers, newest first, a page at a time — the table's own
+   * listing of the folder's question, its pinned papers left out (they are
+   * shown above the dividers). A divider it does not have is 404.
+   */
+  async folderDocuments(
+    p: Principal,
+    folderId: string,
+    q: { divider: string; cursor?: string | undefined; limit?: number | undefined },
+  ): Promise<DocumentPage> {
+    const asked = await withPrincipal(this.db, p, async (trx) => {
+      const { folder } = await shownFolder(trx, p, folderId);
+      const question = questionOf(folder);
+      const more = dividerOf(folder, q.divider);
+      if (!question || refusedForCabinet(p, question) || more === null) {
+        throw notFound('That divider');
+      }
+      const pinned = (await livePins(trx, p, { folder: folderId })).get(folderId) ?? [];
+      return { ...question, cabinet: { except: pinned, ...more } };
+    });
+    return this.docs.table(p, {
+      ...asked,
+      sort: 'dated',
+      direction: 'desc',
+      ...(q.limit !== undefined ? { limit: q.limit } : {}),
+      ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
+    });
+  }
+
+  /**
+   * POST /cabinet/folders/{id}/pins (C2): papers pinned into one of the
+   * caller's folders — their own arrangement, never a change to a paper.
+   * Each must be one they may open (else nothing is pinned: 404), out of
+   * the Trash (422). Pinning one pinned already is nothing new. A folder
+   * holds at most 200, a person 2,000; pins of papers they may no longer
+   * open are let go first, before a cap refuses.
+   */
+  async pin(p: Principal, folderId: string, documentIds: string[]): Promise<{ pinned: number }> {
+    const ids = [...new Set(documentIds.map((i) => i.toLowerCase()))];
+    if (ids.length === 0 || ids.some((i) => !UUID.test(i))) throw notFound('That document');
+    return withPrincipal(this.db, p, async (trx) => {
+      // Their layout's row, held: one person's pins and saves go one at a time.
+      const row = await trx
+        .selectFrom('cabinet_layout')
+        .select('layout')
+        .where('household_id', '=', p.householdId)
+        .where('member_id', '=', p.memberId)
+        .forUpdate()
+        .executeTakeFirst();
+      // A shown folder of theirs: a hidden one is not offered, and not taken (C2 review).
+      if (
+        !row ||
+        !shownFolders(row.layout as CabinetLayout).some((s) => s.folder.id === folderId)
+      ) {
+        throw notFound('That folder');
+      }
+      const seen = (
+        await sql<{ id: string; in_trash: boolean }>`
+          select d.id, d.deleted_at is not null as in_trash
+            from document d
+           where d.id = any(${ids}::uuid[]) and ${readDocument(p)}`.execute(trx)
+      ).rows;
+      if (seen.length !== ids.length) throw notFound('That document');
+      if (seen.some((d) => d.in_trash)) {
+        throw new ApiError(422, 'cabinet_pin_in_trash', PIN_IN_TRASH);
+      }
+      await sql`
+        insert into cabinet_pin (household_id, member_id, folder_id, document_id)
+        select ${p.householdId}::uuid, ${p.memberId}::uuid, ${folderId}, x
+          from unnest(${ids}::uuid[]) as x
+        on conflict do nothing`.execute(trx);
+      const over = async () => {
+        const n = (
+          await sql<{ here: number; every: number }>`
+            select (count(*) filter (where folder_id = ${folderId}))::int as here,
+                   count(*)::int as every
+              from cabinet_pin
+             where household_id = ${p.householdId}::uuid
+               and member_id = ${p.memberId}::uuid`.execute(trx)
+        ).rows[0];
+        return (n?.here ?? 0) > PIN_LIMITS.folder || (n?.every ?? 0) > PIN_LIMITS.total;
+      };
+      if (await over()) {
+        // Room first, from pins of papers they may no longer open: never shown.
+        await sql`
+          delete from cabinet_pin cp
+           where cp.household_id = ${p.householdId}::uuid
+             and cp.member_id = ${p.memberId}::uuid
+             and not exists (
+               select 1 from document d where d.id = cp.document_id and ${readDocument(p)})`.execute(
+          trx,
+        );
+        if (await over()) {
+          throw new ApiError(422, 'cabinet_too_many_pins', TOO_MANY_PINS, {
+            detail: `at most ${PIN_LIMITS.folder} a folder, ${PIN_LIMITS.total} in all`,
+          });
+        }
+      }
+      return { pinned: ids.length };
+    });
+  }
+
+  /**
+   * DELETE /cabinet/folders/{id}/pins/{documentId} (C2): unpinned — the
+   * caller's own row taken away, whatever the paper: `204` for any id, so
+   * somebody who may no longer open a paper can still let its pin go, and
+   * the answer says nothing of whether there was one, or such a paper.
+   */
+  async unpin(p: Principal, folderId: string, documentId: string): Promise<void> {
+    if (!UUID.test(documentId)) return;
+    await withPrincipal(this.db, p, async (trx) => {
+      await trx
+        .deleteFrom('cabinet_pin')
+        .where('household_id', '=', p.householdId)
+        .where('member_id', '=', p.memberId)
+        .where('folder_id', '=', folderId)
+        .where('document_id', '=', documentId)
+        .execute();
+    });
+  }
+}
+
+/** One of the caller's shown folders, and their layout's version; else 404. */
+async function shownFolder(
+  trx: Db,
+  p: Principal,
+  folderId: string,
+): Promise<{ folder: CabinetFolder; version: number }> {
+  const row = await trx
+    .selectFrom('cabinet_layout')
+    .select(['layout', 'version'])
+    .where('household_id', '=', p.householdId)
+    .where('member_id', '=', p.memberId)
+    .executeTakeFirst();
+  const placed = row
+    ? shownFolders(row.layout as CabinetLayout).find((s) => s.folder.id === folderId)
+    : undefined;
+  if (!row || !placed) throw notFound('That folder');
+  return { folder: placed.folder, version: row.version };
+}
+
+/**
+ * The caller's pins, by folder, of papers they may still open, out of the
+ * Trash, oldest pin first — read only joined to the document under the
+ * reader's own rules, so a pin never says more than they may see. One
+ * folder's, or one paper's, when asked.
+ */
+async function livePins(
+  trx: Db,
+  p: Principal,
+  only: { folder?: string; document?: string } = {},
+): Promise<Map<string, string[]>> {
+  const rows = (
+    await sql<{ folder_id: string; document_id: string }>`
+      select cp.folder_id, cp.document_id
+        from cabinet_pin cp
+        join document d on d.id = cp.document_id
+       where cp.household_id = ${p.householdId}::uuid
+         and cp.member_id = ${p.memberId}::uuid
+         ${only.folder !== undefined ? sql`and cp.folder_id = ${only.folder}` : sql``}
+         ${only.document !== undefined ? sql`and cp.document_id = ${only.document}::uuid` : sql``}
+         and ${readDocument(p)} and d.deleted_at is null
+       order by cp.pinned_at, cp.document_id`.execute(trx)
+  ).rows;
+  const out = new Map<string, string[]>();
+  for (const r of rows) out.set(r.folder_id, [...(out.get(r.folder_id) ?? []), r.document_id]);
+  return out;
+}
+
+/**
+ * A layout saved (C2): the pins of folders merged into others moved with
+ * them, then those of folders it no longer has let go. Only a folder the
+ * layout no longer has moves: a move from one it keeps would copy its pins.
+ * A folder over its cap of pins, or a person over theirs, is refused,
+ * nothing saved — counting only the pins they may still open, out of the
+ * Trash, so a refusal never says a pin they cannot see is there.
+ */
+async function keepPins(
+  trx: Db,
+  p: Principal,
+  layout: CabinetLayout,
+  moved: PinsMoved[],
+): Promise<void> {
+  const ids = everyFolder(layout).map((f) => f.id);
+  // In the order they were made: B into A, then A into Z, takes B's to Z too.
+  const target = new Map<string, string>();
+  for (const m of moved.filter((x) => !ids.includes(x.from))) {
+    for (const [from, to] of target) if (to === m.from) target.set(from, m.to);
+    if (!target.has(m.from)) target.set(m.from, m.to);
+  }
+  const moves = [...target]
+    .map(([from, to]) => ({ from, to }))
+    .filter((m) => m.from !== m.to && ids.includes(m.to));
+  if (moves.length > 0) {
+    await sql`
+      insert into cabinet_pin (household_id, member_id, folder_id, document_id, pinned_at)
+      select cp.household_id, cp.member_id, m.to_id, cp.document_id, cp.pinned_at
+        from cabinet_pin cp
+        join unnest(${moves.map((m) => m.from)}::text[], ${moves.map((m) => m.to)}::text[])
+               as m(from_id, to_id) on m.from_id = cp.folder_id
+       where cp.household_id = ${p.householdId}::uuid and cp.member_id = ${p.memberId}::uuid
+      on conflict do nothing`.execute(trx);
+  }
+  await sql`
+    delete from cabinet_pin
+     where household_id = ${p.householdId}::uuid and member_id = ${p.memberId}::uuid
+       and not (folder_id = any(${ids}::text[]))`.execute(trx);
+  const live = await livePins(trx, p);
+  const every = [...live.values()].reduce((n, docs) => n + docs.length, 0);
+  const fullest = Math.max(0, ...[...live.values()].map((docs) => docs.length));
+  if (fullest > PIN_LIMITS.folder || every > PIN_LIMITS.total) {
+    throw new ApiError(422, 'cabinet_too_many_pins', TOO_MANY_PINS, { detail: 'merged folders' });
   }
 }
 

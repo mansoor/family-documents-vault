@@ -260,12 +260,18 @@ describe('browsing my cabinet', () => {
       dated_from: `${thisYear}-01-01`,
       dated_to: `${thisYear}-12-31`,
     });
-    // The folder's list is the table's own call, with the folder's question.
-    const asked = state.calls
-      .filter((c) => c.method === 'GET' && c.url.startsWith('/api/v1/documents?'))
-      .map((c) => new URLSearchParams(c.url.split('?')[1]));
-    expect(asked.some((q) => q.get('category') === 'identity' && q.get('member_id') === 'me')).toBe(
-      true,
+    // The folder's papers are the vault's answer for it (C2): behind its year's divider.
+    expect(
+      state.calls.some(
+        (c) =>
+          c.method === 'GET' &&
+          c.url ===
+            `/api/v1/cabinet/folders/f-id-this/documents?divider=${encodeURIComponent(`year:${thisYear}`)}&limit=50`,
+      ),
+    ).toBe(true);
+    expect(within(pane).getByRole('button', { name: new RegExp(`^${thisYear}`) })).toHaveAttribute(
+      'aria-expanded',
+      'true',
     );
     await expectAccessible();
   });
@@ -562,5 +568,298 @@ describe('Also in, on a document’s page', () => {
     at('/documents/doc-1');
     expect(await screen.findByRole('heading', { name: "Mansoor's passport" })).toBeVisible();
     expect(screen.queryByText('Also in')).toBeNull();
+  });
+});
+
+describe('dividers and pins (C2)', () => {
+  type Folder = CabinetLayout['cabinets'][number]['drawers'][number]['folders'][number];
+  /** One cabinet, one drawer: every paper, Aisha's, and money. */
+  const FOLDERS = (dividers?: Folder['dividers']): CabinetLayout => ({
+    arranged_by: null,
+    cabinets: [
+      {
+        id: 'c',
+        name: 'Home',
+        hidden: false,
+        drawers: [
+          {
+            id: 'd',
+            name: 'People',
+            hidden: false,
+            folders: [
+              {
+                id: 'f-all',
+                name: 'Everything',
+                hidden: false,
+                filter: { notes: 'exclude' },
+                ...(dividers ? { dividers } : {}),
+              },
+              { id: 'f-aisha', name: 'Aisha', hidden: false, filter: { member_id: AISHA.id } },
+              { id: 'f-fin', name: 'Money', hidden: false, filter: { category: 'financial' } },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  const cabinet = (layout: CabinetLayout) => ({
+    cabinet: { layout, version: 2, updated_at: new Date().toISOString() },
+  });
+
+  it('groups a folder’s papers behind year dividers, newest first, each counted and opened in turn', async () => {
+    const state = at('/documents?show=cabinet&folder=f-all', cabinet(FOLDERS()));
+    const pane = await screen.findByRole('region', { name: 'Everything' });
+    const newest = await within(pane).findByRole('button', {
+      name: new RegExp(`^${thisYear}, ?2 documents$`),
+    });
+    expect(newest).toHaveAttribute('aria-expanded', 'true');
+    const older = within(pane).getByRole('button', {
+      name: new RegExp(`^${lastYear}, ?1 document$`),
+    });
+    expect(older).toHaveAttribute('aria-expanded', 'false');
+    expect(await within(pane).findByText("Mansoor's passport")).toBeVisible();
+    expect(within(pane).queryByText("Aisha's passport")).toBeNull();
+    fireEvent.click(older);
+    expect(older).toHaveAttribute('aria-expanded', 'true');
+    expect(await within(pane).findByText("Aisha's passport")).toBeVisible();
+    expect(
+      state.calls.some((c) => c.url.includes(`divider=${encodeURIComponent(`year:${lastYear}`)}`)),
+    ).toBe(true);
+    await expectAccessible();
+  });
+
+  it('groups them behind the folder’s own ranges, the rest behind Other years', async () => {
+    at(
+      '/documents?show=cabinet&folder=f-all',
+      cabinet(
+        FOLDERS({
+          years: true,
+          ranges: [
+            { name: 'This year', from: `${thisYear}-01-01`, to: null },
+            { name: 'Long ago', from: null, to: '1999-12-31' },
+          ],
+        }),
+      ),
+    );
+    const pane = await screen.findByRole('region', { name: 'Everything' });
+    expect(
+      await within(pane).findByRole('button', { name: /^This year.*2 documents$/ }),
+    ).toBeVisible();
+    expect(within(pane).getByRole('button', { name: /^Long ago.*0 documents$/ })).toBeVisible();
+    expect(within(pane).getByRole('button', { name: /^Other years.*1 document$/ })).toBeVisible();
+    expect(within(pane).getByText(`since ${thisYear}`)).toBeVisible();
+  });
+
+  it('shows a pinned paper first, marked, and Unpin takes it out', async () => {
+    const state = at('/documents?show=cabinet&folder=f-fin', {
+      ...cabinet(FOLDERS()),
+      cabinetPins: [{ folder_id: 'f-fin', document_id: 'doc-5' }],
+    });
+    const pane = await screen.findByRole('region', { name: 'Money' });
+    const pinned = await within(pane).findByRole('region', { name: 'Pinned here' });
+    expect(within(pinned).getByText("Aisha's passport")).toBeVisible();
+    expect(within(pinned).getByText(/Pinned/, { selector: '.pin-mark' })).toBeVisible();
+    // Counted once, beside the folder's own: Money holds the statement and the pin.
+    const tree = screen.getByRole('navigation', { name: 'Drawers and folders in Home' });
+    expect(within(tree).getByRole('button', { name: /^Money, ?2 documents$/ })).toBeVisible();
+    fireEvent.click(within(pinned).getByRole('button', { name: "Unpin Aisha's passport" }));
+    await waitFor(() =>
+      expect(within(pane).queryByRole('region', { name: 'Pinned here' })).toBeNull(),
+    );
+    expect(state.pinCalls).toEqual([{ method: 'DELETE', folder: 'f-fin', ids: ['doc-5'] }]);
+    expect(await screen.findByText("Aisha's passport is unpinned from Money.")).toBeInTheDocument();
+    expect(await within(tree).findByRole('button', { name: /^Money, ?1 document$/ })).toBeVisible();
+  });
+
+  it('pins a paper from its page into a folder chosen, and says it is pinned there', async () => {
+    const state = at('/documents/doc-1', cabinet(FOLDERS()));
+    fireEvent.click(await screen.findByRole('button', { name: 'Pin to a folder…' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Pin this paper to a folder' });
+    fireEvent.change(await within(sheet).findByLabelText('Folder'), {
+      target: { value: 'f-aisha' },
+    });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Pin' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Pin this paper to a folder' })).toBeNull(),
+    );
+    expect(state.pinCalls).toEqual([{ method: 'POST', folder: 'f-aisha', ids: ['doc-1'] }]);
+    const link = await screen.findByRole('link', { name: 'Home › People › Aisha' });
+    expect(link.parentElement?.textContent).toContain('Pinned');
+    expect(
+      await screen.findByText('This paper pinned to Home › People › Aisha.'),
+    ).toBeInTheDocument();
+  });
+
+  it('pins every paper chosen in the table, from the bar', async () => {
+    const state = at('/documents', cabinet(FOLDERS()));
+    const table = await screen.findByRole('grid', { name: /^Documents, sorted by/ });
+    fireEvent.click(
+      await within(table).findByRole('checkbox', { name: "Select “Mansoor's passport”" }),
+    );
+    fireEvent.click(within(table).getByRole('checkbox', { name: "Select “Aisha's passport”" }));
+    const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Pin to a folder…' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Pin 2 documents to a folder' });
+    await within(sheet).findByLabelText('Folder');
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Pin' }));
+    await waitFor(() => expect(state.pinCalls).toHaveLength(1));
+    expect(state.pinCalls?.[0]?.folder).toBe('f-all');
+    expect([...(state.pinCalls?.[0]?.ids ?? [])].sort()).toEqual(['doc-1', 'doc-5']);
+  });
+
+  it('sets a folder’s own ranges while arranging, refuses two that share days, and offers school stages', async () => {
+    const state = at('/documents?show=cabinet&arrange=1', cabinet(FOLDERS()));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Dividers: by year, for Aisha in Home › People' }),
+    );
+    const editor = screen.getByRole('group', { name: 'Dividers in Aisha' });
+    fireEvent.click(within(editor).getByRole('radio', { name: 'My own date ranges' }));
+    fireEvent.change(within(editor).getByRole('textbox', { name: 'Name of divider 1' }), {
+      target: { value: 'Early' },
+    });
+    fireEvent.change(within(editor).getByRole('textbox', { name: 'Early starts' }), {
+      target: { value: '2014' },
+    });
+    fireEvent.change(within(editor).getByRole('textbox', { name: 'Early ends' }), {
+      target: { value: '2020' },
+    });
+    expect(within(editor).getByRole('textbox', { name: 'Early ends' })).toHaveValue('2020');
+    fireEvent.click(within(editor).getByRole('button', { name: 'Add a divider' }));
+    fireEvent.change(within(editor).getByRole('textbox', { name: 'Name of divider 2' }), {
+      target: { value: 'Later' },
+    });
+    fireEvent.change(within(editor).getByRole('textbox', { name: 'Later starts' }), {
+      target: { value: '2020-09-01' },
+    });
+    expect(within(editor).getByText(/“Early”.*“Later”.*share days/)).toBeVisible();
+    // Aisha's birthday: her school stages, which never overlap — asked first,
+    // as they replace the dividers already there.
+    fireEvent.click(
+      within(editor).getByRole('button', { name: 'Use school stages from Aisha’s birthday' }),
+    );
+    const ask = await screen.findByRole('alertdialog', { name: 'Replace the dividers of Aisha?' });
+    fireEvent.click(within(ask).getByRole('button', { name: 'Use school stages' }));
+    expect(within(editor).queryByText(/share days/)).toBeNull();
+    expect(within(editor).getByRole('textbox', { name: 'Elementary starts' })).toHaveValue(
+      '2021-09-01',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Use this arrangement' }));
+    await waitFor(() => expect(state.cabinetSaves).toHaveLength(1));
+    const folder = state.cabinetSaves?.[0]?.layout.cabinets[0]?.drawers[0]?.folders[1];
+    expect(folder?.dividers?.ranges.map((r) => r.name)).toEqual([
+      'College',
+      'High school',
+      'Middle school',
+      'Elementary',
+    ]);
+  });
+
+  it('keeps what is typed, and gives a year shared between two ranges to the later one: the owner’s example', async () => {
+    const state = at('/documents?show=cabinet&arrange=1', cabinet(FOLDERS()));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Dividers: by year, for Aisha in Home › People' }),
+    );
+    const editor = screen.getByRole('group', { name: 'Dividers in Aisha' });
+    fireEvent.click(within(editor).getByRole('radio', { name: 'My own date ranges' }));
+    const rows: Array<[string, string, string]> = [
+      ['Elementary', '2014', '2020'],
+      ['Middle school', '2020', '2023'],
+      ['High school', '2023', '2027'],
+      ['College', '2027', ''],
+    ];
+    for (const [i, [name, from, to]] of rows.entries()) {
+      if (i > 0) fireEvent.click(within(editor).getByRole('button', { name: 'Add a divider' }));
+      fireEvent.change(within(editor).getByRole('textbox', { name: `Name of divider ${i + 1}` }), {
+        target: { value: name },
+      });
+      fireEvent.change(within(editor).getByRole('textbox', { name: `${name} starts` }), {
+        target: { value: from },
+      });
+      if (to) {
+        fireEvent.change(within(editor).getByRole('textbox', { name: `${name} ends` }), {
+          target: { value: to },
+        });
+      }
+    }
+    // As typed, never turned into another form; the days under each row.
+    expect(within(editor).getByRole('textbox', { name: 'Elementary ends' })).toHaveValue('2020');
+    expect(within(editor).getByText('1 Jan 2014 – 31 Dec 2019')).toBeVisible();
+    expect(within(editor).getByText('1 Jan 2020 – 31 Dec 2022')).toBeVisible();
+    expect(within(editor).getByText('from 1 Jan 2027')).toBeVisible();
+    expect(within(editor).queryByText(/share days/)).toBeNull();
+    // A full date typed keeps its every figure, to the last one.
+    const ends = within(editor).getByRole('textbox', { name: 'College ends' });
+    fireEvent.change(ends, { target: { value: '2031-12-31' } });
+    expect(ends).toHaveValue('2031-12-31');
+    fireEvent.click(screen.getByRole('button', { name: 'Use this arrangement' }));
+    await waitFor(() => expect(state.cabinetSaves).toHaveLength(1));
+    const folder = state.cabinetSaves?.[0]?.layout.cabinets[0]?.drawers[0]?.folders[1];
+    expect(folder?.dividers?.ranges).toEqual([
+      { name: 'Elementary', from: '2014', to: '2020' },
+      { name: 'Middle school', from: '2020', to: '2023' },
+      { name: 'High school', from: '2023', to: '2027' },
+      { name: 'College', from: '2027', to: '2031-12-31' },
+    ]);
+  });
+
+  it('asks before a new arrangement lets pins go, saying how many', async () => {
+    const state = at('/documents?show=cabinet&arrange=1', {
+      ...cabinet(FOLDERS()),
+      cabinetPins: [{ folder_id: 'f-all', document_id: 'doc-5' }],
+    });
+    fireEvent.click(
+      await screen.findByRole('radio', { name: /^By person, then topic, then year/ }),
+    );
+    expect(await screen.findByText(/You have 1 pinned paper/)).toBeVisible();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Use this arrangement' })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Use this arrangement' }));
+    const ask = await screen.findByRole('alertdialog', { name: 'Let 1 pinned paper go?' });
+    expect(state.cabinetSaves ?? []).toHaveLength(0);
+    fireEvent.click(within(ask).getByRole('button', { name: 'Cancel' }));
+    expect(state.cabinetSaves ?? []).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Use this arrangement' }));
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog', { name: 'Let 1 pinned paper go?' })).getByRole(
+        'button',
+        { name: 'Use this arrangement' },
+      ),
+    );
+    await waitFor(() => expect(state.cabinetSaves).toHaveLength(1));
+  });
+
+  it('moves a folder’s pins with it when it is merged into the one above', async () => {
+    const state = at('/documents?show=cabinet&arrange=1', {
+      ...cabinet({
+        arranged_by: null,
+        cabinets: [
+          {
+            id: 'c',
+            name: 'Home',
+            hidden: false,
+            drawers: [
+              {
+                id: 'd',
+                name: 'Years',
+                hidden: false,
+                folders: [
+                  { id: 'y1', name: '2024', hidden: false, filter: year(2024) },
+                  { id: 'y2', name: '2025', hidden: false, filter: year(2025) },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+      cabinetPins: [{ folder_id: 'y2', document_id: 'doc-1' }],
+    });
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Merge 2025 in Home › Years into 2024' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Use this arrangement' }));
+    await waitFor(() => expect(state.cabinetSaves).toHaveLength(1));
+    expect(state.cabinetSaves?.[0]?.pins_moved).toEqual([{ from: 'y2', to: 'y1' }]);
+    expect(state.cabinetPins).toEqual([{ folder_id: 'y1', document_id: 'doc-1' }]);
   });
 });

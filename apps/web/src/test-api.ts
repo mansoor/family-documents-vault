@@ -8,6 +8,12 @@ import {
   type CabinetLayout,
   type CabinetPreview,
   type CabinetView,
+  dividerKeyOf,
+  dividerMode,
+  OTHER_YEARS,
+  rangesNewestFirst,
+  type FolderDivider,
+  type PinsMoved,
   sensitiveOf,
   SENSITIVE_FOLLOW_CONFIRM,
   SENSITIVE_SHARE_CONFIRM,
@@ -265,7 +271,11 @@ export interface FakeState {
   /** What Arrange by draws, by its way, as POST /cabinet/preview gives it. */
   cabinetPreviews?: Partial<Record<ArrangeBy, CabinetPreview>>;
   /** Each PUT /cabinet, as sent. */
-  cabinetSaves?: Array<{ layout: CabinetLayout; version: number }>;
+  cabinetSaves?: Array<{ layout: CabinetLayout; version: number; pins_moved?: PinsMoved[] }>;
+  /** The signed-in person's pins (0.9.0, C2): which paper in which folder. */
+  cabinetPins?: Array<{ folder_id: string; document_id: string }>;
+  /** Each pin and unpin, as sent. */
+  pinCalls?: Array<{ method: string; folder: string; ids: string[] }>;
   /** Each POST and DELETE of /documents/{id}/no-longer-needed (0.9.0), as sent. */
   unneededCalls?: Array<{ method: string; id: string; body: unknown }>;
   /** Refuse them so, to see what the dialog says. */
@@ -1347,7 +1357,7 @@ export function installFakeApi(state: FakeState) {
           // What Sensitive protects (0.9.0, H1a): said when a test asks.
           ...(state.sensitiveProtects ? { sensitive_protects: true } : {}),
           // My cabinet (0.9.0, C1): said when a test asks.
-          ...(state.cabinets ? { cabinets: true } : {}),
+          ...(state.cabinets ? { cabinets: true, cabinet_dividers: true, cabinet_pins: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
           ...(state.caregivers ? { caregivers: true } : {}),
           // Neutral wording (0.9.0, H2): said when a test gives it.
@@ -5217,13 +5227,140 @@ export function installFakeApi(state: FakeState) {
           ? null
           : (got.page as { items: Array<{ id: string }>; total: number });
       };
+      // Pins (C2): of papers the reader is given, out of the Trash.
+      const pins = (state.cabinetPins ??= []);
+      const given = tabled({});
+      const livePins = (folder: string) =>
+        pins
+          .filter((x) => x.folder_id === folder)
+          .map((x) => x.document_id)
+          .filter((id) => given?.items.some((d) => d.id === id));
+      const datedOf = (d: { issued?: { date: string } | null; created_at?: string }) =>
+        (d.issued?.date ?? d.created_at ?? new Date().toISOString()).slice(0, 10);
+      const folderAt =
+        /^\/api\/v1\/cabinet\/folders\/([^/]+)(\/documents|\/pins|\/pins\/([^/]+))?$/.exec(path);
+      if (folderAt) {
+        const folderId = decodeURIComponent(folderAt[1] as string);
+        if (folderAt[2] === '/pins' && method === 'POST') {
+          const ids = (body as { document_ids: string[] }).document_ids;
+          (state.pinCalls ??= []).push({ method, folder: folderId, ids });
+          for (const id of ids) {
+            if (!pins.some((x) => x.folder_id === folderId && x.document_id === id)) {
+              pins.push({ folder_id: folderId, document_id: id });
+            }
+          }
+          return json({ pinned: ids.length });
+        }
+        if (folderAt[3] !== undefined && method === 'DELETE') {
+          const id = decodeURIComponent(folderAt[3]);
+          (state.pinCalls ??= []).push({ method, folder: folderId, ids: [id] });
+          state.cabinetPins = pins.filter(
+            (x) => !(x.folder_id === folderId && x.document_id === id),
+          );
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
+        const placed = folders.find(({ f }) => f.id === folderId);
+        if (!placed) return refuse(404, 'not_found', 'That folder does not exist.');
+        const f = placed.f;
+        const pinned = livePins(folderId);
+        const got = tabled(f.filter);
+        const rest = (got?.items ?? []).filter((d) => !pinned.includes(d.id)) as Array<
+          { id: string } & Parameters<typeof datedOf>[0]
+        >;
+        const byKey = new Map<string, typeof rest>();
+        for (const d of rest) {
+          const key = dividerKeyOf(f.dividers, datedOf(d));
+          byKey.set(key, [...(byKey.get(key) ?? []), d]);
+        }
+        const newest = (a: (typeof rest)[number], b: (typeof rest)[number]) =>
+          datedOf(b).localeCompare(datedOf(a));
+        if (folderAt[2] === '/documents') {
+          const items = [...(byKey.get(query.get('divider') ?? '') ?? [])].sort(newest);
+          return json({ items, total: items.length, has_more: false, next_cursor: null });
+        }
+        const count = (key: string) => byKey.get(key)?.length ?? 0;
+        let dividers: FolderDivider[];
+        switch (dividerMode(f.dividers)) {
+          case 'none':
+            dividers = [
+              { key: 'all', kind: 'all', name: '', from: null, to: null, count: count('all') },
+            ];
+            break;
+          case 'years':
+            dividers = [...byKey.keys()]
+              .filter((key) => key !== 'other')
+              .sort()
+              .reverse()
+              .map((key) => ({
+                key,
+                kind: 'year' as const,
+                name: key.slice(5),
+                from: `${key.slice(5)}-01-01`,
+                to: `${key.slice(5)}-12-31`,
+                count: count(key),
+              }));
+            if (count('other') > 0) {
+              dividers.push({
+                key: 'other',
+                kind: 'other',
+                name: OTHER_YEARS,
+                from: null,
+                to: null,
+                count: count('other'),
+              });
+            }
+            break;
+          case 'ranges':
+            dividers = [
+              ...rangesNewestFirst(f.dividers).map(({ key, range }) => ({
+                key,
+                kind: 'range' as const,
+                name: range.name,
+                from: range.from,
+                to: range.to,
+                count: count(key),
+              })),
+              ...(count('other') > 0
+                ? [
+                    {
+                      key: 'other',
+                      kind: 'other' as const,
+                      name: OTHER_YEARS,
+                      from: null,
+                      to: null,
+                      count: count('other'),
+                    },
+                  ]
+                : []),
+            ];
+            break;
+        }
+        return json({
+          folder_id: folderId,
+          version: held.version,
+          total: got ? pinned.length + rest.length : null,
+          pinned: (given?.items ?? []).filter((d) => pinned.includes(d.id)),
+          dividers,
+        });
+      }
       if (path === '/api/v1/cabinet' && method === 'GET') return json(held);
       if (path === '/api/v1/cabinet' && method === 'PUT') {
-        const sent = body as { layout: CabinetLayout; version: number };
+        const sent = body as { layout: CabinetLayout; version: number; pins_moved?: PinsMoved[] };
         (state.cabinetSaves ??= []).push(sent);
         if (sent.version !== held.version) {
           return refuse(409, 'conflict', 'Your cabinet was changed somewhere else.');
         }
+        const kept = new Set(
+          sent.layout.cabinets.flatMap((c) => c.drawers.flatMap((d) => d.folders.map((f) => f.id))),
+        );
+        // Only a folder the layout no longer has moves, as the vault moves it.
+        for (const m of sent.pins_moved ?? []) {
+          if (kept.has(m.from)) continue;
+          for (const x of pins.filter((y) => y.folder_id === m.from)) {
+            pins.push({ ...x, folder_id: m.to });
+          }
+        }
+        state.cabinetPins = pins.filter((x) => kept.has(x.folder_id));
         state.cabinet = {
           layout: sent.layout,
           version: held.version + 1,
@@ -5240,7 +5377,20 @@ export function installFakeApi(state: FakeState) {
         return json({
           version: held.version,
           counts: Object.fromEntries(
-            folders.map(({ f }) => [f.id, tabled(f.filter)?.total ?? null]),
+            folders.map(({ f }) => {
+              const got = tabled(f.filter);
+              const pinned = livePins(f.id);
+              return [
+                f.id,
+                got ? got.items.filter((d) => !pinned.includes(d.id)).length + pinned.length : null,
+              ];
+            }),
+          ),
+          // Each folder's live pins, hidden ones too (C2).
+          pins: Object.fromEntries(
+            [...new Set(pins.map((x) => x.folder_id))]
+              .map((folder) => [folder, livePins(folder).length] as const)
+              .filter(([, n]) => n > 0),
           ),
         });
       }
@@ -5248,8 +5398,16 @@ export function installFakeApi(state: FakeState) {
         const id = decodeURIComponent(alsoInAt[1] as string);
         return json({
           items: folders
-            .filter(({ f }) => tabled(f.filter)?.items.some((d) => d.id === id))
-            .map(({ f, path: where }) => ({ id: f.id, name: f.name, path: where })),
+            .filter(
+              ({ f }) =>
+                livePins(f.id).includes(id) || tabled(f.filter)?.items.some((d) => d.id === id),
+            )
+            .map(({ f, path: where }) => ({
+              id: f.id,
+              name: f.name,
+              path: where,
+              ...(livePins(f.id).includes(id) ? { pinned: true } : {}),
+            })),
         });
       }
     }
@@ -5853,6 +6011,8 @@ export function installFakeApi(state: FakeState) {
           tags: (d.tags as string[] | undefined) ?? [],
           snippet: '',
           matched_in: 'title',
+          // Found only as its person's caregiver (H1b), as the vault's search says it.
+          ...(d.caregiver === true ? { caregiver: true as const } : {}),
         }))
         // Whose, as the vault's search narrows it.
         .filter((h) => !query.get('member_id') || h.owner_member_id === query.get('member_id'));

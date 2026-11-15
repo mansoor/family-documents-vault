@@ -131,7 +131,7 @@ import { TagField } from '../tags.js';
 import { useSelect } from './SearchPeople.js';
 import { LinksChoiceDialog, linksAsk, linksChoice, type LinksAsk } from './Visibility.js';
 import { familyZoneNow } from '../family-time.js';
-import { CabinetDocuments, ViewToggle } from '../cabinet.js';
+import { CabinetDocuments, PinSheet, ViewToggle } from '../cabinet.js';
 
 /**
  * Documents (Phase 6, R2): every document the reader may see.
@@ -1743,6 +1743,7 @@ function useClipTips(rows: readonly DocumentView[]) {
 
 type Acting =
   | 'collect'
+  | 'pin'
   | 'location'
   | 'tag-add'
   | 'tag-remove'
@@ -1866,7 +1867,9 @@ function BulkBar(props: {
   onFinished: (o: Outcome) => void;
 }) {
   const { chosen, who, scope } = props;
-  const { withToken, guarded } = useApp();
+  const { withToken, guarded, caps } = useApp();
+  // Pinned into a folder of their own cabinet (0.9.0, C2): their arrangement, any paper they see.
+  const mayPin = caps?.features.cabinet_pins === true && chosen.every((d) => !d.deleted_at);
   const n = chosen.length;
   const offer: BulkOffer = bulkOffer(who, chosen);
   const tooMany = n > MOST_AT_ONCE;
@@ -1884,6 +1887,7 @@ function BulkBar(props: {
   const first = useRef<VisibilityRun | null>(null);
   const pending = useRef<Outcome | null>(null);
   const collectButton = useRef<HTMLButtonElement>(null);
+  const pinButton = useRef<HTMLButtonElement>(null);
   const locationButton = useRef<HTMLButtonElement>(null);
   const tagsButton = useRef<HTMLButtonElement>(null);
   const visibilityButton = useRef<HTMLButtonElement>(null);
@@ -2209,6 +2213,17 @@ function BulkBar(props: {
             Add to a collection
           </button>
         )}
+        {mayPin && (
+          <button
+            ref={pinButton}
+            type="button"
+            className="btn btn-bulk"
+            disabled={busy || tooMany}
+            onClick={() => setActing('pin')}
+          >
+            Pin to a folder…
+          </button>
+        )}
         {offer.location && (
           <button
             ref={locationButton}
@@ -2283,6 +2298,17 @@ function BulkBar(props: {
           ids={chosen.map((d) => d.id)}
           what={what}
           returnFocus={collectButton}
+          onClose={(news) => {
+            setActing(null);
+            if (news) props.onFinished({ said: news, failedHead: null, failed: [], untouched: [] });
+          }}
+        />
+      )}
+      {acting === 'pin' && (
+        <PinSheet
+          documentIds={chosen.map((d) => d.id)}
+          what={what}
+          returnFocus={pinButton}
           onClose={(news) => {
             setActing(null);
             if (news) props.onFinished({ said: news, failedHead: null, failed: [], untouched: [] });

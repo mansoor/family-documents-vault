@@ -750,6 +750,7 @@ export function DocRow({
   pick,
   onTrashed,
   onRemoved,
+  pinned,
 }: {
   doc: DocumentView;
   /** The vault's types, for the type's short name; the category until they arrive. */
@@ -767,6 +768,8 @@ export function DocRow({
   onTrashed?: ((title: string) => void) | undefined;
   /** Its ⋯ took it out of `collection` (0.9.0): the page says so, with Undo. */
   onRemoved?: ((removed: Removed) => void) | undefined;
+  /** Pinned into the cabinet folder it is shown in (0.9.0, C2): marked, with Unpin beside it. */
+  pinned?: { onUnpin: () => void; busy?: boolean } | undefined;
 }) {
   // Somebody else's Only me, seen as their caregiver (H1b), says so.
   const who =
@@ -779,12 +782,13 @@ export function DocRow({
           : null;
   const title = doc.title ?? 'Scan · needs a name';
   return (
-    <li className="docrow" data-doc={doc.id}>
+    <li className={pinned ? 'docrow docrow-pinned' : 'docrow'} data-doc={doc.id}>
       <RowMain title={title} pick={pick} onOpen={onOpen}>
         <span className="doc-title">{title}</span>
         <span className="muted">
           <span>{rowLine(doc, types)}</span>
           {who && <span>{` · ${who}`}</span>}
+          {pinned && <span className="pin-mark">{' · Pinned'}</span>}
         </span>
         <StatusBadge status={doc.status} />
         {hint && <span className="collection-hint">{hint}</span>}
@@ -800,6 +804,17 @@ export function DocRow({
         onTrashed={onTrashed}
         onRemoved={onRemoved}
       />
+      {pinned && (
+        <button
+          type="button"
+          className="btn btn-quiet btn-small"
+          disabled={pinned.busy}
+          aria-label={`Unpin ${title}`}
+          onClick={pinned.onUnpin}
+        >
+          Unpin
+        </button>
+      )}
     </li>
   );
 }

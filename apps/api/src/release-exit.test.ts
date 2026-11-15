@@ -230,7 +230,13 @@ type Kind =
   /** A Reading check (0.9.0, R0): the household's owners', its misses its asker's alone. */
   | 'readingCheck'
   /** A Verify, a browse or a Test of the mailbox asked of the worker (0.9.0, O1): the owners'. */
-  | 'settingsCheck';
+  | 'settingsCheck'
+  /**
+   * A folder of somebody's cabinet (0.9.0, C2), by its id in their layout:
+   * an id names only ever the caller's own folder, so it is no object of
+   * anybody else's.
+   */
+  | 'cabinetFolder';
 
 /** The ids one request is made with: the thing of each kind the attacker is after. */
 type Fill = Record<Kind, string>;
@@ -278,6 +284,9 @@ const PARAM_KINDS: Record<string, Kind> = {
   'paired-devices/:id': 'pairedDevice',
   'reading-checks/:id': 'readingCheck',
   'settings-checks/:id': 'settingsCheck',
+  // A folder of the caller's own cabinet, and a paper pinned in it (0.9.0, C2).
+  'folders/:id': 'cabinetFolder',
+  'pins/:documentId': 'document',
 };
 
 /** The kinds that name a thing of somebody's: another's id here is refused unless the rule says. */
@@ -753,6 +762,31 @@ const RULES: Record<string, Rule> = {
   },
   'GET /api/v1/cabinet/counts': { who: 'signedIn' },
   'GET /api/v1/documents/:id/also-in': { who: 'signedIn' },
+  // Dividers and pins (0.9.0, C2): a folder of the caller's own (`tax`, in
+  // the layout above), its dividers counted by the list's own rules; a pin
+  // only of a paper the caller may open, out of the Trash — another's Only
+  // me, or what a link or a restriction keeps from them, is no paper to
+  // them (404) — and their own arrangement, never a change to the paper.
+  'GET /api/v1/cabinet/folders/:id': { who: 'signedIn' },
+  'GET /api/v1/cabinet/folders/:id/documents': {
+    who: 'signedIn',
+    queries: () => ['divider=year:2026', 'divider=all', 'divider=other', 'divider=range:0'],
+  },
+  'POST /api/v1/cabinet/folders/:id/pins': {
+    who: 'signedIn',
+    body: (f) => ({ document_ids: [f.document] }),
+  },
+  // Unpinning takes away the caller's own row, whatever the paper: 204 for
+  // any id (the C2 review), so it tells nobody whether a paper or a pin is
+  // there, and somebody who may no longer open a paper still lets its pin go.
+  'DELETE /api/v1/cabinet/folders/:id/pins/:documentId': {
+    who: 'signedIn',
+    theirs: Object.fromEntries(
+      (
+        ['restrictedViewer', 'guest', 'guestWithNoRow', 'otherAdult', 'passwordOnlyOwner'] as const
+      ).map((a) => [a, 'only their own pin row is taken away; 204 says nothing (C2 review)']),
+    ),
+  },
 
   // Caregivers for somebody's medical papers, and turning 18 (0.9.0, H1b):
   // a person's grants are theirs, their caregiver's and the owners'; who
@@ -3407,6 +3441,15 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       await ok(send(ahmed, 'GET', `/api/v1/documents/${priv.id}/also-in`), 200),
     );
     expect(also.items.map((i) => i.id).sort()).toEqual(['his', 'his-own']);
+    // He may pin it into a folder of his own (C2): it shows there, first.
+    await ok(
+      send(ahmed, 'POST', '/api/v1/cabinet/folders/his/pins', { document_ids: [priv.id] }),
+      200,
+    );
+    const his = json<{ pinned: Array<{ id: string }> }>(
+      await ok(send(ahmed, 'GET', '/api/v1/cabinet/folders/his'), 200),
+    );
+    expect(his.pinned.map((d) => d.id)).toEqual([priv.id]);
     for (const [name, who] of [
       ['an owner', olivia],
       ['a password-only owner', peter],
@@ -3415,6 +3458,16 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     ] as const) {
       const got = await counted(who);
       expect(got['his-own'], name).toBe(0);
+      // Nor is it pinned into anybody else's (C2): there is no such paper, to them.
+      const pinned = await send(who, 'POST', '/api/v1/cabinet/folders/his/pins', {
+        document_ids: [priv.id],
+      });
+      expect(pinned.statusCode, name).toBe(404);
+      const opened = await ok(send(who, 'GET', '/api/v1/cabinet/folders/his'), 200);
+      for (const secret of [priv.id, priv.version, priv.title, priv.marker]) {
+        expect(opened.body, name).not.toContain(secret);
+        expect(pinned.body, name).not.toContain(secret);
+      }
       // What the folder counts is what the table lists them, his Only me not among it.
       const listed = await ok(
         send(who, 'GET', `/api/v1/documents?sort=title&limit=200&member_id=${ahmed.member_id}`),
@@ -3944,6 +3997,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       mailInCode: [ids.mailInCode as string],
       readingCheck: [ids.readingCheck as string],
       settingsCheck: [ids.settingsCheck as string],
+      cabinetFolder: ['tax'],
     };
     const viewerLike = (name: Attacker, tokens: Tokens, stale = false): AttackerDef => ({
       name,
@@ -4337,6 +4391,7 @@ const PARAM_KIND_DEFAULTS: Record<Kind, true> = {
   mailInCode: true,
   readingCheck: true,
   settingsCheck: true,
+  cabinetFolder: true,
 };
 
 function kindOf(before: string, param: string): Kind | null {

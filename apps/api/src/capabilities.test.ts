@@ -146,6 +146,9 @@ describe('buildCapabilities', () => {
       sensitive_protects: true,
       // 0.9.0 (C1): My cabinet.
       cabinets: true,
+      // 0.9.0 (C2): dividers and pins.
+      cabinet_dividers: true,
+      cabinet_pins: true,
       // 0.9.0 (H1b): caregivers, and turning 18.
       caregivers: true,
     });
