@@ -2,9 +2,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { extractText } from './extract-text.js';
-import { CLEAN_BELOW_CONF, parseTsvPage, readingQuality } from './scan-read.js';
+import { CLEAN_BELOW_CONF, parseTsvPage, readingQuality, SECOND_LOOK_MS } from './scan-read.js';
 import { detectTools, ocrImage, ocrTsv, osdOf } from './tools.js';
 
 /**
@@ -104,11 +104,36 @@ describe.skipIf(!real)('scans read better, with the real tools (R3)', () => {
     return { file, text: got?.text ?? '' };
   };
 
+  /**
+   * `fn` with a second look that has as long as the test has, rather than
+   * SECOND_LOOK_MS's 45 s of wall clock. What is asked here is what the
+   * second look reads, not how fast; the budget itself is scan-read.test.ts's
+   * ("the whole second look has one budget"). The upside-down page is turned,
+   * doubled and cleaned — 24 to 30 s of ImageMagick on a quiet four-core
+   * machine, as its upside-down reading was unsure — and on a runner busy
+   * with the whole suite that ran past the budget, so the page was kept as
+   * it came, upside down. A slow or busy server does the same to such a
+   * page: that is the product's to mend, not this test's to hide.
+   */
+  const withTimeToLook = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    const budget = vi
+      .spyOn(AbortSignal, 'timeout')
+      .mockImplementation((ms) => timeout(ms === SECOND_LOOK_MS ? 240_000 : ms));
+    try {
+      return await fn();
+    } finally {
+      budget.mockRestore();
+    }
+  };
+
   it('a page upside down is read the right way up', async () => {
-    const { file, text } = await read(
-      'upside-down.png',
-      s.grayPng(draw({ dpi: 200, paper: 0.95, inkDark: 0.9, quarter: 180 }, 'upside-down')),
-      'image/png',
+    const { file, text } = await withTimeToLook(() =>
+      read(
+        'upside-down.png',
+        s.grayPng(draw({ dpi: 200, paper: 0.95, inkDark: 0.9, quarter: 180 }, 'upside-down')),
+        'image/png',
+      ),
     );
     expect(text).toMatch(/Payment due by +29\/04\/2026/);
     // Tesseract alone, as before: the page's words are not there.
@@ -116,10 +141,13 @@ describe.skipIf(!real)('scans read better, with the real tools (R3)', () => {
   }, 300_000);
 
   it('a page turned a quarter, in a PDF, is read the right way up', async () => {
-    const { text } = await read(
-      'sideways.pdf',
-      s.picturePdf([draw({ dpi: 200, paper: 0.95, inkDark: 0.9, quarter: 90 }, 'sideways')], 80),
-      'application/pdf',
+    // Turned by the same second look, so given the same time (withTimeToLook).
+    const { text } = await withTimeToLook(() =>
+      read(
+        'sideways.pdf',
+        s.picturePdf([draw({ dpi: 200, paper: 0.95, inkDark: 0.9, quarter: 90 }, 'sideways')], 80),
+        'application/pdf',
+      ),
     );
     expect(text).toMatch(/Payment due by +29\/04\/2026/);
   }, 300_000);
