@@ -87,6 +87,11 @@ export interface ExtractOptions {
    * its best reading kept, so the pages left are read before the deadline.
    */
   looksUntil?: AbortSignal;
+  /**
+   * Told of a page's second look that ran out of time, or a cleaned copy that
+   * could not be read: steps, turns and times, never a word of the file.
+   */
+  log?: (level: string, msg: string, extra?: Record<string, unknown>) => void;
 }
 
 /** How a page is to be read: `once`, with no second look; told when it has read a cleaned copy. */
@@ -198,9 +203,7 @@ export async function extractText(
 ): Promise<ExtractedText | null> {
   const tools = opts.tools ?? (await detectTools());
   const signal = opts.signal;
-  const ocr =
-    opts.ocr ??
-    ((image: string, how?: ReadHow) => readScan(image, tools, signal, how, opts.looksUntil));
+  const ocr = opts.ocr ?? ((image: string, how?: ReadHow) => readScan(image, tools, opts, how));
   signal?.throwIfAborted();
   if (mime === WORD_MIME) {
     return { text: kept(await wordText(file)), source: 'word', textPages: 0, ocrPages: 0 };
@@ -344,15 +347,15 @@ async function dropPage(page: string): Promise<void> {
  * orientation model where the worker has it, and ImageMagick to turn and
  * prepare — each step stopped by the signal it is given (the read's, or the
  * second look's budget). `how.once`: no second look; none either after
- * `until` (ExtractOptions.looksUntil).
+ * `opts.looksUntil`.
  */
 function readScan(
   image: string,
   tools: Tools,
-  signal?: AbortSignal,
+  opts: ExtractOptions,
   how?: ReadHow,
-  until?: AbortSignal,
 ): Promise<string> {
+  const { signal, looksUntil: until, log } = opts;
   const real: ScanTools = {
     words: async (i, s) => parseTsvPage(await ocrTsv(i, 'eng', s ?? signal)),
     skew: (i, s) => skewOf(i, s ?? signal),
@@ -364,6 +367,7 @@ function readScan(
     ...(how?.once ? { once: true } : {}),
     ...(until ? { until } : {}),
     ...(how?.onCleaned ? { onCleaned: how.onCleaned } : {}),
+    ...(log ? { log } : {}),
   });
 }
 
@@ -419,7 +423,18 @@ async function ocrGrainy(
     signal?.throwIfAborted();
     return first;
   }
-  // Itself a second look: read once.
-  const second = (await ocr(cleaned, { once: true })).trim();
+  // Itself a second look: read once. Tesseract failing on it, or running
+  // past its time, leaves the first reading (the R3 budget fix).
+  let second: string;
+  try {
+    second = (await ocr(cleaned, { once: true })).trim();
+  } catch {
+    signal?.throwIfAborted();
+    opts.log?.(
+      'warn',
+      'a cleaned copy of a scanned page could not be read: its first reading kept',
+    );
+    return first;
+  }
   return wordsIn(second) > wordsIn(first) ? second : first;
 }

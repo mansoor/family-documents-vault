@@ -292,8 +292,8 @@ describe('a page read badly is turned, made bigger and read again (R3)', () => {
       'words p-turn180.png',
       'small 270 p-turn270.png',
       'words p-turn270.png',
-      // Read unsurely at first: cleaned, and so made twice the size.
-      'prepare 180 0 2 true p-ready.png',
+      // Turned, and read just so: it reads well, so that is all.
+      'prepare 180 0 1 false p-ready.png',
       'words p-ready.png',
     ]);
   });
@@ -306,10 +306,119 @@ describe('a page read badly is turned, made bigger and read again (R3)', () => {
       'p-ready2.png': upright(30),
     });
     expect(await readScanPage('p.png', t)).toBe(sentence);
+    // Read surely turned: made bigger, not cleaned.
     expect(calls.filter((c) => c.startsWith('prepare'))).toEqual([
-      'prepare 90 0 2 true p-ready.png',
-      'prepare 90 0 2.3 true p-ready2.png',
+      'prepare 90 0 1 false p-ready.png',
+      'prepare 90 0 2.3 false p-ready2.png',
     ]);
+  });
+
+  it('a page turned is read turned first; made bigger and cleaned only if it still reads poorly (the R3 budget)', async () => {
+    const osd = async () => ({ turn: 180 as const, confidence: 9 });
+    // Upside down, it read as garble, unsurely: turned, it reads well, and
+    // is not cleaned at twice its size for the garble's sake.
+    const well = tools({ 'p.png': garbled(30), 'p-ready.png': upright() });
+    let cleaned = 0;
+    const onCleaned = () => {
+      cleaned += 1;
+    };
+    expect(await readScanPage('p.png', { ...well.t, orient: osd }, undefined, { onCleaned })).toBe(
+      sentence,
+    );
+    expect(well.calls).toEqual([
+      'words p.png',
+      'prepare 180 0 1 false p-ready.png',
+      'words p-ready.png',
+    ]);
+    expect(cleaned).toBe(0);
+    // Turned, it still reads unsurely: cleaned, at twice its size, and the better kept.
+    const unsure = upright().map((w) => ({ ...w, conf: 50 }));
+    const poor = tools({ 'p.png': garbled(30), 'p-ready.png': unsure, 'p-ready2.png': upright() });
+    expect(await readScanPage('p.png', { ...poor.t, orient: osd }, undefined, { onCleaned })).toBe(
+      sentence,
+    );
+    expect(poor.calls).toEqual([
+      'words p.png',
+      'prepare 180 0 1 false p-ready.png',
+      'words p-ready.png',
+      'prepare 180 0 2 true p-ready2.png',
+      'words p-ready2.png',
+    ]);
+    expect(cleaned).toBe(1);
+    // Cleaned, it reads worse: the turned reading stands.
+    const worse = tools({
+      'p.png': garbled(30),
+      'p-ready.png': upright().map((w) => ({ ...w, conf: 65 })),
+      'p-ready2.png': garbled(10),
+    });
+    expect(await readScanPage('p.png', { ...worse.t, orient: osd })).toBe(sentence);
+    expect(worse.calls.filter((c) => c.startsWith('prepare'))).toHaveLength(2);
+  });
+
+  it('a page turned whose second look runs out of time keeps its turned reading, never the one upside down (the R3 budget)', async () => {
+    const osd = async () => ({ turn: 180 as const, confidence: 9 });
+    const logged: Array<[string, string, Record<string, unknown> | undefined]> = [];
+    const log = (level: string, msg: string, extra?: Record<string, unknown>) => {
+      logged.push([level, msg, extra]);
+    };
+    // Turned, it reads, unsurely; cleaning it takes past the budget.
+    const unsure = upright().map((w) => ({ ...w, conf: 65 }));
+    const { t, calls } = tools({ 'p.png': garbled(30), 'p-ready.png': unsure });
+    const waits = (_i: string, how: Preparation, out: string, signal?: AbortSignal) => {
+      calls.push(`prepare ${how.turn} ${how.scale} ${how.clean === true} ${out}`);
+      return how.clean
+        ? new Promise<void>((_, reject) => {
+            signal?.addEventListener('abort', () => reject(signal.reason as Error));
+          })
+        : Promise.resolve();
+    };
+    const started = Date.now();
+    const text = await readScanPage('p.png', { ...t, orient: osd, prepare: waits }, undefined, {
+      budgetMs: 200,
+      log,
+    });
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(text).toBe(sentence);
+    expect(text).not.toContain('Jnoqe');
+    expect(calls).toContain('prepare 180 2 true p-ready2.png');
+    expect(logged).toHaveLength(1);
+    const [level, msg, extra] = logged[0] as [string, string, Record<string, unknown>];
+    expect(level).toBe('warn');
+    expect(msg).toMatch(/ran out of time/);
+    // The turn, what was kept and how long: never a word of the page.
+    expect(Object.keys(extra).sort()).toEqual(['kept', 'ms', 'turn']);
+    expect(extra).toMatchObject({ turn: 180, kept: 'turned' });
+    expect(JSON.stringify(logged)).not.toMatch(/policy|Jnoqe/);
+    // Out of time before it was read turned at all: the first reading is all there is, and said so.
+    logged.length = 0;
+    const never = tools({ 'p.png': garbled(30) });
+    const waitsAll = (_i: string, _h: Preparation, _o: string, signal?: AbortSignal) =>
+      new Promise<void>((_, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason as Error));
+      });
+    expect(
+      await readScanPage('p.png', { ...never.t, orient: osd, prepare: waitsAll }, undefined, {
+        budgetMs: 200,
+        log,
+      }),
+    ).toContain('Jnoqe');
+    expect(logged.map(([, , e]) => e?.kept)).toEqual(['first']);
+    // A step that fails, not out of time: nothing said.
+    logged.length = 0;
+    const failing = tools({ 'p.png': garbled(30), 'p-ready.png': unsure });
+    await readScanPage(
+      'p.png',
+      {
+        ...failing.t,
+        orient: osd,
+        prepare: async (_i, how) => {
+          if (how.clean) throw new Error('magick: cache resources exhausted');
+        },
+      },
+      undefined,
+      { log },
+    );
+    expect(logged).toEqual([]);
   });
 
   it('upright with small letters: made bigger, and the better reading kept', async () => {
@@ -644,7 +753,7 @@ describe('a page read badly is turned, made bigger and read again (R3)', () => {
     expect(asked).toEqual(['p.png']);
     expect(sure.calls.filter((c) => c.startsWith('small'))).toEqual([]);
     expect(sure.calls.filter((c) => c.startsWith('prepare'))).toEqual([
-      'prepare 180 0 2 true p-ready.png',
+      'prepare 180 0 1 false p-ready.png',
     ]);
     // Unsure, or not to be had: each way up on a small copy, as without it.
     for (const orient of [
