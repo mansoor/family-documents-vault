@@ -164,6 +164,9 @@ describe('buildCapabilities', () => {
       upload_request_email: false,
       // 0.9.0 (C3): where the original is, as a place in a cabinet.
       original_place: true,
+      // 0.9.0 (H5): health records kept as they are; who opened a link, when.
+      record_formats: true,
+      share_opens: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);
@@ -234,6 +237,13 @@ describe('buildCapabilities', () => {
   it('says the longest a share link may last, so a client offers only what the vault takes (5.18 review)', () => {
     expect(buildCapabilities(config).limits.share_max_days).toBe(90);
     expect(buildCapabilities({ ...config, shareMaxDays: 3 }).limits.share_max_days).toBe(3);
+  });
+
+  it('says how long backups are kept only when it was told (0.9.0, H5)', () => {
+    expect(buildCapabilities(config).limits.backup_retain_days).toBeNull();
+    expect(buildCapabilities({ ...config, backupRetainDays: 30 }).limits.backup_retain_days).toBe(
+      30,
+    );
   });
 
   it('the minimum client version is a valid semver the server itself satisfies', () => {

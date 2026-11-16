@@ -36,7 +36,7 @@ import { z } from 'zod';
 import type { AlertRequest } from '../alert-job.js';
 import type { MailRequest } from '../mail-job.js';
 import { cookieForNewBinding, type DeviceCookie } from '../public/device-cookie.js';
-import type { Principal, RequestMeta } from '../auth/service.js';
+import { describeDevice, type Principal, type RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
 import { seenCollection } from '../collections/service.js';
 import { ApiError, notFound } from '../errors.js';
@@ -66,6 +66,8 @@ import {
   canSee,
   canSeeCollection,
   canShareToView,
+  downloadOnlyKind,
+  viewNotPossibleWords,
   collectionShareItem,
   EMERGENCY_FIELD_KEYS,
   EMERGENCY_LINK_DEFAULT_HOURS,
@@ -121,12 +123,16 @@ import {
   type ShareLinkPreview,
   type SharePages,
   type SharePermission,
+  type DocumentLinkOpening,
+  type DocumentLinkOpens,
+  type ShareOpens,
   type SharedItem,
   type SharedNote,
   type SharedSession,
   type ShareProtection,
   type ShareSecretKind,
   noteMarkdown,
+  recordFileName,
   safeExtension,
   safeFileName,
   zipFileName,
@@ -1444,11 +1450,7 @@ export class ShareService {
       // To view is to see the pages the vault draws, and it draws PDFs and
       // photos; a Word or an Excel file can only go as itself (A22).
       if (permission === 'view' && !note && !canShareToView(newest.mime)) {
-        throw new ApiError(
-          422,
-          'view_not_possible',
-          'Word and Excel files can only be shared to download: the vault cannot draw their pages.',
-        );
+        throw new ApiError(422, 'view_not_possible', viewNotPossibleWords(newest.mime));
       }
 
       // Sensitive (0.9.0, H1a): sent only once the sharer, asked, says so —
@@ -1718,6 +1720,192 @@ export class ShareService {
         openings: openings.get(v.id) ?? [],
       }));
     });
+  }
+
+  /**
+   * The links whose openings the caller may see (0.9.0, H5), of one link
+   * or of every link to one document, each with when it was opened and in
+   * what — as the activity log keeps each opening, never its address:
+   *
+   *  - its maker, and an owner, wherever they see the link (GET /shares);
+   *  - the person a sensitive document belongs to, who can see it: every
+   *    link to it, whoever made it. Their health papers went outside the
+   *    family; who opened them is theirs to know (the owner's question,
+   *    answered so in H5, as a clinician's link is the person's in H4).
+   *
+   * Never a clinician's link (H4 lists those with the person's page), and
+   * nobody else's: anybody else is told there is no such link.
+   */
+  private async openable(
+    p: Principal,
+    of: { shareId: string } | { documentId: string },
+  ): Promise<DocumentLinkOpening[]> {
+    const views = await this.views(p);
+    return withPrincipal(this.db, p, async (trx) => {
+      // The links that give the document: its own, and a collection's that
+      // has it ticked or has followed it (the H5 review).
+      const givers =
+        'documentId' in of
+          ? new Set(
+              (
+                await trx
+                  .selectFrom('share_link_item')
+                  .select('share_id')
+                  .where('document_id', '=', of.documentId)
+                  .where('kind', 'in', ['ticked', 'followed'])
+                  .execute()
+              ).map((r) => r.share_id),
+            )
+          : new Set<string>();
+      // A link to one document in the Trash is listed nowhere, as GET
+      // /documents/{id}/link-opens is 404 for that document.
+      const ownDocs = [
+        ...new Set(views.map((v) => v.document_id).filter((d): d is string => d !== null)),
+      ];
+      const trashed = new Set(
+        ownDocs.length === 0
+          ? []
+          : (
+              await trx
+                .selectFrom('document')
+                .select('id')
+                .where('id', 'in', ownDocs)
+                .where('deleted_at', 'is not', null)
+                .execute()
+            ).map((d) => d.id),
+      );
+      const links = new Map<string, DocumentLinkOpening>();
+      for (const v of views) {
+        if (p.role !== 'owner' && v.created_by !== p.accountId) continue;
+        if (v.document_id !== null && trashed.has(v.document_id)) continue;
+        const wanted =
+          'shareId' in of
+            ? v.id === of.shareId
+            : v.document_id === of.documentId || givers.has(v.id);
+        if (!wanted) continue;
+        links.set(v.id, {
+          share_id: v.id,
+          recipient_label: v.recipient_label,
+          created_by_name: v.created_by_name,
+          mine: v.created_by === p.accountId,
+          permission: v.permission ?? 'download',
+          created_at: v.created_at,
+          expires_at: v.expires_at,
+          state: v.state,
+          open_count: v.open_count,
+          opens: [],
+        });
+      }
+      // The person's own sensitive papers: every link that gives one, to it
+      // alone or with a collection, whoever made it — each paper still one
+      // they can see, and not in the Trash.
+      const theirs = await sql<{
+        id: string;
+        recipient_label: string | null;
+        created_by: string;
+        created_at: Date;
+        expires_at: Date;
+        revoked_at: Date | null;
+        attempts: number;
+        paused_at: Date | null;
+        open_count: number;
+        max_opens: number | null;
+        permission: SharePermission;
+        created_by_name: string | null;
+        maker_suspended_at: Date | null;
+        maker_suspended_until: Date | null;
+        maker_lends: boolean | null;
+        visibility: string;
+        owner_member_id: string | null;
+        doc_sensitive: boolean | null;
+      }>`
+        select l.id, l.recipient_label, l.created_by, l.created_at, l.expires_at,
+               l.revoked_at, l.attempts, l.paused_at, l.open_count, l.max_opens,
+               l.permission, m.display_name as created_by_name,
+               ah.suspended_at as maker_suspended_at,
+               ah.suspended_until as maker_suspended_until,
+               share_link_lends(l.id) as maker_lends,
+               d.visibility, d.owner_member_id, ${sensitiveSql('d')} as doc_sensitive
+          from share_link l
+          join document d
+            on d.id = l.document_id
+            or d.id in (select i.document_id from share_link_item i
+                         where i.share_id = l.id and i.kind in ('ticked', 'followed'))
+          left join account_household ah
+            on ah.account_id = l.created_by and ah.household_id = l.household_id
+          left join member m on m.id = ah.member_id
+         where l.emergency_member_id is null
+           and d.owner_member_id = ${p.memberId}::uuid
+           and d.deleted_at is null
+           and ${'shareId' in of ? sql`l.id = ${of.shareId}::uuid` : sql`d.id = ${of.documentId}::uuid`}
+         order by l.created_at desc`.execute(trx);
+      for (const r of theirs.rows) {
+        if (links.has(r.id) || r.doc_sensitive !== true || !canSee(p, r)) continue;
+        // Paused by its maker's sign-in, or their limits, as GET /shares says it.
+        const stored = stateOf(r);
+        const makerPaused = suspensionInEffect({
+          suspended_at: r.maker_suspended_at,
+          suspended_until: r.maker_suspended_until,
+        });
+        links.set(r.id, {
+          share_id: r.id,
+          recipient_label: r.recipient_label,
+          created_by_name: r.created_by_name,
+          mine: r.created_by === p.accountId,
+          permission: r.permission,
+          created_at: r.created_at.toISOString(),
+          expires_at: r.expires_at.toISOString(),
+          state: stored === 'active' && (makerPaused || !r.maker_lends) ? 'paused' : stored,
+          open_count: r.open_count,
+          opens: [],
+        });
+      }
+      if (links.size === 0) return [];
+      const ids = [...links.keys()];
+      const opened = await sql<{ share_id: string; at: Date; user_agent: string | null }>`
+        select e.detail->>'share_id' as share_id, e.at, e.detail->>'user_agent' as user_agent
+          from audit_event e
+         where e.household_id = ${p.householdId}
+           and e.action = 'share.opened'
+           and e.detail->>'share_id' = any(${ids}::text[])
+         order by e.id desc`.execute(trx);
+      for (const o of opened.rows) {
+        links.get(o.share_id)?.opens.push({
+          at: o.at.toISOString(),
+          device: describeDevice(o.user_agent ?? 'unknown'),
+        });
+      }
+      return [...links.values()].sort((a, b) =>
+        a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0,
+      );
+    });
+  }
+
+  /** GET /shares/{id}/opens (0.9.0, H5): who opened one link, when. */
+  async opens(p: Principal, shareId: string): Promise<ShareOpens> {
+    const [link] = await this.openable(p, { shareId });
+    if (!link) throw notFound('That link');
+    return {
+      share_id: link.share_id,
+      recipient_label: link.recipient_label,
+      open_count: link.open_count,
+      items: link.opens,
+    };
+  }
+
+  /** GET /documents/{id}/link-opens (0.9.0, H5): every link to one document the caller may see the openings of. */
+  async documentLinkOpens(p: Principal, documentId: string): Promise<DocumentLinkOpens> {
+    // A document the caller cannot see is not there, as everywhere.
+    const doc = await withPrincipal(this.db, p, (trx) =>
+      trx
+        .selectFrom('document')
+        .select(['visibility', 'owner_member_id'])
+        .where('id', '=', documentId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst(),
+    );
+    if (!doc || !canSee(p, doc)) throw notFound('That document');
+    return { items: await this.openable(p, { documentId }) };
   }
 
   /**
@@ -2045,7 +2233,7 @@ export class ShareService {
         throw new ApiError(
           422,
           'view_not_possible',
-          `Word and Excel files can only be shared to download, and “${unviewable.title ?? 'a document'}” is one. Untick it, or let them download.`,
+          `${downloadOnlyKind(unviewable.mime)} can only be shared to download, and “${unviewable.title ?? 'a document'}” is one. Untick it, or let them download.`,
         );
       }
 
@@ -3195,8 +3383,8 @@ export class ShareService {
         422,
         'view_not_possible',
         row.document_id !== null
-          ? 'Word and Excel files can only be shared to download: the vault cannot draw their pages.'
-          : `Word and Excel files can only be shared to download, and “${unviewable.title ?? 'a document'}” is one. Keep it to download, or make a new link without it.`,
+          ? viewNotPossibleWords(unviewable.mime)
+          : `${downloadOnlyKind(unviewable.mime)} can only be shared to download, and “${unviewable.title ?? 'a document'}” is one. Keep it to download, or make a new link without it.`,
       );
     }
   }
@@ -4549,7 +4737,7 @@ export class ShareService {
         // A title left out of the page (H1a) is left out of the file's name too.
         item.row.file = name(
           untitled ? 'document' : safeFileName(item.row.title),
-          safeExtension(v.filename),
+          safeExtension(recordFileName(v.filename, v.mime)),
         );
         files.push({
           name: item.row.file,

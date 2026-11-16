@@ -218,8 +218,10 @@ A link can say more than who it is for:
   script, and once more below it. It never gives the file itself, by any route. It shows
   the first 30 pages (of a PDF, or of a scanner's many-page TIFF), and you are told when
   a document is longer. The recipient can keep pictures of the pages, each marked; no page
-  can stop a screenshot, and the page says so. Word and Excel files are shared only with
-  download: the vault cannot draw their pages. A link's pages are removed when it ends.
+  can stop a screenshot, and the page says so. Word and Excel files, and
+  [health records kept as they are](#health-records-from-a-patient-portal), are shared
+  only with download: the vault cannot draw their pages. A link's pages are removed when
+  it ends.
 - **How many opens.** Each press of Open that works is one; reloading the page it opened,
   turning its pages or downloading the file again there is not. A download is counted
   once per document for each open, and so is the line the activity log gets for it.
@@ -427,7 +429,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_DIGEST_HOUR`                               | `9`                                       | The household's local hour for the day's reminders (0 to 23).                                                                                                                                                                                         |
 | `FDV_WEEKLY_HOUR`                               | `18`                                      | The local hour on Sunday for the weekly email summary (0 to 23).                                                                                                                                                                                      |
 | `FDV_BACKUP_CRON`                               | `30 2 * * *`                              | When the worker writes the nightly encrypted database backup (cron, in UTC).                                                                                                                                                                          |
-| `FDV_BACKUP_RETAIN_DAYS`                        | `30`                                      | How many days of backups are kept in `/data/backups` (1 to 365).                                                                                                                                                                                      |
+| `FDV_BACKUP_RETAIN_DAYS`                        | `30`                                      | How many days of backups are kept in `/data/backups` (1 to 365). Give the API the same (the compose file does): a sensitive document's delete confirmation names it.                                                                                  |
 | `FDV_VAPID_PUBLIC_KEY`, `FDV_VAPID_PRIVATE_KEY` | generated                                 | The keys notifications are signed with. `gen-env` makes them; changing them silences every device until it turns notifications on again.                                                                                                              |
 | `FDV_VAPID_SUBJECT`                             | `mailto:vault@example.invalid`            | The contact push services are given for those keys.                                                                                                                                                                                                   |
 
@@ -709,6 +711,42 @@ Opening an Essential, or anything marked Only me, asks you to confirm it is
 you if you have not done so in the last five minutes — for its pages as for
 its file.
 
+### Health records from a patient portal
+
+Besides PDFs, photos, scans, and Word and Excel files, the vault keeps the
+files a patient portal or a hospital hands out, **as they are**:
+
+- **C-CDA** documents (`.xml`), sent as `application/xml` or `text/xml`;
+- **FHIR** exports (`.json`), sent as `application/json` or `application/fhir+json`;
+- **DICOM** images (`.dcm`), with the standard 128-byte preamble and `DICM` after it;
+- and a **ZIP** (`.zip`) of a DICOM folder or a portal's whole export.
+
+They are added from **Add**, as a new version, or in **Add many** — not
+through the scanner folder, email in, a request link or a paired computer,
+which take scans. The vault never opens them: it doesn't read their words,
+run OCR or an AI reader on them, draw pages or a thumbnail, or unzip a ZIP.
+Each is sealed like any other file and **downloaded only** — always as an
+attachment, never sniffed, and XML and JSON as `application/octet-stream`, so
+no browser renders them. A link to view can't give one; a link to download
+can. What a file is is checked from its bytes, not its name: `DICM` at byte
+128 for DICOM, `PK` for a ZIP, and XML and JSON must be UTF-8 text that starts
+as they do (they are not parsed further). A file sent with no type, or as
+`application/octet-stream` or `text/plain`, is known by its ending; one with no
+ending at all — a hospital CD's `IM00001` — is kept if its bytes are a DICOM
+image or a ZIP. Newline-delimited JSON (`.ndjson`, a bulk FHIR export) isn't
+taken: put it in a ZIP. A record is kept and downloaded under its own name
+with the ending of what it is (`.xml`, `.json`, `.dcm`, `.zip`). In **Add
+many**, a folder's `.xml`, `.json` and `.zip` files are left out, and the page
+says how many — a folder holds many of them that aren't health records, such
+as a photo export's notes: choose health record files one at a time.
+
+The size limit is the vault's own, `FDV_MAX_UPLOAD_BYTES` — 100 MB unless
+you change it — for each file, a ZIP included. A DICOM study of hundreds of
+images can be larger than that: add it in parts, as several ZIPs, or raise
+the limit (your reverse proxy's body limit too, if it has one). There is no
+viewer for any of them. **Keep the portal's PDF as well**: it is the readable
+copy, and it's the one to share with a doctor to view.
+
 ### How well the vault reads your papers
 
 **Settings → Server and reading → Reading and the check** measures the vault's reader on
@@ -939,11 +977,16 @@ The landlord wants the tenancy agreement; the accountant wants last year's tax
 return. On the document, **Share a link** makes a read-only link to that one
 document:
 
-- it stops working after seven days, or whatever you set;
+- it stops working after seven days, or whatever you set; a sensitive
+  document's link starts as view-only (download, for a file that can't be
+  shown) and for seven days, which you can change;
 - it can carry a four-digit PIN or a password, which you give them some other way, ask
   for a code emailed to them, and open in one browser only;
 - you can take it back at any moment;
-- every time it is opened you see it, next to the link;
+- every time it is opened you see it, next to the link, and **Who opened it**
+  lists each time and the browser it was opened in (never an address) — for
+  whoever made the link and the owners, and, for a sensitive document, for the
+  person it belongs to as well, whoever made the link;
 - and it reaches nothing else in the vault. There is no account at the other
   end and nothing to sign up for.
 
@@ -1208,13 +1251,21 @@ What happens to each file:
 
 Nothing in the folder is encrypted, and the folder is not backed up: a scan
 sits there until it is stored, then in `processed/` for the days kept, and
-what was rejected until you deal with it.
+what was rejected until you deal with it. If you scan health papers there,
+fewer days — or 0 — keeps them private sooner; Settings says so beside the
+number of days.
 
 ### Emailing documents to the vault
 
 The family can email documents to a mailbox of the household's own. The
 worker checks it every few minutes, and each attachment from someone in the
 family goes into their Inbox to look over, as if they had added it.
+
+A medical record forwarded this way has already passed through your email
+provider, and a copy stays in your sent mail until you delete it; Settings
+says so. For health papers, adding them in the vault directly keeps them out
+of email altogether. Email in takes PDFs, photos, Word and Excel files, not
+[health records kept as they are](#health-records-from-a-patient-portal).
 
 1. **Make a dedicated mailbox**, used for nothing else: say a new Gmail
    address, `smith.vault@gmail.com`. Everything sent to it is read by the
@@ -1440,6 +1491,8 @@ Three things make up a complete backup:
 1. **Your `.env`** — it holds the master key. Keep a copy off the server. Without it, nothing else below is readable.
 2. **The database** — the worker writes an encrypted `pg_dump` every night (`FDV_BACKUP_CRON`, default 02:30 UTC) into the `fdv_vault-data` volume under `/data/backups`, keeping `FDV_BACKUP_RETAIN_DAYS` (30) days. Copy that folder somewhere else on a schedule of your own. From 0.5.8 an Only me document's notes and details are sealed under their owner's key, as its pages always were; backups made before then keep them unsealed until they rotate out.
 3. **The files** — the `fdv_vault-data` volume (`/data/vault`) for the local vault, or your bucket. They are ciphertext; the master key and the database together open them.
+
+A document deleted for good stays in the backups made before, until they age out: its details in the database backups for `FDV_BACKUP_RETAIN_DAYS`, its file in any copy of the files you keep, for as long as you keep it. For a sensitive document, moving it to the Trash and deleting it for good say so, with the number of days (when the API is given `FDV_BACKUP_RETAIN_DAYS`, as the compose file does; otherwise "until your backups age out").
 
 Useful commands (run inside the worker container):
 

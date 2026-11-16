@@ -21,7 +21,7 @@ import { ZipArchive } from 'archiver';
 import { sql } from 'kysely';
 import pg from 'pg';
 import type { PgBoss } from 'pg-boss';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createQueue } from '../queue.js';
 import {
   decryptToBuffer,
@@ -479,5 +479,48 @@ describe.skipIf(!testAdminUrl())('version.process job', () => {
     );
     expect(v.ocr_status).toBe('failed');
     expect(v.process_error).toBe('ocr: not a readable Word file: not a zip');
+  }, 60_000);
+
+  it('a health record kept as it is (0.9.0, H5) is never opened: not read, counted, drawn or thumbnailed', async () => {
+    const { versionId } = await storeVersion(
+      'household',
+      Buffer.from('<ClinicalDocument><title>Ostrich 4471</title></ClinicalDocument>'),
+      'application/xml',
+    );
+    // Its words, were it read, would be found; and its tools would be called.
+    const extract = vi.fn(async () => ({
+      text: 'Ostrich 4471',
+      source: 'pdf' as const,
+      textPages: 1,
+      ocrPages: 0,
+    }));
+    log.length = 0;
+    await processVersion({ ...deps(), extract }, { household_id: hh, version_id: versionId });
+    expect(extract).not.toHaveBeenCalled();
+    const v = await withSystem(db, hh, (trx) =>
+      trx
+        .selectFrom('document_version')
+        .selectAll()
+        .where('id', '=', versionId)
+        .executeTakeFirstOrThrow(),
+    );
+    expect(v).toMatchObject({
+      ocr_status: 'skipped',
+      page_count: null,
+      thumbnail_key: null,
+      preview_state: 'unsupported',
+      preview_pages: 0,
+      process_error: null,
+    });
+    expect(v.processed_at).not.toBeNull();
+    const words = await withSystem(db, hh, (trx) =>
+      trx
+        .selectFrom('document_text')
+        .select('version_id')
+        .where('version_id', '=', versionId)
+        .execute(),
+    );
+    expect(words).toEqual([]);
+    expect(JSON.stringify(log)).not.toContain('Ostrich');
   }, 60_000);
 });

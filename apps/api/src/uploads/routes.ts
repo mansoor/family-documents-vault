@@ -3,6 +3,7 @@ import {
   ACCEPT_READY_MAX,
   attachmentDisposition,
   BATCH_MAX_FILES,
+  deliveredType,
   NOT_SCANNED,
   RELATIVE_PATH_MAX,
   type BatchAcceptInput,
@@ -380,7 +381,8 @@ export function registerIncoming(app: FastifyInstance, incoming: IncomingService
    */
   app.get<{ Params: { id: string } }>('/api/v1/incoming/:id/content', auth, async (req, reply) => {
     const file = await incoming.content(principal(req), parse(idParam, req.params).id, metaOf(req));
-    reply.header('content-type', file.contentType);
+    // XML and JSON (0.9.0, H5) as a type no browser renders.
+    reply.header('content-type', deliveredType(file.contentType));
     reply.header('content-disposition', attachmentDisposition(file.filename));
     reply.header('content-length', String(file.total));
     reply.header('x-content-type-options', 'nosniff');
@@ -562,6 +564,8 @@ export function registerBatches(app: FastifyInstance, batches: BatchService) {
           relativePath,
           filename: theFile.filename,
           mime: theFile.mimetype,
+          // A health record kept as it is (0.9.0, H5): a person adds it; a computer never.
+          records: true,
           stream: theFile.file,
           truncated: () => theFile.file.truncated,
           finished: async () => {

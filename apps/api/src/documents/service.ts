@@ -100,6 +100,17 @@ import {
   type TypeField,
   type VersionView,
   UPLOAD_KINDS,
+  STORED_KINDS,
+  claimedRecordFormat,
+  recordByBytes,
+  recordFileName,
+  isRecordFormat,
+  recordRefusedWords,
+  recordNoPreviewWords,
+  XML_MIME,
+  JSON_MIME,
+  DICOM_MIME,
+  ZIP_MIME,
   withSealed,
   LOCATION_SORT_REFUSAL,
   type OriginalPlaceBulkResult,
@@ -3079,7 +3090,8 @@ export class DocumentService {
     // The real type is detected from the bytes as they flow (CAP-03), and
     // the plaintext hash is computed on the way in; the adapter verifies
     // the ciphertext on the way out.
-    const sniffer = sniffStream(input.mime, input.filename);
+    // A health record kept as it is too (0.9.0, H5): a person adds it here.
+    const sniffer = sniffStream(input.mime, input.filename, { records: true });
     const plainHash = createHash('sha256');
     let plainBytes = 0;
     const counted = new PassThrough();
@@ -3140,7 +3152,8 @@ export class DocumentService {
             vaultId: c.vaultId,
             fileKeyWrapped: c.fileKeyWrapped,
             scopeKeyId: c.scopeKeyId,
-            filename: input.filename,
+            // A record ends as what it is (the H5 review): invoice.html kept as XML is invoice.xml.
+            filename: recordFileName(input.filename, mime),
             mime,
             ext,
             bytes: plainBytes,
@@ -4212,10 +4225,11 @@ export class DocumentService {
             id: v.id,
             mime: v.mime,
             page_count: v.page_count,
-            preview_pages:
-              v.preview_state === 'ready' ||
-              v.preview_state === 'unsupported' ||
-              v.preview_state === 'failed'
+            preview_pages: isRecordFormat(v.mime)
+              ? 0
+              : v.preview_state === 'ready' ||
+                  v.preview_state === 'unsupported' ||
+                  v.preview_state === 'failed'
                 ? (v.preview_pages ?? 0)
                 : null,
             preview_state: v.preview_state,
@@ -4294,6 +4308,8 @@ export class DocumentService {
       const doc = await this.fetchToRead(trx, p, v.document_id, true);
       // Its record came back with a restore, its file did not (5.24).
       if (v.file_removed_at) throw fileRemoved();
+      // A health record kept as it is (0.9.0, H5): never drawn, nor queued.
+      if (isRecordFormat(v.mime)) return { kind: 'none', why: 'record', mime: v.mime } as const;
       if (v.preview_state === 'unsupported') return { kind: 'none', why: 'kind' } as const;
       if (v.preview_state === 'failed') return { kind: 'none', why: 'failed' } as const;
       const known = v.preview_state === 'ready' ? v.preview_pages : v.page_count;
@@ -4354,11 +4370,13 @@ export class DocumentService {
       throw new ApiError(
         404,
         'no_preview',
-        outcome.why === 'kind'
-          ? "There's no preview for this kind of file. You can save a copy to open it."
-          : outcome.why === 'failed'
-            ? "The vault couldn't draw this file's pages. You can save a copy to open it."
-            : "There's no preview of this page. You can save a copy to open it.",
+        outcome.why === 'record'
+          ? recordNoPreviewWords(outcome.mime)
+          : outcome.why === 'kind'
+            ? "There's no preview for this kind of file. You can save a copy to open it."
+            : outcome.why === 'failed'
+              ? "The vault couldn't draw this file's pages. You can save a copy to open it."
+              : "There's no preview of this page. You can save a copy to open it.",
       );
     }
     const dec = new DecryptStream(outcome.fileKey);
@@ -4755,13 +4773,17 @@ function versionView(v: {
     page_count: v.page_count,
     ocr_status: v.ocr_status,
     uploaded_at: v.uploaded_at.toISOString(),
-    // Known once drawn, or known that it never will be; null until then.
-    preview_pages:
-      v.preview_state === 'ready' ||
-      v.preview_state === 'unsupported' ||
-      v.preview_state === 'failed'
+    // Known once drawn, or known that it never will be; null until then. A
+    // health record kept as it is is never drawn (H5): none, from the start.
+    preview_pages: isRecordFormat(v.mime)
+      ? 0
+      : v.preview_state === 'ready' ||
+          v.preview_state === 'unsupported' ||
+          v.preview_state === 'failed'
         ? (v.preview_pages ?? 0)
         : null,
+    // Never opened by the vault, and downloaded only (0.9.0, H5).
+    ...(isRecordFormat(v.mime) ? { stored_as_is: true } : {}),
     // A restore from before its removal brought the record back, not the file (5.24).
     file_removed: v.file_removed_at !== null,
   };
@@ -4811,9 +4833,59 @@ function decodeCursor(s: string): { k: string; id: string } {
 
 /**
  * CAP-03: the formats the vault accepts. Detected from the bytes, not the
- * name. The scanner folder (S3) takes the same, from @fdv/shared.
+ * name. The scanner folder (S3) takes the same, from @fdv/shared. A health
+ * record kept as it is (0.9.0, H5) is filed from a batch's item as it came.
  */
-const ACCEPTED: Readonly<Record<string, string>> = UPLOAD_KINDS;
+const ACCEPTED: Readonly<Record<string, string>> = STORED_KINDS;
+
+/** Word and Excel: zips inside, taken at what the browser said they are, as ever. */
+const OFFICE_TYPES = new Set(Object.keys(UPLOAD_KINDS).filter((m) => m.includes('openxmlformats')));
+
+/** What a sniff takes: since H5, the health record formats too, where a person adds them. */
+export interface SniffOptions {
+  /**
+   * XML, JSON, DICOM and ZIP kept as they are (`RECORD_KINDS`): a single
+   * add, a new version, a person's batch item. Never a computer's key.
+   */
+  records?: boolean;
+}
+
+/** Leading white space, a UTF-8 byte-order mark among it (`\s` takes U+FEFF too). */
+const LEADING = /^\s*/;
+
+/**
+ * Whether the first bytes are a record's (H5): a DICOM image's `DICM` at
+ * 128, a ZIP's `PK` signature, or the start of UTF-8 text that is XML (`<`)
+ * or JSON (`{` or `[`). Compared, never parsed; the rest of a text file is
+ * checked as UTF-8 as it flows (sniffStream).
+ */
+export function recordHeadFits(mime: string, head: Buffer, found: string | undefined): boolean {
+  if (mime === DICOM_MIME) {
+    return head.length >= 132 && head.subarray(128, 132).toString('latin1') === 'DICM';
+  }
+  if (mime === ZIP_MIME) {
+    // A zip's local header, an empty zip's end, or a spanned zip's marker.
+    return (
+      head.length >= 4 &&
+      head[0] === 0x50 &&
+      head[1] === 0x4b &&
+      ((head[2] === 3 && head[3] === 4) ||
+        (head[2] === 5 && head[3] === 6) ||
+        (head[2] === 7 && head[3] === 8))
+    );
+  }
+  if (mime !== XML_MIME && mime !== JSON_MIME) return false;
+  // Text: nothing file-type knows but XML, and UTF-8 as far as it reaches.
+  if (found !== undefined && found !== XML_MIME) return false;
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(head, { stream: true });
+  } catch {
+    return false;
+  }
+  const first = text.replace(LEADING, '').charAt(0);
+  return mime === XML_MIME ? first === '<' : first === '{' || first === '[';
+}
 
 /**
  * A pass-through that inspects the first bytes as they flow and resolves
@@ -4821,11 +4893,17 @@ const ACCEPTED: Readonly<Record<string, string>> = UPLOAD_KINDS;
  * the flow: breaking out of an async iterator would destroy the upload.
  * A batch's items are told apart the same way (I1): the kinds a single add
  * takes, and no others.
+ *
+ * A health record (H5, `records`) must be what it says it is — by its
+ * type, or for a type that says nothing its name — and its bytes bear it
+ * out: DICOM and ZIP by their signatures, XML and JSON as UTF-8 text from
+ * the first byte to the last, `detected` resolving only once the last has
+ * passed. Nothing is unzipped or parsed.
  */
-export function sniffStream(declaredMime: string, filename: string) {
+export function sniffStream(declaredMime: string, filename: string, opts: SniffOptions = {}) {
   const SNIFF_BYTES = 4100;
   let head: Buffer = Buffer.alloc(0);
-  let settled = false;
+  let settling: Promise<void> | null = null;
   let resolve!: (v: { mime: string; ext: string }) => void;
   let reject!: (e: Error) => void;
   const detected = new Promise<{ mime: string; ext: string }>((res, rej) => {
@@ -4834,41 +4912,105 @@ export function sniffStream(declaredMime: string, filename: string) {
   });
   detected.catch(() => undefined); // observed again by the caller
 
-  const settle = async () => {
-    if (settled) return;
-    settled = true;
-    const { fileTypeFromBuffer } = await import('file-type');
-    const found = await fileTypeFromBuffer(head);
-    // docx/xlsx sniff as zip; fall back to the declared type for those.
-    const mime =
-      found && found.mime !== 'application/zip'
-        ? found.mime
-        : declaredMime.split(';')[0]?.trim() || '';
-    const ext = ACCEPTED[mime];
-    if (!ext) {
-      reject(
-        new ApiError(
-          415,
-          'unsupported_type',
-          'That kind of file cannot be stored here. PDFs, photos and scans are fine.',
-          {
-            detail: `detected ${found?.mime ?? 'unknown'}, declared ${declaredMime}, name ${filename}`,
-          },
-        ),
-      );
-      return;
-    }
-    resolve({ mime, ext });
-  };
+  const declared = declaredMime.split(';')[0]?.trim() || '';
+  const claimed = opts.records ? claimedRecordFormat(declaredMime, filename) : null;
+  // XML or JSON: every byte read as UTF-8 as it passes, and the answer held
+  // until the last has.
+  const utf8 =
+    claimed === XML_MIME || claimed === JSON_MIME
+      ? new TextDecoder('utf-8', { fatal: true })
+      : null;
+  let utf8Bad = false;
+  let held: { mime: string; ext: string } | null = null;
+  const detail = (found: string | undefined) =>
+    `detected ${found ?? 'unknown'}, declared ${declaredMime}, name ${filename}`;
+
+  const settle = () =>
+    (settling ??= (async () => {
+      const { fileTypeFromBuffer } = await import('file-type');
+      const found = await fileTypeFromBuffer(head);
+      const foundMime = found?.mime;
+      // A zip file-type knows for Word or Excel stays what it is, whatever
+      // it was sent as or called.
+      if (foundMime && OFFICE_TYPES.has(foundMime)) {
+        resolve({ mime: foundMime, ext: UPLOAD_KINDS[foundMime] as string });
+        return;
+      }
+      // A record, where one may be: what it says it is, if its first bytes
+      // bear it out; or, said as nothing and named as nothing, what its bytes
+      // are — a DICOM image (`DICM` at 128) or a plain ZIP (the H5 review: a
+      // hospital CD's IM00001). A Word or Excel file sent as one stays it:
+      // claimedRecordFormat and recordByBytes take nothing sent as Office.
+      const record = claimed ?? (opts.records ? recordByBytes(declaredMime, foundMime) : null);
+      if (record) {
+        if (!recordHeadFits(record, head, foundMime)) {
+          reject(
+            new ApiError(415, 'unsupported_type', recordRefusedWords(record), {
+              detail: detail(foundMime),
+            }),
+          );
+          return;
+        }
+        const got = { mime: record, ext: ACCEPTED[record] as string };
+        if (utf8) held = got;
+        else resolve(got);
+        return;
+      }
+      // docx/xlsx sniff as zip; fall back to the declared type for those.
+      const mime = foundMime && foundMime !== 'application/zip' ? foundMime : declared;
+      const ext = UPLOAD_KINDS[mime];
+      if (!ext) {
+        reject(
+          new ApiError(
+            415,
+            'unsupported_type',
+            opts.records
+              ? 'That kind of file cannot be stored here. PDFs, photos and scans are fine. So are Word and Excel files, and health records kept as they are (XML, JSON, DICOM, ZIP).'
+              : 'That kind of file cannot be stored here. PDFs, photos and scans are fine.',
+            { detail: detail(foundMime) },
+          ),
+        );
+        return;
+      }
+      resolve({ mime, ext });
+    })());
 
   const stream = new PassThrough({
     transform(chunk: Buffer, _enc, cb) {
       if (head.length < SNIFF_BYTES) head = Buffer.concat([head, chunk]).subarray(0, SNIFF_BYTES);
+      if (utf8 && !utf8Bad) {
+        try {
+          utf8.decode(chunk, { stream: true });
+        } catch {
+          utf8Bad = true;
+        }
+      }
       if (head.length >= SNIFF_BYTES) void settle();
       cb(null, chunk);
     },
     flush(cb) {
-      void settle().then(() => cb(), cb);
+      void settle().then(() => {
+        if (utf8 && !utf8Bad) {
+          try {
+            // A character cut off at the very end is not text either.
+            utf8.decode();
+          } catch {
+            utf8Bad = true;
+          }
+        }
+        if (held) {
+          if (utf8Bad) {
+            reject(
+              new ApiError(415, 'unsupported_type', recordRefusedWords(held.mime), {
+                detail: `not UTF-8, declared ${declaredMime}, name ${filename}`,
+              }),
+            );
+          } else {
+            resolve(held);
+          }
+        }
+        cb();
+      }, cb);
     },
   });
   return { stream, detected };

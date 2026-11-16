@@ -253,3 +253,29 @@ export function linkShowsTitle(showTitle: boolean | null | undefined, sensitive:
   if (showTitle === true || showTitle === false) return showTitle;
   return !sensitive;
 }
+
+/**
+ * Said when a sensitive document is moved to the Trash or deleted for good
+ * (0.9.0, H5): backups made before still hold it, for as long as they are
+ * kept — the vault's nightly ones `days` days (`limits.backup_retain_days`),
+ * copies kept elsewhere as long as somebody keeps them. When the vault
+ * doesn't know how long, "until your backups age out", plainly. `n`: how
+ * many of the documents going are sensitive, for a list moved at once.
+ */
+export function sensitiveBackupsWords(
+  days: number | null | undefined,
+  o: { forGood: boolean; n?: number } = { forGood: false },
+): string {
+  const n = o.n ?? 1;
+  const what = n === 1 ? 'It’s sensitive' : `${n} of them are sensitive`;
+  const it = n === 1 ? 'it' : 'them';
+  const its = n === 1 ? 'its' : 'their';
+  const age =
+    typeof days === 'number' && days > 0
+      ? `until they age out: the vault keeps its nightly backups for ${days} ${days === 1 ? 'day' : 'days'}`
+      : 'until your backups age out';
+  const kept = `Older backups still hold ${it} — ${its} details in the vault’s backups, and ${its} file in any copy of the vault’s files kept elsewhere — ${age}.`;
+  return o.forGood
+    ? `${what}. ${kept}`
+    : `${what}. Even once ${n === 1 ? 'it’s' : 'they’re'} deleted for good, ${kept.charAt(0).toLowerCase()}${kept.slice(1)}`;
+}

@@ -15,6 +15,7 @@ import { None, useGrid } from '../table-grid.js';
 import { Button, ConfirmDialog, ErrorNote, Sheet, TopBar } from '../ui.js';
 import { EmailALink, EmailTheLink } from './Share.js';
 import { ChangeLink } from './ChangeLink.js';
+import { LinkOpens } from '../link-opens.js';
 import { dateTimeWords, familyZoneNow } from '../family-time.js';
 
 /**
@@ -520,6 +521,8 @@ function LinkRow(props: {
       <div className="place-title">{linkTarget(s)}</div>
       <div className="muted">{s.summary}</div>
       {s.created_by_name && <div className="muted">Made by {s.created_by_name}</div>}
+      {/* Who opened it, when (0.9.0, H5). */}
+      <LinkOpens link={s} />
       {pages && <div className="status status-warn">{pages}</div>}
       {(props.onTakeBack || show || change) && (
         <div className="row">
@@ -785,7 +788,10 @@ function LinksTable(props: {
                   {pages && <span className="status status-warn cell-sub">{pages}</span>}
                 </td>
                 <td className="wrap-any">{s.recipient_label ?? <None />}</td>
-                <td className="wrap-any">{s.summary}</td>
+                <td className="wrap-any">
+                  {s.summary}
+                  <LinkOpens link={s} />
+                </td>
                 <td className="wrap-any">{s.created_by_name ?? <None />}</td>
                 {show && (
                   <td>

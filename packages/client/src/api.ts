@@ -116,6 +116,8 @@ import type {
   SearchResult,
   SessionRow,
   Share,
+  ShareOpens,
+  DocumentLinkOpens,
   StopSharing,
   ShareCodeSent,
   SharedDocument,
@@ -1705,6 +1707,23 @@ export function createApi(http: Http) {
     shares: (token: string) => request<{ items: Share[] }>('/api/v1/shares', { token }),
     revokeShare: (token: string, id: string) =>
       request<void>(`/api/v1/shares/${id}`, { method: 'DELETE', token }),
+    /**
+     * Who opened a link, when (0.9.0, H5, `features.share_opens`): each
+     * opening's time and the browser it was opened in, in words, newest
+     * first; never an address. Its maker's, an owner's who sees it, and the
+     * person's whose sensitive document it gives; `404 not_found` for
+     * anybody else.
+     */
+    shareOpens: (token: string, id: string) =>
+      request<ShareOpens>(`/api/v1/shares/${enc(id)}/opens`, { token }),
+    /**
+     * Every link to one document whose openings the caller may see (0.9.0,
+     * H5, `features.share_opens`), newest first, each with its openings:
+     * their own, any an owner sees, and — for the person a sensitive
+     * document belongs to — every link to it, whoever made it.
+     */
+    documentLinkOpens: (token: string, documentId: string) =>
+      request<DocumentLinkOpens>(`/api/v1/documents/${enc(documentId)}/link-opens`, { token }),
     /**
      * A link shown again (0.9.0, `features.share_reveal`): to the account
      * that made it, after confirming it's them (`403 step_up_required`,

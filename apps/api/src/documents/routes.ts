@@ -1,6 +1,8 @@
 import type { MultipartFile } from '@fastify/multipart';
 import {
   attachmentDisposition,
+  deliveredType,
+  recordFileName,
   isDocumentSort,
   NOTES_MAX,
   ORIGINAL_PLACE_MOST,
@@ -837,8 +839,15 @@ export function registerDocuments(
     const range = parseRange(req.headers.range, total);
     const { stream, range: served } = await docs.content(p, req.params.id, range, metaOf(req));
     reply.header('accept-ranges', 'bytes');
-    reply.header('content-type', meta.mime);
-    reply.header('content-disposition', attachmentDisposition(meta.filename));
+    // A file is a download, never a page (0.9.0, H5): XML and JSON under a
+    // type no browser renders, nothing sniffed, and nothing in it runs.
+    reply.header('content-type', deliveredType(meta.mime));
+    reply.header(
+      'content-disposition',
+      attachmentDisposition(recordFileName(meta.filename, meta.mime)),
+    );
+    reply.header('x-content-type-options', 'nosniff');
+    reply.header('content-security-policy', "default-src 'none'; sandbox");
     reply.header('cache-control', 'private, no-store');
     if (!served) {
       reply.header('content-length', String(total));
@@ -906,6 +915,19 @@ export function registerDocuments(
   );
 
   app.get('/api/v1/shares', auth, async (req) => ({ items: await shares.list(principal(req)) }));
+
+  /**
+   * Who opened a link, when (0.9.0, H5): each opening's time and the
+   * browser it was opened in, in words — never an address. For its maker
+   * and the owners who see it, and for the person a sensitive document
+   * belongs to; 404 to anybody else, as for a link that is not there.
+   */
+  app.get<{ Params: { id: string } }>('/api/v1/shares/:id/opens', auth, async (req) =>
+    shares.opens(principal(req), parse(idParam, req.params).id),
+  );
+  app.get<{ Params: { id: string } }>('/api/v1/documents/:id/link-opens', auth, async (req) =>
+    shares.documentLinkOpens(principal(req), parse(idParam, req.params).id),
+  );
 
   /**
    * Only me documents and links outside the family (5.41; the owner's
@@ -1273,9 +1295,15 @@ function sendShared(
   reply: FastifyReply,
   file: { stream: NodeJS.ReadableStream; total: number; contentType: string; filename: string },
 ) {
-  reply.header('content-type', file.contentType);
-  reply.header('content-disposition', attachmentDisposition(file.filename));
+  // XML and JSON (0.9.0, H5) as a type no browser renders; the public
+  // routes' own headers say nosniff and sandbox (PUBLIC_API_HEADERS).
+  reply.header('content-type', deliveredType(file.contentType));
+  reply.header(
+    'content-disposition',
+    attachmentDisposition(recordFileName(file.filename, file.contentType)),
+  );
   reply.header('content-length', String(file.total));
+  reply.header('x-content-type-options', 'nosniff');
   reply.header('cache-control', 'private, no-store');
   // A shared document must never end up in somebody else's search
   // results or a proxy's cache.

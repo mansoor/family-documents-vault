@@ -459,6 +459,11 @@ const INCOMING_EXTENSIONS: Readonly<Record<string, string>> = {
   'image/webp': 'webp',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  // A health record kept as it is, added to a batch (0.9.0, H5).
+  'application/xml': 'xml',
+  'application/json': 'json',
+  'application/dicom': 'dcm',
+  'application/zip': 'zip',
 };
 
 /**

@@ -8,6 +8,7 @@ import {
   formatDate,
   NOTE_KIND,
   noteMarkdown,
+  recordFileName,
   safeExtension,
   safeFileName,
   ZIP_LEFT_OUT,
@@ -386,6 +387,7 @@ export class ZipService {
         'document_id',
         'version_no',
         'filename',
+        'mime',
         'byte_size',
         'storage_key',
         'vault_id',
@@ -539,7 +541,11 @@ export class ZipService {
         const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
         const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
         const adapter = await adapterOf(v.vault_id);
-        row.file = name(safeFileName(d.title ?? 'Untitled'), safeExtension(v.filename));
+        // A health record ends as what it is (0.9.0, the H5 review).
+        row.file = name(
+          safeFileName(d.title ?? 'Untitled'),
+          safeExtension(recordFileName(v.filename, v.mime)),
+        );
         files.push({ name: row.file, open: decryptedFile(adapter, v.storage_key, fileKey), row });
       }
       // Written down as its single download is (SEC-05): never its contents.
@@ -564,6 +570,7 @@ interface NewestVersion {
   document_id: string;
   version_no: number;
   filename: string;
+  mime: string;
   byte_size: string | number | bigint;
   storage_key: string;
   vault_id: string;

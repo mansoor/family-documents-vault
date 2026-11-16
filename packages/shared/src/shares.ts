@@ -633,3 +633,82 @@ export function readShareCode(typed: string | null | undefined): string | null {
   const digits = (typed ?? '').replace(/[\s-]/g, '');
   return new RegExp(`^\\d{${SHARE_CODE_DIGITS}}$`).test(digits) ? digits : null;
 }
+
+// ------------------------------------------- sensitive links (0.9.0, H5)
+
+/** The days a link to a sensitive document starts with (H5): a week. */
+export const SENSITIVE_SHARE_DAYS = 7;
+
+/**
+ * What a new link starts as (H5) when what it gives is sensitive — the
+ * document, or any document ticked on a collection's link: to view, for a
+ * week; to download, for a week, where the vault cannot draw its pages (a
+ * Word or Excel file, a health record kept as it is). The sharer can
+ * choose otherwise within the vault's limits. Null for anything else,
+ * which starts as before: to download, for a week.
+ */
+export function sensitiveLinkStart(o: {
+  sensitive: boolean;
+  viewable: boolean;
+}): { permission: SharePermission; days: number } | null {
+  if (!o.sensitive) return null;
+  return { permission: o.viewable ? 'view' : 'download', days: SENSITIVE_SHARE_DAYS };
+}
+
+/** Said under a sensitive link's choices (H5), as it starts. */
+export function sensitiveLinkStartWords(o: { viewable: boolean; collection?: boolean }): string {
+  const what = o.collection ? 'Some of these are sensitive' : 'This is sensitive';
+  return o.viewable
+    ? `${what}, so the link starts as view-only and ends in a week. You can change either.`
+    : `${what}, so the link ends in a week. It can only be downloaded: the vault can’t show its pages.`;
+}
+
+/**
+ * One time a link was opened (H5): when, and in what, in words — "Safari on
+ * an iPhone" — as the activity log keeps it. Never an address.
+ */
+export interface ShareOpening {
+  at: string;
+  /** The browser or app it was opened in, as the vault describes it. */
+  device: string;
+}
+
+/** GET /shares/{id}/opens (H5): who opened a link, when, newest first. */
+export interface ShareOpens {
+  share_id: string;
+  /** Who the link is for, as its maker wrote it; null when they didn't. */
+  recipient_label: string | null;
+  open_count: number;
+  items: ShareOpening[];
+}
+
+/** A link to one document, with its openings (H5, GET /documents/{id}/link-opens). */
+export interface DocumentLinkOpening {
+  share_id: string;
+  recipient_label: string | null;
+  /** Who made it, as the household knows them; null once they've left. */
+  created_by_name: string | null;
+  /** The caller made it. */
+  mine: boolean;
+  permission: SharePermission;
+  created_at: string;
+  expires_at: string;
+  state: 'active' | 'expired' | 'revoked' | 'locked' | 'paused' | 'used_up';
+  open_count: number;
+  opens: ShareOpening[];
+}
+
+/**
+ * GET /documents/{id}/link-opens (H5): every link to one document whose
+ * openings the caller may see — their own and, for an owner, any they see
+ * in Sharing; and, for the person a sensitive document belongs to, every
+ * link to it, whoever made it.
+ */
+export interface DocumentLinkOpens {
+  items: DocumentLinkOpening[];
+}
+
+/** An opening in words (H5): "Opened 3 Dec, 2:05 pm, in Safari on an iPhone". */
+export function openingWords(o: ShareOpening, when: string): string {
+  return `Opened ${when}, in ${o.device}`;
+}

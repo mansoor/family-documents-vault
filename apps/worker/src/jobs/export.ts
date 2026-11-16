@@ -45,6 +45,7 @@ import {
   csvCell,
   markdownText,
   safeFileName,
+  recordFileName,
 } from '@fdv/shared';
 import { adapterFromRow, StorageError } from '@fdv/storage';
 import { decryptToBuffer } from './process-version.js';
@@ -460,7 +461,8 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
           if (!bytes) fileNote = FILE_NOT_THERE;
         }
         if (adapter && bytes) {
-          const ext = path.extname(v.filename) || '';
+          // A health record ends as what it is (0.9.0, the H5 review).
+          const ext = path.extname(recordFileName(v.filename, v.mime)) || '';
           const base = `${safe(d.category ?? 'other')}/${safe(d.title ?? d.id)}`;
           let name = `${base}${ext}`;
           for (let i = 2; used.has(name); i++) name = `${base} (${i})${ext}`;

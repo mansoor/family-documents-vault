@@ -29,6 +29,13 @@ export const MAIL_IN_MAX_MESSAGE_BYTES = 50 * 1024 * 1024;
 /** A picture in the body smaller than this is a signature or a logo: left out. */
 export const MAIL_IN_INLINE_SKIP_BYTES = 20 * 1024;
 
+/**
+ * Said in email in's settings (0.9.0, H5), in H2's neutral words: whatever
+ * is emailed in has been through an email provider first.
+ */
+export const MAIL_IN_HEALTH_NOTE =
+  'A medical record you forward has already passed through your email provider, and a copy stays in your sent mail until you delete it. For health papers, adding them in the vault directly keeps them out of email altogether.';
+
 /** Where mail is moved once its attachments are in the vault (FDV_MAIL_IN_AFTER=move). */
 export const MAIL_IN_FILED_FOLDER = 'Filed';
 

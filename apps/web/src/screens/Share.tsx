@@ -4,12 +4,14 @@ import {
   COLLECTION_SHARE_FILE_REMOVED,
   defaultShareEnd,
   DOWNLOAD_KEEPS_DETAILS,
+  isRecordFormat,
   isShareAddress,
   latestShareEnd,
   ONLY_ME_NOT_SHARED,
   ONLY_ME_SHARE_WARNING,
   PREVIEW_MAX_PAGES,
   SENSITIVE_SHARE_CONFIRM,
+  sensitiveLinkStartWords,
   SHARE_CODE_TRUTH,
   SHARE_CODE_UNAVAILABLE,
   SHARE_LIMIT_MAX,
@@ -41,6 +43,7 @@ import { endWords, familyZoneNow } from '../family-time.js';
 import { useSmsCodes } from '../text-messages.js';
 import { useSensitiveConfirm } from '../sensitive-confirm.js';
 import { ChangeLink } from './ChangeLink.js';
+import { LinkOpens } from '../link-opens.js';
 
 /**
  * Sharing one document with somebody outside the family (SHR-05).
@@ -96,7 +99,9 @@ export function SharePanel(props: {
   const [made, setMade] = useState<CreatedShare | null>(null);
   // One of its links being changed (0.9.0, LK): its form, in this card's place.
   const [changing, setChanging] = useState<Share | null>(null);
-  const options = useLinkOptions();
+  // A sensitive document's link starts as view-only, for a week (0.9.0,
+  // H5); one the vault can't draw goes to download all the same.
+  const options = useLinkOptions(props.sensitive === true ? { permission: 'view' } : undefined);
   const [open, setOpen] = useState(Boolean(props.onClose));
   const [busy, setBusy] = useState<'making' | 'taking back' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -271,6 +276,8 @@ export function SharePanel(props: {
               <li key={s.id} className="row" style={{ justifyContent: 'space-between' }}>
                 <span className="stack" style={{ gap: 4 }}>
                   <span className="muted">{s.summary}</span>
+                  {/* Who opened it, when (0.9.0, H5). */}
+                  <LinkOpens link={s} />
                   {pagesNote && (
                     <span
                       className={
@@ -310,13 +317,21 @@ export function SharePanel(props: {
             timezone={timezone}
             viewable={viewable}
             note={props.note === true}
-            notViewable="Word and Excel files can only be shared with download: the vault cannot draw their pages."
+            notViewable={
+              isRecordFormat(data?.newest?.mime)
+                ? 'Health record files kept as they are can only be shared with download: the vault doesn’t open them, so it has no pages to show.'
+                : 'Word and Excel files can only be shared with download: the vault cannot draw their pages.'
+            }
             viewNote={
               long !== null
                 ? `They will see the first ${PREVIEW_MAX_PAGES} of ${long} pages.`
                 : null
             }
           />
+          {/* Why it starts as it does (0.9.0, H5). */}
+          {sensitive && props.note !== true && (
+            <p className="muted">{sensitiveLinkStartWords({ viewable })}</p>
+          )}
           {protects && (
             <>
               <Check
@@ -372,6 +387,11 @@ export interface LinkOptionsValue {
   /** The end as chosen, on the family's clock; null is the default, In a week. */
   end: { date: string; time: string } | null;
   permission: SharePermission;
+  /**
+   * View or download was pressed (0.9.0, H5): a collection's sheet starts
+   * view-only while a sensitive one is ticked, until the sharer chooses.
+   */
+  permissionChosen?: boolean;
   opens: string;
   withPin: boolean;
   /** A password (5.20): one the vault makes up, or one typed here. Never with a PIN. */
@@ -646,7 +666,7 @@ export function LinkOptions(props: {
               className={`pill${value.permission === 'view' && viewable ? ' pill-on' : ''}`}
               aria-pressed={value.permission === 'view' && viewable}
               disabled={!viewable}
-              onClick={() => options.set({ permission: 'view' })}
+              onClick={() => options.set({ permission: 'view', permissionChosen: true })}
             >
               View
             </button>
@@ -654,7 +674,7 @@ export function LinkOptions(props: {
               type="button"
               className={`pill${value.permission === 'download' || !viewable ? ' pill-on' : ''}`}
               aria-pressed={value.permission === 'download' || !viewable}
-              onClick={() => options.set({ permission: 'download' })}
+              onClick={() => options.set({ permission: 'download', permissionChosen: true })}
             >
               View and download
             </button>

@@ -144,6 +144,17 @@ const schema = z.object({
       'The longest a share link may last, in days (1 to 90). A link always ends: ' +
         'this only shortens the longest end the vault accepts.',
     ),
+  FDV_BACKUP_RETAIN_DAYS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(365)
+    .optional()
+    .describe(
+      'How many days the worker keeps its nightly backups (the worker’s own setting, given to ' +
+        'the API too): what a sensitive document’s delete confirmation says older backups ' +
+        'hold it for. Unset, it says “until your backups age out”.',
+    ),
   FDV_OFFLINE_MAX_DAYS: z.coerce
     .number()
     .int()

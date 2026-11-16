@@ -7533,6 +7533,85 @@ name'`); a name kept from before keeps it. A place the database
       `setOriginalPlace(token, id, folderId | null, etag?)` and
       `setOriginalPlaces(token, body)`; the fake sets, follows, filters and
       sorts them as the vault does, and a contract scenario checks it.
+  - Sharing with doctors, formats, backups (0.9.0-dev.51, H5). No
+    migration. **Additive**: new routes, fields and upload types; a call
+    made as before is answered as before, but for the headers of a file's
+    download (below).
+    - **New `features`:** `record_formats` and `share_opens` (both `true`).
+      **New `limits.backup_retain_days`**: `FDV_BACKUP_RETAIN_DAYS` when the
+      API is given it (the compose file gives it the worker's), else `null`.
+    - **Health records kept as they are:** `POST /documents` (capture),
+      `POST /documents/{id}/versions` and a person's `POST
+/batches/{id}/items` now take C-CDA XML (`.xml`, `application/xml` or
+      `text/xml`), FHIR JSON (`.json`, `application/json`,
+      `application/fhir+json`), DICOM (`.dcm`, `application/dicom`) and ZIP
+      (`.zip`, `application/zip`, `application/x-zip-compressed`), kept as
+      `application/xml`, `application/json`, `application/dicom` and
+      `application/zip` (`RECORD_KINDS`, `STORED_KINDS`). Which one is the
+      type sent, or — for none or `application/octet-stream` — the name;
+      then the bytes must bear it out: `DICM` at byte 128, a `PK` signature,
+      or UTF-8 text from first byte to last that starts `<` (XML) or `{`/`[`
+      (JSON), never parsed. Otherwise `415 unsupported_type`
+      (`recordRefusedWords`). A file sent as a PDF, photo or Office file is
+      never taken for one. A computer's key, the scanner folder, email in
+      and request links still refuse them (415, or skipped as before).
+      `FDV_MAX_UPLOAD_BYTES` is their limit too.
+    - **Never opened:** the worker neither reads, counts, draws nor
+      thumbnails one (`ocr_status: 'skipped'`, `preview_state:
+'unsupported'`), a batch's item of one is `not_read` at once, and the
+      Reading check leaves them out. **New field
+      `VersionView.stored_as_is: true`** for one, with `preview_pages: 0`
+      from the start; `GET /versions/{id}/pages/{n}` is `404 no_preview`
+      (`recordNoPreviewWords`) and queues nothing. Filed from a batch, its
+      name keeps its ending (`incomingFileName`).
+    - **Downloads:** `GET /versions/{id}/content`, a link's file and an
+      Inbox item's file are sent as an attachment with
+      `X-Content-Type-Options: nosniff` — XML and JSON as
+      `application/octet-stream` (`deliveredType`); the signed-in download
+      also with `Content-Security-Policy: default-src 'none'; sandbox`.
+      **Changed answer:** the `Content-Type` of an XML or JSON file's
+      download (none was taken before). A ZIP download of several documents
+      puts them in as they are.
+    - **Links to view:** `422 view_not_possible` for a record, document or
+      collection, made or changed, with words that say so
+      (`viewNotPossibleWords`, `downloadOnlyKind`); Word and Excel as before.
+    - **New `GET /api/v1/shares/{id}/opens`** → `ShareOpens` `{ share_id,
+recipient_label, open_count, items: [{ at, device }] }`, newest first:
+      each `share.opened` line's time and its browser in words (`"Safari on
+an iPhone"`), never an address. For the link's maker and an owner who
+      sees it in `GET /shares`, and for the person a sensitive document
+      belongs to (the H5 choice), whoever made the link; `404 not_found`
+      for anybody else, a clinician's link (H4 lists those) included.
+    - **New `GET /api/v1/documents/{id}/link-opens`** → `{ items:
+DocumentLinkOpening[] }`, every link to one document whose openings
+      the caller may see, newest first, each with `created_by_name`, `mine`,
+      `permission`, `state`, `expires_at`, `open_count` and `opens`. `404`
+      for a document the caller cannot see.
+    - **Shared and client:** `sensitiveLinkStart`, `SENSITIVE_SHARE_DAYS`
+      and `sensitiveLinkStartWords` (a sensitive document's link starts
+      view-only, or download where it can't be shown, for a week — a
+      client's default, not the API's: an omitted `permission` is still
+      download); `sensitiveBackupsWords`; `WATCH_KEPT_HEALTH`;
+      `MAIL_IN_HEALTH_NOTE`; `isRecordFormat`, `claimedRecordFormat`,
+      `recordFormatWords`, `RECORD_ACCEPT`, `RECORD_FORMATS_NOTE`.
+      `@fdv/client` `shareOpens(token, id)` and `documentLinkOpens(token,
+documentId)`; the fake answers both and refuses a record to view, and
+      a contract scenario checks them.
+    - **After its review (still dev.51):**
+      - A file sent with no type, `application/octet-stream` or `text/plain`
+        and no record ending is kept as DICOM or ZIP when its bytes are one
+        (`recordByBytes`); `text/plain` counts as no type (`saysNothing`),
+        so a `.json` or `.xml` sent so is taken; `.ndjson` is not. A zip
+        file-type knows as Word or Excel stays one.
+      - A record is kept, and downloaded everywhere (signed in, a link, a
+        ZIP, the full export), under its name with its format's ending
+        (`recordFileName`): `invoice.html` kept as XML is `invoice.xml`.
+      - The openings routes include collection links that give the
+        document (ticked or followed), for the maker, owners and the
+        person alike; the person's links say `paused` as `GET /shares`
+        does when the maker's sign-in is paused or limited; and a link to a
+        document in the Trash is 404 on both routes. The fake keeps a
+        seeded collection link's `items` and answers the same.
 
 ## Deprecations in effect
 

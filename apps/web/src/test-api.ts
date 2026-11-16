@@ -1,5 +1,7 @@
 import {
   type SharedEmergency,
+  type ShareOpening,
+  type DocumentLinkOpening,
   type EmergencyFields,
   type EmergencyLink,
   type EmergencyView,
@@ -295,6 +297,16 @@ export interface FakeState {
   cabinets?: boolean;
   /** Where the original is, as a place in a cabinet (0.9.0, C3): said when a test asks. */
   originalPlace?: boolean;
+  /**
+   * Who opened a link, when (0.9.0, H5): `features.share_opens` and
+   * `record_formats`, said when a test gives this; GET /shares/{id}/opens
+   * answers each link's from here (by its id; left out, none), and GET
+   * /documents/{id}/link-opens answers `docLinkOpens[id]`.
+   */
+  linkOpenings?: Record<string, ShareOpening[]>;
+  docLinkOpens?: Record<string, DocumentLinkOpening[]>;
+  /** limits.backup_retain_days (0.9.0, H5): left out, not said. */
+  backupDays?: number | null;
   /** Each POST /documents/original-place, as sent. */
   placeAsks?: Array<{ document_ids: string[]; folder_id: string | null }>;
   /** The signed-in person's cabinet, as GET /cabinet gives it. */
@@ -1466,6 +1478,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.cabinets ? { cabinets: true, cabinet_dividers: true, cabinet_pins: true } : {}),
           // Places in a cabinet (0.9.0, C3): said when a test asks.
           ...(state.originalPlace ? { original_place: true } : {}),
+          // Who opened a link; health records kept as they are (0.9.0, H5).
+          ...(state.linkOpenings ? { share_opens: true, record_formats: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
           ...(state.caregivers ? { caregivers: true } : {}),
           // Emergency information (0.9.0, H4): said when a test asks.
@@ -1502,6 +1516,7 @@ export function installFakeApi(state: FakeState) {
         limits: {
           ...(state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {}),
           ...(state.maxUploadBytes ? { max_upload_bytes: state.maxUploadBytes } : {}),
+          ...(state.backupDays !== undefined ? { backup_retain_days: state.backupDays } : {}),
         },
         deprecations: [],
         branding: { display_name: state.displayName },
@@ -3662,6 +3677,22 @@ export function installFakeApi(state: FakeState) {
       });
     }
     if (path === '/api/v1/shares' && method === 'GET') return json({ items: state.shares });
+    // Who opened a link, when (0.9.0, H5).
+    if (/^\/api\/v1\/shares\/[^/]+\/opens$/.test(path) && method === 'GET') {
+      const id = path.split('/')[4] as string;
+      const link = state.shares.find((x) => x.id === id);
+      if (!link) return refuse(404, 'not_found', 'That link is not in the vault.');
+      return json({
+        share_id: id,
+        recipient_label: link.recipient_label,
+        open_count: link.open_count,
+        items: state.linkOpenings?.[id] ?? [],
+      });
+    }
+    if (/^\/api\/v1\/documents\/[^/]+\/link-opens$/.test(path) && method === 'GET') {
+      const id = path.split('/')[4] as string;
+      return json({ items: state.docLinkOpens?.[id] ?? [] });
+    }
     // A link shown again to whoever made it (0.9.0): theirs alone, after
     // confirming it's them, as the vault answers.
     // A link emailed by the vault (0.9.0): with the operator's mail server

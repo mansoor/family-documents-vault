@@ -226,6 +226,11 @@ export interface BatchUpload {
   idempotencyKey?: string;
   /** What the browser said it is: only Word and Excel are taken at its word, as a single add's. */
   mime: string;
+  /**
+   * A health record kept as it is may be this item (0.9.0, H5): a person's
+   * upload; never a computer's key, which sends scans.
+   */
+  records?: boolean;
   stream: Readable;
   /** True when the multipart parser cut the file off at the size limit. */
   truncated: () => boolean;
@@ -997,7 +1002,7 @@ export class BatchService {
 
     // The kinds a single add takes, told from the bytes as they flow; the
     // plain bytes counted and hashed on the way in.
-    const sniffer = sniffStream(upload.mime, upload.filename);
+    const sniffer = sniffStream(upload.mime, upload.filename, { records: upload.records === true });
     const plainHash = createHash('sha256');
     let bytes = 0;
     const counted = new PassThrough();

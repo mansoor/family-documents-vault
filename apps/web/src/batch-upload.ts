@@ -1,5 +1,11 @@
 import { ApiRequestError, NetworkError, parseRetryAfter } from '@fdv/client';
-import { itemFolder, type BatchItemView } from '@fdv/shared';
+import {
+  claimedRecordFormat,
+  itemFolder,
+  RECORD_ACCEPT,
+  saysNothing,
+  type BatchItemView,
+} from '@fdv/shared';
 import { api } from './api.js';
 
 /**
@@ -109,11 +115,32 @@ export async function sha256Of(file: Blob): Promise<string> {
  * file of any other kind is not sent, and says why. The vault decides from
  * the bytes; this only saves sending what it would refuse.
  */
-export const BATCH_ACCEPT = 'application/pdf,image/*,.heic,.heif,.tif,.tiff,.webp,.docx,.xlsx';
+export const BATCH_ACCEPT = `application/pdf,image/*,.heic,.heif,.tif,.tiff,.webp,.docx,.xlsx,${RECORD_ACCEPT}`;
 const KINDS = /\.(pdf|jpe?g|png|heic|heif|tiff?|webp|docx|xlsx)$/i;
-export function takenKind(file: { name: string; type: string }): boolean {
+export function takenKind(file: { name: string; type: string }, alone = true): boolean {
   if (KINDS.test(file.name)) return true;
+  // A health record kept as it is (0.9.0, H5): by its type, or its name —
+  // chosen on its own; one from a folder is left out (isFolderRecord).
+  if (claimedRecordFormat(file.type, file.name) !== null) return alone;
+  // Chosen on its own, with no type and no ending (a hospital CD's IM00001):
+  // the vault decides from its bytes — a DICOM image or a ZIP, or refused.
+  if (alone && saysNothing(file.type) && !/\.[A-Za-z0-9]{1,8}$/.test(file.name)) return true;
   return /^(application\/pdf|image\/(jpeg|png|heic|heif|tiff|webp))$/.test(file.type);
+}
+
+/**
+ * A health record in a folder chosen or dropped (the H5 review): left out,
+ * for a folder's `.json`, `.xml` and `.zip` are seldom health records (a
+ * photo export's notes beside each picture, say). Chosen on its own, it goes.
+ */
+export function isFolderRecord(file: { name: string; type: string }, path: string | null): boolean {
+  return path !== null && claimedRecordFormat(file.type, file.name) !== null;
+}
+
+/** Said of the records a folder held, left out. */
+export function folderRecordsLeftOutWords(n: number): string | null {
+  if (n <= 0) return null;
+  return `${n === 1 ? '1 file' : `${n} files`} in the folder ${n === 1 ? 'looks' : 'look'} like ${n === 1 ? 'a health record' : 'health records'} (XML, JSON, DICOM or ZIP) and ${n === 1 ? 'was' : 'were'} left out: health record files are added one at a time. Choose ${n === 1 ? 'it' : 'them'} with Choose files.`;
 }
 
 /** A file's bytes: as the browser gives them, or by a FileReader where it has no `arrayBuffer`. */

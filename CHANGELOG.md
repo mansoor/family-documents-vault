@@ -6,6 +6,25 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.51] - 2026-11-16 — sharing health papers with doctors, portal formats, and backups
+
+### Added
+
+- **Keep the files your patient portal gives you, as they are.** Besides PDFs and photos, you can now add a C-CDA document (`.xml`), a FHIR export (`.json`), a DICOM image (`.dcm`), or a ZIP of a DICOM folder or a whole portal export — from **Add**, as a new version, or in **Add many**. The vault keeps each sealed like any file and never opens it: no reading, no pages, no thumbnail, and a ZIP is never unzipped. Its page says **No preview** and why; **Download** gives you the file to open in the program it's for. Keep the portal's PDF too: it's the readable copy.
+- **Who opened a link, when.** Beside a link in **Sharing** and on a document's Share card, **Who opened it** lists each time it was opened and the browser it was opened in — never an address. Whoever made the link sees it, and so do the owners.
+- **Your sensitive papers, shared by someone else.** If a sensitive document is yours — a test result, say — and someone in the family shared it outside, on its own or in a collection, its page shows **Shared outside the family**: every link to it, who made it, and who opened each, when.
+- A DICOM image with no ending, like a hospital CD's `IM00001`, is recognised from its contents when you choose it on its own, and a `.json` or `.xml` your computer calls plain text is taken too. Each health record downloads with the ending of what it is. In **Add many**, a folder's XML, JSON and ZIP files are left out — a folder is full of them that aren't health records — and the page says how many: choose health record files one at a time.
+
+### Changed
+
+- **A sensitive document's link starts careful.** Sharing a sensitive document — or a collection with one ticked — starts as **View** only, for a week, and says why. A file the vault can't show (a Word or Excel file, or a health record) starts as download, for a week. You can still choose otherwise.
+- **Deleting a sensitive document says what backups keep.** Moving it to the Trash, and removing it for good, say that older backups still hold it until they age out — and for how long: the vault keeps its nightly backups for `FDV_BACKUP_RETAIN_DAYS` days (30 unless you change it). If the vault hasn't been told, it says "until your backups age out".
+- **The scanner folder's kept scans** say that fewer days, or 0, keep health papers private sooner. **Email in** says that a medical record you forward has already passed through your email provider.
+
+### Security
+
+- Every file download is sent as an attachment and never sniffed; XML and JSON files go as a type no browser renders, so a file can never run as a page. A health record must be what it says it is: the vault checks a DICOM image's and a ZIP's first bytes, and that XML and JSON are UTF-8 text throughout, and refuses anything else. The scanner folder, email in, request links and a paired computer still take only scans and Office files.
+
 ## [0.9.0-dev.50] - 2026-11-16 — where the original is, in your cabinet
 
 ### Added

@@ -58,6 +58,13 @@ export const WATCH_KEEP_DAYS_MAX = 365;
 export const WATCH_KEPT_WARNING =
   'Scans kept here are not encrypted until they’re deleted; anyone who can open the server’s folder can read them.';
 
+/**
+ * Said beside it too (0.9.0, H5), in H2's neutral words: health papers are
+ * the ones to keep for the shortest time.
+ */
+export const WATCH_KEPT_HEALTH =
+  'If you scan health papers here, such as test results or prescriptions, fewer days — or 0 — keeps them private sooner.';
+
 /** Said beside it too (the O1 review, M2): the vault deletes only the scans it kept there. */
 export const WATCH_PROCESSED_UNTOUCHED =
   'Anything else saved into processed is never touched, but isn’t added either.';

@@ -19,6 +19,7 @@ import {
   folderOfChosen,
   sendBatchItem,
   sha256Of,
+  isFolderRecord,
   takenKind,
   type BatchSending,
 } from './batch-upload.js';
@@ -80,6 +81,11 @@ export interface Upload {
   seen: boolean;
   /** Bumped as what waits in the Inbox changes: the shell counts it again then. */
   changed: number;
+  /**
+   * Health record files in a folder chosen or dropped, left out (0.9.0, the
+   * H5 review): added one at a time instead. Absent: none.
+   */
+  recordsLeftOut?: number;
 }
 
 const EMPTY: Upload = {
@@ -93,6 +99,7 @@ const EMPTY: Upload = {
   stopping: false,
   seen: true,
   changed: 0,
+  recordsLeftOut: 0,
 };
 
 /** How far it has got: what is to send, what arrived, what was not sent, what waits. */
@@ -251,16 +258,22 @@ export class BatchUploads {
     this.set((was) => {
       const keys = new Set(was.chosen.map((c) => c.key));
       const next = [...was.chosen];
+      let leftOut = was.recordsLeftOut ?? 0;
       for (const chosen of files) {
         const file = chosen instanceof File ? chosen : chosen.file;
         const path = pathOf(chosen);
         const key = fileKey(file, path);
         if (keys.has(key)) continue;
         keys.add(key);
+        // A folder's health records are left out, and counted (H5 review).
+        if (isFolderRecord(file, path)) {
+          leftOut += 1;
+          continue;
+        }
         const room =
           BATCH_MAX_FILES - opts.already - next.filter((c) => c.state !== 'refused').length;
-        const reason = !takenKind(file)
-          ? 'Not a kind the vault takes: PDFs, photos and scans, Word and Excel files.'
+        const reason = !takenKind(file, path === null)
+          ? 'Not a kind the vault takes: PDFs, photos and scans, Word and Excel files, and health records (XML, JSON, DICOM, ZIP).'
           : file.size > opts.limit
             ? `Too big: over ${sizeWords(opts.limit)}, the most this vault takes for one file.`
             : room <= 0
@@ -276,7 +289,7 @@ export class BatchUploads {
           ...(reason ? { reason } : {}),
         });
       }
-      return { chosen: next };
+      return { chosen: next, recordsLeftOut: leftOut };
     });
   }
 
@@ -287,7 +300,7 @@ export class BatchUploads {
 
   takeAllOff(): void {
     if (this.state.phase !== 'choosing') return;
-    this.set({ chosen: [] });
+    this.set({ chosen: [], recordsLeftOut: 0 });
   }
 
   /**

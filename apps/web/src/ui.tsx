@@ -1,4 +1,10 @@
-import { avatarColour, graphemesOf, statusTone, type Status } from '@fdv/shared';
+import {
+  avatarColour,
+  graphemesOf,
+  sensitiveBackupsWords,
+  statusTone,
+  type Status,
+} from '@fdv/shared';
 import {
   useEffect,
   useId,
@@ -798,6 +804,12 @@ export function MoveToTrashDialog(props: {
   returnFocus: RefObject<HTMLElement | null>;
   onConfirm: () => void;
   onCancel: () => void;
+  /**
+   * It is sensitive (0.9.0, H5): older backups still hold it until they age
+   * out — `limits.backup_retain_days` days, or "until your backups age out".
+   */
+  sensitive?: boolean;
+  backupDays?: number | null;
 }) {
   return (
     <ConfirmDialog
@@ -815,6 +827,9 @@ export function MoveToTrashDialog(props: {
         “{props.title ?? 'This document'}” leaves every list, search and reminder. You can bring it
         back from the Trash.
       </p>
+      {props.sensitive === true && (
+        <p className="muted">{sensitiveBackupsWords(props.backupDays, { forGood: false })}</p>
+      )}
     </ConfirmDialog>
   );
 }
