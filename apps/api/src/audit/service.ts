@@ -4,13 +4,15 @@ import {
   canSee,
   canSeeCollection,
   describeEvents,
+  describeEventSpans,
   guestLabel,
   type ActivityEvent,
   type ActivityLine,
 } from '@fdv/shared';
-import { sql } from 'kysely';
+import { sql, type RawBuilder } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
+import { notFound } from '../errors.js';
 import { sensitiveSql } from '../documents/filters.js';
 import { madeWith } from '../documents/made-with.js';
 
@@ -574,6 +576,17 @@ export interface ActivityPage {
   next: number | null;
 }
 
+/** A stretch of the log in which a collection's link gave a document: `[from, to)` by row id. */
+interface Window {
+  share_id: string;
+  from: number;
+  /** Null: it gives it still, or did until it was removed. */
+  to: number | null;
+}
+
+/** Past every row id: a stretch that has not ended. */
+const END = '9223372036854775807';
+
 interface Row {
   id: string | number;
   at: Date;
@@ -605,16 +618,98 @@ export class AuditService {
 
   async activity(
     p: Principal,
-    opts: { before?: number | undefined; limit?: number | undefined } = {},
+    opts: {
+      before?: number | undefined;
+      limit?: number | undefined;
+      /**
+       * One document's lines alone (0.9.0, DA): `GET /documents/{id}/activity`.
+       * The same lines, shown to the same people, as the whole log.
+       */
+      documentId?: string | undefined;
+    } = {},
   ): Promise<ActivityPage> {
     requireCapability(p, 'audit.read');
     const limit = Math.min(Math.max(opts.limit ?? PAGE, 1), 100);
 
     return withPrincipal(this.db, p, async (trx) => {
-      // Raw SQL because this joins the audit row to three different
-      // things by `object_type`, which Kysely would make harder to read
-      // rather than easier.
-      const result = await sql<Row>`
+      // A moment a line names is said on the household's clock (5.26).
+      const household = await trx
+        .selectFrom('household')
+        .select(['timezone'])
+        .where('id', '=', p.householdId)
+        .executeTakeFirst();
+      const zone = householdZone(household?.timezone);
+      if (opts.documentId) {
+        return this.documentPage(trx, p, opts.documentId, opts.before, limit, zone);
+      }
+      const read = await this.read(trx, p, null, opts.before, limit + 1);
+      const rows = read.slice(0, limit);
+      // One sitting with a document is one line, not one per page (0.4.12).
+      const items = describeEvents(await this.shown(trx, p, rows, zone));
+      const last = rows[rows.length - 1];
+      return {
+        items,
+        // The cursor follows the rows read, not the lines shown: a page
+        // that hides everything still moves forward.
+        next: read.length > limit && last ? Number(last.id) : null,
+      };
+    });
+  }
+
+  /**
+   * One document's page (0.9.0, DA): read on until it has `limit` lines
+   * the reader is shown, or there is nothing older. Its cursor is the
+   * oldest row of the last line shown (a sitting's last look), never a row
+   * the reader is not shown — a page with nothing shown would otherwise
+   * hand over a cursor for each line kept from them, counting them.
+   */
+  private async documentPage(
+    trx: Db,
+    p: Principal,
+    documentId: string,
+    before: number | undefined,
+    limit: number,
+    zone: string,
+  ): Promise<ActivityPage> {
+    const windows = await this.aboutDocument(trx, p, documentId);
+    const visible: ActivityEvent[] = [];
+    let cursor = before;
+    for (let batch = limit + 1; ; batch = 100) {
+      const rows = await this.read(
+        trx,
+        p,
+        this.picked(p, documentId, windows, cursor, batch),
+        cursor,
+        batch,
+      );
+      visible.push(...(await this.shown(trx, p, rows, zone)));
+      const spans = describeEventSpans(visible);
+      // A line past the page: the page's last line is whole.
+      const lastShown = spans[limit - 1];
+      if (spans.length > limit && lastShown) {
+        return { items: spans.slice(0, limit).map((s) => s.line), next: lastShown.oldest };
+      }
+      const last = rows[rows.length - 1];
+      if (rows.length < batch || !last) {
+        return { items: spans.map((s) => s.line), next: null };
+      }
+      cursor = Number(last.id);
+    }
+  }
+
+  /** The log's rows, newest first, before the cursor: the household's, or those `picked` names. */
+  private async read(
+    trx: Db,
+    p: Principal,
+    picked: RawBuilder<unknown> | null,
+    before: number | undefined,
+    count: number,
+  ): Promise<Row[]> {
+    // Raw SQL because this joins the audit row to three different
+    // things by `object_type`, which Kysely would make harder to read
+    // rather than easier.
+    const result = await sql<Row>`
+        ${picked ?? sql``}
         select e.id,
                e.at,
                e.action,
@@ -688,59 +783,207 @@ export class AuditService {
                                then (e.detail->>'request_id')::uuid
                         end
          where e.household_id = ${p.householdId}
-           ${opts.before ? sql`and e.id < ${opts.before}` : sql``}
+           ${before ? sql`and e.id < ${before}` : sql``}
+           ${picked ? sql`and e.id in (select id from picked)` : sql``}
          order by e.id desc
-         limit ${limit + 1}
+         limit ${count}
       `.execute(trx);
+    return result.rows;
+  }
 
-      const rows = result.rows.slice(0, limit);
-      // A moment a line names is said on the household's clock (5.26).
-      const household = await trx
-        .selectFrom('household')
-        .select(['timezone'])
-        .where('id', '=', p.householdId)
-        .executeTakeFirst();
-      const links = await this.collectionLinks(trx, p, rows);
-      const events: ActivityEvent[] = [];
-      for (const r of rows) {
-        // A private document belongs to one person, and so does every line
-        // about it; a line nobody has said the audience of is nobody's.
-        if (!shownTo(p, { ...r, link: linkOf(r, links) })) continue;
-        events.push({
-          id: Number(r.id),
-          at: r.at.toISOString(),
-          action: r.action,
-          actor:
-            r.actor_name !== null && r.actor_guest !== null
-              ? guestLabel(r.actor_name, r.actor_guest)
-              : r.actor_name,
-          actor_id: r.actor_account_id,
-          actor_member_id: r.actor_member_id,
-          actor_label: r.actor_label,
-          object_type: r.object_type,
-          object_id: r.object_id,
-          object_title:
-            r.document_title ??
-            (r.member_name !== null && r.member_guest !== null
-              ? guestLabel(r.member_name, r.member_guest)
-              : r.member_name),
-          ...(r.document_sensitive === true ? { object_sensitive: true } : {}),
-          collection_name: r.collection_name,
-          detail: (r.detail ?? {}) as Record<string, unknown>,
-          timezone: householdZone(household?.timezone),
-        });
+  /** The rows a reader is shown, as events to say. */
+  private async shown(trx: Db, p: Principal, rows: Row[], zone: string): Promise<ActivityEvent[]> {
+    const links = await this.collectionLinks(trx, p, rows);
+    const events: ActivityEvent[] = [];
+    for (const r of rows) {
+      // A private document belongs to one person, and so does every line
+      // about it; a line nobody has said the audience of is nobody's.
+      if (!shownTo(p, { ...r, link: linkOf(r, links) })) continue;
+      events.push({
+        id: Number(r.id),
+        at: r.at.toISOString(),
+        action: r.action,
+        actor:
+          r.actor_name !== null && r.actor_guest !== null
+            ? guestLabel(r.actor_name, r.actor_guest)
+            : r.actor_name,
+        actor_id: r.actor_account_id,
+        actor_member_id: r.actor_member_id,
+        actor_label: r.actor_label,
+        object_type: r.object_type,
+        object_id: r.object_id,
+        object_title:
+          r.document_title ??
+          (r.member_name !== null && r.member_guest !== null
+            ? guestLabel(r.member_name, r.member_guest)
+            : r.member_name),
+        ...(r.document_sensitive === true ? { object_sensitive: true } : {}),
+        collection_name: r.collection_name,
+        detail: (r.detail ?? {}) as Record<string, unknown>,
+        timezone: zone,
+      });
+    }
+    return events;
+  }
+
+  /**
+   * One document (0.9.0, DA), and when each collection's link gave it:
+   * the stretches of the log — `[from, to)` by row id — in which the
+   * link's own lines (made, opened, a ZIP downloaded, a code sent or
+   * emailed, taken back: written about its collection) carried it. Found
+   * from the document's own lines and the link's `share.created`, never by
+   * today's membership alone:
+   *
+   *  - from the link's making, for a document ticked as it was made
+   *    (`share.created`'s `document_ids`); from its `share.followed`;
+   *  - until its `share.left_out` (Sensitive), or until it was taken out
+   *    of the collection (`collection.item_removed`) — a ticked one again
+   *    from when it is put back (`collection.item_added`), a followed one
+   *    from its next `share.followed`;
+   *  - a ticked document the link left out with no `share.left_out` — as
+   *    the document was made Only me or Adults only, whose line says only
+   *    how many links ended, never which — has none of the link's own
+   *    lines: the log cannot say when it stopped.
+   *
+   * Links live and removed once they had ended (0106, RQ: their
+   * tombstones). A document the caller cannot see — another member's Only
+   * me, removed for good, seen only as its person's caregiver — is not
+   * there, as `GET /documents/{id}` says; one in the Trash keeps its history.
+   */
+  private async aboutDocument(trx: Db, p: Principal, documentId: string): Promise<Window[]> {
+    const doc = await trx
+      .selectFrom('document')
+      .select(['visibility', 'owner_member_id'])
+      .where('id', '=', documentId)
+      .executeTakeFirst();
+    if (!doc || !canSee(p, doc)) throw notFound('That document');
+    // What the document's own lines say of collections and their links.
+    const said = await sql<{
+      id: string;
+      action: string;
+      share_id: string | null;
+      collection_id: string | null;
+    }>`
+      select id, action, detail->>'share_id' as share_id, detail->>'collection_id' as collection_id
+        from audit_event
+       where household_id = ${p.householdId}
+         and object_type = 'document'
+         and object_id = ${documentId}::uuid
+         and action in ('share.followed', 'share.left_out',
+                        'collection.item_added', 'collection.item_removed')
+       order by id`.execute(trx);
+    // Every link that may have given it: as its row says now, as its
+    // tombstone says, or as one of those lines names it.
+    const now = await sql<{ id: string; kind: string }>`
+      select share_id as id, kind from share_link_item where document_id = ${documentId}::uuid
+      union all
+      select id, 'ticked' from share_link_tombstone
+       where document_ids @> array[${documentId}]::uuid[]`.execute(trx);
+    const kinds = new Map<string, Set<string>>();
+    for (const r of now.rows) kinds.set(r.id, (kinds.get(r.id) ?? new Set()).add(r.kind));
+    const ids = [
+      ...new Set([
+        ...now.rows.map((r) => r.id),
+        ...said.rows.flatMap((r) =>
+          r.action.startsWith('share.') && r.share_id && UUID.test(r.share_id)
+            ? [r.share_id.toLowerCase()]
+            : [],
+        ),
+      ]),
+    ];
+    if (ids.length === 0) return [];
+    // Each link's making: its collection, and what it was made with.
+    const made = await sql<{
+      id: string;
+      share_id: string;
+      collection_id: string;
+      ticked: unknown;
+    }>`
+      select id, detail->>'share_id' as share_id, object_id as collection_id,
+             detail->'document_ids' as ticked
+        from audit_event
+       where household_id = ${p.householdId}
+         and object_type = 'collection'
+         and detail->>'share_id' = any(${ids}::text[])
+         and action = 'share.created'`.execute(trx);
+    const windows: Window[] = [];
+    for (const m of made.rows) {
+      const link = m.share_id.toLowerCase();
+      const mine = said.rows.filter((r) =>
+        r.action.startsWith('share.')
+          ? r.share_id?.toLowerCase() === link
+          : r.collection_id?.toLowerCase() === m.collection_id,
+      );
+      const leftOutSaid = mine.some((r) => r.action === 'share.left_out');
+      let ticked = Array.isArray(m.ticked) && (m.ticked as unknown[]).includes(documentId);
+      // Left out with nothing in the log to say when: none of its lines.
+      if (ticked && kinds.get(link)?.has('left_out') && !leftOutSaid) continue;
+      let from: number | null = ticked ? Number(m.id) : null;
+      for (const r of mine) {
+        const at = Number(r.id);
+        if (at < Number(m.id)) continue;
+        if (r.action === 'share.followed' || r.action === 'collection.item_added') {
+          // Put back in, a ticked one is given again; a followed one
+          // only once it has followed again.
+          if (r.action === 'share.followed' || ticked) from ??= at;
+          continue;
+        }
+        // Left out (Sensitive), or taken out of the collection.
+        if (r.action === 'share.left_out') ticked = false;
+        if (from !== null) windows.push({ share_id: link, from, to: at });
+        from = null;
       }
-      // One sitting with a document is one line, not one per page (0.4.12).
-      const items = describeEvents(events);
+      if (from !== null) windows.push({ share_id: link, from, to: null });
+    }
+    return windows;
+  }
 
-      const last = rows[rows.length - 1];
-      return {
-        items,
-        // The cursor follows the rows read, not the lines shown: a page
-        // that hides everything still moves forward.
-        next: result.rows.length > limit && last ? Number(last.id) : null,
-      };
-    });
+  /**
+   * The rows about one document (0.9.0, DA), as a `with picked (id)` for
+   * the log's own query: its own lines (`object_type = 'document'`) by
+   * `audit_event_document_idx`, and each collection's link's own lines in
+   * the stretches it gave the document, by `audit_event_share_idx` (0107),
+   * never by reading the household's whole log. Each part reads no more
+   * than a page, newest first, before the cursor.
+   */
+  private picked(
+    p: Principal,
+    documentId: string,
+    windows: Window[],
+    before: number | undefined,
+    count: number,
+  ): RawBuilder<unknown> {
+    const older = before ? sql`and id < ${before}` : sql``;
+    return sql`
+      with picked as (
+        (select id from audit_event
+          where household_id = ${p.householdId}
+            and object_type = 'document'
+            and object_id = ${documentId}::uuid
+            ${older}
+          order by id desc
+          limit ${count})
+        ${
+          windows.length === 0
+            ? sql``
+            : sql`union all
+        (select x.id
+           from unnest(${windows.map((w) => w.share_id)}::text[],
+                       ${windows.map((w) => w.from)}::bigint[],
+                       ${windows.map((w) => w.to ?? END)}::bigint[]) as w(share_id, from_id, to_id)
+          cross join lateral (
+            select id from audit_event
+             where household_id = ${p.householdId}
+               and object_type = 'collection'
+               and detail->>'share_id' = w.share_id
+               and id >= w.from_id and id < w.to_id
+               ${older}
+             order by id desc
+             limit ${count}) x
+          order by x.id desc
+          limit ${count})`
+        }
+      )`;
   }
 
   /**
@@ -812,11 +1055,15 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * The link a `share.*` line names, by the id in its detail, and whether it
  * must be a collection's: its lines about the collection, and a document
  * that followed one, are; a download, a look at pages, an open about a
- * document may be either. Undefined for any other line; an empty id for a
- * line that names none it can be found by.
+ * document may be either. A collection's link emailed by the vault
+ * (`share_link.emailed`, about its collection) is one too: without it,
+ * that line was shown to nobody, its maker included (fixed in DA). A
+ * document's link emailed keeps its document's rule. Undefined for any
+ * other line; an empty id for a line that names none it can be found by.
  */
 function linkNamed(r: Row): { id: string; collections: boolean } | undefined {
-  if (!r.action.startsWith('share.')) return undefined;
+  const emailed = r.action === 'share_link.emailed' && r.object_type === 'collection';
+  if (!r.action.startsWith('share.') && !emailed) return undefined;
   const collections =
     r.object_type === 'collection' ||
     r.action === 'share.followed' ||

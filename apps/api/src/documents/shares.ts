@@ -42,6 +42,7 @@ import { seenCollection } from '../collections/service.js';
 import { ApiError, notFound } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import { seenDocument, type Enqueue } from './service.js';
+import { lastEmailed } from '../emailed.js';
 import { madeWith } from './made-with.js';
 import { sensitiveSql } from './filters.js';
 import { documentSensitive, liveLinksGiving, sensitiveConfirm } from './sensitive-start.js';
@@ -564,8 +565,10 @@ export interface ShareView {
   emailable: boolean;
   /** The reader made it (0.9.0, LK): its PIN or password are theirs alone to change. */
   mine: boolean;
-  /** Where the reader last emailed it, masked; null for none, and for anybody else's link. */
+  /** Where the vault last emailed it, masked, for whoever sees the link (16 Nov 2026); null for none. */
   emailed_to: string | null;
+  /** Who had it emailed last, by name as the reader is given it; null for none. */
+  emailed_by_name: string | null;
   /**
    * The reader made it and it still works, or is only paused, on the new
    * routes (0.9.0, LK): PATCH /shares/{id} changes its properties.
@@ -2550,20 +2553,14 @@ export class ShareService {
         .selectFrom('household')
         .select('timezone')
         .executeTakeFirstOrThrow();
-      // Where the reader last emailed each of their links (0.9.0): masked,
-      // and only ever their own (0094 gives nobody else's).
-      const emailed = new Map(
-        (
-          await trx
-            .selectFrom('share_link_email')
-            .distinctOn('share_id')
-            .select(['share_id', 'to_masked'])
-            .where('sent_by', '=', p.accountId)
-            .where('share_id', 'is not', null)
-            .orderBy('share_id')
-            .orderBy('sent_at', 'desc')
-            .execute()
-        ).map((e) => [e.share_id, e.to_masked]),
+      // Where each link was last emailed (0.9.0), masked, and by whom: for
+      // whoever sees the link (the owner's decision of 16 Nov 2026, 0108),
+      // so the family can tell a paper was sent and to which inbox.
+      const emailed = await lastEmailed(
+        trx,
+        'share_link_email',
+        'share_id',
+        rows.map((r) => r.id),
       );
       const reader = p;
       // What each collection's link was made with, and has followed: the
@@ -2687,7 +2684,10 @@ export class ShareService {
           // 0.9.0: its maker's to have emailed, while it opens now — not
           // used up, and not paused (the review of 0.9.0-dev.39).
           emailable: revealable && state === 'active' && this.emailLinks,
-          emailed_to: r.created_by === p.accountId ? (emailed.get(r.id) ?? null) : null,
+          // Where it was last emailed, masked, and who had the vault send it
+          // (the owner's decision of 16 Nov 2026): for whoever sees the link.
+          emailed_to: emailed.get(r.id)?.to ?? null,
+          emailed_by_name: emailed.get(r.id)?.by ?? null,
           // 0.9.0 (LK): its maker's to change while it works, or is only
           // paused; never once it has ended or been opened as often as it
           // allows, and never a link on the old routes.

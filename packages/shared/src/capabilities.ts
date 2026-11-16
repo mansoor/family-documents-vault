@@ -709,6 +709,16 @@ export interface CapabilityFeatures {
    * that ended with nothing filed from it the next night.
    */
   ended_sharing?: boolean;
+  /**
+   * One document's activity (0.9.0, DA): `GET /documents/{id}/activity`
+   * `{ items: ActivityLine[], next }`, paged with `before` and `limit` as
+   * `GET /audit` is — the log's lines about the document and about the
+   * links that gave it (its own, and collections' links it was ticked in or
+   * followed, removed ones too), each shown to exactly whom the whole log
+   * shows it. For whoever reads the log (`audit.read`; `403` to a viewer);
+   * `404` for a document the caller cannot see. Absent from older vaults.
+   */
+  document_activity?: boolean;
 }
 
 export interface CapabilityLimits {

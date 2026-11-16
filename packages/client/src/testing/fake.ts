@@ -2899,13 +2899,18 @@ export function createFakeVault(): {
       l.share.state === 'revoked' || l.share.state === 'expired' || l.share.state === 'locked';
     const revealable = (l: FakeShare) => l.made_by === who.memberId && !l.shown_once && !ended(l);
     const view = (l: FakeShare): Share => {
-      const last = l.made_by === who.memberId ? l.emailed?.at(-1) : undefined;
+      // Where it was last emailed, and by whom: for whoever sees the link
+      // (the owner's decision of 16 Nov 2026), as the vault answers.
+      const last = l.emailed?.at(-1);
       return {
         ...l.share,
         revealable: revealable(l),
         // 0.9.0: emailed by the vault, with the operator's mail server alone.
         emailable: revealable(l) && l.share.state === 'active' && state.operatorMail,
         emailed_to: last ? maskEmail(last.to) : null,
+        emailed_by_name: last
+          ? (state.members.find((m) => m.id === l.made_by)?.display_name ?? null)
+          : null,
         mine: l.made_by === who.memberId,
         changeable:
           (l.made_by === who.memberId || who.role === 'owner') &&
@@ -3697,6 +3702,8 @@ export function createFakeVault(): {
           source_folders: true,
           // Ended links and requests removed after a while (0.9.0, RQ).
           ended_sharing: true,
+          // One document's activity (0.9.0, DA).
+          document_activity: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -7982,6 +7989,7 @@ export function createFakeVault(): {
         emailable:
           r.mine && r.state === 'active' && copies[r.id] !== undefined && state.operatorMail,
         emailed_to: r.emailed_to ?? null,
+        emailed_by_name: r.emailed_by_name ?? null,
         latest_end: new Date(Date.parse(r.created_at) + 90 * 864e5).toISOString(),
         version: r.version ?? 1,
       });
@@ -8090,6 +8098,8 @@ export function createFakeVault(): {
           );
         }
         r.emailed_to = maskEmail(to);
+        r.emailed_by_name =
+          state.members.find((m) => m.id === whoOf(s).memberId)?.display_name ?? null;
         const sent: ShareEmailed = {
           sent_to: maskEmail(to),
           sent_at: new Date().toISOString(),
@@ -8274,6 +8284,30 @@ export function createFakeVault(): {
           })
         );
       });
+      return ok({ items: describeEvents(events), next: null });
+    }
+    // One document's activity (0.9.0, DA): its lines alone, to whoever reads
+    // the log and may see it — one in the Trash too, as the vault answers.
+    const activityOf = /^\/api\/v1\/documents\/([^/]+)\/activity$/.exec(path);
+    if (activityOf && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!can(who.role, 'audit.read')) return fail(403, 'forbidden', refusalFor('audit.read'));
+      const id = decodeURIComponent(activityOf[1] as string);
+      const doc = state.documents.find((d) => d.id === id);
+      if (
+        !doc ||
+        !canSee(who, {
+          visibility: doc.visibility ?? 'household',
+          owner_member_id: doc.owner_member_id ?? null,
+        })
+      ) {
+        return fail(404, 'not_found', 'That document does not exist.');
+      }
+      const events = [...(state.activity ?? [])]
+        .reverse()
+        .filter((e) => e.object_type === 'document' && e.object_id === id);
       return ok({ items: describeEvents(events), next: null });
     }
     // Somebody of the family with no sign-in (POST /members), by whoever may

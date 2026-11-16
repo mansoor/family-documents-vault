@@ -765,3 +765,24 @@ export function endedSharingWords(days: EndedSharingDays | null): string {
 /** What stays once one is removed: said wherever the choice is. */
 export const ENDED_SHARING_KEPT_NOTE =
   'The activity log keeps its record of each: when it was made, opened and taken back, and what came in. Documents sent in through a request stay where they were filed.';
+
+/**
+ * Where a link or a request was last emailed by the vault, on its row in
+ * Sharing (the owner's decision of 16 Nov 2026): for whoever sees it, so the
+ * family can tell a paper was already sent and to which inbox. Masked, as
+ * the vault keeps it; and who sent it, unless the reader did.
+ */
+export function emailedToWords(
+  to: string,
+  by: string | null | undefined,
+  mine: boolean | undefined,
+): string {
+  return `Emailed to ${to}${by && mine !== true ? ` by ${by}` : ''}`;
+}
+
+/** The same, as Show the link says it: the reader's own send, or anybody's. */
+export function lastEmailedWords(to: string, mine: boolean | undefined): string {
+  return mine === true
+    ? `You last had the vault email it to ${to}.`
+    : `It was last emailed to ${to}.`;
+}

@@ -558,6 +558,9 @@ const RULES: Record<string, Rule> = {
   // The links to a document whose openings the caller may see (0.9.0, H5):
   // of a document they can see; nothing of one they cannot.
   'GET /api/v1/documents/:id/link-opens': { who: 'signedIn' },
+  // One document's activity (0.9.0, DA): whoever reads the log, never a
+  // viewer or a guest; of a document they can see, nothing of one they cannot.
+  'GET /api/v1/documents/:id/activity': { who: 'family' },
   'GET /api/v1/documents/:id/issuer-suggestions': { who: 'signedIn' },
   'GET /api/v1/documents/:id/suggestions': { who: 'family' },
   'POST /api/v1/documents/:id/share': { who: 'adults', body: () => ({ permission: 'download' }) },

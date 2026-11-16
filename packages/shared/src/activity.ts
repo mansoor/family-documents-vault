@@ -1122,27 +1122,62 @@ export const SITTING_MS = 10 * 60 * 1000;
  * the most recent, since the list reads from now backwards.
  */
 export function describeEvents(events: ActivityEvent[]): ActivityLine[] {
-  const lines: ActivityLine[] = [];
+  return describeEventSpans(events).map((s) => s.line);
+}
+
+/**
+ * The lines `describeEvents` makes, each with the id of the oldest event it
+ * says (0.9.0, DA): a sitting's last look, or the line's own event. A list
+ * that pages by the lines it shows carries on from there, never from an
+ * event that made no line.
+ */
+export function describeEventSpans(
+  events: ActivityEvent[],
+): Array<{ line: ActivityLine; oldest: number }> {
+  const spans: Array<{ line: ActivityLine; oldest: number }> = [];
   let sitting: { actor: string | null; doc: string | null; at: number } | null = null;
   for (const e of events) {
     const at = Date.parse(e.at);
+    const last = spans[spans.length - 1];
     if (
       e.action === 'document.viewed' &&
       sitting &&
+      last &&
       sitting.actor === (e.actor_id ?? null) &&
       sitting.doc === e.object_id &&
       sitting.at - at <= SITTING_MS
     ) {
       sitting.at = at;
+      last.oldest = e.id;
       continue;
     }
     const line = describeEvent(e);
     if (!line) continue;
-    lines.push(line);
+    spans.push({ line, oldest: e.id });
     sitting =
       e.action === 'document.viewed' ? { actor: e.actor_id ?? null, doc: e.object_id, at } : null;
   }
-  return lines;
+  return spans;
+}
+
+/**
+ * The Activity page shown for one document (0.9.0, DA): what its filter
+ * says — "About ‘Richa’s visa’" — and what an empty list says. A sensitive
+ * document is never named, as its lines never name it (H1a); one not known
+ * (gone, or not loaded yet) is "a document".
+ */
+export function documentActivityWords(
+  doc: { title: string | null; sensitive?: boolean | null | undefined } | null,
+): string {
+  if (doc?.sensitive === true) return `About ${SENSITIVE_IN_WORDS}`;
+  return doc?.title ? `About ‘${doc.title}’` : 'About a document';
+}
+
+/** An Activity page for one document with no line to show (0.9.0, DA). */
+export function documentActivityEmptyWords(older: boolean): string {
+  return older
+    ? 'Nothing loaded is about this document. Show older to look further back.'
+    : 'Nothing in the activity log is about this document yet.';
 }
 
 /** The person a line about a member is about, by name. */

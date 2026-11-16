@@ -780,6 +780,18 @@ export function createApi(http: Http) {
         `/api/v1/audit${before ? `?before=${before}` : ''}`,
         { token },
       ),
+    /**
+     * One document's activity (0.9.0, DA, `features.document_activity`):
+     * the log's lines about it and about the links that gave it — its own,
+     * and collections' links it was ticked in or followed — each shown as
+     * the whole log shows it, newest first, paged as `activity` is. `403` to
+     * a viewer; `404 not_found` for a document the caller cannot see.
+     */
+    documentActivity: (token: string, documentId: string, before?: number) =>
+      request<{ items: ActivityLine[]; next: number | null }>(
+        `/api/v1/documents/${enc(documentId)}/activity${before ? `?before=${before}` : ''}`,
+        { token },
+      ),
 
     // ----------------------------------------------------------- invitations
     invitations: (token: string) =>

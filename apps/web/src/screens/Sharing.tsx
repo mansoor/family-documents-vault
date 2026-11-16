@@ -1,7 +1,9 @@
 import {
   can,
+  emailedToWords,
   ENDED_SHARING_KEPT_NOTE,
   endedSharingWords,
+  lastEmailedWords,
   sharePagesNote,
   UPLOAD_REQUEST_EMAIL_NOTE,
   type RevealedUploadRequest,
@@ -598,6 +600,9 @@ function LinkRow(props: {
     <li className="place">
       <div className="place-title">{linkTarget(s)}</div>
       <div className="muted">{s.summary}</div>
+      {s.emailed_to && (
+        <div className="muted">{emailedToWords(s.emailed_to, s.emailed_by_name, s.mine)}</div>
+      )}
       {s.created_by_name && <div className="muted">Made by {s.created_by_name}</div>}
       {/* Who opened it, when (0.9.0, H5). */}
       <LinkOpens link={s} />
@@ -693,7 +698,7 @@ function RequestShownAgain(props: {
       )}
       {/* Another way to send it, beside Copy (16 Nov 2026): never in its place. */}
       {props.request.emailed_to && (
-        <p className="muted">You last had the vault email it to {props.request.emailed_to}.</p>
+        <p className="muted">{lastEmailedWords(props.request.emailed_to, props.request.mine)}</p>
       )}
       <RequestEmail request={props.request} idPrefix="shown-request" />
       <p className="muted">
@@ -772,7 +777,7 @@ function ShownAgain(props: { link: Share; revealed: RevealedShare; onClose: () =
       )}
       {/* Another way to send it, beside Copy (0.9.0): never in its place. */}
       {props.link.emailed_to && (
-        <p className="muted">You last had the vault email it to {props.link.emailed_to}.</p>
+        <p className="muted">{lastEmailedWords(props.link.emailed_to, props.link.mine)}</p>
       )}
       <EmailTheLink share={props.link} idPrefix="shown" />
       <p className="muted">
@@ -868,6 +873,11 @@ function LinksTable(props: {
                 <td className="wrap-any">{s.recipient_label ?? <None />}</td>
                 <td className="wrap-any">
                   {s.summary}
+                  {s.emailed_to && (
+                    <span className="muted cell-sub">
+                      {emailedToWords(s.emailed_to, s.emailed_by_name, s.mine)}
+                    </span>
+                  )}
                   <LinkOpens link={s} />
                 </td>
                 <td className="wrap-any">{s.created_by_name ?? <None />}</td>
@@ -1066,6 +1076,11 @@ function RequestsTable(props: {
                   >
                     {state.words}
                   </span>
+                  {r.emailed_to && (
+                    <span className="muted cell-sub">
+                      {emailedToWords(r.emailed_to, r.emailed_by_name, r.mine)}
+                    </span>
+                  )}
                 </td>
                 <td className="wrap-any">{requestTally(r)}</td>
                 {askedBy && (
@@ -1175,6 +1190,9 @@ export function RequestRow(props: {
       <div className={`request-state${state.tone ? ` status status-${state.tone}` : ' muted'}`}>
         {state.words}
       </div>
+      {r.emailed_to && (
+        <div className="muted">{emailedToWords(r.emailed_to, r.emailed_by_name, r.mine)}</div>
+      )}
       {(props.onTakeBack || resume || afterSignIn || show) && (
         <div className="row">
           {show && (

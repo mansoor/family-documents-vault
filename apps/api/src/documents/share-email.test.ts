@@ -310,8 +310,9 @@ describe.skipIf(!testAdminUrl())('a share link emailed to its recipient (0.9.0)'
         ),
       ),
     ).toMatch(/row-level security/);
-    // Their own, as themselves: allowed; then the owner reads none of it,
-    // and nobody changes it.
+    // Their own, as themselves: allowed; then the owner, who sees the link,
+    // reads it too (the owner's decision of 16 Nov 2026, 0108); nobody
+    // changes it.
     expect(
       await refusal(
         withPrincipal(h.db, as(adult, adultAccount, 'adult') as never, (trx) =>
@@ -329,7 +330,7 @@ describe.skipIf(!testAdminUrl())('a share link emailed to its recipient (0.9.0)'
           .where('share_id', '=', theirs.share.id)
           .execute(),
     );
-    expect(seenByOwner).toEqual([]);
+    expect(seenByOwner).toHaveLength(1);
     const changed = await withPrincipal(h.db, as(adult, adultAccount, 'adult') as never, (trx) =>
       trx
         .updateTable('share_link_email')
@@ -338,6 +339,110 @@ describe.skipIf(!testAdminUrl())('a share link emailed to its recipient (0.9.0)'
         .executeTakeFirst(),
     );
     expect(Number(changed.numUpdatedRows)).toBe(0);
+  });
+
+  it('where a link went is for whoever sees the link, never anybody who does not (16 Nov 2026)', async () => {
+    const as = (who: Tokens, account: string, role: string) =>
+      ({
+        accountId: account,
+        householdId: who.household_id,
+        memberId: who.member_id,
+        role,
+      }) as never;
+    const read = (who: Tokens, account: string, role: string, ids: (string | null)[]) =>
+      withPrincipal(h.db, as(who, account, role), (trx) =>
+        trx
+          .selectFrom('share_link_email')
+          .select(['share_id', 'to_masked'])
+          .where((eb) =>
+            eb.or([
+              eb(
+                'share_id',
+                'in',
+                ids.filter((i): i is string => i !== null),
+              ),
+              ...(ids.includes(null) ? [eb('share_id', 'is', null)] : []),
+            ]),
+          )
+          .where('sent_by', '=', ownerAccount)
+          .execute(),
+      );
+    // An Only me document's link: the owner's alone to see, and where it went.
+    const created = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/documents',
+      headers: h.as(owner),
+      payload: {
+        title: 'Private letter',
+        type_key: 'utility_bill',
+        visibility: 'private',
+        owner_member_id: owner.member_id,
+      },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const secret = json<DocumentView>(created).id;
+    const form = new FormData();
+    form.append('file', PDF, { filename: 'scan.pdf', contentType: 'application/pdf' });
+    await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${secret}/versions`,
+      headers: { ...h.as(owner), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+      payload: form.getBuffer(),
+    });
+    await confirmed(ownerAccount, true);
+    const r = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${secret}/share`,
+      headers: h.as(owner),
+      payload: {},
+    });
+    expect(r.statusCode, r.body).toBe(201);
+    const onlyMe = json<CreatedShare>(r).share.id;
+    expect((await email(owner, onlyMe, { to: address() })).statusCode).toBe(200);
+    expect((await listed(owner)).find((s) => s.id === onlyMe)?.emailed_to).toBe('j•••@e•••.com');
+    expect((await listed(adult)).some((s) => s.id === onlyMe)).toBe(false);
+    // A viewer is given no links at all, nor where one went.
+    const viewer = await h.join(owner, {
+      name: 'Vic',
+      email: 'vic-email@example.test',
+      role: 'viewer',
+    });
+    const theirList = await h.app.inject({ url: '/api/v1/shares', headers: h.as(viewer) });
+    expect(theirList.body).not.toContain('j•••@e•••.com');
+
+    // The database: a clinician's link (H4), the owner's own, is given to
+    // nobody else signed in, and so neither is where it went; one whose
+    // link was removed for good is its sender's alone.
+    const saved = await h.app.inject({
+      method: 'PUT',
+      url: `/api/v1/members/${owner.member_id}/emergency`,
+      headers: h.as(owner),
+      payload: { fields: { blood_type: 'O-' } },
+    });
+    expect(saved.statusCode, saved.body).toBe(200);
+    const e = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${owner.member_id}/emergency/links`,
+      headers: h.as(owner),
+      payload: { fields: ['blood_type'], expires_in_hours: 2 },
+    });
+    expect(e.statusCode, e.body).toBe(201);
+    const clinician = json<CreatedShare>(e).share.id;
+    for (const id of [clinician, null]) {
+      await admin.query(
+        `insert into share_link_email (household_id, share_id, sent_by, to_masked)
+         values ($1, $2, $3, 'c•••@h•••.org')`,
+        [owner.household_id, id, ownerAccount],
+      );
+    }
+    const adults = await read(adult, adultAccount, 'adult', [clinician, null, onlyMe]);
+    // The Only me document's link row is given with its link (share_link's
+    // own rule): the API lists it to nobody but its maker, as above.
+    expect(adults.map((x) => x.share_id).sort()).toEqual([onlyMe]);
+    const owners = await read(owner, ownerAccount, 'owner', [clinician, null, onlyMe]);
+    expect(owners.map((x) => x.share_id ?? 'none').sort()).toEqual(
+      [clinician, 'none', onlyMe].sort(),
+    );
   });
 
   it('within 15 minutes asks what making it asked; later, that it’s them (email_share)', async () => {
@@ -408,8 +513,13 @@ describe.skipIf(!testAdminUrl())('a share link emailed to its recipient (0.9.0)'
     expect((await email(owner, made.share.id, { to, message: 'Hello' })).statusCode).toBe(200);
     const view = (await listed(owner)).find((s) => s.id === made.share.id);
     expect(view?.emailed_to).toBe('j•••@e•••.com');
-    // Another adult who sees the link sees nothing of where it went.
-    expect((await listed(adult)).find((s) => s.id === made.share.id)?.emailed_to).toBeNull();
+    // Another adult who sees the link sees where it went, and who sent it
+    // (the owner's decision of 16 Nov 2026).
+    expect((await listed(adult)).find((s) => s.id === made.share.id)).toMatchObject({
+      emailed_to: 'j•••@e•••.com',
+      emailed_by_name: view?.created_by_name,
+    });
+    expect(view?.emailed_by_name).toBe(view?.created_by_name);
     const line = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('audit_event')

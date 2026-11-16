@@ -3568,6 +3568,35 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: "one document's activity: its own lines, as the whole log says them, and 404 for one that is not there (0.9.0, DA)",
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      expect((await api.capabilities()).features.document_activity).toBe(true);
+      const doc = await api.createDocument(token, {
+        title: 'Contract activity passport',
+        sensitive: false,
+      });
+      const other = await api.createDocument(token, {
+        title: 'Contract activity other',
+        sensitive: false,
+      });
+      const page = await api.documentActivity(token, doc.id);
+      expect(page.items.length).toBeGreaterThan(0);
+      expect(page.items.every((l) => l.document_id === doc.id)).toBe(true);
+      expect(page.items.some((l) => l.text.endsWith('added “Contract activity passport”'))).toBe(
+        true,
+      );
+      // The same line, word for word, as the whole log has it.
+      const whole = (await api.activity(token)).items.filter((l) => l.document_id === doc.id);
+      expect(page.items.map((l) => l.text)).toEqual(whole.map((l) => l.text));
+      expect(page.items.some((l) => l.document_id === other.id)).toBe(false);
+      const missing = await refusal(
+        api.documentActivity(token, '00000000-0000-4000-8000-000000000000'),
+      );
+      expect([missing.status, missing.code]).toEqual([404, 'not_found']);
+    },
+  },
+  {
     name: 'a document no longer needed: kept and listed, said so, reminded of nothing, replaced by one the reader sees, and needed again (0.9.0)',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;
@@ -4100,6 +4129,10 @@ export const contractScenarios: Scenario[] = [
           to: 'contract.recipient@example.test',
         });
         expect(sent.sent_to).toContain('•');
+        // Listed with where it went and who sent it (16 Nov 2026).
+        const listed = (await api.uploadRequests(token)).items.find((r) => r.id === ask.request.id);
+        expect(listed?.emailed_to).toBe(sent.sent_to);
+        expect(typeof listed?.emailed_by_name).toBe('string');
       } else {
         const none = await refusal(
           api.emailUploadRequest(token, ask.request.id, { to: 'contract.recipient@example.test' }),

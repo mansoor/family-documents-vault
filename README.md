@@ -257,7 +257,9 @@ A link can say more than who it is for:
   never the household's own; without it, only Copy is offered. The limits are **3 emails a
   link** and **20 emails a person** in any 24 hours; there is no limit for the household as a
   whole. A message beside the link is plain text and may not name a website. A paused link
-  is not emailed. The address is kept and shown only masked.
+  is not emailed. The address is kept and shown only masked. Sharing says on each link and
+  request where it was last emailed and by whom (_Emailed to j•••@e•••.com by Aisha_), to
+  everyone who can see that link or request.
 
 ## Phones and other apps
 
@@ -680,6 +682,19 @@ Reading a document's pages is in the log too: every page is recorded in the
 hash-chained record, and the list shows one sitting with a document — the
 pages one person looked at, each within ten minutes of the next — as one line:
 _Sarah looked at "Passport"_.
+
+**Activity** on a document's page shows the same log for that one document:
+the lines about it, and about its links outside the family — its own links and
+links to a collection it was in, removed ones included. They are exactly the
+lines the whole log shows you about it, so a link's lines are still only for
+whoever is told of the link. A collection's link counts only while it gave the
+document: from when the link was made with it ticked, or when it followed it in,
+until it was left out of the link (as it was made sensitive) or taken out of the
+collection. When making a document Only me or Adults only ends a collection's
+link for it, the log says only how many links ended, not which, so that link's
+own lines aren't shown for the document; what was downloaded or looked at of the
+document through it still is. A chip at the top names the document; its **×**
+shows the whole log again.
 
 ### Reading a document
 

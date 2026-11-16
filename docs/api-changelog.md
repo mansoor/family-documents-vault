@@ -7763,6 +7763,67 @@ validation_failed`); `403` to whoever may not see where originals are
       - A household whose turn fails is logged by its id and the error's
         code alone, and the others have theirs (`failed` in the job's
         report).
+  - One document's activity (0.9.0-dev.54, DA; the owner's ask of 16 Nov
+    2026). Migration 0107. **Additive.**
+    - **New `features`:** `document_activity` (`true`).
+    - **New route:** `GET /api/v1/documents/{id}/activity` → `{ items:
+ActivityLine[], next }`, newest first, paged with `before` and `limit`
+      (1–100, 50 unless asked) as `GET /api/v1/audit` is. The lines about
+      the document (`object_type` `document`: its edits, looks, downloads,
+      its own links' lines, and whatever went through a collection's link
+      about it), and the lines of each collection's link written about the
+      link's collection — made, opened, a ZIP downloaded, a code sent,
+      emailed, taken back — in the stretch it gave the document: from the
+      link's `share.created` naming it in `document_ids` (ticked), or from
+      its `share.followed`, until its `share.left_out` or the document's
+      `collection.item_removed` (a ticked one again from its
+      `collection.item_added`). Removed links included, by
+      `share_link_tombstone`. A ticked document left out with no
+      `share.left_out` (its link ended as it was made Only me or Adults
+      only, whose line gives only counts) has none of that link's own
+      lines. Each line is shown to exactly whom `GET /audit` shows it; one
+      sitting with the document is one line, as there. Unlike `GET /audit`,
+      a page reads on until it has `limit` lines or there are none older,
+      and `next` is the oldest row of its last line (null at the end): a
+      page is never empty with a cursor, and no cursor is a row the reader
+      is not shown. For whoever reads the log
+      (`audit.read`: `403 forbidden` to a viewer); `404 not_found` for a
+      document the caller cannot see (another member's Only me, Adults only
+      for a teen, one seen only as a caregiver, one removed for good), `422`
+      for an id that is not one. One in the Trash keeps its activity, as
+      `GET /documents/{id}` answers it.
+    - **Storage:** the index `audit_event_share_idx` on `audit_event
+((detail->>'share_id'), id) where object_type = 'collection'`, so a
+      collection's link's lines are found by the link without reading the
+      household's whole log; and a GIN index on
+      `share_link_tombstone.document_ids`.
+    - **Changed (the owner's decision of 16 Nov 2026), migration 0108:**
+      `ShareView.emailed_to` and `UploadRequestView.emailed_to` are where
+      the vault last emailed the link or request, masked, whoever sent it,
+      for every reader the link or request is listed to (before, only the
+      sender's own sends, null for anybody else). **New fields**
+      `ShareView.emailed_by_name` and `UploadRequestView.emailed_by_name`:
+      who sent it, by name as the reader is given it; null for none. The
+      database reads a `share_link_email` or `upload_request_email` row to
+      whoever is given its link or request (`share_link`'s and
+      `upload_request`'s own rules), its sender and the vault; a row whose
+      link or request was removed for good stays its sender's alone. What is
+      written is unchanged, and the daily limits still count each sender's
+      own sends alone (`sent_by`). Shared `emailedToWords` and
+      `lastEmailedWords`. The fake answers both fields, and the request
+      contract scenario checks them.
+    - **Fixed:** a collection's link emailed by the vault
+      (`share_link.emailed`, about the collection) was shown in `GET
+/audit` to nobody, its maker included; it is now shown as the link's
+      other lines are (`linkNamed` knows it). A document's link's line is
+      unchanged.
+    - **Shared and client:** `documentActivityWords` ("About ‘Richa’s
+      visa’", "About a sensitive document"), `documentActivityEmptyWords`,
+      and `describeEventSpans` (`describeEvents`' lines, each with the
+      oldest event it says). `@fdv/client`
+      `documentActivity(token, documentId, before?)`; the fake answers it
+      (its own lines of a document, `404` for one not seen), and a contract
+      scenario checks it.
 
 ## Deprecations in effect
 

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { deriveKey, openUploadRequestCopy, UPLOAD_REQUEST_COPY_PURPOSE } from '@fdv/crypto';
-import { createPool, withSystem } from '@fdv/db';
+import { createPool, withPrincipal, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type {
   ChangedUploadRequest,
@@ -528,5 +528,74 @@ describe.skipIf(!testAdminUrl())('a request shown again and changed (0.9.0, LK)'
     expect(done.password).toBeTruthy();
     expect(done.request.revealable).toBe(false);
     expect(await sealedOf(made.request.id)).toBeNull();
+  });
+
+  it('says where a request was emailed, and by whom, to whoever sees it; the database too (16 Nov 2026)', async () => {
+    const adultAccount = await accountOf(adult);
+    const other = await h.join(owner, {
+      name: 'Omar',
+      email: 'omar-rq-email@example.test',
+      role: 'adult',
+    });
+    await confirmed(adultAccount, true);
+    const email = (id: string) =>
+      h.app.inject({
+        method: 'POST',
+        url: `/api/v1/upload-requests/${id}/email`,
+        headers: h.as(adult),
+        payload: { to: 'jane.smith@example.com' },
+        remoteAddress: addr(),
+      });
+    // One any adult reviews, and one only its requester does.
+    const anyAdult = await make(adult, { review_by: 'adults' });
+    const hersAlone = await make(adult, { review_by: 'me' });
+    for (const r of [anyAdult, hersAlone]) {
+      const sent = await email(r.request.id);
+      expect(sent.statusCode, sent.body).toBe(200);
+    }
+    for (const who of [owner, other, adult]) {
+      expect((await listed(who)).find((r) => r.id === anyAdult.request.id)).toMatchObject({
+        emailed_to: 'j•••@e•••.com',
+        emailed_by_name: 'Sana',
+      });
+    }
+    // Hers alone: nobody else is given the request, nor where it went.
+    expect((await listed(adult)).find((r) => r.id === hersAlone.request.id)?.emailed_to).toBe(
+      'j•••@e•••.com',
+    );
+    for (const who of [owner, other]) {
+      const body = JSON.stringify(await listed(who));
+      expect(body).not.toContain(hersAlone.request.id);
+    }
+    // The database holds it so: a row is read with the request it is about.
+    const as = (who: Tokens, account: string, role: 'owner' | 'adult') => ({
+      householdId: who.household_id,
+      accountId: account,
+      memberId: who.member_id,
+      role,
+    });
+    const rowsFor = (who: Tokens, account: string, role: 'owner' | 'adult') =>
+      withPrincipal(h.db, as(who, account, role), (trx) =>
+        trx
+          .selectFrom('upload_request_email')
+          .select('request_id')
+          .where('request_id', 'in', [anyAdult.request.id, hersAlone.request.id])
+          .execute(),
+      );
+    const ownerSees = await rowsFor(owner, ownerAccount, 'owner');
+    expect(ownerSees.map((r) => r.request_id)).toEqual([anyAdult.request.id]);
+    const herOwn = await rowsFor(adult, adultAccount, 'adult');
+    expect(new Set(herOwn.map((r) => r.request_id))).toEqual(
+      new Set([anyAdult.request.id, hersAlone.request.id]),
+    );
+    // Her day's count is hers: the owner's sends are not counted in it.
+    expect(
+      (
+        await admin.query<{ n: number }>(
+          `select count(*)::int as n from upload_request_email where sent_by = $1`,
+          [adultAccount],
+        )
+      ).rows[0]?.n,
+    ).toBe(2);
   });
 });

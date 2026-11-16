@@ -1766,6 +1766,20 @@ describe('the fake vault, a link emailed to its recipient (0.9.0)', () => {
     expect(
       await refusal(api.emailShare(token, 'theirs-1', { to: 'jane@example.com' })),
     ).toMatchObject({ status: 404 });
+    // Where somebody else's went, and by whom: for whoever sees the link
+    // (the owner's decision of 16 Nov 2026).
+    vault.state.members.push({ id: 'fake-member-2', display_name: 'Aisha' } as never);
+    vault.state.shares?.push({
+      ...(mine as NonNullable<typeof mine>),
+      share: { ...made.share, id: 'theirs-2' },
+      made_by: 'fake-member-2',
+      emailed: [{ to: 'aisha.k@example.org', message: null, at: new Date().toISOString() }],
+    });
+    expect((await api.shares(token)).items.find((s) => s.id === 'theirs-2')).toMatchObject({
+      emailed_to: 'a•••@e•••.org',
+      emailed_by_name: 'Aisha',
+      mine: false,
+    });
     // Without the operator's mail server: not offered, and refused.
     vault.state.operatorMail = false;
     expect((await api.capabilities()).features.share_link_email).toBe(false);

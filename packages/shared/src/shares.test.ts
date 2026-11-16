@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { sharedOutsideWords } from './collections.js';
 import {
   canShareToView,
+  emailedToWords,
   isShareAddress,
+  lastEmailedWords,
   maskEmail,
   readShareCode,
   collectionShareItem,
@@ -434,5 +436,19 @@ describe('a sharer’s message beside an emailed link (0.9.0)', () => {
     const masked = maskEmail(`jane@example.${'a'.repeat(40)}`);
     expect(masked).toBe(`j•••@e•••.${'a'.repeat(10)}…`);
     expect(masked.length).toBeLessThanOrEqual(40);
+  });
+});
+
+describe('where a link or request was emailed (16 Nov 2026)', () => {
+  it('says the masked address, and who sent it unless the reader did', () => {
+    expect(emailedToWords('j•••@e•••.com', 'Aisha', false)).toBe(
+      'Emailed to j•••@e•••.com by Aisha',
+    );
+    expect(emailedToWords('j•••@e•••.com', 'Aisha', true)).toBe('Emailed to j•••@e•••.com');
+    expect(emailedToWords('j•••@e•••.com', null, false)).toBe('Emailed to j•••@e•••.com');
+    expect(lastEmailedWords('j•••@e•••.com', true)).toBe(
+      'You last had the vault email it to j•••@e•••.com.',
+    );
+    expect(lastEmailedWords('j•••@e•••.com', false)).toBe('It was last emailed to j•••@e•••.com.');
   });
 });

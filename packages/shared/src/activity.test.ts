@@ -4,6 +4,9 @@ import {
   activityKind,
   describeEvent,
   describeEvents,
+  describeEventSpans,
+  documentActivityEmptyWords,
+  documentActivityWords,
   whenExactly,
   whenWords,
   type ActivityEvent,
@@ -944,5 +947,46 @@ describe('a sensitive document, in the log’s words (0.9.0, H1a)', () => {
     expect(said({ action: 'share.left_out', collection_name: 'For the lawyer' })?.text).toBe(
       'Sarah took a sensitive document out of a link to the collection “For the lawyer”, so it no longer goes outside the family',
     );
+  });
+});
+
+describe("one document's activity (0.9.0, DA)", () => {
+  it('names the document, never a sensitive one, and says plainly when nothing is about it', () => {
+    expect(documentActivityWords({ title: "Richa's visa" })).toBe("About ‘Richa's visa’");
+    expect(documentActivityWords({ title: "Richa's visa", sensitive: true })).toBe(
+      'About a sensitive document',
+    );
+    expect(documentActivityWords({ title: null })).toBe('About a document');
+    expect(documentActivityWords(null)).toBe('About a document');
+    expect(documentActivityEmptyWords(false)).toBe(
+      'Nothing in the activity log is about this document yet.',
+    );
+    expect(documentActivityEmptyWords(true)).toBe(
+      'Nothing loaded is about this document. Show older to look further back.',
+    );
+  });
+});
+
+describe('describeEventSpans (0.9.0, DA)', () => {
+  it('says the lines describeEvents says, each with the oldest event it covers', () => {
+    const view = (id: number, at: string): ActivityEvent => ({
+      ...base,
+      id,
+      at,
+      action: 'document.viewed',
+      actor_id: 'acc-1',
+    });
+    const events = [
+      view(5, '2026-09-22T16:12:00.000Z'),
+      view(4, '2026-09-22T16:08:00.000Z'),
+      view(3, '2026-09-22T16:05:00.000Z'),
+      { ...base, id: 2, at: '2026-09-22T16:00:00.000Z' },
+    ];
+    const spans = describeEventSpans(events);
+    expect(spans.map((s) => s.line)).toEqual(describeEvents(events));
+    expect(spans.map((s) => [s.line.id, s.oldest])).toEqual([
+      [5, 3],
+      [2, 2],
+    ]);
   });
 });
