@@ -1,4 +1,5 @@
 import {
+  EMERGENCY_NOT_ADVICE,
   pagesNotSharedNote,
   readShareCode,
   SHARE_NEWEST_CODE_ONLY,
@@ -13,6 +14,7 @@ import {
   type ShareLinkPreview,
 } from '../api.js';
 import { describeError } from '../app-context.js';
+import { EmergencyDetails } from '../emergency.js';
 import { NoteText } from '../notes.js';
 import { useFixedTitle } from '../page-title.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
@@ -74,8 +76,21 @@ export function SharePage({ token }: { token: string | null }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  // The window's title (R5): what the page is, never the document's name.
-  useFixedTitle('A shared document');
+  // The window's title (R5): what the page is, never the document's name —
+  // and never "emergency" (H4): a person's information is "Shared information".
+  const emergency =
+    (phase.kind === 'preview' && phase.preview.kind === 'emergency') ||
+    (phase.kind === 'open' && phase.session.kind === 'emergency');
+  useFixedTitle(emergency ? 'Shared information' : 'A shared document');
+  // Never indexed, beside the X-Robots-Tag every answer here carries (H4):
+  // a search engine that reaches the page anyway is told to keep nothing.
+  useEffect(() => {
+    const meta = document.createElement('meta');
+    meta.name = 'robots';
+    meta.content = 'noindex, nofollow, noarchive';
+    document.head.appendChild(meta);
+    return () => meta.remove();
+  }, []);
 
   // What was there is gone, and the focus with it: the new heading takes it.
   useEffect(() => {
@@ -185,7 +200,11 @@ export function SharePage({ token }: { token: string | null }) {
         />
       )}
 
-      {phase.kind === 'open' && (
+      {/* A person's emergency information (0.9.0, H4): what was ticked, and nothing else. */}
+      {phase.kind === 'open' && phase.session.kind === 'emergency' && (
+        <EmergencyOpened session={phase.session} heading={heading} />
+      )}
+      {phase.kind === 'open' && phase.session.kind !== 'emergency' && (
         <Opened session={phase.session} heading={heading} onSession={onSession} onOver={onOver} />
       )}
     </main>
@@ -244,15 +263,22 @@ function Preview({
   const canOpen = secure();
   // A collection (5.19): its name, withheld behind a PIN as a title is.
   const collection = preview.kind === 'collection';
-  const what = collection
-    ? preview.collection_name
-      ? 'this collection'
-      : 'a collection of documents'
-    : preview.document_title
-      ? 'this'
-      : preview.note
-        ? 'a note'
-        : 'a document';
+  // A person's emergency information (0.9.0, H4): said as "some
+  // information" until it is open, unless its sharer chose to name them.
+  const emergency = preview.kind === 'emergency';
+  const what = emergency
+    ? preview.person_name
+      ? `${preview.person_name}’s emergency information`
+      : 'some information'
+    : collection
+      ? preview.collection_name
+        ? 'this collection'
+        : 'a collection of documents'
+      : preview.document_title
+        ? 'this'
+        : preview.note
+          ? 'a note'
+          : 'a document';
   // An emailed code (5.20): sent when they ask, to the address the sharer
   // typed, which this page only ever shows masked.
   const sendCode = async () => {
@@ -289,9 +315,13 @@ function Preview({
   return (
     <>
       <h1 id="share-h" style={{ fontSize: 26 }} tabIndex={-1} ref={heading}>
-        {collection
-          ? (preview.collection_name ?? 'Shared documents')
-          : (preview.document_title ?? (preview.note ? 'A shared note' : 'A shared document'))}
+        {emergency
+          ? preview.person_name
+            ? `Emergency information for ${preview.person_name}`
+            : 'Information shared with you'
+          : collection
+            ? (preview.collection_name ?? 'Shared documents')
+            : (preview.document_title ?? (preview.note ? 'A shared note' : 'A shared document'))}
       </h1>
       <form
         className="card stack"
@@ -308,7 +338,7 @@ function Preview({
           preview.this_device_only) && (
           <ul className="share-terms">
             {preview.permission === 'view' &&
-              (preview.note ? (
+              (preview.note || emergency ? (
                 <li>You can read it here.</li>
               ) : (
                 <li>You can look at its pages here. It is not shared to download.</li>
@@ -577,6 +607,54 @@ function Opened({
           This page stays open for 30 minutes after you last use it, and until{' '}
           {dateTimeWords(session.session_expires_at, browserZone(), { always: true })} at the
           latest. After that, open the link again.
+        </p>
+      </section>
+    </>
+  );
+}
+
+/**
+ * An opened clinician's link (0.9.0, H4): the person, and the parts of
+ * their emergency information that were ticked, as the family typed them —
+ * with how long the page stays open, and that it is not medical advice.
+ */
+function EmergencyOpened({
+  session,
+  heading,
+}: {
+  session: SharedSession;
+  heading: RefObject<HTMLHeadingElement | null>;
+}) {
+  const e = session.emergency;
+  const from = session.shared_by ? <strong>{session.shared_by}</strong> : 'Somebody';
+  if (!e) return null;
+  return (
+    <>
+      <h1 id="share-h" style={{ fontSize: 26 }} tabIndex={-1} ref={heading}>
+        Emergency information for {e.person_name}
+      </h1>
+      <section className="card stack" aria-labelledby="share-h">
+        <p>
+          {from} shared this with you from {session.household_name}, to look at here.
+        </p>
+        <EmergencyDetails
+          fields={e.fields}
+          keys={e.shown}
+          dateOfBirth={e.date_of_birth}
+          showEmpty
+        />
+        {e.updated_at && (
+          <p className="muted">
+            Last changed {dateTimeWords(e.updated_at, browserZone(), { always: true })}.
+          </p>
+        )}
+        <p className="status status-warn" role="note">
+          {EMERGENCY_NOT_ADVICE} Check anything important with the person or their doctor.
+        </p>
+        <p className="muted">
+          This page stays open for 30 minutes after you last use it, and until{' '}
+          {dateTimeWords(session.session_expires_at, browserZone(), { always: true })} at the
+          latest. Whoever sent it can see that it was opened.
         </p>
       </section>
     </>

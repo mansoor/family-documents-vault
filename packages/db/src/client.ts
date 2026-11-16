@@ -167,6 +167,30 @@ export interface Schema {
   };
 
   /**
+   * A person's emergency information (0102, 0.9.0, H4): one sealed record
+   * a person, under the household's identity key, bound to its household
+   * and person. Who reads it is its own `audience` and `chosen` (the
+   * person and the owners always; a live caregiver too); the person and
+   * the owners write it. The version, when and by whom are the database's.
+   */
+  member_emergency: {
+    household_id: string;
+    member_id: string;
+    sealed: Buffer;
+    dek_wrapped: Buffer;
+    wrapped_by_scope: string;
+    audience: ColumnType<
+      'owners_and_self' | 'adults' | 'family',
+      'owners_and_self' | 'adults' | 'family' | undefined,
+      'owners_and_self' | 'adults' | 'family'
+    >;
+    chosen: ColumnType<string[], string[] | undefined, string[]>;
+    version: Generated<number>;
+    updated_at: GeneratedTimestamp;
+    updated_by: Generated<string | null>;
+  };
+
+  /**
    * Something done only after the people it touches were told (0050): today
    * a wider identity audience, whose `subject` is the audience it widens to.
    * Asked now, ending once: completed once `notice_until` has passed, or
@@ -493,6 +517,13 @@ export interface Schema {
      * one's (linkShowsTitle). Set as it is made, never after.
      */
     show_title: ColumnType<boolean | null, boolean | null | undefined, never>;
+    /**
+     * The person whose emergency information it gives (0102, 0.9.0, H4);
+     * null for a document's or a collection's link. Set as it is made.
+     */
+    emergency_member_id: ColumnType<string | null, string | null | undefined, never>;
+    /** The parts of their page the sharer ticked (0102): set with it, never after. */
+    emergency_fields: ColumnType<string[] | null, string[] | null | undefined, never>;
   };
 
   /**

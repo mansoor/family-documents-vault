@@ -16,6 +16,11 @@ export interface LinkEmailInput {
   householdName: string;
   sharedBy: string | null;
   collection: boolean;
+  /**
+   * A person's emergency information (0.9.0, H4): said as "some
+   * information", never what — no allergy, medication or condition (H2).
+   */
+  emergency?: boolean;
   link: string;
   expiresAt: Date;
   timezone: string;
@@ -31,7 +36,11 @@ export function linkEmail(e: LinkEmailInput): { subject: string; text: string } 
   // 0.9.0-dev.39), or not at all.
   const household = plainName(e.householdName);
   const who = plainName(e.sharedBy);
-  const what = e.collection ? 'a collection of documents' : 'a document';
+  const what = e.emergency
+    ? 'some information'
+    : e.collection
+      ? 'a collection of documents'
+      : 'a document';
   const subject = who
     ? `${who} has shared ${what} with you`
     : `${what.charAt(0).toUpperCase()}${what.slice(1)} has been shared with you`;

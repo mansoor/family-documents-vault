@@ -19,6 +19,7 @@ function report(over: Partial<RestoreReport> = {}): RestoreReport {
     purgeRequestsCleared: 0,
     noticesWithdrawn: 0,
     identityAudiences: [],
+    emergencyAudiences: [],
     exportsExpired: 0,
     devicesEnded: 0,
     readingChecksStopped: 0,
@@ -60,5 +61,16 @@ describe('what restore-backup says when it is done', () => {
       '1 Reading check that had not finished was stopped. An owner starts another in Settings → Server and reading → Reading and the check.',
     );
     expect(words).not.toContain('For owners');
+  });
+
+  it('says each person’s emergency information went back to them and the owners (0.9.0, H4)', () => {
+    const words = restoreSummary(
+      'fdv-2026-11-15T02-30-00-123Z.sql.enc',
+      report({ emergencyAudiences: [{ household_id: 'h-1', narrowed: 2 }] }),
+    ).replace(/\s+/g, ' ');
+    expect(words).toContain(
+      'Who can see emergency information in household h-1 went back to each person and the owners, nobody named (2 pages).',
+    );
+    expect(words).not.toMatch(/allerg|medication|condition/i);
   });
 });

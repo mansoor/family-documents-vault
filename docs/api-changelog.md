@@ -7106,6 +7106,105 @@ conflict`, `retriable: true`. `ReminderView.review` (`true` for one,
       documents refused, before a key is claimed or answered: a refused
       create keeps none), keeps keys by household, account, person and
       key, and times them by `FakeVaultState.now` when a test sets it.
+  - Emergency information for each person (0.9.0-dev.47, H4 of the health
+    plan). Migration 0102. **Additive**: nothing an older client sends is
+    answered differently.
+    - **New `features`:** `emergency_info` (`true`).
+    - **New routes** (signed in; never cached, `cache-control: no-store`,
+      `x-robots-tag: noindex, nofollow`):
+      - `GET /api/v1/members/{id}/emergency` — `EmergencyView`: `fields`
+        (what was typed: `blood_type`, `allergies`, `medications`,
+        `conditions`, `insurance`, `doctors`, `emergency_contacts`,
+        `notes`), `date_of_birth`, `audience` (`owners_and_self`,
+        `adults` — the default — or `family`), `chosen` (people named
+        besides; to whoever chooses and the person, else `[]`),
+        `documents` (the person's `advance_directive`, `healthcare_proxy`
+        and `insurance_card` documents the caller may open: `{ id, title }`),
+        `version`, `updated_at`, `can_edit`, `can_choose`,
+        `can_see_links`, `caregiver` (seen only as their caregiver),
+        `candidates` (to whoever chooses). `ETag` is the version. Read by
+        the person, the owners, an adult when the audience is `adults` or
+        `family`, a teen when it is `family`, an adult or a teen named in
+        `chosen`, and the person's caregiver with a live grant they kept
+        (H1b; signed in as an owner or an adult, standard protection).
+        Never a viewer or a guest. Anybody else, and a person who is not
+        there or is a guest: `404 not_found`. A page nobody has written is
+        answered (version 0) to the person and the owners alone; to anybody
+        else it is the same `404`.
+      - `PUT /api/v1/members/{id}/emergency` — `{ fields }`, the whole
+        page, with `If-Match` the version read (a stale one is `409
+conflict`, the version in `detail`; none writes as sent). The
+        person (owner, adult or teen) and every owner; `403 forbidden` to
+        anybody else who may read it. Nothing different is no change.
+        Lists are at most 40 entries, each `{ id, name, note? }` (a
+        medication also `dose`; a doctor or a contact `role`, `phone`);
+        `blood_type` one of `A+ A- B+ B- AB+ AB- O+ O-` or null.
+      - `PUT /api/v1/members/{id}/emergency/audience` — `{ audience,
+chosen_member_ids? }`: the person's when they sign in as an owner
+        or an adult; an owner's for anybody else (a child, a teen,
+        somebody with no sign-in). `403` otherwise; `422` for somebody
+        named who does not sign in as an adult or a teen of the family.
+      - `GET /api/v1/members/{id}/emergency/links` — `{ items:
+EmergencyLink[] }`: the person's clinician's links (each a
+        `Share`, with `emergency_fields` and `openings`, each `{ at,
+network, user_agent }`: when, the network as `/24` or `/48`, the
+        browser — never what was read). The person and the owners; `404`
+        to anybody else.
+      - `POST /api/v1/members/{id}/emergency/links` — `{ fields,
+expires_in_hours? | expires_at?, recipient_label?, with_pin?,
+with_password? | password?, code_email? | recipient_phone?,
+second_factor?, this_device_only?, max_opens?, show_title? }`: a
+        share link of a new kind, to view the ticked parts of the page and
+        nothing else (no document), for `expires_in_hours` (default 4,
+        1–24) or until `expires_at` (24 hours at most; `422
+expiry_out_of_range`). Made by whoever chooses (`403` otherwise),
+        once they confirm it's them (`403 step_up_required`, action
+        `share_emergency`); `409 emergency_empty` for a page with nothing
+        on it. Answered `201 CreatedShare`. It opens through the share
+        routes as every link does (`POST /shared/preview`, `/code`,
+        `/unlock`, `GET /shared/items`): its factors, ten tries, sessions,
+        opens and email (`POST /shares/{id}/email`, which says "some
+        information", never what) are every link's.
+      - `DELETE /api/v1/members/{id}/emergency/links/{linkId}` — taken
+        back, by the person or an owner: `204`.
+    - **Changed answers (share routes):** `ShareLinkPreview.kind` and
+      `SharedSession.kind` may be `emergency`. Behind a factor (a PIN, a
+      password, a code, another browser) the preview of such a link says
+      what any withheld link's says: `kind: "document"`, `shared_by: null`,
+      no `permission` and no `person_name`. With no factor it says
+      `kind: "emergency"` and `person_name` — null unless the sharer chose
+      `show_title` — and `shared_by` null too when its maker is its own
+      person and `show_title` was not chosen. The session carries
+      `emergency`: `{ person_name, date_of_birth, fields, shown,
+updated_at }` — only the ticked parts, `items: []`. Such a link is not
+      in `GET /shares`, and `DELETE /shares/{id}` does not find it. An
+      owner's link for somebody stops when that person signs in as a
+      grown-up (theirs to share then). Taking back the audience
+      (`PUT …/emergency/audience`) ends the exports of whoever loses sight.
+      A restore sets every page back to `owners_and_self` with nobody
+      named, and says how many (`emergencyAudiences` in its report).
+    - **Activity log:** `emergency.updated` ("updated their emergency
+      information") and `emergency.audience_changed`, about the person;
+      a clinician's link's `share.*` lines have `object_type: "emergency"`.
+      For the owners, the person and whoever did it; never a word of what
+      is on the page.
+    - **Exports:** `emergency/<name>.json` for each page the requester may
+      read, and `people[].emergency` in `index.json`.
+    - **Storage:** `member_emergency` (sealed under the identity key, bound
+      to its household and person; `audience`, `chosen`, `version`), with
+      its own rules for each kind of caller; `share_link.emergency_member_id`
+      and `emergency_fields`.
+    - **Shared and client:** `emergency.ts` (`EmergencyView`,
+      `EmergencyFields`, `EmergencyLink`, `SharedEmergency`,
+      `EMERGENCY_FIELD_KEYS`, `EMERGENCY_LINK_DEFAULT_HOURS`,
+      `EMERGENCY_LINK_MAX_HOURS`, `canSeeEmergency`, `canEditEmergency`,
+      `choosesEmergency`, `emergencyFieldsFor`, `emergencyFilled`,
+      `WALLET_CARD_DEFAULT`, `EMERGENCY_NOT_ADVICE`).
+      `@fdv/client`: `emergencyOf`, `saveEmergency(token, id, fields,
+version)`, `setEmergencyAudience`, `emergencyLinks`,
+      `makeEmergencyLink`, `revokeEmergencyLink`; the fake keeps pages and
+      links as the vault does (`FakeVaultState.emergency`,
+      `emergencyLinks`), and a contract scenario checks both.
 
 ## Deprecations in effect
 

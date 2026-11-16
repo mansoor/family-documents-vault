@@ -267,6 +267,15 @@ export function AfterRestoreScreen() {
           )}
         </p>
       )}
+      {/* And each person's emergency information (0.9.0, H4): back to the
+          person and the owners, as identity details are. */}
+      {caps?.features.emergency_info && (
+        <p className="muted" data-testid="restore-emergency">
+          A restore also sets who can see each person’s emergency information back to the person and
+          the owners, with nobody named. Each person — or an owner, for a child — can widen it again
+          on their page.
+        </p>
+      )}
       <ErrorNote message={loadError ?? error} />
       {confirm.dialog}
       <p className="notice" role="status" tabIndex={-1} ref={status} hidden={!said}>

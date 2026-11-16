@@ -217,6 +217,18 @@ const identityLine: Audience = (reader, line) => {
   );
 };
 
+/**
+ * A person's emergency information (0.9.0, H4): changed, who sees it
+ * changed, and every line of a clinician's link to it — made, opened, taken
+ * back, its code sent, emailed. For the owners, the person and whoever did
+ * it: never another adult, a teen or a caregiver, whoever may read the page
+ * itself, and never a word of what is on it (H2).
+ */
+const emergencyLine: Audience = (reader, line) =>
+  reader.role === 'owner' ||
+  (line.object_id != null && line.object_id === reader.memberId) ||
+  (line.actor_account_id != null && line.actor_account_id === reader.accountId);
+
 /** "The audience of what it is about": the row's object type decides. */
 const BY_TYPE = 'by type';
 
@@ -373,6 +385,10 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // sign-in is told of a widening, and so reads each of these lines (the
   // 5.26 review); a viewer reads no log.
   ['identity.audience_changed', everyone],
+  // 0.9.0 (H4): somebody's emergency information changed, and who sees it
+  // — that, never what is on it: the owners, the person, whoever did it.
+  ['emergency.updated', emergencyLine],
+  ['emergency.audience_changed', emergencyLine],
   // 5.41: whether the household's Only me documents can be shared outside
   // the family, and how many links that paused or turned back on: for the
   // owners and the adults, who may share. Never which links.
@@ -504,6 +520,10 @@ const TYPES: ReadonlyMap<string | null, Audience> = new Map<string | null, Audie
   // audience the list of links gives the link to (the 5.19 review). The
   // collection's own actions (collection.*) keep their rows above.
   ['collection', seesTheCollectionsLink],
+  // 0.9.0 (H4): a clinician's link to somebody's emergency information —
+  // made, opened, taken back, emailed — is the person's, the owners' and
+  // whoever made it.
+  ['emergency', emergencyLine],
   ['member', everyone],
   ['invitation', everyone],
   ['owner_change_request', everyone],
@@ -627,7 +647,8 @@ export class AuditService {
           -- Whom a line is about: a person's own lines, and a collection's
           -- manager's (0.9.0), who is named in its detail.
           left join member object_member
-            on object_member.id = case when e.object_type = 'member' then e.object_id
+            on object_member.id = case when e.object_type in ('member', 'emergency')
+                                         then e.object_id
                                        when e.action in ('collection.manager_added',
                                                          'collection.manager_changed',
                                                          'collection.manager_removed')

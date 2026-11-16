@@ -618,6 +618,16 @@ export interface CapabilityFeatures {
    * /reminders?document_id= for one document's. Absent from older vaults.
    */
   health_kinds?: boolean;
+  /**
+   * Emergency information (0.9.0, H4): one page a person — GET and PUT
+   * /members/{id}/emergency (ETag / If-Match), PUT
+   * /members/{id}/emergency/audience, GET and POST
+   * /members/{id}/emergency/links, DELETE
+   * /members/{id}/emergency/links/{linkId}. A clinician's link is a share
+   * link of a third kind: its page and session say `kind: 'emergency'`, and
+   * the session carries `emergency`. Absent from older vaults.
+   */
+  emergency_info?: boolean;
 }
 
 export interface CapabilityLimits {

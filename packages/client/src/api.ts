@@ -174,6 +174,11 @@ import type {
   FolderContents,
   CaregiverGrantView,
   CaregiverLook,
+  EmergencyAudienceInput,
+  EmergencyFields,
+  EmergencyLinkInput,
+  EmergencyLinks,
+  EmergencyView,
   GrownUpAnswerChoice,
   GrownUpAnswerResult,
   GrownUpQuestionView,
@@ -1474,6 +1479,65 @@ export function createApi(http: Http) {
       request<GrownUpAnswerResult>(`/api/v1/members/${enc(memberId)}/grown-up-answer`, {
         method: 'POST',
         body: { answer },
+        token,
+      }),
+
+    // ------------------------------------------ emergency information (H4)
+    /**
+     * A person's emergency information (`features.emergency_info`), as the
+     * caller may see it: the person, the owners, its audience, a live
+     * caregiver. `404` for anybody else, the same as for nobody.
+     */
+    emergencyOf: (token: string, memberId: string) =>
+      request<EmergencyView>(`/api/v1/members/${enc(memberId)}/emergency`, { token }),
+    /**
+     * The whole page, made from the version read (`If-Match`): a newer one
+     * is `409 conflict`. The person, and the owners; `403` for anybody else
+     * who may read it.
+     */
+    saveEmergency: (
+      token: string,
+      memberId: string,
+      fields: EmergencyFields,
+      version?: number | null,
+    ) =>
+      request<EmergencyView>(`/api/v1/members/${enc(memberId)}/emergency`, {
+        method: 'PUT',
+        body: { fields },
+        token,
+        ...(version !== undefined && version !== null
+          ? { headers: { 'if-match': `"${version}"` } }
+          : {}),
+      }),
+    /**
+     * Who sees the page besides the person and the owners: the person's to
+     * choose, signed in as a grown-up; an owner's for anybody else (`403`).
+     */
+    setEmergencyAudience: (token: string, memberId: string, body: EmergencyAudienceInput) =>
+      request<EmergencyView>(`/api/v1/members/${enc(memberId)}/emergency/audience`, {
+        method: 'PUT',
+        body,
+        token,
+      }),
+    /** A person's clinician's links, each with every opening: theirs and the owners' (`404` otherwise). */
+    emergencyLinks: (token: string, memberId: string) =>
+      request<EmergencyLinks>(`/api/v1/members/${enc(memberId)}/emergency/links`, { token }),
+    /**
+     * A clinician's link: the parts ticked, for hours (4 unless said, 24 at
+     * most), with a share link's factors. Asks to confirm it's you
+     * (`step_up_required`, `share_emergency`). The link and its PIN or
+     * password are here, once.
+     */
+    makeEmergencyLink: (token: string, memberId: string, body: EmergencyLinkInput) =>
+      request<CreatedShare>(`/api/v1/members/${enc(memberId)}/emergency/links`, {
+        method: 'POST',
+        body,
+        token,
+      }),
+    /** Taken back by the person or an owner: `204`. */
+    revokeEmergencyLink: (token: string, memberId: string, linkId: string) =>
+      request<void>(`/api/v1/members/${enc(memberId)}/emergency/links/${enc(linkId)}`, {
+        method: 'DELETE',
         token,
       }),
 

@@ -42,6 +42,8 @@ import { registerCabinet } from './cabinet/routes.js';
 import type { CabinetService } from './cabinet/service.js';
 import { registerCaregivers } from './caregivers/routes.js';
 import type { CaregiverService } from './caregivers/service.js';
+import { registerEmergency } from './emergency/routes.js';
+import type { EmergencyService } from './emergency/service.js';
 import type { CollectionService } from './collections/service.js';
 import type { VisibilityService } from './documents/visibility.js';
 import type { TotpService } from './auth/totp.js';
@@ -102,6 +104,8 @@ export interface AppDeps {
   cabinet?: CabinetService;
   /** Caregivers for somebody's medical papers, and turning 18 (0.9.0, H1b). */
   caregivers?: CaregiverService;
+  /** Each person's emergency information (0.9.0, H4). */
+  emergency?: EmergencyService;
   sealedSearch: SealedSearchService;
   visibility: VisibilityService;
   totp: TotpService;
@@ -512,6 +516,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerCollections(app, deps.collections);
   if (deps.cabinet) registerCabinet(app, deps.cabinet);
   if (deps.caregivers) registerCaregivers(app, deps.caregivers);
+  if (deps.emergency) registerEmergency(app, deps.emergency, deps.shares, deps.stepUp);
   registerDocuments(
     app,
     deps.documents,

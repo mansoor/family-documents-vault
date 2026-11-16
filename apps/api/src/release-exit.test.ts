@@ -256,6 +256,8 @@ const PARAM_KINDS: Record<string, Kind> = {
   'managers/:memberId': 'member',
   // A person's caregiver (0.9.0, H1b): a person.
   'caregivers/:caregiverId': 'member',
+  // A clinician's link to a person's emergency information (0.9.0, H4): a share link.
+  'links/:linkId': 'share',
   'photo/:photoId': 'photo',
   'shares/:id': 'share',
   'upload-requests/:id': 'uploadRequest',
@@ -812,6 +814,45 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/members/:id/caregiver-views': {
     who: 'signedIn',
     theirs: { passwordOnlyOwner: 'the owners see who looked, never which paper (H1b)' },
+  },
+  // A person's emergency information (0.9.0, H4): read by the person, the
+  // owners, the adults by default (its audience, chosen by the person) and
+  // a live caregiver — never a viewer or a guest; written by the person and
+  // the owners; who sees it chosen by the person, a grown-up (Ahmed), alone;
+  // a clinician's link made by them, and listed and taken back by them and
+  // the owners. A link id that is not to the person's page is no link here.
+  'GET /api/v1/members/:id/emergency': {
+    who: 'signedIn',
+    theirs: {
+      passwordOnlyOwner: 'the owners read everybody’s emergency information (H4)',
+      otherAdult:
+        'once written, the adults read it by default, and Sara is Ahmed’s caregiver besides (H4)',
+    },
+  },
+  'PUT /api/v1/members/:id/emergency': {
+    who: 'family',
+    body: () => ({ fields: { notes: 'OVERWRITTEN' } }),
+    theirs: { passwordOnlyOwner: 'an owner writes anybody’s emergency information (H4)' },
+  },
+  'PUT /api/v1/members/:id/emergency/audience': {
+    who: 'family',
+    bodies: (f) => [
+      { audience: 'family' },
+      { audience: 'owners_and_self', chosen_member_ids: [f.member] },
+    ],
+  },
+  'GET /api/v1/members/:id/emergency/links': {
+    who: 'signedIn',
+    theirs: {
+      passwordOnlyOwner: 'the owners see a person’s clinician’s links and who opened them (H4)',
+    },
+  },
+  'POST /api/v1/members/:id/emergency/links': {
+    who: 'adults',
+    body: () => ({ fields: ['allergies'] }),
+  },
+  'DELETE /api/v1/members/:id/emergency/links/:linkId': {
+    who: 'signedIn',
   },
   'GET /api/v1/grown-up/questions': { who: 'signedIn' },
   'POST /api/v1/members/:id/grown-up-answer': {

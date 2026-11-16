@@ -148,6 +148,8 @@ export function activityKind(action: string): ActivityKind {
     case 'upload_request':
     case 'incoming':
       return 'shared';
+    case 'emergency':
+      return 'changed';
     case 'member':
     case 'identity':
     case 'access':
@@ -200,6 +202,15 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
   const kind = text(detail.label) ? `“${text(detail.label)}”` : null;
   /** A collection, by the name it has now (0.5.12). */
   const collection = e.collection_name ? `the collection “${e.collection_name}”` : 'a collection';
+  // A person's emergency information (0.9.0, H4): only ever these words,
+  // never what is on it — theirs, or the person's by name.
+  const emergency =
+    e.actor_member_id != null && e.actor_member_id === e.object_id
+      ? 'their emergency information'
+      : `${possessive(personOf(e))} emergency information`;
+  /** What a link's line is about: a collection, a person's emergency information, or a document. */
+  const linkTo =
+    e.object_type === 'collection' ? collection : e.object_type === 'emergency' ? emergency : doc;
   const documentId = e.object_type === 'document' ? e.object_id : null;
   // Who did it, by id (R4): only for a member with a name, where the
   // template says it names them (every template does, but those marked
@@ -537,6 +548,13 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
           : `${who} looked at ${possessive(personOf(e))} sign-in`,
         true,
       );
+    // A person's emergency information (0.9.0, H4): that it changed, and who
+    // can see it — never a word of what is on it (H2), to the owners, the
+    // person and whoever did it.
+    case 'emergency.updated':
+      return line(`${who} updated ${emergency}`);
+    case 'emergency.audience_changed':
+      return line(`${who} changed who can see ${emergency}`, true);
     // A person's identity details (5.26): never a value, and never which
     // fields to anybody but the owners, the person and whoever did it.
     case 'identity.viewed':
@@ -758,7 +776,7 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // documents went; each document's download or look is a line about
     // that document, as for any link.
     case 'share.created': {
-      const to = e.object_type === 'collection' ? collection : doc;
+      const to = linkTo;
       const follows =
         e.object_type === 'collection' && detail.follow_collection === true
           ? ', which keeps up with it'
@@ -769,7 +787,7 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       );
     }
     case 'share.opened':
-      return line(`${who} opened ${e.object_type === 'collection' ? collection : doc}`);
+      return line(`${who} opened ${linkTo}`);
     // 5.19: put in a collection whose link keeps up with it, so sent out too.
     case 'share.followed':
       return line(
@@ -789,7 +807,7 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     case 'share.viewed':
       return line(`${who} looked at the pages of ${doc}`);
     case 'share.revoked': {
-      const to = e.object_type === 'collection' ? collection : doc;
+      const to = linkTo;
       // 5.19: a collection deleted, or made Only me, ends its links.
       if (detail.why === 'collection_deleted') {
         return line(`A link to ${to} stopped working: ${who} deleted the collection`);
@@ -804,7 +822,7 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // against the same ten.
     case 'share.locked':
       return line(
-        `A link to ${e.object_type === 'collection' ? collection : doc} stopped working: its PIN, password or code was wrong ten times`,
+        `A link to ${linkTo} stopped working: its PIN, password or code was wrong ten times`,
         true,
         UNNAMED,
       );
@@ -812,7 +830,7 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // which the log has only masked.
     case 'share.code_sent':
       return line(
-        `A code to open a link to ${e.object_type === 'collection' ? collection : doc} was ${detail.by === 'sms' ? 'texted' : 'emailed'}${text(detail.to) ? ` to ${text(detail.to)}` : ''}`,
+        `A code to open a link to ${linkTo} was ${detail.by === 'sms' ? 'texted' : 'emailed'}${text(detail.to) ? ` to ${text(detail.to)}` : ''}`,
         false,
         UNNAMED,
       );
@@ -820,7 +838,7 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // texts not set up, this month's all sent, or the phone didn't take it.
     case 'share.code_not_sent':
       return line(
-        `A code to open a link to ${e.object_type === 'collection' ? collection : doc} couldn’t be texted${text(detail.to) ? ` to ${text(detail.to)}` : ''}: ${
+        `A code to open a link to ${linkTo} couldn’t be texted${text(detail.to) ? ` to ${text(detail.to)}` : ''}: ${
           detail.reason === 'cap_reached'
             ? 'this month’s texts were all sent'
             : detail.reason === 'not_sent'
@@ -831,22 +849,16 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
         UNNAMED,
       );
     case 'share.resumed':
-      return line(
-        `${who} turned a link to ${e.object_type === 'collection' ? collection : doc} back on after a restore`,
-        true,
-      );
+      return line(`${who} turned a link to ${linkTo} back on after a restore`, true);
     // 0.9.0: a link shown again to whoever made it, after confirming it was
     // them. Never the link, nor its PIN or password.
     case 'share.revealed':
-      return line(
-        `${who} looked again at the link they made to ${e.object_type === 'collection' ? collection : doc}`,
-        true,
-      );
+      return line(`${who} looked again at the link they made to ${linkTo}`, true);
     // 0.9.0 (13 Nov 2026): a link emailed to its recipient by the vault —
     // where, masked; never the link, its PIN or password, nor the message.
     case 'share_link.emailed':
       return line(
-        `${who} emailed the link to ${e.object_type === 'collection' ? collection : doc}${text(detail.to) ? ` to ${text(detail.to)}` : ''}`,
+        `${who} emailed the link to ${linkTo}${text(detail.to) ? ` to ${text(detail.to)}` : ''}`,
         true,
       );
 

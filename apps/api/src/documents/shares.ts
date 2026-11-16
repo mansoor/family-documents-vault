@@ -10,6 +10,7 @@ import { isIPv6 } from 'node:net';
 import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
+  openEmergency,
   openPrivate,
   openShareLinkCopy,
   sealShareLinkCopy,
@@ -55,6 +56,10 @@ import {
   canSeeCollection,
   canShareToView,
   collectionShareItem,
+  EMERGENCY_FIELD_KEYS,
+  EMERGENCY_LINK_DEFAULT_HOURS,
+  EMERGENCY_LINK_MAX_HOURS,
+  emergencyFieldsFor,
   COLLECTION_SHARE_FILE_REMOVED,
   COLLECTION_SHARE_REASONS,
   FILE_REMOVED,
@@ -94,6 +99,9 @@ import {
   withinCollectionAudience,
   type CollectionAudience,
   type CollectionSharePreview,
+  type EmergencyFieldKey,
+  type EmergencyFields,
+  type EmergencyOpening,
   type OnlyMeSharing,
   type RevealedShare,
   type ShareCodeSent,
@@ -298,6 +306,32 @@ export const collectionShareBody = z
     // taken out of the collection while the sheet was open. As many as a
     // household may hold (NFR-05: 10,000 documents), the third round.
     left_out_ids: z.array(z.string().uuid()).max(LEFT_OUT_MAX).optional(),
+  })
+  .strict();
+
+/**
+ * A clinician's link to a person's emergency information (0.9.0, H4): the
+ * parts of the page ticked, for hours (4 unless said, 24 at most) or until
+ * a time, with every link's factors. To view, always; never a document.
+ */
+export const emergencyShareBody = z
+  .object({
+    fields: z
+      .array(z.enum(EMERGENCY_FIELD_KEYS))
+      .min(1, 'Tick at least one part of the page to show.')
+      .max(EMERGENCY_FIELD_KEYS.length),
+    expires_in_hours: z.number().int().min(1).max(EMERGENCY_LINK_MAX_HOURS).optional(),
+    expires_at: shareOptions.expires_at,
+    recipient_label: shareOptions.recipient_label,
+    with_pin: shareOptions.with_pin,
+    with_password: shareOptions.with_password,
+    password: shareOptions.password,
+    code_email: shareOptions.code_email,
+    second_factor: shareOptions.second_factor,
+    recipient_phone: shareOptions.recipient_phone,
+    this_device_only: shareOptions.this_device_only,
+    max_opens: limit,
+    show_title: shareOptions.show_title,
   })
   .strict();
 
@@ -568,11 +602,37 @@ const isRight = (a: Attempt): a is { right: NonNullable<Verified> } =>
 /** A transaction asked for by whoever holds one link, in its household: never anybody else. */
 type LinkScope = Scope & { householdId: string; actor: Extract<Actor, { kind: 'link' }> };
 
-/** A link as the family's lists show it, with who made it. */
-type LinkView = ShareView & { created_by: string };
+/** A link as the family's lists show it, with who made it, and whose page it gives (H4). */
+type LinkView = ShareView & { created_by: string; emergency_member_id: string | null };
+
+/** A clinician's link as its person's page lists it (H4): its ticked parts, and each opening. */
+type EmergencyLinkView = ShareView & {
+  emergency_fields: EmergencyFieldKey[];
+  openings: EmergencyOpening[];
+};
+
+/**
+ * An emergency link's page as its transaction found it (H4): sealed, with
+ * its person and the parts ticked, to be opened once the transaction is
+ * over (`withEmergency`). Never sent as it is.
+ */
+type PendingEmergency = {
+  householdId: string;
+  memberId: string;
+  row: { sealed: Buffer; dek_wrapped: Buffer; wrapped_by_scope: string; updated_at: Date };
+  person: { display_name: string; date_of_birth: string | null };
+  shown: EmergencyFieldKey[];
+};
+
+/** A session's answer as its transaction built it: an emergency page still to open. */
+type Viewed = SharedSession & { pendingEmergency?: PendingEmergency };
 
 /** What the family's lists are sent of a link. */
-const viewOnly = ({ created_by: _by, ...view }: LinkView): ShareView => view;
+const viewOnly = ({
+  created_by: _by,
+  emergency_member_id: _person,
+  ...view
+}: LinkView): ShareView => view;
 
 type LinkRow = {
   id: string;
@@ -603,6 +663,9 @@ type LinkRow = {
   device_hash: Buffer | null;
   /** Whether its page shows the title (0.9.0, H1a): null, as each document is (linkShowsTitle). */
   show_title: boolean | null;
+  /** A clinician's link (0.9.0, H4): whose emergency information, and which parts of it. */
+  emergency_member_id: string | null;
+  emergency_fields: string[] | null;
 };
 
 /** A collection, as its link reads it (5.19). */
@@ -654,11 +717,21 @@ const usedUp = (link: { open_count: number; max_opens: number | null }) =>
 /** The states of a link that has ended: it opens nothing, and is not shown again (0.9.0). */
 const ENDED: readonly ShareView['state'][] = ['revoked', 'expired', 'locked'];
 
-/** What a link's lines in the activity log are about: its document, or its collection. */
-const objectOf = (link: { document_id: string | null; collection_id: string | null }) =>
-  link.collection_id !== null
-    ? { objectType: 'collection', objectId: link.collection_id }
-    : { objectType: 'document', objectId: link.document_id };
+/**
+ * What a link's lines in the activity log are about: its document, its
+ * collection, or (0.9.0, H4) a person's emergency information — the person,
+ * never a word of what is on it.
+ */
+const objectOf = (link: {
+  document_id: string | null;
+  collection_id: string | null;
+  emergency_member_id?: string | null;
+}) =>
+  link.emergency_member_id
+    ? { objectType: 'emergency', objectId: link.emergency_member_id }
+    : link.collection_id !== null
+      ? { objectType: 'collection', objectId: link.collection_id }
+      : { objectType: 'document', objectId: link.document_id };
 
 const gone = () =>
   new ApiError(
@@ -1115,8 +1188,12 @@ export class ShareService {
     id: string,
     token: string,
     secrets: { pin: string | null; password: string | null },
+    /** A clinician's link (H4): the person whose page it is, whose links it is listed with. */
+    emergencyOf?: string,
   ): Promise<CreatedShare> {
-    const share = (await this.list(p)).find((s) => s.id === id) as ShareView;
+    const share = (await this.views(p, emergencyOf))
+      .map(viewOnly)
+      .find((s) => s.id === id) as ShareView;
     return {
       share,
       link_token: token,
@@ -1278,6 +1355,326 @@ export class ShareService {
     // A note has none: its words are read as they are.
     if (permission === 'view' && versionId) await this.drawPages(p.householdId, id, versionId);
     return this.handOver(p, id, token, secrets);
+  }
+
+  // ------------------------------- a person's emergency information (H4)
+
+  /**
+   * When a clinician's link ends (0.9.0, H4): `expires_at`, or
+   * `expires_in_hours` from now, or EMERGENCY_LINK_DEFAULT_HOURS — never
+   * past EMERGENCY_LINK_MAX_HOURS, and at least five minutes ahead.
+   */
+  private emergencyEnd(input: {
+    expires_at?: string | undefined;
+    expires_in_hours?: number | undefined;
+  }): Date {
+    if (input.expires_at !== undefined && input.expires_in_hours !== undefined) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'Say when the link ends once: expires_at or expires_in_hours, not both.',
+      );
+    }
+    const now = Date.now();
+    const longest = now + EMERGENCY_LINK_MAX_HOURS * 3_600_000;
+    const end =
+      input.expires_at !== undefined
+        ? new Date(input.expires_at)
+        : new Date(now + (input.expires_in_hours ?? EMERGENCY_LINK_DEFAULT_HOURS) * 3_600_000);
+    if (end.getTime() < now + 5 * 60_000) {
+      throw expiryRefused('A link has to last at least five minutes.');
+    }
+    // A minute's grace for a client's clock, cut to the longest.
+    if (end.getTime() > longest + 60_000) {
+      throw expiryRefused(
+        `A link to emergency information lasts ${EMERGENCY_LINK_MAX_HOURS} hours at most.`,
+      );
+    }
+    return new Date(Math.min(end.getTime(), longest));
+  }
+
+  /**
+   * POST /members/{id}/emergency/links (0.9.0, H4): a link a clinician
+   * opens to view the parts of a person's page ticked, for hours — a share
+   * link like any other, with its factors, its sessions, its opens written
+   * down and its email, and nothing of the person's documents. Made by
+   * whoever chooses who sees the page (the person signed in as a grown-up;
+   * an owner for anybody else), as themselves; the database holds the same
+   * (0102). The route has asked who is asking (`share_emergency`).
+   */
+  async createForEmergency(
+    p: Principal,
+    memberId: string,
+    input: z.infer<typeof emergencyShareBody>,
+    meta: RequestMeta,
+  ): Promise<CreatedShare> {
+    await this.emergencyShareable(p, memberId);
+    const expiresAt = this.emergencyEnd(input);
+    const secrets = await this.secrets(p, input);
+    const { token, pinHash } = secrets;
+    const fields = EMERGENCY_FIELD_KEYS.filter((k) => input.fields.includes(k));
+    const id = await withPrincipal(this.db, p, async (trx) => {
+      // Asked again inside: who chooses may have changed since.
+      await this.emergencyChooser(trx, memberId);
+      const shareId = randomUUID();
+      await trx
+        .insertInto('share_link')
+        .values({
+          id: shareId,
+          household_id: p.householdId,
+          document_id: null,
+          emergency_member_id: memberId,
+          emergency_fields: fields,
+          token_hash: hashToken(token),
+          pin_hash: pinHash,
+          secret_kind: secrets.secretKind,
+          code_email: secrets.codeEmail,
+          code_phone: secrets.codePhone,
+          this_device_only: secrets.thisDeviceOnly,
+          recipient_label: input.recipient_label ?? null,
+          created_by: p.accountId,
+          // Never past a day by the database's own clock, which the
+          // database's rule counts by (0102), however this one drifts.
+          expires_at: sql<Date>`least(${expiresAt}::timestamptz, now() + interval '24 hours')`,
+          permission: 'view',
+          max_opens: input.max_opens ?? null,
+          link_copy_sealed: this.copyOf(p.householdId, shareId, secrets),
+          // Whose page it is waits behind Open unless the sharer shows it.
+          show_title: input.show_title ?? false,
+        })
+        .execute();
+      // Which parts were ticked is not said: a line names the link and the
+      // person, never what is on the page (H2).
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'share.created',
+        objectType: 'emergency',
+        objectId: memberId,
+        detail: {
+          share_id: shareId,
+          recipient_label: input.recipient_label ?? null,
+          ...ShareService.protectionDetail(secrets),
+          expires_at: expiresAt.toISOString(),
+          permission: 'view',
+          max_opens: input.max_opens ?? null,
+        },
+        ip: meta.ip,
+      });
+      return shareId;
+    });
+    return this.handOver(p, id, token, secrets, memberId);
+  }
+
+  /**
+   * Whether the caller may make a clinician's link to this person's page,
+   * before anybody is asked to confirm it's them: a page they cannot see
+   * is not there (404); one they may read but not share is 403; one with
+   * nothing on it yet has nothing to send (409).
+   */
+  async emergencyShareable(p: Principal, memberId: string): Promise<void> {
+    await withPrincipal(this.db, p, (trx) => this.emergencyChooser(trx, memberId));
+  }
+
+  private async emergencyChooser(trx: Db, memberId: string): Promise<void> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(memberId)) {
+      throw notFound('That person');
+    }
+    const person = await trx
+      .selectFrom('member')
+      .select(['id', 'kind'])
+      .where('id', '=', memberId)
+      .executeTakeFirst();
+    if (!person || person.kind !== 'family') throw notFound('That person');
+    const page = await trx
+      .selectFrom('member_emergency')
+      .select('member_id')
+      .where('member_id', '=', memberId)
+      .executeTakeFirst();
+    const chooses = await sql<{ ok: boolean }>`select emergency_chooses(${memberId}::uuid) as ok`
+      .execute(trx)
+      .then((r) => r.rows[0]?.ok === true);
+    if (!page && !chooses) throw notFound('That person');
+    if (!chooses) {
+      throw new ApiError(
+        403,
+        'forbidden',
+        'Only the person can share their emergency information outside the family — or an owner, for a child or somebody without their own sign-in.',
+      );
+    }
+    if (!page) {
+      throw new ApiError(
+        409,
+        'emergency_empty',
+        'There is no emergency information here yet, so there is nothing to share. Add it first.',
+      );
+    }
+  }
+
+  /**
+   * GET /members/{id}/emergency/links (H4): a person's clinician's links,
+   * newest first, each with every time it was opened — when, from what
+   * network and browser, never what was read — for the person and the
+   * owners (the database gives nobody else a row of them, 0102).
+   */
+  async emergencyLinks(p: Principal, memberId: string): Promise<EmergencyLinkView[]> {
+    const views = await this.views(p, memberId);
+    if (views.length === 0) return [];
+    return withPrincipal(this.db, p, async (trx) => {
+      const ids = views.map((v) => v.id);
+      const fields = new Map(
+        (
+          await trx
+            .selectFrom('share_link')
+            .select(['id', 'emergency_fields'])
+            .where('id', 'in', ids)
+            .execute()
+        ).map((r) => [r.id, (r.emergency_fields ?? []) as EmergencyFieldKey[]]),
+      );
+      const opened = await sql<{
+        share_id: string;
+        at: Date;
+        network: string | null;
+        user_agent: string | null;
+      }>`
+        select e.detail->>'share_id' as share_id, e.at,
+               case when e.ip is null then null
+                    else host(e.ip) || '/' || masklen(e.ip) end as network,
+               e.detail->>'user_agent' as user_agent
+          from audit_event e
+         where e.household_id = ${p.householdId}
+           and e.action = 'share.opened'
+           and e.object_type = 'emergency'
+           and e.object_id = ${memberId}::uuid
+           and e.detail->>'share_id' = any(${ids}::text[])
+         order by e.id desc`.execute(trx);
+      const openings = new Map<string, EmergencyLinkView['openings']>();
+      for (const o of opened.rows) {
+        const list = openings.get(o.share_id) ?? [];
+        list.push({
+          at: o.at.toISOString(),
+          network: o.network,
+          user_agent: o.user_agent ? o.user_agent.slice(0, 200) : null,
+        });
+        openings.set(o.share_id, list);
+      }
+      return views.map((v) => ({
+        ...viewOnly(v),
+        emergency_fields: fields.get(v.id) ?? [],
+        openings: openings.get(v.id) ?? [],
+      }));
+    });
+  }
+
+  /**
+   * DELETE /members/{id}/emergency/links/{linkId} (H4): taken back by the
+   * person or an owner, whoever made it. Its sessions end with it.
+   */
+  async revokeEmergency(
+    p: Principal,
+    memberId: string,
+    id: string,
+    meta: RequestMeta,
+  ): Promise<void> {
+    await withPrincipal(this.db, p, async (trx) => {
+      const row = await trx
+        .updateTable('share_link')
+        .set({ revoked_at: new Date(), revoked_by: p.accountId, code_email: null })
+        .where('id', '=', id)
+        .where('emergency_member_id', '=', memberId)
+        .where('revoked_at', 'is', null)
+        .returning(['id'])
+        .executeTakeFirst();
+      if (!row) throw notFound('That link');
+      await endSessions(trx, [id]);
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'share.revoked',
+        objectType: 'emergency',
+        objectId: memberId,
+        detail: { share_id: id },
+        ip: meta.ip,
+      });
+    });
+  }
+
+  /**
+   * What an opened clinician's link shows (H4), read inside the link's own
+   * transaction: the person, and their page as sealed — read as the link
+   * itself, which the database gives that one person's row alone. Nothing
+   * is opened here: the key is unwrapped once the transaction is over
+   * (`withEmergency`), so a request never holds one connection while it
+   * waits for a second (the H4 review: ten pages at once held the pool).
+   */
+  private async emergencyFor(trx: Db, link: InSession): Promise<PendingEmergency> {
+    const memberId = link.emergency_member_id as string;
+    const row = await trx
+      .selectFrom('member_emergency')
+      .select(['sealed', 'dek_wrapped', 'wrapped_by_scope', 'updated_at'])
+      .where('member_id', '=', memberId)
+      .executeTakeFirst();
+    if (!row) throw gone();
+    const person = await this.emergencyPerson(trx);
+    if (!person) throw gone();
+    return {
+      householdId: link.household_id,
+      memberId,
+      row,
+      person,
+      shown: EMERGENCY_FIELD_KEYS.filter((k) => (link.emergency_fields ?? []).includes(k)),
+    };
+  }
+
+  /**
+   * A session's answer as it is sent (H4): an emergency link's page opened
+   * now, after the link's transaction has given its connection back — the
+   * household's identity key unwrapped as the vault, since a link is given
+   * the keys of its files alone and a page has none. The key, and nothing
+   * else, is read so; what was found is never sent as it was found.
+   */
+  private async withEmergency(viewed: Viewed): Promise<SharedSession> {
+    const { pendingEmergency: pending, ...view } = viewed;
+    if (!pending) return view;
+    const key = await withSystem(this.db, pending.householdId, (sys) =>
+      this.keys.unwrapById(sys, pending.row.wrapped_by_scope),
+    );
+    const fields = openEmergency(
+      key,
+      { householdId: pending.householdId, memberId: pending.memberId },
+      pending.row,
+    ) as EmergencyFields;
+    return {
+      ...view,
+      emergency: {
+        person_name: pending.person.display_name,
+        date_of_birth: pending.shown.includes('date_of_birth')
+          ? pending.person.date_of_birth
+          : null,
+        fields: emergencyFieldsFor(fields, pending.shown),
+        shown: pending.shown,
+        updated_at: pending.row.updated_at.toISOString(),
+      },
+    };
+  }
+
+  /**
+   * Whose page the asking link gives, by name and date of birth, as the
+   * database gives them to it (app_link_emergency_person, 0102): a link is
+   * given no other member's row. Undefined once the link no longer lives.
+   */
+  private async emergencyPerson(
+    trx: Db,
+  ): Promise<{ display_name: string; date_of_birth: string | null } | undefined> {
+    const r = await sql<{ display_name: string; date_of_birth: string | Date | null }>`
+      select display_name, date_of_birth from app_link_emergency_person()`.execute(trx);
+    const row = r.rows[0];
+    if (!row) return undefined;
+    const dob = row.date_of_birth;
+    return {
+      display_name: row.display_name,
+      date_of_birth: dob instanceof Date ? dob.toISOString().slice(0, 10) : dob,
+    };
   }
 
   // ------------------------------------------------- a collection (5.19)
@@ -1718,12 +2115,14 @@ export class ShareService {
    * to a collection the reader can see, and only when they can see every
    * document it was made with — or made it. It never says how many.
    */
-  private async views(p: Principal): Promise<LinkView[]> {
+  private async views(p: Principal, emergencyOf?: string): Promise<LinkView[]> {
     // Who a document went to outside the family ("the divorce lawyer"),
     // who sent it and how often it was opened is for those who may share
     // (0.5.0). A teen or a viewer — an accountant with a sign-in, say —
-    // read every link to every document they could see.
-    if (!can(p.role, 'document.share')) return [];
+    // read every link to every document they could see. A person's own
+    // clinician's links (H4) are theirs to see, a teen's too: the database
+    // gives them to the person and the owners alone (0102).
+    if (emergencyOf === undefined && !can(p.role, 'document.share')) return [];
     return withPrincipal(this.db, p, async (trx) => {
       const rows = await trx
         .selectFrom('share_link')
@@ -1788,7 +2187,15 @@ export class ShareService {
           sql<boolean>`share_link_lends(share_link.id)`.as('maker_lends'),
           // 0.9.0: whether a copy was kept to show its maker again — never the copy.
           sql<boolean>`share_link.link_copy_sealed is not null`.as('has_copy'),
+          'share_link.emergency_member_id',
         ])
+        // A person's clinician's links (H4) are listed with their page
+        // alone, never in the family's list of links.
+        .$call((q) =>
+          emergencyOf === undefined
+            ? q.where('share_link.emergency_member_id', 'is', null)
+            : q.where('share_link.emergency_member_id', '=', emergencyOf),
+        )
         .orderBy('share_link.created_at', 'desc')
         .execute();
       const household = await trx
@@ -1826,6 +2233,9 @@ export class ShareService {
       // this checked only "private", and a teen could read the titles of
       // adults-only documents that had been shared out of the house.
       const seen = rows.filter((r) => {
+        // A person's page (H4): the database gave the row to the person and
+        // the owners alone (0102).
+        if (r.emergency_member_id !== null) return emergencyOf !== undefined;
         if (r.collection_id === null) {
           return r.visibility !== null && canSee(reader, { ...r, visibility: r.visibility });
         }
@@ -1937,6 +2347,7 @@ export class ShareService {
             p.accountId,
           ),
           created_by: r.created_by,
+          emergency_member_id: r.emergency_member_id,
         });
       }
       return views;
@@ -2203,9 +2614,27 @@ export class ShareService {
    * share_not_revealable`. Paused, or opened as often as it allows, it is
    * still theirs to see.
    */
+  /**
+   * A link as the reader's lists give it: the family's list, or (0.9.0, H4)
+   * the list of a person's clinician's links, for the person and the owners.
+   */
+  private async viewOf(p: Principal, id: string): Promise<LinkView | undefined> {
+    const found = (await this.views(p)).find((s) => s.id === id);
+    if (found) return found;
+    const person = await withPrincipal(this.db, p, (trx) =>
+      trx
+        .selectFrom('share_link')
+        .select('emergency_member_id')
+        .where('id', '=', id)
+        .executeTakeFirst(),
+    );
+    if (!person?.emergency_member_id) return undefined;
+    return (await this.views(p, person.emergency_member_id)).find((s) => s.id === id);
+  }
+
   async revealable(p: Principal, id: string): Promise<LinkView> {
     requireCapability(p, 'document.share');
-    const link = (await this.views(p)).find((s) => s.id === id);
+    const link = await this.viewOf(p, id);
     if (!link || link.created_by !== p.accountId) throw notFound('That link');
     if (ENDED.includes(link.state)) {
       throw new ApiError(
@@ -2275,7 +2704,7 @@ export class ShareService {
   async emailable(p: Principal, id: string): Promise<LinkView & { justMade: boolean }> {
     requireCapability(p, 'document.share');
     if (!this.emailLinks) throw linkEmailUnavailable();
-    const link = (await this.views(p)).find((s) => s.id === id);
+    const link = await this.viewOf(p, id);
     if (!link || link.created_by !== p.accountId) throw notFound('That link');
     if (ENDED.includes(link.state) || link.state === 'used_up') {
       throw new ApiError(
@@ -2366,7 +2795,14 @@ export class ShareService {
       // has forgotten its copy (0084).
       const row = await trx
         .selectFrom('share_link')
-        .select(['link_copy_sealed', 'expires_at', 'code_email', 'code_phone', 'collection_id'])
+        .select([
+          'link_copy_sealed',
+          'expires_at',
+          'code_email',
+          'code_phone',
+          'collection_id',
+          'emergency_member_id',
+        ])
         .where('id', '=', id)
         .where('created_by', '=', p.accountId)
         .where('revoked_at', 'is', null)
@@ -2382,6 +2818,8 @@ export class ShareService {
         householdName: household.name,
         sharedBy: shared_by,
         collection: row.collection_id !== null,
+        // A person's emergency information (H4): "some information", never what.
+        emergency: row.emergency_member_id !== null,
         link: `${base}/s#${copy.token}`,
         expiresAt: row.expires_at,
         timezone: householdZone(household.timezone),
@@ -2728,16 +3166,30 @@ export class ShareService {
       const words =
         link.document_id !== null ? await this.documentWords(trx, link.document_id) : null;
       const title = words?.title ?? null;
+      // A person's emergency information (H4; the H4 review). Behind a
+      // factor, not even that it is one, nor who sent it: the page says
+      // what any withheld link's says, as a note's does (N1). Otherwise
+      // it says what it is, and whose only as its sharer chose — and its
+      // sender, when that is the person themselves, only then too.
+      const emergency = link.emergency_member_id !== null;
+      const named = emergency && !withheld && link.show_title === true;
+      const unsaid =
+        emergency && (withheld || (!named && link.maker.member_id === link.emergency_member_id));
       const preview: ShareLinkPreview = {
         household_name: from.household_name,
-        shared_by: from.shared_by,
+        shared_by: unsaid ? null : from.shared_by,
         protection,
         expires_at: link.expires_at.toISOString(),
         document_title: withheld ? null : title,
-        permission: link.permission,
+        ...(emergency && withheld ? {} : { permission: link.permission }),
         opens_left: link.max_opens === null ? null : link.max_opens - link.open_count,
-        kind: link.collection ? 'collection' : 'document',
+        kind: link.collection ? 'collection' : emergency && !withheld ? 'emergency' : 'document',
         ...(link.collection ? { collection_name: withheld ? null : link.collection.name } : {}),
+        ...(emergency && !withheld
+          ? {
+              person_name: named ? ((await this.emergencyPerson(trx))?.display_name ?? null) : null,
+            }
+          : {}),
         // A note, read on the page (0.9.0, N1): so the page says so, not "its pages".
         // Withheld with the title: behind a PIN, a code or another browser,
         // even that it is a note waits (the N1 review).
@@ -3087,10 +3539,12 @@ export class ShareService {
       throw gone();
     }
     await this.tellOpened(householdId, scope.actor.shareId);
+    // An emergency link's page, opened now the transaction is over (H4).
+    const session = await this.withEmergency(outcome.session);
     return {
       cookie: outcome.cookie,
       maxAge: Math.max(1, Math.floor((outcome.expiresAt.getTime() - Date.now()) / 1000)),
-      session: outcome.session,
+      session,
       ...(outcome.deviceCookie ? { device: outcome.deviceCookie } : {}),
     };
   }
@@ -3100,9 +3554,11 @@ export class ShareService {
     cookie: string | undefined,
     devices: readonly DeviceCookie[] = [],
   ): Promise<SharedSession> {
-    return this.inSession(cookie, devices, (trx, link, session) =>
+    const viewed = await this.inSession(cookie, devices, (trx, link, session) =>
       this.sessionView(trx, link, session.expires_at, session.id),
     );
+    // An emergency link's page, opened now the session's transaction is over (H4).
+    return this.withEmergency(viewed);
   }
 
   /**
@@ -3553,7 +4009,7 @@ export class ShareService {
     link: InSession,
     sessionEnds: Date,
     sessionId: string,
-  ): Promise<SharedSession> {
+  ): Promise<Viewed> {
     const from = await this.from(trx, link.created_by);
     const ids = await this.liveItems(trx, link);
     const downloaded =
@@ -3601,7 +4057,7 @@ export class ShareService {
       });
     }
     // Each title as its sharer chose (0.9.0, H1a).
-    return this.titledAsChosen(await this.untitled(trx), {
+    const view = this.titledAsChosen(await this.untitled(trx), {
       household_name: from.household_name,
       shared_by: from.shared_by,
       expires_at: link.expires_at.toISOString(),
@@ -3612,9 +4068,14 @@ export class ShareService {
         link.permission === 'download' && link.max_downloads !== null
           ? Math.max(0, link.max_downloads - link.downloads_used)
           : null,
-      kind: link.collection ? 'collection' : 'document',
+      kind: link.collection ? 'collection' : link.emergency_member_id ? 'emergency' : 'document',
       ...(link.collection ? { collection_name: link.collection.name } : {}),
     });
+    // A person's emergency information (H4): the parts ticked, and no
+    // document — read here, opened once the transaction is over.
+    return link.emergency_member_id
+      ? { ...view, pendingEmergency: await this.emergencyFor(trx, link) }
+      : view;
   }
 
   // ------------------------------------------------ the old routes (A25)
@@ -3891,7 +4352,7 @@ export class ShareService {
         body:
           `Somebody ${what} on a link you shared, so it has stopped ` +
           'working and opens nothing now. The activity log shows which one; make a new link ' +
-          'if they still need the document.',
+          'if they still need it.',
       });
       throw factorWrong(asks, 0);
     }
@@ -3950,6 +4411,7 @@ export class ShareService {
       id: string;
       document_id: string | null;
       collection_id: string | null;
+      emergency_member_id?: string | null;
       recipient_label: string | null;
     },
     action: string,
@@ -4064,6 +4526,30 @@ export class ShareService {
       // family (5.41): whatever else the link says. The database asks the
       // same (app_shared_document(), 0061).
       if (doc.visibility === 'private' && !(await onlyMeShareable(trx))) throw gone();
+      return { ...row, maker, collection: null };
+    }
+    if (row.emergency_member_id !== null) {
+      // A person's emergency information lent (0.9.0, H4): its maker still
+      // the person or an owner, signed in as an owner or an adult, and the
+      // page still there — which the database gives this link alone, and
+      // only while all of that holds (app_live_share, 0102).
+      if (maker.role !== 'owner' && maker.role !== 'adult') throw gone();
+      if (maker.member_id !== row.emergency_member_id) {
+        // An owner's link for somebody else: theirs to make only while the
+        // person does not sign in as a grown-up (0102; the H4 review).
+        if (maker.role !== 'owner') throw gone();
+        const grown = await sql<{ g: boolean }>`
+          select member_signs_in_grown_up(${row.emergency_member_id}::uuid) as g`
+          .execute(trx)
+          .then((r) => r.rows[0]?.g === true);
+        if (grown) throw gone();
+      }
+      const page = await trx
+        .selectFrom('member_emergency')
+        .select('member_id')
+        .where('member_id', '=', row.emergency_member_id)
+        .executeTakeFirst();
+      if (!page) throw gone();
       return { ...row, maker, collection: null };
     }
     if (row.collection_id === null) throw gone();

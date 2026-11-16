@@ -1,3 +1,4 @@
+import type { SharedEmergency } from './emergency.js';
 import type { DateValue, DocumentView, Visibility } from './documents.js';
 import type { DetailProposal } from './proposals.js';
 import type { MemberKind } from './guests.js';
@@ -905,10 +906,19 @@ export interface ShareLinkPreview {
   permission?: SharePermission;
   /** How many more times Open will work; null for no limit (5.18). */
   opens_left?: number | null;
-  /** A document, or a collection (5.19). Absent from older vaults: a document. */
-  kind?: 'document' | 'collection';
+  /**
+   * A document, or a collection (5.19); since 0.9.0 (H4), `emergency`: a
+   * person's emergency information, for a clinician. Absent from older
+   * vaults: a document.
+   */
+  kind?: 'document' | 'collection' | 'emergency';
   /** A collection's name, withheld while a protection is on, as a title is (5.19). */
   collection_name?: string | null;
+  /**
+   * Whose emergency information it is (H4): only when its sharer chose to
+   * show it, and withheld while a protection is on, as a title is.
+   */
+  person_name?: string | null;
   /** A note kept on its own (0.9.0, N1): read on the page. Absent for a file, and from older vaults. */
   note?: boolean;
   /**
@@ -1012,8 +1022,13 @@ export interface SharedSession {
    * gives now, as its sharer may still see them, and nothing says how many
    * others there are. Absent from older vaults: a document.
    */
-  kind?: 'document' | 'collection';
+  kind?: 'document' | 'collection' | 'emergency';
   collection_name?: string | null;
+  /**
+   * A person's emergency information (0.9.0, H4; `kind: 'emergency'`): the
+   * parts its sharer ticked, and no document. Absent for any other link.
+   */
+  emergency?: SharedEmergency;
 }
 
 export interface SharePreview {

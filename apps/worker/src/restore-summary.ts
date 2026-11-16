@@ -102,6 +102,13 @@ export function restoreSummary(file: string, r: RestoreReport): string {
       '    Settings → Household → Family; that waits 72 hours, while everybody is told.',
     );
   }
+  for (const e of r.emergencyAudiences) {
+    lines.push(
+      `  - Who can see emergency information in household ${e.household_id} went back to`,
+      `    each person and the owners, nobody named (${plural(e.narrowed, 'page')}). Each person —`,
+      '    an owner, for a child — can widen theirs again on their page.',
+    );
+  }
   if (r.exportsExpired > 0) {
     lines.push(
       `  - ${plural(r.exportsExpired, 'export')} that could still be downloaded ` +

@@ -1,4 +1,8 @@
 import {
+  type SharedEmergency,
+  type EmergencyFields,
+  type EmergencyLink,
+  type EmergencyView,
   type CaregiverGrantView,
   type CaregiverLook,
   type GrownUpQuestionView,
@@ -257,6 +261,16 @@ export interface FakeCollection {
 }
 
 export interface FakeState {
+  /** Emergency information (0.9.0, H4): said when a test asks. */
+  emergency?: boolean;
+  /** GET /members/{id}/emergency, by person: none is a 404, as the vault answers anybody not given it. */
+  emergencyOf?: Record<string, EmergencyView>;
+  /** GET /members/{id}/emergency/links, by person. */
+  emergencyLinksOf?: Record<string, EmergencyLink[]>;
+  /** What PUT /members/{id}/emergency was sent, and with which If-Match. */
+  emergencyWrites?: Array<{ member: string; fields: EmergencyFields; ifMatch: string | null }>;
+  /** What POST /members/{id}/emergency/links was sent. */
+  emergencyLinksMade?: Array<{ member: string; body: Record<string, unknown> }>;
   /** Caregivers and turning 18 (0.9.0, H1b): said when a test asks. */
   caregivers?: boolean;
   /** Health's kinds and a yearly review (0.9.0, H3): said when a test asks. */
@@ -765,6 +779,8 @@ export interface FakeState {
     name: string | null;
     items: Array<{ id: string; title: string; filename: string }>;
   };
+  /** A link to a person's emergency information (0.9.0, H4): what its session shows. */
+  shareEmergency?: SharedEmergency;
   /**
    * Files sent through a request, waiting to be looked at (5.23), as GET
    * /incoming gives them (IncomingFileView). Given, the vault says it has
@@ -1365,6 +1381,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.cabinets ? { cabinets: true, cabinet_dividers: true, cabinet_pins: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
           ...(state.caregivers ? { caregivers: true } : {}),
+          // Emergency information (0.9.0, H4): said when a test asks.
+          ...(state.emergency ? { emergency_info: true } : {}),
           // Health's kinds and a yearly review (0.9.0, H3): said when a test asks.
           ...(state.healthKinds ? { health_kinds: true } : {}),
           // Neutral wording (0.9.0, H2): said when a test gives it.
@@ -2227,6 +2245,97 @@ export function installFakeApi(state: FakeState) {
       if (!had) return refuse(404, 'not_found', 'That note is not here.');
       state.watchNotices = (state.watchNotices ?? []).filter((n) => n.id !== noticeAt[1]);
       return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    // Emergency information (0.9.0, H4): as a test sets it.
+    const emergencyAt =
+      /^\/api\/v1\/members\/([^/]+)\/emergency(?:\/(audience|links))?(?:\/([^/]+))?$/.exec(path);
+    if (emergencyAt) {
+      const person = emergencyAt[1] as string;
+      const page = state.emergencyOf?.[person];
+      if (!page) return refuse(404, 'not_found', 'That page does not exist.');
+      const part = emergencyAt[2] ?? null;
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      if (part === null && method === 'GET') return json(page);
+      if (part === null && method === 'PUT') {
+        const ifMatch = headers['if-match'] ?? null;
+        const fields: EmergencyFields =
+          (body as { fields?: EmergencyFields } | undefined)?.fields ?? {};
+        state.emergencyWrites = [
+          ...(state.emergencyWrites ?? []),
+          { member: person, fields, ifMatch },
+        ];
+        if (ifMatch !== null && ifMatch !== `"${page.version}"`) {
+          return refuse(
+            409,
+            'conflict',
+            'Someone else changed this emergency information. Reload and try again.',
+          );
+        }
+        Object.assign(page, { fields, version: page.version + 1 });
+        return json(page);
+      }
+      if (part === 'audience' && method === 'PUT') {
+        const b = (body ?? {}) as {
+          audience: EmergencyView['audience'];
+          chosen_member_ids?: string[];
+        };
+        Object.assign(page, {
+          audience: b.audience,
+          chosen: (b.chosen_member_ids ?? []).map((id) => ({
+            member_id: id,
+            name: page.candidates?.find((c) => c.member_id === id)?.name ?? id,
+          })),
+          version: page.version + 1,
+        });
+        return json(page);
+      }
+      if (part === 'links' && !emergencyAt[3] && method === 'GET') {
+        return json({ items: state.emergencyLinksOf?.[person] ?? [] });
+      }
+      if (part === 'links' && !emergencyAt[3] && method === 'POST') {
+        const b = (body ?? {}) as Record<string, unknown>;
+        state.emergencyLinksMade = [
+          ...(state.emergencyLinksMade ?? []),
+          { member: person, body: b },
+        ];
+        const share: EmergencyLink = {
+          id: `emergency-link-${(state.emergencyLinksMade ?? []).length}`,
+          document_id: null,
+          document_title: null,
+          recipient_label: typeof b.recipient_label === 'string' ? b.recipient_label : null,
+          created_by_name: 'Me',
+          created_at: new Date().toISOString(),
+          expires_at: new Date(
+            Date.now() + Number(b.expires_in_hours ?? 4) * 3_600_000,
+          ).toISOString(),
+          has_pin: b.with_pin === true,
+          open_count: 0,
+          last_opened_at: null,
+          state: 'active',
+          summary: 'Shared by link',
+          emergency_fields: (b.fields ?? []) as EmergencyLink['emergency_fields'],
+          openings: [],
+        };
+        state.emergencyLinksOf = {
+          ...(state.emergencyLinksOf ?? {}),
+          [person]: [share, ...(state.emergencyLinksOf?.[person] ?? [])],
+        };
+        return json(
+          {
+            share,
+            link_token: 'emergency-token-1',
+            link_url: 'https://share.example.test/s#emergency-token-1',
+            ...(b.with_pin === true ? { pin: '2468' } : {}),
+          },
+          201,
+        );
+      }
+      if (part === 'links' && emergencyAt[3] && method === 'DELETE') {
+        const l = (state.emergencyLinksOf?.[person] ?? []).find((x) => x.id === emergencyAt[3]);
+        if (!l) return refuse(404, 'not_found', 'That link does not exist.');
+        l.state = 'revoked';
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
     }
     // Caregivers and turning 18 (0.9.0, H1b): as a test sets them.
     if (path === '/api/v1/caregivers' && method === 'GET') {
@@ -4474,28 +4583,33 @@ export function installFakeApi(state: FakeState) {
       shared_by: 'Mansoor Seikh',
       expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
       session_expires_at: new Date(Date.now() + 4 * 3600e3).toISOString(),
-      items: state.shareNote
-        ? [
-            {
-              id: state.shareNote.id,
-              title: state.shareNote.title,
-              type_label: 'Note',
-              filename: `${state.shareNote.title}.md`,
-              content_type: 'text/markdown',
-              byte_size: 0,
-              pages: null,
-              downloaded: false,
-              note: true,
-            },
-          ]
-        : state.shareCollection
-          ? state.shareCollection.items.map((i) => sharedItem(i.id, i.title, i.filename))
-          : [sharedItem('doc-shared', 'Flat 3 tenancy agreement', 'tenancy.pdf')],
-      permission: state.shareNote ? 'view' : (state.sharePermission ?? 'download'),
+      items: state.shareEmergency
+        ? []
+        : state.shareNote
+          ? [
+              {
+                id: state.shareNote.id,
+                title: state.shareNote.title,
+                type_label: 'Note',
+                filename: `${state.shareNote.title}.md`,
+                content_type: 'text/markdown',
+                byte_size: 0,
+                pages: null,
+                downloaded: false,
+                note: true,
+              },
+            ]
+          : state.shareCollection
+            ? state.shareCollection.items.map((i) => sharedItem(i.id, i.title, i.filename))
+            : [sharedItem('doc-shared', 'Flat 3 tenancy agreement', 'tenancy.pdf')],
+      permission:
+        state.shareNote || state.shareEmergency ? 'view' : (state.sharePermission ?? 'download'),
       downloads_left: view || state.shareNote ? null : (state.shareDownloadsLeft ?? null),
-      ...(state.shareCollection
-        ? { kind: 'collection', collection_name: state.shareCollection.name }
-        : { kind: 'document' }),
+      ...(state.shareEmergency
+        ? { kind: 'emergency', emergency: state.shareEmergency }
+        : state.shareCollection
+          ? { kind: 'collection', collection_name: state.shareCollection.name }
+          : { kind: 'document' }),
     });
     // Opened as often as it allows (5.18): said plainly, before and at Open.
     const usedUp = () =>
@@ -4519,24 +4633,38 @@ export function installFakeApi(state: FakeState) {
       if (!state.shareValid) return linkGone();
       if (state.shareOpensLeft === 0) return usedUp();
       const withheld = protection.length > 0 || Boolean(state.shareOtherDevice);
+      // An emergency link behind a factor (H4): what any withheld link's
+      // page says, with no sender; not behind one, its kind and no name.
+      const quietEmergency = Boolean(state.shareEmergency) && withheld;
       return json({
         household_name: 'The Seikh family',
-        shared_by: 'Mansoor Seikh',
+        shared_by: state.shareEmergency ? null : 'Mansoor Seikh',
         protection,
         expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
         document_title:
-          withheld || state.shareCollection
+          withheld || state.shareCollection || state.shareEmergency
             ? null
             : (state.shareNote?.title ?? 'Flat 3 tenancy agreement'),
-        permission: state.shareNote ? 'view' : (state.sharePermission ?? 'download'),
+        ...(quietEmergency
+          ? {}
+          : {
+              permission:
+                state.shareNote || state.shareEmergency
+                  ? 'view'
+                  : (state.sharePermission ?? 'download'),
+            }),
         opens_left: state.shareOpensLeft ?? null,
         ...(state.shareNote ? { note: true } : {}),
-        ...(state.shareCollection
-          ? {
-              kind: 'collection',
-              collection_name: withheld ? null : state.shareCollection.name,
-            }
-          : { kind: 'document' }),
+        ...(quietEmergency
+          ? { kind: 'document' }
+          : state.shareEmergency
+            ? { kind: 'emergency', person_name: null }
+            : state.shareCollection
+              ? {
+                  kind: 'collection',
+                  collection_name: withheld ? null : state.shareCollection.name,
+                }
+              : { kind: 'document' }),
         code_to: state.shareCode
           ? state.shareCodeByText
             ? '•••• •••456'
