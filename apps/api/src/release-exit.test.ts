@@ -212,6 +212,8 @@ type Kind =
   | 'suggestionKey'
   | 'shareToken'
   | 'resetToken'
+  /** A ZIP's download ticket (DL): a secret, good once. */
+  | 'downloadTicket'
   | 'uploadKey'
   | 'dropFile'
   | 'dropToken'
@@ -277,6 +279,7 @@ const PARAM_KINDS: Record<string, Kind> = {
   'suggestions/:key': 'suggestionKey',
   'shared/:token': 'shareToken',
   'password-resets/:token': 'resetToken',
+  'downloads/:ticket': 'downloadTicket',
   'uploads/:key': 'uploadKey',
   'pages/:version': 'version',
   'files/:id': 'dropFile',
@@ -467,6 +470,10 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/shared/items/:doc/content': { who: 'link' },
   // A note's words, read on a link's page (0.9.0, N1).
   'GET /api/v1/shared/items/:doc/note': { who: 'link' },
+  // What a link gives, as one ZIP, and a note as a file (0.9.0, DL).
+  'GET /api/v1/shared/items/download': { who: 'link' },
+  'GET /api/v1/shared/items/download/check': { who: 'link' },
+  'GET /api/v1/shared/items/:doc/note/download': { who: 'link' },
   'GET /api/v1/shared/items/:doc/pages/:n': { who: 'link' },
 
   // Inside an upload request's session.
@@ -569,6 +576,18 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/versions/:id/thumbnail': { who: 'signedIn' },
   'GET /api/v1/versions/:id/pages/:n': { who: 'signedIn' },
   'GET /api/v1/versions/:id/content': { who: 'signedIn' },
+  // Several as one ZIP (0.9.0, DL): only what each could download alone.
+  'POST /api/v1/documents/download': {
+    who: 'signedIn',
+    body: (f) => ({ document_ids: [f.document] }),
+  },
+  'POST /api/v1/documents/download/ticket': {
+    who: 'signedIn',
+    body: (f) => ({ document_ids: [f.document] }),
+  },
+  // A ticket's ZIP (DL): the ticket is the whole of it, made by a session's
+  // own POST and good once; a made-up one is 404 to anybody.
+  'GET /api/v1/downloads/:ticket': { who: 'public' },
   'POST /api/v1/capture': { who: 'family', file: 'pdf' },
   'GET /api/v1/uploads/:key': { who: 'signedIn' },
   // A hit gives its document's tags and expiry (0.7.0-dev.13).
@@ -653,6 +672,8 @@ const RULES: Record<string, Rule> = {
     body: () => ({ name: 'Attacker’s collection', audience: 'everyone' }),
   },
   'GET /api/v1/collections/:id': { who: 'signedIn' },
+  'POST /api/v1/collections/:id/download': { who: 'signedIn' },
+  'POST /api/v1/collections/:id/download/ticket': { who: 'signedIn' },
   'PATCH /api/v1/collections/:id': { who: 'family', body: () => ({ audience: 'everyone' }) },
   'DELETE /api/v1/collections/:id': { who: 'signedIn' },
   'POST /api/v1/collections/:id/items': {
@@ -4428,6 +4449,7 @@ const PARAM_KIND_DEFAULTS: Record<Kind, true> = {
   suggestionKey: true,
   shareToken: true,
   resetToken: true,
+  downloadTicket: true,
   uploadKey: true,
   dropFile: true,
   dropToken: true,

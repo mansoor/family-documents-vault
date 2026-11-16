@@ -21,6 +21,7 @@
     "@fdv/shared": "workspace:*",
     "@fdv/storage": "workspace:^",
     "@simplewebauthn/server": "^14",
+    "archiver": "^8.0.0",
     "argon2": "^0.45.1",
     "fastify": "^5.12.5",
     "file-type": "^22.1.1",
@@ -37,6 +38,7 @@
   },
   "devDependencies": {
     "@fdv/client": "workspace:*",
+    "@types/archiver": "^8.0.0",
     "@types/form-data": "^2.5.2",
     "@types/yauzl": "^2.10.3",
     "form-data": "^4.0.6",

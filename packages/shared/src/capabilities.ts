@@ -628,6 +628,16 @@ export interface CapabilityFeatures {
    * the session carries `emergency`. Absent from older vaults.
    */
   emergency_info?: boolean;
+  /**
+   * Several documents as one ZIP with a readable index (0.9.0, DL; FND-05):
+   * POST /documents/download `{ document_ids }` and POST
+   * /collections/{id}/download for somebody signed in, GET
+   * /shared/items/download inside a link to download's session — each
+   * answering `application/zip`. What goes in, and what each asks
+   * (`download_sensitive`), is `ZIP_MAX_DOCUMENTS`' word in zip-download.ts.
+   * Absent from older vaults: one file at a time.
+   */
+  zip_download?: boolean;
 }
 
 export interface CapabilityLimits {

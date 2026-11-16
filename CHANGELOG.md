@@ -6,6 +6,21 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.48] - 2026-11-16 — several documents in one download
+
+### Added
+
+- **Download several documents at once.** Tick rows in **Documents** and press **Download**: one document downloads as itself, several as one ZIP. A collection's page has **Download** too, for everything in it. Each ZIP has an **index** (index.html for any browser, index.csv for a spreadsheet) saying what each file is — title, kind, person, issued and expiry dates. A note goes in as its words, a Markdown file. Only what you could download one at a time goes in: a document you can see but that has no file is named in the index with why; one you can't see isn't there at all. If one of them is **Sensitive**, the vault asks you to confirm it's you first, as it does for an Only me or an Essential document. One download holds up to 200 documents or 1 GB; for everything, use **Settings → Export**. Every document in it shows as downloaded in the activity log, as a single download does.
+- **A shared collection can be downloaded in one go.** Someone you share a collection with, on a link that lets them download, sees **Download all** and **Download selected** at the top, then the documents — each with a box to tick and its own **Download** — and, below them, any notes, each with **View**, **Download** and a box. A note downloads as a Markdown (.md) file. Each download counts against the link's downloads as it always has, and shows in your activity log. A link to view only offers no downloads. If a download can't be given — too many for one ZIP, or the link's downloads are used up — the page says so in words; when there's more than one download holds, it offers Download selected instead of Download all. A link to emergency information never gives documents or a ZIP.
+- **Big downloads go straight to disk.** A ZIP from the Documents table or a collection is saved by your browser as it arrives, rather than held in the tab first.
+- **A file missing from storage doesn't spoil the rest.** If a document's file isn't where your files are kept, the ZIP still comes with everything else, and its index says which one wasn't there; that one isn't counted as downloaded.
+
+### Changed
+
+- **A collection's page:** its buttons read **Add documents · Fill from a checklist · Share this collection · Add managers**. **Add managers** opens the managers' sheet; the Managers list on the page shows only once somebody manages it, and sits closer together.
+- **Documents:** **Columns** (in the table) and **Arrange my cabinet** (in the cabinet) now sit in the same place, beside Table and Cabinet, so switching views moves neither.
+- **File names in downloads and exports keep their letters in any script** — Urdu, Arabic, Chinese and the rest — instead of turning them into underscores. Characters that hide or reverse text are taken out, and names stay safe on Windows.
+
 ## [0.9.0-dev.47] - 2026-11-15 — emergency information, a wallet card, and a link for a clinician
 
 ### Added

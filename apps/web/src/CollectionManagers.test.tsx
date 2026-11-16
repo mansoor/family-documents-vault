@@ -55,12 +55,23 @@ function at(over: Partial<FakeState>, role: 'owner' | 'adult' | 'teen' = 'owner'
   return state;
 }
 
+async function expectAxeClean() {
+  const results = await axe.run(document.body, {
+    rules: { 'color-contrast': { enabled: false } },
+  });
+  expect(results.violations.map((v) => v.id)).toEqual([]);
+}
+
 describe('collection managers on the web (0.9.0)', () => {
   it('its maker makes somebody a manager, with switches in plain words, and only the family who can see it are offered', async () => {
     const state = at({ collections: [{ ...TRIP }] });
-    const section = await screen.findByRole('region', { name: 'Managers' });
-    expect(within(section).getByText('Nobody else manages it yet.')).toBeInTheDocument();
-    const pick = within(section).getByLabelText('Make someone a manager');
+    // Nobody manages it yet: no section on the page; Add managers in the top row (DL).
+    const open = await screen.findByRole('button', { name: 'Add managers' });
+    expect(screen.queryByRole('region', { name: 'Managers' })).toBeNull();
+    fireEvent.click(open);
+    const sheet = await screen.findByRole('dialog', { name: 'Add managers' });
+    expect(within(sheet).getByText(/Nobody else manages it yet\./)).toBeInTheDocument();
+    const pick = within(sheet).getByLabelText('Make someone a manager');
     // Sam and Tia, never Vic (a viewer) or the maker.
     expect(
       within(pick)
@@ -72,12 +83,17 @@ describe('collection managers on the web (0.9.0)', () => {
       'Can also delete it',
       'Can also choose managers',
     ]) {
-      expect(within(section).getByLabelText(words)).not.toBeChecked();
+      expect(within(sheet).getByLabelText(words)).not.toBeChecked();
     }
+    await expectAxeClean();
     fireEvent.change(pick, { target: { value: 'm-1' } });
-    fireEvent.click(within(section).getByLabelText('Can also delete it'));
-    fireEvent.click(within(section).getByRole('button', { name: 'Make a manager' }));
+    fireEvent.click(within(sheet).getByLabelText('Can also delete it'));
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Make a manager' }));
+    // Made: the sheet closes, and the page's Managers says so.
+    const section = await screen.findByRole('region', { name: 'Managers' });
     expect(await within(section).findByText('Sam now manages “Trip”.')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Add managers' })).toBeNull();
+    expect(open).toHaveFocus();
     expect(state.managerCalls?.at(-1)).toMatchObject({
       method: 'POST',
       body: {
@@ -187,15 +203,19 @@ describe('collection managers on the web (0.9.0)', () => {
       'adult',
     );
     const section = await screen.findByRole('region', { name: 'Managers' });
-    expect(within(section).queryByLabelText('Can also change who it’s for')).toBeNull();
-    expect(within(section).getByLabelText('Can also delete it')).toBeInTheDocument();
-    expect(within(section).getByLabelText('Can also choose managers')).toBeInTheDocument();
+    // Choosing somebody is Add managers' sheet (DL).
+    expect(within(section).queryByLabelText('Make someone a manager')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Add managers' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Add managers' });
+    expect(within(sheet).queryByLabelText('Can also change who it’s for')).toBeNull();
+    expect(within(sheet).getByLabelText('Can also delete it')).toBeInTheDocument();
+    expect(within(sheet).getByLabelText('Can also choose managers')).toBeInTheDocument();
     // And may delete it.
     expect(screen.getByRole('button', { name: 'Delete this collection' })).toBeInTheDocument();
-    fireEvent.change(within(section).getByLabelText('Make someone a manager'), {
+    fireEvent.change(within(sheet).getByLabelText('Make someone a manager'), {
       target: { value: 'm-2' },
     });
-    fireEvent.click(within(section).getByRole('button', { name: 'Make a manager' }));
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Make a manager' }));
     expect(await within(section).findByText('Tia now manages “Trip”.')).toBeInTheDocument();
     // On Tia's row, what the reader has not got is not offered to turn on.
     await waitFor(() =>
@@ -227,6 +247,8 @@ describe('collection managers on the web (0.9.0)', () => {
     });
     const section = await screen.findByRole('region', { name: 'Managers' });
     expect(within(section).queryByLabelText('Make someone a manager')).toBeNull();
+    // Choosing nobody, no Add managers (DL).
+    expect(screen.queryByRole('button', { name: 'Add managers' })).toBeNull();
     expect(within(section).queryByLabelText('Can also delete it (Ana)')).toBeNull();
     expect(screen.getByRole('button', { name: 'Delete this collection' })).toBeInTheDocument();
     fireEvent.click(within(section).getByRole('button', { name: 'Remove Ana as a manager' }));

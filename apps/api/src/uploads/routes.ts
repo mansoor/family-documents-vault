@@ -1,6 +1,7 @@
 import type { MultipartFile } from '@fastify/multipart';
 import {
   ACCEPT_READY_MAX,
+  attachmentDisposition,
   BATCH_MAX_FILES,
   NOT_SCANNED,
   RELATIVE_PATH_MAX,
@@ -294,10 +295,7 @@ export function registerIncoming(app: FastifyInstance, incoming: IncomingService
   app.get<{ Params: { id: string } }>('/api/v1/incoming/:id/content', auth, async (req, reply) => {
     const file = await incoming.content(principal(req), parse(idParam, req.params).id, metaOf(req));
     reply.header('content-type', file.contentType);
-    reply.header(
-      'content-disposition',
-      `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
-    );
+    reply.header('content-disposition', attachmentDisposition(file.filename));
     reply.header('content-length', String(file.total));
     reply.header('x-content-type-options', 'nosniff');
     reply.header('content-security-policy', "default-src 'none'; sandbox");

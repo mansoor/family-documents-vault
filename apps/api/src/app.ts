@@ -15,6 +15,8 @@ import type { PasswordService } from './auth/passwords.js';
 import { endedMeanwhile, type AuthService } from './auth/service.js';
 import { buildCapabilities } from './capabilities.js';
 import { registerDocuments } from './documents/routes.js';
+import type { ZipService } from './documents/zip.js';
+import { registerZips } from './documents/zip-routes.js';
 import type { SealedSearchService } from './documents/sealed-search.js';
 import type { ShareService } from './documents/shares.js';
 import {
@@ -94,6 +96,8 @@ export interface AppDeps {
   auth: AuthService;
   vaults: VaultService;
   documents: DocumentService;
+  /** Several documents as one ZIP (0.9.0, DL): ticked rows, a collection. */
+  zips?: ZipService;
   /** Removing a document for good (5.24). */
   purge: PurgeService;
   /** Kinds of document, managed (5.11). */
@@ -528,6 +532,8 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     deps.purge,
     deps.locks,
   );
+  // Several as one ZIP, signed in (0.9.0, DL): streamed, or by a ticket.
+  if (deps.zips) registerZips(app, deps.zips, deps.auth, deps.stepUp);
   registerUploads(app, deps.uploads);
   registerIncoming(app, deps.incoming);
   registerBatches(app, deps.batches);

@@ -27,6 +27,7 @@ import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { OutcomeNote, type Outcome } from '../table-grid.js';
 import { ConfirmDialog, ErrorNote, Sheet, TopBar, TrashIcon } from '../ui.js';
+import { followDownload } from '../save-file.js';
 import { useSensitiveConfirm } from '../sensitive-confirm.js';
 import { AddDocumentsPicker } from '../collection-add.js';
 import { Toast, type ReviewToast } from '../batch-review.js';
@@ -230,7 +231,7 @@ export function CollectionScreen() {
     confirmLabel: 'Put it in anyway',
   });
   const { id } = useParams<{ id: string }>();
-  const { withToken, authVersion, caps } = useApp();
+  const { withToken, guarded, authVersion, caps } = useApp();
   const navigate = useNavigate();
   const role = storedRole();
   const first = useLoad(
@@ -255,6 +256,11 @@ export function CollectionScreen() {
   const [sharing, setSharing] = useState(false);
   const [shareBusy, setShareBusy] = useState(false);
   const shareButton = useRef<HTMLButtonElement>(null);
+  // Add managers (DL): the managers' sheet, from the top row.
+  const [addingManagers, setAddingManagers] = useState(false);
+  const managersButton = useRef<HTMLButtonElement>(null);
+  // Download (DL): the whole collection as one ZIP.
+  const [zipping, setZipping] = useState(false);
   // The collection is not there for the reader any more — deleted, or no longer
   // for them — since the page was drawn: then that is all the page says,
   // as it would have been had it been so when the page opened.
@@ -327,6 +333,27 @@ export function CollectionScreen() {
 
   const { collection, types, members } = first.data;
   const powers = collectionPowers(role, collection);
+  const mayChooseManagers = managersOffered(caps, role) && powers.choose_managers;
+  const mayZip = caps?.features.zip_download === true && collection.item_count > 0;
+  /** The whole collection, as one ZIP: a Sensitive document in it asks to confirm it's you. */
+  const downloadAll = async () => {
+    setZipping(true);
+    setProblem(null);
+    try {
+      // A ticket first (DL review): whatever it would refuse or ask is said
+      // here; then the browser saves the ZIP to disk as it comes.
+      const ticket = await guarded((t) => api.collectionZipTicket(t, collection.id));
+      if (ticket) followDownload(api.downloadTicketUrl(ticket));
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.code === 'nothing_to_zip') {
+        setProblem(
+          'Nothing in this collection has a file you can download: a note you can’t open, or a document kept without its file, isn’t included.',
+        );
+      } else if (!goneIf(err)) setProblem(describeError(err));
+    } finally {
+      setZipping(false);
+    }
+  };
   const mayChange = mayChangeCollection(role, collection);
   const maker = members.find((m) => m.id === collection.owner_member_id) ?? null;
   // Nobody may change it any more — its maker is outside its audience now,
@@ -344,6 +371,15 @@ export function CollectionScreen() {
   // Whoever may put documents in it from a row's ⋯ (Add to a collection):
   // collections offered to them, and this one theirs to change (A18).
   const mayAdd = mayChange && collectionsOffered(caps, role);
+  const mayFill = offered && mayAdd && kept.data !== null && !checklistKept(kept.data);
+  // The top row (DL): Add documents, Fill from a checklist, Share this
+  // collection, Add managers, in that order; then Download.
+  const topRow =
+    mayAdd ||
+    mayFill ||
+    collectionShareOffered(caps, role, collection) ||
+    mayChooseManagers ||
+    mayZip;
 
   /** Filled from the checklist: the sheet goes, what it did is said, and all is loaded again. */
   const onFilled = (done: ChecklistDone) => {
@@ -559,8 +595,8 @@ export function CollectionScreen() {
               {sharedOutsideWords(collection.shared_outside, role)}
             </p>
           )}
-          {(mayAdd || collectionShareOffered(caps, role, collection)) && (
-            <div className="row">
+          {topRow && (
+            <div className="row collection-actions">
               {mayAdd && (
                 <button
                   ref={addButton}
@@ -574,19 +610,9 @@ export function CollectionScreen() {
                   Add documents
                 </button>
               )}
-              {collectionShareOffered(caps, role, collection) && (
-                <button
-                  ref={shareButton}
-                  type="button"
-                  className="btn btn-quiet"
-                  onClick={() => setSharing(true)}
-                >
-                  Share this collection
-                </button>
-              )}
               {/* With no checklist kept yet, filling one is a button here,
                   not a section of its own (the owner, 24 Oct). */}
-              {offered && mayAdd && kept.data !== null && !checklistKept(kept.data) && (
+              {mayFill && (
                 <button
                   ref={fillButton}
                   type="button"
@@ -597,6 +623,38 @@ export function CollectionScreen() {
                   }}
                 >
                   Fill from a checklist
+                </button>
+              )}
+              {collectionShareOffered(caps, role, collection) && (
+                <button
+                  ref={shareButton}
+                  type="button"
+                  className="btn btn-quiet"
+                  onClick={() => setSharing(true)}
+                >
+                  Share this collection
+                </button>
+              )}
+              {/* Who manages it (DL): its sheet, for whoever may choose managers. */}
+              {mayChooseManagers && (
+                <button
+                  ref={managersButton}
+                  type="button"
+                  className="btn btn-quiet"
+                  onClick={() => setAddingManagers(true)}
+                >
+                  Add managers
+                </button>
+              )}
+              {/* Everything in it the reader may download, as one ZIP (DL). */}
+              {mayZip && (
+                <button
+                  type="button"
+                  className="btn btn-quiet"
+                  disabled={zipping}
+                  onClick={() => void downloadAll()}
+                >
+                  {zipping ? 'Preparing the download…' : 'Download'}
                 </button>
               )}
             </div>
@@ -707,6 +765,9 @@ export function CollectionScreen() {
           collectionName={collection.name}
           version={`${collection.etag}:${collection.audience}`}
           onChanged={() => void again()}
+          adding={addingManagers}
+          onAddClose={() => setAddingManagers(false)}
+          addReturnFocus={managersButton}
         />
       )}
       {mayDelete && (

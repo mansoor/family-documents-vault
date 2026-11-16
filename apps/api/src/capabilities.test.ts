@@ -157,6 +157,8 @@ describe('buildCapabilities', () => {
       health_kinds: true,
       // 0.9.0 (H4): emergency information, a wallet card, a clinician's link.
       emergency_info: true,
+      // 0.9.0 (DL): several documents as one ZIP.
+      zip_download: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

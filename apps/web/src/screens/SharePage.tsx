@@ -3,6 +3,8 @@ import {
   pagesNotSharedNote,
   readShareCode,
   SHARE_NEWEST_CODE_ONLY,
+  ZIP_MAX_BYTES,
+  ZIP_MAX_DOCUMENTS,
   type ShareCodeSent,
 } from '@fdv/shared';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
@@ -17,6 +19,7 @@ import { describeError } from '../app-context.js';
 import { EmergencyDetails } from '../emergency.js';
 import { NoteText } from '../notes.js';
 import { useFixedTitle } from '../page-title.js';
+import { followDownload } from '../save-file.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
 import { browserZone, dateTimeWords } from '../family-time.js';
 
@@ -495,6 +498,9 @@ function Opened({
   // A collection (5.19) is its name and what it gives now; a document's link, its one document.
   const collection = session.kind === 'collection';
   const single = !collection && session.items.length === 1 ? session.items[0] : undefined;
+  // A collection, or a link that gives several (0.9.0, DL): its documents
+  // and its notes in a section each, ticked to download together.
+  const multi = collection || session.items.length > 1;
   const viewOnly = session.permission === 'view';
   // A note kept on its own (0.9.0, N1): its words, on the page; no pages drawn.
   const notesOnly = session.items.length > 0 && session.items.every((i) => i.note === true);
@@ -579,30 +585,52 @@ function Opened({
                 : 'This link has been downloaded from as many times as it allows. Ask whoever sent it for a new one.'}
           </p>
         )}
-        <ul className="list" aria-label="What was shared">
-          {session.items.map((item) => (
-            <li key={item.id} className="place">
-              {!single && <strong>{item.title ?? 'A document'}</strong>}
-              {item.type_label && <span className="muted">{item.type_label}</span>}
-              {item.note ? (
-                <SharedNote item={item} onOver={onOver} />
-              ) : viewOnly ? (
-                <SharedPages item={item} gaveUp={gaveUp} onTryAgain={tryAgain} />
-              ) : session.downloads_left === 0 && !item.downloaded ? null : (
-                <>
-                  <a
-                    className="btn btn-primary"
-                    href={api.linkItemContentUrl(item.id)}
-                    download={item.filename}
-                  >
-                    Download {item.filename}
-                  </a>
-                  <span className="muted">{sizeOf(item.byte_size)}</span>
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
+        {multi ? (
+          <SharedSections
+            session={session}
+            gaveUp={gaveUp}
+            onTryAgain={tryAgain}
+            onOver={onOver}
+            onSession={onSession}
+          />
+        ) : (
+          <ul className="list" aria-label="What was shared">
+            {session.items.map((item) => (
+              <li key={item.id} className="place">
+                {!single && <strong>{item.title ?? 'A document'}</strong>}
+                {item.type_label && <span className="muted">{item.type_label}</span>}
+                {item.note ? (
+                  <>
+                    <SharedNote item={item} onOver={onOver} />
+                    {/* A note downloads as a Markdown file since DL. */}
+                    {mayDownload(session, item) && (
+                      <a
+                        className="btn btn-quiet"
+                        href={api.linkItemNoteFileUrl(item.id)}
+                        download={noteFileName(item)}
+                      >
+                        Download {noteFileName(item)}
+                      </a>
+                    )}
+                  </>
+                ) : viewOnly ? (
+                  <SharedPages item={item} gaveUp={gaveUp} onTryAgain={tryAgain} />
+                ) : session.downloads_left === 0 && !item.downloaded ? null : (
+                  <>
+                    <a
+                      className="btn btn-primary"
+                      href={api.linkItemContentUrl(item.id)}
+                      download={item.filename}
+                    >
+                      Download {item.filename}
+                    </a>
+                    <span className="muted">{sizeOf(item.byte_size)}</span>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
         <p className="muted">
           This page stays open for 30 minutes after you last use it, and until{' '}
           {dateTimeWords(session.session_expires_at, browserZone(), { always: true })} at the
@@ -610,6 +638,311 @@ function Opened({
         </p>
       </section>
     </>
+  );
+}
+
+/** Whether this page may download an item: a link to download's, while it has downloads, or had it. */
+function mayDownload(session: SharedSession, item: SharedItem): boolean {
+  if (session.permission === 'view') return false;
+  return !(session.downloads_left === 0 && !item.downloaded);
+}
+
+/** A note's file, as its download names it: its title, Markdown (DL). */
+function noteFileName(item: SharedItem): string {
+  return item.filename.endsWith('.md') ? item.filename : `${item.title ?? 'note'}.md`;
+}
+
+/** How long after a download begins the page asks what this session has had. */
+const AFTER_DOWNLOAD_MS = 2000;
+
+/** Whether one ZIP holds all of these (DL review): else Download all is not offered. */
+function oneZipHolds(items: SharedItem[]): boolean {
+  const bytes = items.reduce((n, i) => n + i.byte_size, 0);
+  return items.length <= ZIP_MAX_DOCUMENTS && bytes <= ZIP_MAX_BYTES;
+}
+
+/**
+ * What a collection's link gives, or a link to several (0.9.0, DL; the
+ * owner's layout of 15 Nov 2026): Download all and Download selected above
+ * two sections — its documents, each with a box to tick and a Download of
+ * its own (its name is not the button), and below them its notes, each with
+ * View, Download and a box. A link to view has no box and no download: its
+ * documents' pages are shown, and its notes are read with View.
+ */
+function SharedSections({
+  session,
+  gaveUp,
+  onTryAgain,
+  onOver,
+  onSession,
+}: {
+  session: SharedSession;
+  gaveUp: boolean;
+  onTryAgain: () => void;
+  onOver: (message: string) => void;
+  /** What this session has had, and the downloads left, asked again after a download. */
+  onSession: (session: SharedSession) => void;
+}) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const [asking, setAsking] = useState(false);
+  /**
+   * A download, asked about first (DL review): what the vault would refuse —
+   * too many for one ZIP, no downloads left, nothing to give — is said here
+   * in words, never left to a browser's failed download. Then the browser
+   * saves it as it comes, and the page asks again what this session has
+   * had and how many downloads are left.
+   */
+  const download = async (ids: readonly string[] | null, href: string) => {
+    setProblem(null);
+    setAsking(true);
+    try {
+      await api.linkItemsZipCheck(ids ?? undefined);
+      followDownload(href);
+      window.setTimeout(() => {
+        void api.linkItems().then(onSession, (err: unknown) => {
+          if (err instanceof ApiRequestError && OVER.has(err.code)) onOver(err.message);
+        });
+      }, AFTER_DOWNLOAD_MS);
+    } catch (err) {
+      if (err instanceof ApiRequestError && OVER.has(err.code)) onOver(err.message);
+      else setProblem(describeError(err));
+    } finally {
+      setAsking(false);
+    }
+  };
+  const viewOnly = session.permission === 'view';
+  const documents = session.items.filter((i) => i.note !== true);
+  const notes = session.items.filter((i) => i.note === true);
+  const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set());
+  const downloadable = session.items.filter((i) => mayDownload(session, i));
+  const ticked = downloadable.filter((i) => chosen.has(i.id));
+  const tick = (id: string, on: boolean) =>
+    setChosen((was) => {
+      const next = new Set(was);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  const tickAll = (items: SharedItem[], on: boolean) =>
+    setChosen((was) => {
+      const next = new Set(was);
+      for (const i of items) {
+        if (on) next.add(i.id);
+        else next.delete(i.id);
+      }
+      return next;
+    });
+  const holdsAll = oneZipHolds(downloadable);
+  const rowDownload = (item: SharedItem) =>
+    void download(
+      [item.id],
+      item.note ? api.linkItemNoteFileUrl(item.id) : api.linkItemContentUrl(item.id),
+    );
+  return (
+    <>
+      {downloadable.length > 0 && (
+        <div className="share-zip-actions">
+          {holdsAll && (
+            <Button disabled={asking} onClick={() => void download(null, api.linkItemsZipUrl())}>
+              Download all
+            </Button>
+          )}
+          <Button
+            kind={holdsAll ? 'quiet' : 'primary'}
+            disabled={asking || ticked.length === 0}
+            onClick={() => {
+              const ids = ticked.map((i) => i.id);
+              void download(ids, api.linkItemsZipUrl(ids));
+            }}
+          >
+            {ticked.length > 0 ? `Download selected (${ticked.length})` : 'Download selected'}
+          </Button>
+        </div>
+      )}
+      {downloadable.length > 0 && !holdsAll && (
+        <p className="muted" role="note">
+          There is more here than one download holds ({ZIP_MAX_DOCUMENTS} documents or{' '}
+          {Math.round(ZIP_MAX_BYTES / 1024 ** 3)} GB). Tick some and use Download selected, or
+          download them one at a time.
+        </p>
+      )}
+      <ErrorNote message={problem} />
+      {documents.length > 0 && (
+        <section className="stack share-section" aria-labelledby="share-documents-h">
+          <h2 id="share-documents-h">Documents</h2>
+          <SelectAll
+            what="documents"
+            items={documents.filter((i) => mayDownload(session, i))}
+            chosen={chosen}
+            onTick={tickAll}
+          />
+          <ul className="list" aria-label="Documents">
+            {documents.map((item) => {
+              const title = item.title ?? 'A document';
+              const may = mayDownload(session, item);
+              return (
+                <li key={item.id} className="place share-row">
+                  <div className="share-row-head">
+                    {may && (
+                      <input
+                        type="checkbox"
+                        className="share-tick"
+                        aria-label={`Select ${title}`}
+                        checked={chosen.has(item.id)}
+                        onChange={(e) => tick(item.id, e.target.checked)}
+                      />
+                    )}
+                    <span className="share-row-what">
+                      <strong>{title}</strong>
+                      {item.type_label && <span className="muted">{item.type_label}</span>}
+                      {!viewOnly && <span className="muted">{sizeOf(item.byte_size)}</span>}
+                    </span>
+                    {may && (
+                      <Button
+                        kind="quiet"
+                        disabled={asking}
+                        ariaLabel={`Download ${title}`}
+                        onClick={() => rowDownload(item)}
+                      >
+                        Download
+                      </Button>
+                    )}
+                  </div>
+                  {viewOnly && <SharedPages item={item} gaveUp={gaveUp} onTryAgain={onTryAgain} />}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+      {notes.length > 0 && (
+        <section className="stack share-section" aria-labelledby="share-notes-h">
+          <h2 id="share-notes-h">Notes</h2>
+          <SelectAll
+            what="notes"
+            items={notes.filter((i) => mayDownload(session, i))}
+            chosen={chosen}
+            onTick={tickAll}
+          />
+          <ul className="list" aria-label="Notes">
+            {notes.map((item) => (
+              <SharedNoteRow
+                key={item.id}
+                item={item}
+                may={mayDownload(session, item)}
+                ticked={chosen.has(item.id)}
+                onTick={(on) => tick(item.id, on)}
+                onOver={onOver}
+                busy={asking}
+                onDownload={() => rowDownload(item)}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
+    </>
+  );
+}
+
+/** "Select all" of one section: ticked when every one is, part-way when some are. */
+function SelectAll({
+  what,
+  items,
+  chosen,
+  onTick,
+}: {
+  what: 'documents' | 'notes';
+  items: SharedItem[];
+  chosen: ReadonlySet<string>;
+  onTick: (items: SharedItem[], on: boolean) => void;
+}) {
+  const box = useRef<HTMLInputElement>(null);
+  const some = items.filter((i) => chosen.has(i.id)).length;
+  const all = items.length > 0 && some === items.length;
+  useEffect(() => {
+    if (box.current) box.current.indeterminate = some > 0 && !all;
+  }, [some, all]);
+  if (items.length === 0) return null;
+  const id = `share-all-${what}`;
+  return (
+    <div className="check">
+      <input
+        id={id}
+        ref={box}
+        type="checkbox"
+        checked={all}
+        onChange={(e) => onTick(items, e.target.checked)}
+      />
+      <label htmlFor={id}>
+        <span>
+          Select all <span className="visually-hidden">{what}</span>
+        </span>
+      </label>
+    </div>
+  );
+}
+
+/**
+ * One note of a collection's link (DL): its title, View to read its words
+ * here (asked for only then, and written down once, as a look is), and on
+ * a link to download a box and Download, a Markdown file.
+ */
+function SharedNoteRow({
+  item,
+  may,
+  ticked,
+  onTick,
+  onOver,
+  busy,
+  onDownload,
+}: {
+  item: SharedItem;
+  may: boolean;
+  ticked: boolean;
+  onTick: (on: boolean) => void;
+  onOver: (message: string) => void;
+  busy: boolean;
+  /** Its words as a Markdown file, asked about first. */
+  onDownload: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const title = item.title ?? 'A note';
+  const words = `share-note-${item.id}`;
+  return (
+    <li className="place share-row">
+      <div className="share-row-head">
+        {may && (
+          <input
+            type="checkbox"
+            className="share-tick"
+            aria-label={`Select ${title}`}
+            checked={ticked}
+            onChange={(e) => onTick(e.target.checked)}
+          />
+        )}
+        <span className="share-row-what">
+          <strong>{title}</strong>
+        </span>
+        <button
+          type="button"
+          className="btn btn-quiet"
+          aria-expanded={open}
+          aria-controls={words}
+          aria-label={`${open ? 'Hide' : 'View'} ${title}`}
+          onClick={() => setOpen((o) => !o)}
+        >
+          {open ? 'Hide' : 'View'}
+        </button>
+        {may && (
+          <Button kind="quiet" disabled={busy} ariaLabel={`Download ${title}`} onClick={onDownload}>
+            Download
+          </Button>
+        )}
+      </div>
+      <div id={words} hidden={!open}>
+        {open && <SharedNote item={item} onOver={onOver} />}
+      </div>
+    </li>
   );
 }
 

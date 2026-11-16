@@ -50,6 +50,7 @@ import {
   SHARE_DEVICE_KEY_PURPOSE,
   ShareService,
 } from './documents/shares.js';
+import { ZipService } from './documents/zip.js';
 import { deviceCookieKey } from './public/device-cookie.js';
 import { MAIL_JOB, mailJob, type MailRequest } from './mail-job.js';
 import {
@@ -496,6 +497,8 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     visibility: new VisibilityService(db, keys, enqueue),
     vaults,
     documents,
+    // Several documents as one ZIP (0.9.0, DL).
+    zips: new ZipService(db, keys, vaults, documents),
     purge: new PurgeService(db, vaults, documents, alert, enqueue),
     types: new TypeService(db, enqueue, stepUp),
     collections,

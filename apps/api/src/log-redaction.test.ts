@@ -13,6 +13,7 @@ describe('what the log may say about a request (0.5.0)', () => {
     expect(loggableUrl('/shared/Abc123')).toBe('/shared/[redacted]');
     expect(loggableUrl('/reset/r3s3t')).toBe('/reset/[redacted]');
     expect(loggableUrl('/join/inv1t3')).toBe('/join/[redacted]');
+    expect(loggableUrl('/api/v1/downloads/tIcKeT_abc-123')).toBe('/api/v1/downloads/[redacted]');
   });
 
   it('never keeps a query string: a PIN, or what somebody searched for', () => {

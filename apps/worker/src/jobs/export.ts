@@ -41,6 +41,9 @@ import {
   type IdentityList,
   type IdentityPart,
   type TypeField,
+  csvCell,
+  markdownText,
+  safeFileName,
 } from '@fdv/shared';
 import { adapterFromRow, StorageError } from '@fdv/storage';
 import { decryptToBuffer } from './process-version.js';
@@ -197,31 +200,11 @@ interface DetailColumn {
   label: string;
 }
 
-const safe = (s: string) =>
-  s
-    .replace(/[^\w.'\- ]+/g, '_')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 80) || 'untitled';
+// The ZIP's rule for a file's name, shared with a selection's ZIP (DL).
+const safe = safeFileName;
 
-/**
- * A note's Markdown as a file any Markdown viewer may open (the N1 review):
- * what would read there as HTML — `<` before a letter, `/`, `!` or `?`,
- * and `&` before what reads as an entity — is written with a backslash,
- * which such a viewer shows as the character, and a person reads past. The
- * rest is the note as it was written.
- *
- * Backslashes the note already has just before a `<` or an `&` are doubled
- * first (the N1 re-check): a viewer reads each pair as one backslash, so
- * none of them can take the escape added after them for itself — `\<img>`
- * stays the text `\<img>`, never a backslash and then HTML.
- */
-export function markdownText(md: string): string {
-  return md
-    .replace(/\\+(?=[<&])/g, (run) => run + run)
-    .replace(/<(?=[A-Za-z/!?])/g, '\\<')
-    .replace(/&(?=#?[A-Za-z0-9]+;)/g, '\\&');
-}
+/** A note's Markdown as a file any viewer may open: shared with a selection's ZIP (DL). */
+export { markdownText };
 
 /** What an export says of a file not where the files are kept as it was built (5.24). */
 export const FILE_NOT_THERE = 'The file was not where your files are kept when this was made.';
@@ -691,17 +674,8 @@ function csv(entries: Entry[], details: DetailColumn[]): string {
   return [header.join(','), ...entries.map((e) => row(e).join(','))].join('\n') + '\n';
 }
 
-/**
- * One cell of index.csv. Text a spreadsheet would run as a formula — from
- * =, +, -, @, a tab or a carriage return on — gets an apostrophe in front,
- * so it is shown as the text it is: any member can write a title or an
- * issuer, and the file is opened by whoever asked for the export.
- */
-export function csvCell(v: string | number | string[] | null): string {
-  let s = Array.isArray(v) ? v.join(' ') : v === null ? '' : String(v);
-  if (typeof v !== 'number' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
-  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
+/** One cell of index.csv: the rule a selection's ZIP keeps too (DL). */
+export { csvCell };
 
 function html(
   entries: Entry[],

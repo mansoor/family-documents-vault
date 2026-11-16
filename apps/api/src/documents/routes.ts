@@ -1,5 +1,10 @@
 import type { MultipartFile } from '@fastify/multipart';
-import { isDocumentSort, NOTES_MAX, type CaptureMetadata } from '@fdv/shared';
+import {
+  attachmentDisposition,
+  isDocumentSort,
+  NOTES_MAX,
+  type CaptureMetadata,
+} from '@fdv/shared';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
@@ -18,6 +23,7 @@ import { TAG_LIST_MAX } from './tags.js';
 import { asLists, filtersOf, NOT_A_PERSON } from './filters.js';
 import { dates, listQuery, listQueryOf, notesFilter, tagValues, values } from './list-query.js';
 import type { VisibilityService } from './visibility.js';
+import { sendZip } from './zip-routes.js';
 import type { UploadRequestService } from '../uploads/requests.js';
 import {
   codeBody,
@@ -803,10 +809,7 @@ export function registerDocuments(
     const { stream, range: served } = await docs.content(p, req.params.id, range, metaOf(req));
     reply.header('accept-ranges', 'bytes');
     reply.header('content-type', meta.mime);
-    reply.header(
-      'content-disposition',
-      `attachment; filename*=UTF-8''${encodeURIComponent(meta.filename)}`,
-    );
+    reply.header('content-disposition', attachmentDisposition(meta.filename));
     reply.header('cache-control', 'private, no-store');
     if (!served) {
       reply.header('content-length', String(total));
@@ -1076,6 +1079,66 @@ export function registerDocuments(
     },
   );
 
+  // What the link gives, as one ZIP (0.9.0, DL): a link to download's
+  // alone — everything, or `?ids=a,b` (Download selected). A plain GET, so
+  // the browser saves it as it comes.
+  const zipQuery = z
+    .object({
+      ids: z
+        .string()
+        .max(40_000)
+        .transform((v) => v.split(',').filter((i) => i !== ''))
+        .pipe(z.array(z.string().uuid()).min(1).max(1000))
+        .optional(),
+    })
+    .strict();
+  // What a ZIP of them would refuse — a link to view, more than one holds,
+  // nothing to give, no downloads left — asked before the browser follows
+  // the link, so the page can say it in words (DL review). Counts nothing.
+  app.get('/api/v1/shared/items/download/check', inSession, async (req) => {
+    const { ids } = parse(zipQuery, req.query ?? {});
+    const plan = await shares.sessionZip(
+      req.cookies[SHARE_COOKIE],
+      metaOf(req),
+      devicesOf(req),
+      ids ?? null,
+      true,
+    );
+    return { ok: true, documents: plan.rows.filter((r) => r.left_out === null).length };
+  });
+
+  app.get('/api/v1/shared/items/download', inSession, async (req, reply) => {
+    const { ids } = parse(zipQuery, req.query ?? {});
+    const plan = await shares.sessionZip(
+      req.cookies[SHARE_COOKIE],
+      metaOf(req),
+      devicesOf(req),
+      ids ?? null,
+    );
+    reply.header('x-robots-tag', 'noindex, nofollow');
+    return sendZip(req, reply, plan);
+  });
+
+  // A note's words as a file (0.9.0, DL): Markdown, on a link to download.
+  app.get<{ Params: { doc: string } }>(
+    '/api/v1/shared/items/:doc/note/download',
+    inSession,
+    async (req, reply) => {
+      const doc = parse(z.object({ doc: z.string().uuid() }), req.params).doc;
+      const file = await shares.sessionNoteFile(
+        req.cookies[SHARE_COOKIE],
+        doc,
+        metaOf(req),
+        devicesOf(req),
+      );
+      reply.header('content-type', 'text/markdown; charset=utf-8');
+      reply.header('content-disposition', attachmentDisposition(file.filename));
+      reply.header('cache-control', 'private, no-store');
+      reply.header('x-robots-tag', 'noindex, nofollow');
+      return reply.send(file.text);
+    },
+  );
+
   // A note's words, read on the page (0.9.0, N1): only a note the link
   // gives, as every item is.
   app.get<{ Params: { doc: string } }>('/api/v1/shared/items/:doc/note', inSession, async (req) => {
@@ -1148,10 +1211,7 @@ function sendShared(
   file: { stream: NodeJS.ReadableStream; total: number; contentType: string; filename: string },
 ) {
   reply.header('content-type', file.contentType);
-  reply.header(
-    'content-disposition',
-    `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
-  );
+  reply.header('content-disposition', attachmentDisposition(file.filename));
   reply.header('content-length', String(file.total));
   reply.header('cache-control', 'private, no-store');
   // A shared document must never end up in somebody else's search

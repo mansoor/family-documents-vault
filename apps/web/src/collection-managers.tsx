@@ -7,10 +7,10 @@ import {
   type CollectionPowers,
   type Role,
 } from '@fdv/shared';
-import { useRef, useState } from 'react';
+import { useRef, useState, type RefObject } from 'react';
 import { api } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
-import { Button, Check, ConfirmDialog, ErrorNote, Select } from './ui.js';
+import { Button, Check, ConfirmDialog, ErrorNote, Select, Sheet } from './ui.js';
 
 /**
  * A collection's managers on the web (0.9.0, the owner's decision of 13 Nov
@@ -20,6 +20,11 @@ import { Button, Check, ConfirmDialog, ErrorNote, Select } from './ui.js';
  * on or off, and takes a manager away, asked first. A switch the reader
  * may not do themselves is never offered to turn on; the vault decides
  * regardless.
+ *
+ * Since DL (the owner's layout of 15 Nov 2026): choosing somebody is the
+ * Add managers sheet, opened from the collection's top row; the page lists
+ * who manages it, and only when somebody does, set as tight as the app's
+ * other forms.
  */
 
 type SwitchKey = (typeof COLLECTION_MANAGER_SWITCHES)[number]['key'];
@@ -66,6 +71,11 @@ export function ManagersSection(props: {
   version: string;
   /** Something changed here: the collection is loaded again. */
   onChanged: () => void;
+  /** Add managers was pressed in the collection's top row: its sheet is open. */
+  adding?: boolean;
+  /** The sheet closed: the focus goes back to Add managers. */
+  onAddClose?: () => void;
+  addReturnFocus?: RefObject<HTMLElement | null>;
 }) {
   const { withToken, authVersion } = useApp();
   const { data, error, setData } = useLoad(
@@ -90,8 +100,8 @@ export function ManagersSection(props: {
   const chooses = powers.choose_managers;
   // An owner, while its maker may no longer change it, may take managers away.
   const removes = powers.remove_managers;
-  // Nobody to tell of, and nothing the reader may do: no section.
-  if (!chooses && !removes && data.items.length === 0) return null;
+  // Nobody to tell of: no section on the page (choosing somebody is Add managers' sheet).
+  const drawn = data.items.length > 0 || note !== null;
   /** A switch the reader may turn on: one they may do themselves, or any, as its maker. */
   const mayGive = (s: SwitchKey) => powers.maker || powers[POWER_OF[s]];
 
@@ -130,6 +140,7 @@ export function ManagersSection(props: {
     if (done) {
       setPerson('');
       setAsked(NONE);
+      props.onAddClose?.();
     }
   };
 
@@ -148,99 +159,136 @@ export function ManagersSection(props: {
     heading.current?.focus();
   };
 
+  const adding = props.adding === true && chooses;
   return (
-    <section className="card stack collection-managers" aria-labelledby="collection-managers-h">
-      <h2 id="collection-managers-h" ref={heading} tabIndex={-1}>
-        Managers
-      </h2>
-      <p className="muted">
-        {COLLECTION_MANAGERS_ALWAYS} {chooses ? 'Turn on anything more each of them may do.' : ''}
-      </p>
-      <p role="status" className="notice status-line">
-        {note}
-      </p>
-      <ErrorNote message={problem} />
-      {data.items.length === 0 ? (
-        <p className="muted">Nobody else manages it yet.</p>
-      ) : (
-        <ul className="list" aria-label="Managers">
-          {data.items.map((m) => (
-            <li key={m.member_id} className="stack">
-              <strong>{m.display_name}</strong>
-              {chooses ? (
-                COLLECTION_MANAGER_SWITCHES.map((s) => (
-                  <Check
-                    key={s.key}
-                    id={`manager-${m.member_id}-${s.key}`}
-                    label={`${s.label} (${m.display_name})`}
-                    checked={m[s.key]}
-                    // Turning on what the reader may not do is never offered.
-                    disabled={busy || (!m[s.key] && !mayGive(s.key))}
-                    onChange={(on) => toggle(m, s.key, on)}
-                  />
-                ))
-              ) : (
-                <span className="muted">{managerWords(m)}</span>
-              )}
-              {/* Taken away by whoever may choose managers, and by an owner
-                  while its maker may no longer change it (0.9.0). */}
-              {removes && (
-                <Button
-                  kind="quiet"
-                  danger
-                  disabled={busy}
-                  ref={(b) => {
-                    removeButtons.current.set(m.member_id, b);
-                  }}
-                  ariaLabel={`Remove ${m.display_name} as a manager`}
-                  onClick={() => {
-                    returnTo.current = removeButtons.current.get(m.member_id) ?? null;
-                    setRemoving(m);
-                  }}
-                >
-                  Remove
+    <>
+      {drawn && (
+        <section className="card collection-managers" aria-labelledby="collection-managers-h">
+          <h2 id="collection-managers-h" ref={heading} tabIndex={-1}>
+            Managers
+          </h2>
+          <p className="muted">
+            {COLLECTION_MANAGERS_ALWAYS}{' '}
+            {chooses ? 'Turn on anything more each of them may do.' : ''}
+          </p>
+          <p role="status" className="notice status-line">
+            {note}
+          </p>
+          <ErrorNote message={adding ? null : problem} />
+          {data.items.length > 0 && (
+            <ul className="list" aria-label="Managers">
+              {data.items.map((m) => (
+                <li key={m.member_id} className="manager-row">
+                  <strong>{m.display_name}</strong>
+                  {chooses ? (
+                    COLLECTION_MANAGER_SWITCHES.map((s) => (
+                      <Check
+                        key={s.key}
+                        id={`manager-${m.member_id}-${s.key}`}
+                        label={`${s.label} (${m.display_name})`}
+                        checked={m[s.key]}
+                        // Turning on what the reader may not do is never offered.
+                        disabled={busy || (!m[s.key] && !mayGive(s.key))}
+                        onChange={(on) => toggle(m, s.key, on)}
+                      />
+                    ))
+                  ) : (
+                    <span className="muted">{managerWords(m)}</span>
+                  )}
+                  {/* Taken away by whoever may choose managers, and by an owner
+                      while its maker may no longer change it (0.9.0). */}
+                  {removes && (
+                    <Button
+                      kind="quiet"
+                      danger
+                      disabled={busy}
+                      ref={(b) => {
+                        removeButtons.current.set(m.member_id, b);
+                      }}
+                      ariaLabel={`Remove ${m.display_name} as a manager`}
+                      onClick={() => {
+                        returnTo.current = removeButtons.current.get(m.member_id) ?? null;
+                        setRemoving(m);
+                      }}
+                    >
+                      Remove
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+      {adding && props.addReturnFocus && (
+        <Sheet
+          label="Add managers"
+          busy={busy}
+          returnFocus={props.addReturnFocus}
+          onClose={() => {
+            setProblem(null);
+            props.onAddClose?.();
+          }}
+        >
+          <div className="collection-managers-form">
+            <h2>Add managers</h2>
+            <p className="muted">
+              {data.items.length === 0 ? 'Nobody else manages it yet. ' : ''}
+              {COLLECTION_MANAGERS_ALWAYS}
+            </p>
+            <ErrorNote message={problem} />
+            {data.eligible.length === 0 ? (
+              <p className="muted">
+                Nobody else can manage it: a manager is someone in the family with a sign-in who can
+                already see it.
+              </p>
+            ) : (
+              <>
+                <Select
+                  id="new-manager"
+                  label="Make someone a manager"
+                  value={person}
+                  options={[
+                    { value: '', label: 'Choose someone' },
+                    ...data.eligible.map((e) => ({ value: e.member_id, label: e.display_name })),
+                  ]}
+                  hint="Someone in the family who can already see this collection."
+                  onChange={setPerson}
+                />
+                <div className="manager-switches">
+                  {COLLECTION_MANAGER_SWITCHES.filter((s) => mayGive(s.key)).map((s) => (
+                    <Check
+                      key={s.key}
+                      id={`new-manager-${s.key}`}
+                      label={s.label}
+                      checked={asked[s.key]}
+                      disabled={busy}
+                      onChange={(on) => setAsked((a) => ({ ...a, [s.key]: on }))}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+            <div className="row">
+              {data.eligible.length > 0 && (
+                <Button disabled={busy || person === ''} onClick={() => void add()}>
+                  {busy ? 'Saving…' : 'Make a manager'}
                 </Button>
               )}
-            </li>
-          ))}
-        </ul>
-      )}
-      {chooses &&
-        (data.eligible.length === 0 ? (
-          <p className="muted">
-            Nobody else can manage it: a manager is someone in the family with a sign-in who can
-            already see it.
-          </p>
-        ) : (
-          <div className="stack">
-            <Select
-              id="new-manager"
-              label="Make someone a manager"
-              value={person}
-              options={[
-                { value: '', label: 'Choose someone' },
-                ...data.eligible.map((e) => ({ value: e.member_id, label: e.display_name })),
-              ]}
-              hint="Someone in the family who can already see this collection."
-              onChange={setPerson}
-            />
-            {COLLECTION_MANAGER_SWITCHES.filter((s) => mayGive(s.key)).map((s) => (
-              <Check
-                key={s.key}
-                id={`new-manager-${s.key}`}
-                label={s.label}
-                checked={asked[s.key]}
+              <Button
+                kind="quiet"
                 disabled={busy}
-                onChange={(on) => setAsked((a) => ({ ...a, [s.key]: on }))}
-              />
-            ))}
-            <div className="row">
-              <Button disabled={busy || person === ''} onClick={() => void add()}>
-                {busy ? 'Saving…' : 'Make a manager'}
+                onClick={() => {
+                  setProblem(null);
+                  props.onAddClose?.();
+                }}
+              >
+                Close
               </Button>
             </div>
           </div>
-        ))}
+        </Sheet>
+      )}
       {removing && (
         <ConfirmDialog
           title={`Remove ${removing.display_name} as a manager?`}
@@ -258,6 +306,6 @@ export function ManagersSection(props: {
           </p>
         </ConfirmDialog>
       )}
-    </section>
+    </>
   );
 }
