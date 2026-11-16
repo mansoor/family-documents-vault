@@ -567,6 +567,40 @@ describe.skipIf(!testAdminUrl())('incoming: look before it is filed', () => {
     expect(lines.some((l) => l.includes('statement.pdf'))).toBe(false);
     const theirs = await activity(teen);
     expect(theirs.some((l) => l.includes('Jane, accountant'))).toBe(false);
+
+    // Its request removed once it had ended (0.9.0, RQ), as the worker
+    // removes one: the filed file keeps its row, let go of the request, and
+    // history and the activity log say the same to the same people.
+    const [{ request_id: requestId } = { request_id: '' }] = await admin<{ request_id: string }>(
+      'select request_id from incoming_file where id = $1',
+      [file.id],
+    );
+    await admin(
+      `update incoming_file f
+          set request_id = null, item_id = null, session_id = null,
+              request_removed_at = now(), request_label = r.recipient_label
+         from upload_request r
+        where r.id = f.request_id and f.request_id = $1 and f.state = 'accepted'`,
+      [requestId],
+    );
+    await admin(
+      `insert into upload_request_tombstone
+              (id, household_id, requester_member_id, review_by, moved_to_owners_at)
+       select id, household_id, requester_member_id, review_by, moved_to_owners_at
+         from upload_request where id = $1`,
+      [requestId],
+    );
+    await admin('delete from upload_request where id = $1', [requestId]);
+    for (const t of [owner, adult, other]) {
+      expect(await history(t)).toMatchObject({
+        sent_through: 'Sent through a request link (Jane, accountant)',
+        uploaded_by_name: 'Owner',
+      });
+    }
+    expect(await history(teen)).toMatchObject({ sent_through: null, uploaded_by_name: 'Owner' });
+    expect(await history(viewer)).toMatchObject({ sent_through: null, uploaded_by_name: null });
+    expect(await activity(owner)).toEqual(lines);
+    expect((await activity(teen)).some((l) => l.includes('Jane, accountant'))).toBe(false);
   });
 
   it('reject deletes the object', async () => {

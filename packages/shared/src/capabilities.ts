@@ -697,6 +697,18 @@ export interface CapabilityFeatures {
    * Absent from older vaults.
    */
   source_folders?: boolean;
+  /**
+   * Ended links and requests removed after a while (0.9.0, RQ): GET
+   * /household/ended-sharing `{ remove_after_days: 30 | 90 | 365 | null,
+   * can_change }` for every role; PUT `{ remove_after_days }` an owner's
+   * (`403` to anybody else). Each night the vault removes a link outside the
+   * family, or a request to send documents, that ended for good longer ago
+   * (90 days unless chosen; null, never) — never one paused or used up, nor a
+   * request with a file still waiting. The activity log keeps its lines.
+   * Absent from older vaults, which keep links for ever and remove a request
+   * that ended with nothing filed from it the next night.
+   */
+  ended_sharing?: boolean;
 }
 
 export interface CapabilityLimits {

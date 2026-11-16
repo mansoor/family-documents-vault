@@ -34,6 +34,17 @@ export async function madeWith(trx: Db, shareIds: readonly string[]): Promise<Ma
     select s.share_id, x.visibility, x.owner_member_id
       from document_tombstone x
      cross join lateral unnest(x.link_ids) as s(share_id)
-     where s.share_id = any(${ids}::uuid[])`.execute(trx);
+     where s.share_id = any(${ids}::uuid[])
+    union all
+    -- A collection's link removed once it had ended (0106, RQ): what its
+    -- tombstone says it was made with or followed, each document as its row
+    -- or its own tombstone says; one found in neither counts as nobody's.
+    select g.id, coalesce(d.visibility, x.visibility, 'private'::visibility),
+           case when d.id is not null then d.owner_member_id else x.owner_member_id end
+      from share_link_tombstone g
+     cross join lateral unnest(g.document_ids) as k(document_id)
+      left join document d on d.id = k.document_id
+      left join document_tombstone x on x.id = k.document_id
+     where g.id = any(${ids}::uuid[])`.execute(trx);
   return r.rows;
 }

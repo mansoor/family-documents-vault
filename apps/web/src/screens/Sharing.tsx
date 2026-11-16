@@ -1,11 +1,14 @@
 import {
   can,
+  ENDED_SHARING_KEPT_NOTE,
+  endedSharingWords,
   sharePagesNote,
   UPLOAD_REQUEST_EMAIL_NOTE,
   type RevealedUploadRequest,
   type UploadRequestView,
 } from '@fdv/shared';
 import { useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { Link, useLocation } from 'react-router';
 import { api, type RevealedShare, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -42,7 +45,17 @@ import { dateTimeWords, familyZoneNow } from '../family-time.js';
  * the reader made can be changed — Change opens the form it was made with,
  * filled in — and a request can be shown again, as a link is. Ended ones
  * cannot: they are made anew.
+ *
+ * Since 0.9.0 (RQ; the owner's ask of 16 Nov 2026) requests are a table too,
+ * from 768 px, as links are — Working now, then No longer working — and the
+ * list on a phone. What no longer works shows its first 20 and "Show N
+ * more" for the rest (no longer cut off at 20): the vault removes each a
+ * while after it ended (Settings → Privacy, 90 days unless an owner chose
+ * otherwise), and Sharing says how long beside them.
  */
+
+/** Ended links, or ended requests, shown before "Show N more". */
+export const ENDED_SHOWN = 20;
 
 /** Still able to open: taken back, it opens nothing (a page opened on a used-up one lasts to its end). */
 const working = (s: Share) => s.state === 'active' || s.state === 'used_up' || s.state === 'paused';
@@ -175,7 +188,7 @@ export function turnedBackOnWords(
 }
 
 export function SharingScreen() {
-  const { withToken, guarded, authVersion } = useApp();
+  const { withToken, guarded, authVersion, caps } = useApp();
   const mayShare = can(storedRole(), 'document.share');
   const mayAsk = can(storedRole(), 'upload_request.create');
   const owner = can(storedRole(), 'restore.review');
@@ -199,6 +212,24 @@ export function SharingScreen() {
   const [changing, setChanging] = useState<Share | null>(null);
   const [saving, setSaving] = useState(false);
   const [askingRequest, setAskingRequest] = useState<UploadRequestView | null>(null);
+  // Every ended link, or request, once asked for: the first 20 until then.
+  const [allEnded, setAllEnded] = useState(false);
+  const [allAskedEnded, setAllAskedEnded] = useState(false);
+  // Where the ended links and requests are, for the focus once more are shown.
+  const endedAt = useRef<HTMLElement>(null);
+  const askedEndedAt = useRef<HTMLDivElement>(null);
+  // How long ended ones are kept (0.9.0, RQ), said beside them.
+  const keeping = useLoad(
+    async (t) =>
+      caps?.features.ended_sharing === true && (mayShare || mayAsk)
+        ? await api.endedSharing(t)
+        : null,
+    [authVersion, caps?.features.ended_sharing, mayShare, mayAsk],
+  );
+  const keptWords =
+    keeping.data != null
+      ? `${endedSharingWords(keeping.data.remove_after_days)} ${ENDED_SHARING_KEPT_NOTE}`
+      : null;
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   // A request changed on its own page comes back saying so.
@@ -304,10 +335,16 @@ export function SharingScreen() {
 
   const links = data ?? [];
   const live = links.filter(working);
-  const ended = links.filter((s) => !working(s)).slice(0, 20);
+  const endedAll = links.filter((s) => !working(s));
+  const ended = allEnded ? endedAll : endedAll.slice(0, ENDED_SHOWN);
   const asked = requests.data ?? [];
   const askedLive = asked.filter(requestWorking);
-  const askedEnded = asked.filter((r) => !requestWorking(r)).slice(0, 20);
+  const askedEndedAll = asked.filter((r) => !requestWorking(r));
+  const askedEnded = allAskedEnded ? askedEndedAll : askedEndedAll.slice(0, ENDED_SHOWN);
+  const askToTakeBackRequest = (r: UploadRequestView, button: HTMLButtonElement | null) => {
+    returnTo.current = button;
+    setAskingRequest(r);
+  };
   return (
     <main className="page page-top page-wide has-nav">
       <TopBar title="Sharing" />
@@ -358,10 +395,11 @@ export function SharingScreen() {
         )}
       </section>
       {ended.length > 0 && (
-        <section aria-labelledby="links-ended-h" className="stack">
+        <section ref={endedAt} aria-labelledby="links-ended-h" className="stack">
           <h2 id="links-ended-h" className="section-h">
             No longer working
           </h2>
+          {keptWords && <p className="muted">{keptWords}</p>}
           {wide ? (
             <LinksTable links={ended} caption="Links that no longer work" busy={busy} />
           ) : (
@@ -371,6 +409,14 @@ export function SharingScreen() {
               ))}
             </ul>
           )}
+          <ShowMore
+            hidden={endedAll.length - ended.length}
+            what="links that no longer work"
+            onShow={() => {
+              flushSync(() => setAllEnded(true));
+              focusRow(endedAt.current, ENDED_SHOWN);
+            }}
+          />
         </section>
       )}
       {mayAsk && (
@@ -385,36 +431,68 @@ export function SharingScreen() {
           <Link to="/sharing/ask" className="btn btn-primary ask-start">
             Ask for documents
           </Link>
+          <h3 className="section-h" id="requests-live-h">
+            Working now
+          </h3>
           {requests.data !== null && askedLive.length === 0 && (
             <p className="muted">No request works now.</p>
           )}
-          <ul className="list" aria-label="Requests that work now">
-            {askedLive.map((r) => (
-              <RequestRow
-                key={r.id}
-                request={r}
+          {wide ? (
+            askedLive.length > 0 && (
+              <RequestsTable
+                requests={askedLive}
+                caption="Requests that work now"
                 busy={busy}
                 owner={owner}
-                onTakeBack={(button) => {
-                  returnTo.current = button;
-                  setAskingRequest(r);
-                }}
-                onResume={() => void resume(r)}
-                onShow={(button) => void showRequestAgain(r, button)}
+                onTakeBack={askToTakeBackRequest}
+                onResume={(r) => void resume(r)}
+                onShow={(r, button) => void showRequestAgain(r, button)}
               />
-            ))}
-          </ul>
+            )
+          ) : (
+            <ul className="list" aria-label="Requests that work now">
+              {askedLive.map((r) => (
+                <RequestRow
+                  key={r.id}
+                  request={r}
+                  busy={busy}
+                  owner={owner}
+                  onTakeBack={(button) => askToTakeBackRequest(r, button)}
+                  onResume={() => void resume(r)}
+                  onShow={(button) => void showRequestAgain(r, button)}
+                />
+              ))}
+            </ul>
+          )}
           {askedEnded.length > 0 && (
-            <>
+            <div ref={askedEndedAt} className="stack">
               <h3 className="section-h" id="requests-ended-h">
-                Requests that have ended
+                No longer working
               </h3>
-              <ul className="list" aria-labelledby="requests-ended-h">
-                {askedEnded.map((r) => (
-                  <RequestRow key={r.id} request={r} busy={busy} owner={owner} />
-                ))}
-              </ul>
-            </>
+              {keptWords && <p className="muted">{keptWords}</p>}
+              {wide ? (
+                <RequestsTable
+                  requests={askedEnded}
+                  caption="Requests that no longer work"
+                  busy={busy}
+                  owner={owner}
+                />
+              ) : (
+                <ul className="list" aria-label="Requests that no longer work">
+                  {askedEnded.map((r) => (
+                    <RequestRow key={r.id} request={r} busy={busy} owner={owner} />
+                  ))}
+                </ul>
+              )}
+              <ShowMore
+                hidden={askedEndedAll.length - askedEnded.length}
+                what="requests that no longer work"
+                onShow={() => {
+                  flushSync(() => setAllAskedEnded(true));
+                  focusRow(askedEndedAt.current, ENDED_SHOWN);
+                }}
+              />
+            </div>
           )}
         </section>
       )}
@@ -847,6 +925,223 @@ function LinksTable(props: {
 
 const capital = (words: string) => words.charAt(0).toUpperCase() + words.slice(1);
 
+/**
+ * The first row "Show N more" showed, given the focus (the review of 0106),
+ * so whoever pressed it reads on from there: a list's item or a table's row.
+ */
+function focusRow(box: HTMLElement | null, at: number) {
+  const row = box?.querySelectorAll<HTMLElement>('ul.list > li, tbody > tr')[at];
+  if (!row) return;
+  row.tabIndex = -1;
+  row.focus();
+}
+
+/** "Show 12 more": the rest of what no longer works, once asked for. */
+function ShowMore(props: { hidden: number; what: string; onShow: () => void }) {
+  if (props.hidden <= 0) return null;
+  return (
+    <Button
+      kind="quiet"
+      ariaLabel={`Show ${props.hidden} more ${props.what}`}
+      onClick={props.onShow}
+    >
+      Show {props.hidden} more
+    </Button>
+  );
+}
+
+/** Whom a request is for, who asked, and who looks: what the list says under its title. */
+function requestWho(r: UploadRequestView): string[] {
+  return [
+    r.recipient_label ? `For ${r.recipient_label}` : null,
+    !r.mine && r.requested_by_name ? `Asked by ${r.requested_by_name}` : null,
+    r.review_by === 'adults' ? 'Any adult looks at what comes in' : null,
+  ].filter((w): w is string => w !== null);
+}
+
+/** Only a restore's own pause is an owner's to end on Sharing (the 5.28 second round). */
+const resumable = (r: UploadRequestView, owner: boolean) =>
+  owner && r.state === 'paused' && r.paused_reason === 'restored';
+/** Paused by its requester's sign-in waiting after a restore: the row points there. */
+const signInFirst = (r: UploadRequestView, owner: boolean) =>
+  owner && r.state === 'paused' && r.paused_reason === 'sign_in_paused';
+
+/**
+ * Requests as a table, from 768 px (0.9.0, RQ), as links are: what was asked
+ * for, whom it is for, where it stands, what came in, and who asked when the
+ * reader sees anybody else's — what the list says, a column each. With a way
+ * to take each back, R2's grid (one stop for Tab, the arrows between cells),
+ * each action a column of its own when a row has it; without, a plain table.
+ */
+function RequestsTable(props: {
+  requests: UploadRequestView[];
+  caption: string;
+  busy: boolean;
+  owner: boolean;
+  onTakeBack?: (request: UploadRequestView, button: HTMLButtonElement) => void;
+  onResume?: (request: UploadRequestView) => void;
+  onShow?: (request: UploadRequestView, button: HTMLButtonElement) => void;
+}) {
+  const take = props.onTakeBack;
+  const rows = props.requests;
+  // A column of its own (one grid stop a cell), only when a row has one to show.
+  const show = take && rows.some((r) => r.revealable === true) ? props.onShow : undefined;
+  const change = take !== undefined && rows.some((r) => r.changeable === true);
+  const resume =
+    take && rows.some((r) => resumable(r, props.owner) || signInFirst(r, props.owner))
+      ? props.onResume
+      : undefined;
+  const askedBy = rows.some((r) => !r.mine);
+  const table = useRef<HTMLTableElement>(null);
+  // Never in the page: a plain table is given no grid, so no stop of its own.
+  const none = useRef<HTMLTableElement>(null);
+  const wrap = useRef<HTMLDivElement>(null);
+  const grid = useGrid(take ? table : none, wrap, [
+    rows.map((r) => r.id).join(','),
+    String(props.busy),
+  ]);
+  return (
+    <div ref={wrap} className="tbl-wrap tbl-static tbl-section">
+      <table
+        ref={table}
+        className="tbl tbl-plain links-tbl requests-tbl"
+        {...(take ? { role: 'grid', onKeyDown: grid.onKeyDown, onFocus: grid.onFocus } : {})}
+      >
+        <caption className="visually-hidden">{props.caption}</caption>
+        <colgroup>
+          <col />
+          <col style={{ width: '16%' }} />
+          <col style={{ width: '24%' }} />
+          <col style={{ width: '16%' }} />
+          {askedBy && <col style={{ width: '12%' }} />}
+          {show && <col style={{ width: 140 }} />}
+          {change && <col style={{ width: 110 }} />}
+          {resume && <col style={{ width: 150 }} />}
+          {take && <col style={{ width: 130 }} />}
+        </colgroup>
+        <thead>
+          <tr>
+            <th scope="col">Asked for</th>
+            <th scope="col">For</th>
+            <th scope="col">Where it stands</th>
+            <th scope="col">Received</th>
+            {askedBy && <th scope="col">Asked by</th>}
+            {show && (
+              <th scope="col">
+                <span className="visually-hidden">Show the link</span>
+              </th>
+            )}
+            {change && (
+              <th scope="col">
+                <span className="visually-hidden">Change</span>
+              </th>
+            )}
+            {resume && (
+              <th scope="col">
+                <span className="visually-hidden">Turn back on</span>
+              </th>
+            )}
+            {take && (
+              <th scope="col">
+                <span className="visually-hidden">Take it back</span>
+              </th>
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const state = requestState(r, props.owner);
+            return (
+              <tr key={r.id}>
+                <td>
+                  <span className="cell-title wrap-any">“{r.title}”</span>
+                  {r.review_by === 'adults' && (
+                    <span className="muted cell-sub">Any adult looks at what comes in</span>
+                  )}
+                </td>
+                <td className="wrap-any">{r.recipient_label ?? <None />}</td>
+                <td className="wrap-any">
+                  <span
+                    className={`request-state${state.tone ? ` status status-${state.tone}` : ''}`}
+                  >
+                    {state.words}
+                  </span>
+                </td>
+                <td className="wrap-any">{requestTally(r)}</td>
+                {askedBy && (
+                  <td className="wrap-any">{r.mine ? 'You' : (r.requested_by_name ?? <None />)}</td>
+                )}
+                {show && (
+                  <td>
+                    {r.revealable === true && (
+                      <button
+                        type="button"
+                        className="btn btn-quiet btn-small"
+                        disabled={props.busy}
+                        aria-label={`Show the link for ${requestTarget(r)}`}
+                        onClick={(e) => show(r, e.currentTarget)}
+                      >
+                        Show the link
+                      </button>
+                    )}
+                  </td>
+                )}
+                {change && (
+                  <td>
+                    {r.changeable === true && (
+                      <Link
+                        to={`/sharing/ask/${encodeURIComponent(r.id)}`}
+                        className="btn btn-quiet btn-small"
+                        aria-label={`Change ${requestTarget(r)}`}
+                      >
+                        Change
+                      </Link>
+                    )}
+                  </td>
+                )}
+                {resume && (
+                  <td>
+                    {resumable(r, props.owner) ? (
+                      <button
+                        type="button"
+                        className="btn btn-small"
+                        disabled={props.busy}
+                        aria-label={`Turn back on ${requestTarget(r)}`}
+                        onClick={() => resume(r)}
+                      >
+                        Turn back on
+                      </button>
+                    ) : signInFirst(r, props.owner) ? (
+                      <Link to="/after-restore" className="btn btn-quiet btn-small">
+                        {r.requested_by_name
+                          ? `Turn on ${r.requested_by_name}’s sign-in`
+                          : 'Turn on their sign-in'}
+                      </Link>
+                    ) : null}
+                  </td>
+                )}
+                {take && (
+                  <td>
+                    <button
+                      type="button"
+                      className="btn btn-quiet btn-small"
+                      disabled={props.busy}
+                      aria-label={`Take back ${requestTarget(r)}`}
+                      onClick={(e) => take(r, e.currentTarget)}
+                    >
+                      Take it back
+                    </button>
+                  </td>
+                )}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /** A request in a list (5.22): Sharing's, and After a restore's. */
 export function RequestRow(props: {
   request: UploadRequestView;
@@ -869,14 +1164,9 @@ export function RequestRow(props: {
   // from its requester's sign-in ends with it: a lock with the unlock, and
   // a wait after the restore once their sign-in is turned back on, which
   // the row points to (the 5.28 second round).
-  const resume =
-    props.owner && r.state === 'paused' && r.paused_reason === 'restored' ? props.onResume : null;
-  const signInFirst = props.owner && r.state === 'paused' && r.paused_reason === 'sign_in_paused';
-  const who = [
-    r.recipient_label ? `For ${r.recipient_label}` : null,
-    !r.mine && r.requested_by_name ? `Asked by ${r.requested_by_name}` : null,
-    r.review_by === 'adults' ? 'Any adult looks at what comes in' : null,
-  ].filter(Boolean);
+  const resume = resumable(r, props.owner) ? props.onResume : null;
+  const afterSignIn = signInFirst(r, props.owner);
+  const who = requestWho(r);
   return (
     <li className="place request-row">
       <div className="place-title">“{r.title}”</div>
@@ -885,7 +1175,7 @@ export function RequestRow(props: {
       <div className={`request-state${state.tone ? ` status status-${state.tone}` : ' muted'}`}>
         {state.words}
       </div>
-      {(props.onTakeBack || resume || signInFirst || show) && (
+      {(props.onTakeBack || resume || afterSignIn || show) && (
         <div className="row">
           {show && (
             <Button
@@ -912,7 +1202,7 @@ export function RequestRow(props: {
               Turn back on
             </Button>
           )}
-          {signInFirst && (
+          {afterSignIn && (
             <Link to="/after-restore" className="btn btn-quiet">
               {r.requested_by_name
                 ? `Turn on ${r.requested_by_name}’s sign-in`

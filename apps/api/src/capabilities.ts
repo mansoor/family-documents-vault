@@ -247,6 +247,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       share_opens: true,
       // 0.9.0 (C4): the folder a paper came from, kept, and drawn into a cabinet.
       source_folders: true,
+      // 0.9.0 (RQ): ended links and requests removed after the household's
+      // time for keeping them (90 days unless an owner chose otherwise).
+      ended_sharing: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

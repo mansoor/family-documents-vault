@@ -30,6 +30,7 @@ import { createTexter, isTextJob, type TextJob } from './jobs/texts.js';
 import { makeMemberPhoto, type MemberPhotoJob } from './jobs/member-photo.js';
 import { drawSharePages, pruneSharePages, type SharePagesJob } from './jobs/share-pages.js';
 import { removeLeftovers, type PurgeLeftoversJob } from './jobs/purge-leftovers.js';
+import { removeEndedSharing } from './jobs/ended-sharing.js';
 import { isAlert, sendAlert } from './jobs/alerts.js';
 import { isMailJob, pruneShareCodes, sendToAddress } from './jobs/mail.js';
 import { createPushAgent, isPushJob, sendPushJob } from './jobs/push.js';
@@ -259,6 +260,14 @@ async function main(): Promise<void> {
     }
   });
   await boss.schedule(JOBS.purgeLeftovers, '40 4 * * *');
+  // Links and requests that ended for good longer ago than the household
+  // keeps them (0.9.0, RQ): after the night's prune of ended links' pages,
+  // whose files go first.
+  await boss.createQueue(JOBS.endedSharing, { retryLimit: 3, retryDelay: 300 });
+  await boss.work(JOBS.endedSharing, async () => {
+    await removeEndedSharing({ admin: dbs.admin, db: dbs.app, log });
+  });
+  await boss.schedule(JOBS.endedSharing, '45 4 * * *');
 
   await boss.createQueue(JOBS.exportBuild, { retryLimit: 2, retryDelay: 60 });
   await boss.work<ExportJob>(JOBS.exportBuild, { batchSize: 1 }, async (jobs) => {

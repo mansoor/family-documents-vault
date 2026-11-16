@@ -9,6 +9,7 @@ import { Link } from 'react-router';
 import { api } from './api.js';
 import { describeError, useApp } from './app-context.js';
 import { dayWordsOf, useFamilyZone } from './family-time.js';
+import { ActionIcon } from './action-row.js';
 import { ErrorNote, Switch, OnTop, useSheetFocus } from './ui.js';
 
 /**
@@ -411,11 +412,18 @@ function ReplacedBy({ by }: { by: NonNullable<NoLongerNeededView['replaced_by']>
  * Said at the top of a document no longer needed: "No longer needed since
  * 23 Oct 2026 · Replaced by Green card · Needed again", why under it, and
  * who marked it. Needed again and Change are for whoever may change it.
+ *
+ * Since 0.9.0-dev.53 (the owner's ask of 16 Nov 2026) it is opened and
+ * closed by the (i) beside "No longer needed" in the status line
+ * (`NoLongerNeededInfo`), and starts closed: `open` and `id` say so.
  */
 export function NoLongerNeededBanner(props: {
   doc: DocumentView;
   mayChange: boolean;
   onChanged: (saved: DocumentView) => void;
+  /** Shown, or kept in the page hidden for its (i) to open. Shown unless said. */
+  open?: boolean;
+  id?: string;
 }) {
   const { withToken } = useApp();
   const zone = useFamilyZone();
@@ -439,7 +447,12 @@ export function NoLongerNeededBanner(props: {
     }
   };
   return (
-    <section className="nln-banner" aria-label="No longer needed">
+    <section
+      className="nln-banner"
+      aria-label="No longer needed"
+      id={props.id}
+      hidden={props.open === false}
+    >
       <p>
         <strong>{sinceWords(n, zone)}</strong>
         {n.replaced_by && (
@@ -620,5 +633,30 @@ export function NotNeededButton(props: {
         />
       )}
     </>
+  );
+}
+
+/**
+ * The (i) beside "No longer needed" in a document's status line (0.9.0-dev.53;
+ * the owner's ask of 16 Nov 2026): opens and closes its banner, which starts
+ * closed. A button, so Enter and Space work as everywhere; it says whether
+ * the banner is open and which it is.
+ */
+export function NoLongerNeededInfo(props: {
+  open: boolean;
+  controls: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="icon-btn icon-btn-plain nln-info"
+      aria-label="About No longer needed"
+      aria-expanded={props.open}
+      aria-controls={props.controls}
+      onClick={props.onToggle}
+    >
+      <ActionIcon name="info" />
+    </button>
   );
 }

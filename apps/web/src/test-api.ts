@@ -311,6 +311,12 @@ export interface FakeState {
    */
   linkOpenings?: Record<string, ShareOpening[]>;
   docLinkOpens?: Record<string, DocumentLinkOpening[]>;
+  /**
+   * How long ended links and requests are kept (0.9.0, RQ):
+   * `features.ended_sharing`, said when a test gives this; GET and PUT
+   * /household/ended-sharing answer it, and PUT is recorded in `saves`.
+   */
+  endedSharing?: { days: 30 | 90 | 365 | null; saves?: unknown[] };
   /** limits.backup_retain_days (0.9.0, H5): left out, not said. */
   backupDays?: number | null;
   /** Each POST /documents/original-place, as sent. */
@@ -1486,6 +1492,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.originalPlace ? { original_place: true } : {}),
           // The folder a paper came from (0.9.0, C4): said when a test asks.
           ...(state.fromFolders ? { source_folders: true } : {}),
+          // Ended links and requests removed after a while (0.9.0, RQ).
+          ...(state.endedSharing ? { ended_sharing: true } : {}),
           // Who opened a link; health records kept as they are (0.9.0, H5).
           ...(state.linkOpenings ? { share_opens: true, record_formats: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
@@ -3637,6 +3645,23 @@ export function installFakeApi(state: FakeState) {
       const next = (body as { only_me_shareable: boolean }).only_me_shareable;
       state.onlyMeShareable = next;
       return json({ only_me_shareable: next, can_change: true });
+    }
+    // Ended links and requests (0.9.0, RQ): read by everybody, an owner's to change.
+    if (path === '/api/v1/household/ended-sharing' && state.endedSharing) {
+      const e = state.endedSharing;
+      const owner = storedRole() === 'owner';
+      if (method === 'PUT') {
+        if (!owner) {
+          return refuse(
+            403,
+            'forbidden',
+            'Only an owner can change how long ended links and requests are kept.',
+          );
+        }
+        (e.saves ??= []).push(body);
+        e.days = (body as { remove_after_days: 30 | 90 | 365 | null }).remove_after_days;
+      }
+      return json({ remove_after_days: e.days, can_change: owner });
     }
     // Neutral wording (0.9.0, H2): the household's an owner's, each person's own.
     if (path === '/api/v1/household/neutral-wording' && state.wording) {

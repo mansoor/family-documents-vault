@@ -157,7 +157,14 @@ describe('a document’s page', () => {
       'viewer',
     );
     expect(await screen.findByRole('heading', { name: "Mansoor's passport" })).toBeVisible();
-    expect(screen.queryByText(/Study cabinet/)).toBeNull();
+    // The page has come whole: the viewer's own cabinet's "Also in" is there,
+    // and may rightly name a folder "Study cabinet › Drawer 2 › Identity" — a
+    // folder of theirs, not where the original is kept. So the place is looked
+    // for where it would be said, never anywhere on the page (a slow machine
+    // drew Also in first, and the page-wide look found it there).
+    expect(await screen.findByText('Also in')).toBeVisible();
+    expect(screen.queryByText('Original is kept')).toBeNull();
+    expect(document.querySelector('.where-kept')).toBeNull();
     expect(screen.queryByRole('button', { name: 'File it in my cabinet…' })).toBeNull();
   });
 });

@@ -7137,6 +7137,24 @@ html:has(.shell-phone):has(.has-toast) {
   margin: 0;
 }
 
+/* Closed by its (i) (0.9.0-dev.53): hidden, whatever its look says. */
+.nln-banner[hidden] {
+  display: none;
+}
+
+/* The (i) beside "No longer needed": a whole tap wide and high, as every
+   icon button is (.icon-btn), quiet beside the status it explains. */
+.nln-info {
+  min-width: var(--tap);
+  min-height: var(--tap);
+  color: var(--ink-muted);
+}
+
+.nln-info:hover,
+.nln-info[aria-expanded='true'] {
+  color: var(--accent);
+}
+
 .nln-banner a {
   color: var(--accent);
   font-weight: 600;

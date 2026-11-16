@@ -7694,6 +7694,75 @@ validation_failed`); `403` to whoever may not see where originals are
         a new version of a document (S1): its folder was not kept on a
         document. Absent otherwise.
       - Shared `askedFolders`, `FolderToAdd`, and `addFolderTree`'s `opts.key`.
+  - Ended links and requests removed after a while, and requests as a table
+    (0.9.0-dev.53, RQ; the owner's ask of 16 Nov 2026). Migration 0106.
+    **Additive**, but for one change of what the vault keeps: a request
+    that ended with nothing filed from it is no longer removed the next
+    night; it is kept with the rest, for the household's time.
+    - **New `features`:** `ended_sharing` (`true`).
+    - **New routes:** `GET /api/v1/household/ended-sharing` →
+      `EndedSharing` `{ remove_after_days: 30 | 90 | 365 | null, can_change
+}` for every role signed in (null: never removed); `PUT` the same path
+      with `{ remove_after_days }` — an owner's, `403` to anybody else
+      (`household.ended_sharing`), `422 validation_failed` for any other
+      value. The same again changes nothing; a change is written as
+      `household.ended_sharing_changed` (`detail: { days, was }`), shown to
+      everybody who reads the log. 90 for every household, new and old.
+    - **What goes, each night:** a link outside the family (to a document or
+      a collection, never an emergency link) taken back or past its end, and
+      a request taken back, closed or past its end, longer ago than the
+      household keeps them — counted from the earliest of those moments. A
+      paused, used-up or locked one waits until its end has passed too. A
+      link waits until its view-only pages' files are deleted; a request
+      while any file it brought is waiting or on its way, or a decided
+      file's bytes are still to be removed. In batches of 200; the worker's
+      log says how many, never which.
+    - **What stays:** every line of the activity log — a removed request's
+      lines and a removed collection's link's are shown to exactly whom
+      they were before (`upload_request_tombstone`, `share_link_tombstone`);
+      a file filed from a removed request keeps its row, so `GET
+/documents/{id}/versions` still answers `sent_through` ("Sent through a
+      request link (Jane, accountant)") to its reviewers; documents,
+      versions and the Inbox are untouched. What goes with a link: its
+      sessions, codes and pages' rows, and `GET /shares/{id}/opens` with it
+      (`404`): the openings stay in the log as `share.opened` lines. What
+      goes with a request: its items, sessions, codes and refused files'
+      rows. `GET /shares` and `GET /upload-requests` simply no longer list
+      them.
+    - **Changed:** the nightly incoming sweep no longer removes a request
+      past its end with nothing filed from it; the new job does, after the
+      household's time (never, when an owner chose Never).
+    - **Storage:** `household.ended_sharing_days` (30, 90, 365 or null; the
+      trigger `household_ended_sharing_rule` lets only an owner, or the
+      vault, change it); `upload_request_tombstone` and
+      `share_link_tombstone`, written by the vault alone and never changed
+      or removed (`fdv_app` has no update or delete on them); and
+      `incoming_file.request_removed_at` and `request_label`, with
+      `incoming_file_one_way` letting a filed file have neither request nor
+      batch once its request was removed (`incoming_file_request_removed`).
+      Restore checks the trigger, the check, both tombstones' rules and that
+      they cannot be changed.
+    - **Shared and client:** `ENDED_SHARING_DAYS`, `ENDED_SHARING_DEFAULT`,
+      `EndedSharing`, `EndedSharingInput`, `EndedSharingDays`,
+      `endedSharingChoiceWords`, `endedSharingSpan`, `endedSharingWords`,
+      `ENDED_SHARING_KEPT_NOTE`; the role capability
+      `household.ended_sharing`. `@fdv/client` `endedSharing(token)` and
+      `setEndedSharing(token, days)`; the fake answers both, and a contract
+      scenario checks them.
+    - **After its review (still dev.53):**
+      - `share_link_tombstone` is read as the link was: by anybody signed in
+        of the household (it holds no recipient; the log's own rule keeps a
+        line through a collection's link from whoever was not told of the
+        link, a teen included), and by a restricted viewer only for a
+        collection granted (`share_link_tombstone_restricted`). Before, a
+        teen was shown a removed collection link's downloads and looks.
+      - `household.ended_sharing_from` (the upgrade's, or a restore's of an
+        older backup, `now()`; the vault's alone to change): the time counts
+        from the later of it and the end, so nothing goes sooner than the
+        household's time after upgrading.
+      - A household whose turn fails is logged by its id and the error's
+        code alone, and the others have theirs (`failed` in the job's
+        report).
 
 ## Deprecations in effect
 

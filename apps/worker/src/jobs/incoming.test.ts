@@ -942,7 +942,7 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
     expect((await row(left.id))?.object_removed_at).not.toBeNull();
   });
 
-  it('a request past its end with nothing waiting and nothing filed is removed; one with something filed stays', async () => {
+  it('the sweep leaves ended requests to the household’s keeping time (0.9.0, RQ): none is removed here', async () => {
     const ended = days(2);
     const refused = await request({ reviewBy: 'adults', requester: 'owner', expires: ended });
     const refusedFile = await file(refused);
@@ -969,8 +969,10 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
         [[refused, filed, stillWaiting, live]],
       )
     ).rows.map((x) => x.id);
-    expect(left.sort()).toEqual([filed, stillWaiting, live].sort());
-    expect(await row(refusedFile.id)).toBeUndefined();
+    // Removed, if at all, by jobs/ended-sharing.ts once the household's
+    // time for keeping ended ones has passed (90 days unless chosen).
+    expect(left.sort()).toEqual([refused, filed, stillWaiting, live].sort());
+    expect(await row(refusedFile.id)).toMatchObject({ state: 'rejected' });
     // A document's history still says where its version came from.
     expect(await row(filedFile.id)).toMatchObject({ state: 'accepted', version_id: as.version });
   });

@@ -1019,6 +1019,32 @@ and the activity log says who changed what. If the maker can no longer change
 it (their sign-in is gone, say), an owner can take its managers away, and can
 delete it unless a manager may still delete it.
 
+**Links and requests that no longer work** are listed apart in **Sharing**, under
+**No longer working**: the first 20, and **Show N more** for the rest. The vault removes
+each one a while after it ended, each night: **90 days** unless an owner chooses
+otherwise in **Settings → Privacy → Links and requests that no longer work** — after 30
+days, 90 days or 1 year, or never. Adults see the choice there too; only an owner changes
+it, and choosing a shorter time asks first and says what will go the next night. It
+counts from when the link or request was taken back, closed, or reached its end. One that
+is only paused, used up (a page already opened on it keeps working until its end), or
+stopped after ten wrong codes is not removed until its end has passed too. Clinicians'
+emergency links are not touched.
+
+**After upgrading to 0.9.0-dev.53, or restoring a backup made before it,** the time counts
+from the upgrade (or the restore) for anything that ended before it: nothing is removed
+sooner than 90 days later, or whatever an owner chooses, however long ago it ended.
+
+What stays: the activity log keeps every line about each — when it was made, opened,
+emailed and taken back, and what came in — shown to exactly the people who saw them
+before. Documents sent through a request stay where they were filed, and their history
+still says they came through a request link. A request is not removed while a file it
+brought is still waiting in the Inbox. What goes: the link or request itself; with a link,
+its **Who opened it** list (each opening stays in the activity log) and its view-only
+pages (deleted first, as they already are when it ends); with a request, the list of what
+it asked for and the record of each file that was refused (the file itself was deleted
+when it was refused). A record that the vault emailed a link or a request stays, but no
+longer says which one.
+
 ### My cabinet
 
 **Documents** can also be seen as a **Cabinet**: the same papers laid out the

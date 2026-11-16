@@ -19,7 +19,12 @@
  */
 
 import { SENSITIVE_IN_WORDS } from './sensitive.js';
-import { shareEndWords } from './shares.js';
+import {
+  ENDED_SHARING_DAYS,
+  endedSharingSpan,
+  shareEndWords,
+  type EndedSharingDays,
+} from './shares.js';
 import { NEUTRAL_WORDING_WORDS, NEUTRAL_WORDINGS, type NeutralWording } from './wording.js';
 
 export interface ActivityEvent {
@@ -131,6 +136,7 @@ export function activityKind(action: string): ActivityKind {
     case 'household.reading_model_changed':
     case 'household.local_ai_changed':
     case 'household.neutral_wording_changed':
+    case 'household.ended_sharing_changed':
     case 'ai_reader.changed':
     case 'ai_reader.tested':
     case 'ai_reader.send_sensitive_changed':
@@ -985,6 +991,20 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
           : 'another choice';
       return line(
         `${who} changed neutral wording in notifications and email from ${words(detail.was)} to ${words(detail.neutral_wording)}`,
+        true,
+      );
+    }
+    // How long ended links and requests are kept (0.9.0, RQ), from which
+    // choice to which.
+    case 'household.ended_sharing_changed': {
+      const words = (v: unknown) =>
+        v === null
+          ? 'never removed'
+          : (ENDED_SHARING_DAYS as readonly unknown[]).includes(v)
+            ? `removed after ${endedSharingSpan(v as EndedSharingDays)}`
+            : 'another choice';
+      return line(
+        `${who} changed ended links and requests from ${words(detail.was)} to ${words(detail.days)}`,
         true,
       );
     }

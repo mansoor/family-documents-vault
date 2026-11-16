@@ -2986,6 +2986,10 @@ export class DocumentService {
           'former.display_name as former_name',
           'upload_request.id as request_id',
           'upload_request.recipient_label as request_label',
+          // Its request removed once it had ended (0106, RQ): the file
+          // keeps whom it was for.
+          'incoming_file.request_removed_at',
+          'incoming_file.request_label as kept_request_label',
         ])
         .where('document_version.document_id', '=', documentId)
         .orderBy('document_version.version_no', 'desc')
@@ -3009,7 +3013,13 @@ export class DocumentService {
       return rows.map((r, i) => ({
         ...versionView(r),
         uploaded_by_name: named ? (r.uploaded_by_name ?? r.former_name ?? null) : null,
-        sent_through: named && r.request_id ? sentThroughWords(r.request_label) : null,
+        sent_through: !named
+          ? null
+          : r.request_id
+            ? sentThroughWords(r.request_label)
+            : r.request_removed_at
+              ? sentThroughWords(r.kept_request_label)
+              : null,
         details: r.details_kept_at
           ? {
               issued: dateValueOf(r.issued_on, r.issued_precision),

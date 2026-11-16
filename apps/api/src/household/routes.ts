@@ -419,6 +419,23 @@ export function registerHousehold(
     return household.setTimezone(principal(req), body.timezone, metaOf(req));
   });
 
+  // Ended links and requests (0.9.0, RQ): how long they are kept, read by
+  // every role; chosen by an owner — 30, 90 or 365 days, or never (null).
+  app.get('/api/v1/household/ended-sharing', auth, async (req) =>
+    household.endedSharing(principal(req)),
+  );
+  app.put('/api/v1/household/ended-sharing', guard('household.ended_sharing'), async (req) => {
+    const body = parse(
+      z
+        .object({
+          remove_after_days: z.union([z.literal(30), z.literal(90), z.literal(365)]).nullable(),
+        })
+        .strict(),
+      req.body ?? {},
+    );
+    return household.setEndedSharing(principal(req), body.remove_after_days, metaOf(req));
+  });
+
   // The family (5.34: a guest never among them, but for themselves); an
   // owner lists the people outside the family with ?kind=guest.
   const membersQuery = z.object({ kind: z.enum(['family', 'guest']).optional() });

@@ -676,7 +676,6 @@ export interface SweepReport {
   objectsRemoved: number;
   /** Filed versions whose own copy was missing, made again from the file sent in. */
   versionsRepaired: number;
-  requestsRemoved: number;
   moved: number;
   scanned: number;
   told: number;
@@ -690,10 +689,9 @@ export interface SweepReport {
  * telling); a file not filed within INCOMING_KEEP_DAYS of arriving,
  * removed — its pages, its object, its row — with a line for each request
  * it came through; a decided file's object whose removal failed after the
- * decision, removed; and a request past its end with nothing waiting and
- * nothing ever filed from it, removed with its items, sessions, codes and
- * refused files. A request something was filed from stays: a document's
- * history says it came through it.
+ * decision, removed. A request that has ended is removed once the
+ * household's time for keeping ended ones has passed (0.9.0, RQ:
+ * jobs/ended-sharing.ts), never before what it brought is decided.
  */
 export async function sweepIncoming(deps: IncomingDeps): Promise<SweepReport> {
   const now = deps.now?.() ?? new Date();
@@ -701,7 +699,6 @@ export async function sweepIncoming(deps: IncomingDeps): Promise<SweepReport> {
     purged: 0,
     objectsRemoved: 0,
     versionsRepaired: 0,
-    requestsRemoved: 0,
     moved: 0,
     scanned: 0,
     told: 0,
@@ -715,7 +712,6 @@ export async function sweepIncoming(deps: IncomingDeps): Promise<SweepReport> {
     const decided = await removeDecided(deps, hh, now);
     report.objectsRemoved += decided.removed;
     report.versionsRepaired += decided.repaired;
-    report.requestsRemoved += await removeEnded(deps, hh, now);
     // A scan whose job was lost: anything sent more than ten minutes ago
     // and still not ready.
     const stale = await withSystem(deps.db, hh, (trx) =>
@@ -907,49 +903,4 @@ async function keepFiled(
     version: f.version_id,
   });
   return 'repaired';
-}
-
-/**
- * A request past its end, with nothing waiting and nothing ever filed from
- * it: removed, and with it its items, sessions, codes and the rows of the
- * files refused (their bytes went when they were). Its lines in the
- * activity log stay in the chain, and are shown to nobody.
- */
-async function removeEnded(deps: IncomingDeps, hh: string, now: Date): Promise<number> {
-  return withSystem(deps.db, hh, async (trx) => {
-    const ended = await trx
-      .selectFrom('upload_request as r')
-      .select('r.id')
-      .where('r.expires_at', '<=', now)
-      .where((eb) =>
-        eb.not(
-          eb.exists(
-            eb
-              .selectFrom('incoming_file as f')
-              .select('f.id')
-              .whereRef('f.request_id', '=', 'r.id')
-              .where((w) =>
-                w.or([
-                  w('f.state', 'in', ['uploading', 'received', 'accepted']),
-                  // A refused file whose bytes are not known to be gone yet.
-                  w('f.object_removed_at', 'is', null),
-                ]),
-              ),
-          ),
-        ),
-      )
-      .forUpdate()
-      .skipLocked()
-      .execute();
-    if (ended.length === 0) return 0;
-    const r = await trx
-      .deleteFrom('upload_request')
-      .where(
-        'id',
-        'in',
-        ended.map((e) => e.id),
-      )
-      .executeTakeFirst();
-    return Number(r.numDeletedRows);
-  });
 }

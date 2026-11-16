@@ -401,7 +401,7 @@ describe('Sharing lists requests (5.22)', () => {
     expect(first).toHaveTextContent(/Working until/);
     expect(second).toHaveTextContent('Asked by Sam · Any adult looks at what comes in');
     expect(second).toHaveTextContent('No files yet · Not opened yet');
-    const ended = await screen.findByRole('list', { name: 'Requests that have ended' });
+    const ended = await screen.findByRole('list', { name: 'Requests that no longer work' });
     expect(within(ended).getByText('Taken back')).toBeInTheDocument();
     expect(within(ended).queryByRole('button')).not.toBeInTheDocument();
     await expectAccessible();
@@ -433,7 +433,7 @@ describe('Sharing lists requests (5.22)', () => {
       state.calls.some((c) => c.method === 'DELETE' && c.url === '/api/v1/upload-requests/req-a'),
     ).toBe(true);
     expect(
-      within(screen.getByRole('list', { name: 'Requests that have ended' })).getByText(
+      within(screen.getByRole('list', { name: 'Requests that no longer work' })).getByText(
         'Taken back',
       ),
     ).toBeInTheDocument();
