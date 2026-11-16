@@ -31,6 +31,8 @@ export interface CapabilityConfig {
   localAi?: boolean;
   /** The AI reader set in Settings (0.9.0, AIR1): FDV_AI_READER_SETTINGS is not off. */
   aiReaderSettings?: boolean;
+  /** FDV_BACKUP_RETAIN_DAYS, when the API was given it (0.9.0, H5). */
+  backupRetainDays?: number;
 }
 
 /**
@@ -239,6 +241,10 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       upload_request_email: config.operatorMail === true,
       // 0.9.0 (C3): where the original is, as a folder of somebody's cabinet.
       original_place: true,
+      // 0.9.0 (H5): health records kept as they are (XML, JSON, DICOM,
+      // ZIP), never opened; and who opened a link, when.
+      record_formats: true,
+      share_opens: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an
@@ -260,6 +266,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       share_max_days: config.shareMaxDays ?? 90,
       // 5.34 (A28): a guest's sign-in ends within this many days.
       guest_max_days: GUEST_MAX_DAYS,
+      // 0.9.0 (H5): how long the nightly backups are kept, when the API
+      // was told (FDV_BACKUP_RETAIN_DAYS); null, "until they age out".
+      backup_retain_days: config.backupRetainDays ?? null,
     },
     deprecations: DEPRECATIONS,
     branding: { display_name: config.displayName },

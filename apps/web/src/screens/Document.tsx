@@ -1,6 +1,9 @@
 import {
   can,
   FILE_REMOVED,
+  isRecordFormat,
+  RECORD_ACCEPT,
+  recordNoPreviewWords,
   firstReview,
   formatDate,
   issuedByLabel,
@@ -20,6 +23,7 @@ import {
 import { Fragment, useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { Link, Navigate, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 import { FileItHere, WhereKeptRow } from '../original-place.js';
+import { TheirLinksOpened } from '../link-opens.js';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { AddToCollection, audienceLabel, collectionsOffered } from '../collections.js';
@@ -666,9 +670,14 @@ export function DocumentScreen() {
             : []),
         ]}
       />
+      {/* Their own sensitive paper's links, whoever made them, and who
+          opened each (0.9.0, H5). */}
+      {isMine && doc.sensitive_effective === true && <TheirLinksOpened documentId={doc.id} />}
       {confirmingTrash && (
         <MoveToTrashDialog
           title={doc.title}
+          sensitive={doc.sensitive_effective === true}
+          backupDays={caps?.limits.backup_retain_days ?? null}
           busy={trashing}
           returnFocus={trashButton}
           onConfirm={() => void remove()}
@@ -823,7 +832,7 @@ function HistorySection({
           Add a new version
           <input
             type="file"
-            accept="image/*,application/pdf"
+            accept={`image/*,application/pdf,.docx,.xlsx,${RECORD_ACCEPT}`}
             style={{ display: 'none' }}
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -1000,10 +1009,13 @@ function PhonePages(props: {
   const { withToken } = useApp();
   const latest = props.version;
   const [thumb, setThumb] = useState<string | null>(null);
+  // A health record kept as it is (0.9.0, H5): no thumbnail, no pages.
+  const asIs = latest?.stored_as_is === true || isRecordFormat(latest?.mime);
   useEffect(() => {
     let url: string | null = null;
-    // Nothing to draw a thumbnail from: its file was removed for good (5.24).
-    if (!latest || latest.file_removed) return;
+    // Nothing to draw a thumbnail from: its file was removed for good (5.24),
+    // or it is a health record kept as it is (H5).
+    if (!latest || latest.file_removed || asIs) return;
     void withToken((t) => api.thumbnail(t, latest.id))
       .then((blob) => {
         if (blob) {
@@ -1015,7 +1027,7 @@ function PhonePages(props: {
     return () => {
       if (url) URL.revokeObjectURL(url);
     };
-  }, [latest, withToken]);
+  }, [latest, withToken, asIs]);
 
   return (
     <section className="doc-pages" aria-label={`Pages of ${props.title}`}>
@@ -1023,6 +1035,11 @@ function PhonePages(props: {
         // Its record came back with a restore, its file did not (5.24).
         <div className="preview preview-removed" role="note" aria-label="Preview">
           <span className="muted">{FILE_REMOVED}</span>
+        </div>
+      ) : latest && asIs ? (
+        // No preview (H5): it is downloaded, never shown.
+        <div className="preview preview-as-is" role="note" aria-label="Preview">
+          <span className="muted">{recordNoPreviewWords(latest.mime)}</span>
         </div>
       ) : latest ? (
         <Link
@@ -1097,13 +1114,16 @@ export function DocumentPages(props: {
     ? 'No file yet'
     : version.file_removed
       ? FILE_REMOVED
-      : drawn === 0
-        ? // 0 is a kind it does not draw, or a drawing that failed (the
-          // vault says both so): a PDF or a picture is always drawn (W-R3-3).
-          drawsKind(version.mime)
-          ? 'Its pages could not be drawn. Download it to open it.'
-          : 'The vault does not draw this kind of file’s pages. Download it to open it.'
-        : null;
+      : // A health record kept as it is (0.9.0, H5): never drawn.
+        version.stored_as_is === true || isRecordFormat(version.mime)
+        ? recordNoPreviewWords(version.mime)
+        : drawn === 0
+          ? // 0 is a kind it does not draw, or a drawing that failed (the
+            // vault says both so): a PDF or a picture is always drawn (W-R3-3).
+            drawsKind(version.mime)
+            ? 'Its pages could not be drawn. Download it to open it.'
+            : 'The vault does not draw this kind of file’s pages. Download it to open it.'
+          : null;
   const [n, setN] = useState(1);
   const [attempt, setAttempt] = useState(0);
   // The try that may ask who is asking: the one "Confirm it's you" began.

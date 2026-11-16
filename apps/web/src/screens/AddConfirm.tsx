@@ -49,6 +49,8 @@ import {
   sensitiveOf,
   sensitiveStartingVisibility,
   teenUploader,
+  RECORD_ACCEPT,
+  RECORD_FORMATS_NOTE,
 } from '@fdv/shared';
 import {
   useEffect,
@@ -415,7 +417,7 @@ export function AddScreen() {
       <input
         ref={input}
         type="file"
-        accept="image/*,application/pdf,.heic,.tiff,.docx,.xlsx"
+        accept={`image/*,application/pdf,.heic,.tiff,.docx,.xlsx,${RECORD_ACCEPT}`}
         capture="environment"
         aria-label="Choose a file"
         style={{ display: 'none' }}
@@ -434,6 +436,8 @@ export function AddScreen() {
         Take a photo or choose a file
       </Button>
       <p className="muted">PDFs, photos and scans (JPEG, PNG, HEIC, TIFF), Word and Excel files.</p>
+      {/* Health records kept as they are (0.9.0, H5). */}
+      <p className="muted">{RECORD_FORMATS_NOTE}</p>
       {/* Or by email (S4): where, from where, and confirming it. */}
       <EmailInLine />
     </main>

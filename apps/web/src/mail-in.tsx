@@ -6,6 +6,7 @@ import {
   type MailInEmailed,
   type MailInMine,
   type MailInView,
+  MAIL_IN_HEALTH_NOTE,
 } from '@fdv/shared';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api } from './api.js';
@@ -188,6 +189,8 @@ export function EmailInPart() {
                 Anything emailed in waits in an Inbox for its person to look over: nothing is filed
                 without them.
               </li>
+              {/* Health papers (0.9.0, H5), in neutral words. */}
+              <li>{MAIL_IN_HEALTH_NOTE}</li>
             </ul>
           </section>
         </>

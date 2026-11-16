@@ -15,6 +15,7 @@ import {
 import { readAs, withSystem, type Db, type Schema } from '@fdv/db';
 import {
   can,
+  isRecordFormat,
   householdDateOrder,
   type BatchReadFailure,
   type KnownIssuer,
@@ -452,6 +453,12 @@ export async function readItem(
   // again: not read (the I2 check).
   if (attempts > READ_ATTEMPTS) {
     await failed('unreadable').catch(() => undefined);
+    return;
+  }
+  // A health record kept as it is (0.9.0, H5): never decrypted, read or
+  // sent anywhere — "the vault does not read this kind of file", at once.
+  if (isRecordFormat(f.mime)) {
+    await failed('not_read');
     return;
   }
 

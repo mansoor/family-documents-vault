@@ -667,6 +667,23 @@ export interface CapabilityFeatures {
    * `physical_location`, never instead of it. Absent from older vaults.
    */
   original_place?: boolean;
+  /**
+   * 0.9.0 (H5): health records stored as they are — XML (C-CDA), JSON
+   * (FHIR), DICOM and ZIP (`RECORD_KINDS`) — taken by a single add, a new
+   * version and a person's batch item, checked by their bytes and never
+   * opened: no reading, pages or thumbnail, downloaded only (a link to view
+   * refuses them, `422 view_not_possible`). A version says so itself
+   * (`stored_as_is`). Absent from older vaults, which refuse them (415).
+   */
+  record_formats?: boolean;
+  /**
+   * 0.9.0 (H5): who opened a link, when — GET /shares/{id}/opens for its
+   * maker and the owners who see it, and for the person a sensitive
+   * document belongs to; GET /documents/{id}/link-opens, every link to
+   * one document the caller may see the openings of. Each opening's time
+   * and the browser it was opened in, in words; never an address.
+   */
+  share_opens?: boolean;
 }
 
 export interface CapabilityLimits {
@@ -683,6 +700,14 @@ export interface CapabilityLimits {
   share_max_days?: number;
   /** The longest a guest's sign-in lasts before an owner renews it, in days (5.34, A28). */
   guest_max_days?: number;
+  /**
+   * How many days the vault's nightly backups are kept (0.9.0, H5:
+   * FDV_BACKUP_RETAIN_DAYS, given to the API as to the worker): what a
+   * sensitive document's delete confirmation names. Null when the API was
+   * not told; absent from older vaults. Either way, say "until your backups
+   * age out".
+   */
+  backup_retain_days?: number | null;
 }
 
 export interface Deprecation {

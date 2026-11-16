@@ -157,6 +157,9 @@ import {
   SENSITIVE_BY_DEFAULT,
   SENSITIVE_SHARE_CONFIRM,
   sensitiveOf,
+  claimedRecordFormat,
+  isRecordFormat,
+  viewNotPossibleWords,
   TEEN_KEEPS_SENSITIVE,
   GUEST_MAX_DAYS,
   GUEST_ONLY_VIEWER,
@@ -247,6 +250,8 @@ import {
   type CreatedShare,
   type RevealedShare,
   type Share,
+  type ShareOpening,
+  type DocumentLinkOpening,
   type ShareEmailed,
   isShareAddress,
   maskEmail,
@@ -758,6 +763,16 @@ export interface FakeShare {
    * chose, or null — as the document is (`linkShowsTitle`).
    */
   show_title?: boolean | null;
+  /**
+   * The times it was opened (0.9.0, H5), oldest first, as a test seeds
+   * them: the fake opens no link itself.
+   */
+  openings?: ShareOpening[];
+  /**
+   * The documents a collection's link gives (0.9.0, H5), as a test seeds
+   * them: ticked or followed. The fake makes no collection's link itself.
+   */
+  items?: string[];
 }
 
 /** A viewer's limits, as the fake keeps them (5.33): the flags always said. */
@@ -2784,11 +2799,80 @@ export function createFakeVault(): {
     // confirming it's you, which the fake asks nowhere.
     const lkLatest = (l: FakeShare) =>
       Date.parse(l.share.created_at) + (l.share.follow_collection ? 30 : 90) * 864e5;
-    if (!making && !stopping && !one && path !== '/api/v1/shares') return null;
+    // Who opened a link, when (0.9.0, H5).
+    const opensOf = /^\/api\/v1\/shares\/([^/]+)\/opens$/.exec(path);
+    const docOpens = /^\/api\/v1\/documents\/([^/]+)\/link-opens$/.exec(path);
+    if (!making && !stopping && !one && !opensOf && !docOpens && path !== '/api/v1/shares') {
+      return null;
+    }
     const s = sessionOf();
     if (!('id' in s)) return s;
     const who = whoOf(s);
     const links = (state.shares ??= []);
+    if ((opensOf || docOpens) && init.method === 'GET') {
+      // Its maker and an owner where they see it; and the person a sensitive
+      // document is theirs, whoever made the link, to it alone or with a
+      // collection (its `items`) — as the vault answers. A document in the
+      // Trash, or one the reader can't see, gives nothing.
+      const live = (id: string) => {
+        const d = state.documents.find((x) => x.id === id && !x.deleted_at);
+        if (!d) return null;
+        if (d.visibility === 'private' && d.owner_member_id !== who.memberId) return null;
+        return d;
+      };
+      const gives = (l: FakeShare): string[] =>
+        l.share.document_id !== null ? [l.share.document_id] : (l.items ?? []);
+      const mayOpen = (l: FakeShare, docId: string | null): boolean => {
+        const makerOrOwner =
+          can(who.role, 'document.share') &&
+          (l.made_by === who.memberId || who.role === 'owner') &&
+          // A link to one document in the Trash is listed nowhere.
+          (l.share.document_id === null || live(l.share.document_id) !== null);
+        if (makerOrOwner && (docId === null || gives(l).includes(docId))) return true;
+        return gives(l)
+          .filter((id) => docId === null || id === docId)
+          .some((id) => {
+            const d = live(id);
+            if (!d || d.owner_member_id !== who.memberId) return false;
+            return sensitiveOf(
+              d,
+              state.types.find((t) => t.key === d.type_key),
+            );
+          });
+      };
+      const opening = (l: FakeShare): DocumentLinkOpening => ({
+        share_id: l.share.id,
+        recipient_label: l.share.recipient_label,
+        created_by_name: l.share.created_by_name,
+        mine: l.made_by === who.memberId,
+        permission: l.share.permission ?? 'download',
+        created_at: l.share.created_at,
+        expires_at: l.share.expires_at,
+        state: l.share.state,
+        open_count: l.share.open_count,
+        opens: [...(l.openings ?? [])].reverse(),
+      });
+      if (opensOf) {
+        const id = decodeURIComponent(opensOf[1] as string);
+        const l = links.find((x) => x.share.id === id && mayOpen(x, null));
+        if (!l) return fail(404, 'not_found', 'That link is not in the vault.');
+        const o = opening(l);
+        return ok({
+          share_id: o.share_id,
+          recipient_label: o.recipient_label,
+          open_count: o.open_count,
+          items: o.opens,
+        });
+      }
+      const docId = decodeURIComponent((docOpens as RegExpExecArray)[1] as string);
+      if (!live(docId)) return fail(404, 'not_found', 'That document is not in the vault.');
+      return ok({
+        items: links
+          .filter((l) => mayOpen(l, docId))
+          .map(opening)
+          .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0)),
+      });
+    }
     const ended = (l: FakeShare) =>
       l.share.state === 'revoked' || l.share.state === 'expired' || l.share.state === 'locked';
     const revealable = (l: FakeShare) => l.made_by === who.memberId && !l.shown_once && !ended(l);
@@ -2844,6 +2928,11 @@ export function createFakeVault(): {
         })
       ) {
         return fail(404, 'not_found', 'That document is not in the vault.');
+      }
+      // A health record kept as it is (0.9.0, H5) has no pages to view.
+      const newest = [...versionsOf(doc.id)].sort((a, b) => b.version_no - a.version_no)[0];
+      if (body.permission === 'view' && newest && isRecordFormat(newest.mime)) {
+        return fail(422, 'view_not_possible', viewNotPossibleWords(newest.mime));
       }
       // Sensitive, all said (0.9.0, H1a): asked first, made only once the
       // sharer says so.
@@ -3579,6 +3668,9 @@ export function createFakeVault(): {
           link_changes: true,
           // Where the original is, as a place in a cabinet (0.9.0, C3).
           original_place: true,
+          // Health records kept as they are; who opened a link, when (0.9.0, H5).
+          record_formats: true,
+          share_opens: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -3586,6 +3678,8 @@ export function createFakeVault(): {
           max_storage_bytes: null,
           share_max_days: 90,
           guest_max_days: GUEST_MAX_DAYS,
+          // FDV_BACKUP_RETAIN_DAYS, as the compose file gives it (0.9.0, H5).
+          backup_retain_days: 30,
         },
         deprecations: [],
         branding: { display_name: 'A fake family' },
@@ -5210,7 +5304,11 @@ export function createFakeVault(): {
         version_id: next('version'),
         version_no: versionsOf(documentId).length + 1,
         filename: file?.filename ?? 'file',
-        mime: file?.type ?? 'application/octet-stream',
+        // A health record (0.9.0, H5) as the vault keeps it: application/xml for text/xml.
+        mime:
+          claimedRecordFormat(file?.type ?? '', file?.filename ?? '') ??
+          file?.type ??
+          'application/octet-stream',
         byte_size: file?.size ?? 0,
         uploaded_at: new Date().toISOString(),
       };
@@ -5245,7 +5343,15 @@ export function createFakeVault(): {
             page_count: null,
             ocr_status: 'pending',
             uploaded_at: v.uploaded_at,
-            preview_pages: drawn === undefined ? null : drawn === 'unsupported' ? 0 : drawn,
+            preview_pages: isRecordFormat(v.mime)
+              ? 0
+              : drawn === undefined
+                ? null
+                : drawn === 'unsupported'
+                  ? 0
+                  : drawn,
+            // Never opened by the vault, downloaded only (0.9.0, H5).
+            ...(isRecordFormat(v.mime) ? { stored_as_is: true } : {}),
             uploaded_by_name: named ? (me?.display_name ?? null) : null,
           };
         });

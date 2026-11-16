@@ -1,4 +1,10 @@
-import { can, PURGE_NOTICE_HOURS, shortName, type DocumentView } from '@fdv/shared';
+import {
+  can,
+  PURGE_NOTICE_HOURS,
+  sensitiveBackupsWords,
+  shortName,
+  type DocumentView,
+} from '@fdv/shared';
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import { Link } from 'react-router';
@@ -51,7 +57,7 @@ type Removal = { kind: 'remove' } | { kind: 'ask' } | { kind: 'wait'; from: stri
  * and has had a day to bring it back.
  */
 export function TrashScreen() {
-  const { withToken, guarded, authVersion, session } = useApp();
+  const { withToken, guarded, authVersion, session, caps } = useApp();
   const first = useLoad(
     (t) => api.documents(t, { deleted: 'true', sort: 'recent' }),
     [authVersion],
@@ -276,6 +282,7 @@ export function TrashScreen() {
       {confirming && (
         <PurgeDialog
           doc={confirming.doc}
+          backupDays={caps?.limits.backup_retain_days ?? null}
           ask={confirming.removal.kind === 'ask'}
           busy={busy === confirming.doc.id}
           returnFocus={opener}
@@ -316,7 +323,7 @@ function TrashTable(props: {
   fallbackFocus: () => void;
 }) {
   const { items, removalOf, mayRestore } = props;
-  const { authVersion, withToken, guarded } = useApp();
+  const { authVersion, withToken, guarded, caps } = useApp();
   const role = storedRole();
   const owner = can(role, 'document.purge');
   // Whose each is, and what kind: the family and the kinds, as this reader is given them.
@@ -364,6 +371,8 @@ function TrashTable(props: {
   }
   const removeNow = chosen.filter((_, i) => removals[i]?.kind === 'remove');
   const askNow = chosen.filter((_, i) => removals[i]?.kind === 'ask');
+  // Sensitive ones removed now (0.9.0, H5): their backups are said.
+  const sensitiveGoing = removeNow.filter((d) => d.sensitive_effective === true).length;
 
   /** Where the focus goes when what had it goes: the header's box, else the table, else the page. */
   const backToTable = () => {
@@ -686,6 +695,15 @@ function TrashTable(props: {
               offline, a backup.
             </p>
           )}
+          {/* Sensitive ones (0.9.0, H5): how long backups still hold them. */}
+          {sensitiveGoing > 0 && (
+            <p>
+              {sensitiveBackupsWords(caps?.limits.backup_retain_days, {
+                forGood: true,
+                n: sensitiveGoing,
+              })}
+            </p>
+          )}
           {askNow.length > 0 && (
             <p>
               Somebody else added {askNow.length === 1 ? 'one' : askNow.length} of these. Whoever
@@ -714,6 +732,8 @@ function PurgeDialog(props: {
   returnFocus: RefObject<HTMLElement | null>;
   onConfirm: () => void;
   onCancel: () => void;
+  /** How long the nightly backups are kept (0.9.0, H5), when the vault knows. */
+  backupDays?: number | null;
 }) {
   const title = props.doc.title ?? 'This document';
   return props.ask ? (
@@ -758,6 +778,10 @@ function PurgeDialog(props: {
         expires, within seven days, and a phone keeping it offline removes its copy when it next
         connects. A backup made before now can bring back its details, never its file.
       </p>
+      {/* Sensitive (0.9.0, H5): how long backups still hold it. */}
+      {props.doc.sensitive_effective === true && (
+        <p>{sensitiveBackupsWords(props.backupDays, { forGood: true })}</p>
+      )}
       <p>You will be asked to confirm it’s you.</p>
     </ConfirmDialog>
   );

@@ -606,6 +606,8 @@ export function DocActions(props: {
       {sheet === 'trash' && (
         <MoveToTrashDialog
           title={doc?.title ?? null}
+          sensitive={doc?.sensitive_effective === true}
+          backupDays={caps?.limits.backup_retain_days ?? null}
           busy={leaving}
           returnFocus={more}
           onConfirm={() => void remove()}

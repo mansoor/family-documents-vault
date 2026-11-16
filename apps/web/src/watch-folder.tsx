@@ -2,6 +2,7 @@ import {
   roleLabel,
   WATCH_KEEP_DAYS_DEFAULT,
   WATCH_KEEP_DAYS_MAX,
+  WATCH_KEPT_HEALTH,
   WATCH_KEPT_WARNING,
   type WatchBrowseResult,
   type WatchFolderView,
@@ -348,7 +349,7 @@ export function ScannerScreen() {
                     min={0}
                     max={WATCH_KEEP_DAYS_MAX}
                     value={keep}
-                    aria-describedby="scanner-keep-note scanner-keep-warning"
+                    aria-describedby="scanner-keep-note scanner-keep-warning scanner-keep-health"
                     aria-invalid={!keepValid}
                     onChange={(e) => setKeep(e.target.value)}
                   />
@@ -360,6 +361,10 @@ export function ScannerScreen() {
                 </div>
                 <p id="scanner-keep-warning" className="attention attention-warn">
                   {data.kept_warning ?? WATCH_KEPT_WARNING}
+                </p>
+                {/* Health papers (0.9.0, H5), in neutral words. */}
+                <p id="scanner-keep-health" className="muted field-note">
+                  {WATCH_KEPT_HEALTH}
                 </p>
               </>
             )}

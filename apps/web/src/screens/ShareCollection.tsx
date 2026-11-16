@@ -4,6 +4,7 @@ import {
   FOLLOW_MAX_DAYS,
   SENSITIVE_LABEL,
   sensitiveCollectionShareConfirm,
+  sensitiveLinkStartWords,
   SHARE_MAX_DAYS,
   SHOW_TITLE_COLLECTION_HINT,
   SHOW_TITLE_LABEL,
@@ -84,7 +85,7 @@ export function ShareCollectionPanel(props: {
   /** What the sharer has ticked, or unticked, by hand: over what the vault ticked. */
   const [chosen, setChosen] = useState<Record<string, boolean>>({});
   const [follow, setFollow] = useState(false);
-  const options = useLinkOptions();
+  const chosenOptions = useLinkOptions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [made, setMade] = useState<CreatedShare | null>(null);
@@ -116,6 +117,13 @@ export function ShareCollectionPanel(props: {
   // A link that keeps up with the collection lasts 30 days at most (A19).
   const maxDays = follow ? Math.min(vaultMax, FOLLOW_MAX_DAYS) : vaultMax;
   const viewable = ticked.every((i) => i.viewable);
+  const sensitiveTicked = ticked.filter((i) => i.sensitive === true).length;
+  // A sensitive one ticked (0.9.0, H5): the link starts view-only, for a
+  // week, until the sharer chooses View or download themselves.
+  const options =
+    sensitiveTicked > 0 && chosenOptions.value.permissionChosen !== true
+      ? { ...chosenOptions, value: { ...chosenOptions.value, permission: 'view' as const } }
+      : chosenOptions;
   const read = readLinkOptions(options.value, {
     timezone,
     maxDays,
@@ -123,7 +131,6 @@ export function ShareCollectionPanel(props: {
     factors: linkFactors(caps, texts),
   });
   const nothing = ticked.length === 0 && !follow;
-  const sensitiveTicked = ticked.filter((i) => i.sensitive === true).length;
 
   const working = (on: boolean) => {
     setBusy(on);
@@ -278,9 +285,13 @@ export function ShareCollectionPanel(props: {
             read={read}
             timezone={timezone}
             viewable={viewable}
-            notViewable="Word and Excel files can only be shared with download: untick them to share the rest to view."
+            notViewable="Word and Excel files, and health records kept as they are, can only be shared with download: untick them to share the rest to view."
             viewNote="They will see the first 30 pages of each."
           />
+          {/* Why it starts as it does (0.9.0, H5). */}
+          {sensitiveTicked > 0 && (
+            <p className="muted">{sensitiveLinkStartWords({ viewable, collection: true })}</p>
+          )}
           {protects && (sensitiveTicked > 0 || follow) && (
             <>
               <Check

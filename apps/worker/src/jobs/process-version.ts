@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import { DecryptStream, EncryptStream, sealChunk, unwrapKey, type ScopeKeys } from '@fdv/crypto';
 import type { PgBoss } from 'pg-boss';
 import { withSystem, type Db } from '@fdv/db';
+import { isRecordFormat } from '@fdv/shared';
 import { adapterFromRow, readAll, type StorageAdapter } from '@fdv/storage';
 import { extractText } from './extract-text.js';
 import type { SendPreviews } from './previews.js';
@@ -136,6 +137,27 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
     return;
   }
   const { version, doc, adapter, fileKey, scopeKey } = ctx;
+
+  // A health record kept as it is (0.9.0, H5): never decrypted here, read,
+  // counted or drawn — no text, no thumbnail, no pages. Said so, and done.
+  if (isRecordFormat(version.mime)) {
+    await withSystem(deps.db, hh, (trx) =>
+      trx
+        .updateTable('document_version')
+        .set({
+          ocr_status: 'skipped',
+          page_count: null,
+          preview_state: 'unsupported',
+          preview_pages: 0,
+          process_error: null,
+          processed_at: new Date(),
+        })
+        .where('id', '=', version.id)
+        .executeTakeFirst(),
+    );
+    deps.log('info', 'kept a health record as it is', { version_id: version.id });
+    return;
+  }
 
   const dir = await mkdtemp(path.join(tmpdir(), 'fdv-proc-'));
   try {

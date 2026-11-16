@@ -255,6 +255,14 @@ export interface VersionView {
    */
   preview_pages?: number | null;
   /**
+   * A health record kept as it is (0.9.0, H5, `features.record_formats`):
+   * XML, JSON, DICOM or ZIP (`isRecordFormat`). Never read, drawn or opened
+   * by the vault — no pages, no thumbnail, no text — and downloaded only:
+   * show "No preview" (`recordNoPreviewWords`) where its pages would be.
+   * Absent from older vaults, which keep none.
+   */
+  stored_as_is?: boolean;
+  /**
    * Who added this version, as the household knows them (5.1): in a
    * document's history only (`GET /documents/{id}/versions`), and never to
    * a viewer, who is not told what the family has been doing. Null then,

@@ -45,7 +45,7 @@ import { askPage, forgetPages, heldPage } from '../batch-pages.js';
 import { labelOfDay, progressOf, useUploads, type ChosenFile } from '../batch-store.js';
 import { newRun, useAcceptReady, useVersionUndo } from '../batch-review.js';
 import { LearnedFromYou } from '../batch-learning.js';
-import { BATCH_ACCEPT } from '../batch-upload.js';
+import { BATCH_ACCEPT, folderRecordsLeftOutWords } from '../batch-upload.js';
 import { CollectionSelect, mayChangeCollection } from '../collections.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
@@ -487,9 +487,16 @@ function AddMany({ visit }: { visit: string }) {
             >
               <h2 className="section-h">Drop files or a folder here</h2>
               <p className="muted">
-                PDFs, photos and scans, Word and Excel files: up to {BATCH_MAX_FILES} at a time,
-                each up to {sizeWords(limit)}.
+                PDFs, photos and scans, Word and Excel files, and health records kept as they are
+                (XML, JSON, DICOM, ZIP): up to {BATCH_MAX_FILES} at a time, each up to{' '}
+                {sizeWords(limit)}.
               </p>
+              {/* A folder's health records, left out (0.9.0, the H5 review). */}
+              {folderRecordsLeftOutWords(upload.recordsLeftOut ?? 0) && (
+                <p className="status status-warn" role="status">
+                  {folderRecordsLeftOutWords(upload.recordsLeftOut ?? 0)}
+                </p>
+              )}
               <div className="row">
                 <Button kind="quiet" onClick={() => filesInput.current?.click()}>
                   Choose files

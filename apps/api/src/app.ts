@@ -439,6 +439,9 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       displayName: householdName ?? config.FDV_DISPLAY_NAME,
       maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
       shareMaxDays: config.FDV_SHARE_MAX_DAYS,
+      ...(config.FDV_BACKUP_RETAIN_DAYS !== undefined
+        ? { backupRetainDays: config.FDV_BACKUP_RETAIN_DAYS }
+        : {}),
       operatorMail: Boolean(config.FDV_SMTP_URL),
       // The scanner folder (S3): only while the worker has it, there and
       // writable, and said so lately. Not known is not offered.

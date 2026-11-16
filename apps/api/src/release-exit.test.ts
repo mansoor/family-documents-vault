@@ -550,6 +550,9 @@ const RULES: Record<string, Rule> = {
     body: (f) => ({ document_ids: [f.document], folder_id: null }),
   },
   'GET /api/v1/documents/:id/collections': { who: 'signedIn' },
+  // The links to a document whose openings the caller may see (0.9.0, H5):
+  // of a document they can see; nothing of one they cannot.
+  'GET /api/v1/documents/:id/link-opens': { who: 'signedIn' },
   'GET /api/v1/documents/:id/issuer-suggestions': { who: 'signedIn' },
   'GET /api/v1/documents/:id/suggestions': { who: 'family' },
   'POST /api/v1/documents/:id/share': { who: 'adults', body: () => ({ permission: 'download' }) },
@@ -901,6 +904,14 @@ const RULES: Record<string, Rule> = {
   'POST /api/v1/shares/:id/resume': { who: 'owners', body: () => ({}) },
   // A link shown again (11 Nov 2026): to whoever made it alone, after confirming it is them.
   'POST /api/v1/shares/:id/reveal': { who: 'signedIn', body: () => ({}) },
+  // Who opened a link, when (0.9.0, H5): its maker, an owner who sees it,
+  // and the person a sensitive document belongs to; nobody else.
+  'GET /api/v1/shares/:id/opens': {
+    who: 'signedIn',
+    theirs: {
+      passwordOnlyOwner: 'an owner sees who opened any link the family made that they see (H5)',
+    },
+  },
   // A link changed (0.9.0, LK): by whoever made it alone; reaching further
   // asks that it's them. Never anybody else's, an owner's included.
   'PATCH /api/v1/shares/:id': {

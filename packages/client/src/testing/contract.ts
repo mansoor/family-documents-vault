@@ -136,6 +136,7 @@ const SUGGESTIONS_KEY = '8192a3b4-c5d6-4e78-9f80-123456789abc';
 const CREATE_KEY = '92a3b4c5-d6e7-4f89-8a91-23456789abcd';
 const ZIP_KEY = 'a3b4c5d6-e7f8-4a9b-8c0d-3456789abcde';
 const LK_KEY = 'b4c5d6e7-f809-4bac-9d1e-456789abcdef';
+const H5_KEY = 'c5d6e7f8-091a-4bcd-8e2f-56789abcdef0';
 
 async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
   try {
@@ -4192,6 +4193,69 @@ export const contractScenarios: Scenario[] = [
         }),
       );
       expect(missing.status).toBe(404);
+    },
+  },
+  {
+    name: 'a health record kept as it is, downloaded only; who opened a link, when (0.9.0, H5)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      const caps = await api.capabilities();
+      expect(caps.features.record_formats).toBe(true);
+      expect(caps.features.share_opens).toBe(true);
+      const me = await api.me(token);
+      const doc = await api.createDocument(token, {
+        type_key: 'utility_bill',
+        owner_member_id: me.member_id,
+        visibility: 'household',
+        sensitive: false,
+        title: 'Contract FHIR export',
+      });
+      const form = multipartBody([
+        {
+          name: 'file',
+          filename: 'export.json',
+          contentType: 'application/fhir+json',
+          bytes: new TextEncoder().encode('{"resourceType":"Bundle","entry":[]}\n'),
+        },
+      ]);
+      await api.upload(
+        token,
+        doc.id,
+        { kind: 'bytes', bytes: form.bytes, contentType: form.contentType },
+        H5_KEY,
+      );
+      const [version] = (await api.versions(token, doc.id)).items;
+      expect(version).toMatchObject({
+        mime: 'application/json',
+        stored_as_is: true,
+        preview_pages: 0,
+      });
+      // Never to view: there are no pages.
+      const view = await refusal(api.share(token, doc.id, { permission: 'view' }));
+      expect([view.status, view.code]).toEqual([422, 'view_not_possible']);
+      const made = await api.share(token, doc.id, {
+        permission: 'download',
+        recipient_label: 'Contract clinic',
+      });
+      expect(await api.shareOpens(token, made.share.id)).toEqual({
+        share_id: made.share.id,
+        recipient_label: 'Contract clinic',
+        open_count: 0,
+        items: [],
+      });
+      const listed = (await api.documentLinkOpens(token, doc.id)).items;
+      expect(listed).toEqual([
+        expect.objectContaining({
+          share_id: made.share.id,
+          mine: true,
+          permission: 'download',
+          open_count: 0,
+          opens: [],
+        }),
+      ]);
+      const unknown = await refusal(api.shareOpens(token, '00000000-0000-4000-8000-000000000000'));
+      expect([unknown.status, unknown.code]).toEqual([404, 'not_found']);
+      await api.revokeShare(token, made.share.id);
     },
   },
   {

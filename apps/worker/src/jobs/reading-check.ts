@@ -12,6 +12,7 @@ import {
 import { readAs, withSystem, type Db } from '@fdv/db';
 import {
   can,
+  isRecordFormat,
   levelItem,
   localAiOffer,
   numbersOnly,
@@ -553,6 +554,8 @@ async function readDocument(
         .limit(1)
         .executeTakeFirst();
       if (!version) return null;
+      // A health record kept as it is (0.9.0, H5) is never read: not measured.
+      if (isRecordFormat(version.mime)) return null;
       const scopeKey = await deps.keys.unwrapById(trx, version.wrapped_by_scope);
       return {
         doc,
