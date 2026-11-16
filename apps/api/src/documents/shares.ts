@@ -75,6 +75,7 @@ import {
   COLLECTION_SHARE_REASONS,
   FILE_REMOVED,
   FOLLOW_MAX_DAYS,
+  linkShowsTitle,
   isShareAddress,
   maskEmail,
   maskPhone,
@@ -359,6 +360,93 @@ export const emergencyShareBody = z
 const SNAPSHOT_ROWS = 2000;
 
 /**
+ * A link's properties changed by whoever made it (0.9.0, LK; the owner's
+ * decision of 15 Nov 2026): only what is sent changes. Never what it is to,
+ * its code, nor "this browser only". `secret`: `none` takes its PIN or
+ * password away, `pin` gives it a new PIN, `password` a new password — the
+ * vault's, or the one typed in `password`.
+ */
+export const shareChangeBody = z
+  .object({
+    recipient_label: z.string().trim().max(80).nullable().optional(),
+    expires_at: shareOptions.expires_at,
+    permission: shareOptions.permission,
+    max_opens: limit,
+    max_downloads: limit,
+    show_title: z.boolean().optional(),
+    secret: z.enum(['none', 'pin', 'password']).optional(),
+    password: shareOptions.password,
+  })
+  .strict();
+
+/** What a change asks: whether it reaches further, and so asks who is asking (`change_share`). */
+export interface ShareChangePlan {
+  widens: boolean;
+}
+
+/**
+ * A PIN or a password as strong as it is (0.9.0, LK): none; a PIN (four
+ * digits); a password typed by the sharer (eight characters at least, and
+ * chosen by a person); a password the vault made up (twelve characters drawn
+ * at random). Going down this order reaches further, and asks who is asking.
+ */
+const STRENGTH = { none: 0, pin: 1, password: 2, generated: 3 } as const;
+const secretStrength = (link: { pin_hash: string | null; secret_kind: string | null }) =>
+  !link.pin_hash
+    ? STRENGTH.none
+    : link.secret_kind === 'generated'
+      ? STRENGTH.generated
+      : link.secret_kind === 'password'
+        ? STRENGTH.password
+        : STRENGTH.pin;
+
+/**
+ * Whether a link's page shows the title before Open, as it does now (0.9.0,
+ * LK): as its maker chose, or for a document's link, as the document is
+ * (linkShowsTitle: never a sensitive one's). A collection's link or a
+ * clinician's shows each sensitive title only if chosen.
+ */
+const shownTitle = (r: {
+  show_title: boolean | null;
+  document_id: string | null;
+  doc_sensitive: boolean | null;
+}) =>
+  r.document_id !== null
+    ? linkShowsTitle(r.show_title, r.doc_sensitive === true)
+    : r.show_title === true;
+
+/** Whether a limit reaches further: none where there was one, or a higher one. */
+const limitWidens = (before: number | null, after: number | null) =>
+  before !== null && (after === null || after > before);
+
+/** Whether an If-Match names this version: `"3"`, `W/"3"`, `3`, or `*`. */
+export function versionMatches(ifMatch: string, version: number): boolean {
+  const said = ifMatch.trim();
+  if (said === '*') return true;
+  return said.replace(/^W\//, '').replace(/^"(.*)"$/, '$1') === String(version);
+}
+
+/** The answer to a change made from a version moved on since (0.9.0, LK). */
+export const changedElsewhere = (what: 'link' | 'request', version?: number) =>
+  new ApiError(
+    409,
+    'conflict',
+    `That ${what} was changed somewhere else since you opened it. Look at it again, then make your change.`,
+    version !== undefined ? { detail: JSON.stringify({ version }) } : undefined,
+  );
+
+/**
+ * A link that has ended is not made to work again (0.9.0, LK): taken back,
+ * run out of time, stopped by wrong tries, or opened as often as it allows.
+ */
+const linkEnded = () =>
+  new ApiError(
+    410,
+    'share_ended',
+    'That link no longer works, so it can’t be changed. Make a new one if you need to.',
+  );
+
+/**
  * A link emailed to its recipient (0.9.0): the address — the share sheet's
  * own rule (isShareAddress) — and the sharer's own short message, made
  * plain by shareLinkMessage before it goes. Both are checked as the body is
@@ -468,10 +556,31 @@ export interface ShareView {
    * and the operator's mail server set. POST /shares/{id}/email.
    */
   emailable: boolean;
+  /** The reader made it (0.9.0, LK): its PIN or password are theirs alone to change. */
+  mine: boolean;
   /** Where the reader last emailed it, masked; null for none, and for anybody else's link. */
   emailed_to: string | null;
+  /**
+   * The reader made it and it still works, or is only paused, on the new
+   * routes (0.9.0, LK): PATCH /shares/{id} changes its properties.
+   */
+  changeable: boolean;
+  /** The latest it may be changed to end: its longest from when it was made (0.9.0, LK). */
+  latest_end: string;
+  /** Whether its page shows the title before Open, as chosen; null as each document is (H1a). */
+  show_title: boolean | null;
+  /** Moved on by each change (0.9.0, LK): the ETag of PATCH /shares/{id}. */
+  version: number;
   /** One sentence for the list on the home screen. */
   summary: string;
+}
+
+/** PATCH /shares/{id} (0.9.0, LK): the link now, what changed, and a new PIN or made-up password, once. */
+export interface ChangedShare {
+  share: ShareView;
+  changed: string[];
+  pin?: string;
+  password?: string;
 }
 
 export interface CreatedShare {
@@ -691,6 +800,11 @@ type LinkRow = {
   /** A clinician's link (0.9.0, H4): whose emergency information, and which parts of it. */
   emergency_member_id: string | null;
   emergency_fields: string[] | null;
+  /**
+   * Moved on as its PIN or password is replaced or taken away (0.9.0, LK,
+   * 0103): a session opened against an older one is refused.
+   */
+  secret_version: number;
 };
 
 /** A collection, as its link reads it (5.19). */
@@ -2228,7 +2342,13 @@ export class ShareService {
           // 0.9.0: whether a copy was kept to show its maker again — never the copy.
           sql<boolean>`share_link.link_copy_sealed is not null`.as('has_copy'),
           'share_link.emergency_member_id',
+          // 0.9.0 (LK): what a change starts from.
+          'share_link.show_title',
+          'share_link.version',
         ])
+        // Whether its page shows the title, as it is now: a document's
+        // title is left out for a sensitive one unless shown (H1a).
+        .select(sensitiveSql('document').as('doc_sensitive'))
         // A person's clinician's links (H4) are listed with their page
         // alone, never in the family's list of links.
         .$call((q) =>
@@ -2380,6 +2500,22 @@ export class ShareService {
           // used up, and not paused (the review of 0.9.0-dev.39).
           emailable: revealable && state === 'active' && this.emailLinks,
           emailed_to: r.created_by === p.accountId ? (emailed.get(r.id) ?? null) : null,
+          // 0.9.0 (LK): its maker's to change while it works, or is only
+          // paused; never once it has ended or been opened as often as it
+          // allows, and never a link on the old routes.
+          // 0.9.0 (LK): the reader made it — Sharing says it is theirs.
+          mine: r.created_by === p.accountId,
+          // Its maker's, or (the owner's decision of 16 Nov 2026) an owner's,
+          // all but its PIN or password, which stay its maker's.
+          changeable:
+            (r.created_by === p.accountId || p.role === 'owner') &&
+            r.flow === 'v2' &&
+            !ENDED.includes(state) &&
+            state !== 'used_up' &&
+            !usedUp(r),
+          latest_end: this.latestEnd(r).toISOString(),
+          show_title: shownTitle(r),
+          version: r.version,
           summary: summarise(
             { ...r, paused_reason: pausedReason },
             state,
@@ -2728,6 +2864,479 @@ export class ShareService {
       link_url: this.linkUrl(copy.token),
       ...(copy.pin ? { pin: copy.pin } : {}),
       ...(copy.password ? { password: copy.password } : {}),
+    };
+  }
+
+  // ------------------------------------------- changed (0.9.0, LK)
+
+  /**
+   * The latest a link may be changed to end (0.9.0, LK): its longest from
+   * when it was made, as making it allowed from then — a clinician's, 24
+   * hours (the database holds it, 0102); one that keeps up with its
+   * collection, 30 days (0042); any other, the vault's longest.
+   */
+  private latestEnd(link: {
+    created_at: Date;
+    emergency_member_id: string | null;
+    follow_collection: boolean;
+  }): Date {
+    const span = link.emergency_member_id
+      ? EMERGENCY_LINK_MAX_HOURS * 3_600_000
+      : (link.follow_collection ? Math.min(this.maxDays, FOLLOW_MAX_DAYS) : this.maxDays) * 864e5;
+    return new Date(link.created_at.getTime() + span);
+  }
+
+  /**
+   * A link its maker may change (0.9.0, LK): one the caller made and can
+   * still see — anybody else's, an owner's included, is a link there is no
+   * such of (404), as showing it again is — on the new routes, that has not
+   * ended. Asked before anybody is asked to confirm it's them.
+   */
+  private async changeableLink(
+    p: Principal,
+    id: string,
+    input: z.infer<typeof shareChangeBody>,
+  ): Promise<LinkView> {
+    requireCapability(p, 'document.share');
+    const link = await this.viewOf(p, id);
+    // Its maker's, or an owner's who can see it (16 Nov 2026); nobody else's.
+    if (!link || (link.created_by !== p.accountId && p.role !== 'owner')) {
+      throw notFound('That link');
+    }
+    // Its PIN or password are its maker's alone: Show the link is theirs
+    // alone, and a new one would be handed to whoever made it.
+    if (input.secret !== undefined && link.created_by !== p.accountId) {
+      throw new ApiError(
+        403,
+        'share_secret_makers_only',
+        'Only whoever made this link can give it a new PIN or password. Take it back and make a new one if you need to.',
+      );
+    }
+    if (link.flow !== 'v2') {
+      throw new ApiError(
+        409,
+        'share_legacy',
+        'That link was made by an older version of the vault, so it can’t be changed. Take it back and make a new one if you need to.',
+      );
+    }
+    if (!link.changeable) throw linkEnded();
+    return link;
+  }
+
+  /**
+   * What PATCH /shares/{id} would do, asked before the credential is: that
+   * the link is the caller's to change, that the change is one it may make,
+   * and whether it reaches further — a later end, view to download, a limit
+   * raised or taken away, its PIN or password taken away or weakened, its
+   * title shown before Open.
+   */
+  async changePlan(
+    p: Principal,
+    id: string,
+    input: z.infer<typeof shareChangeBody>,
+    ifMatch?: string,
+  ): Promise<ShareChangePlan> {
+    await this.changeableLink(p, id, input);
+    return withPrincipal(this.db, p, async (trx) => {
+      const row = await this.changing(trx, p, id, ifMatch, false);
+      return { widens: (await this.planChange(trx, row, input)).widens };
+    });
+  }
+
+  /** The link a change is made to, as it is now: held, when it is about to be changed. */
+  private async changing(
+    trx: Db,
+    p: Principal,
+    id: string,
+    ifMatch: string | undefined,
+    hold: boolean,
+  ) {
+    const query = trx
+      .selectFrom('share_link')
+      .leftJoin('document', 'document.id', 'share_link.document_id')
+      .select([
+        'share_link.id',
+        'share_link.document_id',
+        'share_link.collection_id',
+        'share_link.emergency_member_id',
+        'share_link.follow_collection',
+        'share_link.flow',
+        'share_link.created_by',
+        'share_link.created_at',
+        'share_link.expires_at',
+        'share_link.revoked_at',
+        'share_link.attempts',
+        'share_link.paused_at',
+        'share_link.open_count',
+        'share_link.max_opens',
+        'share_link.downloads_used',
+        'share_link.max_downloads',
+        'share_link.permission',
+        'share_link.pin_hash',
+        'share_link.secret_kind',
+        'share_link.recipient_label',
+        'share_link.show_title',
+        'share_link.version',
+        'share_link.secret_version',
+        'share_link.link_copy_sealed',
+        'document.type_key',
+      ])
+      .select(sensitiveSql('document').as('doc_sensitive'))
+      .where('share_link.id', '=', id)
+      // An owner changes anybody's (16 Nov 2026); anybody else their own.
+      .$call((q) => (p.role === 'owner' ? q : q.where('share_link.created_by', '=', p.accountId)));
+    const row = await (hold ? query.forUpdate('share_link') : query).executeTakeFirst();
+    if (!row) throw notFound('That link');
+    if (ifMatch !== undefined && !versionMatches(ifMatch, row.version)) {
+      throw changedElsewhere('link', row.version);
+    }
+    if (ENDED.includes(stateOf(row)) || usedUp(row)) throw linkEnded();
+    return row;
+  }
+
+  /**
+   * A change, read against the link as it is: what it sets, which
+   * properties it changes, and whether it reaches further. What cannot be
+   * is refused here, in words.
+   */
+  private async planChange(
+    trx: Db,
+    row: Awaited<ReturnType<ShareService['changing']>>,
+    input: z.infer<typeof shareChangeBody>,
+  ) {
+    const set: {
+      recipient_label?: string | null;
+      expires_at?: Date;
+      permission?: SharePermission;
+      max_opens?: number | null;
+      max_downloads?: number | null;
+      show_title?: boolean | null;
+    } = {};
+    const changed: string[] = [];
+    let widens = false;
+    const emergency = row.emergency_member_id !== null;
+
+    if (input.recipient_label !== undefined) {
+      const label = input.recipient_label?.trim() || null;
+      if (label !== row.recipient_label) {
+        set.recipient_label = label;
+        changed.push('recipient_label');
+      }
+    }
+
+    if (input.expires_at !== undefined) {
+      const asked = new Date(input.expires_at).getTime();
+      const latest = this.latestEnd(row).getTime();
+      const now = row.expires_at.getTime();
+      // An earlier end is always allowed, even for a link whose end is past
+      // a longest lowered since it was made; a later one never past it.
+      // A client's clock a few minutes ahead is cut to the longest.
+      let end = asked;
+      // The end it has, sent back unchanged, is no change (even past a
+      // longest lowered since).
+      if (asked > latest && asked > now) {
+        if (asked > latest + SHARE_END_GRACE_MINUTES * 60_000) {
+          throw expiryRefused(
+            emergency
+              ? `A link to emergency information lasts ${EMERGENCY_LINK_MAX_HOURS} hours at most from when it was made.`
+              : row.follow_collection
+                ? `A link that keeps up with its collection lasts ${FOLLOW_MAX_DAYS} days at most from when it was made.`
+                : `A link can last ${this.maxDays} days at most from when it was made.`,
+          );
+        }
+        end = Math.max(latest, Math.min(asked, now));
+      }
+      // Compared once cut: an end that comes to the same changes nothing.
+      if (end !== now) {
+        // At least five minutes ahead.
+        const problem = shareEndProblem(new Date(end), { maxDays: 36_500 });
+        if (problem) throw expiryRefused(problem);
+        set.expires_at = new Date(end);
+        changed.push('expires_at');
+        if (end > now) widens = true;
+      }
+    }
+
+    const permission = input.permission ?? row.permission;
+    if (permission !== row.permission) {
+      if (emergency) {
+        throw new ApiError(
+          422,
+          'validation_failed',
+          'A link to emergency information is to view, always.',
+        );
+      }
+      if (permission === 'download' && row.type_key === NOTE_KIND) {
+        throw new ApiError(
+          422,
+          'note_read_on_the_page',
+          'A note is shared to be read on the page: it has no file to download.',
+        );
+      }
+      if (permission === 'view') await this.viewable(trx, row);
+      set.permission = permission;
+      changed.push('permission');
+      if (permission === 'download') widens = true;
+    }
+
+    if (input.max_opens !== undefined && input.max_opens !== row.max_opens) {
+      if (input.max_opens !== null && input.max_opens < row.open_count) {
+        throw new ApiError(
+          422,
+          'validation_failed',
+          `That link has been opened ${row.open_count} times already: choose ${row.open_count} or more, or no limit.`,
+          { detail: 'max_opens' },
+        );
+      }
+      set.max_opens = input.max_opens;
+      changed.push('max_opens');
+      if (limitWidens(row.max_opens, input.max_opens)) widens = true;
+    }
+
+    // A link to view has nothing to download: switched to view, its limit goes.
+    if (permission === 'view' && input.max_downloads != null) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'A link to view has nothing to download: leave out max_downloads.',
+      );
+    }
+    const downloads =
+      permission === 'view'
+        ? null
+        : input.max_downloads !== undefined
+          ? input.max_downloads
+          : row.max_downloads;
+    if (downloads !== row.max_downloads) {
+      if (downloads !== null && downloads < row.downloads_used) {
+        throw new ApiError(
+          422,
+          'validation_failed',
+          `That link has been downloaded from ${row.downloads_used} times already: choose ${row.downloads_used} or more, or no limit.`,
+          { detail: 'max_downloads' },
+        );
+      }
+      set.max_downloads = downloads;
+      changed.push('max_downloads');
+      if (permission === 'download' && limitWidens(row.max_downloads, downloads)) widens = true;
+    }
+
+    // Compared with what its page shows now, the document's sensitivity said.
+    if (input.show_title !== undefined && input.show_title !== shownTitle(row)) {
+      // A collection's link unticked goes back to how it was made unticked
+      // (null: each sensitive title hidden, the rest shown), never false,
+      // which would hide every title (share_link_untitled).
+      set.show_title =
+        row.document_id === null && !emergency && !input.show_title ? null : input.show_title;
+      changed.push('show_title');
+      // Its title on the page before Open says more than it did.
+      if (input.show_title) widens = true;
+    }
+
+    if (input.password !== undefined && input.secret !== 'password') {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'A password typed goes with secret: "password".',
+        { detail: 'password' },
+      );
+    }
+    // Taking away what is not there changes nothing.
+    const secret = input.secret === 'none' && row.pin_hash === null ? undefined : input.secret;
+    if (secret !== undefined) {
+      changed.push('secret');
+      const after =
+        secret === 'none'
+          ? STRENGTH.none
+          : secret === 'pin'
+            ? STRENGTH.pin
+            : input.password !== undefined
+              ? STRENGTH.password
+              : STRENGTH.generated;
+      if (after < secretStrength(row)) widens = true;
+    }
+    return { set, changed, widens, secret };
+  }
+
+  /**
+   * What a link switched to view must be able to show (0.9.0, LK), as making
+   * one to view asks: a document's newest file one the vault can draw, and
+   * there; for a collection's, each document it gives, a note aside.
+   */
+  private async viewable(trx: Db, row: { id: string; document_id: string | null }) {
+    const given = await sql<{
+      title: string | null;
+      type_key: string;
+      mime: string | null;
+      file_removed_at: Date | null;
+    }>`
+      select d.title, d.type_key, v.mime, v.file_removed_at
+        from document d
+        left join lateral (select mime, file_removed_at from document_version
+                            where document_id = d.id order by version_no desc limit 1) v on true
+       where d.deleted_at is null
+         and (d.id = ${row.document_id}::uuid
+              or d.id in (select i.document_id from share_link_item i
+                           where i.share_id = ${row.id}::uuid
+                             and i.kind in ('ticked', 'followed')))`.execute(trx);
+    const removed = given.rows.find((d) => d.type_key !== NOTE_KIND && d.file_removed_at !== null);
+    if (removed) {
+      throw new ApiError(
+        422,
+        'file_removed',
+        `The file on “${removed.title ?? 'a document'}” was removed for good, so it cannot be shown to view.`,
+      );
+    }
+    const unviewable = given.rows.find(
+      (d) => d.type_key !== NOTE_KIND && (d.mime === null || !canShareToView(d.mime)),
+    );
+    if (unviewable) {
+      throw new ApiError(
+        422,
+        'view_not_possible',
+        row.document_id !== null
+          ? 'Word and Excel files can only be shared to download: the vault cannot draw their pages.'
+          : `Word and Excel files can only be shared to download, and “${unviewable.title ?? 'a document'}” is one. Keep it to download, or make a new link without it.`,
+      );
+    }
+  }
+
+  /**
+   * PATCH /shares/{id} (0.9.0, LK): the change made, with the link held. A
+   * new PIN or password replaces the old one — in the sealed copy too, so
+   * showing it again shows the new one — and every page opened with the old
+   * one closes. Narrowing takes hold for a page open now as well: each of
+   * its requests asks the link again. `mayWiden`: the route has asked who
+   * is asking, or asks nobody; a change that has come to reach further since
+   * the route asked is refused, to be asked again. Written down as
+   * `share.changed`, with what changed and never a PIN or a password.
+   */
+  async change(
+    p: Principal,
+    id: string,
+    input: z.infer<typeof shareChangeBody>,
+    ifMatch: string | undefined,
+    meta: RequestMeta,
+    mayWiden: boolean,
+    /** Said of a copy that would not open, never what is in it. */
+    warn: (message: string, extra: Record<string, unknown>) => void = () => undefined,
+  ): Promise<ChangedShare> {
+    await this.changeableLink(p, id, input);
+    const pin = input.secret === 'pin' ? String(randomInt(0, 10000)).padStart(4, '0') : null;
+    const password =
+      input.secret === 'password' && input.password === undefined ? madeUpPassword() : null;
+    const typed = input.secret === 'password' ? (input.password ?? null) : null;
+    const secretHash = pin
+      ? await argon2.hash(pin, ARGON2)
+      : password
+        ? await argon2.hash(canonicalMadeUp(password), ARGON2)
+        : typed !== null
+          ? await argon2.hash(typed, ARGON2)
+          : null;
+    const done = await withPrincipal(this.db, p, async (trx) => {
+      const row = await this.changing(trx, p, id, ifMatch, true);
+      const plan = await this.planChange(trx, row, input);
+      if (plan.widens && !mayWiden) throw changedElsewhere('link');
+      if (plan.changed.length === 0) return { row, plan };
+      const secretKind: SecretKind | null =
+        plan.secret === undefined || plan.secret === 'none'
+          ? null
+          : pin
+            ? 'pin'
+            : password
+              ? 'generated'
+              : 'password';
+      // The copy kept as it was made, with the new PIN or made-up password
+      // (a typed one is never kept): only where there is one (0103). One
+      // that will not open is let go — the link is then shown once, as one
+      // made before copies were — rather than the change refused.
+      let copy: Buffer | null | undefined;
+      if (plan.secret !== undefined && row.link_copy_sealed && this.copyKey) {
+        try {
+          const kept = openShareLinkCopy(this.copyKey, row.link_copy_sealed, p.householdId, id);
+          copy = this.copyOf(p.householdId, id, { token: kept.token, pin, password });
+        } catch {
+          warn('a share link’s kept copy did not open, and was let go', { share_id: id });
+          copy = null;
+        }
+      }
+      const updated = await trx
+        .updateTable('share_link')
+        .set({
+          ...plan.set,
+          ...(plan.secret !== undefined
+            ? {
+                pin_hash: plan.secret === 'none' ? null : secretHash,
+                secret_kind: secretKind,
+                // Every session opened with the old one is refused from now (0103).
+                secret_version: row.secret_version + 1,
+                ...(copy !== undefined ? { link_copy_sealed: copy } : {}),
+              }
+            : {}),
+          version: row.version + 1,
+        })
+        .where('id', '=', id)
+        .where('version', '=', row.version)
+        .executeTakeFirst();
+      // Held for update above, so it cannot have moved on; said so if it has.
+      if (updated.numUpdatedRows === 0n) throw changedElsewhere('link');
+      // The pages opened with the old PIN or password close: they were
+      // opened with what no longer opens it. One in use this moment is
+      // passed over here, and refused at its next request (secret_version).
+      if (plan.secret !== undefined) await endSessions(trx, [id]);
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'share.changed',
+        ...objectOf(row),
+        detail: {
+          share_id: id,
+          changed: plan.changed,
+          ...(plan.widens ? { reaches_further: true } : {}),
+          // An owner's change to somebody else's link: whose it is.
+          ...(row.created_by !== p.accountId ? { made_by: row.created_by } : {}),
+          ...('recipient_label' in plan.set ? { recipient_label: plan.set.recipient_label } : {}),
+          ...(plan.set.expires_at ? { expires_at: plan.set.expires_at.toISOString() } : {}),
+          ...(plan.set.permission ? { permission: plan.set.permission } : {}),
+          ...('max_opens' in plan.set ? { max_opens: plan.set.max_opens } : {}),
+          ...('max_downloads' in plan.set ? { max_downloads: plan.set.max_downloads } : {}),
+          ...('show_title' in plan.set ? { show_title: plan.set.show_title } : {}),
+          // What protects it now, never the PIN or the password.
+          ...(plan.secret !== undefined
+            ? {
+                protection:
+                  secretKind === null ? 'none' : secretKind === 'pin' ? 'pin' : 'password',
+              }
+            : {}),
+        },
+        ip: meta.ip,
+      });
+      return { row, plan };
+    });
+    // Pages to view: drawn now for a link switched to view, and drawn again
+    // with whom it is for across each for one whose label changed.
+    const { row, plan } = done;
+    // Switched to download, its pages go: the worker removes them now.
+    if (plan.set.permission === 'download') {
+      await this.enqueue(SHARE_PAGES_PRUNE_JOB, {
+        household_id: p.householdId,
+        share_id: id,
+      }).catch(() => undefined);
+    }
+    const toView = plan.set.permission === 'view';
+    const relabelled =
+      'recipient_label' in plan.set && (plan.set.permission ?? row.permission) === 'view';
+    if ((toView || relabelled) && row.emergency_member_id === null && row.type_key !== NOTE_KIND) {
+      for (const v of await this.linkVersions(p.householdId, id)) {
+        await this.drawPages(p.householdId, id, v.id, relabelled && !toView);
+      }
+    }
+    const share = (await this.viewOf(p, id)) as LinkView;
+    return {
+      share: viewOnly(share),
+      changed: plan.changed,
+      ...(pin ? { pin } : {}),
+      ...(password ? { password } : {}),
     };
   }
 
@@ -3555,6 +4164,9 @@ export class ShareService {
           cookie_hash: hashToken(cookie),
           device_hash: deviceHash,
           verified_by: isRight(tried) ? tried.right : null,
+          // The secret version of the row whose PIN or password was checked
+          // (0.9.0, LK): a change since ends this session.
+          secret_version: link.secret_version,
           created_at: new Date(now),
           last_seen_at: new Date(now),
           expires_at: expiresAt,
@@ -4223,7 +4835,7 @@ export class ShareService {
     const outcome = await withScope(this.db, scope, async (trx) => {
       const session = await trx
         .selectFrom('share_session')
-        .select(['id', 'share_id', 'expires_at', 'last_seen_at', 'device_hash'])
+        .select(['id', 'share_id', 'expires_at', 'last_seen_at', 'device_hash', 'secret_version'])
         .where('cookie_hash', '=', cookieHash)
         .executeTakeFirst();
       // Found a moment ago, and gone now: removed as its link ended
@@ -4253,6 +4865,10 @@ export class ShareService {
         if (err instanceof ApiError && err.code === 'link_not_valid') return end('link');
         throw err;
       }
+      // Opened with a PIN or password replaced or taken away since (0.9.0,
+      // LK): ended, however it escaped the change's removal of the sessions
+      // (one in use at that moment is passed over, never waited on).
+      if (session.secret_version !== link.secret_version) return end('session');
       if (link.this_device_only) {
         const bound = session.device_hash ?? link.device_hash;
         if (!bound || boundCookie(link.id, bound, devices) === null) {
@@ -4292,9 +4908,16 @@ export class ShareService {
         if (!(await this.stillLive(trx, session.share_id))) return end('link');
         throw err;
       }
-      if (!(await this.stillLive(trx, session.share_id))) {
+      const now2 = await this.secretNow(trx, session.share_id);
+      if (now2 === null) {
         await sql`rollback to savepoint fdv_in_session`.execute(trx);
         return end('link');
+      }
+      // Its PIN or password replaced as this was answered (0.9.0, LK):
+      // undone, and the session ended.
+      if (now2 !== session.secret_version) {
+        await sql`rollback to savepoint fdv_in_session`.execute(trx);
+        return end('session');
       }
       await sql`release savepoint fdv_in_session`.execute(trx);
       return { value } as const;
@@ -4770,12 +5393,20 @@ export class ShareService {
    * link its own row only while it may be used (app_live_share, 0042).
    */
   private async stillLive(trx: Db, id: string): Promise<boolean> {
+    return (await this.secretNow(trx, id)) !== null;
+  }
+
+  /**
+   * The asking link's secret version now (0.9.0, LK), asked afresh; null
+   * once it no longer works (the database gives it no row of its own).
+   */
+  private async secretNow(trx: Db, id: string): Promise<number | null> {
     const row = await trx
       .selectFrom('share_link')
-      .select('id')
+      .select('secret_version')
       .where('id', '=', id)
       .executeTakeFirst();
-    return row !== undefined;
+    return row?.secret_version ?? null;
   }
 
   // ------------------------------------------------------------- helpers

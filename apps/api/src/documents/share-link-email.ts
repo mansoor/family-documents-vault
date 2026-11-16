@@ -30,6 +30,66 @@ export interface LinkEmailInput {
   code: 'email' | 'sms' | null;
 }
 
+/**
+ * The email that carries a request to send documents to its recipient
+ * (0.9.0, LK; the owner's decision of 16 Nov 2026), as a share link's does:
+ * whose vault it is from and who asked, that they are asked to send some
+ * documents — never what (the title, the message and the things to send
+ * wait behind Open) — the asker's own short message if they wrote one, the
+ * link, when it stops working, that a password comes separately, and why
+ * they got it. Never the password or a code.
+ */
+export interface RequestEmailInput {
+  householdName: string;
+  askedBy: string | null;
+  link: string;
+  expiresAt: Date;
+  timezone: string;
+  /** The asker's own words, already made plain (shareLinkMessage). */
+  message: string | null;
+  /** It asks for a password: said, never the password. */
+  password: boolean;
+  /** It asks for an emailed code: said, never the code. */
+  code: boolean;
+}
+
+export function requestEmail(e: RequestEmailInput): { subject: string; text: string } {
+  const household = plainName(e.householdName);
+  const who = plainName(e.askedBy);
+  const subject = who
+    ? `${who} has asked you to send some documents`
+    : 'You have been asked to send some documents';
+  const lines = [
+    `${who ?? 'Somebody'}${household ? ` from ${household}` : ''} has asked you to send them some documents, through their family's document vault.`,
+    '',
+  ];
+  if (e.message) {
+    lines.push(`${who ?? 'They'} wrote:`, ...e.message.split('\n').map((l) => `  ${l}`), '');
+  }
+  lines.push(
+    'Open it here to see what they ask for, and send it:',
+    e.link,
+    '',
+    `The link stops working on ${shareEndWords(e.expiresAt, e.timezone)}.`,
+  );
+  if (e.password) {
+    lines.push('', 'It asks for a password. The person who asked will give it to you separately.');
+  }
+  if (e.code) {
+    lines.push(
+      'It also asks for a code, which is emailed on its own to the address the person who asked chose, when the link is opened.',
+    );
+  }
+  lines.push(
+    '',
+    '--',
+    `You are getting this because ${who ?? 'somebody'}${household ? ` at ${household}` : ''} typed your address to send you this link. ` +
+      'It lets you send files, and shows you nothing of theirs. If you were not expecting it, you can ignore this email.',
+    '',
+  );
+  return { subject, text: lines.join('\n') };
+}
+
 export function linkEmail(e: LinkEmailInput): { subject: string; text: string } {
   // Names are anybody's typing: said plainly, with no web address in them
   // and nothing hidden or turned round (plainName, the review of

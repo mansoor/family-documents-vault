@@ -36,6 +36,7 @@ import {
   SHARE_DEVICE_COOKIE,
   SHARE_DEVICE_MAX_AGE_S,
   shareBody,
+  shareChangeBody,
   shareEmailBody,
   unlockBody,
   type ShareService,
@@ -909,6 +910,40 @@ export function registerDocuments(
       const shown = await shares.reveal(principal(req), id, metaOf(req));
       reply.header('cache-control', 'no-store');
       return shown;
+    },
+  );
+
+  /**
+   * A link's properties changed by whoever made it (0.9.0, LK; the owner's
+   * decision of 15 Nov 2026). Whose it is, that it still works and that the
+   * change is one it may make first; then, only for a change that makes it
+   * reach further, that it's them (`change_share`). Answered no-store: a new
+   * PIN or a made-up password is in it, once.
+   */
+  // As tight as showing it again (the LK review): a new PIN or password is in its answer.
+  const changeLimit = { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } };
+  app.patch<{ Params: { id: string } }>(
+    '/api/v1/shares/:id',
+    { ...auth, ...changeLimit },
+    async (req, reply) => {
+      const id = parse(idParam, req.params).id;
+      const body = parse(shareChangeBody, req.body ?? {});
+      const ifMatch =
+        typeof req.headers['if-match'] === 'string' ? req.headers['if-match'] : undefined;
+      const plan = await shares.changePlan(principal(req), id, body, ifMatch);
+      if (stepUp && plan.widens) await stepUp.require(principal(req), 'change_share');
+      const changed = await shares.change(
+        principal(req),
+        id,
+        body,
+        ifMatch,
+        metaOf(req),
+        plan.widens || !stepUp,
+        (message, extra) => req.log.warn(extra, message),
+      );
+      reply.header('cache-control', 'no-store');
+      reply.header('etag', `"${changed.share.version}"`);
+      return changed;
     },
   );
 

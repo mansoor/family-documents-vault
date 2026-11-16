@@ -152,6 +152,88 @@ export interface UploadRequestView {
   closed_reason: 'submitted' | 'requester_lost_right' | null;
   /** Files sent in and waiting, or decided (5.23). */
   files_received: number;
+  /**
+   * The reader asked for it, it still works or is only paused, and the
+   * vault kept a sealed copy as it was made (0.9.0, LK,
+   * `features.link_changes`): `POST /upload-requests/{id}/reveal` shows the
+   * link again. False for a request made before, which stays shown once,
+   * and for anybody else's. Absent from older vaults.
+   */
+  revealable?: boolean;
+  /**
+   * The reader asked for it and it still works, or is only paused (0.9.0,
+   * LK): `PATCH /upload-requests/{id}` changes its properties. Absent from
+   * older vaults.
+   */
+  changeable?: boolean;
+  /**
+   * The latest it may be changed to end (0.9.0, LK): `limits.share_max_days`
+   * from when it was made. Absent from older vaults.
+   */
+  latest_end?: string;
+  /** Moved on by each change (0.9.0, LK): `If-Match: "<version>"`. Absent from older vaults. */
+  version?: number;
+  /**
+   * The reader asked for it, it opens now, a copy was kept and the vault can
+   * send mail (0.9.0, LK, `features.upload_request_email`): `POST
+   * /upload-requests/{id}/email` emails its link. Absent from older vaults.
+   */
+  emailable?: boolean;
+  /** Where the reader last had the vault email it, masked; null for none. Absent from older vaults. */
+  emailed_to?: string | null;
+}
+
+/**
+ * `POST /upload-requests/{id}/reveal` (0.9.0, LK): a request's link shown
+ * again to whoever asked, after confirming it's them (`403
+ * step_up_required`, action `reveal_share`) — the link, and the password
+ * the vault made up, if it made one (a typed one is never kept). `404
+ * not_found` for anybody else's; `409 request_not_revealable` for one made
+ * before the vault kept copies; `410 request_ended` for one that has ended
+ * or been used up. Never cached.
+ */
+export interface RevealedUploadRequest {
+  link_token: string;
+  link_url: string | null;
+  password?: string;
+}
+
+/**
+ * `PATCH /upload-requests/{id}` (0.9.0, LK; the owner's decision of 15 Nov
+ * 2026): a request's properties changed by whoever asked, while it works or
+ * is only paused — only what is sent changes. Never what it asks for (its
+ * title, message and things to send), who looks at what comes in, its
+ * emailed code nor "this browser only".
+ *
+ * `secret`: `none` takes the password away; `password` a new one — the
+ * vault's, or the one typed in `password` — and every page opened with the
+ * old one closes. Making it reach further — a later end, the password taken
+ * away, more visits, files or room, Word and Excel taken too, or no longer
+ * closing once sent — asks to confirm it's you (`403 step_up_required`,
+ * action `change_share`). `If-Match: "<version>"` (optional): `409
+ * conflict`. `404 not_found` for anybody else's; `410 request_ended` for
+ * one that has ended. Written down as `upload_request.changed`.
+ */
+export interface UploadRequestChangeInput {
+  /** What it asks for, in words (16 Nov 2026): as making one takes them. */
+  title?: string;
+  message?: string | null;
+  recipient_label?: string | null;
+  expires_at?: string;
+  secret?: 'none' | 'password';
+  password?: string;
+  max_visits?: number | null;
+  max_files?: number;
+  max_total_bytes?: number;
+  accept_types?: UploadAcceptTypes;
+  close_after_submit?: boolean;
+}
+
+/** What `PATCH /upload-requests/{id}` answers: the request now, and a made-up password, once. */
+export interface ChangedUploadRequest {
+  request: UploadRequestView;
+  changed: string[];
+  password?: string;
 }
 
 /** What making a request answers: the link and the password exist here and nowhere else. */

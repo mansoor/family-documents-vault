@@ -504,6 +504,10 @@ export const SHARE_LINK_EMAIL_UNAVAILABLE =
 export const SHARE_LINK_EMAIL_NOTE =
   'The vault emails the link, who it is from and when it stops working — never what it is to, and never its PIN or password. Tell them those another way.';
 
+/** The same, beside a request's "Email the link" (0.9.0, LK; 16 Nov 2026). */
+export const UPLOAD_REQUEST_EMAIL_NOTE =
+  'The vault emails the link, who it is from and when it stops working — never what you ask for, and never its password. Tell them the password another way.';
+
 /**
  * A sharer's short message as it goes in the email, or why it cannot:
  * plain text, its lines trimmed, no control characters, at most

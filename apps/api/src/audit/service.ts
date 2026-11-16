@@ -306,6 +306,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // address masked (never the link): to whoever may see what it is to, as
   // its other lines are.
   ['share_link.emailed', BY_TYPE],
+  // 0.9.0 (LK): a link's properties changed by whoever made it, never its
+  // PIN or password: to whoever may see what it is to, as its other lines are.
+  ['share.changed', BY_TYPE],
   // 5.19: a document put in a collection whose link keeps up with it, and
   // so sent outside the family: a line about the document, in the collection,
   // on the link — for those who may know of the link.
@@ -496,6 +499,11 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['upload_request.submitted', BY_TYPE],
   ['upload_request.resumed', BY_TYPE],
   ['upload_request.closed', BY_TYPE],
+  // 0.9.0 (LK): a request shown again to whoever asked, and changed by them.
+  ['upload_request.revealed', BY_TYPE],
+  ['upload_request.changed', BY_TYPE],
+  // 16 Nov 2026: a request emailed by the vault, the address masked.
+  ['upload_request.emailed', BY_TYPE],
   // what came in, looked at (5.23): a file's lines name its request in
   // their detail, and go to the request's reviewers; what the vault did to
   // a request's files, its purge and its move to the owners, is the

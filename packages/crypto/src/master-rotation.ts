@@ -5,6 +5,7 @@ import { mailboxPasswordAad } from './mailbox-password.js';
 import { smsPasswordAad } from './sms-password.js';
 import { aiReaderKeyAad } from './ai-reader-key.js';
 import { shareLinkCopyAad } from './share-link-copy.js';
+import { uploadRequestCopyAad } from './upload-request-copy.js';
 import { binding, type ScopeKind } from './scope-keys.js';
 import { unwrapKey, wrapKey } from './wrap.js';
 
@@ -110,6 +111,20 @@ export const MASTER_SEALED = [
     bind: ['household_id'],
     aad: (id: string, row: Readonly<Record<string, string>>) =>
       shareLinkCopyAad(row.household_id ?? '', id),
+  },
+  // packages/crypto/src/upload-request-copy.ts (sealUploadRequestCopy, used
+  // by the API's UploadRequestService): what whoever asked for documents was
+  // handed as the request was made, kept to show them again (0.9.0, LK, 0103)
+  {
+    name: 'uploadRequestCopies',
+    purpose: 'upload-request-copies',
+    table: 'upload_request',
+    key: 'id',
+    column: 'link_copy_sealed',
+    // Its household is bound in with the request.
+    bind: ['household_id'],
+    aad: (id: string, row: Readonly<Record<string, string>>) =>
+      uploadRequestCopyAad(row.household_id ?? '', id),
   },
   // packages/crypto/src/ai-reader-key.ts (sealAiReaderKey, used by the API's
   // AiReaderService; opened by the worker alone): the household's AI reader's
@@ -455,6 +470,7 @@ async function rekey(
     mailInPasswords: 0,
     smsPasswords: 0,
     shareLinkCopies: 0,
+    uploadRequestCopies: 0,
     aiReaderKeys: 0,
   };
   for (const s of MASTER_SEALED) {

@@ -4,6 +4,7 @@ export * from './mailbox-password.js';
 export * from './sms-password.js';
 export * from './ai-reader-key.js';
 export * from './share-link-copy.js';
+export * from './upload-request-copy.js';
 export * from './wrap.js';
 export * from './stream.js';
 export * from './scope-keys.js';

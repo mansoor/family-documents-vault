@@ -231,6 +231,12 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       emergency_info: true,
       // 0.9.0 (DL): several documents as one ZIP, signed in and by a link.
       zip_download: true,
+      // 0.9.0 (LK): links and requests changed after they are made, and
+      // requests shown again.
+      link_changes: true,
+      // 0.9.0 (LK, 16 Nov 2026): a request's link emailed by the vault, as
+      // a share link's is: with the operator's mail server alone.
+      upload_request_email: config.operatorMail === true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

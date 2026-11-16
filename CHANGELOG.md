@@ -6,6 +6,24 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.49] - 2026-11-16 — change a link after it's made, and see a request's link again
+
+### Added
+
+- **Change a link after you've made it.** In **Sharing**, on a document's Share card, and in a person's links for clinicians, a link you made has **Change**. It opens the form you made it with, filled in: who it's for, when it stops, View or View and download, how many times it can be opened, its PIN or password, and whether its page shows the title. Save, and it's the same link with the new settings. What it's to never changes, nor where its code is emailed or texted, nor "This browser only" — the form says so where it shows them: to change those, take it back and make a new one. A link that has ended, been taken back or been opened as often as it allows can't be changed: make a new one.
+- **Owners can change other people's links and requests.** An owner sees **Change** on any link or request they can see, and can change everything but its PIN or password, which stay with whoever made it (only they can see it again). The link stays theirs in Sharing, and the activity log says an owner changed a link somebody else made.
+- **A new PIN or password replaces the old one.** Choose **A new four-digit PIN** or **A new password** (made up for you, or typed), and the vault shows the new one once, with Copy; **Show the link** shows it again later. Anyone with the link open has to open it again with the new one.
+- **Change a request for documents.** In **Sharing**, a request you made has **Change**, which opens its form filled in: its title and message, who it's for, when it stops, its password, how many visits, files and megabytes, which kinds of file, and whether it closes once they press Finish. The things to send, who looks at what comes in, its emailed code and "This browser only" stay as they are.
+- **See a request's link again.** A request you made has **Show the link**, as a share link does: after confirming it's you, it shows the link and the password the vault made up, each with Copy. A request made before this update was shown only once — the vault didn't keep a copy — and says so: take it back and make a new one. (Migration 0103.)
+- **Email a request's link from the vault**, as you can a share link: from **Show the link**, or as you make the request, type their address and, if you like, a short message. The email says who is asking and when the link stops — never what you ask for, and never its password, which you tell them another way. Up to 3 emails a request, and 20 a person, in a day. It needs the mail server of whoever runs the vault.
+
+### Security
+
+- **Changes that let a link do more ask you to confirm it's you:** a later end, View to View and download, more opens or no limit, its PIN or password taken away or swapped for a weaker one, its title shown before it's opened; for a request, a later end, its password taken away, more visits, files or room, Word and Excel files too, or no longer closing once sent. Making a link or request do less asks nothing, and takes hold at once — even for a page already open.
+- **A new PIN or password closes every page opened with the old one** — even one in the middle of sending a file as you change it — at its very next step.
+- A link still can't outlast the longest it was allowed from when it was made: 90 days (or less, if whoever runs the vault set less), 30 days for a link that keeps up with its collection, 24 hours for a link to emergency information. Only whoever made a link or request can see it again, email it, or change its PIN or password; an owner can change the rest, and nobody else can change anything. Every change and every email is in the activity log, saying what changed and never a PIN, a password, a request's title or the link. A request's link is kept sealed under the vault's master key, as a share link's is, and moves with it when the key is rotated.
+- A collection's link switched to View is refused if it holds a Word or Excel file, as making one is; a link switched to download has its drawn pages removed.
+
 ## [0.9.0-dev.48] - 2026-11-16 — several documents in one download
 
 ### Added

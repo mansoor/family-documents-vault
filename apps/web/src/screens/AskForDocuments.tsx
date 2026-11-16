@@ -16,19 +16,34 @@ import {
   UPLOAD_REQUEST_MESSAGE_MAX,
   UPLOAD_REQUEST_TITLE_MAX,
   uploadRequestTypesWords,
+  zonedParts,
   zonedTime,
+  type ChangedUploadRequest,
   type CreatedUploadRequest,
   type UploadAcceptTypes,
+  type UploadRequestChangeInput,
   type UploadRequestInput,
+  type UploadRequestView,
   type UploadReviewBy,
 } from '@fdv/shared';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { Button, Check, ErrorNote, Field, Select, TextArea, TopBar } from '../ui.js';
-import { DEVICE_ONLY_NOTE, EndPicker, insecureLink, PasswordChoice } from './Share.js';
+import {
+  DEVICE_ONLY_NOTE,
+  EndPicker,
+  insecureLink,
+  PasswordChoice,
+  SECRET_KEPT,
+  SecretChoice,
+  secretChoiceProblem,
+  type SecretChoiceValue,
+} from './Share.js';
+import { NewSecret } from './ChangeLink.js';
+import { RequestEmail, requestTarget } from './Sharing.js';
 import { endWords, familyZoneNow } from '../family-time.js';
 
 /**
@@ -541,35 +556,7 @@ export function AskForDocumentsScreen() {
               label="This browser only"
               note={DEVICE_ONLY_NOTE}
             />
-            <Check
-              id="ask-limit-visits"
-              checked={value.limitVisits}
-              onChange={(limitVisits) => set({ limitVisits })}
-              label="Only so many visits"
-              note="Each press of Open is a visit. Reloading the page it opens is not."
-            />
-            {value.limitVisits && (
-              <div className="field share-indent">
-                <label htmlFor="ask-visits">Visits, at most</label>
-                <input
-                  id="ask-visits"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="off"
-                  maxLength={4}
-                  value={value.visits}
-                  onChange={(e) => set({ visits: e.target.value })}
-                  aria-invalid={read.visitsProblem ? true : undefined}
-                  aria-describedby={read.visitsProblem ? 'ask-visits-note' : undefined}
-                  style={{ width: 96 }}
-                />
-                {read.visitsProblem && (
-                  <span id="ask-visits-note" className="field-error" role="alert">
-                    {read.visitsProblem}
-                  </span>
-                )}
-              </div>
-            )}
+            <AskVisits value={value} set={set} read={read} />
           </div>
         </section>
 
@@ -577,85 +564,7 @@ export function AskForDocumentsScreen() {
           <h2 id="ask-takes-h" style={{ fontSize: 18 }}>
             What it takes
           </h2>
-          <div className="ask-limits">
-            <div className="field">
-              <label htmlFor="ask-max-files">Files, at most</label>
-              <input
-                id="ask-max-files"
-                type="text"
-                inputMode="numeric"
-                autoComplete="off"
-                maxLength={2}
-                value={value.maxFiles}
-                onChange={(e) => set({ maxFiles: e.target.value })}
-                aria-invalid={read.filesProblem ? true : undefined}
-                aria-describedby="ask-max-files-note"
-              />
-              <span
-                id="ask-max-files-note"
-                className={read.filesProblem ? 'field-error' : 'muted'}
-                role={read.filesProblem ? 'alert' : undefined}
-              >
-                {read.filesProblem ?? `Up to ${UPLOAD_REQUEST_MAX_FILES}.`}
-              </span>
-            </div>
-            <div className="field">
-              <label htmlFor="ask-max-mb">In all (MB)</label>
-              <input
-                id="ask-max-mb"
-                type="text"
-                inputMode="numeric"
-                autoComplete="off"
-                maxLength={3}
-                value={value.maxMegabytes}
-                onChange={(e) => set({ maxMegabytes: e.target.value })}
-                aria-invalid={read.sizeProblem ? true : undefined}
-                aria-describedby="ask-max-mb-note"
-              />
-              <span
-                id="ask-max-mb-note"
-                className={read.sizeProblem ? 'field-error' : 'muted'}
-                role={read.sizeProblem ? 'alert' : undefined}
-              >
-                {read.sizeProblem ?? `Up to ${MAX_MB} MB, all files together.`}
-              </span>
-            </div>
-          </div>
-          <div className="field" role="group" aria-labelledby="ask-accept-h">
-            <span id="ask-accept-h" className="field-label">
-              Kinds of file
-            </span>
-            <div className="pills">
-              {(
-                [
-                  ['standard', 'PDFs and photos'],
-                  ['office', 'Also Word and Excel'],
-                ] as const
-              ).map(([v, words]) => (
-                <button
-                  key={v}
-                  type="button"
-                  className={`pill${value.accept === v ? ' pill-on' : ''}`}
-                  aria-pressed={value.accept === v}
-                  onClick={() => set({ accept: v })}
-                >
-                  {words}
-                </button>
-              ))}
-            </div>
-            <span className="muted">
-              {value.accept === 'office'
-                ? 'Word and Excel files with macros, or that load anything from elsewhere, are refused. What a file is is decided from its contents, never its name.'
-                : 'What a file is is decided from its contents, never its name.'}
-            </span>
-          </div>
-          <Check
-            id="ask-close-after"
-            checked={value.closeAfter}
-            onChange={(closeAfter) => set({ closeAfter })}
-            label="Close it once they press Finish"
-            note="Then the link takes nothing more. Leave it open if they may send things in more than one go."
-          />
+          <AskTakes value={value} set={set} read={read} />
         </section>
 
         <section className="card stack" aria-labelledby="ask-review-h">
@@ -708,6 +617,448 @@ export function AskForDocumentsScreen() {
     </main>
   );
 }
+
+type AskRead = ReturnType<typeof readAsk>;
+
+/** Only so many visits (5.22): the box, and how many. A request's form and its Change's. */
+function AskVisits(props: {
+  value: AskValue;
+  set: (change: Partial<AskValue>) => void;
+  read: AskRead;
+}) {
+  const { value, set, read } = props;
+  return (
+    <>
+      <Check
+        id="ask-limit-visits"
+        checked={value.limitVisits}
+        onChange={(limitVisits) => set({ limitVisits })}
+        label="Only so many visits"
+        note="Each press of Open is a visit. Reloading the page it opens is not."
+      />
+      {value.limitVisits && (
+        <div className="field share-indent">
+          <label htmlFor="ask-visits">Visits, at most</label>
+          <input
+            id="ask-visits"
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={4}
+            value={value.visits}
+            onChange={(e) => set({ visits: e.target.value })}
+            aria-invalid={read.visitsProblem ? true : undefined}
+            aria-describedby={read.visitsProblem ? 'ask-visits-note' : undefined}
+            style={{ width: 96 }}
+          />
+          {read.visitsProblem && (
+            <span id="ask-visits-note" className="field-error" role="alert">
+              {read.visitsProblem}
+            </span>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** What a request takes (5.22): how many files, how much, what kinds, and closing once sent. */
+function AskTakes(props: {
+  value: AskValue;
+  set: (change: Partial<AskValue>) => void;
+  read: AskRead;
+}) {
+  const { value, set, read } = props;
+  return (
+    <>
+      <div className="ask-limits">
+        <div className="field">
+          <label htmlFor="ask-max-files">Files, at most</label>
+          <input
+            id="ask-max-files"
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={2}
+            value={value.maxFiles}
+            onChange={(e) => set({ maxFiles: e.target.value })}
+            aria-invalid={read.filesProblem ? true : undefined}
+            aria-describedby="ask-max-files-note"
+          />
+          <span
+            id="ask-max-files-note"
+            className={read.filesProblem ? 'field-error' : 'muted'}
+            role={read.filesProblem ? 'alert' : undefined}
+          >
+            {read.filesProblem ?? `Up to ${UPLOAD_REQUEST_MAX_FILES}.`}
+          </span>
+        </div>
+        <div className="field">
+          <label htmlFor="ask-max-mb">In all (MB)</label>
+          <input
+            id="ask-max-mb"
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={3}
+            value={value.maxMegabytes}
+            onChange={(e) => set({ maxMegabytes: e.target.value })}
+            aria-invalid={read.sizeProblem ? true : undefined}
+            aria-describedby="ask-max-mb-note"
+          />
+          <span
+            id="ask-max-mb-note"
+            className={read.sizeProblem ? 'field-error' : 'muted'}
+            role={read.sizeProblem ? 'alert' : undefined}
+          >
+            {read.sizeProblem ?? `Up to ${MAX_MB} MB, all files together.`}
+          </span>
+        </div>
+      </div>
+      <div className="field" role="group" aria-labelledby="ask-accept-h">
+        <span id="ask-accept-h" className="field-label">
+          Kinds of file
+        </span>
+        <div className="pills">
+          {(
+            [
+              ['standard', 'PDFs and photos'],
+              ['office', 'Also Word and Excel'],
+            ] as const
+          ).map(([v, words]) => (
+            <button
+              key={v}
+              type="button"
+              className={`pill${value.accept === v ? ' pill-on' : ''}`}
+              aria-pressed={value.accept === v}
+              onClick={() => set({ accept: v })}
+            >
+              {words}
+            </button>
+          ))}
+        </div>
+        <span className="muted">
+          {value.accept === 'office'
+            ? 'Word and Excel files with macros, or that load anything from elsewhere, are refused. What a file is is decided from its contents, never its name.'
+            : 'What a file is is decided from its contents, never its name.'}
+        </span>
+      </div>
+      <Check
+        id="ask-close-after"
+        checked={value.closeAfter}
+        onChange={(closeAfter) => set({ closeAfter })}
+        label="Close it once they press Finish"
+        note="Then the link takes nothing more. Leave it open if they may send things in more than one go."
+      />
+    </>
+  );
+}
+
+/**
+ * A request changed after it was made (0.9.0, LK; the owner's decision of 15
+ * Nov 2026), at /sharing/ask/{id}: the form it was made with, filled in as it
+ * is now, for whoever asked, while it works or is only paused. Whom it is
+ * for, when it stops, its password, its visits, what it takes and whether it
+ * closes once sent can change; what it asks for, who looks at what comes in,
+ * its emailed code and "this browser only" stay as they were made, and are
+ * said, not offered. Anything that lets it do more asks to confirm it's you.
+ */
+export function ChangeRequestScreen() {
+  const { id = '' } = useParams();
+  const { authVersion } = useApp();
+  const { data, error } = useLoad(
+    async (t) => {
+      const [requests, profile] = await Promise.all([
+        api.uploadRequests(t),
+        api.profile(t).catch(() => null),
+      ]);
+      return {
+        request: requests.items.find((r) => r.id === id) ?? null,
+        timezone: profile?.timezone ?? familyZoneNow(),
+      };
+    },
+    [authVersion, id],
+  );
+  if (!data) {
+    return (
+      <main className="page page-top has-nav">
+        <TopBar title="Change a request" back="/sharing" />
+        <ErrorNote message={error} />
+      </main>
+    );
+  }
+  if (!data.request || data.request.changeable !== true) {
+    return (
+      <main className="page page-top has-nav">
+        <TopBar title="Change a request" back="/sharing" />
+        <p className="lede">
+          That request can’t be changed: it has ended, or it isn’t one you made. Make a new one if
+          you need to.
+        </p>
+        <Link to="/sharing/ask" className="btn btn-primary">
+          Ask for documents
+        </Link>
+      </main>
+    );
+  }
+  return <ChangeRequestForm request={data.request} timezone={data.timezone} />;
+}
+
+function ChangeRequestForm(props: { request: UploadRequestView; timezone: string }) {
+  const { request: r, timezone } = props;
+  const { guarded } = useApp();
+  const navigate = useNavigate();
+  const [startEnd] = useState(() => {
+    const p = zonedParts(new Date(r.expires_at), timezone);
+    return { date: p.date, time: p.time };
+  });
+  const [startMb] = useState(() => String(Math.max(1, Math.round(r.max_total_bytes / MB))));
+  const [value, setValue] = useState<AskValue>(() => ({
+    ...START,
+    title: r.title,
+    message: r.message ?? '',
+    label: r.recipient_label ?? '',
+    end: startEnd,
+    limitVisits: r.max_visits !== null,
+    visits: r.max_visits !== null ? String(r.max_visits) : '3',
+    maxFiles: String(r.max_files),
+    maxMegabytes: startMb,
+    accept: r.accept_types,
+    reviewBy: r.review_by,
+    closeAfter: r.close_after_submit,
+  }));
+  const set = (change: Partial<AskValue>) => setValue((v) => ({ ...v, ...change }));
+  const [secret, setSecret] = useState<SecretChoiceValue>(SECRET_KEPT);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [tried, setTried] = useState(false);
+  const [newPassword, setNewPassword] = useState<ChangedUploadRequest | null>(null);
+
+  const now = new Date();
+  const latest = r.latest_end ? new Date(r.latest_end) : null;
+  const maxDays = latest ? Math.max(0, (latest.getTime() - now.getTime()) / 864e5) : 0;
+  const read = readAsk(value, { timezone, maxDays, emailCode: false, now });
+  const endTouched =
+    value.end !== null && (value.end.date !== startEnd.date || value.end.time !== startEnd.time);
+  const endProblem = !endTouched
+    ? null
+    : read.endProblem?.startsWith('A request can last') && latest
+      ? `It can last until ${endWords(latest, timezone)} at the latest: as long as a request may from when it was made.`
+      : read.endProblem;
+  // Exactly as typed, as making a request reads it.
+  const passwordProblem = secretChoiceProblem(secret, UPLOAD_PASSWORD_MIN, false);
+  const has = r.protection.includes('password') ? 'password' : null;
+
+  // Only what is changed.
+  const body: UploadRequestChangeInput = {};
+  if (!read.titleProblem && value.title.trim() !== r.title) body.title = value.title.trim();
+  const message = value.message.trim() || null;
+  if (message !== r.message) body.message = message;
+  const label = value.label.trim() || null;
+  if (label !== r.recipient_label) body.recipient_label = label;
+  if (endTouched && read.endAt) body.expires_at = read.endAt.toISOString();
+  const visits = value.limitVisits ? Number(value.visits.trim()) : null;
+  if (!read.visitsProblem && visits !== r.max_visits) body.max_visits = visits;
+  if (!read.filesProblem && Number(value.maxFiles.trim()) !== r.max_files) {
+    body.max_files = Number(value.maxFiles.trim());
+  }
+  if (!read.sizeProblem && value.maxMegabytes.trim() !== startMb) {
+    body.max_total_bytes = Math.min(
+      Number(value.maxMegabytes.trim()) * MB,
+      UPLOAD_REQUEST_MAX_BYTES,
+    );
+  }
+  if (value.accept !== r.accept_types) body.accept_types = value.accept;
+  if (value.closeAfter !== r.close_after_submit) body.close_after_submit = value.closeAfter;
+  if (secret.choice === 'none' && has) body.secret = 'none';
+  if (secret.choice === 'password') {
+    body.secret = 'password';
+    if (secret.mode === 'typed') body.password = secret.password;
+  }
+  const nothing = Object.keys(body).length === 0;
+  const problem =
+    read.titleProblem ??
+    endProblem ??
+    read.visitsProblem ??
+    read.filesProblem ??
+    read.sizeProblem ??
+    passwordProblem;
+  // Said of the request as it is now: its title may be what changed.
+  const back = (now: UploadRequestView = r) =>
+    void navigate('/sharing', {
+      replace: true,
+      state: { said: `${capital(requestTarget(now))} is changed.` },
+    });
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setTried(true);
+    if (nothing || problem) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const done = await guarded((t) => api.changeUploadRequest(t, r.id, body, r.version));
+      if (!done) return;
+      if (done.password) setNewPassword(done);
+      else back(done.request);
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (newPassword) {
+    return (
+      <main className="page page-top has-nav">
+        <TopBar title="Change a request" back="/sharing" />
+        <NewSecret
+          what="request"
+          pin={null}
+          password={newPassword.password ?? null}
+          showAgain={newPassword.request.revealable === true}
+          onDone={() => back(newPassword.request)}
+        />
+      </main>
+    );
+  }
+
+  // What else protects it, each staying as it was made (16 Nov 2026).
+  const fixed = [
+    ...(r.protection.includes('email_code')
+      ? [
+          `It emails a code to ${r.recipient_email ? maskEmail(r.recipient_email) : 'the address you chose'} when it is opened. To send the code somewhere else, take this request back and make a new one.`,
+        ]
+      : []),
+    ...(r.protection.includes('this_device')
+      ? [
+          'It opens only in the first browser that opened it. To let it open somewhere else, take this request back and make a new one.',
+        ]
+      : []),
+  ];
+  return (
+    <main className="page page-top has-nav">
+      <TopBar title="Change a request" back="/sharing" />
+      <p className="lede">
+        It stays the same link. Change what you like; anything that lets it do more asks you to
+        confirm it’s you.
+      </p>
+      <form className="stack ask-form" onSubmit={(e) => void submit(e)} noValidate>
+        <section className="card stack" aria-labelledby="ask-what-h">
+          <h2 id="ask-what-h" style={{ fontSize: 18 }}>
+            What you are asking for
+          </h2>
+          <Field
+            id="ask-title"
+            label="Title"
+            value={value.title}
+            maxLength={UPLOAD_REQUEST_TITLE_MAX}
+            requiredMark
+            invalid={tried && read.titleProblem !== null}
+            onChange={(title) => set({ title })}
+            note={
+              tried && read.titleProblem ? (
+                <span className="field-error">{read.titleProblem}</span>
+              ) : (
+                'They see it once they open the link.'
+              )
+            }
+          />
+          <TextArea
+            id="ask-message"
+            label="A message for them"
+            value={value.message}
+            maxLength={UPLOAD_REQUEST_MESSAGE_MAX}
+            onChange={(message) => set({ message })}
+            hint="If you like: what you need, and by when."
+          />
+          {r.items.length > 0 && (
+            <ul className="muted" aria-label="Things to send">
+              {r.items.map((i) => (
+                <li key={i.id}>{i.label}</li>
+              ))}
+            </ul>
+          )}
+          <p className="muted">
+            {r.review_by === 'me'
+              ? r.mine
+                ? 'Only you look at what comes in.'
+                : 'Only whoever asked looks at what comes in.'
+              : 'Any adult looks at what comes in.'}{' '}
+            The things to send, and who looks at what comes in, stay as they are. To change those,
+            take this request back and make a new one.
+          </p>
+        </section>
+
+        <section className="card stack" aria-labelledby="ask-who-h">
+          <h2 id="ask-who-h" style={{ fontSize: 18 }}>
+            Who it is for
+          </h2>
+          <Field
+            id="ask-label"
+            label="Who is it for?"
+            value={value.label}
+            maxLength={80}
+            required={false}
+            placeholder="Jane, accountant"
+            onChange={(l) => set({ label: l })}
+            hint="For your own list, and the activity log. They do not see it."
+          />
+        </section>
+
+        <section className="card stack" aria-labelledby="ask-when-h">
+          <h2 id="ask-when-h" style={{ fontSize: 18 }}>
+            Keeping it safe
+          </h2>
+          <EndPicker
+            idPrefix="ask"
+            timezone={timezone}
+            read={{ ...read, endProblem }}
+            onChange={(end) => set({ end })}
+          />
+          <SecretChoice
+            idPrefix="ask"
+            has={has}
+            pin={false}
+            value={secret}
+            onChange={setSecret}
+            problem={passwordProblem}
+            fixed={fixed}
+            showProblem={tried}
+            maker={r.mine}
+            what="request"
+          />
+          <AskVisits value={value} set={set} read={read} />
+        </section>
+
+        <section className="card stack" aria-labelledby="ask-takes-h">
+          <h2 id="ask-takes-h" style={{ fontSize: 18 }}>
+            What it takes
+          </h2>
+          <AskTakes value={value} set={set} read={read} />
+        </section>
+
+        <ErrorNote message={error} />
+        <div className="row">
+          <Button type="submit" disabled={busy || nothing}>
+            {busy ? 'Saving…' : 'Save the changes'}
+          </Button>
+          <Link to="/sharing" className="btn btn-quiet">
+            Cancel
+          </Link>
+        </div>
+        {nothing && <p className="muted">Nothing is changed yet.</p>}
+        {tried && problem && (
+          <p className="field-error" role="alert">
+            Something above needs putting right first.
+          </p>
+        )}
+      </form>
+    </main>
+  );
+}
+
+const capital = (words: string) => words.charAt(0).toUpperCase() + words.slice(1);
 
 /** "1 file", "10 files". */
 const filesWord = (n: number) => (n === 1 ? '1 file' : `${n} files`);
@@ -814,6 +1165,8 @@ export function RequestHandOver(props: {
         Anyone with the link can send files until it ends, and see nothing in the vault. You will
         see when it is opened, and you can take it back from Sharing whenever you like.
       </p>
+      {/* Or the vault emails it (16 Nov 2026), beside Copy, never in its place. */}
+      <RequestEmail request={r} idPrefix="made-request" />
       <Button onClick={props.onDone}>Done</Button>
     </section>
   );

@@ -40,6 +40,7 @@ const PAGES: ReadonlyArray<readonly [pattern: string, title: string]> = [
   ['/inbox/:id', 'Inbox: a file sent to you'],
   ['/sharing', 'Sharing'],
   ['/sharing/ask', 'Ask for documents'],
+  ['/sharing/ask/:id', 'Change a request'],
   ['/activity', 'Activity'],
   ['/trash', 'Trash'],
   ['/after-restore', 'After a restore'],

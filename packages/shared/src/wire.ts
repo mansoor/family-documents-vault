@@ -693,6 +693,37 @@ export interface Share {
    * from older vaults.
    */
   emailed_to?: string | null;
+  /**
+   * The caller made it and it still works, or is only paused (0.9.0, LK,
+   * `features.link_changes`): `PATCH /shares/{id}` changes its properties.
+   * False for anybody else's, for one that has ended or been opened as often
+   * as it allows, and for a link made before 0.5.14. Absent from older
+   * vaults: nothing is changed.
+   */
+  changeable?: boolean;
+  /**
+   * The caller made it (0.9.0, LK): only then may a change give it a new PIN
+   * or password (`403 share_secret_makers_only` for an owner changing
+   * somebody else's). Absent from older vaults.
+   */
+  mine?: boolean;
+  /**
+   * The latest it may be changed to end (0.9.0, LK): its longest from when
+   * it was made — `limits.share_max_days`, 30 days for a link that keeps up
+   * with its collection, 24 hours for a clinician's. Absent from older vaults.
+   */
+  latest_end?: string;
+  /**
+   * Whether its page shows the title before Open (0.9.0, H1a), as its maker
+   * chose; null as each document is (`linkShowsTitle`). Absent from older vaults.
+   */
+  show_title?: boolean | null;
+  /**
+   * Moved on by each change (0.9.0, LK): sent back as `If-Match: "<version>"`
+   * to `PATCH /shares/{id}`, which answers `409 conflict` when it has moved
+   * on since. Absent from older vaults.
+   */
+  version?: number;
   summary: string;
 }
 
@@ -820,6 +851,62 @@ export interface RevealedShare {
   link_token: string;
   /** As `CreatedShare.link_url`: null when the vault has no public-only site. */
   link_url: string | null;
+  pin?: string;
+  password?: string;
+}
+
+/**
+ * How a changed link's PIN or password goes (0.9.0, LK): `none` takes it
+ * away; `pin`, a new four-digit PIN; `password`, a new password — the
+ * vault's, or the one in `password`. Absent: as it is.
+ */
+export type LinkSecretChange = 'none' | 'pin' | 'password';
+
+/**
+ * `PATCH /shares/{id}` (0.9.0, LK, `features.link_changes`; the owner's
+ * decision of 15 Nov 2026): a link's properties changed by whoever made it,
+ * while it works or is only paused — only what is sent changes. Never what
+ * it is to, its emailed or texted code, nor "this browser only".
+ *
+ * - `expires_at`: at least 5 minutes ahead, and never past `Share.latest_end`
+ *   (`422 expiry_out_of_range`).
+ * - `permission`, `max_opens`, `max_downloads`: a link to view has nothing
+ *   to download; a limit never below what is used already (`422`). A
+ *   clinician's link is to view, always.
+ * - `secret`: a new PIN or password replaces the old one — every page opened
+ *   with the old one closes, and showing the link again shows the new one.
+ *   A made-up one is in the answer, once (`ChangedShare`).
+ *
+ * Making it reach further — a later end, view to download, a limit raised or
+ * taken away, the PIN or password taken away or weakened (a password to a
+ * PIN), its title shown — asks to confirm it's you (`403 step_up_required`,
+ * action `change_share`). Narrowing never does, and takes hold at once for a
+ * page already open (download to view among it).
+ *
+ * `If-Match: "<Share.version>"` (optional): `409 conflict` if it has changed
+ * since. `404 not_found` for anybody else's link; `410 share_ended` for one
+ * taken back, run out of time, stopped by wrong tries or opened as often as
+ * it allows — make a new one; `409 share_legacy` for one made before 0.5.14.
+ * Every change is written to the activity log (`share.changed`), never with
+ * a PIN or a password.
+ */
+export interface ShareChangeInput {
+  recipient_label?: string | null;
+  expires_at?: string;
+  permission?: SharePermission;
+  max_opens?: number | null;
+  max_downloads?: number | null;
+  show_title?: boolean;
+  secret?: LinkSecretChange;
+  /** With `secret: 'password'`: one typed, 8 to 64 characters. Absent: the vault makes one up. */
+  password?: string;
+}
+
+/** What `PATCH /shares/{id}` answers: the link as it is now, and a new PIN or made-up password, once. */
+export interface ChangedShare {
+  share: Share;
+  /** What changed, by name (`expires_at`, `permission`, `secret`, …): never a value. */
+  changed: string[];
   pin?: string;
   password?: string;
 }

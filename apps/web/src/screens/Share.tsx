@@ -27,6 +27,8 @@ import {
   zonedParts,
   zonedTime,
   type Capabilities,
+  type ShareEmailed,
+  type ShareEmailInput,
   type ShareInput,
   type SharePermission,
 } from '@fdv/shared';
@@ -38,6 +40,7 @@ import { Button, Check, ErrorNote, Field, TextArea } from '../ui.js';
 import { endWords, familyZoneNow } from '../family-time.js';
 import { useSmsCodes } from '../text-messages.js';
 import { useSensitiveConfirm } from '../sensitive-confirm.js';
+import { ChangeLink } from './ChangeLink.js';
 
 /**
  * Sharing one document with somebody outside the family (SHR-05).
@@ -91,6 +94,8 @@ export function SharePanel(props: {
   // A code by text (SMS3): offered while the household's texts are set up.
   const texts = useSmsCodes();
   const [made, setMade] = useState<CreatedShare | null>(null);
+  // One of its links being changed (0.9.0, LK): its form, in this card's place.
+  const [changing, setChanging] = useState<Share | null>(null);
   const options = useLinkOptions();
   const [open, setOpen] = useState(Boolean(props.onClose));
   const [busy, setBusy] = useState<'making' | 'taking back' | null>(null);
@@ -220,6 +225,21 @@ export function SharePanel(props: {
     }
   };
 
+  if (changing) {
+    return (
+      <ChangeLink
+        link={changing}
+        target={props.documentTitle ? `“${props.documentTitle}”` : 'this document'}
+        onBusy={(on) => props.onBusy?.(on)}
+        onCancel={() => setChanging(null)}
+        onDone={() => {
+          setChanging(null);
+          void reload();
+        }}
+      />
+    );
+  }
+
   if (made) {
     return (
       <HandOver
@@ -261,9 +281,16 @@ export function SharePanel(props: {
                     </span>
                   )}
                 </span>
-                <Button kind="quiet" disabled={busy !== null} onClick={() => void revoke(s)}>
-                  Take it back
-                </Button>
+                <span className="row" style={{ gap: 8 }}>
+                  {s.changeable === true && (
+                    <Button kind="quiet" disabled={busy !== null} onClick={() => setChanging(s)}>
+                      Change
+                    </Button>
+                  )}
+                  <Button kind="quiet" disabled={busy !== null} onClick={() => void revoke(s)}>
+                    Take it back
+                  </Button>
+                </span>
               </li>
             );
           })}
@@ -383,8 +410,12 @@ const NO_OPTIONS: LinkOptionsValue = {
   thisDeviceOnly: false,
 };
 
-export function useLinkOptions() {
-  const [value, setValue] = useState<LinkOptionsValue>(NO_OPTIONS);
+/**
+ * A link's options as they are chosen: none yet for a new link, or (0.9.0,
+ * LK) a link's own, prefilled, for Change.
+ */
+export function useLinkOptions(initial?: Partial<LinkOptionsValue>) {
+  const [value, setValue] = useState<LinkOptionsValue>(() => ({ ...NO_OPTIONS, ...initial }));
   return {
     value,
     set: (change: Partial<LinkOptionsValue>) => setValue((v) => ({ ...v, ...change })),
@@ -562,6 +593,17 @@ export function LinkOptions(props: {
   endNote?: ReactNode;
   /** A note kept on its own (0.9.0, N1): read on the page, nothing to choose. */
   note?: boolean;
+  /**
+   * What protects it, in place of the choices a new link has (0.9.0, LK):
+   * Change's, where its PIN or password may be kept, taken away or made
+   * new, and the rest stays as it was made.
+   */
+  protection?: ReactNode;
+  /**
+   * What they can do, said when there is nothing to choose (0.9.0, LK): a
+   * clinician's link is to view, always.
+   */
+  canDo?: string;
 }) {
   const { options, read, timezone, viewable } = props;
   const { value } = options;
@@ -585,12 +627,12 @@ export function LinkOptions(props: {
         endNote={props.endNote}
       />
 
-      {props.note ? (
+      {props.note || props.canDo ? (
         <div className="field">
           <span className="field-label">What they can do</span>
           <span className="muted">
-            They read the note on the page, as it is when they open it. They can copy its words:
-            nothing can stop that.
+            {props.canDo ??
+              'They read the note on the page, as it is when they open it. They can copy its words: nothing can stop that.'}
           </span>
         </div>
       ) : (
@@ -657,8 +699,153 @@ export function LinkOptions(props: {
         </span>
       </div>
 
-      <Protection options={options} read={read} />
+      {props.protection ?? <Protection options={options} read={read} />}
     </>
+  );
+}
+
+/** How a link's or a request's PIN or password goes as it is changed (0.9.0, LK). */
+export type SecretChoiceValue = {
+  choice: 'keep' | 'none' | 'pin' | 'password';
+  mode: 'made' | 'typed';
+  password: string;
+};
+
+export const SECRET_KEPT: SecretChoiceValue = { choice: 'keep', mode: 'made', password: '' };
+
+/**
+ * What is wrong with a password typed for a change, or null. Read as making
+ * one reads it: a link's with its spaces at the ends taken off (`trim`), a
+ * request's exactly as typed.
+ */
+export function secretChoiceProblem(
+  value: SecretChoiceValue,
+  min: number,
+  trim = true,
+): string | null {
+  return value.choice === 'password' &&
+    value.mode === 'typed' &&
+    (trim ? value.password.trim() : value.password).length < min
+    ? `At least ${min} characters. Something they can type, and you can say to them.`
+    : null;
+}
+
+/**
+ * Its PIN or password, as a link or a request is changed (0.9.0, LK): kept
+ * as it is, taken away, or made new — a new one replaces the old, and every
+ * page opened with the old one has to be opened again. What else protects it
+ * — a code, one browser only — stays as it was made, and says so.
+ */
+export function SecretChoice(props: {
+  /** The ids' start: `share` for a link, `ask` for a request. */
+  idPrefix: string;
+  /** What it has now. */
+  has: 'pin' | 'password' | null;
+  /** A link may have a PIN; a request has a password or nothing. */
+  pin: boolean;
+  value: SecretChoiceValue;
+  onChange: (value: SecretChoiceValue) => void;
+  problem: string | null;
+  /**
+   * Its other protections, each a sentence saying what it does and that it
+   * stays as it was made (the owner's decision of 16 Nov 2026).
+   */
+  fixed: string[];
+  /**
+   * The reader made it (16 Nov 2026): only then are its PIN or password
+   * theirs to change. An owner changing somebody else's is told so instead.
+   */
+  maker?: boolean;
+  /** `link` or `request`, as the words say it. */
+  what?: 'link' | 'request';
+  /** Say what is wrong even with nothing typed, once the form has been sent. */
+  showProblem?: boolean;
+}) {
+  const { idPrefix: p, value } = props;
+  const what = props.pin ? 'PIN or password' : 'password';
+  if (props.maker === false) {
+    return (
+      <div className="share-protect" role="group" aria-labelledby={`${p}-protect-h`}>
+        <span id={`${p}-protect-h`} className="field-label">
+          Protect it
+        </span>
+        <span className="muted">
+          {props.has
+            ? `It asks for a ${props.has === 'pin' ? 'PIN' : 'password'}. `
+            : `It asks for no ${what}. `}
+          Only {props.what === 'request' ? 'whoever asked' : 'whoever made it'} can change its{' '}
+          {what}: to change that, take this {props.what ?? 'link'} back and make a new one.
+        </span>
+        {props.fixed.map((said) => (
+          <span key={said} className="muted">
+            {said}
+          </span>
+        ))}
+      </div>
+    );
+  }
+  type Choice = [SecretChoiceValue['choice'], string];
+  const choices: Choice[] = [
+    [
+      'keep',
+      props.has === 'pin'
+        ? 'Keep its PIN'
+        : props.has === 'password'
+          ? 'Keep its password'
+          : `No ${what}, as now`,
+    ],
+    ...(props.has ? [['none', `No ${what}`] as Choice] : []),
+    ...(props.pin
+      ? [['pin', props.has === 'pin' ? 'A new four-digit PIN' : 'A four-digit PIN'] as Choice]
+      : []),
+    ['password', props.has === 'password' ? 'A new password' : 'A password'],
+  ];
+  return (
+    <div className="share-protect" role="group" aria-labelledby={`${p}-protect-h`}>
+      <span id={`${p}-protect-h`} className="field-label">
+        Protect it
+      </span>
+      <fieldset className="stack" style={{ gap: 4 }}>
+        <legend className="visually-hidden">Its {what}</legend>
+        {choices.map(([choice, label]) => (
+          <div key={choice} className="check">
+            <input
+              id={`${p}-secret-${choice}`}
+              type="radio"
+              name={`${p}-secret`}
+              checked={value.choice === choice}
+              onChange={() => props.onChange({ ...value, choice })}
+            />
+            <label htmlFor={`${p}-secret-${choice}`}>{label}</label>
+          </div>
+        ))}
+      </fieldset>
+      {value.choice === 'password' && (
+        <PasswordChoice
+          id={`${p}-password`}
+          mode={value.mode}
+          password={value.password}
+          problem={props.problem}
+          onMode={(mode) => props.onChange({ ...value, mode })}
+          onPassword={(password) => props.onChange({ ...value, password })}
+          typedNote={`At least ${SHARE_PASSWORD_MIN} characters. The vault keeps only a scrambled copy, so write it down before you tell them.`}
+          madeNote="Three short groups of letters and numbers, easy to read out. You see it once you save."
+          showProblem={props.showProblem === true}
+        />
+      )}
+      {(value.choice === 'pin' || value.choice === 'password' || value.choice === 'none') &&
+        props.has !== null && (
+          <span className="muted share-indent">
+            The old {props.has === 'pin' ? 'PIN' : 'password'} stops working at once. Anyone with a
+            page open has to open the link again.
+          </span>
+        )}
+      {props.fixed.map((said) => (
+        <span key={said} className="muted">
+          {said}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -1138,13 +1325,35 @@ export function HandOver(props: { created: CreatedShare; timezone: string; onDon
  * what the link is to; those are told another way, as the sheet says.
  */
 export function EmailTheLink(props: { share: Share; idPrefix: string }) {
-  const { guarded, caps } = useApp();
+  const { caps } = useApp();
+  return (
+    <EmailALink
+      idPrefix={props.idPrefix}
+      offered={caps?.features.share_link_email === true && props.share.emailable === true}
+      note={SHARE_LINK_EMAIL_NOTE}
+      send={(t, body) => api.emailShare(t, props.share.id, body)}
+    />
+  );
+}
+
+/**
+ * "Or have the vault email it", for a share link or (0.9.0, LK; the owner's
+ * decision of 16 Nov 2026) a request to send documents: the address, a short
+ * message, and what never goes in the email.
+ */
+export function EmailALink(props: {
+  idPrefix: string;
+  offered: boolean;
+  note: string;
+  send: (token: string, body: ShareEmailInput) => Promise<ShareEmailed>;
+}) {
+  const { guarded } = useApp();
   const [to, setTo] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [sentTo, setSentTo] = useState<string | null>(null);
-  if (caps?.features.share_link_email !== true || props.share.emailable !== true) return null;
+  if (!props.offered) return null;
   const id = `${props.idPrefix}-email-link`;
   const send = async () => {
     setProblem(null);
@@ -1162,7 +1371,7 @@ export function EmailTheLink(props: { share: Share; idPrefix: string }) {
     setBusy(true);
     try {
       const sent = await guarded((t) =>
-        api.emailShare(t, props.share.id, {
+        props.send(t, {
           to: address,
           ...(words.message ? { message: words.message } : {}),
         }),
@@ -1201,7 +1410,7 @@ export function EmailTheLink(props: { share: Share; idPrefix: string }) {
         hint="Sent as you type it, with no web addresses or website names in it."
         onChange={setMessage}
       />
-      <p className="muted">{SHARE_LINK_EMAIL_NOTE}</p>
+      <p className="muted">{props.note}</p>
       <Button kind="quiet" disabled={busy} onClick={() => void send()}>
         {busy ? 'Sending…' : 'Email the link'}
       </Button>

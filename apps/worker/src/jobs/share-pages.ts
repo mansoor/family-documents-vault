@@ -454,10 +454,12 @@ export interface PruneSharePagesDeps {
 /**
  * The pages whose link has ended — taken back, run out, locked by wrong
  * PINs, or opened as often as it allows with no page open on it any more —
+ * those of a link changed to download since (0.9.0, LK), which shows none,
  * and those of a version a newer one has replaced. As SQL, over share_page
  * `p` and its share_link `l`.
  */
 const ENDED = `(l.revoked_at is not null
+    or l.permission = 'download'
     or l.expires_at <= now()
     or l.attempts >= 10
     or (l.max_opens is not null and l.open_count >= l.max_opens

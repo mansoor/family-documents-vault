@@ -894,6 +894,16 @@ const RULES: Record<string, Rule> = {
   'POST /api/v1/shares/:id/resume': { who: 'owners', body: () => ({}) },
   // A link shown again (11 Nov 2026): to whoever made it alone, after confirming it is them.
   'POST /api/v1/shares/:id/reveal': { who: 'signedIn', body: () => ({}) },
+  // A link changed (0.9.0, LK): by whoever made it alone; reaching further
+  // asks that it's them. Never anybody else's, an owner's included.
+  'PATCH /api/v1/shares/:id': {
+    who: 'signedIn',
+    bodies: () => [{ recipient_label: 'attacker' }, { expires_at: inDays(60), secret: 'none' }],
+    theirs: {
+      passwordOnlyOwner:
+        'an owner changes any link the family made, all but its PIN or password (16 Nov 2026)',
+    },
+  },
   // A link emailed by the vault (13 Nov 2026): by whoever made it alone, through
   // the operator's mail server alone.
   'POST /api/v1/shares/:id/email': {
@@ -1170,6 +1180,24 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/upload-requests': { who: 'signedIn' },
   'DELETE /api/v1/upload-requests/:id': { who: 'adults' },
   'POST /api/v1/upload-requests/:id/resume': { who: 'owners', body: () => ({}) },
+  // A request shown again, and changed (0.9.0, LK): by whoever asked alone.
+  'POST /api/v1/upload-requests/:id/reveal': { who: 'adults', body: () => ({}) },
+  // Emailed by the vault (16 Nov 2026): by whoever asked alone.
+  'POST /api/v1/upload-requests/:id/email': {
+    who: 'adults',
+    body: () => ({ to: 'attacker@example.test' }),
+  },
+  'PATCH /api/v1/upload-requests/:id': {
+    who: 'adults',
+    bodies: () => [
+      { recipient_label: 'attacker', title: 'attacker' },
+      { expires_at: inDays(60), secret: 'none' },
+    ],
+    theirs: {
+      passwordOnlyOwner:
+        'an owner changes any request they can see, all but its password (16 Nov 2026)',
+    },
+  },
   'GET /api/v1/incoming': { who: 'signedIn' },
   'GET /api/v1/incoming/:id/pages/:n': { who: 'adults' },
   'GET /api/v1/incoming/:id/content': { who: 'adults' },

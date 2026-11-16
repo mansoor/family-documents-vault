@@ -534,7 +534,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   );
   // Several as one ZIP, signed in (0.9.0, DL): streamed, or by a ticket.
   if (deps.zips) registerZips(app, deps.zips, deps.auth, deps.stepUp);
-  registerUploads(app, deps.uploads);
+  registerUploads(app, deps.uploads, deps.stepUp);
   registerIncoming(app, deps.incoming);
   registerBatches(app, deps.batches);
   if (deps.watchFolder) registerWatchFolder(app, deps.watchFolder);

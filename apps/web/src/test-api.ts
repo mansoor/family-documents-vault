@@ -320,9 +320,20 @@ export interface FakeState {
    */
   /** Each link the vault was asked to email (0.9.0): which, to whom, and the message. */
   linkEmails?: { share_id: string; to: string; message: string | null }[];
+  /** Each request the vault was asked to email (16 Nov 2026): which, to whom, and the message. */
+  requestEmails?: { request_id: string; to: string; message: string | null }[];
   revealedShares?: Record<
     string,
     { link_token: string; link_url: string | null; pin?: string; password?: string }
+  >;
+  /**
+   * What a request its maker may see again shows (0.9.0, LK), by request id.
+   * One not here, though `revealable`, is answered as made before the vault
+   * kept copies.
+   */
+  revealedRequests?: Record<
+    string,
+    { link_token: string; link_url: string | null; password?: string }
   >;
   activity: Array<{
     id: number;
@@ -1408,6 +1419,7 @@ export function installFakeApi(state: FakeState) {
           share_second_factor: state.shareSecondFactor ?? true,
           share_email_code: state.operatorMail === true,
           share_link_email: state.operatorMail === true,
+          upload_request_email: state.operatorMail === true,
           member_edit: true,
           ...(state.memberAdmin !== false ? { member_admin: true } : {}),
           ...(state.signOutEverywhere !== false ? { sign_out_everywhere: true } : {}),
@@ -3678,6 +3690,36 @@ export function installFakeApi(state: FakeState) {
       const sentTo = `${b.to.charAt(0)}•••@${domain.charAt(0)}•••${domain.slice(domain.lastIndexOf('.'))}`;
       return json({ sent_to: sentTo, sent_at: new Date().toISOString(), sends_left: 2 });
     }
+    // A link changed by whoever made it (0.9.0, LK): what was sent is kept
+    // in `calls`; a change asks who is asking while `stepUpNeeded`.
+    if (/^\/api\/v1\/shares\/[^/]+$/.test(path) && method === 'PATCH') {
+      const id = path.split('/')[4] as string;
+      // A clinician's link (H4) is listed with its person's page, not in Sharing.
+      const link = (state.shares.find((x) => x.id === id) ??
+        Object.values(state.emergencyLinksOf ?? {})
+          .flat()
+          .find((x) => x.id === id)) as (Record<string, unknown> & { id: string }) | undefined;
+      if (!link || link.changeable !== true) {
+        return refuse(404, 'not_found', 'That link does not exist.');
+      }
+      if (state.stepUpNeeded) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to let a link you made reach further.',
+          { action: 'change_share' },
+        );
+      }
+      const b = body as Record<string, unknown>;
+      const { secret, password, ...rest } = b;
+      Object.assign(link, rest, { version: Number(link.version ?? 1) + 1 });
+      return json({
+        share: link,
+        changed: Object.keys(b).filter((k) => k !== 'password'),
+        ...(secret === 'pin' ? { pin: '4821' } : {}),
+        ...(secret === 'password' && password === undefined ? { password: 'new-word-here' } : {}),
+      });
+    }
     if (path.startsWith('/api/v1/shares/') && path.endsWith('/reveal') && method === 'POST') {
       const id = path.split('/')[4] as string;
       const link = state.shares.find((x) => x.id === id);
@@ -4401,14 +4443,75 @@ export function installFakeApi(state: FakeState) {
           201,
         );
       }
-      const at = /^\/api\/v1\/upload-requests\/([^/]+)(\/resume)?$/.exec(path);
+      const at = /^\/api\/v1\/upload-requests\/([^/]+)(\/resume|\/reveal|\/email)?$/.exec(path);
       const r = at ? list.find((x) => x.id === at[1]) : undefined;
       if (!at || !r) return refuse(404, 'not_found', 'That request does not exist.');
+      // Emailed by the vault (16 Nov 2026), with the operator's mail server alone.
+      if (at[2] === '/email' && method === 'POST') {
+        if (state.operatorMail !== true) {
+          return refuse(
+            503,
+            'email_link_unavailable',
+            'Emailing a link needs the mail server of whoever runs this vault, and none is set up.',
+          );
+        }
+        if (r.emailable !== true) return refuse(404, 'not_found', 'That request does not exist.');
+        const b = body as { to: string; message?: string };
+        (state.requestEmails ??= []).push({
+          request_id: r.id,
+          to: b.to,
+          message: b.message ?? null,
+        });
+        const sentTo = `${b.to.charAt(0)}•••@${b.to.split('@')[1]?.charAt(0) ?? ''}•••.com`;
+        return json({ sent_to: sentTo, sent_at: new Date().toISOString(), sends_left: 2 });
+      }
+      // Shown again, and changed, by whoever asked (0.9.0, LK).
+      if (at[2] === '/reveal' && method === 'POST') {
+        if (r.revealable !== true) return refuse(404, 'not_found', 'That request does not exist.');
+        if (state.stepUpNeeded) {
+          return refuse(
+            403,
+            'step_up_required',
+            'Please confirm it is you to see a link you made again.',
+            { action: 'reveal_share' },
+          );
+        }
+        const shown = state.revealedRequests?.[r.id];
+        if (!shown) {
+          return refuse(
+            409,
+            'request_not_revealable',
+            'That request was made before the vault kept a copy, so it was shown only once. Take it back and make a new one if you need it again.',
+          );
+        }
+        return json(shown);
+      }
+      if (!at[2] && method === 'PATCH') {
+        if (r.changeable !== true) return refuse(404, 'not_found', 'That request does not exist.');
+        if (state.stepUpNeeded) {
+          return refuse(
+            403,
+            'step_up_required',
+            'Please confirm it is you to let a link you made reach further.',
+            { action: 'change_share' },
+          );
+        }
+        const b = body as Record<string, unknown>;
+        const { secret, password, ...rest } = b;
+        Object.assign(r, rest, { version: Number(r.version ?? 1) + 1 });
+        return json({
+          request: r,
+          changed: Object.keys(b).filter((k) => k !== 'password'),
+          ...(secret === 'password' && password === undefined
+            ? { password: 'abcd-efgh-new1' }
+            : {}),
+        });
+      }
       if (!at[2] && method === 'DELETE') {
         Object.assign(r, { state: 'revoked', recipient_email: null });
         return Promise.resolve(new Response(null, { status: 204 }));
       }
-      if (at[2] && method === 'POST') {
+      if (at[2] === '/resume' && method === 'POST') {
         if (role !== 'owner') {
           return refuse(403, 'forbidden', 'Only an owner can turn things back on after a restore.');
         }

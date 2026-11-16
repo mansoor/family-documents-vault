@@ -10,7 +10,7 @@ import { DocumentsScreen } from './screens/Documents.js';
 import { ReaderScreen } from './screens/Reader.js';
 import { SignInScreen, WelcomeScreen } from './screens/Entry.js';
 import { ActivityScreen } from './screens/Activity.js';
-import { AskForDocumentsScreen } from './screens/AskForDocuments.js';
+import { AskForDocumentsScreen, ChangeRequestScreen } from './screens/AskForDocuments.js';
 import { AfterRestoreScreen } from './screens/AfterRestore.js';
 import { FamilyScreen } from './screens/Family.js';
 import { GuestsScreen } from './guests.js';
@@ -304,6 +304,15 @@ export function App() {
                 element={
                   <Only rule={SCREEN_RULES.ask}>
                     <AskForDocumentsScreen />
+                  </Only>
+                }
+              />
+              {/* A request changed (0.9.0, LK): the form it was made with, filled in. */}
+              <Route
+                path="/sharing/ask/:id"
+                element={
+                  <Only rule={SCREEN_RULES.ask}>
+                    <ChangeRequestScreen />
                   </Only>
                 }
               />
