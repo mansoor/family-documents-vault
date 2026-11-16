@@ -6,6 +6,27 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.53] - 2026-11-16 — requests as a table, and ended links tidied away
+
+### Added
+
+- **Requests to send documents are a table, as links are.** On a wide screen, **Asking for documents** in **Sharing** is a table: what was asked for, who it is for, where it stands, what came in, and who asked (when you see others' requests), with **Show the link**, **Change**, **Turn back on** and **Take it back** on each row. On a phone it's the list it was. Requests are split into **Working now** and **No longer working**, as links are.
+- **Ended links and requests are removed after a while.** Each night the vault removes a link outside the family, or a request for documents, that was taken back, closed, or reached its end longer ago than your household keeps them: **90 days** unless an owner chooses 30 days, 1 year or never, in **Settings → Privacy → Links and requests that no longer work**. One that is only paused or used up waits until its end has passed too, and a request waits while a file it brought is still in the Inbox. Choosing a shorter time asks first, and says what will go the next night. (Migration 0106.)
+- **Show N more.** What no longer works shows the first 20 and a button for the rest, where before only 20 were ever shown. Sharing says how long they are kept.
+
+### Changed
+
+- **A request that ended with nothing filed from it is kept** like any other, for your household's time, instead of being removed the next night.
+- **No longer needed, on a document's page, opens on asking.** The box that says since when, why, what replaced it, **Needed again** and **Change why** is now closed at first: the **ⓘ** beside "No longer needed" under the title opens it, and closes it again.
+
+### Upgrade notes
+
+- **Nothing goes the first night.** For anything that ended before you upgrade — or before you restore a backup made before this version — the 90 days (or whatever an owner chooses) count from the upgrade or the restore, not from when it ended. So the first removals come 90 days after upgrading at the earliest.
+
+### Security
+
+- **The activity log keeps everything.** Every line about a removed link or request stays, shown to exactly the people who saw it before; documents sent through a request stay where they were filed, and their history still says they came through a request link. A link's **Who opened it** list goes with the link; each opening stays in the activity log. With a request go the list of what it asked for and the record of each refused file (the file was deleted when it was refused); a record that the vault emailed a link or request stays, without saying which. Only an owner can change how long they are kept, and the change is in the activity log.
+
 ## [0.9.0-dev.52] - 2026-11-16 — bring your folder tree
 
 ### Added

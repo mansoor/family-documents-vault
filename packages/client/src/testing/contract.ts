@@ -3551,6 +3551,23 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'ended links and requests: kept 90 days unless an owner chose otherwise, 30, 365 or never, anything else refused (0.9.0, RQ)',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      expect((await api.capabilities()).features.ended_sharing).toBe(true);
+      expect(await api.endedSharing(token)).toEqual({ remove_after_days: 90, can_change: true });
+      expect(await api.setEndedSharing(token, 30)).toEqual({
+        remove_after_days: 30,
+        can_change: true,
+      });
+      expect((await api.setEndedSharing(token, null)).remove_after_days).toBeNull();
+      expect((await api.endedSharing(token)).remove_after_days).toBeNull();
+      const odd = await refusal(api.setEndedSharing(token, 45 as never));
+      expect([odd.status, odd.code]).toEqual([422, 'validation_failed']);
+      expect((await api.setEndedSharing(token, 90)).remove_after_days).toBe(90);
+    },
+  },
+  {
     name: 'a document no longer needed: kept and listed, said so, reminded of nothing, replaced by one the reader sees, and needed again (0.9.0)',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

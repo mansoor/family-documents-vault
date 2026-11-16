@@ -280,6 +280,8 @@ import {
   type UploadRequestView,
   type IdentityAudience,
   type FamilyTimeZone,
+  type EndedSharing,
+  type EndedSharingDays,
   type IdentityAudienceView,
   type IdentityFields,
   type IdentityPart,
@@ -517,6 +519,12 @@ export interface FakeVaultState {
    */
   timezoneSource: 'household' | 'server_default';
   serverTimezone: string;
+  /**
+   * How long ended links and requests are kept (0.9.0, RQ): 30, 90 or 365
+   * days, or null for never. GET and PUT /household/ended-sharing answer it;
+   * the fake removes nothing.
+   */
+  endedSharingDays: EndedSharingDays | null;
   /**
    * What an owner has limited each viewer to (5.33), by member id: what PUT
    * and DELETE /members/{id}/access write, what the preview counts by the
@@ -1560,6 +1568,7 @@ export function createFakeVault(): {
     timezone: 'UTC',
     timezoneSource: 'server_default',
     serverTimezone: 'UTC',
+    endedSharingDays: 90,
     restrictions: new Map(),
     operatorMail: true,
     keepsPrivate: [],
@@ -3686,6 +3695,8 @@ export function createFakeVault(): {
           share_opens: true,
           // The folder a paper came from, and a cabinet drawn from them (0.9.0, C4).
           source_folders: true,
+          // Ended links and requests removed after a while (0.9.0, RQ).
+          ended_sharing: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -8516,6 +8527,28 @@ export function createFakeVault(): {
       }
       state.timezone = canon;
       state.timezoneSource = 'household';
+      return ok(view());
+    }
+    // How long ended links and requests are kept (0.9.0, RQ), as the real
+    // vault answers it: every role reads it, an owner chooses 30, 90 or 365
+    // days or never (null), anything else refused.
+    if (path === '/api/v1/household/ended-sharing') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const view = (): EndedSharing => ({
+        remove_after_days: state.endedSharingDays,
+        can_change: can(state.role, 'household.ended_sharing'),
+      });
+      if (init.method === 'GET') return ok(view());
+      if (init.method !== 'PUT') return fail(404, 'not_found', 'Not here.');
+      if (!can(state.role, 'household.ended_sharing')) {
+        return fail(403, 'forbidden', refusalFor('household.ended_sharing'));
+      }
+      const to = (body as { remove_after_days?: unknown }).remove_after_days;
+      if (to !== null && to !== 30 && to !== 90 && to !== 365) {
+        return fail(422, 'validation_failed', 'Choose 30, 90 or 365 days, or never.');
+      }
+      state.endedSharingDays = to;
       return ok(view());
     }
     if (path === '/api/v1/household/identity-audience') {

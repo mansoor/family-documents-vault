@@ -2615,6 +2615,12 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     await sql(vault.adminUrl, 'grant update on public.document_tombstone to fdv_app');
     await expect(checkRestored(target())).rejects.toThrow(/tombstone can be changed or removed/);
     await sql(vault.adminUrl, 'revoke update on public.document_tombstone from fdv_app');
+    // And what a removed request or collection's link leaves (0106, RQ).
+    for (const t of ['upload_request_tombstone', 'share_link_tombstone']) {
+      await sql(vault.adminUrl, `grant delete on public.${t} to fdv_app`);
+      await expect(checkRestored(target())).rejects.toThrow(/tombstone can be changed or removed/);
+      await sql(vault.adminUrl, `revoke delete on public.${t} from fdv_app`);
+    }
     // Its rule for each kind of caller gone.
     await sql(
       vault.adminUrl,
@@ -2938,6 +2944,7 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
         'reminder_delivery',
         'share_link',
         'share_link_item',
+        'share_link_tombstone',
         'share_page',
         'share_page_failure',
         'share_session_use',

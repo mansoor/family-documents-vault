@@ -4,8 +4,9 @@ import { flushSync } from 'react-dom';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { TwoStepNeeded } from '../identity.js';
+import { EndedSharingCard } from '../ended-sharing.js';
 import { NeutralWordingCard } from '../neutral-wording.js';
-import { privacyRows, SettingsRows, wordingCard } from '../settings-sections.js';
+import { endedSharingCard, privacyRows, SettingsRows, wordingCard } from '../settings-sections.js';
 import { storedRole } from '../session.js';
 import { ErrorNote, LoadFailed } from '../ui.js';
 import { SettingsPage } from './Settings.js';
@@ -14,8 +15,9 @@ import { SettingsPage } from './Settings.js';
  * Settings → Privacy (/settings/privacy; Household until 0.8.0, whose
  * address still opens it): neutral wording in notifications and email
  * (0.9.0, H2), an owner's; the household's rule for Only me documents and
- * links outside the family (5.41), and the way to Family, who sees identity
- * details. Kinds of document is a section of its own since 0.8.0 (the
+ * links outside the family (5.41); how long links and requests that no
+ * longer work are kept (0.9.0, RQ), an owner's to change; and the way to
+ * Family, who sees identity details. Kinds of document is a section of its own since 0.8.0 (the
  * owner's ask of 17 Oct 2026). The rule is an owner's to change, with
  * two-step sign-in and a passkey or a code (A54); an adult reads it, as it
  * decides what their share sheet offers.
@@ -29,6 +31,8 @@ export function PrivacyScreen() {
       {/* Neutral wording (0.9.0, H2): the household's, an owner's alone. */}
       {wordingCard(role, caps) && <NeutralWordingCard />}
       <OnlyMeSharingCard />
+      {/* Ended links and requests (0.9.0, RQ): how long they are kept. */}
+      {endedSharingCard(role, caps) && <EndedSharingCard />}
       {/* Its page: who sees identity details, where it was shown before. */}
       <SettingsRows rows={rows} label="More about privacy" />
     </SettingsPage>

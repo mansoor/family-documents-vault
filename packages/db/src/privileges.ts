@@ -333,6 +333,13 @@ begin
     revoke execute on function public.emergency_page_kept(uuid) from public;
     grant execute on function public.emergency_page_kept(uuid) to fdv_app;
   end if;
+  -- What an ended request or collection's link removed leaves behind for
+  -- the activity log (0106, RQ): written once, by the vault, and never
+  -- changed or removed after.
+  if to_regclass('public.upload_request_tombstone') is not null then
+    revoke update, delete on public.upload_request_tombstone from fdv_app;
+    revoke update, delete on public.share_link_tombstone from fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

@@ -72,6 +72,8 @@ import type {
   ExportRow,
   GuestRenewal,
   FamilyTimeZone,
+  EndedSharing,
+  EndedSharingDays,
   IncomingAccepted,
   IncomingAcceptInput,
   IncomingFileView,
@@ -468,6 +470,26 @@ export function createApi(http: Http) {
       request<FamilyTimeZone>('/api/v1/household/timezone', {
         method: 'PUT',
         body: { timezone },
+        token,
+      }),
+    /**
+     * How long links outside the family and requests to send documents are
+     * kept once they have ended for good (0.9.0, RQ, `features.ended_sharing`):
+     * 30, 90 or 365 days, or null for never, and whether this reader may
+     * change it. Every role reads it.
+     */
+    endedSharing: (token: string) =>
+      request<EndedSharing>('/api/v1/household/ended-sharing', { token }),
+    /**
+     * An owner chooses how long ended links and requests are kept: 30, 90 or
+     * 365 days, or never (null). `403` to anybody else; `422` for any other
+     * number. Nothing is removed at once: the vault removes what ended long
+     * enough ago each night, and the activity log keeps its lines.
+     */
+    setEndedSharing: (token: string, days: EndedSharingDays | null) =>
+      request<EndedSharing>('/api/v1/household/ended-sharing', {
+        method: 'PUT',
+        body: { remove_after_days: days },
         token,
       }),
     /** The family: a guest is never among them (5.34), but for a guest themselves. */

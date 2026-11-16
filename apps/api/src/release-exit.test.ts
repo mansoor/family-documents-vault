@@ -1078,6 +1078,14 @@ const RULES: Record<string, Rule> = {
     who: 'owners',
     body: () => ({ timezone: 'Europe/London' }),
   },
+  // 0.9.0 (RQ): how long ended links and requests are kept — read by
+  // everybody signed in, an owner's to change (the database holds it too,
+  // 0106). The sweep sends a year, which removes nothing sooner.
+  'GET /api/v1/household/ended-sharing': { who: 'signedIn' },
+  'PUT /api/v1/household/ended-sharing': {
+    who: 'owners',
+    body: () => ({ remove_after_days: 365 }),
+  },
 
   // Changes of owner.
   'GET /api/v1/owner-changes': { who: 'signedIn' },

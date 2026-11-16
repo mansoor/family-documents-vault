@@ -1189,6 +1189,12 @@ const GUARDS = [
     table: 'notification_preference',
     fn: 'notification_preference_wording_rule',
   },
+  // Only an owner chooses how long ended links and requests are kept (0106, RQ).
+  {
+    name: 'household_ended_sharing_rule',
+    table: 'household',
+    fn: 'household_ended_sharing_rule',
+  },
   // A batch's uploader changes its name and defaults, and nothing else of
   // it (0062, Phase 6 I1).
   {
@@ -1492,6 +1498,13 @@ const REQUIRED_CHECKS = [
     table: 'document',
     what: 'the folder a paper came from, as a path of folders',
   },
+  // A filed file whose request was removed keeps its row, let go of the
+  // request, its item and its session, and only a filed one (0106, RQ).
+  {
+    name: 'incoming_file_request_removed',
+    table: 'incoming_file',
+    what: 'a filed file let go of a removed request, and only a filed one',
+  },
 ];
 
 /**
@@ -1506,6 +1519,12 @@ const OWNERS_ONLY = [
     where: 'moved_to_owners_at is not null',
   },
   { table: 'incoming_file', column: 'owners_only', where: 'owners_only' },
+  // A removed request's tombstone, as the request was (0106, RQ).
+  {
+    table: 'upload_request_tombstone',
+    column: 'moved_to_owners_at',
+    where: 'moved_to_owners_at is not null',
+  },
   // A reminder that somebody has turned 13 (0066): the owners' alone.
   { table: 'reminder', column: 'member_id', where: 'member_id is not null' },
 ];
@@ -1632,6 +1651,11 @@ const ACTOR_GUARDED = [
   // the files still to be deleted (0045).
   'document_tombstone',
   'purge_leftover',
+  // What an ended request or a collection's link removed leaves behind for
+  // the activity log (0106, RQ): their reviewers', those who may share, and
+  // the vault's.
+  'upload_request_tombstone',
+  'share_link_tombstone',
   // People's identity details, and the notices that come before a wider
   // audience for them (0050).
   'member_identity',
@@ -1727,6 +1751,12 @@ const MAKER_ONLY = [
     where: "review_by = 'me'",
     what: 'a file sent for one person to review',
   },
+  // A removed request's tombstone, as the request was (0106, RQ).
+  {
+    table: 'upload_request_tombstone',
+    where: "review_by = 'me'",
+    what: 'a removed request that one person reviewed',
+  },
   // A batch, and its items (above, review-by-me): its uploader's alone (0062, Q3).
   { table: 'intake_batch', where: 'true', what: "somebody's batch of uploads" },
   // The rules learned from somebody's corrections, and their count (0065, I4).
@@ -1821,6 +1851,8 @@ const RESTRICTED = [
   'offline_fill',
   'share_link',
   'share_link_item',
+  // A collection's link removed once it had ended, as the link was (0106).
+  'share_link_tombstone',
   'share_session_use',
   'share_page',
   'share_page_failure',
@@ -2834,6 +2866,12 @@ export async function checkRestored(
               -- What a document removed for good leaves behind (0045).
               has_table_privilege('public.document_tombstone', 'update')
                 or has_table_privilege('public.document_tombstone', 'delete')
+                -- And what an ended request or link removed leaves (0106).
+                or coalesce(has_table_privilege(to_regclass('public.upload_request_tombstone'), 'update')
+                  or has_table_privilege(to_regclass('public.upload_request_tombstone'), 'delete')
+                  or has_table_privilege(to_regclass('public.share_link_tombstone'), 'update')
+                  or has_table_privilege(to_regclass('public.share_link_tombstone'), 'delete'),
+                  false)
                 as tombstones_mutable,
               -- Anybody's restriction, read whole (0054): the vault's own
               -- rules ask it, and the application role may not.
@@ -2864,7 +2902,9 @@ export async function checkRestored(
       throw new Error("the application role can read anybody's restriction (app_grant_of)");
     }
     if (r.tombstones_mutable) {
-      throw new Error("a removed document's tombstone can be changed or removed");
+      throw new Error(
+        "a removed document's, request's or link's tombstone can be changed or removed",
+      );
     }
 
     // Outside withScope, so it says for itself what withSystem would: this

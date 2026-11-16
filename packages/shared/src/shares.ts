@@ -712,3 +712,56 @@ export interface DocumentLinkOpens {
 export function openingWords(o: ShareOpening, when: string): string {
   return `Opened ${when}, in ${o.device}`;
 }
+
+// ------------------------------------- ended links and requests (0.9.0, RQ)
+
+/**
+ * How long a link outside the family and a request to send documents are
+ * kept once they have ended for good (the owner's ask of 16 Nov 2026), in
+ * days; null, never removed. 90 unless an owner chose otherwise.
+ */
+export const ENDED_SHARING_DAYS = [30, 90, 365] as const;
+export type EndedSharingDays = (typeof ENDED_SHARING_DAYS)[number];
+export const ENDED_SHARING_DEFAULT: EndedSharingDays = 90;
+
+/**
+ * GET /household/ended-sharing (0.9.0, RQ; `features.ended_sharing`): how
+ * long the household keeps ended links and requests, for every role; PUT
+ * `{ remove_after_days }` changes it, an owner's (`403` to anybody else).
+ */
+export interface EndedSharing {
+  /** 30, 90 or 365; null, never removed. */
+  remove_after_days: EndedSharingDays | null;
+  /** The reader may change it: an owner. */
+  can_change: boolean;
+}
+
+/** `PUT /household/ended-sharing`. */
+export interface EndedSharingInput {
+  remove_after_days: EndedSharingDays | null;
+}
+
+/** "After 90 days", "Never": a choice, as Settings offers it. */
+export function endedSharingChoiceWords(days: EndedSharingDays | null): string {
+  if (days === null) return 'Never';
+  return days === 365 ? 'After 1 year' : `After ${days} days`;
+}
+
+/** "90 days", "1 year": a time to keep, inside a sentence. */
+export function endedSharingSpan(days: EndedSharingDays): string {
+  return days === 365 ? '1 year' : `${days} days`;
+}
+
+/**
+ * What the household does with ended links and requests, in a sentence:
+ * Settings says it, and Sharing beside what no longer works.
+ */
+export function endedSharingWords(days: EndedSharingDays | null): string {
+  return days === null
+    ? 'Links and requests that no longer work are kept, and never removed.'
+    : `Links and requests that no longer work are removed ${endedSharingSpan(days)} after they end.`;
+}
+
+/** What stays once one is removed: said wherever the choice is. */
+export const ENDED_SHARING_KEPT_NOTE =
+  'The activity log keeps its record of each: when it was made, opened and taken back, and what came in. Documents sent in through a request stay where they were filed.';

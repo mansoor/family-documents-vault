@@ -32,7 +32,11 @@ import { AlsoInRow } from '../cabinet.js';
 import { mayChange } from '../DocActions.js';
 import { asksFor, coreRule, detailText, useAttributes } from '../details.js';
 import { NotesSection } from '../notes.js';
-import { NeededAgainQuestion, NoLongerNeededBanner } from '../no-longer-needed.js';
+import {
+  NeededAgainQuestion,
+  NoLongerNeededBanner,
+  NoLongerNeededInfo,
+} from '../no-longer-needed.js';
 import { DocPanes } from '../doc-panes.js';
 import { PageViewer } from '../page-viewer.js';
 import { useShellMode } from '../shell.js';
@@ -158,6 +162,11 @@ export function DocumentScreen() {
   // by the adding alone.
   const [askAgain, setAskAgain] = useState(false);
   const versionInput = useRef<HTMLLabelElement>(null);
+  // Its banner, opened and closed by the (i) beside "No longer needed"
+  // (0.9.0-dev.53; the owner's ask of 16 Nov 2026): closed on each document.
+  // Held as the document it is open for, so another document starts closed.
+  const [aboutFor, setAboutFor] = useState<string | null>(null);
+  const aboutUnneeded = id !== undefined && aboutFor === id;
 
   const addVersion = async (file: File | undefined) => {
     if (!file || !data) return;
@@ -342,14 +351,26 @@ export function DocumentScreen() {
   const detailsPane = (
     <section id="doc-details" className="doc-details" aria-label={`Details of ${title}`}>
       <div className="row" style={{ alignItems: 'center', gap: 12 }}>
-        <StatusBadge status={doc.status} />
+        <span className="row" style={{ alignItems: 'center', gap: 4 }}>
+          <StatusBadge status={doc.status} />
+          {doc.no_longer_needed && (
+            <NoLongerNeededInfo
+              open={aboutUnneeded}
+              controls="nln-about"
+              onToggle={() => setAboutFor((o) => (o === id ? null : (id ?? null)))}
+            />
+          )}
+        </span>
         <span className="muted">{visibilityLabel}</span>
       </div>
       {/* Kept, but no longer needed (0.9.0): since when, what replaced
-              it, and Needed again for whoever may change it. */}
+              it, and Needed again for whoever may change it — opened by
+              its (i) above, closed until then. */}
       <NoLongerNeededBanner
         doc={doc}
         mayChange={mayChangeIt}
+        open={aboutUnneeded}
+        id="nln-about"
         onChanged={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
       />
       {askAgain && (

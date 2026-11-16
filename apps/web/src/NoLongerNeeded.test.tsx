@@ -1,5 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { fresh, installFakeApi, ME, PASSPORT, signedIn, type FakeState } from './test-api.js';
@@ -81,7 +83,15 @@ function open(
   return state;
 }
 
-const banner = () => screen.findByRole('region', { name: 'No longer needed' });
+/**
+ * Its banner, opened by the (i) beside "No longer needed" in the status line
+ * (0.9.0-dev.53), which it starts closed: pressed only when it is closed.
+ */
+const banner = async () => {
+  const info = await screen.findByRole('button', { name: 'About No longer needed' });
+  if (info.getAttribute('aria-expanded') !== 'true') fireEvent.click(info);
+  return screen.findByRole('region', { name: 'No longer needed' });
+};
 
 /** A screen `px` wide, as the shell asks it (the Documents table is from 768 px). */
 function atWidth(px: number) {
@@ -117,8 +127,26 @@ describe('no longer needed, on the web (0.9.0)', () => {
     expect(screen.queryByRole('region', { name: 'No longer needed' })).toBeNull();
     cleanup();
 
-    // Marked: its banner, with what replaced it, why, and Needed again.
+    // Marked: the status line says so, with an (i) that opens its banner —
+    // closed until then (the owner's ask of 16 Nov 2026).
     const marked = open('/documents/doc-ead', [{ ...MARKED }, { ...GREEN }]);
+    const info = await screen.findByRole('button', { name: 'About No longer needed' });
+    expect(info).toHaveAttribute('aria-expanded', 'false');
+    expect(info).toHaveAttribute('aria-controls', 'nln-about');
+    expect(screen.queryByRole('region', { name: 'No longer needed' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Needed again' })).toBeNull();
+    await expectAccessible();
+    // Open, and closed again, by the same button.
+    fireEvent.click(info);
+    expect(info).toHaveAttribute('aria-expanded', 'true');
+    expect(await screen.findByRole('region', { name: 'No longer needed' })).toHaveAttribute(
+      'id',
+      'nln-about',
+    );
+    fireEvent.click(info);
+    expect(info).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('region', { name: 'No longer needed' })).toBeNull();
+    // Its banner, with what replaced it, why, and Needed again.
     const said = await banner();
     expect(said).toHaveTextContent(
       'No longer needed since 23 Oct 2026 · Replaced by Green card · Needed again',
@@ -419,5 +447,26 @@ describe('no longer needed, on the web (0.9.0)', () => {
       expect(screen.queryByRole('region', { name: 'No longer needed' })).toBeNull(),
     );
     expect(state.unneededCalls?.map((c) => [c.method, c.id])).toEqual([['DELETE', 'doc-ead']]);
+  });
+});
+
+describe('the (i) beside No longer needed, as drawn (0.9.0-dev.53)', () => {
+  const CSS = (() => {
+    const file = ['src/styles.css', 'apps/web/src/styles.css']
+      .map((p) => resolve(process.cwd(), p))
+      .find((p) => existsSync(p));
+    return (file ? readFileSync(file, 'utf8') : '').replace(/\/\*[\s\S]*?\*\//g, '');
+  })();
+  const rule = (css: string, selector: string) => {
+    const at = css.indexOf(`${selector} {`);
+    return at < 0 ? '' : css.slice(at, css.indexOf('}', at));
+  };
+
+  it('a closed banner is hidden whatever its flex says, and the (i) is a whole tap', () => {
+    // .nln-banner is display: flex, which would beat [hidden] on its own.
+    expect(rule(CSS, '.nln-banner')).toMatch(/display:\s*flex/);
+    expect(rule(CSS, '.nln-banner[hidden]')).toMatch(/display:\s*none/);
+    expect(rule(CSS, '.nln-info')).toMatch(/min-width:\s*var\(--tap\)/);
+    expect(rule(CSS, '.nln-info')).toMatch(/min-height:\s*var\(--tap\)/);
   });
 });

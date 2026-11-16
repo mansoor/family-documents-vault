@@ -43,6 +43,12 @@ export const JOBS = {
    * PURGE_LEFTOVERS_JOB), and every household's each night.
    */
   purgeLeftovers: 'purge.leftovers',
+  /**
+   * Nightly (0.9.0, RQ): links outside the family and requests to send
+   * documents that ended for good longer ago than the household keeps them
+   * (household.ended_sharing_days), removed.
+   */
+  endedSharing: 'sharing.ended.remove',
   /** Builds a full export ZIP with indexes. */
   exportBuild: 'export.build',
   /**

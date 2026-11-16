@@ -402,6 +402,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // 0.9.0 (H2): how notifications and email name documents, chosen by an
   // owner: what is sent to everybody, so for whoever reads the log.
   ['household.neutral_wording_changed', everyone],
+  // 0.9.0 (RQ): how long ended links and requests are kept, chosen by an
+  // owner: never which, so for whoever reads the log.
+  ['household.ended_sharing_changed', everyone],
   ['invitation.created', BY_TYPE],
   ['invitation.accepted', BY_TYPE],
   ['invitation.revoked', BY_TYPE],
@@ -642,7 +645,7 @@ export class AuditService {
                l.name                    as collection_name,
                l.audience                as collection_audience,
                l.owner_member_id         as collection_owner,
-               ur.id is not null         as request_visible
+               (ur.id is not null or urt.id is not null) as request_visible
           from audit_event e
           left join account_household ah
             on ah.account_id = e.actor_account_id
@@ -677,6 +680,13 @@ export class AuditService {
                             when e.object_type = 'incoming_file'
                               then (e.detail->>'request_id')::uuid
                        end
+          -- One removed once it had ended (0106, RQ): its tombstone, given
+          -- to the reader as the request was.
+          left join upload_request_tombstone urt
+            on urt.id = case when e.object_type = 'upload_request' then e.object_id
+                             when e.object_type = 'incoming_file'
+                               then (e.detail->>'request_id')::uuid
+                        end
          where e.household_id = ${p.householdId}
            ${opts.before ? sql`and e.id < ${opts.before}` : sql``}
          order by e.id desc
@@ -755,13 +765,21 @@ export class AuditService {
     // With its collection as the reader is given it: the database gives
     // nobody another member's Only me collection (0036), and a deleted one
     // is still given, its lines being its history.
-    const made = await trx
+    const live = await trx
       .selectFrom('share_link as s')
       .leftJoin('doc_collection as c', 'c.id', 's.collection_id')
       .select(['s.id', 's.created_by', 'c.audience', 'c.owner_member_id'])
       .where('s.id', 'in', ids)
       .where('s.collection_id', 'is not', null)
       .execute();
+    // And one removed once it had ended (0106, RQ), as its tombstone says.
+    const removed = await trx
+      .selectFrom('share_link_tombstone as s')
+      .leftJoin('doc_collection as c', 'c.id', 's.collection_id')
+      .select(['s.id', 's.created_by', 'c.audience', 'c.owner_member_id'])
+      .where('s.id', 'in', ids)
+      .execute();
+    const made = [...live, ...removed.filter((g) => !live.some((l) => l.id === g.id))];
     // Who may not share is given no link (GET /shares), and so none of
     // their lines; there is no more to ask.
     const shares = can(p.role, 'document.share');

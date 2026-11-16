@@ -127,6 +127,12 @@ export type Capability =
    */
   | 'household.timezone'
   /**
+   * Choose how long links outside the family and requests to send documents
+   * are kept once they have ended for good (0.9.0, RQ): 30, 90 or 365 days,
+   * or never removed.
+   */
+  | 'household.ended_sharing'
+  /**
    * Lock somebody's sign-in, and unlock it (5.28, A51, A52): never one's
    * own, and never another owner's (A50). An owner power (A54): asked with a
    * passkey or a code, never the password.
@@ -316,6 +322,12 @@ const MATRIX: Record<Capability, Rule> = {
     // and digests arrive (0.9.0, TZ). The database holds it too (0080).
     roles: ['owner'],
     refusal: 'Only an owner can change the family’s time zone.',
+  },
+  'household.ended_sharing': {
+    // How long the household keeps links and requests that no longer work
+    // (0.9.0, RQ). The database holds it too (0106).
+    roles: ['owner'],
+    refusal: 'Only an owner can change how long ended links and requests are kept.',
   },
   'member.suspend': {
     // Only owners lock (A52), and one owner cannot lock out another (A50):

@@ -106,6 +106,18 @@ export interface Schema {
      * also Off, Health documents only, All documents.
      */
     neutral_wording: Generated<'off' | 'health' | 'sensitive' | 'all'>;
+    /**
+     * How long a link outside the family and a request to send documents
+     * are kept once they have ended for good (0106, RQ): 30, 90 or 365
+     * days, or null for never. 90 unless an owner chose otherwise.
+     */
+    ended_sharing_days: ColumnType<number | null, number | null | undefined, number | null>;
+    /**
+     * When the keeping began (0106): the upgrade, a restore of a backup from
+     * before it, or the household's making. A link or request is removed
+     * only once its time has passed since both its end and this.
+     */
+    ended_sharing_from: GeneratedTimestamp;
   };
 
   member: {
@@ -872,6 +884,13 @@ export interface Schema {
     mail_key: string | null;
     /** From an email whose sender the mailbox's check could not vouch for (0069): said on its card. */
     sender_unverified: Generated<boolean>;
+    /**
+     * A filed file whose request was removed once it had ended (0106, RQ):
+     * when, and whom the request was for, in the family's words. Its
+     * `request_id`, item and session are null then.
+     */
+    request_removed_at: Timestamp | null;
+    request_label: string | null;
   };
 
   /**
@@ -1359,6 +1378,35 @@ export interface Schema {
     visibility: Visibility;
     owner_member_id: string | null;
     link_ids: ColumnType<string[], string[] | undefined, never>;
+    removed_at: GeneratedTimestamp;
+  };
+
+  /**
+   * What a request to send documents removed once it had ended (0106, RQ)
+   * leaves behind: whom its lines in the activity log are for. Written by
+   * the vault, never changed or removed.
+   */
+  upload_request_tombstone: {
+    id: string;
+    household_id: string;
+    requester_member_id: string;
+    review_by: 'me' | 'adults';
+    moved_to_owners_at: Timestamp | null;
+    removed_at: GeneratedTimestamp;
+  };
+
+  /**
+   * What a collection's link removed once it had ended (0106, RQ) leaves
+   * behind: who made it, its collection, and the documents it was made with
+   * or followed, for the activity log. Written by the vault, never changed
+   * or removed.
+   */
+  share_link_tombstone: {
+    id: string;
+    household_id: string;
+    created_by: string;
+    collection_id: string;
+    document_ids: ColumnType<string[], string[] | undefined, never>;
     removed_at: GeneratedTimestamp;
   };
 

@@ -315,7 +315,7 @@ export function countBadge(n: number, one: string, many: string) {
   return { shown: String(n), spoken: `${n} ${n === 1 ? one : many}` };
 }
 
-type IconName = 'download' | 'eye' | 'tag' | 'collection' | 'link' | 'history';
+type IconName = 'download' | 'eye' | 'tag' | 'collection' | 'link' | 'history' | 'info';
 
 const PATHS: Record<IconName, ReactNode> = {
   download: (
@@ -352,6 +352,14 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <circle cx="12" cy="12" r="9" />
       <path d="M12 7v5l3 2" />
+    </>
+  ),
+  // An (i): more about what it is beside (0.9.0, No longer needed's).
+  info: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5" />
+      <path d="M12 8h.01" />
     </>
   ),
 };

@@ -206,6 +206,18 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
         }),
     },
     {
+      // How long ended links and requests are kept (0.9.0, RQ): an owner's alone.
+      capability: 'household.ended_sharing',
+      what: 'change how long ended links and requests are kept',
+      call: (t) =>
+        h.app.inject({
+          method: 'PUT',
+          url: '/api/v1/household/ended-sharing',
+          headers: h.as(t),
+          payload: { remove_after_days: 90 },
+        }),
+    },
+    {
       capability: 'member.add',
       what: 'add a person',
       call: (t) =>

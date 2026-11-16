@@ -128,6 +128,13 @@ export const wordingCard = (role: Role, caps: Capabilities | null): boolean =>
 /** The household's rule for Only me documents and links (5.41): read by owners and adults. */
 export const readsOnlyMeRule = (role: Role) => can(role, 'document.share');
 
+/**
+ * How long ended links and requests are kept (0.9.0, RQ): read by whoever
+ * makes them — owners and adults — and changed by an owner.
+ */
+export const endedSharingCard = (role: Role, caps: Capabilities | null): boolean =>
+  caps?.features.ended_sharing === true && can(role, 'document.share');
+
 /** This reader's groups, in order, each with their sections in it; none left empty. */
 export function settingsGroups(
   role: Role,
@@ -195,6 +202,7 @@ export function settingsGroups(
         [
           wordingCard(role, caps) ? 'Neutral wording in notifications' : null,
           readsOnlyMeRule(role) ? 'Only me documents outside the family' : null,
+          endedSharingCard(role, caps) ? 'links that no longer work' : null,
           privacy.length > 0 ? 'who sees identity details' : null,
         ]
           .filter(Boolean)

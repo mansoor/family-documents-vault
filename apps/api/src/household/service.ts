@@ -17,7 +17,11 @@ import {
   DECEASED_REFUSAL,
   DECEASED_SIGNED_IN,
   DETAILS_REFUSAL,
+  ENDED_SHARING_DAYS,
+  ENDED_SHARING_DEFAULT,
   localToday,
+  type EndedSharing,
+  type EndedSharingDays,
   suspensionInEffect,
   type MemberAccount,
   type MemberAccountDevice,
@@ -313,6 +317,67 @@ export class HouseholdService {
       },
       ip: meta.ip,
     });
+  }
+
+  /**
+   * GET /household/ended-sharing (0.9.0, RQ): how long the household keeps
+   * links outside the family and requests to send documents once they have
+   * ended for good — for every role, as Sharing says it beside what no
+   * longer works; and whether the reader may change it.
+   */
+  async endedSharing(p: Principal): Promise<EndedSharing> {
+    return withPrincipal(this.db, p, async (trx) => {
+      const hh = await trx
+        .selectFrom('household')
+        .select('ended_sharing_days')
+        .where('id', '=', p.householdId)
+        .executeTakeFirstOrThrow();
+      return {
+        remove_after_days: endedSharingDaysOf(hh.ended_sharing_days),
+        can_change: can(p.role, 'household.ended_sharing'),
+      };
+    });
+  }
+
+  /**
+   * PUT /household/ended-sharing (0.9.0, RQ): an owner chooses 30, 90 or
+   * 365 days, or never (null). The database holds it to owners too
+   * (household_ended_sharing_rule, 0106). Nothing is removed now: the
+   * worker removes what ended long enough ago that night. Each change is in
+   * the activity log, for everybody who reads it; the same again changes
+   * nothing.
+   */
+  async setEndedSharing(
+    p: Principal,
+    to: EndedSharingDays | null,
+    meta: RequestMeta,
+  ): Promise<EndedSharing> {
+    requireCapability(p, 'household.ended_sharing');
+    await withPrincipal(this.db, p, async (trx) => {
+      const before = await trx
+        .selectFrom('household')
+        .select('ended_sharing_days')
+        .where('id', '=', p.householdId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const was = endedSharingDaysOf(before.ended_sharing_days);
+      if (was === to) return;
+      await trx
+        .updateTable('household')
+        .set({ ended_sharing_days: to })
+        .where('id', '=', p.householdId)
+        .execute();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'household.ended_sharing_changed',
+        objectType: 'household',
+        objectId: p.householdId,
+        detail: { days: to, was },
+        ip: meta.ip,
+      });
+    });
+    return this.endedSharing(p);
   }
 
   async updateProfile(p: Principal, input: z.infer<typeof profileBody>, meta: RequestMeta) {
@@ -827,4 +892,12 @@ export class HouseholdService {
       };
     });
   }
+}
+
+/** A stored choice, as the API says it: one of the offered (the database holds it to them), or never. */
+function endedSharingDaysOf(days: number | null): EndedSharingDays | null {
+  if (days === null) return null;
+  return (ENDED_SHARING_DAYS as readonly number[]).includes(days)
+    ? (days as EndedSharingDays)
+    : ENDED_SHARING_DEFAULT;
 }
