@@ -2,6 +2,7 @@ import type { SharedEmergency } from './emergency.js';
 import type { DateValue, DocumentView, Visibility } from './documents.js';
 import type { DetailProposal } from './proposals.js';
 import type { MemberKind } from './guests.js';
+import type { OriginalPlaceInput } from './original-place.js';
 import type { IdentityAudience, IdentityFields, IdentityPart } from './identity.js';
 import type { MemberAccess, MyRestriction, RestrictionSummary } from './restrictions.js';
 import type { CollectionAudience, Role, RoleChangeEffect } from './roles.js';
@@ -1244,6 +1245,14 @@ export interface DocumentInput {
   /** Who issued it (0.4.10): send only to a vault with `features.issued_by`. */
   issued_by?: string | null;
   physical_location?: string | null;
+  /**
+   * Where the original is, as a folder of the caller's own cabinet (0.9.0,
+   * C3, `features.original_place`): its names are kept on the document; null
+   * clears it. An edit only (PATCH): refused on a new document. A folder that
+   * is not one of the caller's shown folders is refused (422,
+   * `detail: 'original_place'`). Send only to a vault that says `original_place`.
+   */
+  original_place?: OriginalPlaceInput;
   is_essential?: boolean;
   tags?: string[];
   notes?: string | null;

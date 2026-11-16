@@ -33,6 +33,7 @@ import {
   identityFilled,
   maskIdentity,
   NOTE_KIND,
+  PLACE_SEPARATOR,
   seesAdults,
   wellFormedDate,
   type DateValue,
@@ -143,6 +144,12 @@ interface Entry {
   expires: string | null;
   identifier: string | null;
   physical_location: string | null;
+  /**
+   * Where the original is, as a place in somebody's cabinet (0.9.0, C3):
+   * "Study cabinet › Drawer 2 › Tax 2025", its names as the document keeps
+   * them. An export is for owners and adults, who see where originals are.
+   */
+  original_place: string | null;
   tags: string[];
   notes: string | null;
   /** The type's own details, by field key, as the vault keeps them (0.5.7). */
@@ -474,6 +481,7 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         expires: dateOf(d.expires_on, d.expires_precision),
         identifier: d.identifier,
         physical_location: d.physical_location,
+        original_place: d.original_place ? d.original_place.join(PLACE_SEPARATOR) : null,
         tags: d.tags,
         notes: valuesOf(d.id).notes,
         extra: valuesOf(d.id).extra,
@@ -654,6 +662,7 @@ function csv(entries: Entry[], details: DetailColumn[]): string {
     'expires',
     'identifier',
     'physical_location',
+    'original_place',
     'tags',
     'notes',
   ] as const;
@@ -698,7 +707,7 @@ function html(
   const rows = entries
     .map(
       (e) =>
-        `<tr><td>${e.file ? `<a href="${esc(e.file)}">${esc(e.title)}</a>` : esc(e.title)}${e.file_note ? `<br><small>${esc(e.file_note)}</small>` : ''}${e.no_longer_needed ? `<br><small>${esc(noLongerNeededWords(e.no_longer_needed))}</small>` : ''}</td><td>${esc(e.category)}</td><td>${esc(e.person)}</td><td>${esc(e.expires)}</td><td>${esc(e.identifier)}</td><td>${detailsOf(e)}</td><td>${esc(e.physical_location)}</td></tr>`,
+        `<tr><td>${e.file ? `<a href="${esc(e.file)}">${esc(e.title)}</a>` : esc(e.title)}${e.file_note ? `<br><small>${esc(e.file_note)}</small>` : ''}${e.no_longer_needed ? `<br><small>${esc(noLongerNeededWords(e.no_longer_needed))}</small>` : ''}</td><td>${esc(e.category)}</td><td>${esc(e.person)}</td><td>${esc(e.expires)}</td><td>${esc(e.identifier)}</td><td>${detailsOf(e)}</td><td>${esc([e.original_place, e.physical_location].filter((s) => s).join(' · '))}</td></tr>`,
     )
     .join('\n');
   // People (5.27): their photos, where there are any.

@@ -4093,6 +4093,108 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'where the original is, as a folder of my cabinet: set, followed, found and cleared (0.9.0, C3)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.original_place).toBe(true);
+      const me = await api.me(token);
+      const doc = await api.createDocument(token, {
+        type_key: 'utility_bill',
+        owner_member_id: me.member_id,
+        visibility: 'household',
+        sensitive: false,
+        title: 'Contract filed bill',
+      });
+      const other = await api.createDocument(token, {
+        type_key: 'utility_bill',
+        owner_member_id: me.member_id,
+        visibility: 'household',
+        sensitive: false,
+        title: 'Contract other bill',
+      });
+      const folder = (id: string, name: string) => ({
+        id,
+        name,
+        hidden: false,
+        filter: { category: 'bills' },
+      });
+      const layout = (name: string, folders = [folder('ctr-bills', name)]) => ({
+        arranged_by: null,
+        cabinets: [
+          {
+            id: 'ctr-cab',
+            name: 'Contract cabinet',
+            hidden: false,
+            drawers: [{ id: 'ctr-drawer', name: 'Top drawer', hidden: false, folders }],
+          },
+        ],
+      });
+      const at = await api.cabinet(token);
+      const saved = await api.saveCabinet(token, {
+        layout: layout('Bills 2026'),
+        version: at.version,
+      });
+      // A folder that is not one of mine is refused, nothing set.
+      const stranger = await refusal(api.setOriginalPlace(token, doc.id, 'not-mine'));
+      expect([stranger.status, stranger.code]).toEqual([422, 'validation_failed']);
+      const set = await api.setOriginalPlace(token, doc.id, 'ctr-bills', doc.etag);
+      expect(set.original_place).toEqual({
+        path: ['Contract cabinet', 'Top drawer', 'Bills 2026'],
+        folder_id: 'ctr-bills',
+      });
+      // The free text stays its own.
+      expect(set.physical_location).toBeNull();
+      // Filtered and sorted by it, as the table does: the whole path, or its cabinet.
+      for (const asked of ['Contract cabinet › Top drawer › Bills 2026', 'contract cabinet']) {
+        const page = await api.documents(token, {
+          sort: 'original_place',
+          original_place: asked,
+          limit: 200,
+        });
+        expect(page.items.map((d) => d.id)).toContain(doc.id);
+        expect(page.items.map((d) => d.id)).not.toContain(other.id);
+      }
+      // Renamed in my cabinet: the place follows.
+      const renamed = await api.saveCabinet(token, {
+        layout: layout('Bills, 2026'),
+        version: saved.version,
+      });
+      expect((await api.document(token, doc.id)).original_place?.path).toEqual([
+        'Contract cabinet',
+        'Top drawer',
+        'Bills, 2026',
+      ]);
+      // Many at once: the same place for both, then none.
+      const both = await api.setOriginalPlaces(token, {
+        document_ids: [doc.id, other.id],
+        folder_id: 'ctr-bills',
+      });
+      expect(both).toEqual({ changed: [other.id], unchanged: [doc.id], not_yours: [] });
+      // The folder taken out of my cabinet: the names stay, as words.
+      await api.saveCabinet(token, {
+        layout: layout('unused', [folder('ctr-other', 'Something else')]),
+        version: renamed.version,
+      });
+      expect((await api.document(token, other.id)).original_place).toEqual({
+        path: ['Contract cabinet', 'Top drawer', 'Bills, 2026'],
+        folder_id: null,
+      });
+      const cleared = await api.setOriginalPlaces(token, {
+        document_ids: [doc.id, other.id],
+        folder_id: null,
+      });
+      expect([...cleared.changed].sort()).toEqual([doc.id, other.id].sort());
+      expect((await api.document(token, doc.id)).original_place).toBeNull();
+      const missing = await refusal(
+        api.setOriginalPlaces(token, {
+          document_ids: [doc.id, '00000000-0000-4000-8000-000000000000'],
+          folder_id: null,
+        }),
+      );
+      expect(missing.status).toBe(404);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

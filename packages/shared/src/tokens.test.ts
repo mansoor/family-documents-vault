@@ -101,6 +101,7 @@ describe.each([
 
   it('paper is white: a scan is shown on it as it is', () => {
     expect(c.paper).toBe('#FFFFFF');
+    expect(c.paperInk).toBe('#000000');
   });
 });
 

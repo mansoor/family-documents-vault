@@ -7,6 +7,8 @@ import { AddManyScreen, BatchScreen, InboxScreen, SentScreen } from './screens/B
 import { BatchItemScreen } from './screens/BatchItem.js';
 import { DocumentScreen } from './screens/Document.js';
 import { DocumentsScreen } from './screens/Documents.js';
+import { FolderLabelsScreen } from './screens/FolderLabels.js';
+import { folderLanding, rememberLanding } from './landing.js';
 import { ReaderScreen } from './screens/Reader.js';
 import { SignInScreen, WelcomeScreen } from './screens/Entry.js';
 import { ActivityScreen } from './screens/Activity.js';
@@ -80,6 +82,22 @@ function Gate({ children, need }: { children: ReactNode; need: 'signed-in' | 'si
   if (need === 'signed-in' && !session.signedIn) return <Navigate to="/welcome" replace />;
   if (need === 'signed-out' && session.signedIn) return <Navigate to="/" replace />;
   return <>{children}</>;
+}
+
+/**
+ * A folder label's code (0.9.0, C3): `/folder/{id}`, the folder's id in its
+ * printer's cabinet and nothing else. Signed in, the cabinet opens at it —
+ * theirs, or a word that it is not; signed out, the usual sign-in, and then
+ * the folder (landing.ts).
+ */
+function FolderLink() {
+  const { id = '' } = useParams();
+  const { session } = useApp();
+  const to = folderLanding(id);
+  if (session.signedIn) return <Navigate to={to} replace />;
+  // The same each time it is asked: asked twice is once.
+  rememberLanding(to);
+  return <Navigate to="/welcome" replace />;
 }
 
 function SetupGate() {
@@ -173,6 +191,9 @@ export function App() {
             {/* Outside the gates entirely: whoever opens this has no
               account and is not going to make one. */}
             <Route path="/shared/:token" element={<SharedScreen />} />
+            {/* A printed folder label's code (0.9.0, C3): the folder, once
+                signed in — whoever is signed out signs in first. */}
+            <Route path="/folder/:id" element={<FolderLink />} />
             <Route
               path="/sign-in"
               element={
@@ -212,6 +233,8 @@ export function App() {
               <Route path="/documents/:id" element={<DocumentScreen />} />
               <Route path="/documents/:id/read" element={<ReaderScreen />} />
               <Route path="/documents/:id/confirm" element={<ConfirmScreen />} />
+              {/* Labels for the paper folders, each with a code (0.9.0, C3). */}
+              <Route path="/cabinet/labels" element={<FolderLabelsScreen />} />
               <Route path="/search" element={<SearchScreen />} />
               {/* Open to a viewer too: the role rules let a viewer see reminders,
                   and Home's Needs attention links a viewer here. */}

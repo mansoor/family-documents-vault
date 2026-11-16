@@ -542,6 +542,13 @@ const RULES: Record<string, Rule> = {
     body: () => ({ title: 'Changed by an attacker', notes: 'Changed by an attacker' }),
   },
   'DELETE /api/v1/documents/:id': { who: 'signedIn' },
+  // Where the originals of many are, as a folder of the caller's own cabinet
+  // (0.9.0, C3): whoever may change documents and sees where originals are
+  // kept — never a viewer or a guest — and only documents they may see.
+  'POST /api/v1/documents/original-place': {
+    who: 'family',
+    body: (f) => ({ document_ids: [f.document], folder_id: null }),
+  },
   'GET /api/v1/documents/:id/collections': { who: 'signedIn' },
   'GET /api/v1/documents/:id/issuer-suggestions': { who: 'signedIn' },
   'GET /api/v1/documents/:id/suggestions': { who: 'family' },

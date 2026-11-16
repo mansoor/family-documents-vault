@@ -750,6 +750,8 @@ export async function refreshStatus(
           'document.identifier',
           'document.issued_by',
           'document.physical_location',
+          // Its place in a cabinet (C3): where the original is, as the words are.
+          'document.original_place',
           'document.tags',
           'document.notes',
           'document.extra',

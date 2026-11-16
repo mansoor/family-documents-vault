@@ -4,6 +4,8 @@
  * computed by the server and never accepted from a client.
  */
 
+import type { OriginalPlace } from './original-place.js';
+
 export type DatePrecision = 'day' | 'month' | 'year';
 export type Visibility = 'household' | 'adults' | 'private';
 
@@ -82,6 +84,13 @@ export interface DocumentView {
    */
   issued_by?: string | null;
   physical_location: string | null;
+  /**
+   * Where the original is, as a place in somebody's cabinet (0.9.0, C3,
+   * `features.original_place`): Cabinet › Drawer › Folder, beside the free
+   * text above. Null for none — and, as `physical_location`, for whoever may
+   * not see where originals are kept. Absent from older vaults.
+   */
+  original_place?: OriginalPlace | null;
   is_essential: boolean;
   tags: string[];
   /**
@@ -1236,6 +1245,12 @@ export interface RequiredValues {
   issued?: DateValue | null | undefined;
   expires?: DateValue | null | undefined;
   physical_location?: string | null | undefined;
+  /**
+   * Its place in a cabinet (0.9.0, C3): where the original is, as much as
+   * the words are — a kind that needs where the original is has it with
+   * either. As the row keeps it (names), or as the view answers it.
+   */
+  original_place?: ReadonlyArray<string> | Pick<OriginalPlace, 'path'> | null | undefined;
   tags?: ReadonlyArray<string> | null | undefined;
   notes?: string | null | undefined;
   extra?: Record<string, unknown> | null | undefined;
@@ -1246,6 +1261,10 @@ const blank = (v: unknown): boolean =>
   v === null ||
   (typeof v === 'string' && v.trim() === '') ||
   (Array.isArray(v) && v.length === 0);
+
+/** Whether a document has a place in a cabinet (C3): names as a row keeps them, or a view's. */
+const placed = (v: RequiredValues['original_place']): boolean =>
+  v !== null && v !== undefined && ('path' in v ? v.path.length > 0 : v.length > 0);
 
 /**
  * The fields a document's type requires that it has no value for, in the
@@ -1268,7 +1287,11 @@ export function missingFields(
       key === 'expires'
         ? type.expiry_driver !== null && !expiryOptional(type)
         : rule?.shown !== false && rule?.required === true;
-    if (required && blank(doc[key])) out.push({ key, label: rule?.label ?? null });
+    const given =
+      key === 'physical_location'
+        ? !blank(doc.physical_location) || placed(doc.original_place)
+        : !blank(doc[key]);
+    if (required && !given) out.push({ key, label: rule?.label ?? null });
   }
   for (const f of type.fields ?? []) {
     if (f.required === true && blank(doc.extra?.[f.key])) out.push({ key: f.key, label: f.label });

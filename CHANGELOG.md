@@ -6,6 +6,28 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.50] - 2026-11-16 — where the original is, in your cabinet
+
+### Added
+
+- **Say which folder of your cabinet the paper is in.** On a document's page, **Original is kept** has **File it in my cabinet…**: choose one of your own folders (the ones this paper already fits are offered first), and the page says, for example, _Study cabinet › Drawer 2 › Tax 2025 · behind the blue divider_ — the folder, then anything you wrote about where it's kept. The words you write stay as they were, for everything a folder can't say. **Change folder…** moves it, and **Not in a folder** takes it out.
+- **Everyone who sees where originals are kept reads the same place.** Your cabinet is yours alone, so the folder's names are kept with the document: your family read _Study cabinet › Drawer 2 › Tax 2025_ without seeing your cabinet, and only you can open the folder from there. Rename or move the folder and the place follows; take the folder away and the names stay, as words.
+- **File it here, after a scan.** When you add a document, its page asks **Where will the paper go?**, with the folders of your cabinet it belongs in, one tap each, or **Another folder…**, or **Not now**.
+- **Many at once.** In **Documents**, tick rows and **Set where it's kept** now has **Folder in my cabinet** beside the words: one folder for all of them, or **Take them out of their folders**.
+- **Find papers by where they're filed.** Search finds a document by its folder's names; a folder of your cabinet has **Originals filed here**, which opens the table with just those; and the table has a **Filed in** column you can show from **Columns**, sorted like any other.
+- **Print folder labels.** A folder has **Print a label**, and your cabinet **Print folder labels**: tick the folders, choose small or large labels on A4 or Letter, and print. Each label has the folder's name and a code. Scan the code with a phone and it opens that folder in the vault — after signing in, if you weren't — showing only what you may see. The code holds nothing but the vault's address for the folder: no password, no names, no titles. (Migration 0104.)
+
+### Security
+
+- **Where a paper is filed is the household's, like where it's kept:** owners, adults and teens see it and can search and sort by it; a viewer, a guest, a link and anyone signed out never do, and searching for a folder's name finds nothing for them. Only whoever may change a document can set its folder, only ever to a folder of their own, and the database holds it. The activity log says the folder changed, never its name.
+- A label's code opens a folder only for the person whose cabinet it is in; anyone else is told it isn't in their cabinet. After signing in, a label can only ever land on a folder of the cabinet.
+- **A hidden folder's names stay yours.** Hide a folder, or the drawer or cabinet it's in, and the documents filed there keep the names they last showed, instead of following it. The page says plainly that everyone who sees where originals are kept reads the whole path — cabinet, drawer and folder.
+- A name with " › " in it — the mark between a cabinet, a drawer and a folder — isn't taken for a new name, so a place always reads one way. Names are kept without spaces before or after them.
+
+### Fixed
+
+- A phone keeps up when you rename a folder: documents filed in it come with the new names in its next catch-up, though the documents themselves weren't edited.
+
 ## [0.9.0-dev.49] - 2026-11-16 — change a link after it's made, and see a request's link again
 
 ### Added

@@ -9,7 +9,7 @@ import {
   TITLE_SHARE,
   writeKeptWidths,
 } from './column-widths.js';
-import { COLUMNS, PICK_WIDTH, type ColumnKey } from './documents-table.js';
+import { COLUMNS, OPTIONAL_COLUMNS, PICK_WIDTH, type ColumnKey } from './documents-table.js';
 
 /**
  * The Documents table's widths (0.9.0, TW): each column as wide as what it
@@ -17,7 +17,10 @@ import { COLUMNS, PICK_WIDTH, type ColumnKey } from './documents-table.js';
  * within a range; and what each person gave them, kept here.
  */
 
-const ALL = COLUMNS.map((c) => c.key);
+/** Every column a table starts with: those added later (Filed in, C3) are shown only when chosen. */
+const ALL = COLUMNS.map((c) => c.key).filter((k) => !OPTIONAL_COLUMNS.includes(k));
+/** And with them. */
+const EVERY = COLUMNS.map((c) => c.key);
 /** The ⋯ at each row's end (Documents.tsx's MORE_WIDTH). */
 const MORE = 56;
 /**
@@ -42,6 +45,8 @@ const HEADER_TEXT: Record<ColumnKey, number> = {
   status: 49,
   visibility: 84,
   location: 68,
+  // "FILED IN" (C3).
+  original_place: 64,
   collections: 92,
 };
 /**
@@ -56,12 +61,13 @@ const USUAL: Partial<Record<ColumnKey, number>> = {
   status: 10 + 6 + 149 + 16, // the dot, "Valid for 1 year 1 month" in bold
   visibility: 71 + 16, // "Adults only"
   location: 106 + 16, // "Safe deposit box"
+  original_place: 174 + 16, // "Study › Drawer 2 › Tax 2025"
   collections: 78 + 4 + 34 + 16, // a chip, "+2"
 };
 
 describe('each column as wide as what it usually says (0.9.0, TW)', () => {
   it('has every header whole, on one line, however narrow it is made or drawn', () => {
-    for (const key of ALL) {
+    for (const key of EVERY) {
       const s = COLUMN_SIZES[key];
       const head = HEADER_TEXT[key] + HEAD_CHROME;
       expect(s.min, key).toBeGreaterThanOrEqual(Math.max(64, head));
@@ -71,9 +77,11 @@ describe('each column as wide as what it usually says (0.9.0, TW)', () => {
     }
     // And at every band, drawn by itself.
     for (const px of [1920, 1650, 1280, 1024, 900]) {
-      const w = columnWidths(ALL, roomAt(px));
-      for (const key of ALL) {
-        expect(w[key], `${key} at ${px}`).toBeGreaterThanOrEqual(HEADER_TEXT[key] + HEAD_CHROME);
+      for (const keys of [ALL, EVERY]) {
+        const w = columnWidths(keys, roomAt(px));
+        for (const key of keys) {
+          expect(w[key], `${key} at ${px}`).toBeGreaterThanOrEqual(HEADER_TEXT[key] + HEAD_CHROME);
+        }
       }
     }
   });

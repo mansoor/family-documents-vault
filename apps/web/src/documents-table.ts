@@ -34,6 +34,8 @@ export type ColumnKey =
   | 'status'
   | 'visibility'
   | 'location'
+  // Where the original is, as a place in a cabinet (0.9.0, C3).
+  | 'original_place'
   | 'collections';
 
 export interface Column {
@@ -61,6 +63,7 @@ export const COLUMNS: readonly Column[] = [
   { key: 'status', label: 'Status', width: 120 },
   { key: 'visibility', label: 'Who can see it', head: 'Who sees it', width: 92 },
   { key: 'location', label: 'Location', width: 104 },
+  { key: 'original_place', label: 'Filed in', width: 140 },
   { key: 'collections', label: 'Collections', width: 96 },
 ];
 
@@ -84,11 +87,20 @@ export const PAGE_SIZE = 100;
 /** The most documents one action takes at once, as the vault takes them into a collection. */
 export const MOST_AT_ONCE = 200;
 
-/** The columns this reader has: never Location for whom it is not (5.41), never Collections without any. */
-export function columnsFor(role: Role, opts: { collections: boolean }): Column[] {
+/**
+ * The columns this reader has: never Location for whom it is not (5.41),
+ * never Collections without any, and Filed in (C3) only where the vault keeps
+ * places in a cabinet, for whoever sees where originals are.
+ */
+export function columnsFor(
+  role: Role,
+  opts: { collections: boolean; places?: boolean | undefined },
+): Column[] {
   return COLUMNS.filter(
     (c) =>
-      (c.key !== 'location' || seesLocation(role)) && (c.key !== 'collections' || opts.collections),
+      (c.key !== 'location' || seesLocation(role)) &&
+      (c.key !== 'original_place' || (opts.places === true && seesLocation(role))) &&
+      (c.key !== 'collections' || opts.collections),
   );
 }
 
@@ -122,6 +134,8 @@ export const FOLDER_KEYS = [
   'category',
   'issued_by',
   'location',
+  // In a place in a cabinet (0.9.0, C3): the whole path, or its leading part.
+  'original_place',
   'essential',
   'added_from',
   'added_to',
@@ -194,10 +208,14 @@ export function viewFrom(params: URLSearchParams, role: Role): TableView {
       if (DAY.test(v)) keys[k] = v;
     } else if (k === 'essential') {
       if (v === 'true' || v === 'false') keys[k] = v;
-    } else if (k !== 'location' || seesLocation(role)) keys[k] = v;
+    } else if ((k !== 'location' && k !== 'original_place') || seesLocation(role)) keys[k] = v;
   }
   return {
-    sort: isDocumentSort(sort) && (sort !== 'location' || seesLocation(role)) ? sort : 'title',
+    sort:
+      isDocumentSort(sort) &&
+      ((sort !== 'location' && sort !== 'original_place') || seesLocation(role))
+        ? sort
+        : 'title',
     dir: params.get('dir') === 'desc' ? 'desc' : 'asc',
     person: pick('person'),
     kind: pick('kind'),
@@ -274,6 +292,7 @@ export function queryOf(
     category: k.category,
     issued_by: k.issued_by,
     location: k.location,
+    original_place: k.original_place,
     essential: k.essential === undefined ? undefined : k.essential === 'true',
     added_from: k.added_from,
     added_to: k.added_to,
@@ -296,7 +315,9 @@ export function folderChipCount(f: FolderPart): number {
   ).length;
   return (
     ranges +
-    (['category', 'issued_by', 'location', 'essential'] as const).filter((x) => k[x]).length +
+    (['category', 'issued_by', 'location', 'original_place', 'essential'] as const).filter(
+      (x) => k[x],
+    ).length +
     f.tags.length
   );
 }
@@ -318,26 +339,43 @@ export const HIDDEN_COLUMNS_KEY = 'fdv.documents.hidden-columns';
 export const COLLECTION_HIDDEN_COLUMNS_KEY = 'fdv.collection.hidden-columns';
 export const COLLECTION_HIDDEN_BY_DEFAULT: readonly ColumnKey[] = ['collections'];
 
+/**
+ * Columns added after a person may have chosen theirs, hidden until they
+ * show them (0.9.0, C3: Filed in): the table at the owner's window keeps
+ * every column it had whole. Which of them a person shows is remembered
+ * apart (`shownKey`), so a choice made before they came hides none of them.
+ */
+export const OPTIONAL_COLUMNS: readonly ColumnKey[] = ['original_place'];
+
+/** Where the optional columns a person shows are remembered, beside `key`. */
+const shownKey = (key: string) => `${key}.shown`;
+
 /** Which columns are hidden on this device: what was chosen, or `byDefault` until anything is. */
 export function readHidden(
   key: string = HIDDEN_COLUMNS_KEY,
   byDefault: readonly ColumnKey[] = [],
 ): Set<ColumnKey> {
+  const known = (keys: unknown): ColumnKey[] =>
+    Array.isArray(keys)
+      ? keys.filter(
+          (k): k is ColumnKey =>
+            typeof k === 'string' && k !== 'title' && COLUMNS.some((c) => c.key === k),
+        )
+      : [];
+  let shown: ColumnKey[] = [];
+  try {
+    shown = known(JSON.parse(localStorage.getItem(shownKey(key)) ?? '[]'));
+  } catch {
+    // None shown.
+  }
+  const optional = OPTIONAL_COLUMNS.filter((k) => !shown.includes(k));
   try {
     const raw = localStorage.getItem(key);
-    if (raw === null) return new Set(byDefault);
-    const keys = raw ? (JSON.parse(raw) as unknown) : [];
-    return new Set(
-      Array.isArray(keys)
-        ? keys.filter(
-            (k): k is ColumnKey =>
-              typeof k === 'string' && k !== 'title' && COLUMNS.some((c) => c.key === k),
-          )
-        : [],
-    );
+    if (raw === null) return new Set([...byDefault, ...optional]);
+    return new Set([...known(raw ? (JSON.parse(raw) as unknown) : []), ...optional]);
   } catch {
     // A private window, or something else's words there: as it starts.
-    return new Set(byDefault);
+    return new Set([...byDefault, ...optional]);
   }
 }
 
@@ -346,7 +384,14 @@ export function writeHidden(
   key: string = HIDDEN_COLUMNS_KEY,
 ): void {
   try {
-    localStorage.setItem(key, JSON.stringify([...hidden]));
+    localStorage.setItem(
+      key,
+      JSON.stringify([...hidden].filter((k) => !OPTIONAL_COLUMNS.includes(k))),
+    );
+    localStorage.setItem(
+      shownKey(key),
+      JSON.stringify(OPTIONAL_COLUMNS.filter((k) => !hidden.has(k))),
+    );
   } catch {
     // Not remembered: hidden for now, on this page.
   }

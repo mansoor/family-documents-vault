@@ -210,6 +210,12 @@ import {
   RESET_LINK_MINUTES,
   resetCommand,
   seesLocation,
+  placeWords,
+  PLACE_SEPARATOR,
+  PLACE_NOT_IN_CABINET,
+  NAME_HOLDS_SEPARATOR,
+  ORIGINAL_PLACE_MOST,
+  type OriginalPlaceBulkResult,
   shareEndWords,
   suspensionInEffect,
   TYPE_IN_USE,
@@ -850,6 +856,16 @@ type FakeDocument = {
     reason: string | null;
     replaced_by: string | null;
   } | null;
+  /**
+   * Where the original is, as a place in somebody's cabinet (0.9.0, C3), as
+   * the real vault keeps it: the names, and whose folder it is while it is
+   * (`by`, a member id, with `folder_id`; both null once let go).
+   */
+  original_place?: {
+    path: [string, string, string];
+    by: string | null;
+    folder_id: string | null;
+  } | null;
 } & Omit<CaptureMetadata, 'title'>;
 
 /** A computer that sends scans, as the fake keeps one (0.8.0, D1). */
@@ -988,6 +1004,8 @@ const FAKE_EDITABLE = [
   'tags',
   // The whole edit card saved (0.9.0): taken, as the vault takes it.
   'confirm_details',
+  // Where the original is, as a folder of the editor's cabinet (0.9.0, C3).
+  'original_place',
 ];
 
 /** A document's version, as an If-Match names it: changed by every edit. */
@@ -3559,6 +3577,8 @@ export function createFakeVault(): {
           zip_download: true,
           // Links and requests changed, requests shown again (0.9.0, LK).
           link_changes: true,
+          // Where the original is, as a place in a cabinet (0.9.0, C3).
+          original_place: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -3785,11 +3805,17 @@ export function createFakeVault(): {
         (d.visibility === 'private' && d.owner_member_id === who.memberId);
       return seen ? { id: d.id, title: d.title } : null;
     };
+    /** Whoever asks, by member: a place's folder is named to its setter alone (C3). */
+    const askerMember = () => {
+      const s = session();
+      return 'id' in s ? whoOf(s).memberId : null;
+    };
     const viewOf = (doc: FakeDocument) =>
       documentView(doc, state.types, {
         role: state.role,
         editorName,
         location: locationShown(),
+        memberId: askerMember(),
         replacement,
       });
     /** As a list answers it: an Only me document's notes and details stay sealed (0.5.8). */
@@ -3799,6 +3825,7 @@ export function createFakeVault(): {
         role: state.role,
         editorName,
         location: locationShown(),
+        memberId: askerMember(),
         replacement,
       });
     /**
@@ -3814,12 +3841,24 @@ export function createFakeVault(): {
       sort: DocumentSort,
     ) => {
       const location = param(url, 'location');
-      if ((sort === 'location' || location !== undefined) && !maySortByLocation(who.role)) {
+      // And its place in a cabinet (C3), as the vault: the same household's fact.
+      const placeAsked = param(url, 'original_place')?.trim();
+      if (
+        (sort === 'location' ||
+          sort === 'original_place' ||
+          location !== undefined ||
+          placeAsked !== undefined) &&
+        !maySortByLocation(who.role)
+      ) {
         return fail(
           422,
           'validation_failed',
           LOCATION_SORT_REFUSAL,
-          sort === 'location' ? 'sort' : 'location',
+          sort === 'location' || sort === 'original_place'
+            ? 'sort'
+            : location !== undefined
+              ? 'location'
+              : 'original_place',
         );
       }
       const direction = param(url, 'direction') ?? 'asc';
@@ -3915,6 +3954,13 @@ export function createFakeVault(): {
           (d) => visibilities === undefined || visibilities.includes(d.visibility ?? 'household'),
         )
         .filter((d) => location === undefined || low(d.physical_location) === low(location))
+        // The whole path, or its leading part, whatever the case (C3).
+        .filter((d) => {
+          if (placeAsked === undefined) return true;
+          const line = d.original_place ? placeWords(d.original_place).toLowerCase() : null;
+          const want = placeAsked.toLowerCase();
+          return line !== null && (line === want || line.startsWith(want + PLACE_SEPARATOR));
+        })
         .filter((d) => v1.within(listedOf(d)))
         .filter((d) => {
           if (collectionId === undefined) return true;
@@ -3949,7 +3995,9 @@ export function createFakeVault(): {
                                   issued ??
                                     (view.created_at ?? new Date().toISOString()).slice(0, 10),
                                 ]
-                              : [low(d.physical_location)];
+                              : sort === 'original_place'
+                                ? [low(d.original_place ? placeWords(d.original_place) : null)]
+                                : [low(d.physical_location)];
           return { view: { ...view, collections: collectionsOf(d) }, key, id: d.id };
         })
         .filter((r) => statuses === undefined || statuses.includes(r.view.status.value));
@@ -4200,6 +4248,21 @@ export function createFakeVault(): {
           if ('status' in got)
             return refuse(((await got.json()) as { error: { message: string } }).error.message);
         }
+        // A new name holds no " › " (C3): a name kept from before may.
+        const nodes = (l: CabinetLayout | null) =>
+          (l?.cabinets ?? []).flatMap((c) => [c, ...c.drawers.flatMap((d) => [d, ...d.folders])]);
+        const had = new Map(nodes(held.layout).map((n) => [n.id, n.name.trim()]));
+        const joined = nodes(layout).find(
+          (n) => n.name.trim().includes(PLACE_SEPARATOR) && had.get(n.id) !== n.name.trim(),
+        );
+        if (joined) {
+          return fail(
+            422,
+            'validation_failed',
+            `“${joined.name.trim()}”: ${NAME_HOLDS_SEPARATOR}`,
+            `node ${joined.id}: name`,
+          );
+        }
         if (held.version !== version) return fail(409, 'conflict', CABINET_CHANGED);
         // Pins (C2): those of a folder merged moved with it; those of a folder gone, let go.
         const folderIds = new Set(
@@ -4236,6 +4299,26 @@ export function createFakeVault(): {
           updated_at: new Date().toISOString(),
         };
         cabinets[who.memberId] = saved;
+        // Where originals are, in its folders (C3), as the vault: the names
+        // follow a rename; a folder gone lets its reference go, names kept.
+        // Only a shown folder is followed: a hidden one is let go (the C3 review).
+        const paths = new Map(
+          shown(layout).map(({ f, path }) => [
+            f.id,
+            path.map((n) => n.trim()) as [string, string, string],
+          ]),
+        );
+        // Nobody who no longer sees where originals are kept writes any.
+        for (const doc of seesLocation(who.role) ? state.documents : []) {
+          const place = doc.original_place;
+          if (!place || place.by !== who.memberId || place.folder_id === null) continue;
+          // Somebody else's Only me paper is not written by them.
+          if (doc.visibility === 'private' && doc.owner_member_id !== who.memberId) continue;
+          const path = paths.get(place.folder_id);
+          doc.original_place = path
+            ? { ...place, path }
+            : { path: place.path, by: null, folder_id: null };
+        }
         return ok(saved);
       }
       if (path === '/api/v1/cabinet/preview' && method === 'POST') {
@@ -4624,7 +4707,9 @@ export function createFakeVault(): {
       }
       // What the table adds goes with a column sort: refused with any other.
       const tableOnly = [
-        ...['direction', 'collection_id', 'location'].filter((k) => param(url, k) !== undefined),
+        ...['direction', 'collection_id', 'location', 'original_place'].filter(
+          (k) => param(url, k) !== undefined,
+        ),
         ...(param(url, 'member_id') === 'none' ? ['member_id=none'] : []),
       ];
       if (tableOnly.length > 0) {
@@ -4786,6 +4871,61 @@ export function createFakeVault(): {
       state.documents = state.documents.filter((d) => d !== doc);
       return empty();
     }
+    // Where the originals of many are (0.9.0, C3), as the real vault: one
+    // folder of the caller's cabinet, or none; every one theirs to see, out
+    // of the Trash, else nothing changes (404); a teen's not their own left
+    // as it is and named.
+    if (path === '/api/v1/documents/original-place' && init.method === 'POST') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!can(who.role, 'document.edit')) {
+        return fail(403, 'forbidden', refusalFor('document.edit'));
+      }
+      if (!seesLocation(who.role)) {
+        return fail(403, 'forbidden', LOCATION_SORT_REFUSAL, 'original_place');
+      }
+      const ids = body.document_ids;
+      const folderId = body.folder_id;
+      if (
+        !Array.isArray(ids) ||
+        ids.length === 0 ||
+        ids.length > ORIGINAL_PLACE_MOST ||
+        (folderId !== null && typeof folderId !== 'string')
+      ) {
+        return fail(422, 'validation_failed', 'Please check the form.');
+      }
+      const place = folderId === null ? null : fakePlaceOf(state, who.memberId, folderId);
+      if (place === undefined) {
+        return fail(422, 'validation_failed', PLACE_NOT_IN_CABINET, 'original_place');
+      }
+      const docs = [...new Set(ids as string[])].map((id) =>
+        state.documents.find(
+          (d) =>
+            d.id === id &&
+            !d.deleted_at &&
+            canSee(who, {
+              visibility: d.visibility ?? 'household',
+              owner_member_id: d.owner_member_id ?? null,
+            }),
+        ),
+      );
+      if (docs.some((d) => d === undefined)) {
+        return fail(404, 'not_found', 'That document is not in the vault.');
+      }
+      const out: OriginalPlaceBulkResult = { changed: [], unchanged: [], not_yours: [] };
+      for (const d of docs as FakeDocument[]) {
+        if (who.role === 'teen' && d.owner_member_id !== who.memberId) out.not_yours.push(d.id);
+        else if (JSON.stringify(d.original_place ?? null) === JSON.stringify(place)) {
+          out.unchanged.push(d.id);
+        } else {
+          d.original_place = place;
+          d.revision = (d.revision ?? 1) + 1;
+          out.changed.push(d.id);
+        }
+      }
+      return ok(out);
+    }
     // One document, and an edit to it: the details merged, as the real
     // vault merges them (0.5.7), so a client never wipes what it did not show.
     const one = /^\/api\/v1\/documents\/([^/]+)$/.exec(path);
@@ -4861,6 +5001,25 @@ export function createFakeVault(): {
         const tagProblem = tagsProblem(body.tags as string[]);
         if (tagProblem) return fail(422, 'validation_failed', tagProblem, 'tags');
       }
+      // Its place in a cabinet (0.9.0, C3): a shown folder of the editor's
+      // own layout, or null — read before anything is changed, as the vault.
+      let place: FakeDocument['original_place'] | undefined;
+      if (body.original_place !== undefined) {
+        if (!seesLocation(editor.role)) {
+          return fail(403, 'forbidden', LOCATION_SORT_REFUSAL, 'original_place');
+        }
+        const asked: unknown = body.original_place;
+        if (asked === null) place = null;
+        else {
+          const found = fakePlaceOf(
+            state,
+            editor.memberId,
+            (asked as { folder_id?: unknown }).folder_id,
+          );
+          if (!found) return fail(422, 'validation_failed', PLACE_NOT_IN_CABINET, 'original_place');
+          place = found;
+        }
+      }
       Object.assign(doc, { type_key, extra });
       // Sensitive (0.9.0, AIR2): a teen may make a paper sensitive, never
       // less so, all said with the kind it will have — as the real vault.
@@ -4874,6 +5033,7 @@ export function createFakeVault(): {
       }
       Object.assign(doc, { type_key, extra });
       if (body.sensitive !== undefined) doc.sensitive = body.sensitive as boolean | null;
+      if (place !== undefined) doc.original_place = place;
       if (body.tags !== undefined) doc.tags = tagsOf(body.tags as string[]);
       if (body.title !== undefined) doc.title = (body.title as string | null) ?? null;
       // The household's, or a person's, never both (0.9.0): null alone — an
@@ -9850,6 +10010,29 @@ function answer(made: FakeUpload) {
 }
 
 /**
+ * A shown folder of somebody's own layout, as a place in a cabinet is set
+ * from (0.9.0, C3): its names and whose it is; undefined when it is not one
+ * of theirs, or hidden.
+ */
+function fakePlaceOf(
+  state: FakeVaultState,
+  memberId: string,
+  folderId: unknown,
+): NonNullable<FakeDocument['original_place']> | undefined {
+  const layout = state.cabinets?.[memberId]?.layout;
+  for (const c of layout?.cabinets ?? []) {
+    for (const d of c.drawers) {
+      for (const f of d.folders) {
+        if (f.id === folderId && !c.hidden && !d.hidden && !f.hidden) {
+          return { path: [c.name, d.name, f.name], by: memberId, folder_id: f.id };
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
  * A document as the real vault answers it: the fields the fake keeps, its
  * notes and details, and its status — worked out as the vault works it
  * out, so a type's missing required field reads "Needs a passport number"
@@ -9866,6 +10049,8 @@ function documentView(
     editorName?: (memberId: string) => string | null;
     /** Whether the reader sees where the original is kept (5.41): null unless they do. */
     location?: boolean;
+    /** The reader's member id: a place in a cabinet names its folder to its setter alone (C3). */
+    memberId?: string | null;
     /** A replacement as the reader sees it (0.9.0): its id and title, or null when they may not. */
     replacement?: (documentId: string) => { id: string; title: string | null } | null;
   } = {},
@@ -9887,6 +10072,17 @@ function documentView(
     issued: doc.issued ?? null,
     expires,
     physical_location: opts.location === true ? (doc.physical_location ?? null) : null,
+    // Its place in a cabinet (C3): on the same terms; its folder's id to its setter alone.
+    original_place:
+      opts.location === true && doc.original_place
+        ? {
+            path: doc.original_place.path,
+            folder_id:
+              doc.original_place.by !== null && doc.original_place.by === opts.memberId
+                ? doc.original_place.folder_id
+                : null,
+          }
+        : null,
     is_essential: doc.is_essential ?? false,
     tags: doc.tags ?? [],
     visibility: doc.visibility ?? 'household',

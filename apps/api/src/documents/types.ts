@@ -255,6 +255,7 @@ export class TypeService {
           'd.issued_on',
           'd.expires_on',
           'd.physical_location',
+          'd.original_place',
           'd.tags',
           'd.notes',
           'd.extra',
@@ -276,7 +277,9 @@ export class TypeService {
             issued_by: d.issued_by,
             issued: day(d.issued_on),
             expires: day(d.expires_on),
-            physical_location: d.physical_location,
+            // Where the original is: the words, or a place in a cabinet (C3).
+            physical_location:
+              d.physical_location ?? (d.original_place ? d.original_place.join(' ') : null),
             tags: d.tags,
             notes: d.notes,
             extra: (d.extra ?? {}) as Record<string, unknown>,

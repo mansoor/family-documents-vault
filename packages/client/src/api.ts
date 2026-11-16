@@ -1,4 +1,6 @@
 import type {
+  OriginalPlaceBulkInput,
+  OriginalPlaceBulkResult,
   AccessGrant,
   AccessPreview,
   ActivityLine,
@@ -1041,6 +1043,32 @@ export function createApi(http: Http) {
         body,
         token,
         ...(etag ? { headers: { 'if-match': etag } } : {}),
+      }),
+    /**
+     * Where the original is, as a folder of the caller's own cabinet (0.9.0,
+     * C3, `features.original_place`): one document's, through its edit —
+     * `{ folder_id }`, or null to clear it. A folder that is not one of the
+     * caller's shown folders is `422` (`detail: 'original_place'`); a viewer
+     * or a guest is `403`. The document's `original_place` says it after.
+     */
+    setOriginalPlace: (token: string, id: string, folderId: string | null, etag?: string) =>
+      request<DocumentView>(`/api/v1/documents/${enc(id)}`, {
+        method: 'PATCH',
+        body: { original_place: folderId === null ? null : { folder_id: folderId } },
+        token,
+        ...(etag ? { headers: { 'if-match': etag } } : {}),
+      }),
+    /**
+     * The same place for many at once, or none (0.9.0, C3): at most
+     * `ORIGINAL_PLACE_MOST`. Each must be one the caller may see, out of the
+     * Trash (else `404`, nothing changed); those not theirs to change are
+     * left as they are and named in `not_yours`.
+     */
+    setOriginalPlaces: (token: string, body: OriginalPlaceBulkInput) =>
+      request<OriginalPlaceBulkResult>('/api/v1/documents/original-place', {
+        method: 'POST',
+        body,
+        token,
       }),
     deleteDocument: (token: string, id: string) =>
       request<void>(`/api/v1/documents/${id}`, { method: 'DELETE', token }),

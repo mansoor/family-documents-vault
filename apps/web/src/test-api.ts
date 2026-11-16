@@ -293,6 +293,10 @@ export interface FakeState {
   grownUp?: GrownUpQuestionView[];
   /** My cabinet (0.9.0, C1): said when a test asks. */
   cabinets?: boolean;
+  /** Where the original is, as a place in a cabinet (0.9.0, C3): said when a test asks. */
+  originalPlace?: boolean;
+  /** Each POST /documents/original-place, as sent. */
+  placeAsks?: Array<{ document_ids: string[]; folder_id: string | null }>;
   /** The signed-in person's cabinet, as GET /cabinet gives it. */
   cabinet?: CabinetView;
   /** What Arrange by draws, by its way, as POST /cabinet/preview gives it. */
@@ -1460,6 +1464,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.sensitiveProtects ? { sensitive_protects: true } : {}),
           // My cabinet (0.9.0, C1): said when a test asks.
           ...(state.cabinets ? { cabinets: true, cabinet_dividers: true, cabinet_pins: true } : {}),
+          // Places in a cabinet (0.9.0, C3): said when a test asks.
+          ...(state.originalPlace ? { original_place: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
           ...(state.caregivers ? { caregivers: true } : {}),
           // Emergency information (0.9.0, H4): said when a test asks.
@@ -6150,6 +6156,30 @@ export function installFakeApi(state: FakeState) {
       state.documents = state.documents.filter((d) => d !== doc);
       return Promise.resolve(new Response(null, { status: 204 }));
     }
+    // Where the originals of many are (0.9.0, C3): one folder of the
+    // reader's cabinet for all, or none; every one asked for kept.
+    if (path === '/api/v1/documents/original-place' && method === 'POST') {
+      const b = body as { document_ids: string[]; folder_id: string | null };
+      state.placeAsks = [...(state.placeAsks ?? []), b];
+      const place = b.folder_id === null ? null : placeIn(state, b.folder_id);
+      if (place === undefined) {
+        return refuse(422, 'validation_failed', 'That folder isn’t in your cabinet any more.', {
+          detail: 'original_place',
+        });
+      }
+      const out = { changed: [] as string[], unchanged: [] as string[], not_yours: [] as string[] };
+      for (const id of b.document_ids) {
+        const d = state.documents.find((x) => x.id === id);
+        if (!d) return refuse(404, 'not_found', 'That document is not in the vault.');
+        if (JSON.stringify(d.original_place ?? null) === JSON.stringify(place)) {
+          out.unchanged.push(id);
+        } else {
+          Object.assign(d, { original_place: place, etag: `"place-${state.calls.length}"` });
+          out.changed.push(id);
+        }
+      }
+      return json(out);
+    }
     const docMatch = /^\/api\/v1\/documents\/([^/]+)$/.exec(path);
     if (docMatch) {
       const doc = state.documents.find((d) => d.id === docMatch[1]);
@@ -6244,6 +6274,24 @@ export function installFakeApi(state: FakeState) {
             else merged[k] = v;
           }
           change.extra = merged;
+        }
+        // Its place in a cabinet (0.9.0, C3): a shown folder of the reader's
+        // own cabinet, its names kept; or none.
+        if ('original_place' in change) {
+          const asked = change.original_place as { folder_id: string } | null;
+          if (asked === null) change.original_place = null;
+          else {
+            const found = placeIn(state, asked.folder_id);
+            if (!found) {
+              return refuse(
+                422,
+                'validation_failed',
+                'That folder isn’t in your cabinet any more. Choose another, or reload the page.',
+                { detail: 'original_place' },
+              );
+            }
+            change.original_place = found;
+          }
         }
         // A note's words changed (5.35): stamped by whoever is signed in,
         // now; the same words again leave the stamp as it was.
@@ -7275,6 +7323,23 @@ function answerCollections(
  * original is kept never for a viewer — refused as a sort or a filter, and
  * answered null.
  */
+/** A shown folder of the reader's cabinet as a place (C3): its names and id; undefined for none. */
+function placeIn(
+  state: FakeState,
+  folderId: string,
+): { path: [string, string, string]; folder_id: string } | undefined {
+  for (const c of state.cabinet?.layout?.cabinets ?? []) {
+    for (const d of c.drawers) {
+      for (const f of d.folders) {
+        if (f.id === folderId && !c.hidden && !d.hidden && !f.hidden) {
+          return { path: [c.name, d.name, f.name], folder_id: f.id };
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
 function documentTable(
   state: FakeState,
   query: URLSearchParams,

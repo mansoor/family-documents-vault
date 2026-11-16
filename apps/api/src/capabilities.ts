@@ -237,6 +237,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0 (LK, 16 Nov 2026): a request's link emailed by the vault, as
       // a share link's is: with the operator's mail server alone.
       upload_request_email: config.operatorMail === true,
+      // 0.9.0 (C3): where the original is, as a folder of somebody's cabinet.
+      original_place: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

@@ -1261,6 +1261,21 @@ export interface Schema {
     /** Who issued it (0025). */
     issued_by: string | null;
     physical_location: string | null;
+    /**
+     * Where the original is, as a place in somebody's cabinet (0104, C3):
+     * the cabinet's, drawer's and folder's names; and, while the folder is
+     * still in its person's layout, whose layout and which folder. The
+     * names follow a rename there; the reference goes as the folder does.
+     */
+    original_place: ColumnType<string[] | null, string[] | null | undefined, string[] | null>;
+    original_place_by: ColumnType<string | null, string | null | undefined, string | null>;
+    original_place_folder: ColumnType<string | null, string | null | undefined, string | null>;
+    /** When the place last changed, an edit or not (0104): what `updated_since` asks beside updated_at. */
+    place_changed_at: ColumnType<
+      Date | null,
+      Date | string | null | undefined,
+      Date | string | null
+    >;
     is_essential: Generated<boolean>;
     tags: Generated<string[]>;
     notes: string | null;

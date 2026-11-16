@@ -46,6 +46,11 @@ export const colours = {
    * initials on a member's colour. Never filtered, never inverted.
    */
   paper: '#FFFFFF',
+  /**
+   * Words and marks on paper, in either theme: a folder label printed black
+   * on white, and its QR code's squares (0.9.0, C3).
+   */
+  paperInk: '#000000',
   /** A switch's knob while it is off. */
   knob: '#FFFFFF',
 } as const;
@@ -82,6 +87,7 @@ export const darkColours = {
   accentGlow: '#6DB89E59',
   raised: '#2D3A4E',
   paper: '#FFFFFF',
+  paperInk: '#000000',
   knob: '#E8EDF4',
 } as const satisfies Record<ColourRole, string>;
 

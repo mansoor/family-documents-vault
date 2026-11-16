@@ -1321,6 +1321,14 @@ const GUARDS = [
     table: 'upload_request',
     fn: 'upload_request_changes_kept',
   },
+  // Where the original is, as a place in a cabinet: written by whoever sees
+  // where originals are kept, only ever a folder of their own; and its
+  // reference let go whole as its person's layout goes (0104, C3).
+  {
+    name: 'document_original_place_rule',
+    table: 'document',
+    fn: 'document_original_place_rule',
+  },
 ];
 
 /**
@@ -1458,6 +1466,18 @@ const REQUIRED_CHECKS = [
     name: 'share_link_emergency_shape',
     table: 'share_link',
     what: 'a link to emergency information, to view and for a day at most',
+  },
+  // A place in a cabinet is three names, and its reference a person's folder
+  // whole or not at all (0104, C3).
+  {
+    name: 'document_original_place_path',
+    table: 'document',
+    what: 'a place in a cabinet, its three names',
+  },
+  {
+    name: 'document_original_place_ref',
+    table: 'document',
+    what: 'a place in a cabinet’s folder, a person’s whole or none',
   },
 ];
 

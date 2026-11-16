@@ -3,6 +3,7 @@ import { testAdminUrl } from '@fdv/db/testing';
 import { Kysely, PostgresDialect } from 'kysely';
 import {
   DOCUMENT_SORTS,
+  placeWords,
   statusRank,
   type DocumentPage,
   type DocumentSort,
@@ -342,6 +343,9 @@ describe.skipIf(!testAdminUrl())('the Documents table (R2)', () => {
         return low(d.collections?.[0]?.name);
       case 'location':
         return low(d.physical_location);
+      case 'original_place':
+        // Its names as one line (C3).
+        return low(d.original_place ? placeWords(d.original_place) : null);
       case 'dated':
         // Issued, else added (C1): the test's family keeps UTC's calendar.
         return d.issued?.date ?? d.created_at.slice(0, 10);
@@ -758,6 +762,10 @@ describe.skipIf(!testAdminUrl())('the Documents table (R2)', () => {
         'sort=title&location=Desk',
         // An older sort with it is refused too.
         'location=Fire%20safe',
+        // Nor by its place in a cabinet (0.9.0, C3).
+        'sort=original_place',
+        'sort=title&original_place=Study',
+        'original_place=Study',
       ]) {
         const r = await ask(who, query);
         expect(r.statusCode, query).toBe(422);
@@ -770,7 +778,7 @@ describe.skipIf(!testAdminUrl())('the Documents table (R2)', () => {
       expect((await ask(who, `sort=title&cursor=${forged}`)).statusCode).toBe(422);
       expect((await ask(who, `sort=location&cursor=${forged}`)).statusCode).toBe(422);
       // What they are given never says where anything is.
-      for (const sort of DOCUMENT_SORTS.filter((s) => s !== 'location')) {
+      for (const sort of DOCUMENT_SORTS.filter((s) => s !== 'location' && s !== 'original_place')) {
         const docs = (await page(who, `sort=${sort}&limit=200`)).items;
         expect(docs.every((d) => d.physical_location === null)).toBe(true);
       }
@@ -848,7 +856,7 @@ describe.skipIf(!testAdminUrl())('the Documents table (R2)', () => {
       [val, valGrant],
       [jane, janeGrant],
     ] as const) {
-      for (const sort of DOCUMENT_SORTS.filter((s) => s !== 'location')) {
+      for (const sort of DOCUMENT_SORTS.filter((s) => s !== 'location' && s !== 'original_place')) {
         for (const dir of ['asc', 'desc'] as const) {
           const whole = await page(who, `sort=${sort}&direction=${dir}&limit=200`);
           expect(whole.items.map((d) => d.id).sort()).toEqual(grant);

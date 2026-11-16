@@ -31,6 +31,7 @@
   --on-accent: #ffffff; /* words and marks on the accent */
   --raised: #ffffff; /* a menu, a sheet, a dialog: above the page */
   --paper: #ffffff; /* behind a scan or a preview, in either theme: never filtered */
+  --paper-ink: #000000; /* a printed label's words and QR code, in either theme */
   --knob: #ffffff; /* a switch's knob, off */
 
   --font-body: Figtree, system-ui, sans-serif;
@@ -72,6 +73,7 @@
   --on-accent: #0f2620;
   --raised: #2d3a4e;
   --paper: #ffffff;
+  --paper-ink: #000000;
   --knob: #e8edf4;
 }
 
@@ -7881,4 +7883,115 @@ html:has(.shell-phone):has(.has-toast) {
   display: flex;
   justify-content: flex-start;
   min-width: 11.5rem;
+}
+
+/* C3: where the original is, as a place in a cabinet — on a document's
+   page, the place (a way to the folder for whoever set it) and then the
+   words, after a middle dot. */
+.where-kept-place,
+.where-kept-place a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* File it here, after a scan or an upload is filed. */
+.file-it-here-folders {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.file-it-here-folders .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.file-it-here-done {
+  margin: 0;
+}
+
+/* Folder labels: several to a page, each its code and the folder's name. */
+.label-folders {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.label-options {
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.label-preview {
+  overflow-x: auto;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+}
+
+.label-sheet {
+  display: grid;
+  gap: 4mm;
+  justify-content: start;
+}
+
+/* A label is printed black on white, whatever the theme. */
+.folder-label {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 3mm;
+  padding: 2.5mm;
+  border: 1px dashed var(--paper-ink);
+  border-radius: 2mm;
+  background: var(--paper);
+  color: var(--paper-ink);
+  overflow: hidden;
+  break-inside: avoid;
+}
+
+.folder-label .qr {
+  flex: none;
+}
+
+.folder-label-words {
+  display: flex;
+  flex-direction: column;
+  gap: 1mm;
+  min-width: 0;
+}
+
+.folder-label-name {
+  font-size: 12pt;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.folder-label-where {
+  font-size: 8pt;
+  color: var(--paper-ink);
+  overflow-wrap: anywhere;
+}
+
+/* The printer's copy: nowhere on the screen. */
+.label-print-root {
+  display: none;
+}
+
+@media print {
+  body.printing-labels > :not(.label-print-root) {
+    display: none !important;
+  }
+
+  body.printing-labels > .label-print-root {
+    display: block;
+  }
 }
