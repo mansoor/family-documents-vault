@@ -65,6 +65,9 @@ export const CABINET_FILTER_KEYS = [
   // Its place in a cabinet, as one line (0.9.0, C3): as `location`, only for
   // whoever sees where originals are kept.
   'original_place',
+  // The folder its papers came from (0.9.0, C4): as `location`, only for
+  // whoever sees where originals are kept.
+  'source_folder',
   'added_from',
   'added_to',
   'issued_from',
@@ -160,6 +163,13 @@ export interface CabinetCounts {
    * Absent from older vaults.
    */
   pins?: Record<string, number>;
+  /**
+   * Whether the caller filed papers from a folder their cabinet asks for
+   * nowhere yet (0.9.0, C4, `features.source_folders`): what GET
+   * /cabinet/from-folders would add, asked cheaply. Only for whoever sees
+   * where originals are kept; absent otherwise, and from older vaults.
+   */
+  new_folders?: boolean;
 }
 
 /** A folder a document is in, as GET /documents/{id}/also-in names it. */
@@ -463,6 +473,8 @@ export function folderQuestionWords(
   if (issued) what.push(`issued ${issued}`);
   if (f.type_key && f.category) what.push(`in ${categoriesWords(f.category)}`);
   if (f.issued_by) what.push(`from ${f.issued_by}`);
+  // The folder they came from (C4), as the vault keeps it.
+  if (f.source_folder) what.push(`that came from the folder “${f.source_folder}”`);
   let out = what.join(' ');
   if (f.member_id) out += `, for ${f.member_id.split(',').map(names.person).join(' or ')}`;
   return `${out}.`;

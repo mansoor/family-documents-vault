@@ -84,7 +84,9 @@ export async function documentTable(
           ? 'sort'
           : q.location !== undefined
             ? 'location'
-            : 'original_place',
+            : q.original_place !== undefined
+              ? 'original_place'
+              : 'source_folder',
     });
   }
   if (q.status !== undefined && !(STATUS_ORDER as readonly string[]).includes(q.status)) {
@@ -205,14 +207,16 @@ function tableRefuses(p: Principal, q: ListQuery): boolean {
 
 /**
  * Whether `q` sorts or filters by where originals are kept: the words
- * (`location`, 5.41) or the place in a cabinet (`original_place`, C3).
+ * (`location`, 5.41), the place in a cabinet (`original_place`, C3) or the
+ * folder a paper came from (`source_folder`, C4).
  */
 function asksWhereKept(q: ListQuery): boolean {
   return (
     q.sort === 'location' ||
     q.sort === 'original_place' ||
     q.location !== undefined ||
-    q.original_place !== undefined
+    q.original_place !== undefined ||
+    q.source_folder !== undefined
   );
 }
 
@@ -378,6 +382,8 @@ const COLUMNS = sql.raw(
     'original_place_by',
     'original_place_folder',
     'place_changed_at',
+    // The folder it came from (0105, C4).
+    'source_folder',
     'is_essential',
     'tags',
     'notes',
@@ -456,6 +462,11 @@ function whereOf(p: Principal, q: ListQuery): RawBuilder<boolean> {
   // In a place in a cabinet (0.9.0, C3), whatever the case: the whole path,
   // or a cabinet, or a cabinet and its drawer, and everything inside.
   if (q.original_place !== undefined) parts.push(placeFilter(q.original_place));
+  // Came from this folder (0.9.0, C4), whatever the case: exactly that
+  // folder, never those inside it — each is a folder of its own.
+  if (q.source_folder !== undefined) {
+    parts.push(sql`lower(d.source_folder) = lower(${q.source_folder.trim()})`);
+  }
   // A cabinet folder's pins and dividers (0.9.0, C2): only ever narrower.
   if (q.cabinet) parts.push(...cabinetClauses(q.cabinet));
   // A document in the Trash is in no collection until it is brought back,

@@ -136,6 +136,8 @@ export const FOLDER_KEYS = [
   'location',
   // In a place in a cabinet (0.9.0, C3): the whole path, or its leading part.
   'original_place',
+  // Came from this folder (0.9.0, C4): exactly that folder.
+  'source_folder',
   'essential',
   'added_from',
   'added_to',
@@ -208,7 +210,12 @@ export function viewFrom(params: URLSearchParams, role: Role): TableView {
       if (DAY.test(v)) keys[k] = v;
     } else if (k === 'essential') {
       if (v === 'true' || v === 'false') keys[k] = v;
-    } else if ((k !== 'location' && k !== 'original_place') || seesLocation(role)) keys[k] = v;
+    } else if (
+      (k !== 'location' && k !== 'original_place' && k !== 'source_folder') ||
+      seesLocation(role)
+    ) {
+      keys[k] = v;
+    }
   }
   return {
     sort:
@@ -293,6 +300,7 @@ export function queryOf(
     issued_by: k.issued_by,
     location: k.location,
     original_place: k.original_place,
+    source_folder: k.source_folder,
     essential: k.essential === undefined ? undefined : k.essential === 'true',
     added_from: k.added_from,
     added_to: k.added_to,
@@ -315,9 +323,9 @@ export function folderChipCount(f: FolderPart): number {
   ).length;
   return (
     ranges +
-    (['category', 'issued_by', 'location', 'original_place', 'essential'] as const).filter(
-      (x) => k[x],
-    ).length +
+    (
+      ['category', 'issued_by', 'location', 'original_place', 'source_folder', 'essential'] as const
+    ).filter((x) => k[x]).length +
     f.tags.length
   );
 }

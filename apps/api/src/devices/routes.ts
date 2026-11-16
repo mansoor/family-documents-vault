@@ -116,7 +116,8 @@ export function registerDevices(
   /**
    * One file from a computer, multipart: an optional `relative_path` field
    * (where the file was, under the folder it watches: checked, and handed
-   * on as `relativePath`, which nothing keeps yet), then
+   * on as `relativePath`: sealed on the item as its folder (S2), and kept
+   * on the document it is filed as (C4)), then
    * the file as `file`, and nothing else. An Idempotency-Key (a UUID) is
    * required: a file sent again after its answer was lost is answered with
    * the item it made (`idempotent-replayed: true`).

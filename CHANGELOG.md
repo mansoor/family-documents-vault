@@ -6,6 +6,24 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.52] - 2026-11-16 — bring your folder tree
+
+### Added
+
+- **The folder a paper came from is kept.** A document you file from **Add many** with a folder, from a subfolder of the scanner folder, or from a computer's watched folder now keeps the folders it was in — _Taxes/2025_, never the file's own name. Its page says **Came from the folder**, as a way to the other papers from that folder, and search finds it by the folder's names. Before, the folder was kept only while its batch lasted. Papers filed before this update have none. (Migration 0105.)
+- **Keep this folder tree as my cabinet.** Your cabinet has **Keep my folder tree** (or **Use my folder tree** when it's empty), and a batch whose papers came from folders offers it once you've accepted them. It shows your folders first: each one becomes a folder in a cabinet called **My folders**, with a drawer for each top folder, and holds the papers from that folder — now, and as more are added from it. Nothing in your cabinet now changes, a folder you already have is left as it is, and when you have a cabinet already it asks before adding them. Rename, move or hide them afterwards with **Arrange my cabinet**. Only the folders of papers you filed yourself are offered.
+- **Papers from one folder, in the table.** The table can show only the papers from one folder (_From the folder ‘Taxes/2025’_), as a cabinet folder does.
+- **Forget it.** Whoever may change a document can take the folder off it with **Forget it…**, after confirming. It can't be typed or changed by hand.
+- The full export's `index.csv` has a `source_folder` column, and `index.html` says _From the folder ‘Taxes/2025’_ under the document's title.
+
+### Fixed
+
+- **A checklist knows a 1095 and a 1098-T.** A line asking for a _1095-C_ (health coverage) or a _1098-T_ (tuition) finds the tax form whose title names it. A line naming a form without its letters finds each of that number: _1099s for 2025_ finds your _1099-INT_ and _1099-DIV_, where before it found neither. A line with the letters still finds only that one.
+
+### Security
+
+- **The folder a paper came from is the household's, like where it's kept:** owners, adults and teens see it and can search for it; a viewer, a guest, a link and anyone signed out never do, and searching for a folder's name finds nothing for them. The database keeps it as it came, or forgotten — never changed. Forgetting it shows in the activity log as an edit of the document, whose details name the field — never the folder.
+
 ## [0.9.0-dev.51] - 2026-11-16 — sharing health papers with doctors, portal formats, and backups
 
 ### Added

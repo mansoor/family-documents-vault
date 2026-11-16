@@ -684,6 +684,19 @@ export interface CapabilityFeatures {
    * and the browser it was opened in, in words; never an address.
    */
   share_opens?: boolean;
+  /**
+   * 0.9.0 (C4): the folder a paper came from, kept on the document filed
+   * from a batch's item that had one — Add → Many documents with a folder,
+   * the scanner folder, a paired computer — as `DocumentView.source_folder`
+   * ("Taxes/2025"), answered as `physical_location` is (null to viewers,
+   * guests, links and anybody signed out); forgotten with PATCH
+   * /documents/{id} (`source_folder: null`); filtered with `source_folder`
+   * (the folder exactly, whatever the case) by the table and a cabinet's
+   * folder. GET /cabinet/from-folders draws those folders into the
+   * caller's cabinet, added beside what is there, for PUT /cabinet to keep.
+   * Absent from older vaults.
+   */
+  source_folders?: boolean;
 }
 
 export interface CapabilityLimits {

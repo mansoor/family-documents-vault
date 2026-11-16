@@ -167,6 +167,8 @@ describe('buildCapabilities', () => {
       // 0.9.0 (H5): health records kept as they are; who opened a link, when.
       record_formats: true,
       share_opens: true,
+      // 0.9.0 (C4): the folder a paper came from, and a cabinet drawn from them.
+      source_folders: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

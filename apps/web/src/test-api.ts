@@ -12,6 +12,7 @@ import {
   type PersonCaregivers,
   type ArrangeBy,
   type CabinetLayout,
+  type CabinetFromFolders,
   type CabinetPreview,
   type CabinetView,
   dividerKeyOf,
@@ -297,6 +298,11 @@ export interface FakeState {
   cabinets?: boolean;
   /** Where the original is, as a place in a cabinet (0.9.0, C3): said when a test asks. */
   originalPlace?: boolean;
+  /**
+   * The folder a paper came from (0.9.0, C4): `features.source_folders`,
+   * said when a test gives this; GET /cabinet/from-folders answers it.
+   */
+  fromFolders?: CabinetFromFolders;
   /**
    * Who opened a link, when (0.9.0, H5): `features.share_opens` and
    * `record_formats`, said when a test gives this; GET /shares/{id}/opens
@@ -1478,6 +1484,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.cabinets ? { cabinets: true, cabinet_dividers: true, cabinet_pins: true } : {}),
           // Places in a cabinet (0.9.0, C3): said when a test asks.
           ...(state.originalPlace ? { original_place: true } : {}),
+          // The folder a paper came from (0.9.0, C4): said when a test asks.
+          ...(state.fromFolders ? { source_folders: true } : {}),
           // Who opened a link; health records kept as they are (0.9.0, H5).
           ...(state.linkOpenings ? { share_opens: true, record_formats: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
@@ -5813,6 +5821,10 @@ export function installFakeApi(state: FakeState) {
         };
         return json(state.cabinet);
       }
+      // Keep this folder tree as my cabinet (C4): the drawing the test gives.
+      if (path === '/api/v1/cabinet/from-folders' && method === 'GET') {
+        return state.fromFolders ? json(state.fromFolders) : refuse(404, 'not_found', 'Not found.');
+      }
       if (path === '/api/v1/cabinet/preview' && method === 'POST') {
         const by = (body as { arrange_by: ArrangeBy }).arrange_by;
         const drawn = state.cabinetPreviews?.[by];
@@ -5837,6 +5849,8 @@ export function installFakeApi(state: FakeState) {
               .map((folder) => [folder, livePins(folder).length] as const)
               .filter(([, n]) => n > 0),
           ),
+          // Folders papers came from, not in the cabinet yet (C4): as the drawing says.
+          ...(state.fromFolders ? { new_folders: state.fromFolders.added.folders > 0 } : {}),
         });
       }
       if (alsoInAt && method === 'GET') {

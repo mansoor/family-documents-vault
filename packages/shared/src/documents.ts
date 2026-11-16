@@ -91,6 +91,15 @@ export interface DocumentView {
    * not see where originals are kept. Absent from older vaults.
    */
   original_place?: OriginalPlace | null;
+  /**
+   * The folder it came from (0.9.0, C4, `features.source_folders`): its
+   * folders under the folder chosen or watched as it was added in a batch —
+   * Add → Many documents with a folder, the scanner folder, a paired
+   * computer — "Taxes/2025", without the file's name. Null for none, and,
+   * as `physical_location`, for whoever may not see where originals are
+   * kept. Absent from older vaults.
+   */
+  source_folder?: string | null;
   is_essential: boolean;
   tags: string[];
   /**

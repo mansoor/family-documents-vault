@@ -111,6 +111,12 @@ export function registerCabinet(app: FastifyInstance, cabinet: CabinetService) {
     return cabinet.preview(principal(req), body.arrange_by);
   });
 
+  // Bring your tree (0.9.0, C4, `features.source_folders`): drawn, not saved.
+  app.get('/api/v1/cabinet/from-folders', auth, async (req, reply) => {
+    void reply.header('cache-control', 'no-store');
+    return cabinet.fromFolders(principal(req));
+  });
+
   app.get('/api/v1/cabinet/counts', auth, async (req, reply) => {
     void reply.header('cache-control', 'no-store');
     return cabinet.counts(principal(req));

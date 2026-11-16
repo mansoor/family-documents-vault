@@ -1329,6 +1329,13 @@ const GUARDS = [
     table: 'document',
     fn: 'document_original_place_rule',
   },
+  // The folder a paper came from: set as it is made, by whoever sees where
+  // originals are kept, and only ever forgotten after (0105, C4).
+  {
+    name: 'document_source_folder_rule',
+    table: 'document',
+    fn: 'document_source_folder_rule',
+  },
 ];
 
 /**
@@ -1478,6 +1485,12 @@ const REQUIRED_CHECKS = [
     name: 'document_original_place_ref',
     table: 'document',
     what: 'a place in a cabinet’s folder, a person’s whole or none',
+  },
+  // The folder a paper came from, as a batch's item keeps one (0105, C4).
+  {
+    name: 'document_source_folder_path',
+    table: 'document',
+    what: 'the folder a paper came from, as a path of folders',
   },
 ];
 

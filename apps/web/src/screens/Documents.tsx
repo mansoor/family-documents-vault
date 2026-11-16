@@ -821,6 +821,16 @@ export function FolderChips(props: { view: TableView; setView: (v: TableView) =>
           },
         ]
       : []),
+    // The folder its papers came from (0.9.0, C4).
+    ...(k.source_folder
+      ? [
+          {
+            key: 'source_folder',
+            words: `From the folder ‘${k.source_folder}’`,
+            clear: () => without('source_folder'),
+          },
+        ]
+      : []),
     ...(k.essential
       ? [
           {

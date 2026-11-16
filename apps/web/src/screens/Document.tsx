@@ -23,6 +23,7 @@ import {
 import { Fragment, useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { Link, Navigate, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 import { FileItHere, WhereKeptRow } from '../original-place.js';
+import { SourceFolderRow } from '../source-folder.js';
 import { TheirLinksOpened } from '../link-opens.js';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -463,6 +464,12 @@ export function DocumentScreen() {
         <WhereKeptRow
           doc={doc}
           label={word('physical_location', 'Original is kept')}
+          mayChange={mayChangeIt}
+          onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
+        />
+        {/* The folder it came from (0.9.0, C4): the household's, as above. */}
+        <SourceFolderRow
+          doc={doc}
           mayChange={mayChangeIt}
           onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
         />

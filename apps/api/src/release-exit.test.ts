@@ -74,6 +74,11 @@ const PAGE_TEXT = `Registration certificate\nKeeper AHMED KHAN\n${PAGE_WORD} mot
  * recipient do see.
  */
 const LOCATION = 'Bedroom safe, top shelf, behind the shoebox';
+/**
+ * The folder a paper came from (0.9.0, C4): the household's alone, as where
+ * it is kept. Planted as filing it from a batch keeps it.
+ */
+const SOURCE_FOLDER = 'Taxes/marmotfolder 541';
 
 /** An issuer the vault learned from Ahmed's corrections (Phase 6, I4): his rules alone. */
 const AHMED_LEARNED = 'ahmed learned issuer 541';
@@ -794,6 +799,11 @@ const RULES: Record<string, Rule> = {
     ],
   },
   'GET /api/v1/cabinet/counts': { who: 'signedIn' },
+  // Bring your tree (0.9.0, C4): the folders the caller's own papers came
+  // from, drawn into their own cabinet and not saved — only for whoever sees
+  // where originals are kept (a viewer and a guest are refused, 403), and
+  // counted by the list's own rules, so nobody else's paper is counted.
+  'GET /api/v1/cabinet/from-folders': { who: 'family' },
   'GET /api/v1/documents/:id/also-in': { who: 'signedIn' },
   // Dividers and pins (0.9.0, C2): a folder of the caller's own (`tax`, in
   // the layout above), its dividers counted by the list's own rules; a pin
@@ -2546,6 +2556,11 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       json<{ items: DocumentView[] }>(await ok(get(who, '/api/v1/documents?limit=200'))).items.find(
         (d) => d.id === tax.id,
       );
+    // And the folder it came from (C4), on the same terms.
+    await admin.query('update document set source_folder = $1 where id = $2', [
+      SOURCE_FOLDER,
+      tax.id,
+    ]);
 
     // The household: in the document, in the list, and found by its words.
     for (const [who, name] of [
@@ -2561,6 +2576,12 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
         (await found(who, 'shoebox')).map((i) => i.document_id),
         name,
       ).toContain(tax.id);
+      expect(one.source_folder, name).toBe(SOURCE_FOLDER);
+      expect((await listed(who))?.source_folder, name).toBe(SOURCE_FOLDER);
+      expect(
+        (await found(who, 'marmotfolder')).map((i) => i.document_id),
+        name,
+      ).toContain(tax.id);
     }
 
     // A viewer, limited, and a guest: the document, without it — and never
@@ -2573,18 +2594,32 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       expect(json<DocumentView>(one).physical_location, name).toBeNull();
       expect(one.body, name).not.toContain('shoebox');
       expect((await listed(who))?.physical_location, name).toBeNull();
-      for (const q of ['shoebox', 'Bedroom safe', 'shelf', '"top shelf"', 'behind']) {
+      // Nor the folder it came from (C4).
+      expect(json<DocumentView>(one).source_folder, name).toBeNull();
+      expect(one.body, name).not.toContain('marmotfolder');
+      expect((await listed(who))?.source_folder, name).toBeNull();
+      for (const q of [
+        'shoebox',
+        'Bedroom safe',
+        'shelf',
+        '"top shelf"',
+        'behind',
+        'marmotfolder',
+        'taxes',
+      ]) {
         expect(await found(who, q), `${name}: ${q}`).toEqual([]);
       }
       // Left out with "-", the location's words hide nothing: they say
-      // nothing of it by what they leave out.
-      for (const q of ['tax', 'tax -shoebox', 'tax -bedroom']) {
+      // nothing of it by what they leave out — nor do the folder's (C4).
+      for (const q of ['tax', 'tax -shoebox', 'tax -bedroom', 'tax -marmotfolder', 'tax -taxes']) {
         const items = await found(who, q);
         expect(
           items.map((i) => i.document_id),
           `${name}: ${q}`,
         ).toContain(tax.id);
-        expect(JSON.stringify(items), `${name}: ${q}`).not.toMatch(/shoebox|Bedroom/);
+        expect(JSON.stringify(items), `${name}: ${q}`).not.toMatch(
+          /shoebox|Bedroom|marmotfolder|Taxes/,
+        );
       }
     }
 
@@ -2643,6 +2678,11 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
         201,
       ),
     );
+    // And the folder it came from (C4), as filing it from a batch keeps it.
+    await admin.query('update document set source_folder = $1 where id = $2', [
+      'Rafi stuff/badgerfolder',
+      mine.id,
+    ]);
     const bothPasses = async (who: Tokens, q: string) => {
       const first = json<{
         items: Array<{ document_id: string }>;
@@ -2662,14 +2702,19 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     };
     const asTeen = await bothPasses(rafi, 'stairs cupboard');
     expect([...asTeen.first, ...asTeen.second].map((i) => i.document_id)).toContain(mine.id);
+    const teenFolder = await bothPasses(rafi, 'badgerfolder');
+    expect([...teenFolder.first, ...teenFolder.second].map((i) => i.document_id)).toContain(
+      mine.id,
+    );
     await h.decider(olivia);
     await ok(send(olivia, 'POST', `/api/v1/members/${rafi.member_id}/role`, { role: 'viewer' }));
     const asViewer = await bothPasses(rafi, 'stairs cupboard');
     expect(asViewer).toEqual({ first: [], second: [] });
+    expect(await bothPasses(rafi, 'badgerfolder')).toEqual({ first: [], second: [] });
     // Nor does leaving its words out say anything: found once, by its
     // title, whatever the location holds — never a second time by the pass
     // that looks inside their own documents.
-    for (const q of ['diary -stairs', 'diary -bedroom']) {
+    for (const q of ['diary -stairs', 'diary -bedroom', 'diary -badgerfolder']) {
       const left = await bothPasses(rafi, q);
       expect(
         left.first.map((i) => i.document_id),
@@ -2679,6 +2724,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     }
     const theirs = await ok(get(rafi, `/api/v1/documents/${mine.id}`));
     expect(json<DocumentView>(theirs).physical_location).toBeNull();
+    expect(json<DocumentView>(theirs).source_folder).toBeNull();
     expect(json<DocumentView>(theirs).notes).toBe('My own words');
   });
 

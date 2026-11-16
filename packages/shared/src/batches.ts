@@ -237,6 +237,12 @@ export interface BatchItemView {
    * from a vault before 0.8.0.
    */
   folder?: string | null;
+  /**
+   * Accepted as a new version of a document there before (0.8.0, S1), not
+   * as a document of its own — so the folder it came from was not kept on a
+   * document (0.9.0, C4). Absent otherwise, and from older vaults.
+   */
+  as_version?: boolean;
 }
 
 /** `GET /api/v1/batches/{id}`: a batch, and every item not removed, oldest first. */

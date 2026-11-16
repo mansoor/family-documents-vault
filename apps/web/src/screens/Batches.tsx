@@ -46,6 +46,7 @@ import { labelOfDay, progressOf, useUploads, type ChosenFile } from '../batch-st
 import { newRun, useAcceptReady, useVersionUndo } from '../batch-review.js';
 import { LearnedFromYou } from '../batch-learning.js';
 import { BATCH_ACCEPT, folderRecordsLeftOutWords } from '../batch-upload.js';
+import { cabinetHref, useFolderTreeOffered } from '../cabinet.js';
 import { CollectionSelect, mayChangeCollection } from '../collections.js';
 import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
@@ -1414,6 +1415,8 @@ export function BatchScreen() {
   const role = storedRole();
   const navigate = useNavigate();
   const mode = useShellMode();
+  // Keep this folder tree as my cabinet (0.9.0, C4): offered once papers from folders are filed.
+  const treeOffered = useFolderTreeOffered();
   // What the card said it did — a file accepted, the run at its end — read
   // as the screen opens and taken out of the history entry (R5): Back to
   // here later neither says it again nor takes the focus for it.
@@ -1856,6 +1859,14 @@ export function BatchScreen() {
           </span>
         </div>
       ) : null}
+      {/* Papers filed from folders (C4): their tree offered as the cabinet, never made unasked. */}
+      {/* Only for one accepted as a document of its own: a new version keeps no folder. */}
+      {treeOffered && b.items.some((i) => i.state === 'accepted' && i.folder && !i.as_version) && (
+        <p className="muted folder-tree-offer">
+          Papers you accepted here came from folders.{' '}
+          <Link to={cabinetHref({ fromFolders: true })}>Keep this folder tree as my cabinet</Link>
+        </p>
+      )}
       {b.items.length > 0 && (
         // The queue's levels (I3): each with how many, kept in the address.
         <div className="levelfilters" role="group" aria-label="Show">
