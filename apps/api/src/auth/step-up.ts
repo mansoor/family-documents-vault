@@ -50,7 +50,8 @@ export type StepUpAction =
   | 'email_share'
   | 'change_ai_reader'
   | 'send_sensitive_papers'
-  | 'neutral_wording';
+  | 'neutral_wording'
+  | 'share_emergency';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -139,6 +140,11 @@ const WHY: Record<StepUpAction, string> = {
   // titles of their sensitive papers in every inbox and on every lock
   // screen. Naming fewer never asks.
   neutral_wording: 'to let notifications and email name more documents',
+  // A clinician's link to somebody's emergency information (0.9.0, H4):
+  // any credential, as a collection's link asks. A session picked up from
+  // an unlocked device could otherwise send a person's allergies,
+  // medications and conditions out in one link.
+  share_emergency: 'to share emergency information outside the family',
 };
 
 /**

@@ -316,6 +316,23 @@ begin
     revoke execute on function public.not_by_caregiver(uuid) from public;
     grant execute on function public.not_by_caregiver(uuid) to fdv_app;
   end if;
+  -- Emergency information (0102, H4): never removed but with its person;
+  -- who reads it, who chooses who does, and a live link's person.
+  if to_regclass('public.member_emergency') is not null then
+    revoke delete on public.member_emergency from fdv_app;
+    revoke execute on function public.emergency_caregiver(uuid) from public;
+    grant execute on function public.emergency_caregiver(uuid) to fdv_app;
+    revoke execute on function public.emergency_reads(uuid, text, uuid[]) from public;
+    grant execute on function public.emergency_reads(uuid, text, uuid[]) to fdv_app;
+    revoke execute on function public.emergency_chooses(uuid) from public;
+    grant execute on function public.emergency_chooses(uuid) to fdv_app;
+    revoke execute on function public.app_link_emergency_member() from public;
+    grant execute on function public.app_link_emergency_member() to fdv_app;
+    revoke execute on function public.app_link_emergency_person() from public;
+    grant execute on function public.app_link_emergency_person() to fdv_app;
+    revoke execute on function public.emergency_page_kept(uuid) from public;
+    grant execute on function public.emergency_page_kept(uuid) to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

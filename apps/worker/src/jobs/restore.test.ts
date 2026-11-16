@@ -783,6 +783,26 @@ async function seed(url: string): Promise<string> {
         [hh, m.rows[1]?.id],
       );
     }
+    // Two's emergency information, and a clinician's link to it made by
+    // the owner, where the schema has them (0102, H4).
+    const emergency = await c.query<{ has: boolean }>(
+      "select to_regclass('public.member_emergency') is not null as has",
+    );
+    if (emergency.rows[0]?.has) {
+      await c.query(
+        `insert into member_emergency (household_id, member_id, sealed, dek_wrapped, wrapped_by_scope)
+         values ($1, $2, decode(repeat('ab', 40), 'hex'), decode(repeat('cd', 40), 'hex'),
+                 (select id from scope_key where household_id = $1 and kind = 'identity' limit 1))`,
+        [hh, m.rows[1]?.id],
+      );
+      await c.query(
+        `insert into share_link (household_id, emergency_member_id, emergency_fields, token_hash,
+                                 created_by, expires_at, permission)
+         values ($1, $2, '{allergies}', decode(md5(random()::text) || md5(random()::text), 'hex'), $3,
+                 now() + interval '4 hours', 'view')`,
+        [hh, m.rows[1]?.id, account],
+      );
+    }
     // A yearly review on the second document, where the schema has it (0101, H3).
     const reviews = await c.query<{ has: boolean }>(
       `select exists (select 1 from information_schema.columns
@@ -3538,6 +3558,115 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   }, 60_000);
 
+  it('notices somebody’s emergency information open to anybody else, its writers or its links’ rules gone, or its guard (0102, H4)', async () => {
+    const seeded = await sql(vault.adminUrl, 'select count(*)::int as n from member_emergency');
+    expect(seeded.rows[0]?.n).toBe(1);
+    const ruleOf = async (policy: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${policy}'`,
+        )
+      ).rows[0]?.rule as string;
+    const rule = await ruleOf('member_emergency_actor');
+    expect(rule).toMatch(/app_member\(\)/);
+    // Its rule gone: every caller of the household given every page.
+    await sql(vault.adminUrl, 'drop policy member_emergency_actor on public.member_emergency');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on .*member_emergency/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy member_emergency_actor on public.member_emergency as restrictive using (${rule})`,
+      );
+    }
+    // Every member given everybody's: no rule keeps a person's own theirs.
+    await sql(
+      vault.adminUrl,
+      `alter policy member_emergency_actor on public.member_emergency
+         using (case app_actor() when 'account' then true when 'system' then true
+                                 when 'link' then false when 'upload' then false else false end)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule keeps a member's own to them on .*member_emergency/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy member_emergency_actor on public.member_emergency using (${rule})`,
+      );
+    }
+    // Its writers' rule gone: anybody of the family would write it.
+    const writers = (
+      await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as rule from pg_policy
+          where polname = 'member_emergency_writer_update'`,
+      )
+    ).rows[0]?.rule as string;
+    await sql(
+      vault.adminUrl,
+      'drop policy member_emergency_writer_update on public.member_emergency',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /who changes somebody's emergency information|no rule says who may change/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy member_emergency_writer_update on public.member_emergency
+           as restrictive for update using (${writers})`,
+      );
+    }
+    // Who sees its links: gone, every adult would read who it went to.
+    const linksRule = await ruleOf('share_link_emergency_actor');
+    await sql(vault.adminUrl, 'drop policy share_link_emergency_actor on public.share_link');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /who sees the links to somebody's emergency information/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy share_link_emergency_actor on public.share_link as restrictive using (${linksRule})`,
+      );
+    }
+    // Its guard gone: an owner could choose who sees a grown-up's.
+    await sql(
+      vault.adminUrl,
+      'alter table public.member_emergency disable trigger member_emergency_rule',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.member_emergency enable trigger member_emergency_rule',
+      );
+    }
+    // A link to it for a week: its check gone is noticed.
+    await sql(
+      vault.adminUrl,
+      'alter table public.share_link drop constraint share_link_emergency_shape',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/to view and for a day at most/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter table public.share_link add constraint share_link_emergency_shape
+           check (emergency_member_id is null
+                  or (flow = 'v2' and permission = 'view' and max_downloads is null
+                      and expires_at <= created_at + interval '24 hours'))`,
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  }, 60_000);
+
   it('notices somebody’s cabinet open to anybody else, an owner included, or its rule gone (0097, C1)', async () => {
     const seeded = await sql(vault.adminUrl, 'select count(*)::int as n from cabinet_layout');
     expect(seeded.rows[0]?.n).toBe(1);
@@ -4124,6 +4253,14 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     // The report says what the audience was, and that the widening went.
     expect(report.noticesWithdrawn).toBe(1);
     expect(report.identityAudiences).toEqual([{ household_id: seeded, was: 'adults' }]);
+    // And each person's emergency information (H4): Two's page, seen by the
+    // adults when the backup was made, is the person's and the owners' again.
+    expect(report.emergencyAudiences).toEqual([{ household_id: seeded, narrowed: 1 }]);
+    const pages = await sql(
+      t.adminUrl,
+      `select audience, cardinality(chosen)::int as named from member_emergency`,
+    );
+    expect(pages.rows).toEqual([{ audience: 'owners_and_self', named: 0 }]);
     const { rows } = await sql(
       t.adminUrl,
       `select (select identity_audience from household) as audience,
@@ -4781,9 +4918,10 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     expect(before.rows[0]).toEqual({ sessions: 1, uses: 1, codes: 1 });
     const t = await empty();
     const report = await restoreBackup(file, KEY, into(t), quiet, KEYS);
-    // The live links — the document's, and the collection's (5.19) — and
-    // only those: one taken back or run out stays as it was.
-    expect(report.linksPaused).toBe(2);
+    // The live links — the document's, the collection's (5.19) and the
+    // clinician's link to somebody's emergency information (H4) — and only
+    // those: one taken back or run out stays as it was.
+    expect(report.linksPaused).toBe(3);
     const { rows } = await sql(
       t.adminUrl,
       `select (select count(*)::int from share_link
@@ -4799,7 +4937,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     // emailed for a link survives (0043).
     expect(rows[0]).toEqual({
       live: 0,
-      paused: 2,
+      paused: 3,
       dead_paused: 0,
       sessions: 0,
       uses: 0,
@@ -4828,8 +4966,25 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
         await c.query('commit');
         return r[0]?.n;
       });
-    expect(links).toHaveLength(2);
+    expect(links).toHaveLength(3);
     for (const link of links) expect(await reach(link), link.id).toBe(0);
+    // Paused, the clinician's link (H4) reaches nobody's emergency information either.
+    for (const link of links) {
+      const page = await withClient(t.appUrl, async (c) => {
+        await c.query('begin');
+        await c.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', 'link', true),
+                  set_config('app.share_id', $2, true)`,
+          [link.household_id, link.id],
+        );
+        const { rows: r } = await c.query<{ n: number }>(
+          'select count(*)::int as n from member_emergency',
+        );
+        await c.query('commit');
+        return r[0]?.n;
+      });
+      expect(page, link.id).toBe(0);
+    }
 
     // The collection's link came back with what it was made with (0042),
     // and turned back on — an owner's to do — gives that and nothing more.

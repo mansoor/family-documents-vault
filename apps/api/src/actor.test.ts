@@ -32,6 +32,13 @@ const ALLOWED = [
   // to give that note — a link is given the keys of its files alone (0042),
   // and a note has none. The key, and nothing else, is read so.
   'documents/shares.ts ShareService.sessionNote',
+  // A person's emergency information, read on a clinician's link's page
+  // (0.9.0, H4): the household's identity key unwrapped as the vault, once
+  // the link was found, as itself, to give that page — read as the link,
+  // which the database gives that one person's row alone (0102) — and only
+  // once the link's own transaction is over, so no request holds two
+  // connections. The key, and nothing else, is read so.
+  'documents/shares.ts ShareService.withEmergency',
   // Accepting an invitation. The person is not anybody yet, and the check
   // that the member has never signed in reads the household's documents.
   'household/invitations.ts InvitationService.accept',

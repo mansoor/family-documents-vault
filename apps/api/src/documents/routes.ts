@@ -932,6 +932,9 @@ export function registerDocuments(
           await stepUp.require(principal(req), 'email_share');
         } else if (link.collection_id !== null) {
           await stepUp.require(principal(req), 'share_collection');
+        } else if (link.emergency_member_id !== null) {
+          // A person's emergency information (H4): what making it asked.
+          await stepUp.require(principal(req), 'share_emergency');
         } else if (link.document_id !== null) {
           const ask = await docs.stepUpForDocument(principal(req), link.document_id);
           if (ask) await stepUp.require(principal(req), ask);

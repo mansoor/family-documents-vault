@@ -54,3 +54,4 @@ export * from './cabinet.js';
 export * from './cabinet-draw.js';
 export * from './cabinet-dividers.js';
 export * from './caregivers.js';
+export * from './emergency.js';

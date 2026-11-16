@@ -120,6 +120,14 @@ export interface RestoreReport {
    */
   identityAudiences: Array<{ household_id: string; was: string }>;
   /**
+   * Households whose people's emergency information was seen by more than
+   * the person and the owners, and how many pages (0.9.0, H4): each such
+   * page is back to the person and the owners alone, nobody named — a
+   * narrowing made since the backup would otherwise be undone. The person
+   * (an owner, for a child) widens it again on their page.
+   */
+  emergencyAudiences: Array<{ household_id: string; narrowed: number }>;
+  /**
    * Exports that could still be downloaded, expired (5.27): each was built
    * from what its requester could see then, identity details included, and
    * a restore narrows who sees those, and can bring back an export a
@@ -286,6 +294,7 @@ interface Undone {
   purgeRequestsCleared: number;
   noticesWithdrawn: number;
   identityAudiences: Array<{ household_id: string; was: string }>;
+  emergencyAudiences: Array<{ household_id: string; narrowed: number }>;
   exportsExpired: number;
   devicesEnded: number;
   readingChecksStopped: number;
@@ -722,6 +731,9 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
     identityAudiences: [...stdout.matchAll(/fdv-restore-audience:([0-9a-f-]{36})=([a-z_]+)/g)].map(
       (m) => ({ household_id: m[1] as string, was: m[2] as string }),
     ),
+    emergencyAudiences: [...stdout.matchAll(/fdv-restore-emergency:([0-9a-f-]{36})=(\d+)/g)].map(
+      (m) => ({ household_id: m[1] as string, narrowed: Number(m[2]) }),
+    ),
   };
 }
 
@@ -763,6 +775,7 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
  */
 const UNDO = `create temporary table fdv_restore_undone (what text, n int) on commit drop;
 create temporary table fdv_restore_audience (household_id uuid, was text) on commit drop;
+create temporary table fdv_restore_emergency (household_id uuid, n int) on commit drop;
 do $undo$
 declare n int;
 begin
@@ -873,6 +886,18 @@ begin
     update public.household set identity_audience = 'owners_and_self'
      where identity_audience <> 'owners_and_self';
   end if;
+  -- Somebody's emergency information (0102, H4): seen by the person and the
+  -- owners alone again, nobody named, as identity details are — a narrowing
+  -- made since the backup would otherwise be undone.
+  if to_regclass('public.member_emergency') is not null then
+    insert into pg_temp.fdv_restore_emergency
+      select e.household_id, count(*)::int
+        from public.member_emergency e
+       where e.audience <> 'owners_and_self' or cardinality(e.chosen) > 0
+       group by e.household_id;
+    update public.member_emergency set audience = 'owners_and_self', chosen = '{}'
+     where audience <> 'owners_and_self' or cardinality(chosen) > 0;
+  end if;
   if to_regclass('public.export') is not null then
     update public.export set expires_at = now()
      where state = 'done' and (expires_at is null or expires_at > now());
@@ -896,7 +921,9 @@ begin
 end $undo$;
 select 'fdv-restore:' || what || '=' || n from pg_temp.fdv_restore_undone;
 select 'fdv-restore-audience:' || household_id || '=' || was from pg_temp.fdv_restore_audience
- where was <> 'owners_and_self' order by household_id;`;
+ where was <> 'owners_and_self' order by household_id;
+select 'fdv-restore-emergency:' || household_id || '=' || n from pg_temp.fdv_restore_emergency
+ order by household_id;`;
 
 /** Refuses, inside the load's transaction, a backup this release cannot run. */
 function versionGuard(known: number): string {
@@ -1280,6 +1307,11 @@ const GUARDS = [
     fn: 'document_not_by_caregiver',
   },
   { name: 'grown_up_question_rule', table: 'grown_up_question', fn: 'grown_up_question_rule' },
+  // Somebody's emergency information stays theirs, is kept by no guest,
+  // names only their family, is wrapped under the identity key, has its
+  // audience changed only by whoever chooses it, and is versioned by the
+  // database (0102, H4).
+  { name: 'member_emergency_rule', table: 'member_emergency', fn: 'member_emergency_rule' },
 ];
 
 /**
@@ -1410,6 +1442,13 @@ const REQUIRED_CHECKS = [
     name: 'version_extra_plain_or_sealed',
     table: 'document_version',
     what: 'an older version’s own details, plain or sealed and never both',
+  },
+  // A link to somebody's emergency information is to view, for a day at
+  // most (0102, H4).
+  {
+    name: 'share_link_emergency_shape',
+    table: 'share_link',
+    what: 'a link to emergency information, to view and for a day at most',
   },
 ];
 
@@ -1569,6 +1608,9 @@ const ACTOR_GUARDED = [
   // A create's Idempotency-Key (0100, 0.9.0-dev.45): its account's alone,
   // and the vault's.
   'create_idempotency',
+  // Somebody's emergency information (0102, H4): theirs, the owners', its
+  // audience's, a live caregiver's, and its one live clinician's link's.
+  'member_emergency',
 ];
 
 /**
@@ -1604,6 +1646,9 @@ const LINK_NARROWED = [
   // kind, is given a row of them.
   'member_identity',
   'notice_request',
+  // Emergency information (0102, H4): a link is given its own person's page
+  // alone, while it is live; one it never made, nothing.
+  'member_emergency',
 ];
 
 /**
@@ -1676,6 +1721,9 @@ const MAKER_ONLY = [
   { table: 'grown_up_question', where: 'true', what: "somebody's turning-18 question" },
   // The Idempotency-Keys somebody sent with a create (0100, 0.9.0-dev.45).
   { table: 'create_idempotency', where: 'true', what: "somebody's key for a create" },
+  // Somebody's emergency information (0102, H4): theirs, and whoever they
+  // or the owners let see it.
+  { table: 'member_emergency', where: 'true', what: "a person's emergency information" },
 ];
 
 /**
@@ -1772,6 +1820,8 @@ const CHANGED_BY_ROLE = [
   { table: 'member', what: "a person's details" },
   // The person both parts of their own; an owner anybody's shared part (0050).
   { table: 'member_identity', what: "a person's identity details" },
+  // The person and the owners (0102, H4).
+  { table: 'member_emergency', what: "a person's emergency information" },
 ];
 
 /**
@@ -2149,6 +2199,33 @@ const REQUIRED_RULES = [
     cmd,
     what: `that a caregiver writes nothing through a grant (${table})`,
   })),
+  // Somebody's emergency information (0102, H4): written by the person and
+  // the owners alone; a clinician's link to it made by whoever chooses who
+  // sees it, and seen by the person and the owners alone.
+  {
+    table: 'member_emergency',
+    name: 'member_emergency_writer_insert',
+    cmd: 'a',
+    what: "who writes somebody's emergency information",
+  },
+  {
+    table: 'member_emergency',
+    name: 'member_emergency_writer_update',
+    cmd: 'w',
+    what: "who changes somebody's emergency information",
+  },
+  {
+    table: 'share_link',
+    name: 'share_link_emergency_insert',
+    cmd: 'a',
+    what: "who makes a link to somebody's emergency information",
+  },
+  {
+    table: 'share_link',
+    name: 'share_link_emergency_actor',
+    cmd: '*',
+    what: "who sees the links to somebody's emergency information",
+  },
 ];
 
 /** The rows of a guarded table that are a household's: the built-ins are everybody's. */

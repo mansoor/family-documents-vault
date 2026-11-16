@@ -7643,3 +7643,150 @@ html:has(.shell-phone):has(.has-toast) {
   font-size: 14px;
   font-weight: 600;
 }
+
+/* ------------------------------------------ emergency information (H4) */
+
+.emergency-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+
+.emergency-row {
+  display: grid;
+  grid-template-columns: minmax(8em, 30%) 1fr;
+  gap: 4px 12px;
+}
+
+.emergency-row dt {
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
+.emergency-row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.emergency-list {
+  margin: 0;
+  padding-left: 1.1em;
+}
+
+.emergency-notes {
+  white-space: pre-wrap;
+}
+
+.emergency-actions {
+  flex-wrap: wrap;
+}
+
+.emergency-list-edit {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  padding: 12px;
+  margin: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.emergency-list-edit legend {
+  font-weight: 700;
+  padding: 0 4px;
+}
+
+.emergency-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.emergency-entry > .btn,
+.emergency-list-edit > .btn {
+  align-self: flex-start;
+}
+
+.emergency-link,
+.emergency-secret {
+  word-break: break-all;
+}
+
+.emergency-secret {
+  font-size: 22px;
+  letter-spacing: 2px;
+}
+
+.emergency-link-row > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.emergency-openings {
+  margin: 0;
+  padding-left: 1.1em;
+  font-size: 14px;
+}
+
+/* A wallet card: the size of a bank card (85.6 × 54 mm), on paper. */
+.wallet-card {
+  width: 85.6mm;
+  min-height: 54mm;
+  box-sizing: border-box;
+  padding: 3mm;
+  border: 1px solid var(--border-strong);
+  border-radius: 3mm;
+  /* The page's own colours: printed, the light theme's (emergency.tsx). */
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 8pt;
+  line-height: 1.25;
+}
+
+.wallet-card .emergency-details {
+  gap: 1mm;
+}
+
+.wallet-card .emergency-row {
+  grid-template-columns: 22mm 1fr;
+  gap: 0 2mm;
+}
+
+.wallet-card-title,
+.wallet-card-foot {
+  margin: 0 0 1mm;
+}
+
+.wallet-card-foot {
+  margin-top: 1.5mm;
+  font-size: 6.5pt;
+  color: var(--ink-muted);
+}
+
+.wallet-card-preview {
+  overflow-x: auto;
+}
+
+/* The printer's copy: nowhere on the screen. */
+.wallet-print-root {
+  display: none;
+}
+
+@media print {
+  body.printing-wallet-card > :not(.wallet-print-root) {
+    display: none !important;
+  }
+
+  body.printing-wallet-card > .wallet-print-root {
+    display: block;
+  }
+
+  .wallet-card {
+    break-inside: avoid;
+  }
+}

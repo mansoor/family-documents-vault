@@ -155,6 +155,8 @@ describe('buildCapabilities', () => {
       idempotent_create: true,
       // 0.9.0 (H3): Health's kinds and a yearly review.
       health_kinds: true,
+      // 0.9.0 (H4): emergency information, a wallet card, a clinician's link.
+      emergency_info: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

@@ -6,6 +6,23 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.47] - 2026-11-15 — emergency information, a wallet card, and a link for a clinician
+
+### Added
+
+- **Emergency information for each person.** On a person's page, under **Emergency information**: their allergies, medications, conditions, blood type, insurance, doctors and who to call, typed as they would say them, with their advance directive, healthcare proxy and insurance card listed from their documents. The vault keeps and shows what you type — it never reads, checks or advises on any of it.
+- **Who can see it.** The person and the owners always can; by default every adult can too, and the person can narrow it to just themselves and the owners, widen it to everyone in the family, or name people besides. For a child — or anybody without their own grown-up sign-in — an owner chooses. A caregiver the person keeps can see it as well. Viewers and guests never can. The person and the owners can change it.
+- **A wallet card to print.** Tick what goes on it and print a card the size of a bank card. It needs nothing but the paper: no link and no code to scan.
+- **Share with a clinician.** A link that shows only the parts you tick, and none of your documents. It lasts 4 hours unless you choose (24 at most), can ask for a PIN or a password, and can be emailed from the vault. You see each time it was opened — when, from which network and browser — and can take it back at any time. Before it is opened, a link with a PIN or a password says only that something was shared — not what, not whose and not who sent it — and without one it names the person only if you choose. Search engines are told never to keep it. A link an owner makes for a child stops once that child signs in as a grown-up. (Migration 0102.)
+
+### Fixed
+
+- **A page scanned upside down or sideways keeps its turn on a slow server.** The second look now reads the turned page as it is first, and enlarges or cleans it only if that reading is still poor; if its time runs out once the turn is known, the turned reading is kept, never the upside-down one. A cleaned copy that cannot be read leaves the first reading. Only the step, the turn and the time are logged, never a word of the page. (#174)
+
+### Security
+
+- Emergency information is sealed like identity details, and counts as sensitive health information everywhere: no allergy, medication or condition is ever in an email, a notification, a text, the activity log or a search. The activity log says only that someone "updated their emergency information", and only to the owners, the person and whoever did it. A link's email says "some information", never what. Making it seen by fewer people ends the exports of whoever can no longer see it, and a restore sets every page back to the person and the owners, as it does identity details. Every route is tested from the side of a teen, another adult, a viewer, a guest, a caregiver after their grant ends and another household, and a link after it expires, after it is taken back and after a wrong PIN.
+
 ## [0.9.0-dev.46] - 2026-11-15 — health papers, and a review every year
 
 ### Added

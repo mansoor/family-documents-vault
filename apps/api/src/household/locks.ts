@@ -282,7 +282,7 @@ export class LockService {
             .where('revoked_at', 'is', null)
             .where('expires_at', '>', now)
             .where('attempts', '<', 10)
-            .returning(['id', 'document_id', 'collection_id', 'permission'])
+            .returning(['id', 'document_id', 'collection_id', 'emergency_member_id', 'permission'])
             .execute()
         : [];
       await endSessions(
@@ -353,9 +353,13 @@ export class LockService {
           householdId: p.householdId,
           actorAccountId: p.accountId,
           action: 'share.revoked',
-          ...(l.collection_id !== null
-            ? { objectType: 'collection', objectId: l.collection_id }
-            : { objectType: 'document', objectId: l.document_id }),
+          // A clinician's link (0.9.0, H4) is a line about the person's
+          // emergency information, never a document.
+          ...(l.emergency_member_id !== null
+            ? { objectType: 'emergency', objectId: l.emergency_member_id }
+            : l.collection_id !== null
+              ? { objectType: 'collection', objectId: l.collection_id }
+              : { objectType: 'document', objectId: l.document_id }),
           detail: { share_id: l.id },
           ip: meta.ip,
         });

@@ -10,6 +10,7 @@ import {
   newKey,
   noLongerNeededBinding,
   openBytes,
+  openEmergency,
   openIdentity,
   openPrivate,
   openVersionExtra,
@@ -35,6 +36,7 @@ import {
   seesAdults,
   wellFormedDate,
   type DateValue,
+  type EmergencyFields,
   type IdentityFields,
   type IdentityList,
   type IdentityPart,
@@ -70,6 +72,11 @@ import { sql } from 'kysely';
  * is asked for with any credential. Nobody else's Only me part is in any
  * export. A narrower audience expires the exports of whoever loses sight
  * (5.26).
+ *
+ * Since 0.9.0 (H4) it holds `emergency/<name>.json` too: each person's
+ * emergency information the requester may read now, as the database gives
+ * it to them (the person, the owners, the page's audience, a live
+ * caregiver), whole — what they would see in the app.
  */
 
 export interface ExportJob {
@@ -93,6 +100,16 @@ interface PersonEntry {
   photo: string | null;
   /** `identity/<name>.json`: their identity details, where the requester may read them. */
   identity: string | null;
+  /** `emergency/<name>.json` (0.9.0, H4): their emergency information, where the requester may read it. */
+  emergency: string | null;
+}
+
+/** `emergency/<name>.json` (0.9.0, H4): what was typed, and when; nothing is interpreted. */
+interface EmergencyRecordOut {
+  person: string;
+  member_id: string;
+  fields: EmergencyFields;
+  updated_at: string;
 }
 
 /** One part of a person's identity details, as an export holds it. */
@@ -512,7 +529,23 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         archive.append(`${JSON.stringify(record, null, 2)}\n`, { name: identity });
         records.push({ record, own: m.id === ctx.requesterMember });
       }
-      people.push({ id: m.id, name: m.display_name, photo, identity });
+      // Their emergency information (H4), where the requester may read it.
+      const page = ctx.emergencies.get(m.id);
+      const emergency = page ? unused('emergency', base, '.json') : null;
+      if (page && emergency) {
+        const out: EmergencyRecordOut = {
+          person: m.display_name,
+          member_id: m.id,
+          fields: page.fields,
+          updated_at: page.updated_at,
+        };
+        archive.append(
+          `${JSON.stringify(out, null, 2)}
+`,
+          { name: emergency },
+        );
+      }
+      people.push({ id: m.id, name: m.display_name, photo, identity, emergency });
     }
 
     archive.append(
@@ -849,6 +882,7 @@ async function peopleFor(
 ): Promise<{
   identities: Map<string, Partial<Record<IdentityPart, IdentityFields>>>;
   photos: Map<string, Buffer>;
+  emergencies: Map<string, { fields: EmergencyFields; updated_at: string }>;
 }> {
   const viewer = { role: requester.role, memberId: requester.member_id };
   const audience =
@@ -903,7 +937,23 @@ async function peopleFor(
       }
     }
   }
-  return { identities, photos };
+  // Each person's emergency information (0.9.0, H4): the rows the database
+  // gives the requester, read as them — the page's own audience decides —
+  // and opened with the household's identity key, as the vault.
+  const emergencies = new Map<string, { fields: EmergencyFields; updated_at: string }>();
+  const pages = await readAs(trx, as, (mine) =>
+    mine.selectFrom('member_emergency').selectAll().execute(),
+  );
+  for (const r of pages) {
+    const key = await deps.keys.unwrapById(trx, r.wrapped_by_scope);
+    const fields = openEmergency(key, { householdId: hh, memberId: r.member_id }, r);
+    if (Object.keys(fields).length === 0) continue;
+    emergencies.set(r.member_id, {
+      fields,
+      updated_at: r.updated_at.toISOString(),
+    });
+  }
+  return { identities, photos, emergencies };
 }
 
 /**
@@ -961,5 +1011,7 @@ const README = `This folder is a complete export from Family Document Vault.
   you can see, a file for each person. Yours are all there, Only me included; other
   people's ID numbers and hidden details are not: the vault shows those only when you
   confirm it's you.
+- emergency/ holds the emergency information you can see, a file for each person: what
+  the family typed, as they typed it.
 - Nothing here depends on the vault software. Keep it somewhere safe.
 `;

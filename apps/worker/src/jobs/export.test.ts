@@ -16,6 +16,7 @@ import {
   noLongerNeededBinding,
   ScopeKeys,
   sealBytes,
+  sealEmergency,
   sealIdentity,
   sealMailboxPassword,
   sealPrivate,
@@ -1117,6 +1118,55 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
   };
   const identityFiles = (x: Awaited<ReturnType<typeof exported>>) =>
     [...x.entries.keys()].filter((n) => n.startsWith('identity/') && n.endsWith('.json')).sort();
+
+  it('emergency information: each page the requester may read, as the database gives it; never a teen’s or a viewer’s to have of anybody else (0.9.0, H4)', async () => {
+    await admin.query('delete from member_emergency');
+    const owner = { id: ownerMember, account: ownerAccount };
+    const adult = await person('Ezra', 'adult');
+    const teen = await person('Elle', 'teen');
+    const viewer = await person('Evan', 'viewer');
+    const kid = await person('Effie', null);
+    const put = (member: string, fields: Record<string, unknown>, audience = 'adults') =>
+      withSystem(db, hh, async (trx) => {
+        const key = await keys.identityKey(trx, hh);
+        await trx
+          .insertInto('member_emergency')
+          .values({
+            household_id: hh,
+            member_id: member,
+            ...sealEmergency(key.key, { householdId: hh, memberId: member }, fields),
+            wrapped_by_scope: key.id,
+            audience: audience as 'adults',
+          })
+          .execute();
+      });
+    await put(adult.id, { allergies: [{ id: 'a', name: 'ADULT-ALLERGY-H4' }] });
+    await put(kid.id, { medications: [{ id: 'm', name: 'KID-MEDICATION-H4' }] }, 'owners_and_self');
+    await put(teen.id, { conditions: [{ id: 'c', name: 'TEEN-CONDITION-H4' }] });
+    const files = (x: Awaited<ReturnType<typeof exported>>) =>
+      [...x.entries.keys()].filter((n) => n.startsWith('emergency/')).sort();
+    const expected: Record<string, string[]> = {
+      owner: ['emergency/Effie.json', 'emergency/Elle.json', 'emergency/Ezra.json'],
+      adult: ['emergency/Elle.json', 'emergency/Ezra.json'],
+      teen: ['emergency/Elle.json'],
+      viewer: [],
+    };
+    const accounts = { owner, adult, teen, viewer };
+    for (const role of ['owner', 'adult', 'teen', 'viewer'] as const) {
+      const x = await exported(accounts[role].account as string);
+      expect(files(x), role).toEqual(expected[role]);
+      for (const [word, whose] of [
+        ['ADULT-ALLERGY-H4', 'Ezra'],
+        ['KID-MEDICATION-H4', 'Effie'],
+        ['TEEN-CONDITION-H4', 'Elle'],
+      ] as const) {
+        expect(x.all.includes(Buffer.from(word)), `${role}: ${word}`).toBe(
+          (expected[role] ?? []).includes(`emergency/${whose}.json`),
+        );
+      }
+    }
+    await admin.query('delete from member_emergency');
+  });
 
   it('only the records the requester may read: each role, each audience, and Only me only in the person’s own', async () => {
     await admin.query('delete from member_identity');

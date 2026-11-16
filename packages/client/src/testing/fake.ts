@@ -306,6 +306,21 @@ import {
   mayNameOwnCaregiver,
   turnedEighteenWords,
   type CaregiverGrantView,
+  canEditEmergency,
+  canSeeEmergency,
+  choosesEmergency,
+  EMERGENCY_DEFAULT_AUDIENCE,
+  EMERGENCY_DOCUMENT_KINDS,
+  EMERGENCY_FIELD_KEYS,
+  EMERGENCY_LINK_DEFAULT_HOURS,
+  EMERGENCY_LINK_MAX_HOURS,
+  type EmergencyAudience,
+  type EmergencyDocumentKind,
+  type EmergencyDocumentRef,
+  type EmergencyFieldKey,
+  type EmergencyFields,
+  type EmergencyLink,
+  type EmergencyView,
   type GrownUpQuestionView,
 } from '@fdv/shared';
 import type { FetchLike, ResponseLike } from '../http.js';
@@ -591,6 +606,14 @@ export interface FakeVaultState {
    * the person, an owner for somebody without a sign-in, or the caregiver.
    */
   caregivers?: FakeCaregiver[];
+  /**
+   * Each person's emergency information (0.9.0, H4), as the vault keeps it:
+   * what was typed, who sees it besides the person and the owners, and its
+   * version (the ETag).
+   */
+  emergency?: FakeEmergency[];
+  /** Clinician's links to somebody's emergency information (H4), and each opening. */
+  emergencyLinks?: FakeEmergencyLink[];
   /** The caregivers' looks, as GET /members/{id}/caregiver-views gives them to the person. */
   caregiverLooks?: Array<{
     person: string;
@@ -712,6 +735,31 @@ export interface FakeShare {
 
 /** A viewer's limits, as the fake keeps them (5.33): the flags always said. */
 /** An invitation as the fake keeps it (5.34): its secrets in the clear, as only a fake may. */
+/** A person's emergency information, as the fake keeps it (H4). */
+export interface FakeEmergency {
+  member: string;
+  fields: EmergencyFields;
+  audience: EmergencyAudience;
+  chosen: string[];
+  version: number;
+  updated_at: string;
+}
+
+/** A clinician's link, as the fake keeps it (H4): its secret in the clear, as only a fake may. */
+export interface FakeEmergencyLink {
+  id: string;
+  member: string;
+  fields: EmergencyFieldKey[];
+  token: string;
+  pin: string | null;
+  recipient_label: string | null;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  revoked: boolean;
+  openings: Array<{ at: string; network: string | null; user_agent: string | null }>;
+}
+
 /** A caregiver grant, as the fake keeps it (H1b). */
 export interface FakeCaregiver {
   id: string;
@@ -3354,6 +3402,8 @@ export function createFakeVault(): {
           idempotent_create: true,
           // Health's kinds and a yearly review (0.9.0, H3).
           health_kinds: true,
+          // Emergency information, a wallet card and a clinician's link (0.9.0, H4).
+          emergency_info: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -8264,6 +8314,261 @@ export function createFakeVault(): {
         next.is_deceased !== (m.is_deceased ?? false);
       if (moved) Object.assign(m, next, { version: version + 1 });
       return respond(200, memberAnswer(m), { etag: `"${m.version ?? 1}"` });
+    }
+    // A person's emergency information (0.9.0, H4), as the real vault answers it.
+    const emergencyAt =
+      /^\/api\/v1\/members\/([^/]+)\/emergency(?:\/(audience|links))?(?:\/([^/]+))?$/.exec(path);
+    if (emergencyAt) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      const person = decodeURIComponent(emergencyAt[1] as string);
+      const part = emergencyAt[2] ?? null;
+      const linkId = emergencyAt[3] ? decodeURIComponent(emergencyAt[3]) : null;
+      const m = state.members.find((x) => x.id === person);
+      const nobody = () => fail(404, 'not_found', 'That page does not exist.');
+      if (!m || (m.kind ?? 'family') !== 'family') return nobody();
+      const self = person === who.memberId;
+      if (!self && who.role === 'viewer') return nobody();
+      const pages = (state.emergency ??= []);
+      const kept = pages.find((x) => x.member === person);
+      const caregiver =
+        (who.role === 'owner' || who.role === 'adult') &&
+        !self &&
+        (state.caregivers ?? []).some(
+          (g) => !g.revoked && g.confirmed && g.person === person && g.caregiver === who.memberId,
+        );
+      const page: FakeEmergency = kept ?? {
+        member: person,
+        fields: {},
+        audience: EMERGENCY_DEFAULT_AUDIENCE,
+        chosen: [],
+        version: 0,
+        updated_at: '',
+      };
+      const me = { role: who.role, memberId: who.memberId };
+      if (!canSeeEmergency(me, { ...page, member_id: person }, caregiver)) return nobody();
+      // Nothing written yet: the person's and the owners' alone to be told of.
+      if (!kept && !self && who.role !== 'owner') return nobody();
+      const personRole = roleOfMember(person);
+      const chooses = choosesEmergency(
+        me,
+        person,
+        personRole === 'owner' || personRole === 'adult',
+      );
+      const nameOf = (id: string) => state.members.find((x) => x.id === id)?.display_name ?? '';
+      const viewOf = (p: FakeEmergency): EmergencyView => {
+        const documents: Record<EmergencyDocumentKind, EmergencyDocumentRef[]> = {
+          advance_directive: [],
+          healthcare_proxy: [],
+          insurance_card: [],
+        };
+        for (const d of state.documents) {
+          if (d.owner_member_id !== person || d.deleted_at) continue;
+          const kind = d.type_key as EmergencyDocumentKind;
+          if (!(EMERGENCY_DOCUMENT_KINDS as readonly string[]).includes(kind)) continue;
+          const sees =
+            caregiver ||
+            canSee(who, {
+              visibility: d.visibility ?? 'household',
+              owner_member_id: d.owner_member_id ?? null,
+            });
+          if (sees) documents[kind].push({ id: d.id, title: d.title ?? '' });
+        }
+        const inAudience =
+          self ||
+          who.role === 'owner' ||
+          (who.role === 'adult' && p.audience !== 'owners_and_self') ||
+          (who.role === 'teen' && p.audience === 'family') ||
+          p.chosen.includes(who.memberId);
+        return {
+          member_id: person,
+          fields: p.fields,
+          date_of_birth: m.date_of_birth ?? null,
+          audience: p.audience,
+          chosen:
+            chooses || self ? p.chosen.map((id) => ({ member_id: id, name: nameOf(id) })) : [],
+          documents,
+          version: p.version,
+          updated_at: p.updated_at || null,
+          can_edit: canEditEmergency(me, person),
+          can_choose: chooses,
+          can_see_links: self || who.role === 'owner',
+          caregiver: caregiver && !inAudience,
+          ...(chooses
+            ? {
+                candidates: state.members
+                  .filter((x) => x.id !== person && (x.kind ?? 'family') === 'family')
+                  .filter((x) => x.role === 'adult' || x.role === 'teen')
+                  .map((x) => ({
+                    member_id: x.id,
+                    name: x.display_name,
+                    role: x.role as 'adult' | 'teen',
+                  })),
+              }
+            : {}),
+        };
+      };
+      const tag = (p: FakeEmergency) => ({ etag: `"${p.version}"`, 'cache-control': 'no-store' });
+      const stamp = () => new Date((state.now ?? Date.now)()).toISOString();
+      const write = (p: FakeEmergency) => {
+        if (kept) Object.assign(kept, p);
+        else pages.push(p);
+        return respond(200, viewOf(p), tag(p));
+      };
+      if (part === null && init.method === 'GET') return respond(200, viewOf(page), tag(page));
+      if (part === null && init.method === 'PUT') {
+        if (!canEditEmergency(me, person)) {
+          return fail(
+            403,
+            'forbidden',
+            'Only the person themselves, or an owner, can change their emergency information.',
+          );
+        }
+        const said = init.headers['if-match'];
+        if (said && said.replace(/^W\//, '').replace(/^"(.*)"$/, '$1') !== String(page.version)) {
+          return fail(
+            409,
+            'conflict',
+            'Someone else changed this emergency information. Reload and try again.',
+          );
+        }
+        const fields = (body.fields ?? {}) as EmergencyFields;
+        if (kept && JSON.stringify(fields) === JSON.stringify(page.fields)) {
+          return respond(200, viewOf(page), tag(page));
+        }
+        return write({ ...page, fields, version: page.version + 1, updated_at: stamp() });
+      }
+      if (part === 'audience' && init.method === 'PUT') {
+        if (!chooses) {
+          return fail(
+            403,
+            'forbidden',
+            'Only the person chooses who sees their emergency information — or an owner, for a child or somebody without their own sign-in.',
+          );
+        }
+        const audience = body.audience as EmergencyAudience;
+        const chosen = Array.isArray(body.chosen_member_ids)
+          ? (body.chosen_member_ids as string[])
+          : [];
+        const mayBe = (id: string) => {
+          const r = roleOfMember(id);
+          return id !== person && (r === 'adult' || r === 'teen');
+        };
+        if (chosen.some((id) => !mayBe(id))) {
+          return fail(
+            422,
+            'validation_failed',
+            'Choose people of the family who sign in as an adult or a teen.',
+          );
+        }
+        return write({ ...page, audience, chosen, version: page.version + 1, updated_at: stamp() });
+      }
+      if (part === 'links') {
+        if (!self && who.role !== 'owner' && init.method !== 'POST') return nobody();
+        const links = (state.emergencyLinks ??= []);
+        const clock = () => (state.now ?? Date.now)();
+        const listOf = (): EmergencyLink[] =>
+          links
+            .filter((l) => l.member === person)
+            .map((l): EmergencyLink => {
+              const ended = l.revoked
+                ? ('revoked' as const)
+                : Date.parse(l.expires_at) <= clock()
+                  ? ('expired' as const)
+                  : ('active' as const);
+              return {
+                id: l.id,
+                document_id: null,
+                document_title: null,
+                recipient_label: l.recipient_label,
+                created_by_name: nameOf(l.created_by) || null,
+                created_at: l.created_at,
+                expires_at: l.expires_at,
+                has_pin: l.pin !== null,
+                open_count: l.openings.length,
+                last_opened_at: l.openings[0]?.at ?? null,
+                state: ended,
+                flow: 'v2',
+                permission: 'view',
+                protection: l.pin !== null ? ['pin'] : [],
+                summary: l.recipient_label ? `Shared with ${l.recipient_label}` : 'Shared by link',
+                emergency_fields: l.fields,
+                openings: l.openings,
+              };
+            })
+            .reverse();
+        if (linkId === null && init.method === 'GET') return ok({ items: listOf() });
+        if (linkId === null && init.method === 'POST') {
+          if (!chooses) {
+            return fail(
+              403,
+              'forbidden',
+              'Only the person can share their emergency information outside the family — or an owner, for a child or somebody without their own sign-in.',
+            );
+          }
+          if (!kept) {
+            return fail(
+              409,
+              'emergency_empty',
+              'There is no emergency information here yet, so there is nothing to share. Add it first.',
+            );
+          }
+          const asked = Array.isArray(body.fields) ? (body.fields as string[]) : [];
+          const fields = EMERGENCY_FIELD_KEYS.filter((k) => asked.includes(k));
+          if (fields.length === 0) {
+            return fail(
+              422,
+              'validation_failed',
+              'Tick at least one part of the page to show.',
+              'fields',
+            );
+          }
+          const hours =
+            typeof body.expires_in_hours === 'number'
+              ? body.expires_in_hours
+              : EMERGENCY_LINK_DEFAULT_HOURS;
+          if (hours < 1 || hours > EMERGENCY_LINK_MAX_HOURS) {
+            return fail(
+              422,
+              'expiry_out_of_range',
+              `A link to emergency information lasts ${EMERGENCY_LINK_MAX_HOURS} hours at most.`,
+            );
+          }
+          const now = clock();
+          const link: FakeEmergencyLink = {
+            id: next('emergency-link'),
+            member: person,
+            fields,
+            token: next('emergency-token'),
+            pin: body.with_pin === true ? '4321' : null,
+            recipient_label: typeof body.recipient_label === 'string' ? body.recipient_label : null,
+            created_by: who.memberId,
+            created_at: new Date(now).toISOString(),
+            expires_at: new Date(now + hours * 3_600_000).toISOString(),
+            revoked: false,
+            openings: [],
+          };
+          links.push(link);
+          const share = listOf().find((l) => l.id === link.id) as EmergencyLink;
+          return ok(
+            {
+              share,
+              link_token: link.token,
+              link_url: null,
+              ...(link.pin ? { pin: link.pin } : {}),
+            },
+            201,
+          );
+        }
+        if (linkId !== null && init.method === 'DELETE') {
+          const l = links.find((x) => x.id === linkId && x.member === person && !x.revoked);
+          if (!l) return fail(404, 'not_found', 'That link does not exist.');
+          l.revoked = true;
+          return empty();
+        }
+      }
+      return fail(405, 'method_not_allowed', 'Not here.');
     }
     // Caregivers and turning 18 (0.9.0, H1b), as the real vault answers them.
     const careAt =

@@ -3836,6 +3836,63 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'Emergency information: written to the version read, who sees it chosen, a clinician’s link made, listed and taken back (0.9.0, H4)',
+    run: async (api, ctx) => {
+      const { access_token: token, member_id: me } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.emergency_info).toBe(true);
+      const empty = await api.emergencyOf(token, me);
+      expect(empty).toMatchObject({ version: 0, can_edit: true, can_choose: true });
+      expect(empty.audience).toBe('adults');
+      const first = await api.saveEmergency(
+        token,
+        me,
+        {
+          blood_type: 'A+',
+          allergies: [{ id: 'a1', name: 'Contract allergy' }],
+          emergency_contacts: [{ id: 'p1', name: 'Contract contact', phone: '+44 7700 900000' }],
+        },
+        0,
+      );
+      expect(first.version).toBe(1);
+      expect(first.fields.allergies).toEqual([{ id: 'a1', name: 'Contract allergy' }]);
+      // Made from a version moved on: refused.
+      const stale = await refusal(api.saveEmergency(token, me, { notes: 'late' }, 0));
+      expect([stale.status, stale.code]).toEqual([409, 'conflict']);
+      // Who sees it: the person's to choose.
+      const narrowed = await api.setEmergencyAudience(token, me, { audience: 'owners_and_self' });
+      expect(narrowed.audience).toBe('owners_and_self');
+      expect(narrowed.version).toBe(2);
+      // A link: the parts ticked, for hours.
+      const made = await api.makeEmergencyLink(token, me, {
+        fields: ['blood_type', 'allergies'],
+        with_pin: true,
+        recipient_label: 'Contract clinic',
+      });
+      expect(made.pin).toMatch(/^\d{4}$/);
+      expect(made.share.document_id).toBeNull();
+      const hours = (Date.parse(made.share.expires_at) - Date.now()) / 3_600_000;
+      expect(hours).toBeGreaterThan(3.5);
+      expect(hours).toBeLessThanOrEqual(4.01);
+      const tooLong = await refusal(
+        api.makeEmergencyLink(token, me, { fields: ['allergies'], expires_in_hours: 25 }),
+      );
+      expect(tooLong.status).toBe(422);
+      const listed = (await api.emergencyLinks(token, me)).items;
+      const link = listed.find((l) => l.id === made.share.id);
+      expect(link).toMatchObject({
+        emergency_fields: ['blood_type', 'allergies'],
+        openings: [],
+        recipient_label: 'Contract clinic',
+        state: 'active',
+      });
+      await api.revokeEmergencyLink(token, me, made.share.id);
+      const after = (await api.emergencyLinks(token, me)).items.find((l) => l.id === made.share.id);
+      expect(after?.state).toBe('revoked');
+      const again = await refusal(api.revokeEmergencyLink(token, me, made.share.id));
+      expect(again.status).toBe(404);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

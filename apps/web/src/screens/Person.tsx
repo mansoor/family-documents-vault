@@ -50,6 +50,7 @@ import { ViewerLimits } from '../access.js';
 import { IdentityCard } from '../identity.js';
 import { MobileNumberCard } from '../text-messages.js';
 import { CaregiversCard } from '../caregivers.js';
+import { EmergencyCard } from '../emergency.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
 import {
@@ -260,6 +261,10 @@ export function ProfileScreen() {
               }}
             />
           )}
+
+          {/* Their emergency information (0.9.0, H4), where the reader is
+              given it: the page, who sees it, a wallet card, a clinician's link. */}
+          <EmergencyCard key={`emergency-${member.id}`} member={member} name={name} />
 
           {/* Their identity details (5.27), where the reader is given them;
               the owners' note about ID numbers (A69) was until then. */}
