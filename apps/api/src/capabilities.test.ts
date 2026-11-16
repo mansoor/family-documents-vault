@@ -162,6 +162,8 @@ describe('buildCapabilities', () => {
       // 0.9.0 (LK): links and requests changed, requests shown again.
       link_changes: true,
       upload_request_email: false,
+      // 0.9.0 (C3): where the original is, as a place in a cabinet.
+      original_place: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

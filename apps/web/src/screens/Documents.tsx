@@ -3,6 +3,7 @@ import {
   collectionItemHint,
   COLLECTION_HINT_PRIVATE,
   COLLECTION_HINT_TEENS,
+  placeWords,
   seesLocation,
   shortName,
   tagDetail,
@@ -133,6 +134,7 @@ import { LinksChoiceDialog, linksAsk, linksChoice, type LinksAsk } from './Visib
 import { familyZoneNow } from '../family-time.js';
 import { followDownload, saveFile } from '../save-file.js';
 import { CabinetDocuments, PinSheet, ViewToggle } from '../cabinet.js';
+import { BulkPlaceField, bulkFolderOf, bulkPlaceWords, LEAVE_PLACE } from '../original-place.js';
 
 /**
  * Documents (Phase 6, R2): every document the reader may see.
@@ -605,6 +607,8 @@ const SORT_LABELS: Record<DocumentSort, string> = {
   visibility: 'Who can see it',
   collections: 'Collections',
   location: 'Location',
+  // Where the original is, as a place in a cabinet (C3).
+  original_place: 'Filed in',
   // A cabinet folder's order (C1): issued, else added. No column of its own.
   dated: 'Date',
 };
@@ -808,6 +812,15 @@ export function FolderChips(props: { view: TableView; setView: (v: TableView) =>
     ...(k.location
       ? [{ key: 'location', words: `Kept at ${k.location}`, clear: () => without('location') }]
       : []),
+    ...(k.original_place
+      ? [
+          {
+            key: 'original_place',
+            words: `Filed in ${k.original_place}`,
+            clear: () => without('original_place'),
+          },
+        ]
+      : []),
     ...(k.essential
       ? [
           {
@@ -868,7 +881,8 @@ function TableDocuments(props: {
   const [hidden, setHidden] = useState<Set<ColumnKey>>(() =>
     readHidden(hiddenKey, scope ? COLLECTION_HIDDEN_BY_DEFAULT : []),
   );
-  const columns = columnsFor(who.role, { collections: known.collections.length > 0 });
+  const places = useApp().caps?.features.original_place === true;
+  const columns = columnsFor(who.role, { collections: known.collections.length > 0, places });
   const shown = columns.filter((c) => c.key === 'title' || !hidden.has(c.key));
   // On a collection's page, for its maker: who of its audience is not given
   // each one (5.14) — never for an Only me collection, which is theirs alone.
@@ -1569,6 +1583,11 @@ function Cell(props: { column: Column; doc: DocumentView; known: Known; offset: 
       );
     case 'location':
       return <td>{doc.physical_location ? <Clip text={doc.physical_location} /> : <None />}</td>;
+    case 'original_place': {
+      // Its place in a cabinet (0.9.0, C3), as one line.
+      const line = doc.original_place ? placeWords(doc.original_place) : null;
+      return <td>{line ? <Clip text={line} /> : <None />}</td>;
+    }
     case 'collections': {
       const names = (doc.collections ?? []).map((c) => c.name);
       return (
@@ -1980,13 +1999,34 @@ function BulkBar(props: {
     });
   };
 
-  const setLocation = async (where: string) => {
-    const r = await each(chosen, (d) =>
-      withToken((t) => api.updateDocument(t, d.id, { physical_location: where }, d.etag)),
-    );
+  /**
+   * Where the chosen are kept: the words, each through its own edit as the
+   * page saw it; then a folder of the reader's cabinet for all of them at
+   * once (0.9.0, C3) — after the words, whose edits ask for the versions
+   * the page has.
+   */
+  const setLocation = async (where: string, folder: string | null | undefined) => {
+    const r = where
+      ? await each(chosen, (d) =>
+          withToken((t) => api.updateDocument(t, d.id, { physical_location: where }, d.etag)),
+        )
+      : { done: [], failed: [] as Outcome['failed'], untouched: [] as DocumentView[], aside: [] };
+    let filed: string | null = null;
+    if (folder !== undefined && r.untouched.length === 0) {
+      setProgress({ done: 0, of: 1 });
+      try {
+        const placed = await withToken((t) =>
+          api.setOriginalPlaces(t, { document_ids: chosen.map((d) => d.id), folder_id: folder }),
+        );
+        if (placed) filed = bulkPlaceWords(placed, folder);
+      } catch (err) {
+        r.failed.push({ id: '', title: 'The folder', why: describeError(err) });
+      }
+    }
     finish({
       said: said(
         r.done.length > 0 ? `${documentsCount(r.done.length)} now kept in “${where}”.` : null,
+        filed,
         leftWords(r.done.length, r.untouched.length, 'changed', signedOut),
       ),
       failedHead: failedHead(r.failed.length, n, 'changed'),
@@ -2380,7 +2420,7 @@ function BulkBar(props: {
           rows={props.rows}
           progress={progress}
           returnFocus={locationButton}
-          onSet={(where) => void setLocation(where)}
+          onSet={(where, folder) => void setLocation(where, folder)}
           onCancel={() => setActing(null)}
         />
       )}
@@ -2741,10 +2781,16 @@ function LocationSheet(props: {
   rows: DocumentView[];
   progress: { done: number; of: number } | null;
   returnFocus: RefObject<HTMLButtonElement | null>;
-  onSet: (where: string) => void;
+  /**
+   * The words for all of them (none: left as they are), and a folder of the
+   * reader's cabinet (0.9.0, C3): its id, null to take them out of their
+   * folders, undefined to leave them as they are.
+   */
+  onSet: (where: string, folder: string | null | undefined) => void;
   onCancel: () => void;
 }) {
   const [where, setWhere] = useState('');
+  const [folder, setFolder] = useState(LEAVE_PLACE);
   const [missing, setMissing] = useState(false);
   const busy = props.progress !== null;
   const places = [
@@ -2753,11 +2799,12 @@ function LocationSheet(props: {
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (busy) return;
-    if (!where.trim()) {
+    const chosen = bulkFolderOf(folder);
+    if (!where.trim() && chosen === undefined) {
       setMissing(true);
       return;
     }
-    props.onSet(where.trim());
+    props.onSet(where.trim(), chosen);
   };
   return (
     <Sheet
@@ -2793,6 +2840,14 @@ function LocationSheet(props: {
             The same place for all {props.what}: what was written before is replaced.
           </span>
         </div>
+        {/* Or a folder of the reader's own cabinet (0.9.0, C3), beside the words. */}
+        <BulkPlaceField
+          value={folder}
+          onChange={(v) => {
+            setFolder(v);
+            setMissing(false);
+          }}
+        />
         <ErrorNote message={missing ? 'Say where they are kept.' : null} />
         <div className="row">
           <Button type="submit" disabled={busy}>
@@ -2882,8 +2937,11 @@ function PhoneDocuments(props: {
     before.current = now;
   }, [ids, drop]);
 
+  const placesKept = useApp().caps?.features.original_place === true;
   const sortChoices = (Object.keys(SORT_LABELS) as DocumentSort[])
     .filter((s) => s !== 'location' || seesLocation(props.who.role))
+    // By a place in a cabinet (C3): where the vault keeps them, for whoever sees them.
+    .filter((s) => s !== 'original_place' || (placesKept && seesLocation(props.who.role)))
     .filter((s) => s !== 'collections' || known.collections.length > 0)
     .flatMap((s) =>
       (['asc', 'desc'] as const).map((d) => ({

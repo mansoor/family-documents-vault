@@ -62,6 +62,9 @@ export const CABINET_FILTER_KEYS = [
   'status',
   'collection_id',
   'location',
+  // Its place in a cabinet, as one line (0.9.0, C3): as `location`, only for
+  // whoever sees where originals are kept.
+  'original_place',
   'added_from',
   'added_to',
   'issued_from',

@@ -21,6 +21,9 @@ const PAGES: ReadonlyArray<readonly [pattern: string, title: string]> = [
   ['/documents/:id', 'A document'],
   ['/documents/:id/read', 'A document, full size'],
   ['/documents/:id/confirm', 'Is this right?'],
+  // Labels for the paper folders (0.9.0, C3), and a label's code.
+  ['/cabinet/labels', 'Folder labels'],
+  ['/folder/:id', 'A folder'],
   ['/search', 'Search'],
   ['/reminders', 'Needs attention'],
   ['/household-questions', 'A few quick questions'],

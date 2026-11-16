@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router';
 import { api, type InvitationPreview } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
 import { heldLinkToken, linkSpent, markLinkSpent } from '../link-token.js';
+import { forgetLanding } from '../landing.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
 import { browserZone, dayWordsOf } from '../family-time.js';
 
@@ -75,6 +76,8 @@ export function JoinScreen() {
         }),
       );
       markLinkSpent();
+      // A folder label read before joining is not theirs to land on (C3).
+      forgetLanding();
       markAuthChanged();
       // In place of this page, so Back does not come back to it.
       await navigate('/', { replace: true });

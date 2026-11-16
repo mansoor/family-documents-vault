@@ -10,7 +10,9 @@ import {
   mergedName,
   mergeFolderFilters,
   NOT_SURE_YET,
+  PLACE_SEPARATOR,
   rangeWords,
+  seesLocation,
   resolvedRanges,
   schoolStages,
   THE_HOUSEHOLD,
@@ -34,6 +36,7 @@ import { describeError, useApp, useLoad } from './app-context.js';
 import { documentsCount, folderView } from './documents-table.js';
 import { Button, ConfirmDialog, ErrorNote, LoadFailed, Sheet } from './ui.js';
 import { DocRow } from './screens/Home.js';
+import { storedRole } from './session.js';
 
 /**
  * My cabinet (0.9.0, C1; the owner's idea of 13 Nov 2026): the same
@@ -51,7 +54,9 @@ import { DocRow } from './screens/Home.js';
  */
 
 /** The address of the cabinet, with these choices. */
-function cabinetHref(over: { cabinet?: string; folder?: string; arrange?: boolean } = {}): string {
+export function cabinetHref(
+  over: { cabinet?: string; folder?: string; arrange?: boolean } = {},
+): string {
   const p = new URLSearchParams({ show: 'cabinet' });
   if (over.cabinet) p.set('cabinet', over.cabinet);
   if (over.folder) p.set('folder', over.folder);
@@ -168,7 +173,8 @@ const shownOf = <T extends { hidden: boolean }>(xs: readonly T[]) => xs.filter((
 
 /** Documents, as a cabinet: the page `?show=cabinet` is. */
 export function CabinetDocuments() {
-  const { authVersion } = useApp();
+  const { authVersion, caps } = useApp();
+  const placesOffered = caps?.features.original_place === true && seesLocation(storedRole());
   const [params, setParams] = useSearchParams();
   const arranging = params.get('arrange') === '1';
   const mine = useLoad(async (t) => api.cabinet(t), [authVersion]);
@@ -269,6 +275,13 @@ export function CabinetDocuments() {
               </span>
             )}
             <span>{' · Only you see this arrangement'}</span>
+            {/* Labels for the paper folders, each with a code (C3). */}
+            {placesOffered && layout && (
+              <span>
+                {' · '}
+                <Link to="/cabinet/labels">Print folder labels</Link>
+              </span>
+            )}
           </p>
         </div>
       )}
@@ -405,7 +418,16 @@ function Browse(props: {
           />
         ) : (
           <section className="cab-pane" aria-label="Folder">
-            <p className="muted">Choose a folder to see what is in it.</p>
+            {/* A folder asked for that is not one of the reader's shown ones —
+                a label printed from somebody else's cabinet, say (C3). */}
+            {props.folderId ? (
+              <p className="cab-none" role="status">
+                That folder isn’t in your cabinet: a folder label opens the cabinet of whoever
+                printed it. Choose one of your own folders.
+              </p>
+            ) : (
+              <p className="muted">Choose a folder to see what is in it.</p>
+            )}
           </section>
         )}
       </div>
@@ -429,7 +451,9 @@ function FolderPane(props: {
   onChanged: () => void;
 }) {
   const { folder, names } = props;
-  const { withToken } = useApp();
+  const { withToken, caps } = useApp();
+  // Places in a cabinet (C3), for whoever sees where originals are kept.
+  const places = caps?.features.original_place === true && seesLocation(storedRole());
   const navigate = useNavigate();
   const headingId = useId();
   const [contents, setContents] = useState<FolderContents | null>(null);
@@ -494,6 +518,24 @@ function FolderPane(props: {
         >
           Open in the table
         </Link>
+        {/* Where originals are (0.9.0, C3): the papers filed in this very
+            folder, and a label for the paper one, with a code to open it. */}
+        {places && (
+          <>
+            <Link
+              className="btn btn-quiet btn-small"
+              to={`/documents?${new URLSearchParams({ original_place: props.path.join(PLACE_SEPARATOR) }).toString()}`}
+            >
+              Originals filed here
+            </Link>
+            <Link
+              className="btn btn-quiet btn-small"
+              to={`/cabinet/labels?${new URLSearchParams({ folder: folder.id }).toString()}`}
+            >
+              Print a label
+            </Link>
+          </>
+        )}
       </div>
       <p className="muted">
         Fills itself: {folderQuestionWords(folder.filter, names)}
@@ -1530,7 +1572,7 @@ export function AlsoInRow({ documentId, inTrash }: { documentId: string; inTrash
 }
 
 /** The folders a paper may be pinned into: the shown ones, by where they are. */
-function folderChoices(layout: CabinetLayout): Array<{ id: string; path: string }> {
+export function folderChoices(layout: CabinetLayout): Array<{ id: string; path: string }> {
   return shownOf(layout.cabinets).flatMap((c) =>
     shownOf(c.drawers).flatMap((d) =>
       shownOf(d.folders).map((f) => ({ id: f.id, path: `${c.name} › ${d.name} › ${f.name}` })),

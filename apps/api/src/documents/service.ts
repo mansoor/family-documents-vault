@@ -57,6 +57,7 @@ import {
 } from '@fdv/crypto';
 import {
   appendAudit,
+  appendAuditMany,
   householdToday,
   remindAgain,
   silenceReminders,
@@ -100,7 +101,17 @@ import {
   type VersionView,
   UPLOAD_KINDS,
   withSealed,
+  LOCATION_SORT_REFUSAL,
+  type OriginalPlaceBulkResult,
 } from '@fdv/shared';
+import {
+  touchedSince,
+  placeColumns,
+  placeOf,
+  placeRefused,
+  placeView,
+  type PlacedFolder,
+} from './original-place.js';
 import { objectKey, readAll, type StorageAdapter } from '@fdv/storage';
 import { sql, type Expression, type RawBuilder, type Selectable, type SqlBool } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
@@ -184,6 +195,12 @@ export interface DocumentInput {
   identifier?: string | null | undefined;
   issued_by?: string | null | undefined;
   physical_location?: string | null | undefined;
+  /**
+   * Where the original is, as a folder of the caller's own cabinet (0.9.0,
+   * C3): an edit only. Read into its names by `update` before the row is
+   * held (`placeOf`), and written from there.
+   */
+  original_place?: { folder_id: string } | null | undefined;
   is_essential?: boolean | undefined;
   tags?: string[] | undefined;
   notes?: string | null | undefined;
@@ -219,6 +236,8 @@ export interface ListQuery extends DocumentFilters {
   direction?: SortDirection | undefined;
   collection_id?: string | undefined;
   location?: string | undefined;
+  /** In a place in a cabinet (0.9.0, C3): the whole path, or its leading part. */
+  original_place?: string | undefined;
   limit?: number | undefined;
   cursor?: string | undefined;
   /**
@@ -342,6 +361,12 @@ export type DocRow = {
   identifier: string | null;
   issued_by: string | null;
   physical_location: string | null;
+  /** Its place in a cabinet (0104, C3): the names, and whose folder it is, while it is. */
+  original_place: string[] | null;
+  original_place_by: string | null;
+  original_place_folder: string | null;
+  /** When the place last changed (0104): `updated_since` asks it too. */
+  place_changed_at: Date | null;
   is_essential: boolean;
   tags: string[];
   notes: string | null;
@@ -557,6 +582,7 @@ export function rowStatus(
     | 'identifier'
     | 'issued_by'
     | 'physical_location'
+    | 'original_place'
     | 'tags'
     | 'notes'
     | 'extra'
@@ -1200,6 +1226,9 @@ export class DocumentService {
       // Where the original is kept: the household's alone (5.41). A viewer,
       // limited or not, and a guest are answered null, whatever the row says.
       physical_location: seesLocation(p.role) ? row.physical_location : null,
+      // Its place in a cabinet (0.9.0, C3): to the same people, on the same
+      // terms; the folder's id only to whoever it is theirs.
+      original_place: seesLocation(p.role) ? placeView(p, row) : null,
       is_essential: row.is_essential,
       tags: row.tags,
       notes: onlyMe ? (opened?.notes ?? null) : row.notes,
@@ -1599,12 +1628,23 @@ export class DocumentService {
     meta: RequestMeta,
   ) {
     this.canWrite(p);
+    if (input.original_place !== undefined && !seesLocation(p.role)) {
+      throw new ApiError(403, 'forbidden', LOCATION_SORT_REFUSAL, { detail: 'original_place' });
+    }
     let drawNow: string | null = null;
     const view = await withPrincipal(this.db, p, async (trx) => {
+      // Its place in a cabinet (0.9.0, C3): the caller's own folder, read
+      // with its names and held before the document is (placeOf).
+      const place =
+        input.original_place === undefined
+          ? undefined
+          : input.original_place === null
+            ? null
+            : await placeOf(trx, p, input.original_place.folder_id);
       // Sensitive before and after (0.9.0, H1a): its own choice, or a kind
       // that is, may make it so.
       const was = await documentSensitive(trx, id);
-      const done = await this.edit(trx, p, id, input, ifMatch, meta);
+      const done = await this.edit(trx, p, id, input, ifMatch, meta, place);
       drawNow = done.drawNow;
       const seen = await this.view(
         trx,
@@ -1633,6 +1673,96 @@ export class DocumentService {
   }
 
   /**
+   * POST /documents/original-place (0.9.0, C3): one place in the caller's
+   * cabinet for many documents — or none, cleared — as `LocationSheet` sets
+   * them. The folder is read first and held for a share (`placeOf`), then
+   * every document, held in id order (FOR UPDATE), and only then the
+   * household's log, once, for a line a document: the order every writer
+   * of many takes them in.
+   *
+   * Every one must be one the caller may see, out of the Trash (else 404,
+   * nothing changed). Those that are not theirs to change — a teen's not
+   * their own, a paper read as its person's caregiver — are left as they
+   * are and named (`not_yours`); those already so are `unchanged`. Each one
+   * changed is a `document.updated` line of `fields: ['original_place']`,
+   * as an edit of one writes it: never the folder's names.
+   */
+  async setOriginalPlaces(
+    p: Principal,
+    documentIds: string[],
+    folderId: string | null,
+    meta: RequestMeta,
+  ): Promise<OriginalPlaceBulkResult> {
+    this.canWrite(p);
+    if (!seesLocation(p.role)) {
+      throw new ApiError(403, 'forbidden', LOCATION_SORT_REFUSAL, { detail: 'original_place' });
+    }
+    const ids = [...new Set(documentIds.map((i) => i.toLowerCase()))];
+    if (ids.some((i) => !UUID.test(i))) throw notFound();
+    return withPrincipal(this.db, p, async (trx) => {
+      const place = folderId === null ? null : await placeOf(trx, p, folderId);
+      const rows = (
+        await sql<
+          Pick<
+            DocRow,
+            | 'id'
+            | 'visibility'
+            | 'owner_member_id'
+            | 'type_key'
+            | 'category'
+            | 'original_place'
+            | 'original_place_by'
+            | 'original_place_folder'
+          >
+        >`
+          select d.id, d.visibility, d.owner_member_id, d.type_key, d.category,
+                 d.original_place, d.original_place_by, d.original_place_folder
+            from document d
+           where d.id = any(${ids}::uuid[]) and d.deleted_at is null and ${readDocument(p)}
+           order by d.id
+             for update`.execute(trx)
+      ).rows;
+      if (rows.length !== ids.length) throw notFound();
+      const to = placeColumns(place, p);
+      const out: OriginalPlaceBulkResult = { changed: [], unchanged: [], not_yours: [] };
+      for (const r of rows) {
+        if (byGrant(p, r) || (p.role === 'teen' && r.owner_member_id !== p.memberId)) {
+          out.not_yours.push(r.id);
+        } else if (
+          JSON.stringify(r.original_place) === JSON.stringify(to.original_place) &&
+          r.original_place_by === to.original_place_by &&
+          r.original_place_folder === to.original_place_folder
+        ) {
+          out.unchanged.push(r.id);
+        } else {
+          out.changed.push(r.id);
+        }
+      }
+      if (out.changed.length > 0) {
+        await trx
+          .updateTable('document')
+          .set({ ...to, updated_at: new Date(), updated_by: p.accountId })
+          .where('id', 'in', out.changed)
+          .execute()
+          .catch(placeRefused);
+        await appendAuditMany(
+          trx,
+          out.changed.map((id) => ({
+            householdId: p.householdId,
+            actorAccountId: p.accountId,
+            action: 'document.updated',
+            objectType: 'document',
+            objectId: id,
+            detail: { fields: ['original_place'] },
+            ip: meta.ip,
+          })),
+        );
+      }
+      return out;
+    });
+  }
+
+  /**
    * An edit in the caller's own transaction, as PATCH /documents/{id} makes
    * it (0.8.0, S1): a batch's item added as a new version of a document
    * carries the dates and number accepted with it, and its Undo puts them
@@ -1657,6 +1787,8 @@ export class DocumentService {
     input: DocumentInput,
     ifMatch: string | undefined,
     meta: RequestMeta,
+    /** Its place in a cabinet, read already (C3): a folder, none, or left as it is. */
+    place?: PlacedFolder | null,
   ): Promise<{ row: DocRow; drawNow: string | null }> {
     let drawNow: string | null = null;
     // The whole edit card saved (0.9.0, 0083): its newest version's details
@@ -1692,6 +1824,7 @@ export class DocumentService {
         input,
         open ? { ...current, ...open } : current,
       );
+      if (place !== undefined) Object.assign(values, placeColumns(place, p));
       // Its note's words, compared as they are held open (5.35): only a
       // change stamps the note, and is said in the activity log — which is
       // what it was, never what it says. An Only me note is compared opened
@@ -1725,7 +1858,9 @@ export class DocumentService {
         })
         .where('id', '=', id)
         .returningAll()
-        .executeTakeFirstOrThrow();
+        .executeTakeFirstOrThrow()
+        // A place the database refuses is said in words (C3).
+        .catch(placeRefused);
       // Reminded again when the date they count back from may have moved:
       // its expiry, its kind, or the detail its kind reminds from, set or
       // taken away (0.5.15). Any other detail leaves them as they are.
@@ -2249,6 +2384,7 @@ export class DocumentService {
       q.direction !== undefined && 'direction',
       q.collection_id !== undefined && 'collection_id',
       q.location !== undefined && 'location',
+      q.original_place !== undefined && 'original_place',
       (q.member_id === 'none' || q.member_ids?.includes('none') === true) && 'member_id=none',
       (q.member_id === 'household' || q.member_ids?.includes('household') === true) &&
         'member_id=household',
@@ -2282,7 +2418,9 @@ export class DocumentService {
       if (q.issued_by) {
         query = query.where(sql<boolean>`lower(issued_by) = lower(${q.issued_by.trim()})`);
       }
-      if (q.updated_since) query = query.where('updated_at', '>', new Date(q.updated_since));
+      // Changed since, or its place in a cabinet changed since (C3: a
+      // folder renamed is nobody's edit, and a phone's copy still catches up).
+      if (q.updated_since) query = query.where(touchedSince(q.updated_since));
       // Any of several, and the days (V1).
       for (const clause of filterClauses(q, 'document')) query = query.where(clause as never);
 
@@ -3713,6 +3851,7 @@ export class DocumentService {
         issued_precision: DateValue['precision'] | null;
         identifier: string | null;
         physical_location: string | null;
+        original_place: string[] | null;
         tags: string[];
         notes: string | null;
         extra: Record<string, unknown> | null;
@@ -3762,7 +3901,7 @@ export class DocumentService {
         select d.id as document_id, d.title, d.type_key, d.category, d.owner_member_id,
                d.household_owned, d.sensitive,
                d.expires_on, d.expires_precision, d.issued_by, d.issued_on, d.issued_precision,
-               d.identifier, d.physical_location, d.tags, d.notes, d.extra,
+               d.identifier, d.physical_location, d.original_place, d.tags, d.notes, d.extra,
                d.notes_sealed is not null as notes_sealed_present, d.sealed_details,
                d.no_longer_needed_at,
                d.visibility in ('household', 'adults') as words_shown,

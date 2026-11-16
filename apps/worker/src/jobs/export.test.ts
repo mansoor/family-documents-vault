@@ -559,7 +559,7 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     // a name or a value a spreadsheet would run as a formula is written as text.
     const [header = '', ...lines] = (entries.get('index.csv')?.toString() ?? '').split('\n');
     const cols = header.split(',');
-    expect(cols.slice(0, 12)).toEqual([
+    expect(cols.slice(0, 13)).toEqual([
       'title',
       'type_key',
       'category',
@@ -570,6 +570,8 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
       'expires',
       'identifier',
       'physical_location',
+      // Its place in a cabinet (0.9.0, C3), beside the words.
+      'original_place',
       'tags',
       'notes',
     ]);

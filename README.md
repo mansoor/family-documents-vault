@@ -999,6 +999,14 @@ A paper that fits no folder's rule can be **pinned** into one by hand from
 its page or the table's bar: it shows first there, counted once, and stops
 showing by itself if you can no longer open it.
 
+A paper's page can also say **which folder of your cabinet the original is
+in** (_Study cabinet › Drawer 2 › Tax 2025_), beside the words written for
+where it is kept — offered right after a scan, and for many at once from the
+table. The folder's names are kept with the document, so everyone who sees
+where originals are kept reads them; they follow a rename. **Print folder
+labels** prints each folder's name with a code that opens that folder in the
+vault, after signing in; the code holds only the vault's address for it.
+
 ### Caregivers, and turning 18
 
 Anyone can let someone in the family see their medical papers — **Let

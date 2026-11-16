@@ -74,6 +74,10 @@ export const listQuery = z.object({
   collection_id: z.union([z.string().uuid(), z.literal('none')]).optional(),
   // Kept there, whatever the case: only for whoever sees locations (5.41).
   location: z.string().trim().min(1).max(500).optional(),
+  // In a place in a cabinet, whatever the case (0.9.0, C3): its names joined
+  // by " › ", the whole path or its leading part; as `location`, only for
+  // whoever sees where originals are kept.
+  original_place: z.string().trim().min(1).max(620).optional(),
   limit: z.coerce.number().int().min(1).max(DOCUMENT_PAGE_MAX).optional(),
   // Room for the longest key a table's cursor can carry (the review's
   // R2-API-4): a location of 500 characters, each as JSON writes the worst

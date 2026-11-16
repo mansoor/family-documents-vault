@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import { api, type CreatedInvitation, type Member } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
+import { forgetLanding } from '../landing.js';
 import { answersBody, answersFrom, HouseholdAnswerFields } from '../household-answers.js';
 import { Avatar, Button, ErrorNote, Field, Logo } from '../ui.js';
 import {
@@ -62,6 +63,8 @@ export function SetupScreen() {
         await api.setup({ household_name: household, display_name: name, email, password }),
       );
       markAuthChanged();
+      // No folder label lands a new vault anywhere (C3).
+      forgetLanding();
       await reloadCaps();
       setStep('profile');
     } catch (err) {

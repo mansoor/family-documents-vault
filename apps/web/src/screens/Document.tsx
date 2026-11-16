@@ -9,7 +9,6 @@ import {
   REVIEW_LABEL,
   yearlyReviewOffered,
   PREVIEW_MAX_PAGES,
-  seesLocation,
   type CoreField,
   type VersionView,
   NOT_SURE_YET,
@@ -19,7 +18,8 @@ import {
   CAREGIVER_MARK,
 } from '@fdv/shared';
 import { Fragment, useCallback, useEffect, useRef, useState, type RefObject } from 'react';
-import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router';
+import { Link, Navigate, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
+import { FileItHere, WhereKeptRow } from '../original-place.js';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { AddToCollection, audienceLabel, collectionsOffered } from '../collections.js';
@@ -69,6 +69,12 @@ export function DocumentScreen() {
   const { id } = useParams<{ id: string }>();
   const { withToken, guarded, authVersion, session, caps } = useApp();
   const navigate = useNavigate();
+  // Arrived from Add, its file just filed (0.9.0, C3): File it here is offered.
+  const arrived: unknown = useLocation().state;
+  const justFiled =
+    typeof arrived === 'object' &&
+    arrived !== null &&
+    (arrived as { justFiled?: unknown }).justFiled === true;
   const { data, error, reload, setData } = useLoad(
     async (t) => {
       const [doc, versions, members, types, profile] = await Promise.all([
@@ -365,6 +371,16 @@ export function DocumentScreen() {
         />
       )}
 
+      {/* Just filed from a scan or an upload (0.9.0, C3): where its paper
+          goes, its folders in the reader's cabinet offered first. */}
+      {justFiled && (
+        <FileItHere
+          doc={doc}
+          mayChange={mayChangeIt}
+          onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
+        />
+      )}
+
       {/* A paper seen as its person's caregiver (0.9.0, H1b): said so, plainly. */}
       {caregiver && (
         <p className="caregiver-mark" role="note">
@@ -437,12 +453,15 @@ export function DocumentScreen() {
         <AlsoInRow documentId={doc.id} inTrash={Boolean(doc.deleted_at)} />
         {/* Where the original is kept is the household's (5.41): never a
             viewer's or a guest's, whatever an answer carries. */}
-        {seesLocation(storedRole()) && doc.physical_location && (
-          <>
-            <dt>{word('physical_location', 'Original is kept')}</dt>
-            <dd>{doc.physical_location}</dd>
-          </>
-        )}
+        {/* With its place in a cabinet (0.9.0, C3): "Study › Drawer 2 ›
+            Tax 2025 · behind the blue divider", and File it in my cabinet…
+            for whoever may change it. */}
+        <WhereKeptRow
+          doc={doc}
+          label={word('physical_location', 'Original is kept')}
+          mayChange={mayChangeIt}
+          onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
+        />
       </dl>
 
       {/* A yearly review (0.9.0, H3): on an advance directive, a proxy or a

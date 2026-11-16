@@ -26,6 +26,10 @@ export const DOCUMENT_SORTS = [
   'visibility',
   'collections',
   'location',
+  // Where the original is, as a place in a cabinet (0.9.0, C3,
+  // `features.original_place`): by its names, as one line. Only for whoever
+  // sees where originals are kept, as `location`.
+  'original_place',
   // The date a paper is about: issued, else added (0.9.0, C1, `features.cabinets`):
   // a cabinet's folder, newest first. No column of its own.
   'dated',
@@ -128,6 +132,13 @@ export type DocumentListParams = {
   collection_id?: string | undefined;
   /** R2, with a column sort, for whoever sees locations: kept there, whatever the case. */
   location?: string | undefined;
+  /**
+   * 0.9.0 (C3, `features.original_place`), with a column sort, for whoever
+   * sees locations: in this place in a cabinet, whatever the case — its
+   * names joined by `PLACE_SEPARATOR` (" › "), the whole path, or its
+   * cabinet, or its cabinet and drawer, for everything inside them.
+   */
+  original_place?: string | undefined;
   essential?: boolean | undefined;
   deleted?: boolean | undefined;
   purge_requested?: boolean | undefined;

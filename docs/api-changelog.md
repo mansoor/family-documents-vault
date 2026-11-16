@@ -7442,6 +7442,97 @@ request_paused`, `410 request_ended`, `404`. Written down as
         `emailUploadRequest`; the fake answers owners and the email, and the
         contract scenario changes a request's title and emails it (or is
         told why not).
+  - Where the original is, as a place in somebody's cabinet (0.9.0-dev.50,
+    C3; the owner's idea 5 of 13 Nov 2026). Migration 0104. **Additive**:
+    a new route, new fields and new parameters; nothing an older client
+    calls is answered differently, and `physical_location` is as it was.
+    - **New `features`:** `original_place` (`true`).
+    - **New field:** `DocumentView.original_place` — `{ path: [cabinet,
+drawer, folder], folder_id }` or null: Cabinet › Drawer › Folder, the
+      names as its setter had them, kept on the document so that every
+      reader reads the same line without the setter's layout. `folder_id`
+      is the caller's own folder (their layout's id), and null for anybody
+      else's or a folder since taken out. Answered on the same terms as
+      `physical_location` (5.41): null to a viewer, limited or not, a guest,
+      a link and anybody signed out. Absent from older vaults. Shown as one
+      line, the place then the words after a middle dot: `whereKeptWords`
+      ("Study › Drawer 2 › Tax 2025 · behind the blue divider").
+    - **Set and cleared:**
+      - `PATCH /api/v1/documents/{id}` takes `original_place: { folder_id }
+| null` — one of the caller's **shown** folders (`422
+validation_failed`, `detail: 'original_place'`, for any other);
+        `403` to whoever may not see where originals are kept. An edit
+        only: `POST /documents` and a capture refuse it (unknown key). The
+        usual edit rules hold (a teen their own, If-Match, a caregiver
+        nothing), and the log line is `document.updated` with `fields:
+['original_place']` — never a folder's name.
+      - **New route:** `POST /api/v1/documents/original-place` —
+        `{ document_ids (1–200), folder_id | null }` → `{ changed,
+unchanged, not_yours }`, for whoever may change documents and sees
+        where originals are kept (`403` otherwise). Every one must be seen
+        and out of the Trash, else `404` and nothing changes. A teen's not
+        their own, and a paper read as its person's caregiver, are
+        `not_yours` and left as they are. The folder is read first and
+        held, then every document in id order, then the household's log
+        once, a `document.updated` line (`fields: ['original_place']`) a
+        document changed.
+    - **The names follow the folder:** a `PUT /cabinet` that renames or
+      moves a folder rewrites the names on the documents its setter placed
+      there; one that drops the folder lets the reference go (`folder_id`
+      null for them too) and keeps the names, as words. Neither is an edit:
+      no `updated_at`, ETag or log line moves. Somebody else's Only me
+      document keeps the names it had until it is seen again. A person's
+      layout removed (a guest removed) lets their references go the same
+      way.
+    - **Search, the table and folders:** the names are found by search at
+      the location's weight, for whoever sees locations and never by
+      anybody else (nor do they hide a document with `-`). `GET /documents`
+      with a column sort takes `original_place` — the path joined by `" › "`
+      (`PLACE_SEPARATOR`), or a cabinet, or a cabinet and drawer, for
+      everything inside, whatever the case — and **new sort**
+      `original_place` (by the names as one line, blanks last). Both are
+      `422` to whoever may not see locations, as `location` is; with an
+      older sort, `422` as the table's own. A cabinet folder may ask
+      `original_place` too (`CABINET_FILTER_KEYS`). A kind that requires
+      where the original is kept has it with a place alone.
+    - **After its review (still dev.50):**
+      - **`updated_since`** (the older list and the table) now finds a
+        document whose place changed since — set, cleared, or its names
+        following a rename — though its `updated_at` and ETag did not move:
+        it compares `updated_at` or the new `document.place_changed_at`.
+        A phone's copy catches up with a renamed folder.
+      - **A hidden folder is let go:** one hidden, or in a hidden drawer or
+        cabinet, no longer passes its names on; its documents keep the last
+        shown names and lose the reference, as for a folder taken out.
+      - **Names are kept trimmed** (`PUT /cabinet` answers the layout as
+        kept). A new cabinet, drawer or folder name holding `" › "` is `422
+validation_failed` (`NAME_HOLDS_SEPARATOR`, `detail: 'node <id>:
+name'`); a name kept from before keeps it. A place the database
+        refuses is `422` (`detail: 'original_place'`), never `500`.
+      - A save holds the documents it rewrites in id order first.
+    - **Folder labels** (web): `/folder/{id}` opens the caller's folder by
+      its id once signed in (signed out: the usual sign-in, then the
+      folder). A label's code holds only that address (`folderLabelUrl`).
+    - **Export:** `index.csv` gains `original_place` after
+      `physical_location`; `index.html` says both in one cell.
+    - **Storage:** `document.original_place` (three names, each 1–200
+      characters), `original_place_by` and `original_place_folder` (whose
+      layout and which folder, both or neither; a foreign key to
+      `cabinet_layout`, set null as the layout goes). The search index
+      gains the names at weight D. The trigger `document_original_place_rule`
+      lets only somebody signed in who sees locations write a place, only
+      ever naming a folder of their own, and nobody else rename one while it
+      is its setter's; restore checks it and the two checks
+      (`document_original_place_path`, `document_original_place_ref`).
+    - **Shared and client:** `OriginalPlace`, `OriginalPlaceInput`,
+      `OriginalPlaceBulkInput`, `OriginalPlaceBulkResult`,
+      `ORIGINAL_PLACE_MOST`, `PLACE_SEPARATOR`, `placeWords`,
+      `whereKeptWords`, `folderLabelUrl`, `PLACE_NOT_IN_CABINET`;
+      `DocumentInput.original_place`, `DocumentListParams.original_place`,
+      `RequiredValues.original_place`. `@fdv/client`:
+      `setOriginalPlace(token, id, folderId | null, etag?)` and
+      `setOriginalPlaces(token, body)`; the fake sets, follows, filters and
+      sorts them as the vault does, and a contract scenario checks it.
 
 ## Deprecations in effect
 

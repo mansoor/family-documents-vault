@@ -656,6 +656,17 @@ export interface CapabilityFeatures {
    * for. `UploadRequestView.emailable` says which. Absent from older vaults.
    */
   upload_request_email?: boolean;
+  /**
+   * Where the original is, as a place in somebody's cabinet (0.9.0, C3):
+   * a document's `original_place` — Cabinet › Drawer › Folder, picked from
+   * the setter's own layout, its names kept on the document so everybody
+   * who sees where originals are kept reads it — set and cleared with PATCH
+   * /documents/{id} (`original_place: { folder_id } | null`) and for many
+   * with POST /documents/original-place; filtered (`original_place`) and
+   * sorted (`sort=original_place`) by the table. Beside the free text
+   * `physical_location`, never instead of it. Absent from older vaults.
+   */
+  original_place?: boolean;
 }
 
 export interface CapabilityLimits {

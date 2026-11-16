@@ -299,14 +299,17 @@ export function AddScreen() {
       if (details && !(await putDetails(landed, details))) return;
       keys.saved();
       lastTry.current = null;
-      void navigate(`/documents/${landed}`, { replace: true });
+      // Just filed: its page offers where the paper goes (0.9.0, C3).
+      void navigate(`/documents/${landed}`, { replace: true, state: { justFiled: true } });
       return;
     }
     lastTry.current = { key, details: sent };
     const r = await whileInProgress(() => withToken((t) => api.capture(t, chosen, key, details)));
     keys.saved();
     lastTry.current = null;
-    if (r) void navigate(`/documents/${r.document_id}`, { replace: true });
+    if (r) {
+      void navigate(`/documents/${r.document_id}`, { replace: true, state: { justFiled: true } });
+    }
   };
 
   /**

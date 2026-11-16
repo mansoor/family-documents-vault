@@ -65,6 +65,9 @@ export const COLUMN_SIZES: Record<ColumnKey, ColumnSize> = {
   visibility: { min: 118, tight: 118, base: 118, max: 640, weight: 1 },
   // "Safe deposit box" (106 px).
   location: { min: 104, tight: 104, base: 122, max: 640, weight: 2 },
+  // "Study › Drawer 2 › Tax 2025" (174 px), hidden until it is shown (C3);
+  // a longer one clipped, and whole on hover.
+  original_place: { min: 120, tight: 140, base: 190, max: 640, weight: 2 },
   // One chip ("Refinance", 78 px with its border and padding), 4 px, and a
   // "+2" (34 px); its header (92 px) is nearly as wide.
   collections: { min: 126, tight: 126, base: 132, max: 640, weight: 2 },

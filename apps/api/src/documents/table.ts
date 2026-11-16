@@ -7,6 +7,7 @@ import {
   LOCATION_SORT_REFUSAL,
   maySortByLocation,
   NOBODY_MEMBER_FILTER,
+  PLACE_SEPARATOR,
   seesLocation,
   STATUS_ORDER,
   statusRank,
@@ -20,6 +21,7 @@ import type { Principal } from '../auth/service.js';
 import { seenCollection } from '../collections/seen.js';
 import { ApiError } from '../errors.js';
 import { asksStatus, datedSql, filterClauses, statusAllowed, visibilitySql } from './filters.js';
+import { touchedSince } from './original-place.js';
 import {
   kindGiven,
   rowStatus,
@@ -74,9 +76,15 @@ export async function documentTable(
   listed: (rows: DocRow[]) => Promise<DocumentView[]>,
   cursorKey: Uint8Array,
 ): Promise<DocumentPage> {
-  if ((q.sort === 'location' || q.location !== undefined) && !maySortByLocation(p.role)) {
+  // And its place in a cabinet (0.9.0, C3): the same household's fact.
+  if (asksWhereKept(q) && !maySortByLocation(p.role)) {
     throw new ApiError(422, 'validation_failed', LOCATION_SORT_REFUSAL, {
-      detail: q.sort === 'location' ? 'sort' : 'location',
+      detail:
+        q.sort === 'location' || q.sort === 'original_place'
+          ? 'sort'
+          : q.location !== undefined
+            ? 'location'
+            : 'original_place',
     });
   }
   if (q.status !== undefined && !(STATUS_ORDER as readonly string[]).includes(q.status)) {
@@ -191,8 +199,41 @@ export async function documentTable(
  * counted as nothing to say (0.9.0, C1), never as somebody else's answer.
  */
 function tableRefuses(p: Principal, q: ListQuery): boolean {
-  if (q.location !== undefined && !maySortByLocation(p.role)) return true;
+  if (asksWhereKept(q) && !maySortByLocation(p.role)) return true;
   return q.status !== undefined && !(STATUS_ORDER as readonly string[]).includes(q.status);
+}
+
+/**
+ * Whether `q` sorts or filters by where originals are kept: the words
+ * (`location`, 5.41) or the place in a cabinet (`original_place`, C3).
+ */
+function asksWhereKept(q: ListQuery): boolean {
+  return (
+    q.sort === 'location' ||
+    q.sort === 'original_place' ||
+    q.location !== undefined ||
+    q.original_place !== undefined
+  );
+}
+
+/** A document's place in a cabinet as one line, "Study › Drawer 2 › Tax 2025"; null for none. */
+export function placeLine(alias: string): RawBuilder<string | null> {
+  return sql<
+    string | null
+  >`array_to_string(${sql.ref(`${alias}.original_place`)}, ${PLACE_SEPARATOR})`;
+}
+
+/**
+ * In this place, whatever the case (0.9.0, C3): the whole path; or the
+ * leading part of one — a cabinet, or a cabinet and its drawer — and
+ * everything filed inside it. Compared as words, never as a pattern.
+ */
+export function placeFilter(asked: string, alias = 'd'): RawBuilder<boolean> {
+  // Lowered by the database, as the line is, and measured in its characters.
+  const want = sql`lower(${asked.trim()}::text)`;
+  const line = sql`lower(${placeLine(alias)})`;
+  return sql<boolean>`(${line} = ${want}
+    or left(${line}, char_length(${want}) + ${PLACE_SEPARATOR.length}::int) = ${want} || ${PLACE_SEPARATOR}::text)`;
 }
 
 /** How many folders' counts one statement works out at once. */
@@ -332,6 +373,11 @@ const COLUMNS = sql.raw(
     'identifier',
     'issued_by',
     'physical_location',
+    // Its place in a cabinet (0104, C3): the names, and whose folder it is.
+    'original_place',
+    'original_place_by',
+    'original_place_folder',
+    'place_changed_at',
     'is_essential',
     'tags',
     'notes',
@@ -400,12 +446,16 @@ function whereOf(p: Principal, q: ListQuery): RawBuilder<boolean> {
   if (q.tag) parts.push(tagFilter(q.tag, 'd.'));
   if (q.tag_label) parts.push(tagLabelFilter(q.tag_label, 'd.'));
   if (q.issued_by) parts.push(sql`lower(d.issued_by) = lower(${q.issued_by.trim()})`);
-  if (q.updated_since) parts.push(sql`d.updated_at > ${new Date(q.updated_since)}`);
+  // Or its place in a cabinet changed since (C3), as the older list asks it.
+  if (q.updated_since) parts.push(touchedSince(q.updated_since, 'd'));
   // Any of several, and the days (V1, filters.ts).
   parts.push(...filterClauses(q));
   if (q.location !== undefined) {
     parts.push(sql`lower(btrim(d.physical_location)) = lower(btrim(${q.location}))`);
   }
+  // In a place in a cabinet (0.9.0, C3), whatever the case: the whole path,
+  // or a cabinet, or a cabinet and its drawer, and everything inside.
+  if (q.original_place !== undefined) parts.push(placeFilter(q.original_place));
   // A cabinet folder's pins and dividers (0.9.0, C2): only ever narrower.
   if (q.cabinet) parts.push(...cabinetClauses(q.cabinet));
   // A document in the Trash is in no collection until it is brought back,
@@ -532,6 +582,9 @@ function keyOf(p: Principal, sort: Exclude<DocumentSort, 'status'>): Key {
         type: 'text',
         join: NO_JOIN,
       };
+    case 'original_place':
+      // By its names as one line (0.9.0, C3): cabinet, then drawer, then folder.
+      return { expr: sql`lower(${placeLine('d')})`, type: 'text', join: NO_JOIN };
   }
 }
 
@@ -565,6 +618,7 @@ type StatusRow = Pick<
   | 'identifier'
   | 'issued_by'
   | 'physical_location'
+  | 'original_place'
   | 'tags'
   | 'extra'
   | 'sealed_details'
@@ -584,6 +638,7 @@ const STATUS_COLUMNS = sql.raw(
     'identifier',
     'issued_by',
     'physical_location',
+    'original_place',
     'tags',
     'extra',
     'sealed_details',

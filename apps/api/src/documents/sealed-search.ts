@@ -49,6 +49,8 @@ interface SealedRow {
   issued_precision: DateValue['precision'] | null;
   identifier: string | null;
   physical_location: string | null;
+  /** Its place in a cabinet (0104, C3): words of where the original is, as the location's. */
+  original_place: string[] | null;
   tags: string[];
   notes: string | null;
   extra: Record<string, unknown> | null;
@@ -85,7 +87,7 @@ export class SealedSearchService {
         select d.id as document_id, d.title, d.type_key, d.category, d.owner_member_id,
                d.sensitive, d.expires_on, d.expires_precision, d.updated_at,
                d.issued_by, d.issued_on, d.issued_precision,
-               d.identifier, d.physical_location, d.tags, d.notes, d.extra,
+               d.identifier, d.physical_location, d.original_place, d.tags, d.notes, d.extra,
                d.notes_sealed, d.extra_sealed, d.sealed_details, d.no_longer_needed_at,
                t.content_cipher, t.wrapped_by_scope
           from document d
@@ -255,6 +257,8 @@ function ownWords(row: SealedRow, values: PrivateValues, withLocation: boolean):
     notesPlainText(values.notes),
     row.tags.join(' '),
     withLocation ? row.physical_location : null,
+    // And its place in a cabinet (C3), on the same terms.
+    withLocation ? (row.original_place ?? []).join(' ') : null,
   ]
     .filter((s) => s)
     .join('\n');

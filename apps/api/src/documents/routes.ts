@@ -3,6 +3,7 @@ import {
   attachmentDisposition,
   isDocumentSort,
   NOTES_MAX,
+  ORIGINAL_PLACE_MOST,
   type CaptureMetadata,
 } from '@fdv/shared';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -51,6 +52,12 @@ const dateValue = z
 
 /** Into Only me, the person's own links that send it (5.41): ended, or kept. */
 const ownLinksBody = z.enum(['end', 'keep']).optional();
+
+/** A folder of the caller's own cabinet, by its id there (0.9.0, C3). */
+const folderIdBody = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/);
+
+/** Where the original is, as a folder of the caller's cabinet; null clears it (0.9.0, C3). */
+const originalPlaceBody = z.object({ folder_id: folderIdBody }).strict().nullable().optional();
 
 const documentBody = z
   .object({
@@ -492,8 +499,9 @@ export function registerDocuments(
 
   app.patch<{ Params: { id: string } }>('/api/v1/documents/:id', auth, async (req, reply) => {
     // Into Only me, what becomes of the person's own links (5.41).
+    // And its place in a cabinet (0.9.0, C3): an edit's alone.
     const { own_links: ownLinks, ...body } = parse(
-      documentBody.extend({ own_links: ownLinksBody }),
+      documentBody.extend({ own_links: ownLinksBody, original_place: originalPlaceBody }),
       req.body ?? {},
     );
     // Essential turned off, or out of "only me": what opening it asks is
@@ -521,6 +529,26 @@ export function registerDocuments(
     await docs.softDelete(principal(req), req.params.id, metaOf(req));
     return reply.status(204).send();
   });
+
+  // Where the originals of many are, as one folder of the caller's cabinet,
+  // or none (0.9.0, C3): for whoever may change documents and sees where
+  // originals are kept; a viewer is told so before the body is read.
+  app.post(
+    '/api/v1/documents/original-place',
+    { preHandler: [app.requireAuth, needs('document.edit')] },
+    async (req) => {
+      const body = parse(
+        z
+          .object({
+            document_ids: z.array(z.string().max(64)).min(1).max(ORIGINAL_PLACE_MOST),
+            folder_id: folderIdBody.nullable(),
+          })
+          .strict(),
+        req.body ?? {},
+      );
+      return docs.setOriginalPlaces(principal(req), body.document_ids, body.folder_id, metaOf(req));
+    },
+  );
 
   // No longer needed (0.9.0, 0082): kept, its expiry silent; and needed
   // again. For whoever may change the document: a viewer is told so before

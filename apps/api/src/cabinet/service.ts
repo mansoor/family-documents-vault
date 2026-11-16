@@ -2,6 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { withPrincipal, type Db } from '@fdv/db';
 import {
   drawCabinet,
+  NAME_HOLDS_SEPARATOR,
+  PLACE_SEPARATOR,
   DIVIDER_YEARS,
   dividerMode,
   dividersProblemOf,
@@ -42,6 +44,7 @@ import { parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
 import { ApiError, notFound } from '../errors.js';
 import { datedSql } from '../documents/filters.js';
+import { followLayout, placeRefused } from '../documents/original-place.js';
 import { folderQuery, listQueryOf } from '../documents/list-query.js';
 import {
   readDocument,
@@ -248,9 +251,32 @@ export class CabinetService {
     version: number,
     pinsMoved: PinsMoved[] = [],
   ): Promise<CabinetView> {
+    // Each name kept as it is checked: trimmed (C3 review). A name of
+    // spaces before its words would otherwise pass as its trimmed words,
+    // and be kept, and written on documents, as more than the database takes.
+    layout = trimmedNames(layout);
     checkLayout(p, layout);
     const json = JSON.stringify(layout);
     return withPrincipal(this.db, p, async (trx) => {
+      // A new name may not hold " › ", which joins a place's names into one
+      // line (C3): a name kept from before may, as it was.
+      const before = await trx
+        .selectFrom('cabinet_layout')
+        .select('layout')
+        .where('household_id', '=', p.householdId)
+        .where('member_id', '=', p.memberId)
+        .executeTakeFirst();
+      const had = new Map(
+        nodesOf(before?.layout as CabinetLayout | undefined).map((n) => [n.id, n.name]),
+      );
+      const joined = nodesOf(layout).find(
+        (n) => n.name.includes(PLACE_SEPARATOR) && had.get(n.id) !== n.name,
+      );
+      if (joined) {
+        throw new ApiError(422, 'validation_failed', `“${joined.name}”: ${NAME_HOLDS_SEPARATOR}`, {
+          detail: `node ${joined.id}: name`,
+        });
+      }
       const write = () =>
         version === 0
           ? trx
@@ -289,6 +315,9 @@ export class CabinetService {
         });
       }
       await keepPins(trx, p, layout, pinsMoved);
+      // Where originals are, in its folders (C3): their names kept up with
+      // it, and let go of the folders it no longer has.
+      await followLayout(trx, p, layout).catch(placeRefused);
       return { layout, version: saved.version, updated_at: saved.updated_at.toISOString() };
     });
   }
@@ -766,7 +795,38 @@ function checkLayout(p: Principal, layout: CabinetLayout): void {
         if (q.location !== undefined && !maySortByLocation(p.role)) {
           refuse(LOCATION_SORT_REFUSAL, 'location');
         }
+        if (q.original_place !== undefined && !maySortByLocation(p.role)) {
+          refuse(LOCATION_SORT_REFUSAL, 'original_place');
+        }
       }
     }
   }
+}
+
+/** A layout with every cabinet's, drawer's and folder's name trimmed, as it is kept (C3 review). */
+function trimmedNames(layout: CabinetLayout): CabinetLayout {
+  if (!Array.isArray(layout?.cabinets)) return layout;
+  const trim = <T>(name: T): T => (typeof name === 'string' ? (name.trim() as T) : name);
+  return {
+    ...layout,
+    cabinets: layout.cabinets.map((c) => ({
+      ...c,
+      name: trim(c.name),
+      drawers: Array.isArray(c.drawers)
+        ? c.drawers.map((d) => ({
+            ...d,
+            name: trim(d.name),
+            folders: Array.isArray(d.folders)
+              ? d.folders.map((f) => ({ ...f, name: trim(f.name) }))
+              : d.folders,
+          }))
+        : c.drawers,
+    })),
+  };
+}
+
+/** Every cabinet, drawer and folder of a saved layout, by id and name. */
+function nodesOf(layout: CabinetLayout | null | undefined): Array<{ id: string; name: string }> {
+  if (!Array.isArray(layout?.cabinets)) return [];
+  return layout.cabinets.flatMap((c) => [c, ...c.drawers.flatMap((d) => [d, ...d.folders])]);
 }
