@@ -163,6 +163,30 @@ describe('the activity log, in sentences', () => {
       'Sarah looked again at the link they made to “Home insurance policy”',
     );
     expect(revealed?.notable).toBe(true);
+    // 0.9.0 (LK): a link changed by whoever made it, never its PIN.
+    expect(
+      describeEvent(
+        ev({ action: 'share.changed', detail: { share_id: 's-1', changed: ['secret'] } }),
+      )?.text,
+    ).toBe('Sarah changed the link they made to “Home insurance policy”');
+    expect(
+      describeEvent(
+        ev({
+          action: 'share.changed',
+          detail: { share_id: 's-1', changed: ['expires_at'], reaches_further: true },
+        }),
+      )?.text,
+    ).toBe('Sarah changed the link they made to “Home insurance policy”, so it reaches further');
+    expect(activityKind('share.changed')).toBe('shared');
+    // An owner's change to somebody else's link (16 Nov 2026).
+    expect(
+      describeEvent(
+        ev({
+          action: 'share.changed',
+          detail: { share_id: 's-1', changed: ['expires_at'], made_by: 'a-2' },
+        }),
+      )?.text,
+    ).toBe('Sarah changed a link somebody else made to “Home insurance policy”');
     // 0.9.0 (13 Nov 2026): a link emailed by the vault, the address masked.
     const emailed = describeEvent(
       ev({ action: 'share_link.emailed', detail: { share_id: 's-1', to: 'j•••@e•••.com' } }),

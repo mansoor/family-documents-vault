@@ -7317,6 +7317,131 @@ nothing_to_zip`, `404` — counting nothing.
         `attachmentDisposition`, `rfc5987`; `ZIP_LEFT_OUT.not_there`.
         `@fdv/client`: `downloadZipTicket`, `collectionZipTicket`,
         `downloadTicketUrl`, `linkItemsZipCheck`; the fake keeps tickets.
+  - Links and requests changed after they are made, and requests shown
+    again (0.9.0-dev.49, LK; the owner's decision of 15 Nov 2026). Migration 0103. **Additive**: new routes and new fields only; nothing an older
+    client calls is answered differently.
+    - **New `features`:** `link_changes` (`true`).
+    - **New routes:**
+      - `PATCH /api/v1/shares/{id}` — a link's properties changed by
+        whoever made it (`ShareChangeInput`): `recipient_label`,
+        `expires_at`, `permission`, `max_opens`, `max_downloads`,
+        `show_title`, and `secret` (`none`, `pin`, `password` — a made-up
+        one, or the `password` typed). Only what is sent changes; never
+        what it is to, its emailed or texted code, nor `this_device_only`
+        (`422 validation_failed` for any other field). Answers
+        `ChangedShare` (`{ share, changed, pin?, password? }`, `changed`
+        naming properties, never values), `Cache-Control: no-store`, and
+        `ETag: "<version>"`. `If-Match: "<version>"` is optional; one moved
+        on is `409 conflict`. The end is held to the link's longest **from
+        when it was made** (`Share.latest_end`: `limits.share_max_days`, 30
+        days for a link that keeps up with its collection, 24 hours for a
+        clinician's): `422 expiry_out_of_range`, a few minutes past cut to
+        it. A limit below what is used already is `422`; a link to view
+        takes no `max_downloads`; a clinician's link stays to view; a note's
+        stays to view (`422 note_read_on_the_page`); a Word or Excel file
+        cannot go to view (`422 view_not_possible`). Making it reach further
+        — a later end, view to download, a limit raised or taken away, its
+        PIN or password taken away or weakened (password → PIN), its title
+        shown — is `403 step_up_required` with **new action
+        `change_share`** (any credential); narrowing asks nothing. A new or
+        removed PIN or password ends every session opened on the link, and
+        the sealed copy is sealed again with the new PIN or made-up password
+        (a typed one is never kept), so `POST /shares/{id}/reveal` shows it.
+        Narrowing holds for open sessions at once (download → view is `403
+view_only` on their next download). The maker alone: `404 not_found`
+        for anybody else's, an owner's included; `410 share_ended` for one
+        taken back, expired, locked or used up; `409 share_legacy` for one
+        made before 0.5.14; `403` for whoever may not share.
+      - `POST /api/v1/upload-requests/{id}/reveal` — a request's link shown
+        again to whoever asked, as a share link's is: `RevealedUploadRequest`
+        (`{ link_token, link_url, password? }`, the password only if the
+        vault made it up), `no-store`, after `403 step_up_required`
+        (`reveal_share`). `404` for anybody else's; `409
+request_not_revealable` for a request made before 0103; `410
+request_ended` for one taken back, closed, locked, expired or used up.
+      - `PATCH /api/v1/upload-requests/{id}` — a request's properties
+        changed by whoever asked (`UploadRequestChangeInput`):
+        `recipient_label`, `expires_at`, `max_visits`, `max_files`,
+        `max_total_bytes`, `accept_types`, `close_after_submit`, and
+        `secret` (`none`, `password`). Never its title, message, things to
+        send, who reviews, its hints, its emailed code nor
+        `this_device_only`. As `PATCH /shares/{id}`: `ChangedUploadRequest`,
+        If-Match, `latest_end`, limits never below what is used, `change_share`
+        for a later end, the password taken away, more visits, files or
+        room, Word and Excel too, or no longer closing once sent. A new or
+        removed password ends the request's sessions.
+    - **New fields:** on `Share`, `changeable`, `latest_end`, `show_title`
+      and `version`; on `UploadRequestView`, `revealable`, `changeable`,
+      `latest_end` and `version`. Each absent from older vaults.
+    - **Activity log:** `share.changed` (with `changed`, the new non-secret
+      values, `protection` as `none`/`pin`/`password`, and `reaches_further`
+      when it did), `upload_request.revealed` and `upload_request.changed`;
+      never a link, a PIN or a password.
+    - **Storage:** `share_link.version`; `upload_request.version` and
+      `link_copy_sealed` (AES-256-GCM under `deriveKey(master,
+'upload-request-copies')`, bound to its household and request — a new
+      kind in `MASTER_SEALED`, `uploadRequestCopies`, moved by
+      `rotate-master-key` and by a restore of an older backup). The
+      database lets only a link's or request's maker, signed in, change its
+      PIN or password, and only with its version moved on; a copy is sealed
+      again only with it, never put on a row that had none; "this browser
+      only" and a request's emailed code stay as made.
+    - **Shared and client:** `ShareChangeInput`, `ChangedShare`,
+      `LinkSecretChange`, `UploadRequestChangeInput`, `ChangedUploadRequest`,
+      `RevealedUploadRequest`; `@fdv/crypto`: `sealUploadRequestCopy`,
+      `openUploadRequestCopy`, `UPLOAD_REQUEST_COPY_PURPOSE`. `@fdv/client`:
+      `changeShare(token, id, body, version?)`, `revealUploadRequest`,
+      `changeUploadRequest(token, id, body, version?)`; the fake changes and
+      shows them as the vault does (`FakeVaultState.uploadRequestCopies`),
+      and a contract scenario checks both.
+    - **After its review, and the owner's answers of 16 Nov 2026 (still
+      dev.49):**
+      - **Sessions:** a link's and a request's `secret_version` (0103) moves
+        on with each new or removed PIN or password; every session keeps
+        the version it was opened against (`share_session` and
+        `upload_session.secret_version`), and one behind is refused at its
+        next request (`401 share_session_ended` / `drop_session_ended`) —
+        one in use as the change was made included, whose work is undone.
+      - **Owners** may `PATCH` other members' links and the requests they
+        can see, all but `secret` (`403 share_secret_makers_only`,
+        `request_secret_makers_only`, asked before any step-up); widening
+        still asks them `change_share`. The database holds it: only the
+        maker or an owner, signed in, changes a link's or a request's
+        properties, and only the maker its PIN, password or copy. The
+        audit line carries `made_by` (the maker's account) when it is not
+        the actor. **New field:** `Share.mine`. `Share.changeable` and
+        `UploadRequestView.changeable` are `true` for an owner too.
+      - **A request's `title` and `message`** may be changed (as making one
+        takes them; no step-up), and never go in the log.
+      - **New route:** `POST /api/v1/upload-requests/{id}/email` — a
+        request's link emailed by the vault, as `POST /shares/{id}/email`
+        (`ShareEmailInput` → `ShareEmailed`): whoever asked alone, while
+        it opens and has a copy; neutral words that say who asks and when
+        it ends, never what it asks for, its password or a code; 3 a
+        request and 20 an account a day (`429 email_link_limit`); `email_share`
+        after the first 15 minutes; `503 email_link_unavailable` without the
+        operator's mail server; `409 request_not_revealable`, `409
+request_paused`, `410 request_ended`, `404`. Written down as
+        `upload_request.emailed`, masked. **New feature:**
+        `upload_request_email`; **new fields** `UploadRequestView.emailable`
+        and `emailed_to`. **Storage:** `upload_request_email` (as
+        `share_link_email`).
+      - **Changed answers:** `Share.show_title` is now what the page shows
+        (`linkShowsTitle`), never null; a change compares with it. A
+        collection's link switched to view is refused for a Word or Excel
+        file in it (`422 view_not_possible`), and any link for a file
+        removed for good (`422 file_removed`). A made-up password swapped
+        for a typed one asks `change_share` (none < PIN < typed password <
+        made-up password). An end that comes to the same once cut to the
+        longest changes nothing; an earlier end is let through even past a
+        longest lowered since. The `PATCH` routes are limited as `reveal`
+        is. A kept copy that will not open is let go (the link is then shown
+        once) rather than answering `500`. A link switched to download has
+        its pages removed by the worker.
+      - **Shared and client:** `UPLOAD_REQUEST_EMAIL_NOTE`; `@fdv/client`
+        `emailUploadRequest`; the fake answers owners and the email, and the
+        contract scenario changes a request's title and emails it (or is
+        told why not).
 
 ## Deprecations in effect
 

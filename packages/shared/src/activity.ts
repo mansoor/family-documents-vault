@@ -854,6 +854,13 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // them. Never the link, nor its PIN or password.
     case 'share.revealed':
       return line(`${who} looked again at the link they made to ${linkTo}`, true);
+    // 0.9.0 (LK): a link's properties changed by whoever made it — never
+    // its PIN or password; said to reach further when it does.
+    case 'share.changed':
+      return line(
+        `${who} changed ${typeof detail.made_by === 'string' ? 'a link somebody else made' : 'the link they made'} to ${linkTo}${detail.reaches_further === true ? ', so it reaches further' : ''}`,
+        true,
+      );
     // 0.9.0 (13 Nov 2026): a link emailed to its recipient by the vault —
     // where, masked; never the link, its PIN or password, nor the message.
     case 'share_link.emailed':
@@ -894,6 +901,21 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     }
     case 'upload_request.resumed':
       return line(`${who} turned a request to send documents back on after a restore`, true);
+    // 0.9.0 (LK): a request shown again to whoever asked, and changed by
+    // them — never its link or its password.
+    case 'upload_request.revealed':
+      return line(`${who} looked again at a request to send documents they made`, true);
+    case 'upload_request.changed':
+      return line(
+        `${who} changed ${typeof detail.made_by === 'string' ? 'a request somebody else made' : 'a request'} to send documents${detail.reaches_further === true ? ', so it reaches further' : ''}`,
+        true,
+      );
+    // 16 Nov 2026: a request emailed by the vault, the address masked.
+    case 'upload_request.emailed':
+      return line(
+        `${who} emailed a request to send documents${text(detail.to) ? ` to ${text(detail.to)}` : ''}`,
+        true,
+      );
     case 'upload_request.closed':
       return line(
         'A request to send documents was closed: whoever asked can no longer ask for documents',

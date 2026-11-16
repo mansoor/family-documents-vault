@@ -13,12 +13,14 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
+import type { StepUpService } from '../auth/step-up.js';
 import { captureBody, cutOff } from '../documents/routes.js';
 import { ApiError } from '../errors.js';
 import { presentedDeviceCookies } from '../public/device-cookie.js';
 import { batchBody, type BatchService } from './batches.js';
 import { acceptBody, type IncomingService } from './incoming.js';
 import {
+  changeBody,
   createBody,
   DROP_COOKIE_PATH,
   DROP_COOKIE_PREFIX,
@@ -28,9 +30,11 @@ import {
   dropFinishBody,
   dropTokenBody,
   dropUnlockBody,
+  requestEmailUnavailable,
   type DropCookie,
   type UploadRequestService,
 } from './requests.js';
+import { shareEmailBody } from '../documents/shares.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -73,7 +77,12 @@ export function dropSessionCookie(req: FastifyRequest): DropCookie {
  * — the token, a password, a code, a file's name — is in a path, so none of
  * it reaches a log line (log-redaction.ts).
  */
-export function registerUploads(app: FastifyInstance, uploads: UploadRequestService) {
+export function registerUploads(
+  app: FastifyInstance,
+  uploads: UploadRequestService,
+  /** Who is asking, asked again (0.9.0, LK): to show a request again, or let it reach further. */
+  stepUp?: StepUpService,
+) {
   const auth = { preHandler: app.requireAuth };
   const principal = (req: FastifyRequest) => req.principal as Principal;
   const idParam = z.object({ id: z.string().uuid() });
@@ -102,6 +111,83 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
     async (req, reply) => {
       await uploads.revoke(principal(req), parse(idParam, req.params).id, metaOf(req));
       return reply.status(204).send();
+    },
+  );
+
+  /**
+   * A request's link shown again to whoever asked (0.9.0, LK), as a share
+   * link's is: whose it is, and that it can be shown, first; then that it's
+   * them (`reveal_share`). A POST, answered no-store, and as tight as the
+   * routes a link's secret is tried on.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/upload-requests/:id/reveal',
+    { ...auth, config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const id = parse(idParam, req.params).id;
+      await uploads.revealable(principal(req), id);
+      if (stepUp) await stepUp.require(principal(req), 'reveal_share');
+      const shown = await uploads.reveal(principal(req), id, metaOf(req));
+      reply.header('cache-control', 'no-store');
+      return shown;
+    },
+  );
+
+  /**
+   * A request's properties changed by whoever asked (0.9.0, LK): whose it
+   * is, that it still works and that the change is one it may make first;
+   * then, only for a change that makes it reach further, that it's them
+   * (`change_share`). Answered no-store: a made-up password is in it, once.
+   */
+  // As tight as showing it again (the LK review): a made-up password is in its answer.
+  const changeLimit = { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } };
+  app.patch<{ Params: { id: string } }>(
+    '/api/v1/upload-requests/:id',
+    { ...auth, ...changeLimit },
+    async (req, reply) => {
+      const id = parse(idParam, req.params).id;
+      const body = parse(changeBody, req.body ?? {});
+      const ifMatch =
+        typeof req.headers['if-match'] === 'string' ? req.headers['if-match'] : undefined;
+      const plan = await uploads.changePlan(principal(req), id, body, ifMatch);
+      if (stepUp && plan.widens) await stepUp.require(principal(req), 'change_share');
+      const changed = await uploads.change(
+        principal(req),
+        id,
+        body,
+        ifMatch,
+        metaOf(req),
+        plan.widens || !stepUp,
+        (message, extra) => req.log.warn(extra, message),
+      );
+      reply.header('cache-control', 'no-store');
+      if (changed.request.version !== undefined) {
+        reply.header('etag', `"${changed.request.version}"`);
+      }
+      return changed;
+    },
+  );
+
+  /**
+   * A request's link emailed to its recipient by the vault (0.9.0, LK; the
+   * owner's decision of 16 Nov 2026), as a share link's is: none without the
+   * operator's mail server (503), before anything else is asked; then the
+   * address (422), whose it is and that it can be sent; and within
+   * JUST_MADE_MS of making it nothing more (making one asked nothing), later
+   * that it's them (`email_share`).
+   */
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/upload-requests/:id/email',
+    { ...auth, ...changeLimit },
+    async (req, reply) => {
+      const id = parse(idParam, req.params).id;
+      if (!uploads.emailLinks) throw requestEmailUnavailable();
+      const body = parse(shareEmailBody, req.body ?? {});
+      const asked = await uploads.emailable(principal(req), id);
+      if (stepUp && !asked.justMade) await stepUp.require(principal(req), 'email_share');
+      const sent = await uploads.emailLink(principal(req), id, body, metaOf(req));
+      reply.header('cache-control', 'no-store');
+      return sent;
     },
   );
 

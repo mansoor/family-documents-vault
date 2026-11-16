@@ -13,11 +13,14 @@ import {
   decryptRange,
   EncryptStream,
   newKey,
+  openUploadRequestCopy,
+  sealUploadRequestCopy,
   wrapKey,
   type ScopeKeys,
 } from '@fdv/crypto';
 import {
   appendAudit,
+  householdZone,
   withPrincipal,
   withScope,
   type Actor,
@@ -31,8 +34,14 @@ import {
   dropFileName,
   SENDER_NOTE_MAX,
   SHARE_END_GRACE_MINUTES,
+  SHARE_LINK_EMAIL_UNAVAILABLE,
+  SHARE_LINK_EMAILS,
   SHARE_MAX_DAYS,
   SHARE_MIN_MINUTES,
+  shareLinkMessage,
+  type ShareEmailed,
+  type ChangedUploadRequest,
+  type RevealedUploadRequest,
   UPLOAD_CODE_MINUTES,
   UPLOAD_CODE_TRIES,
   UPLOAD_PASSWORD_MIN,
@@ -62,7 +71,15 @@ import { z } from 'zod';
 import type { AlertRequest } from '../alert-job.js';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
-import { canonicalMadeUp, truncatedIp } from '../documents/shares.js';
+import {
+  canonicalMadeUp,
+  changedElsewhere,
+  JUST_MADE_MS,
+  truncatedIp,
+  versionMatches,
+  type shareEmailBody,
+} from '../documents/shares.js';
+import { requestEmail } from '../documents/share-link-email.js';
 import type { Enqueue } from '../documents/service.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
@@ -191,6 +208,30 @@ export const createBody = z
   })
   .strict();
 
+/**
+ * A request's properties changed by whoever asked (0.9.0, LK; the owner's
+ * decision of 15 Nov 2026): only what is sent changes. Never what it asks
+ * for, who looks at what comes in, its emailed code, nor "this browser
+ * only". `secret`: `none` takes its password away; `password` gives it a new
+ * one — the vault's, or the one typed in `password`.
+ */
+export const changeBody = z
+  .object({
+    // What it asks for, in words (16 Nov 2026): as making one takes them.
+    title: z.string().trim().min(1).max(UPLOAD_REQUEST_TITLE_MAX).optional(),
+    message: z.string().trim().max(UPLOAD_REQUEST_MESSAGE_MAX).nullable().optional(),
+    recipient_label: z.string().trim().max(80).nullable().optional(),
+    expires_at: z.string().datetime({ offset: true }).optional(),
+    secret: z.enum(['none', 'password']).optional(),
+    password: z.string().min(UPLOAD_PASSWORD_MIN).max(64).optional(),
+    max_visits: z.number().int().min(1).max(1000).nullable().optional(),
+    max_files: z.number().int().min(1).max(UPLOAD_REQUEST_MAX_FILES).optional(),
+    max_total_bytes: z.number().int().min(1).max(UPLOAD_REQUEST_MAX_BYTES).optional(),
+    accept_types: z.enum(['standard', 'office']).optional(),
+    close_after_submit: z.boolean().optional(),
+  })
+  .strict();
+
 export const dropTokenBody = z.object({ token: linkToken }).strict();
 
 export const dropUnlockBody = z
@@ -231,6 +272,18 @@ export interface UploadRequestOptions {
   alert?: (input: AlertRequest) => Promise<void>;
   /** The household's files waiting for review, in bytes, at most (tests shorten it). */
   householdMaxBytes?: number;
+  /**
+   * The vault's own address (FDV_BASE_URL), for a request's link emailed
+   * by a vault with no public-only site (0.9.0, LK).
+   */
+  baseUrl?: string | null;
+  /**
+   * The key a request's sealed copy is kept under (0.9.0, LK,
+   * UPLOAD_REQUEST_COPY_PURPOSE): its link and made-up password, to show
+   * whoever asked again. Without one, none is kept, and requests are shown
+   * once.
+   */
+  copyKey?: Buffer | null;
 }
 
 /** A file on its way in, as the route hands it over. */
@@ -281,6 +334,8 @@ const SENDER_COLUMNS = [
   'paused_at',
   'revoked_at',
   'closed_at',
+  // 0.9.0 (LK): a session opened against an older password is refused.
+  'secret_version',
 ] as const;
 type SenderRow = Pick<RequestRow, (typeof SENDER_COLUMNS)[number]>;
 
@@ -439,6 +494,31 @@ const ended = (r: RequestRow) => {
   return s === 'revoked' || s === 'closed' || s === 'locked' || s === 'expired' || s === 'used_up';
 };
 
+/**
+ * Over and done with for a change or a showing (0.9.0, LK): ended, or every
+ * visit used even while it is paused — nothing makes it work again.
+ */
+const overForGood = (r: RequestRow) =>
+  ended(r) || (r.max_visits !== null && r.visits_used >= r.max_visits);
+
+/** No operator mail, or no copy key, or no address of its own: nothing is emailed (A21). */
+export const requestEmailUnavailable = () =>
+  new ApiError(503, 'email_link_unavailable', SHARE_LINK_EMAIL_UNAVAILABLE);
+
+/** A request that has ended is not made to work again, nor shown (0.9.0, LK). */
+const requestEnded = (doing: 'change' | 'show') =>
+  new ApiError(
+    410,
+    'request_ended',
+    doing === 'change'
+      ? 'That request no longer works, so it can’t be changed. Make a new one if you need to.'
+      : 'That request no longer works, so there is nothing to show. Make a new one if you need to.',
+  );
+
+/** Whether a limit reaches further: none where there was one, or a higher one. */
+const limitWidens = (before: number | null, after: number | null) =>
+  before !== null && (after === null || after > before);
+
 export class UploadRequestService {
   private readonly maxDays: number;
   private readonly enqueue: Enqueue;
@@ -446,6 +526,7 @@ export class UploadRequestService {
   private readonly householdMax: number;
   private readonly mail: ((m: MailRequest) => Promise<void>) | null;
   private readonly deviceKey: Buffer;
+  private readonly copyKey: Buffer | null;
 
   constructor(
     private readonly db: Db,
@@ -459,6 +540,7 @@ export class UploadRequestService {
     this.householdMax = opts.householdMaxBytes ?? INCOMING_HOUSEHOLD_MAX_BYTES;
     this.mail = opts.mail ?? null;
     this.deviceKey = opts.deviceKey ?? randomBytes(32);
+    this.copyKey = opts.copyKey ?? null;
   }
 
   /** The largest one file may be, before what is left of a request. */
@@ -469,6 +551,18 @@ export class UploadRequestService {
   /** Whether an emailed code can be offered: only with operator mail (A21). */
   get emailCodeAvailable(): boolean {
     return this.mail !== null;
+  }
+
+  /**
+   * Whether the vault can email a request's link (0.9.0, LK): the operator's
+   * mail server is set (A21), copies are kept, and it knows its own address.
+   */
+  get emailLinks(): boolean {
+    return (
+      this.mail !== null &&
+      this.copyKey !== null &&
+      (this.opts.publicUrl ?? this.opts.baseUrl ?? null) !== null
+    );
   }
 
   // ============================================================ the family
@@ -536,6 +630,17 @@ export class UploadRequestService {
         ? await argon2.hash(typed, ARGON2)
         : null;
     const items = input.items ?? [];
+    // Its id made here, to bind its sealed copy to (0.9.0, LK): the link,
+    // and the password the vault made up (a typed one is never kept).
+    const requestId = randomUUID();
+    const copy = this.copyKey
+      ? sealUploadRequestCopy(
+          this.copyKey,
+          { token, ...(made ? { password: made } : {}) },
+          p.householdId,
+          requestId,
+        )
+      : null;
 
     const id = await withPrincipal(this.db, p, async (trx) => {
       if (input.suggested_member_id) {
@@ -568,6 +673,8 @@ export class UploadRequestService {
       const row = await trx
         .insertInto('upload_request')
         .values({
+          id: requestId,
+          link_copy_sealed: copy,
           household_id: p.householdId,
           created_by: p.accountId,
           requester_member_id: p.memberId,
@@ -629,9 +736,7 @@ export class UploadRequestService {
     });
 
     const request = (await this.list(p)).find((r) => r.id === id) as UploadRequestView;
-    const link_url = this.opts.publicUrl
-      ? `${this.opts.publicUrl.replace(/\/+$/, '')}/drop#${token}`
-      : null;
+    const link_url = this.linkUrl(token);
     return made
       ? { request, link_token: token, link_url, password: made }
       : { request, link_token: token, link_url };
@@ -678,6 +783,21 @@ export class UploadRequestService {
         .where('state', '<>', 'uploading')
         .groupBy('request_id')
         .execute();
+      // Where the reader last had the vault email each of theirs (0.9.0,
+      // LK): masked, and only ever their own (0103 gives nobody else's).
+      const emailed = new Map(
+        (
+          await trx
+            .selectFrom('upload_request_email')
+            .distinctOn('request_id')
+            .select(['request_id', 'to_masked'])
+            .where('sent_by', '=', p.accountId)
+            .where('request_id', 'in', ids)
+            .orderBy('request_id')
+            .orderBy('sent_at', 'desc')
+            .execute()
+        ).map((e) => [e.request_id, e.to_masked]),
+      );
       return rows.map((r) => ({
         ...this.view(r, p),
         // Paused while its requester's sign-in is locked, or waits after a
@@ -704,11 +824,24 @@ export class UploadRequestService {
           .filter((i) => i.request_id === r.id)
           .map((i) => ({ id: i.id, label: i.label })),
         files_received: Number(files.find((f) => f.request_id === r.id)?.n ?? 0),
+        emailed_to: emailed.get(r.id) ?? null,
       }));
     });
   }
 
+  /** The whole link to send, on the public-only site when the vault has one. */
+  private linkUrl(token: string): string | null {
+    return this.opts.publicUrl ? `${this.opts.publicUrl.replace(/\/+$/, '')}/drop#${token}` : null;
+  }
+
+  /** The latest a request may be changed to end (0.9.0, LK): the vault's longest from when it was made. */
+  private latestEnd(r: { created_at: Date }): Date {
+    return new Date(r.created_at.getTime() + this.maxDays * 864e5);
+  }
+
   private view(r: RequestRow, p: Principal): UploadRequestView {
+    const mine = r.created_by === p.accountId;
+    const live = !overForGood(r);
     return {
       id: r.id,
       title: r.title,
@@ -736,7 +869,575 @@ export class UploadRequestService {
       paused_reason: r.paused_reason,
       closed_reason: r.closed_reason,
       files_received: 0,
+      // 0.9.0 (LK): whoever asked may see it again, and change it, while it
+      // works or is only paused; one made before copies were kept stays
+      // shown once.
+      revealable: mine && live && this.copyKey !== null && r.link_copy_sealed !== null,
+      // Whoever asked, or (16 Nov 2026) an owner who can see it — all but
+      // its password, which stays whoever asked's.
+      changeable: (mine || p.role === 'owner') && live,
+      // Its link emailed by the vault, by whoever asked, while it opens now.
+      emailable: mine && stateOf(r) === 'active' && this.emailLinks && r.link_copy_sealed !== null,
+      emailed_to: null,
+      latest_end: this.latestEnd(r).toISOString(),
+      version: r.version,
     };
+  }
+
+  // -------------------------------------------- shown again (0.9.0, LK)
+
+  /**
+   * A request whoever asked may see again or change (0.9.0, LK): theirs —
+   * anybody else's, an owner's included, is one there is no such of (404),
+   * as a share link's is — and still working, or only paused. Asked before
+   * anybody is asked to confirm it's them.
+   */
+  private async ownLive(p: Principal, id: string, doing: 'change' | 'show') {
+    this.mayAsk(p);
+    const found = (await this.list(p)).find((r) => r.id === id);
+    // Shown again by whoever asked alone; changed by them, or by an owner
+    // who can see it (16 Nov 2026).
+    if (!found || (!found.mine && !(doing === 'change' && p.role === 'owner'))) {
+      throw new ApiError(404, 'not_found', 'That request does not exist.');
+    }
+    const s = found.state;
+    if (s !== 'active' && s !== 'paused') throw requestEnded(doing);
+    return found;
+  }
+
+  /** Whether a request can be shown again, asked before the credential is (`reveal_share`). */
+  async revealable(p: Principal, id: string): Promise<void> {
+    const found = await this.ownLive(p, id, 'show');
+    if (!found.revealable) {
+      throw new ApiError(
+        409,
+        'request_not_revealable',
+        'That request was made before the vault kept a copy, so it was shown only once. Take it back and make a new one if you need it again.',
+      );
+    }
+  }
+
+  /**
+   * POST /upload-requests/{id}/reveal (0.9.0, LK): what was handed over as
+   * the request was made — the link, and the password the vault made up —
+   * opened from its sealed copy, for whoever asked, once they have confirmed
+   * it's them (the route asks). Written to the activity log, never with the
+   * link.
+   */
+  async reveal(p: Principal, id: string, meta: RequestMeta): Promise<RevealedUploadRequest> {
+    await this.revealable(p, id);
+    const copy = await withPrincipal(this.db, p, async (trx) => {
+      // Read again: taken back meanwhile, it has forgotten its copy (0103).
+      const row = await trx
+        .selectFrom('upload_request')
+        .select(['link_copy_sealed'])
+        .where('id', '=', id)
+        .where('created_by', '=', p.accountId)
+        .where('revoked_at', 'is', null)
+        .executeTakeFirst();
+      if (!row?.link_copy_sealed || !this.copyKey) {
+        throw new ApiError(404, 'not_found', 'That request does not exist.');
+      }
+      const opened = openUploadRequestCopy(this.copyKey, row.link_copy_sealed, p.householdId, id);
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'upload_request.revealed',
+        objectType: 'upload_request',
+        objectId: id,
+        ip: meta.ip,
+      });
+      return opened;
+    });
+    return {
+      link_token: copy.token,
+      link_url: this.linkUrl(copy.token),
+      ...(copy.password ? { password: copy.password } : {}),
+    };
+  }
+
+  // -------------------------------------------------- changed (0.9.0, LK)
+
+  /** The request a change is made to, as it is now: held, when it is about to be changed. */
+  private async changing(
+    trx: Db,
+    p: Principal,
+    id: string,
+    ifMatch: string | undefined,
+    hold: boolean,
+  ): Promise<RequestRow> {
+    const query = trx
+      .selectFrom('upload_request')
+      .selectAll()
+      .where('id', '=', id)
+      // An owner changes anybody's they can see (16 Nov 2026).
+      .$call((q) => (p.role === 'owner' ? q : q.where('created_by', '=', p.accountId)));
+    const row = await (hold ? query.forUpdate() : query).executeTakeFirst();
+    if (!row) throw new ApiError(404, 'not_found', 'That request does not exist.');
+    if (ifMatch !== undefined && !versionMatches(ifMatch, row.version)) {
+      throw changedElsewhere('request', row.version);
+    }
+    if (overForGood(row)) throw requestEnded('change');
+    return row;
+  }
+
+  /**
+   * A change, read against the request as it is: what it sets, which
+   * properties it changes, and whether it reaches further — a later end,
+   * its password taken away, more visits, files or room, Word and Excel
+   * taken too, or no longer closing once sent.
+   */
+  private planChange(row: RequestRow, input: z.infer<typeof changeBody>) {
+    const set: {
+      title?: string;
+      message?: string | null;
+      recipient_label?: string | null;
+      expires_at?: Date;
+      max_visits?: number | null;
+      max_files?: number;
+      max_total_bytes?: number;
+      accept_types?: 'standard' | 'office';
+      close_after_submit?: boolean;
+    } = {};
+    const changed: string[] = [];
+    let widens = false;
+    // What it asks for, in words: neither more nor less reach.
+    if (input.title !== undefined && input.title !== row.title) {
+      set.title = input.title;
+      changed.push('title');
+    }
+    if (input.message !== undefined) {
+      const message = input.message?.trim() || null;
+      if (message !== row.message) {
+        set.message = message;
+        changed.push('message');
+      }
+    }
+    if (input.recipient_label !== undefined) {
+      const label = input.recipient_label?.trim() || null;
+      if (label !== row.recipient_label) {
+        set.recipient_label = label;
+        changed.push('recipient_label');
+      }
+    }
+    if (input.expires_at !== undefined) {
+      const asked = new Date(input.expires_at).getTime();
+      if (Number.isNaN(asked)) throw endRefused('That is not a date and time.');
+      const latest = this.latestEnd(row).getTime();
+      const now = row.expires_at.getTime();
+      // An earlier end is always allowed, even for a request whose end is
+      // past a longest lowered since it was made; a later one never past it,
+      // a clock a few minutes ahead cut to it.
+      let end = asked;
+      if (asked > latest && asked > now) {
+        if (asked > latest + SHARE_END_GRACE_MINUTES * 60_000) {
+          throw endRefused(
+            `A request can last ${this.maxDays} days at most from when it was made.`,
+          );
+        }
+        end = Math.max(latest, Math.min(asked, now));
+      }
+      // Compared once cut: an end that comes to the same changes nothing.
+      if (end !== now) {
+        if (end < Date.now() + SHARE_MIN_MINUTES * 60_000) {
+          throw endRefused(`Choose a time at least ${SHARE_MIN_MINUTES} minutes from now.`);
+        }
+        set.expires_at = new Date(end);
+        changed.push('expires_at');
+        if (end > now) widens = true;
+      }
+    }
+    const used = (n: number, what: string, field: string) =>
+      new ApiError(
+        422,
+        'validation_failed',
+        `That request has had ${n} ${what} already: choose ${n} or more${field === 'max_visits' ? ', or no limit' : ''}.`,
+        { detail: field },
+      );
+    if (input.max_visits !== undefined && input.max_visits !== row.max_visits) {
+      if (input.max_visits !== null && input.max_visits < row.visits_used) {
+        throw used(row.visits_used, 'visits', 'max_visits');
+      }
+      set.max_visits = input.max_visits;
+      changed.push('max_visits');
+      if (limitWidens(row.max_visits, input.max_visits)) widens = true;
+    }
+    if (input.max_files !== undefined && input.max_files !== row.max_files) {
+      if (input.max_files < row.files_used) throw used(row.files_used, 'files', 'max_files');
+      set.max_files = input.max_files;
+      changed.push('max_files');
+      if (input.max_files > row.max_files) widens = true;
+    }
+    const bytes = Number(row.max_total_bytes);
+    if (input.max_total_bytes !== undefined && input.max_total_bytes !== bytes) {
+      if (input.max_total_bytes < Number(row.bytes_used)) {
+        throw new ApiError(
+          422,
+          'validation_failed',
+          'That is less room than what was sent already takes. Choose more.',
+          { detail: 'max_total_bytes' },
+        );
+      }
+      set.max_total_bytes = input.max_total_bytes;
+      changed.push('max_total_bytes');
+      if (input.max_total_bytes > bytes) widens = true;
+    }
+    if (input.accept_types !== undefined && input.accept_types !== row.accept_types) {
+      set.accept_types = input.accept_types;
+      changed.push('accept_types');
+      if (input.accept_types === 'office') widens = true;
+    }
+    if (
+      input.close_after_submit !== undefined &&
+      input.close_after_submit !== row.close_after_submit
+    ) {
+      set.close_after_submit = input.close_after_submit;
+      changed.push('close_after_submit');
+      if (!input.close_after_submit) widens = true;
+    }
+    if (input.password !== undefined && input.secret !== 'password') {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'A password typed goes with secret: "password".',
+        { detail: 'password' },
+      );
+    }
+    // Taking away what is not there changes nothing.
+    const secret = input.secret === 'none' && row.secret_hash === null ? undefined : input.secret;
+    if (secret !== undefined) {
+      changed.push('secret');
+      // As strong as it is: none; one typed (eight characters at least,
+      // chosen by a person); one the vault made up (twelve, at random).
+      // Going down reaches further.
+      const strength = (hash: string | null, kind: string | null) =>
+        !hash ? 0 : kind === 'generated' ? 2 : 1;
+      const after = secret === 'none' ? 0 : input.password !== undefined ? 1 : 2;
+      if (after < strength(row.secret_hash, row.secret_kind)) widens = true;
+    }
+    return { set, changed, widens, secret };
+  }
+
+  /**
+   * What PATCH /upload-requests/{id} would do, asked before the credential
+   * is: that the request is the caller's to change, that the change is one
+   * it may make, and whether it reaches further.
+   */
+  async changePlan(
+    p: Principal,
+    id: string,
+    input: z.infer<typeof changeBody>,
+    ifMatch?: string,
+  ): Promise<{ widens: boolean }> {
+    await this.changeable(p, id, input);
+    return withPrincipal(this.db, p, async (trx) => ({
+      widens: this.planChange(await this.changing(trx, p, id, ifMatch, false), input).widens,
+    }));
+  }
+
+  /**
+   * PATCH /upload-requests/{id} (0.9.0, LK): the change made, with the
+   * request held. A new password replaces the old one — in the sealed copy
+   * too — and every page opened with the old one closes. `mayWiden`: the
+   * route has asked who is asking, or asks nobody. Written down as
+   * `upload_request.changed`, with what changed and never a password.
+   */
+  async change(
+    p: Principal,
+    id: string,
+    input: z.infer<typeof changeBody>,
+    ifMatch: string | undefined,
+    meta: RequestMeta,
+    mayWiden: boolean,
+    /** Said of a copy that would not open, never what is in it. */
+    warn: (message: string, extra: Record<string, unknown>) => void = () => undefined,
+  ): Promise<ChangedUploadRequest> {
+    await this.changeable(p, id, input);
+    const made =
+      input.secret === 'password' && input.password === undefined ? madePassword() : null;
+    const typed = input.secret === 'password' ? (input.password ?? null) : null;
+    const secretHash = made
+      ? await argon2.hash(canonicalMadeUp(made), ARGON2)
+      : typed !== null
+        ? await argon2.hash(typed, ARGON2)
+        : null;
+    const changed = await withPrincipal(this.db, p, async (trx) => {
+      const row = await this.changing(trx, p, id, ifMatch, true);
+      const plan = this.planChange(row, input);
+      if (plan.widens && !mayWiden) throw changedElsewhere('request');
+      if (plan.changed.length === 0) return plan.changed;
+      const secretKind =
+        plan.secret === undefined || plan.secret === 'none'
+          ? null
+          : made
+            ? ('generated' as const)
+            : ('password' as const);
+      // The copy kept as it was made, with the new made-up password (a typed
+      // one is never kept): only where there is one (0103). One that will
+      // not open is let go — the request is then shown once — rather than
+      // the change refused.
+      let copy: Buffer | null | undefined;
+      if (plan.secret !== undefined && row.link_copy_sealed && this.copyKey) {
+        try {
+          const kept = openUploadRequestCopy(this.copyKey, row.link_copy_sealed, p.householdId, id);
+          copy = sealUploadRequestCopy(
+            this.copyKey,
+            { token: kept.token, ...(made ? { password: made } : {}) },
+            p.householdId,
+            id,
+          );
+        } catch {
+          warn('a request’s kept copy did not open, and was let go', { request_id: id });
+          copy = null;
+        }
+      }
+      const updated = await trx
+        .updateTable('upload_request')
+        .set({
+          ...plan.set,
+          ...(plan.secret !== undefined
+            ? {
+                secret_hash: plan.secret === 'none' ? null : secretHash,
+                secret_kind: secretKind,
+                // Every session opened with the old one is refused from now (0103).
+                secret_version: row.secret_version + 1,
+                ...(copy !== undefined ? { link_copy_sealed: copy } : {}),
+              }
+            : {}),
+          version: row.version + 1,
+        })
+        .where('id', '=', id)
+        .where('version', '=', row.version)
+        .executeTakeFirst();
+      // Held for update above, so it cannot have moved on; said so if it has.
+      if (updated.numUpdatedRows === 0n) throw changedElsewhere('request');
+      // The pages opened with the old password close; one in use this moment
+      // is passed over here, and refused at its next request (secret_version).
+      if (plan.secret !== undefined) await endUploadSessions(trx, [id]);
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'upload_request.changed',
+        objectType: 'upload_request',
+        objectId: id,
+        // What it asks for is never written down (as making one's line).
+        detail: {
+          changed: plan.changed,
+          ...(plan.widens ? { reaches_further: true } : {}),
+          // An owner's change to somebody else's request: whose it is.
+          ...(row.created_by !== p.accountId ? { made_by: row.created_by } : {}),
+          ...('recipient_label' in plan.set ? { recipient_label: plan.set.recipient_label } : {}),
+          ...(plan.set.expires_at ? { expires_at: plan.set.expires_at.toISOString() } : {}),
+          ...('max_visits' in plan.set ? { max_visits: plan.set.max_visits } : {}),
+          ...(plan.set.max_files !== undefined ? { max_files: plan.set.max_files } : {}),
+          ...(plan.set.max_total_bytes !== undefined
+            ? { max_total_bytes: plan.set.max_total_bytes }
+            : {}),
+          ...(plan.set.accept_types ? { accept_types: plan.set.accept_types } : {}),
+          ...(plan.set.close_after_submit !== undefined
+            ? { close_after_submit: plan.set.close_after_submit }
+            : {}),
+          // What protects it now, never the password.
+          ...(plan.secret !== undefined
+            ? { protection: plan.secret === 'none' ? 'none' : 'password' }
+            : {}),
+        },
+        ip: meta.ip,
+      });
+      return plan.changed;
+    });
+    const request = (await this.list(p)).find((r) => r.id === id) as UploadRequestView;
+    return { request, changed, ...(made ? { password: made } : {}) };
+  }
+
+  /**
+   * A request the caller may change: theirs, or an owner's who can see it —
+   * its password whoever asked's alone (Show the link is theirs alone, and a
+   * new one would be handed to whoever changed it).
+   */
+  private async changeable(p: Principal, id: string, input: z.infer<typeof changeBody>) {
+    const found = await this.ownLive(p, id, 'change');
+    if (input.secret !== undefined && !found.mine) {
+      throw new ApiError(
+        403,
+        'request_secret_makers_only',
+        'Only whoever asked can give this request a new password. Take it back and make a new one if you need to.',
+      );
+    }
+    return found;
+  }
+
+  // ----------------------------------------------------- emailed (0.9.0, LK)
+
+  /**
+   * A request whoever asked may have the vault email (0.9.0, LK; the
+   * owner's decision of 16 Nov 2026), as a share link is: theirs — anybody
+   * else's is one there is no such of — still opening, and kept as a sealed
+   * copy. `justMade`: within JUST_MADE_MS of making it, when nothing more
+   * is asked than making it asked.
+   */
+  async emailable(p: Principal, id: string): Promise<{ justMade: boolean }> {
+    this.mayAsk(p);
+    if (!this.emailLinks) throw requestEmailUnavailable();
+    const found = (await this.list(p)).find((r) => r.id === id);
+    if (!found || !found.mine) throw new ApiError(404, 'not_found', 'That request does not exist.');
+    if (found.state === 'paused') {
+      throw new ApiError(
+        409,
+        'request_paused',
+        'That request is paused just now, so it would not open for them. Once it works again, you can email it.',
+      );
+    }
+    if (found.state !== 'active') {
+      throw new ApiError(
+        410,
+        'request_ended',
+        'That request no longer opens, so there is nothing to send. Make a new one if you need to.',
+      );
+    }
+    if (!found.revealable) {
+      throw new ApiError(
+        409,
+        'request_not_revealable',
+        'That request was made before the vault kept a copy, so the vault cannot email it. Send it yourself, or take it back and make a new one.',
+      );
+    }
+    return { justMade: Date.now() - Date.parse(found.created_at) <= JUST_MADE_MS };
+  }
+
+  /**
+   * POST /upload-requests/{id}/email (0.9.0, LK): the link, opened from its
+   * sealed copy, emailed to the address whoever asked typed — through the
+   * operator's mail server alone (A21), queued inside the transaction that
+   * counts it. Neutral words (requestEmail): never what it asks for, never
+   * its password or a code. At most SHARE_LINK_EMAILS a request and an
+   * account in a day. Written down masked, as `upload_request.emailed`.
+   */
+  async emailLink(
+    p: Principal,
+    id: string,
+    input: z.infer<typeof shareEmailBody>,
+    meta: RequestMeta,
+  ): Promise<ShareEmailed> {
+    await this.emailable(p, id);
+    const words = shareLinkMessage(input.message);
+    if ('problem' in words) {
+      throw new ApiError(422, 'validation_failed', words.problem, { detail: 'message' });
+    }
+    const mail = this.mail as (m: MailRequest) => Promise<void>;
+    const copyKey = this.copyKey as Buffer;
+    const base = (this.opts.publicUrl ?? this.opts.baseUrl ?? '').replace(/\/+$/, '');
+    const to = input.to;
+    const masked = maskEmail(to);
+    const done = await withPrincipal(this.db, p, async (trx) => {
+      // One at a time for its sender, so the counts hold however many ask at once.
+      await sql`select pg_advisory_xact_lock(hashtextextended(${`upload_request_email:${p.accountId}`}, 0))`.execute(
+        trx,
+      );
+      const now = new Date();
+      const sent = await trx
+        .selectFrom('upload_request_email')
+        .select(['request_id', 'sent_at'])
+        .where('sent_by', '=', p.accountId)
+        .where('sent_at', '>', new Date(now.getTime() - 864e5))
+        .orderBy('sent_at')
+        .execute();
+      const forRequest = sent.filter((s) => s.request_id === id);
+      const tooMany = (oldest: Date | undefined, message: string) =>
+        new ApiError(429, 'email_link_limit', message, {
+          retriable: true,
+          retryAfter: Math.max(
+            1,
+            Math.ceil(((oldest ?? now).getTime() + 864e5 - now.getTime()) / 1000),
+          ),
+        });
+      if (forRequest.length >= SHARE_LINK_EMAILS.perLinkPerDay) {
+        throw tooMany(
+          forRequest[0]?.sent_at,
+          `This request has been emailed ${SHARE_LINK_EMAILS.perLinkPerDay} times today, which is as many as the vault sends. Copy the link and send it yourself, or try again tomorrow.`,
+        );
+      }
+      if (sent.length >= SHARE_LINK_EMAILS.perAccountPerDay) {
+        throw tooMany(
+          sent[0]?.sent_at,
+          `You have emailed ${SHARE_LINK_EMAILS.perAccountPerDay} requests today, which is as many as the vault sends for one person. Copy the link and send it yourself, or try again tomorrow.`,
+        );
+      }
+      // Read again: taken back meanwhile, it has forgotten its copy (0103).
+      const row = await trx
+        .selectFrom('upload_request')
+        .select([
+          'link_copy_sealed',
+          'expires_at',
+          'email_code',
+          'secret_hash',
+          'requester_member_id',
+        ])
+        .where('id', '=', id)
+        .where('created_by', '=', p.accountId)
+        .where('revoked_at', 'is', null)
+        // Nor ended, closed or paused since it was asked about.
+        .where('closed_at', 'is', null)
+        .where('paused_at', 'is', null)
+        .where('expires_at', '>', sql<Date>`now()`)
+        .executeTakeFirst();
+      if (!row?.link_copy_sealed)
+        throw new ApiError(404, 'not_found', 'That request does not exist.');
+      const copy = openUploadRequestCopy(copyKey, row.link_copy_sealed, p.householdId, id);
+      const household = await trx
+        .selectFrom('household')
+        .select(['name', 'timezone'])
+        .executeTakeFirstOrThrow();
+      const asker = await trx
+        .selectFrom('member')
+        .select('display_name')
+        .where('id', '=', row.requester_member_id)
+        .executeTakeFirst();
+      const email = requestEmail({
+        householdName: household.name,
+        askedBy: asker?.display_name ?? null,
+        link: `${base}/drop#${copy.token}`,
+        expiresAt: row.expires_at,
+        timezone: householdZone(household.timezone),
+        message: words.message,
+        password: row.secret_hash !== null,
+        code: row.email_code,
+      });
+      await trx
+        .insertInto('upload_request_email')
+        .values({
+          household_id: p.householdId,
+          request_id: id,
+          sent_by: p.accountId,
+          to_masked: masked,
+          with_message: words.message !== null,
+          sent_at: now,
+        })
+        .execute();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'upload_request.emailed',
+        objectType: 'upload_request',
+        objectId: id,
+        detail: { to: masked, ...(words.message !== null ? { with_message: true } : {}) },
+        ip: meta.ip,
+      });
+      // Queued last: if it cannot be, the count and the line are undone too.
+      await mail({ householdId: p.householdId, to, ...email }).catch((err: unknown) => {
+        throw Object.assign(
+          new ApiError(
+            503,
+            'email_link_not_sent',
+            'The email could not be sent just now. Try again in a minute, or copy the link and send it yourself.',
+            { retriable: true, retryAfter: 60 },
+          ),
+          { cause: err },
+        );
+      });
+      return { now, left: SHARE_LINK_EMAILS.perLinkPerDay - forRequest.length - 1 };
+    });
+    return { sent_to: masked, sent_at: done.now.toISOString(), sends_left: done.left };
   }
 
   /**
@@ -863,12 +1564,20 @@ export class UploadRequestService {
    * database gives it its own row only while it may be used (0044).
    */
   private async stillLive(trx: Db, requestId: string): Promise<boolean> {
+    return (await this.secretNow(trx, requestId)) !== null;
+  }
+
+  /**
+   * The asking upload link's request's secret version now (0.9.0, LK),
+   * asked afresh; null once it may no longer be used.
+   */
+  private async secretNow(trx: Db, requestId: string): Promise<number | null> {
     const row = await trx
       .selectFrom('upload_request')
-      .select('id')
+      .select('secret_version')
       .where('id', '=', requestId)
       .executeTakeFirst();
-    return row !== undefined;
+    return row?.secret_version ?? null;
   }
 
   /** Whose vault, and who asked. */
@@ -905,7 +1614,7 @@ export class UploadRequestService {
       if (
         r.max_visits !== null &&
         r.visits_used >= r.max_visits &&
-        !(await this.hasLiveSession(trx, r.id, sessionCookie(r.id)))
+        !(await this.hasLiveSession(trx, r.id, r.secret_version, sessionCookie(r.id)))
       ) {
         throw usedUp();
       }
@@ -1143,6 +1852,9 @@ export class UploadRequestService {
           request_id: r.id,
           cookie_hash: hash(cookie),
           verified_by: verified,
+          // The secret version of the row whose password was checked (0.9.0,
+          // LK): a change since ends this session.
+          secret_version: r.secret_version,
           created_at: new Date(now),
           last_seen_at: new Date(now),
           expires_at: expiresAt,
@@ -1308,6 +2020,7 @@ export class UploadRequestService {
   private async hasLiveSession(
     trx: Db,
     requestId: string,
+    secretVersion: number,
     cookie: string | undefined,
   ): Promise<boolean> {
     if (!cookie || cookie.length > 128) return false;
@@ -1317,6 +2030,8 @@ export class UploadRequestService {
       .where('request_id', '=', requestId)
       .where('cookie_hash', '=', hash(cookie))
       .where('expires_at', '>', new Date())
+      // Opened with a password replaced since (0.9.0, LK): not live.
+      .where('secret_version', '=', secretVersion)
       .executeTakeFirst();
     return row !== undefined && row.last_seen_at.getTime() + DROP_SESSION_IDLE_MS > Date.now();
   }
@@ -1360,7 +2075,7 @@ export class UploadRequestService {
     const outcome = await withScope(this.db, scope, async (trx) => {
       const session = await trx
         .selectFrom('upload_session')
-        .select(['id', 'expires_at', 'last_seen_at'])
+        .select(['id', 'expires_at', 'last_seen_at', 'secret_version'])
         .where('id', '=', found.session_id)
         .where('cookie_hash', '=', cookieHash)
         .executeTakeFirst();
@@ -1383,6 +2098,10 @@ export class UploadRequestService {
         if (err instanceof ApiError && err.code === 'link_not_valid') return end('request');
         throw err;
       }
+      // Opened with a password replaced or taken away since (0.9.0, LK):
+      // ended, however it escaped the change's removal of the sessions (one
+      // in use at that moment — a file on its way — is passed over).
+      if (session.secret_version !== r.secret_version) return end('session');
       const touched = await trx
         .updateTable('upload_session')
         .set({ last_seen_at: new Date(now) })
@@ -1413,9 +2132,16 @@ export class UploadRequestService {
         if (!(await this.stillLive(trx, found.request_id))) return end('request');
         throw err;
       }
-      if (!opts.mayEnd && !(await this.stillLive(trx, found.request_id))) {
+      const secretNow = await this.secretNow(trx, found.request_id);
+      if (!opts.mayEnd && secretNow === null) {
         await sql`rollback to savepoint fdv_drop_session`.execute(trx);
         return end('request');
+      }
+      // Its password replaced as this was answered (0.9.0, LK): undone, and
+      // the session ended — a file that arrived meanwhile is not kept.
+      if (secretNow !== null && secretNow !== session.secret_version) {
+        await sql`rollback to savepoint fdv_drop_session`.execute(trx);
+        return end('session');
       }
       await sql`release savepoint fdv_drop_session`.execute(trx);
       return { value } as const;

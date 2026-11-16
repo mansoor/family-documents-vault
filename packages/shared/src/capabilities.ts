@@ -638,6 +638,24 @@ export interface CapabilityFeatures {
    * Absent from older vaults: one file at a time.
    */
   zip_download?: boolean;
+  /**
+   * Links changed after they are made, and requests shown again (0.9.0, LK;
+   * the owner's decision of 15 Nov 2026): PATCH /shares/{id} and PATCH
+   * /upload-requests/{id} change a link's or a request's properties for
+   * whoever made it (`Share.changeable`, `UploadRequestView.changeable`), and
+   * POST /upload-requests/{id}/reveal shows a request's link again, as a
+   * share link's is (`UploadRequestView.revealable`). Absent from older
+   * vaults: neither is changed, and a request is shown once.
+   */
+  link_changes?: boolean;
+  /**
+   * A request's link emailed to its recipient by the vault (0.9.0, LK; the
+   * owner's decision of 16 Nov 2026), as `share_link_email`:
+   * `POST /upload-requests/{id}/email`, through the operator's mail server
+   * alone — false without one. Never its password, a code, nor what it asks
+   * for. `UploadRequestView.emailable` says which. Absent from older vaults.
+   */
+  upload_request_email?: boolean;
 }
 
 export interface CapabilityLimits {

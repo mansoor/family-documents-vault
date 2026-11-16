@@ -484,7 +484,8 @@ export interface Schema {
     secret_kind: ColumnType<
       'pin' | 'password' | 'generated' | null,
       'pin' | 'password' | 'generated' | null | undefined,
-      never
+      // Its maker may replace a PIN or a password since 0103.
+      'pin' | 'password' | 'generated' | null
     >;
     /**
      * Where an emailed code goes (0043, v2 only): the address the sharer
@@ -508,15 +509,21 @@ export interface Schema {
      * deriveKey(master, 'share-link-copies') with the household and the
      * link bound in (MASTER_SEALED). Shown again to its maker alone, after
      * confirming it's them. Null for a link made before, and once taken
-     * back. Set as it is made, never after.
+     * back. Set as it is made; since 0103 sealed again by its maker alone,
+     * with a new PIN or password, into a copy that is there.
      */
-    link_copy_sealed: ColumnType<Buffer | null, Buffer | null | undefined, never>;
+    link_copy_sealed: ColumnType<Buffer | null, Buffer | null | undefined, Buffer | null>;
     /**
      * Whether its page shows the document's title (0096, 0.9.0, H1a): the
      * sharer's choice; null as each document is now — not a sensitive
-     * one's (linkShowsTitle). Set as it is made, never after.
+     * one's (linkShowsTitle). Set as it is made; its maker may change it
+     * since 0103.
      */
-    show_title: ColumnType<boolean | null, boolean | null | undefined, never>;
+    show_title: ColumnType<boolean | null, boolean | null | undefined, boolean | null>;
+    /** Moved on by each change its maker makes (0103): the ETag of PATCH /shares/{id}. */
+    version: Generated<number>;
+    /** Moved on as its PIN or password is replaced or taken away (0103): older sessions end. */
+    secret_version: Generated<number>;
     /**
      * The person whose emergency information it gives (0102, 0.9.0, H4);
      * null for a document's or a collection's link. Set as it is made.
@@ -554,6 +561,21 @@ export interface Schema {
     household_id: string;
     share_id: string | null;
     flow: Generated<'v2'>;
+    sent_by: string;
+    to_masked: string;
+    with_message: Generated<boolean>;
+    sent_at: GeneratedTimestamp;
+  };
+
+  /**
+   * A request's link emailed to its recipient by the vault (0103, LK), as a
+   * share link's is: where, masked, never the address nor any message. Its
+   * sender's own, and the vault's; written once.
+   */
+  upload_request_email: {
+    id: Generated<string>;
+    household_id: string;
+    request_id: string | null;
     sent_by: string;
     to_masked: string;
     with_message: Generated<boolean>;
@@ -646,6 +668,8 @@ export interface Schema {
     /** Cut to its /24 or /48 (A24). */
     ip: string | null;
     user_agent: string | null;
+    /** Its link's secret version as it was opened (0103): refused once that moves on. */
+    secret_version: Generated<number>;
   };
 
   /**
@@ -702,6 +726,19 @@ export interface Schema {
      * longer review (0047): from then on the owners' alone.
      */
     moved_to_owners_at: Timestamp | null;
+    /** Moved on by each change its requester makes (0103): the ETag of PATCH /upload-requests/{id}. */
+    version: Generated<number>;
+    /** Moved on as its password is replaced or taken away (0103): older sessions end. */
+    secret_version: Generated<number>;
+    /**
+     * What was handed over as it was made, sealed (0103): its link's secret,
+     * and the password the vault made up, under
+     * deriveKey(master, 'upload-request-copies') with the household and the
+     * request bound in (MASTER_SEALED). Shown again to whoever asked alone,
+     * after confirming it's them. Null for a request made before, and once
+     * taken back.
+     */
+    link_copy_sealed: ColumnType<Buffer | null, Buffer | null | undefined, Buffer | null>;
   };
 
   /** What a request asks for, by name (0044): "W-2", "1099". */
@@ -725,6 +762,8 @@ export interface Schema {
     expires_at: Timestamp;
     ip: string | null;
     user_agent: string | null;
+    /** Its request's secret version as it was opened (0103): refused once that moves on. */
+    secret_version: Generated<number>;
   };
 
   /** An emailed code for an upload link (0044): an HMAC under the server's key. */

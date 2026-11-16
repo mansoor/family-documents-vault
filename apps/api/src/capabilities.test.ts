@@ -159,6 +159,9 @@ describe('buildCapabilities', () => {
       emergency_info: true,
       // 0.9.0 (DL): several documents as one ZIP.
       zip_download: true,
+      // 0.9.0 (LK): links and requests changed, requests shown again.
+      link_changes: true,
+      upload_request_email: false,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

@@ -214,6 +214,9 @@ describe('Emergency information on a person’s page (0.9.0, H4)', () => {
             last_opened_at: '2026-11-15T08:30:00Z',
             state: 'active',
             summary: 'Shared with St Mary’s A&E',
+            changeable: true,
+            version: 1,
+            latest_end: new Date(Date.now() + 20 * 3_600_000).toISOString(),
             emergency_fields: ['allergies'],
             openings: [
               {
@@ -262,9 +265,32 @@ describe('Emergency information on a person’s page (0.9.0, H4)', () => {
         within(c).getByRole('button', { name: 'Share with a clinician' }),
       ),
     );
+    // Changed (0.9.0, LK): the form it was made with, to view always.
+    fireEvent.click(
+      await within(c).findByRole('button', { name: 'Change the link for St Mary’s A&E' }),
+    );
+    const change = await screen.findByRole('dialog', {
+      name: 'Change the link for a clinician',
+    });
+    expect(within(change).getByLabelText('Who is it for?')).toHaveValue('St Mary’s A&E');
+    expect(within(change).getByText(/It is to view, always/)).toBeInTheDocument();
+    expect(within(change).queryByRole('button', { name: 'View and download' })).toBeNull();
+    await expectAccessible();
+    fireEvent.change(within(change).getByLabelText('Who is it for?'), {
+      target: { value: 'Dr Patel at St Mary’s' },
+    });
+    fireEvent.click(within(change).getByRole('button', { name: 'Save the changes' }));
+    expect(
+      await within(c).findByText(/^The link to .*’s emergency information is changed.$/),
+    ).toBeInTheDocument();
+    expect(state.calls.filter((x) => x.method === 'PATCH').map((x) => [x.url, x.body])).toEqual([
+      ['/api/v1/shares/old-link', { recipient_label: 'Dr Patel at St Mary’s' }],
+    ]);
     // Taken back, after asking.
     fireEvent.click(
-      await within(c).findByRole('button', { name: 'Take back the link for St Mary’s A&E' }),
+      await within(c).findByRole('button', {
+        name: 'Take back the link for Dr Patel at St Mary’s',
+      }),
     );
     const dialog = await screen.findByRole('alertdialog');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Take back' }));

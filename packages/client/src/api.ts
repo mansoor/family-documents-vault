@@ -29,6 +29,11 @@ import type {
   RenewalInput,
   RenewalResult,
   RevealedShare,
+  RevealedUploadRequest,
+  ChangedShare,
+  ChangedUploadRequest,
+  ShareChangeInput,
+  UploadRequestChangeInput,
   ShareEmailed,
   ShareEmailInput,
   IssuerSuggestions,
@@ -1682,6 +1687,22 @@ export function createApi(http: Http) {
     revealShare: (token: string, id: string) =>
       request<RevealedShare>(`/api/v1/shares/${enc(id)}/reveal`, { method: 'POST', token }),
     /**
+     * A link's properties changed by whoever made it (0.9.0, LK,
+     * `features.link_changes`), while `Share.changeable`: only what is sent
+     * changes. `version` (its `Share.version`) is sent as If-Match: `409
+     * conflict` when it has moved on. A change that makes it reach further
+     * asks to confirm it's you (`403 step_up_required`, action
+     * `change_share`). `404 not_found` for anybody else's; `410 share_ended`
+     * for one that has ended; `422 expiry_out_of_range` past `latest_end`.
+     */
+    changeShare: (token: string, id: string, body: ShareChangeInput, version?: number) =>
+      request<ChangedShare>(`/api/v1/shares/${enc(id)}`, {
+        method: 'PATCH',
+        body,
+        token,
+        ...(version !== undefined ? { headers: { 'if-match': `"${version}"` } } : {}),
+      }),
+    /**
      * A link emailed to its recipient by the vault (0.9.0,
      * `features.share_link_email`), for whoever made it, while
      * `Share.emailable`: never with its PIN, password or code. `503
@@ -1824,6 +1845,49 @@ export function createApi(http: Http) {
       ),
     revokeUploadRequest: (token: string, id: string) =>
       request<void>(`/api/v1/upload-requests/${enc(id)}`, { method: 'DELETE', token }),
+    /**
+     * A request's link emailed to its recipient by the vault (0.9.0, LK,
+     * `features.upload_request_email`), for whoever asked, while
+     * `UploadRequestView.emailable`: never with its password or a code, nor
+     * what it asks for. As `emailShare`: `503 email_link_unavailable`, `422`,
+     * `404`, `409 request_not_revealable`, `409 request_paused`, `410
+     * request_ended`, `403 step_up_required` (`email_share`) after the
+     * first 15 minutes, `429 email_link_limit`.
+     */
+    emailUploadRequest: (token: string, id: string, body: ShareEmailInput) =>
+      request<ShareEmailed>(`/api/v1/upload-requests/${enc(id)}/email`, {
+        method: 'POST',
+        token,
+        body,
+      }),
+    /**
+     * A request's link shown again to whoever asked (0.9.0, LK), while
+     * `UploadRequestView.revealable`, after confirming it's them (`403
+     * step_up_required`, action `reveal_share`). `404 not_found` for anybody
+     * else's; `409 request_not_revealable` for one made before the vault
+     * kept copies; `410 request_ended`.
+     */
+    revealUploadRequest: (token: string, id: string) =>
+      request<RevealedUploadRequest>(`/api/v1/upload-requests/${enc(id)}/reveal`, {
+        method: 'POST',
+        token,
+      }),
+    /**
+     * A request's properties changed by whoever asked (0.9.0, LK), while
+     * `UploadRequestView.changeable`: as `changeShare`, If-Match its version.
+     */
+    changeUploadRequest: (
+      token: string,
+      id: string,
+      body: UploadRequestChangeInput,
+      version?: number,
+    ) =>
+      request<ChangedUploadRequest>(`/api/v1/upload-requests/${enc(id)}`, {
+        method: 'PATCH',
+        body,
+        token,
+        ...(version !== undefined ? { headers: { 'if-match': `"${version}"` } } : {}),
+      }),
     /** After a restore, owners only (`restore.review`). */
     resumeUploadRequest: (token: string, id: string) =>
       request<UploadRequestView>(`/api/v1/upload-requests/${enc(id)}/resume`, {

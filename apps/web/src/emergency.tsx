@@ -29,6 +29,7 @@ import { api, ApiRequestError, type Member } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { dateOnlyWords, dateTimeWords } from './family-time.js';
 import { EmailTheLink } from './screens/Share.js';
+import { ChangeLink } from './screens/ChangeLink.js';
 import {
   Button,
   Check,
@@ -962,6 +963,11 @@ function ClinicianLinks(props: { memberId: string; name: string; mine: boolean }
     [authVersion, props.memberId],
   );
   const [ending, setEnding] = useState<EmergencyLink | null>(null);
+  // A link changed (0.9.0, LK), by whoever made it: its form, filled in.
+  const [changing, setChanging] = useState<EmergencyLink | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
+  const changeOpener = useRef<HTMLElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const items = data?.items ?? [];
@@ -1001,20 +1007,58 @@ function ClinicianLinks(props: { memberId: string; name: string; mine: boolean }
               )}
             </span>
             {l.state === 'active' && (
-              <Button
-                kind="quiet"
-                danger
-                disabled={busy}
-                ariaLabel={`Take back the link${l.recipient_label ? ` for ${l.recipient_label}` : ''}`}
-                onClick={() => setEnding(l)}
-              >
-                Take back
-              </Button>
+              <span className="row" style={{ gap: 8 }}>
+                {l.changeable === true && (
+                  <Button
+                    kind="quiet"
+                    disabled={busy}
+                    ariaLabel={`Change the link${l.recipient_label ? ` for ${l.recipient_label}` : ''}`}
+                    onClick={() => {
+                      changeOpener.current = document.activeElement as HTMLElement | null;
+                      setChanging(l);
+                    }}
+                  >
+                    Change
+                  </Button>
+                )}
+                <Button
+                  kind="quiet"
+                  danger
+                  disabled={busy}
+                  ariaLabel={`Take back the link${l.recipient_label ? ` for ${l.recipient_label}` : ''}`}
+                  onClick={() => setEnding(l)}
+                >
+                  Take back
+                </Button>
+              </span>
             )}
           </li>
         ))}
       </ul>
       <ErrorNote message={problem} />
+      <p className="notice status-line" role="status">
+        {said}
+      </p>
+      {changing && (
+        <Sheet
+          label="Change the link for a clinician"
+          busy={saving}
+          returnFocus={changeOpener}
+          onClose={() => setChanging(null)}
+        >
+          <ChangeLink
+            link={changing}
+            target={`${props.name}’s emergency information`}
+            onBusy={setSaving}
+            onCancel={() => setChanging(null)}
+            onDone={(words) => {
+              setChanging(null);
+              setSaid(words);
+              void reload();
+            }}
+          />
+        </Sheet>
+      )}
       {ending && (
         <ConfirmDialog
           title="Take back this link?"

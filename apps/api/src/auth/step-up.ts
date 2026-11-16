@@ -48,6 +48,7 @@ export type StepUpAction =
   | 'change_sms'
   | 'reveal_share'
   | 'email_share'
+  | 'change_share'
   | 'change_ai_reader'
   | 'send_sensitive_papers'
   | 'neutral_wording'
@@ -128,6 +129,13 @@ const WHY: Record<StepUpAction, string> = {
   // showing it again asks. A session picked up from an unlocked device
   // could otherwise send every live link to an inbox of its own.
   email_share: 'to email a link you made',
+  // A link or a request made to reach further after it was made (0.9.0,
+  // LK; the owner's decision of 15 Nov 2026): a later end, view to download,
+  // a limit raised or taken away, its PIN or password taken away or
+  // weakened. Any credential, as showing it again asks. A session picked up
+  // from an unlocked device could otherwise keep every link open for months,
+  // its PIN gone. Narrowing one asks nothing.
+  change_share: 'to let a link you made reach further',
   // The AI reader set in Settings (0.9.0, AIR1): a session picked up from an
   // unlocked device could otherwise send the family's papers' words to a
   // server of its own.

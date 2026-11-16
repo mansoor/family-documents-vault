@@ -135,6 +135,7 @@ const OWN_KIND_KEY = '708192a3-b4c5-4d67-8e8f-90123456789a';
 const SUGGESTIONS_KEY = '8192a3b4-c5d6-4e78-9f80-123456789abc';
 const CREATE_KEY = '92a3b4c5-d6e7-4f89-8a91-23456789abcd';
 const ZIP_KEY = 'a3b4c5d6-e7f8-4a9b-8c0d-3456789abcde';
+const LK_KEY = 'b4c5d6e7-f809-4bac-9d1e-456789abcdef';
 
 async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
   try {
@@ -3973,6 +3974,122 @@ export const contractScenarios: Scenario[] = [
       ]);
       const twice = await refusal(api.http.raw(ticket.url));
       expect([twice.status, twice.code]).toEqual([404, 'download_ticket_gone']);
+    },
+  },
+  {
+    name: 'a link and a request changed by whoever made them, and a request shown again (0.9.0, LK)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.link_changes).toBe(true);
+      const me = await api.me(token);
+      const doc = await api.createDocument(token, {
+        type_key: 'utility_bill',
+        owner_member_id: me.member_id,
+        visibility: 'household',
+        sensitive: false,
+        title: 'Contract changed link',
+      });
+      const form = multipartBody([
+        { name: 'file', filename: 'lease.pdf', contentType: 'application/pdf', bytes: PDF },
+      ]);
+      await api.upload(
+        token,
+        doc.id,
+        { kind: 'bytes', bytes: form.bytes, contentType: form.contentType },
+        LK_KEY,
+      );
+      const made = await api.share(token, doc.id, {
+        with_pin: true,
+        recipient_label: 'Contract agent',
+      });
+      expect(made.share).toMatchObject({ changeable: true, version: 1 });
+      const end = new Date(Date.now() + 2 * 864e5).toISOString();
+      const changed = await api.changeShare(
+        token,
+        made.share.id,
+        { expires_at: end, recipient_label: 'Contract new agent', secret: 'pin' },
+        made.share.version,
+      );
+      expect([...changed.changed].sort()).toEqual(['expires_at', 'recipient_label', 'secret']);
+      expect(changed.pin).toMatch(/^\d{4}$/);
+      expect(changed.share).toMatchObject({
+        recipient_label: 'Contract new agent',
+        expires_at: end,
+        version: 2,
+      });
+      // Shown again, it is the new PIN.
+      expect(await api.revealShare(token, made.share.id)).toMatchObject({
+        link_token: made.link_token,
+        pin: changed.pin,
+      });
+      const stale = await refusal(
+        api.changeShare(token, made.share.id, { recipient_label: 'Late' }, 1),
+      );
+      expect([stale.status, stale.code]).toEqual([409, 'conflict']);
+      const tooLong = await refusal(
+        api.changeShare(token, made.share.id, {
+          expires_at: new Date(Date.parse(made.share.created_at) + 91 * 864e5).toISOString(),
+        }),
+      );
+      expect([tooLong.status, tooLong.code]).toEqual([422, 'expiry_out_of_range']);
+      await api.revokeShare(token, made.share.id);
+      const ended = await refusal(
+        api.changeShare(token, made.share.id, { recipient_label: 'Back again' }),
+      );
+      expect([ended.status, ended.code]).toEqual([410, 'share_ended']);
+
+      // A request to send documents: shown again, and changed.
+      const ask = await api.createUploadRequest(token, {
+        title: 'Contract changed request',
+        expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+        with_password: true,
+      });
+      expect(ask.request).toMatchObject({ revealable: true, changeable: true, version: 1 });
+      expect(await api.revealUploadRequest(token, ask.request.id)).toEqual({
+        link_token: ask.link_token,
+        link_url: ask.link_url,
+        password: ask.password,
+      });
+      const asked = await api.changeUploadRequest(
+        token,
+        ask.request.id,
+        { max_visits: 2, secret: 'password' },
+        1,
+      );
+      expect([...asked.changed].sort()).toEqual(['max_visits', 'secret']);
+      expect(asked.request).toMatchObject({ max_visits: 2, version: 2 });
+      expect(asked.password).toBeTruthy();
+      expect((await api.revealUploadRequest(token, ask.request.id)).password).toBe(asked.password);
+      // What it asks for, in words, changes (16 Nov 2026); who looks at what
+      // comes in does not.
+      const retitled = await api.changeUploadRequest(token, ask.request.id, {
+        title: 'Contract renamed request',
+        message: 'The usual papers, please.',
+      });
+      expect([...retitled.changed].sort()).toEqual(['message', 'title']);
+      expect(retitled.request).toMatchObject({
+        title: 'Contract renamed request',
+        message: 'The usual papers, please.',
+      });
+      const reviewer = await refusal(
+        api.changeUploadRequest(token, ask.request.id, { review_by: 'adults' } as never),
+      );
+      expect(reviewer.status).toBe(422);
+      // Emailed by the vault, where it can send mail.
+      if ((await api.capabilities()).features.upload_request_email === true) {
+        const sent = await api.emailUploadRequest(token, ask.request.id, {
+          to: 'contract.recipient@example.test',
+        });
+        expect(sent.sent_to).toContain('•');
+      } else {
+        const none = await refusal(
+          api.emailUploadRequest(token, ask.request.id, { to: 'contract.recipient@example.test' }),
+        );
+        expect([none.status, none.code]).toEqual([503, 'email_link_unavailable']);
+      }
+      await api.revokeUploadRequest(token, ask.request.id);
+      const gone = await refusal(api.revealUploadRequest(token, ask.request.id));
+      expect([gone.status, gone.code]).toEqual([410, 'request_ended']);
     },
   },
   {

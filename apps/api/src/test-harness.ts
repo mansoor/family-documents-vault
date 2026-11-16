@@ -14,6 +14,7 @@ import {
   SMS_PASSWORD_PURPOSE,
   AI_READER_KEY_PURPOSE,
   SHARE_LINK_COPY_PURPOSE,
+  UPLOAD_REQUEST_COPY_PURPOSE,
 } from '@fdv/crypto';
 import { createDb, createPool, type Db, type Schema } from '@fdv/db';
 import type { Role } from '@fdv/shared';
@@ -521,6 +522,8 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       codeKey: deriveKey(TEST_MASTER, UPLOAD_CODE_KEY_PURPOSE),
       mail: config.FDV_SMTP_URL ? (opts.mail ?? operatorMail) : null,
       deviceKey: deviceCookieKey(TEST_MASTER, UPLOAD_DEVICE_KEY_PURPOSE),
+      copyKey: deriveKey(TEST_MASTER, UPLOAD_REQUEST_COPY_PURPOSE),
+      baseUrl: config.FDV_BASE_URL,
       enqueue,
       alert,
       ...(opts.incomingMaxBytes ? { householdMaxBytes: opts.incomingMaxBytes } : {}),

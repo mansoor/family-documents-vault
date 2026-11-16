@@ -114,6 +114,13 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
        values ($1, $2, $3, $4, now() + interval '7 days') returning id`,
       [h, d.rows[0]?.id, Buffer.from(randomUUID()), a.rows[0]?.id],
     );
+    // A request to send documents, and its copy (0.9.0, LK, 0103).
+    const ask = await admin.query<{ id: string }>(
+      `insert into upload_request (household_id, created_by, requester_member_id, title,
+                                   token_hash, expires_at)
+       values ($1, $2, $3, 'Tax papers', $4, now() + interval '7 days') returning id`,
+      [h, a.rows[0]?.id, m.rows[0]?.id, Buffer.from(randomUUID())],
+    );
     const ids = {
       account: a.rows[0]?.id,
       vault: v.rows[0]?.id,
@@ -121,6 +128,7 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
       mail_in_mailbox: h,
       sms_settings: h,
       share_link: link.rows[0]?.id,
+      upload_request: ask.rows[0]?.id,
       ai_reader: h,
     };
     for (const s of MASTER_SEALED) {
@@ -217,6 +225,7 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
         mailInPasswords: 2,
         smsPasswords: 2,
         shareLinkCopies: 2,
+        uploadRequestCopies: 2,
         aiReaderKeys: 2,
       },
       unchanged: 0,
@@ -267,12 +276,13 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
         mailInPasswords: 1,
         smsPasswords: 1,
         shareLinkCopies: 1,
+        uploadRequestCopies: 1,
         aiReaderKeys: 1,
       },
       unchanged: 3,
     });
     expect(await openAll(NEW)).toEqual(plain);
-    expect(await checkMasterKey(admin, NEW)).toEqual({ checked: 10 });
+    expect(await checkMasterKey(admin, NEW)).toEqual({ checked: 11 });
   });
 
   it('refuses whole, naming it, a value that opens with neither key, and moves nothing', async () => {
@@ -292,7 +302,7 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
       `smtp_settings.password_encrypted of ${h}`,
     ]);
     // Everything else opened, with one key or the other.
-    expect((refused as MasterKeyMismatch).opened).toBe(9);
+    expect((refused as MasterKeyMismatch).opened).toBe(10);
     expect(await bytes()).toBe(before);
   });
 
@@ -324,12 +334,12 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
 
   it('the check reads only, and names what does not open and whether the rest does', async () => {
     await seed(OLD);
-    expect(await checkMasterKey(admin, OLD)).toEqual({ checked: 10 });
+    expect(await checkMasterKey(admin, OLD)).toEqual({ checked: 11 });
     const wrong = await checkMasterKey(admin, NEW).catch((e: unknown) => e);
     expect(wrong).toBeInstanceOf(MasterKeyMismatch);
-    expect((wrong as MasterKeyMismatch).unopened).toHaveLength(10);
+    expect((wrong as MasterKeyMismatch).unopened).toHaveLength(11);
     expect((wrong as MasterKeyMismatch).opened).toBe(0);
-    expect((wrong as MasterKeyMismatch).message).toMatch(/scope key .* and 7 more do not open/);
+    expect((wrong as MasterKeyMismatch).message).toMatch(/scope key .* and 8 more do not open/);
   });
 
   it('refuses a connection row-level security applies to, which would see one household at most', async () => {

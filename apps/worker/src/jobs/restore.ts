@@ -1312,6 +1312,15 @@ const GUARDS = [
   // audience changed only by whoever chooses it, and is versioned by the
   // database (0102, H4).
   { name: 'member_emergency_rule', table: 'member_emergency', fn: 'member_emergency_rule' },
+  // A link keeps the copy it was made with, sealed again only by its maker
+  // with a new PIN or password (0085, 0103); a request's copy, password and
+  // protection the same (0103).
+  { name: 'share_link_copy_kept', table: 'share_link', fn: 'share_link_copy_kept' },
+  {
+    name: 'upload_request_changes_kept',
+    table: 'upload_request',
+    fn: 'upload_request_changes_kept',
+  },
 ];
 
 /**
@@ -1531,6 +1540,8 @@ const ACTOR_GUARDED = [
   'share_code',
   // A link emailed to its recipient: its sender's, and the vault's (0094).
   'share_link_email',
+  // A request emailed to its recipient: its sender's, and the vault's (0103).
+  'upload_request_email',
   // Requests to send documents, what they ask for, their senders' sessions
   // and codes, and the files that came in (0044).
   'upload_request',

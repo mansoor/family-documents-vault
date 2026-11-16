@@ -332,6 +332,9 @@ import {
   type EmergencyLink,
   type EmergencyView,
   type GrownUpQuestionView,
+  type ChangedShare,
+  type ChangedUploadRequest,
+  type RevealedUploadRequest,
 } from '@fdv/shared';
 import type { FetchLike, ResponseLike } from '../http.js';
 import { storedZip } from './zip.js';
@@ -586,6 +589,13 @@ export interface FakeVaultState {
    * incoming push).
    */
   uploadRequests: UploadRequestView[];
+  /**
+   * What each request handed over as it was made (0.9.0, LK), by request id:
+   * its link, and the password the vault made up — kept, as the vault keeps
+   * a sealed copy, to show whoever asked again. A request with none here
+   * stands for one made before copies were kept: shown once.
+   */
+  uploadRequestCopies?: Record<string, { token: string; password: string | null }>;
   /**
    * Files sent through a request and waiting to be looked at (0.5.23), as
    * GET /incoming answers them, with their bytes: a test puts one here as a
@@ -2752,6 +2762,10 @@ export function createFakeVault(): {
     const making = /^\/api\/v1\/documents\/([^/]+)\/share$/.exec(path);
     const stopping = /^\/api\/v1\/documents\/([^/]+)\/stop-sharing$/.exec(path);
     const one = /^\/api\/v1\/shares\/([^/]+)(\/reveal|\/email)?$/.exec(path);
+    // A link's properties changed (0.9.0, LK): whoever made it, with no
+    // confirming it's you, which the fake asks nowhere.
+    const lkLatest = (l: FakeShare) =>
+      Date.parse(l.share.created_at) + (l.share.follow_collection ? 30 : 90) * 864e5;
     if (!making && !stopping && !one && path !== '/api/v1/shares') return null;
     const s = sessionOf();
     if (!('id' in s)) return s;
@@ -2768,6 +2782,15 @@ export function createFakeVault(): {
         // 0.9.0: emailed by the vault, with the operator's mail server alone.
         emailable: revealable(l) && l.share.state === 'active' && state.operatorMail,
         emailed_to: last ? maskEmail(last.to) : null,
+        mine: l.made_by === who.memberId,
+        changeable:
+          (l.made_by === who.memberId || who.role === 'owner') &&
+          (l.share.flow ?? 'v2') === 'v2' &&
+          !ended(l) &&
+          l.share.state !== 'used_up',
+        latest_end: new Date(lkLatest(l)).toISOString(),
+        show_title: l.show_title ?? null,
+        version: l.share.version ?? 1,
       };
     };
     if (path === '/api/v1/shares' && init.method === 'GET') {
@@ -2984,6 +3007,120 @@ export function createFakeVault(): {
         ...(link.password ? { password: link.password } : {}),
       };
       return ok(shown);
+    }
+    if (one && !one[2] && init.method === 'PATCH') {
+      // Its maker's, or an owner's (16 Nov 2026) — its PIN or password its maker's alone.
+      if (!link || (link.made_by !== who.memberId && who.role !== 'owner')) {
+        return fail(404, 'not_found', 'That link does not exist.');
+      }
+      if (body.secret !== undefined && link.made_by !== who.memberId) {
+        return fail(
+          403,
+          'share_secret_makers_only',
+          'Only whoever made this link can give it a new PIN or password. Take it back and make a new one if you need to.',
+        );
+      }
+      if (ended(link) || link.share.state === 'used_up') {
+        return fail(
+          410,
+          'share_ended',
+          'That link no longer works, so it can’t be changed. Make a new one if you need to.',
+        );
+      }
+      const version = link.share.version ?? 1;
+      const ifMatch = init.headers['if-match'];
+      if (ifMatch && ifMatch.replace(/^W\//, '').replace(/"/g, '') !== String(version)) {
+        return fail(
+          409,
+          'conflict',
+          'That link was changed somewhere else since you opened it. Look at it again, then make your change.',
+        );
+      }
+      const changes: string[] = [];
+      const nowIs: Share = { ...link.share };
+      if ('recipient_label' in body) {
+        const label =
+          typeof body.recipient_label === 'string' && body.recipient_label.trim()
+            ? body.recipient_label.trim()
+            : null;
+        if (label !== link.share.recipient_label) {
+          nowIs.recipient_label = label;
+          changes.push('recipient_label');
+        }
+      }
+      if (typeof body.expires_at === 'string' && body.expires_at !== link.share.expires_at) {
+        const end = Date.parse(body.expires_at);
+        if (Number.isNaN(end) || end < Date.now() + 5 * 60_000) {
+          return fail(422, 'expiry_out_of_range', 'Choose a time at least 5 minutes from now.');
+        }
+        if (end > lkLatest(link) + 5 * 60_000) {
+          return fail(
+            422,
+            'expiry_out_of_range',
+            'A link can last 90 days at most from when it was made.',
+          );
+        }
+        nowIs.expires_at = new Date(Math.min(end, lkLatest(link))).toISOString();
+        changes.push('expires_at');
+      }
+      if (
+        (body.permission === 'view' || body.permission === 'download') &&
+        body.permission !== (link.share.permission ?? 'download')
+      ) {
+        nowIs.permission = body.permission;
+        if (body.permission === 'view') nowIs.max_downloads = null;
+        changes.push('permission');
+      }
+      for (const key of ['max_opens', 'max_downloads'] as const) {
+        if (!(key in body)) continue;
+        const v = body[key];
+        const value = typeof v === 'number' ? v : null;
+        if (value !== (link.share[key] ?? null)) {
+          nowIs[key] = value;
+          changes.push(key);
+        }
+      }
+      if (typeof body.show_title === 'boolean' && body.show_title !== (link.show_title ?? null)) {
+        link.show_title = body.show_title;
+        changes.push('show_title');
+      }
+      let pin: string | null = null;
+      let password: string | null = null;
+      const secret = body.secret;
+      if (secret === 'none' || secret === 'pin' || secret === 'password') {
+        const had = (link.share.protection ?? []).some((p) => p === 'pin' || p === 'password');
+        if (secret !== 'none' || had) {
+          changes.push('secret');
+          pin = secret === 'pin' ? String(1000 + (n % 9000)) : null;
+          password =
+            secret === 'password' && typeof body.password !== 'string'
+              ? `fake-${next('pw')}-word`
+              : null;
+          const factor =
+            secret === 'pin'
+              ? (['pin'] as const)
+              : secret === 'password'
+                ? (['password'] as const)
+                : [];
+          nowIs.protection = [
+            ...factor,
+            ...(link.share.protection ?? []).filter((p) => p !== 'pin' && p !== 'password'),
+          ];
+          nowIs.has_pin = secret === 'pin';
+          // As the vault keeps it: a typed password never.
+          link.pin = pin;
+          link.password = password;
+        }
+      }
+      if (changes.length) nowIs.version = version + 1;
+      link.share = nowIs;
+      const answer: ChangedShare = {
+        share: view(link),
+        changed: changes,
+        ...(pin ? { pin } : {}),
+        ...(password ? { password } : {}),
+      };
+      return ok(answer);
     }
     if (one && !one[2] && init.method === 'DELETE') {
       if (!link || link.share.state === 'revoked') {
@@ -3342,6 +3479,7 @@ export function createFakeVault(): {
           share_email_code: false,
           // A link emailed to its recipient (0.9.0): with the operator's mail server alone.
           share_link_email: state.operatorMail,
+          upload_request_email: state.operatorMail,
           // A person's details, and the owner's view of a sign-in (5.25).
           member_edit: true,
           // Asking somebody to send documents, and looking before filing (5.23).
@@ -3419,6 +3557,8 @@ export function createFakeVault(): {
           // Emergency information, a wallet card and a clinician's link (0.9.0, H4).
           emergency_info: true,
           zip_download: true,
+          // Links and requests changed, requests shown again (0.9.0, LK).
+          link_changes: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -7458,16 +7598,32 @@ export function createFakeVault(): {
     }
     // Asking somebody to send documents (0.5.21): the family's side. A teen
     // or a viewer is told there is nothing here, as the vault tells them.
-    const uploadAt = /^\/api\/v1\/upload-requests(?:\/([^/]+)(\/resume)?)?$/.exec(path);
+    const uploadAt = /^\/api\/v1\/upload-requests(?:\/([^/]+)(\/resume|\/reveal|\/email)?)?$/.exec(
+      path,
+    );
     if (uploadAt) {
       const s = session();
       if (!('id' in s)) return s;
       if (!can(state.role, 'upload_request.create')) {
         return fail(404, 'not_found', 'That page does not exist.');
       }
-      const [, id, resume] = uploadAt;
+      const [, id, after] = uploadAt;
+      const resume = after === '/resume';
+      // Shown again and changed by whoever asked (0.9.0, LK), as the vault does.
+      const copies = (state.uploadRequestCopies ??= {});
+      const live = (r: UploadRequestView) => r.state === 'active' || r.state === 'paused';
+      const lk = (r: UploadRequestView): UploadRequestView => ({
+        ...r,
+        revealable: r.mine && live(r) && copies[r.id] !== undefined,
+        changeable: (r.mine || state.role === 'owner') && live(r),
+        emailable:
+          r.mine && r.state === 'active' && copies[r.id] !== undefined && state.operatorMail,
+        emailed_to: r.emailed_to ?? null,
+        latest_end: new Date(Date.parse(r.created_at) + 90 * 864e5).toISOString(),
+        version: r.version ?? 1,
+      });
       if (!id && init.method === 'GET') {
-        return ok({ items: state.uploadRequests, email_code_available: false });
+        return ok({ items: state.uploadRequests.map(lk), email_code_available: false });
       }
       if (!id && init.method === 'POST') {
         const title = typeof body.title === 'string' ? body.title.trim() : '';
@@ -7521,21 +7677,212 @@ export function createFakeVault(): {
           files_received: 0,
         };
         state.uploadRequests.unshift(made);
+        const token = next('drop-token');
+        const password = body.with_password ? 'abcd-efgh-jkmn' : null;
+        copies[made.id] = { token, password };
         return ok(
           {
-            request: made,
-            link_token: next('drop-token'),
+            request: lk(made),
+            link_token: token,
             link_url: null,
-            ...(body.with_password ? { password: 'abcd-efgh-jkmn' } : {}),
+            ...(password ? { password } : {}),
           },
           201,
         );
       }
       const r = state.uploadRequests.find((x) => x.id === id);
       if (!r) return fail(404, 'not_found', 'That request does not exist.');
-      if (!resume && init.method === 'DELETE') {
+      if (!after && init.method === 'DELETE') {
         Object.assign(r, { state: 'revoked', recipient_email: null });
+        delete copies[r.id];
         return empty();
+      }
+      if (after === '/email' && init.method === 'POST') {
+        // As the vault answers (16 Nov 2026): no mail server, none; then the
+        // address, whose it is, that it opens, and the copy.
+        if (!state.operatorMail) {
+          return fail(503, 'email_link_unavailable', SHARE_LINK_EMAIL_UNAVAILABLE);
+        }
+        const to = typeof body.to === 'string' ? body.to.trim() : '';
+        if (!isShareAddress(to)) {
+          return fail(
+            422,
+            'validation_failed',
+            'That is not an email address. Check it: name@example.com.',
+          );
+        }
+        if (!r.mine) return fail(404, 'not_found', 'That request does not exist.');
+        if (r.state !== 'active') {
+          return fail(
+            410,
+            'request_ended',
+            'That request no longer opens, so there is nothing to send. Make a new one if you need to.',
+          );
+        }
+        if (!copies[r.id]) {
+          return fail(
+            409,
+            'request_not_revealable',
+            'That request was made before the vault kept a copy, so the vault cannot email it. Send it yourself, or take it back and make a new one.',
+          );
+        }
+        r.emailed_to = maskEmail(to);
+        const sent: ShareEmailed = {
+          sent_to: maskEmail(to),
+          sent_at: new Date().toISOString(),
+          sends_left: SHARE_LINK_EMAILS.perLinkPerDay - 1,
+        };
+        return ok(sent);
+      }
+      if ((after === '/reveal' && init.method === 'POST') || (!after && init.method === 'PATCH')) {
+        // Shown again by whoever asked; changed by them or an owner (16 Nov 2026).
+        if (!r.mine && !(!after && state.role === 'owner')) {
+          return fail(404, 'not_found', 'That request does not exist.');
+        }
+        if (!live(r)) {
+          return fail(
+            410,
+            'request_ended',
+            after
+              ? 'That request no longer works, so there is nothing to show. Make a new one if you need to.'
+              : 'That request no longer works, so it can’t be changed. Make a new one if you need to.',
+          );
+        }
+      }
+      if (after === '/reveal' && init.method === 'POST') {
+        const copy = copies[r.id];
+        if (!copy) {
+          return fail(
+            409,
+            'request_not_revealable',
+            'That request was made before the vault kept a copy, so it was shown only once. Take it back and make a new one if you need it again.',
+          );
+        }
+        const shown: RevealedUploadRequest = {
+          link_token: copy.token,
+          link_url: null,
+          ...(copy.password ? { password: copy.password } : {}),
+        };
+        return ok(shown);
+      }
+      if (!after && init.method === 'PATCH') {
+        const version = r.version ?? 1;
+        const ifMatch = init.headers['if-match'];
+        if (ifMatch && ifMatch.replace(/^W\//, '').replace(/"/g, '') !== String(version)) {
+          return fail(
+            409,
+            'conflict',
+            'That request was changed somewhere else since you opened it. Look at it again, then make your change.',
+          );
+        }
+        for (const key of ['items', 'review_by', 'email_code', 'this_device_only']) {
+          if (key in body) return fail(422, 'validation_failed', `Unrecognized key: "${key}"`);
+        }
+        if (body.secret !== undefined && !r.mine) {
+          return fail(
+            403,
+            'request_secret_makers_only',
+            'Only whoever asked can give this request a new password. Take it back and make a new one if you need to.',
+          );
+        }
+        const changes: string[] = [];
+        if (typeof body.title === 'string' && body.title.trim() !== r.title) {
+          if (!body.title.trim())
+            return fail(422, 'validation_failed', 'Give the request a title.');
+          r.title = body.title.trim();
+          changes.push('title');
+        }
+        if ('message' in body) {
+          const message =
+            typeof body.message === 'string' && body.message.trim() ? body.message.trim() : null;
+          if (message !== r.message) {
+            r.message = message;
+            changes.push('message');
+          }
+        }
+        if ('recipient_label' in body) {
+          const label =
+            typeof body.recipient_label === 'string' && body.recipient_label.trim()
+              ? body.recipient_label.trim()
+              : null;
+          if (label !== r.recipient_label) {
+            r.recipient_label = label;
+            changes.push('recipient_label');
+          }
+        }
+        if (typeof body.expires_at === 'string' && body.expires_at !== r.expires_at) {
+          const end = Date.parse(body.expires_at);
+          const latest = Date.parse(r.created_at) + 90 * 864e5;
+          if (Number.isNaN(end) || end < Date.now() + 5 * 60_000) {
+            return fail(422, 'expiry_out_of_range', 'Choose a time at least 5 minutes from now.');
+          }
+          if (end > latest + 5 * 60_000) {
+            return fail(
+              422,
+              'expiry_out_of_range',
+              'A request can last 90 days at most from when it was made.',
+            );
+          }
+          r.expires_at = new Date(Math.min(end, latest)).toISOString();
+          changes.push('expires_at');
+        }
+        if ('max_visits' in body) {
+          const v = typeof body.max_visits === 'number' ? body.max_visits : null;
+          if (v !== null && v < r.visits_used) {
+            return fail(422, 'validation_failed', 'That is fewer visits than were used already.');
+          }
+          if (v !== r.max_visits) {
+            r.max_visits = v;
+            changes.push('max_visits');
+          }
+        }
+        if (typeof body.max_files === 'number' && body.max_files !== r.max_files) {
+          r.max_files = body.max_files;
+          changes.push('max_files');
+        }
+        if (
+          typeof body.max_total_bytes === 'number' &&
+          body.max_total_bytes !== r.max_total_bytes
+        ) {
+          r.max_total_bytes = body.max_total_bytes;
+          changes.push('max_total_bytes');
+        }
+        if (
+          (body.accept_types === 'standard' || body.accept_types === 'office') &&
+          body.accept_types !== r.accept_types
+        ) {
+          r.accept_types = body.accept_types;
+          changes.push('accept_types');
+        }
+        if (
+          typeof body.close_after_submit === 'boolean' &&
+          body.close_after_submit !== r.close_after_submit
+        ) {
+          r.close_after_submit = body.close_after_submit;
+          changes.push('close_after_submit');
+        }
+        let password: string | null = null;
+        const had = r.protection.includes('password');
+        if (body.secret === 'password' || (body.secret === 'none' && had)) {
+          changes.push('secret');
+          password =
+            body.secret === 'password' && typeof body.password !== 'string'
+              ? `fake-${next('pw')}-word`
+              : null;
+          r.protection = [
+            ...(body.secret === 'password' ? (['password'] as const) : []),
+            ...r.protection.filter((p) => p !== 'password'),
+          ];
+          const copy = copies[r.id];
+          if (copy) copy.password = password;
+        }
+        if (changes.length) r.version = version + 1;
+        const answer: ChangedUploadRequest = {
+          request: lk(r),
+          changed: changes,
+          ...(password ? { password } : {}),
+        };
+        return ok(answer);
       }
       if (resume && init.method === 'POST') {
         if (!can(state.role, 'restore.review')) {
@@ -7544,7 +7891,7 @@ export function createFakeVault(): {
         if (r.state !== 'paused')
           return fail(404, 'not_found', 'That paused request does not exist.');
         Object.assign(r, { state: 'active', paused_reason: null });
-        return ok(r);
+        return ok(lk(r));
       }
     }
     // The activity log (R4): what the fake keeps of it, newest first, each

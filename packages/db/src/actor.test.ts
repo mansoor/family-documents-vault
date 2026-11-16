@@ -700,6 +700,7 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
     }
 
     // Somebody signed in is not held to it: the trigger is the link's alone.
+    // (Its owner changes it as a change does, moving its version on, 0103.)
     const p = {
       householdId: hh,
       accountId: ids.account,
@@ -709,7 +710,7 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
     const relabelled = await withPrincipal(db, p, (trx) =>
       trx
         .updateTable('share_link')
-        .set({ recipient_label: 'the letting agent' })
+        .set({ recipient_label: 'the letting agent', version: sql`version + 1` })
         .where('id', '=', shares.lease)
         .executeTakeFirst(),
     );

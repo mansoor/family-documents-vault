@@ -9,6 +9,7 @@ import {
   SMS_PASSWORD_PURPOSE,
   AI_READER_KEY_PURPOSE,
   SHARE_LINK_COPY_PURPOSE,
+  UPLOAD_REQUEST_COPY_PURPOSE,
 } from '@fdv/crypto';
 import { assertSchemaKnown, createDb, createPool, migrateUp } from '@fdv/db';
 import { AuthService } from './auth/service.js';
@@ -341,6 +342,10 @@ async function main(): Promise<void> {
       codeKey: deriveKey(masterSecret, UPLOAD_CODE_KEY_PURPOSE),
       mail: config.FDV_SMTP_URL ? operatorMail : null,
       deviceKey: deviceCookieKey(masterSecret, UPLOAD_DEVICE_KEY_PURPOSE),
+      // 0.9.0 (LK): a request's link kept sealed, to show whoever asked
+      // again, and the vault's own address, to email it from.
+      copyKey: deriveKey(masterSecret, UPLOAD_REQUEST_COPY_PURPOSE),
+      baseUrl: config.FDV_BASE_URL,
       enqueue,
       alert,
     }),
