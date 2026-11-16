@@ -298,8 +298,9 @@ describe('browsing my cabinet', () => {
   it('carries a folder into the table, each part of it taken off by itself', async () => {
     at(`/documents?category=identity&dated_from=${thisYear}-01-01&dated_to=${thisYear}-12-31`);
     const grid = await screen.findByRole('grid', { name: /^Documents, sorted by/ });
-    await waitFor(() => expect(within(grid).getAllByRole('row')).toHaveLength(2));
-    expect(within(grid).getByText("Mansoor's passport")).toBeVisible();
+    // Its row, not the loading one: a busy machine draws that first.
+    expect(await within(grid).findByText("Mansoor's passport")).toBeVisible();
+    expect(within(grid).getAllByRole('row')).toHaveLength(2);
     fireEvent.click(screen.getByRole('button', { name: `Take off the filter Dated ${thisYear}` }));
     await waitFor(() => expect(within(grid).getAllByRole('row')).toHaveLength(3));
     expect(screen.getByText('Topic: Identity')).toBeVisible();

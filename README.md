@@ -1050,6 +1050,16 @@ where originals are kept reads them; they follow a rename. **Print folder
 labels** prints each folder's name with a code that opens that folder in the
 vault, after signing in; the code holds only the vault's address for it.
 
+A paper filed from a folder — **Add many** with a folder, a subfolder of the
+scanner folder, or a computer's watched folder — keeps the folder it came
+from (_Taxes/2025_, never the file's name), seen by whoever sees where
+originals are kept. **Keep my folder tree** turns those folders into a
+cabinet called **My folders** — a drawer for each top folder, a folder for
+each folder under it, each holding the papers from it, now and later. It is
+shown first, added beside what your cabinet already holds, and asks before
+it's added to a cabinet you have. A paper's folder can be forgotten, never
+changed by hand.
+
 ### Caregivers, and turning 18
 
 Anyone can let someone in the family see their medical papers — **Let

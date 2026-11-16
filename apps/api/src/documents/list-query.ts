@@ -78,6 +78,9 @@ export const listQuery = z.object({
   // by " › ", the whole path or its leading part; as `location`, only for
   // whoever sees where originals are kept.
   original_place: z.string().trim().min(1).max(620).optional(),
+  // Came from this folder, exactly, whatever the case (0.9.0, C4): as
+  // `location`, only for whoever sees where originals are kept.
+  source_folder: z.string().trim().min(1).max(512).optional(),
   limit: z.coerce.number().int().min(1).max(DOCUMENT_PAGE_MAX).optional(),
   // Room for the longest key a table's cursor can carry (the review's
   // R2-API-4): a location of 500 characters, each as JSON writes the worst

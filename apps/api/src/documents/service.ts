@@ -212,6 +212,11 @@ export interface DocumentInput {
    * held (`placeOf`), and written from there.
    */
   original_place?: { folder_id: string } | null | undefined;
+  /**
+   * The folder it came from, forgotten (0.9.0, C4): null alone, and an edit
+   * only. It is written only as a document is filed from a batch's item.
+   */
+  source_folder?: null | undefined;
   is_essential?: boolean | undefined;
   tags?: string[] | undefined;
   notes?: string | null | undefined;
@@ -249,6 +254,8 @@ export interface ListQuery extends DocumentFilters {
   location?: string | undefined;
   /** In a place in a cabinet (0.9.0, C3): the whole path, or its leading part. */
   original_place?: string | undefined;
+  /** Came from this folder, exactly, whatever the case (0.9.0, C4). */
+  source_folder?: string | undefined;
   limit?: number | undefined;
   cursor?: string | undefined;
   /**
@@ -378,6 +385,8 @@ export type DocRow = {
   original_place_folder: string | null;
   /** When the place last changed (0104): `updated_since` asks it too. */
   place_changed_at: Date | null;
+  /** The folder it came from (0105, C4): seen as the location is. */
+  source_folder: string | null;
   is_essential: boolean;
   tags: string[];
   notes: string | null;
@@ -1240,6 +1249,9 @@ export class DocumentService {
       // Its place in a cabinet (0.9.0, C3): to the same people, on the same
       // terms; the folder's id only to whoever it is theirs.
       original_place: seesLocation(p.role) ? placeView(p, row) : null,
+      // The folder it came from (0.9.0, C4): the household's own filing,
+      // to the same people, on the same terms.
+      source_folder: seesLocation(p.role) ? (row.source_folder ?? null) : null,
       is_essential: row.is_essential,
       tags: row.tags,
       notes: onlyMe ? (opened?.notes ?? null) : row.notes,
@@ -1641,6 +1653,10 @@ export class DocumentService {
     this.canWrite(p);
     if (input.original_place !== undefined && !seesLocation(p.role)) {
       throw new ApiError(403, 'forbidden', LOCATION_SORT_REFUSAL, { detail: 'original_place' });
+    }
+    // The folder it came from (C4): the same household's fact.
+    if (input.source_folder !== undefined && !seesLocation(p.role)) {
+      throw new ApiError(403, 'forbidden', LOCATION_SORT_REFUSAL, { detail: 'source_folder' });
     }
     let drawNow: string | null = null;
     const view = await withPrincipal(this.db, p, async (trx) => {
@@ -2396,6 +2412,7 @@ export class DocumentService {
       q.collection_id !== undefined && 'collection_id',
       q.location !== undefined && 'location',
       q.original_place !== undefined && 'original_place',
+      q.source_folder !== undefined && 'source_folder',
       (q.member_id === 'none' || q.member_ids?.includes('none') === true) && 'member_id=none',
       (q.member_id === 'household' || q.member_ids?.includes('household') === true) &&
         'member_id=household',
@@ -3432,7 +3449,16 @@ export class DocumentService {
     p: Principal,
     input: {
       target:
-        { kind: 'capture'; metadata: CaptureMetadata } | { kind: 'version'; documentId: string };
+        | {
+            kind: 'capture';
+            metadata: CaptureMetadata;
+            /**
+             * The folder it came from, as its batch's item kept it (0.9.0,
+             * C4): kept on the new document. None for a request's file.
+             */
+            sourceFolder?: string | null;
+          }
+        | { kind: 'version'; documentId: string };
       file: {
         filename: string;
         mime: string;
@@ -3467,6 +3493,14 @@ export class DocumentService {
     } else {
       documentId = randomUUID();
       values = await this.captureColumns(trx, p, target.metadata);
+      // Where it came from (C4): the household's own filing, kept as the
+      // item had it; only by whoever sees where originals are kept.
+      if (target.sourceFolder && seesLocation(p.role)) {
+        values = { ...values, source_folder: target.sourceFolder } as Record<
+          string,
+          unknown
+        > as Record<string, never>;
+      }
       scope = scopeFor(
         {
           visibility: (values.visibility as Visibility | undefined) ?? 'household',
@@ -4591,6 +4625,8 @@ export class DocumentService {
     }
     if (input.physical_location !== undefined)
       out.physical_location = input.physical_location?.trim() || null;
+    // The folder it came from (C4): only ever forgotten here, never written.
+    if (input.source_folder !== undefined) out.source_folder = null;
     if (input.is_essential !== undefined) out.is_essential = input.is_essential;
     // Tidied, each once whatever its case, a detail tag's value as written
     // (0.9.0, T1, @fdv/shared tags.ts); too long, or too many, said plainly.

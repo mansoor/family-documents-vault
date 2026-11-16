@@ -504,6 +504,14 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
       type_key: 'vehicle_registration',
       extra: { vin: '=2+5', plate: 'AB12 CDE' },
     });
+    // The folder it came from (0.9.0, C4), as filing it from a batch keeps it.
+    await withSystem(db, hh, (trx) =>
+      trx
+        .updateTable('document')
+        .set({ source_folder: 'Car/2026' })
+        .where('title', '=', 'Estate car')
+        .execute(),
+    );
     await addDoc('Our wills', 'adults', ownerMember, 'WILL BYTES', 'legal', {
       type_key: 'will',
       extra: { last_reviewed: { date: '2026-03-31', precision: 'month' }, executor: '@Sana' },
@@ -559,7 +567,7 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     // a name or a value a spreadsheet would run as a formula is written as text.
     const [header = '', ...lines] = (entries.get('index.csv')?.toString() ?? '').split('\n');
     const cols = header.split(',');
-    expect(cols.slice(0, 13)).toEqual([
+    expect(cols.slice(0, 14)).toEqual([
       'title',
       'type_key',
       'category',
@@ -572,6 +580,8 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
       'physical_location',
       // Its place in a cabinet (0.9.0, C3), beside the words.
       'original_place',
+      // The folder it came from (0.9.0, C4).
+      'source_folder',
       'tags',
       'notes',
     ]);
@@ -590,6 +600,12 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
       lines.find((l) => l.startsWith(`${title},`))?.split(',')[cols.indexOf(column)];
     expect(cell('Estate car', 'VIN')).toBe("'=2+5");
     expect(cell('Estate car', 'Registration plate')).toBe('AB12 CDE');
+    expect(cell('Estate car', 'source_folder')).toBe('Car/2026');
+    // And in index.html, under its title (C4).
+    expect(entries.get('index.html')?.toString()).toContain(
+      '<small>From the folder ‘Car/2026’</small>',
+    );
+    expect(cell('Our wills', 'source_folder')).toBe('');
     expect(cell('Our wills', 'Executor')).toBe("'@Sana");
     expect(cell('Our wills', 'Last reviewed')).toBe('March 2026');
     expect(cell('Rail pass', `"'=HYPERLINK(""x"")"`)).toBe('Annual');

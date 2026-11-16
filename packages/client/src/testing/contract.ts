@@ -2,6 +2,7 @@ import {
   CATEGORY_LABELS,
   CORE_FIELDS,
   COLLECTION_HINT_TEENS,
+  FOLDERS_CABINET,
   localToday,
   onlyEveryone,
   reminderOf,
@@ -4193,6 +4194,113 @@ export const contractScenarios: Scenario[] = [
         }),
       );
       expect(missing.status).toBe(404);
+    },
+  },
+  {
+    name: 'the folder a paper came from: kept as it is filed, found, drawn into my cabinet beside what is there, and forgotten (0.9.0, C4)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.source_folders).toBe(true);
+      const me = await api.me(token);
+      const b = await api.createBatch(token, { name: 'Contract tree' });
+      const file = (n: string) => ({
+        kind: 'bytes' as const,
+        filename: `${n}.pdf`,
+        contentType: 'application/pdf',
+        bytes: new TextEncoder().encode(`%PDF-1.4\n% the contract tree ${n}\n%%EOF\n`),
+      });
+      const top = await api.addBatchItem(token, b.id, file('top'), undefined, {
+        relativePath: 'Contract tree/top.pdf',
+      });
+      const deep = await api.addBatchItem(token, b.id, file('deep'), undefined, {
+        relativePath: 'Contract tree/Bills 2026/deep.pdf',
+      });
+      const details = (title: string) => ({
+        type_key: 'utility_bill',
+        owner_member_id: me.member_id,
+        visibility: 'household' as const,
+        sensitive: false,
+        title,
+      });
+      const a = await api.acceptBatchItem(token, b.id, top.id, details('Contract tree top'));
+      const c = await api.acceptBatchItem(token, b.id, deep.id, details('Contract tree deep'));
+      // Kept on the document as it is filed, without the file's own name.
+      expect((await api.document(token, a.document_id)).source_folder).toBe('Contract tree');
+      expect((await api.document(token, c.document_id)).source_folder).toBe(
+        'Contract tree/Bills 2026',
+      );
+      // Found by it in the table, exactly, whatever the case: not the folders inside.
+      const page = await api.documents(token, {
+        sort: 'title',
+        source_folder: 'contract TREE',
+        limit: 200,
+      });
+      expect(page.items.map((d) => d.id)).toContain(a.document_id);
+      expect(page.items.map((d) => d.id)).not.toContain(c.document_id);
+      // As the table's other additions, only with a column sort.
+      const older = await refusal(api.documents(token, { source_folder: 'Contract tree' }));
+      expect([older.status, older.code]).toEqual([422, 'validation_failed']);
+
+      // Drawn into my cabinet, beside what is there: shown, not saved.
+      const before = await api.cabinet(token);
+      const drawn = await api.cabinetFromFolders(token);
+      expect(drawn.version).toBe(before.version);
+      expect(await api.cabinet(token)).toEqual(before);
+      expect(drawn.folders).toEqual(
+        expect.arrayContaining([
+          { path: 'Contract tree', documents: 1 },
+          { path: 'Contract tree/Bills 2026', documents: 1 },
+        ]),
+      );
+      const tree = drawn.layout.cabinets.find((x) => x.name === FOLDERS_CABINET && !x.hidden);
+      const drawer = tree?.drawers.find((d) => d.name === 'Contract tree');
+      expect(drawer?.folders.map((f) => [f.name, f.filter])).toEqual([
+        ['Contract tree', { source_folder: 'Contract tree', notes: 'exclude' }],
+        ['Bills 2026', { source_folder: 'Contract tree/Bills 2026', notes: 'exclude' }],
+      ]);
+      for (const f of drawer?.folders ?? []) expect(drawn.counts[f.id]).toBe(1);
+      // Nothing there before is changed.
+      for (const was of before.layout?.cabinets ?? []) {
+        expect(drawn.layout.cabinets).toContainEqual(was);
+      }
+      // Kept to the version it was drawn on; and the folders fill themselves.
+      const kept = await api.saveCabinet(token, { layout: drawn.layout, version: drawn.version });
+      const counts = await api.cabinetCounts(token);
+      for (const f of drawer?.folders ?? []) expect(counts.counts[f.id]).toBe(1);
+      // A drawing kept once is not kept over a cabinet changed since.
+      const stale = await refusal(
+        api.saveCabinet(token, { layout: drawn.layout, version: drawn.version }),
+      );
+      expect([stale.status, stale.code]).toEqual([409, 'conflict']);
+      // Drawn again: those folders are there already, and nothing is added for them.
+      const again = await api.cabinetFromFolders(token);
+      expect(again.version).toBe(kept.version);
+      expect(again.already).toBeGreaterThanOrEqual(2);
+      expect(
+        again.layout.cabinets
+          .flatMap((x) => x.drawers.flatMap((d) => d.folders))
+          .filter((f) => f.filter.source_folder?.toLowerCase() === 'contract tree'),
+      ).toHaveLength(1);
+
+      // Forgotten, never written.
+      const written = await refusal(
+        api.updateDocument(token, c.document_id, { source_folder: 'Elsewhere' } as never),
+      );
+      expect([written.status, written.code]).toEqual([422, 'validation_failed']);
+      const forgotten = await api.forgetSourceFolder(token, a.document_id);
+      expect(forgotten.source_folder).toBeNull();
+      expect((await api.document(token, c.document_id)).source_folder).toBe(
+        'Contract tree/Bills 2026',
+      );
+
+      // The cabinet as it was, and the papers in the Trash.
+      await api.saveCabinet(token, {
+        layout: before.layout ?? { arranged_by: null, cabinets: [] },
+        version: kept.version,
+      });
+      await api.removeBatch(token, b.id);
+      await api.deleteDocument(token, a.document_id);
+      await api.deleteDocument(token, c.document_id);
     },
   },
   {

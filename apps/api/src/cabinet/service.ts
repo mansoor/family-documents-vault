@@ -1,6 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { withPrincipal, type Db } from '@fdv/db';
 import {
+  addFolderTree,
+  askedFolders,
+  compareFolders,
   drawCabinet,
   NAME_HOLDS_SEPARATOR,
   PLACE_SEPARATOR,
@@ -30,6 +33,7 @@ import {
   type ArrangeBy,
   type CabinetCounts,
   type CabinetFolder,
+  type CabinetFromFolders,
   type CabinetGroup,
   type CabinetLayout,
   type CabinetPreview,
@@ -38,6 +42,7 @@ import {
   type FolderContents,
   type FolderDivider,
   type PinsMoved,
+  type SourceFolder,
 } from '@fdv/shared';
 import { sql } from 'kysely';
 import { parse } from '../auth/routes.js';
@@ -59,6 +64,9 @@ import {
   documentYears,
   refusedForCabinet,
 } from '../documents/table.js';
+
+/** The most folders one drawing reads: past what any cabinet can hold (CABINET_LIMITS.folders_total). */
+const FROM_FOLDERS_MOST = 2000;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -401,6 +409,69 @@ export class CabinetService {
   }
 
   /**
+   * GET /cabinet/from-folders (0.9.0, C4): the caller's cabinet with a
+   * folder for each folder their papers came from — those they filed
+   * themselves from a batch's item that had one, still theirs to see, out of
+   * the Trash — added beside what is there (`addFolderTree`), not saved.
+   * Each folder asks for exactly its folder (`source_folder`), and is
+   * counted as `preview` counts: the caller's own rules, notes left out.
+   * Only for whoever sees where originals are kept (403 otherwise), as the
+   * folder's question is. The caller keeps it with PUT /cabinet, made to
+   * `version`: a cabinet changed since is a 409, never overwritten.
+   */
+  async fromFolders(p: Principal): Promise<CabinetFromFolders> {
+    if (!maySortByLocation(p.role)) {
+      throw new ApiError(403, 'forbidden', LOCATION_SORT_REFUSAL, { detail: 'source_folder' });
+    }
+    const { row, rows, asked } = await withPrincipal(this.db, p, async (trx) => {
+      const row = await trx
+        .selectFrom('cabinet_layout')
+        .select(['layout', 'version'])
+        .where('household_id', '=', p.householdId)
+        .where('member_id', '=', p.memberId)
+        .executeTakeFirst();
+      // One folder whatever its case (Postgres' `lower`, as the filter
+      // compares it), named as it was first kept; only folders the caller
+      // filed something from, counted with every paper from it they see —
+      // what the folder will hold. How many there are in all, past the
+      // most read, is counted too.
+      const rows = (
+        await sql<{ path: string; key: string; documents: number; total: number }>`
+          select min(d.source_folder) as path, lower(d.source_folder) as key,
+                 count(*)::int as documents, (count(*) over ())::int as total
+            from document d
+           where ${readDocument(p)} and d.deleted_at is null
+             and d.source_folder is not null
+             and d.type_key is distinct from ${NOTE_KIND}
+           group by lower(d.source_folder)
+          having bool_or(d.created_by = ${p.accountId}::uuid)
+           order by 2
+           limit ${FROM_FOLDERS_MOST}`.execute(trx)
+      ).rows;
+      // What the layout's folders ask, lowered as the filter lowers them.
+      const asked = await loweredFolders(trx, row?.layout as CabinetLayout | undefined);
+      return { row, rows, asked };
+    });
+    const folders: SourceFolder[] = rows
+      .map((r) => ({ path: r.path, documents: r.documents }))
+      .sort((a, b) => compareFolders(a.path, b.path));
+    const drawn = addFolderTree(
+      (row?.layout as CabinetLayout | undefined) ?? null,
+      rows.map((r) => ({ path: r.path, documents: r.documents, key: r.key })),
+      () => randomBytes(6).toString('base64url'),
+      { key: (path) => asked.get(path) ?? path.toLowerCase() },
+    );
+    // Past the most read: never drawn, and said so.
+    const unread = Math.max(0, (rows[0]?.total ?? 0) - rows.length);
+    return {
+      version: row?.version ?? 0,
+      folders,
+      ...drawn,
+      left_out: drawn.left_out + unread,
+    };
+  }
+
+  /**
    * GET /cabinet/counts: how many documents each shown folder holds for the
    * caller, each exactly the total the Documents table would give them for
    * its question; null for one they may no longer ask.
@@ -413,7 +484,13 @@ export class CabinetService {
         .where('household_id', '=', p.householdId)
         .where('member_id', '=', p.memberId)
         .executeTakeFirst();
-      if (!row) return { version: 0, counts: {} };
+      // Folders papers came from that this cabinet has none for yet (C4):
+      // whether there are any, asked cheaply, for the page to offer them.
+      const newFolders = maySortByLocation(p.role)
+        ? await hasNewFolders(trx, p, row?.layout as CabinetLayout | undefined)
+        : undefined;
+      const fresh = newFolders === undefined ? {} : { new_folders: newFolders };
+      if (!row) return { version: 0, counts: {}, ...fresh };
       const shown = shownFolders(row.layout as CabinetLayout);
       // Each folder's pins the caller may still open, counted once: its
       // question counts what it holds besides them (C2).
@@ -441,7 +518,7 @@ export class CabinetService {
       // arrangement would let go of, said before it is (C2 review).
       const pinsOf: Record<string, number> = {};
       for (const [folder, docs] of pins) pinsOf[folder] = docs.length;
-      return { version: row.version, counts, pins: pinsOf };
+      return { version: row.version, counts, pins: pinsOf, ...fresh };
     });
   }
 
@@ -798,6 +875,9 @@ function checkLayout(p: Principal, layout: CabinetLayout): void {
         if (q.original_place !== undefined && !maySortByLocation(p.role)) {
           refuse(LOCATION_SORT_REFUSAL, 'original_place');
         }
+        if (q.source_folder !== undefined && !maySortByLocation(p.role)) {
+          refuse(LOCATION_SORT_REFUSAL, 'source_folder');
+        }
       }
     }
   }
@@ -823,6 +903,50 @@ function trimmedNames(layout: CabinetLayout): CabinetLayout {
         : c.drawers,
     })),
   };
+}
+
+/**
+ * Each folder a layout's folders ask for (`source_folder`, C4), lowered by
+ * Postgres as the list's filter lowers it: "already there" is then what the
+ * filter would match, whatever the case.
+ */
+async function loweredFolders(
+  trx: Db,
+  layout: CabinetLayout | null | undefined,
+): Promise<Map<string, string>> {
+  const asked = [...new Set(askedFolders(Array.isArray(layout?.cabinets) ? layout : null))];
+  if (asked.length === 0) return new Map();
+  const rows = (
+    await sql<{ path: string; key: string }>`
+      select x as path, lower(x) as key from unnest(${asked}::text[]) as x`.execute(trx)
+  ).rows;
+  return new Map(rows.map((r) => [r.path, r.key]));
+}
+
+/**
+ * Whether the caller filed a paper they still see, out of the Trash, from a
+ * folder their layout asks for nowhere (C4): one row at most, never the
+ * grouping GET /cabinet/from-folders does.
+ */
+async function hasNewFolders(
+  trx: Db,
+  p: Principal,
+  layout: CabinetLayout | null | undefined,
+): Promise<boolean> {
+  const asked = [...new Set(askedFolders(Array.isArray(layout?.cabinets) ? layout : null))];
+  const row = (
+    await sql<{ any: boolean }>`
+      select exists (
+        select 1 from document d
+         where ${readDocument(p)} and d.deleted_at is null
+           and d.source_folder is not null
+           and d.created_by = ${p.accountId}::uuid
+           and d.type_key is distinct from ${NOTE_KIND}
+           and lower(d.source_folder) <> all (
+                 select lower(x) from unnest(${asked}::text[]) as x)
+      ) as any`.execute(trx)
+  ).rows[0];
+  return row?.any === true;
 }
 
 /** Every cabinet, drawer and folder of a saved layout, by id and name. */

@@ -228,6 +228,7 @@ export const CHECKLIST_KIND_WORDS: Readonly<Record<string, readonly string[]>> =
     'w-2',
     '1099',
     '1098',
+    '1095',
     'p60',
     'p45',
     'p11d',
@@ -604,8 +605,11 @@ const CURRENT_RE =
 const CURRENT_ALL_RE = new RegExp(CURRENT_RE.source, 'g');
 const YEAR_RANGE_RE = /\b(199\d|20\d\d) ?(?:-|\/|to|through|thru|until) ?(199\d|20\d\d|\d\d)\b/g;
 const YEAR_RE = /\b(199\d|20\d\d)\b/g;
-/** A tax form's own name, and its plural ("W-2s", "1099s"). */
-const FORM_RE = /\b(w-?2|1099(?:-[a-z]{1,4})?|1098|p60|p45|p11d|1040)s?\b/g;
+/**
+ * A tax form's own name, and its plural ("W-2s", "1099s"): a 1099, 1098 or
+ * 1095 with its letters ("1099-INT", "1098-T", "1095-C") or without.
+ */
+const FORM_RE = /\b(w-?2|10(?:99|98|95)(?:-[a-z]{1,4})?|p60|p45|p11d|1040)s?\b/g;
 
 const MON = `(${MONTH_WORDS.join('|')})\\.?`;
 const MONTH_RANGE_RE = new RegExp(
@@ -642,6 +646,15 @@ function folded(s: string): string {
 function formName(f: string): string {
   if (/^w-?2$/.test(f)) return 'W-2';
   return f.toUpperCase();
+}
+
+/**
+ * Whether a form a document names is the one asked for: the same, or, asked
+ * without its letters, any of that number ("1099" finds a 1099-INT and a
+ * 1099-DIV; "1095-C" finds only a 1095-C).
+ */
+function formFits(asked: string, named: string): boolean {
+  return named === asked || named.startsWith(`${asked}-`);
 }
 
 /** Every form a text names, as people write them. */
@@ -1787,7 +1800,7 @@ function checkByKind(
   let fitting = all;
   if (item.form) {
     const form = item.form;
-    fitting = all.filter((p) => p.forms.includes(form));
+    fitting = all.filter((p) => p.forms.some((f) => formFits(form, f)));
     for (const p of all) if (p.forms.length === 0) unsaid.add(p);
   }
   const dated = fitting.filter((p) => p.date !== null);

@@ -3,6 +3,8 @@ import {
   ARRANGE_BY_WORDS,
   CABINET_CHANGED,
   folderQuestionWords,
+  folderTreeWords,
+  FOLDERS_CABINET,
   daySpanWords,
   dividerMode,
   dividersProblemOf,
@@ -55,13 +57,28 @@ import { storedRole } from './session.js';
 
 /** The address of the cabinet, with these choices. */
 export function cabinetHref(
-  over: { cabinet?: string; folder?: string; arrange?: boolean } = {},
+  over: { cabinet?: string; folder?: string; arrange?: boolean; fromFolders?: boolean } = {},
 ): string {
   const p = new URLSearchParams({ show: 'cabinet' });
   if (over.cabinet) p.set('cabinet', over.cabinet);
   if (over.folder) p.set('folder', over.folder);
   if (over.arrange) p.set('arrange', '1');
+  // Keep this folder tree as my cabinet (0.9.0, C4): its drawing, to look over first.
+  if (over.fromFolders) p.set('from', 'folders');
   return `/documents?${p.toString()}`;
+}
+
+/**
+ * Whether this reader may keep their folder tree as their cabinet (C4): the
+ * vault keeps the folder a paper came from, and they see where originals are.
+ */
+export function useFolderTreeOffered(): boolean {
+  const { caps } = useApp();
+  return (
+    caps?.features.source_folders === true &&
+    caps.features.cabinets === true &&
+    seesLocation(storedRole())
+  );
 }
 
 /** Table or Cabinet: the two ways to see the same documents. */
@@ -177,19 +194,31 @@ export function CabinetDocuments() {
   const placesOffered = caps?.features.original_place === true && seesLocation(storedRole());
   const [params, setParams] = useSearchParams();
   const arranging = params.get('arrange') === '1';
+  const treeOffered = useFolderTreeOffered();
+  const keepingTree = treeOffered && params.get('from') === 'folders';
   const mine = useLoad(async (t) => api.cabinet(t), [authVersion]);
   const layout = mine.data?.layout ?? null;
   const version = mine.data?.version ?? 0;
+  // Counted for a cabinet; and, for whoever may keep their folder tree (C4),
+  // also asked of an empty one: whether papers came from folders it has none
+  // for yet (`new_folders`) — a cheap question, never the drawing itself.
+  const loaded = mine.data !== undefined && mine.data !== null;
   const told = useLoad(
-    async (t) => (layout ? await api.cabinetCounts(t) : null),
-    [authVersion, version, layout !== null],
+    async (t) => (loaded && (layout || treeOffered) ? await api.cabinetCounts(t) : null),
+    [authVersion, version, layout !== null, loaded, treeOffered],
   );
   const counts = { ...told, data: told.data?.counts ?? null };
+  // Offered, never added unasked.
+  const treeToAdd = treeOffered && !keepingTree && told.data?.new_folders === true;
   const names = useNames();
   const heading = useRef<HTMLHeadingElement>(null);
 
-  const go = (over: { cabinet?: string; folder?: string; arrange?: boolean }) =>
-    setParams(new URLSearchParams(cabinetHref(over).split('?')[1]));
+  const go = (over: {
+    cabinet?: string;
+    folder?: string;
+    arrange?: boolean;
+    fromFolders?: boolean;
+  }) => setParams(new URLSearchParams(cabinetHref(over).split('?')[1]));
 
   let body: ReactNode;
   if (mine.error && !mine.data) {
@@ -198,6 +227,18 @@ export function CabinetDocuments() {
     );
   } else if (!mine.data) {
     body = <p className="muted">Opening your cabinet…</p>;
+  } else if (keepingTree) {
+    body = (
+      <KeepFolderTree
+        saved={mine.data}
+        onCancel={() => go({})}
+        onSaved={(saved, cabinetId) => {
+          mine.setData(saved);
+          go(cabinetId ? { cabinet: cabinetId } : {});
+          heading.current?.focus();
+        }}
+      />
+    );
   } else if (arranging) {
     body = (
       <ArrangeCabinet
@@ -224,8 +265,14 @@ export function CabinetDocuments() {
             ? 'Show a cabinet again while arranging, or draw a new arrangement.'
             : 'Arrange it from what the vault already knows: by person, by topic and year, or by kind. Folders fill themselves as papers are added.'}
         </p>
-        <div>
+        <div className="actions">
           <Button onClick={() => go({ arrange: true })}>Arrange my cabinet</Button>
+          {/* Or the folders the papers came from (C4), when there are any. */}
+          {!layout && treeToAdd && (
+            <Button kind="quiet" onClick={() => go({ fromFolders: true })}>
+              Use my folder tree
+            </Button>
+          )}
         </div>
       </section>
     );
@@ -253,7 +300,7 @@ export function CabinetDocuments() {
         {/* Where the table's Columns is (DL): the same slot, so toggling
             Table and Cabinet moves neither. */}
         <div className="table-head-tool">
-          {!arranging && mine.data && layout && (
+          {!arranging && !keepingTree && mine.data && layout && (
             <button
               type="button"
               className="btn btn-quiet btn-small"
@@ -264,7 +311,7 @@ export function CabinetDocuments() {
           )}
         </div>
       </div>
-      {!arranging && mine.data && (
+      {!arranging && !keepingTree && mine.data && (
         <div className="cab-bar">
           <p className="muted">
             <strong className="cab-mine">My cabinet</strong>
@@ -280,6 +327,13 @@ export function CabinetDocuments() {
               <span>
                 {' · '}
                 <Link to="/cabinet/labels">Print folder labels</Link>
+              </span>
+            )}
+            {/* Folders papers came from, not in the cabinet yet (C4). */}
+            {layout && treeToAdd && (
+              <span>
+                {' · '}
+                <Link to={cabinetHref({ fromFolders: true })}>Keep my folder tree</Link>
               </span>
             )}
           </p>
@@ -767,6 +821,159 @@ export function mergeDrawers(
 }
 
 const clone = (l: CabinetLayout): CabinetLayout => JSON.parse(JSON.stringify(l)) as CabinetLayout;
+
+/**
+ * Keep this folder tree as my cabinet (0.9.0, C4): the folders the reader's
+ * papers came from, drawn by the vault beside what their cabinet holds, to
+ * look over first. Nothing is saved until they say so — and, when they have
+ * a cabinet already, until they confirm it — and nothing there is changed:
+ * the folders are added to the cabinet "My folders".
+ */
+function KeepFolderTree(props: {
+  saved: CabinetView;
+  onCancel: () => void;
+  onSaved: (saved: CabinetView, cabinetId: string | null) => void;
+}) {
+  const { withToken } = useApp();
+  const drawn = useLoad(async (t) => api.cabinetFromFolders(t), []);
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const d = drawn.data;
+  const tree = d
+    ? d.layout.cabinets.find((c) => c.drawers.some((x) => x.folders.some((f) => f.id in d.counts)))
+    : undefined;
+  /** The drawers that get a new folder, each with only its new folders. */
+  const added = (tree?.drawers ?? [])
+    .map((x) => ({ ...x, folders: x.folders.filter((f) => (d ? f.id in d.counts : false)) }))
+    .filter((x) => x.folders.length > 0);
+  const hasCabinet = (props.saved.layout?.cabinets.length ?? 0) > 0;
+
+  const keep = async () => {
+    if (!d) return;
+    setBusy(true);
+    try {
+      const done = await withToken((t) =>
+        api.saveCabinet(t, { layout: d.layout, version: d.version }),
+      );
+      if (done) props.onSaved(done, tree?.id ?? null);
+    } catch (err) {
+      setAsking(false);
+      if (err instanceof ApiRequestError && err.status === 409) {
+        // Changed elsewhere meanwhile: drawn again on what it is now, never over it.
+        setError(`${CABINET_CHANGED} The folders were drawn again on your cabinet as it is now.`);
+        await drawn.reload();
+      } else setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  let body: ReactNode;
+  if (drawn.error && !d) {
+    body = (
+      <LoadFailed message={drawn.error} what="your folders" onRetry={() => void drawn.reload()} />
+    );
+  } else if (!d) {
+    body = <p className="muted">Looking at your folders…</p>;
+  } else if (d.folders.length === 0) {
+    body = (
+      <p className="cab-none">
+        None of your papers came from a folder yet. Papers you add from a folder — with Add many,
+        the scanner folder or a computer — keep the folder they came from.
+      </p>
+    );
+  } else if (added.length === 0) {
+    body = (
+      <p className="cab-none">
+        {d.left_out > 0
+          ? 'Your cabinet has no room for more folders. Hide or merge some with Arrange my cabinet, then try again.'
+          : folderTreeWords(d.added)}
+      </p>
+    );
+  } else {
+    body = (
+      <>
+        <p className="muted">{folderTreeWords(d.added)}</p>
+        <ol className="arrange-tree folder-tree" aria-label={`New in “${FOLDERS_CABINET}”`}>
+          {added.map((x) => (
+            <li key={x.id}>
+              <div className="arrange-row">
+                <strong>{x.name}</strong>
+              </div>
+              <ol>
+                {x.folders.map((f) => (
+                  <li key={f.id}>
+                    <div className="arrange-row">
+                      <FolderIcon />
+                      <span title={f.filter.source_folder}>{f.name}</span>
+                      <Count n={d.counts[f.id]} />
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </li>
+          ))}
+        </ol>
+        {(d.already > 0 || d.left_out > 0) && (
+          <p className="muted">
+            {d.already > 0 &&
+              `${d.already === 1 ? '1 folder is' : `${d.already} folders are`} in your cabinet already, and ${d.already === 1 ? 'stays' : 'stay'} as ${d.already === 1 ? 'it is' : 'they are'}. `}
+            {d.left_out > 0 &&
+              `${d.left_out === 1 ? '1 folder is' : `${d.left_out} folders are`} left out: that is more than a cabinet can hold.`}
+          </p>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <section className="arrange stack" aria-labelledby="tree-h" aria-busy={drawn.loading}>
+      <div>
+        <h2 id="tree-h" className="section-h">
+          Keep this folder tree as my cabinet
+        </h2>
+        <p className="muted">
+          Each folder your papers came from becomes a folder in the cabinet “{FOLDERS_CABINET}”, and
+          holds the papers from that folder, now and as more are added. Nothing in your cabinet now
+          is changed. Only you see this arrangement.
+        </p>
+      </div>
+      {body}
+      <ErrorNote message={error} />
+      <div className="actions">
+        <Button kind="quiet" onClick={props.onCancel}>
+          {added.length > 0 ? 'Cancel' : 'Back to my cabinet'}
+        </Button>
+        {added.length > 0 && (
+          <Button
+            disabled={busy || drawn.loading}
+            onClick={() => (hasCabinet ? setAsking(true) : void keep())}
+          >
+            {busy ? 'Saving…' : 'Keep this folder tree'}
+          </Button>
+        )}
+      </div>
+      {asking && d && (
+        <ConfirmDialog
+          title={
+            d.added.folders === 1
+              ? 'Add 1 folder to your cabinet?'
+              : `Add ${d.added.folders} folders to your cabinet?`
+          }
+          confirmLabel="Add the folders"
+          busyLabel="Saving…"
+          busy={busy}
+          onConfirm={() => void keep()}
+          onCancel={() => setAsking(false)}
+        >
+          They go in the cabinet “{FOLDERS_CABINET}”. Your other cabinets, drawers and folders stay
+          as they are. You can rename, move or hide the new ones with Arrange my cabinet.
+        </ConfirmDialog>
+      )}
+    </section>
+  );
+}
 
 /** Arrange my cabinet: a way to draw it, the drawing to look over and change, then Use this arrangement. */
 function ArrangeCabinet(props: {

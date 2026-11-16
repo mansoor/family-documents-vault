@@ -501,9 +501,15 @@ export function registerDocuments(
 
   app.patch<{ Params: { id: string } }>('/api/v1/documents/:id', auth, async (req, reply) => {
     // Into Only me, what becomes of the person's own links (5.41).
-    // And its place in a cabinet (0.9.0, C3): an edit's alone.
+    // And its place in a cabinet (0.9.0, C3), and the folder it came from
+    // forgotten (C4): an edit's alone.
     const { own_links: ownLinks, ...body } = parse(
-      documentBody.extend({ own_links: ownLinksBody, original_place: originalPlaceBody }),
+      documentBody.extend({
+        own_links: ownLinksBody,
+        original_place: originalPlaceBody,
+        // The folder it came from, forgotten (0.9.0, C4): null alone.
+        source_folder: z.null().optional(),
+      }),
       req.body ?? {},
     );
     // Essential turned off, or out of "only me": what opening it asks is

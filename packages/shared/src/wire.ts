@@ -1253,6 +1253,12 @@ export interface DocumentInput {
    * `detail: 'original_place'`). Send only to a vault that says `original_place`.
    */
   original_place?: OriginalPlaceInput;
+  /**
+   * Forget the folder it came from (0.9.0, C4, `features.source_folders`):
+   * null alone — a folder is only ever kept as a paper is filed, never
+   * written. An edit only (PATCH); a viewer or a guest is refused (403).
+   */
+  source_folder?: null;
   is_essential?: boolean;
   tags?: string[];
   notes?: string | null;

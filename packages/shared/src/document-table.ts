@@ -139,6 +139,12 @@ export type DocumentListParams = {
    * cabinet, or its cabinet and drawer, for everything inside them.
    */
   original_place?: string | undefined;
+  /**
+   * 0.9.0 (C4, `features.source_folders`), with a column sort, for whoever
+   * sees locations: came from this folder ("Taxes/2025"), exactly, whatever
+   * the case — not the folders inside it.
+   */
+  source_folder?: string | undefined;
   essential?: boolean | undefined;
   deleted?: boolean | undefined;
   purge_requested?: boolean | undefined;

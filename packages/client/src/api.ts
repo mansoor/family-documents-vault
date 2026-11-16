@@ -179,6 +179,7 @@ import type {
   AlsoIn,
   ArrangeBy,
   CabinetCounts,
+  CabinetFromFolders,
   CabinetPreview,
   CabinetPinned,
   CabinetSave,
@@ -971,6 +972,27 @@ export function createApi(http: Http) {
         method: 'POST',
         body: { arrange_by: arrangeBy },
         token,
+      }),
+    /**
+     * Bring your tree (0.9.0, C4, `features.source_folders`): the caller's
+     * cabinet with a folder for each folder their papers came from, added
+     * beside what is there — shown, not saved. Keep it with `saveCabinet`
+     * and its `layout` and `version` (409 if the cabinet changed since). A
+     * viewer or a guest is `403`.
+     */
+    cabinetFromFolders: (token: string) =>
+      request<CabinetFromFolders>('/api/v1/cabinet/from-folders', { token }),
+    /**
+     * The folder a document came from, forgotten (0.9.0, C4,
+     * `features.source_folders`): its `source_folder` is null after. A
+     * viewer or a guest is `403`.
+     */
+    forgetSourceFolder: (token: string, id: string, etag?: string) =>
+      request<DocumentView>(`/api/v1/documents/${enc(id)}`, {
+        method: 'PATCH',
+        body: { source_folder: null },
+        token,
+        ...(etag ? { headers: { 'if-match': etag } } : {}),
       }),
     /** How many documents each shown folder holds for the caller, by the list's own rules. */
     cabinetCounts: (token: string) => request<CabinetCounts>('/api/v1/cabinet/counts', { token }),

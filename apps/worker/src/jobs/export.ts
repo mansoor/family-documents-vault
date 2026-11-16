@@ -151,6 +151,11 @@ interface Entry {
    * them. An export is for owners and adults, who see where originals are.
    */
   original_place: string | null;
+  /**
+   * The folder it came from (0.9.0, C4): "Taxes/2025", as the document
+   * keeps it. For owners and adults, as where originals are kept.
+   */
+  source_folder: string | null;
   tags: string[];
   notes: string | null;
   /** The type's own details, by field key, as the vault keeps them (0.5.7). */
@@ -484,6 +489,7 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         identifier: d.identifier,
         physical_location: d.physical_location,
         original_place: d.original_place ? d.original_place.join(PLACE_SEPARATOR) : null,
+        source_folder: d.source_folder,
         tags: d.tags,
         notes: valuesOf(d.id).notes,
         extra: valuesOf(d.id).extra,
@@ -665,6 +671,7 @@ function csv(entries: Entry[], details: DetailColumn[]): string {
     'identifier',
     'physical_location',
     'original_place',
+    'source_folder',
     'tags',
     'notes',
   ] as const;
@@ -709,7 +716,7 @@ function html(
   const rows = entries
     .map(
       (e) =>
-        `<tr><td>${e.file ? `<a href="${esc(e.file)}">${esc(e.title)}</a>` : esc(e.title)}${e.file_note ? `<br><small>${esc(e.file_note)}</small>` : ''}${e.no_longer_needed ? `<br><small>${esc(noLongerNeededWords(e.no_longer_needed))}</small>` : ''}</td><td>${esc(e.category)}</td><td>${esc(e.person)}</td><td>${esc(e.expires)}</td><td>${esc(e.identifier)}</td><td>${detailsOf(e)}</td><td>${esc([e.original_place, e.physical_location].filter((s) => s).join(' · '))}</td></tr>`,
+        `<tr><td>${e.file ? `<a href="${esc(e.file)}">${esc(e.title)}</a>` : esc(e.title)}${e.file_note ? `<br><small>${esc(e.file_note)}</small>` : ''}${e.no_longer_needed ? `<br><small>${esc(noLongerNeededWords(e.no_longer_needed))}</small>` : ''}${e.source_folder ? `<br><small>${esc(`From the folder ‘${e.source_folder}’`)}</small>` : ''}</td><td>${esc(e.category)}</td><td>${esc(e.person)}</td><td>${esc(e.expires)}</td><td>${esc(e.identifier)}</td><td>${detailsOf(e)}</td><td>${esc([e.original_place, e.physical_location].filter((s) => s).join(' · '))}</td></tr>`,
     )
     .join('\n');
   // People (5.27): their photos, where there are any.

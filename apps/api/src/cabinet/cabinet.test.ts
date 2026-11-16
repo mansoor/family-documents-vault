@@ -868,7 +868,11 @@ describe.skipIf(!testAdminUrl())('my cabinet', () => {
       listening = false;
       // A reading of every row the owner may see for each hundred folders, and
       // a kind's lookup at most for each kind: never a statement a folder.
-      const reads = statements.filter((q) => /from document d/.test(q));
+      // Besides them, one question whatever the layout (C4): whether papers
+      // came from folders the cabinet has none for yet.
+      const flag = statements.filter((q) => /source_folder/.test(q) && /exists/.test(q));
+      expect(flag).toHaveLength(1);
+      const reads = statements.filter((q) => /from document d/.test(q) && !flag.includes(q));
       expect(reads.length).toBeLessThanOrEqual(2);
       expect(statements.length).toBeLessThan(40);
       // And each the table's own total.

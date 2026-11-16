@@ -1270,6 +1270,12 @@ export interface Schema {
     original_place: ColumnType<string[] | null, string[] | null | undefined, string[] | null>;
     original_place_by: ColumnType<string | null, string | null | undefined, string | null>;
     original_place_folder: ColumnType<string | null, string | null | undefined, string | null>;
+    /**
+     * The folder it came from (0105, C4): "Taxes/2025", as the batch item it
+     * was filed from kept it — set as it is made, forgotten (null) after,
+     * never changed. Seen as `physical_location` is.
+     */
+    source_folder: ColumnType<string | null, string | null | undefined, string | null>;
     /** When the place last changed, an edit or not (0104): what `updated_since` asks beside updated_at. */
     place_changed_at: ColumnType<
       Date | null,

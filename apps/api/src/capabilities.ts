@@ -245,6 +245,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // ZIP), never opened; and who opened a link, when.
       record_formats: true,
       share_opens: true,
+      // 0.9.0 (C4): the folder a paper came from, kept, and drawn into a cabinet.
+      source_folders: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

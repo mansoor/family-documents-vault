@@ -1,4 +1,7 @@
 import {
+  addFolderTree,
+  askedFolders,
+  compareFolders,
   ARRANGE_BY,
   CABINET_CHANGED,
   CABINET_FILTER_KEYS,
@@ -17,6 +20,7 @@ import {
   type PinsMoved,
   type CabinetGroup,
   type CabinetLayout,
+  type CabinetFromFolders,
   type CabinetView,
   type DocumentPage,
   shortName,
@@ -881,6 +885,13 @@ type FakeDocument = {
     by: string | null;
     folder_id: string | null;
   } | null;
+  /**
+   * The folder it came from (0.9.0, C4), as the real vault keeps it: set
+   * as it is filed from a batch's item that had one, forgotten after.
+   */
+  source_folder?: string | null;
+  /** Who filed it from a batch, by member id (C4): whose folder tree it is part of. */
+  filed_by?: string;
 } & Omit<CaptureMetadata, 'title'>;
 
 /** A computer that sends scans, as the fake keeps one (0.8.0, D1). */
@@ -1021,6 +1032,8 @@ const FAKE_EDITABLE = [
   'confirm_details',
   // Where the original is, as a folder of the editor's cabinet (0.9.0, C3).
   'original_place',
+  // The folder it came from, forgotten (0.9.0, C4): null alone.
+  'source_folder',
 ];
 
 /** A document's version, as an If-Match names it: changed by every edit. */
@@ -3671,6 +3684,8 @@ export function createFakeVault(): {
           // Health records kept as they are; who opened a link, when (0.9.0, H5).
           record_formats: true,
           share_opens: true,
+          // The folder a paper came from, and a cabinet drawn from them (0.9.0, C4).
+          source_folders: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -3937,11 +3952,14 @@ export function createFakeVault(): {
       const location = param(url, 'location');
       // And its place in a cabinet (C3), as the vault: the same household's fact.
       const placeAsked = param(url, 'original_place')?.trim();
+      // And the folder it came from (C4), exactly, whatever the case.
+      const folderAsked = param(url, 'source_folder')?.trim();
       if (
         (sort === 'location' ||
           sort === 'original_place' ||
           location !== undefined ||
-          placeAsked !== undefined) &&
+          placeAsked !== undefined ||
+          folderAsked !== undefined) &&
         !maySortByLocation(who.role)
       ) {
         return fail(
@@ -3952,7 +3970,9 @@ export function createFakeVault(): {
             ? 'sort'
             : location !== undefined
               ? 'location'
-              : 'original_place',
+              : placeAsked !== undefined
+                ? 'original_place'
+                : 'source_folder',
         );
       }
       const direction = param(url, 'direction') ?? 'asc';
@@ -4055,6 +4075,11 @@ export function createFakeVault(): {
           const want = placeAsked.toLowerCase();
           return line !== null && (line === want || line.startsWith(want + PLACE_SEPARATOR));
         })
+        .filter(
+          (d) =>
+            folderAsked === undefined ||
+            (d.source_folder ?? null)?.toLowerCase() === folderAsked.toLowerCase(),
+        )
         .filter((d) => v1.within(listedOf(d)))
         .filter((d) => {
           if (collectionId === undefined) return true;
@@ -4461,6 +4486,35 @@ export function createFakeVault(): {
         if (drawnProblem !== null) return fail(422, drawnProblem.code, drawnProblem.message);
         return ok(drawn);
       }
+      // Bring your tree (0.9.0, C4): the folders the caller's own papers came
+      // from, drawn into their cabinet beside what is there, not saved.
+      if (path === '/api/v1/cabinet/from-folders' && method === 'GET') {
+        if (!maySortByLocation(who.role)) {
+          return fail(403, 'forbidden', LOCATION_SORT_REFUSAL, 'source_folder');
+        }
+        const all = await tabled({ notes: 'exclude' });
+        if ('status' in all) return all;
+        const byPath = new Map<string, { path: string; documents: number; mine: boolean }>();
+        for (const d of all.items) {
+          const doc = state.documents.find((x) => x.id === d.id);
+          const folder = doc?.source_folder;
+          if (!doc || !folder) continue;
+          const key = folder.toLowerCase();
+          const was = byPath.get(key) ?? { path: folder, documents: 0, mine: false };
+          was.documents += 1;
+          if (folder < was.path) was.path = folder;
+          if (doc.filed_by === who.memberId) was.mine = true;
+          byPath.set(key, was);
+        }
+        const folders = [...byPath.values()]
+          .filter((f) => f.mine)
+          .map(({ path: p, documents }) => ({ path: p, documents }))
+          .sort((a, b) => compareFolders(a.path, b.path));
+        // Ids of their own, never one the cabinet has already.
+        const drawn = addFolderTree(held.layout, folders, () => next('fake-tree'));
+        const out: CabinetFromFolders = { version: held.version, folders, ...drawn };
+        return ok(out);
+      }
       if (path === '/api/v1/cabinet/counts' && method === 'GET') {
         const counts: Record<string, number | null> = {};
         for (const { f } of shown(held.layout)) {
@@ -4476,7 +4530,25 @@ export function createFakeVault(): {
           const doc = readable(x.document_id);
           if (doc && !doc.deleted_at) pinCounts[x.folder_id] = (pinCounts[x.folder_id] ?? 0) + 1;
         }
-        return ok({ version: held.version, counts, pins: pinCounts });
+        // Folders papers came from that the cabinet has none for yet (C4).
+        let fresh: { new_folders?: boolean } = {};
+        if (maySortByLocation(who.role)) {
+          const asked = new Set(askedFolders(held.layout).map((x) => x.toLowerCase()));
+          const all = await tabled({ notes: 'exclude' });
+          fresh = {
+            new_folders:
+              !('status' in all) &&
+              all.items.some((d) => {
+                const doc = state.documents.find((x) => x.id === d.id);
+                return (
+                  doc?.filed_by === who.memberId &&
+                  !!doc.source_folder &&
+                  !asked.has(doc.source_folder.toLowerCase())
+                );
+              }),
+          };
+        }
+        return ok({ version: held.version, counts, pins: pinCounts, ...fresh });
       }
       if (alsoInAt && method === 'GET') {
         const id = decodeURIComponent(alsoInAt[1] as string);
@@ -4801,7 +4873,7 @@ export function createFakeVault(): {
       }
       // What the table adds goes with a column sort: refused with any other.
       const tableOnly = [
-        ...['direction', 'collection_id', 'location', 'original_place'].filter(
+        ...['direction', 'collection_id', 'location', 'original_place', 'source_folder'].filter(
           (k) => param(url, k) !== undefined,
         ),
         ...(param(url, 'member_id') === 'none' ? ['member_id=none'] : []),
@@ -5114,6 +5186,16 @@ export function createFakeVault(): {
           place = found;
         }
       }
+      // The folder it came from (0.9.0, C4): forgotten, null alone, by
+      // whoever sees where originals are kept — as the vault.
+      if (body.source_folder !== undefined) {
+        if (!seesLocation(editor.role)) {
+          return fail(403, 'forbidden', LOCATION_SORT_REFUSAL, 'source_folder');
+        }
+        if (body.source_folder !== null) {
+          return fail(422, 'validation_failed', 'Only null forgets it.', 'source_folder');
+        }
+      }
       Object.assign(doc, { type_key, extra });
       // Sensitive (0.9.0, AIR2): a teen may make a paper sensitive, never
       // less so, all said with the kind it will have — as the real vault.
@@ -5128,6 +5210,7 @@ export function createFakeVault(): {
       Object.assign(doc, { type_key, extra });
       if (body.sensitive !== undefined) doc.sensitive = body.sensitive as boolean | null;
       if (place !== undefined) doc.original_place = place;
+      if (body.source_folder === null) doc.source_folder = null;
       if (body.tags !== undefined) doc.tags = tagsOf(body.tags as string[]);
       if (body.title !== undefined) doc.title = (body.title as string | null) ?? null;
       // The household's, or a person's, never both (0.9.0): null alone — an
@@ -7749,6 +7832,9 @@ export function createFakeVault(): {
           notes: note(metadata.notes),
           extra,
           visibility: metadata.visibility,
+          // The folder it came from (0.9.0, C4), kept as the vault keeps it.
+          source_folder: seesLocation(who.role) ? (it.folder ?? null) : null,
+          filed_by: who.memberId,
         };
         stampNotes(doc, null, who.memberId);
         state.documents.push(doc);
@@ -10189,6 +10275,8 @@ function documentView(
                 : null,
           }
         : null,
+    // The folder it came from (C4): on the same terms as the location.
+    source_folder: opts.location === true ? (doc.source_folder ?? null) : null,
     is_essential: doc.is_essential ?? false,
     tags: doc.tags ?? [],
     visibility: doc.visibility ?? 'household',

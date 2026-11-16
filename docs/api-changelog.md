@@ -7612,6 +7612,88 @@ documentId)`; the fake answers both and refuses a record to view, and
         does when the maker's sign-in is paused or limited; and a link to a
         document in the Trash is 404 on both routes. The fake keeps a
         seeded collection link's `items` and answers the same.
+  - Bring your tree (0.9.0-dev.52, C4; the owner's idea 6 of 13 Nov 2026).
+    Migration 0105. **Additive**: a new route, a new field and a new
+    parameter; nothing an older client calls is answered differently.
+    - **New `features`:** `source_folders` (`true`).
+    - **New field:** `DocumentView.source_folder` — the folders a document
+      came from under the folder chosen or watched, joined by `/`, without
+      the file's name (`"Taxes/2025"`), or null. Kept as a document is
+      filed from a batch's item that had a folder (`BatchItemView.folder`:
+      Add many with a folder, the scanner folder's subfolders, a paired
+      computer's watched folder) — by `POST …/items/{itemId}/accept` and
+      Accept all Ready alike; never by a single add, a request's file, or
+      an item added as a new version (`into_document_id`), which leaves the
+      document's own as it is. Answered on the same terms as
+      `physical_location` (5.41): null to a viewer, limited or not, a guest,
+      a link and anybody signed out. Absent from older vaults; documents
+      filed before 0.9.0-dev.52 have none.
+    - **Forgotten, never written:** `PATCH /api/v1/documents/{id}` takes
+      `source_folder: null` alone (any other value is `422
+validation_failed`); `403` to whoever may not see where originals are
+      kept; the usual edit rules hold (a teen their own, If-Match, a
+      caregiver nothing). The log line is `document.updated` with `fields:
+['source_folder']`, never the folder. `POST /documents` and a capture
+      refuse it (unknown key).
+    - **Search, the table and folders:** its words (`/` as a space) are
+      found by search at the location's weight, for whoever sees locations
+      and never by anybody else. `GET /documents` with a column sort takes
+      `source_folder` — that folder exactly, whatever the case, not the
+      folders inside it — `422` to whoever may not see locations, and with
+      an older sort `422` as the table's own. A cabinet folder may ask it
+      (`CABINET_FILTER_KEYS`); a layout asking it is `422` to a viewer.
+    - **New route:** `GET /api/v1/cabinet/from-folders` →
+      `CabinetFromFolders` `{ version, layout, folders: [{ path, documents
+}], added: { cabinets, drawers, folders }, counts, already, left_out }`:
+      the caller's cabinet as it is, with a folder added for each folder the
+      caller filed papers from (still seen by them, out of the Trash, notes
+      left out), each asking `{ source_folder: path, notes: 'exclude' }` —
+      **not saved**. They go in a shown cabinet named `"My folders"`
+      (`FOLDERS_CABINET`; a new one if there is none), each top folder a
+      drawer (a shown one of that name, or a new one) and each folder under
+      it a folder named by the rest of its path (`"2025 / Payslips"`;
+      papers right in the top folder: a folder of the drawer's name). A
+      folder the layout asks for already, shown or hidden, is left as it is
+      (`already`); what a cabinet cannot hold is left out (`left_out`);
+      nothing else in the layout changes (`addFolderTree`). `counts` are
+      the new folders' documents for the caller, every paper from that
+      folder they see. Keep it with `PUT /api/v1/cabinet` and its `layout`
+      and `version`: a cabinet changed since is `409 conflict`, never
+      overwritten. For owners, adults and teens; `403` to a viewer or a
+      guest.
+    - **Export:** `index.csv` gains `source_folder` after `original_place`;
+      `index.html` says it under the document's title ("From the folder
+      ‘Taxes/2025’").
+    - **Storage:** `document.source_folder` (1–512 characters, no leading,
+      trailing or double `/`, no `\`, trimmed: `document_source_folder_path`),
+      with an index on its lowered words; the search index gains them at
+      weight D. The trigger `document_source_folder_rule` lets only
+      somebody signed in who sees locations set it, as a document is made,
+      and afterwards only clear it; restore checks the trigger and the check.
+    - **Shared and client:** `CabinetFromFolders`, `SourceFolder`,
+      `FOLDERS_CABINET`, `addFolderTree`, `compareFolders`, `folderParts`,
+      `folderPlace`, `folderTreeWords`; `DocumentInput.source_folder`,
+      `DocumentListParams.source_folder`; `folderQuestionWords` says the
+      folder. `@fdv/client` `cabinetFromFolders(token)` and
+      `forgetSourceFolder(token, id, etag?)`; the fake keeps, filters,
+      forgets and draws them as the vault does, and a contract scenario
+      checks it.
+    - **After its review (still dev.52):**
+      - **New field `CabinetCounts.new_folders`**: whether the caller filed
+        papers from a folder their cabinet asks for nowhere yet — one cheap
+        question, so a page need not draw `from-folders` to offer it. Only
+        for whoever sees where originals are kept; absent otherwise.
+      - `from-folders` reads at most 2,000 folders; any past them are now
+        counted in `left_out` instead of being dropped unsaid. "There
+        already" compares the folders as Postgres lowers them, as the
+        filter does.
+      - A new folder's or drawer's name keeps the end of a long path ("…"
+        before it), and is never a sibling's: " (2)", " (3)"… A drawer made
+        for one top folder is never another's.
+      - **New field `BatchItemView.as_version: true`** on an item accepted as
+        a new version of a document (S1): its folder was not kept on a
+        document. Absent otherwise.
+      - Shared `askedFolders`, `FolderToAdd`, and `addFolderTree`'s `opts.key`.
 
 ## Deprecations in effect
 

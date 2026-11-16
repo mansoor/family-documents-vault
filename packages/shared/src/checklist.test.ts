@@ -416,6 +416,11 @@ A couple of bank statements`).map((i) => i.count);
       ['W2s for 2025', 'W-2'],
       ['1099s for 2025', '1099'],
       ['P60s for 2025', 'P60'],
+      // The owner's ask (16 Nov 2026): a 1095 and a 1098 with their letters.
+      ['1095-C for 2025', '1095-C'],
+      ['1095 for 2025', '1095'],
+      ['1098-T for 2025', '1098-T'],
+      ['1099-INT for 2025', '1099-INT'],
     ] as const) {
       expect(read(text)[0], text).toMatchObject({ type_key: 'tax_form', form, years: [2025] });
     }
@@ -589,6 +594,27 @@ describe('matching a checklist', () => {
     // A UK tax year, 2024/25, is the year it ends in too.
     const p60 = checkItem(one('P60 for 2025'), docs, opts);
     expect(p60.matches.filter((m) => m.chosen).map((m) => m.document_id)).toEqual(['p60']);
+  });
+
+  it('a form asked without its letters finds each of that number; with them, only that one', () => {
+    const docs = [
+      doc({ id: 'int', type_key: 'tax_form', title: '1099-INT 2025 Chase', tax_year: '2025' }),
+      doc({ id: 'div', type_key: 'tax_form', title: '1099-DIV 2025', tax_year: '2025' }),
+      doc({ id: 'c', type_key: 'tax_form', title: '1095-C 2025', tax_year: '2025' }),
+      doc({ id: 'a', type_key: 'tax_form', title: '1095-A 2025', tax_year: '2025' }),
+      doc({ id: 't', type_key: 'tax_form', title: '1098-T 2025', tax_year: '2025' }),
+      doc({ id: 'mort', type_key: 'tax_form', title: '1098 2025 mortgage', tax_year: '2025' }),
+    ];
+    const ids = (line: string) =>
+      checkItem(one(line), docs, opts)
+        .matches.map((m) => m.document_id)
+        .sort();
+    expect(ids('1099s for 2025')).toEqual(['div', 'int']);
+    expect(ids('1099-INT for 2025')).toEqual(['int']);
+    expect(ids('1095 for 2025')).toEqual(['a', 'c']);
+    expect(ids('1095-C for 2025')).toEqual(['c']);
+    expect(ids('1098 for 2025')).toEqual(['mort', 't']);
+    expect(ids('1098-T for 2025')).toEqual(['t']);
   });
 
   it('a kind changed away from a tax form loses its form', () => {

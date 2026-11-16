@@ -387,6 +387,8 @@ interface ItemRow {
   document_seen: boolean | null;
   /** From an email whose sender the mailbox's check could not vouch for (0069, S4). */
   sender_unverified: boolean;
+  /** Accepted as a new version of a document there before (0067, S1). */
+  as_version: boolean;
 }
 
 /** An item waiting, as a decision reads it. */
@@ -405,6 +407,8 @@ interface WaitingRow {
   wrapped_by_scope: string;
   preview_state: string;
   preview_pages: number | null;
+  /** Where it came from (S2), sealed under its own key: kept on the document it becomes (C4). */
+  folder_sealed: Buffer | null;
 }
 
 /**
@@ -1404,7 +1408,8 @@ export class BatchService {
       trx,
       p,
       {
-        target: { kind: 'capture', metadata },
+        // The folder it came from (0.9.0, C4), kept on the document it becomes.
+        target: { kind: 'capture', metadata, sourceFolder: sourceFolderOf(f, fileKey) },
         file: {
           filename: incomingFileName(f.original_name ?? 'file', mime),
           mime,
@@ -2309,6 +2314,7 @@ export class BatchService {
         'f.wrapped_by_scope',
         'f.preview_state',
         'f.preview_pages',
+        'f.folder_sealed',
       ])
       .where('f.id', '=', itemId)
       .where('f.batch_id', '=', batchId);
@@ -2539,6 +2545,8 @@ export class BatchService {
         'f.document_id',
         sql<boolean>`d.id is not null`.as('document_seen'),
         'f.sender_unverified',
+        // Accepted as a new version of a document (S1), not as one of its own (C4).
+        'f.as_version',
       ])
       .where('f.batch_id', 'in', batchIds)
       .where('f.state', 'in', ['received', 'accepted'])
@@ -2718,6 +2726,9 @@ export class BatchService {
         renewals: state === 'waiting' ? (renewals.get(r.id) ?? []) : [],
         // From an email whose sender was not verified (S4): said on its card.
         ...(r.sender_unverified ? { sender_unverified: true } : {}),
+        // Accepted as a new version, not a document of its own (C4): its
+        // folder was not kept on the document it was added to.
+        ...(r.state === 'accepted' && r.as_version ? { as_version: true } : {}),
         folder: path,
       };
     });
@@ -3073,6 +3084,26 @@ function levelsOf(items: BatchItemView[]): Map<string, BatchLevelCounts> {
     out.set(i.batch_id, c);
   }
   return out;
+}
+
+/**
+ * The folder an item came from (S2), opened under its own key and tidied
+ * again as it is kept (`itemFolder`): what the document it becomes keeps
+ * (0.9.0, C4). None for an item that had none, or one that does not open —
+ * never a reason not to file it.
+ */
+function sourceFolderOf(
+  f: Pick<WaitingRow, 'id' | 'folder_sealed'>,
+  fileKey: Buffer,
+): string | null {
+  if (!f.folder_sealed) return null;
+  try {
+    return itemFolder(
+      openBytes(fileKey, f.folder_sealed, itemFolderBinding(f.id)).toString('utf8'),
+    );
+  } catch {
+    return null;
+  }
 }
 
 /** A name as typed, spaces tidied; blank is none. */
