@@ -50,6 +50,16 @@ import {
   type TextCodePurpose,
   type TextCodeSettings,
   NOTE_KIND,
+  ZIP_LEFT_OUT,
+  ZIP_MAX_DOCUMENTS,
+  attachmentDisposition,
+  csvCell,
+  noteMarkdown,
+  safeExtension,
+  safeFileName,
+  zipFileName,
+  zipNames,
+  zipTooLarge,
   noteMatchWords,
   notePreview,
   numbersOnly,
@@ -324,6 +334,7 @@ import {
   type GrownUpQuestionView,
 } from '@fdv/shared';
 import type { FetchLike, ResponseLike } from '../http.js';
+import { storedZip } from './zip.js';
 
 /**
  * A vault in memory, for testing clients without a server.
@@ -1515,6 +1526,9 @@ export function createFakeVault(): {
   let n = 0;
   const next = (prefix: string) => `${prefix}-${++n}`;
   /** A document's versions: what each upload to it, or the capture that made it, stored. */
+  /** ZIPs waiting for their ticket's download (DL review): each taken once. */
+  const zipTickets = new Map<string, ResponseLike>();
+  let zipTicketCount = 0;
   const versionsOf = (documentId: string) =>
     [...state.captures.values()].filter((c) => c.document_id === documentId);
 
@@ -3404,6 +3418,7 @@ export function createFakeVault(): {
           health_kinds: true,
           // Emergency information, a wallet card and a clinician's link (0.9.0, H4).
           emergency_info: true,
+          zip_download: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -5530,6 +5545,138 @@ export function createFakeVault(): {
         };
         return ok(impact);
       }
+    }
+    // Several documents as one ZIP (0.9.0, DL), as the real vault makes it:
+    // what the one person may see — a file each, stored, the stand-in bytes
+    // of its newest version's name; a note as its words, a Markdown file —
+    // and the index. The fake asks no step-up for a sensitive one.
+    // A ticket (DL review): the same, kept once for GET /downloads/{ticket}.
+    const zipCollection = /^\/api\/v1\/collections\/([^/]+)\/download(\/ticket)?$/.exec(path);
+    const zipTicket = /^\/api\/v1\/downloads\/([^/]+)$/.exec(path);
+    if (zipTicket && init.method === 'GET') {
+      const kept = zipTickets.get(decodeURIComponent(zipTicket[1] as string));
+      zipTickets.delete(decodeURIComponent(zipTicket[1] as string));
+      return (
+        kept ??
+        fail(
+          404,
+          'download_ticket_gone',
+          'This download has expired. Go back and press Download again.',
+        )
+      );
+    }
+    const asTicket = path === '/api/v1/documents/download/ticket' || Boolean(zipCollection?.[2]);
+    if (
+      (path === '/api/v1/documents/download' ||
+        path === '/api/v1/documents/download/ticket' ||
+        zipCollection) &&
+      init.method === 'POST'
+    ) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const me = { role: state.role, memberId: 'fake-member' };
+      const sees = (d: FakeDocument) =>
+        canSee(me, {
+          visibility: d.visibility ?? 'household',
+          owner_member_id: d.owner_member_id ?? null,
+        });
+      let ids: string[];
+      let zipName = 'Family documents';
+      if (zipCollection) {
+        const l = state.collections.find(
+          (x) => x.id === decodeURIComponent(zipCollection[1] as string),
+        );
+        if (!l || l.deleted || !canSeeCollection(me, l)) {
+          return fail(404, 'not_found', 'That collection does not exist.');
+        }
+        zipName = l.name;
+        ids = l.items.map((i) => i.document_id);
+      } else {
+        const asked = body.document_ids;
+        if (!Array.isArray(asked) || asked.length === 0 || asked.length > 1000) {
+          return fail(
+            422,
+            'validation_failed',
+            'Choose the documents to download.',
+            'document_ids',
+          );
+        }
+        ids = [...new Set(asked.map(String))];
+      }
+      const docs = ids
+        .map((id) => state.documents.find((d) => d.id === id))
+        .filter((d): d is FakeDocument => d !== undefined && sees(d))
+        .filter((d) => !zipCollection || !d.deleted_at);
+      if (docs.length === 0) {
+        return zipCollection
+          ? fail(422, 'nothing_to_zip', 'None of these has a file you can download.')
+          : fail(404, 'not_found', 'Those documents do not exist.');
+      }
+      const named = zipNames();
+      const enc = new TextEncoder();
+      const files: Array<{ name: string; bytes: Uint8Array }> = [];
+      const rows: string[] = ['Title,Kind,Person,Issued,Expires,File in this ZIP,Note'];
+      for (const d of docs) {
+        const newest = versionsOf(d.id).sort((a, b) => b.version_no - a.version_no)[0];
+        let file: string | null = null;
+        if (d.type_key === NOTE_KIND) {
+          file = named(safeFileName(d.title ?? 'Note'), '.md');
+          files.push({
+            name: file,
+            bytes: enc.encode(noteMarkdown(d.title ?? null, d.notes ?? '')),
+          });
+        } else if (newest) {
+          file = named(safeFileName(d.title ?? 'Untitled'), safeExtension(newest.filename));
+          files.push({ name: file, bytes: enc.encode(newest.filename) });
+        }
+        rows.push(
+          [
+            d.title ?? 'Untitled',
+            d.type_key === NOTE_KIND ? 'Note' : d.type_key,
+            null,
+            null,
+            null,
+            file,
+            file ? null : ZIP_LEFT_OUT.no_file,
+          ]
+            .map(csvCell)
+            .join(','),
+        );
+      }
+      if (files.length === 0) {
+        return fail(422, 'nothing_to_zip', 'None of these has a file you can download.');
+      }
+      if (files.length > ZIP_MAX_DOCUMENTS) {
+        return fail(
+          422,
+          'zip_too_large',
+          zipTooLarge(state.role === 'owner' || state.role === 'adult'),
+        );
+      }
+      const index = `<!doctype html><title>${zipName}</title><p>${files.length} files</p>`;
+      const bytes = storedZip([
+        { name: 'index.html', bytes: enc.encode(index) },
+        { name: 'index.csv', bytes: enc.encode(`${rows.join('\n')}\n`) },
+        ...files,
+      ]);
+      const today = new Date((state.now ?? Date.now)()).toISOString().slice(0, 10);
+      const zipped = attachment(bytes, {
+        'content-type': 'application/zip',
+        'content-disposition': attachmentDisposition(
+          zipFileName(zipCollection ? zipName : null, today),
+        ),
+        'cache-control': 'private, no-store',
+      });
+      if (!asTicket) return zipped;
+      const ticket = `fake-ticket-${++zipTicketCount}-0123456789abcdef`;
+      zipTickets.set(ticket, zipped);
+      return ok(
+        {
+          url: `/api/v1/downloads/${ticket}`,
+          expires_at: new Date((state.now ?? Date.now)() + 60_000).toISOString(),
+        },
+        201,
+      );
     }
     // Collections of documents (0.5.12), as the real vault keeps them: a collection
     // exists only for its maker and whoever is in its audience (a viewer is

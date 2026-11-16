@@ -244,6 +244,19 @@ export function CabinetDocuments() {
           Documents
         </h1>
         <ViewToggle current="cabinet" />
+        {/* Where the table's Columns is (DL): the same slot, so toggling
+            Table and Cabinet moves neither. */}
+        <div className="table-head-tool">
+          {!arranging && mine.data && layout && (
+            <button
+              type="button"
+              className="btn btn-quiet btn-small"
+              onClick={() => go({ arrange: true })}
+            >
+              Arrange my cabinet
+            </button>
+          )}
+        </div>
       </div>
       {!arranging && mine.data && (
         <div className="cab-bar">
@@ -257,11 +270,6 @@ export function CabinetDocuments() {
             )}
             <span>{' · Only you see this arrangement'}</span>
           </p>
-          {layout && (
-            <Button kind="quiet" onClick={() => go({ arrange: true })}>
-              Arrange my cabinet
-            </Button>
-          )}
         </div>
       )}
       <ErrorNote message={counts.error} />

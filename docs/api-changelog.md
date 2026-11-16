@@ -7205,6 +7205,118 @@ version)`, `setEmergencyAudience`, `emergencyLinks`,
       `makeEmergencyLink`, `revokeEmergencyLink`; the fake keeps pages and
       links as the vault does (`FakeVaultState.emergency`,
       `emergencyLinks`), and a contract scenario checks both.
+  - Several documents as one ZIP (0.9.0-dev.48, DL; FND-05, the owner's asks of
+    15 Nov 2026). No migration. **Additive**: new routes only; nothing an
+    older client calls is answered differently, but where "Changed answers"
+    says.
+    - **New `features`:** `zip_download` (`true`).
+    - **New routes**, each answering `application/zip`, streamed (no
+      `Content-Length`), its name in `Content-Disposition`
+      (`filename*=UTF-8''…`), `Cache-Control: private, no-store`; inside
+      it `index.html` and `index.csv` (title, kind, person, issued,
+      expires, the file's name in the ZIP, and why one is not in it), then
+      the files, each named by its title (`safeFileName`: letters, digits,
+      `.`, `'`, `-` and spaces kept, the rest `_`; Windows' device names and
+      a trailing dot or space never; `Passport (2).pdf` for a second of
+      one name, whatever its case):
+      - `POST /api/v1/documents/download` `{ document_ids }` (1 to 1000
+        UUIDs; the Documents table's ticked rows), signed in;
+      - `POST /api/v1/collections/{id}/download`, signed in: what the
+        caller is given of the collection, in its order (`404` for a
+        collection they may not see);
+      - `GET /api/v1/shared/items/download`, inside a link's session
+        (`?ids=a,b` for some of what it gives — Download selected; ids it
+        does not give are not there, `404 not_found` when none is). The
+        index gives only title, kind and file, each title as its sharer
+        chose (H1a: a title left out is "A document", its file
+        `document.pdf`). `X-Robots-Tag: noindex, nofollow`.
+    - **What goes in:** each document only if the caller could download
+      it on its own — the reading rule (role, visibility, a viewer's or a
+      guest's limits, Only me, a caregiver's grant), its newest version's
+      file — never more. One they can see but not download (no file, a
+      file removed for good, somebody else's Only me note's words) is a row
+      of the index saying why (`ZIP_LEFT_OUT`); one they cannot see is not
+      there at all. A **note** goes in as its words, a Markdown file
+      (`.md`, as the full export writes it: `noteMarkdown`), its owner's
+      own Only me note's opened for them.
+    - **Asked first:** a Sensitive document among them, `403
+step_up_required` with **new action `download_sensitive`** (any
+      credential, five minutes); else an Only me one `open_private_document`
+      and an Essential one `open_essential`, as a single download asks.
+      Asked once everything else is known, and before anything is written
+      down.
+    - **Refused:** more than `ZIP_MAX_DOCUMENTS` (200) files, or more than
+      `ZIP_MAX_BYTES` (1 GB) of them, is `422 zip_too_large` — its message
+      points to Settings → Export for whoever may export; none with a file
+      is `422 nothing_to_zip`; none the caller is given, `404 not_found`.
+      A link to view is `403 view_only`; a link taken back, expired,
+      paused or locked as any of its requests is (`404 link_not_valid`,
+      `401 share_session_ended`).
+    - **Written down:** each document put in as its single download is —
+      `document.downloaded` (a note's with `version_no: null`), a
+      caregiver's look (`downloaded`) for its person. On a link, each one
+      counts against `max_downloads` once a session, as a file downloaded
+      alone does, and writes `share.downloaded`; one this session had is
+      free. Downloads running out part-way leave the rest out, each named
+      in the index; none left, `403 downloads_used_up`. Never a document's
+      words or a file's contents in a log.
+    - **New route:** `GET /api/v1/shared/items/{id}/note/download` — a
+      note a link to download gives, as a Markdown file (`text/markdown;
+charset=utf-8`), counted and written down as a download; `403
+view_only` on a link to view, `404` for anything but a note it gives.
+    - **Changed answers:** a link's `SharedItem.downloaded` for a note is
+      whether this session downloaded it (was always `false`).
+    - **Shared and client:** `CapabilityFeatures.zip_download`,
+      `ZipSelectionInput`, `ZIP_MAX_DOCUMENTS`, `ZIP_MAX_BYTES`,
+      `ZIP_LEFT_OUT`, `zipTooLarge`, `zipFileName`, `safeFileName`,
+      `safeExtension`, `zipNames`, `csvCell` and `markdownText` (moved from
+      the worker's export, which uses them), `noteMarkdown`. `@fdv/client`:
+      `downloadZip(token, { document_ids })`,
+      `downloadCollectionZip(token, id)`, `linkItemsZipUrl(ids?)`,
+      `linkItemNoteFileUrl(id)`; the fake makes a ZIP (files stored, the
+      index) for the first two; `@fdv/client/testing`: `storedZip`,
+      `zipEntryNames`.
+    - **After its review (still dev.48):**
+      - **Tickets, for a browser:** `POST /api/v1/documents/download/ticket`
+        `{ document_ids }` and `POST
+/api/v1/collections/{id}/download/ticket` answer `201 { url, expires_at
+}` once everything the ZIP would refuse or ask has been asked (the same
+        `404`, `422` and `403 step_up_required`, as JSON), with nothing
+        written down. `GET /api/v1/downloads/{ticket}` (no
+        `Authorization`: the ticket is the whole of it) then answers the ZIP,
+        made as the session that asked, asked afresh — once, within a
+        minute (`DOWNLOAD_TICKET_MS`); after that, or for one never made,
+        `404 download_ticket_gone`. `Referrer-Policy: no-referrer`. Tickets
+        are kept in the API process's memory alone.
+      - **`GET /api/v1/shared/items/download/check`** (`?ids=` as the ZIP's):
+        `{ ok: true, documents }`, or what the ZIP would refuse — `403
+view_only`, `403 downloads_used_up`, `422 zip_too_large`, `422
+nothing_to_zip`, `404` — counting nothing.
+      - **A clinician's link (H4)** is `404` on `GET /shared/items/download`,
+        its check and `GET /shared/items/{id}/note/download`.
+      - **A file not where the files are kept** is left out — the index's
+        `ZIP_LEFT_OUT.not_there` — before it is written down or counted;
+        one found missing only as the ZIP is written is left out the same
+        way, and the rest go on. The index (`index.html`, `index.csv`) is
+        now written **last**, after the files; its names are reserved
+        (`ZIP_INDEX_FILES`): a document called "index" is "index (2).csv".
+        `ZIP_LEFT_OUT.cannot` is gone (nothing produced it).
+      - **The documents first, then the log:** every document a ZIP gives
+        is held (`FOR KEY SHARE`, by id) before the household's log is,
+        and its lines are written last — signed in in one statement
+        (`appendAuditMany`), by a link one at a time (each checked against
+        the chain's head, 0102).
+      - **Names:** `safeFileName` keeps letters, marks and digits of any
+        script (`\p{L}\p{M}\p{N}`), in NFC; control and formatting
+        characters (a right-to-left override among them) are taken out.
+        The full export's names follow it.
+      - **Content-Disposition** is RFC 5987 strict (`'`, `(`, `)` and `*`
+        escaped too: `attachmentDisposition`, `rfc5987`) for every download:
+        a document's file, a link's file, a note, a ZIP, a file sent in.
+      - **Shared and client:** `ZipTicket`, `ZipCheck`, `ZIP_INDEX_FILES`,
+        `attachmentDisposition`, `rfc5987`; `ZIP_LEFT_OUT.not_there`.
+        `@fdv/client`: `downloadZipTicket`, `collectionZipTicket`,
+        `downloadTicketUrl`, `linkItemsZipCheck`; the fake keeps tickets.
 
 ## Deprecations in effect
 

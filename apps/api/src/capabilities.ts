@@ -229,6 +229,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0 (H4): each person's emergency information, a wallet card and
       // a clinician's link that lasts hours.
       emergency_info: true,
+      // 0.9.0 (DL): several documents as one ZIP, signed in and by a link.
+      zip_download: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

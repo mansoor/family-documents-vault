@@ -275,6 +275,14 @@ export interface FakeState {
   caregivers?: boolean;
   /** Health's kinds and a yearly review (0.9.0, H3): said when a test asks. */
   healthKinds?: boolean;
+  /**
+   * Several as one ZIP (0.9.0, DL): said when a test asks. Each ask is kept
+   * in `zipAsks`; with `zipSensitive`, one is refused `step_up_required`
+   * (`download_sensitive`) while `stepUpNeeded`.
+   */
+  zipDownload?: boolean;
+  zipSensitive?: boolean;
+  zipAsks?: Array<{ path: string; document_ids?: string[] }>;
   /** GET /members/{id}/caregivers, by person: none is a 403, as the vault refuses anybody else. */
   caregiversOf?: Record<string, PersonCaregivers>;
   /** GET /caregivers. */
@@ -777,8 +785,25 @@ export interface FakeState {
    */
   shareCollection?: {
     name: string | null;
-    items: Array<{ id: string; title: string; filename: string }>;
+    /** A note among them (0.9.0, DL): `note`, with its words. */
+    items: Array<{
+      id: string;
+      title: string;
+      filename: string;
+      note?: boolean;
+      body?: string;
+      /** Its size, as the page is told it: 1 KB unless a test says. */
+      byte_size?: number;
+    }>;
   };
+  /**
+   * GET /shared/items/download/check (DL review): each ask kept, by its
+   * query; answered with this refusal while a test sets one.
+   */
+  shareZipChecks?: string[];
+  shareZipRefuse?: { status: number; code: string; message: string };
+  /** Refuse the signed-in ZIP's ticket so (DL review): `nothing_to_zip`, say. */
+  zipRefuse?: { status: number; code: string; message: string };
   /** A link to a person's emergency information (0.9.0, H4): what its session shows. */
   shareEmergency?: SharedEmergency;
   /**
@@ -1286,6 +1311,50 @@ export function installFakeApi(state: FakeState) {
     if (state.offline && path !== '/api/v1/capabilities') {
       return Promise.reject(new TypeError('Failed to fetch'));
     }
+    // Several as one ZIP (0.9.0, DL): the ticked rows, or a collection.
+    // Since the DL review the web asks for a ticket, and follows it as a link.
+    const zipOfCollection = /^\/api\/v1\/collections\/([^/]+)\/download(\/ticket)?$/.exec(path);
+    if (
+      (path === '/api/v1/documents/download' ||
+        path === '/api/v1/documents/download/ticket' ||
+        zipOfCollection) &&
+      method === 'POST'
+    ) {
+      if (state.zipRefuse) {
+        return refuse(state.zipRefuse.status, state.zipRefuse.code, state.zipRefuse.message);
+      }
+      if (state.zipSensitive && state.stepUpNeeded) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to download sensitive documents.',
+          {
+            action: 'download_sensitive',
+          },
+        );
+      }
+      const ids = (body as { document_ids?: string[] } | undefined)?.document_ids;
+      (state.zipAsks ??= []).push({ path, ...(ids ? { document_ids: ids } : {}) });
+      if (path.endsWith('/ticket')) {
+        return json(
+          {
+            url: `/api/v1/downloads/ticket-${state.zipAsks.length}`,
+            expires_at: '2026-11-15T10:01:00Z',
+          },
+          201,
+        );
+      }
+      const name = zipOfCollection ? 'Trip 2026-11-15.zip' : 'Family documents 2026-11-15.zip';
+      return Promise.resolve(
+        new Response('PK', {
+          status: 200,
+          headers: {
+            'content-type': 'application/zip',
+            'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+          },
+        }),
+      );
+    }
     const refused = state.refuseWith?.(method, path);
     if (refused) {
       // Asked to wait (a 429, a 503): how long, as the vault says it.
@@ -1385,6 +1454,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.emergency ? { emergency_info: true } : {}),
           // Health's kinds and a yearly review (0.9.0, H3): said when a test asks.
           ...(state.healthKinds ? { health_kinds: true } : {}),
+          // Several as one ZIP (0.9.0, DL): said when a test asks.
+          ...(state.zipDownload ? { zip_download: true } : {}),
           // Neutral wording (0.9.0, H2): said when a test gives it.
           ...(state.wording ? { neutral_wording: true } : {}),
           // A computer that sends scans (0.8.0, D1): said when a test gives computers.
@@ -4600,7 +4671,21 @@ export function installFakeApi(state: FakeState) {
               },
             ]
           : state.shareCollection
-            ? state.shareCollection.items.map((i) => sharedItem(i.id, i.title, i.filename))
+            ? state.shareCollection.items.map((i) =>
+                i.note
+                  ? {
+                      id: i.id,
+                      title: i.title,
+                      type_label: 'Note',
+                      filename: i.filename,
+                      content_type: 'text/markdown',
+                      byte_size: 0,
+                      pages: null,
+                      downloaded: Boolean(state.shareDownloaded),
+                      note: true,
+                    }
+                  : { ...sharedItem(i.id, i.title, i.filename), byte_size: i.byte_size ?? 1024 },
+              )
             : [sharedItem('doc-shared', 'Flat 3 tenancy agreement', 'tenancy.pdf')],
       permission:
         state.shareNote || state.shareEmergency ? 'view' : (state.sharePermission ?? 'download'),
@@ -4729,17 +4814,37 @@ export function installFakeApi(state: FakeState) {
       if (typeof state.shareOpensLeft === 'number') state.shareOpensLeft -= 1;
       return json(linkSession());
     }
+    // What a ZIP of them would refuse, asked first (DL review).
+    if (path === '/api/v1/shared/items/download/check' && method === 'GET') {
+      (state.shareZipChecks ??= []).push(query.toString());
+      if (!state.shareSession) return linkGone();
+      if (state.shareZipRefuse) {
+        return refuse(
+          state.shareZipRefuse.status,
+          state.shareZipRefuse.code,
+          state.shareZipRefuse.message,
+        );
+      }
+      return json({ ok: true, documents: 1 });
+    }
     // A note's words, on the link's page (0.9.0, N1): only the note it gives.
     const noteAt = /^\/api\/v1\/shared\/items\/([^/]+)\/note$/.exec(path);
     if (noteAt && method === 'GET') {
       if (!state.shareValid) return linkGone();
-      if (!state.shareSession || !state.shareNote || noteAt[1] !== state.shareNote.id) {
+      const inCollection = state.shareCollection?.items.find((i) => i.note && i.id === noteAt[1]);
+      const one =
+        state.shareNote && noteAt[1] === state.shareNote.id
+          ? state.shareNote
+          : inCollection
+            ? { id: inCollection.id, title: inCollection.title, body: inCollection.body ?? '' }
+            : null;
+      if (!state.shareSession || !one) {
         return refuse(404, 'not_found', 'That note is not there.');
       }
       return json({
-        id: state.shareNote.id,
-        title: state.shareNote.title,
-        body: state.shareNote.body,
+        id: one.id,
+        title: one.title,
+        body: one.body,
         updated_at: '2026-09-26T10:05:00Z',
       });
     }

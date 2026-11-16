@@ -31,7 +31,9 @@ const ALLOWED = [
   // owner's key unwrapped as the vault, once the link was found, as itself,
   // to give that note — a link is given the keys of its files alone (0042),
   // and a note has none. The key, and nothing else, is read so.
-  'documents/shares.ts ShareService.sessionNote',
+  // Since DL, its own method (noteWords), which a note's download and a
+  // link's ZIP ask too: the key, and nothing else.
+  'documents/shares.ts ShareService.noteWords',
   // A person's emergency information, read on a clinician's link's page
   // (0.9.0, H4): the household's identity key unwrapped as the vault, once
   // the link was found, as itself, to give that page — read as the link,

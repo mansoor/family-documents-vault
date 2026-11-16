@@ -216,9 +216,10 @@ test('the collection is shared from its page, and opens outside the family with 
     await theirs.goto(url);
     await expect(theirs.getByRole('heading', { name: COLLECTION, level: 1 })).toBeVisible();
     await theirs.getByRole('button', { name: 'Open' }).click();
-    const shared = theirs.getByRole('list', { name: 'What was shared' });
+    const shared = theirs.getByRole('list', { name: 'Documents' });
     await expect(shared.getByText(HOTEL)).toBeVisible();
-    await expect(shared.getByRole('link', { name: 'Download hotel.pdf' })).toBeVisible();
+    await expect(shared.getByRole('button', { name: `Download ${HOTEL}` })).toBeVisible();
+    await expect(theirs.getByRole('button', { name: 'Download all' })).toBeVisible();
     await expect(theirs.getByText(PASS)).toHaveCount(0);
 
     // The family's list of links has it; taken back, after asking, the

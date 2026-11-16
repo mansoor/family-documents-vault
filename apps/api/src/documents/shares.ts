@@ -19,6 +19,7 @@ import {
 } from '@fdv/crypto';
 import {
   appendAudit,
+  type AuditInput,
   withPrincipal,
   withScope,
   withSystem,
@@ -47,6 +48,16 @@ import { documentSensitive, liveLinksGiving, sensitiveConfirm } from './sensitiv
 import { linkEmail } from './share-link-email.js';
 import { onlyMeShareable } from './only-me-rule.js';
 import { endSessions } from './share-sessions.js';
+import {
+  decryptedFile,
+  nothingToZip,
+  notThere,
+  withinZipLimits,
+  zipRefused,
+  type ZipFile,
+  type ZipIndexRow,
+  type ZipPlan,
+} from './zip.js';
 import { shareOpenedJob, SMS_TEXT_JOB } from '../sms/text-job.js';
 import { notSetUp, type SmsService } from '../sms/service.js';
 import { DecryptStream } from '@fdv/crypto';
@@ -114,6 +125,11 @@ import {
   type SharedSession,
   type ShareProtection,
   type ShareSecretKind,
+  noteMarkdown,
+  safeExtension,
+  safeFileName,
+  zipFileName,
+  zipNames,
 } from '@fdv/shared';
 
 /**
@@ -603,6 +619,15 @@ const isRight = (a: Attempt): a is { right: NonNullable<Verified> } =>
 type LinkScope = Scope & { householdId: string; actor: Extract<Actor, { kind: 'link' }> };
 
 /** A link as the family's lists show it, with who made it, and whose page it gives (H4). */
+/** What a link's line in the log says of it. */
+type LinkLabel = {
+  id: string;
+  document_id: string | null;
+  collection_id: string | null;
+  emergency_member_id?: string | null;
+  recipient_label: string | null;
+};
+
 type LinkView = ShareView & { created_by: string; emergency_member_id: string | null };
 
 /** A clinician's link as its person's page lists it (H4): its ticked parts, and each opening. */
@@ -732,6 +757,21 @@ const objectOf = (link: {
     : link.collection_id !== null
       ? { objectType: 'collection', objectId: link.collection_id }
       : { objectType: 'document', objectId: link.document_id };
+
+/** A link to view: its files were not shared (A22), alone or as a ZIP. */
+const forViewingOnly = () =>
+  new ApiError(403, 'view_only', 'This link is for viewing only: the file itself was not shared.');
+
+/** A link's downloads, all used (5.18). */
+const downloadsUsedUp = () =>
+  new ApiError(
+    403,
+    'downloads_used_up',
+    'This link has been downloaded from as many times as it allows. Ask whoever sent it for a new one.',
+  );
+
+/** Today, for a ZIP's name: a link's recipient has no household calendar of their own. */
+const todayUtc = () => new Date().toISOString().slice(0, 10);
 
 const gone = () =>
   new ApiError(
@@ -3628,13 +3668,7 @@ export class ShareService {
       if ((await this.documentWords(trx, documentId)).type_key === NOTE_KIND) {
         throw new ApiError(404, 'not_found', 'A note has no file: its words are on the page.');
       }
-      if (link.permission !== 'download') {
-        throw new ApiError(
-          403,
-          'view_only',
-          'This link is for viewing only: the file itself was not shared.',
-        );
-      }
+      if (link.permission !== 'download') throw forViewingOnly();
       // Its record came back with a restore, its file did not (5.24): said
       // so, before a download is counted or written down that cannot happen.
       if ((await this.newestVersion(trx, documentId)).file_removed_at) throw fileRemoved();
@@ -3647,28 +3681,9 @@ export class ShareService {
         // taken back, locked or paused while this waited for it (its
         // collection deleted, say — the fourth review), it is not counted,
         // and the answer is that the link is gone.
-        const counted = await trx
-          .updateTable('share_link')
-          .set((eb) => ({ downloads_used: eb('downloads_used', '+', 1) }))
-          .where('id', '=', link.id)
-          .where('revoked_at', 'is', null)
-          .where('paused_at', 'is', null)
-          .where('attempts', '<', MAX_PIN_ATTEMPTS)
-          .where((eb) =>
-            eb.or([
-              eb('max_downloads', 'is', null),
-              eb('downloads_used', '<', eb.ref('max_downloads')),
-            ]),
-          )
-          .returning('downloads_used')
-          .executeTakeFirst();
-        if (!counted) {
+        if (!(await this.countDownload(trx, link.id))) {
           if (!(await this.stillLive(trx, link.id))) throw gone();
-          throw new ApiError(
-            403,
-            'downloads_used_up',
-            'This link has been downloaded from as many times as it allows. Ask whoever sent it for a new one.',
-          );
+          throw downloadsUsedUp();
         }
         await this.record(trx, link.household_id, link, 'share.downloaded', meta, documentId);
       }
@@ -3687,6 +3702,318 @@ export class ShareService {
     const file = await this.decrypted(found);
     // Its file named for nothing but its type, where its title is left out (H1a).
     return found.untitled ? { ...file, filename: untitledFile(file.filename) } : file;
+  }
+
+  /**
+   * One more download of a link, counted in one statement, and only while
+   * the link still works and has downloads left (5.18): of any number asking
+   * at once with one left, the statement counts one. False when none was.
+   */
+  private async countDownload(trx: Db, shareId: string): Promise<boolean> {
+    const counted = await trx
+      .updateTable('share_link')
+      .set((eb) => ({ downloads_used: eb('downloads_used', '+', 1) }))
+      .where('id', '=', shareId)
+      .where('revoked_at', 'is', null)
+      .where('paused_at', 'is', null)
+      .where('attempts', '<', MAX_PIN_ATTEMPTS)
+      .where((eb) =>
+        eb.or([
+          eb('max_downloads', 'is', null),
+          eb('downloads_used', '<', eb.ref('max_downloads')),
+        ]),
+      )
+      .returning('downloads_used')
+      .executeTakeFirst();
+    return counted !== undefined;
+  }
+
+  /**
+   * A document's download inside a session, counted as every one is (5.18):
+   * the first of this session's against the link's downloads, and written
+   * down (`share.downloaded`); the rest free. Past the last download left,
+   * nothing of it is kept and the answer is `used_up`; a link that ended
+   * meanwhile is gone.
+   */
+  private async countFirst(
+    trx: Db,
+    link: InSession,
+    sessionId: string,
+    documentId: string,
+    meta: RequestMeta,
+    /**
+     * Where its line goes when the caller writes the log itself, last and in
+     * one go (a ZIP's: the documents first, then the log); else at once.
+     */
+    lines?: AuditInput[],
+  ): Promise<'ok' | 'used_up'> {
+    await sql`savepoint fdv_download_item`.execute(trx);
+    if (await this.used(trx, link, sessionId, documentId, 'downloaded')) {
+      if (!(await this.countDownload(trx, link.id))) {
+        await sql`rollback to savepoint fdv_download_item`.execute(trx);
+        await sql`release savepoint fdv_download_item`.execute(trx);
+        if (!(await this.stillLive(trx, link.id))) throw gone();
+        return 'used_up';
+      }
+      const line = this.recordLine(link.household_id, link, 'share.downloaded', meta, documentId);
+      if (lines) lines.push(line);
+      else await appendAudit(trx, line);
+    }
+    await sql`release savepoint fdv_download_item`.execute(trx);
+    return 'ok';
+  }
+
+  /**
+   * A note's words, opened (0.9.0, N1): an Only me note's with its owner's
+   * key, unwrapped as the vault — a link is given the keys of its files
+   * alone (0042), and a note has none. Asked only of a note the link was
+   * found to give, after its session's transaction.
+   */
+  private async noteWords(
+    householdId: string,
+    doc: {
+      id: string;
+      owner_member_id: string | null;
+      notes: string | null;
+      notes_sealed: Buffer | null;
+    },
+  ): Promise<string> {
+    if (!doc.notes_sealed) return doc.notes ?? '';
+    const key = await withSystem(this.db, householdId, (trx) =>
+      this.keys.unwrap(trx, { householdId, kind: 'member', memberId: doc.owner_member_id }),
+    );
+    return (
+      openPrivate(key.key, doc.id, { notes_sealed: doc.notes_sealed, extra_sealed: null }).notes ??
+      ''
+    );
+  }
+
+  /** A note's row, as its words are read: only a note's. */
+  private async noteRow(trx: Db, documentId: string) {
+    const doc = await trx
+      .selectFrom('document')
+      .select(['id', 'title', 'type_key', 'owner_member_id', 'notes', 'notes_sealed', 'updated_at'])
+      .where('id', '=', documentId)
+      .executeTakeFirst();
+    return doc && doc.type_key === NOTE_KIND ? doc : null;
+  }
+
+  /**
+   * What a link gives, as one ZIP (0.9.0, DL): `GET /shared/items/download`,
+   * inside a session — everything, or only `only` (Download selected: ids
+   * the link does not give are not there). Only a link to download: a link
+   * to view never gives a file (A22), so never a ZIP. Exactly what the link
+   * gives now, each file as its own download gives it, and each note as its
+   * words, a Markdown file — each counted as a download is, once a session,
+   * against the link's downloads, and written down (`share.downloaded`); one
+   * this session has had already is free. Downloads running out part-way
+   * leave the rest out, named in the index; none left at all is the single
+   * download's `403 downloads_used_up`. The index says no more than the
+   * link's page: each title as its sharer chose (H1a), and its kind.
+   */
+  async sessionZip(
+    cookie: string | undefined,
+    meta: RequestMeta,
+    devices: readonly DeviceCookie[] = [],
+    only: readonly string[] | null = null,
+    /**
+     * Asked only (`GET /shared/items/download/check`): what it would refuse
+     * — a link to view, more than one ZIP holds, nothing to give, no
+     * downloads left — with nothing counted or written down.
+     */
+    checkOnly = false,
+  ): Promise<ZipPlan> {
+    const plan = await this.inSession(cookie, devices, async (trx, link, session) => {
+      // A clinician's link (H4) gives a page, never a document or a ZIP.
+      if (link.emergency_member_id !== null) throw notFound('Those documents');
+      if (link.permission !== 'download') throw forViewingOnly();
+      const chosen = only ? new Set(only.map((i) => i.toLowerCase())) : null;
+      const ids = (await this.liveItems(trx, link)).filter(
+        (id) => !chosen || chosen.has(id.toLowerCase()),
+      );
+      if (ids.length === 0) throw notFound('Those documents');
+      const hidden = await this.untitled(trx);
+      type Item = {
+        id: string;
+        row: ZipIndexRow;
+        version: Awaited<ReturnType<ShareService['newestVersion']>> | null;
+        note: NonNullable<Awaited<ReturnType<ShareService['noteRow']>>> | null;
+      };
+      const items: Item[] = [];
+      for (const id of ids) {
+        const words = await this.documentWords(trx, id);
+        const untitled = hidden.has(id);
+        const row: ZipIndexRow = {
+          title: untitled ? UNTITLED_ON_LINK : (words.title ?? 'Untitled'),
+          kind: untitled ? null : words.type_key === NOTE_KIND ? 'Note' : words.type_label,
+          file: null,
+          left_out: null,
+        };
+        if (words.type_key === NOTE_KIND) {
+          items.push({ id, row, version: null, note: await this.noteRow(trx, id) });
+          continue;
+        }
+        const v = await this.newestVersion(trx, id);
+        if (v.file_removed_at) row.left_out = 'removed';
+        items.push({ id, row, version: v.file_removed_at ? null : v, note: null });
+      }
+      const going = items.filter((i) => i.version !== null || i.note !== null);
+      if (going.length === 0) throw nothingToZip();
+      const sizes = going.map((i) => ({
+        byte_size: i.note
+          ? Buffer.byteLength(i.note.notes ?? '')
+          : Number(i.version?.byte_size ?? 0),
+      }));
+      if (!withinZipLimits(sizes)) throw zipRefused(false);
+      const from = await this.from(trx, link.created_by);
+      const heading = link.collection
+        ? link.collection.name
+        : `Shared by ${from.shared_by ?? from.household_name}`;
+      const filename = zipFileName(link.collection?.name ?? 'Shared documents', todayUtc());
+      if (checkOnly) {
+        // None left, and none of these had this session: nothing to give.
+        if (link.max_downloads !== null && link.downloads_used >= link.max_downloads) {
+          const had = new Set(
+            (
+              await trx
+                .selectFrom('share_session_use')
+                .select('document_id')
+                .where('session_id', '=', session.id)
+                .where('kind', '=', 'downloaded')
+                .execute()
+            ).map((u) => u.document_id),
+          );
+          if (!going.some((i) => had.has(i.id))) throw downloadsUsedUp();
+        }
+        return {
+          householdId: link.household_id,
+          filename,
+          heading,
+          rows: items.map((i) => i.row),
+          files: [],
+        };
+      }
+      // A file not where the files are kept is left out before it is
+      // counted or written down (the full export's FILE_NOT_THERE).
+      const there: Item[] = [];
+      for (const item of going) {
+        if (item.version) {
+          const adapter = await this.vaults.adapterById(trx, item.version.vault_id);
+          try {
+            await adapter.stat(item.version.storage_key);
+          } catch (err) {
+            if (!notThere(err)) throw err;
+            item.row.left_out = 'not_there';
+            continue;
+          }
+        }
+        there.push(item);
+      }
+      const name = zipNames();
+      const files: Array<
+        ZipFile | { name: string; note: Item['note'] & object; untitled: boolean; row: ZipIndexRow }
+      > = [];
+      // Counted as each download is, the documents held as they are; the
+      // log last, in one go (the documents first, then the log).
+      const lines: AuditInput[] = [];
+      let usedUp = 0;
+      for (const item of there) {
+        if ((await this.countFirst(trx, link, session.id, item.id, meta, lines)) === 'used_up') {
+          item.row.left_out = 'used_up';
+          usedUp += 1;
+          continue;
+        }
+        const untitled = hidden.has(item.id);
+        if (item.note) {
+          // A title left out of the page (H1a) is left out of its words too.
+          item.row.file = name(untitled ? 'note' : safeFileName(item.row.title), '.md');
+          files.push({ name: item.row.file, note: item.note, untitled, row: item.row });
+          continue;
+        }
+        const v = item.version as NonNullable<Item['version']>;
+        const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
+        const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
+        const adapter = await this.vaults.adapterById(trx, v.vault_id);
+        // A title left out of the page (H1a) is left out of the file's name too.
+        item.row.file = name(
+          untitled ? 'document' : safeFileName(item.row.title),
+          safeExtension(v.filename),
+        );
+        files.push({
+          name: item.row.file,
+          open: decryptedFile(adapter, v.storage_key, fileKey),
+          row: item.row,
+        });
+      }
+      if (files.length === 0 && usedUp > 0) throw downloadsUsedUp();
+      if (files.length === 0) throw nothingToZip();
+      // A link's lines one statement each: the database checks each against
+      // the chain's head as it is (audit_event_link_insert, 0102).
+      for (const line of lines) await appendAudit(trx, line);
+      return {
+        householdId: link.household_id,
+        filename,
+        heading,
+        rows: items.map((i) => i.row),
+        files,
+      };
+    });
+    return {
+      filename: plan.filename,
+      heading: plan.heading,
+      full: false,
+      rows: plan.rows,
+      files: plan.files.map((f) =>
+        'open' in f
+          ? f
+          : {
+              name: f.name,
+              row: f.row,
+              open: async () =>
+                noteMarkdown(
+                  f.untitled ? null : f.note.title,
+                  await this.noteWords(plan.householdId, f.note),
+                ),
+            },
+      ),
+    };
+  }
+
+  /**
+   * A note downloaded as a file (0.9.0, DL): `GET
+   * /shared/items/{doc}/note/download`, its words as Markdown (`.md`), the
+   * way the ZIP and the full export hold them. Only a note the link gives,
+   * and only on a link to download (a link to view shows its words on the
+   * page, never a file); counted and written down as any download is.
+   */
+  async sessionNoteFile(
+    cookie: string | undefined,
+    documentId: string,
+    meta: RequestMeta,
+    devices: readonly DeviceCookie[] = [],
+  ): Promise<{ text: string; filename: string }> {
+    const found = await this.inSession(cookie, devices, async (trx, link, session) => {
+      // A clinician's link (H4) gives a page, never a note.
+      if (link.emergency_member_id !== null) return null;
+      if (!(await this.gives(trx, link, documentId))) return null;
+      const doc = await this.noteRow(trx, documentId);
+      if (!doc) return null;
+      if (link.permission !== 'download') throw forViewingOnly();
+      if ((await this.countFirst(trx, link, session.id, documentId, meta)) === 'used_up') {
+        throw downloadsUsedUp();
+      }
+      return {
+        doc,
+        householdId: link.household_id,
+        untitled: (await this.untitled(trx)).has(doc.id),
+      };
+    });
+    if (!found) throw notFound('That note');
+    const title = found.untitled ? null : found.doc.title;
+    return {
+      text: noteMarkdown(title, await this.noteWords(found.householdId, found.doc)),
+      filename: `${title ? safeFileName(title) : 'note'}.md`,
+    };
   }
 
   /**
@@ -3730,23 +4057,7 @@ export class ShareService {
     });
     if (!found) throw notFound('That note');
     const { doc } = found;
-    let body = doc.notes;
-    if (doc.notes_sealed) {
-      // Its owner's key, unwrapped as the vault: a link is given the keys of
-      // its files alone (0042), and a note has none. Asked only now, of the
-      // one note the link was found to give above.
-      const key = await withSystem(this.db, found.householdId, (trx) =>
-        this.keys.unwrap(trx, {
-          householdId: found.householdId,
-          kind: 'member',
-          memberId: doc.owner_member_id,
-        }),
-      );
-      body = openPrivate(key.key, doc.id, {
-        notes_sealed: doc.notes_sealed,
-        extra_sealed: null,
-      }).notes;
-    }
+    const body = await this.noteWords(found.householdId, doc);
     return {
       id: doc.id,
       // Its title as its sharer chose (H1a).
@@ -4038,7 +4349,8 @@ export class ShareService {
           content_type: 'text/markdown',
           byte_size: 0,
           pages: null,
-          downloaded: false,
+          // Downloaded as a file since DL: again, free, as a file is.
+          downloaded: downloaded.has(id),
           note: true,
         });
         continue;
@@ -4407,20 +4719,26 @@ export class ShareService {
   private record(
     trx: Db,
     householdId: string,
-    link: {
-      id: string;
-      document_id: string | null;
-      collection_id: string | null;
-      emergency_member_id?: string | null;
-      recipient_label: string | null;
-    },
+    link: LinkLabel,
     action: string,
     meta: RequestMeta,
     documentId?: string,
     /** More to say (5.20: where a code went, masked). Never a secret. */
     extra: Record<string, string> = {},
   ): Promise<void> {
-    return appendAudit(trx, {
+    return appendAudit(trx, this.recordLine(householdId, link, action, meta, documentId, extra));
+  }
+
+  /** The line `record` writes, for a caller that writes its lines in one go (a ZIP's). */
+  private recordLine(
+    householdId: string,
+    link: LinkLabel,
+    action: string,
+    meta: RequestMeta,
+    documentId?: string,
+    extra: Record<string, string> = {},
+  ): AuditInput {
+    return {
       householdId,
       // Nobody signed in, so there is no actor account — this label is
       // what the family's activity log shows instead.
@@ -4430,7 +4748,7 @@ export class ShareService {
       detail: { ...extra, share_id: link.id, user_agent: meta.userAgent ?? null },
       // An outsider's address is kept only as far as their network (A24).
       ip: truncatedIp(meta.ip),
-    });
+    };
   }
 
   /**

@@ -20,6 +20,7 @@ import { deviceHeaders, type Api } from '../api.js';
 import { ApiRequestError, isSessionOver } from '../errors.js';
 import { multipartBody } from '../multipart.js';
 import { negotiate } from '../negotiate.js';
+import { zipEntryNames } from './zip.js';
 
 /**
  * What any vault a client talks to must do — the real API and the fake
@@ -133,6 +134,7 @@ const GONE_KIND_KEY = '6f708192-a3b4-4c56-9d7e-8f9012345678';
 const OWN_KIND_KEY = '708192a3-b4c5-4d67-8e8f-90123456789a';
 const SUGGESTIONS_KEY = '8192a3b4-c5d6-4e78-9f80-123456789abc';
 const CREATE_KEY = '92a3b4c5-d6e7-4f89-8a91-23456789abcd';
+const ZIP_KEY = 'a3b4c5d6-e7f8-4a9b-8c0d-3456789abcde';
 
 async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
   try {
@@ -3890,6 +3892,87 @@ export const contractScenarios: Scenario[] = [
       expect(after?.state).toBe('revoked');
       const again = await refusal(api.revokeEmergencyLink(token, me, made.share.id));
       expect(again.status).toBe(404);
+    },
+  },
+  {
+    name: 'several documents as one ZIP: what the caller may download, a note as Markdown, an index; a collection too; nothing to give refused (0.9.0, DL)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.zip_download).toBe(true);
+      const me = await api.me(token);
+      const plain = {
+        type_key: 'utility_bill',
+        owner_member_id: me.member_id,
+        visibility: 'household' as const,
+        sensitive: false,
+      };
+      const bill = await api.createDocument(token, { ...plain, title: 'Contract zip bill' });
+      const form = multipartBody([
+        { name: 'file', filename: 'bill.pdf', contentType: 'application/pdf', bytes: PDF },
+      ]);
+      await api.upload(
+        token,
+        bill.id,
+        { kind: 'bytes', bytes: form.bytes, contentType: form.contentType },
+        ZIP_KEY,
+      );
+      const note = await api.createDocument(token, {
+        type_key: 'note',
+        title: 'Contract zip note',
+        owner_member_id: me.member_id,
+        visibility: 'household',
+        notes: 'Ring Ann first',
+      });
+      const paper = await api.createDocument(token, { ...plain, title: 'Contract zip paper' });
+
+      const res = await api.downloadZip(token, { document_ids: [bill.id, note.id, paper.id] });
+      expect(res.headers.get('content-type')).toBe('application/zip');
+      expect(res.headers.get('content-disposition')).toMatch(
+        /^attachment; filename\*=UTF-8''.+\.zip$/,
+      );
+      expect(zipEntryNames(new Uint8Array(await res.arrayBuffer())).sort()).toEqual([
+        'Contract zip bill.pdf',
+        'Contract zip note.md',
+        'index.csv',
+        'index.html',
+      ]);
+      // Nothing with a file, and nothing there at all.
+      const none = await refusal(api.downloadZip(token, { document_ids: [paper.id] }));
+      expect([none.status, none.code]).toEqual([422, 'nothing_to_zip']);
+      const missing = await refusal(api.downloadZip(token, { document_ids: [NEVER_USED] }));
+      expect(missing.status).toBe(404);
+
+      const collection = await api.createCollection(token, {
+        name: 'Contract zip',
+        audience: 'everyone',
+      });
+      await api.addToCollection(token, collection.id, [bill.id, note.id]);
+      const all = await api.downloadCollectionZip(token, collection.id);
+      expect(zipEntryNames(new Uint8Array(await all.arrayBuffer())).sort()).toEqual([
+        'Contract zip bill.pdf',
+        'Contract zip note.md',
+        'index.csv',
+        'index.html',
+      ]);
+      const elsewhere = await refusal(api.downloadCollectionZip(token, NEVER_USED));
+      expect(elsewhere.status).toBe(404);
+      // By a ticket, as a browser saves it: asked first, then the ZIP once.
+      const refusedTicket = await refusal(
+        api.downloadZipTicket(token, { document_ids: [paper.id] }),
+      );
+      expect([refusedTicket.status, refusedTicket.code]).toEqual([422, 'nothing_to_zip']);
+      const ticket = await api.collectionZipTicket(token, collection.id);
+      expect(ticket.url).toMatch(/^\/api\/v1\/downloads\/.+/);
+      const byTicket = await api.http.raw(ticket.url);
+      expect(byTicket.headers.get('content-type')).toBe('application/zip');
+      expect(zipEntryNames(new Uint8Array(await byTicket.arrayBuffer())).sort()).toEqual([
+        'Contract zip bill.pdf',
+        'Contract zip note.md',
+        'index.csv',
+        'index.html',
+      ]);
+      const twice = await refusal(api.http.raw(ticket.url));
+      expect([twice.status, twice.code]).toEqual([404, 'download_ticket_gone']);
     },
   },
   {

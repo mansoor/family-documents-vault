@@ -131,6 +131,7 @@ import { TagField } from '../tags.js';
 import { useSelect } from './SearchPeople.js';
 import { LinksChoiceDialog, linksAsk, linksChoice, type LinksAsk } from './Visibility.js';
 import { familyZoneNow } from '../family-time.js';
+import { followDownload, saveFile } from '../save-file.js';
 import { CabinetDocuments, PinSheet, ViewToggle } from '../cabinet.js';
 
 /**
@@ -1098,12 +1099,17 @@ function TableDocuments(props: {
           </h1>
         )}
         {!scope && cabinets && <ViewToggle current="table" />}
-        <ColumnsMenu
-          columns={columns}
-          hidden={hidden}
-          onChange={toggleColumn}
-          onReset={() => keepWidths({})}
-        />
+        {/* Columns sits where Cabinet's Arrange my cabinet does (DL): in a
+            slot of its own beside Table and Cabinet, so neither the toggle
+            nor it moves when the view changes. */}
+        <div className={!scope && cabinets ? 'table-head-tool' : 'table-head-tool-plain'}>
+          <ColumnsMenu
+            columns={columns}
+            hidden={hidden}
+            onChange={toggleColumn}
+            onReset={() => keepWidths({})}
+          />
+        </div>
       </div>
       <div className="filters" role="group" aria-label="Filters">
         {filtersFor(known, scope !== undefined).map((k) => (
@@ -1868,6 +1874,14 @@ function BulkBar(props: {
 }) {
   const { chosen, who, scope } = props;
   const { withToken, guarded, caps } = useApp();
+  // Download (0.9.0, DL): one file as itself, several as one ZIP.
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProblem, setDownloadProblem] = useState<string | null>(null);
+  const zips = caps?.features.zip_download === true;
+  const onlyOne = chosen.length === 1 ? chosen[0] : undefined;
+  const oneFile =
+    onlyOne !== undefined && onlyOne.latest_version_id !== null && onlyOne.type_key !== 'note';
+  const mayDownload = oneFile || (zips && chosen.length > 0);
   // Pinned into a folder of their own cabinet (0.9.0, C2): their arrangement, any paper they see.
   const mayPin = caps?.features.cabinet_pins === true && chosen.every((d) => !d.deleted_at);
   const n = chosen.length;
@@ -2197,11 +2211,55 @@ function BulkBar(props: {
     report(before, { leftAside: asked.docs });
   };
 
+  /**
+   * The chosen ones downloaded (DL): one with a file as itself, as its ⋯'s
+   * Download gives it; several as one ZIP of those the reader may download,
+   * with an index. Either may first ask who is asking — a Sensitive one, an
+   * Essential or an Only me.
+   */
+  const download = async () => {
+    setDownloading(true);
+    setDownloadProblem(null);
+    try {
+      if (oneFile && onlyOne) {
+        const versions = await withToken((t) => api.versions(t, onlyOne.id));
+        const current = versions?.items[0];
+        if (!current) {
+          setDownloadProblem('This document has no file to download.');
+          return;
+        }
+        const blob = await guarded((t) => api.content(t, current.id));
+        if (blob) saveFile(blob, current.filename);
+        return;
+      }
+      // A ticket first (DL review): whatever the ZIP would refuse or ask is
+      // said here; then the browser saves it to disk as it comes.
+      const ticket = await guarded((t) =>
+        api.downloadZipTicket(t, { document_ids: chosen.map((d) => d.id) }),
+      );
+      if (ticket) followDownload(api.downloadTicketUrl(ticket));
+    } catch (err) {
+      setDownloadProblem(describeError(err));
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   const what = documentsCount(n);
   return (
     <>
       <div className="bulkbar" role="region" aria-label="What to do with the chosen documents">
         <span className="bulk-count">{n} selected</span>
+        {mayDownload && (
+          <button
+            type="button"
+            className="btn btn-bulk"
+            disabled={busy || downloading}
+            onClick={() => void download()}
+          >
+            {downloading ? 'Preparing the download…' : 'Download'}
+          </button>
+        )}
         {offer.collect && (
           <button
             ref={collectButton}
@@ -2284,8 +2342,9 @@ function BulkBar(props: {
         <button type="button" className="btn btn-bulk" disabled={busy} onClick={props.onClear}>
           Clear selection
         </button>
-        {(tooMany || offer.notes.length > 0) && (
+        {(tooMany || offer.notes.length > 0 || downloadProblem) && (
           <div className="bulk-notes">
+            {downloadProblem && <ErrorNote message={downloadProblem} />}
             {tooMany && <p>Up to {MOST_AT_ONCE} at once: choose fewer to go on.</p>}
             {offer.notes.map((note) => (
               <p key={note}>{note}</p>

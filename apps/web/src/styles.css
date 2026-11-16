@@ -7790,3 +7790,95 @@ html:has(.shell-phone):has(.has-toast) {
     break-inside: avoid;
   }
 }
+
+/* DL: a collection's link — Download all and Download selected above its
+   documents and its notes, each row a box, its name and kind, then what may
+   be done with it at its end. */
+.share-zip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.share-section h2 {
+  font-size: 18px;
+  margin: 8px 0 0;
+}
+
+.list li.share-row {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.share-row-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--tap);
+}
+
+.share-row-head .share-tick {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.share-row-head .share-row-what {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* DL: a collection's managers, as tight as the app's other forms — the
+   heading, its sentence and each manager close together (the owner, 15 Nov
+   2026); choosing somebody is Add managers' sheet. */
+.collection-managers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.collection-managers h2 {
+  margin: 0;
+}
+
+.collection-managers p {
+  margin: 0;
+}
+
+.list li.manager-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.collection-managers-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.collection-managers-form h2,
+.collection-managers-form p {
+  margin: 0;
+}
+
+.manager-switches {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* DL: the Documents page's second control — Columns for the table, Arrange
+   my cabinet for the cabinet — in one slot beside Table and Cabinet, as
+   wide as the wider of the two, so toggling the view moves neither it nor
+   the toggle (the owner, 15 Nov 2026). */
+.table-head-tool {
+  display: flex;
+  justify-content: flex-start;
+  min-width: 11.5rem;
+}

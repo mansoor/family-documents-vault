@@ -41,6 +41,8 @@ const SECRET_SEGMENT = new RegExp(
       `/api/v1/password-resets/${kept('lookup|complete|code')}`,
       `/api/v1/invitations/${kept('lookup|accept')}`,
       `/api/v1/drop/${kept('preview|code|unlock|session|files|finish')}`,
+      // A ZIP's download ticket (0.9.0, DL): single-use and a minute long, but a key still.
+      '/api/v1/downloads/',
       // The pages a browser opens from links made before 0.5.14 (a share's)
       // and 0.5.17 (a reset's, an invitation's); and a request's page with
       // something after it that it never has (5.21).

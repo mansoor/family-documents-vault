@@ -259,15 +259,17 @@ describe('sharing a collection (5.19)', () => {
       screen.getByText(/shared this collection with you from The Seikh family/),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open' }));
-    await screen.findByRole('list', { name: 'What was shared' });
-    const list = screen.getByRole('list', { name: 'What was shared' });
+    await screen.findByRole('list', { name: 'Documents' });
+    const list = screen.getByRole('list', { name: 'Documents' });
     expect(within(list).getByText('Payslip, August')).toBeInTheDocument();
     expect(within(list).getByText('Bank statement, August')).toBeInTheDocument();
+    // Each its own Download (DL): the name is not the button.
     expect(
       within(list)
-        .getAllByRole('link')
-        .map((a) => a.textContent),
-    ).toEqual(['Download payslip.pdf', 'Download statement.pdf']);
+        .getAllByRole('button', { name: /^Download / })
+        .map((a) => a.getAttribute('aria-label')),
+    ).toEqual(['Download Payslip, August', 'Download Bank statement, August']);
+    expect(screen.getByRole('button', { name: 'Download all' })).toBeVisible();
     expect(screen.getByText(/shared these documents with you/)).toBeInTheDocument();
     // Nothing on the page counts what was not sent.
     expect(document.body.textContent).not.toMatch(/\bof \d+ documents|hidden|left out/);

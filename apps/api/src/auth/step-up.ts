@@ -51,7 +51,8 @@ export type StepUpAction =
   | 'change_ai_reader'
   | 'send_sensitive_papers'
   | 'neutral_wording'
-  | 'share_emergency';
+  | 'share_emergency'
+  | 'download_sensitive';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -145,6 +146,11 @@ const WHY: Record<StepUpAction, string> = {
   // an unlocked device could otherwise send a person's allergies,
   // medications and conditions out in one link.
   share_emergency: 'to share emergency information outside the family',
+  // Several documents downloaded as one ZIP with a Sensitive one among them
+  // (0.9.0, DL; the owner's ask of 15 Nov 2026): any credential. A session
+  // picked up from an unlocked device could otherwise carry off a whole
+  // collection of the family's sensitive papers in one click.
+  download_sensitive: 'to download sensitive documents',
 };
 
 /**

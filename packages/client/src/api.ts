@@ -132,6 +132,9 @@ import type {
   VersionView,
   Visibility,
   VisibilityChange,
+  ZipCheck,
+  ZipSelectionInput,
+  ZipTicket,
   MailInCode,
   MailInEmailed,
   MailInInput,
@@ -1144,6 +1147,39 @@ export function createApi(http: Http) {
       request<UploadStatus>(`/api/v1/uploads/${encodeURIComponent(idempotencyKey)}`, { token }),
     content: (token: string, versionId: string): Promise<ResponseLike> =>
       raw(`/api/v1/versions/${versionId}/content`, { token }),
+    /**
+     * Several documents as one ZIP (0.9.0, DL; `features.zip_download`):
+     * the ones of `document_ids` the caller could download one by one, with
+     * index.html and index.csv; a note as its words, a Markdown file.
+     * `403 step_up_required` first when one is Sensitive
+     * (`download_sensitive`), an Only me or an Essential document (what
+     * opening it asks); `422 zip_too_large` past `ZIP_MAX_DOCUMENTS` or
+     * `ZIP_MAX_BYTES`; `422 nothing_to_zip` when none has a file; `404` when
+     * the caller is given none of them. The ZIP's name is in
+     * Content-Disposition.
+     */
+    downloadZip: (token: string, body: ZipSelectionInput): Promise<ResponseLike> =>
+      raw('/api/v1/documents/download', { method: 'POST', token, body }),
+    /** A whole collection as one ZIP (0.9.0, DL): what the caller is given of it, as downloadZip. */
+    downloadCollectionZip: (token: string, collectionId: string): Promise<ResponseLike> =>
+      raw(`/api/v1/collections/${enc(collectionId)}/download`, { method: 'POST', token }),
+    /**
+     * A ticket for the same ZIP (0.9.0, DL review), for a browser, which
+     * saves a plain link to disk as it comes: everything downloadZip would
+     * refuse or ask is answered here, as JSON, with nothing written down;
+     * then `downloadTicketUrl(ticket)` is followed as a link — once, within
+     * a minute, as the session that asked (`404 download_ticket_gone`
+     * after).
+     */
+    downloadZipTicket: (token: string, body: ZipSelectionInput) =>
+      request<ZipTicket>('/api/v1/documents/download/ticket', { method: 'POST', token, body }),
+    collectionZipTicket: (token: string, collectionId: string) =>
+      request<ZipTicket>(`/api/v1/collections/${enc(collectionId)}/download/ticket`, {
+        method: 'POST',
+        token,
+      }),
+    /** Where a ticket's ZIP is: a plain link, no token. */
+    downloadTicketUrl: (ticket: Pick<ZipTicket, 'url'>) => http.url(ticket.url),
     thumbnail: (token: string, versionId: string): Promise<ResponseLike> =>
       raw(`/api/v1/versions/${versionId}/thumbnail`, { token }),
     /**
@@ -1711,6 +1747,28 @@ export function createApi(http: Http) {
     linkItems: () => request<SharedSession>('/api/v1/shared/items'),
     linkItemContentUrl: (documentId: string) =>
       http.url(`/api/v1/shared/items/${enc(documentId)}/content`),
+    /**
+     * What a link to download gives, as one ZIP (0.9.0, DL): a plain address
+     * the browser follows, inside its session — everything, or only `ids`
+     * (Download selected). `403 view_only` for a link to view;
+     * `downloads_used_up` when none are left; `422 zip_too_large`.
+     */
+    /**
+     * What a ZIP of them would refuse, asked first and counting nothing
+     * (0.9.0, DL review): `403 view_only`, `403 downloads_used_up`, `422
+     * zip_too_large`, `422 nothing_to_zip`, `404` for none the link gives.
+     */
+    linkItemsZipCheck: (ids?: readonly string[]) =>
+      request<ZipCheck>(
+        `/api/v1/shared/items/download/check${ids && ids.length ? `?ids=${ids.map(enc).join(',')}` : ''}`,
+      ),
+    linkItemsZipUrl: (ids?: readonly string[]) =>
+      http.url(
+        `/api/v1/shared/items/download${ids && ids.length ? `?ids=${ids.map(enc).join(',')}` : ''}`,
+      ),
+    /** A note on a link to download, as a Markdown file (0.9.0, DL): a plain address. */
+    linkItemNoteFileUrl: (documentId: string) =>
+      http.url(`/api/v1/shared/items/${enc(documentId)}/note/download`),
     /** A note's words on a link's page (0.9.0, N1): an item with `note: true`. */
     linkItemNote: (documentId: string) =>
       request<SharedNote>(`/api/v1/shared/items/${enc(documentId)}/note`),
