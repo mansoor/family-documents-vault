@@ -18,6 +18,7 @@ import type {
   Capabilities,
   CaptureResult,
   ConnectedAppChange,
+  ConnectedAppGrantsInput,
   ConnectedAppInput,
   ConnectedAppKeyAdded,
   ConnectedAppList,
@@ -2524,6 +2525,18 @@ export function createApi(http: Http) {
       update: (token: string, id: string, body: ConnectedAppChange) =>
         request<ConnectedAppView>(`/api/v1/connected-apps/${enc(id)}`, {
           method: 'PATCH',
+          body,
+          token,
+        }),
+      /**
+       * An owner sets what it may read beyond its own (APP2): every grant, a
+       * kind or a category and how far back. A kind Sensitive by default asks
+       * once: `409 sensitive_confirm`, whose message is the question, until
+       * `confirm_sensitive: true`.
+       */
+      setGrants: (token: string, id: string, body: ConnectedAppGrantsInput) =>
+        request<ConnectedAppView>(`/api/v1/connected-apps/${enc(id)}/grants`, {
+          method: 'PUT',
           body,
           token,
         }),

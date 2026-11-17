@@ -2,17 +2,25 @@ import {
   APP_BACKFILL_MAX_DAYS,
   APP_DEFAULT_DAILY_BYTES,
   APP_DEFAULT_DAILY_FILES,
+  APP_GRANTABLE_CATEGORIES,
+  APP_GRANTS_MAX,
   APP_IP_ALLOW_MAX,
+  APP_LOOKBACK_MAX_MONTHS,
   APP_NAME_MAX,
   APP_REFUSAL_SHORT,
   APP_SCOPE_WORDS,
+  APP_SCOPES_OFFERED,
   APP_STATE_WORDS,
   appsNotPublicWords,
+  categoryLabel,
   localToday,
+  lookbackWords,
   NOTE_KIND,
   roleLabel,
   type AppKeyView,
+  type AppScope,
   type ConnectedAppChange,
+  type ConnectedAppGrantsInput,
   type ConnectedAppInput,
   type ConnectedAppList,
   type ConnectedAppView,
@@ -21,7 +29,7 @@ import {
   type Visibility,
 } from '@fdv/shared';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { api } from '../api.js';
+import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { dayWordsOf, familyZoneNow, shortWhenWords } from '../family-time.js';
 import { storedRole } from '../session.js';
@@ -40,6 +48,12 @@ import { SettingsPage } from './Settings.js';
  * adult sees only the apps acting as them: turns one on (it waits for them
  * when an owner connected it as them), and removes it. What it sent that
  * waits, and was filed, is its person's alone to see.
+ *
+ * Reading (APP2): an owner chooses whether it may read and download, and
+ * what it may read beyond what it sent — a kind or a category, and how far
+ * back — asked once when that takes in papers Sensitive by their kind.
+ * Never identity, legal or medical papers: only the categories an app may
+ * ever be given are offered.
  */
 
 const MB = 1024 * 1024;
@@ -108,6 +122,8 @@ interface AppForm {
   until: string;
   backfillFiles: string;
   backfillMb: string;
+  /** What it may do: send, read, download. */
+  scopes: AppScope[];
 }
 
 type Ceilings = ConnectedAppList['ceilings'];
@@ -159,6 +175,7 @@ function readForm(f: AppForm, ceilings: Ceilings): Read {
   if (files === null) return { ok: false, error: `Files a day: 1 to ${ceilings.daily_files}.` };
   const mb = whole(f.mb, 1, maxMb);
   if (mb === null) return { ok: false, error: `MB a day: 1 to ${maxMb}.` };
+  if (f.scopes.length === 0) return { ok: false, error: 'Choose what it may do.' };
   const ip = lines(f.ip);
   if (ip.length > APP_IP_ALLOW_MAX) {
     return { ok: false, error: `${APP_IP_ALLOW_MAX} addresses or networks at most.` };
@@ -190,6 +207,7 @@ function readForm(f: AppForm, ceilings: Ceilings): Read {
       daily_bytes: mb * MB,
       ip_allow: ip,
       backfill,
+      scopes: APP_SCOPES_OFFERED.filter((s) => f.scopes.includes(s)),
     },
   };
 }
@@ -209,6 +227,9 @@ function blankForm(me: string): AppForm {
     until: '',
     backfillFiles: String(APP_DEFAULT_DAILY_FILES),
     backfillMb: String(Math.round(APP_DEFAULT_DAILY_BYTES / MB)),
+    // Sending, and reading what it sent and what it is granted; downloading
+    // only when an owner ticks it.
+    scopes: ['documents.send', 'documents.read'],
   };
 }
 
@@ -227,6 +248,7 @@ function formOf(app: ConnectedAppView): AppForm {
     until: app.backfill ? localToday(familyZoneNow(), new Date(app.backfill.until)) : '',
     backfillFiles: String(app.backfill?.files_per_day ?? app.daily_files),
     backfillMb: String(Math.round((app.backfill?.bytes_per_day ?? app.daily_bytes) / MB)),
+    scopes: [...app.scopes],
   };
 }
 
@@ -249,7 +271,74 @@ function changeOf(start: AppForm, now: AppForm, value: Extract<Read, { ok: true 
         now.backfillFiles.trim() !== start.backfillFiles ||
         now.backfillMb.trim() !== start.backfillMb));
   if (backfillMoved) change.backfill = value.backfill ?? null;
+  if (!sameSet(now.scopes, start.scopes)) change.scopes = value.scopes as AppScope[];
   return change;
+}
+
+/** A grant as the editor holds it: what (`kind:…` or `category:…`), and how many months back. */
+interface GrantRow {
+  what: string;
+  months: string;
+}
+
+/**
+ * What an app may be granted to read: the categories it may ever be given,
+ * and their kinds — never a note, a kind kept as an Essential, or a hidden
+ * one (unless granted already).
+ */
+export function grantChoices(
+  types: DocumentTypeView[],
+  granted: readonly string[] = [],
+): Array<{ value: string; label: string }> {
+  const grantable = APP_GRANTABLE_CATEGORIES as readonly string[];
+  const kinds = types.filter(
+    (t, i) =>
+      t.key !== NOTE_KIND &&
+      types.findIndex((x) => x.key === t.key) === i &&
+      grantable.includes(t.category) &&
+      !t.usually_essential &&
+      (!t.hidden || granted.includes(`kind:${t.key}`)),
+  );
+  return [
+    ...grantable.map((c) => ({ value: `category:${c}`, label: `All of ${categoryLabel(c)}` })),
+    ...kinds.map((t) => ({ value: `kind:${t.key}`, label: t.label })),
+  ];
+}
+
+/** Each grant in words: "Bank statement: the last 12 months". */
+export function grantWords(
+  app: Pick<ConnectedAppView, 'grants'>,
+  types: DocumentTypeView[],
+): string[] {
+  return (app.grants ?? []).map((g) => {
+    const what = g.kind
+      ? (types.find((t) => t.key === g.kind)?.label ?? g.kind)
+      : `All of ${categoryLabel(g.category)}`;
+    return `${what}: ${lookbackWords(g.lookback_months)}${
+      g.sensitive_confirmed ? ', sensitive papers included' : ''
+    }`;
+  });
+}
+
+/** The grants as the editor sends them, checked: or what is wrong, in words. */
+function readGrants(rows: GrantRow[]): ConnectedAppGrantsInput | string {
+  if (rows.length > APP_GRANTS_MAX) return `${APP_GRANTS_MAX} at most.`;
+  const seen = new Set<string>();
+  const grants: ConnectedAppGrantsInput['grants'] = [];
+  for (const r of rows) {
+    if (!r.what) return 'Choose a kind or a category for each.';
+    if (seen.has(r.what)) return 'Each kind or category once.';
+    seen.add(r.what);
+    const months = whole(r.months, 1, APP_LOOKBACK_MAX_MONTHS);
+    if (months === null) return `How far back: 1 to ${APP_LOOKBACK_MAX_MONTHS} months.`;
+    const [sort, key = ''] = r.what.split(':');
+    grants.push(
+      sort === 'kind'
+        ? { kind: key, lookback_months: months }
+        : { category: key, lookback_months: months },
+    );
+  }
+  return { grants };
 }
 
 /** Whom an app may act as: an owner or an adult who signs in. */
@@ -338,6 +427,28 @@ function AppFields(props: {
           </div>
         </>
       )}
+      <fieldset className="limits-set">
+        <legend className="field-label">What it may do</legend>
+        <div className="limits-list">
+          {APP_SCOPES_OFFERED.map((s) => (
+            <Check
+              key={s}
+              id={`${id}-scope-${s.replace('.', '-')}`}
+              label={APP_SCOPE_WORDS[s]}
+              checked={form.scopes.includes(s)}
+              onChange={(on) =>
+                put({
+                  scopes: on ? [...form.scopes, s] : form.scopes.filter((x) => x !== s),
+                })
+              }
+            />
+          ))}
+        </div>
+        <p className="muted">
+          It reads what it sent, and what you allow it below once it is connected. Never identity,
+          legal or medical papers, nothing Only me or Essential, nothing marked Sensitive.
+        </p>
+      </fieldset>
       <fieldset className="limits-set">
         <legend className="field-label">Kinds it may send</legend>
         <p className="muted" id={`${id}-kinds-note`}>
@@ -491,12 +602,39 @@ export function ConnectedAppsScreen() {
   const [said, setSaid] = useState<string | null>(null);
   const [removing, setRemoving] = useState<ConnectedAppView | null>(null);
   const [retiring, setRetiring] = useState<{ app: ConnectedAppView; key: AppKeyView } | null>(null);
+  /** The vault's question before an app reads papers Sensitive by their kind (APP2). */
+  const [asking, setAsking] = useState<{
+    app: ConnectedAppView;
+    input: ConnectedAppGrantsInput;
+    question: string;
+  } | null>(null);
+  /**
+   * What an app may read, being changed: on the screen, not its card, so a
+   * question about Sensitive papers, or a passkey asked for, never loses
+   * what the owner chose; and each card's buttons, for the focus to go back
+   * to.
+   */
+  const [grantEdit, setGrantEdit] = useState<{ appId: string; rows: GrantRow[] } | null>(null);
+  const grantButtons = useRef(new Map<string, HTMLButtonElement | null>());
+  const grantSaves = useRef(new Map<string, HTMLButtonElement | null>());
+  /** Saved: the card whose "What it may read" takes the focus after this render. */
+  const focusGrantsOf = useRef<string | null>(null);
+  /** Where the focus goes back to from the question about Sensitive papers: the editor's Save. */
+  const askReturn = useRef<HTMLButtonElement | null>(null);
   const connectButton = useRef<HTMLButtonElement>(null);
   const statusLine = useRef<HTMLParagraphElement>(null);
   const connectHeading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     if (said) statusLine.current?.focus();
   }, [said]);
+  // After the status line's: what an app may read, saved, puts the focus
+  // back on its card's button.
+  useEffect(() => {
+    const id = focusGrantsOf.current;
+    if (!id) return;
+    focusGrantsOf.current = null;
+    grantButtons.current.get(id)?.focus();
+  });
   // The form's heading in focus as it opens, from the button that is gone.
   const open = connecting !== null;
   useEffect(() => {
@@ -560,6 +698,43 @@ export function ConnectedAppsScreen() {
     }
   };
 
+  /** What an app may read, saved; asked first, by the vault, about papers Sensitive by their kind. */
+  const saveGrants = async (
+    app: ConnectedAppView,
+    input: ConnectedAppGrantsInput,
+  ): Promise<'done' | 'failed' | 'asked'> => {
+    setBusy(true);
+    setError(null);
+    setSaid(null);
+    try {
+      const a = await guarded((t) => api.connectedApps.setGrants(t, app.id, input));
+      if (a === null) return 'failed';
+      await reload();
+      // Saved: said, the editor closed, and the focus back on its card's
+      // "What it may read" (below), not the status line.
+      setSaid(
+        a.state === 'waiting_for_approval' && !a.mine
+          ? `Saved. ${a.name} waits for ${a.member_name} to turn it on again.`
+          : `Saved. ${a.name} may read what it now says here.`,
+      );
+      focusGrantsOf.current = app.id;
+      setGrantEdit(null);
+      return 'done';
+    } catch (err) {
+      // Papers Sensitive by their kind: the vault's question, the editor kept
+      // open behind it.
+      if (err instanceof ApiRequestError && err.code === 'sensitive_confirm') {
+        askReturn.current = grantSaves.current.get(app.id) ?? null;
+        setAsking({ app, input, question: err.message });
+        return 'asked';
+      }
+      setError(describeError(err));
+      return 'failed';
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const items = data?.list.items ?? [];
   const names = [...new Set(items.map((a) => a.name))];
   const people = (data?.members ?? []).filter(actsAs);
@@ -567,8 +742,8 @@ export function ConnectedAppsScreen() {
     <SettingsPage title="Connected apps">
       <p className="lede">
         {owner
-          ? 'An app you connect sends documents into the Inbox of the person it acts as, signed with its own key. It can only send: it cannot open, list or download anything in the vault.'
-          : 'An app an owner connects as you sends documents into your Inbox, signed with its own key. It can only send: it cannot open, list or download anything in the vault.'}
+          ? 'An app you connect sends documents into the Inbox of the person it acts as, signed with its own key. If you allow it, it reads what it sent, and the kinds of papers you choose, for as far back as you choose. Never identity, legal or medical papers, nothing Only me or Essential, and nothing marked Sensitive.'
+          : 'An app an owner connects as you sends documents into your Inbox, signed with its own key. If an owner allows it, it reads what it sent, and the kinds of papers they choose, as you. Never identity, legal or medical papers, nothing Only me or Essential, and nothing marked Sensitive.'}
       </p>
       <p className="status-line" role="status" ref={statusLine} tabIndex={-1}>
         {said}
@@ -689,6 +864,17 @@ export function ConnectedAppsScreen() {
                     (a) => `Saved. ${a.name} may do what it now says here.`,
                   ).then((done) => done !== null)
                 }
+                onGrants={(input) => saveGrants(app, input)}
+                grantRows={grantEdit?.appId === app.id ? grantEdit.rows : null}
+                setGrantRows={(rows) =>
+                  setGrantEdit(rows === null ? null : { appId: app.id, rows })
+                }
+                onGrantsButton={(el) => {
+                  grantButtons.current.set(app.id, el);
+                }}
+                onGrantsSave={(el) => {
+                  grantSaves.current.set(app.id, el);
+                }}
                 onAddKey={async (key) => {
                   const added = await act(
                     () => guarded((t) => api.connectedApps.addKey(t, app.id, key)),
@@ -744,6 +930,23 @@ export function ConnectedAppsScreen() {
               removing.mine ? 'your' : `${removing.member_name}’s`
             } Inbox. To use it again, connect it again.`}
           </p>
+        </ConfirmDialog>
+      )}
+      {asking && (
+        <ConfirmDialog
+          title="Sensitive papers"
+          confirmLabel="Allow"
+          busyLabel="Saving…"
+          busy={busy}
+          returnFocus={askReturn}
+          onConfirm={() => {
+            const { app, input } = asking;
+            setAsking(null);
+            void saveGrants(app, { ...input, confirm_sensitive: true });
+          }}
+          onCancel={() => setAsking(null)}
+        >
+          <p>{asking.question}</p>
         </ConfirmDialog>
       )}
       {retiring && (
@@ -832,6 +1035,14 @@ function AppCard(props: {
   onPause: () => void;
   onResume: () => void;
   onChange: (change: ConnectedAppChange) => Promise<boolean>;
+  /** What it may read, saved: done, refused, or asked about Sensitive papers first. */
+  onGrants: (input: ConnectedAppGrantsInput) => Promise<'done' | 'failed' | 'asked'>;
+  /** What it may read, as the owner is changing it; null while not. */
+  grantRows: GrantRow[] | null;
+  setGrantRows: (rows: GrantRow[] | null) => void;
+  /** Its "What it may read" and its editor's Save, told to the screen as they mount. */
+  onGrantsButton: (el: HTMLButtonElement | null) => void;
+  onGrantsSave: (el: HTMLButtonElement | null) => void;
   onAddKey: (key: string) => Promise<boolean>;
   onRetire: (key: AppKeyView) => void;
   /** A key the app added itself, confirmed: an owner's, or its person's. */
@@ -843,9 +1054,25 @@ function AppCard(props: {
   const [formError, setFormError] = useState<string | null>(null);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const { grantRows, setGrantRows, onGrantsButton, onGrantsSave } = props;
+  const grantsButton = useRef<HTMLButtonElement | null>(null);
   const h = `app-${app.id}-h`;
   const label = (key: string) => props.types.find((t) => t.key === key)?.label ?? key;
   const kinds = app.allowed_kinds.map(label);
+  const reads = app.scopes.includes('documents.read');
+  const granted = grantWords(app, props.types);
+
+  const saveGrants = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!grantRows || busy) return;
+    const input = readGrants(grantRows);
+    if (typeof input === 'string') return setFormError(input);
+    setFormError(null);
+    // Asked about Sensitive papers, the editor closes: the answer saves it.
+    // Saved, the screen closes the editor; asked about Sensitive papers, it
+    // stays open until the answer.
+    await props.onGrants(input);
+  };
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -908,6 +1135,20 @@ function AppCard(props: {
         <dl className="facts">
           <dt>What it may do</dt>
           <dd>{app.scopes.map((s) => APP_SCOPE_WORDS[s]).join('. ')}</dd>
+          <dt>What it may read</dt>
+          <dd>
+            {!reads
+              ? 'Nothing'
+              : granted.length > 0
+                ? `What it sent, and: ${granted.join('; ')}`
+                : 'What it sent'}
+          </dd>
+          {app.scopes.includes('documents.download') && app.daily_read_bytes !== undefined && (
+            <>
+              <dt>Downloaded today</dt>
+              <dd>{`${amountWords(app.read_today ?? 0)} of ${amountWords(app.daily_read_bytes)}`}</dd>
+            </>
+          )}
           <dt>Kinds it may send</dt>
           <dd>{kinds.length > 0 ? kinds.join(', ') : 'None yet'}</dd>
           <dt>Who sees what it sends</dt>
@@ -1016,6 +1257,81 @@ function AppCard(props: {
           </div>
         </details>
       )}
+      {grantRows !== null && (
+        <form className="stack" noValidate onSubmit={(e) => void saveGrants(e)}>
+          <fieldset className="limits-set">
+            <legend className="field-label">{`What ${app.name} may read, beyond what it sent`}</legend>
+            <p className="muted">
+              A kind, or every kind of a category, and how many months back on the paper’s date (up
+              to {APP_LOOKBACK_MAX_MONTHS}). Identity, legal and medical papers are never offered.
+            </p>
+            {grantRows.length === 0 && <p className="muted">Nothing beyond what it sent.</p>}
+            {grantRows.map((r, i) => (
+              <div className="row" key={i}>
+                <Select
+                  id={`app-${app.id}-grant-${i}`}
+                  label="What"
+                  value={r.what}
+                  options={[
+                    { value: '', label: 'Choose…' },
+                    ...grantChoices(
+                      props.types,
+                      grantRows.map((x) => x.what),
+                    ),
+                  ]}
+                  onChange={(v) =>
+                    setGrantRows(grantRows.map((x, j) => (j === i ? { ...x, what: v } : x)))
+                  }
+                />
+                <Field
+                  id={`app-${app.id}-grant-${i}-months`}
+                  label="Months back"
+                  value={r.months}
+                  inputMode="numeric"
+                  required={false}
+                  onChange={(v) =>
+                    setGrantRows(grantRows.map((x, j) => (j === i ? { ...x, months: v } : x)))
+                  }
+                />
+                <Button
+                  kind="quiet"
+                  ariaLabel={`Take away line ${i + 1}`}
+                  onClick={() => setGrantRows(grantRows.filter((_, j) => j !== i))}
+                >
+                  Take away
+                </Button>
+              </div>
+            ))}
+            <div className="row">
+              <Button
+                kind="quiet"
+                onClick={() => setGrantRows([...grantRows, { what: '', months: '12' }])}
+              >
+                Add a kind or category
+              </Button>
+            </div>
+          </fieldset>
+          <p className="muted">
+            Saving asks for your passkey, or a code from your authenticator app.
+          </p>
+          <ErrorNote message={formError} />
+          <div className="row">
+            <Button type="submit" disabled={busy} ref={onGrantsSave}>
+              {busy ? 'Saving…' : 'Save'}
+            </Button>
+            <Button
+              kind="quiet"
+              onClick={() => {
+                setGrantRows(null);
+                setFormError(null);
+                requestAnimationFrame(() => grantsButton.current?.focus());
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </form>
+      )}
       {newKey !== null && (
         <form className="stack" noValidate onSubmit={(e) => void addKey(e)}>
           <div className="field">
@@ -1051,7 +1367,7 @@ function AppCard(props: {
           </div>
         </form>
       )}
-      {!changing && newKey === null && (
+      {!changing && newKey === null && grantRows === null && (
         <div className="row">
           {app.mine && app.state === 'waiting_for_approval' && (
             <Button disabled={busy} ariaLabel={`Turn on ${app.name}`} onClick={props.onApprove}>
@@ -1090,6 +1406,28 @@ function AppCard(props: {
               }}
             >
               Change
+            </Button>
+          )}
+          {owner && reads && (
+            <Button
+              ref={(el) => {
+                grantsButton.current = el;
+                onGrantsButton(el);
+              }}
+              kind="quiet"
+              disabled={busy}
+              ariaLabel={`Change what ${app.name} may read`}
+              onClick={() => {
+                setFormError(null);
+                setGrantRows(
+                  (app.grants ?? []).map((g) => ({
+                    what: g.kind ? `kind:${g.kind}` : `category:${g.category ?? ''}`,
+                    months: String(g.lookback_months),
+                  })),
+                );
+              }}
+            >
+              What it may read
             </Button>
           )}
           {owner && (

@@ -982,6 +982,51 @@ export interface Schema {
     /** A restore's moment: a signature made before it is refused. */
     signed_after: Timestamp | null;
     created_at: GeneratedTimestamp;
+    /** Bytes a day it may download (0110, APP2): a bigint, read as a string. */
+    daily_read_bytes: ColumnType<string, string | number | undefined, string | number>;
+    /** What it downloaded today, on the household's calendar (0110). */
+    read_day: ColumnType<string | null, string | null | undefined, string | null>;
+    read_bytes_today: ColumnType<string, string | number | undefined, string | number>;
+    /** The last "looked up documents" line (0110). */
+    looked_line_at: Timestamp | null;
+    /** Its feed's lines up to here are gone (0110): a bigint, read as a string. */
+    changes_pruned_to: ColumnType<string, string | number | undefined, string | number>;
+  };
+
+  /** A kind or a category an app may read, and how far back (0110, APP2). */
+  connected_app_grant: {
+    id: Generated<string>;
+    household_id: string;
+    app_id: string;
+    kind_key: string | null;
+    category: string | null;
+    lookback_months: number;
+    /** The kinds Sensitive by default an owner confirmed it may read, by key. */
+    sensitive_kinds: ColumnType<string[], string[] | undefined, string[]>;
+    sensitive_confirmed_at: Timestamp | null;
+    sensitive_confirmed_by: string | null;
+    created_at: GeneratedTimestamp;
+  };
+
+  /** What an app was last told of a document it could read (0110, APP2): the vault's alone. */
+  connected_app_seen: {
+    household_id: string;
+    app_id: string;
+    document_id: string;
+    fingerprint: Buffer;
+    available: boolean;
+    changed_at: GeneratedTimestamp;
+  };
+
+  /** An app's changes feed (0110, APP2): the vault's alone. */
+  connected_app_change: {
+    /** A bigint, read as a string. */
+    seq: GeneratedAlways<string>;
+    household_id: string;
+    app_id: string;
+    document_id: string;
+    change: 'changed' | 'unavailable';
+    at: GeneratedTimestamp;
   };
 
   /** An app's public key (0109, APP1): two live at most, retired once. */
@@ -1033,6 +1078,11 @@ export interface Schema {
     received_at: Timestamp | null;
     decided_at: Timestamp | null;
     unlinked_at: Timestamp | null;
+    /**
+     * Filed as a document of its own, not into one that was there (0110,
+     * APP2): only such a document can be the app's own.
+     */
+    made_document: Generated<boolean>;
   };
 
   /**
@@ -2452,6 +2502,11 @@ export type Actor =
    * reaches.
    */
   | { kind: 'upload'; requestId: string; sessionId?: string }
+  /**
+   * A connected app reading (0110, APP2): the documents it may read now and
+   * their current files, and nothing at all of any other table.
+   */
+  | { kind: 'connected_app'; appId: string }
   | { kind: 'anonymous' };
 
 /**
@@ -2524,7 +2579,8 @@ async function inScope<T>(
       set_config('app.share_id', ${actor.kind === 'link' ? actor.shareId : ''}, true),
       set_config('app.upload_request_id', ${actor.kind === 'upload' ? actor.requestId : ''}, true),
       set_config('app.upload_session_id', ${actor.kind === 'upload' ? (actor.sessionId ?? '') : ''}, true),
-      set_config('app.session_id', ${account?.sessionId ?? ''}, true)
+      set_config('app.session_id', ${account?.sessionId ?? ''}, true),
+      set_config('app.connected_app_id', ${actor.kind === 'connected_app' ? actor.appId : ''}, true)
     `.execute(trx);
     return fn(trx);
   });
@@ -2594,11 +2650,57 @@ export async function readAs<T>(
       set_config('app.share_id', '', true),
       set_config('app.upload_request_id', '', true),
       set_config('app.upload_session_id', '', true),
-      set_config('app.session_id', ${who.sessionId ?? ''}, true)
+      set_config('app.session_id', ${who.sessionId ?? ''}, true),
+      set_config('app.connected_app_id', '', true)
     `.execute(trx);
     return await fn(trx);
   } finally {
     await sql`rollback to savepoint fdv_read_as`.execute(trx);
     await sql`release savepoint fdv_read_as`.execute(trx);
+  }
+}
+
+/**
+ * Reads as a connected app, inside a transaction of the vault's own (0110,
+ * APP2): what the database gives that app — the documents it may read now
+ * and their current files — and nothing else. Every document an app is
+ * answered with is read so, under the database's own rule; what the vault
+ * then writes (its feed, the activity log) is written as itself, in the same
+ * transaction, once this has rolled back.
+ *
+ * `zone` is the household's calendar, as the API has it: the lookback of a
+ * grant counts from its today.
+ *
+ * Only for reading, in a savepoint that is always rolled back, as `readAs`.
+ */
+export async function readAsApp<T>(
+  trx: Db,
+  appId: string,
+  zone: string,
+  fn: (trx: Db) => Promise<T>,
+): Promise<T> {
+  const { rows } = await sql<{ actor: string | null }>`
+    select nullif(current_setting('app.actor', true), '') as actor`.execute(trx);
+  if (rows[0]?.actor !== 'system') {
+    throw new Error('readAsApp is only for a transaction of the vault itself');
+  }
+  await sql`savepoint fdv_read_as_app`.execute(trx);
+  try {
+    await sql`select /* fdv:read-as-app */
+      set_config('app.actor', 'connected_app', true),
+      set_config('app.connected_app_id', ${appId}, true),
+      set_config('app.zone', ${zone}, true),
+      set_config('app.account_id', '', true),
+      set_config('app.member_id', '', true),
+      set_config('app.role', '', true),
+      set_config('app.share_id', '', true),
+      set_config('app.upload_request_id', '', true),
+      set_config('app.upload_session_id', '', true),
+      set_config('app.session_id', '', true)
+    `.execute(trx);
+    return await fn(trx);
+  } finally {
+    await sql`rollback to savepoint fdv_read_as_app`.execute(trx);
+    await sql`release savepoint fdv_read_as_app`.execute(trx);
   }
 }

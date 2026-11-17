@@ -730,6 +730,16 @@ export interface CapabilityFeatures {
    * `apps_public`. Absent from older vaults.
    */
   connected_apps?: boolean;
+  /**
+   * Connected apps read (0.9.0, APP2): an app reads its own documents and
+   * what an owner's read grants cover (a kind or a category, and how far
+   * back) — `GET /apps/documents`, `GET /apps/documents/{id}`, `GET
+   * /apps/changes` and `GET /apps/documents/{id}/content` — and Settings →
+   * Connected apps gives grants (`PUT /connected-apps/{id}/grants`) and the
+   * scopes `documents.read` and `documents.download`. Absent from older
+   * vaults.
+   */
+  connected_app_reads?: boolean;
 }
 
 export interface CapabilityLimits {

@@ -1497,6 +1497,17 @@ const UNIQUE_INDEXES = [
     table: 'connected_app_key',
     what: 'a live key, one connected app’s',
   },
+  // A connected app's read grants (0110, APP2): a kind, or a category, once an app.
+  {
+    name: 'connected_app_grant_kind_once',
+    table: 'connected_app_grant',
+    what: 'a kind a connected app reads, once',
+  },
+  {
+    name: 'connected_app_grant_category_once',
+    table: 'connected_app_grant',
+    what: 'a category a connected app reads, once',
+  },
   // One Reading check waiting or running a household (0074, R0).
   {
     name: 'reading_check_one_running',
@@ -1614,6 +1625,34 @@ const REQUIRED_CHECKS = [
     table: 'intake_batch',
     what: 'an app’s batch naming its app, day and part together',
   },
+  // What a connected app may read (0110, APP2): only the categories an app
+  // may ever be given, a kind or a category, at most three years back; and
+  // its feed's lines, of two sorts.
+  {
+    name: 'connected_app_grant_category',
+    table: 'connected_app_grant',
+    what: 'a category a connected app reads, from the list',
+  },
+  {
+    name: 'connected_app_grant_one',
+    table: 'connected_app_grant',
+    what: 'a read grant naming a kind or a category',
+  },
+  {
+    name: 'connected_app_grant_lookback',
+    table: 'connected_app_grant',
+    what: 'how far back a connected app reads, 1 to 36 months',
+  },
+  {
+    name: 'connected_app_grant_sensitive_kinds',
+    table: 'connected_app_grant',
+    what: 'the sensitive kinds a connected app was allowed, a bounded list',
+  },
+  {
+    name: 'connected_app_change_change',
+    table: 'connected_app_change',
+    what: 'a connected app’s feed line, changed or unavailable',
+  },
 ];
 
 /**
@@ -1648,6 +1687,9 @@ const GIVEN_NOTHING: [actor: string, who: string][] = [
   ['anonymous', 'a signed-out page'],
   ['upload', 'an upload link'],
   ['link', 'a share link it never made'],
+  // A connected app (0110, APP2): one that asks for no app of the
+  // household's is given none of its documents.
+  ['connected_app', 'a connected app it never connected'],
 ];
 
 /** A restriction and what it names (0054). */
@@ -1797,6 +1839,11 @@ const ACTOR_GUARDED = [
   'connected_app_key',
   'connected_app_nonce',
   'connected_app_intake',
+  // What a connected app may read, and its feed (0110, APP2): the owners'
+  // and its person's grants; the feed, the vault's alone.
+  'connected_app_grant',
+  'connected_app_seen',
+  'connected_app_change',
 ];
 
 /**
@@ -1921,6 +1968,7 @@ const MAKER_ONLY = [
   { table: 'connected_app', where: 'true', what: 'a connected app' },
   { table: 'connected_app_key', where: 'true', what: "a connected app's key" },
   { table: 'connected_app_intake', where: 'true', what: 'what a connected app sent' },
+  { table: 'connected_app_grant', where: 'true', what: 'what a connected app may read' },
 ];
 
 /**
@@ -1956,6 +2004,9 @@ const NOT_EVEN_OWNERS = [
   // and the nonces it signed with (0109, APP1): the person's and the vault's.
   { table: 'connected_app_intake', what: 'what a connected app sent' },
   { table: 'connected_app_nonce', what: "a connected app's nonces" },
+  // What a connected app was told, and its feed (0110, APP2): the vault's.
+  { table: 'connected_app_seen', what: 'what a connected app was told' },
+  { table: 'connected_app_change', what: "a connected app's feed" },
 ];
 
 /**
@@ -2198,6 +2249,26 @@ const REQUIRED_RULES = [
     name: 'intake_batch_app_insert',
     cmd: 'a',
     what: 'which connected app a day’s batch names',
+  },
+  // A connected app's read grants (0110, APP2): given, changed and taken
+  // away by an owner alone.
+  {
+    table: 'connected_app_grant',
+    name: 'connected_app_grant_actor_insert',
+    cmd: 'a',
+    what: 'who gives a connected app something to read',
+  },
+  {
+    table: 'connected_app_grant',
+    name: 'connected_app_grant_actor_update',
+    cmd: 'w',
+    what: 'who changes what a connected app reads',
+  },
+  {
+    table: 'connected_app_grant',
+    name: 'connected_app_grant_actor_delete',
+    cmd: 'd',
+    what: 'who takes away what a connected app reads',
   },
   // A person's Only me identity details are theirs alone, whoever asks (0050, A33).
   {
@@ -2837,6 +2908,25 @@ export async function checkRestored(
     if (unguarded.length) {
       throw new Error(
         `no rule for each kind of caller on ${unguarded.map((u) => u.name).join(', ')}`,
+      );
+    }
+    // And the rule that gives a connected app nothing of a table (0110,
+    // APP2): every table with rules but the document and its files, which
+    // it reads by its own rule.
+    const { rows: openToApps } = await admin.query<{ name: string }>(
+      `select c.relname as name
+         from pg_class c join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity
+          and to_regprocedure('public.app_connected_app_documents()') is not null
+          and c.relname not in ('document', 'document_version')
+          and not exists (select 1 from pg_policy p
+                           where p.polrelid = c.oid and not p.polpermissive and p.polcmd = '*'
+                             and pg_get_expr(p.polqual, p.polrelid) like '%''connected_app''%')
+        order by 1`,
+    );
+    if (openToApps.length) {
+      throw new Error(
+        `no rule keeps a connected app out of ${openToApps.map((u) => u.name).join(', ')}`,
       );
     }
     // And the rule that keeps a share link to what its page needs (0042),

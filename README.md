@@ -387,11 +387,41 @@ suggestion: where the vault reads the page differently, the card says both and w
 the person. It can ask what became of what it sent — waiting, filed, refused or removed
 — and take back a file that is still waiting.
 
-**What it cannot do.** It cannot sign in, open, list, search or download anything, or
-change anything in the vault. It cannot send a kind it was not allowed (a receipt, if you
-did not allow receipts), choose who sees what it sends beyond the app's setting, or mark
-anything sensitive. Nobody else sees what it sent until the person files it — not even
-an owner. Every other part of the vault refuses its requests.
+**What it cannot do.** It cannot sign in, search, or change anything in the vault, and
+it reads only what the next section says. It cannot send a kind it was not allowed (a
+receipt, if you did not allow receipts), choose who sees what it sends beyond the app's
+setting, or mark anything sensitive. Nobody else sees what it sent until the person
+files it — not even an owner. Every other part of the vault refuses its requests.
+
+**What a connected app can read.** Only if an owner allows it (_What it may do_ in
+_Settings → Connected apps_: reading, and downloading, are each ticked separately; a new
+app may only send unless you tick them). It reads the documents that what it sent became
+(a paper of its own, while its newest file is one the app sent — its own later file filed
+into it keeps it so; a newer file from the family makes it the family's, and a family
+paper its file was filed into as a new version is never its own), and those
+its **read grants** cover: a kind (bank statements, say) or every kind of a
+category (Bills & utilities), each for so many months back — 1 to 36 — counted on the
+paper's date (its issue date, else its due date, else the day it was filed). For each it
+is told the kind, title, dates, amount, who issued it, the account's last 4 digits, the
+period, the tax year, the status and the current file's size and hash, as the vault has
+them now; never whose it is, its notes, tags or number, where the paper is kept, or other
+versions. It can download the current file (an attachment, never a page, counted against
+1 GB a day unless an owner changes it; a file larger than that is taken in parts), and follow a feed of what changed since it last
+asked, which says _unavailable_ — never why — for a document it may no longer read. It
+**never** reads anything the person it acts as cannot see; anything Only me, even what it
+sent; anything Essential or in the Trash; identity, legal, medical, education or pet
+papers, whatever is granted (only Financial, Tax, Bills & utilities, Insurance, Work,
+Property & vehicle and Other can be granted); or a paper somebody marked Sensitive. Kinds
+that are Sensitive by default — statements, payslips, tax forms, loans — are read
+through a grant only when the owner said yes to each of them; Settings asks, and asks
+again for a kind that becomes Sensitive later or joins a granted category. A kind kept
+as an Essential is never read through a grant.
+The database keeps the same rule as the vault's own code: a request from an app is given
+those documents and their current files, and nothing at all of any other table. Granting
+more to an app that acts as somebody else waits for them to turn it on again, as any
+widening does. Its reading is in the activity log: "Ahmed via MonTra downloaded …", "…
+read the details of …" (on the document's own Activity too), and "… looked up documents"
+once an hour.
 
 **Connecting one.** The app makes its own key pair and shows its public key, starting
 `ed25519:`, and a fingerprint. An owner opens _Settings → Connected apps → Connect an app_
@@ -451,8 +481,9 @@ stays in the Inbox for the person to decide, and what was filed stays in the vau
 is removed by itself when its person's sign-in is taken away or they can no longer act
 for it (made a teen or a viewer), and when they are signed out everywhere or an owner
 stops their password — not when they change their password. Everything an app does is in
-the activity log, "Ahmed via MonTra sent a file to their Inbox". A restore pauses every
-app until an owner turns each back on.
+the activity log, "Ahmed via MonTra sent a file to their Inbox" (files sent within an
+hour of each other are one line: "sent 12 files"). A restore pauses every app until an
+owner turns each back on, and an app reads its feed again from the start after one.
 
 **What is kept of what an app sent.** For a file the person removed, or the app took
 back, the vault keeps its hash and size (never the file, its name or what the app said

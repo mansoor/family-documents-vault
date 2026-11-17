@@ -7971,6 +7971,101 @@ resume, addKey, retireKey, remove}`; and a new entry
 baseUrl, appId, keyId, privateKey, fetch })`, `parseConnectionString`.
       The fake checks signatures for real, and a contract scenario runs on
       both.
+  - Connected apps read: grants, list, document, changes and download
+    (0.9.0-dev.56, APP2; the owner's ask of 16 Nov 2026). Migration 0110.
+    **Additive.**
+    - **New `features`:** `connected_app_reads` (`true`).
+    - **Scopes:** `documents.read` and `documents.download` may now be
+      given (`POST` and `PATCH /api/v1/connected-apps` take `scopes`; left
+      out on `POST`, `documents.send` alone, as before). New
+      `daily_read_bytes` (1 GB unless set, up to `FDV_APP_DAILY_BYTES`).
+      Adding a scope or raising it widens, as APP1's widening does.
+    - **New family route:** `PUT /api/v1/connected-apps/{id}/grants` (an
+      owner, with a passkey or a code): `{ grants: [{ kind | category,
+lookback_months }], confirm_sensitive? }`, every grant the app is to
+      have. A category must be one of `financial`, `tax`, `bills`,
+      `insurance`, `work`, `property`, `other`; a kind one of theirs that is
+      not a note nor kept as an Essential (`422 validation_failed`,
+      `detail` naming the grant). A grant covering a kind Sensitive by
+      default that is not yet confirmed on it — kind by kind, so a kind made
+      Sensitive later, or moved into a granted category, is asked about
+      again — is `409 sensitive_confirm` (its `message` the question to ask,
+      `detail` the kind keys) until `confirm_sensitive: true`; meanwhile it
+      is not read. A category grant never covers a kind kept as an Essential.
+      Its `app.changed` line names the grants by key and lookback. A grant more, a longer lookback or a newly
+      confirmed one sends an app acting as somebody else back to
+      `waiting_for_approval`, and they are emailed. `ConnectedAppView`
+      gains `grants` (`{ kind, category, lookback_months,
+sensitive_confirmed, sensitive_kinds }`), `daily_read_bytes` and
+      `read_today`.
+    - **New signed routes:**
+      - `GET /api/v1/apps/documents` (`documents.read`): `kind`
+        (comma-separated), `category`, `from`, `to` (`YYYY-MM-DD`, on
+        `paper_date`), `own`, `limit` (1–100, default 50), `cursor`; newest
+        `paper_date` first, then by id: `{ items: AppDocument[], next }`.
+        `422 validation_failed` for anything else of these, or one given
+        twice.
+      - `GET /api/v1/apps/documents/{id}` (`documents.read`): one
+        `AppDocument` — `{ id, kind: { key, label, category }, title,
+paper_date, issued, expires, due_date, amount: { text, value,
+currency }, issuer, account_last4, period, tax_year, status: { value,
+label }, version: { id, sha256, byte_size, content_type }, own,
+external_id, updated_at }`.
+      - `GET /api/v1/apps/changes` (`documents.read`): `{ changes: [{
+change: 'changed', at, document } | { change: 'unavailable', at,
+document_id }], cursor, more }`; `limit` 1–100 (default 100). Without a
+        cursor, everything it may read now, by id, a page at a time, then
+        the feed from there. `410 cursor_expired` for a cursor older than
+        the 90 days of lines kept, or from before a restore; `422` for one
+        it did not give.
+      - `GET /api/v1/apps/documents/{id}/content` (`documents.download`):
+        the current file, `Content-Disposition: attachment`, `nosniff`, a
+        sandbox CSP, `Accept-Ranges: bytes`, `ETag: "<version_id>"`;
+        `Range` is `206` (`416 range_not_satisfiable`); `If-None-Match` is
+        `304`. Counted against `daily_read_bytes`: `429 app_read_day_full`
+        with `Retry-After` to the household's midnight; more than a whole
+        day's bytes in one answer is `413 larger_than_daily_read`, not
+        retriable (ask in parts, with `Range`). No `HEAD` on the app routes.
+      - An app paused, waiting or removed after its request was let in is
+        answered `403 app_paused`, `403 app_not_approved` or `401
+app_revoked`, never an empty answer.
+      - A document it may not read is `404 not_found` on each, the same as
+        one that is not there, or an id that is not one.
+    - **What it reads:** its own — a document a send of its made (filed
+      as a document, not into one that was there:
+      `connected_app_intake.made_document`), while its current version is
+      one the app sent — and what its
+      grants cover, within the lookback on `paper_date` (issued, else a
+      `due_date` detail, else the day it was filed); never what its person
+      cannot see, Only me (its own included), Essential, the Trash, a note,
+      a category but the seven above (the document's and its kind's), nor a
+      paper marked Sensitive; a kind Sensitive by default only through a
+      confirmed grant (its own need none).
+    - **Changed answers:** an intake filed and no longer readable by the app
+      is `state: 'unavailable'` (`document_id`, `version_id`, `filed_at`
+      null), never why. `GET /apps/me` gains `read: { grants }`, and its
+      `limits.read_bytes_per_day` and `read_bytes_today` are the app's own.
+    - **Database:** `connected_app_grant`, `connected_app_seen`,
+      `connected_app_change`; `connected_app.daily_read_bytes`,
+      `read_day`, `read_bytes_today`, `looked_line_at`,
+      `changes_pruned_to`. The new actor `connected_app`
+      (`app.connected_app_id`): `connected_app_documents(app)` is the rule,
+      written once; the `document` and `document_version` rules give such a
+      transaction those documents and their current versions alone, and a
+      `<table>_no_app` rule on every other table gives it nothing. The
+      worker's hourly sweep keeps 90 days of each feed. The restore checks
+      every table keeps an app out.
+    - **Activity:** `app.read` (one document's details, its line, once an
+      hour an app), `app.looked_up` (a list or the feed, once an hour), and
+      `document.downloaded` with `detail.app`. `describeEvents` folds an
+      app's downloads of one document per sitting, and the files it sent
+      within an hour of each other into one line ("sent 12 files").
+    - **Shared and client:** `appMayRead` (the API's copy of the rule, held
+      to the database's by a test), `lookbackStart`, `AppDocument`,
+      `AppChanges`, `ConnectedAppGrantsInput`; `@fdv/client`
+      `api.connectedApps.setGrants`, and `createAppClient`'s `list`,
+      `document`, `changes` and `download`. The fake reads by the same
+      rule and keeps a feed; a contract scenario runs on both.
 
 ## Deprecations in effect
 

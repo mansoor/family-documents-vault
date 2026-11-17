@@ -1411,6 +1411,20 @@ const RULES: Record<string, Rule> = {
   'DELETE /api/v1/apps/intake/:external_id': { who: 'app' },
   'POST /api/v1/apps/keys': { who: 'app', body: () => ({ public_key: 'ed25519:x' }) },
   'DELETE /api/v1/apps/keys/:key_id': { who: 'app' },
+  // Reading (0.9.0, APP2): its signature alone; what it reads is held to
+  // its own and its grants (reads.test.ts), never anybody's planted secret.
+  'GET /api/v1/apps/documents': { who: 'app', query: () => 'limit=5' },
+  'GET /api/v1/apps/documents/:id': { who: 'app' },
+  'GET /api/v1/apps/documents/:id/content': { who: 'app' },
+  'GET /api/v1/apps/changes': { who: 'app' },
+  // What an app may read: an owner's, with a passkey or a code.
+  'PUT /api/v1/connected-apps/:id/grants': {
+    who: 'ownerPower',
+    body: () => ({
+      grants: [{ category: 'financial', lookback_months: 36 }],
+      confirm_sensitive: true,
+    }),
+  },
   'GET /api/v1/connected-apps': { who: 'signedIn' },
   'POST /api/v1/connected-apps': {
     who: 'ownerPower',

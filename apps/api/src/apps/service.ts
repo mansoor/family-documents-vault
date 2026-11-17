@@ -11,7 +11,10 @@ import {
   APP_DEFAULT_DAILY_FILES,
   APP_DEFAULT_LINKS_PER_HOUR,
   APP_DEFAULT_READ_BYTES,
+  APP_GRANTABLE_CATEGORIES,
+  APP_GRANTS_MAX,
   APP_HINTS,
+  APP_LOOKBACK_MAX_MONTHS,
   APP_IP_ALLOW_MAX,
   APP_KEY_RETIRE_DAYS,
   APP_KEYS_MAX,
@@ -19,6 +22,7 @@ import {
   APP_NAME_MAX,
   APP_REFUSALS,
   APP_REQUESTS_PER_MINUTE,
+  APP_SCOPES_DEFAULT,
   APP_SCOPES_OFFERED,
   APP_SIGNATURE_WINDOW_SECONDS,
   APP_STATUS_MAX_IDS,
@@ -28,6 +32,7 @@ import {
   NOTE_KIND,
   UPLOAD_KINDS,
   appBatchName,
+  appSensitiveConfirmWords,
   hintText,
   localToday,
   lockInEffect,
@@ -36,6 +41,7 @@ import {
   seesAdults,
   suspensionInEffect,
   type AppConnection,
+  type AppGrant,
   type AppIntakeMetadata,
   type AppIntakeState,
   type AppIntakeStates,
@@ -45,6 +51,8 @@ import {
   type AppScope,
   type AppStateName,
   type ConnectedAppChange,
+  type ConnectedAppGrantsInput,
+  type ConnectedAppGrantView,
   type ConnectedAppInput,
   type ConnectedAppKeyAdded,
   type ConnectedAppList,
@@ -58,7 +66,9 @@ import type { AlertRequest } from '../alert-job.js';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { clientAddressOf } from '../client-address.js';
 import { ApiError } from '../errors.js';
+import type { DocumentService } from '../documents/service.js';
 import type { BatchService } from '../uploads/batches.js';
+import { AppReads } from './reads.js';
 import {
   fingerprintOf,
   parseSignature,
@@ -135,6 +145,8 @@ export interface AppOptions {
   alert: (a: AlertRequest) => Promise<void>;
   /** The clock, for the tests. */
   now?: () => number;
+  /** The documents' service (APP2): a download's bytes. Without it, nothing is read. */
+  documents?: DocumentService;
 }
 
 /** A file an app sends: the multipart part, and what the route knows of the rest of the body. */
@@ -246,6 +258,15 @@ function widens(
   if (ip !== undefined && app.ip_allow.length > 0) {
     if (ip.length === 0 || ip.some((n) => !withinAny(n, app.ip_allow))) return true;
   }
+  if (
+    typeof set.daily_read_bytes === 'number' &&
+    set.daily_read_bytes > Number(app.daily_read_bytes)
+  ) {
+    return true;
+  }
+  if (Array.isArray(set.scopes)) {
+    if ((set.scopes as string[]).some((k) => !app.scopes.includes(k))) return true;
+  }
   if ('default_visibility' in set) {
     if (
       visibilityRank(set.default_visibility as string | null) >
@@ -300,6 +321,9 @@ interface AppRow {
   refused_today: number;
   last_refusal: string | null;
   created_at: Date;
+  daily_read_bytes: string;
+  read_day: string | null;
+  read_bytes_today: string;
 }
 
 const APP_COLUMNS = [
@@ -329,6 +353,9 @@ const APP_COLUMNS = [
   'a.refused_today',
   'a.last_refusal',
   'a.created_at',
+  'a.daily_read_bytes',
+  sql<string | null>`a.read_day::text`.as('read_day'),
+  'a.read_bytes_today',
 ] as const;
 
 interface KeyRow {
@@ -368,8 +395,26 @@ interface IntakeRow {
   hints_sealed: Buffer | null;
 }
 
-/** The state an app is answered for what it sent, as `POST /apps/intake` answers it. */
-function stateOf(r: IntakeRow): AppIntakeState {
+/**
+ * The state an app is answered for what it sent, as `POST /apps/intake`
+ * answers it. Filed, and no longer readable by the app (APP2): unavailable,
+ * never why — nor which document.
+ */
+function stateOf(r: IntakeRow, readable: ReadonlySet<string> | null = null): AppIntakeState {
+  if (r.state === 'filed' && readable && !(r.document_id && readable.has(r.document_id))) {
+    return {
+      external_id: r.external_id,
+      state: 'unavailable',
+      received_at: r.received_at ? r.received_at.toISOString() : null,
+      sha256: r.sha256 ? r.sha256.toString('hex') : null,
+      byte_size: r.byte_size === null ? null : Number(r.byte_size),
+      document_id: null,
+      version_id: null,
+      filed_at: null,
+      removed_reason: null,
+      refusal: null,
+    };
+  }
   return {
     external_id: r.external_id,
     state: r.state === 'arriving' ? 'waiting' : r.state,
@@ -447,12 +492,25 @@ function liveKeys(keys: readonly KeyRow[], now: number): KeyRow[] {
 export class AppService {
   /** Signed requests each app made this minute: the rate. */
   private readonly rate = new Map<string, { minute: number; n: number }>();
+  /** What an app reads (APP2). */
+  readonly reads: AppReads | null;
 
   constructor(
     private readonly db: Db,
     private readonly batches: BatchService,
     private readonly opts: AppOptions,
-  ) {}
+  ) {
+    this.reads = opts.documents
+      ? new AppReads(db, { documents: opts.documents, now: () => this.now() })
+      : null;
+  }
+
+  /** Which filed documents of these the app may still read: null while nothing is read. */
+  private async readableOf(c: AppCaller, rows: readonly IntakeRow[]): Promise<Set<string> | null> {
+    if (!this.reads) return null;
+    const ids = rows.flatMap((r) => (r.state === 'filed' && r.document_id ? [r.document_id] : []));
+    return this.reads.stillReadable(c, ids);
+  }
 
   private now(): number {
     return this.opts.now?.() ?? Date.now();
@@ -731,7 +789,7 @@ export class AppService {
   /** `GET /apps/me`: the connection test, and what this app may do. */
   async me(c: AppCaller): Promise<AppMe> {
     const now = this.now();
-    const { app, keys, kinds, household } = await withSystem(
+    const { app, keys, kinds, household, grants } = await withSystem(
       this.db,
       c.householdId,
       async (trx) => {
@@ -761,9 +819,17 @@ export class AppService {
           .selectFrom('household')
           .select(['name'])
           .executeTakeFirstOrThrow();
-        return { app, keys, kinds, household };
+        const grants = await trx
+          .selectFrom('connected_app_grant')
+          .select(['kind_key', 'category', 'lookback_months'])
+          .where('app_id', '=', c.appId)
+          .orderBy('kind_key')
+          .orderBy('category')
+          .execute();
+        return { app, keys, kinds, household, grants };
       },
     );
+    const readToday = app.read_day === localToday(c.timezone, new Date(now));
     const day = localToday(c.timezone, new Date(now));
     const caps = capsOf(app, now);
     const sent = today(app, day);
@@ -793,6 +859,17 @@ export class AppService {
         hints: [...APP_HINTS],
         auto_file: false,
       },
+      ...(this.reads
+        ? {
+            read: {
+              grants: grants.map((g): AppGrant =>
+                g.kind_key
+                  ? { kind: g.kind_key, lookback_months: g.lookback_months }
+                  : { category: g.category as string, lookback_months: g.lookback_months },
+              ),
+            },
+          }
+        : {}),
       limits: {
         max_upload_bytes: this.opts.maxUploadBytes,
         accepted_types: Object.keys(UPLOAD_KINDS),
@@ -800,8 +877,8 @@ export class AppService {
         files_today: sent.files,
         bytes_per_day: caps.bytes,
         bytes_today: sent.bytes,
-        read_bytes_per_day: APP_DEFAULT_READ_BYTES,
-        read_bytes_today: 0,
+        read_bytes_per_day: Number(app.daily_read_bytes ?? APP_DEFAULT_READ_BYTES),
+        read_bytes_today: readToday ? Number(app.read_bytes_today) : 0,
         links_per_hour: APP_DEFAULT_LINKS_PER_HOUR,
         requests_per_minute: APP_REQUESTS_PER_MINUTE,
         day_resets_at: nextLocalMidnight(c.timezone, new Date(now)).toISOString(),
@@ -1047,7 +1124,7 @@ export class AppService {
       if (!claim.row.sha256 || !hash.digest().equals(claim.row.sha256)) {
         throw err(409, 'external_id_conflict');
       }
-      return { status: 200, state: stateOf(claim.row) };
+      return { status: 200, state: stateOf(claim.row, await this.readableOf(c, [claim.row])) };
     }
 
     // What became of a send that did not land: put back as it was.
@@ -1315,7 +1392,7 @@ export class AppService {
   async status(c: AppCaller, externalId: string, meta: RequestMeta): Promise<AppIntakeState> {
     if (!EXTERNAL_ID_PATTERN.test(externalId)) throw notFound();
     const p = this.principalOf(c);
-    return withPrincipal(this.db, p, async (trx) => {
+    const row = await withPrincipal(this.db, p, async (trx) => {
       const row = (await trx
         .selectFrom('connected_app_intake')
         .selectAll()
@@ -1324,8 +1401,9 @@ export class AppService {
         .executeTakeFirst()) as IntakeRow | undefined;
       if (!row || row.state === 'arriving') throw notFound();
       await this.checked(c, trx, meta);
-      return stateOf(row);
+      return row;
     });
+    return stateOf(row, await this.readableOf(c, [row]));
   }
 
   /** `GET /apps/intake?external_ids=`: up to 100 at once, and those never sent. */
@@ -1337,7 +1415,7 @@ export class AppService {
     if (bad !== undefined) throw invalid('That is not an external_id.', 'external_ids');
     const asked = [...new Set(ids)];
     const p = this.principalOf(c);
-    return withPrincipal(this.db, p, async (trx) => {
+    const rows = await withPrincipal(this.db, p, async (trx) => {
       const rows = (await trx
         .selectFrom('connected_app_intake')
         .selectAll()
@@ -1346,15 +1424,17 @@ export class AppService {
         .where('state', '<>', 'arriving')
         .execute()) as IntakeRow[];
       await this.checked(c, trx, meta);
-      const by = new Map(rows.map((r) => [r.external_id, r]));
-      return {
-        items: asked.flatMap((id) => {
-          const r = by.get(id);
-          return r ? [stateOf(r)] : [];
-        }),
-        unknown: asked.filter((id) => !by.has(id)),
-      };
+      return rows;
     });
+    const readable = await this.readableOf(c, rows);
+    const by = new Map(rows.map((r) => [r.external_id, r]));
+    return {
+      items: asked.flatMap((id) => {
+        const r = by.get(id);
+        return r ? [stateOf(r, readable)] : [];
+      }),
+      unknown: asked.filter((id) => !by.has(id)),
+    };
   }
 
   /**
@@ -1387,7 +1467,7 @@ export class AppService {
         'It has been filed already. To remove a filed document, delete it.',
       );
     }
-    if (row.state !== 'waiting') return stateOf(row);
+    if (row.state !== 'waiting') return stateOf(row, await this.readableOf(c, [row]));
     if (!row.batch_id || !row.incoming_file_id) throw notFound();
     await this.batches.removeItem(p, row.batch_id, row.incoming_file_id, meta, async (trx) => {
       const out = await trx
@@ -1741,6 +1821,7 @@ export class AppService {
   private checkedCaps(input: {
     daily_files?: number;
     daily_bytes?: number;
+    daily_read_bytes?: number;
     backfill?: ConnectedAppInput['backfill'];
   }) {
     const { files, bytes } = this.opts.ceilings;
@@ -1758,6 +1839,15 @@ export class AppService {
         files,
         'daily_files',
         `Files a day: 1 to ${files}.`,
+      );
+    }
+    if (input.daily_read_bytes !== undefined) {
+      out.daily_read_bytes = whole(
+        input.daily_read_bytes,
+        1024 * 1024,
+        bytes,
+        'daily_read_bytes',
+        `Bytes a day it may download: 1 MB to ${bytes}.`,
       );
     }
     if (input.daily_bytes !== undefined) {
@@ -1859,6 +1949,24 @@ export class AppService {
       .where('app_id', 'in', ids)
       .orderBy('created_at')
       .execute()) as Array<KeyRow & { app_id: string }>;
+    const grants = await trx
+      .selectFrom('connected_app_grant')
+      .select(['app_id', 'kind_key', 'category', 'lookback_months', 'sensitive_kinds'])
+      .where('app_id', 'in', ids)
+      .orderBy('created_at')
+      .execute();
+    // The kinds Sensitive by default each grant covers now: confirmed only
+    // while every one of them is.
+    const sensitiveKinds =
+      grants.length === 0
+        ? []
+        : await trx
+            .selectFrom('effective_document_type')
+            .select(['key', 'category', 'usually_essential'])
+            .where('deleted_at', 'is', null)
+            .where('sensitive_default', '=', true)
+            .where('key', '<>', NOTE_KIND)
+            .execute();
     // What it sent, waiting and filed: its person's alone (0109's rule).
     const counted = await trx
       .selectFrom('connected_app_intake')
@@ -1912,6 +2020,26 @@ export class AppService {
         refused_today: a.refused_on === day ? a.refused_today : 0,
         last_refusal: a.refused_on === day ? a.last_refusal : null,
         counts: mine ? { waiting: n('waiting'), filed: n('filed') } : null,
+        grants: grants
+          .filter((g) => g.app_id === a.id)
+          .map((g): ConnectedAppGrantView => {
+            const covered = sensitiveKinds.filter(
+              (k) =>
+                !k.usually_essential &&
+                (APP_GRANTABLE_CATEGORIES as readonly string[]).includes(k.category) &&
+                AppService.covers({ kind: g.kind_key, category: g.category }, k),
+            );
+            return {
+              kind: g.kind_key,
+              category: g.category,
+              lookback_months: g.lookback_months,
+              sensitive_confirmed:
+                covered.length > 0 && covered.every((k) => g.sensitive_kinds.includes(k.key)),
+              sensitive_kinds: [...g.sensitive_kinds],
+            };
+          }),
+        daily_read_bytes: Number(a.daily_read_bytes),
+        read_today: a.read_day === day ? Number(a.read_bytes_today) : 0,
         connection_string: newest
           ? connectionString({
               url: address.url,
@@ -1972,7 +2100,7 @@ export class AppService {
           created_by: p.accountId,
           approval: own ? 'approved' : 'waiting',
           approved_at: own ? new Date() : null,
-          scopes: [...APP_SCOPES_OFFERED],
+          scopes: AppService.checkedScopes(input.scopes) ?? [...APP_SCOPES_DEFAULT],
           allowed_kinds: kinds,
           default_visibility: input.default_visibility ?? null,
           daily_files: APP_DEFAULT_DAILY_FILES,
@@ -2017,6 +2145,8 @@ export class AppService {
     if (p.role !== 'owner') throw ownersOnly();
     const set: Record<string, unknown> = { ...this.checkedCaps(input) };
     if (input.name !== undefined) set.name = AppService.nameOf(input.name);
+    const scopes = AppService.checkedScopes(input.scopes);
+    if (scopes) set.scopes = scopes;
     if (input.default_visibility !== undefined) set.default_visibility = input.default_visibility;
     const asked = await withPrincipal(this.db, p, async (trx) => {
       const app = (await trx
@@ -2059,6 +2189,223 @@ export class AppService {
         ip: meta.ip,
       });
       return again ? { account: again, name: (set.name as string | undefined) ?? app.name } : null;
+    });
+    if (asked) await this.askAgain(p.householdId, asked.account, asked.name);
+    return this.view(p, id);
+  }
+
+  /** What an app may do, checked: scopes this vault grants, at least one. Undefined when not sent. */
+  private static checkedScopes(v: unknown): string[] | undefined {
+    if (v === undefined) return undefined;
+    if (
+      !Array.isArray(v) ||
+      v.length === 0 ||
+      v.some((s) => !(APP_SCOPES_OFFERED as readonly unknown[]).includes(s))
+    ) {
+      throw invalid(`Choose what it may do, from: ${APP_SCOPES_OFFERED.join(', ')}.`, 'scopes');
+    }
+    return APP_SCOPES_OFFERED.filter((s) => (v as unknown[]).includes(s));
+  }
+
+  /**
+   * `PUT /connected-apps/{id}/grants`: an owner sets what an app may read
+   * beyond its own (the route asked for a passkey or a code) — each a kind
+   * or a category an app may ever be given, and how far back. A kind
+   * Sensitive by default, or a category holding one, asks once
+   * (`confirm_sensitive`, else `409 sensitive_confirm` with the question);
+   * a grant confirmed before stays so. More than it could read before, for
+   * an app acting as somebody else, waits for them to turn it on again.
+   */
+  /**
+   * Whether a grant covers a kind: its own key, or its category — never a
+   * kind kept as an Essential, nor of a category an app may never read.
+   */
+  private static covers(
+    g: { kind: string | null; category: string | null },
+    k: { key: string; category: string },
+  ): boolean {
+    return g.kind ? k.key === g.kind : k.category === g.category;
+  }
+
+  async setGrants(
+    p: Principal,
+    id: string,
+    input: ConnectedAppGrantsInput,
+    meta: RequestMeta,
+  ): Promise<ConnectedAppView> {
+    if (p.role !== 'owner') throw ownersOnly();
+    if (!input || !Array.isArray(input.grants) || input.grants.length > APP_GRANTS_MAX) {
+      throw invalid(`Up to ${APP_GRANTS_MAX} grants: each a kind or a category.`, 'grants');
+    }
+    const wanted = input.grants.map((g, i) => {
+      const kind = typeof g?.kind === 'string' ? g.kind : undefined;
+      const category = typeof g?.category === 'string' ? g.category : undefined;
+      const months = g?.lookback_months;
+      if ((kind === undefined) === (category === undefined)) {
+        throw invalid('Each grant is a kind or a category, not both.', `grants.${i}`);
+      }
+      if (
+        typeof months !== 'number' ||
+        !Number.isInteger(months) ||
+        months < 1 ||
+        months > APP_LOOKBACK_MAX_MONTHS
+      ) {
+        throw invalid(
+          `How far back: 1 to ${APP_LOOKBACK_MAX_MONTHS} months.`,
+          `grants.${i}.lookback_months`,
+        );
+      }
+      if (
+        category !== undefined &&
+        !(APP_GRANTABLE_CATEGORIES as readonly string[]).includes(category)
+      ) {
+        throw invalid('An app may never read that category.', `grants.${i}.category`);
+      }
+      return { kind: kind ?? null, category: category ?? null, months };
+    });
+    const keyOf = (g: { kind: string | null; category: string | null }) =>
+      g.kind ? `kind:${g.kind}` : `category:${g.category}`;
+    if (new Set(wanted.map(keyOf)).size !== wanted.length) {
+      throw invalid('Each kind or category once.', 'grants');
+    }
+    const asked = await withPrincipal(this.db, p, async (trx) => {
+      const app = (await trx
+        .selectFrom('connected_app as a')
+        .select(APP_COLUMNS)
+        .where('a.id', '=', id)
+        .where('a.revoked_at', 'is', null)
+        .forUpdate()
+        .executeTakeFirst()) as AppRow | undefined;
+      if (!app) throw notHere();
+      const kinds = await trx
+        .selectFrom('effective_document_type')
+        .select(['key', 'label', 'category', 'usually_essential', 'sensitive_default'])
+        .where('deleted_at', 'is', null)
+        .where('key', '<>', NOTE_KIND)
+        .execute();
+      const kindBy = new Map(kinds.map((k) => [k.key, k]));
+      const grantableKind = (k: { category: string; usually_essential: boolean }) =>
+        (APP_GRANTABLE_CATEGORIES as readonly string[]).includes(k.category) &&
+        !k.usually_essential;
+      // Never an identity, legal or medical kind, nor one kept as an
+      // Essential: an app reads none of them, whatever is ticked.
+      for (const [i, g] of wanted.entries()) {
+        if (!g.kind) continue;
+        const k = kindBy.get(g.kind);
+        if (!k) throw invalid('Each kind must be one the household has.', `grants.${i}.kind`);
+        if (
+          !(APP_GRANTABLE_CATEGORIES as readonly string[]).includes(k.category) ||
+          k.usually_essential
+        ) {
+          throw invalid(`An app may never read ${k.label}.`, `grants.${i}.kind`);
+        }
+      }
+      const had = await trx
+        .selectFrom('connected_app_grant')
+        .select(['id', 'kind_key', 'category', 'lookback_months', 'sensitive_kinds'])
+        .where('app_id', '=', id)
+        .execute();
+      const hadBy = new Map(had.map((g) => [keyOf({ kind: g.kind_key, category: g.category }), g]));
+      // The kinds Sensitive by default each grant covers, as the household
+      // has them now; and of those, the ones nobody has confirmed on it yet.
+      const sensitiveOf = (g: { kind: string | null; category: string | null }) =>
+        kinds.filter(
+          (k) => k.sensitive_default !== false && grantableKind(k) && AppService.covers(g, k),
+        );
+      const unconfirmed = (g: { kind: string | null; category: string | null }) => {
+        const yes = hadBy.get(keyOf(g))?.sensitive_kinds ?? [];
+        return sensitiveOf(g).filter((k) => !yes.includes(k.key));
+      };
+      const toConfirm = wanted.flatMap((g) => unconfirmed(g));
+      if (toConfirm.length > 0 && input.confirm_sensitive !== true) {
+        throw new ApiError(
+          409,
+          'sensitive_confirm',
+          appSensitiveConfirmWords(app.name, [...new Set(toConfirm.map((k) => k.label))].sort()),
+          { detail: [...new Set(toConfirm.map((k) => k.key))].sort().join(',') },
+        );
+      }
+      // What each grant is to have: the kinds confirmed before, and those
+      // confirmed now.
+      const next = wanted.map((g) => {
+        const before = hadBy.get(keyOf(g));
+        const now = unconfirmed(g).map((k) => k.key);
+        return {
+          ...g,
+          before,
+          newly: now,
+          sensitive: [...new Set([...(before?.sensitive_kinds ?? []), ...now])].sort(),
+        };
+      });
+      // More than before: a kind or category new to it, further back, or
+      // sensitive papers newly allowed.
+      const wider = next.some(
+        (g) => !g.before || g.months > g.before.lookback_months || g.newly.length > 0,
+      );
+      const keep = new Set(wanted.map(keyOf));
+      const gone = had.filter((g) => !keep.has(keyOf({ kind: g.kind_key, category: g.category })));
+      if (gone.length > 0) {
+        await trx
+          .deleteFrom('connected_app_grant')
+          .where(
+            'id',
+            'in',
+            gone.map((g) => g.id),
+          )
+          .execute();
+      }
+      for (const g of next) {
+        const confirmedNow =
+          g.newly.length > 0
+            ? { sensitive_confirmed_at: new Date(), sensitive_confirmed_by: p.accountId }
+            : {};
+        if (g.before) {
+          await trx
+            .updateTable('connected_app_grant')
+            .set({ lookback_months: g.months, sensitive_kinds: g.sensitive, ...confirmedNow })
+            .where('id', '=', g.before.id)
+            .execute();
+        } else {
+          await trx
+            .insertInto('connected_app_grant')
+            .values({
+              household_id: p.householdId,
+              app_id: id,
+              kind_key: g.kind,
+              category: g.category,
+              lookback_months: g.months,
+              sensitive_kinds: g.sensitive,
+              ...confirmedNow,
+            })
+            .execute();
+        }
+      }
+      const changed =
+        gone.length > 0 ||
+        next.some((g) => !g.before || g.before.lookback_months !== g.months || g.newly.length > 0);
+      if (!changed) return null;
+      const again = wider && (await this.reapprove(trx, p, app)) ? app.account_id : null;
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'app.changed',
+        objectType: 'member',
+        objectId: app.member_id,
+        detail: {
+          app_id: id,
+          app: app.name,
+          fields: ['grants'],
+          // What it may read now, by key alone: never a document.
+          grants: next.map((g) => ({
+            ...(g.kind ? { kind: g.kind } : { category: g.category }),
+            lookback_months: g.months,
+            ...(g.newly.length > 0 ? { sensitive_confirmed: true } : {}),
+          })),
+          ...(again ? { approval: 'asked_again' } : {}),
+        },
+        ip: meta.ip,
+      });
+      return again ? { account: again, name: app.name } : null;
     });
     if (asked) await this.askAgain(p.householdId, asked.account, asked.name);
     return this.view(p, id);

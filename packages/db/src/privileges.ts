@@ -349,6 +349,16 @@ begin
     revoke execute on function public.connected_apps_revoke_for(uuid, text) from public;
     grant execute on function public.connected_apps_revoke_for(uuid, text) to fdv_app;
   end if;
+  -- What a connected app reads (0110, APP2): the rule, written once, that
+  -- its transactions are narrowed to.
+  if to_regprocedure('public.connected_app_documents(uuid)') is not null then
+    revoke execute on function public.connected_app_documents(uuid) from public;
+    grant execute on function public.connected_app_documents(uuid) to fdv_app;
+    revoke execute on function public.app_connected_app_documents() from public;
+    grant execute on function public.app_connected_app_documents() to fdv_app;
+    revoke execute on function public.app_connected_app_versions() from public;
+    grant execute on function public.app_connected_app_versions() to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

@@ -1204,6 +1204,34 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       version_id: accepted.json<{ version_id: string }>().version_id,
       filed_at: expect.any(String) as string,
     });
+    // Filed as a document of its own (APP2): the paper it made.
+    const madeIt = await admin.query<{ made: boolean }>(
+      `select made_document as made from connected_app_intake where external_id = 'mt:tenant-7f3a:doc-01'`,
+    );
+    expect(madeIt.rows[0]?.made).toBe(true);
+    // Let go of by the app, then the filing taken back by an Undo: waiting
+    // again, as if never filed nor let go of — tried, and rolled back.
+    const undo = await admin.connect();
+    try {
+      await undo.query('begin');
+      await undo.query(
+        `update connected_app_intake set unlinked_at = now() where external_id = 'mt:tenant-7f3a:doc-01'`,
+      );
+      await undo.query(
+        `update incoming_file set state = 'received', document_id = null, version_id = null,
+                as_version = false, decided_at = null, decided_by = null, undo_until = null, object_removed_at = null
+          where id = $1`,
+        [item?.id],
+      );
+      const back = await undo.query<{ state: string; unlinked: boolean; made: boolean }>(
+        `select state, unlinked_at is not null as unlinked, made_document as made
+           from connected_app_intake where external_id = 'mt:tenant-7f3a:doc-01'`,
+      );
+      expect(back.rows[0]).toEqual({ state: 'waiting', unlinked: false, made: false });
+    } finally {
+      await undo.query('rollback');
+      undo.release();
+    }
     // A filed one is not withdrawn.
     const late = await call(a, 'DELETE', '/api/v1/apps/intake/mt:tenant-7f3a:doc-01');
     expect([late.statusCode, codeOf(late)]).toEqual([409, 'already_decided']);

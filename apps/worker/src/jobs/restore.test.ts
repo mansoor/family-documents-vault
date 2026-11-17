@@ -2521,6 +2521,92 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     // Several whole checks of a restored vault, on a machine others share.
   }, 240_000);
 
+  it('notices a connected app let into a table, its read rule widened, or its grants unguarded (0110, APP2)', async () => {
+    // Every table but the document and its files keeps an app out.
+    for (const table of [
+      'household',
+      'member',
+      'scope_key',
+      'audit_event',
+      'connected_app_grant',
+    ]) {
+      const policy = `${table}_no_app`;
+      await sql(vault.adminUrl, `drop policy ${policy} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(
+          new RegExp(`no rule keeps a connected app out of ${table}`),
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${policy} on public.${table} as restrictive for all
+             using ((select current_setting('app.actor', true)) is distinct from 'connected_app')
+             with check ((select current_setting('app.actor', true)) is distinct from 'connected_app')`,
+        );
+      }
+    }
+    // An app that is none of the household's is given none of its documents.
+    const { rows } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'document_actor'`,
+    );
+    const rule = rows[0]?.rule as string;
+    await sql(
+      vault.adminUrl,
+      `alter policy document_actor on public.document
+         using (case app_actor() when 'account' then true when 'system' then true
+                                 when 'connected_app' then true else false end)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a connected app it never connected is given its documents \(document\)/,
+      );
+    } finally {
+      await sql(vault.adminUrl, `alter policy document_actor on public.document using (${rule})`);
+    }
+    // Its grants: a rule for each kind of caller, and an owner's alone to give.
+    const { rows: grant } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'connected_app_grant_actor'`,
+    );
+    await sql(
+      vault.adminUrl,
+      'drop policy connected_app_grant_actor on public.connected_app_grant',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on connected_app_grant/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy connected_app_grant_actor on public.connected_app_grant as restrictive
+           using (${grant[0]?.rule as string})`,
+      );
+    }
+    const { rows: give } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polwithcheck, polrelid) as rule from pg_policy
+        where polname = 'connected_app_grant_actor_insert'`,
+    );
+    await sql(
+      vault.adminUrl,
+      'drop policy connected_app_grant_actor_insert on public.connected_app_grant',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /who gives a connected app something to read/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy connected_app_grant_actor_insert on public.connected_app_grant
+           as restrictive for insert with check (${give[0]?.rule as string})`,
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  }, 240_000);
+
   it('notices the Reading check’s rules gone: an owner’s alone, its misses its asker’s, numbers only, one at a time (0074, R0)', async () => {
     const seeded = await sql(
       vault.adminUrl,

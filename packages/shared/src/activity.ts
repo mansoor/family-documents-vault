@@ -170,7 +170,11 @@ export function activityKind(action: string): ActivityKind {
     // A connected app (APP1): what it sends is added; managing it is
     // people and access.
     case 'app':
-      return action === 'app.sent' || action === 'app.withdrawn' ? 'added' : 'people';
+      return action === 'app.sent' || action === 'app.withdrawn'
+        ? 'added'
+        : action === 'app.read' || action === 'app.looked_up'
+          ? 'opened'
+          : 'people';
     default:
       return 'vault';
   }
@@ -300,8 +304,11 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // 0.8.0 (S1): a copy added from a batch, taken back within its minutes.
     case 'batch.version_undone':
       return line(`${who} took back the new copy of ${doc}`);
+    // A connected app's download (APP2): as the person it acts as, "via" it.
     case 'document.downloaded':
-      return line(`${who} downloaded ${doc}`);
+      return text(detail.app)
+        ? line(`${who} via ${appOf(detail)} downloaded ${doc}`)
+        : line(`${who} downloaded ${doc}`);
     // Every page fetched is audited; the log folds a sitting into one line.
     case 'document.viewed':
       return line(`${who} looked at ${doc}`);
@@ -739,6 +746,12 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // document's name, an amount or anything it sent.
     case 'app.sent':
       return line(`${who} via ${appOf(detail)} sent a file to their Inbox`);
+    // What it read (APP2): one document's details, that document's line;
+    // and its looking up documents, once an hour.
+    case 'app.read':
+      return line(`${who} via ${appOf(detail)} read the details of ${doc}`);
+    case 'app.looked_up':
+      return line(`${who} via ${appOf(detail)} looked up documents`);
     case 'app.withdrawn':
       return line(`${who} via ${appOf(detail)} took back a file it sent to their Inbox`);
     case 'app.checked':
@@ -1201,6 +1214,12 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
 export const SITTING_MS = 10 * 60 * 1000;
 
 /**
+ * Files a connected app sent this close together are one line (APP2):
+ * "Ahmed via MonTra sent 12 files to their Inbox".
+ */
+export const APP_SENT_FOLD_MS = 60 * 60 * 1000;
+
+/**
  * Events, newest first, as the lines a person reads (0.4.12). Every page
  * fetched is audited, and paging through a passport is not five things
  * that happened: the views of one document by one person, each within ten
@@ -1221,29 +1240,73 @@ export function describeEventSpans(
   events: ActivityEvent[],
 ): Array<{ line: ActivityLine; oldest: number }> {
   const spans: Array<{ line: ActivityLine; oldest: number }> = [];
-  let sitting: { actor: string | null; doc: string | null; at: number } | null = null;
+  /**
+   * What the last line may fold: a sitting's views of a document, an app's
+   * downloads of one (APP2), or the files an app sent (APP2), each by one
+   * person with nothing shown in between.
+   */
+  let run: {
+    action: string;
+    actor: string | null;
+    doc: string | null;
+    app: string | null;
+    at: number;
+    n: number;
+    first: ActivityEvent;
+  } | null = null;
+  const appIdOf = (e: ActivityEvent) =>
+    typeof e.detail?.app_id === 'string' ? e.detail.app_id : null;
+  /** Which run an event may start or join: views, an app's downloads, an app's sends. */
+  const foldable = (e: ActivityEvent) =>
+    e.action === 'document.viewed' ||
+    (e.action === 'document.downloaded' && appIdOf(e) !== null) ||
+    (e.action === 'app.sent' && appIdOf(e) !== null);
   for (const e of events) {
     const at = Date.parse(e.at);
     const last = spans[spans.length - 1];
     if (
-      e.action === 'document.viewed' &&
-      sitting &&
+      run &&
       last &&
-      sitting.actor === (e.actor_id ?? null) &&
-      sitting.doc === e.object_id &&
-      sitting.at - at <= SITTING_MS
+      foldable(e) &&
+      run.action === e.action &&
+      run.actor === (e.actor_id ?? null) &&
+      run.app === appIdOf(e) &&
+      (e.action === 'app.sent'
+        ? run.at - at <= APP_SENT_FOLD_MS
+        : run.doc === e.object_id && run.at - at <= SITTING_MS)
     ) {
-      sitting.at = at;
+      run.at = at;
+      run.n += 1;
       last.oldest = e.id;
+      if (e.action === 'app.sent') {
+        last.line = { ...last.line, text: appSentWords(run.first, run.n) };
+      }
       continue;
     }
     const line = describeEvent(e);
     if (!line) continue;
     spans.push({ line, oldest: e.id });
-    sitting =
-      e.action === 'document.viewed' ? { actor: e.actor_id ?? null, doc: e.object_id, at } : null;
+    run = foldable(e)
+      ? {
+          action: e.action,
+          actor: e.actor_id ?? null,
+          doc: e.object_id,
+          app: appIdOf(e),
+          at,
+          n: 1,
+          first: e,
+        }
+      : null;
   }
   return spans;
+}
+
+/** The files an app sent, folded into one line: "Ahmed via MonTra sent 12 files to their Inbox". */
+function appSentWords(e: ActivityEvent, n: number): string {
+  const who = e.actor ?? (e.actor_label ? capitalise(e.actor_label) : 'Somebody');
+  return n === 1
+    ? `${who} via ${appOf(e.detail ?? {})} sent a file to their Inbox`
+    : `${who} via ${appOf(e.detail ?? {})} sent ${n} files to their Inbox`;
 }
 
 /**

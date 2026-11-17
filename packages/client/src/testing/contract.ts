@@ -146,6 +146,22 @@ const ZIP_KEY = 'a3b4c5d6-e7f8-4a9b-8c0d-3456789abcde';
 const LK_KEY = 'b4c5d6e7-f809-4bac-9d1e-456789abcdef';
 const H5_KEY = 'c5d6e7f8-091a-4bcd-8e2f-56789abcdef0';
 /** RFC 9421's Ed25519 test key (B.1.4), the contract's worked examples' (0.9.0, APP1). */
+/**
+ * The owner the connected app scenario signed in, with two-step sign-in on
+ * and a code just given: the reading scenario after it acts as them.
+ */
+let connectedAppOwner: Tokens | undefined;
+/** Captures of the connected app reading scenario (0.9.0, APP2). */
+const APP2_KEYS = [
+  'b5c6d7e8-f90a-4b1c-8d2e-3f4a5b6c7d81',
+  'b5c6d7e8-f90a-4b1c-8d2e-3f4a5b6c7d82',
+  'b5c6d7e8-f90a-4b1c-8d2e-3f4a5b6c7d83',
+  'b5c6d7e8-f90a-4b1c-8d2e-3f4a5b6c7d84',
+] as const;
+/** RFC 8032's first Ed25519 test key (7.1, TEST 1), for a second app (0.9.0, APP2). */
+const APP_TEST_KEY_2 = `-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g
+-----END PRIVATE KEY-----`;
 const APP_TEST_KEY = `-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIJ+DYvh6SEqVTm50DFtMDoQikTmiCqirVv9mWG9qfSnF
 -----END PRIVATE KEY-----`;
@@ -4434,6 +4450,7 @@ export const contractScenarios: Scenario[] = [
       expect((await api.capabilities()).features.connected_apps).toBe(true);
       const owner = await signIn(api, ctx);
       await ctx.ownerTwoStep(owner.access_token);
+      connectedAppOwner = owner;
       const token = owner.access_token;
       // The app's key pair, its own; the vault is given the public key. The
       // contract's own test key (RFC 9421 B.1.4), which nobody uses for real.
@@ -4527,6 +4544,177 @@ export const contractScenarios: Scenario[] = [
       await api.connectedApps.remove(token, made.id);
       const gone = await refusal(app.me());
       expect([gone.status, gone.code]).toEqual([401, 'app_revoked']);
+    },
+  },
+  {
+    name: 'a connected app reads what its grants cover, follows the changes, and downloads (0.9.0, APP2)',
+    run: async (api, ctx) => {
+      if (!ctx.fetch) throw new Error('the contract needs the fetch its vault answers on');
+      expect((await api.capabilities()).features.connected_app_reads).toBe(true);
+      // The owner who connected the app before, with two-step sign-in on and a
+      // code just given.
+      const owner = connectedAppOwner;
+      if (!owner) throw new Error('the connected app scenario runs first');
+      const token = owner.access_token;
+      // A key of its own: RFC 8032's first test key, which nobody uses for real.
+      const made = await api.connectedApps.create(token, {
+        name: 'Reader',
+        member_id: owner.member_id,
+        public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+        allowed_kinds: ['utility_bill'],
+        scopes: ['documents.send', 'documents.read', 'documents.download'],
+      });
+      expect(made.scopes).toEqual(['documents.send', 'documents.read', 'documents.download']);
+      const app = createAppClient({
+        baseUrl: api.http.baseUrl,
+        appId: made.id,
+        keyId: made.keys[0]?.key_id as string,
+        privateKey: APP_TEST_KEY_2,
+        fetch: ctx.fetch,
+      });
+      // Papers of the family's: a bill and a statement this year, a bill
+      // three years old, and a passport.
+      const day = (daysAgo: number) =>
+        new Date(Date.now() - daysAgo * 864e5).toISOString().slice(0, 10);
+      const file = async (key: string, type_key: string, title: string, issued: string) => {
+        const form = multipartBody([
+          {
+            name: 'metadata',
+            value: JSON.stringify({
+              type_key,
+              title,
+              owner_member_id: owner.member_id,
+              issued: { date: issued, precision: 'day' },
+              visibility: 'household',
+            }),
+          },
+          { name: 'file', filename: `${title}.pdf`, contentType: 'application/pdf', bytes: PDF },
+        ]);
+        const c = await api.capture(
+          token,
+          { kind: 'bytes', bytes: form.bytes, contentType: form.contentType },
+          key,
+        );
+        return c.document_id;
+      };
+      const bill = await file(APP2_KEYS[0], 'utility_bill', 'Reader water bill', day(40));
+      const statement = await file(APP2_KEYS[1], 'bank_statement', 'Reader statement', day(45));
+      const oldBill = await file(APP2_KEYS[2], 'utility_bill', 'Reader old bill', day(3 * 365));
+      const passport = await file(APP2_KEYS[3], 'passport', 'Reader passport', day(50));
+      // Nothing yet: no grant, and nothing of its own.
+      expect((await app.list()).items).toEqual([]);
+      // These four are this scenario's; the vault holds other papers too.
+      const ours = new Set([bill, statement, oldBill, passport]);
+      const only = (ids: string[]) => ids.filter((id) => ours.has(id));
+      const window = { from: day(46), to: day(39) };
+      // Bills for a year: granted. A kind Sensitive by default asks first.
+      const asked = await refusal(
+        api.connectedApps.setGrants(token, made.id, {
+          grants: [
+            { category: 'bills', lookback_months: 12 },
+            { kind: 'bank_statement', lookback_months: 12 },
+          ],
+        }),
+      );
+      expect([asked.status, asked.code]).toEqual([409, 'sensitive_confirm']);
+      const never = await refusal(
+        api.connectedApps.setGrants(token, made.id, {
+          grants: [{ category: 'identity', lookback_months: 12 }],
+        }),
+      );
+      expect([never.status, never.code]).toEqual([422, 'validation_failed']);
+      const granted = await api.connectedApps.setGrants(token, made.id, {
+        grants: [
+          { category: 'bills', lookback_months: 12 },
+          { kind: 'bank_statement', lookback_months: 12 },
+        ],
+        confirm_sensitive: true,
+      });
+      // (Bills are not sensitive by default, but a kind of the household's
+      // own in that category may be: whether that grant was confirmed too is
+      // the household's to say.)
+      expect(granted.grants).toMatchObject([
+        { kind: null, category: 'bills', lookback_months: 12 },
+        { kind: 'bank_statement', category: null, lookback_months: 12, sensitive_confirmed: true },
+      ]);
+      expect((await app.me()).read?.grants).toEqual([
+        { kind: 'bank_statement', lookback_months: 12 },
+        { category: 'bills', lookback_months: 12 },
+      ]);
+      // Listed: the bill and the statement, newest paper first; never the
+      // passport, nor the bill older than a year.
+      const listed = await app.list(window);
+      expect(listed.items.map((d) => d.id)).toEqual([bill, statement]);
+      expect(listed.next).toBeNull();
+      expect(only((await app.list()).items.map((d) => d.id))).toEqual([bill, statement]);
+      expect(listed.items[0]).toMatchObject({
+        kind: { key: 'utility_bill', category: 'bills' },
+        title: 'Reader water bill',
+        paper_date: day(40),
+        issued: { date: day(40), precision: 'day' },
+        own: false,
+        external_id: null,
+      });
+      const keys = Object.keys(listed.items[0] as object);
+      for (const never of ['owner_member_id', 'notes', 'tags', 'identifier', 'physical_location']) {
+        expect(keys).not.toContain(never);
+      }
+      expect(
+        (await app.list({ ...window, kind: ['bank_statement'] })).items.map((d) => d.id),
+      ).toEqual([statement]);
+      const paged = await app.list({ ...window, limit: 1 });
+      expect(paged.items.map((d) => d.id)).toEqual([bill]);
+      expect(
+        (await app.list({ ...window, limit: 1, cursor: paged.next as string })).items.map(
+          (d) => d.id,
+        ),
+      ).toEqual([statement]);
+      // One document; one it may not read is the same 404 as one not there.
+      expect(await app.document(bill)).toEqual(listed.items[0]);
+      for (const id of [passport, oldBill, NEVER_USED]) {
+        const no = await refusal(app.document(id));
+        expect([no.status, no.code]).toEqual([404, 'not_found']);
+      }
+      // The feed: everything it may read, then what changed.
+      const first = await app.changes();
+      expect(
+        only(
+          first.changes.map((c) => (c.change === 'changed' ? c.document.id : c.document_id)),
+        ).sort(),
+      ).toEqual([bill, statement].sort());
+      expect(first.changes.every((c) => c.change === 'changed')).toBe(true);
+      expect(first.more).toBe(false);
+      expect((await app.changes({ cursor: first.cursor })).changes).toEqual([]);
+      await api.updateDocument(token, bill, { title: 'Reader water bill, paid' });
+      await api.deleteDocument(token, statement);
+      const next = await app.changes({ cursor: first.cursor });
+      const byId = new Map(
+        next.changes.map((c) => [c.change === 'changed' ? c.document.id : c.document_id, c]),
+      );
+      expect(byId.get(bill)).toMatchObject({
+        change: 'changed',
+        document: { title: 'Reader water bill, paid' },
+      });
+      // No longer readable, and never why.
+      const gone = byId.get(statement);
+      expect(gone && Object.keys(gone).sort()).toEqual(['at', 'change', 'document_id']);
+      expect(gone).toMatchObject({ change: 'unavailable', document_id: statement });
+      // Downloaded: an attachment; again by its version, 304; a range, 206.
+      const got = await app.download(bill);
+      expect(got.status).toBe(200);
+      expect(Array.from(got.bytes)).toEqual(Array.from(PDF));
+      expect(got.contentDisposition?.startsWith('attachment')).toBe(true);
+      expect(got.etag).toMatch(/^"[^"]+"$/);
+      expect((await app.download(bill, { ifNoneMatch: got.etag as string })).status).toBe(304);
+      const part = await app.download(bill, { range: { start: 0, end: 3 } });
+      expect([part.status, new TextDecoder().decode(part.bytes)]).toEqual([206, '%PDF']);
+      const hidden = await refusal(app.download(passport));
+      expect([hidden.status, hidden.code]).toEqual([404, 'not_found']);
+      // Without its scope, refused.
+      await api.connectedApps.update(token, made.id, { scopes: ['documents.send'] });
+      const unread = await refusal(app.list());
+      expect([unread.status, unread.code]).toEqual([403, 'scope_not_granted']);
+      await api.connectedApps.remove(token, made.id);
     },
   },
   {

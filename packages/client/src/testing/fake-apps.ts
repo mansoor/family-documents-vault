@@ -1,13 +1,25 @@
 import {
   APP_EMPTY_DIGEST,
+  APP_GRANTABLE_CATEGORIES,
   APP_HINTS,
+  APP_SCOPES_DEFAULT,
   APP_SCOPES_OFFERED,
   APP_SIGNATURE_WINDOW_SECONDS,
+  APP_REFUSALS,
+  appMayRead,
+  appSensitiveConfirmWords,
+  deriveStatus,
+  localToday,
   parseAppMetadata,
+  type AppChange,
+  type AppDocument,
   type AppIntakeState,
   type AppKeyView,
   type AppMe,
+  type AppScope,
+  type ConnectedAppGrantView,
   type ConnectedAppView,
+  type DateValue,
   type Role,
 } from '@fdv/shared';
 import { fromBase64, signatureBaseOf, toBase64 } from '../apps.js';
@@ -19,9 +31,36 @@ import type { FetchLike, ResponseLike } from '../http.js';
  * for real (Ed25519, Web Crypto), in the contract's order: the headers, the
  * keyid, the app's state, the window, the signature, the nonce, the scope,
  * the body's digest. What an app sends is kept on the app alone, by its
- * external id: no Inbox, no reading. Addresses, https and caps are the real
- * vault's to test.
+ * external id: no Inbox. Addresses, https and caps are the real vault's to
+ * test.
+ *
+ * Reading (APP2): the fake's documents, by the vault's own rule
+ * (`appMayRead`), through its grants; a feed kept as the vault keeps it —
+ * what each app was told of each document, and a line each time that
+ * changes — and downloads of the file's bytes.
  */
+
+/** A document of the fake's, as an app's reading needs it. */
+export interface FakeReadableDoc {
+  id: string;
+  title: string | null;
+  type_key: string | null;
+  visibility: string;
+  sensitive: boolean | null;
+  is_essential: boolean;
+  deleted: boolean;
+  issued: DateValue | null;
+  expires: DateValue | null;
+  issued_by: string | null;
+  extra: Record<string, unknown>;
+  /** The day it was filed, YYYY-MM-DD. */
+  filed_on: string;
+  owner_member_id: string | null;
+  household_owned: boolean;
+  /** When it last changed, as far as the fake knows. */
+  updated_at: string;
+  version: { id: string; bytes: Uint8Array; mime: string; filename: string } | null;
+}
 
 export interface FakeAppKey {
   id: string;
@@ -32,7 +71,14 @@ export interface FakeAppKey {
 }
 
 export interface FakeIntake {
-  state: 'waiting' | 'refused' | 'removed';
+  /** `filed` only as a test files it (`fileAppIntake`): the fake has no Inbox. */
+  state: 'waiting' | 'filed' | 'refused' | 'removed';
+  /** Filed: the document and the version it became. */
+  document_id?: string | null;
+  version_id?: string | null;
+  filed_at?: string | null;
+  /** Filed as a document of its own, not into one that was there: only such is the app's own. */
+  made_document?: boolean;
   removed_reason: 'withdrawn' | 'declined' | 'expired' | null;
   refusal: 'kind_not_allowed' | null;
   sha256: string | null;
@@ -58,6 +104,21 @@ export interface FakeApp {
   files_today: number;
   bytes_today: number;
   last_used_at: string | null;
+  /** What it may do (APP2). */
+  scopes?: AppScope[];
+  /** What it may read beyond its own (APP2). */
+  grants?: ConnectedAppGrantView[];
+  /** What it was last told of each document, and its feed (APP2). */
+  seen?: Map<string, { fingerprint: string; available: boolean }>;
+  feed?: Array<{ seq: number; id: string; change: 'changed' | 'unavailable'; at: string }>;
+  /**
+   * Its feed's lines up to this one are gone, as the vault lets them go
+   * after 90 days: a test sets it to see `410 cursor_expired`.
+   */
+  feed_pruned_to?: number;
+  /** Bytes a day it may download, and what it downloaded today: a test lowers it to see 429 and 413. */
+  daily_read_bytes?: number;
+  read_bytes_today?: number;
 }
 
 export interface FakeAppDeps {
@@ -74,8 +135,15 @@ export interface FakeAppDeps {
     category: string;
     fields: Array<{ key: string }>;
     expiry_driver: string | null;
+    reminder_leads?: number[];
+    usually_essential?: boolean;
+    sensitive_default?: boolean;
   }>;
+  /** The fake's documents, as an app's reading needs them (APP2). */
+  documents?: () => FakeReadableDoc[];
   ok: (body: unknown, status?: number, headers?: Record<string, string>) => ResponseLike;
+  /** Bytes as they are, for a download (APP2). */
+  raw: (status: number, bytes: Uint8Array, headers: Record<string, string>) => ResponseLike;
   fail: (status: number, code: string, message: string, detail?: string) => ResponseLike;
   empty: () => ResponseLike;
   next: (what: string) => string;
@@ -83,7 +151,8 @@ export interface FakeAppDeps {
 }
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-const APP_ROUTE = /^\/api\/v1\/apps\/(me|intake|intake\/[^/]+|keys|keys\/[^/]+)$/;
+const APP_ROUTE =
+  /^\/api\/v1\/apps\/(me|intake|intake\/[^/]+|keys|keys\/[^/]+|documents|documents\/[^/]+|documents\/[^/]+\/content|changes)$/;
 
 async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
   const own = new Uint8Array(bytes.length);
@@ -110,8 +179,10 @@ const sameBytes = (a: Uint8Array, b: Uint8Array) =>
 
 export function fakeAppRoutes(d: FakeAppDeps) {
   /** App and key ids are UUIDs, as the vault writes them; an app client takes no other. */
-  let made = 0;
-  const uuid = () => `00000000-0000-4000-8000-${(++made).toString(16).padStart(12, '0')}`;
+  // Counted by the vault's own counter: these routes are made for each
+  // request, and a second app must never be given the first one's id.
+  const uuid = () =>
+    `00000000-0000-4000-8000-${Number(d.next('uuid').split('-').pop()).toString(16).padStart(12, '0')}`;
   const view = async (a: FakeApp, me: { memberId: string }): Promise<ConnectedAppView> => {
     const live = a.keys.filter((k) => !k.retired);
     const keys: AppKeyView[] = [];
@@ -144,7 +215,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       created_at: a.created_at,
       state: a.approval === 'waiting' ? 'waiting_for_approval' : a.paused ? 'paused' : 'active',
       paused_reason: a.paused,
-      scopes: [...APP_SCOPES_OFFERED],
+      scopes: [...(a.scopes ?? APP_SCOPES_DEFAULT)],
       allowed_kinds: a.allowed_kinds,
       default_visibility: a.default_visibility,
       auto_file: false,
@@ -160,22 +231,34 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       counts: mine
         ? { waiting: states.filter((s) => s.state === 'waiting').length, filed: 0 }
         : null,
+      grants: [...(a.grants ?? [])],
+      daily_read_bytes: 1024 ** 3,
+      read_today: 0,
       connection_string: `fdvapp1.${toBase64(new TextEncoder().encode(json), true)}`,
       address: { url: 'https://fake.example', public: false },
     };
   };
-  const stateOf = (externalId: string, s: FakeIntake): AppIntakeState => ({
-    external_id: externalId,
-    state: s.state,
-    received_at: s.received_at,
-    sha256: s.sha256,
-    byte_size: s.byte_size,
-    document_id: null,
-    version_id: null,
-    filed_at: null,
-    removed_reason: s.removed_reason,
-    refusal: s.refusal,
-  });
+  const stateOf = (
+    externalId: string,
+    s: FakeIntake,
+    readableIds: ReadonlySet<string> = new Set(),
+  ): AppIntakeState => {
+    // Filed, and no longer the app's to read: unavailable, never why.
+    const filed = s.state === 'filed';
+    const still = filed && !!s.document_id && readableIds.has(s.document_id);
+    return {
+      external_id: externalId,
+      state: filed && !still ? 'unavailable' : s.state,
+      received_at: s.received_at,
+      sha256: s.sha256,
+      byte_size: s.byte_size,
+      document_id: still ? (s.document_id ?? null) : null,
+      version_id: still ? (s.version_id ?? null) : null,
+      filed_at: still ? (s.filed_at ?? null) : null,
+      removed_reason: s.removed_reason,
+      refusal: s.refusal,
+    };
+  };
 
   /** The family's side, signed in: Settings → Connected apps. */
   const family = async (
@@ -246,11 +329,16 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         bytes_today: 0,
         last_used_at: null,
       };
+      if (body.scopes !== undefined) {
+        const scopes = scopesOf(body.scopes);
+        if (!scopes) return d.fail(422, 'validation_failed', 'Choose what it may do.', 'scopes');
+        a.scopes = scopes;
+      }
       d.apps.push(a);
       return d.ok(await view(a, who), 201);
     }
     const at = new RegExp(
-      `^/api/v1/connected-apps/([^/]+)(/approve|/pause|/resume|/keys(?:/([^/]+))?)?$`,
+      `^/api/v1/connected-apps/([^/]+)(/approve|/pause|/resume|/grants|/keys(?:/([^/]+))?)?$`,
     ).exec(path);
     const a = at ? d.apps.find((x) => x.id === at[1] && seen(x)) : undefined;
     if (!at) return null;
@@ -279,9 +367,214 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       if (typeof body.name === 'string') a.name = body.name;
       if (Array.isArray(body.allowed_kinds)) a.allowed_kinds = body.allowed_kinds as string[];
       if (typeof body.daily_files === 'number') a.daily_files = body.daily_files;
+      if (body.scopes !== undefined) {
+        const scopes = scopesOf(body.scopes);
+        if (!scopes) return d.fail(422, 'validation_failed', 'Choose what it may do.', 'scopes');
+        a.scopes = scopes;
+      }
+      return d.ok(await view(a, who));
+    }
+    if (what === '/grants' && method === 'PUT') {
+      const given = Array.isArray(body.grants)
+        ? (body.grants as Array<Record<string, unknown>>)
+        : [];
+      const kinds = d.kinds();
+      const grantable = (k: { category: string; usually_essential?: boolean }) =>
+        (APP_GRANTABLE_CATEGORIES as readonly string[]).includes(k.category) &&
+        k.usually_essential !== true;
+      const grants: ConnectedAppGrantView[] = [];
+      const asked: Array<{ key: string; label: string }> = [];
+      for (const [i, g] of given.entries()) {
+        const kind = typeof g.kind === 'string' ? g.kind : null;
+        const category = typeof g.category === 'string' ? g.category : null;
+        const months = g.lookback_months;
+        if ((kind === null) === (category === null)) {
+          return d.fail(422, 'validation_failed', 'A kind or a category.', `grants.${i}`);
+        }
+        if (typeof months !== 'number' || !Number.isInteger(months) || months < 1 || months > 36) {
+          return d.fail(422, 'validation_failed', 'How far back: 1 to 36 months.', `grants.${i}`);
+        }
+        const k = kind ? kinds.find((x) => x.key === kind) : undefined;
+        if (
+          (category && !(APP_GRANTABLE_CATEGORIES as readonly string[]).includes(category)) ||
+          (kind && (!k || !grantable(k)))
+        ) {
+          return d.fail(422, 'validation_failed', 'An app may never read that.', `grants.${i}`);
+        }
+        // The kinds Sensitive by default it covers now; each confirmed once.
+        const covered = kinds.filter(
+          (x) =>
+            x.sensitive_default !== false &&
+            grantable(x) &&
+            (kind ? x.key === kind : x.category === category),
+        );
+        const before = (a.grants ?? []).find((x) => x.kind === kind && x.category === category);
+        const had = before?.sensitive_kinds ?? [];
+        const newly = covered.filter((x) => !had.includes(x.key));
+        if (newly.length > 0 && body.confirm_sensitive !== true) asked.push(...newly);
+        const sensitive = [...new Set([...had, ...newly.map((x) => x.key)])].sort();
+        grants.push({
+          kind,
+          category,
+          lookback_months: months,
+          sensitive_confirmed:
+            covered.length > 0 && covered.every((x) => sensitive.includes(x.key)),
+          sensitive_kinds: sensitive,
+        });
+      }
+      if (asked.length > 0) {
+        return d.fail(
+          409,
+          'sensitive_confirm',
+          appSensitiveConfirmWords(a.name, [...new Set(asked.map((x) => x.label))].sort()),
+          [...new Set(asked.map((x) => x.key))].sort().join(','),
+        );
+      }
+      a.grants = grants;
       return d.ok(await view(a, who));
     }
     return null;
+  };
+
+  /** Scopes as an owner gives them: those this vault grants, at least one. */
+  const scopesOf = (v: unknown): AppScope[] | null =>
+    Array.isArray(v) &&
+    v.length > 0 &&
+    v.every((s) => (APP_SCOPES_OFFERED as readonly unknown[]).includes(s))
+      ? APP_SCOPES_OFFERED.filter((s) => (v as unknown[]).includes(s))
+      : null;
+
+  /** A document as the app is told of it, when it may read it (the vault's own rule). */
+  type Told = { doc: AppDocument; fp: string; v: FakeReadableDoc['version'] };
+  const readable = async (a: FakeApp): Promise<Map<string, Told>> => {
+    const out = new Map<string, Told>();
+    const today = localToday(d.timezone());
+    const kinds = d.kinds();
+    // Its own: a document a send of its made (not one it was filed into),
+    // while its current version is one the app sent.
+    const own = new Map<string, string>();
+    const filed = [...a.intake].filter(([, s]) => s.state === 'filed' && s.document_id);
+    for (const [externalId, s] of filed) {
+      if (s.made_document && s.document_id && !own.has(s.document_id)) {
+        own.set(s.document_id, externalId);
+      }
+    }
+    for (const x of d.documents?.() ?? []) {
+      const kind = kinds.find((k) => k.key === x.type_key);
+      const due = x.extra.due_date as DateValue | undefined;
+      const paper = x.issued?.date ?? due?.date ?? x.filed_on;
+      const ownId = own.get(x.id);
+      const isOwn =
+        ownId !== undefined &&
+        filed.some(([, s]) => s.document_id === x.id && s.version_id === (x.version?.id ?? null));
+      const ok = appMayRead({
+        document: {
+          visibility: x.visibility,
+          is_essential: x.is_essential,
+          sensitive: x.sensitive,
+          deleted: x.deleted,
+          type_key: x.type_key,
+          category: kind?.category ?? null,
+          paper_date: paper,
+        },
+        kind: kind
+          ? {
+              category: kind.category,
+              sensitive_default: kind.sensitive_default ?? true,
+              usually_essential: kind.usually_essential ?? false,
+            }
+          : null,
+        role: 'owner',
+        own: isOwn,
+        grants: (a.grants ?? []).map((g) => ({
+          kind_key: g.kind,
+          category: g.category,
+          lookback_months: g.lookback_months,
+          sensitive_kinds: g.sensitive_kinds,
+        })),
+        today,
+      });
+      if (!ok || !kind) continue;
+      const text = (k: string) => (typeof x.extra[k] === 'string' ? x.extra[k].trim() : null);
+      const amount = text('amount');
+      const money = amount ? /^(-?[\d,]*\d(?:\.\d+)?)\s+([A-Z]{3})$/.exec(amount) : null;
+      const year = x.extra.tax_year;
+      const status = deriveStatus(
+        {
+          type: {
+            key: kind.key,
+            expiry_driver: kind.expiry_driver,
+            reminder_leads: kind.reminder_leads ?? [],
+          },
+          owner_member_id: x.owner_member_id,
+          household_owned: x.household_owned,
+          expires: x.expires,
+        },
+        today,
+      );
+      const doc: AppDocument = {
+        id: x.id,
+        kind: { key: kind.key, label: kind.label, category: kind.category },
+        title: x.title,
+        paper_date: paper,
+        issued: x.issued ? { date: x.issued.date, precision: x.issued.precision } : null,
+        expires: x.expires ? { date: x.expires.date, precision: x.expires.precision } : null,
+        due_date: due ? { date: due.date, precision: due.precision } : null,
+        amount: amount
+          ? {
+              text: amount,
+              value: money ? (money[1] as string).replace(/,/g, '') : null,
+              currency: money ? (money[2] as string) : null,
+            }
+          : null,
+        issuer: x.issued_by,
+        account_last4: text('account_last4'),
+        period: text('period'),
+        tax_year:
+          typeof year === 'number' && Number.isInteger(year)
+            ? year
+            : typeof year === 'string' && /^\d{4}$/.test(year)
+              ? Number(year)
+              : null,
+        status: { value: status.value, label: status.label },
+        version: x.version
+          ? {
+              id: x.version.id,
+              sha256: hex(await sha256(x.version.bytes)),
+              byte_size: x.version.bytes.length,
+              content_type: x.version.mime,
+            }
+          : null,
+        own: isOwn,
+        external_id: isOwn ? (ownId ?? null) : null,
+        updated_at: x.updated_at,
+      };
+      const said: Partial<AppDocument> = { ...doc };
+      delete said.updated_at;
+      out.set(x.id, { doc, fp: JSON.stringify(said), v: x.version });
+    }
+    return out;
+  };
+  /** The feed brought up to date: a line for each document new or changed, and each gone. */
+  const refresh = (a: FakeApp, now: Map<string, Told>) => {
+    const seen = (a.seen ??= new Map());
+    const feed = (a.feed ??= []);
+    const at = new Date().toISOString();
+    // Counted on from its own last line: these routes are made for each request.
+    let seq = feed[feed.length - 1]?.seq ?? 0;
+    for (const [id, r] of [...now].sort(([x], [y]) => (x < y ? -1 : 1))) {
+      const s = seen.get(id);
+      if (!s || !s.available || s.fingerprint !== r.fp) {
+        feed.push({ seq: ++seq, id, change: 'changed', at });
+        seen.set(id, { fingerprint: r.fp, available: true });
+      }
+    }
+    for (const [id, s] of seen) {
+      if (s.available && !now.has(id)) {
+        feed.push({ seq: ++seq, id, change: 'unavailable', at });
+        s.available = false;
+      }
+    }
   };
 
   /** A signed request, checked in the contract's order; the app, or the refusal. */
@@ -290,7 +583,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     target: string,
     headers: Record<string, string>,
     body: Uint8Array,
-    scope: boolean,
+    scope: AppScope | null,
     anyState: boolean,
   ): Promise<FakeApp | ResponseLike> => {
     const input = headers['signature-input'];
@@ -341,7 +634,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       return d.fail(401, 'nonce_reused', 'This request was sent before.');
     a.nonces.add(m[5] as string);
     a.last_used_at = new Date().toISOString();
-    if (scope && !APP_SCOPES_OFFERED.includes('documents.send')) {
+    if (scope && !(a.scopes ?? APP_SCOPES_DEFAULT).includes(scope)) {
       return d.fail(403, 'scope_not_granted', 'The owner did not allow this app to do that.');
     }
     const want = body.length === 0 ? APP_EMPTY_DIGEST : `sha-256=:${toBase64(await sha256(body))}:`;
@@ -383,15 +676,165 @@ export function fakeAppRoutes(d: FakeAppDeps) {
           ? new TextEncoder().encode(init.body)
           : new Uint8Array();
     const me = path === '/api/v1/apps/me';
-    const a = await signed(
-      method,
-      target,
-      headers,
-      body,
-      !me && !path.startsWith('/api/v1/apps/keys'),
-      me,
-    );
+    const scope: AppScope | null =
+      me || path.startsWith('/api/v1/apps/keys')
+        ? null
+        : path.endsWith('/content')
+          ? 'documents.download'
+          : path.startsWith('/api/v1/apps/documents') || path === '/api/v1/apps/changes'
+            ? 'documents.read'
+            : 'documents.send';
+    const a = await signed(method, target, headers, body, scope, me);
     if (!('intake' in a)) return a;
+    const params = new Map(
+      (target.split('?')[1] ?? '')
+        .split('&')
+        .filter(Boolean)
+        .map((p) => {
+          const [k = '', v = ''] = p.split('=');
+          return [decodeURIComponent(k), decodeURIComponent(v)] as const;
+        }),
+    );
+    const query = { get: (k: string) => params.get(k) ?? null };
+    const notFound = () => d.fail(404, 'not_found', 'Nothing by that id that this app may see.');
+    const limitOf = (fallback: number): number | null => {
+      const raw = query.get('limit');
+      if (raw === null) return fallback;
+      const n = Number(raw);
+      return /^\d+$/.test(raw) && n >= 1 && n <= 100 ? n : null;
+    };
+    if (path === '/api/v1/apps/documents' && method === 'GET') {
+      const limit = limitOf(50);
+      if (limit === null) return d.fail(422, 'validation_failed', 'limit is 1 to 100.', 'limit');
+      const all = [...(await readable(a)).values()]
+        .map((r) => r.doc)
+        .filter(
+          (x) =>
+            !query.get('kind') || (query.get('kind') as string).split(',').includes(x.kind.key),
+        )
+        .filter((x) => !query.get('category') || x.kind.category === query.get('category'))
+        .filter((x) => !query.get('from') || x.paper_date >= (query.get('from') as string))
+        .filter((x) => !query.get('to') || x.paper_date <= (query.get('to') as string))
+        .filter((x) => !query.get('own') || String(x.own) === query.get('own'))
+        .sort((x, y) =>
+          x.paper_date !== y.paper_date
+            ? x.paper_date < y.paper_date
+              ? 1
+              : -1
+            : x.id < y.id
+              ? -1
+              : 1,
+        );
+      const cursor = query.get('cursor');
+      const from = cursor === null ? 0 : Number(/^list-(\d+)$/.exec(cursor)?.[1] ?? NaN);
+      if (Number.isNaN(from)) return d.fail(422, 'validation_failed', 'Not a cursor.', 'cursor');
+      const items = all.slice(from, from + limit);
+      return d.ok({
+        items,
+        next: all.length > from + limit ? `list-${from + limit}` : null,
+      });
+    }
+    const docAt = /^\/api\/v1\/apps\/documents\/([^/]+)(\/content)?$/.exec(path);
+    if (docAt && method === 'GET') {
+      const r = (await readable(a)).get(docAt[1] as string);
+      if (!r) return notFound();
+      if (!docAt[2]) return d.ok(r.doc);
+      if (!r.v) return notFound();
+      const etag = `"${r.v.id}"`;
+      const total = r.v.bytes.length;
+      const plain = {
+        'content-type': r.v.mime,
+        'content-disposition': `attachment; filename="${r.v.filename.replace(/"/g, '')}"`,
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'; sandbox",
+        'cache-control': 'no-store',
+        'accept-ranges': 'bytes',
+        etag,
+      };
+      if (headers['if-none-match'] === etag) return d.raw(304, new Uint8Array(), plain);
+      // A Range: one, as the vault takes it — `a-b`, `a-` or the last `-n`.
+      let start = 0;
+      let end = total - 1;
+      const asked = headers.range;
+      if (asked !== undefined) {
+        const m = /^bytes=(\d*)-(\d*)$/.exec(asked.trim());
+        const bad = () =>
+          d.fail(416, 'range_not_satisfiable', 'That part of the file does not exist.');
+        if (!m || (m[1] === '' && m[2] === '')) return bad();
+        if (m[1] === '') start = Math.max(0, total - Number(m[2]));
+        else {
+          start = Number(m[1]);
+          end = m[2] === '' ? total - 1 : Math.min(Number(m[2]), total - 1);
+        }
+        if (total === 0 || start > end || start >= total) return bad();
+      }
+      const bytes = end - start + 1;
+      const cap = a.daily_read_bytes ?? 1024 ** 3;
+      if (bytes > cap) {
+        return d.fail(413, 'larger_than_daily_read', APP_REFUSALS.larger_than_daily_read);
+      }
+      if ((a.read_bytes_today ?? 0) + bytes > cap) {
+        return d.fail(429, 'app_read_day_full', APP_REFUSALS.app_read_day_full);
+      }
+      a.read_bytes_today = (a.read_bytes_today ?? 0) + bytes;
+      const length = { 'content-length': String(bytes) };
+      if (asked !== undefined) {
+        return d.raw(206, r.v.bytes.slice(start, end + 1), {
+          ...plain,
+          ...length,
+          'content-range': `bytes ${start}-${end}/${total}`,
+        });
+      }
+      return d.raw(200, r.v.bytes, { ...plain, ...length });
+    }
+    if (path === '/api/v1/apps/changes' && method === 'GET') {
+      const limit = limitOf(100);
+      if (limit === null) return d.fail(422, 'validation_failed', 'limit is 1 to 100.', 'limit');
+      const now = await readable(a);
+      refresh(a, now);
+      const feed = a.feed ?? [];
+      const pruned = a.feed_pruned_to ?? 0;
+      const cursor = query.get('cursor');
+      const expired = () => d.fail(410, 'cursor_expired', APP_REFUSALS.cursor_expired);
+      const after = (seq: number) => feed.some((f) => f.seq > seq);
+      const snapshot = cursor === null ? null : /^snap-(\d+)-(\d+)$/.exec(cursor);
+      if (cursor === null || snapshot) {
+        // Everything it may read now, a page at a time; then the feed from
+        // where it stood when the first page was asked.
+        const head = snapshot
+          ? Number(snapshot[1])
+          : Math.max(feed[feed.length - 1]?.seq ?? 0, pruned);
+        if (head < pruned) return expired();
+        const from = snapshot ? Number(snapshot[2]) : 0;
+        const all = [...now.values()].map((r) => r.doc).sort((x, y) => (x.id < y.id ? -1 : 1));
+        const page = all.slice(from, from + limit);
+        const changes: AppChange[] = page.map((doc) => ({
+          change: 'changed',
+          at: doc.updated_at,
+          document: doc,
+        }));
+        if (all.length > from + limit) {
+          return d.ok({ changes, cursor: `snap-${head}-${from + limit}`, more: true });
+        }
+        return d.ok({ changes, cursor: `feed-${head}`, more: after(head) });
+      }
+      const seqOf = /^feed-(\d+)$/.exec(cursor)?.[1];
+      if (seqOf === undefined) return d.fail(422, 'validation_failed', 'Not a cursor.', 'cursor');
+      const since = Number(seqOf);
+      if (since < pruned) return expired();
+      const rows = feed.filter((f) => f.seq > since).slice(0, limit);
+      const changes: AppChange[] = [];
+      for (const f of rows) {
+        if (f.change === 'unavailable') {
+          changes.push({ change: 'unavailable', at: f.at, document_id: f.id });
+          continue;
+        }
+        const doc = now.get(f.id)?.doc;
+        if (doc) changes.push({ change: 'changed', at: f.at, document: doc });
+      }
+      const last = rows[rows.length - 1]?.seq ?? since;
+      return d.ok({ changes, cursor: `feed-${last}`, more: after(last) });
+    }
     if (me && method === 'GET') {
       const kinds = d.kinds().filter((k) => a.allowed_kinds.includes(k.key));
       const said: AppMe = {
@@ -406,7 +849,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
           now: new Date().toISOString(),
           time_zone: d.timezone(),
         },
-        scopes: [...APP_SCOPES_OFFERED],
+        scopes: [...(a.scopes ?? APP_SCOPES_DEFAULT)],
         send: {
           kinds: kinds.map((k) => ({
             key: k.key,
@@ -418,6 +861,15 @@ export function fakeAppRoutes(d: FakeAppDeps) {
           hints: [...APP_HINTS],
           auto_file: false,
         },
+        read: {
+          grants: [...(a.grants ?? [])]
+            .sort((x, y) => ((x.kind ?? '~') < (y.kind ?? '~') ? -1 : 1))
+            .map((g) =>
+              g.kind
+                ? { kind: g.kind, lookback_months: g.lookback_months }
+                : { category: g.category as string, lookback_months: g.lookback_months },
+            ),
+        },
         limits: {
           max_upload_bytes: 104_857_600,
           accepted_types: ['application/pdf', 'image/jpeg', 'image/png'],
@@ -425,8 +877,8 @@ export function fakeAppRoutes(d: FakeAppDeps) {
           files_today: a.files_today,
           bytes_per_day: a.daily_bytes,
           bytes_today: a.bytes_today,
-          read_bytes_per_day: 1024 ** 3,
-          read_bytes_today: 0,
+          read_bytes_per_day: a.daily_read_bytes ?? 1024 ** 3,
+          read_bytes_today: a.read_bytes_today ?? 0,
           links_per_hour: 60,
           requests_per_minute: 120,
           day_resets_at: new Date(Date.now() + 864e5).toISOString(),
@@ -476,7 +928,9 @@ export function fakeAppRoutes(d: FakeAppDeps) {
             'This external_id was already used with other bytes.',
           );
         }
-        return d.ok(stateOf(id, before), 200, { 'idempotent-replayed': 'true' });
+        return d.ok(stateOf(id, before, new Set((await readable(a)).keys())), 200, {
+          'idempotent-replayed': 'true',
+        });
       }
       if (hints.kind && !a.allowed_kinds.includes(hints.kind)) {
         a.intake.set(id, {
@@ -517,10 +971,11 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         .split(',')
         .map((x) => decodeURIComponent(x))
         .filter(Boolean);
+      const still = new Set((await readable(a)).keys());
       return d.ok({
         items: ids.flatMap((id) => {
           const s = a.intake.get(id);
-          return s ? [stateOf(id, s)] : [];
+          return s ? [stateOf(id, s, still)] : [];
         }),
         unknown: ids.filter((id) => !a.intake.has(id)),
       });
@@ -530,11 +985,14 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       const id = decodeURIComponent(one[1] as string);
       const s = a.intake.get(id);
       if (!s) return d.fail(404, 'not_found', 'Nothing by that id that this app may see.');
+      if (method === 'DELETE' && s.state === 'filed') {
+        return d.fail(409, 'already_decided', 'It has been filed already.');
+      }
       if (method === 'DELETE' && s.state === 'waiting') {
         s.state = 'removed';
         s.removed_reason = 'withdrawn';
       }
-      return d.ok(stateOf(id, s));
+      return d.ok(stateOf(id, s, new Set((await readable(a)).keys())));
     }
     return d.fail(404, 'not_found', 'Nothing by that id that this app may see.');
   };

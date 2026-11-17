@@ -172,6 +172,9 @@ describe.skipIf(!testAdminUrl())('migration 0039: lists are called collections',
       { name: 'doc_collection_item_actor_insert', tbl: 'doc_collection_item', restrictive: true },
       { name: 'doc_collection_item_actor_update', tbl: 'doc_collection_item', restrictive: true },
       { name: 'doc_collection_item_collection', tbl: 'doc_collection_item', restrictive: true },
+      // 0110's (APP2): a transaction acting for a connected app is given
+      // nothing of a collection.
+      { name: 'doc_collection_item_no_app', tbl: 'doc_collection_item', restrictive: true },
       // 0098's (H1b): nothing is put in a collection, or taken out, through a
       // caregiver's grant.
       {
@@ -187,6 +190,7 @@ describe.skipIf(!testAdminUrl())('migration 0039: lists are called collections',
       // 0054's (5.32): a restricted viewer is given only what their grant gives.
       { name: 'doc_collection_item_restricted', tbl: 'doc_collection_item', restrictive: true },
       { name: 'doc_collection_item_tenant', tbl: 'doc_collection_item', restrictive: false },
+      { name: 'doc_collection_no_app', tbl: 'doc_collection', restrictive: true },
       { name: 'doc_collection_only_me', tbl: 'doc_collection', restrictive: true },
       { name: 'doc_collection_restricted', tbl: 'doc_collection', restrictive: true },
       { name: 'doc_collection_tenant', tbl: 'doc_collection', restrictive: false },

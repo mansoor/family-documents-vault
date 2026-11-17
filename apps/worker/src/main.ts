@@ -270,11 +270,13 @@ async function main(): Promise<void> {
   });
   await boss.schedule(JOBS.endedSharing, '45 4 * * *');
   // Connected apps (0.9.0, APP1): spent nonces, and what was refused or
-  // removed long ago, let go every hour.
+  // removed long ago, let go every hour; and (APP2) their feeds' old lines.
   await boss.createQueue(JOBS.appsSweep, { retryLimit: 1, retryDelay: 300 });
   await boss.work(JOBS.appsSweep, async () => {
     const swept = await sweepApps(dbs.admin);
-    if (swept.nonces + swept.sent + swept.stuck > 0) log('info', 'connected apps swept', swept);
+    if (swept.nonces + swept.sent + swept.stuck + swept.changes > 0) {
+      log('info', 'connected apps swept', swept);
+    }
   });
   await boss.schedule(JOBS.appsSweep, '20 * * * *');
 

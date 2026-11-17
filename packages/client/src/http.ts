@@ -179,7 +179,8 @@ export function createHttp(options: HttpOptions): Http {
   };
 }
 
-async function toError(res: ResponseLike, now: number): Promise<ApiRequestError> {
+/** A refusal as the client throws it: the vault's envelope read. */
+export async function toError(res: ResponseLike, now: number): Promise<ApiRequestError> {
   let code = 'http_error';
   let message = `The server answered ${res.status}.`;
   let body: {

@@ -4511,6 +4511,41 @@ export class DocumentService {
     return { stream: cipher.pipe(dec), version: versionView(version), total, range: null };
   }
 
+  /**
+   * A version's bytes for a connected app (0.9.0, APP2): its key opened in
+   * the vault's own transaction, which has already been given the version
+   * by the database's rule for that app (readAsApp). The bytes stream after
+   * the transaction ends; with a range, only the covering chunks.
+   */
+  async appVersionBytes(
+    trx: Db,
+    v: {
+      storage_key: string;
+      vault_id: string;
+      wrapped_by_scope: string;
+      file_key_wrapped: Buffer;
+      document_id: string;
+      byte_size: string | number;
+    },
+  ): Promise<(range: { start: number; end: number } | null) => Promise<Readable>> {
+    const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
+    const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
+    const adapter = await this.vaults.adapterById(trx, v.vault_id);
+    const total = Number(v.byte_size);
+    return async (range) => {
+      if (range) {
+        const plain = await decryptRange(fileKey, total, range, async (s, e) =>
+          readAll(await adapter.get(v.storage_key, { start: s, end: e })),
+        );
+        return Readable.from([plain]);
+      }
+      const cipher = await adapter.get(v.storage_key);
+      const dec = new DecryptStream(fileKey);
+      cipher.on('error', (e) => dec.destroy(e));
+      return cipher.pipe(dec);
+    };
+  }
+
   // ---------------------------------------------------------------- helpers
 
   private async columns(trx: Db, p: Principal, input: DocumentInput, current: DocRow | null) {

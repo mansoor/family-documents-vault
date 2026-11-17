@@ -119,7 +119,21 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
     );
     // What a connected app sent outlives what it became (0.9.0, APP1): it
     // keeps a send from being filed twice. Its key lets go of the id alone.
-    expect(rows.map((r) => r.table_name)).toEqual(['connected_app_intake']);
+    // And a connected app's feed (0.9.0, APP2): what it was told of a
+    // document, and its lines, are what tell it the document is no longer
+    // available — a document removed for good included — so they name it by
+    // its id alone, with no key, and the worker lets them go after 90 days.
+    expect(rows.map((r) => r.table_name)).toEqual([
+      'connected_app_change',
+      'connected_app_intake',
+      'connected_app_seen',
+    ]);
+    const feed = await admin.query(
+      `select 1 from pg_constraint
+        where conrelid in ('public.connected_app_change'::regclass, 'public.connected_app_seen'::regclass)
+          and contype = 'f' and confrelid = 'public.document'::regclass`,
+    );
+    expect(feed.rowCount).toBe(0);
     const intake = await admin.query<{ on_delete: string }>(
       `select confdeltype as on_delete from pg_constraint
         where conrelid = 'public.connected_app_intake'::regclass
