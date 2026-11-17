@@ -439,6 +439,30 @@ describe('Sharing lists requests (5.22)', () => {
     ).toBeInTheDocument();
   });
 
+  it('says where each request was emailed, and by whom when somebody else sent it (16 Nov 2026)', async () => {
+    await openSharing([
+      request({ emailed_to: 'j•••@e•••.com', emailed_by_name: ME.display_name }),
+      request({
+        id: 'req-b',
+        title: 'Lease papers',
+        mine: false,
+        requested_by_name: 'Aisha',
+        emailed_to: 'l•••@a•••.com',
+        emailed_by_name: 'Aisha',
+      }),
+      request({ id: 'req-c', title: 'Payslips', emailed_to: null }),
+    ]);
+    const live = await screen.findByRole('list', { name: 'Requests that work now' });
+    const [mine, theirs, none] = (await within(live).findAllByRole('listitem')) as [
+      HTMLElement,
+      HTMLElement,
+      HTMLElement,
+    ];
+    expect(within(mine).getByText('Emailed to j•••@e•••.com')).toBeVisible();
+    expect(within(theirs).getByText('Emailed to l•••@a•••.com by Aisha')).toBeVisible();
+    expect(within(none).queryByText(/^Emailed to/)).toBeNull();
+  });
+
   it('an owner turns a request a restore paused back on; an adult is not offered to', async () => {
     const paused = request({ state: 'paused', paused_reason: 'restored' });
     const state = await openSharing([paused]);

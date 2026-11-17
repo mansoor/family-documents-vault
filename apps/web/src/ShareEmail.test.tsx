@@ -132,9 +132,33 @@ describe('Email the link from Sharing, for a link the reader made (0.9.0)', () =
     revealable: true,
     emailable: true,
     emailed_to: 'v•••@a•••.com',
+    mine: true,
     summary: 'Shared with the visa agent, not opened yet.',
   };
   const TOKEN = 'kept-link-secret-0123456789abcdef';
+
+  it('says on each link where it was emailed, and by whom when somebody else sent it (16 Nov 2026)', async () => {
+    const theirs = {
+      ...MINE,
+      id: 'sh-theirs',
+      recipient_label: 'the bank',
+      created_by_name: 'Aisha',
+      mine: false,
+      revealable: false,
+      emailable: false,
+      emailed_to: 'b•••@b•••.com',
+      emailed_by_name: 'Aisha',
+    };
+    const state = fresh({ documents: [PASSPORT], operatorMail: true, shares: [MINE, theirs] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/sharing');
+    render(<App />);
+    const live = await screen.findByRole('list', { name: 'Links that work now' });
+    expect(await within(live).findByText('Emailed to v•••@a•••.com')).toBeVisible();
+    expect(within(live).getByText('Emailed to b•••@b•••.com by Aisha')).toBeVisible();
+    await expectAccessible();
+  });
 
   it('shows the link again with Copy, and emails it after confirming it’s you', async () => {
     const state = fresh({

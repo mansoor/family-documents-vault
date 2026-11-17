@@ -6,6 +6,21 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.54] - 2026-11-16 — a document's activity
+
+### Added
+
+- **Activity on a document's page.** Next to **History**, **Share a link** and the rest, **Activity** opens the activity log with only the lines about that document: who added, changed, looked at or downloaded it, and its links outside the family — its own links, and links to a collection it was in — including what was opened or downloaded through them, and links that have since been removed. A chip says which document it is (_About ‘Richa’s visa’_; a sensitive one is called _a sensitive document_, as the log calls it), and its **×** shows the whole log again. When nothing is about it yet, the page says so. Owners, adults and teens see it, as they see the log; a viewer doesn't.
+- The lines are exactly the ones the whole log shows you about that document, no more: a link's lines are still only for whoever is told of the link, and a document you can't see has no Activity. A document in the Trash keeps its Activity. A collection's link counts only while it gave the document: from when it was made with it ticked, or when it followed it in, until it was left out of the link (as it was made sensitive) or taken out of the collection. When making a document Only me or Adults only ends a collection's link for it, the log says only how many links ended, not which, so that link's own lines (opened, emailed, taken back) aren't shown for the document; what was downloaded or looked at of the document through it still is. (Migration 0107 adds indexes so a collection's links are found without reading the whole log.)
+
+### Changed
+
+- **Where a link or a request was emailed is shown to everyone who can see it.** In **Sharing**, a link or a request the vault emailed says so on its row — _Emailed to j•••@e•••.com by Aisha_ — for everybody who can see that link or request, not only the person who sent it, so the family can tell whether a paper was already asked for or sent, and to which inbox. The address is still only ever shown masked. **Show the link** says _It was last emailed to …_ when somebody else sent it. Each person's limit of emails a day is still counted for them alone. (Migration 0108.)
+
+### Fixed
+
+- **Emailing a collection's link is in the activity log.** When the vault emailed a link to a collection, the line saying so was kept from everybody, the person who sent it included. It is now shown to whoever is told of the link, as its other lines are.
+
 ## [0.9.0-dev.53] - 2026-11-16 — requests as a table, and ended links tidied away
 
 ### Added

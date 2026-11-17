@@ -179,8 +179,15 @@ export interface UploadRequestView {
    * /upload-requests/{id}/email` emails its link. Absent from older vaults.
    */
   emailable?: boolean;
-  /** Where the reader last had the vault email it, masked; null for none. Absent from older vaults. */
+  /**
+   * Where the vault last emailed it, masked (`j•••@e•••.com`), for whoever
+   * sees the request, whoever sent it (the owner's decision of 16 Nov 2026;
+   * before 0.9.0-dev.54, the sender's alone); null for none. Absent from
+   * older vaults.
+   */
   emailed_to?: string | null;
+  /** Who had the vault email it last, by name as the reader is given it; null for none. Absent before 0.9.0-dev.54. */
+  emailed_by_name?: string | null;
 }
 
 /**

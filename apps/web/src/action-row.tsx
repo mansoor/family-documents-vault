@@ -8,7 +8,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
-import { useLocation } from 'react-router';
+import { Link, useLocation } from 'react-router';
 import { TrashIcon } from './ui.js';
 
 /**
@@ -25,6 +25,10 @@ import { TrashIcon } from './ui.js';
  * note's apart from a document's, on this browser; none to begin with. A
  * link to a section — `#share`, `#tags`, `#collections`, `#history`,
  * `#who-can-see-it`, or the id of anything inside one — opens it.
+ *
+ * A document's row also has Activity (0.9.0, DA), for whoever reads the
+ * activity log: a link, not a section — it opens the Activity page with
+ * that document's lines alone.
  *
  * The row is a toolbar, as the editor's is: one Tab stop, the arrow keys
  * along it, Home and End. Tab goes on from it into the panel that is open,
@@ -116,6 +120,8 @@ export function ActionRow({
   trashRef?: RefObject<HTMLButtonElement | null>;
   /** What Download or the Trash could not do, said under the row. */
   error?: ReactNode;
+  /** Where Activity goes (0.9.0, DA): this document's lines; none, no button. */
+  activity?: string | null;
 }) {
   const { kind, memberId, sections } = props;
   const id = useId();
@@ -212,11 +218,12 @@ export function ActionRow({
 
   // The row's buttons, in order: one of them reached by Tab, the arrows along.
   const first = props.onDownload ? 1 : 0;
-  const count = first + sections.length + (props.onTrash ? 1 : 0);
+  const count = first + sections.length + (props.activity ? 1 : 0) + (props.onTrash ? 1 : 0);
   const current = active < count ? active : 0;
   const onToolbarKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    const all = [...(toolbar.current?.querySelectorAll<HTMLButtonElement>('[data-action]') ?? [])];
-    const at = all.indexOf(e.target as HTMLButtonElement);
+    // Its buttons, and Activity's link (0.9.0, DA).
+    const all = [...(toolbar.current?.querySelectorAll<HTMLElement>('[data-action]') ?? [])];
+    const at = all.indexOf(e.target as HTMLElement);
     if (at < 0) return;
     const go = (to: number) => {
       e.preventDefault();
@@ -272,6 +279,12 @@ export function ActionRow({
             )}
           </button>
         ))}
+        {props.activity && (
+          <Link to={props.activity} className="btn action-btn" {...stop(first + sections.length)}>
+            <ActionIcon name="activity" />
+            Activity
+          </Link>
+        )}
         {props.onTrash && (
           <button
             ref={trashRef}
@@ -315,7 +328,8 @@ export function countBadge(n: number, one: string, many: string) {
   return { shown: String(n), spoken: `${n} ${n === 1 ? one : many}` };
 }
 
-type IconName = 'download' | 'eye' | 'tag' | 'collection' | 'link' | 'history' | 'info';
+type IconName =
+  'download' | 'eye' | 'tag' | 'collection' | 'link' | 'history' | 'info' | 'activity';
 
 const PATHS: Record<IconName, ReactNode> = {
   download: (
@@ -352,6 +366,17 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <circle cx="12" cy="12" r="9" />
       <path d="M12 7v5l3 2" />
+    </>
+  ),
+  // A list of lines: what has been happening to it (0.9.0, DA).
+  activity: (
+    <>
+      <path d="M8 6h13" />
+      <path d="M8 12h13" />
+      <path d="M8 18h13" />
+      <path d="M3 6h.01" />
+      <path d="M3 12h.01" />
+      <path d="M3 18h.01" />
     </>
   ),
   // An (i): more about what it is beside (0.9.0, No longer needed's).

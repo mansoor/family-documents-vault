@@ -171,6 +171,8 @@ describe('buildCapabilities', () => {
       source_folders: true,
       // 0.9.0 (RQ): ended links and requests removed after a while.
       ended_sharing: true,
+      // 0.9.0 (DA): one document's activity.
+      document_activity: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);

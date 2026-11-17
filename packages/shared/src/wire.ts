@@ -689,11 +689,18 @@ export interface Share {
    */
   emailable?: boolean;
   /**
-   * Where the caller last emailed it, masked (`j•••@e•••.com`): never the
-   * address. Null when they have not, and for anybody else's link. Absent
-   * from older vaults.
+   * Where the vault last emailed it, masked (`j•••@e•••.com`): never the
+   * address. For whoever sees the link, whoever sent it (the owner's
+   * decision of 16 Nov 2026; before 0.9.0-dev.54, the sender's alone). Null
+   * when it has not been emailed. Absent from older vaults.
    */
   emailed_to?: string | null;
+  /**
+   * Who had the vault email it last, by their name in the family as the
+   * reader is given it; null when not emailed, or not known. Absent before
+   * 0.9.0-dev.54.
+   */
+  emailed_by_name?: string | null;
   /**
    * The caller made it and it still works, or is only paused (0.9.0, LK,
    * `features.link_changes`): `PATCH /shares/{id}` changes its properties.

@@ -375,6 +375,12 @@ export interface FakeState {
   }>;
   /** Answer GET /audit in pages of this many lines, with `next` (R4). */
   activityPage?: number;
+  /**
+   * One document's activity (0.9.0, DA): `features.document_activity`, said
+   * when a test gives this; GET /documents/{id}/activity answers the lines
+   * given for that id, paged as GET /audit is, and 404 for an id not here.
+   */
+  documentActivity?: Record<string, FakeState['activity']>;
   /** True: every document has had its "only you can open this" moment already. */
   privateNoticeShown: boolean;
   /**
@@ -1494,6 +1500,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.fromFolders ? { source_folders: true } : {}),
           // Ended links and requests removed after a while (0.9.0, RQ).
           ...(state.endedSharing ? { ended_sharing: true } : {}),
+          // One document's activity (0.9.0, DA): said when a test gives it.
+          ...(state.documentActivity ? { document_activity: true } : {}),
           // Who opened a link; health records kept as they are (0.9.0, H5).
           ...(state.linkOpenings ? { share_opens: true, record_formats: true } : {}),
           // Caregivers and turning 18 (0.9.0, H1b): said when a test asks.
@@ -3520,6 +3528,20 @@ export function installFakeApi(state: FakeState) {
       const items = rest.slice(0, n);
       return json({ items, next: rest.length > n ? (items.at(-1)?.id ?? null) : null });
     }
+    // One document's activity (0.9.0, DA): the lines given for it, paged
+    // as the whole log is; a viewer reads none, an id not given is not there.
+    if (/^\/api\/v1\/documents\/[^/]+\/activity$/.test(path) && method === 'GET') {
+      if (storedRole() === 'viewer') {
+        return refuse(403, 'forbidden', 'A viewer cannot read the activity log.');
+      }
+      const lines = state.documentActivity?.[path.split('/')[4] as string];
+      if (!lines) return refuse(404, 'not_found', 'That document does not exist.');
+      const before = Number(query.get('before') ?? 0);
+      const rest = before ? lines.filter((l) => l.id < before) : lines;
+      const n = state.activityPage ?? rest.length;
+      const items = rest.slice(0, n);
+      return json({ items, next: rest.length > n ? (items.at(-1)?.id ?? null) : null });
+    }
     if (path.endsWith('/visibility') && method === 'POST') {
       const { visibility: to, own_links: ownLinks } = body as {
         visibility: string;
@@ -3758,6 +3780,8 @@ export function installFakeApi(state: FakeState) {
       const at = b.to.lastIndexOf('@');
       const domain = b.to.slice(at + 1);
       const sentTo = `${b.to.charAt(0)}•••@${domain.charAt(0)}•••${domain.slice(domain.lastIndexOf('.'))}`;
+      // Listed with where it went, for whoever sees it (16 Nov 2026).
+      Object.assign(link, { emailed_to: sentTo, emailed_by_name: null });
       return json({ sent_to: sentTo, sent_at: new Date().toISOString(), sends_left: 2 });
     }
     // A link changed by whoever made it (0.9.0, LK): what was sent is kept
@@ -4533,6 +4557,8 @@ export function installFakeApi(state: FakeState) {
           message: b.message ?? null,
         });
         const sentTo = `${b.to.charAt(0)}•••@${b.to.split('@')[1]?.charAt(0) ?? ''}•••.com`;
+        // Listed with where it went, for whoever sees it (16 Nov 2026).
+        Object.assign(r, { emailed_to: sentTo, emailed_by_name: null });
         return json({ sent_to: sentTo, sent_at: new Date().toISOString(), sends_left: 2 });
       }
       // Shown again, and changed, by whoever asked (0.9.0, LK).

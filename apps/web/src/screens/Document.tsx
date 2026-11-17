@@ -597,6 +597,13 @@ export function DocumentScreen() {
         onDownload={latest && !latest.file_removed ? () => void download(latest) : null}
         onTrash={mayChangeIt ? () => setConfirmingTrash(true) : null}
         trashRef={trashButton}
+        // Its lines in the activity log (0.9.0, DA): for whoever reads the
+        // log, never a caregiver, whose papers' lines it gives them none.
+        activity={
+          !caregiver && caps?.features.document_activity === true && can(storedRole(), 'audit.read')
+            ? `/activity?document=${encodeURIComponent(doc.id)}`
+            : null
+        }
         error={<ErrorNote message={actionError} />}
         sections={[
           // Its versions beside Download: the file's own actions together.

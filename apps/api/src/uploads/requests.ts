@@ -87,6 +87,7 @@ import type { MailRequest } from '../mail-job.js';
 import { cookieForNewBinding, type DeviceCookie } from '../public/device-cookie.js';
 import { INCOMING_SCAN_JOB } from './incoming.js';
 import { inspectOffice } from './office.js';
+import { lastEmailed } from '../emailed.js';
 
 /**
  * Asking somebody outside the family to send documents (5.21, #12).
@@ -783,21 +784,9 @@ export class UploadRequestService {
         .where('state', '<>', 'uploading')
         .groupBy('request_id')
         .execute();
-      // Where the reader last had the vault email each of theirs (0.9.0,
-      // LK): masked, and only ever their own (0103 gives nobody else's).
-      const emailed = new Map(
-        (
-          await trx
-            .selectFrom('upload_request_email')
-            .distinctOn('request_id')
-            .select(['request_id', 'to_masked'])
-            .where('sent_by', '=', p.accountId)
-            .where('request_id', 'in', ids)
-            .orderBy('request_id')
-            .orderBy('sent_at', 'desc')
-            .execute()
-        ).map((e) => [e.request_id, e.to_masked]),
-      );
+      // Where each was last emailed (0.9.0, LK), masked, and by whom: for
+      // whoever sees the request (the owner's decision of 16 Nov 2026, 0108).
+      const emailed = await lastEmailed(trx, 'upload_request_email', 'request_id', ids);
       return rows.map((r) => ({
         ...this.view(r, p),
         // Paused while its requester's sign-in is locked, or waits after a
@@ -824,7 +813,8 @@ export class UploadRequestService {
           .filter((i) => i.request_id === r.id)
           .map((i) => ({ id: i.id, label: i.label })),
         files_received: Number(files.find((f) => f.request_id === r.id)?.n ?? 0),
-        emailed_to: emailed.get(r.id) ?? null,
+        emailed_to: emailed.get(r.id)?.to ?? null,
+        emailed_by_name: emailed.get(r.id)?.by ?? null,
       }));
     });
   }
@@ -879,6 +869,7 @@ export class UploadRequestService {
       // Its link emailed by the vault, by whoever asked, while it opens now.
       emailable: mine && stateOf(r) === 'active' && this.emailLinks && r.link_copy_sealed !== null,
       emailed_to: null,
+      emailed_by_name: null,
       latest_end: this.latestEnd(r).toISOString(),
       version: r.version,
     };
