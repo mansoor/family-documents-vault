@@ -930,6 +930,109 @@ export interface Schema {
     device_id: Generated<string | null>;
     /** A day: kept as the database's date, read as a string (YYYY-MM-DD). */
     device_day: ColumnType<string | null, string | null | undefined, never>;
+    /** A connected app's batch for a day (0109, APP1): which app, which day, which part. */
+    app_id: Generated<string | null>;
+    app_day: ColumnType<string | null, string | null | undefined, never>;
+    app_part: ColumnType<number | null, number | null | undefined, never>;
+  };
+
+  /**
+   * A connected app (0109, 0.9.0 APP1): an owner's, acting as one adult;
+   * revoked once and never removed.
+   */
+  connected_app: {
+    id: Generated<string>;
+    household_id: string;
+    name: string;
+    account_id: string;
+    member_id: string;
+    created_by: string | null;
+    approval: ColumnType<'waiting' | 'approved', 'waiting' | 'approved' | undefined>;
+    approved_at: Timestamp | null;
+    scopes: ColumnType<string[], string[] | undefined, string[]>;
+    allowed_kinds: ColumnType<string[], string[] | undefined, string[]>;
+    default_visibility: Visibility | null;
+    auto_file: Generated<boolean>;
+    daily_files: Generated<number>;
+    /** A bigint, read as a string. */
+    daily_bytes: ColumnType<string, string | number | undefined, string | number>;
+    backfill_until: Timestamp | null;
+    backfill_files: number | null;
+    backfill_bytes: ColumnType<
+      string | null,
+      string | number | null | undefined,
+      string | number | null
+    >;
+    backfill_auto_file: Generated<boolean>;
+    /** Addresses and networks, kept as cidr; read with ::text[]. */
+    ip_allow: ColumnType<string[], string[] | undefined, string[]>;
+    paused_reason: 'owner' | 'restored' | null;
+    revoked_at: Timestamp | null;
+    revoked_by: string | null;
+    revoked_reason:
+      'owner' | 'member' | 'sign_in_removed' | 'cannot_act' | 'signed_out' | 'owner_stopped' | null;
+    last_used_at: Timestamp | null;
+    use_day: ColumnType<string | null, string | null | undefined, string | null>;
+    files_today: Generated<number>;
+    bytes_today: ColumnType<string, string | number | undefined, string | number>;
+    refused_on: ColumnType<string | null, string | null | undefined, string | null>;
+    refused_today: Generated<number>;
+    last_refusal: string | null;
+    checked_line_at: Timestamp | null;
+    /** A restore's moment: a signature made before it is refused. */
+    signed_after: Timestamp | null;
+    created_at: GeneratedTimestamp;
+  };
+
+  /** An app's public key (0109, APP1): two live at most, retired once. */
+  connected_app_key: {
+    id: Generated<string>;
+    household_id: string;
+    app_id: string;
+    public_key: Buffer;
+    added_by: 'owner' | 'app';
+    created_at: GeneratedTimestamp;
+    /** Confirmed in Settings; null while a key the app added waits. */
+    confirmed_at: Timestamp | null;
+    first_used_at: Timestamp | null;
+    retired_at: Timestamp | null;
+  };
+
+  /** A nonce an app signed with, kept for its five minutes (0109, APP1): the vault's alone. */
+  connected_app_nonce: {
+    household_id: string;
+    app_id: string;
+    nonce: string;
+    expires_at: Timestamp;
+  };
+
+  /** What an app sent, by its external id (0109, APP1): its person's, and the vault's. */
+  connected_app_intake: {
+    id: Generated<string>;
+    household_id: string;
+    app_id: string;
+    member_id: string;
+    external_id: string;
+    state: 'arriving' | 'waiting' | 'filed' | 'refused' | 'removed';
+    removed_reason: 'withdrawn' | 'declined' | 'expired' | null;
+    refusal: 'kind_not_allowed' | 'unsupported_type' | 'too_large' | null;
+    sha256: Buffer | null;
+    byte_size: ColumnType<
+      string | null,
+      string | number | null | undefined,
+      string | number | null
+    >;
+    incoming_file_id: string | null;
+    document_id: string | null;
+    version_id: string | null;
+    hints_sealed: Buffer | null;
+    created_at: GeneratedTimestamp;
+    started_at: GeneratedTimestamp;
+    /** The send that holds it while it arrives. */
+    attempt: string | null;
+    received_at: Timestamp | null;
+    decided_at: Timestamp | null;
+    unlinked_at: Timestamp | null;
   };
 
   /**

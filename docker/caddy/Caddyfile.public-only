@@ -43,6 +43,16 @@
 {$FDV_PUBLIC_HOSTNAME} {
 	encode zstd gzip
 
+	# A path whose raw form hides a slash, a backslash or a dot (%2f, %5c,
+	# %2e), or holds a segment starting with a dot, is answered 404 before
+	# anything else: the matchers below read the path cleaned, and what is
+	# passed on is the raw one, which nginx or the vault could read otherwise
+	# (/shared/%2e%2e/api/... is /api/... once nginx decodes it).
+	@bad_uri expression `{http.request.uri}.matches("^[^?]*(?i:%2f|%5c|%2e|/[.])")`
+	handle @bad_uri {
+		respond 404
+	}
+
 	# What a stranger's browser may ask for: the pages and what they load,
 	# and the API routes they call. Anything not named is not there.
 	@public path /s /s/ /shared/* /drop /drop/* /assets/* /icon-192.png /icon-512.png /manifest.webmanifest
@@ -75,6 +85,10 @@
 			flush_interval -1
 		}
 	}
+
+	# Connected apps' routes (0.9.0), only with FDV_PUBLIC_APPS=on: compose
+	# mounts apps-on.caddy or apps-off.caddy here.
+	import /etc/caddy/apps.caddy
 
 	handle {
 		respond 404

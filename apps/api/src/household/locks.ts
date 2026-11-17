@@ -1,4 +1,5 @@
 import { COMPUTERS_STOPPED, stopDevicesOf } from '../devices/service.js';
+import { stopAppsOf } from '../apps/service.js';
 import { appendAudit, householdZone, withPrincipal, type Db } from '@fdv/db';
 import {
   can,
@@ -608,6 +609,14 @@ export class LockService {
       // And every computer of theirs that sends scans (0.8.0, D1, the
       // review's F2): an emergency stops them too, each with its line.
       after.computers = await stopDevicesOf(
+        trx,
+        { householdId: p.householdId, actorAccountId: p.accountId },
+        target.account_id,
+        'signed_out',
+        meta,
+      );
+      // And every app acting as them (0.9.0, APP1): removed, each with its line.
+      await stopAppsOf(
         trx,
         { householdId: p.householdId, actorAccountId: p.accountId },
         target.account_id,

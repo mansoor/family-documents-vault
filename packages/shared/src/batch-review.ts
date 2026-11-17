@@ -144,15 +144,18 @@ export function untouchedAccept(opts: {
     role === 'teen' ? me : (p.owner_member_id?.value ?? (d.visibility === 'private' ? me : ''));
   const person = opts.people.find((m) => m.id === owner) ?? null;
   const issuer = p.issued_by?.value ?? '';
-  const title = type
-    ? autoTitle(type, person, { issued_by: issuer, issued: p.issued?.value ?? null })
-    : '';
+  // A title the connected app gave (APP1) stands for the one nobody typed.
+  const title =
+    p.title?.value ??
+    (type ? autoTitle(type, person, { issued_by: issuer, issued: p.issued?.value ?? null }) : '');
   const out: BatchAcceptInput = {
     type_key: type?.key ?? null,
     title: title.trim() || null,
     owner_member_id: owner || null,
     visibility: p.visibility.value,
   };
+  // The household's, as the app said, with nobody chosen (APP1).
+  if (!owner && p.household === true) out.household_owned = true;
   if (shows(type, 'issued_by')) out.issued_by = issuer.trim() || null;
   if (shows(type, 'identifier')) out.identifier = (p.identifier?.value ?? '').trim() || null;
   if (shows(type, 'physical_location')) {
@@ -163,6 +166,10 @@ export function untouchedAccept(opts: {
   const answers: Record<string, unknown> = {};
   for (const f of type?.fields ?? []) {
     if (f.kind === 'yes_no' && f.required === true) answers[f.key] = false;
+    // What the connected app gave of the kind's own fields (APP1): amount,
+    // tax year, the account's last 4, a period, a due date.
+    const given = p.extra?.[f.key];
+    if (given) answers[f.key] = given.value;
   }
   // An expiry read for a kind that keeps it as a date of its own: a bill's
   // Due date (0.9.0).

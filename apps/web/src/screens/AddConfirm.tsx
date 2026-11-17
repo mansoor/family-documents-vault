@@ -911,8 +911,19 @@ function CardMark(props: {
   folder?: string | null | undefined;
   /** Who sent it, as the card says (R1), for a mark learned from their earlier papers. */
   sender?: string | null | undefined;
+  /** The connected app that sent it (0.9.0, APP1), for a mark that is the app's. */
+  app?: string | null | undefined;
 }) {
   const { mark } = props;
+  // What the connected app that sent it said (APP1): "from MonTra", as a
+  // batch's choice is said, with no how-sure.
+  if (mark.from === 'app') {
+    return (
+      <span className="mark-batch mark-app">
+        from <bdi>{props.app ?? 'the app'}</bdi>
+      </span>
+    );
+  }
   // From the folder's name alone (S2): "suggested from the folder ‘Passports/Ahmed’", unsure.
   if (mark.from === 'folder') {
     return (
@@ -956,13 +967,22 @@ function CardMark(props: {
     mark.from === 'pages' || mark.from === 'learned'
       ? (ITEM_SURE as Record<string, number>)[props.field]
       : undefined;
-  // The folder says the same (S2): said beside the pages' mark.
-  const agrees =
-    mark.folder === true && props.folder ? (
-      <span className="mark-sugg mark-folder" title={folderWords(props.folder)}>
-        and the folder ‘<bdi>{props.folder}</bdi>’
-      </span>
-    ) : null;
+  // The folder says the same (S2): said beside the pages' mark; and the
+  // connected app that sent it (APP1).
+  const agrees = (
+    <>
+      {mark.folder === true && props.folder ? (
+        <span className="mark-sugg mark-folder" title={folderWords(props.folder)}>
+          and the folder ‘<bdi>{props.folder}</bdi>’
+        </span>
+      ) : null}
+      {mark.app === true && props.app ? (
+        <span className="mark-sugg mark-app">
+          and <bdi>{props.app}</bdi>
+        </span>
+      ) : null}
+    </>
+  );
   if (mark.from === 'learned' && mark.shape === true) {
     // Proposed, or made surer, by the uploader's earlier papers of this
     // sender's layout (R1): "learned from your earlier papers from Northgate".
@@ -1083,6 +1103,15 @@ export function ConfirmForm(props: {
     /** Ticked as the card starts (`extras.tags` holds them). */
     ticked: readonly string[];
     /** Offered: one used more narrowly than this would be, or a new one. */
+    offered: ReadonlyArray<{ value: string; existing: boolean }>;
+  } | null;
+  /**
+   * The connected app that sent a batch's item (0.9.0, APP1): a mark that is
+   * the app's says so ("from MonTra"); the tags it gave are offered under
+   * Tags, as a folder's are, and never ticked.
+   */
+  app?: {
+    name: string;
     offered: ReadonlyArray<{ value: string; existing: boolean }>;
   } | null;
   /**
@@ -1229,6 +1258,7 @@ export function ConfirmForm(props: {
         mark={mark}
         folder={props.folder?.path}
         sender={typeof sender === 'string' ? sender : null}
+        app={props.app?.name}
       />
     ) : undefined;
   };
@@ -2110,6 +2140,46 @@ export function ConfirmForm(props: {
                         </span>{' '}
                         <span className="mark-sugg">
                           {t.existing ? 'tag from the folder name' : 'new tag from the folder name'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+            {(() => {
+              // Tags the connected app gave (APP1): offered as a folder's are,
+              // never ticked, made only if accepted with them.
+              const app = props.app;
+              const offered = (app?.offered ?? []).filter(
+                (t) => !tagsTyped.has(t.value.toLowerCase()),
+              );
+              if (!app || offered.length === 0) return null;
+              return (
+                <div
+                  className="pills folder-tags"
+                  role="group"
+                  aria-label={`Tags from ${app.name}`}
+                >
+                  {offered.map((t) => {
+                    const what = `${t.existing ? 'a tag' : 'a new tag'} from ${app.name}`;
+                    return (
+                      <button
+                        key={t.value}
+                        type="button"
+                        className="pill pill-sugg"
+                        aria-label={`Add the tag ${t.value}: ${what}`}
+                        onClick={() =>
+                          setTags((was) =>
+                            was.trim() ? `${was.replace(/,\s*$/, '')}, ${t.value}` : t.value,
+                          )
+                        }
+                      >
+                        <span className="pill-sugg-value">
+                          + <bdi>{t.value}</bdi>
+                        </span>{' '}
+                        <span className="mark-sugg">
+                          {t.existing ? 'tag' : 'new tag'} from <bdi>{app.name}</bdi>
                         </span>
                       </button>
                     );

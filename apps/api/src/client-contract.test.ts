@@ -46,8 +46,11 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
         : typeof init.body === 'string'
           ? { payload: init.body }
           : {}),
-      // Sign-in is rate-limited per address; each call is its own peer.
-      remoteAddress: `10.66.${++peer >> 8}.${peer & 0xff}`,
+      // Sign-in is rate-limited per address; each call is its own peer. An
+      // app's calls come from this machine: plain http is let in only so.
+      remoteAddress: /^https?:\/\/[^/]+\/api\/v1\/apps\//.test(url)
+        ? '127.0.0.1'
+        : `10.66.${++peer >> 8}.${peer & 0xff}`,
     });
     return {
       ok: res.statusCode < 400,
@@ -70,6 +73,7 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
 
   const api = createApi(createHttp({ baseUrl: 'http://vault.test', fetch: viaInject }));
   const ctx: ContractContext = {
+    fetch: viaInject,
     email: 'contract@example.test',
     password: 'a long enough password',
     // The household's own setting on a built-in (0031), written as the

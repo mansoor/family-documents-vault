@@ -123,6 +123,11 @@ export const JOBS = {
    */
   incomingSweep: 'incoming.sweep',
   /**
+   * Hourly (0.9.0, APP1): connected apps' spent nonces, and what they sent
+   * that was refused or removed more than 90 days ago, let go.
+   */
+  appsSweep: 'apps.sweep',
+  /**
    * Many documents at once (Phase 6, I1): one item of a household's batches
    * drawn for review, then sent again while more wait — one queued and one
    * running a household (`stately`), so a batch of 200 never starves

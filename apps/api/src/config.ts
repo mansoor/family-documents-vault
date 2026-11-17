@@ -236,6 +236,38 @@ const schema = z.object({
         'Past it, its files are refused until the next day on the household\u2019s calendar.',
     ),
 
+  FDV_PUBLIC_APPS: z
+    .enum(['on', 'off'])
+    .default('off')
+    .describe(
+      'Whether connected apps reach this vault at the public-only site (0.9.0): off unless ' +
+        'set to on. An app on the internet, such as MonTra, can only reach the vault at its ' +
+        'public address; on adds the app routes (/api/v1/apps/*) to what that site serves, and ' +
+        'the connection string an owner pastes into the app starts with FDV_PUBLIC_URL. Give ' +
+        'the same value to the caddy-public service (docker-compose.tls.yml).',
+    ),
+
+  FDV_APP_DAILY_FILES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100_000)
+    .default(1000)
+    .describe(
+      'The most files an owner may let one connected app send in a day (0.9.0; 1,000 unless ' +
+        'changed). Each app starts at 100.',
+    ),
+
+  FDV_APP_DAILY_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1024 * 1024)
+    .default(5 * 1024 ** 3)
+    .describe(
+      'The most bytes an owner may let one connected app send in a day (0.9.0; 5 GB unless ' +
+        'changed). Each app starts at 500 MB.',
+    ),
+
   FDV_SMTP_URL: z
     .string()
     .regex(/^smtps?:[/][/]/, 'Use smtp://… or smtps://…')

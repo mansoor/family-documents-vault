@@ -353,6 +353,7 @@ import {
   type ChangedUploadRequest,
   type RevealedUploadRequest,
 } from '@fdv/shared';
+import { fakeAppRoutes, type FakeApp } from './fake-apps.js';
 import type { FetchLike, ResponseLike } from '../http.js';
 import { storedZip } from './zip.js';
 
@@ -678,6 +679,8 @@ export interface FakeVaultState {
    * only a fake may keep them; a revoked one kept, as the vault keeps it.
    */
   devices?: FakeDevice[];
+  /** Connected apps (0.9.0, APP1), with their public keys and what each sent. */
+  connectedApps?: FakeApp[];
   /** Pairing codes, one a person, as only a fake may keep them. */
   pairings?: Array<{ code: string; member_id: string; expires_at: number; attempts: number }>;
   /**
@@ -3534,6 +3537,29 @@ export function createFakeVault(): {
     // A computer that sends scans (0.8.0, D1), as the real vault answers: a
     // code for whoever may add, traded for a key that only uploads — and a
     // key refused on every other route, first.
+    // Connected apps (0.9.0, APP1): a signature taken by the app routes
+    // alone, checked for real; and Settings → Connected apps.
+    const apps = fakeAppRoutes({
+      apps: (state.connectedApps ??= []),
+      session: () => {
+        const s = session();
+        return 'id' in s ? whoOf(s) : s;
+      },
+      memberName: (id) => state.members.find((m) => m.id === id)?.display_name ?? 'Somebody',
+      ownerTwoStep: () => state.ownerTwoStep,
+      mayAct: (id) =>
+        state.members.some((m) => m.id === id && (m.role === 'owner' || m.role === 'adult')),
+      kinds: () => state.types,
+      ok: (answer, status = 200, headers = {}) => respond(status, answer, headers),
+      fail,
+      empty,
+      next,
+      timezone: () => state.timezone,
+    });
+    const appAnswer = await apps.app(url, init, partsOf);
+    if (appAnswer) return appAnswer;
+    const familyAppAnswer = await apps.family(path, init.method ?? 'GET', body);
+    if (familyAppAnswer) return familyAppAnswer;
     const deviceAnswer = deviceRoutes(path, init, body, session);
     if (deviceAnswer) return deviceAnswer;
     const mailboxAnswer = mailboxRoutes(path, init, body, session);
@@ -3704,6 +3730,8 @@ export function createFakeVault(): {
           ended_sharing: true,
           // One document's activity (0.9.0, DA).
           document_activity: true,
+          // Connected apps (0.9.0, APP1).
+          connected_apps: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -3717,6 +3745,7 @@ export function createFakeVault(): {
         deprecations: [],
         branding: { display_name: 'A fake family' },
         instance_id: FAKE_INSTANCE_ID,
+        apps_public: false,
       };
       return ok(caps);
     }

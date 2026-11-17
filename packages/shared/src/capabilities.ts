@@ -719,6 +719,17 @@ export interface CapabilityFeatures {
    * `404` for a document the caller cannot see. Absent from older vaults.
    */
   document_activity?: boolean;
+  /**
+   * Connected apps (0.9.0, APP1): an owner connects an app in Settings →
+   * Connected apps (`/connected-apps`, with a passkey or a code), which
+   * signs every request to `/api/v1/apps/*` with its own Ed25519 key (RFC
+   * 9421) and sends documents into the Inbox of the person it acts as:
+   * `GET /apps/me`, `POST /apps/intake`, `GET` and `DELETE
+   * /apps/intake/{external_id}`, `GET /apps/intake?external_ids=`, and its
+   * keys. Whether the operator publishes them on the public-only site is
+   * `apps_public`. Absent from older vaults.
+   */
+  connected_apps?: boolean;
 }
 
 export interface CapabilityLimits {
@@ -743,6 +754,13 @@ export interface CapabilityLimits {
    * age out".
    */
   backup_retain_days?: number | null;
+  /**
+   * The most an owner may let a connected app send in a day (0.9.0, APP1:
+   * FDV_APP_DAILY_FILES and FDV_APP_DAILY_BYTES; 1,000 files and 5 GB
+   * unless the operator says otherwise). Absent from older vaults.
+   */
+  app_daily_files_max?: number;
+  app_daily_bytes_max?: number;
 }
 
 export interface Deprecation {
@@ -769,4 +787,11 @@ export interface Capabilities {
    * the same vault still answers there. Absent from older servers.
    */
   instance_id?: string;
+  /**
+   * The operator has published the connected apps' routes on the
+   * public-only site (0.9.0, APP1: FDV_PUBLIC_APPS=on), so an app on the
+   * internet can reach this vault at its public address. Absent from older
+   * vaults, and false unless the operator says.
+   */
+  apps_public?: boolean;
 }

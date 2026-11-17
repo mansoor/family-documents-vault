@@ -63,6 +63,7 @@ import { PurgeService } from './documents/purge.js';
 import { IncomingService } from './uploads/incoming.js';
 import { BatchService } from './uploads/batches.js';
 import { DEVICE_KEY_PURPOSE, DeviceService } from './devices/service.js';
+import { AppService } from './apps/service.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { VaultService } from './vaults/service.js';
@@ -359,6 +360,17 @@ async function main(): Promise<void> {
       downloadUrl: config.FDV_DESKTOP_DOWNLOAD_URL ?? null,
       maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
       dailyBytes: config.FDV_DEVICE_DAILY_BYTES,
+      alert,
+    }),
+    // Connected apps (0.9.0, APP1): their routes signed, their files the batches'.
+    apps: new AppService(db, batches, {
+      baseUrl: config.FDV_BASE_URL,
+      publicUrl: config.FDV_PUBLIC_URL ?? null,
+      appsPublic: config.FDV_PUBLIC_APPS === 'on',
+      maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
+      ceilings: { files: config.FDV_APP_DAILY_FILES, bytes: config.FDV_APP_DAILY_BYTES },
+      serverVersion: version,
+      instanceId: instanceIdReader(db),
       alert,
     }),
     audit: new AuditService(db),

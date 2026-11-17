@@ -1,5 +1,25 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { errorForLog, loggableUrl } from './log-redaction.js';
+
+/**
+ * nginx's access-log map (docker/nginx.conf), read from the file and run as
+ * nginx runs it: each `"~regex" "replacement"` line of the map that cuts a
+ * path, in order, the first that matches.
+ */
+function nginxLogPath(path: string): string {
+  const conf = readFileSync(new URL('../../../docker/nginx.conf', import.meta.url), 'utf8');
+  const block = /map \$fdv_log_path \$fdv_log_uri \{([\s\S]*?)\n\}/.exec(conf)?.[1] ?? '';
+  for (const line of block.split('\n')) {
+    const m = /^\s*"~(.*)" "(.*)";\s*$/.exec(line);
+    if (!m) continue;
+    const re = new RegExp(m[1] as string);
+    if (re.test(path)) {
+      return path.replace(re, (m[2] as string).replace(/\$\{(\w+)\}/g, '$<$1>'));
+    }
+  }
+  return path;
+}
 
 describe('what the log may say about a request (0.5.0)', () => {
   it('cuts the secret out of every link that is one, and keeps the shape', () => {
@@ -137,6 +157,36 @@ describe('what the log may say about a request (0.5.0)', () => {
     expect(loggableUrl('/drop/Abc123-_xyz')).toBe('/drop/[redacted]');
     expect(loggableUrl('/drop')).toBe('/drop');
     expect(loggableUrl('/api/v1/upload-requests')).toBe('/api/v1/upload-requests');
+  });
+
+  it("cuts a connected app's external id, here and in nginx's access log (0.9.0, APP1)", () => {
+    expect(loggableUrl('/api/v1/apps/intake/mt:tenant-7f3a:doc-01HZX3K9Q2')).toBe(
+      '/api/v1/apps/intake/[redacted]',
+    );
+    // Asked for several at once, on a query string: none of it is kept.
+    expect(loggableUrl('/api/v1/apps/intake?external_ids=mt:a,mt:b')).toBe(
+      '/api/v1/apps/intake?[redacted]',
+    );
+    expect(loggableUrl('/api/v1/apps/me')).toBe('/api/v1/apps/me');
+    expect(nginxLogPath('/api/v1/apps/intake/mt:tenant-7f3a:doc-01HZX3K9Q2')).toBe(
+      '/api/v1/apps/intake/[redacted]',
+    );
+    expect(nginxLogPath('/api/v1/apps/me')).toBe('/api/v1/apps/me');
+  });
+
+  it("nginx's access log cuts what the API's log cuts: a ZIP's ticket too (DL, found in APP1)", () => {
+    for (const path of [
+      '/api/v1/downloads/tIcKeT_abc-123',
+      '/api/v1/shared/Abc123-_x/open',
+      '/api/v1/password-resets/r3s3t',
+      '/api/v1/invitations/inv1t3/accept',
+      '/api/v1/apps/intake/mt:doc-1',
+      '/shared/Abc123',
+      '/reset/r3s3t',
+    ]) {
+      expect(nginxLogPath(path), path).toBe(loggableUrl(path));
+    }
+    expect(nginxLogPath('/api/v1/documents/7f1c')).toBe('/api/v1/documents/7f1c');
   });
 
   it('leaves everything else as it was', () => {

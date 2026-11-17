@@ -18,6 +18,8 @@ import {
 } from '@fdv/shared';
 import { expect } from 'vitest';
 import { deviceHeaders, type Api } from '../api.js';
+import { createAppClient, signRequest } from '../apps.js';
+import type { FetchLike } from '../http.js';
 import { ApiRequestError, isSessionOver } from '../errors.js';
 import { multipartBody } from '../multipart.js';
 import { negotiate } from '../negotiate.js';
@@ -110,6 +112,11 @@ export interface ContractContext {
    * none, and its scenarios never ask.
    */
   turnThirteen?: (memberId: string) => Promise<void>;
+  /**
+   * The fetch the vault answers on (0.9.0, APP1): a connected app's client
+   * of its own, beside the family's, signs its requests through it.
+   */
+  fetch?: FetchLike;
 }
 
 export interface Scenario {
@@ -138,6 +145,10 @@ const CREATE_KEY = '92a3b4c5-d6e7-4f89-8a91-23456789abcd';
 const ZIP_KEY = 'a3b4c5d6-e7f8-4a9b-8c0d-3456789abcde';
 const LK_KEY = 'b4c5d6e7-f809-4bac-9d1e-456789abcdef';
 const H5_KEY = 'c5d6e7f8-091a-4bcd-8e2f-56789abcdef0';
+/** RFC 9421's Ed25519 test key (B.1.4), the contract's worked examples' (0.9.0, APP1). */
+const APP_TEST_KEY = `-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIJ+DYvh6SEqVTm50DFtMDoQikTmiCqirVv9mWG9qfSnF
+-----END PRIVATE KEY-----`;
 
 async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
   try {
@@ -2014,7 +2025,7 @@ export const contractScenarios: Scenario[] = [
         documents: 2,
         keeps_private: false,
       });
-      // ...his Adults only one too, when an owner allows it (D6)...
+      // ...his Adults only one too, when an owner allows it...
       expect(
         (
           await api.previewAccess(owner.access_token, veraId, {
@@ -4414,6 +4425,108 @@ export const contractScenarios: Scenario[] = [
       const unknown = await refusal(api.shareOpens(token, '00000000-0000-4000-8000-000000000000'));
       expect([unknown.status, unknown.code]).toEqual([404, 'not_found']);
       await api.revokeShare(token, made.share.id);
+    },
+  },
+  {
+    name: 'a connected app: connected with a code, it signs, sends, is answered again, and withdraws (0.9.0, APP1)',
+    run: async (api, ctx) => {
+      if (!ctx.fetch) throw new Error('the contract needs the fetch its vault answers on');
+      expect((await api.capabilities()).features.connected_apps).toBe(true);
+      const owner = await signIn(api, ctx);
+      await ctx.ownerTwoStep(owner.access_token);
+      const token = owner.access_token;
+      // The app's key pair, its own; the vault is given the public key. The
+      // contract's own test key (RFC 9421 B.1.4), which nobody uses for real.
+      const pkcs8 = APP_TEST_KEY;
+      const made = await api.connectedApps.create(token, {
+        name: 'Contract app',
+        member_id: owner.member_id,
+        public_key: 'ed25519:JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs',
+        allowed_kinds: ['bank_statement'],
+      });
+      expect(made).toMatchObject({ name: 'Contract app', state: 'active', mine: true });
+      expect(made.keys.map((k) => k.fingerprint)).toEqual([
+        'b16c 2d1b ead1 2626 3976 4fdb 0ee4 d377',
+      ]);
+      expect(made.connection_string.startsWith('fdvapp1.')).toBe(true);
+      const app = createAppClient({
+        baseUrl: api.http.baseUrl,
+        appId: made.id,
+        keyId: made.keys[0]?.key_id as string,
+        privateKey: pkcs8,
+        fetch: ctx.fetch,
+      });
+      // The connection test.
+      expect(await app.me()).toMatchObject({
+        app: { id: made.id, name: 'Contract app' },
+        state: 'active',
+        scopes: ['documents.send'],
+      });
+      // Sent; sent again with the same bytes, answered so; with others, refused.
+      const pdf = { bytes: PDF, filename: 'statement.pdf', contentType: 'application/pdf' };
+      const sent = await app.send({
+        externalId: 'contract-1',
+        hints: { kind: 'bank_statement' },
+        file: pdf,
+      });
+      expect(sent).toMatchObject({ status: 201, replayed: false, state: { state: 'waiting' } });
+      expect(sent.state.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(sent.state.byte_size).toBe(PDF.length);
+      const again = await app.send({ externalId: 'contract-1', file: pdf });
+      expect(again).toMatchObject({ status: 200, replayed: true, state: sent.state });
+      const other = await refusal(
+        app.send({
+          externalId: 'contract-1',
+          file: { ...pdf, bytes: new TextEncoder().encode('%PDF-1.4\n% other\n%%EOF\n') },
+        }),
+      );
+      expect([other.status, other.code]).toEqual([409, 'external_id_conflict']);
+      // A kind it may not send: refused, and kept as refused.
+      const receipt = await refusal(
+        app.send({ externalId: 'contract-2', hints: { kind: 'warranty' }, file: pdf }),
+      );
+      expect([receipt.status, receipt.code]).toEqual([422, 'kind_not_allowed']);
+      expect(await app.status('contract-2')).toMatchObject({
+        state: 'refused',
+        refusal: 'kind_not_allowed',
+      });
+      expect(await app.statuses(['contract-1', 'contract-9'])).toEqual({
+        items: [sent.state],
+        unknown: ['contract-9'],
+      });
+      // Withdrawn while it waits.
+      expect(await app.withdraw('contract-1')).toMatchObject({
+        state: 'removed',
+        removed_reason: 'withdrawn',
+      });
+      // A signed request sent twice: refused the second time.
+      const signed = await signRequest({
+        method: 'GET',
+        target: '/api/v1/apps/me',
+        keyid: `${made.id}.${made.keys[0]?.key_id as string}`,
+        privateKey: pkcs8,
+      });
+      const twice = () =>
+        (ctx.fetch as NonNullable<typeof ctx.fetch>)(`${api.http.baseUrl}/api/v1/apps/me`, {
+          method: 'GET',
+          headers: { ...signed },
+        });
+      expect((await twice()).status).toBe(200);
+      const replayed = await twice();
+      expect(replayed.status).toBe(401);
+      expect(((await replayed.json()) as { error: { code: string } }).error.code).toBe(
+        'nonce_reused',
+      );
+      // A sign-in is no app, and an app's signature is no sign-in.
+      const bearer = await refusal(api.http.request('/api/v1/apps/me', { token }));
+      expect([bearer.status, bearer.code]).toEqual([401, 'app_signature_required']);
+      const crossed = await refusal(app.signed('GET', '/api/v1/documents'));
+      expect([crossed.status, crossed.code]).toEqual([401, 'app_signature_not_accepted']);
+      // Listed for its owner; removed, and told so.
+      expect((await api.connectedApps.list(token)).items.some((a) => a.id === made.id)).toBe(true);
+      await api.connectedApps.remove(token, made.id);
+      const gone = await refusal(app.me());
+      expect([gone.status, gone.code]).toEqual([401, 'app_revoked']);
     },
   },
   {

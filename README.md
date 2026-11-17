@@ -372,6 +372,94 @@ they can no longer add documents (made a viewer); when they are signed out every
 or an owner stops their password; and when their password is changed or reset — each
 email says so. A restore removes every one too. Each person then pairs again.
 
+## Connected apps
+
+Another app — a money tracker such as MonTra, say — can send documents into the vault for
+one person of the family, and ask what became of each. It needs a vault of **0.9.0 or
+later**.
+
+**What a connected app can do.** It acts as one owner or adult who signs in, and never
+does more than that person could. It can send files of the kinds an owner allowed, which
+go into that person's Inbox in a batch a day ("From MonTra, 16 November 2026"), are read
+and proposed for like any other upload, and wait there until the person files or removes
+each. What it says about a file (whose it is, its kind, its dates, an amount) is only a
+suggestion: where the vault reads the page differently, the card says both and waits for
+the person. It can ask what became of what it sent — waiting, filed, refused or removed
+— and take back a file that is still waiting.
+
+**What it cannot do.** It cannot sign in, open, list, search or download anything, or
+change anything in the vault. It cannot send a kind it was not allowed (a receipt, if you
+did not allow receipts), choose who sees what it sends beyond the app's setting, or mark
+anything sensitive. Nobody else sees what it sent until the person files it — not even
+an owner. Every other part of the vault refuses its requests.
+
+**Connecting one.** The app makes its own key pair and shows its public key, starting
+`ed25519:`, and a fingerprint. An owner opens _Settings → Connected apps → Connect an app_
+and confirms it is them with a passkey or an authenticator code — never the password
+alone, so an owner must have two-step sign-in or a passkey. They name the app, choose
+whom it acts as, paste its public key (and check the fingerprint shown matches the
+app's), and choose the kinds it may send, who sees what it sends (as each kind says,
+adults only, everyone, or only that person), how much it may send a day, and optionally
+the addresses it may come from (up to ten addresses or networks). The vault then shows a
+**connection string** to paste into the app; it holds no secret. When the app acts as
+somebody else, it does nothing until that person turns it on in their own _Settings →
+Connected apps_, again with a passkey or a code; they are emailed when it is connected.
+When an owner later lets such an app do more — another kind, higher limits, more
+addresses, a backfill, a wider audience — or gives it a key, it waits for that person to
+turn it on again, and they are emailed. Letting it do less needs nothing from them.
+Identity, legal and medical papers, and kinds kept as Essentials, are never among what
+an app may send.
+
+**Limits.** Each app may send 100 files and 500 MB a day unless an owner changes it, up
+to `FDV_APP_DAILY_FILES` and `FDV_APP_DAILY_BYTES` (1,000 files and 5 GB unless you
+change them); a day runs to midnight on the family's clock. For moving many older papers
+at once, an owner can give a **backfill allowance**: higher daily limits until a date at
+most 30 days ahead. Each app may make 120 requests a minute, besides the vault's limit
+for each address.
+
+**Every request is signed.** The app signs each request with its private key (HTTP
+Message Signatures, RFC 9421, Ed25519) over the method, the path, the query and a digest
+of the body, with the time and a one-time value: a request changed on the way is
+refused, and one sent again is refused. The vault keeps only the public key. Requests
+must come over https; plain http is taken only when `FDV_BASE_URL` is `http://localhost`
+and the request comes from that same machine (a vault used on one machine). A signature
+made before a restore is refused.
+
+**Keys.** An app may add a second key of its own, to change keys without a gap. That key
+signs nothing until an owner, or the person the app acts as, confirms it in _Settings →
+Connected apps_ (with a passkey or a code), so a stolen key cannot add one that outlives
+it; the owners and that person are emailed when a key is added or retired. An app may
+retire only a key it added itself; an owner's key is retired in Settings. The older key
+also retires by itself seven days after a newer, confirmed key is first used.
+
+**Reaching it from the internet.** A connected app usually runs on the internet, and can
+only reach the vault at an address on the internet: the public-only site (see [Links for
+people outside the family](#links-for-people-outside-the-family)). It serves only the
+pages a link opens until you set `FDV_PUBLIC_APPS=on` in `.env`, for the API and for the
+`caddy-public` service; then it also serves the app routes (`/api/v1/apps/*`) and the
+vault's capability document (without the family's name), and nothing else. Every app
+route still refuses a request that is not signed by a connected app's key, and the site
+answers 404 to an address that hides a slash or a dot in its encoding. Settings warns while an app is connected and
+`FDV_PUBLIC_APPS` is off. A vault reached only over Tailscale or the home network cannot
+be connected to an app on the internet.
+
+**Removing one.** _Settings → Connected apps_ lists each app with whom it acts as, what
+it may do, when it was last used, and today's files and refused requests. An owner can
+pause one, change what it may do, add or retire a key, and remove it; the person it acts
+as can turn it on and remove it. A removed app's next request is refused; what it sent
+stays in the Inbox for the person to decide, and what was filed stays in the vault. An app
+is removed by itself when its person's sign-in is taken away or they can no longer act
+for it (made a teen or a viewer), and when they are signed out everywhere or an owner
+stops their password — not when they change their password. Everything an app does is in
+the activity log, "Ahmed via MonTra sent a file to their Inbox". A restore pauses every
+app until an owner turns each back on.
+
+**What is kept of what an app sent.** For a file the person removed, or the app took
+back, the vault keeps its hash and size (never the file, its name or what the app said
+of it) for 90 days, so the same file sent again is recognised and answered as already
+decided. A file refused for its kind keeps only that it was refused. Both are then
+forgotten.
+
 ## Configuration
 
 All configuration is through environment variables in `.env` (see [`.env.example`](.env.example)).
@@ -415,6 +503,9 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_SHARE_MAX_DAYS`                            | `90`                                      | The longest a share link may last, in days (1 to 90). A link always ends; this only shortens the longest end the vault accepts.                                                                                                                       |
 | `FDV_DESKTOP_DOWNLOAD_URL`                      | unset                                     | Where your family downloads the uploader app that sends scans from a computer. See [Sending scans from a computer](#sending-scans-from-a-computer).                                                                                                   |
 | `FDV_DEVICE_DAILY_BYTES`                        | `2147483648`                              | The most one paired computer may send in a day, in bytes (2 GB). Past it, its files are refused until the next day.                                                                                                                                   |
+| `FDV_PUBLIC_APPS`                               | `off`                                     | `on` serves the connected apps' routes on the public-only site too, so an app on the internet can reach the vault. Give it to `caddy-public` as well. See [Connected apps](#connected-apps).                                                          |
+| `FDV_APP_DAILY_FILES`                           | `1000`                                    | The most files an owner may let one connected app send in a day. Each app starts at 100.                                                                                                                                                              |
+| `FDV_APP_DAILY_BYTES`                           | `5368709120`                              | The most bytes an owner may let one connected app send in a day (5 GB). Each app starts at 500 MB.                                                                                                                                                    |
 | `FDV_PUBLIC_HOSTNAME`                           | unset                                     | The public-only site's name, for its certificate (profile `public-only`).                                                                                                                                                                             |
 | `FDV_PUBLIC_HTTPS_PORT`                         | `8443`                                    | The port the public-only site listens on for `https://`; forward the router's 443 to it.                                                                                                                                                              |
 | `FDV_PUBLIC_HTTP_PORT`                          | `8081`                                    | The port it listens on for `http://` (certificates, and the redirect); forward the router's 80 to it.                                                                                                                                                 |

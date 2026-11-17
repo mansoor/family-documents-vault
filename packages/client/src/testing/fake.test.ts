@@ -18,6 +18,7 @@ describe('the fake vault keeps the contract', () => {
   const vault = createFakeVault();
   const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
   const ctx: ContractContext = {
+    fetch: vault.fetch,
     email: 'owner@example.test',
     password: 'a long enough password',
     // The fake is one household: its type, marked.

@@ -62,6 +62,9 @@ import { DROP_COOKIE_PATH, type UploadRequestService } from './uploads/requests.
 import type { IncomingService } from './uploads/incoming.js';
 import type { BatchService } from './uploads/batches.js';
 import { DEVICE_KEY_ROUTES, presentsDeviceKey, registerDevices } from './devices/routes.js';
+import { APP_SIGNED_ROUTES, registerApps } from './apps/routes.js';
+import type { AppService } from './apps/service.js';
+import { presentsSignature } from './apps/signing.js';
 import type { DeviceService } from './devices/service.js';
 import { registerVaults } from './vaults/routes.js';
 import { registerWatchFolder } from './watch-folder/routes.js';
@@ -143,6 +146,8 @@ export interface AppDeps {
   batches: BatchService;
   /** A computer that sends scans (0.8.0, D1): pairing, and its upload-only key. */
   devices: DeviceService;
+  /** Connected apps (0.9.0, APP1): Settings → Connected apps, and the signed app routes. */
+  apps?: AppService;
   audit: AuditService;
   passwords: PasswordService;
   /** Essentials a phone may keep (0.4.13). */
@@ -179,6 +184,9 @@ export interface AppDeps {
  * a frame, and nothing in it runs — a shared HTML file opened by mistake is
  * a sandboxed page with no script and no fetch.
  */
+/** The vault's name as the public-only site's capability document gives it (0.9.0, APP1). */
+export const PUBLIC_DISPLAY_NAME = 'Family Document Vault';
+
 export const PUBLIC_API_HEADERS = {
   'referrer-policy': 'no-referrer',
   'x-content-type-options': 'nosniff',
@@ -253,12 +261,28 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     }
   });
 
+  // A connected app's signature (0.9.0, APP1) is taken by the app routes
+  // alone: every other — a public route and one that is not there too —
+  // answers it 401 before anything else is looked at, and nothing an app
+  // does becomes a browser session.
+  app.addHook('onRequest', async (req) => {
+    if (!presentsSignature(req.headers)) return;
+    if (APP_SIGNED_ROUTES.has(`${req.method} ${req.routeOptions.url ?? ''}`)) return;
+    throw new ApiError(
+      401,
+      'app_signature_not_accepted',
+      'A connected app can only use the app routes.',
+    );
+  });
+
   // A computer's key (0.8.0, D1) is taken by its two routes alone: every
   // other — a read, a list, a download, a public route, one that is not
-  // there — answers it 401 before anything else is looked at.
+  // there — answers it 401 before anything else is looked at. (An app
+  // route refuses it itself, as it refuses any credential but a signature.)
   app.addHook('onRequest', async (req) => {
     if (!presentsDeviceKey(req)) return;
-    if (DEVICE_KEY_ROUTES.has(`${req.method} ${req.routeOptions.url ?? ''}`)) return;
+    const key = `${req.method} ${req.routeOptions.url ?? ''}`;
+    if (DEVICE_KEY_ROUTES.has(key) || APP_SIGNED_ROUTES.has(key)) return;
     throw new ApiError(
       401,
       'device_key_not_accepted',
@@ -436,7 +460,13 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     return buildCapabilities({
       serverVersion: deps.serverVersion,
       edition: config.FDV_EDITION,
-      displayName: householdName ?? config.FDV_DISPLAY_NAME,
+      // Asked on the public-only site, where connected apps reach it
+      // (FDV_PUBLIC_APPS=on; Caddy says so in X-FDV-Site, over anything the
+      // caller wrote): the family's name is not the internet's to read.
+      displayName:
+        config.FDV_PUBLIC_APPS === 'on' && req.headers['x-fdv-site'] === 'public'
+          ? PUBLIC_DISPLAY_NAME
+          : (householdName ?? config.FDV_DISPLAY_NAME),
       maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
       shareMaxDays: config.FDV_SHARE_MAX_DAYS,
       ...(config.FDV_BACKUP_RETAIN_DAYS !== undefined
@@ -471,6 +501,10 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       }),
       // The AI reader set in Settings (AIR1): unless the operator keeps it out.
       aiReaderSettings: deps.aiReader?.offered() === true,
+      // Connected apps (APP1): whether they reach this vault from the internet.
+      appsPublic: config.FDV_PUBLIC_APPS === 'on',
+      appDailyFiles: config.FDV_APP_DAILY_FILES,
+      appDailyBytes: config.FDV_APP_DAILY_BYTES,
       setupRequired,
       pushEnabled: Boolean(config.FDV_VAPID_PUBLIC_KEY),
       // Without it the document is still true, only less specific; say
@@ -548,6 +582,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   if (deps.localAi) registerLocalAi(app, deps.localAi);
   if (deps.aiReader) registerAiReader(app, deps.aiReader, deps.stepUp);
   registerDevices(app, deps.devices, deps.stepUp, config.FDV_MAX_UPLOAD_BYTES);
+  if (deps.apps) registerApps(app, deps.apps, deps.stepUp, config.FDV_MAX_UPLOAD_BYTES);
 
   return app;
 }

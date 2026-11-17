@@ -1,4 +1,5 @@
 import { logDevicesEnded } from '../devices/service.js';
+import { logAppsEnded } from '../apps/service.js';
 import { appendAudit, householdZone, withPrincipal, type Db } from '@fdv/db';
 import {
   can,
@@ -192,6 +193,8 @@ export class CoOwnerService {
       // And their computers, which the database stopped as the role changed
       // (0070): a line each (0.8.0, D1).
       await logDevicesEnded(trx, p, target, meta);
+      // And their connected apps, revoked by the database too (0109, APP1).
+      await logAppsEnded(trx, p, target, meta);
       // And each collection they managed that their new role is outside
       // (0.9.0), which the database let go as the role changed.
       await logManagersDropped(trx, p, target.member_id, managing, 'role', meta);
@@ -268,6 +271,7 @@ export class CoOwnerService {
       });
       await logEffects(trx, p, p.memberId, effects, meta);
       await logDevicesEnded(trx, p, { account_id: p.accountId, member_id: p.memberId }, meta);
+      await logAppsEnded(trx, p, { account_id: p.accountId, member_id: p.memberId }, meta);
       // The collections they managed that their new role is outside (0.9.0).
       await logManagersDropped(trx, p, p.memberId, managing, 'role', meta);
       return {
@@ -360,6 +364,7 @@ export class CoOwnerService {
       // Their computers' keys, revoked by the database as the sign-in went
       // (0070): a line each (0.8.0, D1).
       await logDevicesEnded(trx, p, { account_id: target.account_id, member_id: memberId }, meta);
+      await logAppsEnded(trx, p, { account_id: target.account_id, member_id: memberId }, meta);
       // And each collection they managed, let go as the sign-in went (0.9.0).
       await logManagersDropped(trx, p, memberId, managing, 'sign_in', meta);
     });

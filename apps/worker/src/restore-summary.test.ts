@@ -22,6 +22,7 @@ function report(over: Partial<RestoreReport> = {}): RestoreReport {
     emergencyAudiences: [],
     exportsExpired: 0,
     devicesEnded: 0,
+    appsPaused: 0,
     readingChecksStopped: 0,
     signInsPaused: 0,
     locksKept: 0,
@@ -50,6 +51,17 @@ describe('what restore-backup says when it is done', () => {
       'An owner turns each back on, one tap each, in After a restore, on Home.',
     );
     expect(words).not.toContain('Settings → After a restore');
+  });
+
+  it('says the connected apps a restore paused, and where an owner turns them back on (0.9.0, APP1)', () => {
+    const words = restoreSummary(
+      'fdv-2026-11-16T02-30-00-123Z.sql.enc',
+      report({ appsPaused: 2 }),
+    ).replace(/\s+/g, ' ');
+    expect(words).toContain(
+      '2 connected apps were paused: a key removed since the backup would otherwise work again. An owner turns each back on, in Settings → Connected apps.',
+    );
+    expect(restoreSummary('f.sql.enc', report())).not.toContain('connected app');
   });
 
   it('sends an owner to the Reading check where Settings keeps it since 0.9.0, not For owners', () => {

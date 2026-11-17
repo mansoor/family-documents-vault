@@ -17,6 +17,11 @@ import type {
   BatchWaitingCounts,
   Capabilities,
   CaptureResult,
+  ConnectedAppChange,
+  ConnectedAppInput,
+  ConnectedAppKeyAdded,
+  ConnectedAppList,
+  ConnectedAppView,
   DeviceMe,
   DevicePairInput,
   DevicePaired,
@@ -616,7 +621,7 @@ export function createApi(http: Http) {
         { method: 'POST', body, token },
       ),
     /**
-     * Starts a password reset for somebody (5.29, D5): which way it goes is
+     * Starts a password reset for somebody (5.29): which way it goes is
      * the answer's `path` — `mail` to their own address by the operator's
      * mail server; `handover`, a one-time `link` shown this once, only for
      * somebody who keeps nothing private; `operator`, no owner's way, with
@@ -2501,6 +2506,73 @@ export function createApi(http: Http) {
     /** A computer's key revoked, for good: the caller's own, or for an owner, anybody's. */
     revokeDevice: (token: string, id: string) =>
       request<void>(`/api/v1/paired-devices/${enc(id)}`, { method: 'DELETE', token }),
+    // ------------------------------------------- connected apps (0.9.0, APP1)
+    /**
+     * Settings → Connected apps (`features.connected_apps`): the apps an
+     * owner connects, each acting as one owner or adult, signing its own
+     * requests (`@fdv/client/apps` is the app's side). What connects, turns
+     * on, widens and resumes asks for a passkey or a code (`connect_app`,
+     * never the password: `403 totp_required_for_owner` without one).
+     */
+    connectedApps: {
+      /** An owner's every app; an adult's own; nobody else's any (`items: []`). */
+      list: (token: string) => request<ConnectedAppList>('/api/v1/connected-apps', { token }),
+      /** An owner connects one: on at once when it acts as them, else waiting for its person. */
+      create: (token: string, body: ConnectedAppInput) =>
+        request<ConnectedAppView>('/api/v1/connected-apps', { method: 'POST', body, token }),
+      /** An owner changes what it may do: a new name alone asks for no code. */
+      update: (token: string, id: string, body: ConnectedAppChange) =>
+        request<ConnectedAppView>(`/api/v1/connected-apps/${enc(id)}`, {
+          method: 'PATCH',
+          body,
+          token,
+        }),
+      /** Its person turns it on (`404` to anybody else). */
+      approve: (token: string, id: string) =>
+        request<ConnectedAppView>(`/api/v1/connected-apps/${enc(id)}/approve`, {
+          method: 'POST',
+          token,
+        }),
+      /** An owner pauses it: its requests are refused, but for its connection test. */
+      pause: (token: string, id: string) =>
+        request<ConnectedAppView>(`/api/v1/connected-apps/${enc(id)}/pause`, {
+          method: 'POST',
+          token,
+        }),
+      /** An owner turns it back on, after a pause or a restore. */
+      resume: (token: string, id: string) =>
+        request<ConnectedAppView>(`/api/v1/connected-apps/${enc(id)}/resume`, {
+          method: 'POST',
+          token,
+        }),
+      /** An owner adds its new key: two live at most (`409 key_limit`), never one in use (`409 key_exists`). */
+      addKey: (token: string, id: string, publicKey: string) =>
+        request<ConnectedAppKeyAdded>(`/api/v1/connected-apps/${enc(id)}/keys`, {
+          method: 'POST',
+          body: { public_key: publicKey },
+          token,
+        }),
+      /**
+       * A key the app added itself (`pending`), confirmed by an owner or the
+       * person it acts as, with a passkey or a code: only then does it sign.
+       * An owner confirming one for an app acting as somebody else sends the
+       * app back to them to turn on again.
+       */
+      confirmKey: (token: string, id: string, keyId: string) =>
+        request<ConnectedAppView>(`/api/v1/connected-apps/${enc(id)}/keys/${enc(keyId)}/confirm`, {
+          method: 'POST',
+          token,
+        }),
+      /** An owner retires a key; never the last (`409 key_in_use`). `204`. */
+      retireKey: (token: string, id: string, keyId: string) =>
+        request<void>(`/api/v1/connected-apps/${enc(id)}/keys/${enc(keyId)}`, {
+          method: 'DELETE',
+          token,
+        }),
+      /** Removed for good — revoked and kept for the activity log — by an owner or its person. `204`. */
+      remove: (token: string, id: string) =>
+        request<void>(`/api/v1/connected-apps/${enc(id)}`, { method: 'DELETE', token }),
+    },
   };
 }
 

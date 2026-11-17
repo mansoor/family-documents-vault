@@ -340,6 +340,15 @@ begin
     revoke update, delete on public.upload_request_tombstone from fdv_app;
     revoke update, delete on public.share_link_tombstone from fdv_app;
   end if;
+  -- Connected apps (0109, APP1): which household a keyid names, before it
+  -- is known — asked by every signed request; and a person's apps stopped
+  -- by the emergency controls.
+  if to_regprocedure('public.connected_app_find(uuid, uuid)') is not null then
+    revoke execute on function public.connected_app_find(uuid, uuid) from public;
+    grant execute on function public.connected_app_find(uuid, uuid) to fdv_app;
+    revoke execute on function public.connected_apps_revoke_for(uuid, text) from public;
+    grant execute on function public.connected_apps_revoke_for(uuid, text) to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

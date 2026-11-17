@@ -10,8 +10,32 @@
 
 declare function setTimeout(handler: () => void, ms?: number): number;
 
-/** Web Crypto's random numbers: a browser's, Hermes' (its polyfill), Node's. */
-declare const crypto: { getRandomValues<T extends Uint8Array>(array: T): T };
+/**
+ * Web Crypto: its random numbers — a browser's, Hermes' (its polyfill),
+ * Node's — and, for a connected app's signer alone (`@fdv/client/apps`),
+ * SHA-256 and Ed25519 (Node 22, and the browsers that have them).
+ */
+declare const crypto: {
+  getRandomValues<T extends Uint8Array>(array: T): T;
+  readonly subtle: {
+    digest(algorithm: 'SHA-256', data: Uint8Array): Promise<ArrayBuffer>;
+    importKey(
+      format: 'pkcs8' | 'raw',
+      keyData: Uint8Array,
+      algorithm: { name: 'Ed25519' },
+      extractable: boolean,
+      usages: string[],
+    ): Promise<unknown>;
+    sign(algorithm: { name: 'Ed25519' }, key: unknown, data: Uint8Array): Promise<ArrayBuffer>;
+    /** The fake vault's check of an app's signature. */
+    verify(
+      algorithm: { name: 'Ed25519' },
+      key: unknown,
+      signature: Uint8Array,
+      data: Uint8Array,
+    ): Promise<boolean>;
+  };
+};
 declare function clearTimeout(handle: number | undefined): void;
 
 declare class AbortController {

@@ -55,6 +55,17 @@ const ALLOWED = [
   // that is nobody's, so that it takes as long (the D1 review, F4).
   'devices/service.ts DeviceService.pair',
   'devices/service.ts DeviceService.authenticate',
+  // A connected app (0.9.0, APP1): a signed request is nobody's until its
+  // signature is checked, so its nonce is kept, its key's first use and the
+  // app's last noted, and a refusal counted, by the vault — a refusal only
+  // once the signature verifies. GET /apps/me, and a key the app adds or
+  // retires itself, read and write the app's own rows (connected_app is the
+  // owners' to read); what it files and reads it does as its person.
+  'apps/service.ts AppService.authenticate',
+  'apps/service.ts AppService.noteRefusal',
+  'apps/service.ts AppService.me',
+  'apps/service.ts AppService.appAddsKey',
+  'apps/service.ts AppService.appRetiresKey',
   // Text messages (0.9.0, SMS1): a text is sent by the vault, whoever asked
   // for it — the household's SMS Gate and its sealed password read, the
   // month's texts counted and one written (sms_message is the vault's to

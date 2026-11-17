@@ -12,6 +12,7 @@ import {
   expiryOptional,
   expiryReadInto,
   missingFields,
+  periodic,
   type DateValue,
   type DocumentTypeView,
   type Visibility,
@@ -34,6 +35,7 @@ import {
 } from './folders.js';
 import { seesLocation, type Role } from './roles.js';
 import { applyLocalAi, type StoredLocalAi } from './local-ai.js';
+import { amountText, APP_NEVER_CATEGORIES, type AppHints } from './apps.js';
 
 /**
  * What the vault made of a batch's item once it read its pages (Phase 6,
@@ -165,7 +167,19 @@ export type BatchTagCode =
   /** The local AI reads a field otherwise than the card has it (R4): the card's stands. */
   | 'clash_local_ai'
   /** The household has the local AI on, and this was read without it (R4): worth knowing. */
-  | 'local_ai_without';
+  | 'local_ai_without'
+  /**
+   * What a connected app said disagrees with the pages (0.9.0, APP1):
+   * a confident reading's stands, else the app's; both are said.
+   */
+  | 'clash_app'
+  /**
+   * A kind the app may not send, or never sends — identity, legal, medical
+   *: held for a look, never filed by itself.
+   */
+  | 'app_kind_not_allowed'
+  /** What the app said that the card has no place for: said, never filed. */
+  | 'app_said';
 
 /** One reason for an item's level: a Problem's, a Check's, or something worth knowing. */
 export interface BatchTag {
@@ -193,7 +207,7 @@ export interface ItemSuggestion<T> {
    * name of the folder it came from alone ("suggested from the folder
    * ‘Passports/Ahmed’"), with no cue. Absent from a vault before 0.8.0.
    */
-  from: 'pages' | 'batch' | 'both' | 'learned' | 'folder';
+  from: 'pages' | 'batch' | 'both' | 'learned' | 'folder' | 'app';
   /**
    * How sure: the pages (or the rules) for `pages`, `learned` and `both`;
    * the folder's for `folder`; null for the batch's alone.
@@ -228,6 +242,12 @@ export interface ItemSuggestion<T> {
    * never sure, and the card Check for it. Absent from a vault before 0.9.0.
    */
   local_ai?: true;
+  /**
+   * The connected app that sent it says the same (0.9.0, APP1): `confidence`
+   * is the surer for it. Only beside `pages` or `learned`. (`from: 'app'` is
+   * the app's alone, as a batch default is: no cue.)
+   */
+  app?: true;
 }
 
 /**
@@ -242,7 +262,8 @@ export interface ItemSuggestion<T> {
  */
 export interface ItemTagSuggestion {
   value: string;
-  from: 'folder';
+  /** From the folder it came from (S2), or the connected app that sent it (APP1): offered, never ticked. */
+  from: 'folder' | 'app';
   /** Already on a document the uploader can see. */
   existing: boolean;
   /** Ticked on the card as it starts: used, at least as widely as the item would be seen. */
@@ -266,6 +287,18 @@ export interface ItemProposals {
   visibility: ItemVisibility;
   /** Tags from the folder it came from, where the batch chose none (0.8.0, S2). */
   tags?: ItemTagSuggestion[];
+  /**
+   * What a connected app said and the pages are never read for (0.9.0,
+   * APP1): its title, and the kind's own fields it gave (amount, tax
+   * year, account's last 4, period, a due date), by field key. Absent
+   * otherwise, and from older vaults.
+   */
+  title?: ItemSuggestion<string>;
+  extra?: Record<string, ItemSuggestion<unknown>>;
+  /** The app said it is the household's (APP1): filed as the household's, with nobody chosen. */
+  household?: true;
+  /** The connected app that sent it, by its name now (APP1): "From MonTra". */
+  app_name?: string;
 }
 
 /** Where the pages and a default confidently disagree: the default stands until somebody chooses. */
@@ -290,7 +323,20 @@ export type LevelKind = Pick<
   DocumentTypeView,
   'key' | 'label' | 'default_visibility' | 'expiry_driver' | 'fields'
 > &
-  Partial<Pick<DocumentTypeView, 'core' | 'short_label' | 'belongs_to' | 'remind_from'>>;
+  Partial<
+    Pick<DocumentTypeView, 'core' | 'short_label' | 'belongs_to' | 'remind_from' | 'category'>
+  >;
+
+/**
+ * What a connected app said of what it sent (0.9.0, APP1), opened for
+ * its person: the app's name as it is now, the kinds it may send, and its
+ * hints. Hints are claims: one more source, below a sure reading.
+ */
+export interface AppLevelInput {
+  name: string;
+  allowed_kinds: readonly string[];
+  hints: AppHints;
+}
 
 export interface LevelInput {
   state: BatchItemState;
@@ -320,6 +366,8 @@ export interface LevelInput {
    * One more cue (`applyLocalAi`): it never makes a card Ready.
    */
   localAi?: StoredLocalAi | null;
+  /** What the connected app that sent it said (0.9.0, APP1); null or absent for anything else. */
+  app?: AppLevelInput | null;
   defaults: BatchDefaults;
   /** The household's kinds as they are now, and not deleted. */
   types: readonly LevelKind[];
@@ -460,6 +508,31 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
     model?: boolean;
   }> = [];
 
+  // What the connected app that sent it said (0.9.0, APP1): a kind the
+  // household has, and somebody the uploader may file for — by id, or by
+  // name: the whole name, case and spacing aside, else a first name only one
+  // person has. The app is never told whether a name matched.
+  const app = input.app ?? null;
+  const hints: AppHints = app?.hints ?? {};
+  const appSaid: string[] = [];
+  const kindA = hints.kind && kindOf(hints.kind) ? hints.kind : null;
+  let personA: string | null = null;
+  const householdA = !!hints.person && 'household' in hints.person;
+  if (app && hints.person && 'member_id' in hints.person) {
+    const id = hints.person.member_id;
+    if (choosable(id)) personA = id;
+    else appSaid.push(`${app.name} named somebody who is not in the family`);
+  } else if (app && hints.person && 'name' in hints.person) {
+    const said = hints.person.name;
+    personA = personByName(
+      said,
+      people.filter((m) => choosable(m.id)),
+    );
+    if (!personA) appSaid.push(`${app.name} said “${said}”: nobody in the family by that name`);
+  }
+  const appClashes: Array<{ field: 'type_key' | 'owner_member_id'; app: string; pages: string }> =
+    [];
+
   /**
    * A field with a default, a proposal and the folder: the default fills
    * only a blank (Q4), and wins over the folder; the folder fills a blank
@@ -471,12 +544,46 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
     p: Proposed<string> | undefined,
     dflt: string | null,
     fromFolder: string | null,
+    fromApp: string | null = null,
   ): ItemSuggestion<string> | undefined => {
     // The uploader's earlier choices alone (I4): never "the pages say".
     const rulesOnly = p?.cue === 'learned';
     // How sure the pages alone were: a rule's raising never makes a clash,
     // nor speaks for the pages (the I4 review, I4-4).
     const own = p ? (p.page_confidence ?? p.confidence) : 0;
+    // What the connected app said (APP1), where the uploader chose no
+    // default: alone, it fills the blank as a default would; agreeing, it
+    // makes the pages surer, as the folder does; disagreeing, a confident
+    // reading stands, else the app's, and the item is Check either way.
+    if (dflt === null && fromApp !== null) {
+      if (!p) return { value: fromApp, from: 'app', confidence: null, cue: null };
+      const said: ItemSuggestion<string> = {
+        value: p.value,
+        from: isLearned(p) ? 'learned' : 'pages',
+        confidence: p.confidence,
+        cue: p.cue,
+        ...(p.shape ? { shape: true as const } : {}),
+      };
+      if (p.value === fromApp) {
+        const sure = ITEM_SURE[field];
+        const raised = Math.round((own + FOLDER_AGREE_RAISE) * 100) / 100;
+        const mayBeSure =
+          p.model === 'alone' || p.model === 'doubts'
+            ? false
+            : rulesOnly
+              ? p.confidence >= sure
+              : own >= FOLDER_AGREE_FLOOR;
+        const to = Math.min(
+          raised,
+          mayBeSure ? FOLDER_AGREE_MAX : Math.round((sure - 0.01) * 100) / 100,
+        );
+        return { ...said, confidence: Math.max(p.confidence, to), app: true };
+      }
+      appClashes.push({ field, app: fromApp, pages: p.value });
+      return own >= CLASH_CONFIDENCE && p.model !== 'alone'
+        ? said
+        : { value: fromApp, from: 'app', confidence: null, cue: null };
+    }
     if (p && dflt === null) {
       const said: ItemSuggestion<string> = {
         value: p.value,
@@ -546,8 +653,8 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
   };
 
   const merged: Omit<ItemProposals, 'visibility'> = {};
-  const kindM = merge('type_key', kindP, kindD, kindF);
-  const personM = merge('owner_member_id', personP, personD, personF);
+  const kindM = merge('type_key', kindP, kindD, kindF, kindA);
+  const personM = merge('owner_member_id', personP, personD, personF, personA);
   if (kindM) merged.type_key = kindM;
   if (personM) merged.owner_member_id = personM;
 
@@ -572,6 +679,105 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
     }
   }
 
+  // What the app said of the dates and who issued it (APP1): as the
+  // kind and the person, by the kind the card has now. Each date lands where
+  // the contract says: issued on Issue date; expires on Expires, where the
+  // kind shows one; due_date on the kind's own date it reminds from (a
+  // bill's Due date), else on Expires for a periodic kind that shows it (a
+  // card statement's Payment due).
+  const kindNow = kindOf(kindM?.value);
+  const appDates: Array<'issue dates' | 'expiry dates' | 'issuers'> = [];
+  const appExtra: Record<string, ItemSuggestion<unknown>> = {};
+  if (app && kindNow) {
+    const into = expiryReadInto(kindNow);
+    const has = (key: string) => kindNow.fields.find((f) => f.key === key) ?? null;
+    const endHint =
+      into === 'expires'
+        ? (hints.expires ?? (periodic(kindNow) ? hints.due_date : undefined))
+        : into
+          ? hints.due_date
+          : undefined;
+    const fromApp = <T>(value: T): ItemSuggestion<T> => ({
+      value,
+      from: 'app',
+      confidence: null,
+      cue: null,
+    });
+    const slots = merged as Record<string, ItemSuggestion<unknown>>;
+    const agree = <T>(
+      field: 'issued' | 'expires' | 'issued_by',
+      h: T,
+      same: (a: T) => boolean,
+    ): void => {
+      const cur = slots[field] as ItemSuggestion<T> | undefined;
+      if (!cur) {
+        slots[field] = fromApp(h);
+        return;
+      }
+      const own = cur.confidence ?? 0;
+      if (same(cur.value)) {
+        const raised = Math.min(
+          Math.round((own + FOLDER_AGREE_RAISE) * 100) / 100,
+          FOLDER_AGREE_MAX,
+        );
+        slots[field] = { ...cur, confidence: Math.max(own, raised), app: true };
+        return;
+      }
+      appDates.push(
+        field === 'issued' ? 'issue dates' : field === 'expires' ? 'expiry dates' : 'issuers',
+      );
+      if (own < CLASH_CONFIDENCE) slots[field] = fromApp(h);
+    };
+    const issued = hints.issued;
+    if (issued) agree('issued', issued, (v: DateValue) => v.date === issued.date);
+    if (endHint) agree('expires', endHint, (v: DateValue) => v.date === endHint.date);
+    const issuer = hints.issuer;
+    if (issuer) {
+      const key = (t: string) => t.toLowerCase().replace(/\s+/g, ' ').trim();
+      agree('issued_by', issuer, (v: string) => key(v) === key(issuer));
+    }
+    // What the pages are never read for: filled from the app, where the kind
+    // has the field; otherwise said, and not filed.
+    const extraHint = (key: string, words: string, value: (kind: string) => unknown) => {
+      const f = has(key);
+      if (!f) {
+        appSaid.push(`${app.name} said: ${words}`);
+        return;
+      }
+      const v = value(f.kind);
+      if (v !== undefined) appExtra[key] = fromApp(v);
+    };
+    const amount = hints.amount;
+    if (amount) {
+      extraHint('amount', `amount ${amountText(amount)}`, (k) =>
+        k === 'number' ? Number(amount.value) : k === 'text' ? amountText(amount) : undefined,
+      );
+    }
+    const year = hints.tax_year;
+    if (year !== undefined) {
+      extraHint('tax_year', `tax year ${year}`, (k) =>
+        k === 'year' || k === 'number' ? year : k === 'text' ? String(year) : undefined,
+      );
+    }
+    const last4 = hints.account_last4;
+    if (last4) {
+      extraHint('account_last4', `account ending ${last4}`, (k) =>
+        k === 'text' ? last4 : undefined,
+      );
+    }
+    const period = hints.period;
+    if (period) extraHint('period', `period ${period}`, (k) => (k === 'text' ? period : undefined));
+    // A due date the card's end date did not take: the kind's own Due date
+    // field, where it has one; otherwise said.
+    const due = hints.due_date;
+    if (due && endHint !== due) {
+      extraHint('due_date', `due ${due.date}`, (k) => (k === 'date' ? due : undefined));
+    }
+    if (hints.expires && endHint !== hints.expires) {
+      appSaid.push(`${app.name} said: expires ${hints.expires.date}`);
+    }
+  }
+
   // The local AI, where the household has it on (0.9.0, R4): it fills only
   // a blank, unsure, and Check for it; it disagrees, and the card is Check.
   // It never makes anything surer: its tags are all Check (`applyLocalAi`).
@@ -586,6 +792,14 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
   const kindS = proposals.type_key;
   const personS = proposals.owner_member_id;
   const kind = kindOf(kindS?.value);
+  if (app) {
+    proposals.app_name = app.name;
+    if (hints.title) {
+      proposals.title = { value: hints.title, from: 'app', confidence: null, cue: null };
+    }
+    if (Object.keys(appExtra).length > 0) proposals.extra = appExtra;
+    if (householdA && !personS) proposals.household = true;
+  }
 
   // Who can see it: never wider than the batch chose, narrowed by the kind.
   const owner = personS?.value ?? (role === 'teen' ? me : null);
@@ -606,6 +820,15 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
       from: 'folder' as const,
       existing: t.existing,
       ticked: t.existing && t.visibility !== null && NARROW[t.visibility] >= NARROW[vis],
+    }));
+  } else if (d.tags.length === 0 && hints.tags && hints.tags.length > 0) {
+    // An app's tags (APP1): offered on the card, never ticked, never filed
+    // by Accept all Ready.
+    proposals.tags = hints.tags.map((t) => ({
+      value: t,
+      from: 'app' as const,
+      existing: false,
+      ticked: false,
     }));
   }
 
@@ -716,6 +939,41 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
       });
     }
   }
+  // What the connected app said otherwise (APP1): Check, with both said.
+  const appName = app?.name ?? 'the app';
+  for (const c of appClashes) {
+    check({
+      code: 'clash_app',
+      kind: 'check',
+      words:
+        c.field === 'type_key'
+          ? `The pages say ${shortName(kindOf(c.pages)) ?? 'another kind'}; ${appName} says ${shortName(kindOf(c.app)) ?? 'another kind'}`
+          : `The pages say ${nameOf(c.pages)}; ${appName} says ${nameOf(c.app)}`,
+    });
+  }
+  for (const what of appDates) {
+    check({
+      code: 'clash_app',
+      kind: 'check',
+      words: `The pages and ${appName} give different ${what}`,
+    });
+  }
+  // A kind the app may not send, or never sends: held for a look.
+  if (app && kind) {
+    if (APP_NEVER_CATEGORIES.includes(kind.category ?? '')) {
+      check({ code: 'app_kind_not_allowed', kind: 'check', words: `Not a kind ${appName} sends` });
+    } else if (!app.allowed_kinds.includes(kind.key)) {
+      check({
+        code: 'app_kind_not_allowed',
+        kind: 'check',
+        words: `${appName} may not send ${aKind(shortName(kind) ?? kind.label)}`,
+      });
+    }
+  }
+  // What the app said that the card has no place for: said, not filed.
+  if (read || input.reading === 'failed') {
+    for (const words of appSaid) tags.push({ code: 'app_said', kind: 'info', words });
+  }
   // What the local AI suggested or read otherwise (R4): Check, each of
   // them; read without it, said.
   for (const t of ai.tags) {
@@ -762,7 +1020,7 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
     // A kind that is usually the household's is filed as the household's
     // (0.9.0): nobody is missing.
     if (!personS) {
-      if (belongsTo(kind) === 'person') {
+      if (belongsTo(kind) === 'person' && proposals.household !== true) {
         check({ code: 'person_missing', kind: 'check', words: 'Missing: whose it is' });
       }
     } else if (ours(personS) && (personS.confidence ?? 0) < ITEM_SURE.owner_member_id) {
@@ -786,7 +1044,11 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
       // The batch's tags: a folder's are never filed unasked (S2).
       tags: d.tags,
       notes: null,
-      extra: dated ? { [dated]: proposals.expires?.value ?? null } : {},
+      extra: {
+        // What the connected app gave of the kind's own fields (APP1).
+        ...Object.fromEntries(Object.entries(proposals.extra ?? {}).map(([k, v]) => [k, v.value])),
+        ...(dated ? { [dated]: proposals.expires?.value ?? null } : {}),
+      },
     });
     for (const m of missing) {
       const word = m.label ? lowerFirst(m.label) : (FIELD_WORDS[m.key] ?? lowerFirst(m.key));
@@ -969,4 +1231,23 @@ export function storedProposal(raw: unknown): DetailProposal {
     if (f) out[k] = f;
   }
   return out;
+}
+
+/**
+ * Who a name an app gave is (APP1): the whole name, case and spacing
+ * aside; else a first name only one person has. Nobody for no match, or
+ * for two.
+ */
+export function personByName(
+  name: string,
+  people: ReadonlyArray<{ id: string; name: string }>,
+): string | null {
+  const key = (t: string) => t.toLowerCase().replace(/\s+/g, ' ').trim();
+  const whole = people.filter((p) => key(p.name) === key(name));
+  if (whole.length === 1) return whole[0]?.id ?? null;
+  if (whole.length > 1) return null;
+  const first = key(name);
+  if (!first || first.includes(' ')) return null;
+  const firsts = people.filter((p) => key(p.name).split(' ')[0] === first);
+  return firsts.length === 1 ? (firsts[0]?.id ?? null) : null;
 }

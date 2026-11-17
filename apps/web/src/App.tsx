@@ -41,6 +41,7 @@ import { PeopleScreen, RemindersScreen, SearchScreen } from './screens/SearchPeo
 import { AccountScreen, DataScreen, SettingsScreen, StorageScreen } from './screens/Settings.js';
 import { SettingsLayout } from './settings-sections.js';
 import { ComputersScreen } from './screens/Computers.js';
+import { ConnectedAppsScreen } from './screens/ConnectedApps.js';
 import { SetupScreen } from './screens/Setup.js';
 import { FocusOnMove } from './focus-on-move.js';
 import { Only, SCREEN_RULES } from './not-for.js';
@@ -373,6 +374,14 @@ export function App() {
                   element={
                     <Only rule={SCREEN_RULES.computers}>
                       <ComputersScreen />
+                    </Only>
+                  }
+                />
+                <Route
+                  path="connected-apps"
+                  element={
+                    <Only rule={SCREEN_RULES.apps}>
+                      <ConnectedAppsScreen />
                     </Only>
                   }
                 />

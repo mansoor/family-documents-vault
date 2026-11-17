@@ -6,6 +6,26 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.55] - 2026-11-16 — connected apps
+
+### Added
+
+- **Connected apps.** Another app, such as a money tracker, can send documents into the vault for one person of the family. An owner connects it in **Settings → Connected apps**, confirming it's them with a passkey or an authenticator code: they name the app, choose whom it acts as (an owner or an adult who signs in), paste the app's public key and check its fingerprint, and choose the kinds it may send, who sees what it sends, how much it may send a day and, if they like, the addresses it may come from. The vault then shows a connection string to paste into the app; it holds no secret. When the app acts as somebody else, it waits until they turn it on themselves, and they are emailed.
+- **What it sends goes into that person's Inbox**, in a batch a day ("From MonTra, 16 November 2026"), read and proposed for like any upload, and waits for them to file or remove it. Nobody else sees it until then, not even an owner. What the app says about a file (its kind, whose it is, its dates, an amount, a title) is a suggestion: where the pages say otherwise, the card shows both and waits. A kind the app may not send is refused; one the pages read as a kind it may not send, or as an identity, legal or medical paper, waits for a look. The app can ask what became of each file, and take back one still waiting; the same file sent twice is kept once.
+- **Every request is signed** with the app's own key, over what it asks and a digest of what it sends, with the time and a one-time value: a changed or repeated request is refused, and plain http too, but on this machine. Each app may send 100 files and 500 MB a day unless an owner changes it (up to `FDV_APP_DAILY_FILES` and `FDV_APP_DAILY_BYTES`), with a **backfill allowance** for older papers, and 120 requests a minute.
+- **Settings → Connected apps** lists each app: whom it acts as, what it may do, its keys and their fingerprints, when it was last used, today's files and refused requests, and what to paste into it. Owners pause it, change it, add or retire a key and remove it; the person it acts as turns it on and removes it. Everything an app does is in the activity log ("Ahmed via MonTra sent a file to their Inbox"); refused requests are one line a day.
+- **`FDV_PUBLIC_APPS=on`** serves the app routes on the public-only site too, for an app on the internet; off, nothing changes there. See "Connected apps" in the README. (Migration 0109.)
+- **Keys an app adds wait to be confirmed.** An app may add a second key of its own to change keys, but it signs nothing until an owner, or the person the app acts as, confirms it in Settings; an app may retire only a key it added itself, and everybody concerned is emailed when a key is added or retired. When an owner lets an app acting as somebody else do more, or gives it a key, it waits for that person to turn it on again.
+
+### Changed
+
+- An app is removed by itself when its person's sign-in is taken away or they can no longer act for it, and when they are signed out everywhere or an owner stops their password. A restore pauses every app until an owner turns each back on, and refuses any signature made before it.
+- **The public-only site answers 404 to an address that hides a slash or a dot in its encoding** (`%2f`, `%5c`, `%2e`, or a segment starting with a dot), before anything else, and so does nginx: such an address could be read one way by the site and another by what it passes the request to. This covers the share link and request pages too.
+
+### Fixed
+
+- **nginx's access log cut a ZIP's download ticket.** The API's own log already left it out; nginx's kept `/api/v1/downloads/<ticket>` whole. It is cut now, and so is a connected app's id for what it sent.
+
 ## [0.9.0-dev.54] - 2026-11-16 — a document's activity
 
 ### Added

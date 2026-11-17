@@ -450,3 +450,119 @@ describe('the folder, on the batch page and the card (S2)', () => {
     await expectAccessible();
   });
 });
+
+// ------------------------------------------------------------- a connected app's
+
+/** An item a connected app sent (0.9.0, APP1), levelled with what it said. */
+function fromApp(types: DocumentTypeView[]): BatchItemView {
+  const levelled = levelItem({
+    state: 'waiting',
+    reading: 'read',
+    failure: null,
+    // The pages gave its dates and number; the app, the rest.
+    proposal: {
+      expires: { value: day('2031-03-14'), confidence: 0.94, cue: 'machine_lines' },
+      identifier: { value: '533401872', confidence: 0.95, cue: 'machine_lines' },
+    },
+    duplicate: null,
+    app: {
+      name: 'MonTra',
+      allowed_kinds: ['passport'],
+      hints: {
+        kind: 'passport',
+        person: { member_id: 'm-0' },
+        title: 'Aisha’s passport, from MonTra',
+        tags: ['travel'],
+      },
+    },
+    defaults: DEFAULTS,
+    types,
+    people: PEOPLE,
+    role: 'owner',
+    me: 'me',
+  });
+  return {
+    id: 'item-app',
+    batch_id: 'batch-1',
+    name: 'passport.pdf',
+    content_type: 'application/pdf',
+    byte_size: 2048,
+    sha256: 'a'.repeat(64),
+    arrived_at: '2026-11-16T09:05:00Z',
+    state: 'waiting',
+    reading: 'read',
+    read_failure: null,
+    preview_state: 'ready',
+    preview_pages: 1,
+    duplicate: null,
+    document_id: null,
+    level: levelled.level,
+    tags: levelled.tags,
+    proposals: levelled.proposals,
+    clashes: levelled.clashes,
+    folder: null,
+  };
+}
+
+describe('what a connected app said, on the batch page and the card (APP1)', () => {
+  function atAppBatch(path: string): FakeState {
+    atWidth(WIDE);
+    const state = fresh({ members: [{ ...ME, role: 'owner' }, AISHA], batches: [] });
+    const types = state.types as unknown as DocumentTypeView[];
+    state.batches = [
+      {
+        id: 'batch-1',
+        name: 'From MonTra, 16 November 2026',
+        created_at: '2026-11-16T09:00:00Z',
+        ends_at: '2026-12-16T09:00:00Z',
+        defaults: DEFAULTS,
+        items: [fromApp(types)],
+      },
+    ];
+    installFakeApi(state);
+    signedIn('owner');
+    window.history.replaceState({}, '', path);
+    render(<App />);
+    return state;
+  }
+
+  it('the batch page says a kind is the app’s', async () => {
+    atAppBatch('/inbox/batches/batch-1');
+    const table = await screen.findByRole('grid', { name: /^Files in / });
+    const row = within(table)
+      .getAllByRole('row')
+      .find((r) => r.textContent?.includes('passport.pdf')) as HTMLElement;
+    expect(row).toHaveTextContent('Passportfrom MonTra');
+    expect(row).not.toHaveTextContent('undefined');
+  });
+
+  it('the card says what came from the app, starts from its title, and offers its tags unticked', async () => {
+    const state = atAppBatch('/inbox/batches/batch-1/items/item-app');
+    const kind = await screen.findByLabelText(/What it is/);
+    await screen.findByRole('option', { name: 'Aisha' });
+    expect(kind).toHaveValue('passport');
+    expect(screen.getByText('What it is').closest('label')).toHaveTextContent(
+      'What it is from MonTra',
+    );
+    expect(screen.getByLabelText(/Whose it is/)).toHaveValue('m-0');
+    expect(screen.getByText('Whose it is').closest('label')).toHaveTextContent('from MonTra');
+    expect(screen.getByLabelText(/^Name/)).toHaveValue('Aisha’s passport, from MonTra');
+    expect(screen.getByLabelText('Tags')).toHaveValue('');
+    const offer = screen.getByRole('button', {
+      name: 'Add the tag travel: a new tag from MonTra',
+    });
+    expect(document.body).not.toHaveTextContent('undefined');
+    await expectAccessible();
+    fireEvent.click(offer);
+    await waitFor(() => expect(screen.getByLabelText('Tags')).toHaveValue('travel'));
+    fireEvent.click(screen.getByRole('button', { name: /^Accept and next/ }));
+    await waitFor(() =>
+      expect(state.batchAccepts?.find((a) => a.item === 'item-app')?.body).toMatchObject({
+        type_key: 'passport',
+        owner_member_id: 'm-0',
+        title: 'Aisha’s passport, from MonTra',
+        tags: ['travel'],
+      }),
+    );
+  });
+});

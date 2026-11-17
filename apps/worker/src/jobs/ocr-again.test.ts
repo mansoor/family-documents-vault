@@ -192,7 +192,9 @@ describe('a scan read again, cleaned (S5)', () => {
       expect(got?.text).toMatch(/Veterinary/);
       expect(got?.text).toMatch(/Certificate/);
     },
-    120_000,
+    // Tesseract run on the page as drawn and again once cleaned: 36 s on CI's
+    // runners once, now often past two minutes on slower ones, with the same tools.
+    300_000,
   );
 });
 

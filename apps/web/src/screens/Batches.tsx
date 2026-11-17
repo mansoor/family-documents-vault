@@ -1356,6 +1356,11 @@ function ItemKind({ item, types }: { item: BatchItemView; types: DocumentTypeVie
         <span className="mark-sugg" {...(item.folder ? { title: folderWords(item.folder) } : {})}>
           from the folder
         </span>
+      ) : kind.from === 'app' ? (
+        // What the connected app that sent it said (0.9.0, APP1).
+        <span className="mark-batch">
+          from <bdi>{item.proposals?.app_name ?? 'the app'}</bdi>
+        </span>
       ) : kind.from === 'batch' || kind.confidence === null || kind.cue === null ? (
         <span className="mark-batch">from the batch</span>
       ) : kind.model === true ? (
