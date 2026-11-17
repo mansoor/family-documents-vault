@@ -66,7 +66,7 @@ const key = (over: Partial<AppKeyView> = {}): AppKeyView => ({
 
 const app = (over: Partial<ConnectedAppView> = {}): ConnectedAppView => ({
   id: '00000000-0000-4000-a000-000000000001',
-  name: 'MonTra',
+  name: 'Acme Money',
   member_id: 'm-ahmed',
   member_name: 'Ahmed',
   mine: false,
@@ -183,6 +183,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
             until: '2026-11-30T12:00:00.000Z',
             files_per_day: 400,
             bytes_per_day: 2 * 1024 * MB,
+            auto_file: true,
           },
           ip_allow: ['203.0.113.0/24'],
           keys: [
@@ -197,7 +198,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
         MINE,
       ],
     });
-    const card = await screen.findByRole('region', { name: 'MonTra' });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
     expect(within(card).getByText('Acting as Ahmed')).toBeInTheDocument();
     expect(within(card).getByText('On')).toBeInTheDocument();
     expect(
@@ -208,6 +209,17 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     expect(within(card).getByText('12 of 100 files today, 3 MB of 500 MB')).toBeInTheDocument();
     expect(within(card).getByText('2 requests; the last: signature not valid')).toBeInTheDocument();
     expect(within(card).getByText(/^Until 30 November: 400 files and 2 GB a day$/)).toBeVisible();
+    // Filing what is sure by itself, for the older papers' window alone (APP4).
+    expect(
+      within(card).getByText(
+        'Files what is sure and complete until 30 November; the rest waits for a look',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('region', { name: 'Ledger' })).getByText(
+        'Everything waits for a look',
+      ),
+    ).toBeInTheDocument();
     expect(within(card).getByText('203.0.113.0/24')).toBeInTheDocument();
     // Its keys, by fingerprint; the older retiring by itself.
     expect(within(card).getByText('b16c 2d1b 9e0f 4a77 c3d2 0011 8f6e 51a9')).toBeInTheDocument();
@@ -237,7 +249,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       'adult',
     );
     const mine = await screen.findByRole('region', { name: 'Ledger' });
-    expect(screen.queryByRole('region', { name: 'MonTra' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Acme Money' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Connect an app' })).toBeNull();
     expect(screen.getByRole('heading', { name: 'Apps acting as you' })).toBeInTheDocument();
     expect(within(mine).getByText('3 waiting in your Inbox, 9 filed')).toBeInTheDocument();
@@ -293,7 +305,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     expect(within(form).getByLabelText('Birth certificate')).not.toBeChecked();
     await expectAccessible();
 
-    fireEvent.change(within(form).getByLabelText(/^Name/), { target: { value: 'MonTra' } });
+    fireEvent.change(within(form).getByLabelText(/^Name/), { target: { value: 'Acme Money' } });
     fireEvent.change(who, { target: { value: 'm-ahmed' } });
     fireEvent.change(within(form).getByLabelText(/public key/), { target: { value: KEY } });
     fireEvent.click(within(form).getByLabelText('Passport'));
@@ -307,19 +319,21 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     fireEvent.click(within(form).getByRole('button', { name: 'Connect' }));
     await confirmWithCode();
 
-    const made = await screen.findByRole('region', { name: 'MonTra is connected' });
+    const made = await screen.findByRole('region', { name: 'Acme Money is connected' });
     await waitFor(() =>
-      expect(within(made).getByRole('heading', { name: 'MonTra is connected' })).toHaveFocus(),
+      expect(within(made).getByRole('heading', { name: 'Acme Money is connected' })).toHaveFocus(),
     );
     expect(
       within(made).getByText(
         'It does nothing until Ahmed turns it on, in Settings → Connected apps.',
       ),
     ).toBeInTheDocument();
-    expect(within(made).getByText(/^Check this matches what MonTra shows:/)).toBeInTheDocument();
+    expect(
+      within(made).getByText(/^Check this matches what Acme Money shows:/),
+    ).toBeInTheDocument();
     const sent = calls(state, 'POST', '/api/v1/connected-apps').at(-1)?.body;
     expect(sent).toEqual({
-      name: 'MonTra',
+      name: 'Acme Money',
       member_id: 'm-ahmed',
       public_key: KEY,
       allowed_kinds: ['passport'],
@@ -328,6 +342,8 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       daily_bytes: 500 * MB,
       ip_allow: ['203.0.113.7', '198.51.100.0/24'],
       backfill: null,
+      // Everything it sends waits for a look, unless an owner says (APP4).
+      auto_file: false,
       // Sending, and reading what it sent and is granted: downloading only when ticked.
       scopes: ['documents.send', 'documents.read'],
       // Its deletes let go, and 60 links an hour, unless an owner says (APP3).
@@ -339,17 +355,17 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       /^[0-9a-f]{4}( [0-9a-f]{4}){7}$/,
     );
     expect(within(made).getByText(created?.connection_string ?? '?')).toBeInTheDocument();
-    expect(within(made).getByText('Paste this into MonTra. It holds no secret.')).toBeVisible();
+    expect(within(made).getByText('Paste this into Acme Money. It holds no secret.')).toBeVisible();
     fireEvent.click(within(made).getByRole('button', { name: 'Copy' }));
     await waitFor(() => expect(copied).toHaveBeenCalledWith(created?.connection_string));
     expect(await within(made).findByRole('button', { name: 'Copied' })).toBeInTheDocument();
     // And the list has it, waiting for Ahmed.
-    const card = await screen.findByRole('region', { name: 'MonTra' });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
     expect(within(card).getByText('Waiting for its person to turn it on')).toBeInTheDocument();
     await expectAccessible();
     fireEvent.click(within(made).getByRole('button', { name: 'Done' }));
     await waitFor(() =>
-      expect(screen.queryByRole('region', { name: 'MonTra is connected' })).toBeNull(),
+      expect(screen.queryByRole('region', { name: 'Acme Money is connected' })).toBeNull(),
     );
   });
 
@@ -359,7 +375,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     const form = await screen.findByRole('region', { name: 'Connect an app' });
     fireEvent.click(within(form).getByRole('button', { name: 'Connect' }));
     expect(await screen.findByText('Give the app a name.')).toBeInTheDocument();
-    fireEvent.change(within(form).getByLabelText(/^Name/), { target: { value: 'MonTra' } });
+    fireEvent.change(within(form).getByLabelText(/^Name/), { target: { value: 'Acme Money' } });
     fireEvent.click(within(form).getByRole('button', { name: 'Connect' }));
     expect(await screen.findByText('Paste the app’s public key.')).toBeInTheDocument();
     // A key that is not one: the vault's words.
@@ -371,18 +387,18 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
 
   it('an owner pauses an app, and turns it back on with a passkey or a code', async () => {
     const state = at('/settings/connected-apps', { connectedApps: [AHMEDS] });
-    const card = await screen.findByRole('region', { name: 'MonTra' });
-    fireEvent.click(within(card).getByRole('button', { name: 'Pause MonTra' }));
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Pause Acme Money' }));
     expect(
       await screen.findByText(
-        'MonTra is paused. What it sends is refused until it is turned back on.',
+        'Acme Money is paused. What it sends is refused until it is turned back on.',
       ),
     ).toBeInTheDocument();
     expect(await within(card).findByText('Paused by an owner')).toBeInTheDocument();
     state.stepUpNeeded = true;
-    fireEvent.click(within(card).getByRole('button', { name: 'Turn MonTra back on' }));
+    fireEvent.click(within(card).getByRole('button', { name: 'Turn Acme Money back on' }));
     await confirmWithCode();
-    expect(await screen.findByText('MonTra is on again.')).toBeInTheDocument();
+    expect(await screen.findByText('Acme Money is on again.')).toBeInTheDocument();
     expect(await within(card).findByText('On')).toBeInTheDocument();
     expect(calls(state, 'POST', '/pause')).toHaveLength(1);
     expect(calls(state, 'POST', '/resume')).toHaveLength(2);
@@ -392,9 +408,11 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     at('/settings/connected-apps', {
       connectedApps: [app({ state: 'paused', paused_reason: 'restored' })],
     });
-    const card = await screen.findByRole('region', { name: 'MonTra' });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
     expect(within(card).getByText('Paused after the restore')).toBeInTheDocument();
-    expect(within(card).getByRole('button', { name: 'Turn MonTra back on' })).toBeInTheDocument();
+    expect(
+      within(card).getByRole('button', { name: 'Turn Acme Money back on' }),
+    ).toBeInTheDocument();
   });
 
   it('an owner changes its kinds and caps: only what changed is sent, after a passkey or a code', async () => {
@@ -402,8 +420,8 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       connectedApps: [AHMEDS],
       stepUpNeeded: true,
     });
-    const card = await screen.findByRole('region', { name: 'MonTra' });
-    fireEvent.click(within(card).getByRole('button', { name: 'Change MonTra' }));
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Change Acme Money' }));
     expect(within(card).getByLabelText('Passport')).toBeChecked();
     expect(within(card).getByLabelText('Files')).toHaveValue('100');
     expect(within(card).getByLabelText('MB')).toHaveValue('500');
@@ -413,7 +431,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
     await confirmWithCode();
     expect(
-      await screen.findByText('Saved. MonTra may do what it now says here.'),
+      await screen.findByText('Saved. Acme Money may do what it now says here.'),
     ).toBeInTheDocument();
     expect(calls(state, 'PATCH', '/api/v1/connected-apps/').at(-1)?.body).toEqual({
       allowed_kinds: ['passport', 'birth_certificate'],
@@ -424,13 +442,13 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
 
     // A new name alone asks for nothing.
     state.stepUpNeeded = true;
-    fireEvent.click(within(card).getByRole('button', { name: 'Change MonTra' }));
-    fireEvent.change(within(card).getByLabelText(/^Name/), { target: { value: 'MonTra Pro' } });
+    fireEvent.click(within(card).getByRole('button', { name: 'Change Acme Money' }));
+    fireEvent.change(within(card).getByLabelText(/^Name/), { target: { value: 'Acme Money Pro' } });
     fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
-    expect(await screen.findByRole('region', { name: 'MonTra Pro' })).toBeInTheDocument();
+    expect(await screen.findByRole('region', { name: 'Acme Money Pro' })).toBeInTheDocument();
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(calls(state, 'PATCH', '/api/v1/connected-apps/').at(-1)?.body).toEqual({
-      name: 'MonTra Pro',
+      name: 'Acme Money Pro',
     });
   });
 
@@ -439,8 +457,8 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       connectedApps: [AHMEDS],
       stepUpNeeded: true,
     });
-    const card = await screen.findByRole('region', { name: 'MonTra' });
-    fireEvent.click(within(card).getByRole('button', { name: 'Change MonTra' }));
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Change Acme Money' }));
     const mode = within(card).getByLabelText('When it deletes a document it sent');
     expect(mode).toHaveValue('unlink');
     expect(mode).toHaveAccessibleDescription(/Only me papers/);
@@ -466,7 +484,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
     await confirmWithCode();
     expect(
-      await screen.findByText('Saved. MonTra may do what it now says here.'),
+      await screen.findByText('Saved. Acme Money may do what it now says here.'),
     ).toBeInTheDocument();
     expect(calls(state, 'PATCH', '/api/v1/connected-apps/').at(-1)?.body).toEqual({
       scopes: ['documents.send', 'documents.links', 'documents.delete'],
@@ -479,6 +497,52 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       ),
     ).toBeInTheDocument();
     expect(within(card).getByText('0 of 20 this hour; 0 opened this week')).toBeInTheDocument();
+  });
+
+  it('an owner lets it file what is sure and complete, after a passkey or a code (APP4)', async () => {
+    const state = at('/settings/connected-apps', {
+      connectedApps: [AHMEDS],
+      stepUpNeeded: true,
+    });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    expect(within(card).getByText('Everything waits for a look')).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole('button', { name: 'Change Acme Money' }));
+    const auto = within(card).getByLabelText('File when everything is sure and complete');
+    expect(auto).not.toBeChecked();
+    expect(auto).toHaveAccessibleDescription(/Anything else waits in the Inbox/);
+    await expectAccessible();
+    fireEvent.click(auto);
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
+    await confirmWithCode();
+    expect(
+      await screen.findByText('Saved. Acme Money may do what it now says here.'),
+    ).toBeInTheDocument();
+    expect(calls(state, 'PATCH', '/api/v1/connected-apps/').at(-1)?.body).toEqual({
+      auto_file: true,
+    });
+    expect(
+      await within(card).findByText('Files what is sure and complete; the rest waits for a look'),
+    ).toBeInTheDocument();
+
+    // For older papers alone: offered with the window, while the app's own switch is off.
+    state.stepUpNeeded = true;
+    fireEvent.click(within(card).getByRole('button', { name: 'Change Acme Money' }));
+    fireEvent.click(within(card).getByLabelText('File when everything is sure and complete'));
+    fireEvent.click(within(card).getByLabelText('Let it send older papers for a while'));
+    fireEvent.click(
+      within(card).getByLabelText('File when everything is sure and complete, until then'),
+    );
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
+    await confirmWithCode();
+    expect(
+      await within(card).findByText(
+        /^Files what is sure and complete until .+; the rest waits for a look$/,
+      ),
+    ).toBeInTheDocument();
+    expect(calls(state, 'PATCH', '/api/v1/connected-apps/').at(-1)?.body).toMatchObject({
+      auto_file: false,
+      backfill: { files_per_day: 100, bytes_per_day: 500 * MB, auto_file: true },
+    });
   });
 
   it('an owner says what it may read: a kind or a category and how far back, Sensitive asked once (APP2)', async () => {
@@ -509,10 +573,10 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       ],
       stepUpNeeded: true,
     });
-    const card = await screen.findByRole('region', { name: 'MonTra' });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
     expect(within(card).getByText('What it sent')).toBeInTheDocument();
     expect(within(card).getByText('0 MB of 1 GB')).toBeInTheDocument();
-    fireEvent.click(within(card).getByRole('button', { name: 'Change what MonTra may read' }));
+    fireEvent.click(within(card).getByRole('button', { name: 'Change what Acme Money may read' }));
     expect(within(card).getByText('Nothing beyond what it sent.')).toBeInTheDocument();
     fireEvent.click(within(card).getByRole('button', { name: 'Add a kind or category' }));
     const what = within(card).getByLabelText('What');
@@ -534,7 +598,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     let ask = await screen.findByRole('alertdialog', { name: 'Sensitive papers' });
     expect(
       within(ask).getByText(
-        'Bank / investment statement is sensitive. MonTra will be able to read it. Allow anyway?',
+        'Bank / investment statement is sensitive. Acme Money will be able to read it. Allow anyway?',
       ),
     ).toBeInTheDocument();
     // Cancel keeps what the owner chose, open, with the focus back on Save.
@@ -548,11 +612,11 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     ask = await screen.findByRole('alertdialog', { name: 'Sensitive papers' });
     fireEvent.click(within(ask).getByRole('button', { name: 'Allow' }));
     expect(
-      await screen.findByText('Saved. MonTra may read what it now says here.'),
+      await screen.findByText('Saved. Acme Money may read what it now says here.'),
     ).toBeInTheDocument();
     await waitFor(() =>
       expect(
-        within(card).getByRole('button', { name: 'Change what MonTra may read' }),
+        within(card).getByRole('button', { name: 'Change what Acme Money may read' }),
       ).toHaveFocus(),
     );
     const sent = calls(state, 'PUT', '/grants').map((c) => c.body);
@@ -566,7 +630,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       ),
     ).toBeInTheDocument();
     // How far back is said in months, 1 to 36.
-    fireEvent.click(within(card).getByRole('button', { name: 'Change what MonTra may read' }));
+    fireEvent.click(within(card).getByRole('button', { name: 'Change what Acme Money may read' }));
     fireEvent.change(within(card).getByLabelText('Months back'), { target: { value: '48' } });
     fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
     expect(await within(card).findByText('How far back: 1 to 36 months.')).toBeInTheDocument();
@@ -577,16 +641,16 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       connectedApps: [AHMEDS],
       stepUpNeeded: true,
     });
-    const card = await screen.findByRole('region', { name: 'MonTra' });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
     // Its only key cannot be retired.
     expect(within(card).queryByRole('button', { name: /^Retire the key/ })).toBeNull();
-    fireEvent.click(within(card).getByRole('button', { name: 'Add a key to MonTra' }));
-    fireEvent.change(within(card).getByLabelText('MonTra’s new public key'), {
+    fireEvent.click(within(card).getByRole('button', { name: 'Add a key to Acme Money' }));
+    fireEvent.change(within(card).getByLabelText('Acme Money’s new public key'), {
       target: { value: KEY_2 },
     });
     fireEvent.click(within(card).getByRole('button', { name: 'Add the key' }));
     await confirmWithCode();
-    const made = await screen.findByRole('region', { name: 'MonTra’s new key' });
+    const made = await screen.findByRole('region', { name: 'Acme Money’s new key' });
     const added = state.connectedApps?.[0]?.keys[1];
     expect(within(made).getByText(added?.fingerprint ?? '?')).toBeInTheDocument();
     expect(
@@ -594,7 +658,9 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     ).toBeInTheDocument();
     expect(calls(state, 'POST', '/keys').at(-1)?.body).toEqual({ public_key: KEY_2 });
     // Two keys: no more can be added, and either can be retired.
-    expect(await within(card).findByRole('button', { name: 'Add a key to MonTra' })).toBeDisabled();
+    expect(
+      await within(card).findByRole('button', { name: 'Add a key to Acme Money' }),
+    ).toBeDisabled();
     fireEvent.click(
       within(card).getByRole('button', {
         name: 'Retire the key b16c 2d1b 9e0f 4a77 c3d2 0011 8f6e 51a9',
@@ -642,7 +708,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       ],
       stepUpNeeded: true,
     });
-    const card = await screen.findByRole('region', { name: 'MonTra' });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
     expect(
       within(card).getByText(/Not confirmed: it signs nothing until it is\./),
     ).toBeInTheDocument();
@@ -654,7 +720,9 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     await confirmWithCode();
     // Confirmed by an owner for Ahmed's app: Ahmed turns it on again.
     expect(
-      await screen.findByText('The key is confirmed. MonTra waits for Ahmed to turn it on again.'),
+      await screen.findByText(
+        'The key is confirmed. Acme Money waits for Ahmed to turn it on again.',
+      ),
     ).toBeInTheDocument();
     expect(state.connectedApps?.[0]?.keys[1]?.pending).toBe(false);
     expect(calls(state, 'POST', '/confirm').length).toBeGreaterThan(0);
@@ -665,19 +733,19 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
 
   it('an owner removes an app, asked first: Cancel leaves it', async () => {
     const state = at('/settings/connected-apps', { connectedApps: [AHMEDS] });
-    const card = await screen.findByRole('region', { name: 'MonTra' });
-    fireEvent.click(within(card).getByRole('button', { name: 'Remove MonTra' }));
-    let ask = await screen.findByRole('alertdialog', { name: 'Remove MonTra?' });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Remove Acme Money' }));
+    let ask = await screen.findByRole('alertdialog', { name: 'Remove Acme Money?' });
     expect(within(ask).getByText(/What it sent stays in Ahmed’s Inbox/)).toBeInTheDocument();
     await expectAccessible();
     fireEvent.click(within(ask).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
     expect(state.connectedApps).toHaveLength(1);
-    fireEvent.click(within(card).getByRole('button', { name: 'Remove MonTra' }));
-    ask = await screen.findByRole('alertdialog', { name: 'Remove MonTra?' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Remove Acme Money' }));
+    ask = await screen.findByRole('alertdialog', { name: 'Remove Acme Money?' });
     fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }));
     expect(
-      await screen.findByText('MonTra was removed. It can no longer send anything.'),
+      await screen.findByText('Acme Money was removed. It can no longer send anything.'),
     ).toBeInTheDocument();
     expect(state.connectedApps).toEqual([]);
     expect(await screen.findByText('No app is connected.')).toBeInTheDocument();
@@ -685,7 +753,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
 
   it('warns while the app routes are not on the public address', async () => {
     at('/settings/connected-apps', { connectedApps: [AHMEDS], appsPublic: false });
-    expect(await screen.findByText(appsNotPublicWords('MonTra'))).toBeInTheDocument();
+    expect(await screen.findByText(appsNotPublicWords('Acme Money'))).toBeInTheDocument();
     cleanup();
     // With no app, nothing to warn about.
     at('/settings/connected-apps', { connectedApps: [], appsPublic: false });

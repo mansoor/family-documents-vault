@@ -405,6 +405,87 @@ describe.skipIf(!testAdminUrl())('an item read, in the worker (I2)', () => {
     expect(await sealedOf(read)).toEqual([]);
   }, 60_000);
 
+  it('an item an app sent, read while the app files automatically: the API is asked to file it; otherwise nothing is asked (APP4)', async () => {
+    await clear();
+    const app = (
+      await admin.query<{ id: string }>(
+        `insert into connected_app (household_id, name, account_id, member_id, created_by, approval, approved_at)
+         values ($1, 'Acme Money', $2, $3, $2, 'approved', now()) returning id`,
+        [hh, acct.Ahmed, m.Ahmed],
+      )
+    ).rows[0]?.id as string;
+    const b = (
+      await admin.query<{ id: string }>(
+        `insert into intake_batch (household_id, created_by, member_id, created_at, ends_at, app_id, app_day, app_part)
+         values ($1, $2, $3, now(), now() + interval '30 days', $4, current_date, 1) returning id`,
+        [hh, acct.Ahmed, m.Ahmed, app],
+      )
+    ).rows[0]?.id as string;
+    let n = 0;
+    const sent = async () => {
+      const i = await item(b, pdf(['STATEMENT']));
+      await admin.query(
+        `insert into connected_app_intake (household_id, app_id, member_id, external_id, state, incoming_file_id)
+         values ($1, $2, $3, $4, 'waiting', $5)`,
+        [hh, app, m.Ahmed, `auto-${++n}`, i.id],
+      );
+      return i;
+    };
+    const asked: Array<[string, string]> = [];
+    const fileReady = async (h: string, id: string) => {
+      asked.push([h, id]);
+    };
+    const reads = (text: string) => ({
+      extract: says(text),
+      proposer: standIn(() => ({ state: 'done', proposal: {} })).proposer,
+      fileReady,
+    });
+    // Off, as every app starts: nothing asked.
+    await sent();
+    await readNext(reads('Statement one'));
+    expect(asked).toEqual([]);
+    // On: asked, with the household and the item alone.
+    await admin.query('update connected_app set auto_file = true where id = $1', [app]);
+    const on = await sent();
+    await readNext(reads('Statement two'));
+    expect(asked).toEqual([[hh, on.id]]);
+    // Taken back by an Undo once: never asked again.
+    const held = await sent();
+    await admin.query(
+      'update connected_app_intake set auto_file_held = true where incoming_file_id = $1',
+      [held.id],
+    );
+    await readNext(reads('Statement three'));
+    expect(asked).toHaveLength(1);
+    // Paused: not asked. For a backfill's window alone: asked while it lasts.
+    await admin.query(`update connected_app set paused_reason = 'owner' where id = $1`, [app]);
+    await sent();
+    await readNext(reads('Statement four'));
+    expect(asked).toHaveLength(1);
+    await admin.query(
+      `update connected_app set paused_reason = null, auto_file = false, backfill_auto_file = true,
+              backfill_until = now() + interval '2 days', backfill_files = 500,
+              backfill_bytes = 1073741824 where id = $1`,
+      [app],
+    );
+    const window = await sent();
+    await readNext(reads('Statement five'));
+    expect(asked.at(-1)).toEqual([hh, window.id]);
+    // An item of nobody's app: never asked.
+    const plain = await item(await batch(), pdf(['PLAIN']));
+    await readNext(reads('Plain'));
+    expect(asked.some(([, id]) => id === plain.id)).toBe(false);
+    // Asking failed: the item is read all the same, and waits for review.
+    const failing = await sent();
+    await readNext({
+      ...reads('Statement six'),
+      fileReady: async () => {
+        throw new Error('the queue is away');
+      },
+    });
+    expect((await rowOf(failing.id))?.read_state).toBe('read');
+  }, 60_000);
+
   it('the household’s switch for the reading model reaches the thread, and only the vault’s own kinds are offered it (R2)', async () => {
     await clear();
     const b = await batch();

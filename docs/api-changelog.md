@@ -8122,7 +8122,7 @@ no_preview` past the pages, at most 30).
         or the document no longer readable, the app paused, removed or its
         scope taken away, `410 link_ended` (the file route answers both
         with `303 /a#elsewhere` and `/a#ended`). 120 a minute an address.
-    - **The page `/a`:** the drawn pages, "Opened through MonTra" across
+    - **The page `/a`:** the drawn pages, "Opened through Acme Money" across
       the top, never the family's app; the nginx location has the `/s`
       page's headers. With `FDV_PUBLIC_APPS=on` the public-only site serves
       `/api/v1/app-links/*` and `/a` too.
@@ -8135,7 +8135,7 @@ no_preview` past the pages, at most 30).
       `connected_app_link_session_find(bytea)`. The worker's hourly sweep
       keeps a link 8 days; a restore ends every link and session.
     - **Activity:** a view link opened is `document.viewed` with
-      `detail.app` ("Ahmed via MonTra opened …"), a download link's file
+      `detail.app` ("Ahmed via Acme Money opened …"), a download link's file
       `document.downloaded` with `detail.app`, both folded per sitting; a
       delete is `app.unlinked` ("… let go of …; it is still in the vault")
       or `document.deleted` with `detail.app` ("… moved … to the Trash").
@@ -8144,6 +8144,57 @@ no_preview` past the pages, at most 30).
       `link` and `delete`; `api.appLinkSession` and `appLinkPageUrl`. The
       fake mints, opens and deletes by the same rules; a contract scenario
       runs on both.
+  - Connected apps file automatically (0.9.0-dev.58, APP4). Migration 0112.
+    **Additive.**
+    - **Settings:** `POST` and `PATCH /api/v1/connected-apps` take
+      `auto_file` (boolean, off unless set), and `backfill` takes
+      `auto_file` (boolean, off unless set) for the window alone; a
+      `backfill` sent again without it turns it off. Either switched on
+      widens, as APP1's widening does (an app acting as another adult waits
+      for them again). `ConnectedAppView.auto_file` is now the owner's
+      switch, and `backfill` gains `auto_file`; a value not a boolean is
+      `422 validation_failed` (`detail` `auto_file` or
+      `backfill.auto_file`).
+    - **The app's side:** `GET /api/v1/apps/me` says the switch in
+      `send.auto_file` and `backfill.auto_file` (they were always `false`).
+      An intake's state can go from `waiting` to `filed` with nobody
+      looking, as when its person accepts it: the same `document_id`,
+      `version_id` and `filed_at`. A file filed so and taken back by its
+      person through `POST /batches/{id}/accept-ready/undo` (5 minutes; no
+      client offers it yet) is `waiting` again, and never filed
+      automatically again.
+    - **When it files:** only an item of the app's batch, read by the
+      vault, at Ready, with its kind and person proposed by the pages
+      themselves (not by a hint, a default, the folder, the uploader's
+      rules, the reading model or the local AI alone) and sure; whomever the app
+      named is that person (or, for a kind usually the household's with
+      nobody named by the pages, the app named nobody but the household);
+      no clash, near match or duplicate; the kind allowed for the app and
+      never identity, legal or medical, nor usually Essential (such a kind
+      is Check, `app_kind_not_allowed`, "Not a kind Acme Money sends"); nothing required missing; the app
+      on, turned on, not paused or removed, with `documents.send`, its
+      person able to act, and the switch on. `appFilesItself` in
+      `@fdv/shared` decides it, beside `levelItem`.
+    - **The queue:** the worker sends `apps.file_ready { household_id,
+item_id }` (`stately`, keyed by the item) once it has read such an
+      item; the API consumes it — the first queue it consumes — on every
+      instance, and asks everything again as the app's person in one
+      transaction holding the item and the app's row. The worker makes the
+      queue; an API started first waits for it.
+    - **Database:** `connected_app_intake.auto_file_held`, set by the
+      database as an Undo takes a send back.
+    - **Visibility:** an untouched filing — automatic, or Accept all Ready —
+      now starts a teen's or a grown-up child's own sensitive paper as Only
+      me (H1a), as a single accept does where nobody chose; before, Accept
+      all Ready filed the card's visibility as it was.
+    - **Activity:** `document.created` with `detail.app`, `detail.app_id`
+      and `detail.auto: true` reads "Filed automatically from Acme Money: …",
+      naming nobody (a sensitive document is never named); its first
+      `document.version_added`, carrying the same, is not shown.
+    - **Fake vault:** an app's switch and its backfill's are kept and
+      said; with one on, a test says what the pages of a file read
+      (`readAppFile`) and the fake files it by the same rule, or leaves it
+      waiting.
 
 ## Deprecations in effect
 

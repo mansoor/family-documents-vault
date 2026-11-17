@@ -132,7 +132,7 @@ describe("a connected app's signer (0.9.0, APP1)", () => {
     );
     for (const [why, o] of [
       ['a quote in the app id', { ...good, app_id: '0b9a1f3e-6c2d-4e8a-9f71-2d5c8b4a7e10"' }],
-      ['an id that is no UUID', { ...good, key_id: 'montra' }],
+      ['an id that is no UUID', { ...good, key_id: 'acme' }],
       ['an upper-case id', { ...good, app_id: good.app_id.toUpperCase() }],
       ['plain http elsewhere', { ...good, url: 'http://vault.example.com' }],
       ['a path', { ...good, url: 'https://vault.example.com/api' }],

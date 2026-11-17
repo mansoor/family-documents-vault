@@ -3,7 +3,9 @@ import { PgBoss } from 'pg-boss';
 /**
  * Job names are the contract between the API (which enqueues) and the worker
  * (which runs). Add a name here and a handler in `jobs/`; never send a job
- * the worker has no handler for.
+ * the worker has no handler for. One runs the other way (0.9.0, APP4):
+ * `apps.file_ready`, which the worker sends and the API consumes; the
+ * worker still makes its queue, as it makes every queue.
  */
 export const JOBS = {
   /** Proves the worker is alive; runs every minute and logs one line. */
@@ -127,6 +129,13 @@ export const JOBS = {
    * that was refused or removed more than 90 days ago, let go.
    */
   appsSweep: 'apps.sweep',
+  /**
+   * An item a connected app sent, read, while the app files automatically
+   * (0.9.0, APP4): sent by the worker, one queued and one running an item
+   * (`stately`), and consumed by the API, which files it only if it is sure
+   * and complete. The name is @fdv/shared's APP_FILE_READY_JOB.
+   */
+  appsFileReady: 'apps.file_ready',
   /**
    * Many documents at once (Phase 6, I1): one item of a household's batches
    * drawn for review, then sent again while more wait — one queued and one

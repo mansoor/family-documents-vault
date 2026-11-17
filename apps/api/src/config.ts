@@ -241,7 +241,7 @@ const schema = z.object({
     .default('off')
     .describe(
       'Whether connected apps reach this vault at the public-only site (0.9.0): off unless ' +
-        'set to on. An app on the internet, such as MonTra, can only reach the vault at its ' +
+        'set to on. An app on the internet can only reach the vault at its ' +
         'public address; on adds the app routes (/api/v1/apps/*) to what that site serves, and ' +
         'the connection string an owner pastes into the app starts with FDV_PUBLIC_URL. Give ' +
         'the same value to the caddy-public service (docker-compose.tls.yml).',

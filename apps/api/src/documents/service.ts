@@ -336,6 +336,8 @@ interface Filing {
   values: Record<string, never> | null;
   /** An Only me document's details as sent, before they were sealed: its reminders come from them. */
   details?: Record<string, unknown> | undefined;
+  /** More for a new document's line in the activity log: an app's automatic filing (APP4). */
+  createdDetail?: Record<string, unknown> | undefined;
   /** Whom its file key is wrapped for: held to the document as it is at the commit. */
   scope: ReturnType<typeof scopeFor>;
   vaultId: string;
@@ -3297,7 +3299,7 @@ export class DocumentService {
         action: 'document.created',
         objectType: 'document',
         objectId: row.id,
-        detail: { title: row.title, type_key: row.type_key },
+        detail: { title: row.title, type_key: row.type_key, ...f.createdDetail },
         ip: meta.ip,
       });
     }
@@ -3358,7 +3360,8 @@ export class DocumentService {
       action: 'document.version_added',
       objectType: 'document',
       objectId: f.documentId,
-      detail: { version_no: versionNo, mime: f.mime, bytes: f.bytes },
+      // Filed automatically from an app (APP4): its first file is said with it.
+      detail: { version_no: versionNo, mime: f.mime, bytes: f.bytes, ...f.createdDetail },
       ip: meta.ip,
     });
     return row;
@@ -3467,6 +3470,11 @@ export class DocumentService {
              * C4): kept on the new document. None for a request's file.
              */
             sourceFolder?: string | null;
+            /**
+             * More for its line in the activity log: filed automatically
+             * from a connected app (APP4), `{ app, app_id, auto: true }`.
+             */
+            auditDetail?: Record<string, unknown>;
           }
         | { kind: 'version'; documentId: string };
       file: {
@@ -3540,6 +3548,9 @@ export class DocumentService {
         documentId,
         values,
         details,
+        ...(target.kind === 'capture' && target.auditDetail
+          ? { createdDetail: target.auditDetail }
+          : {}),
         scope,
         vaultId: file.vaultId,
         fileKeyWrapped: wrapKey(file.fileKey, scopeKey.key, `version:${documentId}`),

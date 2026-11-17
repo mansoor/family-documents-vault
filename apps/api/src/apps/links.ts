@@ -369,7 +369,7 @@ export class AppLinks {
    * minutes of minting, and once: a session of ten minutes, bound to this
    * address. Its second open is `used`; one too late, or for a document no
    * longer readable, `ended`. A view's open is the line in the Activity
-   * ("Ahmed via MonTra opened …"); a download's is each file it gives.
+   * ("Ahmed via Acme Money opened …"); a download's is each file it gives.
    */
   async open(token: string, address: string | null, meta: RequestMeta): Promise<LinkOpened> {
     if (!SECRET.test(token)) return { kind: 'ended' };
@@ -531,7 +531,7 @@ export class AppLinks {
   /**
    * `GET /api/v1/app-links/session/file`: the file a download link gives —
    * the version current when it was minted, an attachment, never a page.
-   * Each is a line in the Activity ("… via MonTra downloaded …"). Every byte
+   * Each is a line in the Activity ("… via Acme Money downloaded …"). Every byte
    * it gives counts against the app's own download bytes for the day, as
    * its own downloads do: what the app may not download itself, its user
    * may not either (`413 larger_than_daily_read`, `429 app_read_day_full`).

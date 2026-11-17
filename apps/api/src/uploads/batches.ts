@@ -42,6 +42,7 @@ import {
   incomingFileName,
   itemFolder,
   levelItem,
+  appFilesItself,
   folderMatcher,
   type FolderSuggestion,
   lockInEffect,
@@ -85,6 +86,7 @@ import {
   type LearnedClash,
   type PaperReading,
   type LevelKind,
+  type LevelInput,
   type Visibility,
   NOTE_KIND,
   storedAppHints,
@@ -1429,9 +1431,13 @@ export class BatchService {
     placed: Placed,
     undoable: boolean,
     learn: LearnFrom,
+    /** More for its line in the activity log: filed automatically from an app (APP4). */
+    auditDetail?: Record<string, unknown>,
   ): Promise<Filed> {
     const { collection_id: sentCollection, ...sent } = input;
-    const metadata = await this.filled(trx, p, sent, b);
+    // Filed untouched (Accept all Ready, or an app's automatic filing): the
+    // card's own visibility, with H1a on top as a single accept's default has it.
+    const metadata = await this.filled(trx, p, sent, b, undoable);
     const collectionId = sentCollection !== undefined ? sentCollection : b.default_collection_id;
     placed.vaultId = f.vault_id;
     const scopeKey = await this.keys.unwrapById(trx, f.wrapped_by_scope);
@@ -1442,7 +1448,12 @@ export class BatchService {
       p,
       {
         // The folder it came from (0.9.0, C4), kept on the document it becomes.
-        target: { kind: 'capture', metadata, sourceFolder: sourceFolderOf(f, fileKey) },
+        target: {
+          kind: 'capture',
+          metadata,
+          sourceFolder: sourceFolderOf(f, fileKey),
+          ...(auditDetail ? { auditDetail } : {}),
+        },
         file: {
           filename: incomingFileName(f.original_name ?? 'file', mime),
           mime,
@@ -1779,6 +1790,118 @@ export class BatchService {
     }
     out.undo_until = until ? until.toISOString() : null;
     return out;
+  }
+
+  /**
+   * One item a connected app sent, filed with nobody looking (0.9.0, APP4),
+   * as its person: the apps' `apps.file_ready` job, which the API consumes.
+   * In one transaction, as one of Accept all Ready's: the item held, then
+   * asked again — still waiting in that app's batch, never taken back by an
+   * Undo, the app still filing automatically (`stillOn`, which holds the
+   * app's row so a pause or a removal waits for it), and still Ready and
+   * sure by `appFilesItself`, worked out again as the card would be now.
+   * Filed as its card would file it untouched, and may be taken back for
+   * ACCEPT_UNDO_MINUTES by its person, as Accept all Ready's. Anything
+   * else leaves it waiting, and says why; an item filed or removed meanwhile
+   * is no business of this one's (`gone`), so a job run twice files once.
+   */
+  async fileFromApp(
+    p: Principal,
+    itemId: string,
+    app: { id: string; name: string },
+    appOn: (trx: Db) => Promise<boolean>,
+    meta: RequestMeta,
+  ): Promise<
+    | { filed: true; documentId: string; versionId: string }
+    | { filed: false; why: 'gone' | 'held' | 'off' | 'not_sure' | 'refused' }
+  > {
+    if (!can(p.role, 'document.add')) return { filed: false, why: 'off' };
+    const placed: Placed = { key: null, vaultId: null };
+    let done: Filed | { skip: 'gone' | 'held' | 'off' | 'not_sure' };
+    try {
+      done = await withPrincipal(this.db, p, async (trx) => {
+        await this.stillAdds(trx, p);
+        // The app next, held for share, before its batch and the item: the
+        // order a send takes them in (its person, the app, the batch), so a
+        // file arriving while another is filed waits, and never deadlocks.
+        if (!(await appOn(trx))) return { skip: 'off' as const };
+        const at = await trx
+          .selectFrom('incoming_file as f')
+          .innerJoin('intake_batch as ib', 'ib.id', 'f.batch_id')
+          .select(['f.batch_id', 'ib.app_id'])
+          .where('f.id', '=', itemId)
+          .executeTakeFirst();
+        if (!at?.batch_id || at.app_id !== app.id) return { skip: 'gone' as const };
+        const b = await this.batch(trx, at.batch_id, 'share');
+        let f: WaitingRow;
+        try {
+          f = await this.waiting(trx, b.id, itemId, true);
+        } catch (err) {
+          if (err instanceof ApiError && (err.code === 'already_decided' || err.status === 404)) {
+            return { skip: 'gone' as const };
+          }
+          throw err;
+        }
+        // Read under the item's lock: a send taken back by an Undo is held
+        // from filing automatically, by the database as it follows the item.
+        const held = await trx
+          .selectFrom('connected_app_intake')
+          .select(['state', 'auto_file_held'])
+          .where('app_id', '=', app.id)
+          .where('incoming_file_id', '=', f.id)
+          .executeTakeFirst();
+        if (held?.state !== 'waiting') return { skip: 'gone' as const };
+        if (held.auto_file_held) return { skip: 'held' as const };
+        const sure = new Map<string, boolean>();
+        const [item] = (await this.itemsOf(trx, p, [b.id], f.id, sure)).filter(
+          (i) => i.id === f.id,
+        );
+        if (!item || item.level !== 'ready' || !item.proposals || sure.get(f.id) !== true) {
+          return { skip: 'not_sure' as const };
+        }
+        const levelling = await this.levelling(trx, p, [b.id]);
+        const body = untouchedAccept({
+          proposals: item.proposals,
+          defaults: levelling.defaults(b.id),
+          types: levelling.views,
+          people: levelling.people.map((m) => ({ id: m.id, display_name: m.name })),
+          role: p.role,
+          me: p.memberId,
+        });
+        return this.file(
+          trx,
+          p,
+          b,
+          f,
+          body,
+          meta,
+          placed,
+          true,
+          {
+            read: true,
+            proposals: item.proposals,
+            paper: await this.paperOf(trx, f),
+            level: item.level,
+          },
+          { app: app.name, app_id: app.id, auto: true },
+        );
+      });
+    } catch (err) {
+      await this.dropPlaced(p, itemId, placed);
+      // Decided meanwhile, under its lock: somebody else's doing.
+      if (err instanceof ApiError && err.code === 'already_decided') {
+        return { filed: false, why: 'gone' };
+      }
+      // A rule that said no (its person can no longer add, a detail the
+      // card cannot file): it waits for them, as Accept all Ready leaves one.
+      if (err instanceof ApiError && err.status < 500 && err.status !== 409) {
+        return { filed: false, why: 'refused' };
+      }
+      throw err;
+    }
+    if ('skip' in done) return { filed: false, why: done.skip };
+    await this.filedAfter(p, done);
+    return { filed: true, documentId: done.documentId, versionId: done.versionId };
   }
 
   /**
@@ -2477,6 +2600,13 @@ export class BatchService {
     p: Principal,
     sent: CaptureMetadata,
     b: BatchRow,
+    /**
+     * Filed untouched (Accept all Ready, an app's automatic filing): the
+     * visibility is the card's as it started, nobody's choice, so a teen's
+     * or a grown-up child's own sensitive paper still starts as Only me
+     * (H1a), as it does where nobody sent a visibility.
+     */
+    untouched = false,
   ): Promise<CaptureMetadata> {
     const out: CaptureMetadata = { ...sent };
     // The household's chosen (0.9.0): nobody's, whatever the batch's person.
@@ -2526,6 +2656,13 @@ export class BatchService {
         }),
         { sensitive: out.sensitive, kind: type ?? null, owner },
       );
+    } else if (untouched) {
+      const owner = out.owner_member_id ?? (p.role === 'teen' ? p.memberId : null);
+      out.visibility = await sensitiveStart(trx, p, out.visibility, {
+        sensitive: out.sensitive,
+        kind: type ?? null,
+        owner,
+      });
     }
     return out;
   }
@@ -2547,6 +2684,11 @@ export class BatchService {
      * opened; the rest are still read for what they duplicate.
      */
     only?: string,
+    /**
+     * Whether each item a connected app sent may be filed with nobody
+     * looking (APP4, `appFilesItself`), by item, for whoever asks.
+     */
+    filesItself?: Map<string, boolean>,
   ): Promise<BatchItemView[]> {
     const rows = (await trx
       .selectFrom('incoming_file as f')
@@ -2726,7 +2868,7 @@ export class BatchService {
       const path = folders.get(r.id) ?? null;
       const fromFolder: FolderSuggestion | null =
         path && suggests && state === 'waiting' ? suggests(path) : null;
-      const levelled = levelItem({
+      const levelInput: LevelInput = {
         state,
         reading,
         failure,
@@ -2745,7 +2887,11 @@ export class BatchService {
         people: levelling.people,
         role: p.role,
         me: p.memberId,
-      });
+      };
+      const levelled = levelItem(levelInput);
+      if (filesItself && levelInput.app) {
+        filesItself.set(r.id, appFilesItself(levelInput, levelled));
+      }
       return {
         id: r.id,
         batch_id: r.batch_id as string,

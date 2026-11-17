@@ -265,6 +265,42 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
       });
       return filed.document_id;
     },
+    // What the worker does once it has read an app's file (APP4): the
+    // reading written as it writes it, and the apps.file_ready job it would
+    // send, run as the API consumes it.
+    readAppSend: async (app, externalId, _file, proposal) => {
+      const householdId = ctx.tokens?.household_id as string;
+      const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+      const item = await withSystem(h.db, householdId, async (trx) => {
+        const found = await trx
+          .selectFrom('connected_app_intake as i')
+          .innerJoin('incoming_file as f', 'f.id', 'i.incoming_file_id')
+          .select(['f.id', 'f.file_key_wrapped', 'f.wrapped_by_scope'])
+          .where('i.app_id', '=', app.id)
+          .where('i.external_id', '=', externalId)
+          .executeTakeFirstOrThrow();
+        const fileKey = unwrapKey(
+          found.file_key_wrapped,
+          await keys.unwrapById(trx, found.wrapped_by_scope),
+          `incoming:${found.id}`,
+        );
+        await trx
+          .updateTable('incoming_file')
+          .set({
+            read_state: 'read',
+            text_sealed: sealBytes(fileKey, Buffer.from('its words'), itemTextBinding(found.id)),
+            proposals_sealed: sealBytes(
+              fileKey,
+              Buffer.from(JSON.stringify({ v: 1, proposal })),
+              itemProposalsBinding(found.id),
+            ),
+          })
+          .where('id', '=', found.id)
+          .execute();
+        return found.id;
+      });
+      await h.apps.autoFile.fileReady({ household_id: householdId, item_id: item });
+    },
     // An authenticator, turned on from the session the password just opened,
     // and its code given for what an owner power asks (A54).
     ownerTwoStep: async (token) => {

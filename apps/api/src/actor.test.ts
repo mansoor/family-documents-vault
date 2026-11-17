@@ -94,6 +94,11 @@ const ALLOWED = [
   'apps/links.ts AppLinks.open',
   'apps/links.ts AppLinks.inSession',
   'apps/links.ts AppLinks.remove',
+  // An app's item filed automatically (0.9.0, APP4): the worker's job names
+  // only an item, so which app sent it, whom it acts as and whether it still
+  // files automatically are found by the vault; the filing itself is done
+  // as that person, everything asked again in their own transaction.
+  'apps/auto-file.ts AppAutoFile.fileReady',
   // Text messages (0.9.0, SMS1): a text is sent by the vault, whoever asked
   // for it — the household's SMS Gate and its sealed password read, the
   // month's texts counted and one written (sms_message is the vault's to

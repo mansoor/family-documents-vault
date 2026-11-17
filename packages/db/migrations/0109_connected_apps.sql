@@ -1,7 +1,7 @@
 -- Connected apps: an app an owner connects, its keys, and what it sends
 -- (0.9.0, APP1).
 --
--- An owner connects an app (one MonTra workspace, say) in Settings →
+-- An owner connects an app (one Acme Money workspace, say) in Settings →
 -- Connected apps, after a passkey or a code. The app made its own Ed25519
 -- key pair; the vault keeps only the public key. The app acts as one adult
 -- of the family, who has a sign-in and is an owner or an adult, and can
@@ -16,7 +16,7 @@
 -- item's own key.
 --
 -- What it sends goes through the batch path a paired computer's does: into
--- its person's Inbox, one batch an app a household day ("From MonTra, 16
+-- its person's Inbox, one batch an app a household day ("From Acme Money, 16
 -- Nov 2026"), a second past 200 files. Nobody else sees the items until
 -- they are filed, not even an owner. Each send is followed in
 -- connected_app_intake by its external id, so the app can ask what became
@@ -34,7 +34,7 @@
 create table connected_app (
   id                 uuid primary key default gen_random_uuid(),
   household_id       uuid not null references household(id) on delete cascade,
-  -- What the owner called it: "MonTra".
+  -- What the owner called it: "Acme Money".
   name               text not null constraint connected_app_name
                        check (char_length(name) between 1 and 60),
   -- Whom it acts as: their sign-in and the member they are.
@@ -445,7 +445,7 @@ create trigger connected_app_intake_follows_state after update of state on incom
 -- ------------------------------------------------- a batch an app a day
 
 -- What an app sends goes into its person's own uploads: a batch an app a
--- household day, and a second past 200 files ("From MonTra, 16 Nov 2026
+-- household day, and a second past 200 files ("From Acme Money, 16 Nov 2026
 -- (2)"). Which app, day and part are fixed once made
 -- (intake_batch_account_writes compares every column but those an
 -- uploader may change); only a live, approved, unpaused app of the

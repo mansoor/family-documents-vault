@@ -129,6 +129,19 @@ export interface ContractContext {
    * of its own, beside the family's, signs its requests through it.
    */
   fetch?: FetchLike;
+  /**
+   * The pages of a file a connected app sent read as this proposal, and
+   * what the vault does once a read finishes (0.9.0, APP4): the real API's
+   * run writes the reading as the worker does and runs the `apps.file_ready`
+   * job the worker would send; the fake's says what the pages read
+   * (`readAppFile`).
+   */
+  readAppSend?: (
+    app: { id: string },
+    externalId: string,
+    file: { sha256: string },
+    proposal: DetailProposal,
+  ) => Promise<void>;
 }
 
 export interface Scenario {
@@ -4875,6 +4888,72 @@ export const contractScenarios: Scenario[] = [
       // Unreadable now: the session ends, never why.
       await api.connectedApps.setGrants(token, made.id, { grants: [] });
       expect((await get('/api/v1/app-links/session', cookie)).status).toBe(410);
+      await api.connectedApps.remove(token, made.id);
+    },
+  },
+  {
+    name: 'a connected app’s file is filed with nobody looking only when everything is sure and complete (0.9.0, APP4)',
+    run: async (api, ctx) => {
+      if (!ctx.fetch) throw new Error('the contract needs the fetch its vault answers on');
+      if (!ctx.readAppSend)
+        throw new Error('the contract needs its vault to read what an app sent');
+      const owner = connectedAppOwner;
+      if (!owner) throw new Error('the connected app scenario runs first');
+      const token = owner.access_token;
+      // The links scenario's app was removed, and its key with it: the same key, for a new app.
+      const made = await api.connectedApps.create(token, {
+        name: 'Filer',
+        member_id: owner.member_id,
+        public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+        allowed_kinds: ['bank_statement'],
+        scopes: ['documents.send', 'documents.read'],
+        auto_file: true,
+      });
+      expect(made.auto_file).toBe(true);
+      const app = createAppClient({
+        baseUrl: api.http.baseUrl,
+        appId: made.id,
+        keyId: made.keys[0]?.key_id as string,
+        privateKey: APP_TEST_KEY_2,
+        fetch: ctx.fetch,
+      });
+      expect((await app.me()).send).toMatchObject({ auto_file: true });
+      const pages: DetailProposal = {
+        type_key: { value: 'bank_statement', confidence: 0.95, cue: 'kind_words' },
+        owner_member_id: { value: owner.member_id, confidence: 0.95, cue: 'name_on_page' },
+      };
+      const sendOne = async (externalId: string, hints: Record<string, unknown>) => {
+        const sent = await app.send({
+          externalId,
+          hints,
+          file: {
+            bytes: new TextEncoder().encode(`%PDF-1.4
+% ${externalId}
+%%EOF
+`),
+            filename: `${externalId}.pdf`,
+            contentType: 'application/pdf',
+          },
+        });
+        expect(sent.status).toBe(201);
+        return { sha256: sent.state.sha256 as string };
+      };
+      // Sure and complete: the pages read the kind and whose it is, and the app agrees.
+      const sure = await sendOne('filer-1', { kind: 'bank_statement', title: 'Filer statement' });
+      await ctx.readAppSend({ id: made.id }, 'filer-1', sure, pages);
+      const filed = await app.status('filer-1');
+      expect(filed.state).toBe('filed');
+      expect((await app.document(filed.document_id as string)).own).toBe(true);
+      // The app's word alone, the pages saying nothing: it waits for a look.
+      const hinted = await sendOne('filer-2', { kind: 'bank_statement' });
+      await ctx.readAppSend({ id: made.id }, 'filer-2', hinted, {});
+      expect((await app.status('filer-2')).state).toBe('waiting');
+      // Switched off: it waits too.
+      await api.connectedApps.update(token, made.id, { auto_file: false });
+      expect((await app.me()).send.auto_file).toBe(false);
+      const off = await sendOne('filer-3', { kind: 'bank_statement' });
+      await ctx.readAppSend({ id: made.id }, 'filer-3', off, pages);
+      expect((await app.status('filer-3')).state).toBe('waiting');
       await api.connectedApps.remove(token, made.id);
     },
   },

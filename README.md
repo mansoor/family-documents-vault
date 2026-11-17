@@ -374,13 +374,13 @@ email says so. A restore removes every one too. Each person then pairs again.
 
 ## Connected apps
 
-Another app — a money tracker such as MonTra, say — can send documents into the vault for
+Another app — a money tracker, say — can send documents into the vault for
 one person of the family, and ask what became of each. It needs a vault of **0.9.0 or
 later**.
 
 **What a connected app can do.** It acts as one owner or adult who signs in, and never
 does more than that person could. It can send files of the kinds an owner allowed, which
-go into that person's Inbox in a batch a day ("From MonTra, 16 November 2026"), are read
+go into that person's Inbox in a batch a day ("From Acme Money, 16 November 2026"), are read
 and proposed for like any other upload, and wait there until the person files or removes
 each. What it says about a file (whose it is, its kind, its dates, an amount) is only a
 suggestion: where the vault reads the page differently, the card says both and waits for
@@ -419,9 +419,25 @@ as an Essential is never read through a grant.
 The database keeps the same rule as the vault's own code: a request from an app is given
 those documents and their current files, and nothing at all of any other table. Granting
 more to an app that acts as somebody else waits for them to turn it on again, as any
-widening does. Its reading is in the activity log: "Ahmed via MonTra downloaded …", "…
+widening does. Its reading is in the activity log: "Ahmed via Acme Money downloaded …", "…
 read the details of …" (on the document's own Activity too), and "… looked up documents"
 once an hour.
+
+**Filing automatically.** An owner may switch on _File when everything is sure and
+complete_ for an app. Then a file it sends is filed with nobody looking — as the person it
+acts as, into their documents as Accept all Ready would file it, and Only me where their
+own sensitive papers start so — but only when the vault read the pages itself and is sure
+of the kind and of whose it is, and nothing the app said disagrees; the kind is one the
+app may send, never identity, legal or medical, and never one kept as an Essential;
+nothing the kind requires is missing; and it is not a near match or a renewal of a paper
+already there, nor a copy of something here. A suggestion from the app alone is never
+enough. Anything else waits in the Inbox as before. The app sees it as _filed_, and the
+activity log says "Filed automatically from Acme Money: …" (a sensitive paper is never
+named). Nothing on screen offers to undo it: the person changes it, or moves it to the
+Trash, as any document. It stops at once when the app is paused or removed, and after a
+restore. For moving older papers, it may be switched on for the
+backfill allowance's window alone. Switching it on, for an app acting as somebody else,
+waits for them to turn the app on again.
 
 **Opening a document from a connected app.** If an owner ticks _Show its user documents
 it may read_ (with reading ticked too), the app can show its user a document it may read: it asks the vault
@@ -429,7 +445,7 @@ for a link at the moment the user clicks, and sends their browser straight to it
 works **once**, and only within **2 minutes**; opening it gives that browser **10
 minutes** with the document, at the address it was opened from (a page reloaded from
 another network is refused, and the user opens it again from the app). The browser is
-shown the pages the vault drew of the document, with "Opened through MonTra" across the
+shown the pages the vault drew of the document, with "Opened through Acme Money" across the
 top, on a page of its own (`/a`) — never the vault's own screens, and never the file. A
 Word or Excel file has no pages to show. A download link, which saves the file instead,
 needs _Download documents it is allowed_ ticked too, and every byte it gives counts against
@@ -440,7 +456,7 @@ paused or removed, and the page ends. Each app may make 60 links an hour unless 
 changes it (up to 600). The vault keeps only a hash of each link and of each browser's
 session (its cookie is `__Secure-fdv_app_link`, sent to that page's own path alone), and
 its logs cut the link out. Each opening is in the activity log, on the
-document's own Activity too: "Ahmed via MonTra opened …".
+document's own Activity too: "Ahmed via Acme Money opened …".
 
 **Deleting.** If an owner ticks _Delete the documents it sent_, the app may delete a
 document that a file it sent became (not a family paper its file was filed into as a new
@@ -450,7 +466,7 @@ chooses, for each app, what that does: **it lets go of it** (the default: the do
 stays in the vault, and is no longer the app's), or **it moves it to the Trash**, as the
 person it acts as would, where it can be restored for 30 days. Either way the app lets go
 of it: taken out of the Trash, the document is the family's. The activity log says "Ahmed
-via MonTra let go of …; it is still in the vault" or "Ahmed via MonTra moved … to the
+via Acme Money let go of …; it is still in the vault" or "Ahmed via Acme Money moved … to the
 Trash".
 
 **Connecting one.** The app makes its own key pair and shows its public key, starting
@@ -465,7 +481,7 @@ the addresses it may come from (up to ten addresses or networks). The vault then
 somebody else, it does nothing until that person turns it on in their own _Settings →
 Connected apps_, again with a passkey or a code; they are emailed when it is connected.
 When an owner later lets such an app do more — another kind, higher limits, more
-addresses, a backfill, a wider audience — or gives it a key, it waits for that person to
+addresses, a backfill, a wider audience, filing automatically — or gives it a key, it waits for that person to
 turn it on again, and they are emailed. Letting it do less needs nothing from them.
 Identity, legal and medical papers, and kinds kept as Essentials, are never among what
 an app may send.
@@ -512,7 +528,7 @@ stays in the Inbox for the person to decide, and what was filed stays in the vau
 is removed by itself when its person's sign-in is taken away or they can no longer act
 for it (made a teen or a viewer), and when they are signed out everywhere or an owner
 stops their password — not when they change their password. Everything an app does is in
-the activity log, "Ahmed via MonTra sent a file to their Inbox" (files sent within an
+the activity log, "Ahmed via Acme Money sent a file to their Inbox" (files sent within an
 hour of each other are one line: "sent 12 files"). A restore pauses every app until an
 owner turns each back on, and an app reads its feed again from the start after one; every
 link it made, and every page opened from one, ends.

@@ -1,4 +1,5 @@
 import {
+  APP_AUTO_FILE_WORDS,
   APP_BACKFILL_MAX_DAYS,
   APP_DEFAULT_DAILY_BYTES,
   APP_DEFAULT_DAILY_FILES,
@@ -118,6 +119,10 @@ function seenWords(v: Visibility | null, who: string): string {
 
 // ------------------------------------------------------------------ the form
 
+/** What filing automatically means, under its switch (APP4). */
+const AUTO_FILE_NOTE =
+  'Filed without anybody looking only when the pages agree on the kind and whose it is, nothing is missing, and it is not a near match or a copy of something here. Anything else waits in the Inbox. Never identity, legal or medical papers.';
+
 /** The form's fields, as typed. */
 interface AppForm {
   name: string;
@@ -133,6 +138,10 @@ interface AppForm {
   until: string;
   backfillFiles: string;
   backfillMb: string;
+  /** Filed with nobody looking when everything is sure and complete (APP4). */
+  autoFile: boolean;
+  /** And for the older papers' window alone (APP4). */
+  backfillAuto: boolean;
   /** What it may do: send, read, download, show, delete. */
   scopes: AppScope[];
   /** What a delete does (APP3). */
@@ -214,7 +223,12 @@ function readForm(f: AppForm, ceilings: Ceilings): Read {
     }
     const bm = whole(f.backfillMb, 1, maxMb);
     if (bm === null) return { ok: false, error: `Older papers, MB a day: 1 to ${maxMb}.` };
-    backfill = { until: backfillUntil(f.until), files_per_day: bf, bytes_per_day: bm * MB };
+    backfill = {
+      until: backfillUntil(f.until),
+      files_per_day: bf,
+      bytes_per_day: bm * MB,
+      auto_file: f.backfillAuto,
+    };
   }
   return {
     ok: true,
@@ -226,6 +240,7 @@ function readForm(f: AppForm, ceilings: Ceilings): Read {
       daily_bytes: mb * MB,
       ip_allow: ip,
       backfill,
+      auto_file: f.autoFile,
       scopes: APP_SCOPES_OFFERED.filter((s) => f.scopes.includes(s)),
       delete_mode: f.deleteMode,
       links_per_hour: links,
@@ -248,6 +263,9 @@ function blankForm(me: string): AppForm {
     until: '',
     backfillFiles: String(APP_DEFAULT_DAILY_FILES),
     backfillMb: String(Math.round(APP_DEFAULT_DAILY_BYTES / MB)),
+    // Everything it sends waits for a look, until an owner says otherwise.
+    autoFile: false,
+    backfillAuto: false,
     // Sending, and reading what it sent and what it is granted; downloading,
     // showing and deleting only when an owner ticks them.
     scopes: ['documents.send', 'documents.read'],
@@ -271,6 +289,8 @@ function formOf(app: ConnectedAppView): AppForm {
     until: app.backfill ? localToday(familyZoneNow(), new Date(app.backfill.until)) : '',
     backfillFiles: String(app.backfill?.files_per_day ?? app.daily_files),
     backfillMb: String(Math.round((app.backfill?.bytes_per_day ?? app.daily_bytes) / MB)),
+    autoFile: app.auto_file,
+    backfillAuto: app.backfill?.auto_file ?? false,
     scopes: [...app.scopes],
     deleteMode: app.delete_mode ?? APP_DELETE_MODE_DEFAULT,
     links: String(app.links_per_hour ?? APP_DEFAULT_LINKS_PER_HOUR),
@@ -294,8 +314,10 @@ function changeOf(start: AppForm, now: AppForm, value: Extract<Read, { ok: true 
     (now.backfill &&
       (now.until !== start.until ||
         now.backfillFiles.trim() !== start.backfillFiles ||
-        now.backfillMb.trim() !== start.backfillMb));
+        now.backfillMb.trim() !== start.backfillMb ||
+        now.backfillAuto !== start.backfillAuto));
   if (backfillMoved) change.backfill = value.backfill ?? null;
+  if (now.autoFile !== start.autoFile) change.auto_file = now.autoFile;
   if (!sameSet(now.scopes, start.scopes)) change.scopes = value.scopes as AppScope[];
   if (now.deleteMode !== start.deleteMode) change.delete_mode = now.deleteMode;
   if (now.links.trim() !== start.links) change.links_per_hour = value.links_per_hour as number;
@@ -530,6 +552,13 @@ function AppFields(props: {
         }))}
         onChange={(v) => put({ seen: v as AppForm['seen'] })}
       />
+      <Check
+        id={`${id}-auto`}
+        checked={form.autoFile}
+        label={APP_AUTO_FILE_WORDS}
+        note={AUTO_FILE_NOTE}
+        onChange={(on) => put({ autoFile: on })}
+      />
       <fieldset className="limits-set">
         <legend className="field-label">The most it may send in a day</legend>
         <div className="row">
@@ -607,6 +636,15 @@ function AppFields(props: {
               onChange={(v) => put({ backfillMb: v })}
             />
           </div>
+          {!form.autoFile && (
+            <Check
+              id={`${id}-bf-auto`}
+              checked={form.backfillAuto}
+              label={`${APP_AUTO_FILE_WORDS}, until then`}
+              note="So the older papers that are sure file themselves, and only the rest wait in the Inbox."
+              onChange={(on) => put({ backfillAuto: on })}
+            />
+          )}
         </fieldset>
       )}
     </>
@@ -1218,6 +1256,14 @@ function AppCard(props: {
           <dd>{kinds.length > 0 ? kinds.join(', ') : 'None yet'}</dd>
           <dt>Who sees what it sends</dt>
           <dd>{seenWords(app.default_visibility, whom(app))}</dd>
+          <dt>Filing</dt>
+          <dd>
+            {app.auto_file
+              ? 'Files what is sure and complete; the rest waits for a look'
+              : app.backfill?.auto_file
+                ? `Files what is sure and complete until ${day(app.backfill.until)}; the rest waits for a look`
+                : 'Everything waits for a look'}
+          </dd>
           <dt>Last used</dt>
           <dd>{app.last_used_at ? shortWhenWords(app.last_used_at) : 'Not yet'}</dd>
           <dt>Today</dt>

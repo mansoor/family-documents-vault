@@ -629,7 +629,7 @@ async function seed(url: string): Promise<string> {
             const app = await c.query<{ id: string; member_id: string }>(
               `insert into connected_app (household_id, name, account_id, member_id, created_by,
                                           approval, approved_at, allowed_kinds)
-               select $1, 'MonTra', ah.account_id, ah.member_id, ah.account_id, 'approved', now(),
+               select $1, 'Acme Money', ah.account_id, ah.member_id, ah.account_id, 'approved', now(),
                       '{bank_statement}'
                  from account_household ah
                 where ah.household_id = $1 and ah.role in ('owner', 'adult')

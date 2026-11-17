@@ -589,6 +589,19 @@ async function main(): Promise<void> {
   const tellOwners = async (a: OwnersAlert, db: QueueDb) => {
     await boss.send(JOBS.alertSend, { ...a }, { db });
   };
+  // What a connected app sent, read, while it files automatically (APP4):
+  // the API consumes this queue and files what is sure and complete. One
+  // queued and one running an item; tried again for a vault a moment away.
+  const fileReadySettings = { retryLimit: 3, retryDelay: 30, expireInSeconds: 300 };
+  await boss.createQueue(JOBS.appsFileReady, { policy: 'stately', ...fileReadySettings });
+  await boss.updateQueue(JOBS.appsFileReady, fileReadySettings);
+  const fileReady = async (householdId: string, itemId: string) => {
+    await boss.send(
+      JOBS.appsFileReady,
+      { household_id: householdId, item_id: itemId },
+      { singletonKey: `apps.file_ready:${itemId}` },
+    );
+  };
   await workBatchPreviews(boss, incomingDeps, {
     read: {
       maxPages: config.FDV_OCR_MAX_PAGES,
@@ -596,6 +609,7 @@ async function main(): Promise<void> {
       localAi,
       aiReaders,
       tell: tellOwners,
+      fileReady,
     },
   });
   // The Reading check (0.9.0, R0): one household's check read a document

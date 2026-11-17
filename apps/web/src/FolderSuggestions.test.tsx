@@ -466,12 +466,12 @@ function fromApp(types: DocumentTypeView[]): BatchItemView {
     },
     duplicate: null,
     app: {
-      name: 'MonTra',
+      name: 'Acme Money',
       allowed_kinds: ['passport'],
       hints: {
         kind: 'passport',
         person: { member_id: 'm-0' },
-        title: 'Aisha’s passport, from MonTra',
+        title: 'Aisha’s passport, from Acme Money',
         tags: ['travel'],
       },
     },
@@ -512,7 +512,7 @@ describe('what a connected app said, on the batch page and the card (APP1)', () 
     state.batches = [
       {
         id: 'batch-1',
-        name: 'From MonTra, 16 November 2026',
+        name: 'From Acme Money, 16 November 2026',
         created_at: '2026-11-16T09:00:00Z',
         ends_at: '2026-12-16T09:00:00Z',
         defaults: DEFAULTS,
@@ -532,7 +532,7 @@ describe('what a connected app said, on the batch page and the card (APP1)', () 
     const row = within(table)
       .getAllByRole('row')
       .find((r) => r.textContent?.includes('passport.pdf')) as HTMLElement;
-    expect(row).toHaveTextContent('Passportfrom MonTra');
+    expect(row).toHaveTextContent('Passportfrom Acme Money');
     expect(row).not.toHaveTextContent('undefined');
   });
 
@@ -542,14 +542,14 @@ describe('what a connected app said, on the batch page and the card (APP1)', () 
     await screen.findByRole('option', { name: 'Aisha' });
     expect(kind).toHaveValue('passport');
     expect(screen.getByText('What it is').closest('label')).toHaveTextContent(
-      'What it is from MonTra',
+      'What it is from Acme Money',
     );
     expect(screen.getByLabelText(/Whose it is/)).toHaveValue('m-0');
-    expect(screen.getByText('Whose it is').closest('label')).toHaveTextContent('from MonTra');
-    expect(screen.getByLabelText(/^Name/)).toHaveValue('Aisha’s passport, from MonTra');
+    expect(screen.getByText('Whose it is').closest('label')).toHaveTextContent('from Acme Money');
+    expect(screen.getByLabelText(/^Name/)).toHaveValue('Aisha’s passport, from Acme Money');
     expect(screen.getByLabelText('Tags')).toHaveValue('');
     const offer = screen.getByRole('button', {
-      name: 'Add the tag travel: a new tag from MonTra',
+      name: 'Add the tag travel: a new tag from Acme Money',
     });
     expect(document.body).not.toHaveTextContent('undefined');
     await expectAccessible();
@@ -560,7 +560,7 @@ describe('what a connected app said, on the batch page and the card (APP1)', () 
       expect(state.batchAccepts?.find((a) => a.item === 'item-app')?.body).toMatchObject({
         type_key: 'passport',
         owner_member_id: 'm-0',
-        title: 'Aisha’s passport, from MonTra',
+        title: 'Aisha’s passport, from Acme Money',
         tags: ['travel'],
       }),
     );

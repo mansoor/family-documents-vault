@@ -16,6 +16,7 @@ import {
 } from './apps.js';
 import { untouchedAccept } from './batch-review.js';
 import {
+  appFilesItself,
   CLASH_CONFIDENCE,
   ITEM_SURE,
   levelItem,
@@ -25,7 +26,7 @@ import {
 } from './batch-levels.js';
 import type { BatchDefaults } from './batches.js';
 import type { DocumentTypeView } from './documents.js';
-import type { DetailProposal } from './proposals.js';
+import type { DetailProposal, Proposed } from './proposals.js';
 
 /**
  * Connected apps (0.9.0, APP1): what an app may say of what it sends, and
@@ -112,7 +113,7 @@ const NO_DEFAULTS: BatchDefaults = {
   tags: [],
   is_essential: false,
 };
-const APP = { name: 'MonTra', allowed_kinds: ['bank_statement', 'utility_bill'] };
+const APP = { name: 'Acme Money', allowed_kinds: ['bank_statement', 'utility_bill'] };
 
 const input = (over: Partial<LevelInput> & { hints?: AppHints }): LevelInput => {
   const { hints, ...rest } = over;
@@ -151,7 +152,7 @@ describe('an intake’s metadata (0.9.0, APP1)', () => {
         tax_year: 2025,
         account_last4: '1234',
         period: 'October 2026',
-        tags: ['MonTra', 'MonTra', 'Bank'],
+        tags: ['Acme Money', 'Acme Money', 'Bank'],
       },
     });
     expect(ok).toEqual({
@@ -169,7 +170,7 @@ describe('an intake’s metadata (0.9.0, APP1)', () => {
           tax_year: 2025,
           account_last4: '1234',
           period: 'October 2026',
-          tags: ['MonTra', 'Bank'],
+          tags: ['Acme Money', 'Bank'],
         },
       },
     });
@@ -211,8 +212,10 @@ describe('an intake’s metadata (0.9.0, APP1)', () => {
     expect(hintDate('2026-13')).toBeNull();
     expect(amountText({ value: '2450.10', currency: 'USD' })).toBe('2,450.10 USD');
     expect(amountText({ value: '-1234567', currency: 'EUR' })).toBe('-1,234,567 EUR');
-    expect(appBatchName('MonTra', '2026-11-16')).toBe('From MonTra, 16 November 2026');
-    expect(appBatchName('MonTra', '2026-11-16', 2)).toBe('From MonTra, 16 November 2026 (2)');
+    expect(appBatchName('Acme Money', '2026-11-16')).toBe('From Acme Money, 16 November 2026');
+    expect(appBatchName('Acme Money', '2026-11-16', 2)).toBe(
+      'From Acme Money, 16 November 2026 (2)',
+    );
     const hints: AppHints = {
       kind: 'utility_bill',
       issued: { date: '2026-10-31', precision: 'month' },
@@ -250,7 +253,7 @@ describe('hints meet the reading (0.9.0, APP1)', () => {
       cue: null,
     });
     expect(l.proposals?.owner_member_id).toMatchObject({ value: 'm-ahmed', from: 'app' });
-    expect(l.proposals?.app_name).toBe('MonTra');
+    expect(l.proposals?.app_name).toBe('Acme Money');
     expect(l.level).toBe('ready');
   });
 
@@ -284,7 +287,7 @@ describe('hints meet the reading (0.9.0, APP1)', () => {
     expect(l.tags).toContainEqual(
       expect.objectContaining({
         code: 'clash_app',
-        words: 'The pages say Bill; MonTra says Bank statement',
+        words: 'The pages say Bill; Acme Money says Bank statement',
       }),
     );
   });
@@ -324,7 +327,7 @@ describe('hints meet the reading (0.9.0, APP1)', () => {
     expect(l.tags).toContainEqual(
       expect.objectContaining({
         code: 'clash_app',
-        words: 'The pages and MonTra give different issue dates',
+        words: 'The pages and Acme Money give different issue dates',
       }),
     );
     // A bill's due date is its reminding date, the card's end date.
@@ -335,7 +338,7 @@ describe('hints meet the reading (0.9.0, APP1)', () => {
     expect(l.proposals?.title?.value).toBe('Northgate Water, October');
     expect(l.proposals?.household).toBe(true);
     expect(l.tags).toContainEqual(
-      expect.objectContaining({ code: 'app_said', words: 'MonTra said: tax year 2025' }),
+      expect.objectContaining({ code: 'app_said', words: 'Acme Money said: tax year 2025' }),
     );
     // What Accept all Ready would file: the app's title, amount and due date, the household's.
     const body = untouchedAccept({
@@ -361,7 +364,7 @@ describe('hints meet the reading (0.9.0, APP1)', () => {
     expect(l.tags).toContainEqual(
       expect.objectContaining({
         code: 'app_said',
-        words: 'MonTra said “J Smith”: nobody in the family by that name',
+        words: 'Acme Money said “J Smith”: nobody in the family by that name',
       }),
     );
     expect(codes(l)).toContain('person_missing');
@@ -373,7 +376,7 @@ describe('hints meet the reading (0.9.0, APP1)', () => {
     expect(receipt.tags).toContainEqual(
       expect.objectContaining({
         code: 'app_kind_not_allowed',
-        words: 'MonTra may not send a warranty',
+        words: 'Acme Money may not send a warranty',
       }),
     );
     const passport = levelItem(
@@ -383,14 +386,17 @@ describe('hints meet the reading (0.9.0, APP1)', () => {
       }),
     );
     expect(passport.tags).toContainEqual(
-      expect.objectContaining({ code: 'app_kind_not_allowed', words: 'Not a kind MonTra sends' }),
+      expect.objectContaining({
+        code: 'app_kind_not_allowed',
+        words: 'Not a kind Acme Money sends',
+      }),
     );
   });
 
   it('its tags are offered, never ticked; and without an app nothing changes', () => {
-    const l = levelItem(input({ hints: { kind: 'bank_statement', tags: ['MonTra'] } }));
+    const l = levelItem(input({ hints: { kind: 'bank_statement', tags: ['Acme Money'] } }));
     expect(l.proposals?.tags).toEqual([
-      { value: 'MonTra', from: 'app', existing: false, ticked: false },
+      { value: 'Acme Money', from: 'app', existing: false, ticked: false },
     ]);
     const plain = levelItem(input({ app: null, proposal: kindP('warranty', 0.95) }));
     expect(codes(plain)).not.toContain('app_kind_not_allowed');
@@ -414,28 +420,28 @@ describe('what an app did, in the activity log (0.9.0, APP1)', () => {
       object_type: 'member',
       object_id: 'm-ahmed',
       object_title: 'Ahmed',
-      detail: { app_id: 'a', app: 'MonTra', ...detail },
+      detail: { app_id: 'a', app: 'Acme Money', ...detail },
       ...over,
     });
 
   it('says the person via the app, and never what it sent', () => {
-    expect(event('app.sent', {})?.text).toBe('Ahmed via MonTra sent a file to their Inbox');
+    expect(event('app.sent', {})?.text).toBe('Ahmed via Acme Money sent a file to their Inbox');
     expect(event('app.sent', {})?.kind).toBe('added');
-    expect(event('app.checked', {})?.text).toBe('Ahmed via MonTra checked on files it sent');
+    expect(event('app.checked', {})?.text).toBe('Ahmed via Acme Money checked on files it sent');
     expect(event('app.key_added', { by: 'app' })).toMatchObject({
-      text: 'Ahmed via MonTra added a new key to MonTra',
+      text: 'Ahmed via Acme Money added a new key to Acme Money',
       notable: true,
       kind: 'people',
     });
     expect(event('app.connected', {}, { actor: 'Olivia', actor_member_id: 'm-olivia' })?.text).toBe(
-      'Olivia connected MonTra, acting as Ahmed',
+      'Olivia connected Acme Money, acting as Ahmed',
     );
     expect(event('app.revoked', { reason: 'owner' }, { actor: 'Olivia' })?.text).toBe(
-      'Olivia removed MonTra',
+      'Olivia removed Acme Money',
     );
     const refused = event('app.refused_today', { code: 'signature_invalid' }, { actor: null });
     expect(refused).toMatchObject({
-      text: 'Requests from MonTra were refused today (signature not valid)',
+      text: 'Requests from Acme Money were refused today (signature not valid)',
       notable: true,
       actor_member_id: null,
     });
@@ -558,8 +564,10 @@ describe('what an app may read (0.9.0, APP2)', () => {
         statement,
       ),
     ).toBe(false);
-    expect(appSensitiveConfirmWords('MonTra', ['Bank statement', 'Pay statement / payslip'])).toBe(
-      'Bank statement and Pay statement / payslip are sensitive. MonTra will be able to read them. Allow anyway?',
+    expect(
+      appSensitiveConfirmWords('Acme Money', ['Bank statement', 'Pay statement / payslip']),
+    ).toBe(
+      'Bank statement and Pay statement / payslip are sensitive. Acme Money will be able to read them. Allow anyway?',
     );
   });
 });
@@ -578,14 +586,14 @@ describe('an app’s lines in the activity log (0.9.0, APP2)', () => {
     object_type: 'member',
     object_id: 'm-ahmed',
     object_title: null,
-    detail: { app_id: 'app-1', app: 'MonTra' },
+    detail: { app_id: 'app-1', app: 'Acme Money' },
     ...over,
   });
 
   it('files sent close together are one line: "sent 12 files"', () => {
     const sent = Array.from({ length: 12 }, (_, i) => ev('app.sent', i * 3));
     expect(describeEvents(sent).map((l) => l.text)).toEqual([
-      'Ahmed via MonTra sent 12 files to their Inbox',
+      'Ahmed via Acme Money sent 12 files to their Inbox',
     ]);
     // More than an hour between: two lines; another app, its own.
     const apart = describeEvents([
@@ -595,8 +603,8 @@ describe('an app’s lines in the activity log (0.9.0, APP2)', () => {
       ev('app.sent', 91, { detail: { app_id: 'app-2', app: 'Ledger' } }),
     ]);
     expect(apart.map((l) => l.text)).toEqual([
-      'Ahmed via MonTra sent 2 files to their Inbox',
-      'Ahmed via MonTra sent a file to their Inbox',
+      'Ahmed via Acme Money sent 2 files to their Inbox',
+      'Ahmed via Acme Money sent a file to their Inbox',
       'Ahmed via Ledger sent a file to their Inbox',
     ]);
   });
@@ -611,14 +619,211 @@ describe('an app’s lines in the activity log (0.9.0, APP2)', () => {
       ev('document.downloaded', 5, { ...doc, object_sensitive: true }),
     ]);
     expect(lines.map((l) => [l.text, l.kind])).toEqual([
-      ['Ahmed via MonTra downloaded “Northgate, October”', 'opened'],
-      ['Ahmed via MonTra read the details of “Northgate, October”', 'opened'],
-      ['Ahmed via MonTra looked up documents', 'opened'],
-      ['Ahmed via MonTra downloaded a sensitive document', 'opened'],
+      ['Ahmed via Acme Money downloaded “Northgate, October”', 'opened'],
+      ['Ahmed via Acme Money read the details of “Northgate, October”', 'opened'],
+      ['Ahmed via Acme Money looked up documents', 'opened'],
+      ['Ahmed via Acme Money downloaded a sensitive document', 'opened'],
     ]);
     // A family download is said as it always was, and never folded with an app's.
     expect(
       describeEvents([ev('document.downloaded', 0, { ...doc, detail: {} })]).map((l) => l.text),
     ).toEqual(['Ahmed downloaded “Northgate, October”']);
+  });
+});
+
+describe('filing automatically: only when everything is sure and complete (0.9.0, APP4)', () => {
+  const KIND: Proposed<string> = { value: 'bank_statement', confidence: 0.95, cue: 'kind_words' };
+  const AHMED: Proposed<string> = { value: 'm-ahmed', confidence: 0.95, cue: 'name_on_page' };
+  const PAGES: DetailProposal = { type_key: KIND, owner_member_id: AHMED };
+  const sure = (over: Partial<LevelInput> & { hints?: AppHints } = {}) => {
+    const i = input({
+      proposal: PAGES,
+      hints: { kind: 'bank_statement', person: { member_id: 'm-ahmed' } },
+      ...over,
+    });
+    const l = levelItem(i);
+    return { level: l.level, files: appFilesItself(i, l) };
+  };
+  const BILL: DetailProposal = {
+    type_key: { value: 'utility_bill', confidence: 0.95, cue: 'kind_words' },
+  };
+  const DUE = { date: '2026-11-20', precision: 'day' } as const;
+
+  it('files when the pages and the app agree on a kind it may send, and whose it is', () => {
+    expect(sure()).toEqual({ level: 'ready', files: true });
+    // The pages alone, sure, with the app saying nothing: the reading is enough.
+    expect(sure({ hints: {} })).toEqual({ level: 'ready', files: true });
+    // A household's bill: nobody named by the pages, the app says the household's.
+    expect(sure({ proposal: BILL, hints: { person: { household: true }, due_date: DUE } })).toEqual(
+      { level: 'ready', files: true },
+    );
+  });
+
+  it('a hint alone is never enough: the kind, or the person, must be the pages’ own', () => {
+    // Ready by the app's hints alone, as a default would make it: it waits.
+    expect(
+      sure({ proposal: {}, hints: { kind: 'bank_statement', person: { name: 'Ahmed Khan' } } }),
+    ).toEqual({ level: 'ready', files: false });
+    expect(sure({ proposal: { type_key: KIND } })).toEqual({
+      level: 'ready',
+      files: false,
+    });
+  });
+
+  it('unsure, or sure only by a rule or the reading model: it waits', () => {
+    const at = (type_key: Proposed<string>) =>
+      sure({ proposal: { ...PAGES, type_key }, hints: {} });
+    expect(at({ value: 'bank_statement', confidence: 0.6, cue: 'kind_words' }).files).toBe(false);
+    expect(at({ value: 'bank_statement', confidence: 0.95, cue: 'learned' }).files).toBe(false);
+    expect(
+      at({ value: 'bank_statement', confidence: 0.95, cue: 'kind_words', model: 'alone' }).files,
+    ).toBe(false);
+  });
+
+  it('any clash waits: the pages and the app disagree', () => {
+    expect(sure({ hints: { kind: 'bank_statement', person: { member_id: 'm-sara' } } })).toEqual({
+      level: 'check',
+      files: false,
+    });
+    const dates = sure({
+      proposal: {
+        ...PAGES,
+        issued: {
+          value: { date: '2026-10-01', precision: 'day' },
+          confidence: 0.9,
+          cue: 'issue_label',
+        },
+      },
+      hints: { issued: { date: '2026-10-09', precision: 'day' } },
+    });
+    expect(dates).toEqual({ level: 'check', files: false });
+  });
+
+  it('a near match, or a duplicate, waits', () => {
+    expect(sure({ renewal: { title: 'Northgate, September' } }).files).toBe(false);
+    expect(
+      sure({ duplicate: { of: 'document', document_id: 'd-1', title: 'Northgate, October' } })
+        .files,
+    ).toBe(false);
+  });
+
+  it('the app named somebody the card does not have, or the household’s for a person’s paper: it waits', () => {
+    // A name nobody in the family has is only said; the pages' person stands.
+    expect(sure({ hints: { kind: 'bank_statement', person: { name: 'J Smith' } } })).toEqual({
+      level: 'ready',
+      files: false,
+    });
+    expect(sure({ hints: { person: { household: true } } }).files).toBe(false);
+    // A bill the pages put a person on, which the app says is the household's.
+    expect(
+      sure({
+        proposal: { ...BILL, owner_member_id: AHMED },
+        hints: { person: { household: true }, due_date: DUE },
+      }).files,
+    ).toBe(false);
+  });
+
+  it('nobody on a paper that is a person’s: it waits', () => {
+    expect(sure({ proposal: { type_key: KIND }, hints: {} })).toEqual({
+      level: 'check',
+      files: false,
+    });
+  });
+
+  it('a required field missing waits', () => {
+    // A bill with no due date: its Due date is required.
+    expect(sure({ proposal: BILL, hints: { person: { household: true } } })).toEqual({
+      level: 'check',
+      files: false,
+    });
+  });
+
+  it('a kind the app may not send, or never sends, waits', () => {
+    expect(
+      sure({
+        proposal: {
+          ...PAGES,
+          type_key: { value: 'warranty', confidence: 0.95, cue: 'kind_words' },
+        },
+        hints: {},
+      }).files,
+    ).toBe(false);
+    expect(
+      sure({
+        proposal: {
+          ...PAGES,
+          type_key: { value: 'passport', confidence: 0.95, cue: 'kind_words' },
+        },
+        app: { ...APP, allowed_kinds: ['passport'], hints: {} },
+      }).files,
+    ).toBe(false);
+  });
+
+  it('a kind the household keeps as an Essential, even one marked so after the app was allowed it, waits', () => {
+    const types = KINDS.map((k) =>
+      k.key === 'bank_statement' ? { ...k, usually_essential: true } : k,
+    );
+    const i = input({
+      proposal: PAGES,
+      hints: { kind: 'bank_statement', person: { member_id: 'm-ahmed' } },
+      types,
+    });
+    const l = levelItem(i);
+    expect(l.level).toBe('check');
+    expect(l.tags).toContainEqual(
+      expect.objectContaining({
+        code: 'app_kind_not_allowed',
+        words: 'Not a kind Acme Money sends',
+      }),
+    );
+    expect(appFilesItself(i, l)).toBe(false);
+  });
+
+  it('the local AI reading it otherwise waits', () => {
+    expect(
+      sure({ localAi: { state: 'read', fields: { type_key: 'utility_bill' } } }),
+    ).toMatchObject({ files: false });
+  });
+
+  it('not read yet, read failed, decided, or not from an app: never', () => {
+    expect(sure({ reading: 'waiting' }).files).toBe(false);
+    expect(sure({ reading: 'failed', failure: 'unreadable' }).files).toBe(false);
+    expect(sure({ state: 'accepted' }).files).toBe(false);
+    expect(sure({ app: null }).files).toBe(false);
+  });
+
+  it('is said in the activity log as filed from the app, by nobody; a sensitive one never named', () => {
+    const line = (over: Partial<ActivityEvent> = {}) =>
+      describeEvent({
+        id: 1,
+        at: '2026-11-17T12:00:00Z',
+        action: 'document.created',
+        actor: 'Ahmed',
+        actor_member_id: 'm-ahmed',
+        actor_label: null,
+        object_type: 'document',
+        object_id: 'd-1',
+        object_title: 'Northgate, October',
+        detail: { title: 'Northgate, October', app_id: 'a', app: 'Acme Money', auto: true },
+        ...over,
+      });
+    expect(line()).toMatchObject({
+      text: 'Filed automatically from Acme Money: “Northgate, October”',
+      kind: 'added',
+      actor_member_id: null,
+      document_id: 'd-1',
+    });
+    expect(line({ object_sensitive: true })?.text).toBe(
+      'Filed automatically from Acme Money: a sensitive document',
+    );
+    // A person's own add is said as it always was.
+    expect(line({ detail: { title: 'Northgate, October' } })?.text).toBe(
+      'Ahmed added “Northgate, October”',
+    );
+    // Its first file is not said again as an upload: nobody uploaded it.
+    expect(line({ action: 'document.version_added' })).toBeNull();
+    expect(line({ action: 'document.version_added', detail: { version_no: 1 } })?.text).toBe(
+      'Ahmed uploaded a new copy of “Northgate, October”',
+    );
   });
 });

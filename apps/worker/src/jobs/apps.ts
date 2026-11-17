@@ -1,3 +1,4 @@
+import { withSystem, type Db } from '@fdv/db';
 import type pg from 'pg';
 
 /**
@@ -109,4 +110,45 @@ export async function sweepApps(
     changes: changes.rowCount ?? 0,
     links: links.rowCount ?? 0,
   };
+}
+
+/**
+ * Whether an item just read was sent by an app that files automatically
+ * (0.9.0, APP4): in an app's batch, never taken back by an Undo, the app on,
+ * turned on, allowed to send, and its switch on — its own, or a backfill's
+ * while it lasts. Then the worker asks the API to file it
+ * (`apps.file_ready`), which asks all of this again, and whether the item is
+ * sure and complete, in its own transaction as the app's person.
+ */
+export async function appFilesAutomatically(
+  db: Db,
+  hh: string,
+  itemId: string,
+  now: Date,
+): Promise<boolean> {
+  const found = await withSystem(db, hh, (trx) =>
+    trx
+      .selectFrom('incoming_file as f')
+      .innerJoin('intake_batch as ib', 'ib.id', 'f.batch_id')
+      .innerJoin('connected_app as a', 'a.id', 'ib.app_id')
+      .innerJoin('connected_app_intake as i', (j) =>
+        j.onRef('i.incoming_file_id', '=', 'f.id').onRef('i.app_id', '=', 'a.id'),
+      )
+      .select('a.id')
+      .where('f.id', '=', itemId)
+      .where('f.state', '=', 'received')
+      .where('i.state', '=', 'waiting')
+      .where('i.auto_file_held', '=', false)
+      .where('a.revoked_at', 'is', null)
+      .where('a.paused_reason', 'is', null)
+      .where('a.approval', '=', 'approved')
+      .where((eb) =>
+        eb.or([
+          eb('a.auto_file', '=', true),
+          eb.and([eb('a.backfill_auto_file', '=', true), eb('a.backfill_until', '>', now)]),
+        ]),
+      )
+      .executeTakeFirst(),
+  );
+  return found !== undefined;
 }

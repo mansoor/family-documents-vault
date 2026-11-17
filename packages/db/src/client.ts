@@ -1106,6 +1106,8 @@ export interface Schema {
      * APP2): only such a document can be the app's own.
      */
     made_document: Generated<boolean>;
+    /** Taken back by an Undo once filed (0112, APP4): never filed automatically again. */
+    auto_file_held: Generated<boolean>;
   };
 
   /**

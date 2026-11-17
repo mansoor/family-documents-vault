@@ -1823,6 +1823,7 @@ export function installFakeApi(state: FakeState) {
           daily_bytes?: number;
           ip_allow?: string[];
           backfill?: ConnectedAppView['backfill'];
+          auto_file?: boolean;
           scopes?: ConnectedAppView['scopes'];
           delete_mode?: ConnectedAppView['delete_mode'];
           links_per_hour?: number;
@@ -1864,7 +1865,7 @@ export function installFakeApi(state: FakeState) {
           scopes: ['documents.send'],
           allowed_kinds: b.allowed_kinds,
           default_visibility: b.default_visibility ?? null,
-          auto_file: false,
+          auto_file: b.auto_file ?? false,
           daily_files: b.daily_files ?? 100,
           daily_bytes: b.daily_bytes ?? 500 * 1024 * 1024,
           backfill: b.backfill ?? null,
