@@ -82,6 +82,7 @@ import { MailThread } from './jobs/mail-thread.js';
 import { isSettingsCheckJob, runSettingsCheck } from './jobs/settings-check.js';
 import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
+import { sweepApps } from './jobs/apps.js';
 import { masterKeyOpensVault, resolveMasterSecret } from './master-key-check.js';
 
 /** LOG_LEVEL, once the configuration is read: until then, everything is written. */
@@ -268,6 +269,14 @@ async function main(): Promise<void> {
     await removeEndedSharing({ admin: dbs.admin, db: dbs.app, log });
   });
   await boss.schedule(JOBS.endedSharing, '45 4 * * *');
+  // Connected apps (0.9.0, APP1): spent nonces, and what was refused or
+  // removed long ago, let go every hour.
+  await boss.createQueue(JOBS.appsSweep, { retryLimit: 1, retryDelay: 300 });
+  await boss.work(JOBS.appsSweep, async () => {
+    const swept = await sweepApps(dbs.admin);
+    if (swept.nonces + swept.sent + swept.stuck > 0) log('info', 'connected apps swept', swept);
+  });
+  await boss.schedule(JOBS.appsSweep, '20 * * * *');
 
   await boss.createQueue(JOBS.exportBuild, { retryLimit: 2, retryDelay: 60 });
   await boss.work<ExportJob>(JOBS.exportBuild, { batchSize: 1 }, async (jobs) => {

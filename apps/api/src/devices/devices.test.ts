@@ -16,6 +16,7 @@ import {
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { alertsSent, createHarness, type Harness } from '../test-harness.js';
+import { APP_SIGNED_ROUTES } from '../apps/routes.js';
 import { DEVICE_KEY_ROUTES } from './routes.js';
 import { deviceKeyHash } from './service.js';
 
@@ -335,6 +336,14 @@ describe.skipIf(!testAdminUrl())('a computer that sends scans (0.8.0, D1)', () =
       if (DEVICE_KEY_ROUTES.has(key)) {
         expect(res.statusCode, key).not.toBe(401);
         answered.push(key);
+      } else if (APP_SIGNED_ROUTES.has(key)) {
+        // A connected app's routes (0.9.0, APP1) take a signature alone, and
+        // refuse any other credential in their own words.
+        expect([key, res.statusCode, res.json<{ error: { code: string } }>().error.code]).toEqual([
+          key,
+          401,
+          'app_signature_required',
+        ]);
       } else {
         expect(res.statusCode, key).toBe(401);
         expect(res.json<{ error: { code: string } }>().error.code, key).toBe(

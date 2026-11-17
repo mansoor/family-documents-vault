@@ -173,6 +173,8 @@ describe('buildCapabilities', () => {
       ended_sharing: true,
       // 0.9.0 (DA): one document's activity.
       document_activity: true,
+      // 0.9.0 (APP1): connected apps.
+      connected_apps: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);
     expect(buildCapabilities({ ...config, readingModel: true }).features.reading_model).toBe(true);
@@ -250,6 +252,22 @@ describe('buildCapabilities', () => {
     expect(buildCapabilities({ ...config, backupRetainDays: 30 }).limits.backup_retain_days).toBe(
       30,
     );
+  });
+
+  it('says whether apps can reach it from the internet, and the ceilings of their day (0.9.0, APP1)', () => {
+    const caps = buildCapabilities(config);
+    expect(caps.apps_public).toBe(false);
+    expect(caps.limits.app_daily_files_max).toBe(1000);
+    expect(caps.limits.app_daily_bytes_max).toBe(5 * 1024 ** 3);
+    const set = buildCapabilities({
+      ...config,
+      appsPublic: true,
+      appDailyFiles: 50,
+      appDailyBytes: 10 * 1024 ** 2,
+    });
+    expect(set.apps_public).toBe(true);
+    expect(set.limits.app_daily_files_max).toBe(50);
+    expect(set.limits.app_daily_bytes_max).toBe(10 * 1024 ** 2);
   });
 
   it('the minimum client version is a valid semver the server itself satisfies', () => {

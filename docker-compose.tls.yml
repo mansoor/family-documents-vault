@@ -67,6 +67,9 @@ services:
       FDV_TLS_EMAIL: ${FDV_TLS_EMAIL:-}
     volumes:
       - ./docker/caddy/Caddyfile.public-only:/etc/caddy/Caddyfile:ro
+      # Connected apps (0.9.0): their routes on this site only with
+      # FDV_PUBLIC_APPS=on, which picks the fragment the Caddyfile imports.
+      - ./docker/caddy/apps-${FDV_PUBLIC_APPS:-off}.caddy:/etc/caddy/apps.caddy:ro
       - caddy-public-data:/data
       - caddy-public-config:/config
     depends_on:

@@ -124,6 +124,13 @@ export function restoreSummary(file: string, r: RestoreReport): string {
       '    Settings → Your computers.',
     );
   }
+  if (r.appsPaused > 0) {
+    lines.push(
+      `  - ${plural(r.appsPaused, 'connected app')} ${r.appsPaused === 1 ? 'was' : 'were'} paused: ` +
+        'a key removed since the backup',
+      '    would otherwise work again. An owner turns each back on, in Settings → Connected apps.',
+    );
+  }
   if (r.readingChecksStopped > 0) {
     lines.push(
       `  - ${plural(r.readingChecksStopped, 'Reading check')} that had not finished ` +

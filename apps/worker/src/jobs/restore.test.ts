@@ -52,6 +52,7 @@ import { restoreSummary } from '../restore-summary.js';
 import {
   backupBefore,
   checkRestored,
+  RESTORE_UNDO,
   newestBackup,
   restoreBackup,
   RestoreIncomplete,
@@ -616,6 +617,45 @@ async function seed(url: string): Promise<string> {
                  from intake_batch b where b.household_id = $1`,
               [hh, randomBytes(32), randomBytes(32)],
             );
+          }
+          // And, where the schema has them (0109, APP1), a connected app
+          // acting as that person, its key, a nonce it signed with and what
+          // it sent: a backup is the past, so the app comes back paused and
+          // the nonce does not come back.
+          const apps = await c.query<{ has: boolean }>(
+            "select to_regclass('public.connected_app') is not null as has",
+          );
+          if (apps.rows[0]?.has) {
+            const app = await c.query<{ id: string; member_id: string }>(
+              `insert into connected_app (household_id, name, account_id, member_id, created_by,
+                                          approval, approved_at, allowed_kinds)
+               select $1, 'MonTra', ah.account_id, ah.member_id, ah.account_id, 'approved', now(),
+                      '{bank_statement}'
+                 from account_household ah
+                where ah.household_id = $1 and ah.role in ('owner', 'adult')
+                order by ah.role desc limit 1
+               returning id, member_id`,
+              [hh],
+            );
+            const a = app.rows[0];
+            if (a) {
+              await c.query(
+                `insert into connected_app_key (household_id, app_id, public_key, added_by, confirmed_at)
+                 values ($1, $2, $3, 'owner', now())`,
+                [hh, a.id, randomBytes(32)],
+              );
+              await c.query(
+                `insert into connected_app_nonce (household_id, app_id, nonce, expires_at)
+                 values ($1, $2, 'seedNonceSeedNonceSeedN', now() + interval '5 minutes')`,
+                [hh, a.id],
+              );
+              await c.query(
+                `insert into connected_app_intake (household_id, app_id, member_id, external_id,
+                                                   state, refusal, decided_at)
+                 values ($1, $2, $3, 'mt:seed-1', 'refused', 'kind_not_allowed', now())`,
+                [hh, a.id, a.member_id],
+              );
+            }
           }
           // And, where the schema has them (0084, SMS1), the household's SMS
           // Gate, a text it sent, that person's mobile number and a code
@@ -2390,6 +2430,96 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
+
+  it('notices a connected app’s rules gone, and its guards; a restore pauses it (0109, APP1)', async () => {
+    const seeded = await sql(
+      vault.adminUrl,
+      `select (select count(*)::int from connected_app) as apps,
+              (select count(*)::int from connected_app_key) as keys,
+              (select count(*)::int from connected_app_nonce) as nonces,
+              (select count(*)::int from connected_app_intake) as sent`,
+    );
+    expect(seeded.rows[0]).toEqual({ apps: 1, keys: 1, nonces: 1, sent: 1 });
+    // A table's rule for each kind of caller (each is in the list the check
+    // asks of every table, which the passing check above holds).
+    for (const table of ['connected_app', 'connected_app_intake']) {
+      const policy = `${table}_actor`;
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${policy}'`,
+      );
+      const rule = rows[0]?.rule as string;
+      await sql(vault.adminUrl, `drop policy ${policy} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), table).rejects.toThrow(
+          new RegExp(`no rule for each kind of caller on ${table}`),
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${policy} on public.${table} as restrictive using (${rule})`,
+        );
+      }
+    }
+    // What an app sent, given to an owner who is not its person: caught.
+    const { rows: intake } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'connected_app_intake_actor'`,
+    );
+    await sql(
+      vault.adminUrl,
+      `alter policy connected_app_intake_actor on public.connected_app_intake
+         using (case app_actor() when 'account' then app_role() = 'owner' or member_id = app_member()
+                                 when 'system' then true else false end)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /what a connected app sent is open to an owner who is not them/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy connected_app_intake_actor on public.connected_app_intake using (${intake[0]?.rule as string})`,
+      );
+    }
+    // Its guards.
+    for (const [table, trigger] of [
+      ['connected_app', 'connected_app_writes'],
+      ['incoming_file', 'connected_app_intake_follows'],
+      ['account_household', 'connected_apps_leave_with_role'],
+    ] as const) {
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        await expect(checkRestored(target()), trigger).rejects.toThrow(
+          /guard the vault relies on is missing/,
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    // And what a restore does to it, in the load's own transaction: paused,
+    // its nonces forgotten — tried, then rolled back.
+    const pool = new pg.Pool({ connectionString: vault.adminUrl, max: 1 });
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query(RESTORE_UNDO);
+      const { rows } = await client.query<{ paused: number; nonces: number; sent: number }>(
+        `select (select count(*)::int from connected_app where paused_reason = 'restored') as paused,
+                (select count(*)::int from connected_app_nonce) as nonces,
+                (select count(*)::int from connected_app_intake) as sent,
+                (select count(*)::int from connected_app where signed_after is not null) as after`,
+      );
+      // Paused, its nonces gone, and nothing signed before now taken again.
+      expect(rows[0]).toEqual({ paused: 1, nonces: 0, sent: 1, after: 1 });
+    } finally {
+      await client.query('rollback');
+      client.release();
+      await pool.end();
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+    // Several whole checks of a restored vault, on a machine others share.
+  }, 240_000);
 
   it('notices the Reading check’s rules gone: an owner’s alone, its misses its asker’s, numbers only, one at a time (0074, R0)', async () => {
     const seeded = await sql(
@@ -4196,6 +4326,17 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
               (select count(*)::int from device_pairing) as codes`,
     );
     expect(computers.rows[0]).toEqual({ live: 0, restored: 1, codes: 0 });
+    // A connected app comes back paused, for an owner to turn back on, and
+    // no nonce it signed with (0109, APP1): a key revoked since the backup
+    // would otherwise sign again.
+    expect(report.appsPaused).toBe(1);
+    const apps = await sql(
+      t.adminUrl,
+      `select (select count(*)::int from connected_app where paused_reason = 'restored') as paused,
+              (select count(*)::int from connected_app_nonce) as nonces,
+              (select count(*)::int from connected_app_intake) as sent`,
+    );
+    expect(apps.rows[0]).toEqual({ paused: 1, nonces: 0, sent: 1 });
     // A Reading check that had not finished is stopped, what it had read let
     // go; one done keeps its numbers and its owner's misses (0074, R0).
     expect(report.readingChecksStopped).toBe(1);

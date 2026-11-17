@@ -1,6 +1,8 @@
 import {
   AI_READER_KINDS_OFFERED,
   API_VERSION,
+  APP_CEILING_DAILY_BYTES,
+  APP_CEILING_DAILY_FILES,
   GUEST_MAX_DAYS,
   PRODUCT_ID,
   type Capabilities,
@@ -33,6 +35,11 @@ export interface CapabilityConfig {
   aiReaderSettings?: boolean;
   /** FDV_BACKUP_RETAIN_DAYS, when the API was given it (0.9.0, H5). */
   backupRetainDays?: number;
+  /** FDV_PUBLIC_APPS=on: the app routes are on the public-only site too (0.9.0, APP1). */
+  appsPublic?: boolean;
+  /** FDV_APP_DAILY_FILES and FDV_APP_DAILY_BYTES: the ceilings of an app's day (APP1). */
+  appDailyFiles?: number;
+  appDailyBytes?: number;
 }
 
 /**
@@ -252,6 +259,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       ended_sharing: true,
       // 0.9.0 (DA): one document's activity, links that gave it included.
       document_activity: true,
+      // 0.9.0 (APP1): connected apps, signing every request, sending into
+      // their person's Inbox.
+      connected_apps: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an
@@ -276,9 +286,14 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0 (H5): how long the nightly backups are kept, when the API
       // was told (FDV_BACKUP_RETAIN_DAYS); null, "until they age out".
       backup_retain_days: config.backupRetainDays ?? null,
+      // 0.9.0 (APP1): the ceilings an owner may set an app's day up to.
+      app_daily_files_max: config.appDailyFiles ?? APP_CEILING_DAILY_FILES,
+      app_daily_bytes_max: config.appDailyBytes ?? APP_CEILING_DAILY_BYTES,
     },
     deprecations: DEPRECATIONS,
     branding: { display_name: config.displayName },
     ...(config.instanceId ? { instance_id: config.instanceId } : {}),
+    // 0.9.0 (APP1): whether an app on the internet can reach this vault.
+    apps_public: config.appsPublic === true,
   };
 }

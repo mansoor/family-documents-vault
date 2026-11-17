@@ -63,6 +63,7 @@ import { PurgeService } from './documents/purge.js';
 import { IncomingService, type IncomingOptions } from './uploads/incoming.js';
 import { BatchService, type BatchOptions } from './uploads/batches.js';
 import { DEVICE_KEY_PURPOSE, DeviceService } from './devices/service.js';
+import { AppService } from './apps/service.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
@@ -134,6 +135,8 @@ export interface Harness {
   dns: Map<string, string[]>;
   /** The batches, for a test that sends a file as a stream it holds (the D1 review). */
   batches: BatchService;
+  /** The connected apps' service (APP1), for a test that moves its clock. */
+  apps: AppService;
   /**
    * Every text the harness's own SMS Gate was asked to send (SMS1), in
    * order: nothing leaves it. Each is Delivered at once. Empty when a test
@@ -212,6 +215,14 @@ export interface HarnessOptions {
   desktopDownloadUrl?: string;
   /** FDV_DEVICE_DAILY_BYTES (0.8.0, D1): the most one computer may send in a day. */
   deviceDailyBytes?: number;
+  /** FDV_BASE_URL: http://localhost:8080 unless a test says (APP1's https rule). */
+  baseUrl?: string;
+  /** FDV_PUBLIC_APPS (APP1): off unless a test says on. */
+  publicApps?: 'on' | 'off';
+  /** The connected apps' clock (APP1): a signature's window, a day's caps. */
+  appsNow?: () => number;
+  /** FDV_APP_DAILY_FILES (APP1): the ceiling of an app's files a day. */
+  appDailyFiles?: number;
   /** The clock of the scanner folder's, email in's and the Settings checks' services (O1). */
   now?: () => number;
   /** SMS Gate (SMS1): the harness's own, which delivers every text at once, unless a test stands in. */
@@ -326,6 +337,9 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     ...(opts.trustProxy ? { FDV_TRUST_PROXY: opts.trustProxy } : {}),
     ...(opts.edition ? { FDV_EDITION: opts.edition } : {}),
     ...(opts.aiReaderSettings ? { FDV_AI_READER_SETTINGS: opts.aiReaderSettings } : {}),
+    ...(opts.baseUrl ? { FDV_BASE_URL: opts.baseUrl } : {}),
+    ...(opts.publicApps ? { FDV_PUBLIC_APPS: opts.publicApps } : {}),
+    ...(opts.appDailyFiles ? { FDV_APP_DAILY_FILES: String(opts.appDailyFiles) } : {}),
     // Nothing is ever sent to it: the harness catches every email (mailSent).
     ...(opts.operatorMail === false ? {} : { FDV_SMTP_URL: 'smtp://operator-mail.test:25' }),
   });
@@ -463,7 +477,19 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       }),
     alert,
   });
+  const apps = new AppService(db, batches, {
+    baseUrl: config.FDV_BASE_URL,
+    publicUrl: opts.publicUrl ?? null,
+    appsPublic: config.FDV_PUBLIC_APPS === 'on',
+    maxUploadBytes: 5 * 1024 * 1024,
+    ceilings: { files: config.FDV_APP_DAILY_FILES, bytes: config.FDV_APP_DAILY_BYTES },
+    serverVersion: await serverVersion(),
+    instanceId: instanceIdReader(db),
+    alert,
+    ...(opts.appsNow ? { now: opts.appsNow } : {}),
+  });
   const app = await buildApp(config, {
+    apps,
     cabinet: new CabinetService(db, documents),
     caregivers: new CaregiverService(db, new VisibilityService(db, keys, enqueue)),
     emergency: new EmergencyService(db, keys),
@@ -583,6 +609,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     jobs,
     dns,
     batches,
+    apps,
     texts,
     async close() {
       await app.close();

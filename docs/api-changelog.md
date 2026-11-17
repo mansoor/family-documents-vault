@@ -7824,6 +7824,153 @@ ActivityLine[], next }`, newest first, paged with `before` and `limit`
       `documentActivity(token, documentId, before?)`; the fake answers it
       (its own lines of a document, `404` for one not seen), and a contract
       scenario checks it.
+  - Connected apps: apps, signing, intake and status (0.9.0-dev.55, APP1;
+    the owner's ask of 16 Nov 2026). Migration 0109. **Additive.**
+    - **New `features`:** `connected_apps` (`true`). **New top-level field**
+      `apps_public` (`FDV_PUBLIC_APPS=on`: the app routes and the capability
+      document are served on the public-only site too). **New `limits`:**
+      `app_daily_files_max` and `app_daily_bytes_max` (`FDV_APP_DAILY_FILES`,
+      `FDV_APP_DAILY_BYTES`).
+    - **Signed routes** (`/api/v1/apps/*`), taken by a connected app's
+      signature alone: RFC 9421, one signature labelled `fdv` over exactly
+      `("@method" "@path" "@query" "content-digest")` with `created`,
+      `keyid="<app_id>.<key_id>"`, `nonce` (22–64 base64url), `alg="ed25519"`
+      and `tag="fdv-app"` (no `expires`, nothing else); `Content-Digest`
+      `sha-256` over the exact body, of zero bytes for a GET or a DELETE.
+      Checked in this order, each with its code: the headers, and no bearer
+      token, cookie or device key (`401 app_signature_required`); the profile
+      (`401 signature_malformed`, `detail` says which part); a live key of a
+      live app (`401 app_key_unknown`, `401 app_revoked`); on and turned on by
+      its person (`403 app_paused`, `403 app_not_approved`, but for `GET
+/apps/me`); its address in the app's allow-list (`403
+address_not_allowed`); https, as the trusted proxies say, but for a
+      vault whose `FDV_BASE_URL` is `http://localhost`, `127.0.0.1` or
+      `[::1]` (`403 https_required`); `created` within ±300 s (`401
+signature_stale`, `detail` how far off); the signature (`401
+signature_invalid`); the nonce, kept for the window once the signature
+      verifies (`401 nonce_reused`); its person (`403 member_locked`, `403
+member_paused`); the route's scope (`403 scope_not_granted`); 120
+      signed requests a minute an app (`429 rate_limited`); the body's digest
+      (`400 content_digest_mismatch`, nothing kept). A POST needs
+      `Content-Length` (`411 length_required`); a body past
+      `max_upload_bytes` + 64 KiB is `413 too_large` before it is read.
+      - `GET /api/v1/apps/me`: the connection test — `{ app, state, paused_reason?,
+acting_as, vault, scopes, send: { kinds, hints, auto_file: false },
+limits, backfill, keys }`.
+      - `POST /api/v1/apps/intake` (`documents.send`): multipart, a
+        `metadata` part (JSON ≤ 16 KiB: `external_id` and optional `hints`)
+        then a `file` part, nothing else. Into the acting member's Inbox, a
+        batch an app a household day (`intake_batch.app_id`, `app_day`,
+        `app_part`; a second part past 200 files), "From <app>, <date>".
+        `201` with the state; `200` and `Idempotent-Replayed: true` for an
+        external id sent before with the same bytes; `409
+external_id_conflict` with other bytes; `409 upload_in_progress`
+        while the first is arriving; a refused or expired id is free again.
+        `422 kind_not_allowed` (kept as `refused`), `415 unsupported_type`
+        and `413 too_large` (kept as `refused`), `429 app_day_full` with
+        `Retry-After` to the household's midnight. Answered once the file's
+        bytes are stored and its row committed.
+      - `GET /api/v1/apps/intake/{external_id}`, `GET
+/api/v1/apps/intake?external_ids=` (≤ 100: `{ items, unknown }`),
+        `DELETE /api/v1/apps/intake/{external_id}` (withdrawn; a filed one
+        `409 already_decided`). States `waiting`, `filed` (with
+        `document_id`, `version_id`, `filed_at`), `refused` (`refusal`),
+        `removed` (`removed_reason` `withdrawn`, `declined` or `expired`).
+      - `POST /api/v1/apps/keys` (`201 { key_id, keyid, fingerprint,
+created_at }`; `409 key_limit`, `409 key_exists`; the owners and its
+        person are emailed) and `DELETE /api/v1/apps/keys/{key_id}` (`204`;
+        `409 key_in_use` for the key signing it, or the last).
+    - **Every other route** answers an app's signature `401
+app_signature_not_accepted` (the routes that are not there too).
+    - **Family routes** (signed in): `GET /api/v1/connected-apps` (`{ items:
+ConnectedAppView[], apps_public, ceilings }`: an owner every app, an
+      adult their own, anybody else none); `POST /api/v1/connected-apps`
+      (an owner, with a passkey or a code: the new factor-only step-up
+      `connect_app` — `403 totp_required_for_owner` without either);
+      `PATCH /api/v1/connected-apps/{id}` (an owner; the step-up unless only
+      the name changes); `POST …/{id}/approve` (its person, with a passkey or
+      a code); `POST …/{id}/pause` (an owner) and `…/resume` (an owner, the
+      step-up); `POST …/{id}/keys` (an owner, the step-up) and `DELETE
+…/{id}/keys/{keyId}` (an owner; never the last); `DELETE …/{id}`
+      (an owner or its person: revoked, kept for the log).
+    - **Batch items** an app sent: `ItemSuggestion.from` may be `'app'` (and
+      `app: true` where the pages agree); `ItemProposals` gains `title`,
+      `extra`, `household` and `app_name`; `ItemTagSuggestion.from` may be
+      `'app'` (offered, never ticked); new tags `clash_app`,
+      `app_kind_not_allowed` (Check) and `app_said` (info). Treat an unknown
+      `from` as a suggestion with no source said.
+    - **Activity:** `app.connected`, `app.approved`, `app.changed`,
+      `app.key_added`, `app.key_retired`, `app.paused`, `app.resumed`,
+      `app.revoked`, `app.sent`, `app.withdrawn`, `app.checked` (one an hour
+      an app) and `app.refused_today` (the first refusal of a household day;
+      the app keeps the count), to the owners, the person it acts as and
+      whoever did it.
+    - **Database:** `connected_app`, `connected_app_key`,
+      `connected_app_nonce`, `connected_app_intake` (followed from
+      `incoming_file` by `connected_app_intake_follows`), with their rules;
+      `connected_app_find()` and `connected_apps_revoke_for()`; apps revoked
+      as their person's sign-in goes or their role cannot act
+      (`connected_apps_leave_with_role`), and by sign out everywhere and an
+      owner stopping a password. A restore pauses every app
+      (`paused_reason` `restored`) and forgets every nonce; its report says
+      `appsPaused`. The worker lets spent nonces go hourly (`apps.sweep`),
+      and what was refused or removed after 90 days.
+    - **Logs:** the API's log and nginx's access log cut
+      `/api/v1/apps/intake/<external_id>`; nginx's now cuts DL's
+      `/api/v1/downloads/<ticket>` too, as the API's did.
+    - **After its review (still dev.55):**
+      - A key the app adds (`POST /apps/keys`) is pending (`pending: true`
+        in its answer, in `GET /apps/me`'s `keys` and in `AppKeyView`):
+        signing with it is `401 app_key_pending` until an owner, or the
+        person the app acts as, confirms it — new route `POST
+/api/v1/connected-apps/{id}/keys/{keyId}/confirm`, with a passkey or
+        a code. The older key's seven days count from the first use of a
+        confirmed newer key. `DELETE /apps/keys/{key_id}` retires only a key
+        the app added (`409 key_added_by_owner` otherwise). Every key
+        retired emails the owners and the person the app acts as.
+      - An owner widening an app that acts as somebody else (a kind added,
+        a cap raised, an address let in, a backfill, a wider default
+        visibility), adding it a key or confirming one, sends it back to
+        `waiting_for_approval`, and the person is emailed; narrowing does
+        not.
+      - The window is compared to the millisecond, and a nonce is kept a
+        second past it. A restore sets `connected_app.signed_after`: a
+        signature whose `created` is earlier is `401 signature_stale`
+        (`detail` "created before the vault was restored").
+      - A refusal is counted on an app, and the day's line written, only
+        when the request's signature verifies; codes and order unchanged.
+      - Plain http on a localhost vault also needs a loopback socket.
+      - `GET /apps/intake?external_ids=` with the parameter twice is `422
+validation_failed`.
+      - `external_id` may not start with a dot (`^[A-Za-z0-9_:-][A-Za-z0-9._:-]{0,127}$`).
+      - The allowed kinds never include an identity, legal or medical kind,
+        nor one kept as an Essential (`422 validation_failed`, `detail`
+        `allowed_kinds`).
+      - The capability document asked through the public-only site
+        (`X-FDV-Site: public`, set by its Caddy fragment) names the vault
+        "Family Document Vault", never the family.
+      - The public-only site, its app fragment and nginx answer `404` to a
+        raw path holding `%2f`, `%5c`, `%2e` or a segment starting with a dot.
+      - Concurrency: two first sends of an id at once give one `201` and one
+        `409 upload_in_progress`; a send taken over by a later one writes
+        nothing (`connected_app_intake.attempt`) and is answered `409
+upload_in_progress`. A day's reused batch is narrowed to the app's
+        default visibility. Hints are let go once filed. The hourly sweep
+        lets go a send still arriving after an hour, with its part-sent item.
+      - `@fdv/client/apps`: `parseConnectionString` is strict (base64url
+        alone, exactly its fields, UUID ids, an https origin or http on
+        loopback); `createAppClient` refuses ids that are not UUIDs, and
+        `status`/`withdraw` an external id that is not one.
+        `api.connectedApps.confirmKey`.
+    - **Shared and client:** `packages/shared/src/apps.ts` (scopes, hints and
+      `parseAppMetadata`, `appBatchName`, states, views, words);
+      `@fdv/client` `api.connectedApps.{list, create, update, approve, pause,
+resume, addKey, retireKey, remove}`; and a new entry
+      `@fdv/client/apps`: `signRequest()` (Web Crypto Ed25519, the
+      contract's worked examples as its test vectors), `createAppClient({
+baseUrl, appId, keyId, privateKey, fetch })`, `parseConnectionString`.
+      The fake checks signatures for real, and a contract scenario runs on
+      both.
 
 ## Deprecations in effect
 

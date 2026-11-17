@@ -114,6 +114,13 @@ export const itemPriorBinding = (itemId: string, versionId: string) =>
  */
 export const itemFolderBinding = (itemId: string) => `item-folder:${itemId}`;
 /**
+ * And what a connected app said of what it sent (0.9.0, APP1, 0109): its
+ * hints — a person's name, an amount, an account's last four digits — sealed
+ * under the item's key as its row is made, bound to the item, never plain,
+ * and never sent to an AI reader.
+ */
+export const itemAppHintsBinding = (itemId: string) => `item-app-hints:${itemId}`;
+/**
  * A Reading check (0.9.0, R0, 0074): what the worker has done so far, and
  * then which documents needed typing and what, each sealed under the member
  * key of the owner who asked, bound to the check and to which it is.

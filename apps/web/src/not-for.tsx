@@ -87,6 +87,13 @@ export const SCREEN_RULES = {
     title: 'Your computers',
     why: 'Only those who add documents can pair a computer to send scans.',
   },
+  // Connected apps (0.9.0, APP1): owners and adults.
+  apps: {
+    may: (role, caps) =>
+      caps?.features.connected_apps === true && (role === 'owner' || role === 'adult'),
+    title: 'Connected apps',
+    why: 'Only owners and adults have connected apps.',
+  },
   data: {
     may: (role) => can(role, 'export.request'),
     title: 'Your data',

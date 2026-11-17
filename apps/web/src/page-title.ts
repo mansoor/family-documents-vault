@@ -51,6 +51,7 @@ const PAGES: ReadonlyArray<readonly [pattern: string, title: string]> = [
   // Each section (the owner's ask), then the pages under them.
   ['/settings/account', 'Settings: your account'],
   ['/settings/computers', 'Settings: your computers'],
+  ['/settings/connected-apps', 'Settings: connected apps'],
   ['/settings/notifications', 'Settings: notifications'],
   ['/settings/appearance', 'Settings: appearance'],
   ['/settings/time-zone', 'Settings: time zone'],

@@ -1,4 +1,5 @@
 import {
+  type ConnectedAppView,
   type SharedEmergency,
   type ShareOpening,
   type DocumentLinkOpening,
@@ -1019,6 +1020,17 @@ export interface FakeState {
    */
   computers?: PairedDevice[];
   /**
+   * Connected apps (0.9.0, APP1), each as an owner sees it (`member_id`
+   * 'me' is the signed-in person's own): given, the vault has them
+   * (`features.connected_apps`). An adult is listed only theirs, with
+   * `counts`; anybody else's `counts` is null. Connecting, a change that is
+   * more than a new name, turning one on or back on, and adding a key ask
+   * for a passkey or a code (`connect_app`) while `stepUpNeeded`.
+   */
+  connectedApps?: ConnectedAppView[];
+  /** The operator published the app routes on the public-only site (FDV_PUBLIC_APPS). */
+  appsPublic?: boolean;
+  /**
    * Tags you can use (0.9.0, T1): said when a test gives it — Settings →
    * Tags, rename, merge and delete (`features.tag_management`).
    */
@@ -1516,6 +1528,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.wording ? { neutral_wording: true } : {}),
           // A computer that sends scans (0.8.0, D1): said when a test gives computers.
           ...(state.computers ? { device_uploads: true } : {}),
+          // Connected apps (0.9.0, APP1): said when a test gives some.
+          ...(state.connectedApps ? { connected_apps: true } : {}),
           // Tags you can use (0.9.0, T1): said when a test gives them.
           ...(state.tagManagement ? { tag_details: true, tag_management: true } : {}),
           // The Reading check (0.9.0, R0): said when a test gives checks.
@@ -1715,6 +1729,212 @@ export function installFakeApi(state: FakeState) {
       if (!d) return refuse(404, 'not_found', 'That computer is not here.');
       state.computers = state.computers.filter((x) => x !== d);
       return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    // Connected apps (0.9.0, APP1), as the vault answers the family.
+    if (path.startsWith('/api/v1/connected-apps') && state.connectedApps) {
+      const role = storedRole() as Role;
+      const owner = role === 'owner';
+      const ownersOnly = () => refuse(403, 'forbidden', 'Only an owner can do that to an app.');
+      const askFactor = () =>
+        refuse(403, 'step_up_required', 'Please confirm it is you to connect or change an app.', {
+          action: 'connect_app',
+        });
+      const noContent = () => Promise.resolve(new Response(null, { status: 204 }));
+      const seen = (a: ConnectedAppView): ConnectedAppView => ({
+        ...a,
+        mine: a.member_id === 'me',
+        counts: a.member_id === 'me' ? (a.counts ?? { waiting: 0, filed: 0 }) : null,
+      });
+      const visible = () =>
+        owner
+          ? state.connectedApps!
+          : role === 'adult'
+            ? state.connectedApps!.filter((a) => a.member_id === 'me')
+            : [];
+      const keyOk = (k: unknown) =>
+        typeof k === 'string' &&
+        (/^ed25519:[A-Za-z0-9_-]{43}$/.test(k.trim()) || k.includes('-----BEGIN PUBLIC KEY-----'));
+      /** A fingerprint as the vault shows one: eight groups of four, from the key's text. */
+      const fingerprintOf = (k: string) => {
+        let h = 0x811c9dc5;
+        let out = '';
+        for (let round = 0; round < 4; round++) {
+          for (const c of `${round}${k}`) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193) >>> 0;
+          out += h.toString(16).padStart(8, '0');
+        }
+        return (out.match(/.{4}/g) as string[]).join(' ');
+      };
+      const keyOf = (k: string, n: number) => ({
+        key_id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
+        fingerprint: fingerprintOf(k),
+        added_by: 'owner' as const,
+        created_at: new Date().toISOString(),
+        first_used_at: null,
+        retires_at: null,
+      });
+      const connection = (id: string, keyId: string) => `fdvapp1.${btoa(`${id}.${keyId}`)}`;
+      if (path === '/api/v1/connected-apps' && method === 'GET') {
+        return json({
+          items: visible().map(seen),
+          apps_public: state.appsPublic ?? true,
+          ceilings: { daily_files: 1000, daily_bytes: 5 * 1024 ** 3 },
+        });
+      }
+      if (path === '/api/v1/connected-apps' && method === 'POST') {
+        if (!owner) return refuse(403, 'forbidden', 'Only an owner can connect an app.');
+        const b = body as {
+          name: string;
+          member_id: string;
+          public_key: string;
+          allowed_kinds: string[];
+          default_visibility?: Visibility | null;
+          daily_files?: number;
+          daily_bytes?: number;
+          ip_allow?: string[];
+          backfill?: ConnectedAppView['backfill'];
+        };
+        if (state.stepUpNeeded) return askFactor();
+        if (!keyOk(b.public_key)) {
+          return refuse(
+            422,
+            'validation_failed',
+            'Paste the app’s public key: "ed25519:" and 43 characters, or a PEM PUBLIC KEY block.',
+            { detail: 'public_key' },
+          );
+        }
+        const person = state.members.find((m) => m.id === b.member_id) as
+          | { id: string; display_name: string; has_account?: boolean; role?: string | null }
+          | undefined;
+        if (!person?.has_account || (person.role !== 'owner' && person.role !== 'adult')) {
+          return refuse(
+            422,
+            'validation_failed',
+            'An app acts as an owner or an adult who signs in.',
+            {
+              detail: 'member_id',
+            },
+          );
+        }
+        const n = state.connectedApps.length + 1;
+        const id = `00000000-0000-4000-a000-${String(n).padStart(12, '0')}`;
+        const key = keyOf(b.public_key.trim(), n * 10);
+        const app: ConnectedAppView = {
+          id,
+          name: b.name.trim(),
+          member_id: b.member_id,
+          member_name: person.display_name,
+          mine: b.member_id === 'me',
+          created_at: new Date().toISOString(),
+          state: b.member_id === 'me' ? 'active' : 'waiting_for_approval',
+          paused_reason: null,
+          scopes: ['documents.send'],
+          allowed_kinds: b.allowed_kinds,
+          default_visibility: b.default_visibility ?? null,
+          auto_file: false,
+          daily_files: b.daily_files ?? 100,
+          daily_bytes: b.daily_bytes ?? 500 * 1024 * 1024,
+          backfill: b.backfill ?? null,
+          ip_allow: b.ip_allow ?? [],
+          keys: [key],
+          last_used_at: null,
+          today: { files: 0, bytes: 0 },
+          refused_today: 0,
+          last_refusal: null,
+          counts: null,
+          connection_string: connection(id, key.key_id),
+          address: { url: 'https://vault.example.test', public: true },
+        };
+        state.connectedApps = [app, ...state.connectedApps];
+        return json(seen(app), 201);
+      }
+      const appAt =
+        /^\/api\/v1\/connected-apps\/([^/]+)(?:\/(approve|pause|resume|keys))?(?:\/([^/]+))?(\/confirm)?$/.exec(
+          path,
+        );
+      const app = appAt ? visible().find((a) => a.id === appAt[1]) : undefined;
+      if (!appAt || !app) return refuse(404, 'not_found', 'That app is not here.');
+      const put = (next: ConnectedAppView) => {
+        state.connectedApps = state.connectedApps!.map((a) => (a.id === next.id ? next : a));
+        return json(seen(next));
+      };
+      const [, , verb, keyId, confirm] = appAt;
+      // A key the app added itself, confirmed by an owner or its person.
+      if (verb === 'keys' && keyId && confirm && method === 'POST') {
+        if (!owner && app.member_id !== 'me')
+          return refuse(404, 'not_found', 'That app is not here.');
+        if (state.stepUpNeeded) return askFactor();
+        return put({
+          ...app,
+          keys: app.keys.map((k) => (k.key_id === keyId ? { ...k, pending: false } : k)),
+          ...(owner && app.member_id !== 'me' ? { state: 'waiting_for_approval' as const } : {}),
+        });
+      }
+      if (!verb && method === 'PATCH') {
+        if (!owner) return ownersOnly();
+        const change = body as Partial<ConnectedAppView>;
+        const renameOnly = Object.keys(change).every((k) => k === 'name');
+        if (!renameOnly && state.stepUpNeeded) return askFactor();
+        return put({ ...app, ...change });
+      }
+      if (!verb && method === 'DELETE') {
+        if (!owner && app.member_id !== 'me') {
+          return refuse(404, 'not_found', 'That app is not here.');
+        }
+        state.connectedApps = state.connectedApps.filter((a) => a.id !== app.id);
+        return noContent();
+      }
+      if (verb === 'approve' && method === 'POST') {
+        if (app.member_id !== 'me') return refuse(404, 'not_found', 'That app is not here.');
+        if (state.stepUpNeeded) return askFactor();
+        return put({ ...app, state: app.paused_reason ? 'paused' : 'active' });
+      }
+      if (verb === 'pause' && method === 'POST') {
+        if (!owner) return ownersOnly();
+        return put({ ...app, state: 'paused', paused_reason: 'owner' });
+      }
+      if (verb === 'resume' && method === 'POST') {
+        if (!owner) return ownersOnly();
+        if (state.stepUpNeeded) return askFactor();
+        return put({ ...app, state: 'active', paused_reason: null });
+      }
+      if (verb === 'keys' && !keyId && method === 'POST') {
+        if (!owner) return ownersOnly();
+        const k = (body as { public_key?: string }).public_key ?? '';
+        if (state.stepUpNeeded) return askFactor();
+        if (!keyOk(k)) {
+          return refuse(422, 'validation_failed', 'Paste the app’s public key.', {
+            detail: 'public_key',
+          });
+        }
+        if (app.keys.length >= 2) {
+          return refuse(409, 'key_limit', 'An app holds two keys at most. Retire one first.');
+        }
+        const key = keyOf(k.trim(), app.keys.length + 100);
+        const next = {
+          ...app,
+          keys: [...app.keys, key],
+          connection_string: connection(app.id, key.key_id),
+        };
+        state.connectedApps = state.connectedApps.map((a) => (a.id === app.id ? next : a));
+        return json({ key, connection_string: next.connection_string }, 201);
+      }
+      if (verb === 'keys' && keyId && method === 'DELETE') {
+        if (!owner) return ownersOnly();
+        if (!app.keys.some((k) => k.key_id === keyId)) {
+          return refuse(404, 'not_found', 'That key is not here.');
+        }
+        if (app.keys.length <= 1) {
+          return refuse(
+            409,
+            'key_in_use',
+            'That is the app’s last key. Add its new key first, or remove the app.',
+          );
+        }
+        state.connectedApps = state.connectedApps.map((a) =>
+          a.id === app.id ? { ...a, keys: a.keys.filter((k) => k.key_id !== keyId) } : a,
+        );
+        return noContent();
+      }
     }
     if (path === '/api/v1/exports' && method === 'POST') {
       // SEC-17: the first attempt asks who is asking, until a credential

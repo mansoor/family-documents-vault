@@ -234,6 +234,83 @@ describe('the public-only site', () => {
     expect(directives).not.toMatch(/trusted_proxies/);
   });
 
+  it("adds the connected apps' routes and the capability document only with FDV_PUBLIC_APPS=on (0.9.0, APP1)", async () => {
+    expect(caddy).toMatch(/^\s*import \/etc\/caddy\/apps\.caddy$/m);
+    // The import comes before the 404 that answers everything else.
+    expect(caddy.indexOf('import /etc/caddy/apps.caddy')).toBeLessThan(
+      caddy.lastIndexOf('respond 404'),
+    );
+    const on = (await readFile(root('docker/caddy/apps-on.caddy'), 'utf8')).replace(
+      /^\s*#.*$/gm,
+      '',
+    );
+    const off = (await readFile(root('docker/caddy/apps-off.caddy'), 'utf8')).replace(
+      /^\s*#.*$/gm,
+      '',
+    );
+    // Off adds nothing it serves: only the guard below.
+    expect(off).not.toMatch(/reverse_proxy|@apps_api/);
+    // The capability document asked this way is told so, whatever the caller wrote.
+    expect(on).toMatch(/reverse_proxy api:3000 \{[^}]*header_up X-FDV-Site public/);
+    const paths = (/^\s*@apps_api path (.+)$/m.exec(on)?.[1] ?? '').trim().split(/\s+/);
+    expect(paths.sort()).toEqual(['/api/v1/apps/*', '/api/v1/capabilities']);
+    expect(on).toMatch(/handle @apps_api \{\s*reverse_proxy api:3000/);
+    expect(on.match(/reverse_proxy /g)).toHaveLength(1);
+    for (const hidden of ['/api/v1/connected-apps', '/api/v1/documents', '/api/v1/appsx', '/a']) {
+      expect(caddyMatches(paths, hidden), hidden).toBe(false);
+    }
+    for (const shown of ['/api/v1/apps/me', '/api/v1/apps/intake/mt:1', '/api/v1/capabilities']) {
+      expect(caddyMatches(paths, shown), shown).toBe(true);
+    }
+    const compose = await readFile(root('docker-compose.tls.yml'), 'utf8');
+    expect(compose).toContain(
+      './docker/caddy/apps-${FDV_PUBLIC_APPS:-off}.caddy:/etc/caddy/apps.caddy:ro',
+    );
+  });
+
+  it('answers 404 for a raw path that hides a slash, a backslash or a dot, before anything else (APP1 review)', async () => {
+    const on = await readFile(root('docker/caddy/apps-on.caddy'), 'utf8');
+    const off = await readFile(root('docker/caddy/apps-off.caddy'), 'utf8');
+    const nginx = await readFile(root('docker/nginx.conf'), 'utf8');
+    // Caddy's: in the site, first, and in each fragment it imports.
+    const guard = (text: string, name: string) => {
+      const m = /^\s*@(\w+) expression `\{http\.request\.uri\}\.matches\("(.+)"\)`$/m.exec(text);
+      expect(m?.[1], name).toBe(name);
+      expect(text).toMatch(new RegExp(String.raw`handle @${name} \{\s*respond 404\s*\}`));
+      // RE2's inline case flag, as a JavaScript flag.
+      return new RegExp((m?.[2] as string).replace('(?i:', '('), 'i');
+    };
+    const site = guard(caddy, 'bad_uri');
+    expect(caddy.indexOf('handle @bad_uri')).toBeLessThan(caddy.indexOf('handle @public'));
+    const fragments = [guard(on, 'apps_bad_uri'), guard(off, 'apps_bad_uri')];
+    // nginx's, on the path alone, before any location.
+    const n = /if \(\$fdv_log_path ~\* "(.+)"\) \{\s*return 404;\s*\}/.exec(nginx);
+    expect(n).not.toBeNull();
+    expect(nginx.indexOf('return 404;')).toBeLessThan(nginx.indexOf('location '));
+    const nginxRe = new RegExp(n?.[1] as string, 'i');
+    for (const bad of [
+      '/shared/%2e%2e/api/v1/documents',
+      '/shared/..%2Fapi/v1/documents',
+      '/drop/x%5c..%5capi',
+      '/api/v1/apps/intake/%2E%2E',
+      '/shared/./x',
+      '/api/v1/apps/../documents',
+    ]) {
+      for (const re of [site, ...fragments]) expect(re.test(bad), bad).toBe(true);
+      expect(nginxRe.test(bad.split('?')[0] as string), bad).toBe(true);
+    }
+    for (const fine of [
+      '/s',
+      '/shared/abcdef0123456789/open',
+      '/api/v1/apps/intake/mt:tenant-7f3a:doc.01',
+      '/api/v1/apps/intake?external_ids=a%2Fb,c.d',
+      '/assets/index-abc123.js',
+    ]) {
+      for (const re of [site, ...fragments]) expect(re.test(fine), fine).toBe(false);
+      expect(nginxRe.test(fine.split('?')[0] as string), fine).toBe(false);
+    }
+  });
+
   it('is a compose profile of its own, which a plain start leaves off', async () => {
     const compose = await readFile(root('docker-compose.tls.yml'), 'utf8');
     const service = /\n {2}caddy-public:\n([\s\S]*?)\n(?=\S| {2}\S)/.exec(compose)?.[1] ?? '';

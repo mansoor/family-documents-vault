@@ -367,6 +367,22 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // anything it sent.
   ['computer.paired', ownersThePersonAndTheActor],
   ['computer.revoked', ownersThePersonAndTheActor],
+  // 0.9.0 (APP1): a connected app — connected, turned on, changed, its keys,
+  // paused, removed — and what it did as the person it acts as: for the
+  // owners, that person and whoever did it. Its name, never what it sent.
+  ['app.connected', ownersThePersonAndTheActor],
+  ['app.approved', ownersThePersonAndTheActor],
+  ['app.changed', ownersThePersonAndTheActor],
+  ['app.key_added', ownersThePersonAndTheActor],
+  ['app.key_retired', ownersThePersonAndTheActor],
+  ['app.key_confirmed', ownersThePersonAndTheActor],
+  ['app.paused', ownersThePersonAndTheActor],
+  ['app.resumed', ownersThePersonAndTheActor],
+  ['app.revoked', ownersThePersonAndTheActor],
+  ['app.sent', ownersThePersonAndTheActor],
+  ['app.withdrawn', ownersThePersonAndTheActor],
+  ['app.checked', ownersThePersonAndTheActor],
+  ['app.refused_today', ownersThePersonAndTheActor],
   // 5.33: what a viewer can see, limited, changed or let go — by an owner,
   // or by whoever invited them as they accepted: for the owners, the person
   // and whoever did it (the adult who invited them among them). Never what

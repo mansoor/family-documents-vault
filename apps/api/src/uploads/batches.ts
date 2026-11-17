@@ -5,6 +5,7 @@ import { pipeline } from 'node:stream/promises';
 import {
   DecryptStream,
   EncryptStream,
+  itemAppHintsBinding,
   itemFolderBinding,
   itemPriorBinding,
   itemProposalsBinding,
@@ -86,6 +87,9 @@ import {
   type LevelKind,
   type Visibility,
   NOTE_KIND,
+  storedAppHints,
+  type AppHints,
+  type AppLevelInput,
 } from '@fdv/shared';
 import { deleteAll, readAll, StorageError, type StorageAdapter } from '@fdv/storage';
 import { sql } from 'kysely';
@@ -249,6 +253,18 @@ export interface BatchUpload {
    */
   arrived?: (trx: Db, bytes: number) => Promise<void>;
   /**
+   * Asked in the transaction that makes its row, once it is made: a
+   * connected app's send (0.9.0, APP1) is tied to its item there, and its
+   * hints sealed under the item's own key, beside its proposals.
+   */
+  made?: (trx: Db, item: { id: string; fileKey: Buffer }) => Promise<void>;
+  /**
+   * The plain bytes' SHA-256, as they are counted on the way in: a
+   * connected app's send is answered with it, and its replay compared
+   * (APP1). Told once the file has arrived whole.
+   */
+  hashed?: (sha256: Buffer) => void;
+  /**
    * Where the file was under the folder it was added from (0.8.0, S2): the
    * web's `relative_path`, a scanner folder's subfolder, a computer's
    * watched folder (D1's `relative_path`). Its folders are kept — the file's
@@ -389,6 +405,8 @@ interface ItemRow {
   sender_unverified: boolean;
   /** Accepted as a new version of a document there before (0067, S1). */
   as_version: boolean;
+  /** Sent by a connected app (0109, APP1): its batch's app. */
+  app_id: string | null;
 }
 
 /** An item waiting, as a decision reads it. */
@@ -609,7 +627,8 @@ export class BatchService {
         .selectFrom('intake_batch')
         .select('id')
         .where('id', '=', batchId)
-        .where('device_id', 'is not', null)
+        // A computer's, or a connected app's (0.9.0, APP1).
+        .where((eb) => eb.or([eb('device_id', 'is not', null), eb('app_id', 'is not', null)]))
         .forUpdate()
         .executeTakeFirst();
       if (!held) return;
@@ -988,6 +1007,7 @@ export class BatchService {
         })
         .returning(['id', 'storage_key'])
         .executeTakeFirstOrThrow();
+      await upload.made?.(trx, { id: row.id, fileKey });
       return { fileId: row.id, key: row.storage_key, adapter: active.adapter, fileKey };
     });
     if (dead.length > 0) await this.removeAll(p, { stopped: dead, rejected: [] });
@@ -1043,6 +1063,8 @@ export class BatchService {
       throw storageUnreachable((err as Error).message);
     }
 
+    const sha256 = plainHash.digest();
+    upload.hashed?.(sha256);
     let view: BatchItemView;
     try {
       view = await withPrincipal(this.db, p, async (trx) => {
@@ -1059,7 +1081,7 @@ export class BatchService {
             state: 'received',
             mime,
             byte_size: bytes,
-            sha256: plainHash.digest(),
+            sha256,
             cipher_bytes: put.bytes,
             cipher_sha256: Buffer.from(put.sha256, 'hex'),
             received_at: now,
@@ -1096,12 +1118,23 @@ export class BatchService {
    * its bytes and pages go, and so do its name and its hash. What stays,
    * until the batch goes, is that a file of that kind and size was in it.
    */
-  async removeItem(p: Principal, batchId: string, itemId: string, _meta: RequestMeta) {
+  async removeItem(
+    p: Principal,
+    batchId: string,
+    itemId: string,
+    _meta: RequestMeta,
+    /**
+     * Asked once the item is held, in the transaction that removes it: a
+     * connected app's withdrawal is written there (0.9.0, APP1).
+     */
+    before?: (trx: Db) => Promise<void>,
+  ) {
     this.mayAdd(p);
     const f = await withPrincipal(this.db, p, async (trx) => {
       await this.stillAdds(trx, p);
       await this.batch(trx, batchId);
-      const f = await this.waiting(trx, batchId, itemId);
+      const f = await this.waiting(trx, batchId, itemId, before !== undefined);
+      await before?.(trx);
       const decided = await trx
         .updateTable('incoming_file')
         .set({
@@ -2547,6 +2580,8 @@ export class BatchService {
         'f.sender_unverified',
         // Accepted as a new version of a document (S1), not as one of its own (C4).
         'f.as_version',
+        // Sent by a connected app (APP1): what it said is one more source.
+        'ib.app_id',
       ])
       .where('f.batch_id', 'in', batchIds)
       .where('f.state', 'in', ['received', 'accepted'])
@@ -2634,6 +2669,12 @@ export class BatchService {
       if (path) folders.set(r.id, path);
     }
     const suggests = folders.size > 0 ? await levelling.folderMatcher() : null;
+    // What a connected app said of each item it sent (APP1): its name as
+    // it is now, the kinds it may send, and its hints, opened for its person
+    // only while the item waits.
+    const fromApps = await levelling.apps(
+      rows.filter((r) => r.app_id && r.state === 'received' && (!only || r.id === only)),
+    );
     // Near matches (S1): for each item read, and not the same file as a
     // document they can see, from what its pages proposed.
     const renewals = await this.renewalsOf(
@@ -2694,6 +2735,7 @@ export class BatchService {
         expiryLabels: proposed.get(r.id)?.expiryLabels ?? [],
         // The local AI's cue (R4): it never makes the card Ready.
         localAi: proposed.get(r.id)?.localAi ?? null,
+        app: fromApps.get(r.id) ?? null,
         duplicate,
         // A near match makes it Check (S1): Accept all Ready leaves it.
         renewal: renewals.get(r.id)?.[0] ?? null,
@@ -2917,6 +2959,54 @@ export class BatchService {
         } catch {
           return null;
         }
+      },
+      /**
+       * What a connected app said of each of these items (APP1): its name as
+       * it is now, the kinds it may send, and its hints, opened under each
+       * item's own key; one whose hints do not open said nothing.
+       */
+      apps: async (items: ItemRow[]): Promise<Map<string, AppLevelInput>> => {
+        const out = new Map<string, AppLevelInput>();
+        const appIds = [...new Set(items.map((r) => r.app_id).filter((a): a is string => !!a))];
+        if (appIds.length === 0) return out;
+        const apps = await trx
+          .selectFrom('connected_app')
+          .select(['id', 'name', 'allowed_kinds'])
+          .where('id', 'in', appIds)
+          .execute();
+        const sealed = await trx
+          .selectFrom('connected_app_intake')
+          .select(['incoming_file_id', 'hints_sealed'])
+          .where(
+            'incoming_file_id',
+            'in',
+            items.map((r) => r.id),
+          )
+          .execute();
+        const byApp = new Map(apps.map((a) => [a.id, a]));
+        const hintsOf = new Map(sealed.map((s) => [s.incoming_file_id, s.hints_sealed]));
+        for (const r of items) {
+          const a = r.app_id ? byApp.get(r.app_id) : undefined;
+          if (!a) continue;
+          let hints: AppHints = {};
+          const h = hintsOf.get(r.id);
+          if (h) {
+            try {
+              const fileKey = unwrapKey(
+                r.file_key_wrapped,
+                await scopeKey(r.wrapped_by_scope),
+                `incoming:${r.id}`,
+              );
+              hints = storedAppHints(
+                JSON.parse(openBytes(fileKey, h, itemAppHintsBinding(r.id)).toString('utf8')),
+              );
+            } catch {
+              hints = {};
+            }
+          }
+          out.set(r.id, { name: a.name, allowed_kinds: a.allowed_kinds, hints });
+        }
+        return out;
       },
       /** Where an item came from (S2), opened for its uploader; one that does not open is none. */
       folder: async (r: ItemRow): Promise<string | null> => {

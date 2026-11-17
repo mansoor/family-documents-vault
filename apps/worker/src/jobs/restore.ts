@@ -142,6 +142,12 @@ export interface RestoreReport {
    */
   devicesEnded: number;
   /**
+   * Connected apps paused (0.9.0, APP1): a key revoked since the backup was
+   * made would otherwise sign again, so every app waits for an owner to
+   * turn it back on in Settings → Connected apps; and every nonce goes.
+   */
+  appsPaused: number;
+  /**
    * Reading checks stopped (0.9.0, R0): one waiting or running when the
    * backup was made has no job here to finish it, and what it had read so
    * far is let go. Its owner starts another, in Settings → Server and reading.
@@ -297,6 +303,7 @@ interface Undone {
   emergencyAudiences: Array<{ household_id: string; narrowed: number }>;
   exportsExpired: number;
   devicesEnded: number;
+  appsPaused: number;
   readingChecksStopped: number;
 }
 
@@ -727,6 +734,7 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
     noticesWithdrawn: counted('notices_withdrawn'),
     exportsExpired: counted('exports_expired'),
     devicesEnded: counted('devices_ended'),
+    appsPaused: counted('apps_paused'),
     readingChecksStopped: counted('reading_checks_stopped'),
     identityAudiences: [...stdout.matchAll(/fdv-restore-audience:([0-9a-f-]{36})=([a-z_]+)/g)].map(
       (m) => ({ household_id: m[1] as string, was: m[2] as string }),
@@ -911,6 +919,19 @@ begin
     insert into pg_temp.fdv_restore_undone values ('devices_ended', n);
     delete from public.device_pairing;
   end if;
+  -- Connected apps (0109, APP1): every one paused for an owner to turn
+  -- back on — a key revoked since the backup would otherwise sign again —
+  -- and every nonce forgotten.
+  if to_regclass('public.connected_app') is not null then
+    update public.connected_app set paused_reason = 'restored'
+     where revoked_at is null and paused_reason is distinct from 'restored';
+    get diagnostics n = row_count;
+    insert into pg_temp.fdv_restore_undone values ('apps_paused', n);
+    -- And a signature made before now is refused from here on: the nonces
+    -- go below, so one spent since the backup would otherwise be taken again.
+    update public.connected_app set signed_after = now() where revoked_at is null;
+    delete from public.connected_app_nonce;
+  end if;
   if to_regclass('public.reading_check') is not null then
     update public.reading_check set state = 'failed', failure = 'restored', finished_at = now()
      where state in ('waiting', 'running');
@@ -924,6 +945,9 @@ select 'fdv-restore-audience:' || household_id || '=' || was from pg_temp.fdv_re
  where was <> 'owners_and_self' order by household_id;
 select 'fdv-restore-emergency:' || household_id || '=' || n from pg_temp.fdv_restore_emergency
  order by household_id;`;
+
+/** What a restore ends again, in the load's own transaction: for the tests, which try it and roll it back. */
+export const RESTORE_UNDO = UNDO;
 
 /** Refuses, inside the load's transaction, a backup this release cannot run. */
 function versionGuard(known: number): string {
@@ -1241,6 +1265,33 @@ const GUARDS = [
     table: 'account_household',
     fn: 'upload_devices_leave_with_role',
   },
+  // A connected app (0109, APP1): whom it acts as never changes, only an
+  // owner changes what it may do, and a revoked one never changes again;
+  // two live keys at most, a retired one never back, and its keys retired
+  // with it; what became of what it sent followed from the Inbox; and its
+  // apps revoked as its person's sign-in goes or their role cannot act.
+  { name: 'connected_app_writes', table: 'connected_app', fn: 'connected_app_writes' },
+  { name: 'connected_app_revoked', table: 'connected_app', fn: 'connected_app_revoked' },
+  {
+    name: 'connected_app_key_writes',
+    table: 'connected_app_key',
+    fn: 'connected_app_key_writes',
+  },
+  {
+    name: 'connected_app_intake_follows',
+    table: 'incoming_file',
+    fn: 'connected_app_intake_follows',
+  },
+  {
+    name: 'connected_app_intake_follows_state',
+    table: 'incoming_file',
+    fn: 'connected_app_intake_follows',
+  },
+  {
+    name: 'connected_apps_leave_with_role',
+    table: 'account_household',
+    fn: 'connected_apps_leave_with_role',
+  },
   // A Reading check: an owner only cancels one (0074, R0); and an accepted
   // incoming file says which version was filed through review.
   {
@@ -1429,6 +1480,23 @@ const UNIQUE_INDEXES = [
     table: 'intake_batch',
     what: 'one batch a computer a day',
   },
+  // A connected app (0109, APP1): one batch an app a day and part; an
+  // external id once an app; a live key one app's.
+  {
+    name: 'intake_batch_app_day_key',
+    table: 'intake_batch',
+    what: 'one batch a connected app a day and part',
+  },
+  {
+    name: 'connected_app_intake_one',
+    table: 'connected_app_intake',
+    what: 'what a connected app sent, once an external id',
+  },
+  {
+    name: 'connected_app_key_live_idx',
+    table: 'connected_app_key',
+    what: 'a live key, one connected app’s',
+  },
   // One Reading check waiting or running a household (0074, R0).
   {
     name: 'reading_check_one_running',
@@ -1504,6 +1572,47 @@ const REQUIRED_CHECKS = [
     name: 'incoming_file_request_removed',
     table: 'incoming_file',
     what: 'a filed file let go of a removed request, and only a filed one',
+  },
+  // What a connected app may do is from the list, and a key is 32 bytes (0109, APP1).
+  {
+    name: 'connected_app_scopes',
+    table: 'connected_app',
+    what: 'what a connected app may do, from the list',
+  },
+  {
+    name: 'connected_app_key_length',
+    table: 'connected_app_key',
+    what: 'a connected app’s key, 32 bytes',
+  },
+  {
+    name: 'connected_app_key_owner_confirmed',
+    table: 'connected_app_key',
+    what: 'an owner’s key confirmed as it is added',
+  },
+  {
+    name: 'connected_app_visibility',
+    table: 'connected_app',
+    what: 'who sees what a connected app sends, from the list',
+  },
+  {
+    name: 'connected_app_intake_external_id',
+    table: 'connected_app_intake',
+    what: 'an app’s id for what it sent, plain letters and digits',
+  },
+  {
+    name: 'connected_app_intake_state',
+    table: 'connected_app_intake',
+    what: 'what became of what an app sent, from the list',
+  },
+  {
+    name: 'connected_app_intake_refusal',
+    table: 'connected_app_intake',
+    what: 'why what an app sent was refused, from the list',
+  },
+  {
+    name: 'intake_batch_app_day',
+    table: 'intake_batch',
+    what: 'an app’s batch naming its app, day and part together',
   },
 ];
 
@@ -1681,6 +1790,13 @@ const ACTOR_GUARDED = [
   // Somebody's emergency information (0102, H4): theirs, the owners', its
   // audience's, a live caregiver's, and its one live clinician's link's.
   'member_emergency',
+  // Connected apps, their keys, their nonces and what they sent (0109,
+  // APP1): the owners' and the person's each acts as; the nonces and what
+  // was sent, the vault's and that person's alone.
+  'connected_app',
+  'connected_app_key',
+  'connected_app_nonce',
+  'connected_app_intake',
 ];
 
 /**
@@ -1800,6 +1916,11 @@ const MAKER_ONLY = [
   // Somebody's emergency information (0102, H4): theirs, and whoever they
   // or the owners let see it.
   { table: 'member_emergency', where: 'true', what: "a person's emergency information" },
+  // A connected app, its keys, and what it sent (0109, APP1): the owners'
+  // and its person's.
+  { table: 'connected_app', where: 'true', what: 'a connected app' },
+  { table: 'connected_app_key', where: 'true', what: "a connected app's key" },
+  { table: 'connected_app_intake', where: 'true', what: 'what a connected app sent' },
 ];
 
 /**
@@ -1831,6 +1952,10 @@ const NOT_EVEN_OWNERS = [
   { table: 'cabinet_pin', what: "a pin of somebody's" },
   // What somebody made under a key (0100): which document, and when.
   { table: 'create_idempotency', what: "somebody's key for a create" },
+  // What a connected app sent into somebody's Inbox, by its external ids,
+  // and the nonces it signed with (0109, APP1): the person's and the vault's.
+  { table: 'connected_app_intake', what: 'what a connected app sent' },
+  { table: 'connected_app_nonce', what: "a connected app's nonces" },
 ];
 
 /**
@@ -2046,6 +2171,33 @@ const REQUIRED_RULES = [
     name: 'intake_batch_device_insert',
     cmd: 'a',
     what: 'which computer a day’s batch names',
+  },
+  // A connected app (0109, APP1): connected by an owner as themselves, its
+  // keys added by an owner or the vault, never removed but by the vault;
+  // and a day's batch naming only a live app of its own member.
+  {
+    table: 'connected_app',
+    name: 'connected_app_actor_insert',
+    cmd: 'a',
+    what: 'who connects an app',
+  },
+  {
+    table: 'connected_app',
+    name: 'connected_app_actor_delete',
+    cmd: 'd',
+    what: 'who removes a connected app',
+  },
+  {
+    table: 'connected_app_key',
+    name: 'connected_app_key_actor_insert',
+    cmd: 'a',
+    what: 'who adds a key to a connected app',
+  },
+  {
+    table: 'intake_batch',
+    name: 'intake_batch_app_insert',
+    cmd: 'a',
+    what: 'which connected app a day’s batch names',
   },
   // A person's Only me identity details are theirs alone, whoever asks (0050, A33).
   {

@@ -1,4 +1,5 @@
 import { COMPUTERS_STOPPED, stopDevicesOf } from '../devices/service.js';
+import { stopAppsOf } from '../apps/service.js';
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   RESET_LINK_MINUTES,
@@ -259,6 +260,14 @@ export class OwnerResetService {
         phones = await endDevices(trx, { accountId: target.account_id });
         // And every computer of theirs that sends scans (0.8.0, D1, F2).
         computers = await stopDevicesOf(
+          trx,
+          { householdId: p.householdId, actorAccountId: p.accountId },
+          target.account_id,
+          'owner_stopped',
+          meta,
+        );
+        // And every app acting as them (0.9.0, APP1).
+        await stopAppsOf(
           trx,
           { householdId: p.householdId, actorAccountId: p.accountId },
           target.account_id,

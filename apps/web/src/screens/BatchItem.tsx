@@ -30,7 +30,7 @@ import { PageViewer } from '../page-viewer.js';
 import { storedRole } from '../session.js';
 import { ConfirmDialog, ErrorNote, TopBar } from '../ui.js';
 import { detailInputs } from '../details.js';
-import { captureDetails, ConfirmForm, startingOwner } from './AddConfirm.js';
+import { captureDetails, ConfirmForm, HOUSEHOLD_OWNER, startingOwner } from './AddConfirm.js';
 import {
   addable,
   batchLabel,
@@ -410,9 +410,14 @@ export function BatchItemScreen() {
       : p
         ? (p.owner_member_id?.value ?? (d.visibility === 'private' ? (me?.id ?? '') : ''))
         : (d.owner_member_id ?? (d.visibility === 'private' ? (me?.id ?? '') : ''));
-  // Nobody said, of a kind that is usually the household's: the household's (0.9.0).
+  // Nobody said, of a kind that is usually the household's: the household's
+  // (0.9.0) — as is one the connected app that sent it said is (APP1).
   const owner =
-    person === '' ? startingOwner(type, '', caps?.features.household_owner === true) : person;
+    person === ''
+      ? p?.household === true && caps?.features.household_owner === true
+        ? HOUSEHOLD_OWNER
+        : startingOwner(type, '', caps?.features.household_owner === true)
+      : person;
   const startVisibility = (t: DocumentTypeView | undefined, o: string) => {
     // Somebody else's, chosen on the card, from a batch made Only me: Only
     // me is not for them, so the narrowest left, shown before accepting.
@@ -425,10 +430,15 @@ export function BatchItemScreen() {
   // An expiry read for a kind that keeps it as a date of its own — a bill's
   // Due date (0.9.0) — starts that date, as Accept all Ready files it.
   const into = expiryReadInto(type);
-  const dated =
-    into && into !== 'expires' && p?.expires
-      ? detailInputs({ [into]: p.expires.value }, type?.fields ?? [])
-      : {};
+  // And the kind's own fields the connected app gave (APP1), as an untouched
+  // Accept files them.
+  const given: Record<string, unknown> = {};
+  for (const f of type?.fields ?? []) {
+    const v = p?.extra?.[f.key];
+    if (v) given[f.key] = v.value;
+  }
+  if (into && into !== 'expires' && p?.expires) given[into] = p.expires.value;
+  const dated = detailInputs(given, type?.fields ?? []);
   const dup = item.duplicate ? dupWords(item) : null;
   // Probably the same paper, or its renewal (S1): documents of theirs to add it to, best first.
   const renewals =
@@ -638,9 +648,22 @@ export function BatchItemScreen() {
               item.folder
                 ? {
                     path: item.folder,
-                    ticked: (p?.tags ?? []).filter((t) => t.ticked).map((t) => t.value),
+                    ticked: (p?.tags ?? [])
+                      .filter((t) => t.from !== 'app' && t.ticked)
+                      .map((t) => t.value),
                     offered: (p?.tags ?? [])
-                      .filter((t) => !t.ticked)
+                      .filter((t) => t.from !== 'app' && !t.ticked)
+                      .map((t) => ({ value: t.value, existing: t.existing })),
+                  }
+                : null
+            }
+            // The connected app that sent it (APP1): its marks say so, and its tags are offered.
+            app={
+              p?.app_name
+                ? {
+                    name: p.app_name,
+                    offered: (p.tags ?? [])
+                      .filter((t) => t.from === 'app')
                       .map((t) => ({ value: t.value, existing: t.existing })),
                   }
                 : null

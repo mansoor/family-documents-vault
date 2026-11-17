@@ -12,7 +12,8 @@ import { Splitter, useKeptWidth, type WidthBounds } from './splitter.js';
  * many at the top, some nested):
  *
  *  - You: Your account, Notifications, Appearance (light, dark or Auto,
- *    on this browser, for everybody: 0.9.0), Your computers, Your data.
+ *    on this browser, for everybody: 0.9.0), Your computers, Connected apps
+ *    (0.9.0, APP1), Your data.
  *  - Household: Privacy (neutral wording in notifications and email since
  *    H2), Time zone, Kinds of document, Tags — an owner
  *    changes them; everybody else reads what is theirs, as before.
@@ -40,6 +41,7 @@ export type SectionKey =
   | 'notifications'
   | 'appearance'
   | 'computers'
+  | 'apps'
   | 'data'
   | 'privacy'
   | 'timezone'
@@ -135,6 +137,13 @@ export const readsOnlyMeRule = (role: Role) => can(role, 'document.share');
 export const endedSharingCard = (role: Role, caps: Capabilities | null): boolean =>
   caps?.features.ended_sharing === true && can(role, 'document.share');
 
+/**
+ * Connected apps (0.9.0, APP1): owners, who connect them, and adults, who
+ * see the ones acting as them.
+ */
+export const seesConnectedApps = (role: Role, caps: Capabilities | null): boolean =>
+  caps?.features.connected_apps === true && (role === 'owner' || role === 'adult');
+
 /** This reader's groups, in order, each with their sections in it; none left empty. */
 export function settingsGroups(
   role: Role,
@@ -182,6 +191,18 @@ export function settingsGroups(
         '/settings/computers',
         'Your computers',
         owner ? 'Send scans from a computer; the family’s computers' : 'Send scans from a computer',
+      ),
+    );
+  }
+  // Apps that send documents into somebody's Inbox (0.9.0, APP1): an
+  // owner's to connect; an adult sees the ones acting as them.
+  if (seesConnectedApps(role, caps)) {
+    you.push(
+      section(
+        'apps',
+        '/settings/connected-apps',
+        'Connected apps',
+        owner ? 'Apps that send documents into someone’s Inbox' : 'Apps that send documents to you',
       ),
     );
   }
@@ -465,6 +486,13 @@ const DRAWN: Record<SectionKey, ReactNode> = {
     <>
       <rect x="3.5" y="4.5" width="17" height="11.5" rx="1.5" />
       <path d="M9 20h6M12 16v4" />
+    </>
+  ),
+  // Two links of a chain: an app joined to the vault.
+  apps: (
+    <>
+      <path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1" />
+      <path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1" />
     </>
   ),
   data: (

@@ -1558,6 +1558,7 @@ describe('every address Settings had still works (R1)', () => {
     ['/settings/appearance', '/settings/appearance', 'Appearance'],
     // Refused without the feature, as before; the address stays.
     ['/settings/computers', '/settings/computers', 'Your computers'],
+    ['/settings/connected-apps', '/settings/connected-apps', 'Connected apps'],
     ['/settings/data', '/settings/data', 'Your data'],
     ['/settings/privacy', '/settings/privacy', 'Privacy'],
     ['/settings/household', '/settings/privacy', 'Privacy'],

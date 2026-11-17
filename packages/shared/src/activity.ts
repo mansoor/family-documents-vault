@@ -19,6 +19,7 @@
  */
 
 import { SENSITIVE_IN_WORDS } from './sensitive.js';
+import { APP_REFUSAL_SHORT } from './apps.js';
 import {
   ENDED_SHARING_DAYS,
   endedSharingSpan,
@@ -166,6 +167,10 @@ export function activityKind(action: string): ActivityKind {
     case 'credential':
     case 'computer':
       return 'sign_in';
+    // A connected app (APP1): what it sends is added; managing it is
+    // people and access.
+    case 'app':
+      return action === 'app.sent' || action === 'app.withdrawn' ? 'added' : 'people';
     default:
       return 'vault';
   }
@@ -728,6 +733,87 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
           return line(`${who} removed their ${it}`, true);
       }
     }
+    // A connected app (0.9.0, APP1): connected, turned on, changed,
+    // its keys, paused, removed; and what it did, as the person it acts as
+    // "via" the app. To the owners, that person and whoever did it. Never a
+    // document's name, an amount or anything it sent.
+    case 'app.sent':
+      return line(`${who} via ${appOf(detail)} sent a file to their Inbox`);
+    case 'app.withdrawn':
+      return line(`${who} via ${appOf(detail)} took back a file it sent to their Inbox`);
+    case 'app.checked':
+      return line(`${who} via ${appOf(detail)} checked on files it sent`);
+    case 'app.connected':
+      return line(
+        isOwn(e)
+          ? `${who} connected ${appOf(detail)}, acting as themselves`
+          : `${who} connected ${appOf(detail)}, acting as ${personOf(e)}`,
+        true,
+      );
+    case 'app.approved':
+      return line(`${who} turned on ${appOf(detail)}, which acts as them`, true);
+    case 'app.changed':
+      return detail.approval === 'asked_again'
+        ? line(
+            `${who} changed what ${appOf(detail)} may do, so ${personOf(e)} must turn it on again`,
+            true,
+          )
+        : line(`${who} changed what ${appOf(detail)} may do`);
+    case 'app.key_confirmed':
+      return line(`${who} confirmed a new key of ${appOf(detail)}`, true);
+    case 'app.key_added':
+      return detail.by === 'app'
+        ? line(`${who} via ${appOf(detail)} added a new key to ${appOf(detail)}`, true)
+        : line(`${who} added a new key to ${appOf(detail)}`, true);
+    case 'app.key_retired':
+      return detail.by === 'app'
+        ? line(`${who} via ${appOf(detail)} retired an old key of ${appOf(detail)}`)
+        : line(`${who} retired a key of ${appOf(detail)}`);
+    case 'app.paused':
+      return line(`${who} paused ${appOf(detail)}`, true);
+    case 'app.resumed':
+      return line(
+        detail.after === 'restored'
+          ? `${who} turned ${appOf(detail)} back on after the restore`
+          : `${who} turned ${appOf(detail)} back on`,
+        true,
+      );
+    case 'app.revoked': {
+      const app = appOf(detail);
+      switch (detail.reason) {
+        case 'sign_in_removed':
+          return line(
+            `${who} took ${possessive(personOf(e))} sign-in away, so ${app} can no longer act as them`,
+            true,
+          );
+        case 'cannot_act':
+          return isOwn(e)
+            ? line(`${who} stepped down, so ${app} can no longer act as them`, true)
+            : line(
+                `${who} changed ${possessive(personOf(e))} role, so ${app} can no longer act as them`,
+                true,
+              );
+        case 'signed_out':
+          return isOwn(e)
+            ? line(`${who} signed out everywhere, so ${app} was removed`, true)
+            : line(`${who} signed ${personOf(e)} out everywhere, so ${app} was removed`, true);
+        case 'owner_stopped':
+          return line(
+            `${who} stopped ${possessive(personOf(e))} password, so ${app} was removed`,
+            true,
+          );
+        default:
+          return line(`${who} removed ${app}`, true);
+      }
+    }
+    case 'app.refused_today': {
+      const why = APP_REFUSAL_SHORT[text(detail.code)];
+      return line(
+        `Requests from ${appOf(detail)} were refused today${why ? ` (${why})` : ''}`,
+        true,
+        UNNAMED,
+      );
+    }
     // What a viewer can see, limited by an owner (5.33): to the owners, the
     // person and whoever did it. Never what it gives — whose, which kinds,
     // which collections — only that it was made, changed or taken off.
@@ -1204,6 +1290,12 @@ function capitalise(s: string): string {
 /** A detail field as a string, or empty: never "[object Object]". */
 function text(v: unknown): string {
   return typeof v === 'string' ? v : '';
+}
+
+/** A connected app, by the name it had when the line was written (APP1). */
+function appOf(detail: Record<string, unknown>): string {
+  const name = text(detail.app);
+  return name || 'a connected app';
 }
 
 function nameOf(detail: Record<string, unknown>, key: string): string {

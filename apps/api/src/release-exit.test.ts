@@ -121,6 +121,8 @@ const ATTORNEY_CHECKLIST = 'ATTORNEY-CHECKLIST-541 papers for probate';
 
 /** Ahmed's computer (0.8.0, D1): his, and the owners' to see by name; nobody else's. */
 const AHMED_COMPUTER = 'ahmed-computer-541';
+/** An app acting as Ahmed (0.9.0, APP1): his, and the owners'; nobody else's, not even its name. */
+const AHMED_APP = 'ahmed-app-541';
 const BATCH_TAG = 'ahmed-batch-tag-541';
 
 /**
@@ -180,7 +182,13 @@ type Who =
    * attacker holds one, so every one is told to sign in (401), a sign-in
    * as much as a cookie.
    */
-  | 'device';
+  | 'device'
+  /**
+   * A connected app, by its signature (0.9.0, APP1), and nobody else: no
+   * attacker holds its key, so every one is told to sign the request (401
+   * app_signature_required), a sign-in, a computer's key and a cookie alike.
+   */
+  | 'app';
 
 /** The attackers. */
 type Attacker =
@@ -232,6 +240,11 @@ type Kind =
   | 'watchNotice'
   /** A computer that sends scans (0.8.0, D1): its person's, and an owner's to revoke. */
   | 'pairedDevice'
+  /** A connected app (0.9.0, APP1): the owners', and its person's; and one of its keys. */
+  | 'connectedApp'
+  | 'appKey'
+  /** Not an object of anybody's: an app's own id for what it sent, on its signed routes. */
+  | 'externalId'
   /** Not a parameter: another person's code to confirm their address for email in (S4), sent in a body. */
   | 'mailInCode'
   /** A Reading check (0.9.0, R0): the household's owners', its misses its asker's alone. */
@@ -292,6 +305,12 @@ const PARAM_KINDS: Record<string, Kind> = {
   'items/:itemId': 'batchItem',
   'notices/:id': 'watchNotice',
   'paired-devices/:id': 'pairedDevice',
+  // A connected app, and one of its keys, in Settings (0.9.0, APP1).
+  'connected-apps/:id': 'connectedApp',
+  'keys/:keyId': 'appKey',
+  // And on its own signed routes: what it sent, and its own keys.
+  'intake/:external_id': 'externalId',
+  'keys/:key_id': 'appKey',
   'reading-checks/:id': 'readingCheck',
   'settings-checks/:id': 'settingsCheck',
   // A folder of the caller's own cabinet, and a paper pinned in it (0.9.0, C2).
@@ -327,6 +346,8 @@ const OBJECT_KINDS: ReadonlySet<Kind> = new Set<Kind>([
   'pairedDevice',
   'readingCheck',
   'settingsCheck',
+  'connectedApp',
+  'appKey',
 ]);
 
 interface Rule {
@@ -1377,6 +1398,55 @@ const RULES: Record<string, Rule> = {
   },
   'GET /api/v1/devices/me': { who: 'device' },
   'POST /api/v1/device-uploads': { who: 'device', file: 'pdf' },
+  // Connected apps (0.9.0, APP1): the app's own routes, which take its
+  // signature and nothing else; and Settings → Connected apps — each owner
+  // sees every app, its person theirs, anybody else none; connecting,
+  // widening, resuming and keys are an owner's with a passkey or a code;
+  // its person alone turns it on; an owner pauses or removes any, its
+  // person theirs.
+  'GET /api/v1/apps/me': { who: 'app' },
+  'POST /api/v1/apps/intake': { who: 'app', file: 'pdf' },
+  'GET /api/v1/apps/intake': { who: 'app', query: () => 'external_ids=a,b' },
+  'GET /api/v1/apps/intake/:external_id': { who: 'app' },
+  'DELETE /api/v1/apps/intake/:external_id': { who: 'app' },
+  'POST /api/v1/apps/keys': { who: 'app', body: () => ({ public_key: 'ed25519:x' }) },
+  'DELETE /api/v1/apps/keys/:key_id': { who: 'app' },
+  'GET /api/v1/connected-apps': { who: 'signedIn' },
+  'POST /api/v1/connected-apps': {
+    who: 'ownerPower',
+    body: (f) => ({
+      name: 'Attacker app',
+      member_id: f.member,
+      public_key: 'ed25519:JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs',
+      allowed_kinds: ['passport'],
+    }),
+  },
+  'PATCH /api/v1/connected-apps/:id': {
+    who: 'ownerPower',
+    body: () => ({ allowed_kinds: ['passport'], daily_files: 1000 }),
+  },
+  'POST /api/v1/connected-apps/:id/approve': { who: 'adults' },
+  'POST /api/v1/connected-apps/:id/pause': {
+    who: 'owners',
+    theirs: { passwordOnlyOwner: 'an owner may pause any app in the household (APP1)' },
+  },
+  'POST /api/v1/connected-apps/:id/resume': { who: 'ownerPower' },
+  'POST /api/v1/connected-apps/:id/keys': {
+    who: 'ownerPower',
+    body: () => ({ public_key: 'ed25519:JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs' }),
+  },
+  // A key the app added itself, confirmed by an owner or its person, with
+  // a passkey or a code: nobody else's to confirm.
+  'POST /api/v1/connected-apps/:id/keys/:keyId/confirm': { who: 'adults' },
+  'DELETE /api/v1/connected-apps/:id/keys/:keyId': {
+    who: 'owners',
+    theirs: { passwordOnlyOwner: 'an owner may retire a key of any app (its last is kept: 409)' },
+  },
+  'DELETE /api/v1/connected-apps/:id': {
+    who: 'adults',
+    last: true,
+    theirs: { passwordOnlyOwner: 'an owner may remove any app in the household (APP1)' },
+  },
   'GET /api/v1/paired-devices': { who: 'family' },
   'DELETE /api/v1/paired-devices/:id': {
     who: 'family',
@@ -1881,6 +1951,22 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
         computer.device_id,
       ])
     ).rows[0]?.id as string;
+    // An app acting as Ahmed (0.9.0, APP1), connected by Olivia with a code,
+    // waiting for him to turn it on: his and the owners', nobody else's.
+    await h.decider(olivia);
+    const app = json<{ id: string; keys: Array<{ key_id: string }> }>(
+      await ok(
+        send(olivia, 'POST', '/api/v1/connected-apps', {
+          name: AHMED_APP,
+          member_id: ahmed.member_id,
+          public_key: `ed25519:${Buffer.alloc(32, 7).toString('base64url')}`,
+          allowed_kinds: ['bank_statement'],
+        }),
+        201,
+      ),
+    );
+    ids.connectedApp = app.id;
+    ids.appKey = app.keys[0]?.key_id as string;
     const batchForm = new FormData();
     // The folder it came from (0.8.0, S2): his alone, sealed.
     batchForm.append('relative_path', 'AHMED-FOLDER-541/Passports/ahmed-batch-file-541.pdf');
@@ -4134,7 +4220,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     /** The attorney's collection's checklist: never a viewer's, a guest's, a link's or a sender's (C1). */
     const checklists = [ATTORNEY_CHECKLIST];
     /** His computer's name: his, and the owners' (who see the household's computers by name). */
-    const computer = [AHMED_COMPUTER];
+    const computer = [AHMED_COMPUTER, AHMED_APP];
     const outsideGrant = [
       ...secretsOf('will', 'deed', 'carInsurance'),
       ids.attorney as string,
@@ -4167,6 +4253,8 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       batchItem: [ids.batchItem as string],
       watchNotice: [ids.watchNotice as string],
       pairedDevice: [ids.pairedDevice as string],
+      connectedApp: [ids.connectedApp as string],
+      appKey: [ids.appKey as string],
       mailInCode: [ids.mailInCode as string],
       readingCheck: [ids.readingCheck as string],
       settingsCheck: [ids.settingsCheck as string],
@@ -4385,6 +4473,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       case 'drop':
         return a.name === 'uploadSender' ? (objectParam ? 'refused' : 'answered') : 'refused';
       case 'device':
+      case 'app':
         return 'unauthenticated';
       default:
         if (!a.tokens || a.stale) return 'unauthenticated';
@@ -4423,7 +4512,7 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
     // sign-in: the sweep ended its session, and the route was not tried. (A
     // wrong password or passkey is 401 too, and is a refusal.)
     const signedIn = a.tokens !== null && !a.stale;
-    const sessionRoute = !['public', 'link', 'drop', 'device'].includes(rule.who);
+    const sessionRoute = !['public', 'link', 'drop', 'device', 'app'].includes(rule.who);
     if (s >= 500) r.problem = 'a server error';
     else if (s === 429) r.problem = 'rate limited: the route was not tried';
     else if (leaks.length > 0) r.problem = `leaks ${leaks.join(', ')}`;
@@ -4562,6 +4651,9 @@ const PARAM_KIND_DEFAULTS: Record<Kind, true> = {
   batchItem: true,
   watchNotice: true,
   pairedDevice: true,
+  connectedApp: true,
+  appKey: true,
+  externalId: true,
   mailInCode: true,
   readingCheck: true,
   settingsCheck: true,

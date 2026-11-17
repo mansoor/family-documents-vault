@@ -43,6 +43,9 @@ const SECRET_SEGMENT = new RegExp(
       `/api/v1/drop/${kept('preview|code|unlock|session|files|finish')}`,
       // A ZIP's download ticket (0.9.0, DL): single-use and a minute long, but a key still.
       '/api/v1/downloads/',
+      // A connected app's external id (0.9.0, APP1): its own id for a paper
+      // of somebody's, opaque but theirs, and kept out of every log.
+      '/api/v1/apps/intake/',
       // The pages a browser opens from links made before 0.5.14 (a share's)
       // and 0.5.17 (a reset's, an invitation's); and a request's page with
       // something after it that it never has (5.21).

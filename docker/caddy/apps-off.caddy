@@ -1,0 +1,14 @@
+# Connected apps on the public-only site (0.9.0, APP1): FDV_PUBLIC_APPS=off,
+# the default. Nothing is added: the site serves only the pages a link opens.
+# See apps-on.caddy.
+#
+# A path whose raw form hides a slash, a backslash or a dot (%2f, %5c,
+# %2e) or holds a segment starting with a dot is answered 404 before
+# anything else: a matcher reads the path cleaned, and what is passed on is
+# the raw one, which the vault or nginx could read otherwise.
+
+@apps_bad_uri expression `{http.request.uri}.matches("^[^?]*(?i:%2f|%5c|%2e|/[.])")`
+
+handle @apps_bad_uri {
+	respond 404
+}

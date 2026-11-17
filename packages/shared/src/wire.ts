@@ -1515,6 +1515,9 @@ export const FACTOR_STEP_UPS: readonly string[] = [
   // Since 5.41: whether the household's Only me documents can be shared
   // outside the family (PUT /household/sharing) — an owner power too.
   'only_me_sharing',
+  // Since 0.9.0 (APP1): connecting an app, turning one on as its person, and
+  // changing what it may do or its keys.
+  'connect_app',
 ];
 
 /**

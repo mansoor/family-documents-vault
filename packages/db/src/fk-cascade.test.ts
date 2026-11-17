@@ -74,11 +74,21 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
         // A create's Idempotency-Key (0100, 0.9.0-dev.45): goes with what it
         // made; a later try under it makes a new one.
         'create_idempotency',
+        // What a connected app sent (0109, APP1): lets go of the id alone.
+        'connected_app_intake',
       ]),
     );
     // 'c': on delete cascade, every one — but a document no longer needed,
-    // replaced by this one, which stays: only the link goes ('n', set null).
-    expect(keys.filter((k) => k.on_delete !== 'c')).toEqual([
+    // replaced by this one, which stays: only the link goes ('n', set null);
+    // and what a connected app sent, which keeps it from being filed twice.
+    expect(
+      keys.filter((k) => k.on_delete !== 'c').sort((a, b) => a.name.localeCompare(b.name)),
+    ).toEqual([
+      {
+        name: 'connected_app_intake_document_id_household_id_fkey',
+        from_table: 'connected_app_intake',
+        on_delete: 'n',
+      },
       { name: 'document_replaced_by_fkey', from_table: 'document', on_delete: 'n' },
     ]);
   });
@@ -107,7 +117,15 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
                and a.attnum = any(k.conkey))
         order by 1`,
     );
-    expect(rows.map((r) => r.table_name)).toEqual([]);
+    // What a connected app sent outlives what it became (0.9.0, APP1): it
+    // keeps a send from being filed twice. Its key lets go of the id alone.
+    expect(rows.map((r) => r.table_name)).toEqual(['connected_app_intake']);
+    const intake = await admin.query<{ on_delete: string }>(
+      `select confdeltype as on_delete from pg_constraint
+        where conrelid = 'public.connected_app_intake'::regclass
+          and contype = 'f' and confrelid = 'public.document'::regclass`,
+    );
+    expect(intake.rows).toEqual([{ on_delete: 'n' }]);
     // The tombstone names its document by its own id, and no key: it is
     // what is left once the document is not.
     const tombstone = await admin.query(

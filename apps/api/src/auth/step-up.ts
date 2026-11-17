@@ -53,7 +53,8 @@ export type StepUpAction =
   | 'send_sensitive_papers'
   | 'neutral_wording'
   | 'share_emergency'
-  | 'download_sensitive';
+  | 'download_sensitive'
+  | 'connect_app';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -159,6 +160,10 @@ const WHY: Record<StepUpAction, string> = {
   // picked up from an unlocked device could otherwise carry off a whole
   // collection of the family's sensitive papers in one click.
   download_sensitive: 'to download sensitive documents',
+  // Connecting an app, turning one on, or changing what it may do (0.9.0,
+  // APP1): an app that sends papers into somebody's Inbox, as them, is an
+  // owner power — a passkey or a code, never the password alone.
+  connect_app: 'to connect an app, or change what it may do',
 };
 
 /**

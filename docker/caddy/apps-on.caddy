@@ -1,0 +1,31 @@
+# Connected apps on the public-only site (0.9.0, APP1): FDV_PUBLIC_APPS=on.
+#
+# docker-compose.tls.yml mounts this file, or apps-off.caddy, as
+# /etc/caddy/apps.caddy, which Caddyfile.public-only imports. With it the
+# site also serves the connected apps' routes, which an app on the internet
+# signs every request to (anything not signed by a connected app's key is
+# refused by the vault), and the capability document the app reads first.
+# Nothing else is added. Files an app sends are the vault's to limit, as a
+# sender's are. The vault is told the request came this way (X-FDV-Site),
+# whatever the caller wrote, and leaves the family's name out of the
+# capability document it answers here.
+#
+# A path whose raw form hides a slash, a backslash or a dot (%2f, %5c,
+# %2e) or holds a segment starting with a dot is answered 404 before
+# anything else: a matcher reads the path cleaned, and what is passed on is
+# the raw one, which the vault or nginx could read otherwise.
+
+@apps_bad_uri expression `{http.request.uri}.matches("^[^?]*(?i:%2f|%5c|%2e|/[.])")`
+
+handle @apps_bad_uri {
+	respond 404
+}
+
+@apps_api path /api/v1/apps/* /api/v1/capabilities
+
+handle @apps_api {
+	reverse_proxy api:3000 {
+		header_up X-FDV-Site public
+		flush_interval -1
+	}
+}
