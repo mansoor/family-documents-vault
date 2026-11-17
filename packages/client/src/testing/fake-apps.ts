@@ -19,6 +19,7 @@ import {
   parseAppMetadata,
   type AppChange,
   type AppDocument,
+  type AppHints,
   type AppIntakeState,
   type AppKeyView,
   type AppMe,
@@ -51,6 +52,11 @@ import type { FetchLike, ResponseLike } from '../http.js';
  * one page is a few bytes, as the fake draws nothing. Addresses are the
  * real vault's to test. A delete of its own document: let go of, or moved
  * to the Trash, as the owner chose.
+ *
+ * Filing automatically (APP4): an owner's switch, and its backfill's for
+ * the window alone. The fake reads no pages: a test says what a file's
+ * pages read (`readAppFile` on the fake vault), and the fake files it by
+ * the vault's own rule (`appFilesItself`), or leaves it waiting.
  */
 
 /** A document of the fake's, as an app's reading needs it. */
@@ -99,6 +105,11 @@ export interface FakeIntake {
   received_at: string | null;
   /** Let go of by the app (APP3): no longer its own. */
   unlinked?: boolean;
+  /** What it said of the file, and the file, while it waits (APP4: the fake files it so). */
+  hints?: AppHints;
+  file?: { bytes: Uint8Array; filename: string; mime: string };
+  /** Taken back by an Undo once filed (APP4): never filed automatically again. */
+  auto_file_held?: boolean;
 }
 
 /** A link an app minted (APP3), and its session once opened. */
@@ -151,6 +162,28 @@ export interface FakeApp {
   delete_mode?: 'unlink' | 'trash';
   links_per_hour?: number;
   links?: FakeAppLink[];
+  /** Filed automatically when sure and complete (APP4), and a backfill's window (with its own switch). */
+  auto_file?: boolean;
+  backfill?: {
+    until: string;
+    files_per_day: number;
+    bytes_per_day: number;
+    auto_file: boolean;
+  } | null;
+}
+
+/** A backfill's window, while it lasts. */
+const liveBackfill = (a: FakeApp, now = Date.now()) =>
+  a.backfill && Date.parse(a.backfill.until) > now ? a.backfill : null;
+
+/**
+ * Whether an app files what it sends automatically now (APP4): on, turned
+ * on, not paused or removed, sending, and its switch on — or its backfill's.
+ */
+export function fakeAppFilesAutomatically(a: FakeApp, now = Date.now()): boolean {
+  if (a.revoked || a.paused || a.approval !== 'approved') return false;
+  if (!(a.scopes ?? APP_SCOPES_DEFAULT).includes('documents.send')) return false;
+  return a.auto_file === true || liveBackfill(a, now)?.auto_file === true;
 }
 
 export interface FakeAppDeps {
@@ -252,10 +285,10 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       scopes: [...(a.scopes ?? APP_SCOPES_DEFAULT)],
       allowed_kinds: a.allowed_kinds,
       default_visibility: a.default_visibility,
-      auto_file: false,
+      auto_file: a.auto_file === true,
       daily_files: a.daily_files,
       daily_bytes: a.daily_bytes,
-      backfill: null,
+      backfill: liveBackfill(a),
       ip_allow: [],
       keys,
       last_used_at: a.last_used_at,
@@ -377,6 +410,9 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       const links = linksOf(body);
       if ('fail' in links) return links.fail;
       Object.assign(a, links.set);
+      const auto = autoOf(body);
+      if ('fail' in auto) return auto.fail;
+      Object.assign(a, auto.set);
       d.apps.push(a);
       return d.ok(await view(a, who), 201);
     }
@@ -418,6 +454,15 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       const links = linksOf(body);
       if ('fail' in links) return links.fail;
       Object.assign(a, links.set);
+      const auto = autoOf(body);
+      if ('fail' in auto) return auto.fail;
+      // Filing automatically switched on (APP4) widens: an app acting as
+      // somebody else waits for them again, as the vault does.
+      const widened =
+        (auto.set.auto_file === true && a.auto_file !== true) ||
+        (auto.set.backfill?.auto_file === true && liveBackfill(a)?.auto_file !== true);
+      Object.assign(a, auto.set);
+      if (widened && a.member_id !== who.memberId) a.approval = 'waiting';
       return d.ok(await view(a, who));
     }
     if (what === '/grants' && method === 'PUT') {
@@ -480,6 +525,43 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       return d.ok(await view(a, who));
     }
     return null;
+  };
+
+  /** Filing automatically (APP4), and a backfill's window, as an owner sets them. */
+  const autoOf = (
+    body: Record<string, unknown>,
+  ): { set: Partial<FakeApp> } | { fail: ResponseLike } => {
+    const set: Partial<FakeApp> = {};
+    if (body.auto_file !== undefined) {
+      if (typeof body.auto_file !== 'boolean') {
+        return {
+          fail: d.fail(422, 'validation_failed', 'File automatically: on or off.', 'auto_file'),
+        };
+      }
+      set.auto_file = body.auto_file;
+    }
+    if (body.backfill === null) set.backfill = null;
+    else if (body.backfill !== undefined) {
+      const b = body.backfill as Record<string, unknown>;
+      const auto = b.auto_file ?? false;
+      if (typeof auto !== 'boolean') {
+        return {
+          fail: d.fail(
+            422,
+            'validation_failed',
+            'File automatically: on or off.',
+            'backfill.auto_file',
+          ),
+        };
+      }
+      set.backfill = {
+        until: String(b.until),
+        files_per_day: Number(b.files_per_day),
+        bytes_per_day: Number(b.bytes_per_day),
+        auto_file: auto,
+      };
+    }
+    return { set };
   };
 
   /** What a delete does, and links an hour (APP3), as an owner sets them. */
@@ -730,9 +812,13 @@ export function fakeAppRoutes(d: FakeAppDeps) {
   const app: (
     url: string,
     init: Parameters<FetchLike>[1],
-    parts: (
-      body: unknown,
-    ) => Array<{ name: string; value: string | null; bytes?: Uint8Array; type?: string }> | null,
+    parts: (body: unknown) => Array<{
+      name: string;
+      value: string | null;
+      bytes?: Uint8Array;
+      type?: string;
+      filename?: string;
+    }> | null,
   ) => Promise<ResponseLike | null> = async (url, init, parts) => {
     const target = url.replace(/^[a-z]+:\/\/[^/]+/i, '');
     const path = target.split('?')[0] as string;
@@ -1025,7 +1111,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
             expires: k.expiry_driver !== null,
           })),
           hints: [...APP_HINTS],
-          auto_file: false,
+          auto_file: a.auto_file === true,
         },
         read: {
           grants: [...(a.grants ?? [])]
@@ -1050,7 +1136,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
           day_resets_at: new Date(Date.now() + 864e5).toISOString(),
         },
         delete_mode: a.delete_mode ?? 'unlink',
-        backfill: null,
+        backfill: liveBackfill(a),
         keys: [],
       };
       return d.ok(said);
@@ -1125,6 +1211,13 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         sha256: sum,
         byte_size: bytes.length,
         received_at: new Date().toISOString(),
+        // Kept while it waits, for the fake to file it as the vault would (APP4).
+        hints,
+        file: {
+          bytes,
+          filename: file.filename ?? 'file',
+          mime: file.type ?? 'application/octet-stream',
+        },
       };
       a.intake.set(id, s);
       a.files_today += 1;

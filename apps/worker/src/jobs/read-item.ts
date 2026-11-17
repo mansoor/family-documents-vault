@@ -53,6 +53,7 @@ import {
 } from '../ai-send.js';
 import { detectTools, pdfLocked, type Tools } from './tools.js';
 import { WORD_MIME } from './word-text.js';
+import { appFilesAutomatically } from './apps.js';
 
 /**
  * The vault reads each item and suggests (Phase 6, I2): once an item's pages
@@ -183,6 +184,12 @@ export interface ReadOptions {
    * on the vault has gone on a day. The real one, unless a test sets it.
    */
   now?: () => Date;
+  /**
+   * An item a connected app sent, read, while the app files automatically
+   * (0.9.0, APP4): the API asked to file it (`apps.file_ready`), which it
+   * does only if it is sure and complete. Left out, nothing is asked.
+   */
+  fileReady?: (householdId: string, itemId: string) => Promise<void>;
 }
 
 /**
@@ -628,7 +635,7 @@ export async function readItem(
       numberHashOf(had.learned?.numberKey),
       had.ctx,
     );
-    await withSystem(deps.db, hh, (trx) =>
+    const wrote = await withSystem(deps.db, hh, (trx) =>
       ours(trx)
         .set({
           read_state: 'read',
@@ -653,8 +660,22 @@ export async function readItem(
             itemProposalsBinding(f.id),
           ),
         })
-        .execute(),
+        .executeTakeFirst(),
     );
+    // Sent by an app that files automatically (APP4): the API asked to file
+    // it, which it does only if everything is sure and complete. Not asked,
+    // or the asking failed: it waits for review, as it always did.
+    if (Number(wrote.numUpdatedRows) === 1 && opts.fileReady) {
+      const auto = await appFilesAutomatically(deps.db, hh, f.id, clock()).catch(() => false);
+      if (auto) {
+        await opts.fileReady(hh, f.id).catch((err: unknown) => {
+          deps.log('warn', 'could not ask for an app’s item to be filed', {
+            item: f.id,
+            err: (err as Error).message.slice(0, 200),
+          });
+        });
+      }
+    }
     deps.log('info', 'read a batch’s item', {
       item: f.id,
       // What was proposed, by field, never its value.

@@ -82,6 +82,11 @@ describe('the fake vault keeps the contract', () => {
       vault.fileAppIntake(app.id, externalId, made.document_id);
       return made.document_id;
     },
+    // What the pages of an app's file read (APP4): the fake files it, or
+    // leaves it waiting, by the vault's own rule.
+    readAppSend: async (app, externalId, _file, proposal) => {
+      await vault.readAppFile(app.id, externalId, proposal);
+    },
     // The fake's owners have two-step sign-in, and have just used it.
     ownerTwoStep: async () => {
       vault.state.ownerTwoStep = true;

@@ -116,6 +116,7 @@ import {
   isLearned,
   itemFolder,
   levelItem,
+  appFilesItself,
   RELATIVE_PATH_MAX,
   lessonIssuer,
   periodic,
@@ -353,7 +354,7 @@ import {
   type ChangedUploadRequest,
   type RevealedUploadRequest,
 } from '@fdv/shared';
-import { fakeAppRoutes, type FakeApp } from './fake-apps.js';
+import { fakeAppFilesAutomatically, fakeAppRoutes, type FakeApp } from './fake-apps.js';
 import type { FetchLike, ResponseLike } from '../http.js';
 import { storedZip } from './zip.js';
 
@@ -1545,6 +1546,18 @@ export function createFakeVault(): {
     documentId: string,
     asVersion?: boolean,
   ) => void;
+  /**
+   * What the pages of a file a connected app sent read (0.9.0, APP4), as
+   * the vault's worker would read them: the fake reads nothing itself. While
+   * the app files automatically, the fake files it, as the app's person,
+   * exactly when the vault would (`appFilesItself`); otherwise it waits, as
+   * it would for review. Answers which. A near match is not worked out here.
+   */
+  readAppFile: (
+    appId: string,
+    externalId: string,
+    proposal: DetailProposal,
+  ) => Promise<'filed' | 'waiting'>;
 } {
   const state: FakeVaultState = {
     setupRequired: true,
@@ -10014,7 +10027,114 @@ export function createFakeVault(): {
     sent.made_document = !asVersion;
   };
 
-  return { fetch, state, pauseSignIns, fileAppIntake };
+  const readAppFile = async (
+    appId: string,
+    externalId: string,
+    proposal: DetailProposal,
+  ): Promise<'filed' | 'waiting'> => {
+    const app = state.connectedApps?.find((a) => a.id === appId);
+    const sent = app?.intake.get(externalId);
+    if (!app || !sent) throw new Error('no such send of that app');
+    if (sent.state !== 'waiting' || sent.auto_file_held || !sent.file) return 'waiting';
+    if (!fakeAppFilesAutomatically(app)) return 'waiting';
+    const member = state.members.find((m) => m.id === app.member_id);
+    const role: Role | null =
+      member?.role === 'owner' || member?.role === 'adult' ? member.role : null;
+    if (!role) return 'waiting';
+    // The same file as a document here already: a duplicate.
+    const hex = async (b: Uint8Array) => {
+      const own = new Uint8Array(b.length);
+      own.set(b);
+      return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', own)), (x) =>
+        x.toString(16).padStart(2, '0'),
+      ).join('');
+    };
+    let duplicate: { of: 'document'; document_id: string; title: string | null } | null = null;
+    for (const c of state.captures.values()) {
+      const doc = state.documents.find((x) => x.id === c.document_id && !x.deleted_at);
+      if (doc && c.bytes && (await hex(c.bytes)) === sent.sha256) {
+        duplicate = { of: 'document', document_id: doc.id, title: doc.title };
+        break;
+      }
+    }
+    const people = state.members
+      .filter((m) => (m.kind ?? 'family') === 'family')
+      .map((m) => ({ id: m.id, name: m.display_name }));
+    const defaults: BatchDefaults = {
+      owner_member_id: null,
+      type_key: null,
+      visibility: app.default_visibility,
+      physical_location: null,
+      collection_id: null,
+      tags: [],
+      is_essential: false,
+    };
+    const input = {
+      state: 'waiting' as const,
+      reading: 'read' as const,
+      failure: null,
+      proposal,
+      duplicate,
+      defaults,
+      types: state.types,
+      people,
+      role,
+      me: app.member_id,
+      app: { name: app.name, allowed_kinds: app.allowed_kinds, hints: sent.hints ?? {} },
+    };
+    const levelled = levelItem(input);
+    if (!levelled.proposals || !appFilesItself(input, levelled)) return 'waiting';
+    const card = untouchedAccept({
+      proposals: levelled.proposals,
+      defaults,
+      types: state.types,
+      people: people.map((p) => ({ id: p.id, display_name: p.name })),
+      role,
+      me: app.member_id,
+    });
+    const kind = state.types.find((t) => t.key === card.type_key);
+    const doc: FakeDocument = {
+      id: next('document'),
+      title: card.title ?? null,
+      type_key: card.type_key ?? null,
+      ...whoseNew(card, kind),
+      ...ownSensitive(card),
+      identifier: tidy(card.identifier),
+      issued_by: tidy(card.issued_by),
+      issued: card.issued ?? null,
+      expires: card.expires ?? null,
+      physical_location: null,
+      is_essential: false,
+      tags: [],
+      notes: null,
+      extra: { ...card.extra },
+      visibility: card.visibility ?? 'household',
+      filed_by: app.member_id,
+    };
+    state.documents.push(doc);
+    const version: FakeUpload = {
+      kind: 'capture',
+      document_id: doc.id,
+      version_id: next('version'),
+      version_no: 1,
+      filename: sent.file.filename,
+      mime: sent.file.mime,
+      byte_size: sent.file.bytes.length,
+      uploaded_at: new Date().toISOString(),
+      bytes: sent.file.bytes,
+    };
+    state.captures.set(next('app-file'), version);
+    sent.state = 'filed';
+    sent.document_id = doc.id;
+    sent.version_id = version.version_id;
+    sent.filed_at = new Date().toISOString();
+    sent.made_document = true;
+    delete sent.hints;
+    delete sent.file;
+    return 'filed';
+  };
+
+  return { fetch, state, pauseSignIns, fileAppIntake, readAppFile };
 }
 
 /**

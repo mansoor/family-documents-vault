@@ -85,10 +85,12 @@ const createBody = z
         until: z.string().max(64),
         files_per_day: z.number().int(),
         bytes_per_day: z.number().int(),
+        auto_file: z.boolean().optional(),
       })
       .strict()
       .nullable()
       .optional(),
+    auto_file: z.boolean().optional(),
     scopes: z.array(z.string().max(64)).max(10).optional(),
     daily_read_bytes: z.number().int().optional(),
     delete_mode: z.enum(['unlink', 'trash']).optional(),

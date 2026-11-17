@@ -297,7 +297,7 @@ export interface ItemProposals {
   extra?: Record<string, ItemSuggestion<unknown>>;
   /** The app said it is the household's (APP1): filed as the household's, with nobody chosen. */
   household?: true;
-  /** The connected app that sent it, by its name now (APP1): "From MonTra". */
+  /** The connected app that sent it, by its name now (APP1): "From Acme Money". */
   app_name?: string;
 }
 
@@ -324,7 +324,10 @@ export type LevelKind = Pick<
   'key' | 'label' | 'default_visibility' | 'expiry_driver' | 'fields'
 > &
   Partial<
-    Pick<DocumentTypeView, 'core' | 'short_label' | 'belongs_to' | 'remind_from' | 'category'>
+    Pick<
+      DocumentTypeView,
+      'core' | 'short_label' | 'belongs_to' | 'remind_from' | 'category' | 'usually_essential'
+    >
   >;
 
 /**
@@ -958,9 +961,11 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
       words: `The pages and ${appName} give different ${what}`,
     });
   }
-  // A kind the app may not send, or never sends: held for a look.
+  // A kind the app may not send, or never sends: held for a look. A kind
+  // the household keeps as an Essential is never an app's to send, even one
+  // marked so after the app was allowed it (APP4).
   if (app && kind) {
-    if (APP_NEVER_CATEGORIES.includes(kind.category ?? '')) {
+    if (APP_NEVER_CATEGORIES.includes(kind.category ?? '') || kind.usually_essential === true) {
       check({ code: 'app_kind_not_allowed', kind: 'check', words: `Not a kind ${appName} sends` });
     } else if (!app.allowed_kinds.includes(kind.key)) {
       check({
@@ -1116,6 +1121,78 @@ function levelOne(input: LevelInput, aiFills: boolean): ItemLevel {
   else if (tags.some((t) => t.kind === 'check')) level = 'check';
   else level = 'ready';
   return { level, tags, proposals: { ...proposals, visibility }, clashes };
+}
+
+/**
+ * Whether an item a connected app sent is filed without anybody looking
+ * (0.9.0, APP4), where its owner switched that on: only when everything is
+ * sure and complete. Pure, beside `levelItem`, so the vault and the fake
+ * vault decide alike. All of these, or it waits for review:
+ *
+ *  - it is Ready, read, and nothing makes it Check or a Problem — no clash
+ *    of any kind, no near match (a renewal), no duplicate, nothing the local
+ *    AI suggested, nothing required missing;
+ *  - its kind is one the app may send, never identity, legal or medical, and
+ *    never one the household keeps as an Essential;
+ *  - its kind and its person are sure and the pages' own reading says the
+ *    same: a hint, a batch default, the folder, the uploader's rules or the
+ *    reading model alone are never enough;
+ *  - nobody on it only where the kind usually belongs to the household, the
+ *    pages name nobody, and the app named nobody but the household;
+ *  - and whomever the app named is the person on it.
+ */
+export function appFilesItself(input: LevelInput, out: ItemLevel): boolean {
+  const app = input.app;
+  const pages = input.proposal;
+  const card = out.proposals;
+  if (!app || !pages || !card) return false;
+  if (input.state !== 'waiting' || input.reading !== 'read' || out.level !== 'ready') return false;
+  if (input.duplicate || input.renewal || out.clashes.length > 0) return false;
+  if (out.tags.some((t) => t.kind !== 'info')) return false;
+  // Nothing on the card the local AI gave.
+  const suggestions = [
+    card.type_key,
+    card.owner_member_id,
+    card.issued,
+    card.expires,
+    card.identifier,
+    card.issued_by,
+  ];
+  if (suggestions.some((s) => s?.local_ai === true)) return false;
+  const kind = input.types.find((t) => t.key === card.type_key?.value);
+  if (!kind || kind.category === undefined) return false;
+  if (APP_NEVER_CATEGORIES.includes(kind.category ?? '')) return false;
+  if (kind.usually_essential === true || !app.allowed_kinds.includes(kind.key)) return false;
+  if (!readAgrees(card.type_key, pages.type_key, ITEM_SURE.type_key)) return false;
+  const person = card.owner_member_id;
+  const hint = app.hints.person;
+  if (person) {
+    if (!readAgrees(person, pages.owner_member_id, ITEM_SURE.owner_member_id)) return false;
+    // The app said the household's, or named somebody the card does not
+    // have (a name nobody in the family has is only said): a look first.
+    if (hint && (('household' in hint && hint.household) || person.app !== true)) return false;
+  } else {
+    if (belongsTo(kind) !== 'household' || pages.owner_member_id) return false;
+    if (hint && !('household' in hint && hint.household)) return false;
+  }
+  return true;
+}
+
+/**
+ * The card's value is the pages' own reading, sure: proposed by the pages
+ * (made surer by the uploader's rules, a batch default or the app saying the
+ * same is fine), never by a rule, the reading model or the local AI alone.
+ */
+function readAgrees(
+  card: ItemSuggestion<string> | undefined,
+  pages: Proposed<string> | undefined,
+  sure: number,
+): boolean {
+  if (!card || !pages || card.value !== pages.value) return false;
+  if (card.from !== 'pages' && card.from !== 'both' && card.from !== 'learned') return false;
+  if (pages.cue === 'learned' || pages.model !== undefined) return false;
+  if (card.local_ai === true || card.model === true) return false;
+  return (card.confidence ?? 0) >= sure;
 }
 
 /**

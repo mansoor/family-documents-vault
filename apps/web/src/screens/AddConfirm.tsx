@@ -915,7 +915,7 @@ function CardMark(props: {
   app?: string | null | undefined;
 }) {
   const { mark } = props;
-  // What the connected app that sent it said (APP1): "from MonTra", as a
+  // What the connected app that sent it said (APP1): "from Acme Money", as a
   // batch's choice is said, with no how-sure.
   if (mark.from === 'app') {
     return (
@@ -1107,7 +1107,7 @@ export function ConfirmForm(props: {
   } | null;
   /**
    * The connected app that sent a batch's item (0.9.0, APP1): a mark that is
-   * the app's says so ("from MonTra"); the tags it gave are offered under
+   * the app's says so ("from Acme Money"); the tags it gave are offered under
    * Tags, as a folder's are, and never ticked.
    */
   app?: {

@@ -259,7 +259,11 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
   switch (e.action) {
     // ------------------------------------------------------- documents
     case 'document.created':
-      return line(`${who} added ${doc}`);
+      // Filed without anybody looking, from what a connected app sent
+      // (0.9.0, APP4): it was nobody's doing, so the line names nobody.
+      return detail.auto === true && text(detail.app)
+        ? line(`Filed automatically from ${appOf(detail)}: ${doc}`, false, UNNAMED)
+        : line(`${who} added ${doc}`);
     case 'document.updated': {
       // 0.9.0 (AIR2): whether it is sensitive, said — made less so is
       // news, as letting more people see it is.
@@ -303,6 +307,9 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     case 'document.needed_again':
       return line(`${who} marked ${doc} needed again`);
     case 'document.version_added':
+      // The first file of one filed automatically from an app (APP4): its
+      // line says so already, and nobody uploaded anything.
+      if (detail.auto === true && text(detail.app)) return null;
       return line(`${who} uploaded a new copy of ${doc}`);
     // 0.8.0 (S1): a copy added from a batch, taken back within its minutes.
     case 'batch.version_undone':
@@ -1227,7 +1234,7 @@ export const SITTING_MS = 10 * 60 * 1000;
 
 /**
  * Files a connected app sent this close together are one line (APP2):
- * "Ahmed via MonTra sent 12 files to their Inbox".
+ * "Ahmed via Acme Money sent 12 files to their Inbox".
  */
 export const APP_SENT_FOLD_MS = 60 * 60 * 1000;
 
@@ -1313,7 +1320,7 @@ export function describeEventSpans(
   return spans;
 }
 
-/** The files an app sent, folded into one line: "Ahmed via MonTra sent 12 files to their Inbox". */
+/** The files an app sent, folded into one line: "Ahmed via Acme Money sent 12 files to their Inbox". */
 function appSentWords(e: ActivityEvent, n: number): string {
   const who = e.actor ?? (e.actor_label ? capitalise(e.actor_label) : 'Somebody');
   return n === 1

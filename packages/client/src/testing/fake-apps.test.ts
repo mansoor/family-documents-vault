@@ -288,3 +288,94 @@ describe('the fake vault: a connected app’s links and deletes (APP3)', () => {
     expect(vault.state.documents.find((d) => d.id === second)?.deleted_at).toBeTruthy();
   });
 });
+
+describe('the fake vault: a connected app files automatically (APP4)', () => {
+  it('files what is sure and complete with nobody looking, by the vault’s own rule; anything else waits', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const t = await api.setup({
+      household_name: 'The fake family',
+      display_name: 'Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    vault.state.ownerTwoStep = true;
+    const token = t.access_token;
+    const made = await api.connectedApps.create(token, {
+      name: 'Filer',
+      member_id: t.member_id,
+      public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+      allowed_kinds: ['bank_statement'],
+      scopes: ['documents.send', 'documents.read'],
+      auto_file: true,
+    });
+    expect(made.auto_file).toBe(true);
+    const app = createAppClient({
+      baseUrl: 'https://fake.example',
+      appId: made.id,
+      keyId: made.keys[0]?.key_id as string,
+      privateKey: KEY,
+      fetch: vault.fetch,
+    });
+    expect((await app.me()).send.auto_file).toBe(true);
+    const me = vault.state.members.find((m) => m.id === t.member_id)?.display_name as string;
+    const send = (externalId: string, hints: Record<string, unknown>) =>
+      app.send({
+        externalId,
+        hints,
+        file: {
+          bytes: new TextEncoder().encode(`%PDF-1.4\n% ${externalId}\n%%EOF\n`),
+          filename: `${externalId}.pdf`,
+          contentType: 'application/pdf',
+        },
+      });
+    const pages = {
+      type_key: { value: 'bank_statement', confidence: 0.95, cue: 'kind_words' as const },
+      owner_member_id: { value: t.member_id, confidence: 0.95, cue: 'name_on_page' as const },
+    };
+    await send('auto-1', {
+      kind: 'bank_statement',
+      person: { name: me },
+      title: 'Northgate, October',
+    });
+    expect(await vault.readAppFile(made.id, 'auto-1', pages)).toBe('filed');
+    const filed = await app.status('auto-1');
+    expect(filed).toMatchObject({ state: 'filed' });
+    const doc = await app.document(filed.document_id as string);
+    expect(doc).toMatchObject({ own: true, title: 'Northgate, October' });
+    expect(doc.kind.key).toBe('bank_statement');
+
+    // The app's hint alone: it waits.
+    await send('auto-2', { kind: 'bank_statement', person: { name: me } });
+    expect(await vault.readAppFile(made.id, 'auto-2', {})).toBe('waiting');
+    expect((await app.status('auto-2')).state).toBe('waiting');
+    // The pages and the app disagree: it waits.
+    await send('auto-3', { person: { name: 'Nobody Here' } });
+    expect(await vault.readAppFile(made.id, 'auto-3', pages)).toBe('waiting');
+
+    // Switched off: it waits; paused, it waits.
+    await api.connectedApps.update(token, made.id, { auto_file: false });
+    await send('auto-4', {});
+    expect(await vault.readAppFile(made.id, 'auto-4', pages)).toBe('waiting');
+    await api.connectedApps.update(token, made.id, { auto_file: true });
+    await api.connectedApps.pause(token, made.id);
+    expect(await vault.readAppFile(made.id, 'auto-4', pages)).toBe('waiting');
+    await api.connectedApps.resume(token, made.id);
+    expect(await vault.readAppFile(made.id, 'auto-4', pages)).toBe('filed');
+    // Filed already: nothing more.
+    expect(await vault.readAppFile(made.id, 'auto-4', pages)).toBe('waiting');
+    // A kind the household now keeps as an Essential: it waits.
+    const kind = vault.state.types.find((k) => k.key === 'bank_statement');
+    if (!kind) throw new Error('the fake has no bank statements');
+    kind.usually_essential = true;
+    await send('auto-5', {});
+    expect(await vault.readAppFile(made.id, 'auto-5', pages)).toBe('waiting');
+    kind.usually_essential = false;
+    expect(await vault.readAppFile(made.id, 'auto-5', pages)).toBe('filed');
+    // A setting that is not on or off is refused.
+    const bad = await refusal(
+      api.connectedApps.update(token, made.id, { auto_file: 'yes' as unknown as boolean }),
+    );
+    expect([bad.status, bad.code]).toEqual([422, 'validation_failed']);
+  });
+});

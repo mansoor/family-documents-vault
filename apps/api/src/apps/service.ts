@@ -70,6 +70,7 @@ import { clientAddressOf } from '../client-address.js';
 import { ApiError } from '../errors.js';
 import type { DocumentService } from '../documents/service.js';
 import type { BatchService } from '../uploads/batches.js';
+import { AppAutoFile } from './auto-file.js';
 import { AppLinks } from './links.js';
 import { AppReads } from './reads.js';
 import {
@@ -243,7 +244,8 @@ const visibilityRank = (v: string | null | undefined) =>
 /**
  * Whether a change lets an app do more than it could: a kind added, a cap
  * raised, an address let in, a backfill given or made longer or larger,
- * what it sends seen more widely. Narrowing, or a new name, is not.
+ * what it sends seen more widely, filing automatically switched on (for
+ * good or for a backfill). Narrowing, or a new name, is not.
  */
 function widens(
   app: AppRow,
@@ -289,11 +291,15 @@ function widens(
       !had ||
       set.backfill_until.getTime() > (app.backfill_until as Date).getTime() ||
       (set.backfill_files as number) > (app.backfill_files ?? 0) ||
-      (set.backfill_bytes as number) > Number(app.backfill_bytes ?? 0)
+      (set.backfill_bytes as number) > Number(app.backfill_bytes ?? 0) ||
+      // Filing automatically for the window, where it did not (APP4).
+      (set.backfill_auto_file === true && !app.backfill_auto_file)
     ) {
       return true;
     }
   }
+  // Filing what it sends with nobody looking (APP4).
+  if (set.auto_file === true && !app.auto_file) return true;
   return false;
 }
 
@@ -513,6 +519,8 @@ export class AppService {
   readonly reads: AppReads | null;
   /** Its links and deletes (APP3). */
   readonly links: AppLinks | null;
+  /** What it sends, filed automatically when sure and complete (APP4): the API's one consumer. */
+  readonly autoFile: AppAutoFile;
 
   constructor(
     private readonly db: Db,
@@ -530,6 +538,7 @@ export class AppService {
             address: () => this.address().url,
           })
         : null;
+    this.autoFile = new AppAutoFile(db, batches, { now: () => this.now() });
   }
 
   /** Which filed documents of these the app may still read: null while nothing is read. */
@@ -884,7 +893,7 @@ export class AppService {
           expires: k.expiry_driver !== null,
         })),
         hints: [...APP_HINTS],
-        auto_file: false,
+        auto_file: app.auto_file,
       },
       ...(this.reads
         ? {
@@ -916,7 +925,7 @@ export class AppService {
             until: (app.backfill_until as Date).toISOString(),
             files_per_day: caps.files,
             bytes_per_day: caps.bytes,
-            auto_file: false,
+            auto_file: app.backfill_auto_file,
           }
         : null,
       keys: liveKeys(keys, now).map((k) => {
@@ -967,7 +976,7 @@ export class AppService {
 
   /**
    * Today's batch of this app's, on the household's calendar, with room in
-   * it: "From MonTra, 16 November 2026", and a part more past BATCH_MAX_FILES.
+   * it: "From Acme Money, 16 November 2026", and a part more past BATCH_MAX_FILES.
    * As its person; the database lets a batch name only a live app of its
    * own member (0109). Who sees what it sends is the app's default.
    */
@@ -1851,6 +1860,7 @@ export class AppService {
     daily_bytes?: number;
     daily_read_bytes?: number;
     backfill?: ConnectedAppInput['backfill'];
+    auto_file?: unknown;
   }) {
     const { files, bytes } = this.opts.ceilings;
     const out: Record<string, unknown> = {};
@@ -1887,11 +1897,19 @@ export class AppService {
         `Bytes a day: 1 MB to ${bytes}.`,
       );
     }
+    // Filing automatically when sure and complete (APP4): the owner's switch.
+    if (input.auto_file !== undefined) {
+      if (typeof input.auto_file !== 'boolean') {
+        throw invalid('File automatically: on or off.', 'auto_file');
+      }
+      out.auto_file = input.auto_file;
+    }
     if (input.backfill !== undefined) {
       if (input.backfill === null) {
         out.backfill_until = null;
         out.backfill_files = null;
         out.backfill_bytes = null;
+        out.backfill_auto_file = false;
       } else {
         const until = new Date(input.backfill.until);
         const now = this.now();
@@ -1920,6 +1938,12 @@ export class AppService {
           'backfill.bytes_per_day',
           `Bytes a day: 1 MB to ${bytes}.`,
         );
+        // For the window alone (APP4): off unless said.
+        const auto = input.backfill.auto_file ?? false;
+        if (typeof auto !== 'boolean') {
+          throw invalid('File automatically: on or off.', 'backfill.auto_file');
+        }
+        out.backfill_auto_file = auto;
       }
     }
     return out;
@@ -2071,6 +2095,7 @@ export class AppService {
                 until: a.backfill_until.toISOString(),
                 files_per_day: a.backfill_files ?? a.daily_files,
                 bytes_per_day: Number(a.backfill_bytes ?? a.daily_bytes),
+                auto_file: a.backfill_auto_file,
               }
             : null,
         ip_allow: a.ip_allow ?? [],

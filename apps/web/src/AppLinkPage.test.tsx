@@ -36,7 +36,7 @@ describe('a connected app’s link’s page (APP3)', () => {
     installFakeApi(
       fresh({
         appLink: {
-          app: 'MonTra',
+          app: 'Acme Money',
           mode: 'view',
           title: 'Northgate statement, Oct 2026',
           pages: { state: 'ready', count: 2 },
@@ -48,7 +48,7 @@ describe('a connected app’s link’s page (APP3)', () => {
     expect(
       await screen.findByRole('heading', { name: 'Northgate statement, Oct 2026' }),
     ).toBeInTheDocument();
-    expect(screen.getByRole('note')).toHaveTextContent('Opened through MonTra');
+    expect(screen.getByRole('note')).toHaveTextContent('Opened through Acme Money');
     const pages = screen.getByRole('list', { name: 'The pages of Northgate statement, Oct 2026' });
     const images = pages.querySelectorAll('img');
     expect([...images].map((i) => i.getAttribute('src'))).toEqual([
@@ -57,7 +57,7 @@ describe('a connected app’s link’s page (APP3)', () => {
     ]);
     expect(screen.getByAltText('Page 1 of 2')).toBeInTheDocument();
     expect(
-      screen.getByText(/After that, open the document again from MonTra\./),
+      screen.getByText(/After that, open the document again from Acme Money\./),
     ).toBeInTheDocument();
     // Never the file: there is nothing to download here.
     expect(screen.queryByRole('link', { name: /download/i })).toBeNull();
@@ -69,7 +69,7 @@ describe('a connected app’s link’s page (APP3)', () => {
     installFakeApi(
       fresh({
         appLink: {
-          app: 'MonTra',
+          app: 'Acme Money',
           mode: 'view',
           title: null,
           pages: { state: 'drawing', count: 0 },
@@ -86,7 +86,7 @@ describe('a connected app’s link’s page (APP3)', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const drawing = {
-        app: 'MonTra',
+        app: 'Acme Money',
         mode: 'view' as const,
         title: 'A bill',
         pages: { state: 'drawing' as const, count: 0 },
@@ -122,7 +122,7 @@ describe('a connected app’s link’s page (APP3)', () => {
     try {
       const state = fresh({
         appLink: {
-          app: 'MonTra',
+          app: 'Acme Money',
           mode: 'view',
           title: 'A bill',
           pages: { state: 'drawing', count: 0 },

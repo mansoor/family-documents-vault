@@ -64,6 +64,7 @@ import { IncomingService } from './uploads/incoming.js';
 import { BatchService } from './uploads/batches.js';
 import { DEVICE_KEY_PURPOSE, DeviceService } from './devices/service.js';
 import { AppService } from './apps/service.js';
+import { consumeFileReady } from './apps/auto-file.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { VaultService } from './vaults/service.js';
@@ -141,7 +142,11 @@ async function main(): Promise<void> {
     deriveKey(masterSecret, 'totp-secrets'),
     deriveSigningKey(masterSecret),
   );
-  // The API only enqueues; the worker installs the schema and supervises.
+  // The API enqueues, and consumes one queue: apps.file_ready (0.9.0,
+  // APP4), an item a connected app sent filed automatically once the
+  // worker has read it — filing is the API's code, and is never written
+  // twice. The worker installs the schema, makes the queues and supervises
+  // (expired jobs retried, schedules); this connection does neither.
   const boss = new PgBoss({
     connectionString: config.DATABASE_URL,
     schema: 'pgboss',
@@ -250,6 +255,19 @@ async function main(): Promise<void> {
     checks: settingsChecks,
     server: () => localAiState.server(),
     alert,
+  });
+  // Connected apps (0.9.0, APP1): their routes signed, their files the batches'.
+  const apps = new AppService(db, batches, {
+    baseUrl: config.FDV_BASE_URL,
+    publicUrl: config.FDV_PUBLIC_URL ?? null,
+    appsPublic: config.FDV_PUBLIC_APPS === 'on',
+    maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
+    ceilings: { files: config.FDV_APP_DAILY_FILES, bytes: config.FDV_APP_DAILY_BYTES },
+    serverVersion: version,
+    instanceId: instanceIdReader(db),
+    alert,
+    // What an app reads and downloads (APP2).
+    documents,
   });
   const app = await buildApp(config, {
     cabinet: new CabinetService(db, documents),
@@ -362,19 +380,7 @@ async function main(): Promise<void> {
       dailyBytes: config.FDV_DEVICE_DAILY_BYTES,
       alert,
     }),
-    // Connected apps (0.9.0, APP1): their routes signed, their files the batches'.
-    apps: new AppService(db, batches, {
-      baseUrl: config.FDV_BASE_URL,
-      publicUrl: config.FDV_PUBLIC_URL ?? null,
-      appsPublic: config.FDV_PUBLIC_APPS === 'on',
-      maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
-      ceilings: { files: config.FDV_APP_DAILY_FILES, bytes: config.FDV_APP_DAILY_BYTES },
-      serverVersion: version,
-      instanceId: instanceIdReader(db),
-      alert,
-      // What an app reads and downloads (APP2).
-      documents,
-    }),
+    apps,
     audit: new AuditService(db),
     suggestions: new SuggestionService(db),
     stepUp: stepUpService,
@@ -382,15 +388,22 @@ async function main(): Promise<void> {
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(masterSecret)),
   });
 
+  // What a connected app sent, filed automatically (APP4): consumed once
+  // the server listens, on every instance (each job is filed once, under
+  // its item's lock), and stopped before the server closes.
+  const consumers: Array<{ stop: () => Promise<void> }> = [];
   const shutdown = async (signal: string) => {
     app.log.info({ signal }, 'shutting down');
-    await stopApi({ proposals: proposalPool, app, boss, db });
+    await stopApi({ proposals: proposalPool, consumers, app, boss, db });
     process.exit(0);
   };
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
 
   await app.listen({ host: config.HOST, port: config.PORT });
+  consumers.push(
+    consumeFileReady(boss, apps.autoFile, (level, msg, extra) => app.log[level](extra ?? {}, msg)),
+  );
 }
 
 main().catch((err: unknown) => {

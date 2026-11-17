@@ -114,7 +114,7 @@ export interface AppLinkMinted {
 
 /** `GET /api/v1/app-links/session`: what the page a view link opens shows. */
 export interface AppLinkSession {
-  /** The app, by the name the family gave it: "Opened through MonTra". */
+  /** The app, by the name the family gave it: "Opened through Acme Money". */
   app: string;
   mode: AppLinkMode;
   title: string | null;
@@ -148,7 +148,7 @@ export const APP_GRANTABLE_CATEGORIES = [
 
 /**
  * The categories whose papers an app's reading never files, whatever its
- * allowed kinds say: held as Check, "Not a kind MonTra sends".
+ * allowed kinds say: held as Check, "Not a kind Acme Money sends".
  */
 export const APP_NEVER_CATEGORIES: readonly string[] = ['identity', 'legal', 'medical'];
 
@@ -178,6 +178,14 @@ export const APP_DEFAULT_LINKS_PER_HOUR = 60;
 export const APP_REQUESTS_PER_MINUTE = 120;
 /** A backfill allowance ends at most this many days ahead. */
 export const APP_BACKFILL_MAX_DAYS = 30;
+/**
+ * The job the worker sends once it has read an item an app sent, while the
+ * app files automatically (APP4): `{ household_id, item_id }`. The API
+ * consumes it (it alone files), checking everything again.
+ */
+export const APP_FILE_READY_JOB = 'apps.file_ready';
+/** The owner's switch, in Settings → Connected apps (APP4). */
+export const APP_AUTO_FILE_WORDS = 'File when everything is sure and complete';
 /** Addresses and networks an app's allow-list holds at most. */
 export const APP_IP_ALLOW_MAX = 10;
 /** The longest an app's name may be. */
@@ -460,8 +468,8 @@ export function parseAppMetadata(
 
 /**
  * The name of an app's batch for a day, on the household's calendar
- * (YYYY-MM-DD), and its part past the first 200 files: "From MonTra, 16
- * November 2026", "From MonTra, 16 November 2026 (2)".
+ * (YYYY-MM-DD), and its part past the first 200 files: "From Acme Money, 16
+ * November 2026", "From Acme Money, 16 November 2026 (2)".
  */
 export function appBatchName(app: string, day: string, part = 1): string {
   const name = deviceBatchName(app, day);
@@ -540,6 +548,11 @@ export interface AppMe {
     time_zone: string;
   };
   scopes: AppScope[];
+  /**
+   * `auto_file` (APP4): the owner's switch — what it sends is filed without
+   * review when everything is sure and complete, and its state goes from
+   * `waiting` to `filed` with nobody looking. Anything else still waits.
+   */
   send: { kinds: AppSendKind[]; hints: AppHintName[]; auto_file: boolean };
   /** What it may read (APP2): its grants. Absent from a vault without `connected_app_reads`. */
   read?: { grants: AppGrant[] };
@@ -558,6 +571,7 @@ export interface AppMe {
     requests_per_minute: number;
     day_resets_at: string;
   };
+  /** A backfill allowance while it lasts; `auto_file`: on for the window alone (APP4). */
   backfill: {
     until: string;
     files_per_day: number;
@@ -595,10 +609,17 @@ export interface ConnectedAppView {
   allowed_kinds: string[];
   /** Who sees what it sends: null as each kind says. */
   default_visibility: Visibility | null;
+  /** What it sends is filed without review when everything is sure and complete (APP4). */
   auto_file: boolean;
   daily_files: number;
   daily_bytes: number;
-  backfill: { until: string; files_per_day: number; bytes_per_day: number } | null;
+  /** A backfill allowance while it lasts, and whether auto-file is on for it alone (APP4). */
+  backfill: {
+    until: string;
+    files_per_day: number;
+    bytes_per_day: number;
+    auto_file: boolean;
+  } | null;
   ip_allow: string[];
   keys: AppKeyView[];
   last_used_at: string | null;
@@ -634,7 +655,18 @@ export interface ConnectedAppInput {
   daily_files?: number;
   daily_bytes?: number;
   ip_allow?: string[];
-  backfill?: { until: string; files_per_day: number; bytes_per_day: number } | null;
+  /**
+   * A backfill allowance; `auto_file` (APP4) files what is sure and
+   * complete without review while it lasts, whatever the app's own switch.
+   */
+  backfill?: {
+    until: string;
+    files_per_day: number;
+    bytes_per_day: number;
+    auto_file?: boolean;
+  } | null;
+  /** File what it sends without review when everything is sure and complete (APP4): off when left out. */
+  auto_file?: boolean;
   /** What it may do (APP2): `documents.send` alone when left out. */
   scopes?: AppScope[];
   /** Bytes a day it may download (APP2): 1 GB when left out. */
@@ -660,6 +692,7 @@ export type ConnectedAppChange = Partial<
     | 'daily_read_bytes'
     | 'delete_mode'
     | 'links_per_hour'
+    | 'auto_file'
   >
 >;
 
@@ -950,7 +983,7 @@ export function appMayRead(c: AppReadCase): boolean {
 /**
  * The question an owner is asked when a grant would let an app read papers
  * Sensitive by their kind: "Bank statement and Pay statement / payslip are
- * sensitive. MonTra will be able to read them. Allow anyway?"
+ * sensitive. Acme Money will be able to read them. Allow anyway?"
  */
 export function appSensitiveConfirmWords(app: string, kinds: readonly string[]): string {
   const names =

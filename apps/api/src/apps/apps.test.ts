@@ -120,7 +120,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     await h.decider(by);
     const key = newKey();
     const res = await send(by, 'POST', '/api/v1/connected-apps', {
-      name: 'MonTra',
+      name: 'Acme Money',
       member_id: by.member_id,
       public_key: key.given,
       allowed_kinds: ['bank_statement', 'utility_bill', 'credit_card_statement'],
@@ -283,7 +283,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
   it('an owner connects an app with a passkey or a code, never the password alone', async () => {
     const key = newKey();
     const body = {
-      name: 'MonTra',
+      name: 'Acme Money',
       member_id: owner.member_id,
       public_key: key.given,
       allowed_kinds: ['bank_statement'],
@@ -317,7 +317,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     expect(made.statusCode, made.body).toBe(201);
     const view = made.json<ConnectedAppView>();
     expect(view).toMatchObject({
-      name: 'MonTra',
+      name: 'Acme Money',
       member_name: 'Owner',
       mine: true,
       state: 'active',
@@ -350,7 +350,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     expect(res.statusCode, res.body).toBe(200);
     const said = res.json<AppMe>();
     expect(said).toMatchObject({
-      app: { id: view.id, name: 'MonTra' },
+      app: { id: view.id, name: 'Acme Money' },
       state: 'active',
       acting_as: { name: 'Owner' },
       scopes: ['documents.send'],
@@ -376,7 +376,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     expect(res.headers['x-request-id']).toBeTruthy();
     expect(res.headers['x-fdv-server-version']).toBeTruthy();
     expect(res.headers['set-cookie']).toBeUndefined();
-    expect(await lines(owner)).toContain('Owner connected MonTra, acting as themselves');
+    expect(await lines(owner)).toContain('Owner connected Acme Money, acting as themselves');
   });
 
   it('an app acting as another adult waits until they turn it on, and only they may', async () => {
@@ -483,7 +483,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       ],
       [
         'a keyid not of two ids',
-        { ...valid, 'signature-input': input.replace(/keyid="[^"]+"/, 'keyid="montra"') },
+        { ...valid, 'signature-input': input.replace(/keyid="[^"]+"/, 'keyid="acme"') },
       ],
       ['a short signature', { ...valid, signature: 'fdv=:AAAA:' }],
       ['two signatures', { ...valid, signature: `${valid.signature}, sig2=:AAAA:` }],
@@ -1126,7 +1126,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
   // ------------------------------------------------------------ intake
 
   it('a file lands in its person’s Inbox, from the app, and an external id is answered again for the same bytes', async () => {
-    const a = await connect(owner, { member_id: ahmed.member_id, name: 'MonTra' });
+    const a = await connect(owner, { member_id: ahmed.member_id, name: 'Acme Money' });
     await h.decider(ahmed);
     await send(ahmed, 'POST', `/api/v1/connected-apps/${a.appId}/approve`);
     const bytes = PDF('NORTHGATE-OCT');
@@ -1139,7 +1139,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       account_last4: '1234',
       period: 'October 2026',
       amount: { value: '2450.10', currency: 'USD' },
-      tags: ['MonTra'],
+      tags: ['Acme Money'],
     };
     const first = await intake(a, 'mt:tenant-7f3a:doc-01', { bytes }, hints);
     expect(first.statusCode, first.body).toBe(201);
@@ -1157,7 +1157,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       refusal: null,
     });
     // In Ahmed's Inbox, in today's batch from the app.
-    const batch = (await batchesOf(ahmed)).find((b) => b.name?.startsWith('From MonTra, '));
+    const batch = (await batchesOf(ahmed)).find((b) => b.name?.startsWith('From Acme Money, '));
     expect(batch?.counts.waiting).toBe(1);
     const detail = (await send(ahmed, 'GET', `/api/v1/batches/${batch?.id}`)).json<BatchDetail>();
     const item = detail.items[0];
@@ -1170,8 +1170,8 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
         account_last4: { value: '1234', from: 'app' },
         period: { value: 'October 2026', from: 'app' },
       },
-      tags: [{ value: 'MonTra', from: 'app', existing: false, ticked: false }],
-      app_name: 'MonTra',
+      tags: [{ value: 'Acme Money', from: 'app', existing: false, ticked: false }],
+      app_name: 'Acme Money',
     });
     // Its hints are sealed, never plain in the database.
     const kept = await admin.query<{ hints: Buffer }>(
@@ -1247,10 +1247,10 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     expect([late.statusCode, codeOf(late)]).toEqual([409, 'already_decided']);
     // And the log says what the app did, never what it sent.
     const said = await lines(owner);
-    expect(said).toContain('Ahmed Khan via MonTra sent a file to their Inbox');
-    expect(said).toContain('Ahmed Khan via MonTra checked on files it sent');
+    expect(said).toContain('Ahmed Khan via Acme Money sent a file to their Inbox');
+    expect(said).toContain('Ahmed Khan via Acme Money checked on files it sent');
     expect(said.join('\n')).not.toContain('Northgate');
-    expect((await lines(sara)).some((l) => l.includes('via MonTra'))).toBe(false);
+    expect((await lines(sara)).some((l) => l.includes('via Acme Money'))).toBe(false);
     // Only Ahmed is told how many wait, and were filed.
     expect((await appsOf(ahmed)).items.find((x) => x.id === a.appId)?.counts).toEqual({
       waiting: 0,
