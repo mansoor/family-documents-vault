@@ -174,6 +174,23 @@ describe('what the log may say about a request (0.5.0)', () => {
     expect(nginxLogPath('/api/v1/apps/me')).toBe('/api/v1/apps/me');
   });
 
+  it("cuts a connected app's link, here and in nginx's access log, but its session's name (0.9.0, APP3)", () => {
+    const token = 'q2v5Xb8Kc1nT4yWm9pLd3Aq2v5Xb8Kc1nT4yWm9pLd3';
+    expect(loggableUrl(`/api/v1/app-links/${token}`)).toBe('/api/v1/app-links/[redacted]');
+    expect(nginxLogPath(`/api/v1/app-links/${token}`)).toBe('/api/v1/app-links/[redacted]');
+    // A token that merely starts like the session's name is still cut.
+    expect(loggableUrl(`/api/v1/app-links/session${token}`)).toBe('/api/v1/app-links/[redacted]');
+    expect(nginxLogPath(`/api/v1/app-links/session${token}`)).toBe('/api/v1/app-links/[redacted]');
+    for (const kept of [
+      '/api/v1/app-links/session',
+      '/api/v1/app-links/session/pages/3',
+      '/api/v1/app-links/session/file',
+    ]) {
+      expect(loggableUrl(kept), kept).toBe(kept);
+      expect(nginxLogPath(kept), kept).toBe(kept);
+    }
+  });
+
   it("nginx's access log cuts what the API's log cuts: a ZIP's ticket too (DL, found in APP1)", () => {
     for (const path of [
       '/api/v1/downloads/tIcKeT_abc-123',

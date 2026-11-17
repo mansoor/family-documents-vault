@@ -113,6 +113,18 @@ export interface ContractContext {
    */
   turnThirteen?: (memberId: string) => Promise<void>;
   /**
+   * What a person's filing does to a file a connected app sent (0.9.0,
+   * APP3): the real API's run files it from the app's batch in their Inbox,
+   * as they would; the fake's, which has no Inbox for it, files it as a new
+   * document of theirs. The document it became.
+   */
+  fileAppSend?: (
+    token: string,
+    app: { id: string; name: string },
+    externalId: string,
+    file: { sha256: string; bytes: Uint8Array },
+  ) => Promise<string>;
+  /**
    * The fetch the vault answers on (0.9.0, APP1): a connected app's client
    * of its own, beside the family's, signs its requests through it.
    */
@@ -158,6 +170,8 @@ const APP2_KEYS = [
   'b5c6d7e8-f90a-4b1c-8d2e-3f4a5b6c7d83',
   'b5c6d7e8-f90a-4b1c-8d2e-3f4a5b6c7d84',
 ] as const;
+/** A capture of the connected app links scenario (0.9.0, APP3). */
+const APP3_KEY = 'c6d7e8f9-0a1b-4c2d-8e3f-4a5b6c7d8e91';
 /** RFC 8032's first Ed25519 test key (7.1, TEST 1), for a second app (0.9.0, APP2). */
 const APP_TEST_KEY_2 = `-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g
@@ -4714,6 +4728,153 @@ export const contractScenarios: Scenario[] = [
       await api.connectedApps.update(token, made.id, { scopes: ['documents.send'] });
       const unread = await refusal(app.list());
       expect([unread.status, unread.code]).toEqual([403, 'scope_not_granted']);
+      await api.connectedApps.remove(token, made.id);
+    },
+  },
+  {
+    name: 'a connected app’s link opens once for a session there, and its deletes keep to its own (0.9.0, APP3)',
+    run: async (api, ctx) => {
+      if (!ctx.fetch) throw new Error('the contract needs the fetch its vault answers on');
+      const fetch = ctx.fetch;
+      expect((await api.capabilities()).features.connected_app_links).toBe(true);
+      const owner = connectedAppOwner;
+      if (!owner) throw new Error('the connected app scenario runs first');
+      const token = owner.access_token;
+      // The reading scenario's app was removed, and its key with it: the
+      // same key, for a new app.
+      const made = await api.connectedApps.create(token, {
+        name: 'Linker',
+        member_id: owner.member_id,
+        public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+        allowed_kinds: ['utility_bill'],
+        scopes: ['documents.send', 'documents.read', 'documents.links', 'documents.delete'],
+      });
+      expect(made).toMatchObject({ delete_mode: 'unlink', links_per_hour: 60 });
+      const app = createAppClient({
+        baseUrl: api.http.baseUrl,
+        appId: made.id,
+        keyId: made.keys[0]?.key_id as string,
+        privateKey: APP_TEST_KEY_2,
+        fetch,
+      });
+      expect(await app.me()).toMatchObject({
+        delete_mode: 'unlink',
+        limits: { links_per_hour: 60 },
+      });
+      // A bill of the family's, granted.
+      const issued = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+      const form = multipartBody([
+        {
+          name: 'metadata',
+          value: JSON.stringify({
+            type_key: 'utility_bill',
+            title: 'Linked water bill',
+            owner_member_id: owner.member_id,
+            issued: { date: issued, precision: 'day' },
+            visibility: 'household',
+          }),
+        },
+        { name: 'file', filename: 'bill.pdf', contentType: 'application/pdf', bytes: PDF },
+      ]);
+      const bill = (
+        await api.capture(
+          token,
+          { kind: 'bytes', bytes: form.bytes, contentType: form.contentType },
+          APP3_KEY,
+        )
+      ).document_id;
+      const hidden = await refusal(app.link(bill, 'view'));
+      expect([hidden.status, hidden.code]).toEqual([404, 'not_found']);
+      // (A kind of the household's own in Bills may be Sensitive by default:
+      // said yes to, as the reading scenario does.)
+      await api.connectedApps.setGrants(token, made.id, {
+        grants: [{ category: 'bills', lookback_months: 12 }],
+        confirm_sensitive: true,
+      });
+      // A view link: within two minutes, for ten.
+      const minted = await app.link(bill, 'view');
+      expect(minted.mode).toBe('view');
+      expect(minted.session_minutes).toBe(10);
+      const left = Date.parse(minted.open_by) - Date.now();
+      expect(left).toBeGreaterThan(60_000);
+      expect(left).toBeLessThanOrEqual(121_000);
+      const path = minted.url.replace(/^[a-z]+:\/\/[^/]+/i, '');
+      expect(path).toMatch(/^\/api\/v1\/app-links\/[A-Za-z0-9_-]{43}$/);
+      const get = (p: string, cookie?: string) =>
+        fetch(`${api.http.baseUrl}${p}`, { method: 'GET', headers: cookie ? { cookie } : {} });
+      // Opened: a session's cookie for its path alone, and on to the page.
+      const opened = await get(path);
+      expect([opened.status, opened.headers.get('location')]).toEqual([303, '/a']);
+      const set = opened.headers.get('set-cookie') ?? '';
+      expect(set).toMatch(/^__Secure-fdv_app_link=[A-Za-z0-9_-]{43};/);
+      expect(set).toMatch(/Path=\/api\/v1\/app-links\/session/);
+      expect(set).toMatch(/HttpOnly/);
+      expect(set).toMatch(/Secure/);
+      expect(set).toMatch(/SameSite=Lax/i);
+      const cookie = set.split(';')[0] as string;
+      // Once: opened again, the page says so.
+      const again = await get(path);
+      expect([again.status, again.headers.get('location')]).toEqual([303, '/a#used']);
+      const session = await get('/api/v1/app-links/session', cookie);
+      expect(session.status).toBe(200);
+      expect(await session.json()).toMatchObject({
+        app: 'Linker',
+        mode: 'view',
+        title: 'Linked water bill',
+      });
+      // Without its cookie, nothing.
+      expect((await get('/api/v1/app-links/session')).status).toBe(410);
+      // A download link needs documents.download too.
+      const noDownload = await refusal(app.link(bill, 'download'));
+      expect([noDownload.status, noDownload.code]).toEqual([403, 'scope_not_granted']);
+      const bad = await refusal(
+        app.signed('POST', `/api/v1/apps/documents/${bill}/links`, {
+          bytes: new TextEncoder().encode('{"mode":"print"}'),
+          contentType: 'application/json',
+        }),
+      );
+      expect([bad.status, bad.code]).toEqual([422, 'validation_failed']);
+      // So many an hour, as the owner sets.
+      await app.link(bill, 'view');
+      await api.connectedApps.update(token, made.id, { links_per_hour: 2 });
+      const full = await refusal(app.link(bill, 'view'));
+      expect([full.status, full.code]).toEqual([429, 'app_links_full']);
+      // Retriable, and when.
+      expect(full.retriable).toBe(true);
+      expect(full.retryAfterSeconds).toBeGreaterThan(0);
+      // A delete: never one it reads by a grant.
+      const notOwn = await refusal(app.delete(bill));
+      expect([notOwn.status, notOwn.code]).toEqual([404, 'not_found']);
+      await api.connectedApps.update(token, made.id, { delete_mode: 'trash' });
+      expect((await app.me()).delete_mode).toBe('trash');
+      // Its own, sent and filed by the family: moved to the Trash, and let go of.
+      if (!ctx.fileAppSend)
+        throw new Error('the contract needs its vault to file what an app sent');
+      const ownBytes = new TextEncoder().encode('%PDF-1.4\n% the linker’s own\n%%EOF\n');
+      const sent = await app.send({
+        externalId: 'linker-own-1',
+        hints: { kind: 'utility_bill' },
+        file: { bytes: ownBytes, filename: 'own.pdf', contentType: 'application/pdf' },
+      });
+      expect(sent.status).toBe(201);
+      const own = await ctx.fileAppSend(token, { id: made.id, name: made.name }, 'linker-own-1', {
+        sha256: sent.state.sha256 as string,
+        bytes: ownBytes,
+      });
+      expect(await app.status('linker-own-1')).toMatchObject({ state: 'filed', document_id: own });
+      expect((await app.document(own)).own).toBe(true);
+      expect(await app.delete(own)).toEqual({ document_id: own, result: 'trashed' });
+      const trashed = await refusal(app.document(own));
+      expect([trashed.status, trashed.code]).toEqual([404, 'not_found']);
+      expect(await app.status('linker-own-1')).toMatchObject({
+        state: 'unavailable',
+        document_id: null,
+      });
+      const twice = await refusal(app.delete(own));
+      expect([twice.status, twice.code]).toEqual([404, 'not_found']);
+      // Unreadable now: the session ends, never why.
+      await api.connectedApps.setGrants(token, made.id, { grants: [] });
+      expect((await get('/api/v1/app-links/session', cookie)).status).toBe(410);
       await api.connectedApps.remove(token, made.id);
     },
   },

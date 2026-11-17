@@ -6,12 +6,15 @@ import {
   EXTERNAL_ID_PATTERN,
   type AppChanges,
   type AppConnection,
+  type AppDeleted,
   type AppDocument,
   type AppDocumentList,
   type AppHints,
   type AppIntakeState,
   type AppIntakeStates,
   type AppKeyAdded,
+  type AppLinkMinted,
+  type AppLinkMode,
   type AppMe,
 } from '@fdv/shared';
 import { createHttp, toError, type FetchLike, type Http } from './http.js';
@@ -310,6 +313,17 @@ export interface AppClient {
     id: string,
     o?: { range?: { start: number; end?: number }; ifNoneMatch?: string },
   ): Promise<AppDownload>;
+  /**
+   * A link for its user's browser (APP3, `documents.links`; a download link
+   * needs `documents.download` too): send the browser to `url` at once. It
+   * opens once, within 2 minutes, for a session of 10 minutes there.
+   */
+  link(id: string, mode: AppLinkMode): Promise<AppLinkMinted>;
+  /**
+   * A document it sent, deleted as the owner chose (APP3, `documents.delete`):
+   * `unlinked` (it stays in the vault) or `trashed`. Its own alone: 404 otherwise.
+   */
+  delete(id: string): Promise<AppDeleted>;
   /** One document into its person's Inbox; 200 for an external id sent before. */
   send(s: AppSend): Promise<{ status: number; replayed: boolean; state: AppIntakeState }>;
   status(externalId: string): Promise<AppIntakeState>;
@@ -434,6 +448,12 @@ export function createAppClient(opts: AppClientOptions): AppClient {
         contentRange: res.headers.get('content-range'),
       };
     },
+    link: (id, mode) =>
+      json<AppLinkMinted>('POST', `/api/v1/apps/documents/${docId(id)}/links`, {
+        bytes: utf8(JSON.stringify({ mode })),
+        contentType: 'application/json',
+      }),
+    delete: (id) => json<AppDeleted>('DELETE', `/api/v1/apps/documents/${docId(id)}`),
     async send(s) {
       const body = multipartBody([
         {

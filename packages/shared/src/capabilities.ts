@@ -740,6 +740,18 @@ export interface CapabilityFeatures {
    * vaults.
    */
   connected_app_reads?: boolean;
+  /**
+   * Connected apps' links and deletes (0.9.0, APP3): `POST
+   * /apps/documents/{id}/links` mints a single-use link its user's browser
+   * opens within 2 minutes, for a session of 10 minutes there (the drawn
+   * pages on `/a`, or the file), and `DELETE /apps/documents/{id}` lets go
+   * of a document it sent, or moves it to the Trash, as an owner chose
+   * (`delete_mode`). The scopes `documents.links` (which needs
+   * `documents.read` too, and `documents.download` as well for a download
+   * link, whose bytes count against the app's day) and `documents.delete`.
+   * Absent from older vaults.
+   */
+  connected_app_links?: boolean;
 }
 
 export interface CapabilityLimits {

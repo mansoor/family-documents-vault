@@ -47,8 +47,9 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
           ? { payload: init.body }
           : {}),
       // Sign-in is rate-limited per address; each call is its own peer. An
-      // app's calls come from this machine: plain http is let in only so.
-      remoteAddress: /^https?:\/\/[^/]+\/api\/v1\/apps\//.test(url)
+      // app's calls come from this machine: plain http is let in only so;
+      // and its user's browser opening its link (APP3) stays at one address.
+      remoteAddress: /^https?:\/\/[^/]+\/api\/v1\/app(?:s|-links)\//.test(url)
         ? '127.0.0.1'
         : `10.66.${++peer >> 8}.${peer & 0xff}`,
     });
@@ -248,6 +249,21 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
     addSignIn: async (token, who) => {
       await api.stepUp(token, { password: ctx.password });
       return (await h.join({ access_token: token } as Tokens, who)).member_id;
+    },
+    // What a person's filing does to what an app sent (APP3): from the app's
+    // batch in their Inbox, as they would file it.
+    fileAppSend: async (token, app, _externalId, file) => {
+      const batches = await api.batches(token);
+      const batch = batches.items.find((b) => b.name?.startsWith(`From ${app.name}`));
+      if (!batch) throw new Error(`no batch from ${app.name}`);
+      const detail = await api.batch(token, batch.id);
+      const item = detail.items.find((i) => i.sha256 === file.sha256);
+      if (!item) throw new Error('the app’s file is not in its batch');
+      const filed = await api.acceptBatchItem(token, batch.id, item.id, {
+        type_key: 'utility_bill',
+        title: `Filed from ${app.name}`,
+      });
+      return filed.document_id;
     },
     // An authenticator, turned on from the session the password just opened,
     // and its code given for what an owner power asks (A54).

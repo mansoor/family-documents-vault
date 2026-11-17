@@ -2,12 +2,18 @@ import {
   APP_EMPTY_DIGEST,
   APP_GRANTABLE_CATEGORIES,
   APP_HINTS,
+  APP_LINK_COOKIE,
+  APP_LINK_OPEN_SECONDS,
+  APP_LINK_PAGE,
+  APP_LINK_SESSION_MINUTES,
+  APP_LINK_SESSION_PATH,
   APP_SCOPES_DEFAULT,
   APP_SCOPES_OFFERED,
   APP_SIGNATURE_WINDOW_SECONDS,
   APP_REFUSALS,
   appMayRead,
   appSensitiveConfirmWords,
+  canShareToView,
   deriveStatus,
   localToday,
   parseAppMetadata,
@@ -38,6 +44,13 @@ import type { FetchLike, ResponseLike } from '../http.js';
  * (`appMayRead`), through its grants; a feed kept as the vault keeps it —
  * what each app was told of each document, and a line each time that
  * changes — and downloads of the file's bytes.
+ *
+ * Links and deletes (APP3): a link minted for a document the app may read,
+ * opened once within two minutes for a session of ten (its cookie on the
+ * session's path alone), the rule asked again at each request; a view's
+ * one page is a few bytes, as the fake draws nothing. Addresses are the
+ * real vault's to test. A delete of its own document: let go of, or moved
+ * to the Trash, as the owner chose.
  */
 
 /** A document of the fake's, as an app's reading needs it. */
@@ -84,6 +97,21 @@ export interface FakeIntake {
   sha256: string | null;
   byte_size: number | null;
   received_at: string | null;
+  /** Let go of by the app (APP3): no longer its own. */
+  unlinked?: boolean;
+}
+
+/** A link an app minted (APP3), and its session once opened. */
+export interface FakeAppLink {
+  token: string;
+  document_id: string;
+  version_id: string;
+  mode: 'view' | 'download';
+  created_at: number;
+  open_by: number;
+  opened_at: number | null;
+  cookie: string | null;
+  session_until: number | null;
 }
 
 export interface FakeApp {
@@ -119,6 +147,10 @@ export interface FakeApp {
   /** Bytes a day it may download, and what it downloaded today: a test lowers it to see 429 and 413. */
   daily_read_bytes?: number;
   read_bytes_today?: number;
+  /** What a delete does, and the links it may mint an hour (APP3). */
+  delete_mode?: 'unlink' | 'trash';
+  links_per_hour?: number;
+  links?: FakeAppLink[];
 }
 
 export interface FakeAppDeps {
@@ -141,6 +173,8 @@ export interface FakeAppDeps {
   }>;
   /** The fake's documents, as an app's reading needs them (APP2). */
   documents?: () => FakeReadableDoc[];
+  /** A document moved to the Trash by an app's delete (APP3). */
+  trash?: (id: string) => void;
   ok: (body: unknown, status?: number, headers?: Record<string, string>) => ResponseLike;
   /** Bytes as they are, for a download (APP2). */
   raw: (status: number, bytes: Uint8Array, headers: Record<string, string>) => ResponseLike;
@@ -152,7 +186,7 @@ export interface FakeAppDeps {
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const APP_ROUTE =
-  /^\/api\/v1\/apps\/(me|intake|intake\/[^/]+|keys|keys\/[^/]+|documents|documents\/[^/]+|documents\/[^/]+\/content|changes)$/;
+  /^\/api\/v1\/apps\/(me|intake|intake\/[^/]+|keys|keys\/[^/]+|documents|documents\/[^/]+|documents\/[^/]+\/content|documents\/[^/]+\/links|changes)$/;
 
 async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
   const own = new Uint8Array(bytes.length);
@@ -234,6 +268,12 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       grants: [...(a.grants ?? [])],
       daily_read_bytes: 1024 ** 3,
       read_today: 0,
+      delete_mode: a.delete_mode ?? 'unlink',
+      links_per_hour: a.links_per_hour ?? 60,
+      links_last_hour: (a.links ?? []).filter((l) => l.created_at > Date.now() - 3_600_000).length,
+      links_opened_week: (a.links ?? []).filter(
+        (l) => l.opened_at !== null && l.opened_at > Date.now() - 7 * 864e5,
+      ).length,
       connection_string: `fdvapp1.${toBase64(new TextEncoder().encode(json), true)}`,
       address: { url: 'https://fake.example', public: false },
     };
@@ -243,9 +283,9 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     s: FakeIntake,
     readableIds: ReadonlySet<string> = new Set(),
   ): AppIntakeState => {
-    // Filed, and no longer the app's to read: unavailable, never why.
+    // Filed, and no longer the app's to read, or let go of: unavailable, never why.
     const filed = s.state === 'filed';
-    const still = filed && !!s.document_id && readableIds.has(s.document_id);
+    const still = filed && !s.unlinked && !!s.document_id && readableIds.has(s.document_id);
     return {
       external_id: externalId,
       state: filed && !still ? 'unavailable' : s.state,
@@ -334,6 +374,9 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         if (!scopes) return d.fail(422, 'validation_failed', 'Choose what it may do.', 'scopes');
         a.scopes = scopes;
       }
+      const links = linksOf(body);
+      if ('fail' in links) return links.fail;
+      Object.assign(a, links.set);
       d.apps.push(a);
       return d.ok(await view(a, who), 201);
     }
@@ -372,6 +415,9 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         if (!scopes) return d.fail(422, 'validation_failed', 'Choose what it may do.', 'scopes');
         a.scopes = scopes;
       }
+      const links = linksOf(body);
+      if ('fail' in links) return links.fail;
+      Object.assign(a, links.set);
       return d.ok(await view(a, who));
     }
     if (what === '/grants' && method === 'PUT') {
@@ -436,6 +482,36 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     return null;
   };
 
+  /** What a delete does, and links an hour (APP3), as an owner sets them. */
+  const linksOf = (
+    body: Record<string, unknown>,
+  ): { set: Partial<FakeApp> } | { fail: ResponseLike } => {
+    const set: Partial<FakeApp> = {};
+    if (body.delete_mode !== undefined) {
+      if (body.delete_mode !== 'unlink' && body.delete_mode !== 'trash') {
+        return {
+          fail: d.fail(
+            422,
+            'validation_failed',
+            'What a delete does: unlink or trash.',
+            'delete_mode',
+          ),
+        };
+      }
+      set.delete_mode = body.delete_mode;
+    }
+    if (body.links_per_hour !== undefined) {
+      const n = body.links_per_hour;
+      if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || n > 600) {
+        return {
+          fail: d.fail(422, 'validation_failed', 'Links an hour: 1 to 600.', 'links_per_hour'),
+        };
+      }
+      set.links_per_hour = n;
+    }
+    return { set };
+  };
+
   /** Scopes as an owner gives them: those this vault grants, at least one. */
   const scopesOf = (v: unknown): AppScope[] | null =>
     Array.isArray(v) &&
@@ -451,9 +527,11 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     const today = localToday(d.timezone());
     const kinds = d.kinds();
     // Its own: a document a send of its made (not one it was filed into),
-    // while its current version is one the app sent.
+    // not let go of (APP3), while its current version is one the app sent.
     const own = new Map<string, string>();
-    const filed = [...a.intake].filter(([, s]) => s.state === 'filed' && s.document_id);
+    const filed = [...a.intake].filter(
+      ([, s]) => s.state === 'filed' && s.document_id && !s.unlinked,
+    );
     for (const [externalId, s] of filed) {
       if (s.made_document && s.document_id && !own.has(s.document_id)) {
         own.set(s.document_id, externalId);
@@ -681,9 +759,13 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         ? null
         : path.endsWith('/content')
           ? 'documents.download'
-          : path.startsWith('/api/v1/apps/documents') || path === '/api/v1/apps/changes'
-            ? 'documents.read'
-            : 'documents.send';
+          : path.endsWith('/links')
+            ? 'documents.links'
+            : method === 'DELETE' && /^\/api\/v1\/apps\/documents\/[^/]+$/.test(path)
+              ? 'documents.delete'
+              : path.startsWith('/api/v1/apps/documents') || path === '/api/v1/apps/changes'
+                ? 'documents.read'
+                : 'documents.send';
     const a = await signed(method, target, headers, body, scope, me);
     if (!('intake' in a)) return a;
     const params = new Map(
@@ -733,6 +815,90 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         items,
         next: all.length > from + limit ? `list-${from + limit}` : null,
       });
+    }
+    const linkAt = /^\/api\/v1\/apps\/documents\/([^/]+)\/links$/.exec(path);
+    if (linkAt && method === 'POST') {
+      let asked: unknown;
+      try {
+        asked = JSON.parse(new TextDecoder().decode(body));
+      } catch {
+        asked = null;
+      }
+      const mode = (asked as { mode?: unknown } | null)?.mode;
+      if (mode !== 'view' && mode !== 'download') {
+        return d.fail(422, 'validation_failed', 'mode is "view" or "download".', 'mode');
+      }
+      // Any link needs reading too; a download link, downloading as well.
+      const needs: AppScope[] =
+        mode === 'download' ? ['documents.read', 'documents.download'] : ['documents.read'];
+      const missing = needs.find((x) => !(a.scopes ?? APP_SCOPES_DEFAULT).includes(x));
+      if (missing) {
+        return d.fail(403, 'scope_not_granted', APP_REFUSALS.scope_not_granted, missing);
+      }
+      const r = (await readable(a)).get(linkAt[1] as string);
+      if (!r || !r.v) return notFound();
+      if (mode === 'view' && !canShareToView(r.v.mime)) {
+        return d.fail(409, 'view_unavailable', APP_REFUSALS.view_unavailable);
+      }
+      const now = Date.now();
+      const links = (a.links ??= []);
+      const hour = links
+        .filter((l) => l.created_at > now - 3_600_000)
+        .map((l) => l.created_at)
+        .sort((x, y) => x - y);
+      const cap = a.links_per_hour ?? 60;
+      if (hour.length >= cap) {
+        // Retriable, when the (n − cap)th of the hour, oldest first, is an hour old.
+        const at = hour[hour.length - cap] ?? now;
+        const wait = Math.max(1, Math.ceil((at + 3_600_000 - now) / 1000));
+        return d.ok(
+          {
+            error: {
+              code: 'app_links_full',
+              message: APP_REFUSALS.app_links_full,
+              retriable: true,
+              request_id: 'fake',
+            },
+          },
+          429,
+          { 'retry-after': String(wait) },
+        );
+      }
+      const token = toBase64(crypto.getRandomValues(new Uint8Array(32)), true);
+      links.push({
+        token,
+        document_id: r.doc.id,
+        version_id: r.v.id,
+        mode,
+        created_at: now,
+        open_by: now + APP_LINK_OPEN_SECONDS * 1000,
+        opened_at: null,
+        cookie: null,
+        session_until: null,
+      });
+      return d.ok(
+        {
+          url: `https://fake.example/api/v1/app-links/${token}`,
+          mode,
+          open_by: new Date(now + APP_LINK_OPEN_SECONDS * 1000).toISOString(),
+          session_minutes: APP_LINK_SESSION_MINUTES,
+        },
+        201,
+      );
+    }
+    const deleteAt = /^\/api\/v1\/apps\/documents\/([^/]+)$/.exec(path);
+    if (deleteAt && method === 'DELETE') {
+      // Its own alone: one it reads by a grant, or may not read, is 404.
+      const r = (await readable(a)).get(deleteAt[1] as string);
+      if (!r || !r.doc.own) return notFound();
+      for (const s of a.intake.values()) {
+        if (s.state === 'filed' && s.document_id === r.doc.id) s.unlinked = true;
+      }
+      if ((a.delete_mode ?? 'unlink') === 'trash') {
+        d.trash?.(r.doc.id);
+        return d.ok({ document_id: r.doc.id, result: 'trashed' });
+      }
+      return d.ok({ document_id: r.doc.id, result: 'unlinked' });
     }
     const docAt = /^\/api\/v1\/apps\/documents\/([^/]+)(\/content)?$/.exec(path);
     if (docAt && method === 'GET') {
@@ -879,10 +1045,11 @@ export function fakeAppRoutes(d: FakeAppDeps) {
           bytes_today: a.bytes_today,
           read_bytes_per_day: a.daily_read_bytes ?? 1024 ** 3,
           read_bytes_today: a.read_bytes_today ?? 0,
-          links_per_hour: 60,
+          links_per_hour: a.links_per_hour ?? 60,
           requests_per_minute: 120,
           day_resets_at: new Date(Date.now() + 864e5).toISOString(),
         },
+        delete_mode: a.delete_mode ?? 'unlink',
         backfill: null,
         keys: [],
       };
@@ -997,5 +1164,102 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     return d.fail(404, 'not_found', 'Nothing by that id that this app may see.');
   };
 
-  return { family, app };
+  /**
+   * What its user's browser asks (APP3): the token, once, within two
+   * minutes, then the session's cookie on the session's path alone. Each
+   * request asks the app's rule again: a document it may no longer read,
+   * an app paused or removed, ends it.
+   */
+  const links = async (
+    url: string,
+    init: Parameters<FetchLike>[1],
+  ): Promise<ResponseLike | null> => {
+    const path = url.replace(/^[a-z]+:\/\/[^/]+/i, '').split('?')[0] as string;
+    if (!path.startsWith('/api/v1/app-links/')) return null;
+    const method = init.method ?? 'GET';
+    if (method !== 'GET') return d.fail(404, 'not_found', 'Nothing here.');
+    const headers = Object.fromEntries(
+      Object.entries(init.headers).map(([k, v]) => [k.toLowerCase(), v]),
+    );
+    const redirect = (to: string, more: Record<string, string> = {}) =>
+      d.raw(303, new Uint8Array(), { location: to, ...more });
+    const all = () => d.apps.flatMap((a) => (a.links ?? []).map((l) => ({ a, l })));
+    const good = async (a: FakeApp, l: FakeAppLink) => {
+      const scopes = a.scopes ?? APP_SCOPES_DEFAULT;
+      if (a.revoked || a.paused || a.approval !== 'approved') return null;
+      if (!scopes.includes('documents.links') || !scopes.includes('documents.read')) return null;
+      if (l.mode === 'download' && !scopes.includes('documents.download')) return null;
+      return (await readable(a)).get(l.document_id) ?? null;
+    };
+    const ended = () => d.fail(410, 'link_ended', APP_REFUSALS.link_ended);
+    const inSession = async () => {
+      const cookie = /(?:^|;\s*)__Secure-fdv_app_link=([A-Za-z0-9_-]{43})/.exec(
+        headers.cookie ?? '',
+      )?.[1];
+      const found = all().find(
+        (x) => cookie && x.l.cookie === cookie && (x.l.session_until ?? 0) > Date.now(),
+      );
+      if (!found) return null;
+      const r = await good(found.a, found.l);
+      return r ? { ...found, r } : null;
+    };
+    if (path === APP_LINK_SESSION_PATH) {
+      const s = await inSession();
+      if (!s) return ended();
+      return d.ok({
+        app: s.a.name,
+        mode: s.l.mode,
+        title: s.r.doc.title,
+        pages: s.l.mode === 'view' ? { state: 'ready', count: 1 } : { state: 'none', count: 0 },
+        ends_at: new Date(s.l.session_until as number).toISOString(),
+      });
+    }
+    const pageAt = /^\/api\/v1\/app-links\/session\/pages\/(\d+)$/.exec(path);
+    if (pageAt) {
+      const s = await inSession();
+      if (!s) return ended();
+      if (s.l.mode !== 'view' || pageAt[1] !== '1') {
+        return d.fail(404, 'no_preview', 'There is no such page.');
+      }
+      // The fake draws nothing: a page is a JPEG's first bytes.
+      return d.raw(200, new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), {
+        'content-type': 'image/jpeg',
+        'cache-control': 'private, no-store',
+      });
+    }
+    if (path === `${APP_LINK_SESSION_PATH}/file`) {
+      const s = await inSession();
+      if (!s) return redirect(`${APP_LINK_PAGE}#ended`);
+      const v = s.r.v;
+      if (s.l.mode !== 'download' || !v) return d.fail(404, 'not_found', 'Nothing here.');
+      // Counted against the app's own day, as its downloads are.
+      const cap = s.a.daily_read_bytes ?? 1024 ** 3;
+      if ((s.a.read_bytes_today ?? 0) + v.bytes.length > cap) {
+        return redirect(`${APP_LINK_PAGE}#full`);
+      }
+      s.a.read_bytes_today = (s.a.read_bytes_today ?? 0) + v.bytes.length;
+      return d.raw(200, v.bytes, {
+        'content-type': v.mime,
+        'content-disposition': `attachment; filename="${v.filename.replace(/"/g, '')}"`,
+        'x-content-type-options': 'nosniff',
+        'cache-control': 'no-store',
+        'content-length': String(v.bytes.length),
+      });
+    }
+    const token = /^\/api\/v1\/app-links\/([^/]+)$/.exec(path)?.[1] ?? '';
+    const found = all().find((x) => x.l.token === token);
+    if (!found) return redirect(`${APP_LINK_PAGE}#ended`);
+    const { a, l } = found;
+    if (l.opened_at !== null) return redirect(`${APP_LINK_PAGE}#used`);
+    if (l.open_by <= Date.now() || !(await good(a, l))) return redirect(`${APP_LINK_PAGE}#ended`);
+    const now = Date.now();
+    l.opened_at = now;
+    l.cookie = toBase64(crypto.getRandomValues(new Uint8Array(32)), true);
+    l.session_until = now + APP_LINK_SESSION_MINUTES * 60_000;
+    return redirect(l.mode === 'view' ? APP_LINK_PAGE : `${APP_LINK_SESSION_PATH}/file`, {
+      'set-cookie': `${APP_LINK_COOKIE}=${l.cookie}; Max-Age=${APP_LINK_SESSION_MINUTES * 60}; Path=${APP_LINK_SESSION_PATH}; HttpOnly; Secure; SameSite=Lax`,
+    });
+  };
+
+  return { family, app, links };
 }

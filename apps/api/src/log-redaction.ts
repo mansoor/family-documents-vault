@@ -46,6 +46,11 @@ const SECRET_SEGMENT = new RegExp(
       // A connected app's external id (0.9.0, APP1): its own id for a paper
       // of somebody's, opaque but theirs, and kept out of every log.
       '/api/v1/apps/intake/',
+      // A connected app's link (0.9.0, APP3): single-use and two minutes
+      // long, but the whole key to a document while it lasts. Its session's
+      // routes carry nothing in their paths (the cookie is never logged), so
+      // that one name is kept.
+      `/api/v1/app-links/${kept('session')}`,
       // The pages a browser opens from links made before 0.5.14 (a share's)
       // and 0.5.17 (a reset's, an invitation's); and a request's page with
       // something after it that it never has (5.21).

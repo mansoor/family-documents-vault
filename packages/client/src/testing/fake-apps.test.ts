@@ -167,3 +167,124 @@ describe('the fake vault: what a connected app reads (APP2)', () => {
     }
   });
 });
+
+describe('the fake vault: a connected app’s links and deletes (APP3)', () => {
+  it('a link opens once, its session reads the rule again; a delete lets go, or trashes, its own alone', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const t = await api.setup({
+      household_name: 'The fake family',
+      display_name: 'Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    vault.state.ownerTwoStep = true;
+    const token = t.access_token;
+    const made = await api.connectedApps.create(token, {
+      name: 'Linker',
+      member_id: t.member_id,
+      public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+      allowed_kinds: ['utility_bill'],
+      scopes: ['documents.send', 'documents.read', 'documents.links', 'documents.delete'],
+    });
+    expect(made).toMatchObject({ delete_mode: 'unlink', links_per_hour: 60 });
+    const app = createAppClient({
+      baseUrl: 'https://fake.example',
+      appId: made.id,
+      keyId: made.keys[0]?.key_id as string,
+      privateKey: KEY,
+      fetch: vault.fetch,
+    });
+    const day = new Date(Date.now() - 20 * 864e5).toISOString().slice(0, 10);
+    const file = async (key: string, title: string) => {
+      const form = multipartBody([
+        {
+          name: 'metadata',
+          value: JSON.stringify({
+            type_key: 'utility_bill',
+            title,
+            owner_member_id: t.member_id,
+            issued: { date: day, precision: 'day' },
+            visibility: 'household',
+          }),
+        },
+        { name: 'file', filename: `${title}.pdf`, contentType: 'application/pdf', bytes: PDF },
+      ]);
+      return (
+        await api.capture(
+          token,
+          { kind: 'bytes', bytes: form.bytes, contentType: form.contentType },
+          key,
+        )
+      ).document_id;
+    };
+    const send = async (externalId: string, title: string, key: string) => {
+      await app.send({
+        externalId,
+        hints: { kind: 'utility_bill' },
+        file: { bytes: PDF, filename: 'bill.pdf', contentType: 'application/pdf' },
+      });
+      const id = await file(key, title);
+      vault.fileAppIntake(made.id, externalId, id);
+      return id;
+    };
+    const own = await send('own-1', 'Own bill', 'b1b2c3d4-0000-4000-8000-000000000001');
+    expect((await app.me()).delete_mode).toBe('unlink');
+
+    // A link: opened once, within its time, for a session in that browser.
+    const minted = await app.link(own, 'view');
+    expect(minted).toMatchObject({ mode: 'view', session_minutes: 10 });
+    const path = minted.url.replace(/^[a-z]+:\/\/[^/]+/i, '');
+    const get = (p: string, cookie?: string) =>
+      vault.fetch(`https://fake.example${p}`, {
+        method: 'GET',
+        headers: cookie ? { cookie } : {},
+      });
+    const opened = await get(path);
+    expect([opened.status, opened.headers.get('location')]).toEqual([303, '/a']);
+    const cookie = (opened.headers.get('set-cookie') ?? '').split(';')[0] as string;
+    expect(opened.headers.get('set-cookie')).toMatch(
+      /^__Secure-fdv_app_link=[A-Za-z0-9_-]{43}; .*Path=\/api\/v1\/app-links\/session; HttpOnly; Secure; SameSite=Lax$/,
+    );
+    const again = await get(path);
+    expect([again.status, again.headers.get('location')]).toEqual([303, '/a#used']);
+    const session = await get('/api/v1/app-links/session', cookie);
+    expect(await session.json()).toMatchObject({ app: 'Linker', mode: 'view', title: 'Own bill' });
+    expect((await get('/api/v1/app-links/session/pages/1', cookie)).status).toBe(200);
+    expect((await get('/api/v1/app-links/session')).status).toBe(410);
+    // A download link needs its scope too.
+    const noDownload = await refusal(app.link(own, 'download'));
+    expect([noDownload.status, noDownload.code]).toEqual([403, 'scope_not_granted']);
+    // Too late: ended.
+    const late = await app.link(own, 'view');
+    const link = vault.state.connectedApps
+      ?.find((a) => a.id === made.id)
+      ?.links?.find((l) => late.url.endsWith(l.token));
+    if (!link) throw new Error('no link');
+    link.open_by = Date.now() - 1;
+    expect((await get(late.url.replace(/^[a-z]+:\/\/[^/]+/i, ''))).headers.get('location')).toBe(
+      '/a#ended',
+    );
+
+    // A delete: unlinked, still in the vault; a second time, not its own.
+    expect(await app.delete(own)).toEqual({ document_id: own, result: 'unlinked' });
+    expect(await app.status('own-1')).toMatchObject({ state: 'unavailable', document_id: null });
+    expect((await get('/api/v1/app-links/session', cookie)).status).toBe(410);
+    const twice = await refusal(app.delete(own));
+    expect([twice.status, twice.code]).toEqual([404, 'not_found']);
+    // Granted, not its own: 404.
+    await api.connectedApps.setGrants(token, made.id, {
+      grants: [{ category: 'bills', lookback_months: 12 }],
+    });
+    expect((await app.document(own)).own).toBe(false);
+    const granted = await refusal(app.delete(own));
+    expect([granted.status, granted.code]).toEqual([404, 'not_found']);
+    // To the Trash, when the owner says.
+    await api.connectedApps.update(token, made.id, { delete_mode: 'trash' });
+    const second = await send('own-2', 'Second bill', 'b1b2c3d4-0000-4000-8000-000000000002');
+    expect(await app.delete(second)).toEqual({ document_id: second, result: 'trashed' });
+    const gone = await refusal(app.document(second));
+    expect([gone.status, gone.code]).toEqual([404, 'not_found']);
+    expect(vault.state.documents.find((d) => d.id === second)?.deleted_at).toBeTruthy();
+  });
+});

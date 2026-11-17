@@ -330,6 +330,9 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       backfill: null,
       // Sending, and reading what it sent and is granted: downloading only when ticked.
       scopes: ['documents.send', 'documents.read'],
+      // Its deletes let go, and 60 links an hour, unless an owner says (APP3).
+      delete_mode: 'unlink',
+      links_per_hour: 60,
     });
     const created = state.connectedApps?.[0];
     expect(within(made).getByText(created?.keys[0]?.fingerprint ?? '?')).toHaveTextContent(
@@ -429,6 +432,53 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     expect(calls(state, 'PATCH', '/api/v1/connected-apps/').at(-1)?.body).toEqual({
       name: 'MonTra Pro',
     });
+  });
+
+  it('an owner lets it show and delete: what a delete does, and links an hour, after a passkey or a code (APP3)', async () => {
+    const state = at('/settings/connected-apps', {
+      connectedApps: [AHMEDS],
+      stepUpNeeded: true,
+    });
+    const card = await screen.findByRole('region', { name: 'MonTra' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Change MonTra' }));
+    const mode = within(card).getByLabelText('When it deletes a document it sent');
+    expect(mode).toHaveValue('unlink');
+    expect(mode).toHaveAccessibleDescription(/Only me papers/);
+    expect(within(card).getByLabelText(/^Documents it may show its user/)).toHaveValue('60');
+    await expectAccessible();
+    fireEvent.click(
+      within(card).getByLabelText(
+        'Show its user documents it may read, for 10 minutes (with reading)',
+      ),
+    );
+    fireEvent.click(
+      within(card).getByLabelText('Delete the documents it sent, as you choose below'),
+    );
+    fireEvent.change(mode, { target: { value: 'trash' } });
+    fireEvent.change(within(card).getByLabelText(/^Documents it may show its user/), {
+      target: { value: '601' },
+    });
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
+    expect(await within(card).findByText('Links an hour: 1 to 600.')).toBeInTheDocument();
+    fireEvent.change(within(card).getByLabelText(/^Documents it may show its user/), {
+      target: { value: '20' },
+    });
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
+    await confirmWithCode();
+    expect(
+      await screen.findByText('Saved. MonTra may do what it now says here.'),
+    ).toBeInTheDocument();
+    expect(calls(state, 'PATCH', '/api/v1/connected-apps/').at(-1)?.body).toEqual({
+      scopes: ['documents.send', 'documents.links', 'documents.delete'],
+      delete_mode: 'trash',
+      links_per_hour: 20,
+    });
+    expect(
+      await within(card).findByText(
+        'It moves it to the Trash, where it can be restored for 30 days.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(card).getByText('0 of 20 this hour; 0 opened this week')).toBeInTheDocument();
   });
 
   it('an owner says what it may read: a kind or a category and how far back, Sensitive asked once (APP2)', async () => {

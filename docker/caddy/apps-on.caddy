@@ -4,8 +4,10 @@
 # /etc/caddy/apps.caddy, which Caddyfile.public-only imports. With it the
 # site also serves the connected apps' routes, which an app on the internet
 # signs every request to (anything not signed by a connected app's key is
-# refused by the vault), and the capability document the app reads first.
-# Nothing else is added. Files an app sends are the vault's to limit, as a
+# refused by the vault), and the capability document the app reads first;
+# and (APP3) the links an app mints for its user's browser
+# (/api/v1/app-links/*, a single-use token, then a session's cookie) and the
+# page a view link opens (/a). Nothing else is added. Files an app sends are the vault's to limit, as a
 # sender's are. The vault is told the request came this way (X-FDV-Site),
 # whatever the caller wrote, and leaves the family's name out of the
 # capability document it answers here.
@@ -21,11 +23,22 @@ handle @apps_bad_uri {
 	respond 404
 }
 
-@apps_api path /api/v1/apps/* /api/v1/capabilities
+@apps_api path /api/v1/apps/* /api/v1/capabilities /api/v1/app-links/*
 
 handle @apps_api {
 	reverse_proxy api:3000 {
 		header_up X-FDV-Site public
+		flush_interval -1
+	}
+}
+
+# The page a connected app's view link opens (APP3): its user's browser is
+# sent to /api/v1/app-links/<token>, and on to /a with its session. The page
+# loads the app's own files (/assets/*, which the site serves already).
+@apps_page path /a /a/
+
+handle @apps_page {
+	reverse_proxy web:80 {
 		flush_interval -1
 	}
 }

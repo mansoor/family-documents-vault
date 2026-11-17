@@ -2,9 +2,14 @@ import {
   APP_BACKFILL_MAX_DAYS,
   APP_DEFAULT_DAILY_BYTES,
   APP_DEFAULT_DAILY_FILES,
+  APP_DEFAULT_LINKS_PER_HOUR,
+  APP_DELETE_MODE_DEFAULT,
+  APP_DELETE_MODE_WORDS,
+  APP_DELETE_MODES,
   APP_GRANTABLE_CATEGORIES,
   APP_GRANTS_MAX,
   APP_IP_ALLOW_MAX,
+  APP_LINKS_PER_HOUR_MAX,
   APP_LOOKBACK_MAX_MONTHS,
   APP_NAME_MAX,
   APP_REFUSAL_SHORT,
@@ -17,6 +22,7 @@ import {
   lookbackWords,
   NOTE_KIND,
   roleLabel,
+  type AppDeleteMode,
   type AppKeyView,
   type AppScope,
   type ConnectedAppChange,
@@ -54,6 +60,11 @@ import { SettingsPage } from './Settings.js';
  * back — asked once when that takes in papers Sensitive by their kind.
  * Never identity, legal or medical papers: only the categories an app may
  * ever be given are offered.
+ *
+ * Links and deletes (APP3): whether it may show its user a document (a link
+ * that opens once, for ten minutes) and how many links an hour; whether it
+ * may delete what it sent, and what a delete does — let go of it, keeping
+ * it in the vault, or move it to the Trash.
  */
 
 const MB = 1024 * 1024;
@@ -122,8 +133,12 @@ interface AppForm {
   until: string;
   backfillFiles: string;
   backfillMb: string;
-  /** What it may do: send, read, download. */
+  /** What it may do: send, read, download, show, delete. */
   scopes: AppScope[];
+  /** What a delete does (APP3). */
+  deleteMode: AppDeleteMode;
+  /** Links it may make an hour (APP3), as typed. */
+  links: string;
 }
 
 type Ceilings = ConnectedAppList['ceilings'];
@@ -176,6 +191,10 @@ function readForm(f: AppForm, ceilings: Ceilings): Read {
   const mb = whole(f.mb, 1, maxMb);
   if (mb === null) return { ok: false, error: `MB a day: 1 to ${maxMb}.` };
   if (f.scopes.length === 0) return { ok: false, error: 'Choose what it may do.' };
+  const links = whole(f.links, 1, APP_LINKS_PER_HOUR_MAX);
+  if (links === null) {
+    return { ok: false, error: `Links an hour: 1 to ${APP_LINKS_PER_HOUR_MAX}.` };
+  }
   const ip = lines(f.ip);
   if (ip.length > APP_IP_ALLOW_MAX) {
     return { ok: false, error: `${APP_IP_ALLOW_MAX} addresses or networks at most.` };
@@ -208,6 +227,8 @@ function readForm(f: AppForm, ceilings: Ceilings): Read {
       ip_allow: ip,
       backfill,
       scopes: APP_SCOPES_OFFERED.filter((s) => f.scopes.includes(s)),
+      delete_mode: f.deleteMode,
+      links_per_hour: links,
     },
   };
 }
@@ -227,9 +248,11 @@ function blankForm(me: string): AppForm {
     until: '',
     backfillFiles: String(APP_DEFAULT_DAILY_FILES),
     backfillMb: String(Math.round(APP_DEFAULT_DAILY_BYTES / MB)),
-    // Sending, and reading what it sent and what it is granted; downloading
-    // only when an owner ticks it.
+    // Sending, and reading what it sent and what it is granted; downloading,
+    // showing and deleting only when an owner ticks them.
     scopes: ['documents.send', 'documents.read'],
+    deleteMode: APP_DELETE_MODE_DEFAULT,
+    links: String(APP_DEFAULT_LINKS_PER_HOUR),
   };
 }
 
@@ -249,6 +272,8 @@ function formOf(app: ConnectedAppView): AppForm {
     backfillFiles: String(app.backfill?.files_per_day ?? app.daily_files),
     backfillMb: String(Math.round((app.backfill?.bytes_per_day ?? app.daily_bytes) / MB)),
     scopes: [...app.scopes],
+    deleteMode: app.delete_mode ?? APP_DELETE_MODE_DEFAULT,
+    links: String(app.links_per_hour ?? APP_DEFAULT_LINKS_PER_HOUR),
   };
 }
 
@@ -272,6 +297,8 @@ function changeOf(start: AppForm, now: AppForm, value: Extract<Read, { ok: true 
         now.backfillMb.trim() !== start.backfillMb));
   if (backfillMoved) change.backfill = value.backfill ?? null;
   if (!sameSet(now.scopes, start.scopes)) change.scopes = value.scopes as AppScope[];
+  if (now.deleteMode !== start.deleteMode) change.delete_mode = now.deleteMode;
+  if (now.links.trim() !== start.links) change.links_per_hour = value.links_per_hour as number;
   return change;
 }
 
@@ -449,6 +476,28 @@ function AppFields(props: {
           legal or medical papers, nothing Only me or Essential, nothing marked Sensitive.
         </p>
       </fieldset>
+      <Select
+        id={`${id}-delete`}
+        label="When it deletes a document it sent"
+        value={form.deleteMode}
+        describedBy={`${id}-delete-note`}
+        options={APP_DELETE_MODES.map((m) => ({ value: m, label: APP_DELETE_MODE_WORDS[m] }))}
+        onChange={(v) => put({ deleteMode: v as AppDeleteMode })}
+      />
+      <p id={`${id}-delete-note`} className="muted field-note">
+        Only a document a file it sent became — not a paper of yours its file was added to — while
+        nobody has added a newer file. Only me papers, and anything it may not read, it cannot
+        touch.
+      </p>
+      <Field
+        id={`${id}-links`}
+        label="Documents it may show its user, an hour"
+        value={form.links}
+        inputMode="numeric"
+        required={false}
+        note={`Each opens once, within 2 minutes, for 10 minutes, in one browser. Up to ${APP_LINKS_PER_HOUR_MAX}.`}
+        onChange={(v) => put({ links: v })}
+      />
       <fieldset className="limits-set">
         <legend className="field-label">Kinds it may send</legend>
         <p className="muted" id={`${id}-kinds-note`}>
@@ -1147,6 +1196,22 @@ function AppCard(props: {
             <>
               <dt>Downloaded today</dt>
               <dd>{`${amountWords(app.read_today ?? 0)} of ${amountWords(app.daily_read_bytes)}`}</dd>
+            </>
+          )}
+          {app.scopes.includes('documents.links') && app.links_per_hour !== undefined && (
+            <>
+              <dt>Documents shown</dt>
+              <dd>
+                {`${app.links_last_hour ?? 0} of ${app.links_per_hour} this hour; ${
+                  app.links_opened_week ?? 0
+                } opened this week`}
+              </dd>
+            </>
+          )}
+          {app.scopes.includes('documents.delete') && (
+            <>
+              <dt>When it deletes</dt>
+              <dd>{APP_DELETE_MODE_WORDS[app.delete_mode ?? APP_DELETE_MODE_DEFAULT]}</dd>
             </>
           )}
           <dt>Kinds it may send</dt>

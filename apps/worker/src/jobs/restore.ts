@@ -932,6 +932,12 @@ begin
     update public.connected_app set signed_after = now() where revoked_at is null;
     delete from public.connected_app_nonce;
   end if;
+  -- And their links (0111, APP3): every link and session from before the
+  -- restore ends — a token or a cookie used since the backup would
+  -- otherwise work again.
+  if to_regclass('public.connected_app_link') is not null then
+    delete from public.connected_app_link;
+  end if;
   if to_regclass('public.reading_check') is not null then
     update public.reading_check set state = 'failed', failure = 'restored', finished_at = now()
      where state in ('waiting', 'running');
@@ -1508,6 +1514,17 @@ const UNIQUE_INDEXES = [
     table: 'connected_app_grant',
     what: 'a category a connected app reads, once',
   },
+  // A connected app's link (0111, APP3): its token, and its session, once.
+  {
+    name: 'connected_app_link_token_once',
+    table: 'connected_app_link',
+    what: 'a connected app’s link, once',
+  },
+  {
+    name: 'connected_app_link_session_once',
+    table: 'connected_app_link',
+    what: 'a connected app’s link session, once',
+  },
   // One Reading check waiting or running a household (0074, R0).
   {
     name: 'reading_check_one_running',
@@ -1652,6 +1669,23 @@ const REQUIRED_CHECKS = [
     name: 'connected_app_change_change',
     table: 'connected_app_change',
     what: 'a connected app’s feed line, changed or unavailable',
+  },
+  // A connected app's deletes and links (0111, APP3): what a delete does,
+  // a bounded number of links an hour, and a link to view or download.
+  {
+    name: 'connected_app_delete_mode',
+    table: 'connected_app',
+    what: 'what a connected app’s delete does, unlink or trash',
+  },
+  {
+    name: 'connected_app_links_per_hour',
+    table: 'connected_app',
+    what: 'the links a connected app makes an hour, 1 to 600',
+  },
+  {
+    name: 'connected_app_link_mode',
+    table: 'connected_app_link',
+    what: 'a connected app’s link, to view or to download',
   },
 ];
 
@@ -1844,6 +1878,9 @@ const ACTOR_GUARDED = [
   'connected_app_grant',
   'connected_app_seen',
   'connected_app_change',
+  // Its links (0111, APP3): counted by the owners and its person, written
+  // by the vault alone.
+  'connected_app_link',
 ];
 
 /**
@@ -2269,6 +2306,26 @@ const REQUIRED_RULES = [
     name: 'connected_app_grant_actor_delete',
     cmd: 'd',
     what: 'who takes away what a connected app reads',
+  },
+  // A connected app's links (0111, APP3): minted, opened and ended by the
+  // vault alone, whoever else may count them.
+  {
+    table: 'connected_app_link',
+    name: 'connected_app_link_actor_insert',
+    cmd: 'a',
+    what: 'who makes a connected app’s link',
+  },
+  {
+    table: 'connected_app_link',
+    name: 'connected_app_link_actor_update',
+    cmd: 'w',
+    what: 'who opens a connected app’s link',
+  },
+  {
+    table: 'connected_app_link',
+    name: 'connected_app_link_actor_delete',
+    cmd: 'd',
+    what: 'who takes away a connected app’s link',
   },
   // A person's Only me identity details are theirs alone, whoever asks (0050, A33).
   {

@@ -359,6 +359,16 @@ begin
     revoke execute on function public.app_connected_app_versions() from public;
     grant execute on function public.app_connected_app_versions() to fdv_app;
   end if;
+  -- Which link a token, or a link's session, names (0111, APP3): asked
+  -- before the household is known.
+  if to_regprocedure('public.connected_app_link_find(bytea)') is not null then
+    revoke execute on function public.connected_app_link_find(bytea) from public;
+    grant execute on function public.connected_app_link_find(bytea) to fdv_app;
+    revoke execute on function public.connected_app_link_session_find(bytea) from public;
+    grant execute on function public.connected_app_link_session_find(bytea) to fdv_app;
+    revoke execute on function public.connected_app_links_hold(uuid) from public;
+    grant execute on function public.connected_app_links_hold(uuid) to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

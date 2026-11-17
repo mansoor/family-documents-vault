@@ -85,7 +85,7 @@ interface DocRowLike {
   no_longer_needed_at: Date | null;
 }
 
-interface VersionRowLike {
+export interface VersionRowLike {
   id: string;
   document_id: string;
   version_no: number;
@@ -102,7 +102,7 @@ interface VersionRowLike {
 }
 
 /** One document the app may read, as it is told of it, and the fingerprint of that. */
-interface Readable1 {
+export interface Readable1 {
   doc: AppDocument;
   fingerprint: Buffer;
   version: VersionRowLike | null;
@@ -234,9 +234,10 @@ export class AppReads {
   /**
    * What the app may read now, by id: read as the app (the database's
    * rule), each held to the API's own copy of the rule, and told as the
-   * vault has it. `only` narrows it to some documents.
+   * vault has it. `only` narrows it to some documents. Asked by links and
+   * deletes (APP3) too, in their own transaction.
    */
-  private async readable(
+  async readable(
     trx: Db,
     c: AppCaller,
     only: string[] | null = null,

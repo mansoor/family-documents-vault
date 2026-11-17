@@ -83,7 +83,7 @@ import { registerAiReader, type AiReaderService } from './household/ai-reader.js
 import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
 import { ownNetworks, trustProxyFor } from './client-address.js';
-import { GUEST_OWNS_NOTHING } from '@fdv/shared';
+import { APP_LINK_PATH, GUEST_OWNS_NOTHING } from '@fdv/shared';
 import { ApiError, notFound, notReady } from './errors.js';
 
 /**
@@ -256,7 +256,13 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     // What a stranger's browser is sent (5.16): the share routes answer
     // people outside the family, and whatever they are sent — a file of
     // any kind included — is never framed, sniffed, run or passed on.
-    if (req.url.startsWith(`${SHARE_COOKIE_PATH}/`) || req.url.startsWith(`${DROP_COOKIE_PATH}/`)) {
+    // A connected app's links (0.9.0, APP3) are opened by its user's
+    // browser: the same.
+    if (
+      req.url.startsWith(`${SHARE_COOKIE_PATH}/`) ||
+      req.url.startsWith(`${DROP_COOKIE_PATH}/`) ||
+      req.url.startsWith(`${APP_LINK_PATH}/`)
+    ) {
       for (const [name, value] of Object.entries(PUBLIC_API_HEADERS)) reply.header(name, value);
     }
   });

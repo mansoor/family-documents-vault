@@ -4546,6 +4546,86 @@ export class DocumentService {
     };
   }
 
+  /**
+   * One page of a version as the vault drew it, for a connected app's link
+   * (0.9.0, APP3): asked in the vault's own transaction, once the link and
+   * the app's read rule have been checked. Its key is opened here; the
+   * bytes are read after the transaction ends. Pages not drawn yet are
+   * `pending` (and asked for once, as the family's own reading asks); a
+   * file the vault cannot draw, or a page past those drawn, `none`.
+   */
+  async appPage(
+    trx: Db,
+    householdId: string,
+    v: {
+      id: string;
+      document_id: string;
+      storage_key: string;
+      vault_id: string;
+      wrapped_by_scope: string;
+      file_key_wrapped: Buffer;
+      mime: string;
+      preview_state: string;
+      preview_pages: number | null;
+      preview_requested_at: Date | null;
+      file_removed_at: Date | null;
+    },
+    page: number,
+  ): Promise<{ kind: 'ready'; read: () => Promise<Buffer> } | { kind: 'pending' | 'none' }> {
+    if (v.file_removed_at || isRecordFormat(v.mime)) return { kind: 'none' };
+    if (v.preview_state === 'unsupported' || v.preview_state === 'failed') return { kind: 'none' };
+    if (page > PREVIEW_MAX_PAGES) return { kind: 'none' };
+    if (v.preview_state !== 'ready') {
+      const lost =
+        v.preview_state === 'queued' &&
+        (!v.preview_requested_at ||
+          Date.now() - new Date(v.preview_requested_at).getTime() > PREVIEW_REQUEUE_MS);
+      if (v.preview_state === 'none' || lost) {
+        await trx
+          .updateTable('document_version')
+          .set({ preview_state: 'queued', preview_requested_at: new Date() })
+          .where('id', '=', v.id)
+          .execute();
+        await this.enqueue(
+          PREVIEWS_JOB,
+          { household_id: householdId, version_id: v.id },
+          { singletonKey: previewJobKey(v.id), priority: 10 },
+        ).catch(() => undefined);
+      }
+      return { kind: 'pending' };
+    }
+    if (page > (v.preview_pages ?? 0)) return { kind: 'none' };
+    const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
+    const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
+    const adapter = await this.vaults.adapterById(trx, v.vault_id);
+    const key = `${v.storage_key}.p${page}.enc`;
+    return {
+      kind: 'ready',
+      read: async () => {
+        const dec = new DecryptStream(fileKey);
+        const [, plain] = await Promise.all([pipeline(await adapter.get(key), dec), readAll(dec)]);
+        return plain;
+      },
+    };
+  }
+
+  /**
+   * A connected app's document moved to the Trash, as its person would
+   * (0.9.0, APP3): in the vault's own transaction, once the app's read
+   * rule and its own-ness have been checked and the document held. Its
+   * reminders go as any document's in the Trash do. The caller writes the
+   * activity line.
+   */
+  async appTrash(trx: Db, householdId: string, id: string, accountId: string): Promise<void> {
+    await trx
+      .updateTable('document')
+      .set({ deleted_at: new Date(), updated_at: new Date(), updated_by: accountId })
+      .where('id', '=', id)
+      .where('deleted_at', 'is', null)
+      .execute();
+    await this.reminders?.regenerateDerived(trx, householdId, id);
+  }
+
   // ---------------------------------------------------------------- helpers
 
   private async columns(trx: Db, p: Principal, input: DocumentInput, current: DocRow | null) {

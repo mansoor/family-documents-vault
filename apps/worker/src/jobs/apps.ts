@@ -17,6 +17,11 @@ import type pg from 'pg';
  * changes_pruned_to). What it was told of a document it can no longer read
  * goes after 90 days too; a revoked app's feed goes at once.
  *
+ * An app's links (APP3) work for two minutes, and their sessions for ten:
+ * a link is kept 8 days after it was minted, so Settings can say how many
+ * were opened in the last week, then it goes; a revoked app's at once. Only
+ * hashes are kept of its token and its session, never either.
+ *
  * As the owning role: these rows are the vault's alone to remove, every
  * household's at once, and none of them says anything about a person.
  */
@@ -28,9 +33,12 @@ export const APP_ARRIVING_GIVE_UP_MINUTES = 60;
 /** Lines of an app's changes feed are kept this many days (APP2). */
 export const APP_CHANGES_KEEP_DAYS = 90;
 
+/** An app's link is kept this many days after it was minted (APP3): Settings counts a week. */
+export const APP_LINKS_KEEP_DAYS = 8;
+
 export async function sweepApps(
   admin: pg.Pool,
-): Promise<{ nonces: number; sent: number; stuck: number; changes: number }> {
+): Promise<{ nonces: number; sent: number; stuck: number; changes: number; links: number }> {
   const nonces = await admin.query(
     'delete from public.connected_app_nonce where expires_at < now()',
   );
@@ -87,10 +95,18 @@ export async function sweepApps(
                      where a.id = s.app_id and a.revoked_at is not null)`,
     [APP_CHANGES_KEEP_DAYS],
   );
+  const links = await admin.query(
+    `delete from public.connected_app_link l
+      where l.created_at < now() - make_interval(days => $1)
+         or exists (select 1 from public.connected_app a
+                     where a.id = l.app_id and a.revoked_at is not null)`,
+    [APP_LINKS_KEEP_DAYS],
+  );
   return {
     nonces: nonces.rowCount ?? 0,
     sent: sent.rowCount ?? 0,
     stuck: gone.rowCount ?? 0,
     changes: changes.rowCount ?? 0,
+    links: links.rowCount ?? 0,
   };
 }

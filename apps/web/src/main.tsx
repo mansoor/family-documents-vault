@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
 import { holdAccountLinkToken, reopenOnNewLink, takeLinkToken } from './link-token.js';
+import { AppLinkPage } from './screens/AppLinkPage.js';
 import { DropPage } from './screens/DropPage.js';
 import { SharePage } from './screens/SharePage.js';
 import { followTheme } from './theme.js';
@@ -37,6 +38,15 @@ if (/^\/s\/?$/.test(window.location.pathname)) {
   root.render(
     <StrictMode>
       <DropPage token={token} />
+    </StrictMode>,
+  );
+} else if (/^\/a\/?$/.test(window.location.pathname)) {
+  // The page a connected app's view link opens (0.9.0, APP3), on its own as
+  // /s is: no sign-in, no session, no capability document. Its session is a
+  // cookie the link set; a hash says the link was used or has ended.
+  root.render(
+    <StrictMode>
+      <AppLinkPage hash={window.location.hash} />
     </StrictMode>,
   );
 } else {
