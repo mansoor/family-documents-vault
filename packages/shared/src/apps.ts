@@ -186,6 +186,9 @@ export const APP_BACKFILL_MAX_DAYS = 30;
 export const APP_FILE_READY_JOB = 'apps.file_ready';
 /** The owner's switch, in Settings → Connected apps (APP4). */
 export const APP_AUTO_FILE_WORDS = 'File when everything is sure and complete';
+
+/** The switch that sends each paper to the Inbox of the person it is about (APP5), in Settings. */
+export const APP_ROUTE_WORDS = 'Send each paper to the Inbox of the person it’s about';
 /** Addresses and networks an app's allow-list holds at most. */
 export const APP_IP_ALLOW_MAX = 10;
 /** The longest an app's name may be. */
@@ -493,6 +496,13 @@ export interface AppIntakeState {
   filed_at: string | null;
   removed_reason: 'withdrawn' | 'declined' | 'expired' | null;
   refusal: 'kind_not_allowed' | 'unsupported_type' | 'too_large' | null;
+  /**
+   * Whether the exact file of this send can be downloaded again by its
+   * external id (APP5, `GET /apps/intake/{external_id}/content`): filed,
+   * its file still the vault's, its document out of the Trash and not Only
+   * me — `filed` or `unavailable` alike. False for anything else.
+   */
+  content_available: boolean;
 }
 
 /** `GET /apps/intake?external_ids=`: the states, and the ids this app never sent. */
@@ -636,6 +646,11 @@ export interface ConnectedAppView {
   /** What a delete does, and the links it may mint an hour (APP3). */
   delete_mode?: AppDeleteMode;
   links_per_hour?: number;
+  /**
+   * Each paper it sends to the Inbox of the person it is about, when that
+   * person is an adult of the family who signs in (APP5); else its person's.
+   */
+  route_to_person: boolean;
   /** Links it minted in the last hour, and those opened in the last 7 days (APP3). */
   links_last_hour?: number;
   links_opened_week?: number;
@@ -675,6 +690,8 @@ export interface ConnectedAppInput {
   delete_mode?: AppDeleteMode;
   /** Links it may mint an hour (APP3): 60 when left out. */
   links_per_hour?: number;
+  /** Each paper to the Inbox of the person it is about (APP5): on when left out. */
+  route_to_person?: boolean;
 }
 
 /** `PATCH /api/v1/connected-apps/{id}`: what is sent changes; the rest stays. */
@@ -693,6 +710,7 @@ export type ConnectedAppChange = Partial<
     | 'delete_mode'
     | 'links_per_hour'
     | 'auto_file'
+    | 'route_to_person'
   >
 >;
 
@@ -977,6 +995,31 @@ export function appMayRead(c: AppReadCase): boolean {
       (g.kind_key === key || g.category === category) &&
       d.paper_date >= lookbackStart(c.today, g.lookback_months) &&
       (d.sensitive === false || !kindSensitive || g.sensitive_kinds.includes(key)),
+  );
+}
+
+/**
+ * Whether an app may download again the exact file a send of its became
+ * (APP5), whether or not it may read the document now: the API's own copy
+ * of the database's rule (connected_app_sent_versions), for a send filed
+ * and not let go of. Its file still kept, its document out of the Trash and
+ * seen by Everyone or Adults only — never Only me, whoever's it is — and
+ * its own category and its kind's both ones an app may ever be given (a
+ * paper made an identity, legal or medical one since is never an app's).
+ */
+export function appMayDownloadSent(v: {
+  deleted: boolean;
+  visibility: string;
+  file_removed: boolean;
+  category: string | null;
+  kind_category: string | null;
+}): boolean {
+  return (
+    !v.deleted &&
+    !v.file_removed &&
+    (v.visibility === 'household' || v.visibility === 'adults') &&
+    appGrantable(v.category) &&
+    appGrantable(v.kind_category)
   );
 }
 

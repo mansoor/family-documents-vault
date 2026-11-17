@@ -8220,6 +8220,64 @@ item_id }` (`stately`, keyed by the item) once it has read such an
       anything but `packages/client/src` and `packages/shared/src` went in,
       or anything is left to install but what `scripts/mit-packages.mjs`
       allows them (the list `check-mit-boundary.mjs` now reads too).
+  - Connected apps: their own sends again, and whose Inbox (0.9.0-dev.60,
+    APP5). Migration 0113. **Additive.**
+    - **`GET /api/v1/apps/intake/{external_id}/content`** (signed,
+      `documents.download`): the exact file the app's send became, by its
+      own external id — while that version is still the vault's (its file
+      kept), its document out of the Trash and not Only me, its category and
+      its kind's still ones an app may ever be given, and the send not let
+      go of — whether or not the app may read the document now (filed into
+      a family paper as a new version, or a newer family file after it).
+      Answered as `GET /apps/documents/{id}/content` is: an attachment,
+      nosniff, sandbox CSP, no-store, `ETag` the version's id (`304`),
+      `Range` (`206`), counted against `read_bytes_per_day` (`413`, `429`
+      as there). Anything else `404 not_found`. Activity:
+      `document.downloaded` with `detail.app` and `detail.sent: true`, the
+      same line as a download. In the database: under the app actor,
+      `document_version` also gives `app_connected_app_sent_versions()`
+      (`connected_app_sent_versions(uuid)`, security definer); the API asks
+      its own copy, `appMayDownloadSent` in `@fdv/shared`.
+    - **Intake state** gains `content_available` (boolean) on every state
+      object: whether that route gives the file now (`filed` and
+      `unavailable` alike; false otherwise, and always false without
+      `documents.download`).
+    - **`POST` and `PATCH /api/v1/connected-apps`** take `route_to_person`
+      (boolean; on when left out of a create; switched on widens, so an app
+      acting as somebody else waits for them again); not a boolean is
+      `422 validation_failed` (`route_to_person`). `ConnectedAppView` says
+      `route_to_person`. Apps connected before 0113 have it off.
+    - **Whose Inbox:** with it on, a send whose `person` hint names (by
+      `member_id`, or a `name` matched as before) an owner or an adult of
+      the family with a sign-in in this household, neither locked nor
+      paused, is that person's upload — in their own batch ("From <app>,
+      <date>", one an app a person a household day; `intake_batch_app_day_key`
+      is now `(app_id, member_id, app_day, app_part)`), wrapped under their
+      key, reviewed and filed as them, and filed automatically as them.
+      Anything else, a kind that usually belongs to the household, and an
+      app with it off: the app's person's, as before. The app's caps count
+      every send. The app is never told; `connected_app_intake` keeps it
+      (`inbox_member_id`). The database lets a batch name an app for such a
+      person alone (`connected_app_inbox(uuid, uuid)` in
+      `intake_batch_app_insert`); the Inbox reads an item's app, kinds and
+      hints through `connected_app_items(uuid[])`, which gives somebody
+      signed in their own batches' items alone. A withdraw takes the item
+      out of the Inbox it is in. `@fdv/db` gains `actAs`: the app's own rows
+      are written as its person inside the recipient's transaction (only as
+      somebody of the household as they are). A send lands only while the
+      app's person is still an owner or adult, neither locked nor paused
+      (`403 member_locked` / `member_paused`), and the person it goes to
+      neither locked nor paused (else `503 busy`, retriable: sent again, it
+      goes where the rule says then); an automatic filing checks the same
+      of its person in its own transaction.
+    - **Activity:** `app.sent` and `app.withdrawn` name the member whose
+      Inbox it was (`object_id`): "… sent a file to Sara's Inbox" when that
+      is not the app's person; folded per Inbox. Settings' `counts` count
+      the app's person's own Inbox.
+    - **Client:** `AppClient.sentFile(externalId, { range, ifNoneMatch })`.
+      **Fake vault:** the same routing (`appInboxOf` in `@fdv/shared`, kept
+      on the send as `inbox_member_id`, filed automatically as that person)
+      and the same re-download rule; a contract scenario runs on both.
 
 ## Deprecations in effect
 

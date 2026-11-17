@@ -749,6 +749,7 @@ describe.skipIf(!testAdminUrl())('connected apps read (0.9.0, APP2)', () => {
       filed_at: null,
       removed_reason: null,
       refusal: null,
+      content_available: false,
     });
     const after = (await call(a, `/api/v1/apps/changes?cursor=${start.cursor}`)).json<AppChanges>();
     expect(after.changes).toEqual([

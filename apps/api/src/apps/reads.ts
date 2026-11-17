@@ -6,6 +6,8 @@ import {
   APP_LIST_DEFAULT,
   APP_PAGE_MAX,
   APP_REFUSALS,
+  EXTERNAL_ID_PATTERN,
+  appMayDownloadSent,
   appMayRead,
   attachmentDisposition,
   deliveredType,
@@ -100,6 +102,27 @@ export interface VersionRowLike {
   uploaded_at: Date;
   file_removed_at: Date | null;
 }
+
+/**
+ * The columns of a version an app's own send became that are read to serve
+ * its bytes again (APP5): its file, its keys and its name — never the
+ * details a version keeps of its document.
+ */
+export const SENT_VERSION_COLUMNS = [
+  'id',
+  'document_id',
+  'version_no',
+  'filename',
+  'mime',
+  'byte_size',
+  'sha256',
+  'storage_key',
+  'vault_id',
+  'wrapped_by_scope',
+  'file_key_wrapped',
+  'uploaded_at',
+  'file_removed_at',
+] as const;
 
 /** One document the app may read, as it is told of it, and the fingerprint of that. */
 export interface Readable1 {
@@ -243,29 +266,7 @@ export class AppReads {
     only: string[] | null = null,
   ): Promise<Map<string, Readable1>> {
     if (only && only.length === 0) return new Map();
-    // The app as it is now: one paused, waiting or removed since its request
-    // was let in reads nothing — and is told so, never handed an empty
-    // household (whose feed would say every document had gone).
-    const person = await trx
-      .selectFrom('connected_app as a')
-      .innerJoin('account_household as ah', (j) =>
-        j
-          .onRef('ah.account_id', '=', 'a.account_id')
-          .onRef('ah.household_id', '=', 'a.household_id')
-          .onRef('ah.member_id', '=', 'a.member_id'),
-      )
-      .select(['ah.role', 'a.revoked_at', 'a.paused_reason', 'a.approval'])
-      .where('a.id', '=', c.appId)
-      .executeTakeFirst();
-    if (!person || person.revoked_at || !['owner', 'adult'].includes(person.role)) {
-      throw new ApiError(401, 'app_revoked', APP_REFUSALS.app_revoked);
-    }
-    if (person.paused_reason) throw new ApiError(403, 'app_paused', APP_REFUSALS.app_paused);
-    if (person.approval !== 'approved') {
-      throw new ApiError(403, 'app_not_approved', APP_REFUSALS.app_not_approved);
-    }
-    const hh = await trx.selectFrom('household').select('timezone').executeTakeFirstOrThrow();
-    const zone = householdZone(hh.timezone);
+    const { person, zone } = await this.appNow(trx, c);
     // Today as the database counts it: its own clock, on the household's calendar.
     const today = localToday(zone, new Date());
     const { docs, versions } = await readAsApp(trx, c.appId, zone, async (t) => {
@@ -396,6 +397,129 @@ export class AppReads {
       out.set(d.id, { doc, fingerprint: fingerprintOfDocument(doc), version: v, title: d.title });
     }
     return out;
+  }
+
+  /**
+   * The app as it is now: one paused, waiting or removed since its request
+   * was let in reads nothing — and is told so, never handed an empty
+   * household (whose feed would say every document had gone). Its person's
+   * role, and the household's calendar.
+   */
+  private async appNow(trx: Db, c: AppCaller): Promise<{ person: { role: string }; zone: string }> {
+    const person = await trx
+      .selectFrom('connected_app as a')
+      .innerJoin('account_household as ah', (j) =>
+        j
+          .onRef('ah.account_id', '=', 'a.account_id')
+          .onRef('ah.household_id', '=', 'a.household_id')
+          .onRef('ah.member_id', '=', 'a.member_id'),
+      )
+      .select(['ah.role', 'a.revoked_at', 'a.paused_reason', 'a.approval'])
+      .where('a.id', '=', c.appId)
+      .executeTakeFirst();
+    if (!person || person.revoked_at || !['owner', 'adult'].includes(person.role)) {
+      throw new ApiError(401, 'app_revoked', APP_REFUSALS.app_revoked);
+    }
+    if (person.paused_reason) throw new ApiError(403, 'app_paused', APP_REFUSALS.app_paused);
+    if (person.approval !== 'approved') {
+      throw new ApiError(403, 'app_not_approved', APP_REFUSALS.app_not_approved);
+    }
+    const hh = await trx.selectFrom('household').select('timezone').executeTakeFirstOrThrow();
+    return { person, zone: householdZone(hh.timezone) };
+  }
+
+  /**
+   * The versions it sent that it may download again (APP5), by its
+   * external ids: read as the app (the database's rule, 0113's
+   * connected_app_sent_versions), and each held to the API's own copy of the
+   * rule (`appMayDownloadSent`) against the document as the vault has it.
+   * The send's version, never another; the document's other files and its
+   * details are not read so.
+   */
+  private async sentVersions(
+    trx: Db,
+    c: AppCaller,
+    externalIds: string[],
+  ): Promise<Map<string, VersionRowLike>> {
+    const out = new Map<string, VersionRowLike>();
+    const { zone } = await this.appNow(trx, c);
+    const sends = await trx
+      .selectFrom('connected_app_intake')
+      .select(['external_id', 'document_id', 'version_id'])
+      .where('app_id', '=', c.appId)
+      .where('external_id', 'in', externalIds)
+      .where('state', '=', 'filed')
+      .where('unlinked_at', 'is', null)
+      .execute();
+    const filed = sends.filter(
+      (r): r is { external_id: string; document_id: string; version_id: string } =>
+        r.document_id !== null && r.version_id !== null,
+    );
+    if (filed.length === 0) return out;
+    // What serving its bytes needs, and nothing else: an older version
+    // carries the document's details as they were, and none of them is ever
+    // read here, let alone answered — the route gives the file alone.
+    const versions = (await readAsApp(trx, c.appId, zone, (t) =>
+      t
+        .selectFrom('document_version')
+        .select(SENT_VERSION_COLUMNS)
+        .where(
+          'id',
+          'in',
+          filed.map((r) => r.version_id),
+        )
+        .execute(),
+    )) as unknown as VersionRowLike[];
+    if (versions.length === 0) return out;
+    const docs = await trx
+      .selectFrom('document')
+      .select(['id', 'deleted_at', 'visibility', 'category', 'type_key'])
+      .where(
+        'id',
+        'in',
+        versions.map((v) => v.document_id),
+      )
+      .execute();
+    const keys = [...new Set(docs.map((d) => d.type_key).filter((k): k is string => !!k))];
+    const kinds =
+      keys.length === 0
+        ? []
+        : await trx
+            .selectFrom('effective_document_type')
+            .select(['key', 'category'])
+            .where('key', 'in', keys)
+            .execute();
+    const kindBy = new Map(kinds.map((k) => [k.key, k.category]));
+    const docBy = new Map(docs.map((d) => [d.id, d]));
+    const versionBy = new Map(versions.map((v) => [v.id, v]));
+    for (const r of filed) {
+      const v = versionBy.get(r.version_id);
+      const d = v ? docBy.get(v.document_id) : undefined;
+      if (
+        v &&
+        d &&
+        v.document_id === r.document_id &&
+        appMayDownloadSent({
+          deleted: d.deleted_at !== null,
+          visibility: d.visibility,
+          file_removed: v.file_removed_at !== null,
+          category: d.category,
+          kind_category: d.type_key ? (kindBy.get(d.type_key) ?? null) : null,
+        })
+      ) {
+        out.set(r.external_id, v);
+      }
+    }
+    return out;
+  }
+
+  /** Which of these sends' own files the app may download again (APP5): its intake's `content_available`. */
+  async sentAvailable(c: AppCaller, externalIds: string[]): Promise<Set<string>> {
+    const wanted = [...new Set(externalIds.filter((i) => EXTERNAL_ID_PATTERN.test(i)))];
+    if (wanted.length === 0) return new Set();
+    return withSystem(this.db, c.householdId, async (trx) => {
+      return new Set((await this.sentVersions(trx, c, wanted)).keys());
+    });
   }
 
   /** Which of these documents the app may still read (its intake's `filed` or `unavailable`). */
@@ -787,73 +911,138 @@ export class AppReads {
       const r = (await this.readable(trx, c, [docId])).get(docId);
       const v = r?.version;
       if (!r || !v || v.file_removed_at) throw notFound();
-      const etag = `"${v.id}"`;
-      const asked = (headers.ifNoneMatch ?? '')
-        .split(',')
-        .map((t) => t.trim().replace(/^W\//, ''))
-        .filter(Boolean);
-      if (asked.includes(etag) || asked.includes('*')) return { kind: 'same' as const, etag };
-      const total = Number(v.byte_size);
-      const range = parseRange(headers.range, total);
-      const bytes = range ? range.end - range.start + 1 : total;
-      // More than it may download in a whole day: never, however long it
-      // waits — so said, not to be retried; a Range takes it in parts.
-      const cap = await trx
-        .selectFrom('connected_app')
-        .select('daily_read_bytes')
-        .where('id', '=', c.appId)
-        .executeTakeFirstOrThrow();
-      if (bytes > Number(cap.daily_read_bytes)) {
-        throw new ApiError(413, 'larger_than_daily_read', APP_REFUSALS.larger_than_daily_read, {
-          detail: String(cap.daily_read_bytes),
-        });
-      }
-      // Within the day's download bytes, counted with the app held.
-      const hh = await trx.selectFrom('household').select('timezone').executeTakeFirstOrThrow();
-      const zone = householdZone(hh.timezone);
-      const day = localToday(zone, new Date(this.opts.now()));
-      const counted = await trx
-        .updateTable('connected_app')
-        .set({
-          read_day: day,
-          read_bytes_today: sql<string>`case when read_day = ${day}::date then read_bytes_today + ${bytes} else ${bytes} end`,
-        })
-        .where('id', '=', c.appId)
-        .where(
-          sql<boolean>`(case when read_day = ${day}::date then read_bytes_today else 0 end) + ${bytes} <= daily_read_bytes`,
-        )
-        .returning('id')
-        .executeTakeFirst();
-      if (!counted) {
-        const wait = Math.max(
-          1,
-          Math.ceil(
-            (nextLocalMidnight(zone, new Date(this.opts.now())).getTime() - this.opts.now()) / 1000,
-          ),
-        );
-        throw new ApiError(429, 'app_read_day_full', APP_REFUSALS.app_read_day_full, {
-          retriable: true,
-          retryAfter: wait,
-        });
-      }
-      await holdForReading(trx, docId);
-      const open = await this.opts.documents.appVersionBytes(trx, v);
-      await appendAudit(trx, {
-        householdId: c.householdId,
-        actorAccountId: c.accountId,
-        action: 'document.downloaded',
-        objectType: 'document',
-        objectId: docId,
-        detail: {
-          app_id: c.appId,
-          app: c.name,
-          version_no: v.version_no,
-          range: range ? `${range.start}-${range.end}` : null,
-        },
-        ip: meta.ip,
-      });
-      return { kind: 'bytes' as const, etag, v, total, range, open };
+      return this.counted(trx, c, v, headers, meta, {});
     });
+    return this.answered(got);
+  }
+
+  /**
+   * `GET /apps/intake/{external_id}/content` (APP5): the exact file a send
+   * of its became, by its own external id — while that file is still one of
+   * the vault's versions, its document out of the Trash and not Only me —
+   * whether or not the app may read the document now (a file filed into a
+   * family paper as a new version, or one a newer family file came after).
+   * Served, counted and written down as its downloads are; its ETag is the
+   * version's id. Anything else is 404, as one never sent.
+   */
+  async sentContent(
+    c: AppCaller,
+    externalId: string,
+    headers: { range?: string | undefined; ifNoneMatch?: string | undefined },
+    meta: RequestMeta,
+  ): Promise<
+    | { status: 304; etag: string }
+    | {
+        status: 200 | 206;
+        etag: string;
+        headers: Record<string, string>;
+        stream: Readable;
+      }
+  > {
+    if (!EXTERNAL_ID_PATTERN.test(externalId)) throw notFound();
+    const got = await withSystem(this.db, c.householdId, async (trx) => {
+      const v = (await this.sentVersions(trx, c, [externalId])).get(externalId);
+      if (!v) throw notFound();
+      return this.counted(trx, c, v, headers, meta, { sent: true });
+    });
+    return this.answered(got);
+  }
+
+  /**
+   * A version's bytes for the app, in the vault's own transaction once the
+   * app's rule has given it: `304` for its ETag; else within the app's
+   * download bytes for the day, counted with the app held, its document
+   * held while its line is written, its key opened. The bytes are read
+   * once the transaction is over.
+   */
+  private async counted(
+    trx: Db,
+    c: AppCaller,
+    v: VersionRowLike,
+    headers: { range?: string | undefined; ifNoneMatch?: string | undefined },
+    meta: RequestMeta,
+    more: Record<string, unknown>,
+  ) {
+    const docId = v.document_id;
+    const etag = `"${v.id}"`;
+    const asked = (headers.ifNoneMatch ?? '')
+      .split(',')
+      .map((t) => t.trim().replace(/^W\//, ''))
+      .filter(Boolean);
+    if (asked.includes(etag) || asked.includes('*')) return { kind: 'same' as const, etag };
+    const total = Number(v.byte_size);
+    const range = parseRange(headers.range, total);
+    const bytes = range ? range.end - range.start + 1 : total;
+    // More than it may download in a whole day: never, however long it
+    // waits — so said, not to be retried; a Range takes it in parts.
+    const cap = await trx
+      .selectFrom('connected_app')
+      .select('daily_read_bytes')
+      .where('id', '=', c.appId)
+      .executeTakeFirstOrThrow();
+    if (bytes > Number(cap.daily_read_bytes)) {
+      throw new ApiError(413, 'larger_than_daily_read', APP_REFUSALS.larger_than_daily_read, {
+        detail: String(cap.daily_read_bytes),
+      });
+    }
+    // Within the day's download bytes, counted with the app held.
+    const hh = await trx.selectFrom('household').select('timezone').executeTakeFirstOrThrow();
+    const zone = householdZone(hh.timezone);
+    const day = localToday(zone, new Date(this.opts.now()));
+    const counted = await trx
+      .updateTable('connected_app')
+      .set({
+        read_day: day,
+        read_bytes_today: sql<string>`case when read_day = ${day}::date then read_bytes_today + ${bytes} else ${bytes} end`,
+      })
+      .where('id', '=', c.appId)
+      .where(
+        sql<boolean>`(case when read_day = ${day}::date then read_bytes_today else 0 end) + ${bytes} <= daily_read_bytes`,
+      )
+      .returning('id')
+      .executeTakeFirst();
+    if (!counted) {
+      const wait = Math.max(
+        1,
+        Math.ceil(
+          (nextLocalMidnight(zone, new Date(this.opts.now())).getTime() - this.opts.now()) / 1000,
+        ),
+      );
+      throw new ApiError(429, 'app_read_day_full', APP_REFUSALS.app_read_day_full, {
+        retriable: true,
+        retryAfter: wait,
+      });
+    }
+    await holdForReading(trx, docId);
+    const open = await this.opts.documents.appVersionBytes(trx, v);
+    await appendAudit(trx, {
+      householdId: c.householdId,
+      actorAccountId: c.accountId,
+      action: 'document.downloaded',
+      objectType: 'document',
+      objectId: docId,
+      detail: {
+        app_id: c.appId,
+        app: c.name,
+        version_no: v.version_no,
+        range: range ? `${range.start}-${range.end}` : null,
+        ...more,
+      },
+      ip: meta.ip,
+    });
+    return { kind: 'bytes' as const, etag, v, total, range, open };
+  }
+
+  /** What `counted` found, as the route answers it: the headers, and the bytes streamed. */
+  private async answered(got: Awaited<ReturnType<AppReads['counted']>>): Promise<
+    | { status: 304; etag: string }
+    | {
+        status: 200 | 206;
+        etag: string;
+        headers: Record<string, string>;
+        stream: Readable;
+      }
+  > {
     if (got.kind === 'same') return { status: 304, etag: got.etag };
     const stream = await got.open(got.range);
     const out: Record<string, string> = {

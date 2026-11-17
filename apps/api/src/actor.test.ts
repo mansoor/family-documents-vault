@@ -80,6 +80,14 @@ const ALLOWED = [
   'apps/reads.ts AppReads.document',
   'apps/reads.ts AppReads.changes',
   'apps/reads.ts AppReads.content',
+  // The exact file a send of its became, again (0.9.0, APP5): the send's
+  // version read narrowed to the app (readAsApp: the database gives it the
+  // versions it sent, while their documents are out of the Trash and not
+  // Only me), its own send and the document looked up by the vault, and the
+  // download counted, opened and written down as above; and whether each
+  // send's file can be (its intake's status).
+  'apps/reads.ts AppReads.sentAvailable',
+  'apps/reads.ts AppReads.sentContent',
   // A connected app's links and deletes (0.9.0, APP3). Minting: the app's
   // read rule asked as above (readAsApp), the link's row written and its
   // hour counted on the app (connected_app_link is the vault's to write).
@@ -322,5 +330,85 @@ describe('withSystem in the API', { timeout: 30_000 }, () => {
     // client.ts makes withSystem and the scopes, and so says app.actor and
     // 'system' itself; nothing else in the packages may.
     expect(found.filter((f) => !f.startsWith('packages/db/src/client.ts '))).toEqual([]);
+  });
+});
+
+/**
+ * Acting as another person inside somebody's own transaction (0.9.0, APP5):
+ * `actAs` writes as the person a connected app acts as, inside the
+ * transaction of the person its file went to. Each use is named here, as
+ * `withSystem`'s are; one more anywhere fails this test until somebody
+ * decides it belongs on the list.
+ */
+const ACT_AS_ALLOWED = [
+  // A send to the Inbox of the person it is about: the app's row held, its
+  // caps counted, its send's row and its activity line written as its own
+  // person, in the recipient's transaction (`asApp`).
+  'apps/service.ts asApp',
+  // A withdraw of such a send, from the recipient's Inbox (`asApp`).
+  'apps/service.ts asApp',
+  // Filing such a send automatically: the app's row held and its person
+  // read as its person, in the recipient's filing transaction.
+  'apps/auto-file.ts AppAutoFile.fileReady',
+];
+
+/** Every use of `actAs` in one file: a call, a rename, a namespace import, or the name handed on. */
+function actAsIn(file: string, text: string): string[] {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) {
+      const names = node.importClause?.namedBindings;
+      const from = ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : '';
+      if (names && ts.isNamespaceImport(names) && from === '@fdv/db') {
+        found.push(`${file} import * as ${names.name.text}`);
+      }
+      if (names && ts.isNamedImports(names)) {
+        for (const el of names.elements) {
+          if (el.propertyName?.getText() === 'actAs') {
+            found.push(`${file} actAs as ${el.name.text}`);
+          }
+        }
+      }
+      return;
+    }
+    if (ts.isIdentifier(node) && node.text === 'actAs') {
+      const called = ts.isCallExpression(node.parent) && node.parent.expression === node;
+      found.push(`${file} ${enclosing(node)}${called ? '' : ' (not a plain call)'}`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+describe('actAs in the API', { timeout: 30_000 }, () => {
+  it('actAs is called only from the allow-list', async () => {
+    const found: string[] = [];
+    for (const file of await sources()) {
+      found.push(...actAsIn(file, await readFile(path.join(SRC, file), 'utf8')));
+    }
+    expect(found.sort()).toEqual([...ACT_AS_ALLOWED].sort());
+  });
+
+  it('the check sees a call wherever it is, however it is reached', () => {
+    const code = `
+      import { actAs, actAs as asSomebody } from '@fdv/db';
+      import * as db from '@fdv/db';
+      export class Things {
+        async one() { return actAs(trx, who, f); }
+      }
+      export function viaNamespace() { return db.actAs(trx, who, f); }
+      const handedOn = { go: actAs };
+    `;
+    expect(actAsIn('x.ts', code).sort()).toEqual(
+      [
+        'x.ts actAs as asSomebody',
+        'x.ts import * as db',
+        'x.ts Things.one',
+        'x.ts viaNamespace (not a plain call)',
+        'x.ts (top level) (not a plain call)',
+      ].sort(),
+    );
   });
 });

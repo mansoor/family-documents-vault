@@ -18,6 +18,8 @@ import { createFakeVault } from './fake.js';
 describe('the fake vault keeps the contract', () => {
   const vault = createFakeVault();
   const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+  /** What a person filed of what apps sent, counted: each filing's own Idempotency-Key. */
+  let appFilings = 0;
   const ctx: ContractContext = {
     fetch: vault.fetch,
     email: 'owner@example.test',
@@ -77,7 +79,8 @@ describe('the fake vault keeps the contract', () => {
       const made = await api.capture(
         token,
         { kind: 'bytes', bytes: form.bytes, contentType: form.contentType },
-        'd7e8f9a0-1b2c-4d3e-8f4a-5b6c7d8e9f01',
+        // A key of its own each time: a second filing is a new document.
+        `d7e8f9a0-1b2c-4d3e-8f4a-${String(++appFilings).padStart(12, '0')}`,
       );
       vault.fileAppIntake(app.id, externalId, made.document_id);
       return made.document_id;

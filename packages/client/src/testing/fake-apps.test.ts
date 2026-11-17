@@ -379,3 +379,231 @@ describe('the fake vault: a connected app files automatically (APP4)', () => {
     expect([bad.status, bad.code]).toEqual([422, 'validation_failed']);
   });
 });
+
+describe('the fake vault: a connected app’s own sends again, and whose Inbox (APP5)', () => {
+  const setUp = async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const t = await api.setup({
+      household_name: 'The fake family',
+      display_name: 'Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    vault.state.ownerTwoStep = true;
+    vault.state.members.push(
+      {
+        id: '00000000-0000-4000-8000-0000000000a1',
+        display_name: 'Ahmed Khan',
+        role: 'adult',
+        is_me: false,
+      },
+      {
+        id: '00000000-0000-4000-8000-0000000000a2',
+        display_name: 'Sara Khan',
+        role: 'adult',
+        is_me: false,
+      },
+      {
+        id: '00000000-0000-4000-8000-0000000000a3',
+        display_name: 'Sara Patel',
+        role: 'adult',
+        is_me: false,
+      },
+      {
+        id: '00000000-0000-4000-8000-0000000000a4',
+        display_name: 'Tariq Khan',
+        role: 'teen',
+        is_me: false,
+      },
+      {
+        id: '00000000-0000-4000-8000-0000000000a5',
+        display_name: 'Mina Khan',
+        role: null,
+        is_me: false,
+      },
+      {
+        id: '00000000-0000-4000-8000-0000000000a6',
+        display_name: 'Gita Guest',
+        role: 'adult',
+        is_me: false,
+        kind: 'guest',
+      },
+    );
+    const made = await api.connectedApps.create(t.access_token, {
+      name: 'Router',
+      member_id: t.member_id,
+      public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+      allowed_kinds: ['bank_statement', 'utility_bill'],
+      scopes: ['documents.send', 'documents.read', 'documents.download'],
+    });
+    const app = createAppClient({
+      baseUrl: 'https://fake.example',
+      appId: made.id,
+      keyId: made.keys[0]?.key_id as string,
+      privateKey: KEY,
+      fetch: vault.fetch,
+    });
+    const send = (externalId: string, hints: Record<string, unknown>, bytes = PDF) =>
+      app.send({
+        externalId,
+        hints,
+        file: { bytes, filename: `${externalId}.pdf`, contentType: 'application/pdf' },
+      });
+    const inbox = (externalId: string) =>
+      vault.state.connectedApps?.find((a) => a.id === made.id)?.intake.get(externalId)
+        ?.inbox_member_id;
+    return { vault, api, t, made, app, send, inbox };
+  };
+
+  it('sends each paper to the Inbox of the person it is about, by the vault’s rule', async () => {
+    const { t, made, send, inbox, api, vault, app } = await setUp();
+    expect(made.route_to_person).toBe(true);
+    await send('by-id', {
+      kind: 'bank_statement',
+      person: { member_id: '00000000-0000-4000-8000-0000000000a1' },
+    });
+    expect(inbox('by-id')).toBe('00000000-0000-4000-8000-0000000000a1');
+    await send('by-name', { kind: 'bank_statement', person: { name: 'sara khan' } });
+    expect(inbox('by-name')).toBe('00000000-0000-4000-8000-0000000000a2');
+    for (const [id, hints] of [
+      ['two-saras', { kind: 'bank_statement', person: { name: 'Sara' } }],
+      [
+        'teen',
+        { kind: 'bank_statement', person: { member_id: '00000000-0000-4000-8000-0000000000a4' } },
+      ],
+      [
+        'child',
+        { kind: 'bank_statement', person: { member_id: '00000000-0000-4000-8000-0000000000a5' } },
+      ],
+      [
+        'guest',
+        { kind: 'bank_statement', person: { member_id: '00000000-0000-4000-8000-0000000000a6' } },
+      ],
+      ['household', { kind: 'bank_statement', person: { household: true } }],
+      [
+        'bill',
+        { kind: 'utility_bill', person: { member_id: '00000000-0000-4000-8000-0000000000a1' } },
+      ],
+      ['nobody', { kind: 'bank_statement' }],
+    ] as const) {
+      await send(id, hints);
+      expect([id, inbox(id)]).toEqual([id, t.member_id]);
+    }
+    // Never told whose Inbox: the state is as ever.
+    expect(JSON.stringify(await app.status('by-id'))).not.toContain(
+      '00000000-0000-4000-8000-0000000000a1',
+    );
+    // Switched off: its own person's Inbox.
+    await api.connectedApps.update(t.access_token, made.id, { route_to_person: false });
+    await send('off', {
+      kind: 'bank_statement',
+      person: { member_id: '00000000-0000-4000-8000-0000000000a1' },
+    });
+    expect(inbox('off')).toBe(t.member_id);
+    // Filed automatically as the person it went to.
+    await api.connectedApps.update(t.access_token, made.id, {
+      route_to_person: true,
+      auto_file: true,
+    });
+    await send('auto', {
+      kind: 'bank_statement',
+      person: { member_id: '00000000-0000-4000-8000-0000000000a1' },
+      title: 'A',
+    });
+    expect(
+      await vault.readAppFile(made.id, 'auto', {
+        type_key: { value: 'bank_statement', confidence: 0.95, cue: 'kind_words' },
+        owner_member_id: {
+          value: '00000000-0000-4000-8000-0000000000a1',
+          confidence: 0.95,
+          cue: 'name_on_page',
+        },
+      }),
+    ).toBe('filed');
+    const doc = vault.state.documents.find((d) => d.title === 'A');
+    expect(doc?.filed_by).toBe('00000000-0000-4000-8000-0000000000a1');
+    expect(doc?.owner_member_id).toBe('00000000-0000-4000-8000-0000000000a1');
+  });
+
+  it('the exact file a send became, again: filed, a newer family file after it, never Only me or in the Trash', async () => {
+    const { vault, api, t, made, app, send } = await setUp();
+    await send('again-1', { kind: 'bank_statement' });
+    expect((await app.status('again-1')).content_available).toBe(false);
+    const missing = await refusal(app.sentFile('again-1'));
+    expect([missing.status, missing.code]).toEqual([404, 'not_found']);
+    const form = multipartBody([
+      {
+        name: 'metadata',
+        value: JSON.stringify({
+          type_key: 'bank_statement',
+          title: 'Again',
+          owner_member_id: t.member_id,
+          visibility: 'household',
+        }),
+      },
+      { name: 'file', filename: 'again.pdf', contentType: 'application/pdf', bytes: PDF },
+    ]);
+    const doc = (
+      await api.capture(
+        t.access_token,
+        { kind: 'bytes', bytes: form.bytes, contentType: form.contentType },
+        'b1b2c3d4-0000-4000-8000-000000000001',
+      )
+    ).document_id;
+    vault.fileAppIntake(made.id, 'again-1', doc);
+    expect(await app.status('again-1')).toMatchObject({ state: 'filed', content_available: true });
+    const got = await app.sentFile('again-1');
+    expect(got.status).toBe(200);
+    expect(got.bytes).toEqual(PDF);
+    // Without the download scope: never said available, as the route refuses it.
+    await api.connectedApps.update(t.access_token, made.id, {
+      scopes: ['documents.send', 'documents.read'],
+    });
+    expect((await app.status('again-1')).content_available).toBe(false);
+    await api.connectedApps.update(t.access_token, made.id, {
+      scopes: ['documents.send', 'documents.read', 'documents.download'],
+    });
+    // A newer file from the family: not its own any more, and still its file.
+    const first = [...vault.state.captures.values()].find((c) => c.document_id === doc);
+    vault.state.captures.set('newer', {
+      ...(first as NonNullable<typeof first>),
+      version_id: 'v-newer',
+      version_no: 2,
+      bytes: new TextEncoder().encode('%PDF-1.4\n% newer\n%%EOF\n'),
+    });
+    expect(await app.status('again-1')).toMatchObject({
+      state: 'unavailable',
+      content_available: true,
+    });
+    expect((await app.sentFile('again-1')).bytes).toEqual(PDF);
+    expect((await app.sentFile('again-1', { ifNoneMatch: got.etag as string })).status).toBe(304);
+    // Only me: never.
+    const d = vault.state.documents.find((x) => x.id === doc);
+    if (!d) throw new Error('no document');
+    d.visibility = 'private';
+    expect((await refusal(app.sentFile('again-1'))).status).toBe(404);
+    expect((await app.status('again-1')).content_available).toBe(false);
+    d.visibility = 'household';
+    // In the Trash: never.
+    await api.deleteDocument(t.access_token, doc);
+    expect((await refusal(app.sentFile('again-1'))).status).toBe(404);
+    // Another app's external id: never.
+    await api.connectedApps.remove(t.access_token, made.id);
+    const other = await api.connectedApps.create(t.access_token, {
+      name: 'Other',
+      member_id: t.member_id,
+      public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+      allowed_kinds: ['bank_statement'],
+      scopes: ['documents.send', 'documents.download'],
+    });
+    const otherApp = createAppClient({
+      baseUrl: 'https://fake.example',
+      appId: other.id,
+      keyId: other.keys[0]?.key_id as string,
+      privateKey: KEY,
+      fetch: vault.fetch,
+    });
+    expect((await refusal(otherApp.sentFile('again-1'))).status).toBe(404);
+  });
+});

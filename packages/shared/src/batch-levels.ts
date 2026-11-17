@@ -1328,3 +1328,33 @@ export function personByName(
   const firsts = people.filter((p) => key(p.name).split(' ')[0] === first);
   return firsts.length === 1 ? (firsts[0]?.id ?? null) : null;
 }
+
+/**
+ * Whose Inbox a connected app's send goes to (APP5), when the app sends
+ * each paper to the person it is about: the person its hint names — by id,
+ * or by a name as `personByName` matches it among the family (never a
+ * guest) — when `receives` says they may have it (an owner or an adult of
+ * the household who signs in and may act now). Null, for the app's own
+ * person's Inbox: no person said, the household said, a kind that usually
+ * belongs to the household, a name that matched nobody or two, or somebody
+ * who may not have it.
+ */
+export function appInboxOf(input: {
+  hints: AppHints;
+  /** The kind the app said, as the household has it; null for none, or one it has not. */
+  kind: { belongs_to?: 'person' | 'household' | null } | null;
+  /** The family the app's person may file for: never a guest. */
+  people: ReadonlyArray<{ id: string; name: string }>;
+  receives: (memberId: string) => boolean;
+}): string | null {
+  const said = input.hints.person;
+  if (!said || 'household' in said) return null;
+  if (input.kind && belongsTo(input.kind) === 'household') return null;
+  const who =
+    'member_id' in said
+      ? input.people.some((p) => p.id === said.member_id)
+        ? said.member_id
+        : null
+      : personByName(said.name, input.people);
+  return who !== null && input.receives(who) ? who : null;
+}

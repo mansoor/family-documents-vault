@@ -4958,6 +4958,66 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'a connected app downloads again the exact file it sent, while its document is in the vault (0.9.0, APP5)',
+    run: async (api, ctx) => {
+      if (!ctx.fetch) throw new Error('the contract needs the fetch its vault answers on');
+      if (!ctx.fileAppSend)
+        throw new Error('the contract needs its vault to file what an app sent');
+      const owner = connectedAppOwner;
+      if (!owner) throw new Error('the connected app scenario runs first');
+      const token = owner.access_token;
+      // The filing scenario's app was removed, and its key with it: the same key, for a new app.
+      const made = await api.connectedApps.create(token, {
+        name: 'Resender',
+        member_id: owner.member_id,
+        public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+        allowed_kinds: ['utility_bill'],
+        scopes: ['documents.send', 'documents.download'],
+      });
+      // Each paper to the person it is about, unless an owner says otherwise.
+      expect(made.route_to_person).toBe(true);
+      const app = createAppClient({
+        baseUrl: api.http.baseUrl,
+        appId: made.id,
+        keyId: made.keys[0]?.key_id as string,
+        privateKey: APP_TEST_KEY_2,
+        fetch: ctx.fetch,
+      });
+      const bytes = new TextEncoder().encode('%PDF-1.4\n% the resender’s own\n%%EOF\n');
+      const sent = await app.send({
+        externalId: 'resend-1',
+        hints: { kind: 'utility_bill' },
+        file: { bytes, filename: 'resend.pdf', contentType: 'application/pdf' },
+      });
+      expect(sent.status).toBe(201);
+      expect(sent.state.content_available).toBe(false);
+      const waiting = await refusal(app.sentFile('resend-1'));
+      expect([waiting.status, waiting.code]).toEqual([404, 'not_found']);
+      const doc = await ctx.fileAppSend(token, { id: made.id, name: made.name }, 'resend-1', {
+        sha256: sent.state.sha256 as string,
+        bytes,
+      });
+      expect(await app.status('resend-1')).toMatchObject({
+        state: 'filed',
+        content_available: true,
+      });
+      const again = await app.sentFile('resend-1');
+      expect(again.status).toBe(200);
+      expect(again.bytes).toEqual(bytes);
+      expect(again.etag).toMatch(/^"[^"]+"$/);
+      expect(again.contentDisposition).toMatch(/^attachment/);
+      // In the Trash: not any more, and its status says so.
+      await api.deleteDocument(token, doc);
+      const trashed = await refusal(app.sentFile('resend-1'));
+      expect([trashed.status, trashed.code]).toEqual([404, 'not_found']);
+      expect((await app.status('resend-1')).content_available).toBe(false);
+      // Never one it did not send.
+      const never = await refusal(app.sentFile('resend-never'));
+      expect([never.status, never.code]).toEqual([404, 'not_found']);
+      await api.connectedApps.remove(token, made.id);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

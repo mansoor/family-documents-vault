@@ -77,6 +77,7 @@ const app = (over: Partial<ConnectedAppView> = {}): ConnectedAppView => ({
   allowed_kinds: ['passport'],
   default_visibility: null,
   auto_file: false,
+  route_to_person: false,
   daily_files: 100,
   daily_bytes: 500 * MB,
   backfill: null,
@@ -344,6 +345,8 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       backfill: null,
       // Everything it sends waits for a look, unless an owner says (APP4).
       auto_file: false,
+      // Each paper to the Inbox of the person it is about, unless an owner says (APP5).
+      route_to_person: true,
       // Sending, and reading what it sent and is granted: downloading only when ticked.
       scopes: ['documents.send', 'documents.read'],
       // Its deletes let go, and 60 links an hour, unless an owner says (APP3).
@@ -543,6 +546,32 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       auto_file: false,
       backfill: { files_per_day: 100, bytes_per_day: 500 * MB, auto_file: true },
     });
+  });
+
+  it('an owner sends each paper to the Inbox of the person it is about, after a passkey or a code (APP5)', async () => {
+    const state = at('/settings/connected-apps', {
+      connectedApps: [AHMEDS],
+      stepUpNeeded: true,
+    });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    // An app from before keeps its person's Inbox.
+    expect(within(card).getByText('Ahmed’s')).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole('button', { name: 'Change Acme Money' }));
+    const route = within(card).getByLabelText(
+      'Send each paper to the Inbox of the person it’s about',
+    );
+    expect(route).not.toBeChecked();
+    expect(route).toHaveAccessibleDescription(/The app is never told whose Inbox/);
+    await expectAccessible();
+    fireEvent.click(route);
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
+    await confirmWithCode();
+    expect(calls(state, 'PATCH', '/api/v1/connected-apps/').at(-1)?.body).toEqual({
+      route_to_person: true,
+    });
+    expect(
+      await within(card).findByText('The person each paper is about, else Ahmed’s'),
+    ).toBeInTheDocument();
   });
 
   it('an owner says what it may read: a kind or a category and how far back, Sensitive asked once (APP2)', async () => {
