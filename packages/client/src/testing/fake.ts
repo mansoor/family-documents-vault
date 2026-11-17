@@ -3578,6 +3578,32 @@ export function createFakeVault(): {
       mayAct: (id) =>
         state.members.some((m) => m.id === id && (m.role === 'owner' || m.role === 'adult')),
       kinds: () => state.types,
+      // Whose Inbox a send may go to (APP5): the family by name, and an owner
+      // or an adult who signs in and is neither locked nor paused.
+      people: () =>
+        state.members
+          .filter((m) => (m.kind ?? 'family') === 'family')
+          .map((m) => ({ id: m.id, name: m.display_name })),
+      receives: (id) =>
+        state.members.some(
+          (m) =>
+            m.id === id &&
+            (m.kind ?? 'family') === 'family' &&
+            (m.role === 'owner' || m.role === 'adult') &&
+            !suspensionOf(id),
+        ),
+      // Any version, by its id (APP5): the exact file a send became.
+      versionOf: (versionId) => {
+        const v = [...state.captures.values()].find((x) => x.version_id === versionId);
+        return v
+          ? {
+              document_id: v.document_id,
+              bytes: v.bytes ?? new Uint8Array(),
+              mime: v.mime,
+              filename: v.filename,
+            }
+          : null;
+      },
       // What an app reads (APP2): the fake's documents and their newest file.
       documents: () =>
         state.documents.map((doc) => {
@@ -10037,7 +10063,10 @@ export function createFakeVault(): {
     if (!app || !sent) throw new Error('no such send of that app');
     if (sent.state !== 'waiting' || sent.auto_file_held || !sent.file) return 'waiting';
     if (!fakeAppFilesAutomatically(app)) return 'waiting';
-    const member = state.members.find((m) => m.id === app.member_id);
+    // As whoever's Inbox it is in (APP5): the app's person, or the person
+    // it was sent to.
+    const inbox = sent.inbox_member_id ?? app.member_id;
+    const member = state.members.find((m) => m.id === inbox);
     const role: Role | null =
       member?.role === 'owner' || member?.role === 'adult' ? member.role : null;
     if (!role) return 'waiting';
@@ -10079,7 +10108,7 @@ export function createFakeVault(): {
       types: state.types,
       people,
       role,
-      me: app.member_id,
+      me: inbox,
       app: { name: app.name, allowed_kinds: app.allowed_kinds, hints: sent.hints ?? {} },
     };
     const levelled = levelItem(input);
@@ -10090,7 +10119,7 @@ export function createFakeVault(): {
       types: state.types,
       people: people.map((p) => ({ id: p.id, display_name: p.name })),
       role,
-      me: app.member_id,
+      me: inbox,
     });
     const kind = state.types.find((t) => t.key === card.type_key);
     const doc: FakeDocument = {
@@ -10109,7 +10138,7 @@ export function createFakeVault(): {
       notes: null,
       extra: { ...card.extra },
       visibility: card.visibility ?? 'household',
-      filed_by: app.member_id,
+      filed_by: inbox,
     };
     state.documents.push(doc);
     const version: FakeUpload = {

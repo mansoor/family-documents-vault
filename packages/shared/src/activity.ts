@@ -760,8 +760,10 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // its keys, paused, removed; and what it did, as the person it acts as
     // "via" the app. To the owners, that person and whoever did it. Never a
     // document's name, an amount or anything it sent.
+    // Into the Inbox of the person it is about (APP5), when that is not
+    // the app's own person: "… sent a file to Sarah’s Inbox".
     case 'app.sent':
-      return line(`${who} via ${appOf(detail)} sent a file to their Inbox`);
+      return line(`${who} via ${appOf(detail)} sent a file to ${inboxOf(e)}`);
     // What it read (APP2): one document's details, that document's line;
     // and its looking up documents, once an hour.
     case 'app.read':
@@ -769,7 +771,7 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     case 'app.looked_up':
       return line(`${who} via ${appOf(detail)} looked up documents`);
     case 'app.withdrawn':
-      return line(`${who} via ${appOf(detail)} took back a file it sent to their Inbox`);
+      return line(`${who} via ${appOf(detail)} took back a file it sent to ${inboxOf(e)}`);
     // A document it sent, let go of (APP3): it stays in the vault.
     case 'app.unlinked':
       return line(`${who} via ${appOf(detail)} let go of ${doc}; it is still in the vault`);
@@ -1290,9 +1292,9 @@ export function describeEventSpans(
       run.action === e.action &&
       run.actor === (e.actor_id ?? null) &&
       run.app === appIdOf(e) &&
-      (e.action === 'app.sent'
-        ? run.at - at <= APP_SENT_FOLD_MS
-        : run.doc === e.object_id && run.at - at <= SITTING_MS)
+      // An app's sends fold per Inbox (APP5): the person each went to.
+      run.doc === e.object_id &&
+      (e.action === 'app.sent' ? run.at - at <= APP_SENT_FOLD_MS : run.at - at <= SITTING_MS)
     ) {
       run.at = at;
       run.n += 1;
@@ -1324,8 +1326,18 @@ export function describeEventSpans(
 function appSentWords(e: ActivityEvent, n: number): string {
   const who = e.actor ?? (e.actor_label ? capitalise(e.actor_label) : 'Somebody');
   return n === 1
-    ? `${who} via ${appOf(e.detail ?? {})} sent a file to their Inbox`
-    : `${who} via ${appOf(e.detail ?? {})} sent ${n} files to their Inbox`;
+    ? `${who} via ${appOf(e.detail ?? {})} sent a file to ${inboxOf(e)}`
+    : `${who} via ${appOf(e.detail ?? {})} sent ${n} files to ${inboxOf(e)}`;
+}
+
+/**
+ * Whose Inbox an app's file went to (APP5): "their Inbox" for the app's
+ * own person — every send before APP5 — else "Sarah’s Inbox".
+ */
+function inboxOf(e: ActivityEvent): string {
+  return isOwn(e) || e.object_type !== 'member'
+    ? 'their Inbox'
+    : `${possessive(personOf(e))} Inbox`;
 }
 
 /**

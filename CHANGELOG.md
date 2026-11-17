@@ -6,6 +6,18 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.60] - 2026-11-17 — connected apps: their own sends again, and the right Inbox
+
+### Added
+
+- **A connected app can download again the exact file it sent**, by its own external id (`GET /api/v1/apps/intake/{external_id}/content`, with _Download documents it is allowed_ ticked), while that file is still in the vault — even once it was filed into a family paper as a new version, or the family added a newer file, and whether or not the app may read the document. Not while the document is in the Trash or Only me, once it is removed for good or made an identity, legal or medical paper, nor once the app let go of it. What it sent says whether it can (`content_available`). It counts against the app's download bytes for the day, and the activity log says "Ahmed via Acme Money downloaded …", as for its other downloads. The database keeps the same rule.
+- **Each paper an app sends can go to the Inbox of the person it is about.** In **Settings → Connected apps**, Connect and Change: _Send each paper to the Inbox of the person it's about_. When the app names somebody (by id, or a name that matches one person of the family) who is an owner or an adult of the household with a sign-in, not locked or paused, the file goes to their Inbox, in a batch of their own, for them to review and file as themselves — and filing automatically, when on, files it as them by the same rule. Anything else goes to the Inbox of the person the app acts as, as before: nobody named, the household, a teen, somebody without a sign-in, a guest, a name two people share or nobody has, and any kind that usually belongs to the household. On for an app connected from now on; an app connected before keeps its person's Inbox until an owner switches it on, which, for an app acting as somebody else, waits for them to turn it on again. The app is never told whose Inbox, and its daily limits count everything it sends. The activity log names the Inbox: "Ahmed via Acme Money sent a file to Sara's Inbox". (Migration 0113.)
+
+### Changed
+
+- An app's batch is one a person a day: what it sends to two people never shares a batch.
+- Settings' "What it sent you" counts what is in the app's person's own Inbox.
+
 ## [0.9.0-dev.59] - 2026-11-17 — the API client on each release
 
 ### Added

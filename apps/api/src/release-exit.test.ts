@@ -1421,6 +1421,10 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/apps/documents/:id': { who: 'app' },
   'GET /api/v1/apps/documents/:id/content': { who: 'app' },
   'GET /api/v1/apps/changes': { who: 'app' },
+  // The exact file it sent, again (0.9.0, APP5): its signature alone; held
+  // to its own sends whose documents are out of the Trash and not Only me
+  // (sends.test.ts).
+  'GET /api/v1/apps/intake/:external_id/content': { who: 'app' },
   // Links and deletes (0.9.0, APP3): its signature alone; what it may link
   // or delete is held to its read rule and its own (links.test.ts).
   'POST /api/v1/apps/documents/:id/links': { who: 'app', body: () => ({ mode: 'view' }) },

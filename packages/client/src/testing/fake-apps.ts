@@ -11,6 +11,8 @@ import {
   APP_SCOPES_OFFERED,
   APP_SIGNATURE_WINDOW_SECONDS,
   APP_REFUSALS,
+  appInboxOf,
+  appMayDownloadSent,
   appMayRead,
   appSensitiveConfirmWords,
   canShareToView,
@@ -57,6 +59,12 @@ import type { FetchLike, ResponseLike } from '../http.js';
  * the window alone. The fake reads no pages: a test says what a file's
  * pages read (`readAppFile` on the fake vault), and the fake files it by
  * the vault's own rule (`appFilesItself`), or leaves it waiting.
+ *
+ * Its own sends again, and whose Inbox (APP5): the exact file a send became,
+ * by its external id, by the vault's own rule (`appMayDownloadSent`); and
+ * each send's Inbox worked out by the vault's own rule (`appInboxOf`) and
+ * kept on the send (`inbox_member_id`) — never told to the app. A send to
+ * the person it is about is filed automatically as them.
  */
 
 /** A document of the fake's, as an app's reading needs it. */
@@ -110,6 +118,8 @@ export interface FakeIntake {
   file?: { bytes: Uint8Array; filename: string; mime: string };
   /** Taken back by an Undo once filed (APP4): never filed automatically again. */
   auto_file_held?: boolean;
+  /** Whose Inbox it went to (APP5): the app's person's, or the person it is about. */
+  inbox_member_id?: string;
 }
 
 /** A link an app minted (APP3), and its session once opened. */
@@ -170,6 +180,12 @@ export interface FakeApp {
     bytes_per_day: number;
     auto_file: boolean;
   } | null;
+  /**
+   * Each paper to the Inbox of the person it is about (APP5): on for an app
+   * connected through the routes; one a test makes without it is an app
+   * from before, which keeps its person's Inbox.
+   */
+  route_to_person?: boolean;
 }
 
 /** A backfill's window, while it lasts. */
@@ -203,7 +219,19 @@ export interface FakeAppDeps {
     reminder_leads?: number[];
     usually_essential?: boolean;
     sensitive_default?: boolean;
+    belongs_to?: 'person' | 'household' | null;
   }>;
+  /** The family an app's person may file for, never a guest (APP5): a name hint is matched to them. */
+  people?: () => Array<{ id: string; name: string }>;
+  /** Whether a send may go to this person's Inbox (APP5): an owner or an adult who signs in and may act. */
+  receives?: (memberId: string) => boolean;
+  /** A version of the fake's, any one, by its id (APP5): what a send became. */
+  versionOf?: (versionId: string) => {
+    document_id: string;
+    bytes: Uint8Array;
+    mime: string;
+    filename: string;
+  } | null;
   /** The fake's documents, as an app's reading needs them (APP2). */
   documents?: () => FakeReadableDoc[];
   /** A document moved to the Trash by an app's delete (APP3). */
@@ -219,7 +247,7 @@ export interface FakeAppDeps {
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const APP_ROUTE =
-  /^\/api\/v1\/apps\/(me|intake|intake\/[^/]+|keys|keys\/[^/]+|documents|documents\/[^/]+|documents\/[^/]+\/content|documents\/[^/]+\/links|changes)$/;
+  /^\/api\/v1\/apps\/(me|intake|intake\/[^/]+|intake\/[^/]+\/content|keys|keys\/[^/]+|documents|documents\/[^/]+|documents\/[^/]+\/content|documents\/[^/]+\/links|changes)$/;
 
 async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
   const own = new Uint8Array(bytes.length);
@@ -286,6 +314,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       allowed_kinds: a.allowed_kinds,
       default_visibility: a.default_visibility,
       auto_file: a.auto_file === true,
+      route_to_person: a.route_to_person === true,
       daily_files: a.daily_files,
       daily_bytes: a.daily_bytes,
       backfill: liveBackfill(a),
@@ -311,10 +340,28 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       address: { url: 'https://fake.example', public: false },
     };
   };
+  /** The exact file a send of the app's became, while it may download it again (APP5). */
+  const sentFile = (s: FakeIntake) => {
+    if (s.state !== 'filed' || s.unlinked || !s.document_id || !s.version_id) return null;
+    const v = d.versionOf?.(s.version_id) ?? null;
+    const doc = (d.documents?.() ?? []).find((x) => x.id === s.document_id);
+    if (!v || !doc || v.document_id !== doc.id) return null;
+    const category = d.kinds().find((k) => k.key === doc.type_key)?.category ?? null;
+    return appMayDownloadSent({
+      deleted: doc.deleted,
+      visibility: doc.visibility,
+      file_removed: false,
+      category,
+      kind_category: category,
+    })
+      ? v
+      : null;
+  };
   const stateOf = (
     externalId: string,
     s: FakeIntake,
     readableIds: ReadonlySet<string> = new Set(),
+    a: FakeApp | null = null,
   ): AppIntakeState => {
     // Filed, and no longer the app's to read, or let go of: unavailable, never why.
     const filed = s.state === 'filed';
@@ -330,6 +377,11 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       filed_at: still ? (s.filed_at ?? null) : null,
       removed_reason: s.removed_reason,
       refusal: s.refusal,
+      // Never where the route would answer 403: it needs the download scope.
+      content_available:
+        !!a &&
+        (a.scopes ?? APP_SCOPES_DEFAULT).includes('documents.download') &&
+        sentFile(s) !== null,
     };
   };
 
@@ -401,7 +453,12 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         files_today: 0,
         bytes_today: 0,
         last_used_at: null,
+        // On for a new app unless the owner said not (APP5).
+        route_to_person: true,
       };
+      const route = routeOf(body);
+      if ('fail' in route) return route.fail;
+      Object.assign(a, route.set);
       if (body.scopes !== undefined) {
         const scopes = scopesOf(body.scopes);
         if (!scopes) return d.fail(422, 'validation_failed', 'Choose what it may do.', 'scopes');
@@ -456,12 +513,16 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       Object.assign(a, links.set);
       const auto = autoOf(body);
       if ('fail' in auto) return auto.fail;
-      // Filing automatically switched on (APP4) widens: an app acting as
-      // somebody else waits for them again, as the vault does.
+      const route = routeOf(body);
+      if ('fail' in route) return route.fail;
+      // Filing automatically switched on (APP4), or sending to the person a
+      // paper is about (APP5), widens: an app acting as somebody else waits
+      // for them again, as the vault does.
       const widened =
         (auto.set.auto_file === true && a.auto_file !== true) ||
-        (auto.set.backfill?.auto_file === true && liveBackfill(a)?.auto_file !== true);
-      Object.assign(a, auto.set);
+        (auto.set.backfill?.auto_file === true && liveBackfill(a)?.auto_file !== true) ||
+        (route.set.route_to_person === true && a.route_to_person !== true);
+      Object.assign(a, auto.set, route.set);
       if (widened && a.member_id !== who.memberId) a.approval = 'waiting';
       return d.ok(await view(a, who));
     }
@@ -562,6 +623,24 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       };
     }
     return { set };
+  };
+
+  /** Each paper to the Inbox of the person it is about (APP5), as an owner sets it. */
+  const routeOf = (
+    body: Record<string, unknown>,
+  ): { set: Partial<FakeApp> } | { fail: ResponseLike } => {
+    if (body.route_to_person === undefined) return { set: {} };
+    if (typeof body.route_to_person !== 'boolean') {
+      return {
+        fail: d.fail(
+          422,
+          'validation_failed',
+          'Send to the person it is about: on or off.',
+          'route_to_person',
+        ),
+      };
+    }
+    return { set: { route_to_person: body.route_to_person } };
   };
 
   /** What a delete does, and links an hour (APP3), as an owner sets them. */
@@ -1181,7 +1260,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
             'This external_id was already used with other bytes.',
           );
         }
-        return d.ok(stateOf(id, before, new Set((await readable(a)).keys())), 200, {
+        return d.ok(stateOf(id, before, new Set((await readable(a)).keys()), a), 200, {
           'idempotent-replayed': 'true',
         });
       }
@@ -1204,6 +1283,17 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       if (a.files_today >= a.daily_files) {
         return d.fail(429, 'app_day_full', 'This app has sent as much as it may today.');
       }
+      // Whose Inbox (APP5): the person it is about, by the vault's own rule,
+      // when the app sends there; else its own person's.
+      const routed =
+        a.route_to_person === true
+          ? appInboxOf({
+              hints,
+              kind: d.kinds().find((k) => k.key === hints.kind) ?? null,
+              people: d.people?.() ?? [],
+              receives: (id) => d.receives?.(id) === true,
+            })
+          : null;
       const s: FakeIntake = {
         state: 'waiting',
         removed_reason: null,
@@ -1211,6 +1301,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         sha256: sum,
         byte_size: bytes.length,
         received_at: new Date().toISOString(),
+        inbox_member_id: routed ?? a.member_id,
         // Kept while it waits, for the fake to file it as the vault would (APP4).
         hints,
         file: {
@@ -1235,10 +1326,37 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       return d.ok({
         items: ids.flatMap((id) => {
           const s = a.intake.get(id);
-          return s ? [stateOf(id, s, still)] : [];
+          return s ? [stateOf(id, s, still, a)] : [];
         }),
         unknown: ids.filter((id) => !a.intake.has(id)),
       });
+    }
+    // The exact file a send became, again (APP5): counted as its downloads are.
+    const sentAt = /^\/api\/v1\/apps\/intake\/([^/]+)\/content$/.exec(path);
+    if (sentAt && method === 'GET') {
+      const s = a.intake.get(decodeURIComponent(sentAt[1] as string));
+      const v = s ? sentFile(s) : null;
+      if (!s || !v) return notFound();
+      const etag = `"${s.version_id as string}"`;
+      const plain = {
+        'content-type': v.mime,
+        'content-disposition': `attachment; filename="${v.filename.replace(/"/g, '')}"`,
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'; sandbox",
+        'cache-control': 'no-store',
+        'accept-ranges': 'bytes',
+        etag,
+      };
+      if (headers['if-none-match'] === etag) return d.raw(304, new Uint8Array(), plain);
+      const cap = a.daily_read_bytes ?? 1024 ** 3;
+      if (v.bytes.length > cap) {
+        return d.fail(413, 'larger_than_daily_read', APP_REFUSALS.larger_than_daily_read);
+      }
+      if ((a.read_bytes_today ?? 0) + v.bytes.length > cap) {
+        return d.fail(429, 'app_read_day_full', APP_REFUSALS.app_read_day_full);
+      }
+      a.read_bytes_today = (a.read_bytes_today ?? 0) + v.bytes.length;
+      return d.raw(200, v.bytes, { ...plain, 'content-length': String(v.bytes.length) });
     }
     const one = /^\/api\/v1\/apps\/intake\/([^/]+)$/.exec(path);
     if (one) {
@@ -1252,7 +1370,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         s.state = 'removed';
         s.removed_reason = 'withdrawn';
       }
-      return d.ok(stateOf(id, s, new Set((await readable(a)).keys())));
+      return d.ok(stateOf(id, s, new Set((await readable(a)).keys()), a));
     }
     return d.fail(404, 'not_found', 'Nothing by that id that this app may see.');
   };

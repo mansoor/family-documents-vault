@@ -3,6 +3,7 @@ import { describeEvent, describeEvents, type ActivityEvent } from './activity.js
 import {
   amountText,
   appBatchName,
+  appMayDownloadSent,
   appMayRead,
   appSensitiveConfirmWords,
   hintDate,
@@ -17,6 +18,7 @@ import {
 import { untouchedAccept } from './batch-review.js';
 import {
   appFilesItself,
+  appInboxOf,
   CLASH_CONFIDENCE,
   ITEM_SURE,
   levelItem,
@@ -224,6 +226,52 @@ describe('an intake’s metadata (0.9.0, APP1)', () => {
     expect(storedAppHints(JSON.parse(sealedAppHints(hints)))).toEqual(hints);
     expect(storedAppHints({ v: 2, hints })).toEqual({});
     expect(storedAppHints({ v: 1, hints: { colour: 'red' } })).toEqual({});
+  });
+
+  it('whose Inbox a send goes to: the person it names, when they may have it (APP5)', () => {
+    const family = [
+      { id: 'm-sara', name: 'Sara Khan' },
+      { id: 'm-sara-p', name: 'Sara Patel' },
+      { id: 'm-ahmed', name: 'Ahmed Khan' },
+      { id: 'm-teen', name: 'Tariq Khan' },
+    ];
+    const adults = new Set(['m-sara', 'm-sara-p', 'm-ahmed']);
+    const of = (hints: AppHints, kind: { belongs_to?: 'person' | 'household' } | null = null) =>
+      appInboxOf({ hints, kind, people: family, receives: (id) => adults.has(id) });
+    expect(of({ person: { member_id: 'm-ahmed' } })).toBe('m-ahmed');
+    expect(of({ person: { name: 'sara  KHAN' } })).toBe('m-sara');
+    expect(of({ person: { name: 'Ahmed' } })).toBe('m-ahmed');
+    // Two Saras, nobody, a teen, somebody not of the family, the household, nobody said.
+    expect(of({ person: { name: 'Sara' } })).toBeNull();
+    expect(of({ person: { name: 'J Smith' } })).toBeNull();
+    expect(of({ person: { member_id: 'm-teen' } })).toBeNull();
+    expect(of({ person: { name: 'Tariq' } })).toBeNull();
+    expect(of({ person: { member_id: 'm-guest' } })).toBeNull();
+    expect(of({ person: { household: true } })).toBeNull();
+    expect(of({ kind: 'bank_statement' })).toBeNull();
+    // A kind that usually belongs to the household, whoever it names.
+    expect(of({ person: { member_id: 'm-ahmed' } }, { belongs_to: 'household' })).toBeNull();
+    expect(of({ person: { member_id: 'm-ahmed' } }, { belongs_to: 'person' })).toBe('m-ahmed');
+  });
+
+  it('the file a send became, again: kept, out of the Trash, never Only me nor a never-category (APP5)', () => {
+    const ok = {
+      deleted: false,
+      visibility: 'household',
+      file_removed: false,
+      category: 'financial',
+      kind_category: 'financial',
+    };
+    expect(appMayDownloadSent(ok)).toBe(true);
+    expect(appMayDownloadSent({ ...ok, visibility: 'adults' })).toBe(true);
+    expect(appMayDownloadSent({ ...ok, visibility: 'private' })).toBe(false);
+    expect(appMayDownloadSent({ ...ok, visibility: 'something new' })).toBe(false);
+    expect(appMayDownloadSent({ ...ok, deleted: true })).toBe(false);
+    expect(appMayDownloadSent({ ...ok, file_removed: true })).toBe(false);
+    expect(appMayDownloadSent({ ...ok, category: 'identity', kind_category: 'identity' })).toBe(
+      false,
+    );
+    expect(appMayDownloadSent({ ...ok, kind_category: null })).toBe(false);
   });
 
   it('a name is a person by the whole name, else a first name only one person has', () => {
@@ -588,6 +636,21 @@ describe('an app’s lines in the activity log (0.9.0, APP2)', () => {
     object_title: null,
     detail: { app_id: 'app-1', app: 'Acme Money' },
     ...over,
+  });
+
+  it('files sent to the Inbox of the person they are about name it, and fold per Inbox (APP5)', () => {
+    const sara = { object_id: 'm-sara', object_title: 'Sara Khan' };
+    const lines = describeEvents([
+      ev('app.sent', 0, sara),
+      ev('app.sent', 2, sara),
+      ev('app.sent', 4),
+      ev('app.withdrawn', 6, sara),
+    ]).map((l) => l.text);
+    expect(lines).toEqual([
+      'Ahmed via Acme Money sent 2 files to Sara Khan’s Inbox',
+      'Ahmed via Acme Money sent a file to their Inbox',
+      'Ahmed via Acme Money took back a file it sent to Sara Khan’s Inbox',
+    ]);
   });
 
   it('files sent close together are one line: "sent 12 files"', () => {

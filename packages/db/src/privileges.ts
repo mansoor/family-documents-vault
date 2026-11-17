@@ -369,6 +369,19 @@ begin
     revoke execute on function public.connected_app_links_hold(uuid) from public;
     grant execute on function public.connected_app_links_hold(uuid) to fdv_app;
   end if;
+  -- An app's own sends, again, and whose Inbox it fills (0113, APP5): the
+  -- versions it sent; the Inboxes it may fill; and what it said of an item,
+  -- as the Inbox it is in shows it.
+  if to_regprocedure('public.connected_app_sent_versions(uuid)') is not null then
+    revoke execute on function public.connected_app_sent_versions(uuid) from public;
+    grant execute on function public.connected_app_sent_versions(uuid) to fdv_app;
+    revoke execute on function public.app_connected_app_sent_versions() from public;
+    grant execute on function public.app_connected_app_sent_versions() to fdv_app;
+    revoke execute on function public.connected_app_inbox(uuid, uuid) from public;
+    grant execute on function public.connected_app_inbox(uuid, uuid) to fdv_app;
+    revoke execute on function public.connected_app_items(uuid[]) from public;
+    grant execute on function public.connected_app_items(uuid[]) to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

@@ -1,5 +1,6 @@
 import {
   APP_AUTO_FILE_WORDS,
+  APP_ROUTE_WORDS,
   APP_BACKFILL_MAX_DAYS,
   APP_DEFAULT_DAILY_BYTES,
   APP_DEFAULT_DAILY_FILES,
@@ -123,6 +124,10 @@ function seenWords(v: Visibility | null, who: string): string {
 const AUTO_FILE_NOTE =
   'Filed without anybody looking only when the pages agree on the kind and whose it is, nothing is missing, and it is not a near match or a copy of something here. Anything else waits in the Inbox. Never identity, legal or medical papers.';
 
+/** Whose Inbox what it sends goes to, under its switch (APP5). */
+const ROUTE_NOTE =
+  'When the app says whom a paper is about, and they are an adult here who signs in, it goes to their Inbox for them to look at and file. Anything else goes to the Inbox of the person it acts as. The app is never told whose Inbox.';
+
 /** The form's fields, as typed. */
 interface AppForm {
   name: string;
@@ -142,6 +147,8 @@ interface AppForm {
   autoFile: boolean;
   /** And for the older papers' window alone (APP4). */
   backfillAuto: boolean;
+  /** Each paper to the Inbox of the person it is about (APP5). */
+  route: boolean;
   /** What it may do: send, read, download, show, delete. */
   scopes: AppScope[];
   /** What a delete does (APP3). */
@@ -241,6 +248,7 @@ function readForm(f: AppForm, ceilings: Ceilings): Read {
       ip_allow: ip,
       backfill,
       auto_file: f.autoFile,
+      route_to_person: f.route,
       scopes: APP_SCOPES_OFFERED.filter((s) => f.scopes.includes(s)),
       delete_mode: f.deleteMode,
       links_per_hour: links,
@@ -266,6 +274,8 @@ function blankForm(me: string): AppForm {
     // Everything it sends waits for a look, until an owner says otherwise.
     autoFile: false,
     backfillAuto: false,
+    // Each paper to the person it is about, unless an owner says otherwise.
+    route: true,
     // Sending, and reading what it sent and what it is granted; downloading,
     // showing and deleting only when an owner ticks them.
     scopes: ['documents.send', 'documents.read'],
@@ -291,6 +301,7 @@ function formOf(app: ConnectedAppView): AppForm {
     backfillMb: String(Math.round((app.backfill?.bytes_per_day ?? app.daily_bytes) / MB)),
     autoFile: app.auto_file,
     backfillAuto: app.backfill?.auto_file ?? false,
+    route: app.route_to_person,
     scopes: [...app.scopes],
     deleteMode: app.delete_mode ?? APP_DELETE_MODE_DEFAULT,
     links: String(app.links_per_hour ?? APP_DEFAULT_LINKS_PER_HOUR),
@@ -318,6 +329,7 @@ function changeOf(start: AppForm, now: AppForm, value: Extract<Read, { ok: true 
         now.backfillAuto !== start.backfillAuto));
   if (backfillMoved) change.backfill = value.backfill ?? null;
   if (now.autoFile !== start.autoFile) change.auto_file = now.autoFile;
+  if (now.route !== start.route) change.route_to_person = now.route;
   if (!sameSet(now.scopes, start.scopes)) change.scopes = value.scopes as AppScope[];
   if (now.deleteMode !== start.deleteMode) change.delete_mode = now.deleteMode;
   if (now.links.trim() !== start.links) change.links_per_hour = value.links_per_hour as number;
@@ -558,6 +570,13 @@ function AppFields(props: {
         label={APP_AUTO_FILE_WORDS}
         note={AUTO_FILE_NOTE}
         onChange={(on) => put({ autoFile: on })}
+      />
+      <Check
+        id={`${id}-route`}
+        checked={form.route}
+        label={APP_ROUTE_WORDS}
+        note={ROUTE_NOTE}
+        onChange={(on) => put({ route: on })}
       />
       <fieldset className="limits-set">
         <legend className="field-label">The most it may send in a day</legend>
@@ -1263,6 +1282,14 @@ function AppCard(props: {
               : app.backfill?.auto_file
                 ? `Files what is sure and complete until ${day(app.backfill.until)}; the rest waits for a look`
                 : 'Everything waits for a look'}
+          </dd>
+          <dt>Whose Inbox</dt>
+          <dd>
+            {app.route_to_person
+              ? `The person each paper is about, else ${app.mine ? 'yours' : `${app.member_name}’s`}`
+              : app.mine
+                ? 'Yours'
+                : `${app.member_name}’s`}
           </dd>
           <dt>Last used</dt>
           <dd>{app.last_used_at ? shortWhenWords(app.last_used_at) : 'Not yet'}</dd>

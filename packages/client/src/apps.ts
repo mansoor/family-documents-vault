@@ -314,6 +314,16 @@ export interface AppClient {
     o?: { range?: { start: number; end?: number }; ifNoneMatch?: string },
   ): Promise<AppDownload>;
   /**
+   * The exact file a send of its became, by its own external id (APP5,
+   * `documents.download`): while it is still the vault's, its document out
+   * of the Trash and not Only me — whether or not it may read the document
+   * now. Its status says whether (`content_available`); 404 otherwise.
+   */
+  sentFile(
+    externalId: string,
+    o?: { range?: { start: number; end?: number }; ifNoneMatch?: string },
+  ): Promise<AppDownload>;
+  /**
    * A link for its user's browser (APP3, `documents.links`; a download link
    * needs `documents.download` too): send the browser to `url` at once. It
    * opens once, within 2 minutes, for a session of 10 minutes there.
@@ -396,6 +406,38 @@ export function createAppClient(opts: AppClientOptions): AppClient {
       : `?${kept.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}`;
   };
 
+  /** A file's bytes, signed: a range, or 304 for a version it has (APP2, APP5). */
+  const bytesOf = async (
+    target: string,
+    o: { range?: { start: number; end?: number }; ifNoneMatch?: string },
+  ): Promise<AppDownload> => {
+    const headers: Record<string, string> = {
+      ...(await signRequest({
+        method: 'GET',
+        target,
+        keyid,
+        privateKey: opts.privateKey,
+        created: created(),
+      })),
+      accept: '*/*',
+    };
+    if (o.range) headers.range = `bytes=${o.range.start}-${o.range.end ?? ''}`;
+    if (o.ifNoneMatch) headers['if-none-match'] = o.ifNoneMatch;
+    const res = await opts.fetch(`${opts.baseUrl.replace(/\/+$/, '')}${target}`, {
+      method: 'GET',
+      headers,
+    });
+    if (res.status !== 304 && !res.ok) throw await toError(res, opts.now?.() ?? Date.now());
+    return {
+      status: res.status as 200 | 206 | 304,
+      etag: res.headers.get('etag'),
+      bytes: res.status === 304 ? new Uint8Array() : new Uint8Array(await res.arrayBuffer()),
+      contentType: res.headers.get('content-type'),
+      contentDisposition: res.headers.get('content-disposition'),
+      contentRange: res.headers.get('content-range'),
+    };
+  };
+
   return {
     me: () => json<AppMe>('GET', '/api/v1/apps/me'),
     list: (q = {}) =>
@@ -420,34 +462,8 @@ export function createAppClient(opts: AppClientOptions): AppClient {
           ['limit', q.limit === undefined ? undefined : String(q.limit)],
         ])}`,
       ),
-    async download(id, o = {}) {
-      const target = `/api/v1/apps/documents/${docId(id)}/content`;
-      const headers: Record<string, string> = {
-        ...(await signRequest({
-          method: 'GET',
-          target,
-          keyid,
-          privateKey: opts.privateKey,
-          created: created(),
-        })),
-        accept: '*/*',
-      };
-      if (o.range) headers.range = `bytes=${o.range.start}-${o.range.end ?? ''}`;
-      if (o.ifNoneMatch) headers['if-none-match'] = o.ifNoneMatch;
-      const res = await opts.fetch(`${opts.baseUrl.replace(/\/+$/, '')}${target}`, {
-        method: 'GET',
-        headers,
-      });
-      if (res.status !== 304 && !res.ok) throw await toError(res, opts.now?.() ?? Date.now());
-      return {
-        status: res.status as 200 | 206 | 304,
-        etag: res.headers.get('etag'),
-        bytes: res.status === 304 ? new Uint8Array() : new Uint8Array(await res.arrayBuffer()),
-        contentType: res.headers.get('content-type'),
-        contentDisposition: res.headers.get('content-disposition'),
-        contentRange: res.headers.get('content-range'),
-      };
-    },
+    download: (id, o = {}) => bytesOf(`/api/v1/apps/documents/${docId(id)}/content`, o),
+    sentFile: (id, o = {}) => bytesOf(`/api/v1/apps/intake/${pathId(id)}/content`, o),
     link: (id, mode) =>
       json<AppLinkMinted>('POST', `/api/v1/apps/documents/${docId(id)}/links`, {
         bytes: utf8(JSON.stringify({ mode })),

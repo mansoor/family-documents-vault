@@ -1155,6 +1155,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       filed_at: null,
       removed_reason: null,
       refusal: null,
+      content_available: false,
     });
     // In Ahmed's Inbox, in today's batch from the app.
     const batch = (await batchesOf(ahmed)).find((b) => b.name?.startsWith('From Acme Money, '));

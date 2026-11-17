@@ -995,6 +995,8 @@ export interface Schema {
     delete_mode: ColumnType<'unlink' | 'trash', 'unlink' | 'trash' | undefined, 'unlink' | 'trash'>;
     /** Links it may mint an hour (0111, APP3). */
     links_per_hour: Generated<number>;
+    /** Each paper to the Inbox of the person it is about (0113, APP5): on for new apps. */
+    route_to_person: Generated<boolean>;
   };
 
   /** A kind or a category an app may read, and how far back (0110, APP2). */
@@ -1108,6 +1110,8 @@ export interface Schema {
     made_document: Generated<boolean>;
     /** Taken back by an Undo once filed (0112, APP4): never filed automatically again. */
     auto_file_held: Generated<boolean>;
+    /** Whose Inbox it went to (0113, APP5); null for a send from before, the app's person's. */
+    inbox_member_id: string | null;
   };
 
   /**
@@ -2682,6 +2686,80 @@ export async function readAs<T>(
   } finally {
     await sql`rollback to savepoint fdv_read_as`.execute(trx);
     await sql`release savepoint fdv_read_as`.execute(trx);
+  }
+}
+
+/**
+ * Acts as another person of the same household for a part of a transaction
+ * of somebody signed in (0.9.0, APP5): what a connected app sends to the
+ * Inbox of the person it is about is that person's own upload, in their own
+ * transaction, while the app's own rows — its caps, the send's state, the
+ * activity log's line — are written as the app's person, in the same
+ * transaction, so both land or neither does. Each is given exactly what the
+ * database gives that person; nobody is given more than they would alone.
+ *
+ * In a savepoint: the settings go back to the transaction's own afterwards,
+ * whatever `fn` did; what `fn` wrote is kept when it succeeds, and undone
+ * with the settings when it throws. Only from a transaction of somebody
+ * signed in, never the vault's; the household stays the transaction's own.
+ */
+export async function actAs<T>(
+  trx: Db,
+  who: Omit<ScopePrincipal, 'householdId'>,
+  fn: (trx: Db) => Promise<T>,
+): Promise<T> {
+  const { rows } = await sql<{
+    actor: string | null;
+    account: string;
+    member: string;
+    role: string;
+    session: string;
+  }>`select /* fdv:act-as */ nullif(current_setting('app.actor', true), '') as actor,
+            coalesce(current_setting('app.account_id', true), '') as account,
+            coalesce(current_setting('app.member_id', true), '') as member,
+            coalesce(current_setting('app.role', true), '') as role,
+            coalesce(current_setting('app.session_id', true), '') as session`.execute(trx);
+  const was = rows[0];
+  if (was?.actor !== 'account') {
+    throw new Error('actAs is only for a transaction of somebody signed in');
+  }
+  if (was.account === who.accountId && was.member === who.memberId && was.role === who.role) {
+    return fn(trx);
+  }
+  // Somebody of this household, as they are: their sign-in here, that
+  // member, that role — never anybody the code only names.
+  const { rows: here } = await sql<{ one: number }>`
+    select /* fdv:act-as */ 1 as one
+      from account_household
+     where household_id = nullif(current_setting('app.household_id', true), '')::uuid
+       and account_id = ${who.accountId}::uuid
+       and member_id = ${who.memberId}::uuid
+       and role::text = ${who.role}`.execute(trx);
+  if (here.length === 0) {
+    throw new Error('actAs is only for somebody of this household, as they are');
+  }
+  await sql`savepoint fdv_act_as`.execute(trx);
+  try {
+    await sql`select /* fdv:act-as */
+      set_config('app.account_id', ${who.accountId}, true),
+      set_config('app.member_id', ${who.memberId}, true),
+      set_config('app.role', ${who.role}, true),
+      set_config('app.session_id', ${who.sessionId ?? ''}, true)
+    `.execute(trx);
+    const out = await fn(trx);
+    await sql`select /* fdv:act-as */
+      set_config('app.account_id', ${was.account}, true),
+      set_config('app.member_id', ${was.member}, true),
+      set_config('app.role', ${was.role}, true),
+      set_config('app.session_id', ${was.session}, true)
+    `.execute(trx);
+    await sql`release savepoint fdv_act_as`.execute(trx);
+    return out;
+  } catch (err) {
+    // Undone, the settings with it: the transaction is its own person's again.
+    await sql`rollback to savepoint fdv_act_as`.execute(trx).catch(() => undefined);
+    await sql`release savepoint fdv_act_as`.execute(trx).catch(() => undefined);
+    throw err;
   }
 }
 

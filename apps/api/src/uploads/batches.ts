@@ -46,6 +46,7 @@ import {
   folderMatcher,
   type FolderSuggestion,
   lockInEffect,
+  suspensionInEffect,
   PREVIEW_MAX_PAGES,
   PRIVATE_TO_THEM,
   TEEN_KEEPS_SENSITIVE,
@@ -276,6 +277,12 @@ export interface BatchUpload {
    * alone. Null or absent: it came from no folder.
    */
   relativePath?: string | null;
+  /**
+   * Refuse an uploader whose sign-in is paused too, not only locked, in
+   * both transactions (0.9.0, APP5): a connected app's file, which lands in
+   * somebody's Inbox with nobody there to see it.
+   */
+  paused?: boolean;
 }
 
 const notHere = () => new ApiError(404, 'not_found', 'That batch is not here.');
@@ -514,7 +521,7 @@ export class BatchService {
    * them. One who can no longer add documents is refused as anybody else
    * who cannot.
    */
-  private async stillAdds(trx: Db, p: Principal): Promise<void> {
+  private async stillAdds(trx: Db, p: Principal, opts: { paused?: boolean } = {}): Promise<void> {
     const me = await trx
       .selectFrom('account_household')
       .select(['role', 'suspended_at', 'suspended_until', 'suspend_reason'])
@@ -523,6 +530,10 @@ export class BatchService {
       .forShare()
       .executeTakeFirst();
     if (!me || !can(me.role, 'document.add') || lockInEffect(me)) throw refused();
+    // Paused too (after a restore), for what nobody is there to see: a
+    // connected app's file landing in somebody's Inbox, or filed with
+    // nobody looking (0.9.0, APP5) — under the row's own lock.
+    if (opts.paused && suspensionInEffect(me)) throw refused();
     // The database answers this transaction as the role it was asked with.
     if (me.role !== p.role) throw busy();
   }
@@ -911,7 +922,7 @@ export class BatchService {
     this.mayAdd(p);
     const dead: Array<{ id: string; storage_key: string; vault_id: string }> = [];
     const ctx = await withPrincipal(this.db, p, async (trx) => {
-      await this.stillAdds(trx, p);
+      await this.stillAdds(trx, p, { paused: upload.paused === true });
       await upload.stillAllowed?.(trx);
       // Held: what is counted against the limit cannot change under it.
       const b = await this.batch(trx, batchId, true);
@@ -1073,7 +1084,7 @@ export class BatchService {
         // Still somebody who may add, and still allowed (a computer's key
         // live), as it lands (the D1 review, F3): a sign-in taken away or a
         // key revoked while the bytes arrived lands nothing.
-        await this.stillAdds(trx, p);
+        await this.stillAdds(trx, p, { paused: upload.paused === true });
         await upload.stillAllowed?.(trx);
         await upload.arrived?.(trx, bytes);
         const now = new Date();
@@ -1820,7 +1831,15 @@ export class BatchService {
     let done: Filed | { skip: 'gone' | 'held' | 'off' | 'not_sure' };
     try {
       done = await withPrincipal(this.db, p, async (trx) => {
-        await this.stillAdds(trx, p);
+        // Whoever's Inbox it is in, still able to add, neither locked nor
+        // paused (APP5): asked here, under their row's lock.
+        // One who may not, here and now, is the app's switch off for them.
+        try {
+          await this.stillAdds(trx, p, { paused: true });
+        } catch (err) {
+          if (err instanceof ApiError && err.code === 'forbidden') return { skip: 'off' as const };
+          throw err;
+        }
         // The app next, held for share, before its batch and the item: the
         // order a send takes them in (its person, the app, the batch), so a
         // file arriving while another is filed waits, and never deadlocks.
@@ -1844,13 +1863,8 @@ export class BatchService {
         }
         // Read under the item's lock: a send taken back by an Undo is held
         // from filing automatically, by the database as it follows the item.
-        const held = await trx
-          .selectFrom('connected_app_intake')
-          .select(['state', 'auto_file_held'])
-          .where('app_id', '=', app.id)
-          .where('incoming_file_id', '=', f.id)
-          .executeTakeFirst();
-        if (held?.state !== 'waiting') return { skip: 'gone' as const };
+        const held = (await appItems(trx, [f.id])).get(f.id);
+        if (held?.app_id !== app.id || held.state !== 'waiting') return { skip: 'gone' as const };
         if (held.auto_file_held) return { skip: 'held' as const };
         const sure = new Map<string, boolean>();
         const [item] = (await this.itemsOf(trx, p, [b.id], f.id, sure)).filter(
@@ -3113,29 +3127,17 @@ export class BatchService {
        */
       apps: async (items: ItemRow[]): Promise<Map<string, AppLevelInput>> => {
         const out = new Map<string, AppLevelInput>();
-        const appIds = [...new Set(items.map((r) => r.app_id).filter((a): a is string => !!a))];
-        if (appIds.length === 0) return out;
-        const apps = await trx
-          .selectFrom('connected_app')
-          .select(['id', 'name', 'allowed_kinds'])
-          .where('id', 'in', appIds)
-          .execute();
-        const sealed = await trx
-          .selectFrom('connected_app_intake')
-          .select(['incoming_file_id', 'hints_sealed'])
-          .where(
-            'incoming_file_id',
-            'in',
-            items.map((r) => r.id),
-          )
-          .execute();
-        const byApp = new Map(apps.map((a) => [a.id, a]));
-        const hintsOf = new Map(sealed.map((s) => [s.incoming_file_id, s.hints_sealed]));
+        const ids = items.filter((r) => !!r.app_id).map((r) => r.id);
+        if (ids.length === 0) return out;
+        // As the Inbox's own person sees them (0113, APP5): an item an app
+        // sent to the person it is about is theirs to look at, though the
+        // app's row is not.
+        const sent = await appItems(trx, ids);
         for (const r of items) {
-          const a = r.app_id ? byApp.get(r.app_id) : undefined;
-          if (!a) continue;
+          const a = sent.get(r.id);
+          if (!a || a.app_id !== r.app_id) continue;
           let hints: AppHints = {};
-          const h = hintsOf.get(r.id);
+          const h = a.hints_sealed;
           if (h) {
             try {
               const fileKey = unwrapKey(
@@ -3150,7 +3152,7 @@ export class BatchService {
               hints = {};
             }
           }
-          out.set(r.id, { name: a.name, allowed_kinds: a.allowed_kinds, hints });
+          out.set(r.id, { name: a.app_name, allowed_kinds: a.allowed_kinds, hints });
         }
         return out;
       },
@@ -3386,4 +3388,29 @@ function storedPrior(raw: unknown): Prior | null {
 function previewState(drawn: string): IncomingPreviewState {
   if (drawn === 'none' || drawn === 'drawing') return 'pending';
   return drawn as IncomingPreviewState;
+}
+
+/** What a connected app sent, as the Inbox it is in shows it (0113, APP5). */
+interface AppItem {
+  app_id: string;
+  app_name: string;
+  allowed_kinds: string[];
+  hints_sealed: Buffer | null;
+  state: string | null;
+  auto_file_held: boolean | null;
+}
+
+/**
+ * The app that sent each of these items, its kinds, its hints and where the
+ * send stands, by item: asked of the database's connected_app_items, which
+ * gives somebody signed in the items of their own batches alone — so the
+ * person an app sent a paper to, whose Inbox it is in, sees what the app
+ * said of it, and nothing else of the app.
+ */
+async function appItems(trx: Db, ids: string[]): Promise<Map<string, AppItem>> {
+  if (ids.length === 0) return new Map();
+  const { rows } = await sql<AppItem & { incoming_file_id: string }>`
+    select incoming_file_id, app_id, app_name, allowed_kinds, hints_sealed, state, auto_file_held
+      from connected_app_items(${ids}::uuid[])`.execute(trx);
+  return new Map(rows.map((r) => [r.incoming_file_id, r]));
 }

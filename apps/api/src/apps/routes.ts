@@ -50,6 +50,8 @@ export const APP_SIGNED_ROUTES: ReadonlyMap<string, AppRoute> = new Map<string, 
   ['GET /api/v1/apps/documents/:id', { scope: 'documents.read' }],
   ['GET /api/v1/apps/changes', { scope: 'documents.read' }],
   ['GET /api/v1/apps/documents/:id/content', { scope: 'documents.download' }],
+  // The exact file it sent, by its own external id, again (APP5).
+  ['GET /api/v1/apps/intake/:external_id/content', { scope: 'documents.download' }],
   // Links for its user's browser, and deletes (APP3).
   ['POST /api/v1/apps/documents/:id/links', { scope: 'documents.links' }],
   ['DELETE /api/v1/apps/documents/:id', { scope: 'documents.delete' }],
@@ -91,6 +93,7 @@ const createBody = z
       .nullable()
       .optional(),
     auto_file: z.boolean().optional(),
+    route_to_person: z.boolean().optional(),
     scopes: z.array(z.string().max(64)).max(10).optional(),
     daily_read_bytes: z.number().int().optional(),
     delete_mode: z.enum(['unlink', 'trash']).optional(),
@@ -433,6 +436,33 @@ export function registerApps(
         const out = await reads.content(
           caller(req),
           req.params.id,
+          {
+            range: typeof range === 'string' ? range : undefined,
+            ifNoneMatch: typeof ifNoneMatch === 'string' ? ifNoneMatch : undefined,
+          },
+          metaOf(req),
+        );
+        void reply.header('etag', out.etag);
+        if (out.status === 304) return reply.status(304).send();
+        for (const [k, v] of Object.entries(out.headers)) void reply.header(k, v);
+        return reply.status(out.status).send(out.stream);
+      },
+    );
+
+    /**
+     * The exact file it sent, by its own external id (APP5): while that file
+     * is still one of the vault's, its document out of the Trash and not
+     * Only me — whether or not it may read the document now.
+     */
+    app.get<{ Params: { external_id: string } }>(
+      '/api/v1/apps/intake/:external_id/content',
+      signed('GET /api/v1/apps/intake/:external_id/content'),
+      async (req, reply) => {
+        const range = req.headers.range;
+        const ifNoneMatch = req.headers['if-none-match'];
+        const out = await reads.sentContent(
+          caller(req),
+          req.params.external_id,
           {
             range: typeof range === 'string' ? range : undefined,
             ifNoneMatch: typeof ifNoneMatch === 'string' ? ifNoneMatch : undefined,

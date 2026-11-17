@@ -3,7 +3,7 @@ import { BlockList, isIP, isIPv4 } from 'node:net';
 import type { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
 import { itemAppHintsBinding, sealBytes } from '@fdv/crypto';
-import { appendAudit, householdZone, withPrincipal, withSystem, type Db } from '@fdv/db';
+import { actAs, appendAudit, householdZone, withPrincipal, withSystem, type Db } from '@fdv/db';
 import {
   APP_BACKFILL_MAX_DAYS,
   APP_CONNECTION_PREFIX,
@@ -34,6 +34,7 @@ import {
   NOTE_KIND,
   UPLOAD_KINDS,
   appBatchName,
+  appInboxOf,
   appSensitiveConfirmWords,
   hintText,
   localToday,
@@ -44,6 +45,7 @@ import {
   suspensionInEffect,
   type AppConnection,
   type AppGrant,
+  type AppHints,
   type AppIntakeMetadata,
   type AppIntakeState,
   type AppIntakeStates,
@@ -300,6 +302,8 @@ function widens(
   }
   // Filing what it sends with nobody looking (APP4).
   if (set.auto_file === true && !app.auto_file) return true;
+  // What it sends into other people's Inboxes than its person's (APP5).
+  if (set.route_to_person === true && !app.route_to_person) return true;
   return false;
 }
 
@@ -340,6 +344,7 @@ interface AppRow {
   read_bytes_today: string;
   delete_mode: 'unlink' | 'trash';
   links_per_hour: number;
+  route_to_person: boolean;
 }
 
 const APP_COLUMNS = [
@@ -374,6 +379,7 @@ const APP_COLUMNS = [
   'a.read_bytes_today',
   'a.delete_mode',
   'a.links_per_hour',
+  'a.route_to_person',
 ] as const;
 
 interface KeyRow {
@@ -413,14 +419,22 @@ interface IntakeRow {
   hints_sealed: Buffer | null;
   /** Let go of by the app (APP3): its document is no longer its own. */
   unlinked_at?: Date | null;
+  /** Whose Inbox it went to (APP5); null: the app's person's. Never told to the app. */
+  inbox_member_id?: string | null;
 }
 
 /**
  * The state an app is answered for what it sent, as `POST /apps/intake`
  * answers it. Filed, and no longer readable by the app (APP2): unavailable,
- * never why — nor which document.
+ * never why — nor which document. Whether its own file can be downloaded
+ * again (APP5): by `sent`, the external ids whose can.
  */
-function stateOf(r: IntakeRow, readable: ReadonlySet<string> | null = null): AppIntakeState {
+function stateOf(
+  r: IntakeRow,
+  readable: ReadonlySet<string> | null = null,
+  sent: ReadonlySet<string> | null = null,
+): AppIntakeState {
+  const content_available = r.state === 'filed' && sent !== null && sent.has(r.external_id);
   // Let go of by the app (APP3), or no longer readable by it: unavailable.
   const gone =
     r.unlinked_at != null || (readable && !(r.document_id && readable.has(r.document_id)));
@@ -436,6 +450,7 @@ function stateOf(r: IntakeRow, readable: ReadonlySet<string> | null = null): App
       filed_at: null,
       removed_reason: null,
       refusal: null,
+      content_available,
     };
   }
   return {
@@ -449,6 +464,7 @@ function stateOf(r: IntakeRow, readable: ReadonlySet<string> | null = null): App
     filed_at: r.state === 'filed' && r.decided_at ? r.decided_at.toISOString() : null,
     removed_reason: r.removed_reason,
     refusal: r.refusal,
+    content_available,
   };
 }
 
@@ -546,6 +562,113 @@ export class AppService {
     if (!this.reads) return null;
     const ids = rows.flatMap((r) => (r.state === 'filed' && r.document_id ? [r.document_id] : []));
     return this.reads.stillReadable(c, ids);
+  }
+
+  /**
+   * Which of these sends' own files the app may download again (APP5), by
+   * external id: null while nothing is read.
+   */
+  private async sentOf(c: AppCaller, rows: readonly IntakeRow[]): Promise<Set<string> | null> {
+    // Never "available" where the route would answer 403: it needs the download scope.
+    if (!this.reads || !c.scopes.includes('documents.download')) return null;
+    const ids = rows.flatMap((r) =>
+      r.state === 'filed' && !r.unlinked_at && r.version_id ? [r.external_id] : [],
+    );
+    return this.reads.sentAvailable(c, ids);
+  }
+
+  /** What became of a send, as the app is answered it (APP2, APP5): readable, and its file again. */
+  private async stateFor(c: AppCaller, row: IntakeRow): Promise<AppIntakeState> {
+    return stateOf(row, await this.readableOf(c, [row]), await this.sentOf(c, [row]));
+  }
+
+  /**
+   * Whose Inbox a send goes to (APP5), when the app sends each paper to the
+   * person it is about: the person its hint names — by id, or a name that
+   * matches one person of the family — when they are an owner or an adult
+   * of the household who signs in and may act now. Null for its own
+   * person's: anything else, or the app's person themselves. Asked as its
+   * person: the family as they may file for it, and the kind as the
+   * household has it.
+   */
+  private async inboxOf(p: Principal, app: AppRow, hints: AppHints): Promise<Principal | null> {
+    if (!app.route_to_person || !hints.person || 'household' in hints.person) return null;
+    return withPrincipal(this.db, p, async (trx) => {
+      const kind = hints.kind
+        ? await trx
+            .selectFrom('effective_document_type')
+            .select('belongs_to')
+            .where('key', '=', hints.kind)
+            .where('deleted_at', 'is', null)
+            .executeTakeFirst()
+        : undefined;
+      const family = await trx
+        .selectFrom('member')
+        .select(['id', 'display_name'])
+        .where('kind', '=', 'family')
+        .execute();
+      const signIns = await trx
+        .selectFrom('account_household')
+        .select([
+          'account_id',
+          'member_id',
+          'role',
+          'suspended_at',
+          'suspended_until',
+          'suspend_reason',
+        ])
+        .where('household_id', '=', p.householdId)
+        .execute();
+      const by = new Map(signIns.map((r) => [r.member_id, r]));
+      const to = appInboxOf({
+        hints,
+        kind: kind ?? null,
+        people: family.map((m) => ({ id: m.id, name: m.display_name })),
+        receives: (id) => {
+          const r = by.get(id);
+          return (
+            r !== undefined &&
+            (r.role === 'owner' || r.role === 'adult') &&
+            !lockInEffect(r) &&
+            !suspensionInEffect(r)
+          );
+        },
+      });
+      const r = to && to !== p.memberId ? by.get(to) : undefined;
+      if (!r) return null;
+      return {
+        accountId: r.account_id,
+        sessionId: '',
+        householdId: p.householdId,
+        memberId: r.member_id,
+        role: r.role,
+        seesAdults: seesAdults(r.role, null),
+      };
+    });
+  }
+
+  /**
+   * The person a send went to (APP5), as they are now, to act as: their
+   * sign-in in this household. Null when they have none any more.
+   */
+  private async personOf(p: Principal, memberId: string): Promise<Principal | null> {
+    const r = await withPrincipal(this.db, p, (trx) =>
+      trx
+        .selectFrom('account_household')
+        .select(['account_id', 'member_id', 'role'])
+        .where('household_id', '=', p.householdId)
+        .where('member_id', '=', memberId)
+        .executeTakeFirst(),
+    );
+    if (!r) return null;
+    return {
+      accountId: r.account_id,
+      sessionId: '',
+      householdId: p.householdId,
+      memberId: r.member_id,
+      role: r.role,
+      seesAdults: seesAdults(r.role, null),
+    };
   }
 
   private now(): number {
@@ -979,10 +1102,21 @@ export class AppService {
    * it: "From Acme Money, 16 November 2026", and a part more past BATCH_MAX_FILES.
    * As its person; the database lets a batch name only a live app of its
    * own member (0109). Who sees what it sends is the app's default.
+   *
+   * Sent to the person it is about (APP5): that person's batch, one an app
+   * a person a day, made as them — the database lets a batch name an app
+   * that routes for an owner or an adult of the family (0113) — with the
+   * app's row held as its own person (`asApp`).
    */
-  private async appBatch(p: Principal, c: AppCaller, day: string, past = 0): Promise<string> {
+  private async appBatch(
+    p: Principal,
+    c: AppCaller,
+    day: string,
+    past = 0,
+    asApp: <T>(trx: Db, fn: (trx: Db) => Promise<T>) => Promise<T> = (trx, fn) => fn(trx),
+  ): Promise<string> {
     return withPrincipal(this.db, p, async (trx) => {
-      const app = await this.live(trx, c);
+      const app = await asApp(trx, (t) => this.live(t, c));
       const parts = await trx
         .selectFrom('intake_batch as b')
         .select(['b.id', 'b.app_part', 'b.default_visibility'])
@@ -1003,6 +1137,7 @@ export class AppService {
             .as('n'),
         )
         .where('b.app_id', '=', c.appId)
+        .where('b.member_id', '=', p.memberId)
         .where('b.app_day', '=', day)
         .orderBy('b.app_part')
         .execute();
@@ -1025,8 +1160,8 @@ export class AppService {
         .insertInto('intake_batch')
         .values({
           household_id: c.householdId,
-          created_by: c.accountId,
-          member_id: c.memberId,
+          created_by: p.accountId,
+          member_id: p.memberId,
           name: appBatchName(app.name, day, part).slice(0, 200),
           default_visibility: app.default_visibility,
           app_id: c.appId,
@@ -1043,6 +1178,7 @@ export class AppService {
         .selectFrom('intake_batch')
         .select('id')
         .where('app_id', '=', c.appId)
+        .where('member_id', '=', p.memberId)
         .where('app_day', '=', day)
         .where('app_part', '=', part)
         .executeTakeFirst();
@@ -1115,6 +1251,7 @@ export class AppService {
         decided_at: null,
         started_at: sql<Date>`now()`,
         attempt,
+        inbox_member_id: null,
       };
       if (!row) {
         // Two first sends at once: the second finds the first's row, and is
@@ -1161,7 +1298,7 @@ export class AppService {
       if (!claim.row.sha256 || !hash.digest().equals(claim.row.sha256)) {
         throw err(409, 'external_id_conflict');
       }
-      return { status: 200, state: stateOf(claim.row, await this.readableOf(c, [claim.row])) };
+      return { status: 200, state: await this.stateFor(c, claim.row) };
     }
 
     // What became of a send that did not land: put back as it was.
@@ -1184,6 +1321,7 @@ export class AppService {
               started_at: was.started_at,
               received_at: was.received_at,
               decided_at: was.decided_at,
+              inbox_member_id: was.inbox_member_id ?? null,
             })
             .where('id', '=', claim.id)
             .where('state', '=', 'arriving')
@@ -1247,21 +1385,88 @@ export class AppService {
       throw this.dayFull(c);
     }
 
+    // Whose Inbox it goes to (APP5): the person it is about, as their own
+    // upload, the app's rows written as its own person in the same
+    // transaction; else its own person's, as always.
+    let to: Principal | null;
+    try {
+      to = await this.inboxOf(p, claim.app, hints);
+    } catch (e) {
+      await letGo();
+      throw e;
+    }
+    const inbox = to ?? p;
+    const asApp = <T>(trx: Db, fn: (trx: Db) => Promise<T>): Promise<T> =>
+      to ? actAs(trx, p, fn) : fn(trx);
+
     let sha: Buffer | null = null;
     let batchId: string | undefined;
+    /**
+     * The file whole and stored: within the day's caps, counted with the app
+     * held, so two files at once never pass them together; said waiting; and
+     * the activity log's line — as the app's own person, whoever's Inbox it
+     * went to (the line names that Inbox's person).
+     */
+    const arrived = async (trx: Db, bytes: number): Promise<void> => {
+      const app = await this.live(trx, c);
+      const at = this.now();
+      const d = localToday(c.timezone, new Date(at));
+      const cap = capsOf(app, at);
+      const sent = today(app, d);
+      if (sent.files + 1 > cap.files || sent.bytes + bytes > cap.bytes) {
+        throw this.dayFull(c);
+      }
+      await trx
+        .updateTable('connected_app')
+        .set({
+          use_day: d,
+          files_today: sent.files + 1,
+          bytes_today: sent.bytes + bytes,
+          last_used_at: sql<Date>`now()`,
+        })
+        .where('id', '=', c.appId)
+        .execute();
+      const landed = await trx
+        .updateTable('connected_app_intake')
+        .set({
+          state: 'waiting',
+          sha256: sha,
+          byte_size: bytes,
+          received_at: sql<Date>`now()`,
+        })
+        .where('id', '=', claim.id)
+        .where('state', '=', 'arriving')
+        .where('attempt', '=', attempt)
+        .returning('id')
+        .executeTakeFirst();
+      // Taken over by a later send while its bytes came: its item is thrown
+      // away, and the later send's stands.
+      if (!landed) throw inProgress();
+      await appendAudit(trx, {
+        householdId: c.householdId,
+        actorAccountId: c.accountId,
+        action: 'app.sent',
+        objectType: 'member',
+        objectId: inbox.memberId,
+        detail: { app_id: c.appId, app: c.name },
+        ip: meta.ip,
+      });
+    };
     try {
       let past = 0;
       for (let tries = 0; ; tries++) {
-        batchId = await this.appBatch(p, c, day, past);
+        batchId = await this.appBatch(inbox, c, day, past, asApp);
         try {
           await this.batches.addItem(
-            p,
+            inbox,
             batchId,
             {
               filename: file.filename,
               mime: file.mime,
               // An app's file is never a health record kept as it is (H5).
               records: false,
+              // Nobody is there to see it land: a paused sign-in is refused too (APP5).
+              paused: true,
               stream: file.stream,
               truncated: file.truncated,
               finished: async () => {
@@ -1271,78 +1476,43 @@ export class AppService {
                 if (!(await file.digestOk())) throw digestMismatch();
               },
               stillAllowed: async (trx) => {
-                await this.live(trx, c);
+                // The app, and its own person as they are now — whoever's
+                // Inbox it goes to (APP5): a lock or a pause since it signed
+                // lands nothing.
+                await asApp(trx, async (t) => {
+                  await this.live(t, c);
+                  await this.personActs(t, c);
+                });
               },
-              made: async (trx, item) => {
-                const sealed =
-                  Object.keys(hints).length > 0
-                    ? sealBytes(
-                        item.fileKey,
-                        Buffer.from(sealedAppHints(hints), 'utf8'),
-                        itemAppHintsBinding(item.id),
-                      )
-                    : null;
-                const tied = await trx
-                  .updateTable('connected_app_intake')
-                  .set({ incoming_file_id: item.id, hints_sealed: sealed })
-                  .where('id', '=', claim.id)
-                  .where('state', '=', 'arriving')
-                  .where('attempt', '=', attempt)
-                  .returning('id')
-                  .executeTakeFirst();
-                // Taken over by a later send: this one makes no item.
-                if (!tied) throw inProgress();
-              },
+              made: (trx, item) =>
+                asApp(trx, async (trx) => {
+                  const sealed =
+                    Object.keys(hints).length > 0
+                      ? sealBytes(
+                          item.fileKey,
+                          Buffer.from(sealedAppHints(hints), 'utf8'),
+                          itemAppHintsBinding(item.id),
+                        )
+                      : null;
+                  const tied = await trx
+                    .updateTable('connected_app_intake')
+                    .set({
+                      incoming_file_id: item.id,
+                      hints_sealed: sealed,
+                      inbox_member_id: inbox.memberId,
+                    })
+                    .where('id', '=', claim.id)
+                    .where('state', '=', 'arriving')
+                    .where('attempt', '=', attempt)
+                    .returning('id')
+                    .executeTakeFirst();
+                  // Taken over by a later send: this one makes no item.
+                  if (!tied) throw inProgress();
+                }),
               hashed: (h) => {
                 sha = h;
               },
-              arrived: async (trx, bytes) => {
-                // Within the day's caps, counted with the app held, so two
-                // files at once never pass them together.
-                const app = await this.live(trx, c);
-                const at = this.now();
-                const d = localToday(c.timezone, new Date(at));
-                const cap = capsOf(app, at);
-                const sent = today(app, d);
-                if (sent.files + 1 > cap.files || sent.bytes + bytes > cap.bytes) {
-                  throw this.dayFull(c);
-                }
-                await trx
-                  .updateTable('connected_app')
-                  .set({
-                    use_day: d,
-                    files_today: sent.files + 1,
-                    bytes_today: sent.bytes + bytes,
-                    last_used_at: sql<Date>`now()`,
-                  })
-                  .where('id', '=', c.appId)
-                  .execute();
-                const landed = await trx
-                  .updateTable('connected_app_intake')
-                  .set({
-                    state: 'waiting',
-                    sha256: sha,
-                    byte_size: bytes,
-                    received_at: sql<Date>`now()`,
-                  })
-                  .where('id', '=', claim.id)
-                  .where('state', '=', 'arriving')
-                  .where('attempt', '=', attempt)
-                  .returning('id')
-                  .executeTakeFirst();
-                // Taken over by a later send while its bytes came: its item
-                // is thrown away, and the later send's stands.
-                if (!landed) throw inProgress();
-                await appendAudit(trx, {
-                  householdId: c.householdId,
-                  actorAccountId: c.accountId,
-                  action: 'app.sent',
-                  objectType: 'member',
-                  objectId: c.memberId,
-                  detail: { app_id: c.appId, app: c.name },
-                  ip: meta.ip,
-                });
-              },
+              arrived: (trx, bytes) => asApp(trx, (trx) => arrived(trx, bytes)),
             },
             meta,
           );
@@ -1350,14 +1520,24 @@ export class AppService {
         } catch (e) {
           // Filled meanwhile by files sent at once: the next part.
           if (e instanceof ApiError && e.code === 'batch_full' && tries < 3) {
-            past = await this.partOf(p, batchId);
+            past = await this.partOf(inbox, batchId);
             continue;
           }
           throw e;
         }
       }
-    } catch (e) {
-      if (batchId) await this.batches.dropIfEmpty(p, batchId).catch(() => undefined);
+    } catch (caught) {
+      // The person it was going to can no longer have it (locked, paused,
+      // their role changed) since it was routed (APP5): nothing landed, and
+      // sent again it goes where the rule says then.
+      const e =
+        to && caught instanceof ApiError && caught.code === 'forbidden'
+          ? new ApiError(503, 'busy', 'The vault was busy just then. Try again.', {
+              retriable: true,
+              retryAfter: 1,
+            })
+          : caught;
+      if (batchId) await this.batches.dropIfEmpty(inbox, batchId).catch(() => undefined);
       if (e instanceof ApiError && e.code === 'too_large') {
         await refused('too_large');
       } else if (e instanceof ApiError && e.code === 'unsupported_type') {
@@ -1381,6 +1561,25 @@ export class AppService {
         .executeTakeFirstOrThrow(),
     );
     return { status: 201, state: stateOf(row) };
+  }
+
+  /**
+   * The app's own person, as they are now, inside a send's transaction:
+   * still an owner or an adult here, neither locked nor paused. Read after
+   * the app's row is held. A send to somebody else's Inbox (APP5) is that
+   * person's upload, so their own checks are not this person's.
+   */
+  private async personActs(trx: Db, c: AppCaller): Promise<void> {
+    const me = await trx
+      .selectFrom('account_household')
+      .select(['role', 'suspended_at', 'suspended_until', 'suspend_reason'])
+      .where('account_id', '=', c.accountId)
+      .where('household_id', '=', c.householdId)
+      .where('member_id', '=', c.memberId)
+      .executeTakeFirst();
+    if (!me || (me.role !== 'owner' && me.role !== 'adult')) throw err(401, 'app_revoked');
+    if (lockInEffect(me)) throw err(403, 'member_locked');
+    if (suspensionInEffect(me)) throw err(403, 'member_paused');
   }
 
   /** Which part of the day a batch is. */
@@ -1440,7 +1639,7 @@ export class AppService {
       await this.checked(c, trx, meta);
       return row;
     });
-    return stateOf(row, await this.readableOf(c, [row]));
+    return this.stateFor(c, row);
   }
 
   /** `GET /apps/intake?external_ids=`: up to 100 at once, and those never sent. */
@@ -1464,11 +1663,12 @@ export class AppService {
       return rows;
     });
     const readable = await this.readableOf(c, rows);
+    const sent = await this.sentOf(c, rows);
     const by = new Map(rows.map((r) => [r.external_id, r]));
     return {
       items: asked.flatMap((id) => {
         const r = by.get(id);
-        return r ? [stateOf(r, readable)] : [];
+        return r ? [stateOf(r, readable, sent)] : [];
       }),
       unknown: asked.filter((id) => !by.has(id)),
     };
@@ -1478,7 +1678,9 @@ export class AppService {
    * `DELETE /apps/intake/{external_id}`: a waiting item taken out of the
    * Inbox, as its person's Remove would, and said `withdrawn`. A filed one
    * is `409 already_decided`; one removed or refused already is answered
-   * as it is.
+   * as it is. One sent to the Inbox of the person it is about (APP5) is
+   * taken out of theirs, as them, the send's row and the activity log's
+   * line written as the app's own person in the same transaction.
    */
   async withdraw(c: AppCaller, externalId: string, meta: RequestMeta): Promise<AppIntakeState> {
     if (!EXTERNAL_ID_PATTERN.test(externalId)) throw notFound();
@@ -1486,13 +1688,11 @@ export class AppService {
     const read = () =>
       withPrincipal(this.db, p, async (trx) => {
         const row = (await trx
-          .selectFrom('connected_app_intake as i')
-          .leftJoin('incoming_file as f', 'f.id', 'i.incoming_file_id')
-          .selectAll('i')
-          .select('f.batch_id')
-          .where('i.app_id', '=', c.appId)
-          .where('i.external_id', '=', externalId)
-          .executeTakeFirst()) as (IntakeRow & { batch_id: string | null }) | undefined;
+          .selectFrom('connected_app_intake')
+          .selectAll()
+          .where('app_id', '=', c.appId)
+          .where('external_id', '=', externalId)
+          .executeTakeFirst()) as IntakeRow | undefined;
         return row;
       });
     const row = await read();
@@ -1504,34 +1704,54 @@ export class AppService {
         'It has been filed already. To remove a filed document, delete it.',
       );
     }
-    if (row.state !== 'waiting') return stateOf(row, await this.readableOf(c, [row]));
-    if (!row.batch_id || !row.incoming_file_id) throw notFound();
-    await this.batches.removeItem(p, row.batch_id, row.incoming_file_id, meta, async (trx) => {
-      const out = await trx
-        .updateTable('connected_app_intake')
-        .set({
-          state: 'removed',
-          removed_reason: 'withdrawn',
-          decided_at: sql<Date>`now()`,
-          hints_sealed: null,
-        })
-        .where('id', '=', row.id)
-        .where('state', '=', 'waiting')
-        .returning('id')
-        .executeTakeFirst();
-      if (!out) {
-        throw new ApiError(409, 'already_decided', 'It has been filed or removed already.');
-      }
-      await appendAudit(trx, {
-        householdId: c.householdId,
-        actorAccountId: c.accountId,
-        action: 'app.withdrawn',
-        objectType: 'member',
-        objectId: c.memberId,
-        detail: { app_id: c.appId, app: c.name },
-        ip: meta.ip,
-      });
-    });
+    if (row.state !== 'waiting') return this.stateFor(c, row);
+    const itemId = row.incoming_file_id;
+    if (!itemId) throw notFound();
+    // Whose Inbox it is in: its own person's, or the person it went to.
+    const to =
+      row.inbox_member_id && row.inbox_member_id !== c.memberId
+        ? await this.personOf(p, row.inbox_member_id)
+        : null;
+    if (row.inbox_member_id && row.inbox_member_id !== c.memberId && !to) throw notFound();
+    const inbox = to ?? p;
+    const item = await withPrincipal(this.db, inbox, (trx) =>
+      trx
+        .selectFrom('incoming_file')
+        .select('batch_id')
+        .where('id', '=', itemId)
+        .executeTakeFirst(),
+    );
+    if (!item?.batch_id) throw notFound();
+    const asApp = <T>(trx: Db, fn: (trx: Db) => Promise<T>): Promise<T> =>
+      to ? actAs(trx, p, fn) : fn(trx);
+    await this.batches.removeItem(inbox, item.batch_id, itemId, meta, (trx) =>
+      asApp(trx, async (trx) => {
+        const out = await trx
+          .updateTable('connected_app_intake')
+          .set({
+            state: 'removed',
+            removed_reason: 'withdrawn',
+            decided_at: sql<Date>`now()`,
+            hints_sealed: null,
+          })
+          .where('id', '=', row.id)
+          .where('state', '=', 'waiting')
+          .returning('id')
+          .executeTakeFirst();
+        if (!out) {
+          throw new ApiError(409, 'already_decided', 'It has been filed or removed already.');
+        }
+        await appendAudit(trx, {
+          householdId: c.householdId,
+          actorAccountId: c.accountId,
+          action: 'app.withdrawn',
+          objectType: 'member',
+          objectId: inbox.memberId,
+          detail: { app_id: c.appId, app: c.name },
+          ip: meta.ip,
+        });
+      }),
+    );
     const after = await read();
     if (!after) throw notFound();
     return stateOf(after);
@@ -1861,6 +2081,7 @@ export class AppService {
     daily_read_bytes?: number;
     backfill?: ConnectedAppInput['backfill'];
     auto_file?: unknown;
+    route_to_person?: unknown;
   }) {
     const { files, bytes } = this.opts.ceilings;
     const out: Record<string, unknown> = {};
@@ -1903,6 +2124,14 @@ export class AppService {
         throw invalid('File automatically: on or off.', 'auto_file');
       }
       out.auto_file = input.auto_file;
+    }
+    // Each paper to the Inbox of the person it is about (APP5): on for a
+    // new app unless said; the owner's switch.
+    if (input.route_to_person !== undefined) {
+      if (typeof input.route_to_person !== 'boolean') {
+        throw invalid('Send to the person it is about: on or off.', 'route_to_person');
+      }
+      out.route_to_person = input.route_to_person;
     }
     if (input.backfill !== undefined) {
       if (input.backfill === null) {
@@ -2045,6 +2274,10 @@ export class AppService {
       .select((eb) => eb.fn.countAll<string>().as('n'))
       .where('app_id', 'in', ids)
       .where('member_id', '=', p.memberId)
+      // In their own Inbox (APP5): not what went to the person it was about.
+      .where((eb) =>
+        eb.or([eb('inbox_member_id', 'is', null), eb('inbox_member_id', '=', p.memberId)]),
+      )
       .where('state', 'in', ['waiting', 'filed'])
       .groupBy(['app_id', 'state'])
       .execute();
@@ -2087,6 +2320,7 @@ export class AppService {
         allowed_kinds: a.allowed_kinds,
         default_visibility: a.default_visibility,
         auto_file: a.auto_file,
+        route_to_person: a.route_to_person,
         daily_files: a.daily_files,
         daily_bytes: Number(a.daily_bytes),
         backfill:

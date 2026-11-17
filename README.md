@@ -380,7 +380,8 @@ later**.
 
 **What a connected app can do.** It acts as one owner or adult who signs in, and never
 does more than that person could. It can send files of the kinds an owner allowed, which
-go into that person's Inbox in a batch a day ("From Acme Money, 16 November 2026"), are read
+go into that person's Inbox — or the Inbox of the person each is about (see _Whose Inbox_
+below) — in a batch a day ("From Acme Money, 16 November 2026"), are read
 and proposed for like any other upload, and wait there until the person files or removes
 each. What it says about a file (whose it is, its kind, its dates, an amount) is only a
 suggestion: where the vault reads the page differently, the card says both and waits for
@@ -439,6 +440,31 @@ restore. For moving older papers, it may be switched on for the
 backfill allowance's window alone. Switching it on, for an app acting as somebody else,
 waits for them to turn the app on again.
 
+**Whose Inbox.** With _Send each paper to the Inbox of the person it's about_ on (the
+default for an app connected from 0.9.0-dev.60; an app connected before keeps sending to
+its person's Inbox until an owner switches it on), a file whose app names somebody — by
+their id, or by a name that matches one person of the family, the whole name or a first
+name only one person has — goes to **that person's** Inbox, when they are an owner or an
+adult of the household who signs in and is not locked or paused. They review and file it
+as their own, in a batch of their own ("From Acme Money, 16 November 2026"); filing
+automatically, if on, files it as them by the same rule. Anything else goes to the Inbox of
+the person the app acts as, as before: a file that names nobody, the household, a teen,
+somebody without a sign-in, a guest, a name two people share or nobody has, and any paper
+of a kind that usually belongs to the household (a utility bill). The app's daily limits
+count everything it sends, whoever's Inbox. The app is never told whose Inbox a file went
+to, and the activity log names it: "Ahmed via Acme Money sent a file to Sara's Inbox".
+Switching it on, for an app acting as somebody else, waits for them to turn the app on
+again.
+
+**Downloading what it sent again.** An app allowed to download may always download again
+the exact file it sent, by its own `external_id`, while that file is still in the vault —
+even once it was filed into a family paper as a new version, or the family added a newer
+file, and whether or not the app may read the document. Not while the document is in the
+Trash or Only me, once it is removed for good, or once the family made it an identity,
+legal or medical paper; not once the app let go of it. Its status says whether
+(`content_available`), and each download counts against its daily download bytes and is in
+the activity log, as its other downloads are.
+
 **Opening a document from a connected app.** If an owner ticks _Show its user documents
 it may read_ (with reading ticked too), the app can show its user a document it may read: it asks the vault
 for a link at the moment the user clicks, and sends their browser straight to it. The link
@@ -481,7 +507,8 @@ the addresses it may come from (up to ten addresses or networks). The vault then
 somebody else, it does nothing until that person turns it on in their own _Settings →
 Connected apps_, again with a passkey or a code; they are emailed when it is connected.
 When an owner later lets such an app do more — another kind, higher limits, more
-addresses, a backfill, a wider audience, filing automatically — or gives it a key, it waits for that person to
+addresses, a backfill, a wider audience, filing automatically, sending to the person a paper
+is about — or gives it a key, it waits for that person to
 turn it on again, and they are emailed. Letting it do less needs nothing from them.
 Identity, legal and medical papers, and kinds kept as Essentials, are never among what
 an app may send.

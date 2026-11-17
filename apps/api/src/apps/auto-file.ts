@@ -1,4 +1,4 @@
-import { withSystem, type Db } from '@fdv/db';
+import { actAs, withSystem, type Db } from '@fdv/db';
 import {
   APP_FILE_READY_JOB,
   lockInEffect,
@@ -23,6 +23,11 @@ import type { BatchService } from '../uploads/batches.js';
  * app still on, turned on by its person, not paused or removed, still
  * allowed to send and still filing automatically (`appOn`, holding the
  * app's row before the batch and the item, as a send does), and the item still Ready and sure by `appFilesItself`.
+ *
+ * An item the app sent to the Inbox of the person it is about (APP5) is
+ * filed as that person — whose Inbox it is in — with the same checks, and
+ * that person still an owner or an adult who may act; the app's own rows
+ * are read as the app's person, in the same transaction.
  *
  * Safe to run twice, and on several API instances at once: an item filed
  * or removed meanwhile is nothing to do, and the item's own lock decides
@@ -90,6 +95,13 @@ export class AppAutoFile {
             .onRef('ah.account_id', '=', 'a.account_id')
             .onRef('ah.household_id', '=', 'a.household_id'),
         )
+        // Whose Inbox it is in (APP5): the person it was sent to, as they are now.
+        .leftJoin('account_household as rh', (j) =>
+          j
+            .onRef('rh.account_id', '=', 'ib.created_by')
+            .onRef('rh.household_id', '=', 'ib.household_id')
+            .onRef('rh.member_id', '=', 'ib.member_id'),
+        )
         .select([
           'f.state',
           'i.auto_file_held',
@@ -109,6 +121,12 @@ export class AppAutoFile {
           'ah.suspended_at',
           'ah.suspended_until',
           'ah.suspend_reason',
+          'rh.account_id as inbox_account_id',
+          'rh.member_id as inbox_member_id',
+          'rh.role as inbox_role',
+          'rh.suspended_at as inbox_suspended_at',
+          'rh.suspended_until as inbox_suspended_until',
+          'rh.suspend_reason as inbox_suspend_reason',
         ])
         .where('f.id', '=', item)
         .executeTakeFirst(),
@@ -118,20 +136,41 @@ export class AppAutoFile {
     if (!live(found, this.now()) || !found.role || found.ah_member_id !== found.member_id) {
       return 'off';
     }
+    // Filed as whoever's Inbox it is in: the app's person, or the person
+    // it was sent to (APP5) — still an owner or an adult who may act.
+    const inboxRole = found.inbox_role;
+    if (
+      !found.inbox_account_id ||
+      !found.inbox_member_id ||
+      (inboxRole !== 'owner' && inboxRole !== 'adult') ||
+      !mayAct({
+        suspended_at: found.inbox_suspended_at,
+        suspended_until: found.inbox_suspended_until,
+        suspend_reason: found.inbox_suspend_reason,
+      })
+    ) {
+      return 'off';
+    }
     const role: Role = found.role;
+    const acting = { accountId: found.account_id, memberId: found.member_id, role };
     const p: Principal = {
-      accountId: found.account_id,
+      accountId: found.inbox_account_id,
       sessionId: '',
       householdId: hh,
-      memberId: found.member_id,
-      role,
-      seesAdults: seesAdults(role, null),
+      memberId: found.inbox_member_id,
+      role: inboxRole,
+      seesAdults: seesAdults(inboxRole, null),
     };
     const app = { id: found.app_id, name: found.name };
-    const out = await this.batches.fileFromApp(p, item, app, (trx) => this.appOn(trx, app.id, hh), {
-      ip: null,
-      userAgent: null,
-    });
+    const out = await this.batches.fileFromApp(
+      p,
+      item,
+      app,
+      // The app's row, and its person, read as its person (APP5): the person
+      // it sent to need not see the app's row.
+      (trx) => actAs(trx, acting, (t) => this.appOn(t, app.id, hh)),
+      { ip: null, userAgent: null },
+    );
     return out.filed ? 'filed' : out.why;
   }
 
@@ -190,6 +229,15 @@ function live(
   if (a.revoked_at !== null || a.paused_reason !== null || a.approval !== 'approved') return false;
   if (!a.scopes.includes('documents.send') || !autoFileOn(a, now)) return false;
   if (a.role !== 'owner' && a.role !== 'adult') return false;
+  return mayAct(a);
+}
+
+/** Whether a person's sign-in is neither locked nor paused now. */
+function mayAct(a: {
+  suspended_at: Date | null;
+  suspended_until: Date | null;
+  suspend_reason: string | null;
+}): boolean {
   const person = {
     suspended_at: a.suspended_at,
     suspended_until: a.suspended_until,
