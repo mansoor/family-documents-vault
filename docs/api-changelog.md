@@ -8195,6 +8195,31 @@ item_id }` (`stately`, keyed by the item) once it has read such an
       said; with one on, a test says what the pages of a file read
       (`readAppFile`) and the fake files it by the same rule, or leaves it
       waiting.
+  - The client as a tarball on each GitHub release (0.9.0-dev.59, CL1). No
+    change to the API. **Additive.**
+    - **Where:** every tag's GitHub release (a pre-release for `-dev` and
+      `-rc`) has `fdv-client-<version>.tgz`, `@fdv/client` at the vault's
+      version, installed by URL:
+      `https://github.com/mansoor/family-documents-vault/releases/download/v<version>/fdv-client-<version>.tgz`.
+      Not on npmjs.com or GitHub Packages; no token needed.
+    - **What:** ESM only, and `.d.ts`, for `.`, `./apps`, `./testing` (the
+      fake vault) and `./testing/contract` (`contractScenarios` and its
+      types, moved out of `./testing` in the tarball alone: the workspace's
+      `./testing` still has them), sharing one copy of each module; what
+      they use of `@fdv/shared` bundled in (its declarations under
+      `dist/types/_shared`); MIT, with its README and LICENSE.
+      `engines.node` `>=22`; `sideEffects: false`. Dependencies:
+      `libphonenumber-js` (the fake vault's); `vitest` (`>=5 <7`) an
+      optional peer, imported by `./testing/contract` alone.
+    - **Releases:** a tarball once attached is never replaced (apps pin its
+      integrity): a re-run whose tarball differs fails. A release is
+      _latest_ by the rule `latest` images follow.
+    - **The workspace** still uses `packages/client`'s TypeScript source;
+      its `package.json` is unchanged. `scripts/client-pack.mjs` builds a
+      separate package in `packages/client/dist/package` and fails if
+      anything but `packages/client/src` and `packages/shared/src` went in,
+      or anything is left to install but what `scripts/mit-packages.mjs`
+      allows them (the list `check-mit-boundary.mjs` now reads too).
 
 ## Deprecations in effect
 

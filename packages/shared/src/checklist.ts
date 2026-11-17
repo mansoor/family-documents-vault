@@ -5,7 +5,7 @@ import { shortTypeLabel } from './titles.js';
 
 /**
  * A collection from a checklist (0.9.0, C1): a list a family is asked for —
- * "Documents for Mansoor / W2 for 2025 and 2024 / Last 3 pay statements" —
+ * "Documents for Alex / W2 for 2025 and 2024 / Last 3 pay statements" —
  * read line by line with plain rules (no AI), shown back as what was
  * understood, and matched against the documents the reader can see. Nothing
  * is put in the collection until its maker ticks what to add.
@@ -55,9 +55,9 @@ import { shortTypeLabel } from './titles.js';
  * how many, and how recent, to the parts after it. A line with no kind is
  * Not understood: the person chooses its kind, person and count, or skips it.
  *
- * **Whose, without an apostrophe** (0.9.0): "mansoors passport" is
- * Mansoor's when "mansoors", less its last "s", is somebody the reader may
- * choose (by first or full name) and "mansoors" is nobody; a name that
+ * **Whose, without an apostrophe** (0.9.0): "alexs passport" is
+ * Alex's when "alexs", less its last "s", is somebody the reader may
+ * choose (by first or full name) and "alexs" is nobody; a name that
  * ends in "s" ("Chris", "James") never loses one, so "chriss" is nobody. A
  * line that starts with a name as it is ("james passport") is theirs when
  * the rest of it says the kind the whole line does.
@@ -779,7 +779,7 @@ function whoIs(name: string, ctx: ChecklistContext): Whose | null {
       ? { kind: 'person', id: (found[0] as (typeof people)[number]).id }
       : { kind: 'shared', choices: found.map((p) => p.id) };
   if (exact.length > 0) return pick(exact);
-  // By first name: "Mansoor" for Mansoor Seikh, "Mansoor Seikh" for Mansoor.
+  // By first name: "Alex" for Alex Rivera, "Alex Rivera" for Alex.
   const first = people.filter(
     (p) =>
       firstWord(p.words) === firstWord(words) &&
@@ -812,8 +812,8 @@ const NAME_WORD = /^\p{L}[\p{L}.-]{0,30}$/u;
 
 /**
  * Whose a name without an apostrophe says (0.9.0): somebody by the name as
- * it is (`plain`), or by the name less its last "s" ("mansoors" is
- * Mansoor's) when the name as it is is nobody — and never a name that
+ * it is (`plain`), or by the name less its last "s" ("alexs" is
+ * Alex's) when the name as it is is nobody — and never a name that
  * ends in "s" less one more ("chriss" is not Chris's: "Chris", "James"
  * never lose an "s").
  */
@@ -869,7 +869,7 @@ const NAME = "([\\p{L}][\\p{L}'’.-]{0,30}(?: [\\p{L}&][\\p{L}'’.-]{0,30}){0,
 const PAPERS = '(?:documents?|docs?|papers?|paperwork|files?|items?|things|stuff)';
 const HEADING_FOR = new RegExp(`^(?:the )?${PAPERS} (?:for|of|from) ${NAME} ?:?$`, 'iu');
 const HEADING_OWN = new RegExp(`^${NAME}['’]s? ${PAPERS} ?:?$`, 'iu');
-/** "Mansoors documents": a name without its apostrophe (0.9.0). */
+/** "Alexs documents": a name without its apostrophe (0.9.0). */
 const HEADING_OWN_BARE = new RegExp(`^(\\S+(?: \\S+){0,2}) ${PAPERS} ?:?$`, 'iu');
 const HEADING_FOR_COLON = new RegExp(`^for ${NAME} ?:$`, 'iu');
 const HEADING_COLON = new RegExp(`^${NAME} ?: ?(.*)$`, 'iu');
@@ -901,7 +901,7 @@ function headingWhose(
   return null;
 }
 
-/** A heading: the person it names, and what follows it on its line ("Mansoor: passport"). */
+/** A heading: the person it names, and what follows it on its line ("Alex: passport"). */
 function headingOf(
   line: string,
   ctx: ChecklistContext,
@@ -1111,8 +1111,8 @@ function titleWordsOf(rest: string): string[] | null {
 }
 
 /**
- * The person a part of a line names itself — "Mansoor's W2", "W2 for
- * Mansoor", "W2 (Mansoor)" — and its words without the name. A name that
+ * The person a part of a line names itself — "Alex's W2", "W2 for
+ * Alex", "W2 (Alex)" — and its words without the name. A name that
  * reads as somebody's and is nobody the reader may choose ("Dad's
  * passport", "Grandma's") is whose?; "last year's", "for the house" name
  * nobody.
@@ -1137,7 +1137,7 @@ function ownerIn(
 
 /**
  * A part that starts with somebody, without an apostrophe (0.9.0):
- * "mansoors passport", "Mansoors EAD" — or "james passport", a name as it
+ * "alexs passport", "Alexs EAD" — or "james passport", a name as it
  * is, when the rest names a kind. Either way the rest says the kind the
  * whole part does, so "bills for 2024" keeps its bills beside a Bill. A
  * word that is nobody stays as it was.
@@ -1376,7 +1376,7 @@ export function checklistWanted(item: ChecklistItem): number {
   return 1;
 }
 
-/** Whose, said after it: ", Mansoor's", or ", anyone's". */
+/** Whose, said after it: ", Alex's", or ", anyone's". */
 function whoseWords(item: ChecklistItem, people: readonly ChecklistPerson[]): string {
   if (item.member_id === null) return ', anyone’s';
   const name = people.find((p) => p.id === item.member_id)?.name;
@@ -1385,7 +1385,7 @@ function whoseWords(item: ChecklistItem, people: readonly ChecklistPerson[]): st
 
 /**
  * What an item was understood as, in words: "3 most recent pay statements,
- * Mansoor’s", "W-2s for 2025 and 2024, Mansoor’s", "Bank statements from
+ * Alex’s", "W-2s for 2025 and 2024, Alex’s", "Bank statements from
  * each of the last 3 months, anyone's".
  */
 export function checklistSummary(
@@ -1477,7 +1477,7 @@ export interface ChecklistItemCheck extends ChecklistReadItem {
   found: number;
   /** …and how many more were found that will not go in (an Only me one in a collection others see). */
   found_not_added: number;
-  /** What is still missing, in words ("W-2 for 2024, Mansoor’s"). */
+  /** What is still missing, in words ("W-2 for 2024, Alex’s"). */
   missing: string[];
   matches: ChecklistMatch[];
   /** Found by the words of its title, not its kind (0.9.0); absent for a line found by its kind. */

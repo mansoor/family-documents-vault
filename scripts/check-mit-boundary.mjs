@@ -5,27 +5,21 @@
 // them. This fails if either one:
 //
 //  - says any licence but MIT, or has lost its LICENSE file;
-//  - depends on anything but what is allowed below;
+//  - depends on anything but what mit-packages.mjs allows;
 //  - imports anything from outside its own folder, except those packages
 //    (and vitest, in tests and the fake vault's contract only), or imports
 //    from a path worked out at run time, which cannot be checked.
+//
+// The client's tarball on each GitHub release (client-pack.mjs) carries
+// @fdv/shared bundled into it; that script checks what it built against
+// the same lists: only these two packages' sources, and only their allowed
+// packages left to install — nothing from apps/* or any other package.
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MIT, TEST_ONLY } from './mit-packages.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-
-/**
- * Each MIT package, and the only packages it may use at run time: each of
- * them MIT itself. libphonenumber-js (MIT) reads a mobile number typed for
- * text messages (0.9.0).
- */
-const MIT = {
-  'packages/shared': ['libphonenumber-js'],
-  'packages/client': ['@fdv/shared'],
-};
-/** Used by tests, and by the client's `testing` entry that tests import. */
-const TEST_ONLY = new Set(['vitest']);
 
 /**
  * The source with comments blanked out, strings and template text kept as
