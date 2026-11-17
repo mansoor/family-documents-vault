@@ -6,6 +6,17 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.61] - 2026-11-17 — the API client, from an app's first use
+
+### Changed
+
+- **The API client no longer pulls vitest into an app's installs.** The tarball's `package.json` declares no peer dependencies: its optional vitest peer made pnpm link an app's own vitest, and with it vite and esbuild, into production installs. The contract scenarios (`@fdv/client/testing/contract`) still use vitest: an app that runs them keeps `vitest` (`>=5 <7`) in its own devDependencies, as the client's README says.
+- **A request that gets no answer says why, for a log.** The client's `NetworkError` (`offline` or `timeout`, as before) now carries what the platform's `fetch` threw as its standard `cause`, and a short `detail` such as `ECONNREFUSED`. A connected app's downloads give the same error, where before they let `fetch`'s own through.
+
+### Added
+
+- **The fake vault rotates an app's keys as the vault does.** An app adding its next key, an owner confirming it or adding one in Settings, and retiring keys were answered `404` by the fake; now they follow the vault's rules — the app's own key signs nothing until confirmed, two keys at most, the old key retiring by itself seven days after the new one first signs — and a contract scenario holds the fake and the real vault to the same.
+
 ## [0.9.0-dev.60] - 2026-11-17 — connected apps: their own sends again, and the right Inbox
 
 ### Added

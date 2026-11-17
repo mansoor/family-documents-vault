@@ -304,6 +304,16 @@ if (readFileSync(path.join(shared, 'LICENSE'), 'utf8') !== licence) {
   fail('packages/shared/LICENSE differs from the client’s: ship both');
 }
 copyFileSync(path.join(client, 'LICENSE'), path.join(stage, 'LICENSE'));
+// No peer dependency on vitest (CL2): pnpm links even an optional peer to
+// the app's own vitest, which drags vitest, vite and esbuild into its
+// production installs. `./testing/contract` imports it all the same; the
+// README tells an app to keep vitest in its own devDependencies, in the
+// range the repository tests with: the major it uses, and the next.
+const vitestRange = `>=${vitestMajor} <${vitestMajor + 2}`;
+const readme = readFileSync(path.join(client, 'README.md'), 'utf8');
+if (usesVitest && !readme.includes(`vitest@"${vitestRange}"`)) {
+  fail(`packages/client/README.md does not tell an app to install vitest@"${vitestRange}"`);
+}
 copyFileSync(path.join(client, 'README.md'), path.join(stage, 'README.md'));
 
 const entry = (name, dts) => ({ types: `./dist/types/${dts}`, default: `./dist/${name}.js` });
@@ -331,14 +341,12 @@ const pkg = {
   // Every module only declares as it loads (checked above).
   sideEffects: false,
   dependencies,
-  ...(usesVitest && {
-    // The major the repository tests with, and the next.
-    peerDependencies: { vitest: `>=${vitestMajor} <${vitestMajor + 2}` },
-    peerDependenciesMeta: { vitest: { optional: true } },
-  }),
 };
 const manifest = JSON.stringify(pkg, null, 2) + '\n';
 if (manifest.includes('workspace:')) fail('a workspace: version is left in package.json');
+if (/"peerDependencies|"optionalDependencies/.test(manifest)) {
+  fail('package.json declares peers: an app installs nothing it did not ask for');
+}
 writeFileSync(path.join(stage, 'package.json'), manifest);
 
 // npm pack, as npm and pnpm both install a tarball: npm.cmd on Windows

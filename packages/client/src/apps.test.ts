@@ -10,6 +10,7 @@ import {
   signRequest,
   toBase64,
 } from './apps.js';
+import { NetworkError } from './errors.js';
 
 /**
  * The signer of `@fdv/client/apps` (0.9.0, APP1), held to the contract's
@@ -172,5 +173,25 @@ describe("a connected app's signer (0.9.0, APP1)", () => {
     });
     expect(() => app.status('../documents')).toThrow(/not an external_id/);
     expect(() => app.withdraw('a/b')).toThrow(/not an external_id/);
+  });
+});
+
+describe("a connected app's request with no answer (CL2)", () => {
+  it('is offline, a download too, with what fetch threw as its cause', async () => {
+    const thrown = new TypeError('fetch failed');
+    const app = createAppClient({
+      baseUrl: 'https://vault.example.com',
+      appId: '0b9a1f3e-6c2d-4e8a-9f71-2d5c8b4a7e10',
+      keyId: '5e2c7d91-3a4b-4c6d-8e9f-0a1b2c3d4e5f',
+      privateKey: TEST_KEY,
+      fetch: async () => {
+        throw thrown;
+      },
+    });
+    for (const p of [app.download('doc-1'), app.sentFile('sent-1'), app.me()]) {
+      const err = await p.catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(NetworkError);
+      expect(err).toMatchObject({ kind: 'offline', cause: thrown, detail: 'fetch failed' });
+    }
   });
 });

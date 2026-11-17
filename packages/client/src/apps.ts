@@ -17,6 +17,7 @@ import {
   type AppLinkMode,
   type AppMe,
 } from '@fdv/shared';
+import { NetworkError } from './errors.js';
 import { createHttp, toError, type FetchLike, type Http } from './http.js';
 import { multipartBody } from './multipart.js';
 
@@ -339,8 +340,19 @@ export interface AppClient {
   status(externalId: string): Promise<AppIntakeState>;
   statuses(externalIds: string[]): Promise<AppIntakeStates>;
   withdraw(externalId: string): Promise<AppIntakeState>;
-  /** A new key for rotation, signed with this one. */
+  /**
+   * A new key for rotation, signed with this one: pending (it signs
+   * nothing, `401 app_key_pending`) until an owner, or the person the app
+   * acts as, confirms it in Settings. Two live at most, pending ones counted
+   * (`409 key_limit`); never one in use (`409 key_exists`).
+   */
   addKey(publicKey: string): Promise<AppKeyAdded>;
+  /**
+   * A key it added itself, retired: never one an owner added (`409
+   * key_added_by_owner`), the key signing this request, nor its last (`409
+   * key_in_use`). Once a newer, confirmed key first signs, the older one
+   * retires by itself seven days later (`retires_at` in `me()`).
+   */
   retireKey(keyId: string): Promise<void>;
   /** A signed request of the app's own, for anything else. */
   signed<T>(
@@ -423,10 +435,16 @@ export function createAppClient(opts: AppClientOptions): AppClient {
     };
     if (o.range) headers.range = `bytes=${o.range.start}-${o.range.end ?? ''}`;
     if (o.ifNoneMatch) headers['if-none-match'] = o.ifNoneMatch;
-    const res = await opts.fetch(`${opts.baseUrl.replace(/\/+$/, '')}${target}`, {
-      method: 'GET',
-      headers,
-    });
+    let res: Awaited<ReturnType<FetchLike>>;
+    try {
+      res = await opts.fetch(`${opts.baseUrl.replace(/\/+$/, '')}${target}`, {
+        method: 'GET',
+        headers,
+      });
+    } catch (cause) {
+      // No answer: offline, as every other request says it, with the cause.
+      throw new NetworkError('offline', undefined, { cause });
+    }
     if (res.status !== 304 && !res.ok) throw await toError(res, opts.now?.() ?? Date.now());
     return {
       status: res.status as 200 | 206 | 304,

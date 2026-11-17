@@ -18,7 +18,7 @@ import {
 } from '@fdv/shared';
 import { expect } from 'vitest';
 import { deviceHeaders, type Api } from '../api.js';
-import { createAppClient, signRequest } from '../apps.js';
+import { createAppClient, signRequest, toBase64 } from '../apps.js';
 import type { FetchLike } from '../http.js';
 import { ApiRequestError, isSessionOver } from '../errors.js';
 import { multipartBody } from '../multipart.js';
@@ -192,6 +192,22 @@ MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g
 const APP_TEST_KEY = `-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIJ+DYvh6SEqVTm50DFtMDoQikTmiCqirVv9mWG9qfSnF
 -----END PRIVATE KEY-----`;
+
+/** A fresh Ed25519 key pair, as an app makes its next one (CL2): "ed25519:…" and PKCS#8. */
+async function keyPair(): Promise<{ publicKey: string; privateKey: Uint8Array }> {
+  // A key as exportKey takes it: this package's own globals, or the DOM's
+  // and Node's where another package compiles this source.
+  type Key = Parameters<typeof crypto.subtle.exportKey>[1];
+  const k = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as {
+    publicKey: Key;
+    privateKey: Key;
+  };
+  const raw = new Uint8Array(await crypto.subtle.exportKey('raw', k.publicKey));
+  return {
+    publicKey: `ed25519:${toBase64(raw, true)}`,
+    privateKey: new Uint8Array(await crypto.subtle.exportKey('pkcs8', k.privateKey)),
+  };
+}
 
 async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
   try {
@@ -5014,6 +5030,99 @@ export const contractScenarios: Scenario[] = [
       // Never one it did not send.
       const never = await refusal(app.sentFile('resend-never'));
       expect([never.status, never.code]).toEqual([404, 'not_found']);
+      await api.connectedApps.remove(token, made.id);
+    },
+  },
+  {
+    name: 'a connected app adds its next key, which signs once confirmed; keys retire as the vault allows (0.9.0, CL2)',
+    run: async (api, ctx) => {
+      if (!ctx.fetch) throw new Error('the contract needs the fetch its vault answers on');
+      const fetch = ctx.fetch;
+      const owner = connectedAppOwner;
+      if (!owner) throw new Error('the connected app scenario runs first');
+      const token = owner.access_token;
+      const [a, b, c, d] = await Promise.all([keyPair(), keyPair(), keyPair(), keyPair()]);
+      const made = await api.connectedApps.create(token, {
+        name: 'Rotator',
+        member_id: owner.member_id,
+        public_key: a.publicKey,
+        allowed_kinds: ['utility_bill'],
+      });
+      const client = (keyId: string, privateKey: Uint8Array) =>
+        createAppClient({ baseUrl: api.http.baseUrl, appId: made.id, keyId, privateKey, fetch });
+      const keyA = made.keys[0]?.key_id as string;
+      const appA = client(keyA, a.privateKey);
+
+      // Its next key, added by the app and signed with its current one: pending.
+      const added = await appA.addKey(b.publicKey);
+      expect(added).toMatchObject({ keyid: `${made.id}.${added.key_id}`, pending: true });
+      expect(added.fingerprint).toMatch(/^[0-9a-f]{4}( [0-9a-f]{4}){7}$/);
+      const appB = client(added.key_id, b.privateKey);
+      const pending = await refusal(appB.me());
+      expect([pending.status, pending.code]).toEqual([401, 'app_key_pending']);
+      expect((await appA.me()).keys).toEqual([
+        expect.objectContaining({ key_id: keyA, added_by: 'owner', pending: false }),
+        expect.objectContaining({ key_id: added.key_id, added_by: 'app', pending: true }),
+      ]);
+
+      // Two live at most, the pending one counted, from the app and Settings
+      // alike; never one live already; never what is no key.
+      const full = await refusal(appA.addKey(c.publicKey));
+      expect([full.status, full.code]).toEqual([409, 'key_limit']);
+      const fullHere = await refusal(api.connectedApps.addKey(token, made.id, c.publicKey));
+      expect([fullHere.status, fullHere.code]).toEqual([409, 'key_limit']);
+      const taken = await refusal(appA.addKey(a.publicKey));
+      expect([taken.status, taken.code]).toEqual([409, 'key_exists']);
+      const junk = await refusal(appA.addKey('ed25519:not-a-key'));
+      expect([junk.status, junk.code]).toEqual([422, 'validation_failed']);
+
+      // The app retires only a key it added, and only one there is.
+      const owners = await refusal(appA.retireKey(keyA));
+      expect([owners.status, owners.code]).toEqual([409, 'key_added_by_owner']);
+      const nowhere = await refusal(appA.retireKey(NEVER_USED));
+      expect([nowhere.status, nowhere.code]).toEqual([404, 'not_found']);
+
+      // Confirmed in Settings, where it waits: now it signs, and the older
+      // key retires by itself seven days after its first use.
+      const listed = (await api.connectedApps.list(token)).items.find((x) => x.id === made.id);
+      expect(listed?.keys.find((k) => k.key_id === added.key_id)?.pending).toBe(true);
+      const confirmed = await api.connectedApps.confirmKey(token, made.id, added.key_id);
+      expect(confirmed.keys.find((k) => k.key_id === added.key_id)?.pending).toBe(false);
+      // Its own person confirmed it: it is not asked again.
+      expect(confirmed.state).toBe('active');
+      expect((await appB.me()).state).toBe('active');
+      const older = (await appB.me()).keys.find((k) => k.key_id === keyA);
+      const left = Date.parse(older?.retires_at as string) - Date.now();
+      expect(left).toBeGreaterThan(6.9 * 864e5);
+      expect(left).toBeLessThanOrEqual(7 * 864e5 + 60_000);
+
+      // Never the key that signs the request.
+      const signing = await refusal(appB.retireKey(added.key_id));
+      expect([signing.status, signing.code]).toEqual([409, 'key_in_use']);
+      // An owner retires the old key: it signs nothing more; never the last.
+      await api.connectedApps.retireKey(token, made.id, keyA);
+      const retired = await refusal(appA.me());
+      expect([retired.status, retired.code]).toEqual([401, 'app_key_unknown']);
+      const last = await refusal(api.connectedApps.retireKey(token, made.id, added.key_id));
+      expect([last.status, last.code]).toEqual([409, 'key_in_use']);
+
+      // An owner's key, added in Settings: confirmed as it is added, and not
+      // the app's to retire.
+      const given = await api.connectedApps.addKey(token, made.id, c.publicKey);
+      expect(given.key).toMatchObject({ added_by: 'owner', pending: false });
+      expect(given.connection_string.startsWith('fdvapp1.')).toBe(true);
+      expect((await client(given.key.key_id, c.privateKey).me()).state).toBe('active');
+      const notIts = await refusal(appB.retireKey(given.key.key_id));
+      expect([notIts.status, notIts.code]).toEqual([409, 'key_added_by_owner']);
+
+      // A key the app added, retired by the app while another signs; not
+      // there to confirm after.
+      await api.connectedApps.retireKey(token, made.id, given.key.key_id);
+      const next = await appB.addKey(d.publicKey);
+      await appB.retireKey(next.key_id);
+      const gone = await refusal(api.connectedApps.confirmKey(token, made.id, next.key_id));
+      expect([gone.status, gone.code]).toEqual([404, 'not_found']);
+      expect((await appB.me()).keys.map((k) => k.key_id)).toEqual([added.key_id]);
       await api.connectedApps.remove(token, made.id);
     },
   },

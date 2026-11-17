@@ -2,6 +2,8 @@ import {
   APP_EMPTY_DIGEST,
   APP_GRANTABLE_CATEGORIES,
   APP_HINTS,
+  APP_KEY_RETIRE_DAYS,
+  APP_KEYS_MAX,
   APP_LINK_COOKIE,
   APP_LINK_OPEN_SECONDS,
   APP_LINK_PAGE,
@@ -23,10 +25,12 @@ import {
   type AppDocument,
   type AppHints,
   type AppIntakeState,
+  type AppKeyAdded,
   type AppKeyView,
   type AppMe,
   type AppScope,
   type ConnectedAppGrantView,
+  type ConnectedAppKeyAdded,
   type ConnectedAppView,
   type DateValue,
   type Role,
@@ -65,6 +69,20 @@ import type { FetchLike, ResponseLike } from '../http.js';
  * each send's Inbox worked out by the vault's own rule (`appInboxOf`) and
  * kept on the send (`inbox_member_id`) — never told to the app. A send to
  * the person it is about is filed automatically as them.
+ *
+ * Keys (CL2), by the vault's rules: an app adds its next key itself, signed
+ * with a current one, and it is pending — it signs nothing (`401
+ * app_key_pending`) — until an owner, or the person the app acts as,
+ * confirms it; an owner adds one in Settings, confirmed as it is added. Two
+ * live at most (`409 key_limit`, pending ones counted), never one live
+ * already (`409 key_exists`). The app retires only a key it added, never
+ * the one signing nor the last; an owner any but the last. An older key
+ * retires by itself seven days after a newer, confirmed one first signs.
+ * An owner's key, or confirming the app's, for an app acting as somebody
+ * else sends it back to them to turn on again. Adding and confirming ask
+ * for a passkey or a code: an owner's is `ownerTwoStep`, an adult's
+ * `adultTwoStep` (theirs unless a test says not). Each check is made in the
+ * order the vault's routes make it.
  */
 
 /** A document of the fake's, as an app's reading needs it. */
@@ -95,6 +113,10 @@ export interface FakeAppKey {
   added_by: 'owner' | 'app';
   created_at: string;
   retired: boolean;
+  /** Added by the app and not yet confirmed (CL2): it signs nothing. */
+  pending?: boolean;
+  /** When it first signed a request the vault took (CL2). */
+  first_used_at?: string | null;
 }
 
 export interface FakeIntake {
@@ -208,6 +230,8 @@ export interface FakeAppDeps {
   session: () => { memberId: string; role: Role } | ResponseLike;
   memberName: (id: string) => string;
   ownerTwoStep: () => boolean;
+  /** Whether an adult signed in has a passkey or a code (CL2): yes unless a test says not. */
+  memberTwoStep?: () => boolean;
   /** Whom an app may act as: an owner or an adult with a sign-in. */
   mayAct: (memberId: string) => boolean;
   kinds: () => Array<{
@@ -262,15 +286,56 @@ async function fingerprint(raw: Uint8Array): Promise<string> {
       .match(/.{4}/g) as string[]
   ).join(' ');
 }
+/** An Ed25519 SubjectPublicKeyInfo's DER, before its 32 bytes of key. */
+const SPKI_ED25519 = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];
+/** A public key as the vault takes it: "ed25519:" and 43 base64url characters, or a PEM PUBLIC KEY. */
 function rawKey(text: unknown): Uint8Array | null {
   if (typeof text !== 'string') return null;
-  const m = /^ed25519:([A-Za-z0-9_-]{43})$/.exec(text.trim());
-  if (!m) return null;
-  const raw = fromBase64(m[1] as string);
-  return raw.length === 32 ? raw : null;
+  const t = text.trim();
+  const m = /^ed25519:([A-Za-z0-9_-]{43})$/.exec(t);
+  if (m) {
+    const raw = fromBase64(m[1] as string);
+    return raw.length === 32 ? raw : null;
+  }
+  const pem = /^-----BEGIN PUBLIC KEY-----([A-Za-z0-9+/=\s]+)-----END PUBLIC KEY-----$/.exec(t);
+  if (!pem) return null;
+  let der: Uint8Array;
+  try {
+    der = fromBase64((pem[1] as string).replace(/\s+/g, ''));
+  } catch {
+    return null;
+  }
+  if (der.length !== 44 || !SPKI_ED25519.every((b, i) => der[i] === b)) return null;
+  return der.slice(12);
 }
 const sameBytes = (a: Uint8Array, b: Uint8Array) =>
   a.length === b.length && a.every((x, i) => x === b[i]);
+
+/**
+ * When a key retires by itself, as the vault works it out: seven days
+ * after a newer key of its app — confirmed, not retired — first signed;
+ * else never (null). Newer: added after it (the app's keys are kept in the
+ * order they were added).
+ */
+function retiresAt(k: FakeAppKey, keys: readonly FakeAppKey[]): string | null {
+  const first = keys
+    .slice(keys.indexOf(k) + 1)
+    .filter((n) => !n.retired && !n.pending && n.first_used_at)
+    .map((n) => Date.parse(n.first_used_at as string))
+    .sort((x, y) => x - y)[0];
+  return first === undefined ? null : new Date(first + APP_KEY_RETIRE_DAYS * 864e5).toISOString();
+}
+
+/** An app's keys live now: not retired, and not past their seven days. */
+function liveKeys(a: FakeApp, now = Date.now()): FakeAppKey[] {
+  return a.keys.filter((k) => {
+    if (k.retired) return false;
+    const until = retiresAt(k, a.keys);
+    return until === null || Date.parse(until) > now;
+  });
+}
+
+const KEY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function fakeAppRoutes(d: FakeAppDeps) {
   /** App and key ids are UUIDs, as the vault writes them; an app client takes no other. */
@@ -278,19 +343,66 @@ export function fakeAppRoutes(d: FakeAppDeps) {
   // request, and a second app must never be given the first one's id.
   const uuid = () =>
     `00000000-0000-4000-8000-${Number(d.next('uuid').split('-').pop()).toString(16).padStart(12, '0')}`;
-  const view = async (a: FakeApp, me: { memberId: string }): Promise<ConnectedAppView> => {
-    const live = a.keys.filter((k) => !k.retired);
+  /** An app's live keys, as Settings is told of them. */
+  const keyViews = async (a: FakeApp): Promise<AppKeyView[]> => {
     const keys: AppKeyView[] = [];
-    for (const k of live) {
+    for (const k of liveKeys(a)) {
       keys.push({
         key_id: k.id,
         fingerprint: await fingerprint(k.raw),
         added_by: k.added_by,
         created_at: k.created_at,
-        first_used_at: null,
-        retires_at: null,
+        pending: k.pending === true,
+        first_used_at: k.first_used_at ?? null,
+        retires_at: retiresAt(k, a.keys),
       });
     }
+    return keys;
+  };
+  /**
+   * A key added, by the vault's rules: the app's keys past their seven days
+   * retired first; never one live already, in any app (`409 key_exists`);
+   * two live at most, pending ones counted (`409 key_limit`). An owner's is
+   * confirmed as it is added; the app's waits.
+   */
+  const insertKey = (
+    a: FakeApp,
+    raw: Uint8Array,
+    by: 'owner' | 'app',
+  ): FakeAppKey | ResponseLike => {
+    const live = liveKeys(a);
+    for (const k of a.keys) if (!k.retired && !live.includes(k)) k.retired = true;
+    if (d.apps.some((x) => !x.revoked && x.keys.some((k) => !k.retired && sameBytes(k.raw, raw)))) {
+      return d.fail(409, 'key_exists', 'That key is already in use. Make a new key pair.');
+    }
+    if (live.length >= APP_KEYS_MAX) {
+      return d.fail(
+        409,
+        'key_limit',
+        `An app has ${APP_KEYS_MAX} keys at most. Retire the old key first.`,
+      );
+    }
+    const k: FakeAppKey = {
+      id: uuid(),
+      raw,
+      added_by: by,
+      created_at: new Date().toISOString(),
+      retired: false,
+      pending: by === 'app',
+      first_used_at: null,
+    };
+    a.keys.push(k);
+    return k;
+  };
+  /**
+   * An owner's key, or a confirmed one, for an app acting as somebody else:
+   * it waits for them to turn it on again, as the vault does.
+   */
+  const reapprove = (a: FakeApp, who: { memberId: string }) => {
+    if (a.member_id !== who.memberId && a.approval === 'approved') a.approval = 'waiting';
+  };
+  const view = async (a: FakeApp, me: { memberId: string }): Promise<ConnectedAppView> => {
+    const keys = await keyViews(a);
     const newest = keys[keys.length - 1];
     const json = JSON.stringify({
       url: 'https://fake.example',
@@ -474,14 +586,95 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       return d.ok(await view(a, who), 201);
     }
     const at = new RegExp(
-      `^/api/v1/connected-apps/([^/]+)(/approve|/pause|/resume|/grants|/keys(?:/([^/]+))?)?$`,
+      `^/api/v1/connected-apps/([^/]+)(/approve|/pause|/resume|/grants|/keys(?:/([^/]+)(/confirm)?)?)?$`,
     ).exec(path);
-    const a = at ? d.apps.find((x) => x.id === at[1] && seen(x)) : undefined;
     if (!at) return null;
-    if (!a) return d.fail(404, 'not_found', 'That app is not here.');
     const what = at[2] ?? '';
+    const find = () => d.apps.find((x) => x.id === at[1] && seen(x));
+    const notHere = () => d.fail(404, 'not_found', 'That app is not here.');
+    // An app's keys, each check in the order the vault's routes make them:
+    // the ids, whose call it is, the second step, the key given, the app.
+    if (what.startsWith('/keys')) {
+      const keyId = at[3];
+      const confirm = at[4] === '/confirm';
+      const add = keyId === undefined && method === 'POST';
+      const retire = keyId !== undefined && !confirm && method === 'DELETE';
+      if (!add && !retire && !(confirm && method === 'POST')) return null;
+      if (!KEY_ID.test(at[1] as string) || (keyId !== undefined && !KEY_ID.test(keyId))) {
+        return d.fail(422, 'validation_failed', 'Not an id.', keyId === undefined ? 'id' : 'keyId');
+      }
+      if (confirm) {
+        // An owner, or the person the app acts as; nobody else is told it is there.
+        if (who.role !== 'owner' && who.role !== 'adult') return notHere();
+      } else if (who.role !== 'owner') {
+        return d.fail(
+          403,
+          'forbidden',
+          add
+            ? 'Only an owner can add a key to an app.'
+            : 'Only an owner can connect an app, or change what it may do.',
+        );
+      }
+      // A passkey or a code: adding and confirming ask for one, retiring not.
+      if (!retire) {
+        const has = who.role === 'owner' ? d.ownerTwoStep() : (d.memberTwoStep?.() ?? true);
+        if (!has) {
+          return d.fail(
+            403,
+            who.role === 'owner' ? 'totp_required_for_owner' : 'two_step_required',
+            'Turn on two-step sign-in to connect an app, or change what it may do.',
+          );
+        }
+      }
+      const raw = add ? rawKey(body.public_key) : null;
+      if (add && !raw) {
+        return d.fail(
+          422,
+          'validation_failed',
+          'Paste the app’s public key: "ed25519:" and 43 characters, or a PEM PUBLIC KEY block.',
+          'public_key',
+        );
+      }
+      const a = find();
+      if (!a) return notHere();
+      if (add) {
+        const k = insertKey(a, raw as Uint8Array, 'owner');
+        if (!('raw' in k)) return k;
+        reapprove(a, who);
+        const v = await view(a, who);
+        const added: ConnectedAppKeyAdded = {
+          key: v.keys.find((x) => x.key_id === k.id) as AppKeyView,
+          connection_string: v.connection_string,
+        };
+        return d.ok(added, 201);
+      }
+      const live = liveKeys(a);
+      const k = live.find((x) => x.id === keyId);
+      if (!k) return d.fail(404, 'not_found', 'That key is not here.');
+      if (confirm) {
+        // Only then does it sign.
+        if (k.pending) {
+          k.pending = false;
+          reapprove(a, who);
+        }
+        return d.ok(await view(a, who));
+      }
+      if (live.length <= 1) {
+        return d.fail(
+          409,
+          'key_in_use',
+          'That is the app’s last key. Add its new key first, or remove the app.',
+        );
+      }
+      k.retired = true;
+      return d.empty();
+    }
+    const a = find();
+    if (!a) return notHere();
     if (what === '' && method === 'DELETE') {
+      // Its keys retire with it, so the same key may be given to an app connected again.
       a.revoked = true;
+      for (const k of a.keys) k.retired = true;
       return d.empty();
     }
     if (what === '/approve' && method === 'POST') {
@@ -844,8 +1037,10 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       );
     const a = d.apps.find((x) => x.id === m[3]);
     if (a?.revoked) return d.fail(401, 'app_revoked', 'This app has been removed from the vault.');
-    const key = a?.keys.find((k) => k.id === m[4] && !k.retired);
-    if (!a || !key) return d.fail(401, 'app_key_unknown', 'The vault does not know this key.');
+    const key = a ? liveKeys(a).find((k) => k.id === m[4]) : undefined;
+    if (!a || !key) return d.fail(401, 'app_key_unknown', APP_REFUSALS.app_key_unknown);
+    // A key the app added itself signs nothing until it is confirmed in Settings.
+    if (key.pending) return d.fail(401, 'app_key_pending', APP_REFUSALS.app_key_pending);
     if (!anyState && a.paused) return d.fail(403, 'app_paused', 'An owner has paused this app.');
     if (!anyState && a.approval !== 'approved') {
       return d.fail(
@@ -873,6 +1068,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       return d.fail(401, 'nonce_reused', 'This request was sent before.');
     a.nonces.add(m[5] as string);
     a.last_used_at = new Date().toISOString();
+    key.first_used_at ??= a.last_used_at;
     if (scope && !(a.scopes ?? APP_SCOPES_DEFAULT).includes(scope)) {
       return d.fail(403, 'scope_not_granted', 'The owner did not allow this app to do that.');
     }
@@ -1216,9 +1412,79 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         },
         delete_mode: a.delete_mode ?? 'unlink',
         backfill: liveBackfill(a),
-        keys: [],
+        keys: (await keyViews(a)).map((k) => ({
+          key_id: k.key_id,
+          fingerprint: k.fingerprint,
+          added_by: k.added_by,
+          created_at: k.created_at,
+          pending: k.pending === true,
+          retires_at: k.retires_at,
+        })),
       };
       return d.ok(said);
+    }
+    // Its next key, signed with a current one: pending until confirmed (CL2).
+    if (path === '/api/v1/apps/keys' && method === 'POST') {
+      let given: unknown;
+      try {
+        given = JSON.parse(new TextDecoder().decode(body));
+      } catch {
+        given = null;
+      }
+      const fields =
+        given && typeof given === 'object' && !Array.isArray(given)
+          ? (given as Record<string, unknown>)
+          : null;
+      const raw =
+        fields &&
+        Object.keys(fields).every((k) => k === 'public_key') &&
+        typeof fields.public_key === 'string' &&
+        fields.public_key.length <= 4096
+          ? rawKey(fields.public_key)
+          : null;
+      if (!raw) {
+        return d.fail(
+          422,
+          'validation_failed',
+          'public_key is "ed25519:" and 43 base64url characters, or a PEM PUBLIC KEY.',
+          'public_key',
+        );
+      }
+      const k = insertKey(a, raw, 'app');
+      if (!('raw' in k)) return k;
+      const added: AppKeyAdded = {
+        key_id: k.id,
+        keyid: `${a.id}.${k.id}`,
+        fingerprint: await fingerprint(raw),
+        created_at: k.created_at,
+        pending: true,
+      };
+      return d.ok(added, 201);
+    }
+    // A key it added itself; never an owner's, the one signing, nor the last (CL2).
+    const retiring = /^\/api\/v1\/apps\/keys\/([^/]+)$/.exec(path)?.[1];
+    if (retiring !== undefined && method === 'DELETE') {
+      if (!KEY_ID.test(retiring)) return notFound();
+      const live = liveKeys(a);
+      const k = live.find((x) => x.id === retiring.toLowerCase());
+      if (!k) return notFound();
+      if (k.added_by !== 'app') {
+        return d.fail(
+          409,
+          'key_added_by_owner',
+          'An owner added that key: it is retired in Settings → Connected apps.',
+        );
+      }
+      const signing = /keyid="[^".]+\.([^"]+)"/.exec(headers['signature-input'] ?? '')?.[1];
+      if (k.id === signing || live.length <= 1) {
+        return d.fail(
+          409,
+          'key_in_use',
+          'That key signs this request, or is the app’s last key. Sign with the other key first.',
+        );
+      }
+      k.retired = true;
+      return d.empty();
     }
     if (path === '/api/v1/apps/intake' && method === 'POST') {
       const got = parts(body) ?? [];

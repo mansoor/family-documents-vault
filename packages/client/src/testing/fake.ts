@@ -480,6 +480,12 @@ export interface FakeVaultState {
   memberAccounts: Map<string, MemberAccount>;
   ownerTwoStep: boolean;
   /**
+   * Whether an adult signed in has a passkey or a code (CL2), for what asks
+   * one of anybody, as confirming a connected app's key does: they have,
+   * unless a test sets this to false (`403 two_step_required`).
+   */
+  adultTwoStep?: boolean;
+  /**
    * People's identity details (5.26), by member id: each part's fields, as
    * the real vault keeps them sealed, and its version. The fake signs in as
    * `fake-member`; another person's Only me part is not there for it.
@@ -3575,6 +3581,7 @@ export function createFakeVault(): {
       },
       memberName: (id) => state.members.find((m) => m.id === id)?.display_name ?? 'Somebody',
       ownerTwoStep: () => state.ownerTwoStep,
+      memberTwoStep: () => state.adultTwoStep !== false,
       mayAct: (id) =>
         state.members.some((m) => m.id === id && (m.role === 'owner' || m.role === 'adult')),
       kinds: () => state.types,

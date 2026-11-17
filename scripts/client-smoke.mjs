@@ -8,10 +8,26 @@
 // alone), signs a request, and sends a signed file
 // to the fake vault, which checks the signature as the vault does; and tsc
 // reads the declarations as an app's TypeScript would, without skipLibCheck.
+// The package declares no peers (CL2), and nothing installs vitest; with
+// vitest beside it, as an app keeps it in its devDependencies (the
+// workspace's own, linked in: nothing downloaded), `./testing/contract`
+// loads and its first scenarios run against the fake vault. Folders an
+// earlier run left (killed before its clean-up) go first, links unfollowed.
 //
 // Run `pnpm client:pack` first. Usage: client-smoke.mjs [npm] [pnpm]
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import os from 'node:os';
@@ -28,6 +44,8 @@ if (!existsSync(tarball)) {
 const managers = process.argv.slice(2).length ? process.argv.slice(2) : ['npm'];
 const require = createRequire(import.meta.url);
 const tsc = path.join(path.dirname(require.resolve('typescript/package.json')), 'bin', 'tsc');
+/** The workspace's own vitest (the root's devDependency), its real folder. */
+const vitest = realpathSync(path.join(root, 'node_modules', 'vitest'));
 
 /** RFC 8032's first Ed25519 test key (7.1, TEST 1): nobody uses it for real. */
 const KEY = `-----BEGIN PRIVATE KEY-----
@@ -37,7 +55,7 @@ const PUBLIC_KEY = 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo';
 
 const SMOKE = `
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { ApiRequestError, createApi, createHttp } from '@fdv/client';
 import { createAppClient, signRequest } from '@fdv/client/apps';
 import * as testing from '@fdv/client/testing';
@@ -46,6 +64,11 @@ assert.ok(!('contractScenarios' in testing), 'the fake vault entry carries no co
 
 const pkg = JSON.parse(readFileSync(new URL('./node_modules/@fdv/client/package.json', import.meta.url), 'utf8'));
 assert.equal(pkg.version, ${JSON.stringify(version)});
+// No peers, not even an optional one: nothing is linked or installed beside it.
+for (const field of ['peerDependencies', 'peerDependenciesMeta', 'optionalDependencies']) {
+  assert.equal(pkg[field], undefined, 'the package declares ' + field);
+}
+assert.ok(!existsSync(new URL('./node_modules/vitest', import.meta.url)), 'vitest was installed');
 
 // A request signed: the same inputs give the same headers (Ed25519 is deterministic).
 const input = {
@@ -118,6 +141,25 @@ console.log('testing/contract: needs vitest, and nothing else does');
 console.log('smoke test passed');
 `;
 
+/** With vitest beside it, as an app has it: the contract entry loads, and its first scenarios run on the fake. */
+const CONTRACT = `
+import assert from 'node:assert/strict';
+import { createApi, createHttp } from '@fdv/client';
+import { createFakeVault } from '@fdv/client/testing';
+import { contractScenarios } from '@fdv/client/testing/contract';
+
+assert.ok(Array.isArray(contractScenarios) && contractScenarios.length > 10);
+const fake = createFakeVault();
+const api = createApi(createHttp({ baseUrl: 'https://vault.test', fetch: fake.fetch }));
+const ctx = { email: 'owner@example.test', password: 'a long enough password', fetch: fake.fetch };
+// From a new vault to a stolen refresh token: they ask nothing of ctx but these.
+for (const s of contractScenarios.slice(0, 5)) {
+  await s.run(api, ctx);
+  console.log('contract on the fake:', s.name);
+}
+console.log('testing/contract: loads and runs with vitest beside it');
+`;
+
 const CHECK_TS = `
 import { ApiRequestError, createApi, createHttp, type FetchLike } from '@fdv/client';
 import { createAppClient, signRequest, type SignedHeaders } from '@fdv/client/apps';
@@ -162,6 +204,27 @@ const server = createServer((req, res) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const url = `http://127.0.0.1:${server.address().port}${asset}`;
 console.log(`client-smoke: installing ${url}`);
+
+/**
+ * A smoke test's folder removed: the link to the workspace's vitest first,
+ * alone and never followed (not recursive: a junction or a symlink goes,
+ * what it points at stays), then the folder.
+ */
+function removeSmokeFolder(dir) {
+  const link = path.join(dir, 'node_modules', 'vitest');
+  try {
+    if (lstatSync(link).isSymbolicLink()) rmSync(link, { force: true });
+  } catch {
+    // Never linked.
+  }
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// What an earlier run left, killed before its own clean-up: never a link
+// into the workspace's vitest left lying about.
+for (const name of readdirSync(os.tmpdir())) {
+  if (name.startsWith('fdv-client-smoke-')) removeSmokeFolder(path.join(os.tmpdir(), name));
+}
 
 try {
   for (const pm of managers) await smoke(pm);
@@ -208,7 +271,17 @@ async function smoke(pm) {
     );
     await run(process.execPath, [tsc, '-p', 'tsconfig.json'], dir);
     console.log(`${pm}: the declarations typecheck`);
+
+    // vitest beside it, as an app keeps it in its own devDependencies: the
+    // workspace's, linked in (a junction on Windows needs no privilege).
+    mkdirSync(path.join(dir, 'node_modules'), { recursive: true });
+    symlinkSync(vitest, path.join(dir, 'node_modules', 'vitest'), 'junction');
+    writeFileSync(path.join(dir, 'contract.mjs'), CONTRACT);
+    await run(process.execPath, ['contract.mjs'], dir);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeSmokeFolder(dir);
+  }
+  if (!existsSync(path.join(vitest, 'package.json'))) {
+    throw new Error('the workspace’s vitest went with the smoke test’s folder');
   }
 }

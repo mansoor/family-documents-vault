@@ -8278,6 +8278,43 @@ item_id }` (`stately`, keyed by the item) once it has read such an
       **Fake vault:** the same routing (`appInboxOf` in `@fdv/shared`, kept
       on the send as `inbox_member_id`, filed automatically as that person)
       and the same re-download rule; a contract scenario runs on both.
+  - The client library: keys in the fake vault, no vitest peer, a cause on
+    network errors (0.9.0-dev.61, CL2). No change to the API. **Additive**,
+    but for the tarball's `package.json`.
+    - **Tarball:** `package.json` declares **no `peerDependencies`** (and no
+      `peerDependenciesMeta`): the optional `vitest` peer of 0.9.0-dev.59 is
+      gone, as pnpm linked it to an app's own vitest and pulled vitest, vite
+      and esbuild into its production installs. `./testing/contract` still
+      imports `vitest`: an app that uses it keeps `vitest` (`>=5 <7`) in its
+      own `devDependencies`. No other entry needs it.
+    - **Fake vault, keys:** `POST /api/v1/apps/keys` and `DELETE
+/api/v1/apps/keys/{key_id}` (signed), and `POST
+/api/v1/connected-apps/{id}/keys`, `POST
+/api/v1/connected-apps/{id}/keys/{keyId}/confirm` and `DELETE
+/api/v1/connected-apps/{id}/keys/{keyId}`, answered by the vault's rules
+      (they were `404`): an app's own key is pending (`401 app_key_pending`
+      until an owner, or the person it acts as, confirms it); two live at
+      most, pending ones counted (`409 key_limit`); never one live already
+      (`409 key_exists`); the app retires only a key it added (`409
+key_added_by_owner`), never the one signing nor the last (`409
+key_in_use`), an owner any but the last; an older key retires by itself
+      seven days after a newer, confirmed one first signs (`retires_at`,
+      `first_used_at`); an owner's key, or confirming the app's, for an app
+      acting as somebody else asks them again. Keys in `GET /apps/me` and
+      Settings say `pending`. A PEM `PUBLIC KEY` is taken as the vault takes
+      it. Each check is made in the routes' order (the ids `422`, whose call
+      it is `403`, the passkey or code `403`, the key given `422`, the app
+      `404`); an adult confirming without a passkey or a code is `403
+two_step_required` (`state.adultTwoStep = false`; they have one
+      otherwise). A contract scenario holds the fake and the real API to the
+      same.
+    - **Client:** a request with no answer is a `NetworkError` as before
+      (`kind` `offline` or `timeout`), now with what `fetch` threw as its
+      standard `cause` and a short `detail` (a code such as `ECONNREFUSED`,
+      else its message, never one with an address in it; `cause` is
+      `fetch`'s own, unchanged, so log it with care); an app's downloads
+      (`download`, `sentFile`) throw
+      the same, where before they let `fetch`'s own error through.
 
 ## Deprecations in effect
 

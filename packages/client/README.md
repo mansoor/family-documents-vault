@@ -6,12 +6,12 @@ fake vault to test against. MIT, written in TypeScript, and platform-neutral: no
 no Node APIs, so it runs in a browser, in React Native and in Node 22 or later (it needs
 the global `crypto`, with Web Crypto's Ed25519 for signing).
 
-| Import                         | What it is                                                                       |
-| ------------------------------ | -------------------------------------------------------------------------------- |
-| `@fdv/client`                  | The API client (`createHttp`, `createApi`), its errors, retries and helpers.     |
-| `@fdv/client/apps`             | A connected app's client (`createAppClient`) and signer (`signRequest`).         |
-| `@fdv/client/testing`          | `createFakeVault()`, an in-memory vault that answers as the real one does.       |
-| `@fdv/client/testing/contract` | `contractScenarios`: what the fake and the real vault are both held to (vitest). |
+| Import                         | What it is                                                                              |
+| ------------------------------ | --------------------------------------------------------------------------------------- |
+| `@fdv/client`                  | The API client (`createHttp`, `createApi`), its errors, retries and helpers.            |
+| `@fdv/client/apps`             | A connected app's client (`createAppClient`) and signer (`signRequest`).                |
+| `@fdv/client/testing`          | `createFakeVault()`, an in-memory vault that answers as the real one does.              |
+| `@fdv/client/testing/contract` | `contractScenarios`: what the fake and the real vault are both held to (vitest, yours). |
 
 ## Installing
 
@@ -22,7 +22,7 @@ It is not on npmjs.com. Each vault release attaches the client of that release t
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.59/fdv-client-0.9.0-dev.59.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.61/fdv-client-0.9.0-dev.61.tgz"
   }
 }
 ```
@@ -64,6 +64,26 @@ await vault.send({
 const state = await vault.status('invoice-2026-11'); // waiting, filed, refused or removed
 ```
 
+`parseConnectionString` takes an `https` address, and plain `http` only to this machine
+(`localhost`, `127.0.0.1`, `[::1]`), on purpose: for a vault run locally while developing.
+
+A request with no answer at all throws a `NetworkError` (`kind` `offline` or `timeout`),
+never an `ApiRequestError`; what the platform's `fetch` threw is its standard `cause`, and
+`detail` says it in a few words (`ECONNREFUSED`, or the error's message; never a message
+with an address in it) for a log. The `cause` is passed through from `fetch` unchanged, and
+may name the address asked, its query included: be careful logging it in full.
+
+### Rotating keys
+
+An app adds its next key itself, signed with its current one: `addKey('ed25519:…')` (or a
+PEM `PUBLIC KEY`). The new key is **pending**: it signs nothing (`401 app_key_pending`) until
+an owner, or the person the app acts as, confirms it in _Settings → Connected apps_. An app
+has two live keys at most, a pending one counted (`409 key_limit`). Once the new key has
+signed a request, the old one retires by itself seven days later (`retires_at` in `me()`),
+or sooner with `retireKey(id)`, which retires only a key the app added, never the one
+signing the request nor its last (`409 key_added_by_owner`, `409 key_in_use`). An owner may
+add a key in Settings too, confirmed as it is added.
+
 `signRequest({ method, target, body, keyid, privateKey })` gives the three headers
 (`content-digest`, `signature-input`, `signature`) for a request made any other way.
 
@@ -99,10 +119,15 @@ const app = createAppClient({
 });
 ```
 
-The fake checks every signature as the vault does. The scenarios both the fake and the real
-vault are held to, `contractScenarios`, are their own entry, `@fdv/client/testing/contract`:
-they use vitest's `expect`, so that entry needs `vitest` installed (an optional peer
-dependency, 5 or 6). Nothing else in the package does.
+The fake checks every signature as the vault does, and keeps an app's keys by the vault's
+rules: pending until confirmed, two at most, the seven days. Adding or confirming a key
+asks for a passkey or a code: the fake's owner has none until `fake.state.ownerTwoStep =
+true`, and an adult has one until `fake.state.adultTwoStep = false`. The scenarios both the fake
+and the real vault are held to, `contractScenarios`, are their own entry,
+`@fdv/client/testing/contract`: they use vitest's `expect`, so to use that entry, keep
+vitest in your app's own devDependencies, `npm install -D vitest@">=5 <7"` (or `pnpm add -D
+vitest@">=5 <7"`). The package declares no dependency on vitest, not even an optional peer,
+so it never reaches a production install; nothing else in it needs vitest.
 
 ## Licence
 
