@@ -10,9 +10,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only unless a job says otherwise: `images` alone pushes to GHCR
+# (packages: write), and `release` alone writes the tag's GitHub release
+# (contents: write). Nothing pulls from GHCR: e2e builds its images.
 permissions:
   contents: read
-  packages: write
 
 jobs:
   guard:
@@ -113,6 +115,115 @@ jobs:
           OLDER_CLIENT_REF: v0.5.11
       - run: pnpm build
 
+  # The API client (MIT) as an app installs it: a tarball on each GitHub
+  # release, installed by its URL (CL1). Packed and tried on every PR, so a
+  # package that would not install or load is caught before it merges.
+  client-package:
+    name: The client's release tarball
+    runs-on: ubuntu-24.04
+    needs: guard
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm client:pack
+      - name: Install it by URL with npm and pnpm, outside the workspace, and use it
+        run: pnpm client:smoke npm pnpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-tarball
+          path: packages/client/dist/fdv-client-*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  # A tag's GitHub release, with the client's tarball on it: a pre-release
+  # for a -dev or -rc tag. Made once everything else on the tag has passed
+  # and the images are pushed. The only job that may write to the
+  # repository.
+  release:
+    name: GitHub release
+    runs-on: ubuntu-24.04
+    needs: [check, client-package, image-tests, images, e2e]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # All history: whether the tag's commit is on main decides Latest.
+          fetch-depth: 0
+      - name: Is this the latest release?
+        id: release
+        run: |
+          # The rule `latest` images follow (the images job): a tag with no
+          # pre-release part, whose commit is on main, and the newest such
+          # release there. Anything else never takes Latest from another.
+          newest=$(git tag --merged origin/main --sort=-v:refname 'v*' | grep -v -- - | head -1)
+          if [[ "$TAG" == *-* ]]; then
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+          elif ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::notice::$TAG is not on main: not marked Latest."
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+          elif [ "$newest" != "$TAG" ]; then
+            echo "::notice::$TAG is not the newest release on main ($newest): not marked Latest."
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: client-tarball
+          path: ${{ runner.temp }}/client
+      - name: Create the release if need be, and attach the client
+        env:
+          LATEST: ${{ steps.release.outputs.latest }}
+          DIR: ${{ runner.temp }}/client
+        run: |
+          name="fdv-client-${TAG#v}.tgz"
+          asset="$DIR/$name"
+          test -f "$asset" || { echo "::error::$name was not packed: is package.json's version the tag's?"; exit 1; }
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            pre=
+            case "$TAG" in *-*) pre=--prerelease ;; esac
+            notes="Family Document Vault ${TAG}: see [CHANGELOG.md](https://github.com/${GH_REPO}/blob/${TAG}/CHANGELOG.md) for what changed.
+
+          Images: \`ghcr.io/${GH_REPO}/{api,worker,web}:${TAG#v}\`.
+
+          The API client for apps (MIT), installable by this URL:
+          \`https://github.com/${GH_REPO}/releases/download/${TAG}/${name}\`"
+            gh release create "$TAG" "$asset" --verify-tag --title "$TAG" --notes "$notes" \
+              --latest="$LATEST" $pre
+            echo "Released $TAG with $name"
+            exit 0
+          fi
+          # Apps pin the tarball's integrity hash: the bytes behind its URL
+          # never change. The same bytes again (a re-run) are left as they
+          # are; different bytes fail, for a new tag to carry them.
+          if gh release view "$TAG" --json assets -q '.assets[].name' | grep -qxF "$name"; then
+            mkdir -p "$RUNNER_TEMP/attached"
+            gh release download "$TAG" --pattern "$name" --dir "$RUNNER_TEMP/attached"
+            had=$(sha256sum "$RUNNER_TEMP/attached/$name" | cut -d' ' -f1)
+            now=$(sha256sum "$asset" | cut -d' ' -f1)
+            if [ "$had" = "$now" ]; then
+              echo "$TAG already has $name, the same bytes ($now): nothing to do."
+              exit 0
+            fi
+            echo "::error::$TAG already has a different $name (sha256 $had, this build $now). It is never replaced: tag a new version."
+            exit 1
+          fi
+          gh release upload "$TAG" "$asset"
+          echo "Attached $name to the existing release $TAG"
+
   # The worker draws people's photos and page previews with ImageMagick. The
   # job above has Ubuntu's ImageMagick 6 (Q16), which needs half the memory
   # per pixel and reads files differently; the worker image runs Alpine's
@@ -180,6 +291,10 @@ jobs:
     name: Build images
     runs-on: ubuntu-24.04
     needs: check
+    # The only job that pushes to GHCR.
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         target: [api, worker, web]

@@ -539,6 +539,34 @@ of it) for 90 days, so the same file sent again is recognised and answered as al
 decided. A file refused for its kind keeps only that it was refused. Both are then
 forgotten.
 
+### The client library, for writing a connected app
+
+An app need not write its own signer. The vault's own API client,
+[`packages/client`](packages/client/README.md) (`@fdv/client`, MIT), signs requests for a
+connected app (`@fdv/client/apps`) and comes with a fake vault to test against
+(`@fdv/client/testing`) that checks signatures and answers as the vault does. It is not on
+npmjs.com: every release attaches the client of that release to its
+[GitHub release](https://github.com/mansoor/family-documents-vault/releases) as
+`fdv-client-<version>.tgz`, and an app installs it by that URL, pinned to the version, with
+npm or pnpm and no token (from CI too):
+
+```json
+{
+  "dependencies": {
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.59/fdv-client-0.9.0-dev.59.tgz"
+  }
+}
+```
+
+It is ESM only, with TypeScript declarations (set `moduleResolution` to `node16`,
+`nodenext` or `bundler`), and runs in Node 22 or later, browsers and React Native; signing
+uses Web Crypto's Ed25519 (Node 22, and the browsers that have it). It needs one package
+from npm, `libphonenumber-js` (MIT), for the fake vault. The contract scenarios the fake and
+the vault are both held to are their own entry, `@fdv/client/testing/contract`, which needs
+`vitest` installed; nothing else does. The package's
+[README](packages/client/README.md) shows signing and a test against the fake vault.
+`pnpm client:pack` builds the same tarball from a checkout.
+
 ## Configuration
 
 All configuration is through environment variables in `.env` (see [`.env.example`](.env.example)).
@@ -2126,4 +2154,4 @@ Two packages are MIT instead, so that anyone can build an app that talks to a va
 - [`packages/shared`](packages/shared/LICENSE) — the API's types and the helpers every client needs (dates, statuses, reminder wording, design tokens);
 - [`packages/client`](packages/client/LICENSE) — the API client, its fake vault for testing, and the contract both are held to.
 
-Each has its own `LICENSE` file; everything else in the repository is under the root [LICENSE](LICENSE). `pnpm lint` checks that neither MIT package depends on, or imports, anything else in the repository.
+Each has its own `LICENSE` file; everything else in the repository is under the root [LICENSE](LICENSE). `pnpm lint` checks that neither MIT package depends on, or imports, anything else in the repository, and `pnpm client:pack` that the client's release tarball carries nothing but those two packages' code.

@@ -1,0 +1,214 @@
+#!/usr/bin/env node
+// The client's release tarball, installed as an app installs it (CL1): by
+// URL — served here on 127.0.0.1 at the path a GitHub release gives it —
+// into an empty folder outside the workspace, by each package manager named
+// (npm unless told: `client-smoke.mjs npm pnpm`), with nothing of the
+// workspace to lean on. Then, from plain Node ESM, it imports `.`, `./apps`
+// and `./testing` (without vitest; `./testing/contract`, which needs it, fails
+// alone), signs a request, and sends a signed file
+// to the fake vault, which checks the signature as the vault does; and tsc
+// reads the declarations as an app's TypeScript would, without skipLibCheck.
+//
+// Run `pnpm client:pack` first. Usage: client-smoke.mjs [npm] [pnpm]
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const { version } = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+const tarball = path.join(root, 'packages/client/dist', `fdv-client-${version}.tgz`);
+if (!existsSync(tarball)) {
+  console.error(`client-smoke: no ${tarball}; run pnpm client:pack first`);
+  process.exit(1);
+}
+const managers = process.argv.slice(2).length ? process.argv.slice(2) : ['npm'];
+const require = createRequire(import.meta.url);
+const tsc = path.join(path.dirname(require.resolve('typescript/package.json')), 'bin', 'tsc');
+
+/** RFC 8032's first Ed25519 test key (7.1, TEST 1): nobody uses it for real. */
+const KEY = `-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g
+-----END PRIVATE KEY-----`;
+const PUBLIC_KEY = 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo';
+
+const SMOKE = `
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { ApiRequestError, createApi, createHttp } from '@fdv/client';
+import { createAppClient, signRequest } from '@fdv/client/apps';
+import * as testing from '@fdv/client/testing';
+const { createFakeVault } = testing;
+assert.ok(!('contractScenarios' in testing), 'the fake vault entry carries no contract');
+
+const pkg = JSON.parse(readFileSync(new URL('./node_modules/@fdv/client/package.json', import.meta.url), 'utf8'));
+assert.equal(pkg.version, ${JSON.stringify(version)});
+
+// A request signed: the same inputs give the same headers (Ed25519 is deterministic).
+const input = {
+  method: 'POST',
+  target: '/api/v1/apps/intake',
+  body: '{"hello":"vault"}',
+  keyid: '00000000-0000-4000-8000-000000000001.00000000-0000-4000-8000-000000000002',
+  privateKey: ${JSON.stringify(KEY)},
+  created: 1700000000,
+  nonce: 'c21va2Utc21va2Utc21va2Utc21va2Ut',
+};
+const signed = await signRequest(input);
+assert.deepEqual(await signRequest(input), signed);
+assert.match(signed['content-digest'], /^sha-256=:[A-Za-z0-9+/]+=*:$/);
+assert.match(signed['signature-input'], /keyid="00000000-0000-4000-8000-000000000001\\.00000000-0000-4000-8000-000000000002"/);
+assert.match(signed.signature, /^[a-z0-9-]+=:[A-Za-z0-9+/]+=*:$/);
+console.log('signed:', signed.signature.slice(0, 40) + '…');
+
+// The fake vault: an owner connects an app, which sends a signed file.
+const fake = createFakeVault();
+const api = createApi(createHttp({ baseUrl: 'https://vault.test', fetch: fake.fetch }));
+const owner = await api.setup({
+  household_name: 'Smoke test family',
+  display_name: 'Owner',
+  email: 'owner@example.test',
+  password: 'a long enough password',
+});
+fake.state.ownerTwoStep = true;
+const made = await api.connectedApps.create(owner.access_token, {
+  name: 'Smoke test app',
+  member_id: owner.member_id,
+  public_key: ${JSON.stringify(PUBLIC_KEY)},
+  allowed_kinds: ['utility_bill'],
+  scopes: ['documents.send'],
+});
+const app = createAppClient({
+  baseUrl: 'https://vault.test',
+  appId: made.id,
+  keyId: made.keys[0].key_id,
+  privateKey: ${JSON.stringify(KEY)},
+  fetch: fake.fetch,
+});
+const pdf = new TextEncoder().encode('%PDF-1.4\\n% smoke\\n%%EOF\\n');
+const sent = await app.send({
+  externalId: 'smoke-1',
+  hints: { kind: 'utility_bill' },
+  file: { bytes: pdf, filename: 'bill.pdf', contentType: 'application/pdf' },
+});
+assert.equal(sent.status, 201);
+assert.equal((await app.status('smoke-1')).state, 'waiting');
+console.log('fake vault: sent', sent.status, sent.state.state);
+
+// Signed with another key: refused, as an ApiRequestError of the main entry
+// (one copy of each module across the three entries).
+const other = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+const stranger = createAppClient({
+  baseUrl: 'https://vault.test',
+  appId: made.id,
+  keyId: made.keys[0].key_id,
+  privateKey: new Uint8Array(await crypto.subtle.exportKey('pkcs8', other.privateKey)),
+  fetch: fake.fetch,
+});
+await assert.rejects(stranger.me(), (e) => e instanceof ApiRequestError && e.status === 401);
+console.log('fake vault: a wrong signature refused (401)');
+
+// The contract scenarios are their own entry, the only one that needs vitest:
+// here, without it, that entry alone fails to load.
+await assert.rejects(import('@fdv/client/testing/contract'), (e) => e.code === 'ERR_MODULE_NOT_FOUND' && /vitest/.test(e.message));
+console.log('testing/contract: needs vitest, and nothing else does');
+console.log('smoke test passed');
+`;
+
+const CHECK_TS = `
+import { ApiRequestError, createApi, createHttp, type FetchLike } from '@fdv/client';
+import { createAppClient, signRequest, type SignedHeaders } from '@fdv/client/apps';
+import { createFakeVault } from '@fdv/client/testing';
+import { contractScenarios, type Scenario } from '@fdv/client/testing/contract';
+
+declare const fetchLike: FetchLike;
+const api = createApi(createHttp({ baseUrl: 'https://vault.test', fetch: fetchLike }));
+const app = createAppClient({ baseUrl: '', appId: '', keyId: '', privateKey: '', fetch: fetchLike });
+export const h: Promise<SignedHeaders> = signRequest({ method: 'GET', target: '/', keyid: 'a.b', privateKey: '' });
+export const v = createFakeVault().state;
+export const n: Scenario[] = contractScenarios;
+export const e: ApiRequestError | null = null;
+export { api, app };
+`;
+
+/**
+ * A command, waited for without blocking: the server below answers the
+ * install meanwhile. npm.cmd and pnpm.cmd on Windows need a shell (nothing
+ * passed has a space in it).
+ */
+const run = (cmd, args, cwd) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, {
+      cwd,
+      stdio: 'inherit',
+      shell: process.platform === 'win32' && cmd !== process.execPath,
+    });
+    child.on('error', reject);
+    child.on('exit', (code) =>
+      code === 0 ? resolve() : reject(new Error(`${cmd} ${args.join(' ')}: exit ${code}`)),
+    );
+  });
+
+// The tarball at the path its GitHub release serves it from.
+const bytes = readFileSync(tarball);
+const asset = `/mansoor/family-documents-vault/releases/download/v${version}/fdv-client-${version}.tgz`;
+const server = createServer((req, res) => {
+  if (req.url !== asset) return res.writeHead(404).end();
+  res.writeHead(200, { 'content-type': 'application/octet-stream' }).end(bytes);
+});
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+const url = `http://127.0.0.1:${server.address().port}${asset}`;
+console.log(`client-smoke: installing ${url}`);
+
+try {
+  for (const pm of managers) await smoke(pm);
+} finally {
+  server.close();
+}
+console.log(`\nclient-smoke: fdv-client-${version}.tgz works with ${managers.join(' and ')}`);
+
+async function smoke(pm) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), `fdv-client-smoke-${pm}-`));
+  console.log(`\n== ${pm}: ${dir}`);
+  try {
+    writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify({ name: 'fdv-client-smoke', private: true, type: 'module' }, null, 2),
+    );
+    if (pm === 'npm') await run('npm', ['install', '--no-audit', '--no-fund', url], dir);
+    else if (pm === 'pnpm') await run('pnpm', ['add', url], dir);
+    else throw new Error(`no such package manager here: ${pm}`);
+    const deps = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8')).dependencies;
+    if (deps?.['@fdv/client'] !== url) {
+      throw new Error(`${pm} wrote @fdv/client as ${deps?.['@fdv/client']}, not its URL`);
+    }
+
+    writeFileSync(path.join(dir, 'smoke.mjs'), SMOKE);
+    await run(process.execPath, ['smoke.mjs'], dir);
+
+    writeFileSync(path.join(dir, 'check.ts'), CHECK_TS);
+    writeFileSync(
+      path.join(dir, 'tsconfig.json'),
+      JSON.stringify({
+        compilerOptions: {
+          target: 'ES2022',
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+          lib: ['ES2022'],
+          types: [],
+          strict: true,
+          noEmit: true,
+          skipLibCheck: false,
+        },
+        files: ['check.ts'],
+      }),
+    );
+    await run(process.execPath, [tsc, '-p', 'tsconfig.json'], dir);
+    console.log(`${pm}: the declarations typecheck`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}

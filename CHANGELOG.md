@@ -6,6 +6,13 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.59] - 2026-11-17 — the API client on each release
+
+### Added
+
+- **The API client, installable by a release's URL.** Every release now has a GitHub release (a pre-release for a `-dev` or `-rc` version), with the vault's API client for apps attached as `fdv-client-<version>.tgz`: `@fdv/client` (MIT), which signs a connected app's requests and comes with a fake vault to test against. An app installs it by that URL, pinned to the version — `https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.59/fdv-client-0.9.0-dev.59.tgz` — with npm or pnpm and no token, and needs no signer of its own. It is ESM only, with TypeScript declarations, for Node 22 or later, browsers and React Native, and carries what it uses of `@fdv/shared` inside it. The fake vault is `@fdv/client/testing`; the contract scenarios, which need vitest, are `@fdv/client/testing/contract`. See "The client library, for writing a connected app" in the README.
+- `pnpm client:pack` builds that tarball from a checkout, and `pnpm client:smoke` installs it by URL with npm and pnpm into an empty folder and uses it; CI runs both on every pull request, and on a tag uploads the tarball to the tag's release. A tarball once on a release is never replaced: a re-run whose tarball differs fails.
+
 ## [0.9.0-dev.58] - 2026-11-17 — connected apps file automatically
 
 ### Added

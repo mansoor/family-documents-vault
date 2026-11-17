@@ -1,6 +1,6 @@
 {
   "name": "family-document-vault",
-  "version": "0.9.0-dev.58",
+  "version": "0.9.0-dev.59",
   "private": true,
   "type": "module",
   "description": "A household document vault: every important paper in one place, telling you its own status and warning you before it expires.",
@@ -22,6 +22,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:older-client": "node scripts/older-client.mjs",
+    "client:pack": "node scripts/client-pack.mjs",
+    "client:smoke": "node scripts/client-smoke.mjs",
     "check": "pnpm lint && pnpm typecheck && pnpm test",
     "e2e": "playwright test"
   },
