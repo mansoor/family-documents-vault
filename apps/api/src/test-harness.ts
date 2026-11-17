@@ -487,6 +487,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     instanceId: instanceIdReader(db),
     alert,
     ...(opts.appsNow ? { now: opts.appsNow } : {}),
+    documents,
   });
   const app = await buildApp(config, {
     apps,

@@ -372,6 +372,8 @@ async function main(): Promise<void> {
       serverVersion: version,
       instanceId: instanceIdReader(db),
       alert,
+      // What an app reads and downloads (APP2).
+      documents,
     }),
     audit: new AuditService(db),
     suggestions: new SuggestionService(db),

@@ -66,6 +66,20 @@ const ALLOWED = [
   'apps/service.ts AppService.me',
   'apps/service.ts AppService.appAddsKey',
   'apps/service.ts AppService.appRetiresKey',
+  // What a connected app reads (0.9.0, APP2): the documents themselves are
+  // read narrowed to the app (readAsApp, inside this transaction: the
+  // database gives it what its rule allows and nothing of any other table),
+  // never as the vault. The vault's own part is around that: the app's
+  // grants, kinds and own sends looked up, its feed written
+  // (connected_app_seen and connected_app_change are the vault's alone), a
+  // download's bytes counted on the app and its file's key opened, and the
+  // activity log's lines. A list, one document, the feed, a download, and
+  // whether what it sent is still readable (its intake's status).
+  'apps/reads.ts AppReads.stillReadable',
+  'apps/reads.ts AppReads.list',
+  'apps/reads.ts AppReads.document',
+  'apps/reads.ts AppReads.changes',
+  'apps/reads.ts AppReads.content',
   // Text messages (0.9.0, SMS1): a text is sent by the vault, whoever asked
   // for it — the household's SMS Gate and its sealed password read, the
   // month's texts counted and one written (sms_message is the vault's to

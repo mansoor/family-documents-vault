@@ -262,6 +262,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0 (APP1): connected apps, signing every request, sending into
       // their person's Inbox.
       connected_apps: true,
+      // 0.9.0 (APP2): an app reads its own and what its read grants cover:
+      // a list, one document, a changes feed and a download.
+      connected_app_reads: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

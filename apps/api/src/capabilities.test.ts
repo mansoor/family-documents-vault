@@ -174,6 +174,7 @@ describe('buildCapabilities', () => {
       // 0.9.0 (DA): one document's activity.
       document_activity: true,
       // 0.9.0 (APP1): connected apps.
+      connected_app_reads: true,
       connected_apps: true,
     });
     expect(buildCapabilities({ ...config, watchFolder: true }).features.watch_folder).toBe(true);

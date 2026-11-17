@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { describeEvent, type ActivityEvent } from './activity.js';
+import { describeEvent, describeEvents, type ActivityEvent } from './activity.js';
 import {
   amountText,
   appBatchName,
+  appMayRead,
+  appSensitiveConfirmWords,
   hintDate,
+  lookbackStart,
+  lookbackWords,
+  type AppReadCase,
   parseAppMetadata,
   sealedAppHints,
   storedAppHints,
@@ -434,5 +439,186 @@ describe('what an app did, in the activity log (0.9.0, APP1)', () => {
       notable: true,
       actor_member_id: null,
     });
+  });
+});
+
+describe('what an app may read (0.9.0, APP2)', () => {
+  const base: AppReadCase = {
+    document: {
+      visibility: 'household',
+      is_essential: false,
+      sensitive: null,
+      deleted: false,
+      type_key: 'utility_bill',
+      category: 'bills',
+      paper_date: '2026-10-01',
+    },
+    kind: { category: 'bills', sensitive_default: false, usually_essential: false },
+    role: 'adult',
+    own: false,
+    grants: [{ kind_key: null, category: 'bills', lookback_months: 12, sensitive_kinds: [] }],
+    today: '2026-11-16',
+  };
+  const may = (over: Partial<AppReadCase>, doc: Partial<AppReadCase['document']> = {}) =>
+    appMayRead({ ...base, ...over, document: { ...base.document, ...doc } });
+
+  it('a lookback is counted back by months, as the database counts it', () => {
+    expect(lookbackStart('2026-11-16', 12)).toBe('2025-11-16');
+    expect(lookbackStart('2026-03-31', 1)).toBe('2026-02-28');
+    expect(lookbackStart('2024-03-31', 1)).toBe('2024-02-29');
+    expect(lookbackStart('2026-01-31', 36)).toBe('2023-01-31');
+    expect(lookbackStart('2026-01-15', 1)).toBe('2025-12-15');
+    expect(may({}, { paper_date: '2025-11-16' })).toBe(true);
+    expect(may({}, { paper_date: '2025-11-15' })).toBe(false);
+    expect(lookbackWords(1)).toBe('the last month');
+    expect(lookbackWords(12)).toBe('the last 12 months');
+  });
+
+  it('never what its person cannot see, Only me, Essential, the Trash, a note or a marked paper', () => {
+    expect(may({})).toBe(true);
+    expect(may({}, { visibility: 'private' })).toBe(false);
+    expect(may({ own: true }, { visibility: 'private' })).toBe(false);
+    expect(may({}, { visibility: 'adults' })).toBe(true);
+    expect(may({ role: 'teen' })).toBe(false);
+    expect(may({}, { is_essential: true })).toBe(false);
+    expect(may({}, { deleted: true })).toBe(false);
+    expect(may({}, { sensitive: true })).toBe(false);
+    expect(may({ own: true }, { sensitive: true })).toBe(false);
+    expect(may({}, { type_key: 'note' })).toBe(false);
+    expect(may({ kind: null })).toBe(false);
+    expect(may({}, { visibility: 'somebody_new' })).toBe(false);
+  });
+
+  it('only the categories an app may ever be given, its own included', () => {
+    const passport = { type_key: 'passport', category: 'identity' };
+    const identity = { category: 'identity', sensitive_default: true, usually_essential: false };
+    const grants = [
+      { kind_key: 'passport', category: null, lookback_months: 36, sensitive_kinds: ['passport'] },
+    ];
+    expect(may({ grants, kind: identity }, passport)).toBe(false);
+    expect(may({ own: true, kind: identity }, passport)).toBe(false);
+    expect(
+      may({ kind: { category: 'medical', sensitive_default: true, usually_essential: false } }),
+    ).toBe(false);
+    // A kind kept as an Essential is never read through a grant; its own still is.
+    const kept = { category: 'bills', sensitive_default: false, usually_essential: true };
+    expect(may({ kind: kept })).toBe(false);
+    expect(may({ kind: kept, own: true })).toBe(true);
+    expect(may({}, { category: 'legal' })).toBe(false);
+    expect(
+      may({
+        kind: {
+          category: 'a_category_added_later',
+          sensitive_default: false,
+          usually_essential: false,
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it('a kind Sensitive by default needs its grant confirmed; its own need none', () => {
+    const statement = { type_key: 'bank_statement', category: 'financial' };
+    const kind = { category: 'financial', sensitive_default: true, usually_essential: false };
+    const grant = (confirmed: boolean) => [
+      {
+        kind_key: 'bank_statement',
+        category: null,
+        lookback_months: 12,
+        sensitive_kinds: confirmed ? ['bank_statement'] : [],
+      },
+    ];
+    expect(may({ kind, grants: grant(false) }, statement)).toBe(false);
+    expect(may({ kind, grants: grant(true) }, statement)).toBe(true);
+    expect(may({ kind, grants: grant(false) }, { ...statement, sensitive: false })).toBe(true);
+    expect(may({ kind, grants: [], own: true }, statement)).toBe(true);
+    // Confirmed for another kind is not confirmed for this one.
+    expect(
+      may(
+        {
+          kind,
+          grants: [
+            {
+              kind_key: null,
+              category: 'financial',
+              lookback_months: 12,
+              sensitive_kinds: ['loan'],
+            },
+          ],
+        },
+        statement,
+      ),
+    ).toBe(false);
+    // A kind whose default is not said is taken as Sensitive.
+    expect(
+      may(
+        {
+          kind: { category: 'financial', sensitive_default: null, usually_essential: false },
+          grants: grant(false),
+        },
+        statement,
+      ),
+    ).toBe(false);
+    expect(appSensitiveConfirmWords('MonTra', ['Bank statement', 'Pay statement / payslip'])).toBe(
+      'Bank statement and Pay statement / payslip are sensitive. MonTra will be able to read them. Allow anyway?',
+    );
+  });
+});
+
+describe('an app’s lines in the activity log (0.9.0, APP2)', () => {
+  const at = (min: number) => new Date(Date.UTC(2026, 10, 16, 12, 0) - min * 60_000).toISOString();
+  let id = 1000;
+  const ev = (action: string, min: number, over: Partial<ActivityEvent> = {}): ActivityEvent => ({
+    id: id--,
+    at: at(min),
+    action,
+    actor: 'Ahmed',
+    actor_id: 'acc-ahmed',
+    actor_member_id: 'm-ahmed',
+    actor_label: null,
+    object_type: 'member',
+    object_id: 'm-ahmed',
+    object_title: null,
+    detail: { app_id: 'app-1', app: 'MonTra' },
+    ...over,
+  });
+
+  it('files sent close together are one line: "sent 12 files"', () => {
+    const sent = Array.from({ length: 12 }, (_, i) => ev('app.sent', i * 3));
+    expect(describeEvents(sent).map((l) => l.text)).toEqual([
+      'Ahmed via MonTra sent 12 files to their Inbox',
+    ]);
+    // More than an hour between: two lines; another app, its own.
+    const apart = describeEvents([
+      ev('app.sent', 0),
+      ev('app.sent', 5),
+      ev('app.sent', 90),
+      ev('app.sent', 91, { detail: { app_id: 'app-2', app: 'Ledger' } }),
+    ]);
+    expect(apart.map((l) => l.text)).toEqual([
+      'Ahmed via MonTra sent 2 files to their Inbox',
+      'Ahmed via MonTra sent a file to their Inbox',
+      'Ahmed via Ledger sent a file to their Inbox',
+    ]);
+  });
+
+  it('a download and a read, as the person via the app; a sensitive one never named', () => {
+    const doc = { object_type: 'document', object_id: 'd-1', object_title: 'Northgate, October' };
+    const lines = describeEvents([
+      ev('document.downloaded', 0, doc),
+      ev('document.downloaded', 2, doc),
+      ev('app.read', 3, doc),
+      ev('app.looked_up', 4),
+      ev('document.downloaded', 5, { ...doc, object_sensitive: true }),
+    ]);
+    expect(lines.map((l) => [l.text, l.kind])).toEqual([
+      ['Ahmed via MonTra downloaded “Northgate, October”', 'opened'],
+      ['Ahmed via MonTra read the details of “Northgate, October”', 'opened'],
+      ['Ahmed via MonTra looked up documents', 'opened'],
+      ['Ahmed via MonTra downloaded a sensitive document', 'opened'],
+    ]);
+    // A family download is said as it always was, and never folded with an app's.
+    expect(
+      describeEvents([ev('document.downloaded', 0, { ...doc, detail: {} })]).map((l) => l.text),
+    ).toEqual(['Ahmed downloaded “Northgate, October”']);
   });
 });

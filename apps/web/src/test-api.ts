@@ -1848,7 +1848,7 @@ export function installFakeApi(state: FakeState) {
         return json(seen(app), 201);
       }
       const appAt =
-        /^\/api\/v1\/connected-apps\/([^/]+)(?:\/(approve|pause|resume|keys))?(?:\/([^/]+))?(\/confirm)?$/.exec(
+        /^\/api\/v1\/connected-apps\/([^/]+)(?:\/(approve|pause|resume|keys|grants))?(?:\/([^/]+))?(\/confirm)?$/.exec(
           path,
         );
       const app = appAt ? visible().find((a) => a.id === appAt[1]) : undefined;
@@ -1875,6 +1875,48 @@ export function installFakeApi(state: FakeState) {
         const renameOnly = Object.keys(change).every((k) => k === 'name');
         if (!renameOnly && state.stepUpNeeded) return askFactor();
         return put({ ...app, ...change });
+      }
+      // What it may read (APP2): an owner's, with a passkey or a code; a
+      // kind Sensitive by default asked about once, as the vault asks.
+      if (verb === 'grants' && method === 'PUT') {
+        if (!owner) return ownersOnly();
+        if (state.stepUpNeeded) return askFactor();
+        const b = body as {
+          grants: Array<{ kind?: string; category?: string; lookback_months: number }>;
+          confirm_sensitive?: boolean;
+        };
+        const sensitive = ['bank_statement', 'pay_statement'];
+        const had = app.grants ?? [];
+        const needs = b.grants.filter(
+          (g) =>
+            g.kind !== undefined &&
+            sensitive.includes(g.kind) &&
+            !had.some((x) => x.kind === g.kind && x.sensitive_confirmed),
+        );
+        if (needs.length > 0 && b.confirm_sensitive !== true) {
+          return refuse(
+            409,
+            'sensitive_confirm',
+            `Bank / investment statement is sensitive. ${app.name} will be able to read it. Allow anyway?`,
+          );
+        }
+        return put({
+          ...app,
+          grants: b.grants.map((g) => {
+            const confirmed =
+              g.kind !== undefined &&
+              sensitive.includes(g.kind) &&
+              (b.confirm_sensitive === true ||
+                had.some((x) => x.kind === g.kind && x.sensitive_confirmed));
+            return {
+              kind: g.kind ?? null,
+              category: g.category ?? null,
+              lookback_months: g.lookback_months,
+              sensitive_confirmed: confirmed,
+              sensitive_kinds: confirmed && g.kind ? [g.kind] : [],
+            };
+          }),
+        });
       }
       if (!verb && method === 'DELETE') {
         if (!owner && app.member_id !== 'me') {

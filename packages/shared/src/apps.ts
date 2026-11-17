@@ -17,7 +17,7 @@ import type { DateValue, Visibility } from './documents.js';
 
 // ------------------------------------------------------------- scopes
 
-/** What an app may do. APP1 grants `documents.send` alone. */
+/** What an app may do. Chosen by an owner per app; `documents.send` alone unless they say. */
 export const APP_SCOPES = [
   'documents.send',
   'documents.read',
@@ -27,8 +27,18 @@ export const APP_SCOPES = [
 ] as const;
 export type AppScope = (typeof APP_SCOPES)[number];
 
-/** The scopes this vault can grant now: the rest come with their features. */
-export const APP_SCOPES_OFFERED: readonly AppScope[] = ['documents.send'];
+/**
+ * The scopes this vault can grant now: the rest come with their features
+ * (reading and downloading since APP2; links and deletes with APP3).
+ */
+export const APP_SCOPES_OFFERED: readonly AppScope[] = [
+  'documents.send',
+  'documents.read',
+  'documents.download',
+];
+
+/** What a new app may do when the owner does not say: send, and nothing more. */
+export const APP_SCOPES_DEFAULT: readonly AppScope[] = ['documents.send'];
 
 /** Each scope in words, as Settings says what an app may do. */
 export const APP_SCOPE_WORDS: Readonly<Record<AppScope, string>> = {
@@ -61,6 +71,17 @@ export const APP_GRANTABLE_CATEGORIES = [
 export const APP_NEVER_CATEGORIES: readonly string[] = ['identity', 'legal', 'medical'];
 
 // ---------------------------------------------------------- limits
+
+/** A read grant's lookback, in months: 1 to this many (APP2). */
+export const APP_LOOKBACK_MAX_MONTHS = 36;
+/** Read grants an app holds at most (APP2). */
+export const APP_GRANTS_MAX = 50;
+/** A page of `GET /apps/documents` and of `GET /apps/changes`, at most; and their defaults. */
+export const APP_PAGE_MAX = 100;
+export const APP_LIST_DEFAULT = 50;
+export const APP_CHANGES_DEFAULT = 100;
+/** Lines of an app's changes feed are kept this many days; an older cursor is `410 cursor_expired`. */
+export const APP_CHANGES_KEEP_DAYS = 90;
 
 /** The day's caps an app starts with, within the operator's ceilings. */
 export const APP_DEFAULT_DAILY_FILES = 100;
@@ -438,6 +459,8 @@ export interface AppMe {
   };
   scopes: AppScope[];
   send: { kinds: AppSendKind[]; hints: AppHintName[]; auto_file: boolean };
+  /** What it may read (APP2): its grants. Absent from a vault without `connected_app_reads`. */
+  read?: { grants: AppGrant[] };
   limits: {
     max_upload_bytes: number;
     accepted_types: string[];
@@ -500,6 +523,11 @@ export interface ConnectedAppView {
   last_refusal: string | null;
   /** How many of what it sent wait, and were filed: its person's alone to know; null to anybody else. */
   counts: { waiting: number; filed: number } | null;
+  /** What it may read beyond its own (APP2): each grant, as Settings shows it. */
+  grants?: ConnectedAppGrantView[];
+  /** Bytes a day it may download, and what it downloaded today (APP2). */
+  daily_read_bytes?: number;
+  read_today?: number;
   /** What to paste into the app: no secret is in it. */
   connection_string: string;
   /** The address the app must use, and whether it is the public-only site's. */
@@ -517,6 +545,10 @@ export interface ConnectedAppInput {
   daily_bytes?: number;
   ip_allow?: string[];
   backfill?: { until: string; files_per_day: number; bytes_per_day: number } | null;
+  /** What it may do (APP2): `documents.send` alone when left out. */
+  scopes?: AppScope[];
+  /** Bytes a day it may download (APP2): 1 GB when left out. */
+  daily_read_bytes?: number;
 }
 
 /** `PATCH /api/v1/connected-apps/{id}`: what is sent changes; the rest stays. */
@@ -530,6 +562,8 @@ export type ConnectedAppChange = Partial<
     | 'daily_bytes'
     | 'ip_allow'
     | 'backfill'
+    | 'scopes'
+    | 'daily_read_bytes'
   >
 >;
 
@@ -584,6 +618,10 @@ export const APP_REFUSALS = {
   external_id_conflict: 'This external_id was already used with other bytes.',
   app_day_full: 'This app has sent as much as it may today.',
   length_required: 'Send Content-Length.',
+  app_read_day_full: 'This app has downloaded as much as it may today.',
+  larger_than_daily_read:
+    'This file is larger than this app may download in a day. Ask for it in parts, with Range.',
+  cursor_expired: 'That cursor is too old. Read the changes again from the start.',
 } as const;
 
 /** A refusal's code as Settings says it: "signature not valid". */
@@ -604,6 +642,7 @@ export const APP_REFUSAL_SHORT: Readonly<Record<string, string>> = {
   content_digest_mismatch: 'body changed',
   kind_not_allowed: 'kind not allowed',
   app_day_full: 'day full',
+  app_read_day_full: 'downloads full',
   rate_limited: 'too many requests',
 };
 
@@ -634,4 +673,196 @@ export function sealedAppHints(hints: AppHints): string {
     if (v) out[k] = date(v);
   }
   return JSON.stringify({ v: 1, hints: out });
+}
+
+// ------------------------------------------------------------ reading (APP2)
+
+/** A read grant, as `GET /apps/me` says it: a kind or a category, and how far back. */
+export type AppGrant =
+  { kind: string; lookback_months: number } | { category: string; lookback_months: number };
+
+/** A read grant as Settings shows it. */
+export interface ConnectedAppGrantView {
+  kind: string | null;
+  category: string | null;
+  lookback_months: number;
+  /**
+   * An owner said it may read every kind Sensitive by default that it covers
+   * now. A kind made Sensitive later, or moved into a granted category, is
+   * not read until they say so again.
+   */
+  sensitive_confirmed: boolean;
+  /** The kinds Sensitive by default it may read, by key, as an owner confirmed them. */
+  sensitive_kinds: string[];
+}
+
+/** `PUT /api/v1/connected-apps/{id}/grants`: every grant the app is to have. */
+export interface ConnectedAppGrantsInput {
+  grants: Array<{ kind?: string; category?: string; lookback_months: number }>;
+  /**
+   * Yes to its reading papers Sensitive by their kind (bank statements,
+   * payslips, tax forms): asked once, when a grant covers such a kind.
+   * Without it such a grant is `409 sensitive_confirm`.
+   */
+  confirm_sensitive?: boolean;
+}
+
+/** A date as an app is told it: for month or year precision, the last day of the period. */
+export interface AppDate {
+  date: string;
+  precision: 'day' | 'month' | 'year';
+}
+
+/** One document as an app reads it (`GET /apps/documents`, the changes feed). */
+export interface AppDocument {
+  id: string;
+  kind: { key: string; label: string; category: string };
+  title: string | null;
+  /** The date a grant's lookback counts on: issued, else due, else filed. */
+  paper_date: string;
+  issued: AppDate | null;
+  expires: AppDate | null;
+  due_date: AppDate | null;
+  amount: { text: string; value: string | null; currency: string | null } | null;
+  issuer: string | null;
+  account_last4: string | null;
+  period: string | null;
+  tax_year: number | null;
+  status: { value: string; label: string };
+  version: { id: string; sha256: string; byte_size: number; content_type: string } | null;
+  own: boolean;
+  /** Its external id, when it is the app's own. */
+  external_id: string | null;
+  updated_at: string;
+}
+
+/** `GET /apps/documents`. */
+export interface AppDocumentList {
+  items: AppDocument[];
+  next: string | null;
+}
+
+/** One line of the changes feed. `unavailable` never says why. */
+export type AppChange =
+  | { change: 'changed'; at: string; document: AppDocument }
+  | { change: 'unavailable'; at: string; document_id: string };
+
+/** `GET /apps/changes`. */
+export interface AppChanges {
+  changes: AppChange[];
+  cursor: string;
+  more: boolean;
+}
+
+/**
+ * A date some months before another, as the database counts it (a month
+ * back from 31 March is 28 or 29 February): where a grant's lookback
+ * starts. Both `YYYY-MM-DD`.
+ */
+export function lookbackStart(today: string, months: number): string {
+  const [y, m, d] = today.split('-').map(Number) as [number, number, number];
+  const total = y * 12 + (m - 1) - months;
+  const year = Math.floor(total / 12);
+  const month = (total % 12) + 1;
+  const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const day = Math.min(d, last);
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `${String(year).padStart(4, '0')}-${two(month)}-${two(day)}`;
+}
+
+/** The categories an app may ever read, as a set. */
+const GRANTABLE: ReadonlySet<string> = new Set(APP_GRANTABLE_CATEGORIES);
+
+/** Whether a category is one an app may ever be granted to read. */
+export const appGrantable = (category: string | null | undefined): boolean =>
+  category !== null && category !== undefined && GRANTABLE.has(category);
+
+/** What `appMayRead` asks of one document. */
+export interface AppReadCase {
+  document: {
+    visibility: string;
+    is_essential: boolean;
+    /** Its own Sensitive: true, false, or null as its kind says. */
+    sensitive: boolean | null;
+    deleted: boolean;
+    type_key: string | null;
+    category: string | null;
+    /** Its paper's date, YYYY-MM-DD (`paper_date`). */
+    paper_date: string;
+  };
+  /** Its kind as the household has it now; null for none. */
+  kind: {
+    category: string;
+    sensitive_default: boolean | null;
+    /** Kept as an Essential: never read through a grant. */
+    usually_essential: boolean | null;
+  } | null;
+  /** The role of the person the app acts as. */
+  role: string;
+  /**
+   * Filed from what the app sent, not let go of, and its current version
+   * still the one the app sent.
+   */
+  own: boolean;
+  grants: ReadonlyArray<{
+    kind_key: string | null;
+    category: string | null;
+    lookback_months: number;
+    /** The kinds Sensitive by default an owner confirmed on it. */
+    sensitive_kinds: readonly string[];
+  }>;
+  /** The household's today, YYYY-MM-DD. */
+  today: string;
+}
+
+/**
+ * Whether an app may read a document (APP2): the API's own copy of the
+ * database's rule (connected_app_documents), held to the same answers by a
+ * test. Never anything its person cannot see, Only me (its own included),
+ * Essential, in the Trash, a note, or of a category an app may never be
+ * given; never a paper somebody marked Sensitive. Its own (while its
+ * current version is the one the app sent), or one a grant covers by kind or
+ * category within the grant's lookback, its kind not one kept as an
+ * Essential — its kind confirmed on the grant when it makes it Sensitive.
+ */
+export function appMayRead(c: AppReadCase): boolean {
+  const d = c.document;
+  if (c.role !== 'owner' && c.role !== 'adult') return false;
+  if (d.deleted || d.is_essential || d.sensitive === true) return false;
+  if (d.visibility !== 'household' && d.visibility !== 'adults') return false;
+  if (!d.type_key || d.type_key === 'note' || !c.kind) return false;
+  if (!appGrantable(d.category) || !appGrantable(c.kind.category)) return false;
+  if (c.own) return true;
+  if (c.kind.usually_essential !== false) return false;
+  const kindSensitive = c.kind.sensitive_default !== false;
+  const category = c.kind.category;
+  const key = d.type_key;
+  return c.grants.some(
+    (g) =>
+      (g.kind_key === key || g.category === category) &&
+      d.paper_date >= lookbackStart(c.today, g.lookback_months) &&
+      (d.sensitive === false || !kindSensitive || g.sensitive_kinds.includes(key)),
+  );
+}
+
+/**
+ * The question an owner is asked when a grant would let an app read papers
+ * Sensitive by their kind: "Bank statement and Pay statement / payslip are
+ * sensitive. MonTra will be able to read them. Allow anyway?"
+ */
+export function appSensitiveConfirmWords(app: string, kinds: readonly string[]): string {
+  const names =
+    kinds.length <= 1
+      ? (kinds[0] ?? 'These papers')
+      : `${kinds.slice(0, -1).join(', ')} and ${kinds[kinds.length - 1]}`;
+  const one = kinds.length === 1;
+  return `${names} ${one ? 'is' : 'are'} sensitive. ${app} will be able to read ${
+    one ? 'it' : 'them'
+  }. Allow anyway?`;
+}
+
+/** A grant's lookback in words: "the last 12 months". */
+export function lookbackWords(months: number): string {
+  if (months === 1) return 'the last month';
+  return `the last ${months} months`;
 }

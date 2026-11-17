@@ -12,6 +12,11 @@ import type pg from 'pg';
  * external id is free, and nothing of it is left. A filed one is kept as
  * long as its row is (APP2 says when it stops being the app's).
  *
+ * An app's changes feed (APP2) keeps 90 days of lines: older ones go, and
+ * the app is told a cursor from before them is too old (its
+ * changes_pruned_to). What it was told of a document it can no longer read
+ * goes after 90 days too; a revoked app's feed goes at once.
+ *
  * As the owning role: these rows are the vault's alone to remove, every
  * household's at once, and none of them says anything about a person.
  */
@@ -20,9 +25,12 @@ export const APP_INTAKE_KEEP_DAYS = 90;
 /** A send still arriving after this long died on its way: its row and its part-sent item go. */
 export const APP_ARRIVING_GIVE_UP_MINUTES = 60;
 
+/** Lines of an app's changes feed are kept this many days (APP2). */
+export const APP_CHANGES_KEEP_DAYS = 90;
+
 export async function sweepApps(
   admin: pg.Pool,
-): Promise<{ nonces: number; sent: number; stuck: number }> {
+): Promise<{ nonces: number; sent: number; stuck: number; changes: number }> {
   const nonces = await admin.query(
     'delete from public.connected_app_nonce where expires_at < now()',
   );
@@ -49,9 +57,40 @@ export async function sweepApps(
       [items],
     );
   }
+  // The feed's old lines, in one statement with one cut-off: each live
+  // app's last line let go is noted on it, and exactly those lines go, so a
+  // cursor before them is answered as too old, never as nothing new. The
+  // note waits for a feed being read (which holds its app's row), and a feed
+  // read after sees both. A removed app's feed goes whole.
+  const changes = await admin.query(
+    `with cut as (
+       select app_id, max(seq) as last from public.connected_app_change
+        where at < now() - make_interval(days => $1)
+        group by app_id
+     ), noted as (
+       update public.connected_app a
+          set changes_pruned_to = cut.last
+         from cut
+        where a.id = cut.app_id and a.revoked_at is null and a.changes_pruned_to < cut.last
+        returning a.id
+     )
+     delete from public.connected_app_change c
+      where c.seq <= (select cut.last from cut where cut.app_id = c.app_id)
+         or exists (select 1 from public.connected_app a
+                     where a.id = c.app_id and a.revoked_at is not null)`,
+    [APP_CHANGES_KEEP_DAYS],
+  );
+  await admin.query(
+    `delete from public.connected_app_seen s
+      where (not s.available and s.changed_at < now() - make_interval(days => $1))
+         or exists (select 1 from public.connected_app a
+                     where a.id = s.app_id and a.revoked_at is not null)`,
+    [APP_CHANGES_KEEP_DAYS],
+  );
   return {
     nonces: nonces.rowCount ?? 0,
     sent: sent.rowCount ?? 0,
     stuck: gone.rowCount ?? 0,
+    changes: changes.rowCount ?? 0,
   };
 }

@@ -4,14 +4,17 @@ import {
   APP_SIGNATURE_TAG,
   APP_SIGNED_COMPONENTS,
   EXTERNAL_ID_PATTERN,
+  type AppChanges,
   type AppConnection,
+  type AppDocument,
+  type AppDocumentList,
   type AppHints,
   type AppIntakeState,
   type AppIntakeStates,
   type AppKeyAdded,
   type AppMe,
 } from '@fdv/shared';
-import { createHttp, type FetchLike, type Http } from './http.js';
+import { createHttp, toError, type FetchLike, type Http } from './http.js';
 import { multipartBody } from './multipart.js';
 
 /**
@@ -270,9 +273,43 @@ export interface AppSend {
   file: { bytes: Uint8Array; filename: string; contentType: string };
 }
 
+/** What `list` may narrow to (APP2): each as `GET /apps/documents` takes it. */
+export interface AppListQuery {
+  kind?: string[];
+  category?: string;
+  /** YYYY-MM-DD, compared with `paper_date`. */
+  from?: string;
+  to?: string;
+  own?: boolean;
+  limit?: number;
+  cursor?: string;
+}
+
+/** A download (APP2): its bytes, or 304 when `ifNoneMatch` is still its version. */
+export interface AppDownload {
+  status: 200 | 206 | 304;
+  /** The version's id, quoted: `"<version_id>"`. */
+  etag: string | null;
+  bytes: Uint8Array;
+  contentType: string | null;
+  contentDisposition: string | null;
+  contentRange: string | null;
+}
+
 export interface AppClient {
   /** The connection test, and what this app may do. */
   me(): Promise<AppMe>;
+  /** Its own and what its grants cover, newest paper first (APP2). */
+  list(q?: AppListQuery): Promise<AppDocumentList>;
+  /** One document (APP2): 404 for one it may not read, as for one that is not there. */
+  document(id: string): Promise<AppDocument>;
+  /** What changed since `cursor` (APP2); without one, everything it may read now. */
+  changes(q?: { cursor?: string; limit?: number }): Promise<AppChanges>;
+  /** The current file's bytes (APP2, `documents.download`): a range, or 304 for a version it has. */
+  download(
+    id: string,
+    o?: { range?: { start: number; end?: number }; ifNoneMatch?: string },
+  ): Promise<AppDownload>;
   /** One document into its person's Inbox; 200 for an external id sent before. */
   send(s: AppSend): Promise<{ status: number; replayed: boolean; state: AppIntakeState }>;
   status(externalId: string): Promise<AppIntakeState>;
@@ -332,9 +369,71 @@ export function createAppClient(opts: AppClientOptions): AppClient {
     target: string,
     body?: { bytes: Uint8Array; contentType: string },
   ): Promise<T> => (await (await request(method, target, body)).json()) as T;
+  /** A document's id, as the vault writes them: nothing else reaches a path. */
+  const docId = (id: string) => {
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(id)) throw new Error('not a document id');
+    return id;
+  };
+  /** A query, each value percent-encoded once, in the order given. */
+  const query = (pairs: Array<[string, string | undefined]>) => {
+    const kept = pairs.filter((p): p is [string, string] => p[1] !== undefined);
+    return kept.length === 0
+      ? ''
+      : `?${kept.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}`;
+  };
 
   return {
     me: () => json<AppMe>('GET', '/api/v1/apps/me'),
+    list: (q = {}) =>
+      json<AppDocumentList>(
+        'GET',
+        `/api/v1/apps/documents${query([
+          ['kind', q.kind?.join(',')],
+          ['category', q.category],
+          ['from', q.from],
+          ['to', q.to],
+          ['own', q.own === undefined ? undefined : String(q.own)],
+          ['limit', q.limit === undefined ? undefined : String(q.limit)],
+          ['cursor', q.cursor],
+        ])}`,
+      ),
+    document: (id) => json<AppDocument>('GET', `/api/v1/apps/documents/${docId(id)}`),
+    changes: (q = {}) =>
+      json<AppChanges>(
+        'GET',
+        `/api/v1/apps/changes${query([
+          ['cursor', q.cursor],
+          ['limit', q.limit === undefined ? undefined : String(q.limit)],
+        ])}`,
+      ),
+    async download(id, o = {}) {
+      const target = `/api/v1/apps/documents/${docId(id)}/content`;
+      const headers: Record<string, string> = {
+        ...(await signRequest({
+          method: 'GET',
+          target,
+          keyid,
+          privateKey: opts.privateKey,
+          created: created(),
+        })),
+        accept: '*/*',
+      };
+      if (o.range) headers.range = `bytes=${o.range.start}-${o.range.end ?? ''}`;
+      if (o.ifNoneMatch) headers['if-none-match'] = o.ifNoneMatch;
+      const res = await opts.fetch(`${opts.baseUrl.replace(/\/+$/, '')}${target}`, {
+        method: 'GET',
+        headers,
+      });
+      if (res.status !== 304 && !res.ok) throw await toError(res, opts.now?.() ?? Date.now());
+      return {
+        status: res.status as 200 | 206 | 304,
+        etag: res.headers.get('etag'),
+        bytes: res.status === 304 ? new Uint8Array() : new Uint8Array(await res.arrayBuffer()),
+        contentType: res.headers.get('content-type'),
+        contentDisposition: res.headers.get('content-disposition'),
+        contentRange: res.headers.get('content-range'),
+      };
+    },
     async send(s) {
       const body = multipartBody([
         {

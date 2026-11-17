@@ -4,7 +4,15 @@ import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { amountWords, todayWords } from './screens/ConnectedApps.js';
-import { fresh, installFakeApi, ME, signedIn, type FakeState } from './test-api.js';
+import {
+  BANK_STATEMENT,
+  fresh,
+  installFakeApi,
+  ME,
+  signedIn,
+  TYPES,
+  type FakeState,
+} from './test-api.js';
 
 /**
  * Settings → Connected apps (0.9.0, APP1): the apps an owner connects, each
@@ -320,6 +328,8 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       daily_bytes: 500 * MB,
       ip_allow: ['203.0.113.7', '198.51.100.0/24'],
       backfill: null,
+      // Sending, and reading what it sent and is granted: downloading only when ticked.
+      scopes: ['documents.send', 'documents.read'],
     });
     const created = state.connectedApps?.[0];
     expect(within(made).getByText(created?.keys[0]?.fingerprint ?? '?')).toHaveTextContent(
@@ -419,6 +429,97 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     expect(calls(state, 'PATCH', '/api/v1/connected-apps/').at(-1)?.body).toEqual({
       name: 'MonTra Pro',
     });
+  });
+
+  it('an owner says what it may read: a kind or a category and how far back, Sensitive asked once (APP2)', async () => {
+    const BILLS = {
+      key: 'utility_bill',
+      label: 'Utility / bill',
+      category: 'bills',
+      fields: [],
+      expiry_driver: null,
+      reminder_leads: [],
+      usually_essential: false,
+      default_visibility: 'household',
+      issued_by_label: null,
+    };
+    const state = at('/settings/connected-apps', {
+      connectedApps: [
+        app({
+          scopes: ['documents.send', 'documents.read', 'documents.download'],
+          grants: [],
+          daily_read_bytes: 1024 ** 3,
+          read_today: 0,
+        }),
+      ],
+      types: [
+        ...TYPES,
+        ...(TYPES.some((t) => t.key === 'bank_statement') ? [] : [BANK_STATEMENT]),
+        BILLS,
+      ],
+      stepUpNeeded: true,
+    });
+    const card = await screen.findByRole('region', { name: 'MonTra' });
+    expect(within(card).getByText('What it sent')).toBeInTheDocument();
+    expect(within(card).getByText('0 MB of 1 GB')).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole('button', { name: 'Change what MonTra may read' }));
+    expect(within(card).getByText('Nothing beyond what it sent.')).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole('button', { name: 'Add a kind or category' }));
+    const what = within(card).getByLabelText('What');
+    const offered = within(what)
+      .getAllByRole('option')
+      .map((o) => o.textContent);
+    // Only what an app may ever be given: never identity papers, a passport among them.
+    expect(offered).toContain('Bank / investment statement');
+    expect(offered).toContain('All of Bills & utilities');
+    expect(offered).not.toContain('Passport');
+    expect(offered).not.toContain('All of Identity');
+    expect(offered).not.toContain('All of Medical');
+    fireEvent.change(what, { target: { value: 'kind:bank_statement' } });
+    fireEvent.change(within(card).getByLabelText('Months back'), { target: { value: '12' } });
+    await expectAccessible();
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
+    await confirmWithCode();
+    // The vault asks about Sensitive papers; the owner allows it.
+    let ask = await screen.findByRole('alertdialog', { name: 'Sensitive papers' });
+    expect(
+      within(ask).getByText(
+        'Bank / investment statement is sensitive. MonTra will be able to read it. Allow anyway?',
+      ),
+    ).toBeInTheDocument();
+    // Cancel keeps what the owner chose, open, with the focus back on Save.
+    fireEvent.click(within(ask).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(within(card).getByLabelText('What')).toHaveValue('kind:bank_statement');
+    expect(within(card).getByLabelText('Months back')).toHaveValue('12');
+    await waitFor(() => expect(within(card).getByRole('button', { name: 'Save' })).toHaveFocus());
+    // Asked again, and allowed: saved, closed, the focus on its card's "What it may read".
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
+    ask = await screen.findByRole('alertdialog', { name: 'Sensitive papers' });
+    fireEvent.click(within(ask).getByRole('button', { name: 'Allow' }));
+    expect(
+      await screen.findByText('Saved. MonTra may read what it now says here.'),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        within(card).getByRole('button', { name: 'Change what MonTra may read' }),
+      ).toHaveFocus(),
+    );
+    const sent = calls(state, 'PUT', '/grants').map((c) => c.body);
+    expect(sent.at(-1)).toEqual({
+      grants: [{ kind: 'bank_statement', lookback_months: 12 }],
+      confirm_sensitive: true,
+    });
+    expect(
+      await within(card).findByText(
+        'What it sent, and: Bank / investment statement: the last 12 months, sensitive papers included',
+      ),
+    ).toBeInTheDocument();
+    // How far back is said in months, 1 to 36.
+    fireEvent.click(within(card).getByRole('button', { name: 'Change what MonTra may read' }));
+    fireEvent.change(within(card).getByLabelText('Months back'), { target: { value: '48' } });
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
+    expect(await within(card).findByText('How far back: 1 to 36 months.')).toBeInTheDocument();
   });
 
   it('an owner adds its new key, sees what to paste, and retires the old one, asked first', async () => {

@@ -6,6 +6,19 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.56] - 2026-11-16 — connected apps read
+
+### Added
+
+- **A connected app can read, if you allow it.** In **Settings → Connected apps**, an owner now ticks what each app may do: send, read the details of documents it is allowed, and download them. **What it may read** sets, beyond what the app sent itself, the kinds of papers (bank statements, say) or whole categories (Bills & utilities) it may read, each for so many months back, from 1 to 36, counted on the paper's date. Only categories an app may ever be given are offered: never identity, legal, medical, education or pet papers. Giving it a kind that is Sensitive by default — statements, payslips, tax forms, loans — asks first, kind by kind: "Bank statement is sensitive. MonTra will be able to read it. Allow anyway?" A kind that becomes Sensitive later, or joins a granted category, is asked about again before the app reads it; a kind kept as an Essential is never read through a grant. Saving asks for a passkey or a code, and an app acting as somebody else waits for them to turn it on again, as before.
+- **What it reads is the vault's as it is now**: the kind, title, dates, amount, who issued it, the last 4 digits, the period, the tax year and the status — never whose it is, notes, tags, numbers or where the paper is kept. It reads as its own only a paper its file became — never a family paper its file was filed into as a new version — and only while the paper's newest file is one it sent. It can download the current file, up to 1 GB a day unless an owner changes it (a larger file is taken in parts), and follow a feed of what changed, which says only that a paper is no longer available, never why.
+- **Never**: anything the person it acts as can't see, anything Only me (even what it sent), anything Essential or in the Trash, any paper somebody marked Sensitive. The database keeps this rule too, not only the vault's code: a request from an app is given those documents and their current files, and nothing at all of any other table. (Migration 0110.)
+- **In the activity log**, as the person via the app: "Ahmed via MonTra downloaded …" and "… read the details of …", on the document's own **Activity** too, and "… looked up documents" once an hour. Many files an app sent close together are now one line: "Ahmed via MonTra sent 12 files to their Inbox".
+
+### Changed
+
+- **What an app sent and was filed** is said to be _unavailable_ to it once it can no longer read it (made Only me, say), never why.
+
 ## [0.9.0-dev.55] - 2026-11-16 — connected apps
 
 ### Added

@@ -9,6 +9,7 @@ import {
   type AppIntakeMetadata,
   type AppScope,
   type ConnectedAppChange,
+  type ConnectedAppGrantsInput,
   type ConnectedAppInput,
 } from '@fdv/shared';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -40,6 +41,11 @@ export const APP_SIGNED_ROUTES: ReadonlyMap<string, AppRoute> = new Map<string, 
   ['DELETE /api/v1/apps/intake/:external_id', { scope: 'documents.send' }],
   ['POST /api/v1/apps/keys', { scope: null }],
   ['DELETE /api/v1/apps/keys/:key_id', { scope: null }],
+  // Reading (APP2): its own and what its grants cover.
+  ['GET /api/v1/apps/documents', { scope: 'documents.read' }],
+  ['GET /api/v1/apps/documents/:id', { scope: 'documents.read' }],
+  ['GET /api/v1/apps/changes', { scope: 'documents.read' }],
+  ['GET /api/v1/apps/documents/:id/content', { scope: 'documents.download' }],
 ]);
 
 /** The scope a signed route needs, for the tests and the release-exit rules. */
@@ -76,6 +82,25 @@ const createBody = z
       .strict()
       .nullable()
       .optional(),
+    scopes: z.array(z.string().max(64)).max(10).optional(),
+    daily_read_bytes: z.number().int().optional(),
+  })
+  .strict();
+
+const grantsBody = z
+  .object({
+    grants: z
+      .array(
+        z
+          .object({
+            kind: z.string().max(64).optional(),
+            category: z.string().max(64).optional(),
+            lookback_months: z.number().int(),
+          })
+          .strict(),
+      )
+      .max(200),
+    confirm_sensitive: z.boolean().optional(),
   })
   .strict();
 
@@ -125,6 +150,10 @@ export function registerApps(
     const [method] = key.split(' ');
     const bodiless = method === 'GET' || method === 'DELETE';
     return {
+      // No HEAD beside a GET: a signed HEAD of a download would be counted,
+      // written down and open the file for nothing. Its signature is
+      // refused as on any route that is not an app's.
+      exposeHeadRoute: false,
       onRequest: async (req: FastifyRequest) => {
         req.connectedApp = await apps.authenticate(req, route);
         if (bodiless) {
@@ -358,6 +387,54 @@ export function registerApps(
     },
   );
 
+  // ---------------------------------------------------- reading (APP2)
+
+  const reads = apps.reads;
+  if (reads) {
+    /** Its own and what its grants cover, newest paper first: `kind`, `category`, `from`, `to`, `own`, `limit`, `cursor`. */
+    app.get<{ Querystring: Record<string, string | string[] | undefined> }>(
+      '/api/v1/apps/documents',
+      signed('GET /api/v1/apps/documents'),
+      async (req) => reads.list(caller(req), singleQuery(req.query), metaOf(req)),
+    );
+
+    app.get<{ Params: { id: string } }>(
+      '/api/v1/apps/documents/:id',
+      signed('GET /api/v1/apps/documents/:id'),
+      async (req) => reads.document(caller(req), req.params.id, metaOf(req)),
+    );
+
+    /** What changed since the cursor: `changed`, and `unavailable` with no reason. */
+    app.get<{ Querystring: Record<string, string | string[] | undefined> }>(
+      '/api/v1/apps/changes',
+      signed('GET /api/v1/apps/changes'),
+      async (req) => reads.changes(caller(req), singleQuery(req.query), metaOf(req)),
+    );
+
+    /** The current file's bytes, server to server: an attachment, never a page. */
+    app.get<{ Params: { id: string } }>(
+      '/api/v1/apps/documents/:id/content',
+      signed('GET /api/v1/apps/documents/:id/content'),
+      async (req, reply) => {
+        const range = req.headers.range;
+        const ifNoneMatch = req.headers['if-none-match'];
+        const out = await reads.content(
+          caller(req),
+          req.params.id,
+          {
+            range: typeof range === 'string' ? range : undefined,
+            ifNoneMatch: typeof ifNoneMatch === 'string' ? ifNoneMatch : undefined,
+          },
+          metaOf(req),
+        );
+        void reply.header('etag', out.etag);
+        if (out.status === 304) return reply.status(304).send();
+        for (const [k, v] of Object.entries(out.headers)) void reply.header(k, v);
+        return reply.status(out.status).send(out.stream);
+      },
+    );
+  }
+
   // ---------------------------------------------------------- the family's
 
   /** The apps the caller sees: an owner every one, its person their own. */
@@ -384,6 +461,21 @@ export function registerApps(
     const body = parse(changeBody, req.body ?? {}) as ConnectedAppChange;
     if (!AppService.onlyRenames(body)) await stepUp.requireOwnerPower(p, 'connect_app');
     return apps.update(p, id, body, metaOf(req));
+  });
+
+  /**
+   * What it may read beyond its own (APP2): every grant it is to have, set
+   * by an owner with a passkey or a code. Sensitive kinds ask once.
+   */
+  app.put<{ Params: { id: string } }>('/api/v1/connected-apps/:id/grants', auth, async (req) => {
+    const p = principal(req);
+    const { id } = parse(idParams, req.params);
+    if (p.role !== 'owner') {
+      throw new ApiError(403, 'forbidden', 'Only an owner can change what an app may read.');
+    }
+    await stepUp.requireOwnerPower(p, 'connect_app');
+    const body = parse(grantsBody, req.body ?? {}) as ConnectedAppGrantsInput;
+    return apps.setGrants(p, id, body, metaOf(req));
   });
 
   /** Its person turns it on, with a passkey or a code. */
@@ -471,6 +563,18 @@ export function registerApps(
     await apps.remove(p, id, metaOf(req));
     return reply.status(204).send();
   });
+}
+
+/** A query as one value a name: a name given twice is not a list. */
+function singleQuery(q: Record<string, string | string[] | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(q)) {
+    if (Array.isArray(v)) {
+      throw new ApiError(422, 'validation_failed', `Send ${k} once.`, { detail: k });
+    }
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
 }
 
 /** The parser's own limits (a second file, a third field) are the order's refusal. */

@@ -1505,6 +1505,8 @@ interface FakeUpload {
   mime: string;
   byte_size: number;
   uploaded_at: string;
+  /** Its bytes, for a connected app's download (0.9.0, APP2). */
+  bytes?: Uint8Array;
 }
 
 /** The fake's installation id, as a real vault reports its own. */
@@ -1530,6 +1532,19 @@ export function createFakeVault(): {
    * them (`revoked`).
    */
   pauseSignIns: () => void;
+  /**
+   * What a person's filing does to what a connected app sent (0.9.0, APP2),
+   * as the fake has no Inbox for it: the send, by its external id, filed as
+   * this document, its newest file the one it became: as a document of its
+   * own, or `asVersion` into one that was there. The app reads a document
+   * its send made as its own, while a file of its own is the newest.
+   */
+  fileAppIntake: (
+    appId: string,
+    externalId: string,
+    documentId: string,
+    asVersion?: boolean,
+  ) => void;
 } {
   const state: FakeVaultState = {
     setupRequired: true,
@@ -3550,7 +3565,50 @@ export function createFakeVault(): {
       mayAct: (id) =>
         state.members.some((m) => m.id === id && (m.role === 'owner' || m.role === 'adult')),
       kinds: () => state.types,
+      // What an app reads (APP2): the fake's documents and their newest file.
+      documents: () =>
+        state.documents.map((doc) => {
+          const v = versionsOf(doc.id).sort((x, y) => y.version_no - x.version_no)[0];
+          return {
+            id: doc.id,
+            title: doc.title,
+            type_key: doc.type_key ?? null,
+            visibility: doc.visibility ?? 'household',
+            sensitive: doc.sensitive ?? null,
+            is_essential: doc.is_essential === true,
+            deleted: !!doc.deleted_at,
+            issued: doc.issued ?? null,
+            expires: doc.expires ?? null,
+            issued_by: doc.issued_by ?? null,
+            extra: doc.extra ?? {},
+            filed_on: new Date().toISOString().slice(0, 10),
+            owner_member_id: doc.owner_member_id ?? null,
+            household_owned: doc.household_owned === true,
+            updated_at: v?.uploaded_at ?? new Date().toISOString(),
+            version: v
+              ? {
+                  id: v.version_id,
+                  bytes: v.bytes ?? new Uint8Array(),
+                  mime: v.mime,
+                  filename: v.filename,
+                }
+              : null,
+          };
+        }),
       ok: (answer, status = 200, headers = {}) => respond(status, answer, headers),
+      raw: (status, bytes, headers) => {
+        const lower = Object.fromEntries(
+          Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]),
+        );
+        return {
+          ok: status >= 200 && status < 300,
+          status,
+          headers: { get: (name: string) => lower[name.toLowerCase()] ?? null },
+          json: async () => JSON.parse(new TextDecoder().decode(bytes)) as unknown,
+          text: async () => new TextDecoder().decode(bytes),
+          arrayBuffer: async () => bytes.slice().buffer,
+        };
+      },
       fail,
       empty,
       next,
@@ -3732,6 +3790,7 @@ export function createFakeVault(): {
           document_activity: true,
           // Connected apps (0.9.0, APP1).
           connected_apps: true,
+          connected_app_reads: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -5441,6 +5500,7 @@ export function createFakeVault(): {
           'application/octet-stream',
         byte_size: file?.size ?? 0,
         uploaded_at: new Date().toISOString(),
+        ...(file?.bytes ? { bytes: file.bytes } : {}),
       };
       state.captures.set(key.toLowerCase(), made);
       return ok(answer(made), 201);
@@ -9928,7 +9988,24 @@ export function createFakeVault(): {
     return fail(404, 'not_found', `The fake vault has no ${init.method} ${path}.`);
   };
 
-  return { fetch, state, pauseSignIns };
+  const fileAppIntake = (
+    appId: string,
+    externalId: string,
+    documentId: string,
+    asVersion = false,
+  ) => {
+    const app = state.connectedApps?.find((a) => a.id === appId);
+    const sent = app?.intake.get(externalId);
+    if (!app || !sent) throw new Error('no such send of that app');
+    const newest = versionsOf(documentId).sort((x, y) => y.version_no - x.version_no)[0];
+    sent.state = 'filed';
+    sent.document_id = documentId;
+    sent.version_id = newest?.version_id ?? null;
+    sent.filed_at = new Date().toISOString();
+    sent.made_document = !asVersion;
+  };
+
+  return { fetch, state, pauseSignIns, fileAppIntake };
 }
 
 /**
