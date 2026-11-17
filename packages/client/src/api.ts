@@ -21,6 +21,7 @@ import type {
   ConnectedAppGrantsInput,
   ConnectedAppInput,
   ConnectedAppKeyAdded,
+  AppLinkSession,
   ConnectedAppList,
   ConnectedAppView,
   DeviceMe,
@@ -1905,6 +1906,16 @@ export function createApi(http: Http) {
     /** A view-only link's page (5.18): a JPEG drawn with whom the link is for. */
     linkItemPageUrl: (documentId: string, n: number) =>
       http.url(`/api/v1/shared/items/${enc(documentId)}/pages/${n}`),
+
+    // ---------------------------- a connected app's link (0.9.0, APP3)
+    /**
+     * What a connected app's link opened in this browser shows (the `/a`
+     * page): `410 link_ended` when there is no session, `403
+     * link_other_address` from another network.
+     */
+    appLinkSession: () => request<AppLinkSession>('/api/v1/app-links/session'),
+    /** One page of it, as the vault drew it: a JPEG, inside the session. */
+    appLinkPageUrl: (n: number) => http.url(`/api/v1/app-links/session/pages/${n}`),
 
     // ------------------------------------------- after a restore (0.5.14)
     /**

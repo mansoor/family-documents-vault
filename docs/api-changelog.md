@@ -8066,6 +8066,84 @@ app_revoked`, never an empty answer.
       `api.connectedApps.setGrants`, and `createAppClient`'s `list`,
       `document`, `changes` and `download`. The fake reads by the same
       rule and keeps a feed; a contract scenario runs on both.
+  - Connected apps: links and deletes (0.9.0-dev.57, APP3; the owner's
+    decisions of 16 Nov 2026). Migration 0111. **Additive.**
+    - **New `features`:** `connected_app_links` (`true`).
+    - **Scopes:** `documents.links` and `documents.delete` may now be
+      given. `POST` and `PATCH /api/v1/connected-apps` take `delete_mode`
+      (`unlink`, the default, or `trash`) and `links_per_hour` (1–600, 60
+      unless set). `trash` instead of `unlink`, or more links an hour,
+      widens, as APP1's widening does. `ConnectedAppView` gains
+      `delete_mode`, `links_per_hour`, `links_last_hour` and
+      `links_opened_week`.
+    - **New signed routes:**
+      - `POST /api/v1/apps/documents/{id}/links` (`documents.links`):
+        `{ mode: 'view' | 'download' }` (`422 validation_failed`
+        otherwise), for a document the app may read now (else `404
+not_found`). Any link needs `documents.read` too, and a download link
+        `documents.download` as well (`403 scope_not_granted`, `detail` the
+        scope). `201 { url, mode, open_by,
+session_minutes }`; `url` is `<address>/api/v1/app-links/<token>`, the
+        token 32 random bytes, base64url, kept only as its SHA-256. A file
+        the vault cannot draw (Word, Excel; its pages unsupported or failed)
+        is `409 view_unavailable` for a view; more than `links_per_hour` in
+        the last hour is `429 app_links_full`, retriable, with
+        `Retry-After`.
+      - `DELETE /api/v1/apps/documents/{id}` (`documents.delete`): the
+        app's own document alone (one a send of its made — never a family
+        paper its file was filed into — its current version still one it
+        sent, readable now); anything else is `404
+not_found`. `200 { document_id, result: 'unlinked' | 'trashed' }` as the
+        app's `delete_mode` says. Either way the app lets go: its intake
+        reads `unavailable`, and its feed says what the document now is to
+        it (`unavailable`, or `changed` with `own: false` while a grant
+        covers it). A second delete is `404`.
+    - **New browser routes** (no signature, no sign-in; the public routes'
+      headers, `PUBLIC_API_HEADERS`):
+      - `GET /api/v1/app-links/{token}`: within 2 minutes of minting, once:
+        sets `__Secure-fdv_app_link` (32 random bytes, kept hashed; `HttpOnly`,
+        `Secure`, `SameSite=Lax`, `Path=/api/v1/app-links/session`, 10
+        minutes) and answers `303` to `/a` (view) or
+        `/api/v1/app-links/session/file` (download). Used: `303
+/a#used`; too late, made up, or no longer readable: `303 /a#ended`.
+        20 a minute an address.
+      - `GET /api/v1/app-links/session`: `{ app, mode, title, pages: {
+state: 'ready' | 'drawing' | 'none', count }, ends_at }`.
+      - `GET /api/v1/app-links/session/pages/{n}`: a view's page, a JPEG
+        (`404 preview_pending`, retriable, while being drawn; `404
+no_preview` past the pages, at most 30).
+      - `GET /api/v1/app-links/session/file`: a download's file, the
+        version current at minting, `attachment`, `nosniff`, `Range`. Every
+        byte counts against the app's `read_bytes_per_day`, as its own
+        downloads do; past it, or a file larger than a day's, `303
+/a#full`.
+      - In a session: from another address than the one it was opened
+        from (IPv4 exactly, IPv6 by /64) `403 link_other_address`; over,
+        or the document no longer readable, the app paused, removed or its
+        scope taken away, `410 link_ended` (the file route answers both
+        with `303 /a#elsewhere` and `/a#ended`). 120 a minute an address.
+    - **The page `/a`:** the drawn pages, "Opened through MonTra" across
+      the top, never the family's app; the nginx location has the `/s`
+      page's headers. With `FDV_PUBLIC_APPS=on` the public-only site serves
+      `/api/v1/app-links/*` and `/a` too.
+    - **Logs:** `/api/v1/app-links/<token>` is cut in the API's log and
+      nginx's access log; the session's own name is kept.
+    - **Database:** `connected_app_link` (minted, opened and ended by the
+      vault alone; counted by the owners and its person),
+      `connected_app.delete_mode` and `links_per_hour`;
+      `connected_app_link_find(bytea)` and
+      `connected_app_link_session_find(bytea)`. The worker's hourly sweep
+      keeps a link 8 days; a restore ends every link and session.
+    - **Activity:** a view link opened is `document.viewed` with
+      `detail.app` ("Ahmed via MonTra opened …"), a download link's file
+      `document.downloaded` with `detail.app`, both folded per sitting; a
+      delete is `app.unlinked` ("… let go of …; it is still in the vault")
+      or `document.deleted` with `detail.app` ("… moved … to the Trash").
+    - **Shared and client:** `APP_DELETE_MODES`, `APP_LINK_*`,
+      `AppLinkMinted`, `AppLinkSession`, `AppDeleted`; `createAppClient`'s
+      `link` and `delete`; `api.appLinkSession` and `appLinkPageUrl`. The
+      fake mints, opens and deletes by the same rules; a contract scenario
+      runs on both.
 
 ## Deprecations in effect
 

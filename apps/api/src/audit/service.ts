@@ -388,6 +388,10 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // for whoever may see it, as a download's is.
   ['app.looked_up', ownersThePersonAndTheActor],
   ['app.read', BY_TYPE],
+  // 0.9.0 (APP3): a document it sent let go of — that document's line, for
+  // whoever may see it. (Its links opened, and its moves to the Trash, are
+  // document.viewed, document.downloaded and document.deleted lines.)
+  ['app.unlinked', BY_TYPE],
   // 5.33: what a viewer can see, limited, changed or let go — by an owner,
   // or by whoever invited them as they accepted: for the owners, the person
   // and whoever did it (the adult who invited them among them). Never what

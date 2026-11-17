@@ -6,6 +6,19 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.57] - 2026-11-17 — connected apps: links and deletes
+
+### Added
+
+- **A connected app can show its user a document.** In **Settings → Connected apps**, an owner may tick _Show its user documents it may read_ (it needs reading too). The app asks for a link when its user clicks, and sends their browser straight to it: the link works once, within 2 minutes, and gives that browser 10 minutes with the document, at the address it was opened from. The browser sees the pages the vault drew, with "Opened through MonTra" across the top, on a page of their own — never the vault's screens, never the file. A download link, which saves the file instead, needs _Download documents it is allowed_ too, and its bytes count against the app's own downloads for the day. The vault asks again at every page whether the app may still read the document. 60 links an hour unless an owner changes it (up to 600). Only hashes of a link and of a browser's session are kept, and the logs cut the link out.
+- **A connected app can delete what it sent**, if an owner ticks _Delete the documents it sent_, and as they choose for that app: it lets go of the document, which stays in the vault (the default), or it moves it to the Trash, as the person it acts as would, restorable for 30 days. Only a document a file it sent became (never a family paper its file was filed into), while the family has added no newer file — never one it reads through a grant, anything Only me, or anything else it may not read. Either way it lets go: taken out of the Trash, the document is the family's.
+- **In the activity log**, on the document's own **Activity** too: "Ahmed via MonTra opened …", "… let go of …; it is still in the vault" and "… moved … to the Trash". Settings shows how many links each app made this hour and how many were opened this week. (Migration 0111.)
+
+### Changed
+
+- With `FDV_PUBLIC_APPS=on`, the public-only site also serves the links an app makes (`/api/v1/app-links/*`) and the page they open (`/a`).
+- A restore ends every link an app made, and every page opened from one.
+
 ## [0.9.0-dev.56] - 2026-11-16 — connected apps read
 
 ### Added

@@ -76,6 +76,9 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
         'create_idempotency',
         // What a connected app sent (0109, APP1): lets go of the id alone.
         'connected_app_intake',
+        // A connected app's link (0111, APP3): nothing without its document,
+        // so it goes with it.
+        'connected_app_link',
       ]),
     );
     // 'c': on delete cascade, every one — but a document no longer needed,

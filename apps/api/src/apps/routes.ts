@@ -3,6 +3,9 @@ import { PassThrough } from 'node:stream';
 import type { MultipartFile } from '@fastify/multipart';
 import {
   APP_EMPTY_DIGEST,
+  APP_LINK_COOKIE,
+  APP_LINK_PAGE,
+  APP_LINK_SESSION_PATH,
   APP_METADATA_MAX_BYTES,
   APP_REFUSALS,
   parseAppMetadata,
@@ -15,6 +18,7 @@ import {
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
+import { clientAddressOf } from '../client-address.js';
 import type { Principal } from '../auth/service.js';
 import type { StepUpService } from '../auth/step-up.js';
 import { cutOff } from '../documents/routes.js';
@@ -46,6 +50,9 @@ export const APP_SIGNED_ROUTES: ReadonlyMap<string, AppRoute> = new Map<string, 
   ['GET /api/v1/apps/documents/:id', { scope: 'documents.read' }],
   ['GET /api/v1/apps/changes', { scope: 'documents.read' }],
   ['GET /api/v1/apps/documents/:id/content', { scope: 'documents.download' }],
+  // Links for its user's browser, and deletes (APP3).
+  ['POST /api/v1/apps/documents/:id/links', { scope: 'documents.links' }],
+  ['DELETE /api/v1/apps/documents/:id', { scope: 'documents.delete' }],
 ]);
 
 /** The scope a signed route needs, for the tests and the release-exit rules. */
@@ -84,6 +91,8 @@ const createBody = z
       .optional(),
     scopes: z.array(z.string().max(64)).max(10).optional(),
     daily_read_bytes: z.number().int().optional(),
+    delete_mode: z.enum(['unlink', 'trash']).optional(),
+    links_per_hour: z.number().int().optional(),
   })
   .strict();
 
@@ -107,6 +116,7 @@ const grantsBody = z
 const changeBody = createBody.omit({ member_id: true, public_key: true }).partial().strict();
 
 const keyBody = z.object({ public_key: z.string().max(4096) }).strict();
+const linkBody = z.object({ mode: z.string().max(16) }).strict();
 const idParams = z.object({ id: z.string().uuid() });
 
 /** A hash of every byte that goes by, told once the stream ends. */
@@ -346,37 +356,37 @@ export function registerApps(
     async (req) => apps.withdraw(caller(req), req.params.external_id, metaOf(req)),
   );
 
+  /** A signed route with a small JSON body: the body hashed as the parser reads it, then checked. */
+  const signedJson = (key: string) => ({
+    ...signed(key),
+    bodyLimit: 16 * 1024,
+    preParsing: async (
+      req: FastifyRequest,
+      _reply: FastifyReply,
+      payload: NodeJS.ReadableStream,
+    ) => {
+      const body = hashing();
+      const tee = new PassThrough();
+      tee.on('data', (chunk: Buffer) => body.tap(chunk));
+      tee.once('end', body.end);
+      req.appBodyDigest = body.done;
+      payload.pipe(tee);
+      return tee;
+    },
+    preHandler: async (req: FastifyRequest) => {
+      const got = await req.appBodyDigest;
+      if (!got || !got.equals(digestOf(req))) {
+        await apps.countRefusal(caller(req), 'content_digest_mismatch');
+        throw new ApiError(400, 'content_digest_mismatch', APP_REFUSALS.content_digest_mismatch);
+      }
+    },
+  });
+
   /** A key the app adds for rotation, signed with a current key. */
-  app.post(
-    '/api/v1/apps/keys',
-    {
-      ...signed('POST /api/v1/apps/keys'),
-      bodyLimit: 16 * 1024,
-      // The body hashed as the parser reads it.
-      preParsing: async (req: FastifyRequest, _reply: FastifyReply, payload) => {
-        const body = hashing();
-        const tee = new PassThrough();
-        tee.on('data', (chunk: Buffer) => body.tap(chunk));
-        tee.once('end', body.end);
-        req.appBodyDigest = body.done;
-        payload.pipe(tee);
-        return tee;
-      },
-      preHandler: async (req: FastifyRequest) => {
-        const got = await req.appBodyDigest;
-        if (!got || !got.equals(digestOf(req))) {
-          await apps.countRefusal(caller(req), 'content_digest_mismatch');
-          throw new ApiError(400, 'content_digest_mismatch', APP_REFUSALS.content_digest_mismatch);
-        }
-      },
-    },
-    async (req, reply) => {
-      const body = parse(keyBody, req.body ?? {});
-      return reply
-        .status(201)
-        .send(await apps.appAddsKey(caller(req), body.public_key, metaOf(req)));
-    },
-  );
+  app.post('/api/v1/apps/keys', signedJson('POST /api/v1/apps/keys'), async (req, reply) => {
+    const body = parse(keyBody, req.body ?? {});
+    return reply.status(201).send(await apps.appAddsKey(caller(req), body.public_key, metaOf(req)));
+  });
 
   app.delete<{ Params: { key_id: string } }>(
     '/api/v1/apps/keys/:key_id',
@@ -431,6 +441,123 @@ export function registerApps(
         if (out.status === 304) return reply.status(304).send();
         for (const [k, v] of Object.entries(out.headers)) void reply.header(k, v);
         return reply.status(out.status).send(out.stream);
+      },
+    );
+  }
+
+  // ------------------------------------------ links and deletes (APP3)
+
+  const links = apps.links;
+  if (links) {
+    /**
+     * A link for its user's browser, to send it to at once: `{ mode: "view" }`
+     * (the drawn pages) or `{ mode: "download" }` (the file). 201.
+     */
+    app.post<{ Params: { id: string } }>(
+      '/api/v1/apps/documents/:id/links',
+      signedJson('POST /api/v1/apps/documents/:id/links'),
+      async (req, reply) => {
+        const body = parse(linkBody, req.body ?? {});
+        return reply
+          .status(201)
+          .send(await links.mint(caller(req), req.params.id, body.mode, metaOf(req)));
+      },
+    );
+
+    /** A document it sent, let go of or moved to the Trash, as the owner chose. */
+    app.delete<{ Params: { id: string } }>(
+      '/api/v1/apps/documents/:id',
+      signed('DELETE /api/v1/apps/documents/:id'),
+      async (req) => links.remove(caller(req), req.params.id, metaOf(req)),
+    );
+
+    // What its user's browser asks: no signature, no sign-in. The token
+    // opens once; after that, the session's cookie, for this path alone.
+    // Rate-limited as a share link's are: opening as the front door,
+    // inside a session as a page that loads its pages.
+    const tight = { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } };
+    const inSession = { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } };
+    const cookieOf = (req: FastifyRequest) => req.cookies[APP_LINK_COOKIE];
+
+    /** The session itself: what the `/a` page shows. */
+    app.get('/api/v1/app-links/session', inSession, async (req) =>
+      links.session(cookieOf(req), clientAddressOf(req)),
+    );
+
+    /** One page a view link shows, as the vault drew it. */
+    app.get<{ Params: { n: string } }>(
+      '/api/v1/app-links/session/pages/:n',
+      inSession,
+      async (req, reply) => {
+        const { n } = parse(
+          z.object({ n: z.coerce.number().int().min(1).max(10_000) }),
+          req.params,
+        );
+        const jpeg = await links.page(cookieOf(req), clientAddressOf(req), n);
+        void reply.header('content-type', 'image/jpeg');
+        void reply.header('cache-control', 'private, no-store');
+        return reply.send(jpeg);
+      },
+    );
+
+    /**
+     * The file a download link gives: an attachment. A browser follows this
+     * itself, so a session over is the page's words, not an error's.
+     */
+    app.get('/api/v1/app-links/session/file', inSession, async (req, reply) => {
+      const range = req.headers.range;
+      try {
+        const out = await links.file(
+          cookieOf(req),
+          clientAddressOf(req),
+          typeof range === 'string' ? range : undefined,
+          metaOf(req),
+        );
+        for (const [k, v] of Object.entries(out.headers)) void reply.header(k, v);
+        return reply.status(out.status).send(out.stream);
+      } catch (e) {
+        // The browser is sent to the page, which says it in words: over,
+        // another network, or more than the app may download today.
+        const to: Record<string, string> = {
+          link_ended: 'ended',
+          link_other_address: 'elsewhere',
+          app_read_day_full: 'full',
+          larger_than_daily_read: 'full',
+        };
+        if (e instanceof ApiError && to[e.code]) {
+          return reply.redirect(`${APP_LINK_PAGE}#${to[e.code]}`, 303);
+        }
+        throw e;
+      }
+    });
+
+    /**
+     * The link itself, opened by the browser: within two minutes, once. A
+     * session's cookie, and on (303) to the page or the file, so the token
+     * leaves the address bar. Used, or too late: the page says so.
+     */
+    app.get<{ Params: { token: string } }>(
+      '/api/v1/app-links/:token',
+      tight,
+      async (req, reply) => {
+        const opened = await links.open(req.params.token, clientAddressOf(req), metaOf(req));
+        if (opened.kind !== 'session') {
+          return reply.redirect(`${APP_LINK_PAGE}#${opened.kind}`, 303);
+        }
+        // Secure always, as a share's is; Lax, not Strict: the open is a
+        // navigation from the app's site, and the cookie must come with the
+        // request it is sent on to. Its path keeps it off everything else.
+        void reply.setCookie(APP_LINK_COOKIE, opened.cookie, {
+          path: APP_LINK_SESSION_PATH,
+          httpOnly: true,
+          secure: true,
+          sameSite: 'lax',
+          maxAge: opened.maxAge,
+        });
+        return reply.redirect(
+          opened.mode === 'view' ? APP_LINK_PAGE : `${APP_LINK_SESSION_PATH}/file`,
+          303,
+        );
       },
     );
   }

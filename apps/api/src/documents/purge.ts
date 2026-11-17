@@ -585,10 +585,15 @@ export async function versionObjects(
 /**
  * The rows a removal of a document waits on, held before the document is,
  * in the order the writers of each hold them (see the top of this file):
- * its links' sessions, its links, the pages links drew of it. Taking back a
+ * a connected app's links, its links' sessions, its links, the pages links
+ * drew of it. Taking back a
  * document Accept all Ready filed holds them so too (I3, batches.ts).
  */
 export async function holdDocumentRows(trx: Db, id: string): Promise<void> {
+  // A connected app's links to it (0.9.0, APP3): opening one holds the link,
+  // then the document; they go with it, so they are held first here too —
+  // by the vault, as only it writes them (connected_app_links_hold, 0111).
+  await sql`select connected_app_links_hold(${id}::uuid)`.execute(trx);
   // The sessions of its own links: a request in one holds its session
   // first, then its link, then the log.
   await sql`select s.id from share_session s

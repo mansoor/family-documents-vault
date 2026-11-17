@@ -423,6 +423,36 @@ widening does. Its reading is in the activity log: "Ahmed via MonTra downloaded 
 read the details of …" (on the document's own Activity too), and "… looked up documents"
 once an hour.
 
+**Opening a document from a connected app.** If an owner ticks _Show its user documents
+it may read_ (with reading ticked too), the app can show its user a document it may read: it asks the vault
+for a link at the moment the user clicks, and sends their browser straight to it. The link
+works **once**, and only within **2 minutes**; opening it gives that browser **10
+minutes** with the document, at the address it was opened from (a page reloaded from
+another network is refused, and the user opens it again from the app). The browser is
+shown the pages the vault drew of the document, with "Opened through MonTra" across the
+top, on a page of its own (`/a`) — never the vault's own screens, and never the file. A
+Word or Excel file has no pages to show. A download link, which saves the file instead,
+needs _Download documents it is allowed_ ticked too, and every byte it gives counts against
+the app's own downloads for the day: what the app may not download itself, its user may not
+either (past it, the page says the download isn't available today). The vault asks again at every page
+whether the app may still read the document: made Only me, moved to the Trash, the app
+paused or removed, and the page ends. Each app may make 60 links an hour unless an owner
+changes it (up to 600). The vault keeps only a hash of each link and of each browser's
+session (its cookie is `__Secure-fdv_app_link`, sent to that page's own path alone), and
+its logs cut the link out. Each opening is in the activity log, on the
+document's own Activity too: "Ahmed via MonTra opened …".
+
+**Deleting.** If an owner ticks _Delete the documents it sent_, the app may delete a
+document that a file it sent became (not a family paper its file was filed into as a new
+version), while no newer file from the family has been added — never one it reads through
+a grant, anything Only me, or anything else it may not read. An owner
+chooses, for each app, what that does: **it lets go of it** (the default: the document
+stays in the vault, and is no longer the app's), or **it moves it to the Trash**, as the
+person it acts as would, where it can be restored for 30 days. Either way the app lets go
+of it: taken out of the Trash, the document is the family's. The activity log says "Ahmed
+via MonTra let go of …; it is still in the vault" or "Ahmed via MonTra moved … to the
+Trash".
+
 **Connecting one.** The app makes its own key pair and shows its public key, starting
 `ed25519:`, and a fingerprint. An owner opens _Settings → Connected apps → Connect an app_
 and confirms it is them with a passkey or an authenticator code — never the password
@@ -466,8 +496,9 @@ also retires by itself seven days after a newer, confirmed key is first used.
 only reach the vault at an address on the internet: the public-only site (see [Links for
 people outside the family](#links-for-people-outside-the-family)). It serves only the
 pages a link opens until you set `FDV_PUBLIC_APPS=on` in `.env`, for the API and for the
-`caddy-public` service; then it also serves the app routes (`/api/v1/apps/*`) and the
-vault's capability document (without the family's name), and nothing else. Every app
+`caddy-public` service; then it also serves the app routes (`/api/v1/apps/*`), the
+vault's capability document (without the family's name), and the links an app makes for
+its user's browser (`/api/v1/app-links/*` and the page `/a`), and nothing else. Every app
 route still refuses a request that is not signed by a connected app's key, and the site
 answers 404 to an address that hides a slash or a dot in its encoding. Settings warns while an app is connected and
 `FDV_PUBLIC_APPS` is off. A vault reached only over Tailscale or the home network cannot
@@ -483,7 +514,8 @@ for it (made a teen or a viewer), and when they are signed out everywhere or an 
 stops their password — not when they change their password. Everything an app does is in
 the activity log, "Ahmed via MonTra sent a file to their Inbox" (files sent within an
 hour of each other are one line: "sent 12 files"). A restore pauses every app until an
-owner turns each back on, and an app reads its feed again from the start after one.
+owner turns each back on, and an app reads its feed again from the start after one; every
+link it made, and every page opened from one, ends.
 
 **What is kept of what an app sent.** For a file the person removed, or the app took
 back, the vault keeps its hash and size (never the file, its name or what the app said

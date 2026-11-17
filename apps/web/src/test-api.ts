@@ -1,4 +1,5 @@
 import {
+  type AppLinkSession,
   type ConnectedAppView,
   type SharedEmergency,
   type ShareOpening,
@@ -1031,6 +1032,14 @@ export interface FakeState {
   /** The operator published the app routes on the public-only site (FDV_PUBLIC_APPS). */
   appsPublic?: boolean;
   /**
+   * A connected app's link opened in this browser (0.9.0, APP3): what the
+   * `/a` page is shown, or, unsaid, `410 link_ended`; `'elsewhere'` is
+   * `403 link_other_address`.
+   */
+  appLink?: AppLinkSession | 'elsewhere';
+  /** Answer the next this-many asks of the link's session with a 503. */
+  appLinkFailures?: number;
+  /**
    * Tags you can use (0.9.0, T1): said when a test gives it — Settings →
    * Tags, rename, merge and delete (`features.tag_management`).
    */
@@ -1731,6 +1740,28 @@ export function installFakeApi(state: FakeState) {
       return Promise.resolve(new Response(null, { status: 204 }));
     }
     // Connected apps (0.9.0, APP1), as the vault answers the family.
+    // A connected app's link's session (APP3): the /a page's.
+    if (path === '/api/v1/app-links/session' && method === 'GET') {
+      if (state.appLinkFailures) {
+        state.appLinkFailures -= 1;
+        return refuse(503, 'busy', 'The vault was busy just then. Try again.');
+      }
+      if (state.appLink === 'elsewhere') {
+        return refuse(
+          403,
+          'link_other_address',
+          'This page was opened from another network. Open the document again from the app.',
+        );
+      }
+      if (!state.appLink) {
+        return refuse(
+          410,
+          'link_ended',
+          'This link has been used or has ended. Open the document again from the app.',
+        );
+      }
+      return json(state.appLink);
+    }
     if (path.startsWith('/api/v1/connected-apps') && state.connectedApps) {
       const role = storedRole() as Role;
       const owner = role === 'owner';
@@ -1792,6 +1823,9 @@ export function installFakeApi(state: FakeState) {
           daily_bytes?: number;
           ip_allow?: string[];
           backfill?: ConnectedAppView['backfill'];
+          scopes?: ConnectedAppView['scopes'];
+          delete_mode?: ConnectedAppView['delete_mode'];
+          links_per_hour?: number;
         };
         if (state.stepUpNeeded) return askFactor();
         if (!keyOk(b.public_key)) {
@@ -1843,6 +1877,10 @@ export function installFakeApi(state: FakeState) {
           counts: null,
           connection_string: connection(id, key.key_id),
           address: { url: 'https://vault.example.test', public: true },
+          delete_mode: b.delete_mode ?? 'unlink',
+          links_per_hour: b.links_per_hour ?? 60,
+          links_last_hour: 0,
+          links_opened_week: 0,
         };
         state.connectedApps = [app, ...state.connectedApps];
         return json(seen(app), 201);

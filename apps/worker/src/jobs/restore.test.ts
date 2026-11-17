@@ -2521,6 +2521,56 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     // Several whole checks of a restored vault, on a machine others share.
   }, 240_000);
 
+  it('a restore ends every link a connected app made, and every session opened from one (0111, APP3)', async () => {
+    const pool = new pg.Pool({ connectionString: vault.adminUrl, max: 1 });
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      // A document of the app's household with a file, inside this
+      // transaction: a link not yet opened, and one opened, its session live.
+      const made = await client.query<{ document_id: string; id: string }>(
+        `with a as (select household_id from connected_app limit 1),
+              d as (insert into document (household_id, title)
+                    select household_id, 'Linked' from a returning id, household_id),
+              s as (select id from vault where household_id = (select household_id from a) limit 1),
+              k as (select id from scope_key where household_id = (select household_id from a) limit 1)
+         insert into document_version
+           (household_id, document_id, version_no, filename, mime, byte_size, sha256,
+            cipher_bytes, cipher_sha256, storage_key, vault_id, file_key_wrapped, wrapped_by_scope)
+         select d.household_id, d.id, 1, 'a.pdf', 'application/pdf', 1, '\\x00', 1, '\\x00',
+                'linked.enc', (select id from s), '\\x00', (select id from k)
+           from d
+         returning document_id, id`,
+      );
+      expect(made.rows).toHaveLength(1);
+      await client.query(
+        `insert into connected_app_link (household_id, app_id, document_id, version_id, mode,
+                                         token_hash, open_by, opened_at, session_hash,
+                                         session_until, first_address)
+         select a.household_id, a.id, $1, $2, 'view', gen_random_bytes(32),
+                now() + interval '2 minutes', o.opened, o.session, o.until, '203.0.113.7'
+           from (select id, household_id from connected_app limit 1) a
+           cross join (values (null::timestamptz, null::bytea, null::timestamptz),
+                              (now(), gen_random_bytes(32), now() + interval '10 minutes'))
+                        as o(opened, session, until)`,
+        [made.rows[0]?.document_id, made.rows[0]?.id],
+      );
+      const before = await client.query<{ n: number }>(
+        'select count(*)::int as n from connected_app_link',
+      );
+      expect(before.rows[0]?.n).toBe(2);
+      await client.query(RESTORE_UNDO);
+      const after = await client.query<{ n: number }>(
+        'select count(*)::int as n from connected_app_link',
+      );
+      expect(after.rows[0]?.n).toBe(0);
+    } finally {
+      await client.query('rollback');
+      client.release();
+      await pool.end();
+    }
+  });
+
   it('notices a connected app let into a table, its read rule widened, or its grants unguarded (0110, APP2)', async () => {
     // Every table but the document and its files keeps an app out.
     for (const table of [

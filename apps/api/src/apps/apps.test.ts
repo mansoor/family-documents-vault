@@ -80,6 +80,8 @@ interface CallOptions {
 
 /** The connected apps' clock, ahead of the real one by this much: a test moves it. */
 let clockOffset = 0;
+/** Or held still at this instant, while a test counts within one minute. */
+let clockHeld: number | null = null;
 
 let peers = 0;
 const peer = () => `10.72.${(peers >> 8) & 0xff}.${peers++ & 0xff}`;
@@ -208,7 +210,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     h = await createHarness({
       rateLimitPerMinute: 20_000,
       publicApps: 'on',
-      appsNow: () => Date.now() + clockOffset,
+      appsNow: () => clockHeld ?? Date.now() + clockOffset,
     });
     admin = createPool(h.adminUrl, 1);
     owner = await h.setup();
@@ -641,13 +643,21 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
         );
       }
     }
-    // 120 signed requests a minute, then 429 with Retry-After.
-    const statuses: number[] = [];
-    for (let i = 0; i < 121; i++) statuses.push((await me(a)).statusCode);
-    expect(statuses.slice(0, 118).every((s) => s === 200)).toBe(true);
-    const limited = await me(a);
-    expect([limited.statusCode, codeOf(limited)]).toEqual([429, 'rate_limited']);
-    expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
+    // 120 signed requests a minute, then 429 with Retry-After. The clock is
+    // held a second into a minute, so a busy machine's slow loop never
+    // crosses into the next one (each request is still signed at its own
+    // real moment, well inside the window).
+    clockHeld = Math.floor(Date.now() / 60_000) * 60_000 + 1_000;
+    try {
+      const statuses: number[] = [];
+      for (let i = 0; i < 121; i++) statuses.push((await me(a)).statusCode);
+      expect(statuses.slice(0, 118).every((s) => s === 200)).toBe(true);
+      const limited = await me(a);
+      expect([limited.statusCode, codeOf(limited)]).toEqual([429, 'rate_limited']);
+      expect(Number(limited.headers['retry-after'])).toBe(59);
+    } finally {
+      clockHeld = null;
+    }
   }, 120_000);
 
   // ------------------------------------------------------------ the review round

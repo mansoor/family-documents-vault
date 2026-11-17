@@ -10,6 +10,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { createApi } from '../api.js';
 import { createHttp } from '../http.js';
+import { multipartBody } from '../multipart.js';
 import { contractScenarios, type ContractContext } from './contract.js';
 import { createFakeVault } from './fake.js';
 
@@ -61,6 +62,25 @@ describe('the fake vault keeps the contract', () => {
       vault.state.members.push({ id, display_name: who.name, role: who.role, is_me: false });
       vault.state.signIns.push({ member_id: id, email: who.email, password: who.password });
       return id;
+    },
+    // What a person's filing does to what an app sent (APP3): the fake has
+    // no Inbox for it, so a document of theirs with that file is made, and
+    // the send filed as it.
+    fileAppSend: async (token, app, externalId, file) => {
+      const form = multipartBody([
+        {
+          name: 'metadata',
+          value: JSON.stringify({ type_key: 'utility_bill', title: `Filed from ${app.name}` }),
+        },
+        { name: 'file', filename: 'sent.pdf', contentType: 'application/pdf', bytes: file.bytes },
+      ]);
+      const made = await api.capture(
+        token,
+        { kind: 'bytes', bytes: form.bytes, contentType: form.contentType },
+        'd7e8f9a0-1b2c-4d3e-8f4a-5b6c7d8e9f01',
+      );
+      vault.fileAppIntake(app.id, externalId, made.document_id);
+      return made.document_id;
     },
     // The fake's owners have two-step sign-in, and have just used it.
     ownerTwoStep: async () => {

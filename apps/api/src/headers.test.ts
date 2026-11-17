@@ -77,6 +77,8 @@ describe('the pages a link opens', () => {
       'location ^~ /shared/ {',
       // A request to send documents' page (5.21; the page itself is 5.22's).
       'location ~ ^/drop/?$ {',
+      // A connected app's view link's page (0.9.0, APP3).
+      'location ~ ^/a/?$ {',
     ]) {
       const block = nginxBlock(conf, opening);
       expect(added(block, 'Referrer-Policy'), opening).toBe('no-referrer');
@@ -253,9 +255,21 @@ describe('the public-only site', () => {
     // The capability document asked this way is told so, whatever the caller wrote.
     expect(on).toMatch(/reverse_proxy api:3000 \{[^}]*header_up X-FDV-Site public/);
     const paths = (/^\s*@apps_api path (.+)$/m.exec(on)?.[1] ?? '').trim().split(/\s+/);
-    expect(paths.sort()).toEqual(['/api/v1/apps/*', '/api/v1/capabilities']);
+    expect(paths.sort()).toEqual(['/api/v1/app-links/*', '/api/v1/apps/*', '/api/v1/capabilities']);
     expect(on).toMatch(/handle @apps_api \{\s*reverse_proxy api:3000/);
-    expect(on.match(/reverse_proxy /g)).toHaveLength(1);
+    // And (APP3) the page a view link opens, from the web container: that
+    // page alone.
+    const page = (/^\s*@apps_page path (.+)$/m.exec(on)?.[1] ?? '').trim().split(/\s+/);
+    expect(page.sort()).toEqual(['/a', '/a/']);
+    expect(on).toMatch(/handle @apps_page \{\s*reverse_proxy web:80/);
+    expect(on.match(/reverse_proxy /g)).toHaveLength(2);
+    expect(off).not.toMatch(/@apps_page/);
+    for (const shown of ['/api/v1/app-links/abc', '/api/v1/app-links/session/pages/1']) {
+      expect(caddyMatches(paths, shown), shown).toBe(true);
+    }
+    for (const hidden of ['/api/v1/app-linksx', '/ab', '/a/b']) {
+      expect(caddyMatches([...paths, ...page], hidden), hidden).toBe(false);
+    }
     for (const hidden of ['/api/v1/connected-apps', '/api/v1/documents', '/api/v1/appsx', '/a']) {
       expect(caddyMatches(paths, hidden), hidden).toBe(false);
     }

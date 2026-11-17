@@ -3595,6 +3595,11 @@ export function createFakeVault(): {
               : null,
           };
         }),
+      // An app's delete, as the owner chose (APP3): to the Trash, as a person's would.
+      trash: (id) => {
+        const doc = state.documents.find((x) => x.id === id);
+        if (doc) doc.deleted_at = new Date().toISOString();
+      },
       ok: (answer, status = 200, headers = {}) => respond(status, answer, headers),
       raw: (status, bytes, headers) => {
         const lower = Object.fromEntries(
@@ -3616,6 +3621,9 @@ export function createFakeVault(): {
     });
     const appAnswer = await apps.app(url, init, partsOf);
     if (appAnswer) return appAnswer;
+    // A connected app's link, opened by its user's browser (APP3).
+    const linkAnswer = await apps.links(url, init);
+    if (linkAnswer) return linkAnswer;
     const familyAppAnswer = await apps.family(path, init.method ?? 'GET', body);
     if (familyAppAnswer) return familyAppAnswer;
     const deviceAnswer = deviceRoutes(path, init, body, session);
@@ -3791,6 +3799,7 @@ export function createFakeVault(): {
           // Connected apps (0.9.0, APP1).
           connected_apps: true,
           connected_app_reads: true,
+          connected_app_links: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,

@@ -1,5 +1,6 @@
 # Connected apps on the public-only site (0.9.0, APP1): FDV_PUBLIC_APPS=off,
-# the default. Nothing is added: the site serves only the pages a link opens.
+# the default. Nothing is added: the site serves only the pages a link opens
+# — not /api/v1/apps/*, /api/v1/app-links/* nor /a (APP3), which answer 404.
 # See apps-on.caddy.
 #
 # A path whose raw form hides a slash, a backslash or a dot (%2f, %5c,

@@ -243,6 +243,8 @@ type Kind =
   /** A connected app (0.9.0, APP1): the owners', and its person's; and one of its keys. */
   | 'connectedApp'
   | 'appKey'
+  /** A connected app's view link (0.9.0, APP3): a secret, good once. */
+  | 'appLinkToken'
   /** Not an object of anybody's: an app's own id for what it sent, on its signed routes. */
   | 'externalId'
   /** Not a parameter: another person's code to confirm their address for email in (S4), sent in a body. */
@@ -311,6 +313,8 @@ const PARAM_KINDS: Record<string, Kind> = {
   // And on its own signed routes: what it sent, and its own keys.
   'intake/:external_id': 'externalId',
   'keys/:key_id': 'appKey',
+  // A view link an app made for its person (0.9.0, APP3).
+  'app-links/:token': 'appLinkToken',
   'reading-checks/:id': 'readingCheck',
   'settings-checks/:id': 'settingsCheck',
   // A folder of the caller's own cabinet, and a paper pinned in it (0.9.0, C2).
@@ -1417,6 +1421,17 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/apps/documents/:id': { who: 'app' },
   'GET /api/v1/apps/documents/:id/content': { who: 'app' },
   'GET /api/v1/apps/changes': { who: 'app' },
+  // Links and deletes (0.9.0, APP3): its signature alone; what it may link
+  // or delete is held to its read rule and its own (links.test.ts).
+  'POST /api/v1/apps/documents/:id/links': { who: 'app', body: () => ({ mode: 'view' }) },
+  'DELETE /api/v1/apps/documents/:id': { who: 'app' },
+  // What its user's browser opens: a token nobody else holds, then a
+  // session's cookie no attacker has — "ended" to everybody else, a
+  // sign-in, a share's cookie and a sender's alike (links.test.ts).
+  'GET /api/v1/app-links/:token': { who: 'public' },
+  'GET /api/v1/app-links/session': { who: 'public' },
+  'GET /api/v1/app-links/session/pages/:n': { who: 'public' },
+  'GET /api/v1/app-links/session/file': { who: 'public' },
   // What an app may read: an owner's, with a passkey or a code.
   'PUT /api/v1/connected-apps/:id/grants': {
     who: 'ownerPower',
@@ -4667,6 +4682,7 @@ const PARAM_KIND_DEFAULTS: Record<Kind, true> = {
   pairedDevice: true,
   connectedApp: true,
   appKey: true,
+  appLinkToken: true,
   externalId: true,
   mailInCode: true,
   readingCheck: true,

@@ -80,6 +80,20 @@ const ALLOWED = [
   'apps/reads.ts AppReads.document',
   'apps/reads.ts AppReads.changes',
   'apps/reads.ts AppReads.content',
+  // A connected app's links and deletes (0.9.0, APP3). Minting: the app's
+  // read rule asked as above (readAsApp), the link's row written and its
+  // hour counted on the app (connected_app_link is the vault's to write).
+  // Opening, and each request in the session: nobody is known but by the
+  // token or the cookie (found by its hash, connected_app_link_find), so the
+  // link is read and its session written by the vault — and the app's read
+  // rule asked again, narrowed to the app, every time; the pages and the
+  // file's key opened as the app's download opens them. A delete: its own
+  // document, by the same rule, let go of on its intake, or moved to the
+  // Trash as its person would, with the activity log's line.
+  'apps/links.ts AppLinks.mint',
+  'apps/links.ts AppLinks.open',
+  'apps/links.ts AppLinks.inSession',
+  'apps/links.ts AppLinks.remove',
   // Text messages (0.9.0, SMS1): a text is sent by the vault, whoever asked
   // for it — the household's SMS Gate and its sealed password read, the
   // month's texts counted and one written (sms_message is the vault's to

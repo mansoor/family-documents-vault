@@ -10,6 +10,8 @@ import {
   APP_DEFAULT_DAILY_BYTES,
   APP_DEFAULT_DAILY_FILES,
   APP_DEFAULT_LINKS_PER_HOUR,
+  APP_DELETE_MODES,
+  APP_LINKS_PER_HOUR_MAX,
   APP_DEFAULT_READ_BYTES,
   APP_GRANTABLE_CATEGORIES,
   APP_GRANTS_MAX,
@@ -68,6 +70,7 @@ import { clientAddressOf } from '../client-address.js';
 import { ApiError } from '../errors.js';
 import type { DocumentService } from '../documents/service.js';
 import type { BatchService } from '../uploads/batches.js';
+import { AppLinks } from './links.js';
 import { AppReads } from './reads.js';
 import {
   fingerprintOf,
@@ -267,6 +270,11 @@ function widens(
   if (Array.isArray(set.scopes)) {
     if ((set.scopes as string[]).some((k) => !app.scopes.includes(k))) return true;
   }
+  // Its deletes moving papers to the Trash, or more links an hour (APP3).
+  if (set.delete_mode === 'trash' && app.delete_mode !== 'trash') return true;
+  if (typeof set.links_per_hour === 'number' && set.links_per_hour > app.links_per_hour) {
+    return true;
+  }
   if ('default_visibility' in set) {
     if (
       visibilityRank(set.default_visibility as string | null) >
@@ -324,6 +332,8 @@ interface AppRow {
   daily_read_bytes: string;
   read_day: string | null;
   read_bytes_today: string;
+  delete_mode: 'unlink' | 'trash';
+  links_per_hour: number;
 }
 
 const APP_COLUMNS = [
@@ -356,6 +366,8 @@ const APP_COLUMNS = [
   'a.daily_read_bytes',
   sql<string | null>`a.read_day::text`.as('read_day'),
   'a.read_bytes_today',
+  'a.delete_mode',
+  'a.links_per_hour',
 ] as const;
 
 interface KeyRow {
@@ -393,6 +405,8 @@ interface IntakeRow {
   received_at: Date | null;
   decided_at: Date | null;
   hints_sealed: Buffer | null;
+  /** Let go of by the app (APP3): its document is no longer its own. */
+  unlinked_at?: Date | null;
 }
 
 /**
@@ -401,7 +415,10 @@ interface IntakeRow {
  * never why — nor which document.
  */
 function stateOf(r: IntakeRow, readable: ReadonlySet<string> | null = null): AppIntakeState {
-  if (r.state === 'filed' && readable && !(r.document_id && readable.has(r.document_id))) {
+  // Let go of by the app (APP3), or no longer readable by it: unavailable.
+  const gone =
+    r.unlinked_at != null || (readable && !(r.document_id && readable.has(r.document_id)));
+  if (r.state === 'filed' && gone) {
     return {
       external_id: r.external_id,
       state: 'unavailable',
@@ -494,6 +511,8 @@ export class AppService {
   private readonly rate = new Map<string, { minute: number; n: number }>();
   /** What an app reads (APP2). */
   readonly reads: AppReads | null;
+  /** Its links and deletes (APP3). */
+  readonly links: AppLinks | null;
 
   constructor(
     private readonly db: Db,
@@ -503,6 +522,14 @@ export class AppService {
     this.reads = opts.documents
       ? new AppReads(db, { documents: opts.documents, now: () => this.now() })
       : null;
+    this.links =
+      opts.documents && this.reads
+        ? new AppLinks(db, {
+            reads: this.reads,
+            documents: opts.documents,
+            address: () => this.address().url,
+          })
+        : null;
   }
 
   /** Which filed documents of these the app may still read: null while nothing is read. */
@@ -870,6 +897,7 @@ export class AppService {
             },
           }
         : {}),
+      ...(this.links ? { delete_mode: app.delete_mode } : {}),
       limits: {
         max_upload_bytes: this.opts.maxUploadBytes,
         accepted_types: Object.keys(UPLOAD_KINDS),
@@ -879,7 +907,7 @@ export class AppService {
         bytes_today: sent.bytes,
         read_bytes_per_day: Number(app.daily_read_bytes ?? APP_DEFAULT_READ_BYTES),
         read_bytes_today: readToday ? Number(app.read_bytes_today) : 0,
-        links_per_hour: APP_DEFAULT_LINKS_PER_HOUR,
+        links_per_hour: app.links_per_hour ?? APP_DEFAULT_LINKS_PER_HOUR,
         requests_per_minute: APP_REQUESTS_PER_MINUTE,
         day_resets_at: nextLocalMidnight(c.timezone, new Date(now)).toISOString(),
       },
@@ -1897,6 +1925,25 @@ export class AppService {
     return out;
   }
 
+  /** What a delete does, and the links it may mint an hour (APP3), checked. */
+  private checkedLinks(input: { delete_mode?: unknown; links_per_hour?: unknown }) {
+    const out: Record<string, unknown> = {};
+    if (input.delete_mode !== undefined) {
+      if (!(APP_DELETE_MODES as readonly unknown[]).includes(input.delete_mode)) {
+        throw invalid('What a delete does: unlink or trash.', 'delete_mode');
+      }
+      out.delete_mode = input.delete_mode;
+    }
+    if (input.links_per_hour !== undefined) {
+      const n = input.links_per_hour;
+      if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || n > APP_LINKS_PER_HOUR_MAX) {
+        throw invalid(`Links an hour: 1 to ${APP_LINKS_PER_HOUR_MAX}.`, 'links_per_hour');
+      }
+      out.links_per_hour = n;
+    }
+    return out;
+  }
+
   /** An app's name, as the vault keeps it. */
   private static nameOf(v: unknown): string {
     const n = typeof v === 'string' ? hintText(v) : '';
@@ -1977,6 +2024,19 @@ export class AppService {
       .where('state', 'in', ['waiting', 'filed'])
       .groupBy(['app_id', 'state'])
       .execute();
+    // Its links (APP3): minted in the last hour, and opened in the last week.
+    const linked = this.links
+      ? await trx
+          .selectFrom('connected_app_link')
+          .select([
+            'app_id',
+            sql<string>`count(*) filter (where created_at > now() - interval '1 hour')`.as('hour'),
+            sql<string>`count(*) filter (where opened_at > now() - interval '7 days')`.as('week'),
+          ])
+          .where('app_id', 'in', ids)
+          .groupBy('app_id')
+          .execute()
+      : [];
     const hh = await trx.selectFrom('household').select('timezone').executeTakeFirstOrThrow();
     const now = this.now();
     const day = localToday(householdZone(hh.timezone), new Date(now));
@@ -2040,6 +2100,14 @@ export class AppService {
           }),
         daily_read_bytes: Number(a.daily_read_bytes),
         read_today: a.read_day === day ? Number(a.read_bytes_today) : 0,
+        ...(this.links
+          ? {
+              delete_mode: a.delete_mode,
+              links_per_hour: a.links_per_hour,
+              links_last_hour: Number(linked.find((l) => l.app_id === a.id)?.hour ?? 0),
+              links_opened_week: Number(linked.find((l) => l.app_id === a.id)?.week ?? 0),
+            }
+          : {}),
         connection_string: newest
           ? connectionString({
               url: address.url,
@@ -2082,7 +2150,7 @@ export class AppService {
     if (!Array.isArray(input.allowed_kinds)) {
       throw invalid('Choose the kinds it may send.', 'allowed_kinds');
     }
-    const caps = this.checkedCaps(input);
+    const caps = { ...this.checkedCaps(input), ...this.checkedLinks(input) };
     const made = await withPrincipal(this.db, p, async (trx) => {
       const person = await this.actingMember(trx, input.member_id);
       const kinds = await this.checkedKinds(trx, input.allowed_kinds);
@@ -2143,7 +2211,10 @@ export class AppService {
     meta: RequestMeta,
   ): Promise<ConnectedAppView> {
     if (p.role !== 'owner') throw ownersOnly();
-    const set: Record<string, unknown> = { ...this.checkedCaps(input) };
+    const set: Record<string, unknown> = {
+      ...this.checkedCaps(input),
+      ...this.checkedLinks(input),
+    };
     if (input.name !== undefined) set.name = AppService.nameOf(input.name);
     const scopes = AppService.checkedScopes(input.scopes);
     if (scopes) set.scopes = scopes;

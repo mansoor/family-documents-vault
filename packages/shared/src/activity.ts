@@ -174,7 +174,10 @@ export function activityKind(action: string): ActivityKind {
         ? 'added'
         : action === 'app.read' || action === 'app.looked_up'
           ? 'opened'
-          : 'people';
+          : // A document it sent let go of (APP3): the document changed hands.
+            action === 'app.unlinked'
+            ? 'changed'
+            : 'people';
     default:
       return 'vault';
   }
@@ -310,8 +313,11 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
         ? line(`${who} via ${appOf(detail)} downloaded ${doc}`)
         : line(`${who} downloaded ${doc}`);
     // Every page fetched is audited; the log folds a sitting into one line.
+    // A connected app's link opened (APP3): as the person it acts as, "via" it.
     case 'document.viewed':
-      return line(`${who} looked at ${doc}`);
+      return text(detail.app)
+        ? line(`${who} via ${appOf(detail)} opened ${doc}`)
+        : line(`${who} looked at ${doc}`);
     // A phone keeping Essentials (0.4.13): filled once per version, and
     // what was opened on it, reported when it next had a connection.
     case 'document.cached_offline':
@@ -322,8 +328,11 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
         ? line(`${who} showed ${doc} from their phone${without}`)
         : line(`${who} opened ${doc} on their phone${without}`);
     }
+    // A connected app's delete, as its owner chose (APP3): "via" it.
     case 'document.deleted':
-      return line(`${who} moved ${doc} to the Trash`);
+      return text(detail.app)
+        ? line(`${who} via ${appOf(detail)} moved ${doc} to the Trash`)
+        : line(`${who} moved ${doc} to the Trash`);
     case 'document.restored':
       // 5.24: bringing it back is how whoever filed it keeps it.
       return detail.cancelled_purge === true
@@ -754,6 +763,9 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return line(`${who} via ${appOf(detail)} looked up documents`);
     case 'app.withdrawn':
       return line(`${who} via ${appOf(detail)} took back a file it sent to their Inbox`);
+    // A document it sent, let go of (APP3): it stays in the vault.
+    case 'app.unlinked':
+      return line(`${who} via ${appOf(detail)} let go of ${doc}; it is still in the vault`);
     case 'app.checked':
       return line(`${who} via ${appOf(detail)} checked on files it sent`);
     case 'app.connected':

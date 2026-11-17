@@ -28,13 +28,15 @@ export const APP_SCOPES = [
 export type AppScope = (typeof APP_SCOPES)[number];
 
 /**
- * The scopes this vault can grant now: the rest come with their features
- * (reading and downloading since APP2; links and deletes with APP3).
+ * The scopes this vault can grant now: sending (APP1), reading and
+ * downloading (APP2), opening for its user and deleting (APP3).
  */
 export const APP_SCOPES_OFFERED: readonly AppScope[] = [
   'documents.send',
   'documents.read',
   'documents.download',
+  'documents.links',
+  'documents.delete',
 ];
 
 /** What a new app may do when the owner does not say: send, and nothing more. */
@@ -45,9 +47,89 @@ export const APP_SCOPE_WORDS: Readonly<Record<AppScope, string>> = {
   'documents.send': 'Send documents to the Inbox, and see what became of them',
   'documents.read': 'Read the details of documents it is allowed',
   'documents.download': 'Download documents it is allowed',
-  'documents.links': 'Open documents it is allowed, for its user',
-  'documents.delete': 'Let go of the documents it sent',
+  'documents.links': 'Show its user documents it may read, for 10 minutes (with reading)',
+  'documents.delete': 'Delete the documents it sent, as you choose below',
 };
+
+// ------------------------------------------------------------ deletes (APP3)
+
+/**
+ * What an app's delete does, chosen by an owner per app: `unlink` — the app
+ * lets go, and the document stays in the vault — or `trash` — its own
+ * document moves to the vault's Trash, restorable as any is.
+ */
+export const APP_DELETE_MODES = ['unlink', 'trash'] as const;
+export type AppDeleteMode = (typeof APP_DELETE_MODES)[number];
+/** A new app lets go, and never moves anything to the Trash, unless an owner says. */
+export const APP_DELETE_MODE_DEFAULT: AppDeleteMode = 'unlink';
+
+/** Each in words, as Settings offers them. */
+export const APP_DELETE_MODE_WORDS: Readonly<Record<AppDeleteMode, string>> = {
+  unlink: 'It lets go of it. The document stays in the vault.',
+  trash: 'It moves it to the Trash, where it can be restored for 30 days.',
+};
+
+/** `DELETE /api/v1/apps/documents/{id}`: what became of it. */
+export interface AppDeleted {
+  document_id: string;
+  result: 'unlinked' | 'trashed';
+}
+
+// ------------------------------------------------------- view links (APP3)
+
+/** What a link gives: the vault's drawn pages, or the file. */
+export const APP_LINK_MODES = ['view', 'download'] as const;
+export type AppLinkMode = (typeof APP_LINK_MODES)[number];
+/** A link is opened within this many seconds of being minted, once. */
+export const APP_LINK_OPEN_SECONDS = 120;
+/** Its first open is a session this long, in that browser alone. */
+export const APP_LINK_SESSION_MINUTES = 10;
+/** Links an app may mint an hour: the default, and the most an owner may allow. */
+export const APP_LINKS_PER_HOUR_MAX = 600;
+/**
+ * The session's cookie, and the one path it is sent to. `__Secure-`: a
+ * browser keeps it only from a secure page, and only with Secure.
+ */
+export const APP_LINK_COOKIE = '__Secure-fdv_app_link';
+export const APP_LINK_PATH = '/api/v1/app-links';
+export const APP_LINK_SESSION_PATH = '/api/v1/app-links/session';
+/** The page a view link opens: none of the family's app around it. */
+export const APP_LINK_PAGE = '/a';
+/** A link's pages, at most: the first 30, as the vault draws them. */
+export const APP_LINK_PAGES_MAX = 30;
+
+/** `POST /api/v1/apps/documents/{id}/links`'s body. */
+export interface AppLinkInput {
+  mode: AppLinkMode;
+}
+
+/** `POST /api/v1/apps/documents/{id}/links`: the link, to send its user's browser to at once. */
+export interface AppLinkMinted {
+  url: string;
+  mode: AppLinkMode;
+  /** Opened by then, or never. */
+  open_by: string;
+  session_minutes: number;
+}
+
+/** `GET /api/v1/app-links/session`: what the page a view link opens shows. */
+export interface AppLinkSession {
+  /** The app, by the name the family gave it: "Opened through MonTra". */
+  app: string;
+  mode: AppLinkMode;
+  title: string | null;
+  /** The pages drawn: `ready` with how many, `drawing` (asked again shortly), or `none` (not drawn). */
+  pages: { state: 'ready' | 'drawing' | 'none'; count: number };
+  /** When the session ends. */
+  ends_at: string;
+}
+
+/** What the page says when the link is used, or over: never why. */
+export const APP_LINK_OVER_WORDS =
+  'This link has been used or has ended. Open the document again from the app.';
+/** What the page says when a download link's file is more than the app may download today. */
+export const APP_LINK_FULL_WORDS =
+  'This download isn’t available today: the app has downloaded as much as it may. Try again tomorrow, or ask an owner of the vault.';
 
 /**
  * The categories an app may ever be granted to read (APP2): an
@@ -461,6 +543,8 @@ export interface AppMe {
   send: { kinds: AppSendKind[]; hints: AppHintName[]; auto_file: boolean };
   /** What it may read (APP2): its grants. Absent from a vault without `connected_app_reads`. */
   read?: { grants: AppGrant[] };
+  /** What a delete does (APP3). Absent from a vault without `connected_app_links`. */
+  delete_mode?: AppDeleteMode;
   limits: {
     max_upload_bytes: number;
     accepted_types: string[];
@@ -528,6 +612,12 @@ export interface ConnectedAppView {
   /** Bytes a day it may download, and what it downloaded today (APP2). */
   daily_read_bytes?: number;
   read_today?: number;
+  /** What a delete does, and the links it may mint an hour (APP3). */
+  delete_mode?: AppDeleteMode;
+  links_per_hour?: number;
+  /** Links it minted in the last hour, and those opened in the last 7 days (APP3). */
+  links_last_hour?: number;
+  links_opened_week?: number;
   /** What to paste into the app: no secret is in it. */
   connection_string: string;
   /** The address the app must use, and whether it is the public-only site's. */
@@ -549,6 +639,10 @@ export interface ConnectedAppInput {
   scopes?: AppScope[];
   /** Bytes a day it may download (APP2): 1 GB when left out. */
   daily_read_bytes?: number;
+  /** What a delete does (APP3): `unlink` when left out. */
+  delete_mode?: AppDeleteMode;
+  /** Links it may mint an hour (APP3): 60 when left out. */
+  links_per_hour?: number;
 }
 
 /** `PATCH /api/v1/connected-apps/{id}`: what is sent changes; the rest stays. */
@@ -564,6 +658,8 @@ export type ConnectedAppChange = Partial<
     | 'backfill'
     | 'scopes'
     | 'daily_read_bytes'
+    | 'delete_mode'
+    | 'links_per_hour'
   >
 >;
 
@@ -622,6 +718,11 @@ export const APP_REFUSALS = {
   larger_than_daily_read:
     'This file is larger than this app may download in a day. Ask for it in parts, with Range.',
   cursor_expired: 'That cursor is too old. Read the changes again from the start.',
+  app_links_full: 'This app has made as many links as it may this hour.',
+  view_unavailable: 'The vault cannot show this kind of file as pages. Ask for a download link.',
+  link_ended: APP_LINK_OVER_WORDS,
+  link_other_address:
+    'This page was opened from another network. Open the document again from the app.',
 } as const;
 
 /** A refusal's code as Settings says it: "signature not valid". */
@@ -643,6 +744,7 @@ export const APP_REFUSAL_SHORT: Readonly<Record<string, string>> = {
   kind_not_allowed: 'kind not allowed',
   app_day_full: 'day full',
   app_read_day_full: 'downloads full',
+  app_links_full: 'links full',
   rate_limited: 'too many requests',
 };
 

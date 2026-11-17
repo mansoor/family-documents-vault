@@ -991,6 +991,10 @@ export interface Schema {
     looked_line_at: Timestamp | null;
     /** Its feed's lines up to here are gone (0110): a bigint, read as a string. */
     changes_pruned_to: ColumnType<string, string | number | undefined, string | number>;
+    /** What a delete does (0111, APP3): let go of it, or move it to the Trash. */
+    delete_mode: ColumnType<'unlink' | 'trash', 'unlink' | 'trash' | undefined, 'unlink' | 'trash'>;
+    /** Links it may mint an hour (0111, APP3). */
+    links_per_hour: Generated<number>;
   };
 
   /** A kind or a category an app may read, and how far back (0110, APP2). */
@@ -1027,6 +1031,25 @@ export interface Schema {
     document_id: string;
     change: 'changed' | 'unavailable';
     at: GeneratedTimestamp;
+  };
+
+  /** A link an app minted for its user's browser (0111, APP3): the vault's alone. */
+  connected_app_link: {
+    id: Generated<string>;
+    household_id: string;
+    app_id: string;
+    document_id: string;
+    version_id: string;
+    mode: 'view' | 'download';
+    /** SHA-256 of the token; the token itself is never kept. */
+    token_hash: Buffer;
+    created_at: GeneratedTimestamp;
+    open_by: Timestamp;
+    opened_at: Timestamp | null;
+    /** SHA-256 of the session's cookie, once opened. */
+    session_hash: Buffer | null;
+    session_until: Timestamp | null;
+    first_address: string | null;
   };
 
   /** An app's public key (0109, APP1): two live at most, retired once. */

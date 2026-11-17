@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from './App.js';
 import { APP_NAME, pageTitle } from './page-title.js';
+import { AppLinkPage } from './screens/AppLinkPage.js';
 import { DropPage } from './screens/DropPage.js';
 import { SharePage } from './screens/SharePage.js';
 import {
@@ -126,8 +127,13 @@ describe('every page has a title of its own (WCAG 2.4.2)', () => {
     await waitFor(() => expect(document.title).toBe(`A shared document – ${APP_NAME}`));
     unmount();
     installFakeApi(fresh({ drop: freshDrop() }));
-    render(<DropPage token="drop-token-abcdefghijklmnopqrstuvwxyz" />);
+    const drop = render(<DropPage token="drop-token-abcdefghijklmnopqrstuvwxyz" />);
     await waitFor(() => expect(document.title).toBe(`Send documents – ${APP_NAME}`));
+    drop.unmount();
+    // A connected app's link's page (0.9.0, APP3): never the document's name.
+    installFakeApi(fresh());
+    render(<AppLinkPage hash="#ended" />);
+    await waitFor(() => expect(document.title).toBe(`A document – ${APP_NAME}`));
   });
 });
 
