@@ -72,7 +72,7 @@ const createBody = z
     default_visibility: z.enum(['household', 'adults', 'private']).nullable().optional(),
     daily_files: z.number().int().optional(),
     daily_bytes: z.number().int().optional(),
-    ip_allow: z.array(z.string().max(64)).max(20).optional(),
+    ip_allow: z.array(z.string().max(260)).max(20).optional(),
     backfill: z
       .object({
         until: z.string().max(64),

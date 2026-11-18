@@ -966,6 +966,8 @@ export interface Schema {
     backfill_auto_file: Generated<boolean>;
     /** Addresses and networks, kept as cidr; read with ::text[]. */
     ip_allow: ColumnType<string[], string[] | undefined, string[]>;
+    /** Host names (0115, APP7): checked against what they resolve to as requests come. */
+    ip_allow_names: ColumnType<string[], string[] | undefined, string[]>;
     paused_reason: 'owner' | 'restored' | null;
     revoked_at: Timestamp | null;
     revoked_by: string | null;

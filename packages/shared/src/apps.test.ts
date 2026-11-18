@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { describeEvent, describeEvents, type ActivityEvent } from './activity.js';
 import {
   amountText,
+  appAllowName,
   appBatchName,
   appMayDownloadSent,
   appMayRead,
@@ -907,5 +908,43 @@ describe('filing automatically: only when everything is sure and complete (0.9.0
     expect(line({ action: 'document.version_added', detail: { version_no: 1 } })?.text).toBe(
       'Ahmed uploaded a new copy of “Northgate, October”',
     );
+  });
+});
+
+describe('a name in an app’s allow-list (0.9.0, APP7)', () => {
+  it('keeps a host name in lower case, an international one in punycode', () => {
+    expect(appAllowName('Feeds.Example.com')).toBe('feeds.example.com');
+    expect(appAllowName(' api.example.org. ')).toBe('api.example.org');
+    expect(appAllowName('bücher.example')).toBe('xn--bcher-kva.example');
+    expect(appAllowName('xn--bcher-kva.example')).toBe('xn--bcher-kva.example');
+    expect(appAllowName('a-1.b2.example')).toBe('a-1.b2.example');
+  });
+
+  it('refuses what is not a host name: one label, a wildcard, an address, a URL, bad labels', () => {
+    for (const bad of [
+      '',
+      'localhost',
+      '*.example.com',
+      '203.0.113.7',
+      '0x7f.1',
+      '1.2.3',
+      'feeds.example.1-2',
+      '2001:db8::1',
+      '[2001:db8::1]',
+      'https://example.com',
+      'example.com/path',
+      'example.com:443',
+      'user@example.com',
+      'ex ample.com',
+      'ex\\ample.com',
+      '-bad.example.com',
+      'bad-.example.com',
+      'a..example.com',
+      'under_score.example.com',
+      `${'a'.repeat(64)}.example.com`,
+      `${'a.'.repeat(127)}com`,
+    ]) {
+      expect(appAllowName(bad), bad).toBeNull();
+    }
   });
 });

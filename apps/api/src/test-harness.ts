@@ -235,6 +235,11 @@ export interface HarnessOptions {
   aiReaderSettings?: 'on' | 'off';
   /** DNS for the AI reader's address (AIR1): the harness's own, a name → its addresses. */
   aiResolve?: (host: string) => Promise<string[]>;
+  /**
+   * DNS for the names in a connected app's allow-list (APP7): a name and a
+   * family → its addresses. Unless a test stands in, no name is found.
+   */
+  appsResolve?: (name: string, family: 4 | 6) => Promise<Array<{ address: string; ttl: number }>>;
 }
 
 /** The key the harness's `mail.to_address` jobs are sealed under, as the worker's are. */
@@ -524,6 +529,13 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     alert,
     ...(opts.appsNow ? { now: opts.appsNow } : {}),
     documents,
+    resolveName:
+      opts.appsResolve ??
+      (async (name) => {
+        throw Object.assign(new Error(`no address for ${name} in the harness`), {
+          code: 'ESERVFAIL',
+        });
+      }),
   });
   const app = await buildApp(config, {
     apps,

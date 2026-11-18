@@ -43,6 +43,32 @@ async function expectAccessible() {
 
 const MB = 1024 * 1024;
 
+/**
+ * The household's kinds, as the grouped list sees them (APP7): two
+ * financial ones and an Essential among them, two bills, an identity and a
+ * legal kind (never offered), and a category of an Essential alone (not
+ * shown).
+ */
+const KINDS = [
+  ...TYPES,
+  {
+    ...BANK_STATEMENT,
+    key: 'credit_card_statement',
+    label: 'Credit card statement',
+  },
+  { ...BANK_STATEMENT, key: 'pension', label: 'Pension', usually_essential: true },
+  { ...BANK_STATEMENT, key: 'utility_bill', label: 'Utility bill', category: 'bills' },
+  { ...BANK_STATEMENT, key: 'council_tax', label: 'Council tax', category: 'bills' },
+  { ...BANK_STATEMENT, key: 'will', label: 'Will', category: 'legal' },
+  {
+    ...BANK_STATEMENT,
+    key: 'deeds',
+    label: 'Property deeds',
+    category: 'property',
+    usually_essential: true,
+  },
+];
+
 const AHMED = {
   ...ME,
   id: 'm-ahmed',
@@ -318,22 +344,23 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
         .map((o) => o.textContent),
     ).toEqual(['Mansoor Seikh (you)', 'Ahmed · Adult']);
     expect(who).toHaveValue('me');
-    // No kind ticked to start with.
-    expect(within(form).getByLabelText('Passport')).not.toBeChecked();
-    expect(within(form).getByLabelText('Birth certificate')).not.toBeChecked();
+    // No kind ticked to start with; identity papers never offered (APP7).
+    expect(within(form).getByLabelText('Bank / investment statement')).not.toBeChecked();
+    expect(within(form).queryByLabelText('Passport')).toBeNull();
+    expect(within(form).queryByLabelText('Birth certificate')).toBeNull();
     await expectAccessible();
 
     fireEvent.change(within(form).getByLabelText(/^Name/), { target: { value: 'Acme Money' } });
     fireEvent.change(who, { target: { value: 'm-ahmed' } });
     // No key to paste: the vault generates one.
     expect(within(form).queryByLabelText(/public key/)).toBeNull();
-    fireEvent.click(within(form).getByLabelText('Passport'));
+    fireEvent.click(within(form).getByLabelText('Bank / investment statement'));
     fireEvent.change(within(form).getByLabelText('Who sees what it sends'), {
       target: { value: 'adults' },
     });
     fireEvent.change(within(form).getByLabelText('Files'), { target: { value: '50' } });
     fireEvent.change(within(form).getByLabelText('Addresses it may send from'), {
-      target: { value: '203.0.113.7\n\n198.51.100.0/24' },
+      target: { value: '203.0.113.7\n\n198.51.100.0/24, feeds.example.com' },
     });
     fireEvent.click(within(form).getByRole('button', { name: 'Connect' }));
     await confirmWithCode();
@@ -357,11 +384,11 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     expect(sent).toEqual({
       name: 'Acme Money',
       member_id: 'm-ahmed',
-      allowed_kinds: ['passport'],
+      allowed_kinds: ['bank_statement'],
       default_visibility: 'adults',
       daily_files: 50,
       daily_bytes: 500 * MB,
-      ip_allow: ['203.0.113.7', '198.51.100.0/24'],
+      ip_allow: ['203.0.113.7', '198.51.100.0/24', 'feeds.example.com'],
       backfill: null,
       // Everything it sends waits for a look, unless an owner says (APP4).
       auto_file: false,
@@ -382,6 +409,133 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     expect(
       await within(card).findByRole('button', { name: 'Generate an API key for Acme Money' }),
     ).toBeEnabled();
+  });
+
+  it('groups the kinds it may send by category: a category ticks all its kinds, some of them are mixed (APP7)', async () => {
+    const state = at('/settings/connected-apps', { connectedApps: [], types: KINDS });
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect an app' }));
+    const form = await screen.findByRole('region', { name: 'Connect an app' });
+    const kinds = within(form).getByRole('group', { name: 'Kinds it may send' });
+    // A box for each category it may be given kinds of, in the categories'
+    // order; never identity or legal, nor one of an Essential alone.
+    const categories = within(kinds)
+      .getAllByRole('checkbox', { name: /^All of / })
+      .map((b) => b.getAttribute('id'));
+    expect(
+      categories.map((id) => document.querySelector(`label[for="${id}"]`)?.textContent),
+    ).toEqual(['All of Financial', 'All of Bills & utilities']);
+    for (const never of ['Passport', 'Will', 'Property deeds', /All of Identity/, /All of Legal/]) {
+      expect(within(kinds).queryByLabelText(never)).toBeNull();
+    }
+    // Each category's kinds sit beneath it, in a group of their own.
+    const financial = within(kinds).getByRole('group', { name: 'Financial' });
+    expect(
+      within(financial)
+        .getAllByRole('checkbox')
+        .map((b) => document.querySelector(`label[for="${b.id}"]`)?.textContent),
+    ).toEqual(['Bank / investment statement', 'Credit card statement', 'Pension']);
+    // An Essential shows, not to be ticked, saying why.
+    const pension = within(financial).getByLabelText('Pension');
+    expect(pension).toBeDisabled();
+    expect(pension).toHaveAccessibleDescription('An Essential: never an app’s to send');
+
+    const all = within(kinds).getByRole<HTMLInputElement>('checkbox', {
+      name: 'All of Financial',
+    });
+    const bank = within(financial).getByLabelText('Bank / investment statement');
+    const card = within(financial).getByLabelText('Credit card statement');
+    /** The category's state: ticked, mixed (indeterminate) or not. */
+    const stateOf = () => (all.indeterminate ? 'mixed' : all.checked ? 'all' : 'none');
+    expect(stateOf()).toBe('none');
+    // A native box: its mixed state is `indeterminate`, never an aria-checked of its own.
+    expect(all).not.toHaveAttribute('aria-checked');
+    expect(all.getAttribute('aria-controls')?.split(' ')).toContain(bank.id);
+
+    // Ticking the category ticks all its kinds (never the Essential).
+    fireEvent.click(all);
+    expect(bank).toBeChecked();
+    expect(card).toBeChecked();
+    expect(pension).not.toBeChecked();
+    expect(stateOf()).toBe('all');
+    // One of them unticked: the category is mixed.
+    fireEvent.click(card);
+    expect(all).not.toBeChecked();
+    expect(all.indeterminate).toBe(true);
+    expect(stateOf()).toBe('mixed');
+    await expectAccessible();
+    // Ticked from mixed: all of them again; unticked: none.
+    fireEvent.click(all);
+    expect(card).toBeChecked();
+    expect(stateOf()).toBe('all');
+    fireEvent.click(all);
+    expect(bank).not.toBeChecked();
+    expect(card).not.toBeChecked();
+    expect(stateOf()).toBe('none');
+    // The kinds one by one: all of them ticks the category.
+    fireEvent.click(bank);
+    expect(stateOf()).toBe('mixed');
+    fireEvent.click(card);
+    expect(stateOf()).toBe('all');
+    fireEvent.click(card);
+
+    // What is sent is the flat list of kinds, as before.
+    fireEvent.click(within(kinds).getByRole('checkbox', { name: 'All of Bills & utilities' }));
+    fireEvent.change(within(form).getByLabelText(/^Name/), { target: { value: 'Acme Money' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Connect' }));
+    await screen.findByRole('region', { name: 'Acme Money' });
+    expect(calls(state, 'POST', '/api/v1/connected-apps').at(-1)?.body).toMatchObject({
+      allowed_kinds: ['bank_statement', 'utility_bill', 'council_tax'],
+    });
+  });
+
+  it('an allowed kind the vault would now refuse is named, then dropped from a change, never sent again (APP7)', async () => {
+    const state = at('/settings/connected-apps', {
+      connectedApps: [
+        app({ allowed_kinds: ['bank_statement', 'passport', 'pension', 'gone_kind'] }),
+      ],
+      types: KINDS,
+    });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Change Acme Money' }));
+    // The Essential shows unticked and not to be ticked; the identity kind not at all.
+    expect(within(card).getByLabelText('Pension')).not.toBeChecked();
+    expect(within(card).getByLabelText('Pension')).toBeDisabled();
+    expect(within(card).queryByLabelText('Passport')).toBeNull();
+    // What it will no longer send is said by name, and when.
+    expect(
+      within(card).getByText(
+        'Will no longer send, once its kinds change: Passport, Pension, gone_kind',
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(within(card).getByLabelText('Utility bill'));
+    expect(
+      within(card).getByText('Will no longer send: Passport, Pension, gone_kind'),
+    ).toBeInTheDocument();
+    await expectAccessible();
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
+    expect(
+      await screen.findByText('Saved. Acme Money may do what it now says here.'),
+    ).toBeInTheDocument();
+    expect(calls(state, 'PATCH', '/api/v1/connected-apps/').at(-1)?.body).toEqual({
+      allowed_kinds: ['bank_statement', 'utility_bill'],
+    });
+  });
+
+  it('takes names among the addresses it may send from, saying how a name is checked; five at most (APP7)', async () => {
+    const state = at('/settings/connected-apps', { connectedApps: [] });
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect an app' }));
+    const form = await screen.findByRole('region', { name: 'Connect an app' });
+    const field = within(form).getByLabelText('Addresses it may send from');
+    expect(field).toHaveAccessibleDescription(
+      /a name \(feeds\.example\.com, up to 5\)\. Left empty, any address\. A name is checked against the addresses it points to now\. Apps on large cloud platforms may call from addresses their name doesn’t list; use their published address ranges instead\.$/,
+    );
+    fireEvent.change(within(form).getByLabelText(/^Name/), { target: { value: 'Acme Money' } });
+    fireEvent.change(field, {
+      target: { value: ['a', 'b', 'c', 'd', 'e', 'f'].map((n) => `${n}.example.com`).join('\n') },
+    });
+    fireEvent.click(within(form).getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText('5 names at most.')).toBeInTheDocument();
+    expect(calls(state, 'POST', '/api/v1/connected-apps')).toHaveLength(0);
   });
 
   it('says what is wrong before connecting: a name', async () => {
@@ -425,16 +579,17 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
 
   it('an owner changes its kinds and caps: only what changed is sent, after a passkey or a code', async () => {
     const state = at('/settings/connected-apps', {
-      connectedApps: [AHMEDS],
+      connectedApps: [app({ allowed_kinds: ['bank_statement'] })],
       stepUpNeeded: true,
+      types: KINDS,
     });
     const card = await screen.findByRole('region', { name: 'Acme Money' });
     fireEvent.click(within(card).getByRole('button', { name: 'Change Acme Money' }));
-    expect(within(card).getByLabelText('Passport')).toBeChecked();
+    expect(within(card).getByLabelText('Bank / investment statement')).toBeChecked();
     expect(within(card).getByLabelText('Files')).toHaveValue('100');
     expect(within(card).getByLabelText('MB')).toHaveValue('500');
     await expectAccessible();
-    fireEvent.click(within(card).getByLabelText('Birth certificate'));
+    fireEvent.click(within(card).getByLabelText('Utility bill'));
     fireEvent.change(within(card).getByLabelText('Files'), { target: { value: '200' } });
     fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
     await confirmWithCode();
@@ -442,10 +597,12 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       await screen.findByText('Saved. Acme Money may do what it now says here.'),
     ).toBeInTheDocument();
     expect(calls(state, 'PATCH', '/api/v1/connected-apps/').at(-1)?.body).toEqual({
-      allowed_kinds: ['passport', 'birth_certificate'],
+      allowed_kinds: ['bank_statement', 'utility_bill'],
       daily_files: 200,
     });
-    expect(await within(card).findByText('Passport, Birth certificate')).toBeInTheDocument();
+    expect(
+      await within(card).findByText('Bank / investment statement, Utility bill'),
+    ).toBeInTheDocument();
     expect(within(card).getByText('12 of 200 files today, 3 MB of 500 MB')).toBeInTheDocument();
 
     // A new name alone asks for nothing.

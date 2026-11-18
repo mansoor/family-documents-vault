@@ -6,6 +6,16 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.64] - 2026-11-18 — connected apps: kinds by category, addresses by name
+
+### Changed
+
+- **The kinds a connected app may send are grouped by category** in **Settings → Connected apps** (Connect and Change). Each category has a box of its own with its kinds beneath it: ticking the category ticks all its kinds, unticking it unticks them, and with only some ticked it shows as partly ticked (and says "mixed" to a screen reader). Identity, legal and medical kinds are no longer offered at all, since the vault never lets an app send them; a kind kept as an Essential shows, not to be ticked, saying why; and a category with nothing an app may send is not shown. Change names any kind an app still has that is no longer offered ("Will no longer send: …"), and changing its kinds drops them. The app's kinds are saved as before.
+
+### Added
+
+- **An app's allowed addresses may include host names**, alongside addresses and networks: up to five names (`feeds.example.com`) among the ten entries. A request is let in when its address is one the name points to at that moment (its A and AAAA records; an IPv6 address must match exactly). The vault looks each name up with a two-second limit and keeps the answer for its TTL, five minutes at most; a failed lookup is remembered for 30 seconds. A name that cannot be looked up lets nothing in, unless an answer from the last hour is kept. A name's loopback or unspecified addresses (127.0.0.0/8, 0.0.0.0, ::1, ::) never let anything in, and one name's slow lookup never holds up a request another name already matches. The caller's address is never looked up by name. Settings says so beside the field: apps on large cloud platforms may call from addresses their name doesn't list, so give their published address ranges instead. (Migration 0115.)
+
 ## [0.9.0-dev.63] - 2026-11-17 — connected apps use API keys
 
 ### Changed

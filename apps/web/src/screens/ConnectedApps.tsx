@@ -11,6 +11,9 @@ import {
   APP_GRANTABLE_CATEGORIES,
   APP_GRANTS_MAX,
   APP_IP_ALLOW_MAX,
+  APP_IP_ALLOW_NAME_HINT,
+  APP_IP_ALLOW_NAMES_MAX,
+  APP_NEVER_CATEGORIES,
   APP_KEY_DAYS_MAX,
   APP_KEY_NAME_MAX,
   APP_KEY_VALIDITY_DAYS,
@@ -24,6 +27,8 @@ import {
   APP_SCOPES_OFFERED,
   APP_STATE_WORDS,
   appsNotPublicWords,
+  appAllowName,
+  CATEGORY_LABELS,
   categoryLabel,
   localToday,
   lookbackWords,
@@ -43,7 +48,14 @@ import {
   type Member,
   type Visibility,
 } from '@fdv/shared';
-import { useEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type RefObject,
+} from 'react';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { dayWordsOf, familyZoneNow, shortWhenWords } from '../family-time.js';
@@ -235,7 +247,12 @@ function readForm(f: AppForm, ceilings: Ceilings): Read {
   }
   const ip = lines(f.ip);
   if (ip.length > APP_IP_ALLOW_MAX) {
-    return { ok: false, error: `${APP_IP_ALLOW_MAX} addresses or networks at most.` };
+    return { ok: false, error: `${APP_IP_ALLOW_MAX} addresses, networks or names at most.` };
+  }
+  // Names (APP7): the vault checks each, and these caps, again.
+  const names = new Set(ip.map(appAllowName).filter((n): n is string => n !== null));
+  if (names.size > APP_IP_ALLOW_NAMES_MAX) {
+    return { ok: false, error: `${APP_IP_ALLOW_NAMES_MAX} names at most.` };
   }
   let backfill: ConnectedAppInput['backfill'] = null;
   if (f.backfill) {
@@ -534,6 +551,153 @@ const actsAs = (m: Member) =>
 const offeredKinds = (types: DocumentTypeView[], allowed: readonly string[]) =>
   types.filter((t) => t.key !== NOTE_KIND && (!t.hidden || allowed.includes(t.key)));
 
+/** Why an app is never given a kind to send, as the vault refuses it; null when it may be. */
+const neverWhy = (t: DocumentTypeView): string | null =>
+  APP_NEVER_CATEGORIES.includes(t.category)
+    ? 'Identity, legal and medical papers are never an app’s to send'
+    : t.usually_essential
+      ? 'An Essential: never an app’s to send'
+      : null;
+
+/** One category of the kinds it may send (APP7): its kinds, those it may be given and not. */
+export interface KindGroup {
+  category: string;
+  kinds: DocumentTypeView[];
+}
+
+/**
+ * The kinds an app may send, by category (APP7), in the categories' own
+ * order: never identity, legal or medical (not offered at all), and no
+ * category none of whose kinds it may be given.
+ */
+export function kindGroups(types: DocumentTypeView[], allowed: readonly string[]): KindGroup[] {
+  const order = Object.keys(CATEGORY_LABELS);
+  const rank = (c: string) => (order.includes(c) ? order.indexOf(c) : order.length);
+  const by = new Map<string, DocumentTypeView[]>();
+  for (const t of offeredKinds(types, allowed)) {
+    if (APP_NEVER_CATEGORIES.includes(t.category)) continue;
+    by.set(t.category, [...(by.get(t.category) ?? []), t]);
+  }
+  return [...by.entries()]
+    .filter(([, kinds]) => kinds.some((t) => neverWhy(t) === null))
+    .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
+    .map(([category, kinds]) => ({ category, kinds }));
+}
+
+/**
+ * A category's box (APP7): ticked when every kind of it the app may be
+ * given is, mixed when some are (`indeterminate`, which a screen reader
+ * says as mixed), and ticking it ticks them all, unticking unticks them.
+ */
+function CategoryCheck(props: {
+  id: string;
+  group: KindGroup;
+  chosen: readonly string[];
+  controls: string;
+  onChange: (on: boolean) => void;
+}) {
+  const box = useRef<HTMLInputElement>(null);
+  const open = props.group.kinds.filter((t) => neverWhy(t) === null);
+  const some = open.filter((t) => props.chosen.includes(t.key)).length;
+  const all = open.length > 0 && some === open.length;
+  const mixed = some > 0 && !all;
+  useLayoutEffect(() => {
+    if (box.current) box.current.indeterminate = mixed;
+  });
+  return (
+    <div className="check app-kinds-category">
+      <input
+        id={props.id}
+        ref={box}
+        type="checkbox"
+        checked={all}
+        aria-controls={props.controls}
+        onChange={() => props.onChange(!all)}
+      />
+      <label htmlFor={props.id}>
+        <span className="visually-hidden">All of</span> {categoryLabel(props.group.category)}
+      </label>
+    </div>
+  );
+}
+
+/**
+ * The kinds it may send, grouped by category (APP7): each category a box
+ * for all its kinds, its kinds beneath it. An Essential kind shows, not to
+ * be ticked, saying why. What is sent is the flat list of kinds, as before.
+ *
+ * Changing an app (`saved`, its kinds as they are): a kind it has that is
+ * no longer offered — one the vault would refuse, or one the household no
+ * longer has — is dropped as its kinds change, and said by name first.
+ */
+function KindsByCategory(props: {
+  id: string;
+  types: DocumentTypeView[];
+  chosen: string[];
+  onChange: (kinds: string[]) => void;
+  saved?: readonly string[];
+}) {
+  const { id, chosen } = props;
+  const groups = kindGroups(props.types, chosen);
+  const known = new Map(props.types.map((t) => [t.key, t]));
+  const never = new Set(props.types.filter((t) => neverWhy(t) !== null).map((t) => t.key));
+  const gone = (k: string) => never.has(k) || !known.has(k);
+  // A change never keeps a kind the vault would refuse.
+  const put = (next: string[]) => props.onChange(next.filter((k) => !gone(k)));
+  const dropped = (props.saved ?? []).filter(gone);
+  const droppingNow = dropped.length > 0 && !dropped.some((k) => chosen.includes(k));
+  const names = dropped.map((k) => known.get(k)?.label ?? k).join(', ');
+  return (
+    <>
+      {dropped.length > 0 && (
+        <p className="muted" id={`${id}-kinds-dropped`}>
+          {droppingNow
+            ? `Will no longer send: ${names}`
+            : `Will no longer send, once its kinds change: ${names}`}
+        </p>
+      )}
+      <div className="app-kinds">
+        {groups.map((g) => {
+          const gid = `${id}-cat-${g.category}`;
+          const open = g.kinds.filter((t) => neverWhy(t) === null).map((t) => t.key);
+          return (
+            <div key={g.category} className="app-kinds-group">
+              <CategoryCheck
+                id={gid}
+                group={g}
+                chosen={chosen}
+                controls={g.kinds.map((t) => `${id}-kind-${t.key}`).join(' ')}
+                onChange={(on) =>
+                  put(
+                    on
+                      ? [...chosen, ...open.filter((k) => !chosen.includes(k))]
+                      : chosen.filter((k) => !open.includes(k)),
+                  )
+                }
+              />
+              <div role="group" aria-label={categoryLabel(g.category)} className="app-kinds-list">
+                {g.kinds.map((t) => (
+                  <Check
+                    key={t.key}
+                    id={`${id}-kind-${t.key}`}
+                    label={t.label}
+                    checked={chosen.includes(t.key) && !never.has(t.key)}
+                    disabled={never.has(t.key)}
+                    {...(never.has(t.key) ? { note: neverWhy(t) } : {})}
+                    onChange={(on) =>
+                      put(on ? [...chosen, t.key] : chosen.filter((k) => k !== t.key))
+                    }
+                  />
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 function AppFields(props: {
   id: string;
   form: AppForm;
@@ -544,10 +708,11 @@ function AppFields(props: {
   connect?: { people: Member[]; me: string };
   /** Whom it acts as, for "Only …": "you", or their name. */
   who: string;
+  /** Changing it: its kinds as they are saved (APP7), to say which go. */
+  savedKinds?: readonly string[];
 }) {
   const { form, set, id } = props;
   const put = (more: Partial<AppForm>) => set({ ...form, ...more });
-  const kinds = offeredKinds(props.types, form.kinds);
   const maxMb = Math.floor(props.ceilings.daily_bytes / MB);
   const days = backfillDays();
   return (
@@ -634,24 +799,16 @@ function AppFields(props: {
       <fieldset className="limits-set">
         <legend className="field-label">Kinds it may send</legend>
         <p className="muted" id={`${id}-kinds-note`}>
-          Anything it says is another kind is refused. Identity, legal and medical papers always
-          wait for a look.
+          Anything it says is another kind is refused. Never identity, legal or medical papers, nor
+          a kind kept as an Essential.
         </p>
-        <div className="limits-list limits-kinds">
-          {kinds.map((t) => (
-            <Check
-              key={t.key}
-              id={`${id}-kind-${t.key}`}
-              label={t.label}
-              checked={form.kinds.includes(t.key)}
-              onChange={(on) =>
-                put({
-                  kinds: on ? [...form.kinds, t.key] : form.kinds.filter((k) => k !== t.key),
-                })
-              }
-            />
-          ))}
-        </div>
+        <KindsByCategory
+          id={id}
+          types={props.types}
+          chosen={form.kinds}
+          onChange={(kinds) => put({ kinds })}
+          {...(props.savedKinds ? { saved: props.savedKinds } : {})}
+        />
       </fieldset>
       <Select
         id={`${id}-seen`}
@@ -712,7 +869,8 @@ function AppFields(props: {
           onChange={(e) => put({ ip: e.target.value })}
         />
         <p id={`${id}-ip-note`} className="muted field-note">
-          {`One a line, up to ${APP_IP_ALLOW_MAX}: an address (203.0.113.7) or a network (203.0.113.0/24). Left empty, any address.`}
+          {`One a line, up to ${APP_IP_ALLOW_MAX}: an address (203.0.113.7), a network (203.0.113.0/24) or a name (feeds.example.com, up to ${APP_IP_ALLOW_NAMES_MAX}). Left empty, any address.`}{' '}
+          {APP_IP_ALLOW_NAME_HINT}
         </p>
       </div>
       <Check
@@ -1556,6 +1714,7 @@ function AppCard(props: {
             types={props.types}
             ceilings={props.ceilings}
             who={whom(app)}
+            savedKinds={app.allowed_kinds}
           />
           <ErrorNote message={formError} />
           <div className="row">
