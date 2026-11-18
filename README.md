@@ -580,7 +580,7 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.61/fdv-client-0.9.0-dev.61.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.62/fdv-client-0.9.0-dev.62.tgz"
   }
 }
 ```

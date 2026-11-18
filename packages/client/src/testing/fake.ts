@@ -163,6 +163,8 @@ import {
   SENSITIVE_SHARE_CONFIRM,
   sensitiveOf,
   claimedRecordFormat,
+  deliveredType,
+  recordFileName,
   isRecordFormat,
   viewNotPossibleWords,
   TEEN_KEEPS_SENSITIVE,
@@ -356,6 +358,7 @@ import {
 } from '@fdv/shared';
 import { fakeAppFilesAutomatically, fakeAppRoutes, type FakeApp } from './fake-apps.js';
 import type { FetchLike, ResponseLike } from '../http.js';
+import { partsOf, readBody, type Part } from './body.js';
 import { storedZip } from './zip.js';
 
 /**
@@ -980,6 +983,8 @@ export interface FakeBatchItem {
   document_id: string | null;
   /** The uploader's Idempotency-Key for it, when sent (the I1 review). */
   key?: string;
+  /** Its bytes, exactly as sent (CL3): the version an accept makes keeps them. */
+  bytes?: Uint8Array;
   /**
    * Read for its details (I2), as the vault's worker would read it: a test
    * (or the contract's `readBatchItems`) sets these; `waiting` until then.
@@ -1425,20 +1430,6 @@ function remindingFrom(t: DocumentTypeView): string | null {
 }
 
 /**
- * One part of a multipart body: a field's value, or a file (value null)
- * with its name, type and size as the fake can tell them.
- */
-interface Part {
-  name: string;
-  value: string | null;
-  filename?: string;
-  type?: string;
-  size?: number;
-  /** A file's bytes, as near as the fake can tell them (I1's stand-in hash). */
-  bytes?: Uint8Array;
-}
-
-/**
  * A stand-in for a file's SHA-256 (I1): 64 hex digits, the same for the
  * same bytes and, in a test, different for different ones. Not SHA-256.
  */
@@ -1450,56 +1441,6 @@ function standInHash(bytes: Uint8Array): string {
     out += h.toString(16).padStart(8, '0');
   }
   return out;
-}
-
-/**
- * The parts of a multipart body the fake cares about, in order: its fields
- * and whether each came before the file, and the file's name, type and
- * size. Bytes are read as text, which is enough for the details and a
- * test's small PDF (a binary file's size is only near enough).
- */
-function partsOf(body: unknown): Part[] | null {
-  if (body instanceof Uint8Array) {
-    const text = new TextDecoder().decode(body);
-    const out: Part[] = [];
-    const header =
-      /Content-Disposition: form-data; name="([^"]*)"(; filename="([^"]*)")?([^]*?)\r\n\r\n/g;
-    for (const m of text.matchAll(header)) {
-      const start = (m.index ?? 0) + m[0].length;
-      const end = text.indexOf('\r\n--', start);
-      if (m[2]) {
-        const bytes = new TextEncoder().encode(text.slice(start, end));
-        out.push({
-          name: m[1] as string,
-          value: null,
-          filename: m[3] as string,
-          type:
-            /Content-Type: ([^\r\n]+)/i.exec(m[4] ?? '')?.[1]?.trim() ?? 'application/octet-stream',
-          size: bytes.length,
-          bytes,
-        });
-        continue;
-      }
-      out.push({ name: m[1] as string, value: text.slice(start, end) });
-    }
-    return out;
-  }
-  const entries = (body as { entries?: () => Iterable<[string, unknown]> } | null)?.entries;
-  if (typeof entries === 'function') {
-    return [...entries.call(body)].map(([name, value]) => {
-      if (typeof value === 'string') return { name, value };
-      // A platform File or Blob: what it says of itself.
-      const file = value as { name?: unknown; type?: unknown; size?: unknown } | null;
-      return {
-        name,
-        value: null,
-        filename: typeof file?.name === 'string' ? file.name : 'file',
-        type: typeof file?.type === 'string' && file.type ? file.type : 'application/octet-stream',
-        size: typeof file?.size === 'number' ? file.size : 0,
-      };
-    });
-  }
-  return null;
 }
 
 interface FakeUpload {
@@ -3447,7 +3388,7 @@ export function createFakeVault(): {
           return ok(replay, 201);
         }
       }
-      const parts = partsOf(init.body) ?? [];
+      const parts = partsOf(init.body, init.headers['content-type']) ?? [];
       const files = parts.filter((p) => p.value === null);
       const fields = parts.filter((p) => p.value !== null);
       const file = files[0];
@@ -3505,6 +3446,7 @@ export function createFakeVault(): {
         state: 'waiting',
         document_id: null,
         key,
+        ...(file.bytes ? { bytes: file.bytes } : {}),
       };
       b.items.push(it);
       const sent: DeviceUploaded = { item_id: it.id, status: 'waiting' };
@@ -3549,10 +3491,13 @@ export function createFakeVault(): {
     return null;
   };
 
-  const fetch: FetchLike = async (url, init) => {
+  const fetch: FetchLike = async (url, sent) => {
     const path = url.replace(/^[a-z]+:\/\/[^/]+/i, '').split('?')[0] as string;
-    state.calls.push({ method: init.method, path });
+    state.calls.push({ method: sent.method, path });
     if (state.offline) throw new TypeError('Network request failed');
+    // The body as it was sent, in bytes (CL3): a stream, a Blob or an
+    // ArrayBuffer read now; a platform FormData's files too.
+    const init = { ...sent, body: await readBody(sent.body) };
     const body =
       typeof init.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {};
     const auth = init.headers.authorization?.replace(/^Bearer /, '');
@@ -3665,7 +3610,7 @@ export function createFakeVault(): {
       next,
       timezone: () => state.timezone,
     });
-    const appAnswer = await apps.app(url, init, partsOf);
+    const appAnswer = await apps.app(url, init, (b) => partsOf(b, init.headers['content-type']));
     if (appAnswer) return appAnswer;
     // A connected app's link, opened by its user's browser (APP3).
     const linkAnswer = await apps.links(url, init);
@@ -5457,7 +5402,7 @@ export function createFakeVault(): {
         }
         return respond(201, answer(prior), { 'idempotent-replayed': 'true' });
       }
-      const parts = partsOf(init.body) ?? [];
+      const parts = partsOf(init.body, init.headers['content-type']) ?? [];
       let documentId = target;
       if (documentId === undefined) {
         // The card's details come before the file, or not at all (0.4.9).
@@ -5765,6 +5710,29 @@ export function createFakeVault(): {
       const made = state.captures.get(decodeURIComponent(uploadKey[1] as string).toLowerCase());
       if (!made) return fail(404, 'not_found', 'That upload is not known here.');
       return ok({ state: 'done', document_id: made.document_id, version_id: made.version_id });
+    }
+    // A version's file (CL3), as the real route gives it: the exact bytes
+    // uploaded, an attachment, under the type a browser never renders for a
+    // record. Ranges and the step-up of an Essential are not modelled.
+    const contentOf = /^\/api\/v1\/versions\/([^/]+)\/content$/.exec(path);
+    if (contentOf && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const id = decodeURIComponent(contentOf[1] as string);
+      const v = [...state.captures.values()].find((c) => c.version_id === id);
+      if (!v || !state.documents.some((d) => d.id === v.document_id)) {
+        return fail(404, 'not_found', 'That file is not in the vault.');
+      }
+      const bytes = v.bytes ?? new Uint8Array();
+      return attachment(bytes, {
+        'accept-ranges': 'bytes',
+        'content-type': deliveredType(v.mime),
+        'content-disposition': attachmentDisposition(recordFileName(v.filename, v.mime)),
+        'content-length': String(bytes.length),
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'; sandbox",
+        'cache-control': 'private, no-store',
+      });
     }
     // A page as the vault drew it (0.4.12): not found for a version it never
     // made, still being drawn until a test says otherwise, then a JPEG.
@@ -7120,6 +7088,7 @@ export function createFakeVault(): {
           mime: f.content_type,
           byte_size: f.bytes.length,
           uploaded_at: new Date().toISOString(),
+          bytes: f.bytes,
         };
         // Kept as an upload is, under a key nobody will send.
         state.captures.set(next('incoming-upload'), made);
@@ -7818,7 +7787,7 @@ export function createFakeVault(): {
         if (taken >= BATCH_MAX_FILES) {
           return fail(422, 'batch_full', `A batch holds ${BATCH_MAX_FILES} files at most.`);
         }
-        const parts = partsOf(init.body) ?? [];
+        const parts = partsOf(init.body, init.headers['content-type']) ?? [];
         const files = parts.filter((p) => p.value === null);
         const file = files[0];
         // Where it was under the folder chosen (S2): one field, before the file.
@@ -7859,6 +7828,7 @@ export function createFakeVault(): {
           document_id: null,
           ...(key ? { key } : {}),
           ...(folder ? { folder } : {}),
+          ...(file.bytes ? { bytes: file.bytes } : {}),
         };
         b.items.push(it);
         return ok(itemView(b, it), 201);
@@ -8009,6 +7979,7 @@ export function createFakeVault(): {
           mime: it.content_type,
           byte_size: it.byte_size,
           uploaded_at: new Date().toISOString(),
+          ...(it.bytes ? { bytes: it.bytes } : {}),
         };
         state.captures.set(next('batch-upload'), made);
         collection?.items.push({ document_id: doc.id, added_at: new Date().toISOString() });
@@ -8634,7 +8605,7 @@ export function createFakeVault(): {
       }
       if (init.method !== 'PUT') return fail(404, 'not_found', 'Not here.');
       if (state.role === 'viewer') return fail(403, 'forbidden', refusalFor('member.photo'));
-      const parts = partsOf(init.body) ?? [];
+      const parts = partsOf(init.body, init.headers['content-type']) ?? [];
       const order = parts.map((p) => (p.value === null ? `file:${p.name}` : p.name)).join(',');
       if (order !== 'file:file' && order !== 'crop,file:file') {
         return fail(422, 'validation_failed', 'Send the crop first, then the photo.');
@@ -10536,7 +10507,15 @@ function param(url: string, name: string): string | undefined {
 function answer(made: FakeUpload) {
   return made.kind === 'capture'
     ? { document_id: made.document_id, version_id: made.version_id, job_id: null, state: 'stored' }
-    : { id: made.version_id, document_id: made.document_id };
+    : {
+        id: made.version_id,
+        document_id: made.document_id,
+        // What the file was (CL3): its size the bytes kept, exactly.
+        version_no: made.version_no,
+        filename: made.filename,
+        mime: made.mime,
+        byte_size: made.byte_size,
+      };
 }
 
 /**

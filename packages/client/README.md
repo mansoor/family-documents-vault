@@ -22,7 +22,7 @@ It is not on npmjs.com. Each vault release attaches the client of that release t
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.61/fdv-client-0.9.0-dev.61.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.62/fdv-client-0.9.0-dev.62.tgz"
   }
 }
 ```
@@ -122,7 +122,10 @@ const app = createAppClient({
 The fake checks every signature as the vault does, and keeps an app's keys by the vault's
 rules: pending until confirmed, two at most, the seven days. Adding or confirming a key
 asks for a passkey or a code: the fake's owner has none until `fake.state.ownerTwoStep =
-true`, and an adult has one until `fake.state.adultTwoStep = false`. The scenarios both the fake
+true`, and an adult has one until `fake.state.adultTwoStep = false`. It keeps a file's bytes
+exactly as they were sent — bytes, a stream, a Blob or a platform FormData — and gives back
+those bytes from every download (an app's, its re-download of a send, and the family's
+`api.content`), so a hash taken before and after agrees. The scenarios both the fake
 and the real vault are held to, `contractScenarios`, are their own entry,
 `@fdv/client/testing/contract`: they use vitest's `expect`, so to use that entry, keep
 vitest in your app's own devDependencies, `npm install -D vitest@">=5 <7"` (or `pnpm add -D

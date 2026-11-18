@@ -183,6 +183,11 @@ const APP2_KEYS = [
   'b5c6d7e8-f90a-4b1c-8d2e-3f4a5b6c7d83',
   'b5c6d7e8-f90a-4b1c-8d2e-3f4a5b6c7d84',
 ] as const;
+/** The every-byte scenario's capture and new version (CL3). */
+const CL3_KEYS = [
+  'd6e7f809-1a2b-4c3d-8e4f-5a6b7c8d9e01',
+  'd6e7f809-1a2b-4c3d-8e4f-5a6b7c8d9e02',
+] as const;
 /** A capture of the connected app links scenario (0.9.0, APP3). */
 const APP3_KEY = 'c6d7e8f9-0a1b-4c2d-8e3f-4a5b6c7d8e91';
 /** RFC 8032's first Ed25519 test key (7.1, TEST 1), for a second app (0.9.0, APP2). */
@@ -206,6 +211,54 @@ async function keyPair(): Promise<{ publicKey: string; privateKey: Uint8Array }>
   return {
     publicKey: `ed25519:${toBase64(raw, true)}`,
     privateKey: new Uint8Array(await crypto.subtle.exportKey('pkcs8', k.privateKey)),
+  };
+}
+
+/**
+ * A file no text decoding survives (CL3): a PDF's first line, then every
+ * byte value twice, then lines that look like a multipart boundary and a
+ * part's headers — CRLF and dashes — and the end of a PDF. Each `label`
+ * makes a file of its own.
+ */
+function everyByte(label: string): Uint8Array<ArrayBuffer> {
+  const enc = new TextEncoder();
+  const chunks = [
+    enc.encode(`%PDF-1.4\n% ${label}\n`),
+    Uint8Array.from({ length: 512 }, (_, i) => i % 256),
+    enc.encode(
+      '\r\n--fdv-00112233445566778899aabbccddeeff0011\r\nContent-Disposition: form-data; name="file"\r\n\r\n\r\n--\r\n',
+    ),
+    Uint8Array.from({ length: 256 }, (_, i) => 255 - i),
+    enc.encode('\n%%EOF\n'),
+  ];
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
+}
+
+/** Bytes' SHA-256, in hex. */
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(bytes)));
+  return Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** A version's file, by the family's ordinary download: exactly the bytes, and their hash. */
+async function downloaded(
+  api: Api,
+  token: string,
+  versionId: string,
+): Promise<{ bytes: Uint8Array; sha256: string; disposition: string | null }> {
+  const res = await api.content(token, versionId);
+  expect(res.status).toBe(200);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  return {
+    bytes,
+    sha256: await sha256Hex(bytes),
+    disposition: res.headers.get('content-disposition'),
   };
 }
 
@@ -5123,6 +5176,132 @@ export const contractScenarios: Scenario[] = [
       const gone = await refusal(api.connectedApps.confirmKey(token, made.id, next.key_id));
       expect([gone.status, gone.code]).toEqual([404, 'not_found']);
       expect((await appB.me()).keys.map((k) => k.key_id)).toEqual([added.key_id]);
+      await api.connectedApps.remove(token, made.id);
+    },
+  },
+  {
+    name: 'a file of every byte value comes back exactly as the family sent it: a capture, a new version, a batch item accepted (CL3)',
+    run: async (api) => {
+      // The owner, with two-step sign-in on by now, as the connected app scenario signed them in.
+      const owner = connectedAppOwner;
+      if (!owner) throw new Error('the connected app scenario runs first');
+      const token = owner.access_token;
+      const pdf = (label: string) => ({
+        bytes: everyByte(label),
+        filename: `${label}.pdf`,
+        contentType: 'application/pdf',
+      });
+      // A capture, sent as bytes with its details first.
+      const first = pdf('cl3-capture');
+      const form = multipartBody([
+        {
+          name: 'metadata',
+          value: JSON.stringify({
+            type_key: 'utility_bill',
+            title: 'Every byte, captured',
+            owner_member_id: owner.member_id,
+            visibility: 'household',
+          }),
+        },
+        { name: 'file', ...first },
+      ]);
+      const made = await api.capture(
+        token,
+        { kind: 'bytes', bytes: form.bytes, contentType: form.contentType },
+        CL3_KEYS[0],
+      );
+      const got = await downloaded(api, token, made.version_id);
+      expect(got.bytes).toEqual(first.bytes);
+      expect(got.sha256).toBe(await sha256Hex(first.bytes));
+      expect(got.disposition).toMatch(/^attachment/);
+      // A new version of it.
+      const second = pdf('cl3-version');
+      const body = multipartBody([{ name: 'file', ...second }]);
+      const version = await api.upload(
+        token,
+        made.document_id,
+        { kind: 'bytes', bytes: body.bytes, contentType: body.contentType },
+        CL3_KEYS[1],
+      );
+      expect(version.byte_size).toBe(second.bytes.length);
+      const again = await downloaded(api, token, version.id);
+      expect(again.bytes).toEqual(second.bytes);
+      expect(again.sha256).toBe(await sha256Hex(second.bytes));
+      // A batch's item, accepted.
+      const third = pdf('cl3-batch');
+      const batch = await api.createBatch(token, { name: 'Every byte' });
+      const item = await api.addBatchItem(token, batch.id, { kind: 'bytes', ...third });
+      expect(item.byte_size).toBe(third.bytes.length);
+      const accepted = await api.acceptBatchItem(token, batch.id, item.id, {
+        type_key: 'utility_bill',
+        title: 'Every byte, accepted',
+        owner_member_id: owner.member_id,
+        visibility: 'household',
+      });
+      const filed = await downloaded(api, token, accepted.version_id);
+      expect(filed.bytes).toEqual(third.bytes);
+      expect(filed.sha256).toBe(await sha256Hex(third.bytes));
+      await api.removeBatch(token, batch.id);
+    },
+  },
+  {
+    name: 'a connected app’s file of every byte value is kept exactly: its digest, its hash, and each download of it (CL3)',
+    run: async (api, ctx) => {
+      if (!ctx.fetch) throw new Error('the contract needs the fetch its vault answers on');
+      if (!ctx.fileAppSend)
+        throw new Error('the contract needs its vault to file what an app sent');
+      const owner = connectedAppOwner;
+      if (!owner) throw new Error('the connected app scenario runs first');
+      const token = owner.access_token;
+      const key = await keyPair();
+      const made = await api.connectedApps.create(token, {
+        name: 'Every byte',
+        member_id: owner.member_id,
+        public_key: key.publicKey,
+        allowed_kinds: ['utility_bill'],
+        scopes: ['documents.send', 'documents.read', 'documents.download'],
+      });
+      const app = createAppClient({
+        baseUrl: api.http.baseUrl,
+        appId: made.id,
+        keyId: made.keys[0]?.key_id as string,
+        privateKey: key.privateKey,
+        fetch: ctx.fetch,
+      });
+      const bytes = everyByte('cl3-app');
+      const sum = await sha256Hex(bytes);
+      const file = { bytes, filename: 'every-byte.pdf', contentType: 'application/pdf' };
+      const sent = await app.send({
+        externalId: 'every-byte-1',
+        hints: { kind: 'utility_bill' },
+        file,
+      });
+      // The vault hashed the bytes sent, having checked them against their digest.
+      expect(sent.status).toBe(201);
+      expect(sent.state.sha256).toBe(sum);
+      expect(sent.state.byte_size).toBe(bytes.length);
+      // Sent again, the same bytes: answered so, not refused as others would be.
+      const replay = await app.send({ externalId: 'every-byte-1', file });
+      expect(replay).toMatchObject({ status: 200, replayed: true });
+      const doc = await ctx.fileAppSend(token, { id: made.id, name: made.name }, 'every-byte-1', {
+        sha256: sum,
+        bytes,
+      });
+      // The app's re-download of its send, and its download of the document.
+      const resent = await app.sentFile('every-byte-1');
+      expect(resent.status).toBe(200);
+      expect(resent.bytes).toEqual(bytes);
+      expect(await sha256Hex(resent.bytes)).toBe(sum);
+      const read = await app.download(doc);
+      expect(read.status).toBe(200);
+      expect(read.bytes).toEqual(bytes);
+      expect(await sha256Hex(read.bytes)).toBe(sum);
+      // The family's ordinary download of the version it became.
+      const newest = (await api.versions(token, doc)).items[0];
+      expect(newest?.byte_size).toBe(bytes.length);
+      const family = await downloaded(api, token, newest?.id as string);
+      expect(family.bytes).toEqual(bytes);
+      expect(family.sha256).toBe(sum);
       await api.connectedApps.remove(token, made.id);
     },
   },

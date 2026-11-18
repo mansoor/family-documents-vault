@@ -6,6 +6,12 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.62] - 2026-11-17 — the fake vault keeps a file's bytes
+
+### Fixed
+
+- **The client's fake vault no longer alters binary files.** It read an upload's body as text, so a PNG, a JPEG or most PDFs sent to it — by a connected app, a capture, a new version, a batch or a computer — were stored altered, their hash no longer the one of the file sent. It now splits the body on its boundary in bytes and keeps each file exactly, from bytes, a stream, a Blob or a platform FormData, and every download gives those bytes back. The fake also answers the family's ordinary download of a version (`GET /versions/{id}/content`), which it did not before. The real vault was never affected. A contract scenario sends a file of every byte value to the fake and the real vault alike and downloads it back every way there is.
+
 ## [0.9.0-dev.61] - 2026-11-17 — the API client, from an app's first use
 
 ### Changed
