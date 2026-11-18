@@ -1,4 +1,5 @@
 import {
+  APP_ACTS_AS_DEFAULT,
   APP_AUTH_FAILURES_PER_MINUTE,
   APP_CLIENT_ID_PATTERN,
   APP_CONNECTION_PREFIX,
@@ -84,6 +85,13 @@ import type { FetchLike, ResponseLike } from '../http.js';
  * retired by the app itself. A test expires a key with `fakeExpireAppKey`
  * (the fake vault's `expireAppKey`). Each check is made in the order the
  * vault's routes make it.
+ *
+ * Acting as itself (APP8), by the vault's rules: an app connected without a
+ * person acts as itself, on at once, its papers that nothing routes going
+ * to its reviewer's Inbox (by default the owner connecting it); a reviewer
+ * who cannot take one now (`receives` false) refuses it `503 busy`, and
+ * the owners are told once (an activity line). The activity log names the
+ * app alone. One acting as a person is as before.
  */
 
 /** A document of the fake's, as an app's reading needs it. */
@@ -121,7 +129,7 @@ export interface FakeAppKey {
   last_used_at: string | null;
   revoked_at: string | null;
   /** Why: an owner revoked it, or its app was removed (the vault's restore revokes every key too). */
-  revoked_reason?: 'owner' | 'app_removed' | 'restore' | null;
+  revoked_reason?: 'owner' | 'app_removed' | 'restore' | 'creator' | null;
 }
 
 export interface FakeIntake {
@@ -147,6 +155,8 @@ export interface FakeIntake {
   auto_file_held?: boolean;
   /** Whose Inbox it went to (APP5): the app's person's, or the person it is about. */
   inbox_member_id?: string;
+  /** Sent as the app itself (APP8): a file of it filed names the app, whatever it acts as by then. */
+  as_itself?: boolean;
 }
 
 /** A link an app minted (APP3), and its session once opened. */
@@ -167,7 +177,14 @@ export interface FakeAppLink {
 export interface FakeApp {
   id: string;
   name: string;
-  member_id: string;
+  /** Whom it acts as (APP8): itself, or `member_id`. Absent: a person, as an app from before. */
+  acts_as?: 'app' | 'person';
+  /** The person it acts as; null when it acts as itself. */
+  member_id: string | null;
+  /** Who reviews what nothing routes, when it acts as itself (APP8). */
+  reviewer_member_id?: string | null;
+  /** The owners were told it needs another reviewer (APP8): once, until one takes a send. */
+  reviewer_told?: boolean;
   approval: 'waiting' | 'approved';
   paused: 'owner' | 'restored' | null;
   revoked: boolean;
@@ -266,6 +283,16 @@ export interface FakeAppDeps {
   documents?: () => FakeReadableDoc[];
   /** A document moved to the Trash by an app's delete (APP3). */
   trash?: (id: string) => void;
+  /**
+   * A line in the fake's activity log (APP8): what an app did, and the
+   * owners told it needs a reviewer. `object` is the member a line is about.
+   */
+  log?: (line: {
+    action: string;
+    actorMemberId: string | null;
+    object: string | null;
+    detail: Record<string, unknown>;
+  }) => void;
   ok: (body: unknown, status?: number, headers?: Record<string, string>) => ResponseLike;
   /** Bytes as they are, for a download (APP2). */
   raw: (status: number, bytes: Uint8Array, headers: Record<string, string>) => ResponseLike;
@@ -372,6 +399,17 @@ export function fakeExpireAppKey(apps: readonly FakeApp[], clientId: string): bo
 
 const KEY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Whom an app acts as (APP8): one a test made by hand without saying is a person's. */
+export const actsAs = (a: Pick<FakeApp, 'acts_as'>): 'app' | 'person' => a.acts_as ?? 'person';
+
+/** What an app's line in the activity log says of it (APP8): the app alone, when it acts as itself. */
+const lineOf = (a: FakeApp, more: Record<string, unknown> = {}) => ({
+  app_id: a.id,
+  app: a.name,
+  ...(actsAs(a) === 'app' ? { as_itself: true } : {}),
+  ...more,
+});
+
 export function fakeAppRoutes(d: FakeAppDeps) {
   /** App and key ids are UUIDs, as the vault writes them; an app client takes no other. */
   // Counted by the vault's own counter: these routes are made for each
@@ -396,18 +434,26 @@ export function fakeAppRoutes(d: FakeAppDeps) {
    * on again, as the vault does.
    */
   const reapprove = (a: FakeApp, who: { memberId: string }) => {
+    // An app acting as itself acts as nobody (APP8): an owner's change is theirs.
+    if (actsAs(a) === 'app') return;
     if (a.member_id !== who.memberId && a.approval === 'approved') a.approval = 'waiting';
   };
   const view = async (a: FakeApp, me: { memberId: string }): Promise<ConnectedAppView> => {
     const keys = a.keys.map(keyView);
     const newest = liveKeys(a)[liveKeys(a).length - 1];
-    const mine = a.member_id === me.memberId;
+    const itself = actsAs(a) === 'app';
+    const mine = !itself && a.member_id === me.memberId;
     const states = [...a.intake.values()];
+    const reviewer = itself ? (a.reviewer_member_id ?? null) : null;
     return {
       id: a.id,
       name: a.name,
-      member_id: a.member_id,
-      member_name: d.memberName(a.member_id),
+      acts_as: actsAs(a),
+      member_id: itself ? null : a.member_id,
+      member_name: itself || !a.member_id ? null : d.memberName(a.member_id),
+      reviewer_member_id: reviewer,
+      reviewer_name: reviewer ? d.memberName(reviewer) : null,
+      reviewer_needed: itself && !(reviewer && d.receives?.(reviewer) === true),
       mine,
       created_at: a.created_at,
       state: a.approval === 'waiting' ? 'waiting_for_approval' : a.paused ? 'paused' : 'active',
@@ -484,6 +530,66 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     };
   };
 
+  /**
+   * Whom an app is to act as (APP8), as the vault decides it: a person named
+   * (as before), or itself with a reviewer — the one named, else the one it
+   * has, else the owner asking. The wrong field for each is `422`.
+   */
+  const whomOf = (
+    body: Record<string, unknown>,
+    had: FakeApp | null,
+    me: string,
+  ):
+    | { acts_as: 'app' | 'person'; member_id: string | null; reviewer_member_id: string | null }
+    | { fail: ResponseLike } => {
+    const asked =
+      body.acts_as ??
+      (body.member_id !== undefined
+        ? 'person'
+        : body.reviewer_member_id !== undefined
+          ? 'app'
+          : had
+            ? actsAs(had)
+            : APP_ACTS_AS_DEFAULT);
+    const bad = (message: string, detail: string) => ({
+      fail: d.fail(422, 'validation_failed', message, detail),
+    });
+    if (asked !== 'app' && asked !== 'person') {
+      return bad('An app acts as itself or as a person.', 'acts_as');
+    }
+    if (asked === 'person') {
+      if (body.reviewer_member_id !== undefined) {
+        return bad('An app acting as a person has no reviewer.', 'reviewer_member_id');
+      }
+      const member =
+        typeof body.member_id === 'string'
+          ? body.member_id
+          : had && actsAs(had) === 'person'
+            ? had.member_id
+            : null;
+      if (!member || !d.mayAct(member)) {
+        return bad('An app acts as an owner or an adult who signs in.', 'member_id');
+      }
+      return { acts_as: 'person', member_id: member, reviewer_member_id: null };
+    }
+    if (body.member_id !== undefined) {
+      return bad('An app acting as itself acts as nobody.', 'member_id');
+    }
+    const reviewer =
+      typeof body.reviewer_member_id === 'string'
+        ? body.reviewer_member_id
+        : had && actsAs(had) === 'app' && had.reviewer_member_id
+          ? had.reviewer_member_id
+          : me;
+    if (!d.mayAct(reviewer)) {
+      return bad(
+        'An app’s papers are reviewed by an owner or an adult who signs in.',
+        'reviewer_member_id',
+      );
+    }
+    return { acts_as: 'app', member_id: null, reviewer_member_id: reviewer };
+  };
+
   /** The family's side, signed in: Settings → Connected apps. */
   const family = async (
     path: string,
@@ -515,21 +621,18 @@ export function fakeAppRoutes(d: FakeAppDeps) {
           'Turn on two-step sign-in to connect an app, or change what it may do.',
         );
       }
-      const member = typeof body.member_id === 'string' ? body.member_id : '';
-      if (!d.mayAct(member)) {
-        return d.fail(
-          422,
-          'validation_failed',
-          'An app acts as an owner or an adult who signs in.',
-          'member_id',
-        );
-      }
+      // Whom it acts as (APP8): a person named, as before; else itself.
+      const whom = whomOf(body, null, who.memberId);
+      if ('fail' in whom) return whom.fail;
+      const member = whom.member_id;
       const now = new Date().toISOString();
       const a: FakeApp = {
         id: uuid(),
         name: (typeof body.name === 'string' ? body.name : '').trim() || 'App',
+        acts_as: whom.acts_as,
         member_id: member,
-        approval: member === who.memberId ? 'approved' : 'waiting',
+        reviewer_member_id: whom.reviewer_member_id,
+        approval: whom.acts_as === 'app' || member === who.memberId ? 'approved' : 'waiting',
         paused: null,
         revoked: false,
         allowed_kinds: Array.isArray(body.allowed_kinds) ? (body.allowed_kinds as string[]) : [],
@@ -562,6 +665,16 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       if ('fail' in auto) return auto.fail;
       Object.assign(a, auto.set);
       d.apps.push(a);
+      d.log?.({
+        action: 'app.connected',
+        actorMemberId: who.memberId,
+        object: a.member_id ?? a.reviewer_member_id ?? null,
+        detail: {
+          app_id: a.id,
+          app: a.name,
+          ...(whom.acts_as === 'app' ? { acts_as: 'app' } : {}),
+        },
+      });
       return d.ok(await view(a, who), 201);
     }
     const at = new RegExp(
@@ -721,6 +834,24 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       return d.ok(await view(a, who));
     }
     if (what === '' && method === 'PATCH') {
+      // Whom it acts as, and who reviews it (APP8): as the vault changes them.
+      const asked =
+        body.acts_as !== undefined ||
+        body.member_id !== undefined ||
+        body.reviewer_member_id !== undefined;
+      if (asked) {
+        const whom = whomOf(body, a, who.memberId);
+        if ('fail' in whom) return whom.fail;
+        const moved = whom.acts_as !== actsAs(a) || whom.member_id !== a.member_id;
+        a.acts_as = whom.acts_as;
+        a.member_id = whom.member_id;
+        a.reviewer_member_id = whom.reviewer_member_id;
+        a.reviewer_told = false;
+        if (moved) {
+          a.approval =
+            whom.acts_as === 'person' && whom.member_id !== who.memberId ? 'waiting' : 'approved';
+        }
+      }
       if (typeof body.name === 'string') a.name = body.name;
       if (Array.isArray(body.allowed_kinds)) a.allowed_kinds = body.allowed_kinds as string[];
       if (typeof body.daily_files === 'number') a.daily_files = body.daily_files;
@@ -1436,7 +1567,9 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         app: { id: a.id, name: a.name, created_at: a.created_at },
         state: a.approval === 'waiting' ? 'waiting_for_approval' : a.paused ? 'paused' : 'active',
         ...(a.paused ? { paused_reason: a.paused } : {}),
-        acting_as: { name: d.memberName(a.member_id) },
+        // Whom it acts as (APP8), and nothing more of whom.
+        acts_as: actsAs(a),
+        acting_as: { name: a.member_id ? d.memberName(a.member_id) : a.name },
         vault: {
           instance_id: null,
           server_version: '0.9.0',
@@ -1566,6 +1699,38 @@ export function fakeAppRoutes(d: FakeAppDeps) {
               receives: (id) => d.receives?.(id) === true,
             })
           : null;
+      // Nothing routes it: its person's Inbox — or, for an app acting as
+      // itself (APP8), its reviewer's, while they can take it; else refused
+      // for a moment, and the owners told once.
+      let inbox = routed ?? a.member_id;
+      if (!routed && actsAs(a) === 'app') {
+        const reviewer = a.reviewer_member_id ?? null;
+        if (!reviewer || d.receives?.(reviewer) !== true) {
+          if (!a.reviewer_told) {
+            a.reviewer_told = true;
+            d.log?.({
+              action: 'app.reviewer_needed',
+              actorMemberId: null,
+              object: null,
+              detail: lineOf(a),
+            });
+          }
+          return d.ok(
+            {
+              error: {
+                code: 'busy',
+                message: 'The vault was busy just then. Try again.',
+                retriable: true,
+                request_id: 'fake',
+              },
+            },
+            503,
+            { 'retry-after': '1' },
+          );
+        }
+        inbox = reviewer;
+        a.reviewer_told = false;
+      }
       const s: FakeIntake = {
         state: 'waiting',
         removed_reason: null,
@@ -1573,7 +1738,8 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         sha256: sum,
         byte_size: bytes.length,
         received_at: new Date().toISOString(),
-        inbox_member_id: routed ?? a.member_id,
+        ...(inbox ? { inbox_member_id: inbox } : {}),
+        as_itself: actsAs(a) === 'app',
         // Kept while it waits, for the fake to file it as the vault would (APP4).
         hints,
         file: {
@@ -1585,6 +1751,12 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       a.intake.set(id, s);
       a.files_today += 1;
       a.bytes_today += bytes.length;
+      d.log?.({
+        action: 'app.sent',
+        actorMemberId: actsAs(a) === 'app' ? null : a.member_id,
+        object: inbox,
+        detail: lineOf(a),
+      });
       return d.ok(stateOf(id, s), 201);
     }
     if (path === '/api/v1/apps/intake' && method === 'GET') {

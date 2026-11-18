@@ -1,5 +1,9 @@
 import {
+  APP_ACTS_AS_DEFAULT,
   APP_AUTO_FILE_WORDS,
+  APP_REVIEWER_WORDS,
+  appItselfWords,
+  appReviewerNeededWords,
   APP_ROUTE_WORDS,
   APP_BACKFILL_MAX_DAYS,
   APP_DEFAULT_DAILY_BYTES,
@@ -34,6 +38,7 @@ import {
   lookbackWords,
   NOTE_KIND,
   roleLabel,
+  type AppActsAs,
   type AppDeleteMode,
   type AppKeyView,
   type AppScope,
@@ -75,7 +80,10 @@ import { SettingsPage } from './Settings.js';
 /**
  * Connected apps (/settings/connected-apps, 0.9.0 APP1): an app an owner
  * connects, which sends documents into the Inbox of the person it acts as —
- * an owner or an adult who signs in.
+ * an owner or an adult who signs in. Since APP8 an app acts as itself by
+ * default: what nothing sends to a particular person goes to the Inbox of
+ * the person who reviews it ("Reviewed by"), an owner or an adult, who is
+ * told and asked nothing; an owner may still choose a person it acts as.
  *
  * An owner sees every app, connects one (a passkey or an authenticator's
  * code, never the password: `connect_app`), pauses it, turns it back on,
@@ -124,9 +132,31 @@ export function todayWords(app: Pick<ConnectedAppView, 'today' | 'daily_files' |
 /** A day as the page says it: "23 November", on the family's calendar. */
 const day = (iso: string) => dayWordsOf(iso, familyZoneNow(), { year: 'other' });
 
-/** Whom it acts as, for the reader: "you", or their name. */
-const whom = (app: Pick<ConnectedAppView, 'mine' | 'member_name'>) =>
-  app.mine ? 'you' : app.member_name;
+/** Whom it acts as, for the reader: "you", or their name; "itself" for an app acting as itself (APP8). */
+const whom = (app: Pick<ConnectedAppView, 'mine' | 'member_name' | 'acts_as'>) =>
+  app.acts_as === 'app' ? 'itself' : app.mine ? 'you' : (app.member_name ?? 'somebody');
+
+/**
+ * Whose Inbox takes what nothing sends to a particular person: its
+ * person's, or, for an app acting as itself, its reviewer's (APP8).
+ */
+function inboxWords(
+  app: Pick<
+    ConnectedAppView,
+    'mine' | 'member_name' | 'acts_as' | 'reviewer_member_id' | 'reviewer_name' | 'reviewer_needed'
+  >,
+  me: string,
+): string {
+  if (app.acts_as === 'app') {
+    if (app.reviewer_needed || !app.reviewer_name) return 'nobody’s, until an owner chooses who';
+    return app.reviewer_member_id === me ? 'yours' : `${app.reviewer_name}’s`;
+  }
+  return app.mine ? 'yours' : `${app.member_name ?? 'its person'}’s`;
+}
+
+/** Whether it waits for somebody else to turn it on again: a person it acts as, not the reader. */
+const waitsOnOther = (app: Pick<ConnectedAppView, 'mine' | 'acts_as'>) =>
+  app.acts_as !== 'app' && !app.mine;
 
 /** Its state in words; a pause says by whom. */
 function stateWords(app: ConnectedAppView): string {
@@ -138,6 +168,8 @@ function stateWords(app: ConnectedAppView): string {
   }
   return APP_STATE_WORDS[app.state];
 }
+
+const capitalise = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 const STATE_CLASS: Record<ConnectedAppView['state'], string> = {
   active: 'status status-ok',
@@ -166,7 +198,11 @@ const ROUTE_NOTE =
 /** The form's fields, as typed. */
 interface AppForm {
   name: string;
+  /** Whom it acts as (APP8): itself, or the person `member` is. */
+  actsAs: AppActsAs;
   member: string;
+  /** Who reviews what nothing sends to a particular person, when it acts as itself (APP8). */
+  reviewer: string;
   kinds: string[];
   /** '' is "as each kind says". */
   seen: '' | Visibility;
@@ -197,7 +233,9 @@ type Ceilings = ConnectedAppList['ceilings'];
 type Read =
   | {
       ok: true;
-      value: Omit<ConnectedAppInput, 'member_id'> & { ip_allow: string[] };
+      value: Omit<ConnectedAppInput, 'member_id' | 'acts_as' | 'reviewer_member_id'> & {
+        ip_allow: string[];
+      };
     }
   | { ok: false; error: string };
 
@@ -235,6 +273,10 @@ function readForm(f: AppForm, ceilings: Ceilings): Read {
   if (name.length > APP_NAME_MAX) {
     return { ok: false, error: `A name is ${APP_NAME_MAX} characters at most.` };
   }
+  if (f.actsAs === 'app' && !f.reviewer) {
+    return { ok: false, error: 'Choose who reviews what it sends.' };
+  }
+  if (f.actsAs === 'person' && !f.member) return { ok: false, error: 'Choose whom it acts as.' };
   const maxMb = Math.floor(ceilings.daily_bytes / MB);
   const files = whole(f.files, 1, ceilings.daily_files);
   if (files === null) return { ok: false, error: `Files a day: 1 to ${ceilings.daily_files}.` };
@@ -299,7 +341,10 @@ function readForm(f: AppForm, ceilings: Ceilings): Read {
 function blankForm(me: string): AppForm {
   return {
     name: '',
+    // Itself, reviewed by the owner connecting it, unless they choose (APP8).
+    actsAs: APP_ACTS_AS_DEFAULT,
     member: me,
+    reviewer: me,
     kinds: [],
     seen: '',
     files: String(APP_DEFAULT_DAILY_FILES),
@@ -326,7 +371,9 @@ function blankForm(me: string): AppForm {
 function formOf(app: ConnectedAppView): AppForm {
   return {
     name: app.name,
-    member: app.member_id,
+    actsAs: app.acts_as ?? 'person',
+    member: app.member_id ?? '',
+    reviewer: app.reviewer_member_id ?? '',
     kinds: [...app.allowed_kinds],
     seen: app.default_visibility ?? '',
     files: String(app.daily_files),
@@ -352,6 +399,16 @@ const sameSet = (a: readonly string[], b: readonly string[]) =>
 function changeOf(start: AppForm, now: AppForm, value: Extract<Read, { ok: true }>['value']) {
   const change: ConnectedAppChange = {};
   if (now.name.trim() !== start.name) change.name = value.name;
+  // Whom it acts as (APP8): sent only when it changed — itself with its
+  // reviewer, or a person.
+  if (now.actsAs !== start.actsAs || (now.actsAs === 'person' && now.member !== start.member)) {
+    change.acts_as = now.actsAs;
+    if (now.actsAs === 'person') change.member_id = now.member;
+    else change.reviewer_member_id = now.reviewer;
+  } else if (now.actsAs === 'app' && now.reviewer !== start.reviewer) {
+    change.acts_as = 'app';
+    change.reviewer_member_id = now.reviewer;
+  }
   if (!sameSet(now.kinds, start.kinds)) change.allowed_kinds = value.allowed_kinds;
   if (now.seen !== start.seen) change.default_visibility = value.default_visibility ?? null;
   if (now.files.trim() !== start.files) change.daily_files = value.daily_files as number;
@@ -698,13 +755,86 @@ function KindsByCategory(props: {
   );
 }
 
+/** A person, as the pickers name them: "Sara (you)", or "Sam · Adult". */
+const personWords = (m: Member, me: string) =>
+  m.id === me
+    ? `${m.display_name} (you)`
+    : `${m.display_name} · ${m.role ? roleLabel(m.role) : ''}`;
+
+/**
+ * Whom it acts as — itself (the default) or a person — and, acting as
+ * itself, who reviews what it sends that is for nobody in particular (APP8).
+ */
+function WhoFields(props: {
+  id: string;
+  form: AppForm;
+  put: (more: Partial<AppForm>) => void;
+  people: Member[];
+  me: string;
+}) {
+  const { id, form, put, people, me } = props;
+  const name = form.name.trim() || 'the app';
+  return (
+    <>
+      <div className="field">
+        <label htmlFor={`${id}-who`}>It acts as</label>
+        <select
+          id={`${id}-who`}
+          value={form.actsAs === 'app' ? 'app' : `person:${form.member}`}
+          aria-describedby={`${id}-who-note`}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === 'app') put({ actsAs: 'app', reviewer: form.reviewer || me });
+            else put({ actsAs: 'person', member: v.slice('person:'.length) });
+          }}
+        >
+          <option value="app">{appItselfWords(name)}</option>
+          {people.map((m) => (
+            <option key={m.id} value={`person:${m.id}`}>
+              {personWords(m, me)}
+            </option>
+          ))}
+        </select>
+        <p id={`${id}-who-note`} className="muted field-note">
+          {form.actsAs === 'app'
+            ? 'Itself: the activity log names the app, never a person, and no person’s sign-in is used.'
+            : 'What it sends that is for nobody in particular goes into their Inbox. An owner or an adult who signs in. Somebody else turns it on themselves before it can send anything.'}
+        </p>
+      </div>
+      {form.actsAs === 'app' && (
+        <div className="field">
+          <label htmlFor={`${id}-reviewer`}>{APP_REVIEWER_WORDS}</label>
+          <select
+            id={`${id}-reviewer`}
+            value={form.reviewer}
+            aria-describedby={`${id}-reviewer-note`}
+            onChange={(e) => put({ reviewer: e.target.value })}
+          >
+            {/* None yet, or the one it had can review no more: chosen, never silently. */}
+            {!people.some((m) => m.id === form.reviewer) && <option value="">Choose…</option>}
+            {people.map((m) => (
+              <option key={m.id} value={m.id}>
+                {personWords(m, me)}
+              </option>
+            ))}
+          </select>
+          <p id={`${id}-reviewer-note`} className="muted field-note">
+            What it sends that isn’t for a particular person goes into their Inbox, to file or
+            remove. An owner or an adult who signs in. They are told, and need not turn anything on.
+          </p>
+        </div>
+      )}
+    </>
+  );
+}
+
 function AppFields(props: {
   id: string;
   form: AppForm;
   set: (f: AppForm) => void;
   types: DocumentTypeView[];
   ceilings: Ceilings;
-  /** Connecting: whom it acts as is asked too. */
+  /** An owner connecting or changing it: whom it acts as, and who reviews it, are asked too (APP8). */
   connect?: { people: Member[]; me: string };
   /** Whom it acts as, for "Only …": "you", or their name. */
   who: string;
@@ -728,29 +858,13 @@ function AppFields(props: {
         onChange={(v) => put({ name: v })}
       />
       {props.connect && (
-        <>
-          <div className="field">
-            <label htmlFor={`${id}-who`}>Acting as</label>
-            <select
-              id={`${id}-who`}
-              value={form.member}
-              aria-describedby={`${id}-who-note`}
-              onChange={(e) => put({ member: e.target.value })}
-            >
-              {props.connect.people.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.id === props.connect?.me
-                    ? `${m.display_name} (you)`
-                    : `${m.display_name} · ${m.role ? roleLabel(m.role) : ''}`}
-                </option>
-              ))}
-            </select>
-            <p id={`${id}-who-note`} className="muted field-note">
-              What it sends goes into their Inbox. An owner or an adult who signs in. Somebody else
-              turns it on themselves before it can send anything.
-            </p>
-          </div>
-        </>
+        <WhoFields
+          id={id}
+          form={form}
+          put={put}
+          people={props.connect.people}
+          me={props.connect.me}
+        />
       )}
       <fieldset className="limits-set">
         <legend className="field-label">What it may do</legend>
@@ -1040,7 +1154,11 @@ export function ConnectedAppsScreen() {
     if (!connecting || !data || busy) return;
     const read = readForm(connecting, data.list.ceilings);
     if (!read.ok) return setError(read.error);
-    const body: ConnectedAppInput = { ...read.value, member_id: connecting.member };
+    // Itself, with its reviewer; or a person (APP8).
+    const body: ConnectedAppInput =
+      connecting.actsAs === 'app'
+        ? { ...read.value, acts_as: 'app', reviewer_member_id: connecting.reviewer }
+        : { ...read.value, acts_as: 'person', member_id: connecting.member };
     setBusy(true);
     setError(null);
     setSaid(null);
@@ -1097,8 +1215,8 @@ export function ConnectedAppsScreen() {
       // Saved: said, the editor closed, and the focus back on its card's
       // "What it may read" (below), not the status line.
       setSaid(
-        a.state === 'waiting_for_approval' && !a.mine
-          ? `Saved. ${a.name} waits for ${a.member_name} to turn it on again.`
+        a.state === 'waiting_for_approval' && waitsOnOther(a)
+          ? `Saved. ${a.name} waits for ${a.member_name ?? 'its person'} to turn it on again.`
           : `Saved. ${a.name} may read what it now says here.`,
       );
       focusGrantsOf.current = app.id;
@@ -1126,7 +1244,7 @@ export function ConnectedAppsScreen() {
     <SettingsPage title="Connected apps">
       <p className="lede">
         {owner
-          ? 'An app you connect sends documents into the Inbox of the person it acts as, using an API key you generate here. If you allow it, it reads what it sent, and the kinds of papers you choose, for as far back as you choose. Never identity, legal or medical papers, nothing Only me or Essential, and nothing marked Sensitive.'
+          ? 'An app you connect acts as itself, or as a person you choose, and sends documents into the Inbox of the person each is about — else of the person who reviews it — using an API key you generate here. If you allow it, it reads what it sent, and the kinds of papers you choose, for as far back as you choose. Never identity, legal or medical papers, nothing Only me or Essential, and nothing marked Sensitive.'
           : 'An app an owner connects as you sends documents into your Inbox, using an API key an owner generates. If an owner allows it, it reads what it sent, and the kinds of papers they choose, as you. Never identity, legal or medical papers, nothing Only me or Essential, and nothing marked Sensitive.'}
       </p>
       <p className="status-line" role="status" ref={statusLine} tabIndex={-1}>
@@ -1166,9 +1284,11 @@ export function ConnectedAppsScreen() {
               ceilings={data.list.ceilings}
               connect={{ people, me }}
               who={
-                connecting.member === me
-                  ? 'you'
-                  : (people.find((m) => m.id === connecting.member)?.display_name ?? 'them')
+                connecting.actsAs === 'app'
+                  ? 'itself'
+                  : connecting.member === me
+                    ? 'you'
+                    : (people.find((m) => m.id === connecting.member)?.display_name ?? 'them')
               }
             />
             <p className="muted">
@@ -1211,6 +1331,8 @@ export function ConnectedAppsScreen() {
                 busy={busy}
                 types={data.types}
                 ceilings={data.list.ceilings}
+                people={people}
+                me={me}
                 onApprove={() =>
                   void act(
                     () => guarded((t) => api.connectedApps.approve(t, app.id)),
@@ -1229,14 +1351,17 @@ export function ConnectedAppsScreen() {
                     () => guarded((t) => api.connectedApps.resume(t, app.id)),
                     (a) =>
                       a.state === 'waiting_for_approval'
-                        ? `${a.name} is no longer paused. It still waits for ${a.member_name} to turn it on.`
+                        ? `${a.name} is no longer paused. It still waits for ${a.member_name ?? 'its person'} to turn it on.`
                         : `${a.name} is on again.`,
                   )
                 }
                 onChange={(change) =>
                   act(
                     () => guarded((t) => api.connectedApps.update(t, app.id, change)),
-                    (a) => `Saved. ${a.name} may do what it now says here.`,
+                    (a) =>
+                      a.state === 'waiting_for_approval' && waitsOnOther(a)
+                        ? `Saved. ${a.name} waits for ${a.member_name ?? 'its person'} to turn it on.`
+                        : `Saved. ${a.name} may do what it now says here.`,
                   ).then((done) => done !== null)
                 }
                 onGrants={(input) => saveGrants(app, input)}
@@ -1269,9 +1394,9 @@ export function ConnectedAppsScreen() {
             // The secret goes with the sheet: nothing here keeps it.
             setShown(null);
             setSaid(
-              app.mine
+              !waitsOnOther(app)
                 ? `${app.name}’s new key is ready.`
-                : `${app.name} waits for ${app.member_name} to turn it on again before it can use its new key.`,
+                : `${app.name} waits for ${app.member_name ?? 'its person'} to turn it on again before it can use its new key.`,
             );
           }}
         />
@@ -1297,8 +1422,10 @@ export function ConnectedAppsScreen() {
         >
           <p>
             {`It can no longer send anything, and its keys stop working. What it sent stays in ${
-              removing.mine ? 'your' : `${removing.member_name}’s`
-            } Inbox. To use it again, connect it again.`}
+              removing.acts_as === 'app'
+                ? 'the Inboxes it went to'
+                : `${removing.mine ? 'your' : `${removing.member_name ?? 'its person'}’s`} Inbox`
+            }. To use it again, connect it again.`}
           </p>
         </ConfirmDialog>
       )}
@@ -1439,9 +1566,9 @@ function KeyShownSheet(props: {
         copyLabel="Copy the connection string"
       />
       <p className="muted">
-        {app.mine
+        {!waitsOnOther(app)
           ? `Paste these into ${app.name}.`
-          : `Paste these into ${app.name}. It can use the key once ${app.member_name} turns it on again.`}
+          : `Paste these into ${app.name}. It can use the key once ${app.member_name ?? 'its person'} turns it on again.`}
       </p>
       <div className="row">
         <Button onClick={props.onDone}>Done</Button>
@@ -1484,7 +1611,7 @@ function KeyFormView(props: {
       {edit.connected && (
         <p>
           {app.state === 'waiting_for_approval'
-            ? `${app.name} is connected. It does nothing until ${app.member_name} turns it on, in Settings → Connected apps. Generate its key now, to paste into the app.`
+            ? `${app.name} is connected. It does nothing until ${app.member_name ?? 'its person'} turns it on, in Settings → Connected apps. Generate its key now, to paste into the app.`
             : `${app.name} is connected. Generate its key now, to paste into the app.`}
         </p>
       )}
@@ -1543,9 +1670,9 @@ function KeyFormView(props: {
       )}
       <p className="muted">
         {`Generating asks for your passkey, or a code from your authenticator app. The secret is shown once.${
-          app.mine
+          !waitsOnOther(app)
             ? ''
-            : ` ${app.member_name} turns ${app.name} on again before it can use the key.`
+            : ` ${app.member_name ?? 'Its person'} turns ${app.name} on again before it can use the key.`
         }`}
       </p>
       <ErrorNote message={edit.error} />
@@ -1637,6 +1764,10 @@ function AppCard(props: {
   busy: boolean;
   types: DocumentTypeView[];
   ceilings: Ceilings;
+  /** Whom it may act as, and who may review it (APP8): owners and adults who sign in. */
+  people: Member[];
+  /** The reader's member id. */
+  me: string;
   onApprove: () => void;
   onPause: () => void;
   onResume: () => void;
@@ -1705,6 +1836,11 @@ function AppCard(props: {
         <span className={STATE_CLASS[app.state]}>{stateWords(app)}</span>
       </div>
       <p className="muted">{`Acting as ${whom(app)}`}</p>
+      {app.acts_as === 'app' && app.reviewer_needed && (
+        <p className="status status-warn" role="note">
+          {appReviewerNeededWords(app.name)}
+        </p>
+      )}
       {changing ? (
         <form className="stack" noValidate onSubmit={(e) => void save(e)}>
           <AppFields
@@ -1713,7 +1849,14 @@ function AppCard(props: {
             set={(now) => setChanging({ ...changing, now })}
             types={props.types}
             ceilings={props.ceilings}
-            who={whom(app)}
+            connect={{ people: props.people, me: props.me }}
+            who={
+              changing.now.actsAs === 'app'
+                ? 'itself'
+                : changing.now.member === props.me
+                  ? 'you'
+                  : (props.people.find((m) => m.id === changing.now.member)?.display_name ?? 'them')
+            }
             savedKinds={app.allowed_kinds}
           />
           <ErrorNote message={formError} />
@@ -1734,6 +1877,20 @@ function AppCard(props: {
         </form>
       ) : (
         <dl className="facts">
+          <dt>Acts as</dt>
+          <dd>{app.acts_as === 'app' ? 'Itself' : (app.member_name ?? 'Somebody')}</dd>
+          {app.acts_as === 'app' && (
+            <>
+              <dt>{APP_REVIEWER_WORDS}</dt>
+              <dd>
+                {app.reviewer_needed || !app.reviewer_name
+                  ? 'Nobody who can, now'
+                  : app.reviewer_member_id === props.me
+                    ? `${app.reviewer_name} (you)`
+                    : app.reviewer_name}
+              </dd>
+            </>
+          )}
           <dt>What it may do</dt>
           <dd>{app.scopes.map((s) => APP_SCOPE_WORDS[s]).join('. ')}</dd>
           <dt>What it may read</dt>
@@ -1781,10 +1938,8 @@ function AppCard(props: {
           <dt>Whose Inbox</dt>
           <dd>
             {app.route_to_person
-              ? `The person each paper is about, else ${app.mine ? 'yours' : `${app.member_name}’s`}`
-              : app.mine
-                ? 'Yours'
-                : `${app.member_name}’s`}
+              ? `The person each paper is about, else ${inboxWords(app, props.me)}`
+              : capitalise(inboxWords(app, props.me))}
           </dd>
           <dt>Last used</dt>
           <dd>{app.last_used_at ? shortWhenWords(app.last_used_at) : 'Not yet'}</dd>

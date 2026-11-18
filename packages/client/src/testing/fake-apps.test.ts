@@ -938,3 +938,77 @@ describe('the fake vault: API keys an owner generates (APP6)', () => {
     expect((await reader.me()).key.permissions).toEqual(['documents.send', 'documents.read']);
   });
 });
+
+describe('the fake vault: a connected app acting as itself (APP8)', () => {
+  it('itself by default, reviewed by the owner; the wrong field for each refused; its own sends’ uploader the app; an auto-filed one too', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const t = await api.setup({
+      household_name: 'The fake family',
+      display_name: 'Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    vault.state.ownerTwoStep = true;
+    const token = t.access_token;
+    const made = await api.connectedApps.create(token, {
+      name: 'Acme Money',
+      allowed_kinds: ['bank_statement'],
+      scopes: ['documents.send'],
+      auto_file: true,
+    });
+    expect(made).toMatchObject({
+      acts_as: 'app',
+      member_id: null,
+      reviewer_member_id: t.member_id,
+      state: 'active',
+    });
+    for (const [body, detail] of [
+      [{ acts_as: 'app', member_id: t.member_id }, 'member_id'],
+      [{ acts_as: 'person', reviewer_member_id: t.member_id }, 'reviewer_member_id'],
+      [{ reviewer_member_id: 'nobody' }, 'reviewer_member_id'],
+    ] as const) {
+      const r = await refusal(
+        api.connectedApps.create(token, { name: 'Wrong', allowed_kinds: [], ...body }),
+      );
+      expect([r.status, r.detail]).toEqual([422, detail]);
+    }
+    const app = await keyed(api, token, made, vault.fetch);
+    expect((await app.me()).acts_as).toBe('app');
+    const sent = await app.send({
+      externalId: 'auto-1',
+      hints: { kind: 'bank_statement' },
+      file: { bytes: PDF, filename: 'statement.pdf', contentType: 'application/pdf' },
+    });
+    expect(sent.status).toBe(201);
+    expect(
+      await vault.readAppFile(made.id, 'auto-1', {
+        type_key: { value: 'bank_statement', confidence: 0.95, cue: 'kind_words' },
+        owner_member_id: { value: t.member_id, confidence: 0.95, cue: 'name_on_page' },
+        issued: {
+          value: { date: '2026-10-31', precision: 'day' },
+          confidence: 0.9,
+          cue: 'issue_label',
+        },
+      }),
+    ).toBe('filed');
+    const st = await app.status('auto-1');
+    const history = (await api.versions(token, st.document_id as string)).items;
+    expect(history[0]).toMatchObject({ uploaded_by_name: 'Acme Money', uploaded_by_app: true });
+    // No reviewer who can take it: 503 busy, retriable, and nothing kept.
+    const sara = 'member-sara';
+    vault.state.members.push({ id: sara, display_name: 'Sara', role: 'adult', is_me: false });
+    await api.connectedApps.update(token, made.id, { reviewer_member_id: sara });
+    const s = vault.state.members.find((m) => m.id === sara);
+    if (s) s.role = 'teen';
+    const busy = await refusal(
+      app.send({
+        externalId: 'busy-1',
+        hints: { kind: 'bank_statement' },
+        file: { bytes: PDF, filename: 'b.pdf', contentType: 'application/pdf' },
+      }),
+    );
+    expect([busy.status, busy.code, busy.retriable]).toEqual([503, 'busy', true]);
+    expect((await app.statuses(['busy-1'])).unknown).toEqual(['busy-1']);
+  });
+});

@@ -384,6 +384,15 @@ begin
     revoke execute on function public.connected_app_items(uuid[]) from public;
     grant execute on function public.connected_app_items(uuid[]) to fdv_app;
   end if;
+  -- An app acting as itself (0116, APP8): its name, for a file it added.
+  if to_regprocedure('public.connected_app_names(uuid[])') is not null then
+    revoke execute on function public.connected_app_names(uuid[]) from public;
+    grant execute on function public.connected_app_names(uuid[]) to fdv_app;
+    -- What a creator connected ends with them: the database's own, asked
+    -- from its triggers and emergency controls alone.
+    revoke execute on function
+      public.connected_apps_of_creator_end(uuid, uuid, text, uuid) from public;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

@@ -338,6 +338,11 @@ interface Filing {
   details?: Record<string, unknown> | undefined;
   /** More for a new document's line in the activity log: an app's automatic filing (APP4). */
   createdDetail?: Record<string, unknown> | undefined;
+  /**
+   * The connected app whose file this is, when it acted as itself (APP8):
+   * the version names the app as its uploader, and no person.
+   */
+  uploadedByApp?: string | null | undefined;
   /** Whom its file key is wrapped for: held to the document as it is at the commit. */
   scope: ReturnType<typeof scopeFor>;
   vaultId: string;
@@ -2996,6 +3001,19 @@ export class DocumentService {
         .where('document_version.document_id', '=', documentId)
         .orderBy('document_version.version_no', 'desc')
         .execute();
+      // A version a connected app acting as itself added (0.9.0, APP8): the
+      // app, by its name and nothing else of it, is who added it.
+      const appIds = [
+        ...new Set(rows.flatMap((r) => (r.uploaded_by_app ? [r.uploaded_by_app] : []))),
+      ];
+      const appNames = new Map(
+        appIds.length === 0
+          ? []
+          : (
+              await sql<{ id: string; name: string }>`
+                select id, name from connected_app_names(${appIds}::uuid[])`.execute(trx)
+            ).rows.map((a) => [a.id, a.name] as const),
+      );
       // Each older version's own details (0.9.0, 0083), as the document's
       // are given: an Only me one's kind's details opened only in its
       // owner's own request — nobody else is given that document at all.
@@ -3014,7 +3032,12 @@ export class DocumentService {
           : null;
       return rows.map((r, i) => ({
         ...versionView(r),
-        uploaded_by_name: named ? (r.uploaded_by_name ?? r.former_name ?? null) : null,
+        uploaded_by_name: !named
+          ? null
+          : r.uploaded_by_app
+            ? (appNames.get(r.uploaded_by_app) ?? null)
+            : (r.uploaded_by_name ?? r.former_name ?? null),
+        ...(r.uploaded_by_app ? { uploaded_by_app: true } : {}),
         sent_through: !named
           ? null
           : r.request_id
@@ -3338,7 +3361,9 @@ export class DocumentService {
         vault_id: f.vaultId,
         file_key_wrapped: f.fileKeyWrapped,
         wrapped_by_scope: f.scopeKeyId,
-        uploaded_by: p.accountId,
+        // A connected app acting as itself (APP8) is its uploader: no person.
+        uploaded_by: f.uploadedByApp ? null : p.accountId,
+        uploaded_by_app: f.uploadedByApp ?? null,
         // Starting from the version before's details, until somebody
         // confirms them for this one (0.9.0, 0083).
         details_unconfirmed: versionNo > 1,
@@ -3477,6 +3502,8 @@ export class DocumentService {
             auditDetail?: Record<string, unknown>;
           }
         | { kind: 'version'; documentId: string };
+      /** The connected app whose file this is, when it acted as itself (APP8). */
+      uploadedByApp?: string | null;
       file: {
         filename: string;
         mime: string;
@@ -3551,6 +3578,7 @@ export class DocumentService {
         ...(target.kind === 'capture' && target.auditDetail
           ? { createdDetail: target.auditDetail }
           : {}),
+        uploadedByApp: input.uploadedByApp ?? null,
         scope,
         vaultId: file.vaultId,
         fileKeyWrapped: wrapKey(file.fileKey, scopeKey.key, `version:${documentId}`),
@@ -4627,7 +4655,13 @@ export class DocumentService {
    * reminders go as any document's in the Trash do. The caller writes the
    * activity line.
    */
-  async appTrash(trx: Db, householdId: string, id: string, accountId: string): Promise<void> {
+  async appTrash(
+    trx: Db,
+    householdId: string,
+    id: string,
+    /** Its person's sign-in; null for an app acting as itself (APP8). */
+    accountId: string | null,
+  ): Promise<void> {
     await trx
       .updateTable('document')
       .set({ deleted_at: new Date(), updated_at: new Date(), updated_by: accountId })

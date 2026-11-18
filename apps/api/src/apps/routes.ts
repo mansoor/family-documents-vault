@@ -67,7 +67,10 @@ declare module 'fastify' {
 const createBody = z
   .object({
     name: z.string().max(400),
-    member_id: z.string().uuid(),
+    // Whom it acts as (APP8): itself unless it says a person; then member_id.
+    acts_as: z.enum(['app', 'person']).optional(),
+    member_id: z.string().uuid().optional(),
+    reviewer_member_id: z.string().uuid().optional(),
     allowed_kinds: z.array(z.string().max(64)).max(200),
     default_visibility: z.enum(['household', 'adults', 'private']).nullable().optional(),
     daily_files: z.number().int().optional(),
@@ -109,7 +112,7 @@ const grantsBody = z
   })
   .strict();
 
-const changeBody = createBody.omit({ member_id: true }).partial().strict();
+const changeBody = createBody.partial().strict();
 
 /** An API key, as an owner generates it: what is checked of each field is the service's. */
 const keyBody = z

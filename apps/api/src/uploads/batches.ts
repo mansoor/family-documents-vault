@@ -1303,6 +1303,7 @@ export class BatchService {
       p,
       {
         target: { kind: 'version', documentId: doc.id },
+        uploadedByApp: await sentByApp(trx, f.id),
         file: {
           filename: incomingFileName(f.original_name ?? 'file', mime),
           mime,
@@ -1465,6 +1466,7 @@ export class BatchService {
           sourceFolder: sourceFolderOf(f, fileKey),
           ...(auditDetail ? { auditDetail } : {}),
         },
+        uploadedByApp: await sentByApp(trx, f.id),
         file: {
           filename: incomingFileName(f.original_name ?? 'file', mime),
           mime,
@@ -1897,7 +1899,13 @@ export class BatchService {
             paper: await this.paperOf(trx, f),
             level: item.level,
           },
-          { app: app.name, app_id: app.id, auto: true },
+          // An app acting as itself (APP8): its line names the app alone.
+          {
+            app: app.name,
+            app_id: app.id,
+            auto: true,
+            ...(held.by_app ? { as_itself: true } : {}),
+          },
         );
       });
     } catch (err) {
@@ -3398,6 +3406,18 @@ interface AppItem {
   hints_sealed: Buffer | null;
   state: string | null;
   auto_file_held: boolean | null;
+  /** The app acts as itself (APP8): a file of it filed names the app as its uploader. */
+  by_app: boolean;
+}
+
+/**
+ * The connected app a waiting item came from, when it acts as itself
+ * (APP8): the version it is filed as names that app as its uploader, never
+ * the person filing it. Null for anything else.
+ */
+async function sentByApp(trx: Db, itemId: string): Promise<string | null> {
+  const a = (await appItems(trx, [itemId])).get(itemId);
+  return a?.by_app ? a.app_id : null;
 }
 
 /**
@@ -3410,7 +3430,8 @@ interface AppItem {
 async function appItems(trx: Db, ids: string[]): Promise<Map<string, AppItem>> {
   if (ids.length === 0) return new Map();
   const { rows } = await sql<AppItem & { incoming_file_id: string }>`
-    select incoming_file_id, app_id, app_name, allowed_kinds, hints_sealed, state, auto_file_held
+    select incoming_file_id, app_id, app_name, allowed_kinds, hints_sealed, state, auto_file_held,
+           by_app
       from connected_app_items(${ids}::uuid[])`.execute(trx);
   return new Map(rows.map((r) => [r.incoming_file_id, r]));
 }

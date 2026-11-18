@@ -1230,6 +1230,7 @@ describe.skipIf(!testAdminUrl())('connected apps read (0.9.0, APP2)', () => {
       appId: a.appId,
       keyId: a.keyId,
       householdId: owner.household_id,
+      actsAs: 'person' as const,
       accountId: (
         await admin.query<{ account_id: string }>(
           'select account_id from account_household where member_id = $1',

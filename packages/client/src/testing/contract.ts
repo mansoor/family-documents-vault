@@ -5411,6 +5411,137 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'a connected app acts as itself: what nothing routes goes to its reviewer’s Inbox, what is about a person to them, the activity log names the app, a reviewer who cannot take it is 503 busy, and acting as a person is as before (0.9.0, APP8)',
+    run: async (api, ctx) => {
+      if (!ctx.fetch) throw new Error('the contract needs the fetch its vault answers on');
+      if (!ctx.fileAppSend)
+        throw new Error('the contract needs its vault to file what an app sent');
+      const owner = connectedAppOwner;
+      if (!owner) throw new Error('the connected app scenario runs first');
+      const token = owner.access_token;
+      // Connected without a person: itself, on at once, reviewed by the owner.
+      const made = await api.connectedApps.create(token, {
+        name: 'Acme Itself',
+        allowed_kinds: ['utility_bill', 'bank_statement'],
+        scopes: ['documents.send', 'documents.read'],
+      });
+      expect(made).toMatchObject({
+        acts_as: 'app',
+        member_id: null,
+        member_name: null,
+        reviewer_member_id: owner.member_id,
+        reviewer_needed: false,
+        state: 'active',
+      });
+      const { app } = await keyedApp(api, token, made, ctx.fetch);
+      const me = await app.me();
+      expect(me.acts_as).toBe('app');
+      expect(me.acting_as).toEqual({ name: 'Acme Itself' });
+      const file = (marker: string) => ({
+        bytes: new TextEncoder().encode(`%PDF-1.4\n% ${marker}\n%%EOF\n`),
+        filename: `${marker}.pdf`,
+        contentType: 'application/pdf',
+      });
+      const lines = async () => (await api.activity(token)).items;
+
+      // Nothing routes it: the reviewer's Inbox, filed from there; its file
+      // names the app as who added it, and its line the app alone.
+      const first = file('itself-1');
+      const sent = await app.send({
+        externalId: 'itself-1',
+        hints: { kind: 'utility_bill' },
+        file: first,
+      });
+      expect(sent.status).toBe(201);
+      const doc = await ctx.fileAppSend(token, { id: made.id, name: made.name }, 'itself-1', {
+        sha256: sent.state.sha256 as string,
+        bytes: first.bytes,
+      });
+      expect((await app.status('itself-1')).state).toBe('filed');
+      const history = (await api.versions(token, doc)).items;
+      expect(history[0]).toMatchObject({ uploaded_by_name: 'Acme Itself', uploaded_by_app: true });
+      const sentLine = (await lines()).find((l) =>
+        /^Acme Itself sent a file to .+’s? Inbox$/.test(l.text),
+      );
+      expect(sentLine).toBeDefined();
+      expect(sentLine?.actor_member_id).toBeNull();
+
+      // About somebody who signs in: their Inbox, as APP5's.
+      const rhea = await ctx.addSignIn(token, {
+        name: 'Rhea Itself',
+        email: 'rhea-itself@example.test',
+        password: 'another correct horse',
+        role: 'adult',
+      });
+      const routed = await app.send({
+        externalId: 'itself-2',
+        // By name: the fake's member ids are not UUIDs.
+        // A person's paper: a utility bill is the household's, and never routed.
+        hints: { kind: 'bank_statement', person: { name: 'Rhea Itself' } },
+        file: file('itself-2'),
+      });
+      expect(routed.status).toBe(201);
+      expect((await lines()).map((l) => l.text)).toContain(
+        'Acme Itself sent a file to Rhea Itself’s Inbox',
+      );
+
+      // Rhea reviews it now (no approval), and is locked: what nothing
+      // routes is refused for a moment; the owners are told once.
+      const changed = await api.connectedApps.update(token, made.id, { reviewer_member_id: rhea });
+      expect(changed).toMatchObject({ state: 'active', reviewer_member_id: rhea });
+      await api.lockMember(token, rhea);
+      for (const id of ['itself-3', 'itself-3']) {
+        const busy = await refusal(
+          app.send({ externalId: id, hints: { kind: 'utility_bill' }, file: file(id) }),
+        );
+        expect([busy.status, busy.code, busy.retriable]).toEqual([503, 'busy', true]);
+      }
+      const told = (await lines()).filter((l) =>
+        l.text.startsWith('Acme Itself needs somebody to review what it sends'),
+      );
+      expect(told).toHaveLength(1);
+      expect(
+        (await api.connectedApps.list(token)).items.find((a) => a.id === made.id)?.reviewer_needed,
+      ).toBe(true);
+      await api.unlockMember(token, rhea);
+      expect(
+        (
+          await app.send({
+            externalId: 'itself-3',
+            hints: { kind: 'utility_bill' },
+            file: file('itself-3'),
+          })
+        ).status,
+      ).toBe(201);
+
+      // Acting as a person from now (the owner themselves): as before.
+      const person = await api.connectedApps.update(token, made.id, {
+        acts_as: 'person',
+        member_id: owner.member_id,
+      });
+      expect(person).toMatchObject({
+        acts_as: 'person',
+        member_id: owner.member_id,
+        reviewer_member_id: null,
+        state: 'active',
+      });
+      expect((await app.me()).acts_as).toBe('person');
+      expect(
+        (
+          await app.send({
+            externalId: 'itself-4',
+            hints: { kind: 'utility_bill' },
+            file: file('itself-4'),
+          })
+        ).status,
+      ).toBe(201);
+      expect(
+        (await lines()).some((l) => / via Acme Itself sent a file to their Inbox$/.test(l.text)),
+      ).toBe(true);
+      await api.connectedApps.remove(token, made.id);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

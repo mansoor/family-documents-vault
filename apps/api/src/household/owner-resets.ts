@@ -1,5 +1,5 @@
 import { COMPUTERS_STOPPED, stopDevicesOf } from '../devices/service.js';
-import { stopAppsOf } from '../apps/service.js';
+import { appsEndedAlert, stopAppsOf } from '../apps/service.js';
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   RESET_LINK_MINUTES,
@@ -266,13 +266,19 @@ export class OwnerResetService {
           'owner_stopped',
           meta,
         );
-        // And every app acting as them (0.9.0, APP1).
+        // And every app acting as them (0.9.0, APP1); and (APP8) every app
+        // acting as itself they set up, and every API key they generated for
+        // one — the other owners told with the rest, once this commits.
         await stopAppsOf(
           trx,
           { householdId: p.householdId, actorAccountId: p.accountId },
           target.account_id,
           'owner_stopped',
           meta,
+          (t) => {
+            const a = appsEndedAlert(p.householdId, target.display_name, t);
+            if (a) told.push(a);
+          },
         );
       }
 

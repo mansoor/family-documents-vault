@@ -1874,12 +1874,14 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
 
   it('the vault itself refuses a revoked app’s change, and an adult changing what their app may do', async () => {
     const a = await connect(owner, { name: 'Fixed' });
+    // Whom it acts as may change since APP8 (an owner's, through the
+    // routes); who connected it, and when, never do.
     await expect(
-      admin.query(`update connected_app set member_id = $2 where id = $1`, [
-        a.appId,
-        sara.member_id,
-      ]),
-    ).rejects.toThrow(/whom an app acts as never changes/);
+      admin.query(
+        `update connected_app set created_at = created_at - interval '1 day' where id = $1`,
+        [a.appId],
+      ),
+    ).rejects.toThrow(/who connected an app, and when, never change/);
     await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}`);
     await expect(
       admin.query(`update connected_app set name = 'Back' where id = $1`, [a.appId]),

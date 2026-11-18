@@ -2,7 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { sql } from 'kysely';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { actAs, createDb, createPool, withPrincipal, withSystem, type Db } from './client.js';
+import {
+  actAs,
+  actAsVault,
+  createDb,
+  createPool,
+  withPrincipal,
+  withSystem,
+  type Db,
+} from './client.js';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from './testing.js';
 
 /**
@@ -154,5 +162,47 @@ describe.skipIf(!testAdminUrl())('actAs', () => {
         ),
       ),
     ).rejects.toThrow(/only for a transaction of somebody signed in/);
+  });
+
+  // An app acting as itself (0.9.0, APP8): its own rows written by the
+  // vault, on its behalf, inside the transaction of whoever's Inbox it fills.
+  const actor = async (trx: Db) =>
+    (
+      await sql<{ actor: string; account: string; member: string; role: string }>`
+        select current_setting('app.actor', true) as actor,
+               current_setting('app.account_id', true) as account,
+               current_setting('app.member_id', true) as member,
+               current_setting('app.role', true) as role`.execute(trx)
+    ).rows[0];
+
+  it('actAsVault: the vault inside, nobody’s person; the transaction’s own person again after', async () => {
+    await withPrincipal(db, asOwner(), async (trx) => {
+      const inside = await actAsVault(trx, (t) => actor(t));
+      expect(inside).toEqual({ actor: 'system', account: '', member: '', role: '' });
+      expect(await actor(trx)).toEqual({
+        actor: 'account',
+        account: who.owner.account,
+        member: who.owner.member,
+        role: 'owner',
+      });
+    });
+  });
+
+  it('actAsVault: a throw inside undoes what it wrote and puts the person back; never from the vault’s own', async () => {
+    await withPrincipal(db, asOwner(), async (trx) => {
+      await expect(
+        actAsVault(trx, async (t) => {
+          await sql`select set_config('app.marker', 'written', true)`.execute(t);
+          await sql`select 1 / 0`.execute(t);
+        }),
+      ).rejects.toThrow(/division by zero/);
+      expect((await actor(trx))?.actor).toBe('account');
+      const marker = await sql<{ v: string | null }>`
+        select nullif(current_setting('app.marker', true), '') as v`.execute(trx);
+      expect(marker.rows[0]?.v).toBeNull();
+    });
+    await expect(withSystem(db, hh, (trx) => actAsVault(trx, (t) => actor(t)))).rejects.toThrow(
+      /only for a transaction of somebody signed in/,
+    );
   });
 });

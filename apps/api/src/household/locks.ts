@@ -1,5 +1,5 @@
 import { COMPUTERS_STOPPED, stopDevicesOf } from '../devices/service.js';
-import { stopAppsOf } from '../apps/service.js';
+import { appsEndedAlert, stopAppsOf } from '../apps/service.js';
 import { appendAudit, householdZone, withPrincipal, type Db } from '@fdv/db';
 import {
   can,
@@ -573,7 +573,9 @@ export class LockService {
       told: { accountId: string; owner: boolean; by: string; household: string } | null;
       result: SignedOutEverywhere | null;
       computers: number;
-    } = { phones: [], told: null, result: null, computers: 0 };
+      /** The other owners' email: apps acting as themselves this person set up, stopped (APP8). */
+      apps: AlertRequest | null;
+    } = { phones: [], told: null, result: null, computers: 0, apps: null };
     await withPrincipal(this.db, p, async (trx) => {
       // 1. The household, then the person.
       await holdHousehold(trx);
@@ -615,13 +617,18 @@ export class LockService {
         'signed_out',
         meta,
       );
-      // And every app acting as them (0.9.0, APP1): removed, each with its line.
+      // And every app acting as them (0.9.0, APP1): removed, each with its
+      // line — and (APP8) every app acting as itself they set up, and every
+      // API key they generated for one; the other owners emailed after.
       await stopAppsOf(
         trx,
         { householdId: p.householdId, actorAccountId: p.accountId },
         target.account_id,
         'signed_out',
         meta,
+        (t) => {
+          after.apps = appsEndedAlert(p.householdId, target.display_name, t);
+        },
       );
       // Told, unless locked or paused: they could not sign in again as the
       // email says, and their sessions ended with the lock already.
@@ -643,6 +650,7 @@ export class LockService {
         targets: after.phones,
       });
     }
+    if (after.apps) await this.alert(after.apps).catch(() => undefined);
     if (after.told) {
       const { by, household } = after.told;
       await this.alert({

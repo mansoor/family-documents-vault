@@ -190,6 +190,27 @@ export const APP_AUTO_FILE_WORDS = 'File when everything is sure and complete';
 
 /** The switch that sends each paper to the Inbox of the person it is about (APP5), in Settings. */
 export const APP_ROUTE_WORDS = 'Send each paper to the Inbox of the person it’s about';
+
+/**
+ * Whom an app acts as (APP8): itself — no person, and no hidden account
+ * standing in for one — or one person of the family, as before APP8.
+ */
+export const APP_ACTS_AS = ['app', 'person'] as const;
+export type AppActsAs = (typeof APP_ACTS_AS)[number];
+/** An app connected without saying acts as itself (APP8). */
+export const APP_ACTS_AS_DEFAULT: AppActsAs = 'app';
+/**
+ * What an app acting as itself reads as (APP8): never more than an app
+ * acting as an adult would — Everyone and Adults only, never Only me.
+ */
+export const APP_ITSELF_READS_AS = 'adult';
+/** "It acts as": itself, in Settings (APP8). */
+export const appItselfWords = (app: string): string => `Itself (${app})`;
+/** The person who reviews what an app acting as itself sends that nothing routes (APP8). */
+export const APP_REVIEWER_WORDS = 'Reviewed by';
+/** Said in Settings while an app acting as itself has nobody who can review what it sends. */
+export const appReviewerNeededWords = (app: string): string =>
+  `Choose who reviews what ${app} sends. Until then, what isn’t sent to the person it’s about is refused for a moment and ${app} tries again later.`;
 /**
  * Entries an app's allow-list holds at most: addresses, networks and names
  * (APP7) together.
@@ -605,8 +626,12 @@ export interface AppKeyView {
   expires_at: string | null;
   last_used_at: string | null;
   revoked_at: string | null;
-  /** Why it was revoked: by an owner, with its app, or by a restore (every key is). */
-  revoked_reason?: 'owner' | 'app_removed' | 'restore' | null;
+  /**
+   * Why it was revoked: by an owner, with its app, by a restore (every key
+   * is), or (APP8) as the owner who generated it for an app acting as itself
+   * left, stopped being an owner or was stopped (`creator`).
+   */
+  revoked_reason?: 'owner' | 'app_removed' | 'restore' | 'creator' | null;
   state: AppKeyState;
 }
 
@@ -626,6 +651,12 @@ export interface AppMe {
   app: { id: string; name: string; created_at: string };
   state: AppStateName;
   paused_reason?: 'owner' | 'restored';
+  /**
+   * Whom it acts as (APP8): `app`, itself; `person`, one person of the
+   * family. Nothing more is said of whom.
+   */
+  acts_as: AppActsAs;
+  /** The person it acts as, by name; its own name when it acts as itself (APP8). */
   acting_as: { name: string };
   vault: {
     instance_id: string | null;
@@ -676,9 +707,24 @@ export interface AppMe {
 export interface ConnectedAppView {
   id: string;
   name: string;
-  /** Whom it acts as. */
-  member_id: string;
-  member_name: string;
+  /** Whom it acts as (APP8): itself, or the person `member_id` is. */
+  acts_as: AppActsAs;
+  /** The person it acts as; null when it acts as itself (APP8). */
+  member_id: string | null;
+  member_name: string | null;
+  /**
+   * Who reviews what it sends that nothing routes, when it acts as itself
+   * (APP8): an owner or an adult with a sign-in. Null when it acts as a
+   * person, or while it has nobody (`reviewer_needed`).
+   */
+  reviewer_member_id: string | null;
+  reviewer_name: string | null;
+  /**
+   * It acts as itself and has nobody who can review what it sends now (none
+   * chosen, or the one chosen is locked, paused or no longer an adult): an
+   * owner chooses another (APP8).
+   */
+  reviewer_needed: boolean;
   /** It acts as the caller. */
   mine: boolean;
   created_at: string;
@@ -740,7 +786,16 @@ export interface ConnectedAppView {
 /** `POST /api/v1/connected-apps`. */
 export interface ConnectedAppInput {
   name: string;
-  member_id: string;
+  /** Whom it acts as (APP8): itself when left out. */
+  acts_as?: AppActsAs;
+  /** The person it acts as: for `acts_as: 'person'` alone, and then needed. */
+  member_id?: string;
+  /**
+   * Who reviews what it sends that nothing routes, when it acts as itself
+   * (APP8): an owner or an adult with a sign-in; the owner connecting it when
+   * left out.
+   */
+  reviewer_member_id?: string;
   allowed_kinds: string[];
   default_visibility?: Visibility | null;
   daily_files?: number;
@@ -793,6 +848,9 @@ export type ConnectedAppChange = Partial<
     | 'links_per_hour'
     | 'auto_file'
     | 'route_to_person'
+    | 'acts_as'
+    | 'member_id'
+    | 'reviewer_member_id'
   >
 >;
 
@@ -1042,7 +1100,10 @@ export interface AppReadCase {
     /** Kept as an Essential: never read through a grant. */
     usually_essential: boolean | null;
   } | null;
-  /** The role of the person the app acts as. */
+  /**
+   * The role of the person the app acts as; for an app acting as itself
+   * (APP8), `APP_ITSELF_READS_AS`.
+   */
   role: string;
   /**
    * Made by what the app sent (filed as a document of its own, not into a

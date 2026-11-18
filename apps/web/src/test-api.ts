@@ -1796,7 +1796,9 @@ export function installFakeApi(state: FakeState) {
         if (!owner) return refuse(403, 'forbidden', 'Only an owner can connect an app.');
         const b = body as {
           name: string;
-          member_id: string;
+          acts_as?: 'app' | 'person';
+          member_id?: string;
+          reviewer_member_id?: string;
           allowed_kinds: string[];
           default_visibility?: Visibility | null;
           daily_files?: number;
@@ -1810,16 +1812,27 @@ export function installFakeApi(state: FakeState) {
           links_per_hour?: number;
         };
         if (state.stepUpNeeded) return askFactor();
-        const person = state.members.find((m) => m.id === b.member_id) as
+        // Whom it acts as (APP8): a person named without acts_as is a person;
+        // else itself, reviewed by the person named or the owner connecting it.
+        const itself = (b.acts_as ?? (b.member_id !== undefined ? 'person' : 'app')) === 'app';
+        if (itself ? b.member_id !== undefined : b.reviewer_member_id !== undefined) {
+          return refuse(422, 'validation_failed', 'Not for whom it acts as.', {
+            detail: itself ? 'member_id' : 'reviewer_member_id',
+          });
+        }
+        const chosen = itself ? (b.reviewer_member_id ?? 'me') : (b.member_id ?? '');
+        const person = state.members.find((m) => m.id === chosen) as
           | { id: string; display_name: string; has_account?: boolean; role?: string | null }
           | undefined;
         if (!person?.has_account || (person.role !== 'owner' && person.role !== 'adult')) {
           return refuse(
             422,
             'validation_failed',
-            'An app acts as an owner or an adult who signs in.',
+            itself
+              ? 'An app’s papers are reviewed by an owner or an adult who signs in.'
+              : 'An app acts as an owner or an adult who signs in.',
             {
-              detail: 'member_id',
+              detail: itself ? 'reviewer_member_id' : 'member_id',
             },
           );
         }
@@ -1828,11 +1841,15 @@ export function installFakeApi(state: FakeState) {
         const app: ConnectedAppView = {
           id,
           name: b.name.trim(),
-          member_id: b.member_id,
-          member_name: person.display_name,
-          mine: b.member_id === 'me',
+          acts_as: itself ? 'app' : 'person',
+          member_id: itself ? null : chosen,
+          member_name: itself ? null : person.display_name,
+          reviewer_member_id: itself ? chosen : null,
+          reviewer_name: itself ? person.display_name : null,
+          reviewer_needed: false,
+          mine: !itself && chosen === 'me',
           created_at: new Date().toISOString(),
-          state: b.member_id === 'me' ? 'active' : 'waiting_for_approval',
+          state: itself || chosen === 'me' ? 'active' : 'waiting_for_approval',
           paused_reason: null,
           scopes: b.scopes ?? ['documents.send'],
           allowed_kinds: b.allowed_kinds,
@@ -1875,7 +1892,24 @@ export function installFakeApi(state: FakeState) {
         const change = body as Partial<ConnectedAppView>;
         const renameOnly = Object.keys(change).every((k) => k === 'name');
         if (!renameOnly && state.stepUpNeeded) return askFactor();
-        return put({ ...app, ...change });
+        // Whom it acts as (APP8): a person or itself, named as the vault names them.
+        const named = (id: string | null | undefined): string | null =>
+          (state.members.find((m) => m.id === id)?.display_name as string | undefined) ?? null;
+        const next = { ...app, ...change };
+        if (change.acts_as === 'app') {
+          next.member_id = null;
+          next.member_name = null;
+          next.reviewer_name = named(next.reviewer_member_id);
+          next.reviewer_needed = false;
+          next.state = 'active';
+        } else if (change.acts_as === 'person') {
+          next.reviewer_member_id = null;
+          next.reviewer_name = null;
+          next.reviewer_needed = false;
+          next.member_name = named(next.member_id);
+          next.state = next.member_id === 'me' ? 'active' : 'waiting_for_approval';
+        }
+        return put(next);
       }
       // What it may read (APP2): an owner's, with a passkey or a code; a
       // kind Sensitive by default asked about once, as the vault asks.

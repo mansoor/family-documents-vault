@@ -114,7 +114,81 @@ interface KeyNotice {
   expires_at: Date;
   app_id: string;
   app: string;
-  member_id: string;
+  /** Whom it acts as; null for an app acting as itself (APP8). */
+  member_id: string | null;
+}
+
+/**
+ * Whether an app acting as itself (0.9.0-dev.65, APP8) has nobody who can
+ * review what it sends now: no reviewer, or one who is no longer an owner or
+ * adult of the family with a sign-in here, or is locked or paused. In SQL,
+ * for the sweep, as the API asks it as a send comes.
+ */
+const REVIEWER_GONE = `not exists (
+  select 1 from public.account_household ah
+    join public.member m on m.id = ah.member_id and m.household_id = ah.household_id
+   where ah.household_id = a.household_id and ah.member_id = a.reviewer_member_id
+     and m.kind = 'family' and ah.role::text in ('owner', 'adult')
+     and not public.suspension_in_effect(ah.suspended_at, ah.suspended_until))`;
+
+/**
+ * Apps acting as themselves whose reviewer can no longer take what they send
+ * (0.9.0-dev.65, APP8): the owners are told once — an activity line and an
+ * email, queued in the transaction that marks the app told
+ * (`reviewer_told_at`, the API's own mark) — so they hear before the app's
+ * next send is refused. Told again once a reviewer is chosen, or takes a
+ * send. The hourly sweep runs it.
+ */
+export async function noticeReviewers(deps: {
+  admin: pg.Pool;
+  db: Db;
+  tell: (a: OwnersAlert, db: QueueDb) => Promise<void>;
+}): Promise<number> {
+  const { rows } = await deps.admin.query<{ household_id: string }>(
+    `select distinct a.household_id from public.connected_app a
+      where a.acts_as = 'app' and a.revoked_at is null and a.reviewer_told_at is null
+        and ${REVIEWER_GONE}`,
+  );
+  let told = 0;
+  for (const { household_id: hh } of rows) {
+    told += await withSystem(deps.db, hh, async (trx) => {
+      const gone = await sql<{ id: string; name: string }>`
+        update connected_app a set reviewer_told_at = now()
+         where a.acts_as = 'app' and a.revoked_at is null and a.reviewer_told_at is null
+           and ${sql.raw(REVIEWER_GONE)}
+        returning a.id, a.name`.execute(trx);
+      if (gone.rows.length === 0) return 0;
+      const owners = (
+        await trx
+          .selectFrom('account_household')
+          .select('account_id')
+          .where('role', '=', 'owner')
+          .execute()
+      ).map((o) => o.account_id);
+      for (const a of gone.rows) {
+        await appendAudit(trx, {
+          householdId: hh,
+          action: 'app.reviewer_needed',
+          objectType: 'member',
+          objectId: null,
+          detail: { app_id: a.id, app: a.name, as_itself: true },
+        });
+        if (owners.length > 0) {
+          await deps.tell(
+            {
+              household_id: hh,
+              account_ids: owners,
+              subject: `Choose who reviews what ${a.name} sends`,
+              body: `${a.name} acts as itself, and nobody can review what it sends now: the person chosen has left, is locked or paused, or is no longer an adult. Until an owner chooses somebody in Settings → Connected apps, what it sends that isn’t for a particular person is refused for a moment, and ${a.name} tries again later.`,
+            },
+            queueDbOf(trx),
+          );
+        }
+      }
+      return gone.rows.length;
+    });
+  }
+  return told;
 }
 
 /**
