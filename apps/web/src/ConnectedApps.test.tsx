@@ -42,8 +42,6 @@ async function expectAccessible() {
 }
 
 const MB = 1024 * 1024;
-const KEY = 'ed25519:' + 'A'.repeat(43);
-const KEY_2 = 'ed25519:' + 'B'.repeat(43);
 
 const AHMED = {
   ...ME,
@@ -55,12 +53,15 @@ const AHMED = {
 const AISHA = { ...ME, id: 'm-aisha', display_name: 'Aisha', role: 'teen', is_me: false };
 
 const key = (over: Partial<AppKeyView> = {}): AppKeyView => ({
-  key_id: '00000000-0000-4000-8000-000000000001',
-  fingerprint: 'b16c 2d1b 9e0f 4a77 c3d2 0011 8f6e 51a9',
-  added_by: 'owner',
+  id: 'k-1',
+  client_id: 'fdvc_AAAAAAAAAAAAAAAAAAAAAA',
+  name: null,
+  permissions: ['documents.send'],
   created_at: '2026-11-01T09:00:00.000Z',
-  first_used_at: '2026-11-01T09:05:00.000Z',
-  retires_at: null,
+  expires_at: null,
+  last_used_at: '2026-11-01T09:05:00.000Z',
+  revoked_at: null,
+  state: 'live',
   ...over,
 });
 
@@ -86,9 +87,9 @@ const app = (over: Partial<ConnectedAppView> = {}): ConnectedAppView => ({
   last_used_at: '2026-11-15T09:00:00.000Z',
   today: { files: 12, bytes: 3 * MB },
   refused_today: 2,
-  last_refusal: 'signature_invalid',
+  last_refusal: 'app_key_expired',
   counts: { waiting: 3, filed: 9 },
-  connection_string: 'fdvapp1.c3RvcmVk',
+  connection_string: 'fdvapp2.c3RvcmVk',
   address: { url: 'https://vault.example.test', public: true },
   ...over,
 });
@@ -133,7 +134,9 @@ async function confirmWithCode() {
     target: { value: '123456' },
   });
   fireEvent.click(within(ask).getByRole('button', { name: 'Confirm' }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await waitFor(() =>
+    expect(screen.queryByRole('dialog', { name: 'Just checking it is you' })).toBeNull(),
+  );
 }
 
 describe('the words', () => {
@@ -188,11 +191,12 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
           },
           ip_allow: ['203.0.113.0/24'],
           keys: [
-            key({ retires_at: '2026-11-23T12:00:00.000Z' }),
+            key({ name: 'Live', expires_at: '2027-11-01T09:00:00.000Z' }),
             key({
-              key_id: '00000000-0000-4000-8000-000000000002',
-              fingerprint: '77aa 0b1c 2d3e 4f50 6172 8394 a5b6 c7d8',
-              added_by: 'app',
+              id: 'k-2',
+              client_id: 'fdvc_BBBBBBBBBBBBBBBBBBBBBB',
+              permissions: ['documents.send', 'documents.read'],
+              last_used_at: null,
             }),
           ],
         }),
@@ -208,7 +212,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     expect(within(card).getByText('Passport')).toBeInTheDocument();
     expect(within(card).getByText('As each kind says')).toBeInTheDocument();
     expect(within(card).getByText('12 of 100 files today, 3 MB of 500 MB')).toBeInTheDocument();
-    expect(within(card).getByText('2 requests; the last: signature not valid')).toBeInTheDocument();
+    expect(within(card).getByText('2 requests; the last: API key expired')).toBeInTheDocument();
     expect(within(card).getByText(/^Until 30 November: 400 files and 2 GB a day$/)).toBeVisible();
     // Filing what is sure by itself, for the older papers' window alone (APP4).
     expect(
@@ -222,10 +226,20 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       ),
     ).toBeInTheDocument();
     expect(within(card).getByText('203.0.113.0/24')).toBeInTheDocument();
-    // Its keys, by fingerprint; the older retiring by itself.
-    expect(within(card).getByText('b16c 2d1b 9e0f 4a77 c3d2 0011 8f6e 51a9')).toBeInTheDocument();
-    expect(within(card).getByText(/retires on 23 November/)).toBeInTheDocument();
-    expect(within(card).getByText(/added by the app/)).toBeInTheDocument();
+    // Its API keys: name, client ID, permissions, days and use; never a secret.
+    const keys = within(card).getByRole('list', { name: 'API keys' });
+    expect(within(keys).getByText('Live')).toBeInTheDocument();
+    expect(within(keys).getByText('Unnamed key')).toBeInTheDocument();
+    expect(within(keys).getByText('fdvc_AAAAAAAAAAAAAAAAAAAAAA')).toBeInTheDocument();
+    expect(within(keys).getByText('Send, Read')).toBeInTheDocument();
+    expect(within(keys).getByText('1 November 2027')).toBeInTheDocument();
+    expect(within(keys).getByText('Never')).toBeInTheDocument();
+    expect(within(keys).getByText('Never used')).toBeInTheDocument();
+    expect(within(keys).getByRole('button', { name: 'Revoke the key Live' })).toBeInTheDocument();
+    // Two work: no third.
+    expect(
+      within(card).getByRole('button', { name: 'Generate an API key for Acme Money' }),
+    ).toBeDisabled();
     // What it sent is Ahmed's alone to see.
     expect(within(card).queryByText('What it sent you')).toBeNull();
     // The owner's own: waiting for them, and its counts theirs.
@@ -243,7 +257,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     await expectAccessible();
   });
 
-  it('shows an adult only the apps acting as them, with what each sent; they turn one on and remove one', async () => {
+  it('shows an adult only the apps acting as them, with what each sent and its keys; they turn one on and remove one', async () => {
     const state = at(
       '/settings/connected-apps',
       { connectedApps: [AHMEDS, MINE], stepUpNeeded: true },
@@ -254,8 +268,13 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     expect(screen.queryByRole('button', { name: 'Connect an app' })).toBeNull();
     expect(screen.getByRole('heading', { name: 'Apps acting as you' })).toBeInTheDocument();
     expect(within(mine).getByText('3 waiting in your Inbox, 9 filed')).toBeInTheDocument();
-    // An owner's actions are not theirs.
-    for (const name of [/^Change/, /^Add a key/, /^Pause/]) {
+    // Its keys, to see; an owner's actions are not theirs.
+    expect(
+      within(within(mine).getByRole('list', { name: 'API keys' })).getByText(
+        'fdvc_AAAAAAAAAAAAAAAAAAAAAA',
+      ),
+    ).toBeInTheDocument();
+    for (const name of [/^Change/, /^Generate/, /^Pause/, /^Revoke/]) {
       expect(within(mine).queryByRole('button', { name })).toBeNull();
     }
     await expectAccessible();
@@ -283,9 +302,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     expect(calls(state, 'DELETE', '/api/v1/connected-apps/')).toHaveLength(1);
   });
 
-  it('connects an app with a passkey or a code, then shows the key it kept and what to paste, with Copy', async () => {
-    const copied = vi.fn(() => Promise.resolve());
-    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: copied } });
+  it('connects an app with a passkey or a code, then opens its Generate key form', async () => {
     const state = at('/settings/connected-apps', { connectedApps: [], stepUpNeeded: true });
     expect(await screen.findByText('No app is connected.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Connect an app' }));
@@ -308,7 +325,8 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
 
     fireEvent.change(within(form).getByLabelText(/^Name/), { target: { value: 'Acme Money' } });
     fireEvent.change(who, { target: { value: 'm-ahmed' } });
-    fireEvent.change(within(form).getByLabelText(/public key/), { target: { value: KEY } });
+    // No key to paste: the vault generates one.
+    expect(within(form).queryByLabelText(/public key/)).toBeNull();
     fireEvent.click(within(form).getByLabelText('Passport'));
     fireEvent.change(within(form).getByLabelText('Who sees what it sends'), {
       target: { value: 'adults' },
@@ -320,23 +338,25 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     fireEvent.click(within(form).getByRole('button', { name: 'Connect' }));
     await confirmWithCode();
 
-    const made = await screen.findByRole('region', { name: 'Acme Money is connected' });
+    // Its Generate key form, open at once, its heading in focus.
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    const keyForm = await within(card).findByRole('form', {
+      name: 'Generate an API key for Acme Money',
+    });
     await waitFor(() =>
-      expect(within(made).getByRole('heading', { name: 'Acme Money is connected' })).toHaveFocus(),
+      expect(
+        within(keyForm).getByRole('heading', { name: 'Generate an API key for Acme Money' }),
+      ).toHaveFocus(),
     );
     expect(
-      within(made).getByText(
-        'It does nothing until Ahmed turns it on, in Settings → Connected apps.',
+      within(keyForm).getByText(
+        'Acme Money is connected. It does nothing until Ahmed turns it on, in Settings → Connected apps. Generate its key now, to paste into the app.',
       ),
-    ).toBeInTheDocument();
-    expect(
-      within(made).getByText(/^Check this matches what Acme Money shows:/),
     ).toBeInTheDocument();
     const sent = calls(state, 'POST', '/api/v1/connected-apps').at(-1)?.body;
     expect(sent).toEqual({
       name: 'Acme Money',
       member_id: 'm-ahmed',
-      public_key: KEY,
       allowed_kinds: ['passport'],
       default_visibility: 'adults',
       daily_files: 50,
@@ -353,38 +373,23 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
       delete_mode: 'unlink',
       links_per_hour: 60,
     });
-    const created = state.connectedApps?.[0];
-    expect(within(made).getByText(created?.keys[0]?.fingerprint ?? '?')).toHaveTextContent(
-      /^[0-9a-f]{4}( [0-9a-f]{4}){7}$/,
-    );
-    expect(within(made).getByText(created?.connection_string ?? '?')).toBeInTheDocument();
-    expect(within(made).getByText('Paste this into Acme Money. It holds no secret.')).toBeVisible();
-    fireEvent.click(within(made).getByRole('button', { name: 'Copy' }));
-    await waitFor(() => expect(copied).toHaveBeenCalledWith(created?.connection_string));
-    expect(await within(made).findByRole('button', { name: 'Copied' })).toBeInTheDocument();
-    // And the list has it, waiting for Ahmed.
-    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    // The list has it, waiting for Ahmed, with no key yet.
     expect(within(card).getByText('Waiting for its person to turn it on')).toBeInTheDocument();
+    expect(state.connectedApps?.[0]?.keys).toEqual([]);
     await expectAccessible();
-    fireEvent.click(within(made).getByRole('button', { name: 'Done' }));
-    await waitFor(() =>
-      expect(screen.queryByRole('region', { name: 'Acme Money is connected' })).toBeNull(),
-    );
+    // Cancelled: the form goes, and Generate key is there for later.
+    fireEvent.click(within(keyForm).getByRole('button', { name: 'Cancel' }));
+    expect(
+      await within(card).findByRole('button', { name: 'Generate an API key for Acme Money' }),
+    ).toBeEnabled();
   });
 
-  it('says what is wrong before connecting: a name, and the key', async () => {
+  it('says what is wrong before connecting: a name', async () => {
     const state = at('/settings/connected-apps', { connectedApps: [] });
     fireEvent.click(await screen.findByRole('button', { name: 'Connect an app' }));
     const form = await screen.findByRole('region', { name: 'Connect an app' });
     fireEvent.click(within(form).getByRole('button', { name: 'Connect' }));
     expect(await screen.findByText('Give the app a name.')).toBeInTheDocument();
-    fireEvent.change(within(form).getByLabelText(/^Name/), { target: { value: 'Acme Money' } });
-    fireEvent.click(within(form).getByRole('button', { name: 'Connect' }));
-    expect(await screen.findByText('Paste the app’s public key.')).toBeInTheDocument();
-    // A key that is not one: the vault's words.
-    fireEvent.change(within(form).getByLabelText(/public key/), { target: { value: 'nope' } });
-    fireEvent.click(within(form).getByRole('button', { name: 'Connect' }));
-    expect(await screen.findByText(/^Paste the app’s public key: "ed25519:"/)).toBeInTheDocument();
     expect(state.connectedApps).toEqual([]);
   });
 
@@ -665,99 +670,223 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     expect(await within(card).findByText('How far back: 1 to 36 months.')).toBeInTheDocument();
   });
 
-  it('an owner adds its new key, sees what to paste, and retires the old one, asked first', async () => {
+  it('an owner generates an API key: permissions ticked from the app’s, a validity, the secret shown once (APP6)', async () => {
+    const copied = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: copied } });
     const state = at('/settings/connected-apps', {
-      connectedApps: [AHMEDS],
+      connectedApps: [app({ scopes: ['documents.send', 'documents.read'], keys: [] })],
       stepUpNeeded: true,
     });
     const card = await screen.findByRole('region', { name: 'Acme Money' });
-    // Its only key cannot be retired.
-    expect(within(card).queryByRole('button', { name: /^Retire the key/ })).toBeNull();
-    fireEvent.click(within(card).getByRole('button', { name: 'Add a key to Acme Money' }));
-    fireEvent.change(within(card).getByLabelText('Acme Money’s new public key'), {
-      target: { value: KEY_2 },
+    expect(
+      within(card).getByText('No key yet. Generate one, and paste it into Acme Money.'),
+    ).toBeVisible();
+    expect(
+      within(card).getByText('Acme Money needs an API key before it can reach the vault.'),
+    ).toBeVisible();
+    fireEvent.click(
+      within(card).getByRole('button', { name: 'Generate an API key for Acme Money' }),
+    );
+    const form = await within(card).findByRole('form', {
+      name: 'Generate an API key for Acme Money',
     });
-    fireEvent.click(within(card).getByRole('button', { name: 'Add the key' }));
-    await confirmWithCode();
-    const made = await screen.findByRole('region', { name: 'Acme Money’s new key' });
-    const added = state.connectedApps?.[0]?.keys[1];
-    expect(within(made).getByText(added?.fingerprint ?? '?')).toBeInTheDocument();
-    expect(
-      within(made).getByText(state.connectedApps?.[0]?.connection_string ?? '?'),
-    ).toBeInTheDocument();
-    expect(calls(state, 'POST', '/keys').at(-1)?.body).toEqual({ public_key: KEY_2 });
-    // Two keys: no more can be added, and either can be retired.
-    expect(
-      await within(card).findByRole('button', { name: 'Add a key to Acme Money' }),
-    ).toBeDisabled();
-    fireEvent.click(
-      within(card).getByRole('button', {
-        name: 'Retire the key b16c 2d1b 9e0f 4a77 c3d2 0011 8f6e 51a9',
-      }),
-    );
-    const ask = await screen.findByRole('alertdialog', { name: 'Retire this key?' });
-    fireEvent.click(within(ask).getByRole('button', { name: 'Cancel' }));
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
-    expect(state.connectedApps?.[0]?.keys).toHaveLength(2);
-    fireEvent.click(
-      within(card).getByRole('button', {
-        name: 'Retire the key b16c 2d1b 9e0f 4a77 c3d2 0011 8f6e 51a9',
-      }),
-    );
-    fireEvent.click(
-      within(await screen.findByRole('alertdialog', { name: 'Retire this key?' })).getByRole(
-        'button',
-        { name: 'Retire' },
-      ),
-    );
-    expect(
-      await screen.findByText('The key b16c 2d1b 9e0f 4a77 c3d2 0011 8f6e 51a9 was retired.'),
-    ).toBeInTheDocument();
-    expect(state.connectedApps?.[0]?.keys.map((k) => k.fingerprint)).toEqual([added?.fingerprint]);
     await waitFor(() =>
-      expect(within(card).queryByText('b16c 2d1b 9e0f 4a77 c3d2 0011 8f6e 51a9')).toBeNull(),
+      expect(
+        within(form).getByRole('heading', { name: 'Generate an API key for Acme Money' }),
+      ).toHaveFocus(),
     );
+    // Every permission the app has, ticked; none it has not.
+    expect(
+      within(form).getByLabelText('Send documents to the Inbox, and see what became of them'),
+    ).toBeChecked();
+    expect(
+      within(form).getByLabelText('Read the details of documents it is allowed'),
+    ).toBeChecked();
+    expect(within(form).queryByLabelText('Download documents it is allowed')).toBeNull();
+    const validity = within(form).getByLabelText('How long it lasts');
+    expect(
+      within(validity)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['30 days', '90 days', '1 year', 'Custom…', 'Never expires']);
+    expect(validity).toHaveValue('365');
+    await expectAccessible();
+
+    // A custom validity out of range is said, not sent.
+    fireEvent.change(validity, { target: { value: 'custom' } });
+    fireEvent.change(within(form).getByLabelText('Days'), { target: { value: '4000' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Generate key' }));
+    expect(await within(form).findByText('How long it lasts: 1 to 3650 days.')).toBeVisible();
+    expect(calls(state, 'POST', '/keys')).toHaveLength(0);
+    // Nothing ticked is said too.
+    fireEvent.change(within(form).getByLabelText('Days'), { target: { value: '45' } });
+    fireEvent.click(within(form).getByLabelText('Read the details of documents it is allowed'));
+    fireEvent.change(within(form).getByLabelText(/^Name/), { target: { value: 'Live' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Generate key' }));
+    await confirmWithCode();
+    expect(calls(state, 'POST', '/keys').at(-1)?.body).toEqual({
+      name: 'Live',
+      permissions: ['documents.send'],
+      expires_in_days: 45,
+    });
+
+    // Shown once: the client ID and the secret, with Copy, and the warning.
+    const sheet = await screen.findByRole('dialog', { name: 'Copy this key now' });
+    await waitFor(() =>
+      expect(within(sheet).getByRole('heading', { name: 'Copy this key now' })).toHaveFocus(),
+    );
+    const made = state.connectedApps?.[0]?.keys[0];
+    const secret = `fdvs_${'1'.padStart(43, 'S')}`;
+    expect(within(sheet).getByText(made?.client_id ?? '?')).toBeVisible();
+    expect(within(sheet).getByText(secret)).toBeVisible();
+    expect(
+      within(sheet).getByText(
+        'The secret won’t be shown again. If it’s lost, generate a new key and revoke this one.',
+      ),
+    ).toBeVisible();
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Copy the secret' }));
+    await waitFor(() => expect(copied).toHaveBeenCalledWith(secret));
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Copy the client ID' }));
+    await waitFor(() => expect(copied).toHaveBeenCalledWith(made?.client_id));
+    // The connection string: without the secret, unless ticked.
+    const without = state.connectedApps?.[0]?.connection_string ?? '?';
+    expect(within(sheet).getByText(without)).toBeVisible();
+    fireEvent.click(within(sheet).getByLabelText('Include the secret in the connection string'));
+    const shown = within(sheet).getByLabelText('Connection string').textContent ?? '';
+    expect(shown).not.toBe(without);
+    expect(JSON.parse(atob(shown.slice('fdvapp2.'.length)))).toMatchObject({ secret });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Copy the connection string' }));
+    await waitFor(() => expect(copied).toHaveBeenCalledWith(shown));
+    await expectAccessible();
+
+    // Done: the secret goes with the sheet, and is nowhere on the page.
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.queryByText(secret)).toBeNull();
+    expect(
+      await screen.findByText(
+        'Acme Money waits for Ahmed to turn it on again before it can use its new key.',
+      ),
+    ).toBeInTheDocument();
+    // Listed, with what it may do and when it expires.
+    const list = within(card).getByRole('list', { name: 'API keys' });
+    expect(within(list).getByText('Live')).toBeVisible();
+    expect(within(list).getByText(made?.client_id ?? '?')).toBeVisible();
+    expect(within(list).getByText('Send')).toBeVisible();
+    expect(within(list).getByText('Never used')).toBeVisible();
   });
 
-  it('shows a key the app added as not confirmed, and an owner confirms it with a code (APP1 review)', async () => {
+  it('a key that never expires, and the vault’s refusal said on the form (APP6)', async () => {
     const state = at('/settings/connected-apps', {
+      connectedApps: [app({ keys: [] })],
+    });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    fireEvent.click(
+      within(card).getByRole('button', { name: 'Generate an API key for Acme Money' }),
+    );
+    fireEvent.change(within(card).getByLabelText('How long it lasts'), {
+      target: { value: 'never' },
+    });
+    fireEvent.click(within(card).getByRole('button', { name: 'Generate key' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Copy this key now' });
+    expect(calls(state, 'POST', '/keys').at(-1)?.body).toEqual({
+      name: null,
+      permissions: ['documents.send'],
+      expires_in_days: null,
+    });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const list = within(card).getByRole('list', { name: 'API keys' });
+    expect(within(list).getByText('Unnamed key')).toBeVisible();
+    expect(within(list).getByText('Never')).toBeVisible();
+    // The vault refuses: its words, on the form, which stays open.
+    fireEvent.click(
+      within(card).getByRole('button', { name: 'Generate an API key for Acme Money' }),
+    );
+    state.connectedApps = state.connectedApps!.map((a) => ({ ...a, scopes: ['documents.read'] }));
+    fireEvent.click(within(card).getByRole('button', { name: 'Generate key' }));
+    expect(
+      await within(card).findByText('Choose what the key may do, from the app’s.'),
+    ).toBeVisible();
+    expect(within(card).getByRole('button', { name: 'Generate key' })).toBeInTheDocument();
+  });
+
+  it('says each key in words: soon to expire, expired, revoked; two live keys at most (APP6)', async () => {
+    const soon = new Date(Date.now() + 5 * 864e5 - 60_000).toISOString();
+    at('/settings/connected-apps', {
       connectedApps: [
         app({
           keys: [
-            key(),
+            key({ name: 'Old', state: 'expired', expires_at: '2026-10-01T09:00:00.000Z' }),
             key({
-              key_id: '00000000-0000-4000-8000-000000000002',
-              fingerprint: '77aa 1b2c 3d4e 5f60 7182 93a4 b5c6 d7e8',
-              added_by: 'app',
-              pending: true,
-              first_used_at: null,
+              id: 'k-2',
+              client_id: 'fdvc_REVOKEDREVOKEDREVOKE',
+              name: 'Leaked',
+              state: 'revoked',
+              revoked_at: '2026-11-03T09:00:00.000Z',
             }),
+            key({
+              id: 'k-3',
+              client_id: 'fdvc_SOONSOONSOONSOONSOON',
+              name: 'Soon',
+              expires_at: soon,
+            }),
+            key({ id: 'k-4', client_id: 'fdvc_NEVERNEVERNEVERNEVER', name: 'Forever' }),
           ],
         }),
       ],
+    });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    const rows = within(within(card).getByRole('list', { name: 'API keys' })).getAllByRole(
+      'listitem',
+    );
+    expect(rows).toHaveLength(4);
+    expect(within(rows[0] as HTMLElement).getByText(/Expired/)).toBeVisible();
+    expect(within(rows[0] as HTMLElement).queryByRole('button', { name: /^Revoke/ })).toBeNull();
+    expect(within(rows[1] as HTMLElement).getByText(/Revoked 3 November/)).toBeVisible();
+    expect(within(rows[1] as HTMLElement).queryByRole('button', { name: /^Revoke/ })).toBeNull();
+    expect(within(rows[2] as HTMLElement).getByText(/\(expires in 5 days\)$/)).toBeVisible();
+    expect(within(rows[3] as HTMLElement).getByText('Never')).toBeVisible();
+    expect(
+      within(rows[3] as HTMLElement).getByRole('button', { name: 'Revoke the key Forever' }),
+    ).toBeEnabled();
+    // Two work: no third.
+    const generate = within(card).getByRole('button', {
+      name: 'Generate an API key for Acme Money',
+    });
+    expect(generate).toBeDisabled();
+    expect(generate).toHaveAccessibleDescription(
+      '2 keys at most work at once. Revoke one to generate another.',
+    );
+    await expectAccessible();
+  });
+
+  it('an owner revokes a key, asked first, with a passkey or a code (APP6)', async () => {
+    const state = at('/settings/connected-apps', {
+      connectedApps: [app({ keys: [key({ name: 'Live' })] })],
       stepUpNeeded: true,
     });
     const card = await screen.findByRole('region', { name: 'Acme Money' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Revoke the key Live' }));
+    let ask = await screen.findByRole('alertdialog', { name: 'Revoke this key?' });
     expect(
-      within(card).getByText(/Not confirmed: it signs nothing until it is\./),
+      within(ask).getByText(/Acme Money stops working with the key Live at its next request/),
     ).toBeInTheDocument();
-    fireEvent.click(
-      within(card).getByRole('button', {
-        name: 'Confirm the key 77aa 1b2c 3d4e 5f60 7182 93a4 b5c6 d7e8',
-      }),
-    );
+    fireEvent.click(within(ask).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(calls(state, 'DELETE', '/keys/')).toHaveLength(0);
+    fireEvent.click(within(card).getByRole('button', { name: 'Revoke the key Live' }));
+    ask = await screen.findByRole('alertdialog', { name: 'Revoke this key?' });
+    fireEvent.click(within(ask).getByRole('button', { name: 'Revoke' }));
     await confirmWithCode();
-    // Confirmed by an owner for Ahmed's app: Ahmed turns it on again.
+    expect(await screen.findByText('The key Live was revoked.')).toBeInTheDocument();
+    expect(calls(state, 'DELETE', '/keys/k-1').length).toBeGreaterThan(0);
+    expect(state.connectedApps?.[0]?.keys[0]?.state).toBe('revoked');
+    expect(await within(card).findByText(/^ ?Revoked /)).toBeVisible();
+    expect(within(card).queryByRole('button', { name: 'Revoke the key Live' })).toBeNull();
     expect(
-      await screen.findByText(
-        'The key is confirmed. Acme Money waits for Ahmed to turn it on again.',
-      ),
-    ).toBeInTheDocument();
-    expect(state.connectedApps?.[0]?.keys[1]?.pending).toBe(false);
-    expect(calls(state, 'POST', '/confirm').length).toBeGreaterThan(0);
-    await waitFor(() =>
-      expect(within(card).queryByText(/Not confirmed: it signs nothing/)).toBeNull(),
-    );
+      within(card).getByText('Acme Money needs an API key before it can reach the vault.'),
+    ).toBeVisible();
   });
 
   it('an owner removes an app, asked first: Cancel leaves it', async () => {

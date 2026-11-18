@@ -1,7 +1,6 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { BlockList, isIP, isIPv4 } from 'node:net';
 import type { Readable } from 'node:stream';
-import { createHash } from 'node:crypto';
 import { itemAppHintsBinding, sealBytes } from '@fdv/crypto';
 import { actAs, appendAudit, householdZone, withPrincipal, withSystem, type Db } from '@fdv/db';
 import {
@@ -17,8 +16,10 @@ import {
   APP_GRANTS_MAX,
   APP_HINTS,
   APP_LOOKBACK_MAX_MONTHS,
+  APP_AUTH_FAILURES_PER_MINUTE,
   APP_IP_ALLOW_MAX,
-  APP_KEY_RETIRE_DAYS,
+  APP_KEY_DAYS_MAX,
+  APP_KEY_NAME_MAX,
   APP_KEYS_MAX,
   APP_NEVER_CATEGORIES,
   APP_NAME_MAX,
@@ -26,7 +27,6 @@ import {
   APP_REQUESTS_PER_MINUTE,
   APP_SCOPES_DEFAULT,
   APP_SCOPES_OFFERED,
-  APP_SIGNATURE_WINDOW_SECONDS,
   APP_STATUS_MAX_IDS,
   BATCH_MAX_FILES,
   EXTERNAL_ID_PATTERN,
@@ -49,7 +49,7 @@ import {
   type AppIntakeMetadata,
   type AppIntakeState,
   type AppIntakeStates,
-  type AppKeyAdded,
+  type AppKeyState,
   type AppKeyView,
   type AppMe,
   type AppScope,
@@ -58,7 +58,8 @@ import {
   type ConnectedAppGrantsInput,
   type ConnectedAppGrantView,
   type ConnectedAppInput,
-  type ConnectedAppKeyAdded,
+  type ConnectedAppKeyInput,
+  type ConnectedAppKeyMade,
   type ConnectedAppList,
   type ConnectedAppView,
   type Role,
@@ -74,35 +75,34 @@ import type { DocumentService } from '../documents/service.js';
 import type { BatchService } from '../uploads/batches.js';
 import { AppAutoFile } from './auto-file.js';
 import { AppLinks } from './links.js';
-import { AppReads } from './reads.js';
 import {
-  fingerprintOf,
-  parseSignature,
-  pathAndQuery,
-  rawPublicKey,
-  signatureBase,
-  verifies,
-  type ParsedSignature,
-} from './signing.js';
+  addressBucket,
+  newClientId,
+  newSecret,
+  readBasic,
+  secretHash,
+  secretMatches,
+} from './keys.js';
+import { AppReads } from './reads.js';
 
 /**
- * Connected apps (0.9.0, APP1): an owner connects one, and it signs every
- * request it makes, as the one adult it acts as.
+ * Connected apps (0.9.0, APP1): an owner connects one, and it acts as the
+ * one adult it is connected for, with an API key an owner generated (APP6).
  *
  * **The family's side** (Settings → Connected apps, signed in): an owner
  * connects an app — its name, whom it acts as (an owner or an adult with a
- * sign-in), its public key, the kinds it may send, who sees what it sends,
- * its day's caps, the addresses it may come from and a backfill allowance —
- * after a passkey or a code (the route's `connect_app`). One that acts as
+ * sign-in), the kinds it may send, who sees what it sends, its day's caps,
+ * the addresses it may come from and a backfill allowance — after a
+ * passkey or a code (the route's `connect_app`), then generates its API
+ * keys, each with its own permissions and validity. One that acts as
  * somebody else waits until they turn it on themselves. Owners see every
  * app and change what it may do; its person sees theirs and may remove it.
  * Nobody else is given any.
  *
- * **The app's side** (`/api/v1/apps/*`, signed): `authenticate` checks a
- * request in the contract's order, each with its own code — the headers,
- * the keyid, the app's state, its address, https, the window, the
- * signature, the nonce (kept once the signature verifies, so a stranger
- * fills nothing), its person, the route's scope, and its rate. What it
+ * **The app's side** (`/api/v1/apps/*`, with a key): `authenticate` checks
+ * a request in the contract's order, each with its own code — the key
+ * (`Authorization: Basic`), the app's and the key's state, its address,
+ * https, its person, the route's scope, and its rate. What it
  * sends goes through the batch path a paired computer's does (BatchService:
  * a batch an app a household day, sealed under its person's key), its
  * state kept by external id in connected_app_intake, followed from the
@@ -115,6 +115,7 @@ import {
 /** What `authenticate` found: the app, its key and its person, as they are now. */
 export interface AppCaller {
   appId: string;
+  /** The API key the request came with (APP6). */
   keyId: string;
   householdId: string;
   accountId: string;
@@ -123,6 +124,7 @@ export interface AppCaller {
   name: string;
   memberName: string;
   timezone: string;
+  /** What this request may do: the app's scopes that its key has too (APP6). */
   scopes: AppScope[];
   state: AppStateName;
   pausedReason: 'owner' | 'restored' | null;
@@ -163,8 +165,6 @@ export interface AppFile {
   truncated: () => boolean;
   /** Reads the body to its end, refusing anything after the file. */
   finished: () => Promise<void>;
-  /** Whether the body's bytes, now all read, are what Content-Digest says. */
-  digestOk: () => Promise<boolean>;
 }
 
 const STALE_ARRIVAL_MS = 15 * 60_000;
@@ -179,7 +179,12 @@ const invalid = (message: string, detail: string) =>
   new ApiError(422, 'validation_failed', message, { detail });
 const ownersOnly = () =>
   new ApiError(403, 'forbidden', 'Only an owner can connect an app, or change what it may do.');
-const digestMismatch = () => err(400, 'content_digest_mismatch');
+const keyLimit = () =>
+  new ApiError(
+    409,
+    'key_limit',
+    `An app has ${APP_KEYS_MAX} live API keys at most. Revoke one first.`,
+  );
 const inProgress = () =>
   new ApiError(
     409,
@@ -307,7 +312,11 @@ function widens(
   return false;
 }
 
-/** A connection string: `fdvapp1.` and base64url of its JSON. No secret is in it. */
+/**
+ * A connection string: `fdvapp2.` and base64url of its JSON — the vault's
+ * address and a key's client ID, and its secret only when the owner chose
+ * so as the key was shown.
+ */
 export function connectionString(c: AppConnection): string {
   return `${APP_CONNECTION_PREFIX}${Buffer.from(JSON.stringify(c), 'utf8').toString('base64url')}`;
 }
@@ -384,22 +393,29 @@ const APP_COLUMNS = [
 
 interface KeyRow {
   id: string;
-  public_key: Buffer;
-  added_by: 'owner' | 'app';
+  app_id: string;
+  client_id: string;
+  name: string | null;
+  permissions: string[];
   created_at: Date;
-  confirmed_at: Date | null;
-  first_used_at: Date | null;
-  retired_at: Date | null;
+  expires_at: Date | null;
+  last_used_at: Date | null;
+  revoked_at: Date | null;
+  revoked_reason: 'owner' | 'app_removed' | 'restore' | null;
 }
 
+/** A key's columns, as Settings lists it: never its secret's hash. */
 const KEY_COLUMNS = [
   'id',
-  'public_key',
-  'added_by',
+  'app_id',
+  'client_id',
+  'name',
+  'permissions',
   'created_at',
-  'confirmed_at',
-  'first_used_at',
-  'retired_at',
+  'expires_at',
+  'last_used_at',
+  'revoked_at',
+  'revoked_reason',
 ] as const;
 
 interface IntakeRow {
@@ -493,44 +509,36 @@ function today(a: Pick<AppRow, 'use_day' | 'files_today' | 'bytes_today'>, day: 
     : { files: 0, bytes: 0 };
 }
 
-/** An app's key, as an app or Settings is told of it. */
-function keyView(k: KeyRow, all: readonly KeyRow[]): AppKeyView {
-  // Seven days after a newer, confirmed key of its app was first used, it
-  // retires by itself.
-  const newer = all
-    .filter(
-      (n) =>
-        n.id !== k.id &&
-        n.retired_at === null &&
-        n.confirmed_at !== null &&
-        n.created_at > k.created_at,
-    )
-    .map((n) => n.first_used_at)
-    .filter((d): d is Date => d !== null)
-    .sort((x, y) => x.getTime() - y.getTime())[0];
+/** Whether a key works now: not revoked, and not past its expiry. */
+function keyState(k: Pick<KeyRow, 'revoked_at' | 'expires_at'>, now: number): AppKeyState {
+  if (k.revoked_at) return 'revoked';
+  return k.expires_at && k.expires_at.getTime() <= now ? 'expired' : 'live';
+}
+
+/** An app's key, as Settings lists it: never its secret, nor its hash. */
+function keyView(k: KeyRow, now: number): AppKeyView {
   return {
-    key_id: k.id,
-    fingerprint: fingerprintOf(k.public_key),
-    added_by: k.added_by,
+    id: k.id,
+    client_id: k.client_id,
+    name: k.name,
+    permissions: APP_SCOPES_OFFERED.filter((s) => k.permissions.includes(s)),
     created_at: k.created_at.toISOString(),
-    pending: k.confirmed_at === null,
-    first_used_at: k.first_used_at ? k.first_used_at.toISOString() : null,
-    retires_at: newer ? new Date(newer.getTime() + APP_KEY_RETIRE_DAYS * DAY).toISOString() : null,
+    expires_at: k.expires_at ? k.expires_at.toISOString() : null,
+    last_used_at: k.last_used_at ? k.last_used_at.toISOString() : null,
+    revoked_at: k.revoked_at ? k.revoked_at.toISOString() : null,
+    revoked_reason: k.revoked_reason,
+    state: keyState(k, now),
   };
 }
 
-/** A key live now: not retired, and not past seven days after a newer one's first use. */
-function liveKeys(keys: readonly KeyRow[], now: number): KeyRow[] {
-  return keys.filter((k) => {
-    if (k.retired_at) return false;
-    const until = keyView(k, keys).retires_at;
-    return !until || new Date(until).getTime() > now;
-  });
-}
-
 export class AppService {
-  /** Signed requests each app made this minute: the rate. */
+  /** Requests each app made this minute: the rate. */
   private readonly rate = new Map<string, { minute: number; n: number }>();
+  /** Failed authentications from each address this minute (APP6). */
+  private readonly failures: { minute: number; counts: Map<string, number> } = {
+    minute: -1,
+    counts: new Map(),
+  };
   /** What an app reads (APP2). */
   readonly reads: AppReads | null;
   /** Its links and deletes (APP3). */
@@ -695,132 +703,117 @@ export class AppService {
     };
   }
 
-  // ------------------------------------------------------------ signing
+  // ------------------------------------------------------------ API keys
 
   /**
-   * A signed request, checked in the order the contract gives, each refusal
-   * with its own code. The nonce is kept only once the signature verifies.
-   * Answers the app and its person as they are now, and the signature, for
-   * the body's digest.
+   * A request's API key (APP6), checked in the order the contract gives,
+   * each refusal with its own code: `Authorization: Basic` and no other
+   * credential; an address that has failed too often this minute waits; the
+   * client ID and its secret, compared in constant time, an unknown ID and
+   * a wrong secret alike (`app_key_invalid`); the app removed, the key
+   * revoked, the key expired; then as before — the app on and turned on,
+   * its address, https, its person, the route's scope (the app's and the
+   * key's both) and its rate. Nothing is cached: a key revoked is refused
+   * on the very next request. Answers the app and its person as they are now.
    */
-  async authenticate(
-    req: FastifyRequest,
-    route: AppRoute,
-  ): Promise<{ caller: AppCaller; signature: ParsedSignature }> {
-    // 1. Signature headers, and nothing else that names a caller.
+  async authenticate(req: FastifyRequest, route: AppRoute): Promise<{ caller: AppCaller }> {
     const h = req.headers;
-    const other = h.authorization !== undefined || (h.cookie !== undefined && /\S/.test(h.cookie));
-    const parsed = parseSignature(h);
-    if (other || ('code' in parsed && parsed.code === 'app_signature_required')) {
-      throw err(401, 'app_signature_required');
+    const now = this.now();
+    const minute = Math.floor(now / 60_000);
+    // 1. Basic, and nothing else that names a caller: no cookie, no bearer token.
+    const creds = readBasic(h);
+    if (creds.kind === 'none' || (h.cookie !== undefined && /\S/.test(h.cookie))) {
+      throw err(401, 'app_key_required');
     }
-    // 2. As the profile says.
-    if ('code' in parsed) throw err(401, 'signature_malformed', { detail: parsed.detail });
-    const s = parsed;
-    // 3. A live key of a live app.
-    const found = await sql<{
-      household_id: string;
-      public_key: Buffer;
-      key_live: boolean;
-      key_pending: boolean;
-      revoked: boolean;
-      paused_reason: 'owner' | 'restored' | null;
-      approval: 'waiting' | 'approved';
-      ip_allow: string[];
-      signed_after: Date | null;
-    }>`select household_id, public_key, key_live, key_pending, revoked, paused_reason, approval,
-              ip_allow, signed_after
-         from connected_app_find(${s.appId}::uuid, ${s.keyId}::uuid)`.execute(this.db);
-    const at = found.rows[0];
-    // A removed app's keys retired with it: it is told it was removed.
-    if (at?.revoked) throw err(401, 'app_revoked');
-    if (!at || !at.key_live) throw err(401, 'app_key_unknown');
-    // A key the app added itself signs nothing until it is confirmed in Settings.
-    if (at.key_pending) throw err(401, 'app_key_pending');
-    // The base, and whether the signature verifies, worked out once: a
-    // refusal is written against the app only when the request is truly
-    // its own, so a stranger who knows an app's id writes nothing.
-    const { path, query } = pathAndQuery(req.raw.url ?? req.url);
-    const base = signatureBase({
-      method: req.method,
-      path,
-      query,
-      digestHeader: s.digestHeader,
-      params: s.params,
-    });
-    let verified: boolean | null = null;
-    const isGenuine = () => (verified ??= verifies(at.public_key, base, s.signature));
+    // 2. An address that keeps failing waits for its minute to end, before
+    // anything is looked up.
+    // An IPv6 address by its /64. This minute's counts alone are kept: at a
+    // minute's turn the map is swapped for an empty one.
+    const address = addressBucket(clientAddressOf(req) ?? '-');
+    if (this.failures.minute !== minute) {
+      this.failures.minute = minute;
+      this.failures.counts = new Map();
+    }
+    const counts = this.failures.counts;
+    if ((counts.get(address) ?? 0) >= APP_AUTH_FAILURES_PER_MINUTE) {
+      const wait = Math.max(1, Math.ceil(((minute + 1) * 60_000 - now) / 1000));
+      throw new ApiError(
+        429,
+        'rate_limited',
+        `Too many requests with a key that did not work. Try again in ${wait} seconds.`,
+        { retriable: true, retryAfter: wait },
+      );
+    }
+    // Only a guess counts: an unknown client ID or a wrong secret. A right
+    // secret — whatever is refused after it — is no guessing.
+    const failed = (): void => {
+      counts.set(address, (counts.get(address) ?? 0) + 1);
+    };
+    // 3. A key the vault made, and its secret: the same work, and the same
+    // answer, for an unknown client ID as for a wrong secret.
+    const found =
+      creds.kind === 'basic'
+        ? (
+            await sql<{
+              household_id: string;
+              app_id: string;
+              key_id: string;
+              secret_hash: Buffer;
+              permissions: string[];
+              expires_at: Date | null;
+              key_revoked: boolean;
+              revoked: boolean;
+              paused_reason: 'owner' | 'restored' | null;
+              approval: 'waiting' | 'approved';
+              ip_allow: string[];
+            }>`select household_id, app_id, key_id, secret_hash, permissions, expires_at,
+                      key_revoked, revoked, paused_reason, approval, ip_allow
+                 from connected_app_find(${creds.clientId})`.execute(this.db)
+          ).rows[0]
+        : undefined;
+    const genuine = secretMatches(creds.kind === 'basic' ? creds.secret : '', found?.secret_hash);
+    if (!found || !genuine) {
+      failed();
+      throw err(401, 'app_key_invalid');
+    }
+    const at = found;
+    // From here the request is truly the app's: a refusal is counted on it.
     const refuse = async (e: ApiError): Promise<never> => {
-      if (isGenuine()) {
-        await this.noteRefusal(at.household_id, s.appId, e.code).catch(() => undefined);
-      }
+      await this.noteRefusal(at.household_id, at.app_id, e.code).catch(() => undefined);
       throw e;
     };
-    // 4. On, and turned on by its person — but for GET /apps/me.
+    // 4. The app removed, then the key revoked or past its expiry.
+    if (at.revoked) throw err(401, 'app_revoked');
+    if (at.key_revoked) await refuse(err(401, 'app_key_revoked'));
+    if (at.expires_at && at.expires_at.getTime() <= now) {
+      await refuse(err(401, 'app_key_expired'));
+    }
+    // 5. On, and turned on by its person — but for GET /apps/me.
     if (!route.anyState) {
       if (at.paused_reason) await refuse(err(403, 'app_paused'));
       if (at.approval !== 'approved') await refuse(err(403, 'app_not_approved'));
     }
-    // 5. From an address it may come from.
+    // 6. From an address it may come from.
     if (!addressAllowed(clientAddressOf(req), at.ip_allow ?? [])) {
       await refuse(err(403, 'address_not_allowed'));
     }
-    // 6. Over https, as the trusted proxies say; plain http only for a vault
+    // 7. Over https, as the trusted proxies say; plain http only for a vault
     // on this machine, asked from this machine: its address and the socket.
     if (req.protocol !== 'https' && !(localBase(this.opts.baseUrl) && loopbackSocket(req))) {
       await refuse(err(403, 'https_required'));
     }
-    // 7. Within the window, to the millisecond, so a nonce is always kept
-    // past the last moment its `created` is taken; and never from before a
-    // restore, whose forgotten nonces would otherwise open a replay.
-    const now = this.now();
-    const offMs = s.created * 1000 - now;
-    if (Math.abs(offMs) > APP_SIGNATURE_WINDOW_SECONDS * 1000) {
-      const off = Math.round(Math.abs(offMs) / 1000);
-      await refuse(
-        err(401, 'signature_stale', {
-          detail: `created ${off} seconds ${offMs > 0 ? 'ahead of' : 'behind'} the vault's clock`,
-        }),
-      );
-    }
-    if (at.signed_after && s.created * 1000 < at.signed_after.getTime()) {
-      await refuse(
-        err(401, 'signature_stale', { detail: 'created before the vault was restored' }),
-      );
-    }
-    // 8. The signature verifies.
-    if (!isGenuine()) throw err(401, 'signature_invalid');
-    // 9. The nonce is new: kept for its window, the key's first use and the
-    // app's last noted, and the app and its person read as they are now.
-    const read = await withSystem(this.db, at.household_id, async (trx) => {
-      await trx
-        .deleteFrom('connected_app_nonce')
-        .where('app_id', '=', s.appId)
-        .where('expires_at', '<', new Date(now))
-        .execute();
-      const kept = await trx
-        .insertInto('connected_app_nonce')
-        .values({
-          household_id: at.household_id,
-          app_id: s.appId,
-          nonce: s.nonce,
-          // A second past the window's last accepted instant.
-          expires_at: new Date((s.created + APP_SIGNATURE_WINDOW_SECONDS + 1) * 1000),
-        })
-        .onConflict((oc) => oc.columns(['app_id', 'nonce']).doNothing())
-        .returning('nonce')
-        .executeTakeFirst();
-      if (!kept) return null;
+    // 8. The key's use and the app's noted, and the app and its person
+    // read as they are now.
+    const app = await withSystem(this.db, at.household_id, async (trx) => {
       await trx
         .updateTable('connected_app_key')
-        .set({ first_used_at: sql<Date>`now()` })
-        .where('id', '=', s.keyId)
-        .where('first_used_at', 'is', null)
+        .set({ last_used_at: sql<Date>`now()` })
+        .where('id', '=', at.key_id)
         .execute();
       await trx
         .updateTable('connected_app')
         .set({ last_used_at: sql<Date>`now()` })
-        .where('id', '=', s.appId)
+        .where('id', '=', at.app_id)
         .execute();
       return trx
         .selectFrom('connected_app as a')
@@ -848,15 +841,13 @@ export class AppService {
           'ah.suspended_until',
           'ah.suspend_reason',
         ])
-        .where('a.id', '=', s.appId)
+        .where('a.id', '=', at.app_id)
         .executeTakeFirst();
     });
-    if (read === null) await refuse(err(401, 'nonce_reused'));
-    const app = read as NonNullable<typeof read>;
     if (!app || app.revoked_at !== null || !app.role || !['owner', 'adult'].includes(app.role)) {
       throw err(401, 'app_revoked');
     }
-    // 10. Its person may act now.
+    // 9. Its person may act now.
     const person = {
       suspend_reason: app.suspend_reason ?? null,
       suspended_at: app.suspended_at ?? null,
@@ -864,15 +855,18 @@ export class AppService {
     };
     if (lockInEffect(person)) await refuse(err(403, 'member_locked'));
     if (suspensionInEffect(person)) await refuse(err(403, 'member_paused'));
-    // 11. The route is in its scopes.
-    if (route.scope && !app.scopes.includes(route.scope)) {
+    // 10. The route is in what the app may do and in what this key may:
+    // both, as they are now.
+    const scopes = APP_SCOPES_OFFERED.filter(
+      (s) => app.scopes.includes(s) && at.permissions.includes(s),
+    );
+    if (route.scope && !scopes.includes(route.scope)) {
       await refuse(err(403, 'scope_not_granted'));
     }
-    // And its rate: so many signed requests a minute.
-    const minute = Math.floor(now / 60_000);
-    const r = this.rate.get(s.appId);
+    // And its rate: so many requests a minute, whichever key.
+    const r = this.rate.get(at.app_id);
     const n = r && r.minute === minute ? r.n + 1 : 1;
-    this.rate.set(s.appId, { minute, n });
+    this.rate.set(at.app_id, { minute, n });
     if (n > APP_REQUESTS_PER_MINUTE) {
       const wait = Math.max(1, Math.ceil(((minute + 1) * 60_000 - now) / 1000));
       await refuse(
@@ -889,8 +883,8 @@ export class AppService {
     }
     return {
       caller: {
-        appId: s.appId,
-        keyId: s.keyId,
+        appId: at.app_id,
+        keyId: at.key_id,
         householdId: at.household_id,
         accountId: app.account_id,
         memberId: app.member_id,
@@ -898,17 +892,11 @@ export class AppService {
         name: app.name,
         memberName: app.display_name,
         timezone: householdZone(app.timezone),
-        scopes: app.scopes as AppScope[],
+        scopes,
         state: appState(app),
         pausedReason: app.paused_reason,
       },
-      signature: s,
     };
-  }
-
-  /** A refusal after the signature was taken (a body's digest), counted as the rest are. */
-  async countRefusal(c: AppCaller, code: string): Promise<void> {
-    await this.noteRefusal(c.householdId, c.appId, code).catch(() => undefined);
   }
 
   /**
@@ -948,7 +936,7 @@ export class AppService {
   /** `GET /apps/me`: the connection test, and what this app may do. */
   async me(c: AppCaller): Promise<AppMe> {
     const now = this.now();
-    const { app, keys, kinds, household, grants } = await withSystem(
+    const { app, key, kinds, household, grants } = await withSystem(
       this.db,
       c.householdId,
       async (trx) => {
@@ -957,12 +945,12 @@ export class AppService {
           .select(APP_COLUMNS)
           .where('a.id', '=', c.appId)
           .executeTakeFirstOrThrow();
-        const keys = (await trx
+        // The key this request came with, and none of the app's others.
+        const key = await trx
           .selectFrom('connected_app_key')
           .select(KEY_COLUMNS)
-          .where('app_id', '=', c.appId)
-          .orderBy('created_at')
-          .execute()) as KeyRow[];
+          .where('id', '=', c.keyId)
+          .executeTakeFirstOrThrow();
         const kinds =
           app.allowed_kinds.length === 0
             ? []
@@ -985,7 +973,7 @@ export class AppService {
           .orderBy('kind_key')
           .orderBy('category')
           .execute();
-        return { app, keys, kinds, household, grants };
+        return { app, key, kinds, household, grants };
       },
     );
     const readToday = app.read_day === localToday(c.timezone, new Date(now));
@@ -1051,17 +1039,14 @@ export class AppService {
             auto_file: app.backfill_auto_file,
           }
         : null,
-      keys: liveKeys(keys, now).map((k) => {
-        const v = keyView(k, keys);
-        return {
-          key_id: v.key_id,
-          fingerprint: v.fingerprint,
-          added_by: v.added_by,
-          created_at: v.created_at,
-          pending: v.pending === true,
-          retires_at: v.retires_at,
-        };
-      }),
+      key: {
+        client_id: key.client_id,
+        name: key.name,
+        permissions: APP_SCOPES_OFFERED.filter((s) => key.permissions.includes(s)),
+        created_at: key.created_at.toISOString(),
+        expires_at: key.expires_at ? key.expires_at.toISOString() : null,
+        last_used_at: key.last_used_at ? key.last_used_at.toISOString() : null,
+      },
     };
   }
 
@@ -1294,7 +1279,6 @@ export class AppService {
         file.stream.resume();
       }).catch(() => undefined);
       await file.finished();
-      if (!(await file.digestOk())) throw digestMismatch();
       if (!claim.row.sha256 || !hash.digest().equals(claim.row.sha256)) {
         throw err(409, 'external_id_conflict');
       }
@@ -1348,7 +1332,7 @@ export class AppService {
           .execute(),
       ).catch(() => undefined);
     };
-    const drainAndCheck = async () => {
+    const drain = async () => {
       file.stream.resume();
       await new Promise<void>((resolve) => {
         if (file.stream.readableEnded) resolve();
@@ -1359,14 +1343,13 @@ export class AppService {
         }
       });
       await file.finished();
-      return file.digestOk();
     };
 
     // A kind it may not send: refused — a record of the refusal kept, never
     // the file or what the app said of it.
     if (hints.kind && !(await this.kindAllowed(p, claim.app, hints.kind))) {
       try {
-        if (!(await drainAndCheck())) throw digestMismatch();
+        await drain();
       } catch (e) {
         await letGo();
         throw e;
@@ -1469,15 +1452,10 @@ export class AppService {
               paused: true,
               stream: file.stream,
               truncated: file.truncated,
-              finished: async () => {
-                await file.finished();
-                // The body's digest, now that all of it has been read: a body
-                // changed in flight keeps nothing.
-                if (!(await file.digestOk())) throw digestMismatch();
-              },
+              finished: file.finished,
               stillAllowed: async (trx) => {
                 // The app, and its own person as they are now — whoever's
-                // Inbox it goes to (APP5): a lock or a pause since it signed
+                // Inbox it goes to (APP5): a lock or a pause since it was sent
                 // lands nothing.
                 await asApp(trx, async (t) => {
                   await this.live(t, c);
@@ -1542,12 +1520,12 @@ export class AppService {
         await refused('too_large');
       } else if (e instanceof ApiError && e.code === 'unsupported_type') {
         // Refused for what its bytes are: so said, once the body is known whole.
-        const whole = await drainAndCheck().catch(() => false);
+        const whole = await drain().then(
+          () => true,
+          () => false,
+        );
         if (whole) await refused('unsupported_type');
-        else {
-          await letGo();
-          throw digestMismatch();
-        }
+        else await letGo();
       } else {
         await letGo();
       }
@@ -1759,178 +1737,6 @@ export class AppService {
 
   // ---------------------------------------------------------- the keys
 
-  /**
-   * `POST /apps/keys`: a key the app adds for rotation, signed with a
-   * current one. It is pending — it signs nothing — until an owner, or the
-   * person the app acts as, confirms it in Settings, so a stolen key cannot
-   * add one of its own that outlives it. Two live at most (`409 key_limit`,
-   * pending ones counted); one already live in the household is `409
-   * key_exists`. The owners are emailed, and the person it acts as.
-   */
-  async appAddsKey(c: AppCaller, publicKey: unknown, meta: RequestMeta): Promise<AppKeyAdded> {
-    const raw = typeof publicKey === 'string' ? rawPublicKey(publicKey) : null;
-    if (!raw) {
-      throw invalid(
-        'public_key is "ed25519:" and 43 base64url characters, or a PEM PUBLIC KEY.',
-        'public_key',
-      );
-    }
-    const made = await withSystem(this.db, c.householdId, async (trx) => {
-      const k = await this.insertKey(trx, c.householdId, c.appId, raw, 'app');
-      await appendAudit(trx, {
-        householdId: c.householdId,
-        actorAccountId: c.accountId,
-        action: 'app.key_added',
-        objectType: 'member',
-        objectId: c.memberId,
-        detail: { app_id: c.appId, app: c.name, by: 'app', fingerprint: fingerprintOf(raw) },
-        ip: meta.ip,
-      });
-      const owners = await trx
-        .selectFrom('account_household')
-        .select('account_id')
-        .where('role', '=', 'owner')
-        .execute();
-      return { k, owners: owners.map((o) => o.account_id) };
-    });
-    await this.opts
-      .alert({
-        householdId: c.householdId,
-        accountIds: [...new Set([...made.owners, c.accountId])],
-        subject: `A new key was added to ${c.name}`,
-        body: `${c.name}, a connected app acting as ${c.memberName}, added a new key to sign its requests with (${fingerprintOf(raw)}). It works only once an owner or ${c.memberName} confirms it in Settings → Connected apps. If you did not expect this, do not confirm it, and remove the app there.`,
-        emailOnly: true,
-      })
-      .catch(() => undefined);
-    return {
-      key_id: made.k.id,
-      keyid: `${c.appId}.${made.k.id}`,
-      fingerprint: fingerprintOf(raw),
-      created_at: made.k.created_at.toISOString(),
-      pending: true,
-    };
-  }
-
-  /** A key inserted: `key_limit`, `key_exists` as the contract says. */
-  private async insertKey(
-    trx: Db,
-    householdId: string,
-    appId: string,
-    raw: Buffer,
-    by: 'owner' | 'app',
-  ): Promise<{ id: string; created_at: Date }> {
-    const keys = (await trx
-      .selectFrom('connected_app_key')
-      .select(KEY_COLUMNS)
-      .where('app_id', '=', appId)
-      .execute()) as KeyRow[];
-    const live = liveKeys(keys, this.now());
-    // Keys past their seven days, retired now that they are looked at.
-    const lapsed = keys.filter((k) => k.retired_at === null && !live.includes(k)).map((k) => k.id);
-    if (lapsed.length > 0) {
-      await trx
-        .updateTable('connected_app_key')
-        .set({ retired_at: sql<Date>`now()` })
-        .where('id', 'in', lapsed)
-        .execute();
-    }
-    const taken = await trx
-      .selectFrom('connected_app_key')
-      .select('id')
-      .where('public_key', '=', raw)
-      .where('retired_at', 'is', null)
-      .executeTakeFirst();
-    if (taken) {
-      throw new ApiError(409, 'key_exists', 'That key is already in use. Make a new key pair.');
-    }
-    if (live.length >= APP_KEYS_MAX) {
-      throw new ApiError(
-        409,
-        'key_limit',
-        `An app has ${APP_KEYS_MAX} keys at most. Retire the old key first.`,
-      );
-    }
-    return trx
-      .insertInto('connected_app_key')
-      .values({
-        household_id: householdId,
-        app_id: appId,
-        public_key: raw,
-        added_by: by,
-        // An owner's key is confirmed as it is added; the app's waits.
-        confirmed_at: by === 'owner' ? sql<Date>`now()` : null,
-      })
-      .returning(['id', 'created_at'])
-      .executeTakeFirstOrThrow();
-  }
-
-  /**
-   * `DELETE /apps/keys/{key_id}`: a key the app added itself; never one an
-   * owner added (`409 key_added_by_owner`: that is Settings' to retire), the
-   * key that signs this request, nor the last. The owners and the person it
-   * acts as are emailed.
-   */
-  async appRetiresKey(c: AppCaller, keyId: string, meta: RequestMeta): Promise<void> {
-    if (!/^[0-9a-f-]{36}$/i.test(keyId)) throw notFound();
-    const told = await withSystem(this.db, c.householdId, async (trx) => {
-      await trx
-        .selectFrom('connected_app')
-        .select('id')
-        .where('id', '=', c.appId)
-        .forUpdate()
-        .execute();
-      const keys = (await trx
-        .selectFrom('connected_app_key')
-        .select(KEY_COLUMNS)
-        .where('app_id', '=', c.appId)
-        .execute()) as KeyRow[];
-      const live = liveKeys(keys, this.now());
-      const k = live.find((x) => x.id === keyId.toLowerCase());
-      if (!k) throw notFound();
-      if (k.added_by !== 'app') {
-        throw new ApiError(
-          409,
-          'key_added_by_owner',
-          'An owner added that key: it is retired in Settings → Connected apps.',
-        );
-      }
-      if (k.id === c.keyId || live.length <= 1) {
-        throw new ApiError(
-          409,
-          'key_in_use',
-          'That key signs this request, or is the app’s last key. Sign with the other key first.',
-        );
-      }
-      await trx
-        .updateTable('connected_app_key')
-        .set({ retired_at: sql<Date>`now()` })
-        .where('id', '=', k.id)
-        .execute();
-      await appendAudit(trx, {
-        householdId: c.householdId,
-        actorAccountId: c.accountId,
-        action: 'app.key_retired',
-        objectType: 'member',
-        objectId: c.memberId,
-        detail: {
-          app_id: c.appId,
-          app: c.name,
-          by: 'app',
-          fingerprint: fingerprintOf(k.public_key),
-        },
-        ip: meta.ip,
-      });
-      return { owners: await this.owners(trx), fingerprint: fingerprintOf(k.public_key) };
-    });
-    await this.keyRetiredAlert(
-      c.householdId,
-      [...told.owners, c.accountId],
-      c.name,
-      c.memberName,
-      told.fingerprint,
-    );
-  }
-
   /** The household's owners' sign-ins, for the emails about an app's keys. */
   private async owners(trx: Db): Promise<string[]> {
     const rows = await trx
@@ -1941,20 +1747,20 @@ export class AppService {
     return rows.map((o) => o.account_id);
   }
 
-  /** A key retired: the owners and the person the app acts as are told, by email. */
-  private async keyRetiredAlert(
+  /** A key revoked: the owners and the person the app acts as are told, by email. */
+  private async keyRevokedAlert(
     householdId: string,
     accountIds: string[],
     app: string,
     member: string,
-    fingerprint: string,
+    clientId: string,
   ): Promise<void> {
     await this.opts
       .alert({
         householdId,
         accountIds: [...new Set(accountIds)],
-        subject: `A key of ${app} was retired`,
-        body: `A key ${app} signed its requests with (${fingerprint}) was retired; ${app} acts as ${member}. If you did not expect this, look at Settings → Connected apps.`,
+        subject: `An API key of ${app} was revoked`,
+        body: `The API key ${clientId} of ${app} was revoked; ${app} acts as ${member}. Whatever uses that key is refused from its next request. If you did not expect this, look at Settings → Connected apps.`,
         emailOnly: true,
       })
       .catch(() => undefined);
@@ -2236,19 +2042,11 @@ export class AppService {
     const ids = apps.map((a) => a.id);
     const keys = (await trx
       .selectFrom('connected_app_key')
-      .select([
-        'id',
-        'app_id',
-        'public_key',
-        'added_by',
-        'created_at',
-        'confirmed_at',
-        'first_used_at',
-        'retired_at',
-      ])
+      .select(KEY_COLUMNS)
       .where('app_id', 'in', ids)
       .orderBy('created_at')
-      .execute()) as Array<KeyRow & { app_id: string }>;
+      .orderBy('id')
+      .execute()) as KeyRow[];
     const grants = await trx
       .selectFrom('connected_app_grant')
       .select(['app_id', 'kind_key', 'category', 'lookback_months', 'sensitive_kinds'])
@@ -2301,8 +2099,7 @@ export class AppService {
     const address = this.address();
     return apps.map((a) => {
       const all = keys.filter((k) => k.app_id === a.id);
-      const live = liveKeys(all, now);
-      const newest = live[live.length - 1];
+      const newest = all.filter((k) => keyState(k, now) === 'live').pop();
       const mine = a.member_id === p.memberId;
       const n = (state: string) =>
         Number(counted.find((r) => r.app_id === a.id && r.state === state)?.n ?? 0);
@@ -2333,7 +2130,7 @@ export class AppService {
               }
             : null,
         ip_allow: a.ip_allow ?? [],
-        keys: live.map((k) => keyView(k, all)),
+        keys: all.map((k) => keyView(k, now)),
         last_used_at: a.last_used_at ? a.last_used_at.toISOString() : null,
         today: sent,
         refused_today: a.refused_on === day ? a.refused_today : 0,
@@ -2370,10 +2167,8 @@ export class AppService {
         connection_string: newest
           ? connectionString({
               url: address.url,
-              app_id: a.id,
-              key_id: newest.id,
+              client_id: newest.client_id,
               instance_id: instance,
-              fingerprint: fingerprintOf(newest.public_key),
             })
           : '',
         address,
@@ -2390,7 +2185,8 @@ export class AppService {
   /**
    * `POST /connected-apps`: an owner connects an app (the route asked for
    * a passkey or a code). On at once when it acts as them; otherwise it
-   * waits for its person, who is emailed.
+   * waits for its person, who is emailed. It has no key until an owner
+   * generates one (APP6).
    */
   async create(
     p: Principal,
@@ -2399,13 +2195,6 @@ export class AppService {
   ): Promise<ConnectedAppView> {
     if (p.role !== 'owner') throw ownersOnly();
     const name = AppService.nameOf(input.name);
-    const raw = typeof input.public_key === 'string' ? rawPublicKey(input.public_key) : null;
-    if (!raw) {
-      throw invalid(
-        'Paste the app’s public key: "ed25519:" and 43 characters, or a PEM PUBLIC KEY block.',
-        'public_key',
-      );
-    }
     if (!Array.isArray(input.allowed_kinds)) {
       throw invalid('Choose the kinds it may send.', 'allowed_kinds');
     }
@@ -2436,14 +2225,13 @@ export class AppService {
           ip_allow: sql<string[]>`${ip}::cidr[]` as unknown as string[],
         })
         .execute();
-      await this.insertKey(trx, p.householdId, id, raw, 'owner');
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
         action: 'app.connected',
         objectType: 'member',
         objectId: input.member_id,
-        detail: { app_id: id, app: name, fingerprint: fingerprintOf(raw) },
+        detail: { app_id: id, app: name },
         ip: meta.ip,
       });
       return { id, own, person };
@@ -2816,56 +2604,156 @@ export class AppService {
     return this.view(p, id);
   }
 
-  /** `POST /connected-apps/{id}/keys`: an owner adds a key (the route asked for the step-up). */
-  async addKey(
+  /**
+   * `POST /connected-apps/{id}/keys`: an owner generates an API key (the
+   * route asked for a passkey or a code) — its name, its permissions (some
+   * of the app's scopes) and how many days it lasts, or never. Two live at
+   * most (`409 key_limit`). The secret is answered this once, and kept as a
+   * hash alone. An app acting as somebody else waits for them to turn it on
+   * again, as for any widening — unless the new key may do no more than a
+   * live one already may (a rotation).
+   */
+  async generateKey(
     p: Principal,
     id: string,
-    publicKey: unknown,
+    input: ConnectedAppKeyInput,
     meta: RequestMeta,
-  ): Promise<ConnectedAppKeyAdded> {
+  ): Promise<ConnectedAppKeyMade> {
     if (p.role !== 'owner') throw ownersOnly();
-    const raw = typeof publicKey === 'string' ? rawPublicKey(publicKey) : null;
-    if (!raw) {
-      throw invalid(
-        'Paste the app’s public key: "ed25519:" and 43 characters, or a PEM PUBLIC KEY block.',
-        'public_key',
-      );
-    }
-    const key = await withPrincipal(this.db, p, async (trx) => {
+    const clientId = newClientId();
+    const secret = newSecret();
+    const made = await withPrincipal(this.db, p, async (trx) => {
       const app = await trx
         .selectFrom('connected_app')
-        .select(['id', 'member_id', 'name', 'account_id'])
+        .select(['id', 'member_id', 'name', 'account_id', 'scopes'])
         .where('id', '=', id)
         .where('revoked_at', 'is', null)
         .forUpdate()
         .executeTakeFirst();
       if (!app) throw notHere();
-      const k = await this.insertKey(trx, p.householdId, id, raw, 'owner');
-      const again = await this.reapprove(trx, p, app);
+      const name = AppService.keyNameOf(input.name);
+      const permissions = AppService.checkedPermissions(input.permissions, app.scopes);
+      const days = AppService.checkedDays(input.expires_in_days);
+      const live = await trx
+        .selectFrom('connected_app_key')
+        .select('permissions')
+        .where('app_id', '=', id)
+        .where('revoked_at', 'is', null)
+        .where((eb) =>
+          eb.or([eb('expires_at', 'is', null), eb('expires_at', '>', sql<Date>`now()`)]),
+        )
+        .execute();
+      if (live.length >= APP_KEYS_MAX) throw keyLimit();
+      // A new key that may do no more than a live one already may (a
+      // rotation) widens nothing: its person is not asked again (the
+      // owner's decision, 18 Nov 2026). One that may do more is a widening.
+      const widening = !live.some((k) => permissions.every((s) => k.permissions.includes(s)));
+      const k = await trx
+        .insertInto('connected_app_key')
+        .values({
+          household_id: p.householdId,
+          app_id: id,
+          client_id: clientId,
+          secret_hash: secretHash(secret),
+          name,
+          permissions,
+          created_by: p.accountId,
+          expires_at: days === null ? null : sql<Date>`now() + make_interval(days => ${days}::int)`,
+        })
+        .returning(['id', 'expires_at'])
+        .executeTakeFirstOrThrow()
+        .catch((e: unknown) => {
+          // Two owners at once: the database counts too.
+          if ((e as { constraint?: string }).constraint === 'connected_app_key_two') {
+            throw keyLimit();
+          }
+          throw e;
+        });
+      const again = widening && (await this.reapprove(trx, p, app));
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
         action: 'app.key_added',
         objectType: 'member',
         objectId: app.member_id,
-        detail: { app_id: id, app: app.name, by: 'owner', fingerprint: fingerprintOf(raw) },
+        detail: {
+          app_id: id,
+          app: app.name,
+          client_id: clientId,
+          permissions,
+          expires_at: k.expires_at ? k.expires_at.toISOString() : null,
+          ...(again ? { approval: 'asked_again' } : {}),
+        },
         ip: meta.ip,
       });
-      return { ...k, again: again ? app.account_id : null, name: app.name };
+      return { keyId: k.id, again: again ? app.account_id : null, name: app.name };
     });
-    if (key.again) await this.askAgain(p.householdId, key.again, key.name);
+    if (made.again) await this.askAgain(p.householdId, made.again, made.name);
     const view = await this.view(p, id);
-    const added = view.keys.find((k) => k.key_id === key.id);
-    if (!added) throw notHere();
-    return { key: added, connection_string: view.connection_string };
+    const key = view.keys.find((k) => k.id === made.keyId);
+    if (!key) throw notHere();
+    const instance = await this.opts.instanceId().catch(() => null);
+    const url = this.address().url;
+    return {
+      key,
+      client_id: clientId,
+      secret,
+      connection_string: connectionString({ url, client_id: clientId, instance_id: instance }),
+      connection_string_with_secret: connectionString({
+        url,
+        client_id: clientId,
+        instance_id: instance,
+        secret,
+      }),
+    };
+  }
+
+  /** A key's name: optional, as plain text, APP_KEY_NAME_MAX characters at most. */
+  private static keyNameOf(v: unknown): string | null {
+    if (v === undefined || v === null) return null;
+    if (typeof v !== 'string') throw invalid('A key’s name is text.', 'name');
+    const n = hintText(v).trim();
+    if (n.length > APP_KEY_NAME_MAX) {
+      throw invalid(`A key’s name is ${APP_KEY_NAME_MAX} characters at most.`, 'name');
+    }
+    return n.length === 0 ? null : n;
+  }
+
+  /** A key's permissions: at least one, each one the app itself may do; in the vault's order. */
+  private static checkedPermissions(v: unknown, app: readonly string[]): AppScope[] {
+    if (
+      !Array.isArray(v) ||
+      v.length === 0 ||
+      v.some((s) => typeof s !== 'string' || !app.includes(s))
+    ) {
+      throw invalid(
+        `Choose what the key may do, from what the app may do: ${app.join(', ')}.`,
+        'permissions',
+      );
+    }
+    return APP_SCOPES_OFFERED.filter((s) => (v as unknown[]).includes(s));
+  }
+
+  /** How long a key lasts: 1 to APP_KEY_DAYS_MAX days, or null for never. */
+  private static checkedDays(v: unknown): number | null {
+    if (v === null) return null;
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > APP_KEY_DAYS_MAX) {
+      throw invalid(
+        `How long the key lasts: 1 to ${APP_KEY_DAYS_MAX} days, or never.`,
+        'expires_in_days',
+      );
+    }
+    return v;
   }
 
   /**
-   * `DELETE /connected-apps/{id}/keys/{keyId}`: an owner retires a key,
-   * pending or not; never the last. The owners and the person the app acts
-   * as are emailed.
+   * `DELETE /connected-apps/{id}/keys/{keyId}`: an owner revokes a key (the
+   * route asked for a passkey or a code). It works for nothing from the
+   * next request on; its last one too, which leaves the app without a
+   * key. Already revoked: nothing changes. The owners and the person the
+   * app acts as are emailed.
    */
-  async retireKey(p: Principal, id: string, keyId: string, meta: RequestMeta): Promise<void> {
+  async revokeKey(p: Principal, id: string, keyId: string, meta: RequestMeta): Promise<void> {
     if (p.role !== 'owner') throw ownersOnly();
     const told = await withPrincipal(this.db, p, async (trx) => {
       const app = await trx
@@ -2876,24 +2764,17 @@ export class AppService {
         .forUpdate()
         .executeTakeFirst();
       if (!app) throw notHere();
-      const keys = (await trx
+      const k = await trx
         .selectFrom('connected_app_key')
-        .select(KEY_COLUMNS)
+        .select(['id', 'client_id', 'name', 'revoked_at'])
+        .where('id', '=', keyId)
         .where('app_id', '=', id)
-        .execute()) as KeyRow[];
-      const live = liveKeys(keys, this.now());
-      const k = live.find((x) => x.id === keyId);
+        .executeTakeFirst();
       if (!k) throw new ApiError(404, 'not_found', 'That key is not here.');
-      if (live.length <= 1) {
-        throw new ApiError(
-          409,
-          'key_in_use',
-          'That is the app’s last key. Add its new key first, or remove the app.',
-        );
-      }
+      if (k.revoked_at) return null;
       await trx
         .updateTable('connected_app_key')
-        .set({ retired_at: sql<Date>`now()` })
+        .set({ revoked_at: sql<Date>`now()`, revoked_by: p.accountId, revoked_reason: 'owner' })
         .where('id', '=', k.id)
         .execute();
       await appendAudit(trx, {
@@ -2902,28 +2783,25 @@ export class AppService {
         action: 'app.key_retired',
         objectType: 'member',
         objectId: app.member_id,
-        detail: {
-          app_id: id,
-          app: app.name,
-          by: 'owner',
-          fingerprint: fingerprintOf(k.public_key),
-        },
+        detail: { app_id: id, app: app.name, client_id: k.client_id },
         ip: meta.ip,
       });
       return {
         owners: await this.owners(trx),
         app,
         member: await this.memberName(trx, app.member_id),
-        fingerprint: fingerprintOf(k.public_key),
+        clientId: k.client_id,
       };
     });
-    await this.keyRetiredAlert(
-      p.householdId,
-      [...told.owners, told.app.account_id],
-      told.app.name,
-      told.member,
-      told.fingerprint,
-    );
+    if (told) {
+      await this.keyRevokedAlert(
+        p.householdId,
+        [...told.owners, told.app.account_id],
+        told.app.name,
+        told.member,
+        told.clientId,
+      );
+    }
   }
 
   /** Somebody of the family, by the name the household knows them by. */
@@ -2934,62 +2812,6 @@ export class AppService {
       .where('id', '=', memberId)
       .executeTakeFirst();
     return m?.display_name ?? 'somebody';
-  }
-
-  /**
-   * `POST /connected-apps/{id}/keys/{keyId}/confirm`: a key the app added
-   * itself, confirmed by an owner or the person the app acts as (the route
-   * asked for a passkey or a code); only then does it sign. An owner
-   * confirming one for an app acting as somebody else sends it back to
-   * them to turn on again, as an owner's own key would.
-   */
-  async confirmKey(
-    p: Principal,
-    id: string,
-    keyId: string,
-    meta: RequestMeta,
-  ): Promise<ConnectedAppView> {
-    const asked = await withPrincipal(this.db, p, async (trx) => {
-      const app = await trx
-        .selectFrom('connected_app')
-        .select(['id', 'member_id', 'name', 'account_id'])
-        .where('id', '=', id)
-        .where('revoked_at', 'is', null)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!app || (p.role !== 'owner' && app.member_id !== p.memberId)) throw notHere();
-      const keys = (await trx
-        .selectFrom('connected_app_key')
-        .select(KEY_COLUMNS)
-        .where('app_id', '=', id)
-        .execute()) as KeyRow[];
-      const k = liveKeys(keys, this.now()).find((x) => x.id === keyId);
-      if (!k) throw new ApiError(404, 'not_found', 'That key is not here.');
-      if (k.confirmed_at !== null) return null;
-      await trx
-        .updateTable('connected_app_key')
-        .set({ confirmed_at: sql<Date>`now()` })
-        .where('id', '=', k.id)
-        .execute();
-      const again = await this.reapprove(trx, p, app);
-      await appendAudit(trx, {
-        householdId: p.householdId,
-        actorAccountId: p.accountId,
-        action: 'app.key_confirmed',
-        objectType: 'member',
-        objectId: app.member_id,
-        detail: {
-          app_id: id,
-          app: app.name,
-          fingerprint: fingerprintOf(k.public_key),
-          ...(again ? { approval: 'asked_again' } : {}),
-        },
-        ip: meta.ip,
-      });
-      return again ? { account: app.account_id, name: app.name } : null;
-    });
-    if (asked) await this.askAgain(p.householdId, asked.account, asked.name);
-    return this.view(p, id);
   }
 
   /**

@@ -5,8 +5,8 @@
 // (npm unless told: `client-smoke.mjs npm pnpm`), with nothing of the
 // workspace to lean on. Then, from plain Node ESM, it imports `.`, `./apps`
 // and `./testing` (without vitest; `./testing/contract`, which needs it, fails
-// alone), signs a request, and sends a signed file
-// to the fake vault, which checks the signature as the vault does; and tsc
+// alone), builds an API key's header, and sends a file with a key an owner
+// generated to the fake vault, which checks the key as the vault does; and tsc
 // reads the declarations as an app's TypeScript would, without skipLibCheck.
 // The package declares no peers (CL2), and nothing installs vitest; with
 // vitest beside it, as an app keeps it in its devDependencies (the
@@ -47,17 +47,11 @@ const tsc = path.join(path.dirname(require.resolve('typescript/package.json')), 
 /** The workspace's own vitest (the root's devDependency), its real folder. */
 const vitest = realpathSync(path.join(root, 'node_modules', 'vitest'));
 
-/** RFC 8032's first Ed25519 test key (7.1, TEST 1): nobody uses it for real. */
-const KEY = `-----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g
------END PRIVATE KEY-----`;
-const PUBLIC_KEY = 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo';
-
 const SMOKE = `
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { ApiRequestError, createApi, createHttp } from '@fdv/client';
-import { createAppClient, signRequest } from '@fdv/client/apps';
+import { basicAuthorization, createAppClient } from '@fdv/client/apps';
 import * as testing from '@fdv/client/testing';
 const { createFakeVault } = testing;
 assert.ok(!('contractScenarios' in testing), 'the fake vault entry carries no contract');
@@ -70,24 +64,14 @@ for (const field of ['peerDependencies', 'peerDependenciesMeta', 'optionalDepend
 }
 assert.ok(!existsSync(new URL('./node_modules/vitest', import.meta.url)), 'vitest was installed');
 
-// A request signed: the same inputs give the same headers (Ed25519 is deterministic).
-const input = {
-  method: 'POST',
-  target: '/api/v1/apps/intake',
-  body: '{"hello":"vault"}',
-  keyid: '00000000-0000-4000-8000-000000000001.00000000-0000-4000-8000-000000000002',
-  privateKey: ${JSON.stringify(KEY)},
-  created: 1700000000,
-  nonce: 'c21va2Utc21va2Utc21va2Utc21va2Ut',
-};
-const signed = await signRequest(input);
-assert.deepEqual(await signRequest(input), signed);
-assert.match(signed['content-digest'], /^sha-256=:[A-Za-z0-9+/]+=*:$/);
-assert.match(signed['signature-input'], /keyid="00000000-0000-4000-8000-000000000001\\.00000000-0000-4000-8000-000000000002"/);
-assert.match(signed.signature, /^[a-z0-9-]+=:[A-Za-z0-9+/]+=*:$/);
-console.log('signed:', signed.signature.slice(0, 40) + '…');
+// An API key's header: Basic, base64 of the client ID and the secret.
+const header = basicAuthorization('fdvc_AAECAwQFBgcICQoLDA0ODw', 'fdvs_ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8');
+assert.equal(Buffer.from(header.slice(6), 'base64').toString(), 'fdvc_AAECAwQFBgcICQoLDA0ODw:fdvs_ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8');
+assert.throws(() => basicAuthorization('fdvc_short', 'fdvs_short'));
+console.log('header:', header.slice(0, 20) + '…');
 
-// The fake vault: an owner connects an app, which sends a signed file.
+// The fake vault: an owner connects an app and generates its API key; the
+// app sends a file with it.
 const fake = createFakeVault();
 const api = createApi(createHttp({ baseUrl: 'https://vault.test', fetch: fake.fetch }));
 const owner = await api.setup({
@@ -100,17 +84,21 @@ fake.state.ownerTwoStep = true;
 const made = await api.connectedApps.create(owner.access_token, {
   name: 'Smoke test app',
   member_id: owner.member_id,
-  public_key: ${JSON.stringify(PUBLIC_KEY)},
   allowed_kinds: ['utility_bill'],
   scopes: ['documents.send'],
 });
+const key = await api.connectedApps.generateKey(owner.access_token, made.id, {
+  permissions: ['documents.send'],
+  expires_in_days: 30,
+});
+assert.match(key.secret, /^fdvs_[A-Za-z0-9_-]{43}$/);
 const app = createAppClient({
-  baseUrl: 'https://vault.test',
-  appId: made.id,
-  keyId: made.keys[0].key_id,
-  privateKey: ${JSON.stringify(KEY)},
+  url: 'https://vault.test',
+  clientId: key.client_id,
+  secret: key.secret,
   fetch: fake.fetch,
 });
+assert.equal((await app.me()).key.client_id, key.client_id);
 const pdf = new TextEncoder().encode('%PDF-1.4\\n% smoke\\n%%EOF\\n');
 const sent = await app.send({
   externalId: 'smoke-1',
@@ -121,18 +109,19 @@ assert.equal(sent.status, 201);
 assert.equal((await app.status('smoke-1')).state, 'waiting');
 console.log('fake vault: sent', sent.status, sent.state.state);
 
-// Signed with another key: refused, as an ApiRequestError of the main entry
-// (one copy of each module across the three entries).
-const other = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+// A wrong secret: refused, as an ApiRequestError of the main entry (one
+// copy of each module across the three entries).
 const stranger = createAppClient({
-  baseUrl: 'https://vault.test',
-  appId: made.id,
-  keyId: made.keys[0].key_id,
-  privateKey: new Uint8Array(await crypto.subtle.exportKey('pkcs8', other.privateKey)),
+  url: 'https://vault.test',
+  clientId: key.client_id,
+  secret: 'fdvs_' + 'A'.repeat(43),
   fetch: fake.fetch,
 });
-await assert.rejects(stranger.me(), (e) => e instanceof ApiRequestError && e.status === 401);
-console.log('fake vault: a wrong signature refused (401)');
+await assert.rejects(
+  stranger.me(),
+  (e) => e instanceof ApiRequestError && e.status === 401 && e.code === 'app_key_invalid',
+);
+console.log('fake vault: a wrong secret refused (401)');
 
 // The contract scenarios are their own entry, the only one that needs vitest:
 // here, without it, that entry alone fails to load.
@@ -162,14 +151,19 @@ console.log('testing/contract: loads and runs with vitest beside it');
 
 const CHECK_TS = `
 import { ApiRequestError, createApi, createHttp, type FetchLike } from '@fdv/client';
-import { createAppClient, signRequest, type SignedHeaders } from '@fdv/client/apps';
+import { basicAuthorization, createAppClient, type AppClient } from '@fdv/client/apps';
 import { createFakeVault } from '@fdv/client/testing';
 import { contractScenarios, type Scenario } from '@fdv/client/testing/contract';
 
 declare const fetchLike: FetchLike;
 const api = createApi(createHttp({ baseUrl: 'https://vault.test', fetch: fetchLike }));
-const app = createAppClient({ baseUrl: '', appId: '', keyId: '', privateKey: '', fetch: fetchLike });
-export const h: Promise<SignedHeaders> = signRequest({ method: 'GET', target: '/', keyid: 'a.b', privateKey: '' });
+const app: AppClient = createAppClient({
+  url: 'https://vault.test',
+  clientId: 'fdvc_AAAAAAAAAAAAAAAAAAAAAA',
+  secret: 'fdvs_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+  fetch: fetchLike,
+});
+export const h: string = basicAuthorization('', '');
 export const v = createFakeVault().state;
 export const n: Scenario[] = contractScenarios;
 export const e: ApiRequestError | null = null;

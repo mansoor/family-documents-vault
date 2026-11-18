@@ -6,6 +6,36 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.63] - 2026-11-17 — connected apps use API keys
+
+### Changed
+
+- **Breaking for connected apps: an app now proves who it is with an API key the vault generates, not by signing its requests.** In **Settings → Connected apps**, an owner generates a key for an app — with a passkey or a code — giving it a name if they like, **its own permissions** (some of what the app may do: send, read, download, show its user, delete) and **how long it lasts**: 30, 90 or 365 days, any number of days up to 3650, or never. The vault shows the **client ID** and the **secret** once, with Copy buttons and a connection string to paste into the app (with the secret in it, if the owner ticks so), and keeps only a hash of the secret. The app sends both on every request (HTTP Basic). A request is allowed only what both the key and the app may do.
+- **The cutover is immediate.** An app connected with a public key before this version stops working at the upgrade until an owner generates it an API key and gives it to the app: the upgrade removes every public key, and there is no time when both work. Nothing else about an app changes — what it may do, send and read, its limits, what it sent, its links.
+- **Only an owner generates or revokes a key**, each time with a passkey or a code; an app can no longer add, renew or retire a key of its own. An app has two live keys at most, so it can move to a new one without a gap; revoking a key stops it at its very next request; removing an app revokes all its keys. Generating a key for an app that acts as somebody else waits for them to turn it on again, as before.
+- Settings lists each app's keys: name, client ID, what it may do, when it was made, when it expires (or "Never"), when it was last used, and whether it was revoked or has expired. The public-key field and fingerprints are gone from Connect.
+- The connection string starts `fdvapp2.` now; an old `fdvapp1.` one is refused by the client library with a note to generate an API key.
+- The API client (`@fdv/client`) makes a connected app's requests with its key — `createAppClient({ url, clientId, secret })`, which refuses an address that is not https (or plain http to this machine), so the secret never travels in the clear — and no longer signs; its fake vault generates, revokes and expires keys as the vault does.
+- **A connected app keeps reading what its send made**, for as long as the document is in the vault, out of the Trash and not Only me, even after the family or another app adds a newer version: its changes feed says the document changed, no longer that it is unavailable. It still deletes only a document whose current file is one it sent, so it never trashes a newer file of the family's. Its exact file stays its own by its `external_id` (`GET /api/v1/apps/intake/{external_id}/content`).
+- **Revoking a key ends what it opened**: a view or download link it made, and a page opened from one, end at their next request.
+- **Replacing a key asks nothing of the person an app acts as**: a new key that may do no more than a live one does not send the app back to them; a key that may do more still does.
+- **A restore revokes every API key** (one revoked since the backup would otherwise work again); an owner generates each app a new one, and the restore's summary says so.
+- A login of your own in front of the vault (Caddy's `basicauth`, nginx's `auth_basic`) goes through untouched: only a Basic header whose user is a client ID (`fdvc_…`) is taken for an app's key.
+- Only guessing locks an address out for the minute — a client ID the vault does not know, or a wrong secret — and an IPv6 address is counted with the rest of its /64; a right secret for a revoked or expired key never counts.
+
+### Added
+
+- **The owners are told before a key expires**: an email and a line in the activity log 14 days before (for a key made to last longer than that), and again once it has expired. An app can ask which key it is using and when it expires, to warn its own users in time.
+- A key that does not work is refused alike whether the client ID is unknown or the secret wrong; an address that keeps sending keys that do not work waits a minute.
+
+### Removed
+
+- Request signing for connected apps (HTTP Message Signatures, Ed25519), its one-time values and its body digests, and the routes an app used to add and retire its own keys. (Migration 0114.)
+
+### Security
+
+- Neither the vault's log nor nginx's access log keeps a connected app's `Authorization` header or its secret; nginx no longer logs a user name for a request.
+
 ## [0.9.0-dev.62] - 2026-11-17 — the fake vault keeps a file's bytes
 
 ### Fixed

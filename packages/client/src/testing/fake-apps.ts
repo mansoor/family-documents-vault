@@ -1,8 +1,11 @@
 import {
-  APP_EMPTY_DIGEST,
+  APP_AUTH_FAILURES_PER_MINUTE,
+  APP_CLIENT_ID_PATTERN,
+  APP_CONNECTION_PREFIX,
   APP_GRANTABLE_CATEGORIES,
   APP_HINTS,
-  APP_KEY_RETIRE_DAYS,
+  APP_KEY_DAYS_MAX,
+  APP_KEY_NAME_MAX,
   APP_KEYS_MAX,
   APP_LINK_COOKIE,
   APP_LINK_OPEN_SECONDS,
@@ -11,7 +14,7 @@ import {
   APP_LINK_SESSION_PATH,
   APP_SCOPES_DEFAULT,
   APP_SCOPES_OFFERED,
-  APP_SIGNATURE_WINDOW_SECONDS,
+  APP_SECRET_PATTERN,
   APP_REFUSALS,
   appInboxOf,
   appMayDownloadSent,
@@ -25,27 +28,28 @@ import {
   type AppDocument,
   type AppHints,
   type AppIntakeState,
-  type AppKeyAdded,
+  type AppKeyState,
   type AppKeyView,
   type AppMe,
   type AppScope,
   type ConnectedAppGrantView,
-  type ConnectedAppKeyAdded,
+  type ConnectedAppKeyMade,
   type ConnectedAppView,
   type DateValue,
   type Role,
 } from '@fdv/shared';
-import { fromBase64, signatureBaseOf, toBase64 } from '../apps.js';
+import { fromBase64, toBase64 } from '../apps.js';
 import type { FetchLike, ResponseLike } from '../http.js';
 
 /**
  * Connected apps in the fake vault (0.9.0, APP1): Settings → Connected apps
- * for whoever signs in, and the signed app routes — the signature checked
- * for real (Ed25519, Web Crypto), in the contract's order: the headers, the
- * keyid, the app's state, the window, the signature, the nonce, the scope,
- * the body's digest. What an app sends is kept on the app alone, by its
- * external id: no Inbox. Addresses, https and caps are the real vault's to
- * test.
+ * for whoever signs in, and the app routes — an API key checked as the
+ * vault checks it (APP6), in the contract's order: the Basic header, the
+ * failed tries of the minute, the client ID and secret, the app removed,
+ * the key revoked or expired, the app's state, and the route's scope among
+ * the key's permissions and the app's. What an app sends is kept on the app
+ * alone, by its external id: no Inbox. Addresses, https and caps are the
+ * real vault's to test.
  *
  * Reading (APP2): the fake's documents, by the vault's own rule
  * (`appMayRead`), through its grants; a feed kept as the vault keeps it —
@@ -70,19 +74,16 @@ import type { FetchLike, ResponseLike } from '../http.js';
  * kept on the send (`inbox_member_id`) — never told to the app. A send to
  * the person it is about is filed automatically as them.
  *
- * Keys (CL2), by the vault's rules: an app adds its next key itself, signed
- * with a current one, and it is pending — it signs nothing (`401
- * app_key_pending`) — until an owner, or the person the app acts as,
- * confirms it; an owner adds one in Settings, confirmed as it is added. Two
- * live at most (`409 key_limit`, pending ones counted), never one live
- * already (`409 key_exists`). The app retires only a key it added, never
- * the one signing nor the last; an owner any but the last. An older key
- * retires by itself seven days after a newer, confirmed one first signs.
- * An owner's key, or confirming the app's, for an app acting as somebody
- * else sends it back to them to turn on again. Adding and confirming ask
- * for a passkey or a code: an owner's is `ownerTwoStep`, an adult's
- * `adultTwoStep` (theirs unless a test says not). Each check is made in the
- * order the vault's routes make it.
+ * API keys (APP6), by the vault's rules: an owner generates one in
+ * Settings, after a passkey or a code (`ownerTwoStep`), with its own
+ * permissions (some of the app's scopes) and how long it lasts (1 to 3650
+ * days, or never); its secret is answered once and kept only as a SHA-256.
+ * Two live at most (`409 key_limit`); an owner revokes one, and its next
+ * request is `401 app_key_revoked`. A key for an app acting as somebody
+ * else sends it back to them to turn on again. Never made, renewed or
+ * retired by the app itself. A test expires a key with `fakeExpireAppKey`
+ * (the fake vault's `expireAppKey`). Each check is made in the order the
+ * vault's routes make it.
  */
 
 /** A document of the fake's, as an app's reading needs it. */
@@ -107,16 +108,20 @@ export interface FakeReadableDoc {
   version: { id: string; bytes: Uint8Array; mime: string; filename: string } | null;
 }
 
+/** An API key (APP6): its secret is never kept, only its SHA-256 (hex). */
 export interface FakeAppKey {
   id: string;
-  raw: Uint8Array;
-  added_by: 'owner' | 'app';
+  client_id: string;
+  secret_sha256: string;
+  name: string | null;
+  permissions: AppScope[];
   created_at: string;
-  retired: boolean;
-  /** Added by the app and not yet confirmed (CL2): it signs nothing. */
-  pending?: boolean;
-  /** When it first signed a request the vault took (CL2). */
-  first_used_at?: string | null;
+  /** null: it never expires. */
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  /** Why: an owner revoked it, or its app was removed (the vault's restore revokes every key too). */
+  revoked_reason?: 'owner' | 'app_removed' | 'restore' | null;
 }
 
 export interface FakeIntake {
@@ -147,6 +152,8 @@ export interface FakeIntake {
 /** A link an app minted (APP3), and its session once opened. */
 export interface FakeAppLink {
   token: string;
+  /** The API key it was minted with (APP6): revoked or expired, the link ends. */
+  key_id?: string;
   document_id: string;
   version_id: string;
   mode: 'view' | 'download';
@@ -171,7 +178,6 @@ export interface FakeApp {
   keys: FakeAppKey[];
   created_at: string;
   intake: Map<string, FakeIntake>;
-  nonces: Set<string>;
   files_today: number;
   bytes_today: number;
   last_used_at: string | null;
@@ -269,9 +275,8 @@ export interface FakeAppDeps {
   timezone: () => string;
 }
 
-const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const APP_ROUTE =
-  /^\/api\/v1\/apps\/(me|intake|intake\/[^/]+|intake\/[^/]+\/content|keys|keys\/[^/]+|documents|documents\/[^/]+|documents\/[^/]+\/content|documents\/[^/]+\/links|changes)$/;
+  /^\/api\/v1\/apps\/(me|intake|intake\/[^/]+|intake\/[^/]+\/content|documents|documents\/[^/]+|documents\/[^/]+\/content|documents\/[^/]+\/links|changes)$/;
 
 async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
   const own = new Uint8Array(bytes.length);
@@ -279,60 +284,90 @@ async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest('SHA-256', own));
 }
 const hex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
-async function fingerprint(raw: Uint8Array): Promise<string> {
-  return (
-    hex(await sha256(raw))
-      .slice(0, 32)
-      .match(/.{4}/g) as string[]
-  ).join(' ');
+
+/** A key's state now: revoked, past its expiry, or live. */
+function keyState(k: FakeAppKey, now = Date.now()): AppKeyState {
+  if (k.revoked_at !== null) return 'revoked';
+  if (k.expires_at !== null && Date.parse(k.expires_at) <= now) return 'expired';
+  return 'live';
 }
-/** An Ed25519 SubjectPublicKeyInfo's DER, before its 32 bytes of key. */
-const SPKI_ED25519 = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];
-/** A public key as the vault takes it: "ed25519:" and 43 base64url characters, or a PEM PUBLIC KEY. */
-function rawKey(text: unknown): Uint8Array | null {
-  if (typeof text !== 'string') return null;
-  const t = text.trim();
-  const m = /^ed25519:([A-Za-z0-9_-]{43})$/.exec(t);
-  if (m) {
-    const raw = fromBase64(m[1] as string);
-    return raw.length === 32 ? raw : null;
+
+/** An app's live keys: not revoked, not expired. */
+function liveKeys(a: FakeApp, now = Date.now()): FakeAppKey[] {
+  return a.keys.filter((k) => keyState(k, now) === 'live');
+}
+
+/** A key as Settings lists it: never its secret, nor its hash. */
+function keyView(k: FakeAppKey): AppKeyView {
+  return {
+    id: k.id,
+    client_id: k.client_id,
+    name: k.name,
+    permissions: [...k.permissions],
+    created_at: k.created_at,
+    expires_at: k.expires_at,
+    last_used_at: k.last_used_at,
+    revoked_at: k.revoked_at,
+    revoked_reason: k.revoked_at === null ? null : (k.revoked_reason ?? 'owner'),
+    state: keyState(k),
+  };
+}
+
+/** `n` random bytes, base64url. */
+const randomText = (n: number) => toBase64(crypto.getRandomValues(new Uint8Array(n)), true);
+
+/** Two hex strings compared without stopping at the first difference. */
+function sameHex(a: string, b: string): boolean {
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
   }
-  const pem = /^-----BEGIN PUBLIC KEY-----([A-Za-z0-9+/=\s]+)-----END PUBLIC KEY-----$/.exec(t);
-  if (!pem) return null;
-  let der: Uint8Array;
+  return diff === 0;
+}
+
+/**
+ * A Basic header's value, decoded: its user part and the rest; null for no
+ * Basic at all. An app's key is one whose user part is a client ID
+ * (`fdvc_…`); any other Basic value is somebody else's — a proxy's in
+ * front of the vault — and goes on untouched, as the vault lets it.
+ */
+function basicOf(header: string | undefined): { user: string; rest: string | null } | null {
+  const m = /^basic +([A-Za-z0-9+/]+={0,2})$/i.exec((header ?? '').trim());
+  if (!m) return null;
+  let decoded: string;
   try {
-    der = fromBase64((pem[1] as string).replace(/\s+/g, ''));
+    decoded = new TextDecoder().decode(fromBase64(m[1] as string));
   } catch {
     return null;
   }
-  if (der.length !== 44 || !SPKI_ED25519.every((b, i) => der[i] === b)) return null;
-  return der.slice(12);
+  const colon = decoded.indexOf(':');
+  return colon === -1
+    ? { user: decoded, rest: null }
+    : { user: decoded.slice(0, colon), rest: decoded.slice(colon + 1) };
 }
-const sameBytes = (a: Uint8Array, b: Uint8Array) =>
-  a.length === b.length && a.every((x, i) => x === b[i]);
+
+/** Whether a request carries a connected app's API key (its Basic user part `fdvc_…`). */
+const presentsAppKey = (header: string | undefined) =>
+  basicOf(header)?.user.startsWith('fdvc_') ?? false;
+
+/** Failed authentications this minute, per fake vault (it knows no addresses: one bucket). */
+const FAILURES = new WeakMap<FakeApp[], { minute: number; n: number }>();
 
 /**
- * When a key retires by itself, as the vault works it out: seven days
- * after a newer key of its app — confirmed, not retired — first signed;
- * else never (null). Newer: added after it (the app's keys are kept in the
- * order they were added).
+ * A key past its expiry now, as time would make it (a test's hook, APP6):
+ * its next request is `401 app_key_expired`. False for a client ID no app
+ * of these has.
  */
-function retiresAt(k: FakeAppKey, keys: readonly FakeAppKey[]): string | null {
-  const first = keys
-    .slice(keys.indexOf(k) + 1)
-    .filter((n) => !n.retired && !n.pending && n.first_used_at)
-    .map((n) => Date.parse(n.first_used_at as string))
-    .sort((x, y) => x - y)[0];
-  return first === undefined ? null : new Date(first + APP_KEY_RETIRE_DAYS * 864e5).toISOString();
-}
-
-/** An app's keys live now: not retired, and not past their seven days. */
-function liveKeys(a: FakeApp, now = Date.now()): FakeAppKey[] {
-  return a.keys.filter((k) => {
-    if (k.retired) return false;
-    const until = retiresAt(k, a.keys);
-    return until === null || Date.parse(until) > now;
-  });
+export function fakeExpireAppKey(apps: readonly FakeApp[], clientId: string): boolean {
+  for (const a of apps) {
+    const k = a.keys.find((x) => x.client_id === clientId);
+    if (k) {
+      k.created_at = new Date(Date.now() - 2 * 864e5).toISOString();
+      k.expires_at = new Date(Date.now() - 1000).toISOString();
+      return true;
+    }
+  }
+  return false;
 }
 
 const KEY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -343,74 +378,29 @@ export function fakeAppRoutes(d: FakeAppDeps) {
   // request, and a second app must never be given the first one's id.
   const uuid = () =>
     `00000000-0000-4000-8000-${Number(d.next('uuid').split('-').pop()).toString(16).padStart(12, '0')}`;
-  /** An app's live keys, as Settings is told of them. */
-  const keyViews = async (a: FakeApp): Promise<AppKeyView[]> => {
-    const keys: AppKeyView[] = [];
-    for (const k of liveKeys(a)) {
-      keys.push({
-        key_id: k.id,
-        fingerprint: await fingerprint(k.raw),
-        added_by: k.added_by,
-        created_at: k.created_at,
-        pending: k.pending === true,
-        first_used_at: k.first_used_at ?? null,
-        retires_at: retiresAt(k, a.keys),
-      });
-    }
-    return keys;
-  };
+  /** A connection string: the address and a key's client ID, and its secret only when asked. */
+  const connection = (clientId: string, secret?: string) =>
+    `${APP_CONNECTION_PREFIX}${toBase64(
+      new TextEncoder().encode(
+        JSON.stringify({
+          url: 'https://fake.example',
+          client_id: clientId,
+          instance_id: null,
+          ...(secret ? { secret } : {}),
+        }),
+      ),
+      true,
+    )}`;
   /**
-   * A key added, by the vault's rules: the app's keys past their seven days
-   * retired first; never one live already, in any app (`409 key_exists`);
-   * two live at most, pending ones counted (`409 key_limit`). An owner's is
-   * confirmed as it is added; the app's waits.
-   */
-  const insertKey = (
-    a: FakeApp,
-    raw: Uint8Array,
-    by: 'owner' | 'app',
-  ): FakeAppKey | ResponseLike => {
-    const live = liveKeys(a);
-    for (const k of a.keys) if (!k.retired && !live.includes(k)) k.retired = true;
-    if (d.apps.some((x) => !x.revoked && x.keys.some((k) => !k.retired && sameBytes(k.raw, raw)))) {
-      return d.fail(409, 'key_exists', 'That key is already in use. Make a new key pair.');
-    }
-    if (live.length >= APP_KEYS_MAX) {
-      return d.fail(
-        409,
-        'key_limit',
-        `An app has ${APP_KEYS_MAX} keys at most. Retire the old key first.`,
-      );
-    }
-    const k: FakeAppKey = {
-      id: uuid(),
-      raw,
-      added_by: by,
-      created_at: new Date().toISOString(),
-      retired: false,
-      pending: by === 'app',
-      first_used_at: null,
-    };
-    a.keys.push(k);
-    return k;
-  };
-  /**
-   * An owner's key, or a confirmed one, for an app acting as somebody else:
-   * it waits for them to turn it on again, as the vault does.
+   * A key for an app acting as somebody else: it waits for them to turn it
+   * on again, as the vault does.
    */
   const reapprove = (a: FakeApp, who: { memberId: string }) => {
     if (a.member_id !== who.memberId && a.approval === 'approved') a.approval = 'waiting';
   };
   const view = async (a: FakeApp, me: { memberId: string }): Promise<ConnectedAppView> => {
-    const keys = await keyViews(a);
-    const newest = keys[keys.length - 1];
-    const json = JSON.stringify({
-      url: 'https://fake.example',
-      app_id: a.id,
-      key_id: newest?.key_id ?? '',
-      instance_id: null,
-      fingerprint: newest?.fingerprint ?? '',
-    });
+    const keys = a.keys.map(keyView);
+    const newest = liveKeys(a)[liveKeys(a).length - 1];
     const mine = a.member_id === me.memberId;
     const states = [...a.intake.values()];
     return {
@@ -448,7 +438,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       links_opened_week: (a.links ?? []).filter(
         (l) => l.opened_at !== null && l.opened_at > Date.now() - 7 * 864e5,
       ).length,
-      connection_string: `fdvapp1.${toBase64(new TextEncoder().encode(json), true)}`,
+      connection_string: newest ? connection(newest.client_id) : '',
       address: { url: 'https://fake.example', public: false },
     };
   };
@@ -473,7 +463,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     externalId: string,
     s: FakeIntake,
     readableIds: ReadonlySet<string> = new Set(),
-    a: FakeApp | null = null,
+    scopes: readonly AppScope[] | null = null,
   ): AppIntakeState => {
     // Filed, and no longer the app's to read, or let go of: unavailable, never why.
     const filed = s.state === 'filed';
@@ -490,10 +480,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       removed_reason: s.removed_reason,
       refusal: s.refusal,
       // Never where the route would answer 403: it needs the download scope.
-      content_available:
-        !!a &&
-        (a.scopes ?? APP_SCOPES_DEFAULT).includes('documents.download') &&
-        sentFile(s) !== null,
+      content_available: !!scopes && scopes.includes('documents.download') && sentFile(s) !== null,
     };
   };
 
@@ -528,9 +515,6 @@ export function fakeAppRoutes(d: FakeAppDeps) {
           'Turn on two-step sign-in to connect an app, or change what it may do.',
         );
       }
-      const raw = rawKey(body.public_key);
-      if (!raw)
-        return d.fail(422, 'validation_failed', 'Paste the app’s public key.', 'public_key');
       const member = typeof body.member_id === 'string' ? body.member_id : '';
       if (!d.mayAct(member)) {
         return d.fail(
@@ -539,11 +523,6 @@ export function fakeAppRoutes(d: FakeAppDeps) {
           'An app acts as an owner or an adult who signs in.',
           'member_id',
         );
-      }
-      if (
-        d.apps.some((a) => !a.revoked && a.keys.some((k) => !k.retired && sameBytes(k.raw, raw)))
-      ) {
-        return d.fail(409, 'key_exists', 'That key is already in use. Make a new key pair.');
       }
       const now = new Date().toISOString();
       const a: FakeApp = {
@@ -558,10 +537,10 @@ export function fakeAppRoutes(d: FakeAppDeps) {
           (body.default_visibility as ConnectedAppView['default_visibility']) ?? null,
         daily_files: typeof body.daily_files === 'number' ? body.daily_files : 100,
         daily_bytes: typeof body.daily_bytes === 'number' ? body.daily_bytes : 500 * 1024 * 1024,
-        keys: [{ id: uuid(), raw, added_by: 'owner', created_at: now, retired: false }],
+        // No key yet: an owner generates one next (APP6).
+        keys: [],
         created_at: now,
         intake: new Map(),
-        nonces: new Set(),
         files_today: 0,
         bytes_today: 0,
         last_used_at: null,
@@ -586,7 +565,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       return d.ok(await view(a, who), 201);
     }
     const at = new RegExp(
-      `^/api/v1/connected-apps/([^/]+)(/approve|/pause|/resume|/grants|/keys(?:/([^/]+)(/confirm)?)?)?$`,
+      `^/api/v1/connected-apps/([^/]+)(/approve|/pause|/resume|/grants|/keys(?:/([^/]+))?)?$`,
     ).exec(path);
     if (!at) return null;
     const what = at[2] ?? '';
@@ -596,85 +575,134 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     // the ids, whose call it is, the second step, the key given, the app.
     if (what.startsWith('/keys')) {
       const keyId = at[3];
-      const confirm = at[4] === '/confirm';
-      const add = keyId === undefined && method === 'POST';
-      const retire = keyId !== undefined && !confirm && method === 'DELETE';
-      if (!add && !retire && !(confirm && method === 'POST')) return null;
+      const generate = keyId === undefined && method === 'POST';
+      const revoke = keyId !== undefined && method === 'DELETE';
+      if (!generate && !revoke) return null;
       if (!KEY_ID.test(at[1] as string) || (keyId !== undefined && !KEY_ID.test(keyId))) {
         return d.fail(422, 'validation_failed', 'Not an id.', keyId === undefined ? 'id' : 'keyId');
       }
-      if (confirm) {
-        // An owner, or the person the app acts as; nobody else is told it is there.
-        if (who.role !== 'owner' && who.role !== 'adult') return notHere();
-      } else if (who.role !== 'owner') {
+      // An owner's alone, after a passkey or a code: generating and revoking alike.
+      if (who.role !== 'owner') {
         return d.fail(
           403,
           'forbidden',
-          add
-            ? 'Only an owner can add a key to an app.'
-            : 'Only an owner can connect an app, or change what it may do.',
+          generate
+            ? 'Only an owner can generate an API key for an app.'
+            : 'Only an owner can revoke an app’s API key.',
         );
       }
-      // A passkey or a code: adding and confirming ask for one, retiring not.
-      if (!retire) {
-        const has = who.role === 'owner' ? d.ownerTwoStep() : (d.memberTwoStep?.() ?? true);
-        if (!has) {
-          return d.fail(
-            403,
-            who.role === 'owner' ? 'totp_required_for_owner' : 'two_step_required',
-            'Turn on two-step sign-in to connect an app, or change what it may do.',
-          );
-        }
-      }
-      const raw = add ? rawKey(body.public_key) : null;
-      if (add && !raw) {
+      if (!d.ownerTwoStep()) {
         return d.fail(
-          422,
-          'validation_failed',
-          'Paste the app’s public key: "ed25519:" and 43 characters, or a PEM PUBLIC KEY block.',
-          'public_key',
+          403,
+          'totp_required_for_owner',
+          'Turn on two-step sign-in to connect an app, or change what it may do.',
         );
       }
       const a = find();
       if (!a) return notHere();
-      if (add) {
-        const k = insertKey(a, raw as Uint8Array, 'owner');
-        if (!('raw' in k)) return k;
-        reapprove(a, who);
-        const v = await view(a, who);
-        const added: ConnectedAppKeyAdded = {
-          key: v.keys.find((x) => x.key_id === k.id) as AppKeyView,
-          connection_string: v.connection_string,
-        };
-        return d.ok(added, 201);
-      }
-      const live = liveKeys(a);
-      const k = live.find((x) => x.id === keyId);
-      if (!k) return d.fail(404, 'not_found', 'That key is not here.');
-      if (confirm) {
-        // Only then does it sign.
-        if (k.pending) {
-          k.pending = false;
-          reapprove(a, who);
+      if (revoke) {
+        const k = a.keys.find((x) => x.id === keyId?.toLowerCase());
+        if (!k) return d.fail(404, 'not_found', 'That key is not here.');
+        if (k.revoked_at === null) {
+          k.revoked_at = new Date().toISOString();
+          k.revoked_reason = 'owner';
         }
-        return d.ok(await view(a, who));
+        return d.empty();
       }
-      if (live.length <= 1) {
+      // The body: its name, its permissions, how long it lasts; nothing else.
+      const allowed = ['name', 'permissions', 'expires_in_days'];
+      const extra = Object.keys(body).find((k) => !allowed.includes(k));
+      if (extra !== undefined) {
+        return d.fail(422, 'validation_failed', `Unknown field ${extra}.`, extra);
+      }
+      let name: string | null = null;
+      if (body.name !== undefined && body.name !== null) {
+        if (typeof body.name !== 'string' || body.name.trim().length > APP_KEY_NAME_MAX) {
+          return d.fail(
+            422,
+            'validation_failed',
+            `Give the key a name of ${APP_KEY_NAME_MAX} characters at most, or none.`,
+            'name',
+          );
+        }
+        name = body.name.trim() || null;
+      }
+      const appScopes = a.scopes ?? APP_SCOPES_DEFAULT;
+      const p = body.permissions;
+      if (
+        !Array.isArray(p) ||
+        p.length === 0 ||
+        !p.every((s) => typeof s === 'string' && (appScopes as readonly string[]).includes(s))
+      ) {
         return d.fail(
-          409,
-          'key_in_use',
-          'That is the app’s last key. Add its new key first, or remove the app.',
+          422,
+          'validation_failed',
+          'Choose what the key may do, from what the app may do.',
+          'permissions',
         );
       }
-      k.retired = true;
-      return d.empty();
+      const days = body.expires_in_days;
+      if (
+        days !== null &&
+        (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > APP_KEY_DAYS_MAX)
+      ) {
+        return d.fail(
+          422,
+          'validation_failed',
+          `How long it lasts: 1 to ${APP_KEY_DAYS_MAX} days, or never expires.`,
+          'expires_in_days',
+        );
+      }
+      const live = liveKeys(a);
+      if (live.length >= APP_KEYS_MAX) {
+        return d.fail(
+          409,
+          'key_limit',
+          `An app has ${APP_KEYS_MAX} live API keys at most. Revoke one first.`,
+        );
+      }
+      const clientId = `fdvc_${randomText(16)}`;
+      const secret = `fdvs_${randomText(32)}`;
+      const now = Date.now();
+      const k: FakeAppKey = {
+        id: uuid(),
+        client_id: clientId,
+        secret_sha256: hex(await sha256(new TextEncoder().encode(secret))),
+        name,
+        permissions: APP_SCOPES_OFFERED.filter((s) => (p as unknown[]).includes(s)),
+        created_at: new Date(now).toISOString(),
+        expires_at: days === null ? null : new Date(now + days * 864e5).toISOString(),
+        last_used_at: null,
+        revoked_at: null,
+      };
+      a.keys.push(k);
+      // A key that may do no more than a live one already may (a rotation)
+      // widens nothing (the owner's decision, 18 Nov 2026): its person is
+      // not asked again. One that may do more is a widening.
+      if (!live.some((x) => k.permissions.every((s) => x.permissions.includes(s)))) {
+        reapprove(a, who);
+      }
+      const made: ConnectedAppKeyMade = {
+        key: keyView(k),
+        client_id: clientId,
+        secret,
+        connection_string: connection(clientId),
+        connection_string_with_secret: connection(clientId, secret),
+      };
+      return d.ok(made, 201);
     }
     const a = find();
     if (!a) return notHere();
     if (what === '' && method === 'DELETE') {
-      // Its keys retire with it, so the same key may be given to an app connected again.
+      // Its keys are revoked with it.
       a.revoked = true;
-      for (const k of a.keys) k.retired = true;
+      const now = new Date().toISOString();
+      for (const k of a.keys) {
+        if (k.revoked_at === null) {
+          k.revoked_at = now;
+          k.revoked_reason = 'app_removed';
+        }
+      }
       return d.empty();
     }
     if (what === '/approve' && method === 'POST') {
@@ -875,13 +903,22 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       : null;
 
   /** A document as the app is told of it, when it may read it (the vault's own rule). */
-  type Told = { doc: AppDocument; fp: string; v: FakeReadableDoc['version'] };
+  type Told = {
+    doc: AppDocument;
+    fp: string;
+    v: FakeReadableDoc['version'];
+    /** Its current version is one this app sent: only then may the app delete it. */
+    currentSent: boolean;
+    /** The versions of it this app sent (filed, not let go of): version id → external id. */
+    sent: Map<string, string>;
+  };
   const readable = async (a: FakeApp): Promise<Map<string, Told>> => {
     const out = new Map<string, Told>();
     const today = localToday(d.timezone());
     const kinds = d.kinds();
     // Its own: a document a send of its made (not one it was filed into),
-    // not let go of (APP3), while its current version is one the app sent.
+    // not let go of (APP3), whatever newer versions the family or another
+    // app added since (the owner's decision, 18 Nov 2026).
     const own = new Map<string, string>();
     const filed = [...a.intake].filter(
       ([, s]) => s.state === 'filed' && s.document_id && !s.unlinked,
@@ -896,9 +933,14 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       const due = x.extra.due_date as DateValue | undefined;
       const paper = x.issued?.date ?? due?.date ?? x.filed_on;
       const ownId = own.get(x.id);
-      const isOwn =
-        ownId !== undefined &&
-        filed.some(([, s]) => s.document_id === x.id && s.version_id === (x.version?.id ?? null));
+      const isOwn = ownId !== undefined;
+      const sent = new Map<string, string>();
+      for (const [externalId, s] of filed) {
+        if (s.document_id === x.id && s.version_id && !sent.has(s.version_id)) {
+          sent.set(s.version_id, externalId);
+        }
+      }
+      const currentSent = x.version !== null && sent.has(x.version.id);
       const ok = appMayRead({
         document: {
           visibility: x.visibility,
@@ -983,7 +1025,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       };
       const said: Partial<AppDocument> = { ...doc };
       delete said.updated_at;
-      out.set(x.id, { doc, fp: JSON.stringify(said), v: x.version });
+      out.set(x.id, { doc, fp: JSON.stringify(said), v: x.version, currentSent, sent });
     }
     return out;
   };
@@ -1009,81 +1051,98 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     }
   };
 
-  /** A signed request, checked in the contract's order; the app, or the refusal. */
-  const signed = async (
-    method: string,
-    target: string,
+  /**
+   * A request with an API key (APP6), checked in the contract's order; the
+   * app, its key and what this request may do (the key's permissions that
+   * the app has too), or the refusal.
+   */
+  const authenticate = async (
     headers: Record<string, string>,
-    body: Uint8Array,
     scope: AppScope | null,
     anyState: boolean,
-  ): Promise<FakeApp | ResponseLike> => {
-    const input = headers['signature-input'];
-    const sig = headers['signature'];
-    const digest = headers['content-digest'];
-    if (!input || !sig || !digest || headers.authorization) {
-      return d.fail(401, 'app_signature_required', 'Sign this request as a connected app.');
+  ): Promise<{ a: FakeApp; key: FakeAppKey; scopes: AppScope[] } | ResponseLike> => {
+    // 1. Basic with an app's client ID, and nothing else that names a caller.
+    const basic = basicOf(headers.authorization);
+    if (
+      !basic ||
+      !basic.user.startsWith('fdvc_') ||
+      headers.cookie ||
+      headers['signature'] ||
+      headers['signature-input']
+    ) {
+      return d.fail(401, 'app_key_required', APP_REFUSALS.app_key_required);
     }
-    const m = new RegExp(
-      `^fdv=(\\("@method" "@path" "@query" "content-digest"\\);created=(\\d+);keyid="(${UUID}|[a-z]+-\\d+)\\.(${UUID}|[a-z]+-\\d+)";nonce="([A-Za-z0-9_-]{22,64})";alg="ed25519";tag="fdv-app")$`,
-    ).exec(input);
-    const s = /^fdv=:([A-Za-z0-9+/]+={0,2}):$/.exec(sig);
-    const g = /^sha-256=:([A-Za-z0-9+/]{43}=):$/.exec(digest);
-    if (!m || !s || !g)
-      return d.fail(
-        401,
-        'signature_malformed',
-        'The request’s signature is not written as the vault expects.',
+    // 2. Not too many failed tries this minute.
+    const minute = Math.floor(Date.now() / 60_000);
+    const tries = FAILURES.get(d.apps);
+    const failedNow = tries && tries.minute === minute ? tries.n : 0;
+    if (failedNow >= APP_AUTH_FAILURES_PER_MINUTE) {
+      const wait = Math.max(1, Math.ceil(((minute + 1) * 60_000 - Date.now()) / 1000));
+      return d.ok(
+        {
+          error: {
+            code: 'rate_limited',
+            message: `Too many failed tries. Try again in ${wait} seconds.`,
+            retriable: true,
+            request_id: 'fake',
+          },
+        },
+        429,
+        { 'retry-after': String(wait) },
       );
-    const a = d.apps.find((x) => x.id === m[3]);
-    if (a?.revoked) return d.fail(401, 'app_revoked', 'This app has been removed from the vault.');
-    const key = a ? liveKeys(a).find((k) => k.id === m[4]) : undefined;
-    if (!a || !key) return d.fail(401, 'app_key_unknown', APP_REFUSALS.app_key_unknown);
-    // A key the app added itself signs nothing until it is confirmed in Settings.
-    if (key.pending) return d.fail(401, 'app_key_pending', APP_REFUSALS.app_key_pending);
-    if (!anyState && a.paused) return d.fail(403, 'app_paused', 'An owner has paused this app.');
+    }
+    // Only a guess counts: an unknown client ID or a wrong secret. A right
+    // secret — whatever is refused after it — is no guessing.
+    const guessed = () => {
+      FAILURES.set(d.apps, { minute, n: failedNow + 1 });
+      return d.fail(401, 'app_key_invalid', APP_REFUSALS.app_key_invalid);
+    };
+    const refused = (status: number, code: keyof typeof APP_REFUSALS) =>
+      d.fail(status, code, APP_REFUSALS[code]);
+    // 3. The client ID and the secret: unknown and wrong alike, compared in full.
+    const clientId = basic.user;
+    const secret = basic.rest ?? '';
+    const given = hex(await sha256(new TextEncoder().encode(secret)));
+    let found: { a: FakeApp; key: FakeAppKey } | null = null;
+    for (const a of d.apps) {
+      const key = a.keys.find((k) => k.client_id === clientId);
+      if (key) found = { a, key };
+    }
+    const matches = sameHex(given, found?.key.secret_sha256 ?? '0'.repeat(64));
+    if (
+      !found ||
+      !matches ||
+      basic.rest === null ||
+      !APP_CLIENT_ID_PATTERN.test(clientId) ||
+      !APP_SECRET_PATTERN.test(secret)
+    ) {
+      return guessed();
+    }
+    const { a, key } = found;
+    // 4. The app removed; the key revoked or past its expiry.
+    if (a.revoked) return refused(401, 'app_revoked');
+    const state = keyState(key);
+    if (state === 'revoked') return refused(401, 'app_key_revoked');
+    if (state === 'expired') return refused(401, 'app_key_expired');
+    // 5. On, and turned on by its person — but for GET /apps/me.
+    if (!anyState && a.paused) return d.fail(403, 'app_paused', APP_REFUSALS.app_paused);
     if (!anyState && a.approval !== 'approved') {
-      return d.fail(
-        403,
-        'app_not_approved',
-        'The person this app acts as has not turned it on yet.',
-      );
+      return d.fail(403, 'app_not_approved', APP_REFUSALS.app_not_approved);
     }
-    if (Math.abs(Number(m[2]) - Math.floor(Date.now() / 1000)) > APP_SIGNATURE_WINDOW_SECONDS) {
-      return d.fail(401, 'signature_stale', 'The request was signed too long ago.');
-    }
-    const base = signatureBaseOf({ method, target, contentDigest: digest, params: m[1] as string });
-    const pub = await crypto.subtle.importKey('raw', key.raw, { name: 'Ed25519' }, false, [
-      'verify',
-    ]);
-    const verified = await crypto.subtle.verify(
-      { name: 'Ed25519' },
-      pub,
-      fromBase64(s[1] as string),
-      new TextEncoder().encode(base),
-    );
-    if (!verified)
-      return d.fail(401, 'signature_invalid', 'The request’s signature does not verify.');
-    if (a.nonces.has(m[5] as string))
-      return d.fail(401, 'nonce_reused', 'This request was sent before.');
-    a.nonces.add(m[5] as string);
     a.last_used_at = new Date().toISOString();
-    key.first_used_at ??= a.last_used_at;
-    if (scope && !(a.scopes ?? APP_SCOPES_DEFAULT).includes(scope)) {
-      return d.fail(403, 'scope_not_granted', 'The owner did not allow this app to do that.');
+    key.last_used_at = a.last_used_at;
+    // 6. The route among what the key may do, and the app.
+    const appScopes = a.scopes ?? APP_SCOPES_DEFAULT;
+    const scopes = APP_SCOPES_OFFERED.filter(
+      (s) => appScopes.includes(s) && key.permissions.includes(s),
+    );
+    if (scope && !scopes.includes(scope)) {
+      return d.fail(403, 'scope_not_granted', APP_REFUSALS.scope_not_granted);
     }
-    const want = body.length === 0 ? APP_EMPTY_DIGEST : `sha-256=:${toBase64(await sha256(body))}:`;
-    if (want !== digest) {
-      return d.fail(
-        400,
-        'content_digest_mismatch',
-        'The body did not match its digest, so nothing was kept.',
-      );
-    }
-    return a;
+    return { a, key, scopes };
   };
 
-  /** The app's side, signed. */
+  /** The app's side, with its API key. */
   const app: (
     url: string,
     init: Parameters<FetchLike>[1],
@@ -1101,11 +1160,11 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     const headers = Object.fromEntries(
       Object.entries(init.headers).map(([k, v]) => [k.toLowerCase(), v]),
     );
-    const signedRequest =
-      headers['signature'] !== undefined || headers['signature-input'] !== undefined;
+    // An app's key is taken by the app routes alone; any other Basic value
+    // (a proxy's in front of the vault) goes on untouched.
     if (!APP_ROUTE.test(path)) {
-      return signedRequest
-        ? d.fail(401, 'app_signature_not_accepted', 'A connected app can only use the app routes.')
+      return presentsAppKey(headers.authorization)
+        ? d.fail(401, 'app_key_not_accepted', APP_REFUSALS.app_key_not_accepted)
         : null;
     }
     const body =
@@ -1115,20 +1174,20 @@ export function fakeAppRoutes(d: FakeAppDeps) {
           ? new TextEncoder().encode(init.body)
           : new Uint8Array();
     const me = path === '/api/v1/apps/me';
-    const scope: AppScope | null =
-      me || path.startsWith('/api/v1/apps/keys')
-        ? null
-        : path.endsWith('/content')
-          ? 'documents.download'
-          : path.endsWith('/links')
-            ? 'documents.links'
-            : method === 'DELETE' && /^\/api\/v1\/apps\/documents\/[^/]+$/.test(path)
-              ? 'documents.delete'
-              : path.startsWith('/api/v1/apps/documents') || path === '/api/v1/apps/changes'
-                ? 'documents.read'
-                : 'documents.send';
-    const a = await signed(method, target, headers, body, scope, me);
-    if (!('intake' in a)) return a;
+    const scope: AppScope | null = me
+      ? null
+      : path.endsWith('/content')
+        ? 'documents.download'
+        : path.endsWith('/links')
+          ? 'documents.links'
+          : method === 'DELETE' && /^\/api\/v1\/apps\/documents\/[^/]+$/.test(path)
+            ? 'documents.delete'
+            : path.startsWith('/api/v1/apps/documents') || path === '/api/v1/apps/changes'
+              ? 'documents.read'
+              : 'documents.send';
+    const authed = await authenticate(headers, scope, me);
+    if (!('a' in authed)) return authed;
+    const { a, key, scopes } = authed;
     const params = new Map(
       (target.split('?')[1] ?? '')
         .split('&')
@@ -1189,16 +1248,21 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       if (mode !== 'view' && mode !== 'download') {
         return d.fail(422, 'validation_failed', 'mode is "view" or "download".', 'mode');
       }
+      const extra = Object.keys(asked as object).find((k) => k !== 'mode');
+      if (extra !== undefined) {
+        return d.fail(422, 'validation_failed', `Unrecognized key: "${extra}"`, extra);
+      }
       // Any link needs reading too; a download link, downloading as well.
       const needs: AppScope[] =
         mode === 'download' ? ['documents.read', 'documents.download'] : ['documents.read'];
-      const missing = needs.find((x) => !(a.scopes ?? APP_SCOPES_DEFAULT).includes(x));
+      const missing = needs.find((x) => !scopes.includes(x));
       if (missing) {
         return d.fail(403, 'scope_not_granted', APP_REFUSALS.scope_not_granted, missing);
       }
       const r = (await readable(a)).get(linkAt[1] as string);
-      if (!r || !r.v) return notFound();
-      if (mode === 'view' && !canShareToView(r.v.mime)) {
+      const shown = r?.v ?? null;
+      if (!r || !shown) return notFound();
+      if (mode === 'view' && !canShareToView(shown.mime)) {
         return d.fail(409, 'view_unavailable', APP_REFUSALS.view_unavailable);
       }
       const now = Date.now();
@@ -1228,8 +1292,9 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       const token = toBase64(crypto.getRandomValues(new Uint8Array(32)), true);
       links.push({
         token,
+        key_id: key.id,
         document_id: r.doc.id,
-        version_id: r.v.id,
+        version_id: shown.id,
         mode,
         created_at: now,
         open_by: now + APP_LINK_OPEN_SECONDS * 1000,
@@ -1249,9 +1314,11 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     }
     const deleteAt = /^\/api\/v1\/apps\/documents\/([^/]+)$/.exec(path);
     if (deleteAt && method === 'DELETE') {
-      // Its own alone: one it reads by a grant, or may not read, is 404.
+      // Its own alone, its current file one it sent: one it reads by a
+      // grant, may not read, or whose newest file is the family's (or
+      // another app's), is 404.
       const r = (await readable(a)).get(deleteAt[1] as string);
-      if (!r || !r.doc.own) return notFound();
+      if (!r || !r.doc.own || !r.currentSent) return notFound();
       for (const s of a.intake.values()) {
         if (s.state === 'filed' && s.document_id === r.doc.id) s.unlinked = true;
       }
@@ -1266,12 +1333,13 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       const r = (await readable(a)).get(docAt[1] as string);
       if (!r) return notFound();
       if (!docAt[2]) return d.ok(r.doc);
-      if (!r.v) return notFound();
-      const etag = `"${r.v.id}"`;
-      const total = r.v.bytes.length;
+      const v = r.v;
+      if (!v) return notFound();
+      const etag = `"${v.id}"`;
+      const total = v.bytes.length;
       const plain = {
-        'content-type': r.v.mime,
-        'content-disposition': `attachment; filename="${r.v.filename.replace(/"/g, '')}"`,
+        'content-type': v.mime,
+        'content-disposition': `attachment; filename="${v.filename.replace(/"/g, '')}"`,
         'x-content-type-options': 'nosniff',
         'content-security-policy': "default-src 'none'; sandbox",
         'cache-control': 'no-store',
@@ -1306,13 +1374,13 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       a.read_bytes_today = (a.read_bytes_today ?? 0) + bytes;
       const length = { 'content-length': String(bytes) };
       if (asked !== undefined) {
-        return d.raw(206, r.v.bytes.slice(start, end + 1), {
+        return d.raw(206, v.bytes.slice(start, end + 1), {
           ...plain,
           ...length,
           'content-range': `bytes ${start}-${end}/${total}`,
         });
       }
-      return d.raw(200, r.v.bytes, { ...plain, ...length });
+      return d.raw(200, v.bytes, { ...plain, ...length });
     }
     if (path === '/api/v1/apps/changes' && method === 'GET') {
       const limit = limitOf(100);
@@ -1376,7 +1444,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
           now: new Date().toISOString(),
           time_zone: d.timezone(),
         },
-        scopes: [...(a.scopes ?? APP_SCOPES_DEFAULT)],
+        scopes: [...scopes],
         send: {
           kinds: kinds.map((k) => ({
             key: k.key,
@@ -1412,79 +1480,17 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         },
         delete_mode: a.delete_mode ?? 'unlink',
         backfill: liveBackfill(a),
-        keys: (await keyViews(a)).map((k) => ({
-          key_id: k.key_id,
-          fingerprint: k.fingerprint,
-          added_by: k.added_by,
-          created_at: k.created_at,
-          pending: k.pending === true,
-          retires_at: k.retires_at,
-        })),
+        // The key making this request, and nothing of the app's others.
+        key: {
+          client_id: key.client_id,
+          name: key.name,
+          permissions: [...key.permissions],
+          created_at: key.created_at,
+          expires_at: key.expires_at,
+          last_used_at: key.last_used_at,
+        },
       };
       return d.ok(said);
-    }
-    // Its next key, signed with a current one: pending until confirmed (CL2).
-    if (path === '/api/v1/apps/keys' && method === 'POST') {
-      let given: unknown;
-      try {
-        given = JSON.parse(new TextDecoder().decode(body));
-      } catch {
-        given = null;
-      }
-      const fields =
-        given && typeof given === 'object' && !Array.isArray(given)
-          ? (given as Record<string, unknown>)
-          : null;
-      const raw =
-        fields &&
-        Object.keys(fields).every((k) => k === 'public_key') &&
-        typeof fields.public_key === 'string' &&
-        fields.public_key.length <= 4096
-          ? rawKey(fields.public_key)
-          : null;
-      if (!raw) {
-        return d.fail(
-          422,
-          'validation_failed',
-          'public_key is "ed25519:" and 43 base64url characters, or a PEM PUBLIC KEY.',
-          'public_key',
-        );
-      }
-      const k = insertKey(a, raw, 'app');
-      if (!('raw' in k)) return k;
-      const added: AppKeyAdded = {
-        key_id: k.id,
-        keyid: `${a.id}.${k.id}`,
-        fingerprint: await fingerprint(raw),
-        created_at: k.created_at,
-        pending: true,
-      };
-      return d.ok(added, 201);
-    }
-    // A key it added itself; never an owner's, the one signing, nor the last (CL2).
-    const retiring = /^\/api\/v1\/apps\/keys\/([^/]+)$/.exec(path)?.[1];
-    if (retiring !== undefined && method === 'DELETE') {
-      if (!KEY_ID.test(retiring)) return notFound();
-      const live = liveKeys(a);
-      const k = live.find((x) => x.id === retiring.toLowerCase());
-      if (!k) return notFound();
-      if (k.added_by !== 'app') {
-        return d.fail(
-          409,
-          'key_added_by_owner',
-          'An owner added that key: it is retired in Settings → Connected apps.',
-        );
-      }
-      const signing = /keyid="[^".]+\.([^"]+)"/.exec(headers['signature-input'] ?? '')?.[1];
-      if (k.id === signing || live.length <= 1) {
-        return d.fail(
-          409,
-          'key_in_use',
-          'That key signs this request, or is the app’s last key. Sign with the other key first.',
-        );
-      }
-      k.retired = true;
-      return d.empty();
     }
     if (path === '/api/v1/apps/intake' && method === 'POST') {
       const got = parts(body) ?? [];
@@ -1526,7 +1532,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
             'This external_id was already used with other bytes.',
           );
         }
-        return d.ok(stateOf(id, before, new Set((await readable(a)).keys()), a), 200, {
+        return d.ok(stateOf(id, before, new Set((await readable(a)).keys()), scopes), 200, {
           'idempotent-replayed': 'true',
         });
       }
@@ -1592,7 +1598,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       return d.ok({
         items: ids.flatMap((id) => {
           const s = a.intake.get(id);
-          return s ? [stateOf(id, s, still, a)] : [];
+          return s ? [stateOf(id, s, still, scopes)] : [];
         }),
         unknown: ids.filter((id) => !a.intake.has(id)),
       });
@@ -1636,7 +1642,7 @@ export function fakeAppRoutes(d: FakeAppDeps) {
         s.state = 'removed';
         s.removed_reason = 'withdrawn';
       }
-      return d.ok(stateOf(id, s, new Set((await readable(a)).keys()), a));
+      return d.ok(stateOf(id, s, new Set((await readable(a)).keys()), scopes));
     }
     return d.fail(404, 'not_found', 'Nothing by that id that this app may see.');
   };
@@ -1662,7 +1668,12 @@ export function fakeAppRoutes(d: FakeAppDeps) {
       d.raw(303, new Uint8Array(), { location: to, ...more });
     const all = () => d.apps.flatMap((a) => (a.links ?? []).map((l) => ({ a, l })));
     const good = async (a: FakeApp, l: FakeAppLink) => {
-      const scopes = a.scopes ?? APP_SCOPES_DEFAULT;
+      // The key it was minted with, live now (APP6): revoking a key ends its links.
+      const key = l.key_id === undefined ? undefined : a.keys.find((k) => k.id === l.key_id);
+      if (l.key_id !== undefined && (!key || keyState(key) !== 'live')) return null;
+      const scopes = (a.scopes ?? APP_SCOPES_DEFAULT).filter(
+        (s) => !key || key.permissions.includes(s),
+      );
       if (a.revoked || a.paused || a.approval !== 'approved') return null;
       if (!scopes.includes('documents.links') || !scopes.includes('documents.read')) return null;
       if (l.mode === 'download' && !scopes.includes('documents.download')) return null;
@@ -1707,7 +1718,8 @@ export function fakeAppRoutes(d: FakeAppDeps) {
     if (path === `${APP_LINK_SESSION_PATH}/file`) {
       const s = await inSession();
       if (!s) return redirect(`${APP_LINK_PAGE}#ended`);
-      const v = s.r.v;
+      // The version it was minted for: the current one then, or the app's own send.
+      const v = d.versionOf?.(s.l.version_id) ?? s.r.v;
       if (s.l.mode !== 'download' || !v) return d.fail(404, 'not_found', 'Nothing here.');
       // Counted against the app's own day, as its downloads are.
       const cap = s.a.daily_read_bytes ?? 1024 ** 3;

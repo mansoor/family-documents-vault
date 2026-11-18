@@ -1782,28 +1782,9 @@ export function installFakeApi(state: FakeState) {
           : role === 'adult'
             ? state.connectedApps!.filter((a) => a.member_id === 'me')
             : [];
-      const keyOk = (k: unknown) =>
-        typeof k === 'string' &&
-        (/^ed25519:[A-Za-z0-9_-]{43}$/.test(k.trim()) || k.includes('-----BEGIN PUBLIC KEY-----'));
-      /** A fingerprint as the vault shows one: eight groups of four, from the key's text. */
-      const fingerprintOf = (k: string) => {
-        let h = 0x811c9dc5;
-        let out = '';
-        for (let round = 0; round < 4; round++) {
-          for (const c of `${round}${k}`) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193) >>> 0;
-          out += h.toString(16).padStart(8, '0');
-        }
-        return (out.match(/.{4}/g) as string[]).join(' ');
-      };
-      const keyOf = (k: string, n: number) => ({
-        key_id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
-        fingerprint: fingerprintOf(k),
-        added_by: 'owner' as const,
-        created_at: new Date().toISOString(),
-        first_used_at: null,
-        retires_at: null,
-      });
-      const connection = (id: string, keyId: string) => `fdvapp1.${btoa(`${id}.${keyId}`)}`;
+      /** What to paste into the app (APP6): the address and a client ID, the secret only when asked. */
+      const connection = (clientId: string, secret?: string) =>
+        `fdvapp2.${btoa(JSON.stringify({ url: 'https://vault.example.test', client_id: clientId, ...(secret ? { secret } : {}) }))}`;
       if (path === '/api/v1/connected-apps' && method === 'GET') {
         return json({
           items: visible().map(seen),
@@ -1816,7 +1797,6 @@ export function installFakeApi(state: FakeState) {
         const b = body as {
           name: string;
           member_id: string;
-          public_key: string;
           allowed_kinds: string[];
           default_visibility?: Visibility | null;
           daily_files?: number;
@@ -1830,14 +1810,6 @@ export function installFakeApi(state: FakeState) {
           links_per_hour?: number;
         };
         if (state.stepUpNeeded) return askFactor();
-        if (!keyOk(b.public_key)) {
-          return refuse(
-            422,
-            'validation_failed',
-            'Paste the app’s public key: "ed25519:" and 43 characters, or a PEM PUBLIC KEY block.',
-            { detail: 'public_key' },
-          );
-        }
         const person = state.members.find((m) => m.id === b.member_id) as
           | { id: string; display_name: string; has_account?: boolean; role?: string | null }
           | undefined;
@@ -1853,7 +1825,6 @@ export function installFakeApi(state: FakeState) {
         }
         const n = state.connectedApps.length + 1;
         const id = `00000000-0000-4000-a000-${String(n).padStart(12, '0')}`;
-        const key = keyOf(b.public_key.trim(), n * 10);
         const app: ConnectedAppView = {
           id,
           name: b.name.trim(),
@@ -1863,7 +1834,7 @@ export function installFakeApi(state: FakeState) {
           created_at: new Date().toISOString(),
           state: b.member_id === 'me' ? 'active' : 'waiting_for_approval',
           paused_reason: null,
-          scopes: ['documents.send'],
+          scopes: b.scopes ?? ['documents.send'],
           allowed_kinds: b.allowed_kinds,
           default_visibility: b.default_visibility ?? null,
           auto_file: b.auto_file ?? false,
@@ -1872,13 +1843,13 @@ export function installFakeApi(state: FakeState) {
           daily_bytes: b.daily_bytes ?? 500 * 1024 * 1024,
           backfill: b.backfill ?? null,
           ip_allow: b.ip_allow ?? [],
-          keys: [key],
+          keys: [],
           last_used_at: null,
           today: { files: 0, bytes: 0 },
           refused_today: 0,
           last_refusal: null,
           counts: null,
-          connection_string: connection(id, key.key_id),
+          connection_string: '',
           address: { url: 'https://vault.example.test', public: true },
           delete_mode: b.delete_mode ?? 'unlink',
           links_per_hour: b.links_per_hour ?? 60,
@@ -1889,7 +1860,7 @@ export function installFakeApi(state: FakeState) {
         return json(seen(app), 201);
       }
       const appAt =
-        /^\/api\/v1\/connected-apps\/([^/]+)(?:\/(approve|pause|resume|keys|grants))?(?:\/([^/]+))?(\/confirm)?$/.exec(
+        /^\/api\/v1\/connected-apps\/([^/]+)(?:\/(approve|pause|resume|keys|grants))?(?:\/([^/]+))?$/.exec(
           path,
         );
       const app = appAt ? visible().find((a) => a.id === appAt[1]) : undefined;
@@ -1898,18 +1869,7 @@ export function installFakeApi(state: FakeState) {
         state.connectedApps = state.connectedApps!.map((a) => (a.id === next.id ? next : a));
         return json(seen(next));
       };
-      const [, , verb, keyId, confirm] = appAt;
-      // A key the app added itself, confirmed by an owner or its person.
-      if (verb === 'keys' && keyId && confirm && method === 'POST') {
-        if (!owner && app.member_id !== 'me')
-          return refuse(404, 'not_found', 'That app is not here.');
-        if (state.stepUpNeeded) return askFactor();
-        return put({
-          ...app,
-          keys: app.keys.map((k) => (k.key_id === keyId ? { ...k, pending: false } : k)),
-          ...(owner && app.member_id !== 'me' ? { state: 'waiting_for_approval' as const } : {}),
-        });
-      }
+      const [, , verb, keyId] = appAt;
       if (!verb && method === 'PATCH') {
         if (!owner) return ownersOnly();
         const change = body as Partial<ConnectedAppView>;
@@ -1980,42 +1940,81 @@ export function installFakeApi(state: FakeState) {
         if (state.stepUpNeeded) return askFactor();
         return put({ ...app, state: 'active', paused_reason: null });
       }
+      // An API key generated (APP6): an owner's, with a passkey or a code;
+      // two live at most; its secret answered this once.
       if (verb === 'keys' && !keyId && method === 'POST') {
         if (!owner) return ownersOnly();
-        const k = (body as { public_key?: string }).public_key ?? '';
         if (state.stepUpNeeded) return askFactor();
-        if (!keyOk(k)) {
-          return refuse(422, 'validation_failed', 'Paste the app’s public key.', {
-            detail: 'public_key',
+        const b = body as {
+          name?: string | null;
+          permissions?: ConnectedAppView['scopes'];
+          expires_in_days?: number | null;
+        };
+        const permissions = b.permissions ?? [];
+        if (permissions.length === 0 || permissions.some((p) => !app.scopes.includes(p))) {
+          return refuse(422, 'validation_failed', 'Choose what the key may do, from the app’s.', {
+            detail: 'permissions',
           });
         }
-        if (app.keys.length >= 2) {
-          return refuse(409, 'key_limit', 'An app holds two keys at most. Retire one first.');
+        const days = b.expires_in_days ?? null;
+        if (days !== null && (!Number.isInteger(days) || days < 1 || days > 3650)) {
+          return refuse(422, 'validation_failed', 'How long it lasts: 1 to 3650 days.', {
+            detail: 'expires_in_days',
+          });
         }
-        const key = keyOf(k.trim(), app.keys.length + 100);
-        const next = {
+        if (app.keys.filter((k) => k.state === 'live').length >= 2) {
+          return refuse(409, 'key_limit', 'An app has 2 keys at most. Revoke one first.');
+        }
+        const n = app.keys.length + 1;
+        const clientId = `fdvc_${String(n).padStart(22, 'K')}`;
+        const secret = `fdvs_${String(n).padStart(43, 'S')}`;
+        const now = new Date();
+        const key = {
+          id: `00000000-0000-4000-8000-${String(100 + n).padStart(12, '0')}`,
+          client_id: clientId,
+          name: b.name ?? null,
+          permissions,
+          created_at: now.toISOString(),
+          expires_at: days === null ? null : new Date(now.getTime() + days * 864e5).toISOString(),
+          last_used_at: null,
+          revoked_at: null,
+          state: 'live' as const,
+        };
+        const next: ConnectedAppView = {
           ...app,
           keys: [...app.keys, key],
-          connection_string: connection(app.id, key.key_id),
+          connection_string: connection(clientId),
+          // A key for an app acting as somebody else: they turn it on again.
+          ...(app.member_id !== 'me' ? { state: 'waiting_for_approval' as const } : {}),
         };
         state.connectedApps = state.connectedApps.map((a) => (a.id === app.id ? next : a));
-        return json({ key, connection_string: next.connection_string }, 201);
+        return json(
+          {
+            key,
+            client_id: clientId,
+            secret,
+            connection_string: connection(clientId),
+            connection_string_with_secret: connection(clientId, secret),
+          },
+          201,
+        );
       }
       if (verb === 'keys' && keyId && method === 'DELETE') {
         if (!owner) return ownersOnly();
-        if (!app.keys.some((k) => k.key_id === keyId)) {
+        if (state.stepUpNeeded) return askFactor();
+        if (!app.keys.some((k) => k.id === keyId)) {
           return refuse(404, 'not_found', 'That key is not here.');
         }
-        if (app.keys.length <= 1) {
-          return refuse(
-            409,
-            'key_in_use',
-            'That is the app’s last key. Add its new key first, or remove the app.',
+        state.connectedApps = state.connectedApps.map((a) => {
+          if (a.id !== app.id) return a;
+          const keys = a.keys.map((k) =>
+            k.id === keyId && k.state === 'live'
+              ? { ...k, state: 'revoked' as const, revoked_at: new Date().toISOString() }
+              : k,
           );
-        }
-        state.connectedApps = state.connectedApps.map((a) =>
-          a.id === app.id ? { ...a, keys: a.keys.filter((k) => k.key_id !== keyId) } : a,
-        );
+          const newest = keys.filter((k) => k.state === 'live').at(-1);
+          return { ...a, keys, connection_string: newest ? connection(newest.client_id) : '' };
+        });
         return noContent();
       }
     }

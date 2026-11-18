@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApi } from '../api.js';
-import { createAppClient, toBase64 } from '../apps.js';
+import type { AppScope } from '@fdv/shared';
+import { createAppClient, parseConnectionString, toBase64 } from '../apps.js';
 import { ApiRequestError } from '../errors.js';
-import { createHttp } from '../http.js';
+import { createHttp, type FetchLike } from '../http.js';
 import { multipartBody } from '../multipart.js';
 import { createFakeVault } from './fake.js';
 
@@ -13,10 +14,27 @@ import { createFakeVault } from './fake.js';
  * pages, a cursor too old, the download's ranges, headers and caps.
  */
 
-/** RFC 8032's first Ed25519 test key (7.1, TEST 1): nobody uses it for real. */
-const KEY = `-----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g
------END PRIVATE KEY-----`;
+/**
+ * An app's client with an API key an owner generated for it (APP6): every
+ * permission the app has, for 30 days.
+ */
+async function keyed(
+  api: ReturnType<typeof createApi>,
+  token: string,
+  made: { id: string; scopes: AppScope[] },
+  fetch: FetchLike,
+) {
+  const key = await api.connectedApps.generateKey(token, made.id, {
+    permissions: made.scopes,
+    expires_in_days: 30,
+  });
+  return createAppClient({
+    url: 'https://fake.example',
+    clientId: key.client_id,
+    secret: key.secret,
+    fetch,
+  });
+}
 const PDF = new TextEncoder().encode('%PDF-1.4\n% fake app reads\n%%EOF\n');
 
 async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
@@ -44,17 +62,10 @@ describe('the fake vault: what a connected app reads (APP2)', () => {
     const made = await api.connectedApps.create(token, {
       name: 'Reader',
       member_id: t.member_id,
-      public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
       allowed_kinds: ['utility_bill'],
       scopes: ['documents.send', 'documents.read', 'documents.download'],
     });
-    const app = createAppClient({
-      baseUrl: 'https://fake.example',
-      appId: made.id,
-      keyId: made.keys[0]?.key_id as string,
-      privateKey: KEY,
-      fetch: vault.fetch,
-    });
+    const app = await keyed(api, token, made, vault.fetch);
     const day = new Date(Date.now() - 20 * 864e5).toISOString().slice(0, 10);
     const file = async (key: string, title: string, extra: Record<string, unknown> = {}) => {
       const form = multipartBody([
@@ -183,18 +194,11 @@ describe('the fake vault: a connected app’s links and deletes (APP3)', () => {
     const made = await api.connectedApps.create(token, {
       name: 'Linker',
       member_id: t.member_id,
-      public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
       allowed_kinds: ['utility_bill'],
       scopes: ['documents.send', 'documents.read', 'documents.links', 'documents.delete'],
     });
     expect(made).toMatchObject({ delete_mode: 'unlink', links_per_hour: 60 });
-    const app = createAppClient({
-      baseUrl: 'https://fake.example',
-      appId: made.id,
-      keyId: made.keys[0]?.key_id as string,
-      privateKey: KEY,
-      fetch: vault.fetch,
-    });
+    const app = await keyed(api, token, made, vault.fetch);
     const day = new Date(Date.now() - 20 * 864e5).toISOString().slice(0, 10);
     const file = async (key: string, title: string) => {
       const form = multipartBody([
@@ -252,6 +256,30 @@ describe('the fake vault: a connected app’s links and deletes (APP3)', () => {
     expect(await session.json()).toMatchObject({ app: 'Linker', mode: 'view', title: 'Own bill' });
     expect((await get('/api/v1/app-links/session/pages/1', cookie)).status).toBe(200);
     expect((await get('/api/v1/app-links/session')).status).toBe(410);
+    // A link remembers the key that minted it (APP6): that key revoked, its
+    // session ends at its next request, and a link not yet opened with it.
+    const other = await api.connectedApps.generateKey(token, made.id, {
+      permissions: made.scopes,
+      expires_in_days: 30,
+    });
+    const otherApp = createAppClient({
+      url: 'https://fake.example',
+      clientId: other.client_id,
+      secret: other.secret,
+      fetch: vault.fetch,
+    });
+    const viaOther = await otherApp.link(own, 'view');
+    const unopened = await otherApp.link(own, 'view');
+    const otherOpened = await get(viaOther.url.replace(/^[a-z]+:\/\/[^/]+/i, ''));
+    const otherCookie = (otherOpened.headers.get('set-cookie') ?? '').split(';')[0] as string;
+    expect((await get('/api/v1/app-links/session', otherCookie)).status).toBe(200);
+    await api.connectedApps.revokeKey(token, made.id, other.key.id);
+    expect((await get('/api/v1/app-links/session', otherCookie)).status).toBe(410);
+    expect(
+      (await get(unopened.url.replace(/^[a-z]+:\/\/[^/]+/i, ''))).headers.get('location'),
+    ).toBe('/a#ended');
+    // The other key's links end; this key's go on.
+    expect((await get('/api/v1/app-links/session', cookie)).status).toBe(200);
     // A download link needs its scope too.
     const noDownload = await refusal(app.link(own, 'download'));
     expect([noDownload.status, noDownload.code]).toEqual([403, 'scope_not_granted']);
@@ -304,19 +332,12 @@ describe('the fake vault: a connected app files automatically (APP4)', () => {
     const made = await api.connectedApps.create(token, {
       name: 'Filer',
       member_id: t.member_id,
-      public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
       allowed_kinds: ['bank_statement'],
       scopes: ['documents.send', 'documents.read'],
       auto_file: true,
     });
     expect(made.auto_file).toBe(true);
-    const app = createAppClient({
-      baseUrl: 'https://fake.example',
-      appId: made.id,
-      keyId: made.keys[0]?.key_id as string,
-      privateKey: KEY,
-      fetch: vault.fetch,
-    });
+    const app = await keyed(api, token, made, vault.fetch);
     expect((await app.me()).send.auto_file).toBe(true);
     const me = vault.state.members.find((m) => m.id === t.member_id)?.display_name as string;
     const send = (externalId: string, hints: Record<string, unknown>) =>
@@ -433,17 +454,10 @@ describe('the fake vault: a connected app’s own sends again, and whose Inbox (
     const made = await api.connectedApps.create(t.access_token, {
       name: 'Router',
       member_id: t.member_id,
-      public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
       allowed_kinds: ['bank_statement', 'utility_bill'],
       scopes: ['documents.send', 'documents.read', 'documents.download'],
     });
-    const app = createAppClient({
-      baseUrl: 'https://fake.example',
-      appId: made.id,
-      keyId: made.keys[0]?.key_id as string,
-      privateKey: KEY,
-      fetch: vault.fetch,
-    });
+    const app = await keyed(api, t.access_token, made, vault.fetch);
     const send = (externalId: string, hints: Record<string, unknown>, bytes = PDF) =>
       app.send({
         externalId,
@@ -564,7 +578,8 @@ describe('the fake vault: a connected app’s own sends again, and whose Inbox (
     await api.connectedApps.update(t.access_token, made.id, {
       scopes: ['documents.send', 'documents.read', 'documents.download'],
     });
-    // A newer file from the family: not its own any more, and still its file.
+    // A newer file from the family: still its own to read (the owner's
+    // decision, 18 Nov 2026), and still its file.
     const first = [...vault.state.captures.values()].find((c) => c.document_id === doc);
     vault.state.captures.set('newer', {
       ...(first as NonNullable<typeof first>),
@@ -573,7 +588,8 @@ describe('the fake vault: a connected app’s own sends again, and whose Inbox (
       bytes: new TextEncoder().encode('%PDF-1.4\n% newer\n%%EOF\n'),
     });
     expect(await app.status('again-1')).toMatchObject({
-      state: 'unavailable',
+      state: 'filed',
+      document_id: doc,
       content_available: true,
     });
     expect((await app.sentFile('again-1')).bytes).toEqual(PDF);
@@ -593,55 +609,18 @@ describe('the fake vault: a connected app’s own sends again, and whose Inbox (
     const other = await api.connectedApps.create(t.access_token, {
       name: 'Other',
       member_id: t.member_id,
-      public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
       allowed_kinds: ['bank_statement'],
       scopes: ['documents.send', 'documents.download'],
     });
-    const otherApp = createAppClient({
-      baseUrl: 'https://fake.example',
-      appId: other.id,
-      keyId: other.keys[0]?.key_id as string,
-      privateKey: KEY,
-      fetch: vault.fetch,
-    });
+    const otherApp = await keyed(api, t.access_token, other, vault.fetch);
     expect((await refusal(otherApp.sentFile('again-1'))).status).toBe(404);
   });
 });
 
-describe('the fake vault: keys an app adds itself, and an owner adds (CL2)', () => {
+describe('the fake vault: API keys an owner generates (APP6)', () => {
   afterEach(() => {
     vi.useRealTimers();
   });
-
-  /** A fresh Ed25519 key pair: "ed25519:…", the same as a PEM PUBLIC KEY, and PKCS#8. */
-  const keyPair = async () => {
-    type Key = Parameters<typeof crypto.subtle.exportKey>[1];
-    const k = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as {
-      publicKey: Key;
-      privateKey: Key;
-    };
-    const raw = new Uint8Array(await crypto.subtle.exportKey('raw', k.publicKey));
-    const spki = new Uint8Array([
-      0x30,
-      0x2a,
-      0x30,
-      0x05,
-      0x06,
-      0x03,
-      0x2b,
-      0x65,
-      0x70,
-      0x03,
-      0x21,
-      0x00,
-      ...raw,
-    ]);
-    return {
-      publicKey: `ed25519:${toBase64(raw, true)}`,
-      pem: `-----BEGIN PUBLIC KEY-----\n${toBase64(spki)}\n-----END PUBLIC KEY-----\n`,
-      privateKey: new Uint8Array(await crypto.subtle.exportKey('pkcs8', k.privateKey)),
-    };
-  };
 
   const setUp = async (actsAsAdult = false) => {
     const vault = createFakeVault();
@@ -665,201 +644,297 @@ describe('the fake vault: keys an app adds itself, and an owner adds (CL2)', () 
       email: 'ahmed@example.test',
       password: 'ahmed has a long password',
     });
-    const first = await keyPair();
     const made = await api.connectedApps.create(t.access_token, {
       name: 'Acme Money',
       member_id: actsAsAdult ? adult : t.member_id,
-      public_key: first.publicKey,
       allowed_kinds: ['utility_bill'],
+      scopes: ['documents.send', 'documents.read'],
     });
-    const client = (keyId: string, privateKey: Uint8Array) =>
-      createAppClient({
-        baseUrl: 'https://fake.example',
-        appId: made.id,
-        keyId,
-        privateKey,
-        fetch: vault.fetch,
-      });
-    const app = client(made.keys[0]?.key_id as string, first.privateKey);
-    return { vault, api, t, made, client, app, first };
+    const client = (clientId: string, secret: string) =>
+      createAppClient({ url: 'https://fake.example', clientId, secret, fetch: vault.fetch });
+    return { vault, api, t, made, client };
+  };
+  const code = async (p: Promise<unknown>) => {
+    const e = await refusal(p);
+    return [e.status, e.code];
   };
 
-  it('an older key retires by itself seven days after a newer, confirmed one first signs', async () => {
+  it('connects with no key; a key is shown once, kept as a hash, and listed with its state', async () => {
+    const { vault, api, t, made, client } = await setUp();
+    expect(made.keys).toEqual([]);
+    expect(made.connection_string).toBe('');
+    const key = await api.connectedApps.generateKey(t.access_token, made.id, {
+      name: '  Acme Money, live  ',
+      permissions: ['documents.read', 'documents.send'],
+      expires_in_days: 90,
+    });
+    expect(key.key).toMatchObject({
+      name: 'Acme Money, live',
+      permissions: ['documents.send', 'documents.read'],
+      state: 'live',
+      last_used_at: null,
+    });
+    // Its secret is nowhere in the fake's keeping: only a hash of it.
+    const kept = vault.state.connectedApps?.[0]?.keys[0];
+    expect(kept?.secret_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(kept)).not.toContain(key.secret);
+    const listed = (await api.connectedApps.list(t.access_token)).items[0];
+    expect(listed?.keys).toEqual([key.key]);
+    expect(parseConnectionString(listed?.connection_string as string)).toEqual({
+      url: 'https://fake.example',
+      client_id: key.client_id,
+      instance_id: null,
+    });
+    // Used: its last use is said.
+    expect((await client(key.client_id, key.secret).me()).key.last_used_at).toEqual(
+      expect.any(String),
+    );
+    const after = (await api.connectedApps.list(t.access_token)).items[0];
+    expect(after?.keys[0]?.last_used_at).toEqual(expect.any(String));
+    // A name too long, an unknown field: refused.
+    expect(
+      await code(
+        api.connectedApps.generateKey(t.access_token, made.id, {
+          name: 'x'.repeat(61),
+          permissions: ['documents.send'],
+          expires_in_days: 30,
+        }),
+      ),
+    ).toEqual([422, 'validation_failed']);
+  });
+
+  it('a key expires at its moment by the clock, never before; an expired one frees its place', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-11-01T12:00:00Z'));
-    const { api, t, made, client, app, first } = await setUp();
-    const next = await keyPair();
-    // A PEM PUBLIC KEY is taken as the "ed25519:" form is.
-    const added = await app.addKey(next.pem);
-    // Pending, and never used: nothing retires yet.
-    expect((await app.me()).keys.every((k) => k.retires_at === null)).toBe(true);
-    await api.connectedApps.confirmKey(t.access_token, made.id, added.key_id);
-    const newer = client(added.key_id, next.privateKey);
-    // Confirmed, but not used yet: still nothing.
-    expect((await app.me()).keys.every((k) => k.retires_at === null)).toBe(true);
-    vi.setSystemTime(new Date('2026-11-02T12:00:00Z'));
-    await newer.me();
-    const listed = (await api.connectedApps.list(t.access_token)).items[0];
-    expect(listed?.keys.find((k) => k.key_id === made.keys[0]?.key_id)?.retires_at).toBe(
-      '2026-11-09T12:00:00.000Z',
-    );
-    expect(listed?.keys.find((k) => k.key_id === added.key_id)?.first_used_at).toBe(
-      '2026-11-02T12:00:00.000Z',
-    );
-    // A moment before: it still signs. After: unknown, and no longer counted.
-    vi.setSystemTime(new Date('2026-11-09T11:59:59Z'));
-    expect((await app.me()).state).toBe('active');
-    vi.setSystemTime(new Date('2026-11-09T12:00:01Z'));
-    const lapsed = await refusal(app.me());
-    expect([lapsed.status, lapsed.code]).toEqual([401, 'app_key_unknown']);
-    expect((await newer.me()).keys.map((k) => k.key_id)).toEqual([added.key_id]);
-    // This app has room for its next key; and the lapsed key is free for
-    // another app, once looked at.
-    await newer.addKey((await keyPair()).publicKey);
-    const again = await api.connectedApps.create(t.access_token, {
-      name: 'Acme Money again',
-      member_id: t.member_id,
-      public_key: first.publicKey,
-      allowed_kinds: ['utility_bill'],
+    const { vault, api, t, made, client } = await setUp();
+    const short = await api.connectedApps.generateKey(t.access_token, made.id, {
+      permissions: ['documents.send'],
+      expires_in_days: 1,
     });
-    expect(again.keys).toHaveLength(1);
+    expect(short.key.expires_at).toBe('2026-11-02T12:00:00.000Z');
+    const never = await api.connectedApps.generateKey(t.access_token, made.id, {
+      permissions: ['documents.send'],
+      expires_in_days: null,
+    });
+    const app = client(short.client_id, short.secret);
+    vi.setSystemTime(new Date('2026-11-02T11:59:59Z'));
+    expect((await app.me()).key.expires_at).toBe('2026-11-02T12:00:00.000Z');
+    vi.setSystemTime(new Date('2026-11-02T12:00:00Z'));
+    expect(await code(app.me())).toEqual([401, 'app_key_expired']);
+    // Years later, the one that never expires still works.
+    vi.setSystemTime(new Date('2036-11-02T12:00:00Z'));
+    expect((await client(never.client_id, never.secret).me()).key.expires_at).toBeNull();
+    // The expired key no longer counts: there is room for another.
+    const next = await api.connectedApps.generateKey(t.access_token, made.id, {
+      permissions: ['documents.send'],
+      expires_in_days: 3650,
+    });
+    expect(next.key.state).toBe('live');
+    expect(
+      (await api.connectedApps.list(t.access_token)).items[0]?.keys.map((k) => k.state),
+    ).toEqual(['expired', 'live', 'live']);
+    // The test hook does the same, at once.
+    vault.expireAppKey(next.client_id);
+    expect(await code(client(next.client_id, next.secret).me())).toEqual([401, 'app_key_expired']);
+    expect(() => vault.expireAppKey('fdvc_nobodyhasthisclientid')).toThrow();
   });
 
-  it('for an app acting as somebody else: an owner adding or confirming a key asks them again; they confirm their own', async () => {
-    const { vault, api, t, made, client, app } = await setUp(true);
+  it('an owner’s alone, with a second step; for an app acting as somebody else it asks them again', async () => {
+    const { vault, api, t, made, client } = await setUp(true);
     const ahmed = await api.signIn('ahmed@example.test', 'ahmed has a long password');
     if (!('access_token' in ahmed)) throw new Error('expected a session');
     await api.connectedApps.approve(ahmed.access_token, made.id);
-    expect((await app.me()).state).toBe('active');
-
-    // The app's own next key, confirmed by the person it acts as: still on.
-    const next = await keyPair();
-    const added = await app.addKey(next.publicKey);
-    const confirmed = await api.connectedApps.confirmKey(ahmed.access_token, made.id, added.key_id);
-    expect(confirmed.state).toBe('active');
-    expect(confirmed.keys.find((k) => k.key_id === added.key_id)?.pending).toBe(false);
-    // Confirmed again: nothing changes.
-    const twice = await api.connectedApps.confirmKey(ahmed.access_token, made.id, added.key_id);
-    expect(twice.state).toBe('active');
-    // An adult adds no key in Settings, and retires none.
-    const notTheirs = await refusal(
-      api.connectedApps.addKey(ahmed.access_token, made.id, (await keyPair()).publicKey),
-    );
-    expect([notTheirs.status, notTheirs.code]).toEqual([403, 'forbidden']);
-    const noRetire = await refusal(
-      api.connectedApps.retireKey(ahmed.access_token, made.id, added.key_id),
-    );
-    expect([noRetire.status, noRetire.code]).toEqual([403, 'forbidden']);
-
-    // An owner retires the old key and adds one: the app waits for its person again.
-    await api.connectedApps.retireKey(t.access_token, made.id, made.keys[0]?.key_id as string);
-    const third = await keyPair();
-    const given = await api.connectedApps.addKey(t.access_token, made.id, third.pem);
-    expect(given.key).toMatchObject({ added_by: 'owner', pending: false });
-    const newer = client(added.key_id, next.privateKey);
-    expect((await newer.me()).state).toBe('waiting_for_approval');
-    const waiting = await refusal(newer.status('nothing-sent'));
-    expect([waiting.status, waiting.code]).toEqual([403, 'app_not_approved']);
-    await api.connectedApps.approve(ahmed.access_token, made.id);
-    expect((await newer.me()).state).toBe('active');
-
-    // An owner confirming the app's key, for somebody else: asked again.
-    await api.connectedApps.retireKey(t.access_token, made.id, given.key.key_id);
-    const fourth = await newer.addKey((await keyPair()).publicKey);
-    const owners = await api.connectedApps.confirmKey(t.access_token, made.id, fourth.key_id);
-    expect(owners.state).toBe('waiting_for_approval');
-
-    // Without two-step sign-in, an owner neither adds a key nor confirms one.
-    vault.state.ownerTwoStep = false;
-    const noStep = await refusal(
-      api.connectedApps.addKey(t.access_token, made.id, (await keyPair()).publicKey),
-    );
-    expect([noStep.status, noStep.code]).toEqual([403, 'totp_required_for_owner']);
-    vault.state.ownerTwoStep = true;
-    // Not a key's id.
-    const odd = await refusal(api.connectedApps.confirmKey(t.access_token, made.id, 'not-a-key'));
-    expect([odd.status, odd.code]).toEqual([422, 'validation_failed']);
-  });
-
-  it('checks in the order the vault’s routes do; an adult with no passkey or code confirms nothing', async () => {
-    const { vault, api, t, made, app } = await setUp(true);
-    const ahmed = await api.signIn('ahmed@example.test', 'ahmed has a long password');
-    if (!('access_token' in ahmed)) throw new Error('expected a session');
-    await api.connectedApps.approve(ahmed.access_token, made.id);
-    const nowhere = '00000000-0000-4000-8000-00000000ffff';
-    const key = (await keyPair()).publicKey;
-    const code = async (p: Promise<unknown>) => {
-      const e = await refusal(p);
-      return [e.status, e.code];
-    };
-    // The ids first; then whose call it is, before the app is looked for.
-    expect(await code(api.connectedApps.addKey(t.access_token, 'not-an-id', key))).toEqual([
-      422,
-      'validation_failed',
-    ]);
-    expect(await code(api.connectedApps.addKey(ahmed.access_token, nowhere, key))).toEqual([
+    const body = { permissions: ['documents.send' as const], expires_in_days: 30 };
+    // The person it acts as sees the app, but generates and revokes no key.
+    expect(await code(api.connectedApps.generateKey(ahmed.access_token, made.id, body))).toEqual([
       403,
       'forbidden',
     ]);
-    expect(await code(api.connectedApps.retireKey(ahmed.access_token, nowhere, nowhere))).toEqual([
-      403,
-      'forbidden',
-    ]);
-    // Then the second step, then the key given, and only then the app.
+    // Without two-step sign-in, an owner neither generates nor revokes.
     vault.state.ownerTwoStep = false;
-    expect(await code(api.connectedApps.addKey(t.access_token, nowhere, key))).toEqual([
+    expect(await code(api.connectedApps.generateKey(t.access_token, made.id, body))).toEqual([
       403,
       'totp_required_for_owner',
     ]);
     vault.state.ownerTwoStep = true;
-    expect(await code(api.connectedApps.addKey(t.access_token, nowhere, 'nope'))).toEqual([
+    const key = await api.connectedApps.generateKey(t.access_token, made.id, body);
+    // A key for somebody else's app: it waits for them again.
+    const app = client(key.client_id, key.secret);
+    expect((await app.me()).state).toBe('waiting_for_approval');
+    expect(await code(app.status('nothing-sent'))).toEqual([403, 'app_not_approved']);
+    await api.connectedApps.approve(ahmed.access_token, made.id);
+    expect((await app.me()).state).toBe('active');
+    // A new key that may do no more than a live one (a rotation): not asked
+    // again (18 Nov 2026). One that may do more: asked again.
+    const rotated = await api.connectedApps.generateKey(t.access_token, made.id, body);
+    expect((await app.me()).state).toBe('active');
+    await api.connectedApps.revokeKey(t.access_token, made.id, rotated.key.id);
+    const wider = await api.connectedApps.generateKey(t.access_token, made.id, {
+      permissions: ['documents.send', 'documents.read'],
+      expires_in_days: 30,
+    });
+    expect((await app.me()).state).toBe('waiting_for_approval');
+    await api.connectedApps.revokeKey(t.access_token, made.id, wider.key.id);
+    await api.connectedApps.approve(ahmed.access_token, made.id);
+    expect((await app.me()).state).toBe('active');
+    expect(
+      await code(api.connectedApps.revokeKey(ahmed.access_token, made.id, key.key.id)),
+    ).toEqual([403, 'forbidden']);
+    vault.state.ownerTwoStep = false;
+    expect(await code(api.connectedApps.revokeKey(t.access_token, made.id, key.key.id))).toEqual([
+      403,
+      'totp_required_for_owner',
+    ]);
+    vault.state.ownerTwoStep = true;
+    // Not an id; no such app; no such key.
+    const nowhere = '00000000-0000-4000-8000-00000000ffff';
+    expect(await code(api.connectedApps.revokeKey(t.access_token, made.id, 'nope'))).toEqual([
       422,
       'validation_failed',
     ]);
-    expect(await code(api.connectedApps.addKey(t.access_token, nowhere, key))).toEqual([
+    expect(await code(api.connectedApps.generateKey(t.access_token, nowhere, body))).toEqual([
       404,
       'not_found',
     ]);
-    // Retiring asks no second step: an owner's no-app is a 404.
-    vault.state.ownerTwoStep = false;
-    expect(await code(api.connectedApps.retireKey(t.access_token, nowhere, nowhere))).toEqual([
+    expect(await code(api.connectedApps.revokeKey(t.access_token, made.id, nowhere))).toEqual([
       404,
       'not_found',
     ]);
-    vault.state.ownerTwoStep = true;
-
-    // An adult without a passkey or a code: refused before anything is looked at.
-    const added = await app.addKey(key);
-    vault.state.adultTwoStep = false;
-    expect(
-      await code(api.connectedApps.confirmKey(ahmed.access_token, made.id, added.key_id)),
-    ).toEqual([403, 'two_step_required']);
-    expect(await code(api.connectedApps.confirmKey(ahmed.access_token, nowhere, nowhere))).toEqual([
-      403,
-      'two_step_required',
-    ]);
-    vault.state.adultTwoStep = true;
-    expect(await code(api.connectedApps.confirmKey(ahmed.access_token, nowhere, nowhere))).toEqual([
-      404,
-      'not_found',
-    ]);
-    const confirmed = await api.connectedApps.confirmKey(ahmed.access_token, made.id, added.key_id);
-    expect(confirmed.keys.find((k) => k.key_id === added.key_id)?.pending).toBe(false);
+    // Revoked: the next request refused; revoked again, nothing changes.
+    await api.connectedApps.revokeKey(t.access_token, made.id, key.key.id);
+    expect(await code(app.me())).toEqual([401, 'app_key_revoked']);
+    await api.connectedApps.revokeKey(t.access_token, made.id, key.key.id);
+    expect(await code(app.me())).toEqual([401, 'app_key_revoked']);
   });
 
-  it('refuses a body that is not just a public key, and a paused app adds none', async () => {
-    const { api, t, made, app } = await setUp();
-    const extra = await refusal(
-      app.signed('POST', '/api/v1/apps/keys', {
-        bytes: new TextEncoder().encode(
-          JSON.stringify({ public_key: (await keyPair()).publicKey, name: 'x' }),
-        ),
-        contentType: 'application/json',
-      }),
-    );
-    expect([extra.status, extra.code]).toEqual([422, 'validation_failed']);
-    await api.connectedApps.pause(t.access_token, made.id);
-    const paused = await refusal(app.addKey((await keyPair()).publicKey));
-    expect([paused.status, paused.code]).toEqual([403, 'app_paused']);
+  it('a request’s key: Basic alone, failed tries limited a minute, revoked or removed, and only on app routes', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-01T12:00:10Z'));
+    const { vault, api, t, made, client } = await setUp();
+    const key = await api.connectedApps.generateKey(t.access_token, made.id, {
+      permissions: ['documents.send'],
+      expires_in_days: 30,
+    });
+    const raw = (headers: Record<string, string>, path = '/api/v1/apps/me') =>
+      vault.fetch(`https://fake.example${path}`, { method: 'GET', headers });
+    const basic = `Basic ${toBase64(new TextEncoder().encode(`${key.client_id}:${key.secret}`))}`;
+    const codeOf = async (r: Awaited<ReturnType<typeof raw>>) =>
+      [r.status, ((await r.json()) as { error: { code: string } }).error.code] as const;
+    // Nothing, a bearer token, a cookie beside the key: the key is asked for.
+    expect(await codeOf(await raw({}))).toEqual([401, 'app_key_required']);
+    expect(await codeOf(await raw({ authorization: `Bearer ${t.access_token}` }))).toEqual([
+      401,
+      'app_key_required',
+    ]);
+    expect(await codeOf(await raw({ authorization: basic, cookie: 'x=1' }))).toEqual([
+      401,
+      'app_key_required',
+    ]);
+    expect((await raw({ authorization: basic })).status).toBe(200);
+    // Its key is no sign-in: refused on the family's routes.
+    expect(await codeOf(await raw({ authorization: basic }, '/api/v1/documents'))).toEqual([
+      401,
+      'app_key_not_accepted',
+    ]);
+    // A wrong secret, an unknown client ID, what is not base64: all one refusal.
+    const wrong = client(key.client_id, `fdvs_${'A'.repeat(43)}`);
+    const unknown = client(`fdvc_${'B'.repeat(22)}`, key.secret);
+    expect(await code(wrong.me())).toEqual([401, 'app_key_invalid']);
+    expect(await code(unknown.me())).toEqual([401, 'app_key_invalid']);
+    expect(await codeOf(await raw({ authorization: 'Basic !!!' }))).toEqual([
+      401,
+      'app_key_required',
+    ]);
+    // Basic that is no app's (a proxy's in front of the vault, "foo:bar"):
+    // no key on an app route, and untouched on any other.
+    expect(await codeOf(await raw({ authorization: 'Basic Zm9vOmJhcg==' }))).toEqual([
+      401,
+      'app_key_required',
+    ]);
+    expect(
+      (await raw({ authorization: 'Basic Zm9vOmJhcg==' }, '/api/v1/capabilities')).status,
+    ).toBe(200);
+    expect(
+      await codeOf(await raw({ authorization: 'Basic Zm9vOmJhcg==' }, '/api/v1/documents')),
+    ).not.toEqual([401, 'app_key_not_accepted']);
+    // An app's client ID not as the vault writes them: a key that is not right.
+    const short = `Basic ${toBase64(new TextEncoder().encode(`fdvc_short:${key.secret}`))}`;
+    expect(await codeOf(await raw({ authorization: short }))).toEqual([401, 'app_key_invalid']);
+    // Ten failed tries a minute; the eleventh waits, even with the right key.
+    for (let i = 0; i < 7; i++) await refusal(wrong.me());
+    const limited = await raw({ authorization: basic });
+    expect(await codeOf(limited)).toEqual([429, 'rate_limited']);
+    expect(Number(limited.headers.get('retry-after'))).toBe(50);
+    vi.setSystemTime(new Date('2026-11-01T12:01:00Z'));
+    expect((await raw({ authorization: basic })).status).toBe(200);
+    // A key revoked, or expired, is refused but never counted as a guess:
+    // its secret is right.
+    const second = await api.connectedApps.generateKey(t.access_token, made.id, {
+      permissions: ['documents.send'],
+      expires_in_days: 30,
+    });
+    await api.connectedApps.revokeKey(t.access_token, made.id, second.key.id);
+    const revoked = client(second.client_id, second.secret);
+    for (let i = 0; i < 11; i++) {
+      expect(await code(revoked.me())).toEqual([401, 'app_key_revoked']);
+    }
+    const third = await api.connectedApps.generateKey(t.access_token, made.id, {
+      permissions: ['documents.send'],
+      expires_in_days: 30,
+    });
+    vault.expireAppKey(third.client_id);
+    const expired = client(third.client_id, third.secret);
+    for (let i = 0; i < 11; i++) {
+      expect(await code(expired.me())).toEqual([401, 'app_key_expired']);
+    }
+    expect((await raw({ authorization: basic })).status).toBe(200);
+    expect(
+      (await api.connectedApps.list(t.access_token)).items
+        .find((x) => x.id === made.id)
+        ?.keys.find((k) => k.id === second.key.id)?.revoked_reason,
+    ).toBe('owner');
+    // Removed: every key ends with the app.
+    await api.connectedApps.remove(t.access_token, made.id);
+    expect(await code(client(key.client_id, key.secret).me())).toEqual([401, 'app_revoked']);
+  });
+
+  it('what a key may do: its own permissions among the app’s, as the app is narrowed too', async () => {
+    const { api, t, made, client } = await setUp();
+    const full = await api.connectedApps.generateKey(t.access_token, made.id, {
+      permissions: ['documents.send', 'documents.read'],
+      expires_in_days: 30,
+    });
+    const sendOnly = await api.connectedApps.generateKey(t.access_token, made.id, {
+      permissions: ['documents.send'],
+      expires_in_days: 30,
+    });
+    const reader = client(full.client_id, full.secret);
+    const sender = client(sendOnly.client_id, sendOnly.secret);
+    expect((await reader.list()).items).toEqual([]);
+    expect(await code(sender.list())).toEqual([403, 'scope_not_granted']);
+    expect((await sender.me()).scopes).toEqual(['documents.send']);
+    // Never more than the app may: refused as it is asked for.
+    expect(
+      await code(
+        api.connectedApps.generateKey(t.access_token, made.id, {
+          permissions: ['documents.delete'],
+          expires_in_days: 30,
+        }),
+      ),
+    ).toEqual([422, 'validation_failed']);
+    // Two live at most.
+    expect(
+      await code(
+        api.connectedApps.generateKey(t.access_token, made.id, {
+          permissions: ['documents.send'],
+          expires_in_days: 30,
+        }),
+      ),
+    ).toEqual([409, 'key_limit']);
+    // The app narrowed: its keys with it, whatever they say.
+    await api.connectedApps.update(t.access_token, made.id, { scopes: ['documents.send'] });
+    expect(await code(reader.list())).toEqual([403, 'scope_not_granted']);
+    expect((await reader.me()).scopes).toEqual(['documents.send']);
+    expect((await reader.me()).key.permissions).toEqual(['documents.send', 'documents.read']);
   });
 });

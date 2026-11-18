@@ -1,6 +1,5 @@
-import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { multipartBody } from '@fdv/client';
-import { signRequest } from '@fdv/client/apps';
 import {
   EnvKeyProvider,
   itemProposalsBinding,
@@ -23,7 +22,7 @@ import {
 } from '@fdv/shared';
 import type { LightMyRequestResponse } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
+import { appKeyFor, basicFor, createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
 import { autoFileOn, consumeFileReady, type FileReadyQueue } from './auto-file.js';
 
 /**
@@ -39,19 +38,11 @@ const PDF = (marker: string) =>
     `%PDF-1.4\n% ${marker}\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n`,
   );
 
-function newKey() {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const raw = Buffer.from(publicKey.export({ format: 'jwk' }).x as string, 'base64url');
-  return {
-    pem: privateKey.export({ format: 'pem', type: 'pkcs8' }) as string,
-    given: `ed25519:${raw.toString('base64url')}`,
-  };
-}
-
 interface TestApp {
   appId: string;
   keyId: string;
-  pem: string;
+  clientId: string;
+  secret: string;
   view: ConnectedAppView;
 }
 
@@ -166,18 +157,17 @@ describe.skipIf(!testAdminUrl())('connected apps file automatically (0.9.0, APP4
     name = 'Acme Money',
   ): Promise<TestApp> {
     await h.decider(owner);
-    const key = newKey();
     const res = await send(owner, 'POST', '/api/v1/connected-apps', {
       name,
       member_id: owner.member_id,
-      public_key: key.given,
       allowed_kinds: ['bank_statement', 'utility_bill'],
       auto_file: true,
       ...input,
     });
     expect(res.statusCode, res.body).toBe(201);
     const view = res.json<ConnectedAppView>();
-    return { appId: view.id, keyId: view.keys[0]?.key_id as string, pem: key.pem, view };
+    const key = await appKeyFor(h, owner, view);
+    return { appId: view.id, ...key, view };
   }
 
   async function call(
@@ -186,13 +176,7 @@ describe.skipIf(!testAdminUrl())('connected apps file automatically (0.9.0, APP4
     target: string,
     body?: { bytes: Uint8Array; contentType: string },
   ): Promise<LightMyRequestResponse> {
-    const signed = await signRequest({
-      method,
-      target,
-      ...(body ? { body: body.bytes } : {}),
-      keyid: `${a.appId}.${a.keyId}`,
-      privateKey: a.pem,
-    });
+    const signed = basicFor(a);
     return h.app.inject({
       method,
       url: target,
@@ -747,11 +731,9 @@ describe.skipIf(!testAdminUrl())('connected apps file automatically (0.9.0, APP4
 
   it('switching it on widens what an app acting as another adult may do: it waits for them again; off does not', async () => {
     await h.decider(owner);
-    const key = newKey();
     const made = await send(owner, 'POST', '/api/v1/connected-apps', {
       name: 'Ahmed’s',
       member_id: ahmed.member_id,
-      public_key: key.given,
       allowed_kinds: ['bank_statement'],
     });
     expect(made.statusCode, made.body).toBe(201);

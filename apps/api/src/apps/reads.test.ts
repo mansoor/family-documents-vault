@@ -1,5 +1,4 @@
-import { generateKeyPairSync, randomUUID } from 'node:crypto';
-import { signRequest } from '@fdv/client/apps';
+import { randomUUID } from 'node:crypto';
 import { createPool, householdZone, withScope, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
@@ -21,7 +20,7 @@ import type { LightMyRequestResponse } from 'fastify';
 import FormData from 'form-data';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { alertsSent, createHarness, type Harness } from '../test-harness.js';
+import { appKeyFor, basicFor, alertsSent, createHarness, type Harness } from '../test-harness.js';
 import { paperDate } from './reads.js';
 
 /**
@@ -36,19 +35,11 @@ const PDF = (marker: string) =>
     `%PDF-1.4\n% ${marker}\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n`,
   );
 
-function newKey() {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const raw = Buffer.from(publicKey.export({ format: 'jwk' }).x as string, 'base64url');
-  return {
-    pem: privateKey.export({ format: 'pem', type: 'pkcs8' }) as string,
-    given: `ed25519:${raw.toString('base64url')}`,
-  };
-}
-
 interface TestApp {
   appId: string;
   keyId: string;
-  pem: string;
+  clientId: string;
+  secret: string;
 }
 
 let peers = 0;
@@ -82,18 +73,17 @@ describe.skipIf(!testAdminUrl())('connected apps read (0.9.0, APP2)', () => {
     name = 'Reader',
   ): Promise<TestApp & { view: ConnectedAppView }> {
     await h.decider(by);
-    const key = newKey();
     const res = await send(by, 'POST', '/api/v1/connected-apps', {
       name,
       member_id: by.member_id,
-      public_key: key.given,
       allowed_kinds: ['utility_bill'],
       scopes: ALL,
       ...input,
     });
     expect(res.statusCode, res.body).toBe(201);
     const view = res.json<ConnectedAppView>();
-    return { appId: view.id, keyId: view.keys[0]?.key_id as string, pem: key.pem, view };
+    const key = await appKeyFor(h, by, view);
+    return { appId: view.id, ...key, view };
   }
 
   async function call(
@@ -102,12 +92,7 @@ describe.skipIf(!testAdminUrl())('connected apps read (0.9.0, APP2)', () => {
     headers: Record<string, string> = {},
     method: 'GET' | 'DELETE' = 'GET',
   ): Promise<LightMyRequestResponse> {
-    const signed = await signRequest({
-      method,
-      target,
-      keyid: `${a.appId}.${a.keyId}`,
-      privateKey: a.pem,
-    });
+    const signed = basicFor(a);
     return h.app.inject({
       method,
       url: target,
@@ -712,7 +697,7 @@ describe.skipIf(!testAdminUrl())('connected apps read (0.9.0, APP2)', () => {
     const old = await call(a, `/api/v1/apps/changes?cursor=${four.cursor}`);
     expect([old.statusCode, codeOf(old)]).toEqual([410, 'cursor_expired']);
     await admin.query(
-      "update connected_app set changes_pruned_to = 0, signed_after = now() - interval '1 hour' where id = $1",
+      "update connected_app set changes_pruned_to = 0, restored_at = now() - interval '1 hour' where id = $1",
       [a.appId],
     );
     const restored = await call(a, `/api/v1/apps/changes?cursor=${four.cursor}`);
@@ -796,6 +781,11 @@ describe.skipIf(!testAdminUrl())('connected apps read (0.9.0, APP2)', () => {
     const noScope = await call(a, url);
     expect([noScope.statusCode, codeOf(noScope)]).toEqual([403, 'scope_not_granted']);
     await send(owner, 'PATCH', `/api/v1/connected-apps/${a.appId}`, { scopes: ALL });
+    // Its key was made before: it may still not download (APP6) — a key
+    // given the new scope may.
+    const before = await call(a, url);
+    expect([before.statusCode, codeOf(before)]).toEqual([403, 'scope_not_granted']);
+    Object.assign(a, await appKeyFor(h, owner, { id: a.appId, scopes: ALL }));
     const doc = (await call(a, `/api/v1/apps/documents/${bill}`)).json<AppDocument>();
     const got = await call(a, url);
     expect(got.statusCode, got.body).toBe(200);
@@ -1106,7 +1096,7 @@ describe.skipIf(!testAdminUrl())('connected apps read (0.9.0, APP2)', () => {
     });
   });
 
-  it('the app’s own paper stays its own with its own next file; a newer family file ends that', async () => {
+  it('the app’s own paper stays its own with its own next file, and with a newer family file (18 Nov 2026)', async () => {
     const a = await connect(owner, {}, 'Own versions');
     // A paper the app's send made, long ago: its own, nothing granted.
     const made = await make(owner, { title: 'Made bill R', ...issued(daysAgo(3000)) });
@@ -1124,20 +1114,36 @@ describe.skipIf(!testAdminUrl())('connected apps read (0.9.0, APP2)', () => {
       version: { id: second },
     });
     expect((await dbRule(a.appId)).has(made)).toBe(true);
-    // The family adds a newer file: the paper is theirs, outside every grant.
+    // The family adds a newer file: the app that made the paper still
+    // reads it, in the database's rule and the API's alike, and its feed
+    // tells it of the newer version — never that it went.
     const start = (await call(a, '/api/v1/apps/changes')).json<AppChanges>();
-    await upload(owner, made);
-    expect((await call(a, `/api/v1/apps/documents/${made}`)).statusCode).toBe(404);
-    expect((await dbRule(a.appId)).has(made)).toBe(false);
+    const third = await upload(owner, made);
+    expect((await call(a, `/api/v1/apps/documents/${made}`)).json<AppDocument>()).toMatchObject({
+      own: true,
+      external_id: 'made-1',
+      version: { id: third },
+    });
+    expect((await dbRule(a.appId)).has(made)).toBe(true);
     const after = (await call(a, `/api/v1/apps/changes?cursor=${start.cursor}`)).json<AppChanges>();
     expect(after.changes).toEqual([
-      { change: 'unavailable', at: expect.any(String) as string, document_id: made },
+      {
+        change: 'changed',
+        at: expect.any(String) as string,
+        document: expect.objectContaining({
+          id: made,
+          own: true,
+          version: expect.objectContaining({ id: third }) as AppDocument['version'],
+        }) as AppDocument,
+      },
     ]);
     for (const id of ['made-1', 'made-2']) {
       expect((await call(a, `/api/v1/apps/intake/${id}`)).json<AppIntakeState>()).toMatchObject({
-        state: 'unavailable',
+        state: 'filed',
+        document_id: made,
       });
     }
+    // (Its current file is the family's now: never the app's to delete — links.test.ts.)
   });
 
   it('the rule answers only for the household asking: never another’s app', async () => {
@@ -1261,13 +1267,8 @@ describe.skipIf(!testAdminUrl())('connected apps read (0.9.0, APP2)', () => {
     expect(whole.headers['retry-after']).toBeUndefined();
     const part = await call(a, url, { range: 'bytes=0-1023' });
     expect(part.statusCode).toBe(206);
-    // A signed HEAD is no download: refused, counted nowhere.
-    const signed = await signRequest({
-      method: 'HEAD',
-      target: url,
-      keyid: `${a.appId}.${a.keyId}`,
-      privateKey: a.pem,
-    });
+    // A HEAD with the app's key is no download: refused, counted nowhere.
+    const signed = basicFor(a);
     const head = await h.app.inject({
       method: 'HEAD',
       url,

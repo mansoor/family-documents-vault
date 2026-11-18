@@ -356,7 +356,12 @@ import {
   type ChangedUploadRequest,
   type RevealedUploadRequest,
 } from '@fdv/shared';
-import { fakeAppFilesAutomatically, fakeAppRoutes, type FakeApp } from './fake-apps.js';
+import {
+  fakeAppFilesAutomatically,
+  fakeAppRoutes,
+  fakeExpireAppKey,
+  type FakeApp,
+} from './fake-apps.js';
 import type { FetchLike, ResponseLike } from '../http.js';
 import { partsOf, readBody, type Part } from './body.js';
 import { storedZip } from './zip.js';
@@ -1505,6 +1510,12 @@ export function createFakeVault(): {
     externalId: string,
     proposal: DetailProposal,
   ) => Promise<'filed' | 'waiting'>;
+  /**
+   * A connected app's API key past its expiry now (0.9.0, APP6), as time
+   * would make it: its next request is `401 app_key_expired`. Throws for a
+   * client ID the fake never gave.
+   */
+  expireAppKey: (clientId: string) => void;
 } {
   const state: FakeVaultState = {
     setupRequired: true,
@@ -3516,8 +3527,9 @@ export function createFakeVault(): {
     // A computer that sends scans (0.8.0, D1), as the real vault answers: a
     // code for whoever may add, traded for a key that only uploads — and a
     // key refused on every other route, first.
-    // Connected apps (0.9.0, APP1): a signature taken by the app routes
-    // alone, checked for real; and Settings → Connected apps.
+    // Connected apps (0.9.0, APP1): an API key (APP6) taken by the app
+    // routes alone, checked as the vault checks it; and Settings →
+    // Connected apps.
     const apps = fakeAppRoutes({
       apps: (state.connectedApps ??= []),
       session: () => {
@@ -3791,6 +3803,7 @@ export function createFakeVault(): {
           connected_apps: true,
           connected_app_reads: true,
           connected_app_links: true,
+          connected_app_keys: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -10141,7 +10154,13 @@ export function createFakeVault(): {
     return 'filed';
   };
 
-  return { fetch, state, pauseSignIns, fileAppIntake, readAppFile };
+  const expireAppKey = (clientId: string) => {
+    if (!fakeExpireAppKey(state.connectedApps ?? [], clientId)) {
+      throw new Error('no such key of any app');
+    }
+  };
+
+  return { fetch, state, pauseSignIns, fileAppIntake, readAppFile, expireAppKey };
 }
 
 /**

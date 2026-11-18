@@ -130,6 +130,11 @@ export interface Readable1 {
   fingerprint: Buffer;
   version: VersionRowLike | null;
   title: string | null;
+  /**
+   * Its current version is one this app sent (APP3's delete rule): only then
+   * may the app delete it, so it never trashes a newer file of the family's.
+   */
+  currentSent: boolean;
 }
 
 /** A date as an app is told it. */
@@ -317,18 +322,22 @@ export class AppReads {
       if (!had || had.version_no < v.version_no) versionBy.set(v.document_id, v);
     }
     // Its own: a document it made — a send of its filed as a document, not
-    // into one that was there — whose current version is still one it sent.
-    // Its own later file filed into it keeps it its own; a family paper its
-    // file was filed into, or a newer file from the family, is the family's,
-    // read only as a grant allows. Told by the send that made it.
+    // into one that was there — for as long as it is in the vault, whatever
+    // newer versions the family or another app added since (the owner's
+    // decision, 18 Nov 2026). A family paper its file was filed into is the
+    // family's, read only as a grant allows. Told by the send that made it.
     const ownBy = new Map<string, string>();
     for (const o of own) {
       if (!o.document_id || !o.made_document || ownBy.has(o.document_id)) continue;
-      const current = versionBy.get(o.document_id);
-      const fromApp =
-        current !== undefined &&
-        own.some((x) => x.document_id === o.document_id && x.version_id === current.id);
-      if (fromApp) ownBy.set(o.document_id, o.external_id);
+      ownBy.set(o.document_id, o.external_id);
+    }
+    // Which of each document's versions this app sent, by their sends.
+    const sentBy = new Map<string, Map<string, string>>();
+    for (const o of own) {
+      if (!o.document_id || !o.version_id) continue;
+      const m = sentBy.get(o.document_id) ?? new Map<string, string>();
+      if (!m.has(o.version_id)) m.set(o.version_id, o.external_id);
+      sentBy.set(o.document_id, m);
     }
     const out = new Map<string, Readable1>();
     for (const d of docs) {
@@ -394,7 +403,14 @@ export class AppReads {
         external_id: external,
         updated_at: updated.toISOString(),
       };
-      out.set(d.id, { doc, fingerprint: fingerprintOfDocument(doc), version: v, title: d.title });
+      const sent = sentBy.get(d.id) ?? new Map<string, string>();
+      out.set(d.id, {
+        doc,
+        fingerprint: fingerprintOfDocument(doc),
+        version: v,
+        title: d.title,
+        currentSent: v !== null && sent.has(v.id),
+      });
     }
     return out;
   }
@@ -721,7 +737,7 @@ export class AppReads {
       );
       const app = await trx
         .selectFrom('connected_app')
-        .select(['signed_after', 'changes_pruned_to'])
+        .select(['restored_at', 'changes_pruned_to'])
         .where('id', '=', c.appId)
         // Held while the feed is read: the worker's pruning, which notes its
         // cut-off on this row as it lets lines go, waits for it, so a cursor
@@ -729,7 +745,7 @@ export class AppReads {
         .forShare()
         .executeTakeFirstOrThrow();
       // A restore starts the feed again: a cursor from before it is too old.
-      const epoch = String(app.signed_after ? app.signed_after.getTime() : 0);
+      const epoch = String(app.restored_at ? app.restored_at.getTime() : 0);
       if (cursor.kind !== 'start' && cursor.epoch !== epoch) throw cursorExpired();
       if (cursor.kind === 'feed' && cursor.seq < Number(app.changes_pruned_to)) {
         throw cursorExpired();

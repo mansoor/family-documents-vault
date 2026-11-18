@@ -722,11 +722,10 @@ export interface CapabilityFeatures {
   /**
    * Connected apps (0.9.0, APP1): an owner connects an app in Settings →
    * Connected apps (`/connected-apps`, with a passkey or a code), which
-   * signs every request to `/api/v1/apps/*` with its own Ed25519 key (RFC
-   * 9421) and sends documents into the Inbox of the person it acts as:
-   * `GET /apps/me`, `POST /apps/intake`, `GET` and `DELETE
-   * /apps/intake/{external_id}`, `GET /apps/intake?external_ids=`, and its
-   * keys. Whether the operator publishes them on the public-only site is
+   * sends documents into the Inbox of the person it acts as: `GET
+   * /apps/me`, `POST /apps/intake`, `GET` and `DELETE
+   * /apps/intake/{external_id}`, `GET /apps/intake?external_ids=`. How it
+   * proves who it is: `connected_app_keys` (since 0.9.0-dev.63). Whether the operator publishes them on the public-only site is
    * `apps_public`. Absent from older vaults.
    */
   connected_apps?: boolean;
@@ -752,6 +751,15 @@ export interface CapabilityFeatures {
    * Absent from older vaults.
    */
   connected_app_links?: boolean;
+  /**
+   * Connected apps' API keys (0.9.0-dev.63, APP6): an app sends a key an
+   * owner generated in Settings on every request to `/api/v1/apps/*`, as
+   * `Authorization: Basic base64(client_id:secret)`; each key has its own
+   * permissions and lasts 1 to 3650 days, or never expires. It replaces
+   * the request signing of earlier 0.9.0 development builds, which is
+   * gone. Absent from older vaults.
+   */
+  connected_app_keys?: boolean;
 }
 
 export interface CapabilityLimits {

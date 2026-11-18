@@ -8350,6 +8350,138 @@ two_step_required` (`state.adultTwoStep = false`; they have one
       downloaded back by the app (`download`), by its re-download of the
       send (`sentFile`) and by the family's `api.content`, bytes and SHA-256
       compared each time.
+  - Connected apps authenticate with API keys the vault generates, in place
+    of request signing (0.9.0-dev.63, APP6). Migration 0114. **Breaking for
+    connected apps.** Nothing changes for a signed-in client.
+    - **Breaking: signing is gone.** `/api/v1/apps/*` no longer takes an RFC
+      9421 signature: no `Signature-Input`, `Signature` or `Content-Digest`,
+      no nonces, no `created` window. An app connected with an Ed25519
+      public key before dev.63 stops authenticating at the upgrade, with
+      `401 app_key_required`, until an owner generates it an API key:
+      migration 0114 drops every public key (`connected_app_key` is made
+      anew), the nonces (`connected_app_nonce`) and `connected_app_find(uuid,
+uuid)`; there is no window where both work. Everything else of an app
+      (its scopes, kinds, grants, caps, sends, feed, links) is kept.
+      `connected_app.signed_after` is now `restored_at` (the changes feed's
+      epoch, as before).
+    - **Breaking: removed routes.** `POST /api/v1/apps/keys` and `DELETE
+/api/v1/apps/keys/{key_id}` (an app never adds, renews or retires a key
+      of its own; they now answer `401 app_key_not_accepted`, as any route
+      not an app's), and `POST
+/api/v1/connected-apps/{id}/keys/{keyId}/confirm` (`404`).
+    - **How an app authenticates:** `Authorization: Basic
+base64(client_id:secret)` on every request. `client_id` is `fdvc_` and
+      22 base64url characters (16 random bytes; it names the key, and is no
+      secret); `secret` is `fdvs_` and 43 base64url characters (32 random
+      bytes), shown once, kept as its SHA-256 and compared in constant time.
+      Checked in this order, each with its own code: no Basic header, or a
+      bearer token, a device key or a cookie beside it, `401
+app_key_required`; an address that sent more than 10 keys that did
+      not work this minute, `429 rate_limited` (retriable, `Retry-After`),
+      before anything is looked up; an unknown client ID, a wrong secret or
+      a value not written as the vault writes them, `401 app_key_invalid`
+      (one answer, word for word); the app removed, `401 app_revoked`; the
+      key revoked, `401 app_key_revoked`; past its `expires_at`, `401
+app_key_expired`; then as before — `403 app_paused`, `403
+app_not_approved` (both but for `GET /apps/me`), `403
+address_not_allowed`, `403 https_required`, `403 member_locked` /
+      `member_paused`, `403 scope_not_granted`, `429 rate_limited`. Basic
+      authentication on any route not an app's is `401 app_key_not_accepted`
+      (was `app_signature_not_accepted`). Gone codes: `app_signature_required`,
+      `signature_malformed`, `app_key_unknown`, `app_key_pending`,
+      `signature_stale`, `signature_invalid`, `nonce_reused`,
+      `content_digest_mismatch`, `app_signature_not_accepted`.
+    - **Each key has its own permissions:** a request is allowed a route only
+      when both the key's `permissions` and the app's `scopes` hold its scope,
+      as they are when it arrives (`403 scope_not_granted`).
+    - **`GET /api/v1/apps/me`:** `scopes` is now what this request may do
+      (the app's scopes the key has too); **`keys` is gone**, and **`key`**
+      describes the key making the call: `{ client_id, name, permissions,
+created_at, expires_at, last_used_at }`, `expires_at` `null` for a key
+      that never expires. Never the secret or its hash, never the app's
+      other keys.
+    - **`POST /api/v1/connected-apps/{id}/keys`** (an owner, with a passkey
+      or a code) now generates a key: `{ name?, permissions, expires_in_days
+}` — `permissions` some of the app's scopes, at least one;
+      `expires_in_days` 1 to 3650, or `null` for never — and answers `201`
+      `{ key, client_id, secret, connection_string,
+connection_string_with_secret }`, `Cache-Control: no-store`. `422
+validation_failed` with `detail` `name`, `permissions` or
+      `expires_in_days`; `409 key_limit` past two live keys (not revoked,
+      not expired). An app acting as somebody else waits for them to turn it
+      on again, as before. **`DELETE /api/v1/connected-apps/{id}/keys/{keyId}`**
+      revokes one: now an owner's **with a passkey or a code**; `204`, again
+      `204`; its last live key too (was `409 key_in_use`). The owners and the
+      app's person are emailed.
+    - **`POST /api/v1/connected-apps`** no longer takes `public_key` (`422`
+      if sent) and makes no key: the app has `keys: []` and
+      `connection_string: ""` until an owner generates one.
+    - **`ConnectedAppView.keys`:** every key of the app, oldest first, `{ id,
+client_id, name, permissions, created_at, expires_at, last_used_at,
+revoked_at, state }` with `state` `live`, `expired` or `revoked` (was
+      the live keys' `key_id`, `fingerprint`, `added_by`, `pending`,
+      `first_used_at`, `retires_at`).
+    - **Connection string:** `fdvapp2.` and base64url of `{ url, client_id,
+instance_id }`, and `secret` in the one the owner copies with it (was
+      `fdvapp1.` with `app_id`, `key_id` and `fingerprint`).
+    - **New `features.connected_app_keys`** (`true`).
+    - **Expiry notices:** the worker's hourly sweep tells the owners, once,
+      14 days before a key expires (a key made to last longer than that),
+      and once when it has: an email and an activity line each
+      (`app.key_expiring`, `app.key_expired`). Activity: `app.key_added` is
+      now "… generated an API key for …", `app.key_retired` "… revoked an
+      API key of …"; `app.key_confirmed` is gone.
+    - **Logs:** errors cut a `Basic` value of 16 base64 characters or more
+      (or one decoding to a client ID) and an `fdvs_…` secret; nginx's
+      access log no longer names `$remote_user` (a Basic header's would be
+      the client ID).
+    - **Only an app's Basic is an app key:** Basic whose decoded user part
+      starts `fdvc_`. Any other Basic value (a proxy's own login in front of
+      the vault) passes untouched: an ordinary route answers as without it,
+      an app route `401 app_key_required`.
+    - **The failed-authentication limit** counts only guesses (an unknown
+      client ID, a wrong secret, a malformed `fdvc_` value), by address, an
+      IPv6 one by its /64; `app_key_revoked`, `app_key_expired`,
+      `app_revoked` and the rest are never counted.
+    - **The own rule (behaviour change):** a document an app's send made
+      (`made_document`, filed, not let go of) stays readable by that app —
+      list, document, changes, download, links — while it is in the vault,
+      out of the Trash, not Only me and of a category an app may be given,
+      whatever newer versions the family or another app added since; `own`
+      and `external_id` (the making send) stay. Before, a newer version made
+      it `unavailable`. The feed says `changed` with the newer version; the
+      send's state stays `filed`. In the database:
+      `connected_app_documents(uuid)` no longer asks that the current version
+      be the app's. **Deletes are unchanged**: `DELETE
+/api/v1/apps/documents/{id}` takes only a document whose current version
+      is one of the app's sends (`404` otherwise). The app's exact file is
+      only ever by its own id, `GET
+/api/v1/apps/intake/{external_id}/content`.
+    - **Links and keys:** `connected_app_link.key_id` (0114) remembers the
+      key a link was minted with; revoked or expired, an unopened link opens
+      as ended and an open session is `410 link_ended` at its next request.
+      A session's scopes are the app's and that key's. Links minted before
+      0114 are removed by it.
+    - **Re-approval:** generating a key whose permissions are a subset of a
+      live key's no longer sends an app acting as somebody else back to
+      `waiting_for_approval`; a wider key still does.
+    - **Restore:** every `connected_app_key` is revoked (`revoked_reason`
+      `restore`, `revoked_by` null); `AppKeyView.revoked_reason` (`owner`,
+      `app_removed`, `restore`) says why a key was revoked. The trigger keeps
+      who revoked a key, and why, as they were.
+    - **Client:** `createAppClient` throws for a `url` that is not https, or
+      plain http to this machine (`vaultOriginProblem`).
+    - **Client:** `createAppClient({ url, clientId, secret, fetch?, now? })`
+      sends the key on every request; `parseConnectionString` reads
+      `fdvapp2.` (an `fdvapp1.` string is refused, saying to generate an API
+      key); `AppClient.signed()` is now `request()`; `signRequest` and the
+      signer, `addKey` and `retireKey` are gone. Family side:
+      `connectedApps.generateKey(token, id, body)` and `revokeKey(token,
+id, keyId)`; `addKey`, `confirmKey` and `retireKey` are gone. **Fake
+      vault:** generates, revokes and expires keys by the same rules
+      (`vault.expireAppKey(clientId)` for a test), Basic checks in the same
+      order, per-key permissions; contract scenarios hold both vaults to the
+      same.
 
 ## Deprecations in effect
 

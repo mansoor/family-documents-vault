@@ -111,6 +111,24 @@ const NUMBER = /\+[1-9][0-9]{6,14}(?![0-9])/g;
  */
 const BEARER = /\bBearer\s+[^\s"',;]+/gi;
 
+/**
+ * A connected app's API key as it is sent (APP6): `Basic` and the base64
+ * of its client ID and secret; and a secret on its own, by its `fdvs_`
+ * prefix. Neither is ever logged on purpose (the Authorization header is
+ * cut from every line); were one to reach an error's words, it is cut —
+ * `Basic` followed by a base64 run of 16 characters or more, or one whose
+ * decoding is a client ID's — never "Basic" in ordinary words.
+ */
+const BASIC = /\bBasic\s+([A-Za-z0-9+/]+={0,2})/gi;
+const APP_SECRET = /\bfdvs_[A-Za-z0-9_-]+/g;
+
+/** A Basic value, cut when it can be a key. */
+function cutBasic(whole: string, value: string): string {
+  if (value.length >= 16) return 'Basic [key]';
+  const decoded = Buffer.from(value, 'base64').toString('utf8');
+  return decoded.startsWith('fdvc_') ? 'Basic [key]' : whole;
+}
+
 /** What a logged error may keep of PostgreSQL's fields: names, never values. */
 const ERROR_FIELDS = ['code', 'statusCode', 'constraint', 'table', 'column', 'routine', 'severity'];
 
@@ -124,7 +142,12 @@ const ERROR_FIELDS = ['code', 'statusCode', 'constraint', 'table', 'column', 'ro
  */
 export function errorForLog(err: unknown): Record<string, unknown> {
   const scrub = (s: string) =>
-    s.replace(ADDRESS, '[address]').replace(NUMBER, '[number]').replace(BEARER, 'Bearer [key]');
+    s
+      .replace(ADDRESS, '[address]')
+      .replace(NUMBER, '[number]')
+      .replace(BEARER, 'Bearer [key]')
+      .replace(BASIC, cutBasic)
+      .replace(APP_SECRET, 'fdvs_[secret]');
   if (!(err instanceof Error)) return { message: scrub(String(err)) };
   const e = err as Error & Record<string, unknown>;
   const out: Record<string, unknown> = {

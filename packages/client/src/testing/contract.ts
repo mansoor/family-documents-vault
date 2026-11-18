@@ -1,4 +1,5 @@
 import {
+  APP_KEYS_MAX,
   CATEGORY_LABELS,
   CORE_FIELDS,
   COLLECTION_HINT_TEENS,
@@ -13,12 +14,13 @@ import {
   type DetailProposal,
   type PaperReading,
   type DocumentTypeInput,
+  type AppScope,
   type Role,
   type Tokens,
 } from '@fdv/shared';
 import { expect } from 'vitest';
 import { deviceHeaders, type Api } from '../api.js';
-import { createAppClient, signRequest, toBase64 } from '../apps.js';
+import { createAppClient, parseConnectionString, type AppClient } from '../apps.js';
 import type { FetchLike } from '../http.js';
 import { ApiRequestError, isSessionOver } from '../errors.js';
 import { multipartBody } from '../multipart.js';
@@ -125,10 +127,30 @@ export interface ContractContext {
     file: { sha256: string; bytes: Uint8Array },
   ) => Promise<string>;
   /**
+   * The same, but filed as a new version of a document that is there
+   * (0.9.0, APP6): the real API's run accepts the app's item into that
+   * document, as a person would; the fake's adds the file as its newest
+   * version and files the send as one.
+   */
+  fileAppSendAsVersion?: (
+    token: string,
+    app: { id: string; name: string },
+    externalId: string,
+    file: { sha256: string; bytes: Uint8Array },
+    documentId: string,
+  ) => Promise<void>;
+  /**
    * The fetch the vault answers on (0.9.0, APP1): a connected app's client
-   * of its own, beside the family's, signs its requests through it.
+   * of its own, beside the family's, sends its API key through it.
    */
   fetch?: FetchLike;
+  /**
+   * A connected app's API key past its expiry now (0.9.0, APP6), as time
+   * would make it: the real API's run writes it as the owning role; the
+   * fake's moves its key's dates. Optional: without it the expired case is
+   * not asked.
+   */
+  expireAppKey?: (clientId: string) => Promise<void>;
   /**
    * The pages of a file a connected app sent read as this proposal, and
    * what the vault does once a read finishes (0.9.0, APP4): the real API's
@@ -170,7 +192,6 @@ const CREATE_KEY = '92a3b4c5-d6e7-4f89-8a91-23456789abcd';
 const ZIP_KEY = 'a3b4c5d6-e7f8-4a9b-8c0d-3456789abcde';
 const LK_KEY = 'b4c5d6e7-f809-4bac-9d1e-456789abcdef';
 const H5_KEY = 'c5d6e7f8-091a-4bcd-8e2f-56789abcdef0';
-/** RFC 9421's Ed25519 test key (B.1.4), the contract's worked examples' (0.9.0, APP1). */
 /**
  * The owner the connected app scenario signed in, with two-step sign-in on
  * and a code just given: the reading scenario after it acts as them.
@@ -190,27 +211,33 @@ const CL3_KEYS = [
 ] as const;
 /** A capture of the connected app links scenario (0.9.0, APP3). */
 const APP3_KEY = 'c6d7e8f9-0a1b-4c2d-8e3f-4a5b6c7d8e91';
-/** RFC 8032's first Ed25519 test key (7.1, TEST 1), for a second app (0.9.0, APP2). */
-const APP_TEST_KEY_2 = `-----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g
------END PRIVATE KEY-----`;
-const APP_TEST_KEY = `-----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEIJ+DYvh6SEqVTm50DFtMDoQikTmiCqirVv9mWG9qfSnF
------END PRIVATE KEY-----`;
-
-/** A fresh Ed25519 key pair, as an app makes its next one (CL2): "ed25519:…" and PKCS#8. */
-async function keyPair(): Promise<{ publicKey: string; privateKey: Uint8Array }> {
-  // A key as exportKey takes it: this package's own globals, or the DOM's
-  // and Node's where another package compiles this source.
-  type Key = Parameters<typeof crypto.subtle.exportKey>[1];
-  const k = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as {
-    publicKey: Key;
-    privateKey: Key;
-  };
-  const raw = new Uint8Array(await crypto.subtle.exportKey('raw', k.publicKey));
+/** The family's newer file of the versions scenario (APP6). */
+const ORIGIN_KEY = 'e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a51';
+/**
+ * An app's client with an API key an owner generated for it (0.9.0, APP6):
+ * every permission the app has, for 30 days unless a scenario says.
+ */
+async function keyedApp(
+  api: Api,
+  token: string,
+  made: { id: string; scopes: AppScope[] },
+  fetch: FetchLike,
+  o: { permissions?: AppScope[]; days?: number | null } = {},
+): Promise<{ app: AppClient; clientId: string; secret: string; keyId: string }> {
+  const key = await api.connectedApps.generateKey(token, made.id, {
+    permissions: o.permissions ?? made.scopes,
+    expires_in_days: o.days === undefined ? 30 : o.days,
+  });
   return {
-    publicKey: `ed25519:${toBase64(raw, true)}`,
-    privateKey: new Uint8Array(await crypto.subtle.exportKey('pkcs8', k.privateKey)),
+    app: createAppClient({
+      url: api.http.baseUrl,
+      clientId: key.client_id,
+      secret: key.secret,
+      fetch,
+    }),
+    clientId: key.client_id,
+    secret: key.secret,
+    keyId: key.key.id,
   };
 }
 
@@ -4540,7 +4567,7 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
-    name: 'a connected app: connected with a code, it signs, sends, is answered again, and withdraws (0.9.0, APP1)',
+    name: 'a connected app: connected with a code, given an API key, it sends, is answered again, and withdraws (0.9.0, APP1)',
     run: async (api, ctx) => {
       if (!ctx.fetch) throw new Error('the contract needs the fetch its vault answers on');
       expect((await api.capabilities()).features.connected_apps).toBe(true);
@@ -4548,26 +4575,19 @@ export const contractScenarios: Scenario[] = [
       await ctx.ownerTwoStep(owner.access_token);
       connectedAppOwner = owner;
       const token = owner.access_token;
-      // The app's key pair, its own; the vault is given the public key. The
-      // contract's own test key (RFC 9421 B.1.4), which nobody uses for real.
-      const pkcs8 = APP_TEST_KEY;
+      // Connected with no key; an owner generates one (APP6), shown once.
       const made = await api.connectedApps.create(token, {
         name: 'Contract app',
         member_id: owner.member_id,
-        public_key: 'ed25519:JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs',
         allowed_kinds: ['bank_statement'],
       });
       expect(made).toMatchObject({ name: 'Contract app', state: 'active', mine: true });
-      expect(made.keys.map((k) => k.fingerprint)).toEqual([
-        'b16c 2d1b ead1 2626 3976 4fdb 0ee4 d377',
-      ]);
-      expect(made.connection_string.startsWith('fdvapp1.')).toBe(true);
-      const app = createAppClient({
-        baseUrl: api.http.baseUrl,
-        appId: made.id,
-        keyId: made.keys[0]?.key_id as string,
-        privateKey: pkcs8,
-        fetch: ctx.fetch,
+      expect(made.keys).toEqual([]);
+      expect(made.connection_string).toBe('');
+      const { app, clientId, secret } = await keyedApp(api, token, made, ctx.fetch);
+      const listed = (await api.connectedApps.list(token)).items.find((a) => a.id === made.id);
+      expect(parseConnectionString(listed?.connection_string as string)).toMatchObject({
+        client_id: clientId,
       });
       // The connection test.
       expect(await app.me()).toMatchObject({
@@ -4612,29 +4632,13 @@ export const contractScenarios: Scenario[] = [
         state: 'removed',
         removed_reason: 'withdrawn',
       });
-      // A signed request sent twice: refused the second time.
-      const signed = await signRequest({
-        method: 'GET',
-        target: '/api/v1/apps/me',
-        keyid: `${made.id}.${made.keys[0]?.key_id as string}`,
-        privateKey: pkcs8,
-      });
-      const twice = () =>
-        (ctx.fetch as NonNullable<typeof ctx.fetch>)(`${api.http.baseUrl}/api/v1/apps/me`, {
-          method: 'GET',
-          headers: { ...signed },
-        });
-      expect((await twice()).status).toBe(200);
-      const replayed = await twice();
-      expect(replayed.status).toBe(401);
-      expect(((await replayed.json()) as { error: { code: string } }).error.code).toBe(
-        'nonce_reused',
-      );
-      // A sign-in is no app, and an app's signature is no sign-in.
+      // The secret is never shown again: not in the list, not in the view.
+      expect(JSON.stringify(await api.connectedApps.list(token))).not.toContain(secret);
+      // A sign-in is no app, and an app's key is no sign-in.
       const bearer = await refusal(api.http.request('/api/v1/apps/me', { token }));
-      expect([bearer.status, bearer.code]).toEqual([401, 'app_signature_required']);
-      const crossed = await refusal(app.signed('GET', '/api/v1/documents'));
-      expect([crossed.status, crossed.code]).toEqual([401, 'app_signature_not_accepted']);
+      expect([bearer.status, bearer.code]).toEqual([401, 'app_key_required']);
+      const crossed = await refusal(app.request('GET', '/api/v1/documents'));
+      expect([crossed.status, crossed.code]).toEqual([401, 'app_key_not_accepted']);
       // Listed for its owner; removed, and told so.
       expect((await api.connectedApps.list(token)).items.some((a) => a.id === made.id)).toBe(true);
       await api.connectedApps.remove(token, made.id);
@@ -4652,22 +4656,15 @@ export const contractScenarios: Scenario[] = [
       const owner = connectedAppOwner;
       if (!owner) throw new Error('the connected app scenario runs first');
       const token = owner.access_token;
-      // A key of its own: RFC 8032's first test key, which nobody uses for real.
+      // An app of its own, and an API key for it (APP6).
       const made = await api.connectedApps.create(token, {
         name: 'Reader',
         member_id: owner.member_id,
-        public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
         allowed_kinds: ['utility_bill'],
         scopes: ['documents.send', 'documents.read', 'documents.download'],
       });
       expect(made.scopes).toEqual(['documents.send', 'documents.read', 'documents.download']);
-      const app = createAppClient({
-        baseUrl: api.http.baseUrl,
-        appId: made.id,
-        keyId: made.keys[0]?.key_id as string,
-        privateKey: APP_TEST_KEY_2,
-        fetch: ctx.fetch,
-      });
+      const { app } = await keyedApp(api, token, made, ctx.fetch);
       // Papers of the family's: a bill and a statement this year, a bill
       // three years old, and a passport.
       const day = (daysAgo: number) =>
@@ -4822,23 +4819,14 @@ export const contractScenarios: Scenario[] = [
       const owner = connectedAppOwner;
       if (!owner) throw new Error('the connected app scenario runs first');
       const token = owner.access_token;
-      // The reading scenario's app was removed, and its key with it: the
-      // same key, for a new app.
       const made = await api.connectedApps.create(token, {
         name: 'Linker',
         member_id: owner.member_id,
-        public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
         allowed_kinds: ['utility_bill'],
         scopes: ['documents.send', 'documents.read', 'documents.links', 'documents.delete'],
       });
       expect(made).toMatchObject({ delete_mode: 'unlink', links_per_hour: 60 });
-      const app = createAppClient({
-        baseUrl: api.http.baseUrl,
-        appId: made.id,
-        keyId: made.keys[0]?.key_id as string,
-        privateKey: APP_TEST_KEY_2,
-        fetch,
-      });
+      const { app } = await keyedApp(api, token, made, fetch);
       expect(await app.me()).toMatchObject({
         delete_mode: 'unlink',
         limits: { links_per_hour: 60 },
@@ -4910,7 +4898,7 @@ export const contractScenarios: Scenario[] = [
       const noDownload = await refusal(app.link(bill, 'download'));
       expect([noDownload.status, noDownload.code]).toEqual([403, 'scope_not_granted']);
       const bad = await refusal(
-        app.signed('POST', `/api/v1/apps/documents/${bill}/links`, {
+        app.request('POST', `/api/v1/apps/documents/${bill}/links`, {
           bytes: new TextEncoder().encode('{"mode":"print"}'),
           contentType: 'application/json',
         }),
@@ -4969,23 +4957,15 @@ export const contractScenarios: Scenario[] = [
       const owner = connectedAppOwner;
       if (!owner) throw new Error('the connected app scenario runs first');
       const token = owner.access_token;
-      // The links scenario's app was removed, and its key with it: the same key, for a new app.
       const made = await api.connectedApps.create(token, {
         name: 'Filer',
         member_id: owner.member_id,
-        public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
         allowed_kinds: ['bank_statement'],
         scopes: ['documents.send', 'documents.read'],
         auto_file: true,
       });
       expect(made.auto_file).toBe(true);
-      const app = createAppClient({
-        baseUrl: api.http.baseUrl,
-        appId: made.id,
-        keyId: made.keys[0]?.key_id as string,
-        privateKey: APP_TEST_KEY_2,
-        fetch: ctx.fetch,
-      });
+      const { app } = await keyedApp(api, token, made, ctx.fetch);
       expect((await app.me()).send).toMatchObject({ auto_file: true });
       const pages: DetailProposal = {
         type_key: { value: 'bank_statement', confidence: 0.95, cue: 'kind_words' },
@@ -5035,23 +5015,15 @@ export const contractScenarios: Scenario[] = [
       const owner = connectedAppOwner;
       if (!owner) throw new Error('the connected app scenario runs first');
       const token = owner.access_token;
-      // The filing scenario's app was removed, and its key with it: the same key, for a new app.
       const made = await api.connectedApps.create(token, {
         name: 'Resender',
         member_id: owner.member_id,
-        public_key: 'ed25519:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
         allowed_kinds: ['utility_bill'],
         scopes: ['documents.send', 'documents.download'],
       });
       // Each paper to the person it is about, unless an owner says otherwise.
       expect(made.route_to_person).toBe(true);
-      const app = createAppClient({
-        baseUrl: api.http.baseUrl,
-        appId: made.id,
-        keyId: made.keys[0]?.key_id as string,
-        privateKey: APP_TEST_KEY_2,
-        fetch: ctx.fetch,
-      });
+      const { app } = await keyedApp(api, token, made, ctx.fetch);
       const bytes = new TextEncoder().encode('%PDF-1.4\n% the resender’s own\n%%EOF\n');
       const sent = await app.send({
         externalId: 'resend-1',
@@ -5087,96 +5059,136 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
-    name: 'a connected app adds its next key, which signs once confirmed; keys retire as the vault allows (0.9.0, CL2)',
+    name: 'a connected app’s API keys: generated by an owner, shown once, each with its own permissions and validity; expired, revoked and a third live key refused (0.9.0, APP6)',
     run: async (api, ctx) => {
       if (!ctx.fetch) throw new Error('the contract needs the fetch its vault answers on');
       const fetch = ctx.fetch;
+      expect((await api.capabilities()).features.connected_app_keys).toBe(true);
       const owner = connectedAppOwner;
       if (!owner) throw new Error('the connected app scenario runs first');
       const token = owner.access_token;
-      const [a, b, c, d] = await Promise.all([keyPair(), keyPair(), keyPair(), keyPair()]);
       const made = await api.connectedApps.create(token, {
-        name: 'Rotator',
+        name: 'Acme Money',
         member_id: owner.member_id,
-        public_key: a.publicKey,
         allowed_kinds: ['utility_bill'],
+        scopes: ['documents.send', 'documents.read'],
       });
-      const client = (keyId: string, privateKey: Uint8Array) =>
-        createAppClient({ baseUrl: api.http.baseUrl, appId: made.id, keyId, privateKey, fetch });
-      const keyA = made.keys[0]?.key_id as string;
-      const appA = client(keyA, a.privateKey);
+      const client = (clientId: string, secret: string) =>
+        createAppClient({ url: api.http.baseUrl, clientId, secret, fetch });
 
-      // Its next key, added by the app and signed with its current one: pending.
-      const added = await appA.addKey(b.publicKey);
-      expect(added).toMatchObject({ keyid: `${made.id}.${added.key_id}`, pending: true });
-      expect(added.fingerprint).toMatch(/^[0-9a-f]{4}( [0-9a-f]{4}){7}$/);
-      const appB = client(added.key_id, b.privateKey);
-      const pending = await refusal(appB.me());
-      expect([pending.status, pending.code]).toEqual([401, 'app_key_pending']);
-      expect((await appA.me()).keys).toEqual([
-        expect.objectContaining({ key_id: keyA, added_by: 'owner', pending: false }),
-        expect.objectContaining({ key_id: added.key_id, added_by: 'app', pending: true }),
-      ]);
+      // A key with every permission the app has, for 30 days: it works, and
+      // `me()` describes it — the key making the call, and no other.
+      const a = await keyedApp(api, token, made, fetch);
+      const meA = await a.app.me();
+      expect(meA.scopes).toEqual(['documents.send', 'documents.read']);
+      expect(meA.key).toMatchObject({
+        client_id: a.clientId,
+        name: null,
+        permissions: ['documents.send', 'documents.read'],
+        last_used_at: expect.any(String) as string,
+      });
+      const left = Date.parse(meA.key.expires_at as string) - Date.now();
+      expect(left).toBeGreaterThan(29.9 * 864e5);
+      expect(left).toBeLessThanOrEqual(30 * 864e5 + 60_000);
+      expect('keys' in meA).toBe(false);
+      expect(JSON.stringify(meA)).not.toContain(a.secret);
+      expect((await a.app.list()).items).toEqual(expect.any(Array));
 
-      // Two live at most, the pending one counted, from the app and Settings
-      // alike; never one live already; never what is no key.
-      const full = await refusal(appA.addKey(c.publicKey));
-      expect([full.status, full.code]).toEqual([409, 'key_limit']);
-      const fullHere = await refusal(api.connectedApps.addKey(token, made.id, c.publicKey));
-      expect([fullHere.status, fullHere.code]).toEqual([409, 'key_limit']);
-      const taken = await refusal(appA.addKey(a.publicKey));
-      expect([taken.status, taken.code]).toEqual([409, 'key_exists']);
-      const junk = await refusal(appA.addKey('ed25519:not-a-key'));
-      expect([junk.status, junk.code]).toEqual([422, 'validation_failed']);
+      // Its permissions are some of the app's, at least one; it lasts 1 to
+      // 3650 days, or never.
+      for (const [why, body] of [
+        ['a scope the app has not', { permissions: ['documents.delete'], expires_in_days: 30 }],
+        ['no permission', { permissions: [], expires_in_days: 30 }],
+        ['no days', { permissions: ['documents.send'], expires_in_days: 0 }],
+        ['too many days', { permissions: ['documents.send'], expires_in_days: 3651 }],
+      ] as const) {
+        const bad = await refusal(
+          api.connectedApps.generateKey(token, made.id, {
+            permissions: [...body.permissions],
+            expires_in_days: body.expires_in_days,
+          }),
+        );
+        expect([bad.status, bad.code], why).toEqual([422, 'validation_failed']);
+      }
 
-      // The app retires only a key it added, and only one there is.
-      const owners = await refusal(appA.retireKey(keyA));
-      expect([owners.status, owners.code]).toEqual([409, 'key_added_by_owner']);
-      const nowhere = await refusal(appA.retireKey(NEVER_USED));
-      expect([nowhere.status, nowhere.code]).toEqual([404, 'not_found']);
+      // A second key, named, that never expires, and only sends: what it may
+      // do is its own permissions among the app's.
+      const b = await api.connectedApps.generateKey(token, made.id, {
+        name: 'Acme Money, sending only',
+        permissions: ['documents.send'],
+        expires_in_days: null,
+      });
+      expect(b.client_id).toMatch(/^fdvc_[A-Za-z0-9_-]{22}$/);
+      expect(b.secret).toMatch(/^fdvs_[A-Za-z0-9_-]{43}$/);
+      expect(b.key).toMatchObject({
+        client_id: b.client_id,
+        name: 'Acme Money, sending only',
+        permissions: ['documents.send'],
+        expires_at: null,
+        revoked_at: null,
+        state: 'live',
+      });
+      const plain = parseConnectionString(b.connection_string);
+      expect(plain).toMatchObject({ client_id: b.client_id });
+      expect(plain).not.toHaveProperty('secret');
+      expect(parseConnectionString(b.connection_string_with_secret)).toMatchObject({
+        client_id: b.client_id,
+        secret: b.secret,
+      });
+      const appB = client(b.client_id, b.secret);
+      const meB = await appB.me();
+      expect(meB.scopes).toEqual(['documents.send']);
+      expect(meB.key).toMatchObject({ name: 'Acme Money, sending only', expires_at: null });
+      const narrower = await refusal(appB.list());
+      expect([narrower.status, narrower.code]).toEqual([403, 'scope_not_granted']);
 
-      // Confirmed in Settings, where it waits: now it signs, and the older
-      // key retires by itself seven days after its first use.
+      // Two live at most: a third is refused.
+      const third = await refusal(
+        api.connectedApps.generateKey(token, made.id, {
+          permissions: ['documents.send'],
+          expires_in_days: 90,
+        }),
+      );
+      expect([third.status, third.code]).toEqual([409, 'key_limit']);
+      expect(APP_KEYS_MAX).toBe(2);
+
+      // A wrong secret and a client ID nobody was given are the same refusal.
+      const wrong = await refusal(client(a.clientId, b.secret).me());
+      expect([wrong.status, wrong.code]).toEqual([401, 'app_key_invalid']);
+      const unknown = await refusal(client(`fdvc_${'A'.repeat(22)}`, a.secret).me());
+      expect([unknown.status, unknown.code]).toEqual([401, 'app_key_invalid']);
+
+      // Revoked: its next request is refused, and its place is free again.
+      await api.connectedApps.revokeKey(token, made.id, a.keyId);
+      const revoked = await refusal(a.app.me());
+      expect([revoked.status, revoked.code]).toEqual([401, 'app_key_revoked']);
+      const c = await keyedApp(api, token, made, fetch, { days: 365 });
+      expect((await c.app.me()).key.client_id).toBe(c.clientId);
+
+      // Expired: refused, and its place free again too.
+      if (ctx.expireAppKey) {
+        await ctx.expireAppKey(c.clientId);
+        const expired = await refusal(c.app.me());
+        expect([expired.status, expired.code]).toEqual([401, 'app_key_expired']);
+        const d = await keyedApp(api, token, made, fetch, { days: 7 });
+        expect((await d.app.me()).state).toBe('active');
+      }
+
+      // Settings lists every key with its state, and never a secret.
       const listed = (await api.connectedApps.list(token)).items.find((x) => x.id === made.id);
-      expect(listed?.keys.find((k) => k.key_id === added.key_id)?.pending).toBe(true);
-      const confirmed = await api.connectedApps.confirmKey(token, made.id, added.key_id);
-      expect(confirmed.keys.find((k) => k.key_id === added.key_id)?.pending).toBe(false);
-      // Its own person confirmed it: it is not asked again.
-      expect(confirmed.state).toBe('active');
-      expect((await appB.me()).state).toBe('active');
-      const older = (await appB.me()).keys.find((k) => k.key_id === keyA);
-      const left = Date.parse(older?.retires_at as string) - Date.now();
-      expect(left).toBeGreaterThan(6.9 * 864e5);
-      expect(left).toBeLessThanOrEqual(7 * 864e5 + 60_000);
+      const states = Object.fromEntries((listed?.keys ?? []).map((k) => [k.client_id, k.state]));
+      expect(states).toMatchObject({
+        [a.clientId]: 'revoked',
+        [b.client_id]: 'live',
+        [c.clientId]: ctx.expireAppKey ? 'expired' : 'live',
+      });
+      const text = JSON.stringify(listed);
+      for (const secret of [a.secret, b.secret, c.secret]) expect(text).not.toContain(secret);
 
-      // Never the key that signs the request.
-      const signing = await refusal(appB.retireKey(added.key_id));
-      expect([signing.status, signing.code]).toEqual([409, 'key_in_use']);
-      // An owner retires the old key: it signs nothing more; never the last.
-      await api.connectedApps.retireKey(token, made.id, keyA);
-      const retired = await refusal(appA.me());
-      expect([retired.status, retired.code]).toEqual([401, 'app_key_unknown']);
-      const last = await refusal(api.connectedApps.retireKey(token, made.id, added.key_id));
-      expect([last.status, last.code]).toEqual([409, 'key_in_use']);
-
-      // An owner's key, added in Settings: confirmed as it is added, and not
-      // the app's to retire.
-      const given = await api.connectedApps.addKey(token, made.id, c.publicKey);
-      expect(given.key).toMatchObject({ added_by: 'owner', pending: false });
-      expect(given.connection_string.startsWith('fdvapp1.')).toBe(true);
-      expect((await client(given.key.key_id, c.privateKey).me()).state).toBe('active');
-      const notIts = await refusal(appB.retireKey(given.key.key_id));
-      expect([notIts.status, notIts.code]).toEqual([409, 'key_added_by_owner']);
-
-      // A key the app added, retired by the app while another signs; not
-      // there to confirm after.
-      await api.connectedApps.retireKey(token, made.id, given.key.key_id);
-      const next = await appB.addKey(d.publicKey);
-      await appB.retireKey(next.key_id);
-      const gone = await refusal(api.connectedApps.confirmKey(token, made.id, next.key_id));
-      expect([gone.status, gone.code]).toEqual([404, 'not_found']);
-      expect((await appB.me()).keys.map((k) => k.key_id)).toEqual([added.key_id]);
+      // An app removed: every key of it ends with it.
       await api.connectedApps.remove(token, made.id);
+      const gone = await refusal(appB.me());
+      expect([gone.status, gone.code]).toEqual([401, 'app_revoked']);
     },
   },
   {
@@ -5245,7 +5257,7 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
-    name: 'a connected app’s file of every byte value is kept exactly: its digest, its hash, and each download of it (CL3)',
+    name: 'a connected app’s file of every byte value is kept exactly: its hash, and each download of it (CL3)',
     run: async (api, ctx) => {
       if (!ctx.fetch) throw new Error('the contract needs the fetch its vault answers on');
       if (!ctx.fileAppSend)
@@ -5253,21 +5265,13 @@ export const contractScenarios: Scenario[] = [
       const owner = connectedAppOwner;
       if (!owner) throw new Error('the connected app scenario runs first');
       const token = owner.access_token;
-      const key = await keyPair();
       const made = await api.connectedApps.create(token, {
         name: 'Every byte',
         member_id: owner.member_id,
-        public_key: key.publicKey,
         allowed_kinds: ['utility_bill'],
         scopes: ['documents.send', 'documents.read', 'documents.download'],
       });
-      const app = createAppClient({
-        baseUrl: api.http.baseUrl,
-        appId: made.id,
-        keyId: made.keys[0]?.key_id as string,
-        privateKey: key.privateKey,
-        fetch: ctx.fetch,
-      });
+      const { app } = await keyedApp(api, token, made, ctx.fetch);
       const bytes = everyByte('cl3-app');
       const sum = await sha256Hex(bytes);
       const file = { bytes, filename: 'every-byte.pdf', contentType: 'application/pdf' };
@@ -5276,7 +5280,7 @@ export const contractScenarios: Scenario[] = [
         hints: { kind: 'utility_bill' },
         file,
       });
-      // The vault hashed the bytes sent, having checked them against their digest.
+      // The vault hashed the bytes sent, exactly as they were.
       expect(sent.status).toBe(201);
       expect(sent.state.sha256).toBe(sum);
       expect(sent.state.byte_size).toBe(bytes.length);
@@ -5303,6 +5307,107 @@ export const contractScenarios: Scenario[] = [
       expect(family.bytes).toEqual(bytes);
       expect(family.sha256).toBe(sum);
       await api.connectedApps.remove(token, made.id);
+    },
+  },
+  {
+    name: 'a connected app keeps reading what its send made, whatever versions came since, and fetches its own file by its external id (0.9.0, APP6)',
+    run: async (api, ctx) => {
+      if (!ctx.fetch) throw new Error('the contract needs the fetch its vault answers on');
+      if (!ctx.fileAppSend || !ctx.fileAppSendAsVersion) {
+        throw new Error('the contract needs its vault to file what an app sent, as a version too');
+      }
+      const owner = connectedAppOwner;
+      if (!owner) throw new Error('the connected app scenario runs first');
+      const token = owner.access_token;
+      const scopes: AppScope[] = [
+        'documents.send',
+        'documents.read',
+        'documents.download',
+        'documents.delete',
+      ];
+      const first = await api.connectedApps.create(token, {
+        name: 'Origin one',
+        member_id: owner.member_id,
+        allowed_kinds: ['utility_bill'],
+        scopes,
+      });
+      const second = await api.connectedApps.create(token, {
+        name: 'Origin two',
+        member_id: owner.member_id,
+        allowed_kinds: ['utility_bill'],
+        scopes,
+      });
+      const { app: one } = await keyedApp(api, token, first, ctx.fetch);
+      const { app: two } = await keyedApp(api, token, second, ctx.fetch);
+      const pdf = (marker: string) =>
+        new TextEncoder().encode(`%PDF-1.4\n% ${marker}\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n`);
+
+      // The first app's send, filed as a document of its own.
+      const mine = pdf('origin-one-1');
+      const sentOne = await one.send({
+        externalId: 'origin-one-1',
+        hints: { kind: 'utility_bill' },
+        file: { bytes: mine, filename: 'origin.pdf', contentType: 'application/pdf' },
+      });
+      const doc = await ctx.fileAppSend(token, { id: first.id, name: first.name }, 'origin-one-1', {
+        sha256: sentOne.state.sha256 as string,
+        bytes: mine,
+      });
+      const start = await one.changes();
+
+      // The family adds a newer file: still the app's, which reads it as it
+      // is now, and its feed says it changed.
+      const family = pdf('origin-family-2');
+      const body = multipartBody([
+        { name: 'file', filename: 'family.pdf', contentType: 'application/pdf', bytes: family },
+      ]);
+      const newer = await api.upload(
+        token,
+        doc,
+        { kind: 'bytes', bytes: body.bytes, contentType: body.contentType },
+        ORIGIN_KEY,
+      );
+      const read = await one.document(doc);
+      expect(read).toMatchObject({ own: true, external_id: 'origin-one-1' });
+      expect(read.version?.id).toBe(newer.id);
+      expect((await one.list({ own: true })).items.map((d) => d.id)).toContain(doc);
+      const fed = await one.changes({ cursor: start.cursor });
+      const line = fed.changes.find((c) => c.change === 'changed' && c.document.id === doc);
+      expect(line?.change === 'changed' ? line.document.version?.id : null).toBe(newer.id);
+      expect(fed.changes.some((c) => c.change === 'unavailable')).toBe(false);
+      // The current file is the family's; its own exact file, by its external id.
+      expect((await one.download(doc)).bytes).toEqual(family);
+      expect((await one.sentFile('origin-one-1')).bytes).toEqual(mine);
+      // Never the family's newer file to delete.
+      const del = await refusal(one.delete(doc));
+      expect([del.status, del.code]).toEqual([404, 'not_found']);
+
+      // Another app's send filed into it as a version: the second app may
+      // not read the document, but fetches its own file again; the first
+      // still reads it, its current file now the second app's.
+      const theirs = pdf('origin-two-1');
+      const sentTwo = await two.send({
+        externalId: 'origin-two-1',
+        hints: { kind: 'utility_bill' },
+        file: { bytes: theirs, filename: 'two.pdf', contentType: 'application/pdf' },
+      });
+      await ctx.fileAppSendAsVersion(
+        token,
+        { id: second.id, name: second.name },
+        'origin-two-1',
+        { sha256: sentTwo.state.sha256 as string, bytes: theirs },
+        doc,
+      );
+      const notTwos = await refusal(two.document(doc));
+      expect([notTwos.status, notTwos.code]).toEqual([404, 'not_found']);
+      expect((await two.sentFile('origin-two-1')).bytes).toEqual(theirs);
+      const still = await one.document(doc);
+      expect(still).toMatchObject({ own: true, external_id: 'origin-one-1' });
+      expect(still.version?.id).not.toBe(newer.id);
+      expect((await one.download(doc)).bytes).toEqual(theirs);
+      expect((await one.sentFile('origin-one-1')).bytes).toEqual(mine);
+      await api.connectedApps.remove(token, first.id);
+      await api.connectedApps.remove(token, second.id);
     },
   },
   {

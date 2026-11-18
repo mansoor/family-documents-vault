@@ -55,17 +55,15 @@ const ALLOWED = [
   // that is nobody's, so that it takes as long (the D1 review, F4).
   'devices/service.ts DeviceService.pair',
   'devices/service.ts DeviceService.authenticate',
-  // A connected app (0.9.0, APP1): a signed request is nobody's until its
-  // signature is checked, so its nonce is kept, its key's first use and the
-  // app's last noted, and a refusal counted, by the vault — a refusal only
-  // once the signature verifies. GET /apps/me, and a key the app adds or
-  // retires itself, read and write the app's own rows (connected_app is the
-  // owners' to read); what it files and reads it does as its person.
+  // A connected app (0.9.0, APP1): a request is nobody's until its API key
+  // (APP6) is checked, so the key's last use and the app's are noted, and a
+  // refusal counted, by the vault — a refusal only once the key is right.
+  // GET /apps/me reads the app's own rows and the key it came with
+  // (connected_app is the owners' to read); what it files and reads it does
+  // as its person.
   'apps/service.ts AppService.authenticate',
   'apps/service.ts AppService.noteRefusal',
   'apps/service.ts AppService.me',
-  'apps/service.ts AppService.appAddsKey',
-  'apps/service.ts AppService.appRetiresKey',
   // What a connected app reads (0.9.0, APP2): the documents themselves are
   // read narrowed to the app (readAsApp, inside this transaction: the
   // database gives it what its rule allows and nothing of any other table),

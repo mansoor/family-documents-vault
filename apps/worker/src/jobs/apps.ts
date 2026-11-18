@@ -1,14 +1,13 @@
-import { withSystem, type Db } from '@fdv/db';
+import { appendAudit, householdZone, withSystem, type Db } from '@fdv/db';
+import { APP_KEY_WARN_DAYS, shareEndWords } from '@fdv/shared';
+import { sql } from 'kysely';
 import type pg from 'pg';
+import { queueDbOf, type OwnersAlert, type QueueDb } from '../ai-send.js';
 
 /**
  * Connected apps (0.9.0, APP1): the hourly sweep.
  *
- * A nonce is kept only while a signature with it could be taken (its
- * `created` and five minutes): past that, the window refuses the request
- * anyway, so the row is let go (the API also lets an app's own go as it
- * checks a new one). And what an app sent that was refused or removed is
- * remembered for 90 days — its file's hash and size, so a send of the
+ * What an app sent that was refused or removed is remembered for 90 days — its file's hash and size, so a send of the
  * same file is recognised — then forgotten: its
  * external id is free, and nothing of it is left. A filed one is kept as
  * long as its row is (APP2 says when it stops being the app's).
@@ -39,10 +38,7 @@ export const APP_LINKS_KEEP_DAYS = 8;
 
 export async function sweepApps(
   admin: pg.Pool,
-): Promise<{ nonces: number; sent: number; stuck: number; changes: number; links: number }> {
-  const nonces = await admin.query(
-    'delete from public.connected_app_nonce where expires_at < now()',
-  );
+): Promise<{ sent: number; stuck: number; changes: number; links: number }> {
   const sent = await admin.query(
     `delete from public.connected_app_intake
       where state in ('refused', 'removed')
@@ -104,12 +100,140 @@ export async function sweepApps(
     [APP_LINKS_KEEP_DAYS],
   );
   return {
-    nonces: nonces.rowCount ?? 0,
     sent: sent.rowCount ?? 0,
     stuck: gone.rowCount ?? 0,
     changes: changes.rowCount ?? 0,
     links: links.rowCount ?? 0,
   };
+}
+
+/** A key the owners are told of: which, of which app, and when it stops. */
+interface KeyNotice {
+  client_id: string;
+  name: string | null;
+  expires_at: Date;
+  app_id: string;
+  app: string;
+  member_id: string;
+}
+
+/**
+ * An app's API keys (0.9.0-dev.63, APP6): the owners are told, once, 14
+ * days before a key expires — when it was made to last longer than that —
+ * and once when it has expired: an activity line (for the owners and the
+ * person the app acts as) and an email to the owners, queued in the same
+ * transaction that marks the key told, so neither is ever sent twice nor
+ * lost. A revoked key, or one of a removed app, is told of no more. The
+ * hourly sweep runs it.
+ */
+export async function noticeAppKeys(deps: {
+  admin: pg.Pool;
+  db: Db;
+  tell: (a: OwnersAlert, db: QueueDb) => Promise<void>;
+}): Promise<{ expiring: number; expired: number }> {
+  const { rows } = await deps.admin.query<{ household_id: string }>(
+    `select distinct k.household_id
+       from public.connected_app_key k
+       join public.connected_app a on a.id = k.app_id
+      where k.revoked_at is null and a.revoked_at is null
+        and k.expires_at is not null and k.expired_told_at is null
+        and (k.expires_at <= now()
+             or (k.warned_at is null
+                 and k.expires_at <= now() + make_interval(days => $1)
+                 and k.expires_at - k.created_at > make_interval(days => $1)))`,
+    [APP_KEY_WARN_DAYS],
+  );
+  let expiring = 0;
+  let expired = 0;
+  for (const { household_id: hh } of rows) {
+    const told = await withSystem(deps.db, hh, async (trx) => {
+      const ended = await sql<KeyNotice>`
+        update connected_app_key k set expired_told_at = now()
+          from connected_app a
+         where a.id = k.app_id and a.revoked_at is null and k.revoked_at is null
+           and k.expires_at <= now() and k.expired_told_at is null
+        returning k.client_id, k.name, k.expires_at, a.id as app_id, a.name as app, a.member_id`.execute(
+        trx,
+      );
+      const soon = await sql<KeyNotice>`
+        update connected_app_key k set warned_at = now()
+          from connected_app a
+         where a.id = k.app_id and a.revoked_at is null and k.revoked_at is null
+           and k.warned_at is null and k.expired_told_at is null
+           and k.expires_at > now()
+           and k.expires_at <= now() + make_interval(days => ${APP_KEY_WARN_DAYS}::int)
+           and k.expires_at - k.created_at > make_interval(days => ${APP_KEY_WARN_DAYS}::int)
+        returning k.client_id, k.name, k.expires_at, a.id as app_id, a.name as app, a.member_id`.execute(
+        trx,
+      );
+      if (ended.rows.length + soon.rows.length === 0) return { soon: 0, ended: 0 };
+      const hhRow = await trx.selectFrom('household').select('timezone').executeTakeFirstOrThrow();
+      const zone = householdZone(hhRow.timezone);
+      const owners = (
+        await trx
+          .selectFrom('account_household')
+          .select('account_id')
+          .where('role', '=', 'owner')
+          .execute()
+      ).map((o) => o.account_id);
+      const which = (k: KeyNotice) => `${k.client_id}${k.name ? ` (“${k.name}”)` : ''}`;
+      const day = (d: Date) => shareEndWords(d, zone, { weekday: false, year: true });
+      for (const k of soon.rows) {
+        await appendAudit(trx, {
+          householdId: hh,
+          action: 'app.key_expiring',
+          objectType: 'member',
+          objectId: k.member_id,
+          detail: {
+            app_id: k.app_id,
+            app: k.app,
+            client_id: k.client_id,
+            expires_at: k.expires_at.toISOString(),
+          },
+        });
+        if (owners.length > 0) {
+          await deps.tell(
+            {
+              household_id: hh,
+              account_ids: owners,
+              subject: `An API key of ${k.app} expires on ${day(k.expires_at)}`,
+              body: `The API key ${which(k)} of ${k.app} expires on ${day(k.expires_at)}. To keep ${k.app} working, generate a new key in Settings → Connected apps, give it to ${k.app}, then revoke this one.`,
+            },
+            queueDbOf(trx),
+          );
+        }
+      }
+      for (const k of ended.rows) {
+        await appendAudit(trx, {
+          householdId: hh,
+          action: 'app.key_expired',
+          objectType: 'member',
+          objectId: k.member_id,
+          detail: {
+            app_id: k.app_id,
+            app: k.app,
+            client_id: k.client_id,
+            expires_at: k.expires_at.toISOString(),
+          },
+        });
+        if (owners.length > 0) {
+          await deps.tell(
+            {
+              household_id: hh,
+              account_ids: owners,
+              subject: `An API key of ${k.app} has expired`,
+              body: `The API key ${which(k)} of ${k.app} expired on ${day(k.expires_at)}, and the vault refuses it now. If ${k.app} still needs to reach the vault, generate a new key in Settings → Connected apps and give it to ${k.app}.`,
+            },
+            queueDbOf(trx),
+          );
+        }
+      }
+      return { soon: soon.rows.length, ended: ended.rows.length };
+    });
+    expiring += told.soon;
+    expired += told.ended;
+  }
+  return { expiring, expired };
 }
 
 /**

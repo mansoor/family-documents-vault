@@ -12,35 +12,13 @@ declare function setTimeout(handler: () => void, ms?: number): number;
 
 /**
  * Web Crypto: its random numbers — a browser's, Hermes' (its polyfill),
- * Node's — and, for a connected app's signer alone (`@fdv/client/apps`),
- * SHA-256 and Ed25519 (Node 22, and the browsers that have them).
+ * Node's — and SHA-256, which the fake vault hashes files and an API key's
+ * secret with (Node 22, and the browsers).
  */
 declare const crypto: {
   getRandomValues<T extends Uint8Array>(array: T): T;
   readonly subtle: {
     digest(algorithm: 'SHA-256', data: Uint8Array): Promise<ArrayBuffer>;
-    importKey(
-      format: 'pkcs8' | 'raw',
-      keyData: Uint8Array,
-      algorithm: { name: 'Ed25519' },
-      extractable: boolean,
-      usages: string[],
-    ): Promise<unknown>;
-    sign(algorithm: { name: 'Ed25519' }, key: unknown, data: Uint8Array): Promise<ArrayBuffer>;
-    /** The fake vault's check of an app's signature. */
-    verify(
-      algorithm: { name: 'Ed25519' },
-      key: unknown,
-      signature: Uint8Array,
-      data: Uint8Array,
-    ): Promise<boolean>;
-    /** The contract's fresh key pairs, for an app's next key (CL2). */
-    generateKey(
-      algorithm: { name: 'Ed25519' },
-      extractable: boolean,
-      usages: string[],
-    ): Promise<unknown>;
-    exportKey(format: 'raw' | 'pkcs8', key: unknown): Promise<ArrayBuffer>;
   };
 };
 declare function clearTimeout(handle: number | undefined): void;

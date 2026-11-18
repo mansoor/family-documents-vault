@@ -1,15 +1,15 @@
 # @fdv/client
 
 The API client for [Family Document Vault](https://github.com/mansoor/family-documents-vault):
-the one the vault's own web and phone apps use, the signer a **connected app** needs, and a
+the one the vault's own web and phone apps use, the client a **connected app** needs, and a
 fake vault to test against. MIT, written in TypeScript, and platform-neutral: no DOM and
 no Node APIs, so it runs in a browser, in React Native and in Node 22 or later (it needs
-the global `crypto`, with Web Crypto's Ed25519 for signing).
+the global `fetch` and `crypto`).
 
 | Import                         | What it is                                                                              |
 | ------------------------------ | --------------------------------------------------------------------------------------- |
 | `@fdv/client`                  | The API client (`createHttp`, `createApi`), its errors, retries and helpers.            |
-| `@fdv/client/apps`             | A connected app's client (`createAppClient`) and signer (`signRequest`).                |
+| `@fdv/client/apps`             | A connected app's client (`createAppClient`), with its API key.                         |
 | `@fdv/client/testing`          | `createFakeVault()`, an in-memory vault that answers as the real one does.              |
 | `@fdv/client/testing/contract` | `contractScenarios`: what the fake and the real vault are both held to (vitest, yours). |
 
@@ -22,7 +22,7 @@ It is not on npmjs.com. Each vault release attaches the client of that release t
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.62/fdv-client-0.9.0-dev.62.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.63/fdv-client-0.9.0-dev.63.tgz"
   }
 }
 ```
@@ -36,26 +36,27 @@ It is **ESM only**, with TypeScript declarations behind `exports`: TypeScript ne
 the other entries (`node`/`node10` does not read `exports`). It says `sideEffects: false`, so
 a bundler keeps only what an app uses.
 
-## Signing requests as a connected app
+## A connected app's API key
 
-The vault's owner connects the app in _Settings → Connected apps_, pasting the app's public
-key, and gets a connection string (`fdvapp1.…`) to paste into the app. Every request the app
-makes is signed with its Ed25519 private key (HTTP Message Signatures, RFC 9421, with a
-`Content-Digest`), through Web Crypto: Node 22, and browsers that have Ed25519.
+An owner connects the app in _Settings → Connected apps_ and **generates an API key** for it
+there: a client ID (`fdvc_…`) and a secret (`fdvs_…`). Each key has its own permissions (some
+of what the app may do) and lasts 30, 90 or 365 days, a number of days the owner chooses
+(1 to 3650), or never expires. The vault shows the secret **once** and keeps only a hash of
+it, with a connection string (`fdvapp2.…`) to paste into the app; the owner may include the
+secret in it. The app sends the key on every request as `Authorization: Basic
+base64(client_id:secret)`; keep the secret as you would a password.
 
 ```ts
 import { createAppClient, parseConnectionString } from '@fdv/client/apps';
 
 const c = parseConnectionString(process.env.VAULT_CONNECTION!);
 const vault = createAppClient({
-  baseUrl: c.url,
-  appId: c.app_id,
-  keyId: c.key_id,
-  privateKey: process.env.VAULT_PRIVATE_KEY!, // a PEM "PRIVATE KEY" (PKCS#8) block
-  fetch: (url, init) => fetch(url, init),
+  url: c.url,
+  clientId: c.client_id,
+  secret: c.secret ?? process.env.VAULT_SECRET!,
 });
 
-const me = await vault.me(); // what this app may do
+const me = await vault.me(); // what this app may do, and the key it used
 await vault.send({
   externalId: 'invoice-2026-11',
   hints: { kind: 'utility_bill' },
@@ -64,8 +65,12 @@ await vault.send({
 const state = await vault.status('invoice-2026-11'); // waiting, filed, refused or removed
 ```
 
-`parseConnectionString` takes an `https` address, and plain `http` only to this machine
+`fetch` is the platform's own unless you pass one. `parseConnectionString` and
+`createAppClient` both take an `https` address, and plain `http` only to this machine
 (`localhost`, `127.0.0.1`, `[::1]`), on purpose: for a vault run locally while developing.
+`createAppClient` throws for any other address, so the secret is never sent in the clear. A connection string made before API keys
+(`fdvapp1.…`, from 0.9.0 development builds before dev.63, which signed requests) is refused
+with what to do: generate an API key and paste its new connection string.
 
 A request with no answer at all throws a `NetworkError` (`kind` `offline` or `timeout`),
 never an `ApiRequestError`; what the platform's `fetch` threw is its standard `cause`, and
@@ -73,19 +78,50 @@ never an `ApiRequestError`; what the platform's `fetch` threw is its standard `c
 with an address in it) for a log. The `cause` is passed through from `fetch` unchanged, and
 may name the address asked, its query included: be careful logging it in full.
 
-### Rotating keys
+### Keys expire, and are replaced by an owner
 
-An app adds its next key itself, signed with its current one: `addKey('ed25519:…')` (or a
-PEM `PUBLIC KEY`). The new key is **pending**: it signs nothing (`401 app_key_pending`) until
-an owner, or the person the app acts as, confirms it in _Settings → Connected apps_. An app
-has two live keys at most, a pending one counted (`409 key_limit`). Once the new key has
-signed a request, the old one retires by itself seven days later (`retires_at` in `me()`),
-or sooner with `retireKey(id)`, which retires only a key the app added, never the one
-signing the request nor its last (`409 key_added_by_owner`, `409 key_in_use`). An owner may
-add a key in Settings too, confirmed as it is added.
+An app never makes, renews or retires its own keys: only an owner generates and revokes them,
+in Settings. `me().key` describes the key making the call (its client ID, name, permissions,
+`created_at`, `expires_at`, or `null` when it never expires, and `last_used_at`), never the
+app's other keys, so an app can **warn its own users before the key expires**; the vault
+reminds its owners 14 days before, and again once it has. An app has two live keys at most,
+so an owner can generate the next one and the app can move to it before the old one ends.
+A request is refused `401 app_key_invalid` for a wrong secret or a client ID the vault does
+not know (the same answer for both), `401 app_key_expired`, `401 app_key_revoked` (from the
+very next request after an owner revokes it) or `401 app_revoked` (the app was removed); and
+`403 scope_not_granted` for something the key's permissions, or the app's, do not allow. Ten
+guesses a minute from one address — a client ID the vault does not know, or a wrong secret —
+and the next waits (`429 rate_limited`); a revoked or expired key is refused without counting.
+Basic authentication whose user is not a client ID (`fdvc_…`) is not an app's key — a proxy's
+password in front of the vault, say — and the vault lets it pass on its own routes.
 
-`signRequest({ method, target, body, keyid, privateKey })` gives the three headers
-(`content-digest`, `signature-input`, `signature`) for a request made any other way.
+When an owner generates a new key that may do no more than a live one already may (moving to
+a new key), an app acting as somebody else keeps working; a key that may do more waits for
+that person to turn the app on again. Revoking a key ends the links it made for its user's
+browser, opened or not, at their next request.
+
+### What it sent, and the versions after
+
+A document the app's send made stays the app's to read (`own: true`, with the `external_id`
+of that send) while it is in the vault, out of the Trash and not Only me — even after the
+family, or another app, adds newer versions: the feed says it `changed`, and `document(id)`
+and `download(id)` (`GET /api/v1/apps/documents/{id}` and `…/content`) give it as it is now,
+its newest file. The exact file the app sent is `sentFile(externalId)` (`GET
+/api/v1/apps/intake/{external_id}/content`), whatever came after it. `delete(id)` (`DELETE
+/api/v1/apps/documents/{id}`) is only for a document whose newest file is one the app sent:
+never the family's newer file, nor another app's.
+
+### API versioning
+
+Every route is under `/api/v1/`. `GET /api/v1/apps/me` gives the vault's version
+(`vault.server_version`), and `GET /api/v1/capabilities` its capability flags (`features`).
+Every change is listed in the vault's `docs/api-changelog.md`. During the 0.9.0 development
+builds a breaking change may still land inside v1, and the changelog marks it **breaking**.
+From the 0.9.0 release on, a breaking change goes to a new path version (`/api/v2/…`), while
+v1 keeps working for a stated deprecation period of at least 6 months.
+
+`basicAuthorization(clientId, secret)` gives the `Authorization` header for a request made
+any other way; `request()` on the client sends one of the app's own.
 
 ## Testing against the fake vault
 
@@ -104,28 +140,31 @@ const owner = await api.setup({
 });
 fake.state.ownerTwoStep = true; // connecting an app asks for a second step
 const made = await api.connectedApps.create(owner.access_token, {
-  name: 'My app',
+  name: 'Acme Money',
   member_id: owner.member_id,
-  public_key: 'ed25519:…', // the app's public key
   allowed_kinds: ['utility_bill'],
   scopes: ['documents.send'],
 });
+const key = await api.connectedApps.generateKey(owner.access_token, made.id, {
+  permissions: ['documents.send'],
+  expires_in_days: 90, // or null: never expires
+});
 const app = createAppClient({
-  baseUrl: 'https://vault.test',
-  appId: made.id,
-  keyId: made.keys[0]!.key_id,
-  privateKey,
+  url: 'https://vault.test',
+  clientId: key.client_id,
+  secret: key.secret,
   fetch: fake.fetch,
 });
+fake.expireAppKey(key.client_id); // as time would: its next request is 401 app_key_expired
 ```
 
-The fake checks every signature as the vault does, and keeps an app's keys by the vault's
-rules: pending until confirmed, two at most, the seven days. Adding or confirming a key
-asks for a passkey or a code: the fake's owner has none until `fake.state.ownerTwoStep =
-true`, and an adult has one until `fake.state.adultTwoStep = false`. It keeps a file's bytes
-exactly as they were sent — bytes, a stream, a Blob or a platform FormData — and gives back
-those bytes from every download (an app's, its re-download of a send, and the family's
-`api.content`), so a hash taken before and after agrees. The scenarios both the fake
+The fake checks every API key as the vault does, and keeps an app's keys by the vault's
+rules: an owner's alone, two live at most, each with its permissions and expiry, revoked at
+once. Generating or revoking a key asks for a passkey or a code: the fake's owner has none
+until `fake.state.ownerTwoStep = true`. It keeps a file's bytes exactly as they were sent —
+bytes, a stream, a Blob or a platform FormData — and gives back those bytes from every
+download (an app's, its re-download of a send, and the family's `api.content`), so a hash
+taken before and after agrees. The scenarios both the fake
 and the real vault are held to, `contractScenarios`, are their own entry,
 `@fdv/client/testing/contract`: they use vitest's `expect`, so to use that entry, keep
 vitest in your app's own devDependencies, `npm install -D vitest@">=5 <7"` (or `pnpm add -D

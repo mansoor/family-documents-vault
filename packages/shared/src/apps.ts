@@ -1,7 +1,8 @@
 /**
- * Connected apps (0.9.0, APP1): an app an owner connects, which signs every
- * request with its own Ed25519 key and sends documents into the Inbox of
- * the person it acts as.
+ * Connected apps (0.9.0, APP1): an app an owner connects, which sends
+ * documents into the Inbox of the person it acts as. Since APP6 it proves
+ * who it is on every request with an API key the vault generated: a client
+ * ID and a secret, as HTTP Basic authentication.
  *
  * The integrator's side is `docs/api-changelog.md` and the contract the
  * vault keeps with them; this module is what the API, the web, the fake
@@ -197,33 +198,55 @@ export const APP_NAME_MAX = 60;
 export const APP_METADATA_MAX_BYTES = 16 * 1024;
 /** `GET /apps/intake?external_ids=` takes this many at most. */
 export const APP_STATUS_MAX_IDS = 100;
-/** How far `created` may be from the vault's clock, in seconds. */
-export const APP_SIGNATURE_WINDOW_SECONDS = 300;
-/** Live keys an app holds at most, for rotation. */
+
+// ------------------------------------------------------- API keys (APP6)
+
+/*
+ * An app's API keys (0.9.0, APP6): an owner generates one in Settings →
+ * Connected apps, with its own permissions (some of the app's scopes) and
+ * how long it lasts; the vault shows its client ID and secret once, keeps
+ * only a SHA-256 of the secret, and the app sends both on every request as
+ * `Authorization: Basic base64(client_id:secret)`.
+ */
+
+/** Live keys an app holds at most: not expired, not revoked. */
 export const APP_KEYS_MAX = 2;
-/** An older key retires by itself this many days after a newer one is first used. */
-export const APP_KEY_RETIRE_DAYS = 7;
+/** A client ID: `fdvc_` and 16 random bytes, base64url. It names a key; it is not a secret. */
+export const APP_CLIENT_ID_PREFIX = 'fdvc_';
+export const APP_CLIENT_ID_PATTERN = /^fdvc_[A-Za-z0-9_-]{22}$/;
+/**
+ * A secret: `fdvs_` and 32 random bytes, base64url. The prefix lets a
+ * secret scanner spot one pasted where it should not be.
+ */
+export const APP_SECRET_PREFIX = 'fdvs_';
+export const APP_SECRET_PATTERN = /^fdvs_[A-Za-z0-9_-]{43}$/;
+/** How long a key lasts, as Settings offers it, in days; or a custom number up to the most; or never. */
+export const APP_KEY_VALIDITY_DAYS = [30, 90, 365] as const;
+export const APP_KEY_DAYS_MAX = 3650;
+/** The owners are reminded this many days before a key expires (when it lasts longer than that). */
+export const APP_KEY_WARN_DAYS = 14;
+/** A key's name, at most. */
+export const APP_KEY_NAME_MAX = 60;
+/** Failed authentications an address may make a minute before it waits (`429 rate_limited`). */
+export const APP_AUTH_FAILURES_PER_MINUTE = 10;
 
-// ------------------------------------------------------------ signing
+/** A key's state: works, past its expiry, or revoked (by an owner, or with its app). */
+export type AppKeyState = 'live' | 'expired' | 'revoked';
 
-/** The one signature's label, and the tag that keeps it to this protocol. */
-export const APP_SIGNATURE_LABEL = 'fdv';
-export const APP_SIGNATURE_TAG = 'fdv-app';
-/** The components signed, exactly these, in this order. */
-export const APP_SIGNED_COMPONENTS = ['@method', '@path', '@query', 'content-digest'] as const;
-/** The digest of no body at all: what a GET or a DELETE carries. */
-export const APP_EMPTY_DIGEST = 'sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:';
+/** A connection string's prefix: `fdvapp2.` and base64url of its JSON. */
+export const APP_CONNECTION_PREFIX = 'fdvapp2.';
+/** The connection strings made before API keys (APP1 to APP5): read only to say they are old. */
+export const APP_CONNECTION_PREFIX_SIGNED = 'fdvapp1.';
 
-/** A connection string's prefix: no secret is in it. */
-export const APP_CONNECTION_PREFIX = 'fdvapp1.';
-
-/** What a connection string holds. */
+/**
+ * What a connection string holds: where the vault is and which key; the
+ * secret only when the owner chose to include it as the key was shown.
+ */
 export interface AppConnection {
   url: string;
-  app_id: string;
-  key_id: string;
+  client_id: string;
   instance_id: string | null;
-  fingerprint: string;
+  secret?: string;
 }
 
 // ------------------------------------------------------------- intake
@@ -527,21 +550,32 @@ export interface AppSendKind {
   expires: boolean;
 }
 
-/** A key, as an app or Settings is told of it: never the key itself. */
+/** A key, as Settings lists it: never its secret, nor anything made from it. */
 export interface AppKeyView {
-  key_id: string;
-  fingerprint: string;
-  added_by: 'owner' | 'app';
+  id: string;
+  client_id: string;
+  name: string | null;
+  /** What it may do: some of its app's scopes (the app's are asked too, on every request). */
+  permissions: AppScope[];
   created_at: string;
-  /**
-   * Added by the app itself and not yet confirmed in Settings: it signs
-   * nothing until an owner, or the person the app acts as, confirms it.
-   */
-  pending?: boolean;
-  /** When it was first used to sign: Settings says it. */
-  first_used_at?: string | null;
-  /** When it retires by itself: seven days after a newer key was first used; else null. */
-  retires_at: string | null;
+  /** When it stops working; null: never. */
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  /** Why it was revoked: by an owner, with its app, or by a restore (every key is). */
+  revoked_reason?: 'owner' | 'app_removed' | 'restore' | null;
+  state: AppKeyState;
+}
+
+/** `GET /apps/me`'s `key`: the key making the call, and nothing of the app's other keys. */
+export interface AppMeKey {
+  client_id: string;
+  name: string | null;
+  permissions: AppScope[];
+  created_at: string;
+  /** null: it never expires. */
+  expires_at: string | null;
+  last_used_at: string | null;
 }
 
 /** `GET /api/v1/apps/me`: the connection test, and what this app may do. */
@@ -557,6 +591,7 @@ export interface AppMe {
     now: string;
     time_zone: string;
   };
+  /** What this request may do: the app's scopes that the key making it has too (APP6). */
   scopes: AppScope[];
   /**
    * `auto_file` (APP4): the owner's switch — what it sends is filed without
@@ -588,17 +623,8 @@ export interface AppMe {
     bytes_per_day: number;
     auto_file: boolean;
   } | null;
-  keys: AppKeyView[];
-}
-
-/** `POST /api/v1/apps/keys`: a key added by the app. */
-export interface AppKeyAdded {
-  key_id: string;
-  keyid: string;
-  fingerprint: string;
-  created_at: string;
-  /** Always true: it signs nothing until an owner, or the person the app acts as, confirms it. */
-  pending?: boolean;
+  /** The key making this request (APP6): an app warns its own users before it expires. */
+  key: AppMeKey;
 }
 
 // ------------------------------------------------- Settings (the family)
@@ -631,6 +657,7 @@ export interface ConnectedAppView {
     auto_file: boolean;
   } | null;
   ip_allow: string[];
+  /** Its API keys (APP6), oldest first: live, expired and revoked. */
   keys: AppKeyView[];
   last_used_at: string | null;
   today: { files: number; bytes: number };
@@ -654,7 +681,10 @@ export interface ConnectedAppView {
   /** Links it minted in the last hour, and those opened in the last 7 days (APP3). */
   links_last_hour?: number;
   links_opened_week?: number;
-  /** What to paste into the app: no secret is in it. */
+  /**
+   * What to paste into the app: the address and its newest live key's
+   * client ID, never a secret; empty while it has no live key.
+   */
   connection_string: string;
   /** The address the app must use, and whether it is the public-only site's. */
   address: { url: string; public: boolean };
@@ -664,7 +694,6 @@ export interface ConnectedAppView {
 export interface ConnectedAppInput {
   name: string;
   member_id: string;
-  public_key: string;
   allowed_kinds: string[];
   default_visibility?: Visibility | null;
   daily_files?: number;
@@ -714,10 +743,26 @@ export type ConnectedAppChange = Partial<
   >
 >;
 
-/** `POST /api/v1/connected-apps/{id}/keys`'s answer: the key, and the string to paste again. */
-export interface ConnectedAppKeyAdded {
+/** `POST /api/v1/connected-apps/{id}/keys`: an owner generates an API key (APP6). */
+export interface ConnectedAppKeyInput {
+  /** What to call it ("Acme Money, live"); optional. */
+  name?: string | null;
+  /** Some of the app's scopes, at least one. */
+  permissions: AppScope[];
+  /** How long it lasts: 1 to APP_KEY_DAYS_MAX days; null: it never expires. */
+  expires_in_days: number | null;
+}
+
+/**
+ * Its answer, `201`: the secret this once and never again (the vault keeps
+ * only a hash of it), with the connection string without it and with it.
+ */
+export interface ConnectedAppKeyMade {
   key: AppKeyView;
+  client_id: string;
+  secret: string;
   connection_string: string;
+  connection_string_with_secret: string;
 }
 
 /** The apps the caller may see, and what the vault says about where apps reach it. */
@@ -742,25 +787,20 @@ export const appsNotPublicWords = (app: string): string =>
 
 /** The refusals an app's request may be answered, in words a person may be shown. */
 export const APP_REFUSALS = {
-  app_signature_required: 'Sign this request as a connected app.',
-  signature_malformed: 'The request’s signature is not written as the vault expects.',
-  app_key_unknown: 'The vault does not know this key, or it has been retired.',
-  app_key_pending:
-    'This key waits for an owner, or the person the app acts as, to confirm it in Settings.',
+  app_key_required: 'Send the app’s API key: Authorization: Basic, with its client ID and secret.',
+  app_key_invalid: 'The client ID or the secret is not right.',
+  app_key_expired: 'This API key has expired. An owner can generate a new one in Settings.',
+  app_key_revoked: 'An owner has revoked this API key.',
   app_revoked: 'This app has been removed from the vault. Connect it again.',
   app_paused: 'An owner has paused this app.',
   app_not_approved: 'The person this app acts as has not turned it on yet.',
   address_not_allowed: 'This app may not reach the vault from this address.',
   https_required: 'Use https to reach the vault.',
-  signature_stale: 'The request was signed too long ago, or the app’s clock is wrong.',
-  signature_invalid: 'The request’s signature does not verify.',
-  nonce_reused: 'This request was sent before. Sign it again.',
   member_locked: 'An owner has locked the sign-in of the person this app acts as.',
   member_paused:
     'After a restore, the sign-in of the person this app acts as waits for an owner to turn it back on.',
-  scope_not_granted: 'The owner did not allow this app to do that.',
-  content_digest_mismatch: 'The body did not match its digest, so nothing was kept.',
-  app_signature_not_accepted: 'A connected app can only use the app routes.',
+  scope_not_granted: 'The owner did not allow this app, or this API key, to do that.',
+  app_key_not_accepted: 'A connected app can only use the app routes.',
   kind_not_allowed: 'This app may not send this kind of document.',
   external_id_conflict: 'This external_id was already used with other bytes.',
   app_day_full: 'This app has sent as much as it may today.',
@@ -776,22 +816,17 @@ export const APP_REFUSALS = {
     'This page was opened from another network. Open the document again from the app.',
 } as const;
 
-/** A refusal's code as Settings says it: "signature not valid". */
+/** A refusal's code as Settings says it: "API key expired". */
 export const APP_REFUSAL_SHORT: Readonly<Record<string, string>> = {
-  signature_malformed: 'signature not written right',
-  app_key_unknown: 'key not known',
-  app_key_pending: 'key not confirmed yet',
+  app_key_expired: 'API key expired',
+  app_key_revoked: 'API key revoked',
   app_paused: 'paused',
   app_not_approved: 'not turned on yet',
   address_not_allowed: 'address not allowed',
   https_required: 'not over https',
-  signature_stale: 'clock off',
-  signature_invalid: 'signature not valid',
-  nonce_reused: 'request sent twice',
   member_locked: 'sign-in locked',
   member_paused: 'sign-in paused',
   scope_not_granted: 'not allowed',
-  content_digest_mismatch: 'body changed',
   kind_not_allowed: 'kind not allowed',
   app_day_full: 'day full',
   app_read_day_full: 'downloads full',
@@ -883,8 +918,12 @@ export interface AppDocument {
   tax_year: number | null;
   status: { value: string; label: string };
   version: { id: string; sha256: string; byte_size: number; content_type: string } | null;
+  /**
+   * A document this app's send made, for as long as it is in the vault —
+   * whatever newer versions the family or another app added since.
+   */
   own: boolean;
-  /** Its external id, when it is the app's own. */
+  /** Its external id, when it is the app's own: the send that made it. */
   external_id: string | null;
   updated_at: string;
 }
@@ -953,8 +992,8 @@ export interface AppReadCase {
   /** The role of the person the app acts as. */
   role: string;
   /**
-   * Filed from what the app sent, not let go of, and its current version
-   * still the one the app sent.
+   * Made by what the app sent (filed as a document of its own, not into a
+   * family paper) and not let go of — whatever newer versions came since.
    */
   own: boolean;
   grants: ReadonlyArray<{
@@ -973,8 +1012,8 @@ export interface AppReadCase {
  * database's rule (connected_app_documents), held to the same answers by a
  * test. Never anything its person cannot see, Only me (its own included),
  * Essential, in the Trash, a note, or of a category an app may never be
- * given; never a paper somebody marked Sensitive. Its own (while its
- * current version is the one the app sent), or one a grant covers by kind or
+ * given; never a paper somebody marked Sensitive. Its own (one its send
+ * made, whatever versions came since), or one a grant covers by kind or
  * category within the grant's lookback, its kind not one kept as an
  * Essential — its kind confirmed on the grant when it makes it Sensitive.
  */

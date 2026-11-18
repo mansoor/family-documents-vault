@@ -126,9 +126,17 @@ export function restoreSummary(file: string, r: RestoreReport): string {
   }
   if (r.appsPaused > 0) {
     lines.push(
-      `  - ${plural(r.appsPaused, 'connected app')} ${r.appsPaused === 1 ? 'was' : 'were'} paused: ` +
-        'a key removed since the backup',
-      '    would otherwise work again. An owner turns each back on, in Settings → Connected apps.',
+      `  - ${plural(r.appsPaused, 'connected app')} ${r.appsPaused === 1 ? 'was' : 'were'} paused. ` +
+        'An owner turns each back on,',
+      '    in Settings → Connected apps.',
+    );
+  }
+  if (r.appKeysRevoked > 0) {
+    lines.push(
+      `  - ${plural(r.appKeysRevoked, "connected app's API key", "connected apps' API keys")} ` +
+        `${r.appKeysRevoked === 1 ? 'was' : 'were'} revoked: one revoked since the backup`,
+      '    would otherwise work again. An owner generates each app a new key, in',
+      '    Settings → Connected apps, and gives it to the app.',
     );
   }
   if (r.readingChecksStopped > 0) {

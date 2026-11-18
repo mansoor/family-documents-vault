@@ -20,7 +20,8 @@ import type {
   ConnectedAppChange,
   ConnectedAppGrantsInput,
   ConnectedAppInput,
-  ConnectedAppKeyAdded,
+  ConnectedAppKeyInput,
+  ConnectedAppKeyMade,
   AppLinkSession,
   ConnectedAppList,
   ConnectedAppView,
@@ -2569,26 +2570,20 @@ export function createApi(http: Http) {
           method: 'POST',
           token,
         }),
-      /** An owner adds its new key: two live at most (`409 key_limit`), never one in use (`409 key_exists`). */
-      addKey: (token: string, id: string, publicKey: string) =>
-        request<ConnectedAppKeyAdded>(`/api/v1/connected-apps/${enc(id)}/keys`, {
-          method: 'POST',
-          body: { public_key: publicKey },
-          token,
-        }),
       /**
-       * A key the app added itself (`pending`), confirmed by an owner or the
-       * person it acts as, with a passkey or a code: only then does it sign.
-       * An owner confirming one for an app acting as somebody else sends the
-       * app back to them to turn on again.
+       * An owner generates an API key (APP6), with a passkey or a code: its
+       * own permissions (some of the app's scopes) and how long it lasts
+       * (`expires_in_days`, or null: never). Two live at most (`409
+       * key_limit`). `201`: the client ID and the secret, this once.
        */
-      confirmKey: (token: string, id: string, keyId: string) =>
-        request<ConnectedAppView>(`/api/v1/connected-apps/${enc(id)}/keys/${enc(keyId)}/confirm`, {
+      generateKey: (token: string, id: string, body: ConnectedAppKeyInput) =>
+        request<ConnectedAppKeyMade>(`/api/v1/connected-apps/${enc(id)}/keys`, {
           method: 'POST',
+          body,
           token,
         }),
-      /** An owner retires a key; never the last (`409 key_in_use`). `204`. */
-      retireKey: (token: string, id: string, keyId: string) =>
+      /** An owner revokes a key, with a passkey or a code: the app's next request with it is refused. `204`. */
+      revokeKey: (token: string, id: string, keyId: string) =>
         request<void>(`/api/v1/connected-apps/${enc(id)}/keys/${enc(keyId)}`, {
           method: 'DELETE',
           token,

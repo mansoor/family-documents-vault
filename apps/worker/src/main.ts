@@ -82,7 +82,7 @@ import { MailThread } from './jobs/mail-thread.js';
 import { isSettingsCheckJob, runSettingsCheck } from './jobs/settings-check.js';
 import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
-import { sweepApps } from './jobs/apps.js';
+import { noticeAppKeys, sweepApps } from './jobs/apps.js';
 import { masterKeyOpensVault, resolveMasterSecret } from './master-key-check.js';
 
 /** LOG_LEVEL, once the configuration is read: until then, everything is written. */
@@ -269,15 +269,24 @@ async function main(): Promise<void> {
     await removeEndedSharing({ admin: dbs.admin, db: dbs.app, log });
   });
   await boss.schedule(JOBS.endedSharing, '45 4 * * *');
-  // Connected apps (0.9.0, APP1): spent nonces, and what was refused or
-  // removed long ago, let go every hour; and (APP2) their feeds' old lines,
-  // and (APP3) their links a week old.
+  // Connected apps (0.9.0, APP1): what was refused or removed long ago,
+  // let go every hour; (APP2) their feeds' old lines; (APP3) their links a
+  // week old; and (APP6) the owners told of API keys that expire within 14
+  // days, or have expired, once each.
   await boss.createQueue(JOBS.appsSweep, { retryLimit: 1, retryDelay: 300 });
   await boss.work(JOBS.appsSweep, async () => {
     const swept = await sweepApps(dbs.admin);
-    if (swept.nonces + swept.sent + swept.stuck + swept.changes + swept.links > 0) {
+    if (swept.sent + swept.stuck + swept.changes + swept.links > 0) {
       log('info', 'connected apps swept', swept);
     }
+    const keys = await noticeAppKeys({
+      admin: dbs.admin,
+      db: dbs.app,
+      tell: async (a, db) => {
+        await boss.send(JOBS.alertSend, { ...a }, { db });
+      },
+    });
+    if (keys.expiring + keys.expired > 0) log('info', 'connected app keys told of', keys);
   });
   await boss.schedule(JOBS.appsSweep, '20 * * * *');
 

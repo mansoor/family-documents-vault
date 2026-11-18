@@ -173,7 +173,8 @@ describe('buildCapabilities', () => {
       ended_sharing: true,
       // 0.9.0 (DA): one document's activity.
       document_activity: true,
-      // 0.9.0 (APP1): connected apps.
+      // 0.9.0 (APP1): connected apps; (APP6) with API keys.
+      connected_app_keys: true,
       connected_app_links: true,
       connected_app_reads: true,
       connected_apps: true,
