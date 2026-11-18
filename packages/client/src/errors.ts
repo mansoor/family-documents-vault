@@ -41,17 +41,58 @@ export class ApiRequestError extends Error {
   }
 }
 
-/** No answer at all: the network is down, or the server did not reply in time. */
+/**
+ * No answer at all: the network is down, or the server did not reply in
+ * time. What the platform's fetch threw is its standard `cause`, and
+ * `detail` says it in a few words (a code such as `ECONNREFUSED`, or the
+ * error's message), for a log: `message` stays the one to show.
+ */
 export class NetworkError extends Error {
+  /** Why, in a few words, from what fetch threw; undefined when nothing was given. */
+  readonly detail: string | undefined;
+
   constructor(
     public readonly kind: 'offline' | 'timeout',
     message = kind === 'timeout'
       ? 'The vault took too long to answer.'
       : "We can't reach the vault right now.",
+    options: { cause?: unknown } = {},
   ) {
-    super(message);
+    super(message, 'cause' in options ? { cause: options.cause } : undefined);
+    // An engine that ignores the option (an older Hermes) still keeps it.
+    if ('cause' in options && !('cause' in this)) {
+      Object.defineProperty(this, 'cause', {
+        value: options.cause,
+        writable: true,
+        configurable: true,
+      });
+    }
     this.name = 'NetworkError';
+    this.detail = 'cause' in options ? networkDetail(options.cause) : undefined;
   }
+}
+
+/**
+ * What a failed fetch says, in a few words: the first `code` down its
+ * chain of causes (Node's fetch puts `ECONNREFUSED`, `ENOTFOUND` and the
+ * like on its cause), else its message, on one line — but never a message
+ * with an address in it (`://`), which says only "the request failed".
+ */
+export function networkDetail(err: unknown): string | undefined {
+  let at: unknown = err;
+  for (let depth = 0; depth < 4 && at !== null && typeof at === 'object'; depth++) {
+    const code = (at as { code?: unknown }).code;
+    if (typeof code === 'string' && code) return code;
+    at = (at as { cause?: unknown }).cause;
+  }
+  const message =
+    err !== null && typeof err === 'object' ? (err as { message?: unknown }).message : err;
+  if (typeof message !== 'string' || !message.trim()) return undefined;
+  // A message naming an address may carry its query, or a password in it:
+  // never repeated here.
+  if (message.includes('://')) return 'the request failed';
+  const one = message.trim().replace(/\s+/g, ' ');
+  return one.length > 120 ? `${one.slice(0, 119)}…` : one;
 }
 
 /**

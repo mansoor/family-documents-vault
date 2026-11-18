@@ -580,7 +580,7 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.59/fdv-client-0.9.0-dev.59.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.61/fdv-client-0.9.0-dev.61.tgz"
   }
 }
 ```
@@ -590,7 +590,8 @@ It is ESM only, with TypeScript declarations (set `moduleResolution` to `node16`
 uses Web Crypto's Ed25519 (Node 22, and the browsers that have it). It needs one package
 from npm, `libphonenumber-js` (MIT), for the fake vault. The contract scenarios the fake and
 the vault are both held to are their own entry, `@fdv/client/testing/contract`, which needs
-`vitest` installed; nothing else does. The package's
+`vitest` (5 or 6) in the app's own devDependencies; nothing else does, and the package
+declares no dependency on it. The package's
 [README](packages/client/README.md) shows signing and a test against the fake vault.
 `pnpm client:pack` builds the same tarball from a checkout.
 

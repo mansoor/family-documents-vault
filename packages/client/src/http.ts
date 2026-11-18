@@ -148,8 +148,11 @@ export function createHttp(options: HttpOptions): Http {
     let res: ResponseLike;
     try {
       res = await options.fetch(url(path), init);
-    } catch {
-      throw new NetworkError(controller?.signal.aborted ? 'timeout' : 'offline');
+    } catch (cause) {
+      // The kind as ever; what fetch threw kept as the standard cause.
+      throw new NetworkError(controller?.signal.aborted ? 'timeout' : 'offline', undefined, {
+        cause,
+      });
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }

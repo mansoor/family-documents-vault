@@ -34,6 +34,13 @@ declare const crypto: {
       signature: Uint8Array,
       data: Uint8Array,
     ): Promise<boolean>;
+    /** The contract's fresh key pairs, for an app's next key (CL2). */
+    generateKey(
+      algorithm: { name: 'Ed25519' },
+      extractable: boolean,
+      usages: string[],
+    ): Promise<unknown>;
+    exportKey(format: 'raw' | 'pkcs8', key: unknown): Promise<ArrayBuffer>;
   };
 };
 declare function clearTimeout(handle: number | undefined): void;
