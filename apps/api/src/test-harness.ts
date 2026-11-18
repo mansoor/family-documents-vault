@@ -522,6 +522,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     baseUrl: config.FDV_BASE_URL,
     publicUrl: opts.publicUrl ?? null,
     appsPublic: config.FDV_PUBLIC_APPS === 'on',
+    localHttp: config.FDV_APPS_LOCAL_HTTP === 'on',
     maxUploadBytes: 5 * 1024 * 1024,
     ceilings: { files: config.FDV_APP_DAILY_FILES, bytes: config.FDV_APP_DAILY_BYTES },
     serverVersion: await serverVersion(),

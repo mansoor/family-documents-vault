@@ -59,6 +59,8 @@ services:
       # Connected apps (0.9.0): on serves their routes on the public-only site
       # too (give caddy-public the same); the ceilings of an app's day.
       FDV_PUBLIC_APPS: ${FDV_PUBLIC_APPS:-off}
+      # Development only: plain http for connected apps to a localhost vault.
+      FDV_APPS_LOCAL_HTTP: ${FDV_APPS_LOCAL_HTTP:-off}
       FDV_APP_DAILY_FILES: ${FDV_APP_DAILY_FILES:-}
       FDV_APP_DAILY_BYTES: ${FDV_APP_DAILY_BYTES:-}
       # The longest a share link may last, in days (90 at most).

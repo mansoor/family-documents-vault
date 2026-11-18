@@ -704,7 +704,7 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.65/fdv-client-0.9.0-dev.65.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.66/fdv-client-0.9.0-dev.66.tgz"
   }
 }
 ```
@@ -762,6 +762,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_DESKTOP_DOWNLOAD_URL`                      | unset                                     | Where your family downloads the uploader app that sends scans from a computer. See [Sending scans from a computer](#sending-scans-from-a-computer).                                                                                                   |
 | `FDV_DEVICE_DAILY_BYTES`                        | `2147483648`                              | The most one paired computer may send in a day, in bytes (2 GB). Past it, its files are refused until the next day.                                                                                                                                   |
 | `FDV_PUBLIC_APPS`                               | `off`                                     | `on` serves the connected apps' routes on the public-only site too, so an app on the internet can reach the vault. Give it to `caddy-public` as well. See [Connected apps](#connected-apps).                                                          |
+| `FDV_APPS_LOCAL_HTTP`                           | `off`                                     | Development only. `on` lets connected apps call over plain http when `FDV_BASE_URL` is `http://localhost` (or `127.0.0.1`, `[::1]`); ignored for any other base URL. Never on a vault other machines can reach.                                       |
 | `FDV_APP_DAILY_FILES`                           | `1000`                                    | The most files an owner may let one connected app send in a day. Each app starts at 100.                                                                                                                                                              |
 | `FDV_APP_DAILY_BYTES`                           | `5368709120`                              | The most bytes an owner may let one connected app send in a day (5 GB). Each app starts at 500 MB.                                                                                                                                                    |
 | `FDV_PUBLIC_HOSTNAME`                           | unset                                     | The public-only site's name, for its certificate (profile `public-only`).                                                                                                                                                                             |

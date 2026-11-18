@@ -167,6 +167,8 @@ export interface AppOptions {
   publicUrl: string | null;
   /** FDV_PUBLIC_APPS=on: the app routes are on the public-only site. */
   appsPublic: boolean;
+  /** FDV_APPS_LOCAL_HTTP=on: plain http for a localhost vault behind its web container. */
+  localHttp?: boolean;
   /** FDV_MAX_UPLOAD_BYTES. */
   maxUploadBytes: number;
   /** FDV_APP_DAILY_FILES and FDV_APP_DAILY_BYTES: the ceilings an owner sets caps up to. */
@@ -246,6 +248,16 @@ export function addressAllowed(ip: string | null, allow: readonly string[]): boo
 }
 
 /** Whether FDV_BASE_URL is this machine alone, where plain http is taken. */
+/**
+ * Whether a request over plain http may go on: only for a vault whose own
+ * address is this machine, asked from this machine, or with the operator's
+ * development switch on (FDV_APPS_LOCAL_HTTP), since behind the web container
+ * the API never sees an app on this machine as this machine.
+ */
+export function plainHttpAllowed(baseUrl: string, loopback: boolean, localHttp: boolean): boolean {
+  return localBase(baseUrl) && (loopback || localHttp);
+}
+
 export function localBase(baseUrl: string): boolean {
   try {
     const u = new URL(baseUrl);
@@ -1029,8 +1041,12 @@ export class AppService {
       await refuse(err(403, 'address_not_allowed'));
     }
     // 7. Over https, as the trusted proxies say; plain http only for a vault
-    // on this machine, asked from this machine: its address and the socket.
-    if (req.protocol !== 'https' && !(localBase(this.opts.baseUrl) && loopbackSocket(req))) {
+    // on this machine, asked from this machine (its address and the socket),
+    // or with the operator's development switch for such a vault.
+    if (
+      req.protocol !== 'https' &&
+      !plainHttpAllowed(this.opts.baseUrl, loopbackSocket(req), this.opts.localHttp === true)
+    ) {
       await refuse(err(403, 'https_required'));
     }
     // 8. The key's use and the app's noted, and the app and its person

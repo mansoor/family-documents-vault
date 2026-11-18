@@ -242,6 +242,8 @@ needs a vault of 0.4.10 or later.
 
 ## Unreleased
 
+- `FDV_APPS_LOCAL_HTTP=on` (0.9.0-dev.66, development only): `403 https_required` is no longer answered to a connected app calling over plain http when the vault's `FDV_BASE_URL` is `http://localhost`, `127.0.0.1` or `[::1]`. No change for any other vault. **Additive.**
+
 - `GET /api/v1/capabilities` — the capability document. Fetch it first,
   unauthenticated. Shape:
 

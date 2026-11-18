@@ -6,6 +6,12 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.66] - 2026-11-18 — connected apps over plain http, for development
+
+### Added
+
+- **`FDV_APPS_LOCAL_HTTP`** (off unless set to `on`; development only): connected apps may call a vault whose `FDV_BASE_URL` is `http://localhost` over plain http, even though the API sits behind the web container and never sees them as this machine. Ignored for any other base URL.
+
 ## [0.9.0-dev.65] - 2026-11-18 — a connected app acts as itself
 
 ### Changed
