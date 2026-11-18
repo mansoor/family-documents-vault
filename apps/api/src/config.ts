@@ -247,6 +247,16 @@ const schema = z.object({
         'the same value to the caddy-public service (docker-compose.tls.yml).',
     ),
 
+  FDV_APPS_LOCAL_HTTP: z
+    .enum(['on', 'off'])
+    .default('off')
+    .describe(
+      'For development only: on lets connected apps call over plain http when FDV_BASE_URL is ' +
+        'http://localhost (or 127.0.0.1, [::1]), even though the API sits behind the web ' +
+        'container and never sees the app as this machine. Ignored for any other base URL. ' +
+        'Off unless set to on; never on a vault other machines can reach.',
+    ),
+
   FDV_APP_DAILY_FILES: z.coerce
     .number()
     .int()

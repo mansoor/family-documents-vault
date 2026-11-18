@@ -261,6 +261,7 @@ async function main(): Promise<void> {
     baseUrl: config.FDV_BASE_URL,
     publicUrl: config.FDV_PUBLIC_URL ?? null,
     appsPublic: config.FDV_PUBLIC_APPS === 'on',
+    localHttp: config.FDV_APPS_LOCAL_HTTP === 'on',
     maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
     ceilings: { files: config.FDV_APP_DAILY_FILES, bytes: config.FDV_APP_DAILY_BYTES },
     serverVersion: version,
