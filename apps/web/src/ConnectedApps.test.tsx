@@ -94,8 +94,12 @@ const key = (over: Partial<AppKeyView> = {}): AppKeyView => ({
 const app = (over: Partial<ConnectedAppView> = {}): ConnectedAppView => ({
   id: '00000000-0000-4000-a000-000000000001',
   name: 'Acme Money',
+  acts_as: 'person',
   member_id: 'm-ahmed',
   member_name: 'Ahmed',
+  reviewer_member_id: null,
+  reviewer_name: null,
+  reviewer_needed: false,
   mine: false,
   created_at: '2026-11-01T09:00:00.000Z',
   state: 'active',
@@ -336,14 +340,15 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     await waitFor(() =>
       expect(within(form).getByRole('heading', { name: 'Connect an app' })).toHaveFocus(),
     );
-    // Whom it may act as: owners and adults who sign in; never a teen.
-    const who = within(form).getByLabelText('Acting as');
+    // Whom it may act as: itself (APP8), or owners and adults who sign in; never a teen.
+    const who = within(form).getByLabelText('It acts as');
     expect(
       within(who)
         .getAllByRole('option')
         .map((o) => o.textContent),
-    ).toEqual(['Mansoor Seikh (you)', 'Ahmed · Adult']);
-    expect(who).toHaveValue('me');
+    ).toEqual(['Itself (the app)', 'Mansoor Seikh (you)', 'Ahmed · Adult']);
+    expect(who).toHaveValue('app');
+    expect(within(form).getByLabelText('Reviewed by')).toHaveValue('me');
     // No kind ticked to start with; identity papers never offered (APP7).
     expect(within(form).getByLabelText('Bank / investment statement')).not.toBeChecked();
     expect(within(form).queryByLabelText('Passport')).toBeNull();
@@ -351,7 +356,9 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     await expectAccessible();
 
     fireEvent.change(within(form).getByLabelText(/^Name/), { target: { value: 'Acme Money' } });
-    fireEvent.change(who, { target: { value: 'm-ahmed' } });
+    fireEvent.change(who, { target: { value: 'person:m-ahmed' } });
+    // Acting as a person: they review what it sends, so nobody else is asked.
+    expect(within(form).queryByLabelText('Reviewed by')).toBeNull();
     // No key to paste: the vault generates one.
     expect(within(form).queryByLabelText(/public key/)).toBeNull();
     fireEvent.click(within(form).getByLabelText('Bank / investment statement'));
@@ -383,6 +390,7 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     const sent = calls(state, 'POST', '/api/v1/connected-apps').at(-1)?.body;
     expect(sent).toEqual({
       name: 'Acme Money',
+      acts_as: 'person',
       member_id: 'm-ahmed',
       allowed_kinds: ['bank_statement'],
       default_visibility: 'adults',
@@ -1074,5 +1082,157 @@ describe('Settings → Connected apps (0.9.0, APP1)', () => {
     at('/settings/connected-apps', { connectedApps: [], appsPublic: false });
     await screen.findByText('No app is connected.');
     expect(screen.queryByText(/FDV_PUBLIC_APPS/)).toBeNull();
+  });
+});
+
+/**
+ * An app acts as itself (0.9.0, APP8): by default, with a person who reviews
+ * what it sends that is for nobody in particular — the owner connecting it
+ * unless they choose another owner or adult, who is told and asked nothing.
+ */
+describe('Settings → Connected apps: an app acting as itself (0.9.0, APP8)', () => {
+  /** Acme Money acting as itself, reviewed by Ahmed. */
+  const ITSELF = app({
+    acts_as: 'app',
+    member_id: null,
+    member_name: null,
+    reviewer_member_id: 'm-ahmed',
+    reviewer_name: 'Ahmed',
+    mine: false,
+    counts: null,
+    route_to_person: true,
+  });
+
+  it('connects as itself by default, reviewed by the owner connecting it, and no person', async () => {
+    const state = at('/settings/connected-apps', { connectedApps: [], stepUpNeeded: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect an app' }));
+    const form = await screen.findByRole('region', { name: 'Connect an app' });
+    fireEvent.change(within(form).getByLabelText(/^Name/), { target: { value: 'Acme Money' } });
+    const who = within(form).getByLabelText('It acts as');
+    expect(who).toHaveValue('app');
+    expect(within(who).getByRole('option', { name: 'Itself (Acme Money)' })).toBeInTheDocument();
+    // Its reviewer: owners and adults who sign in, never a teen; the owner first chosen.
+    const reviewer = within(form).getByLabelText('Reviewed by');
+    expect(
+      within(reviewer)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['Mansoor Seikh (you)', 'Ahmed · Adult']);
+    expect(reviewer).toHaveValue('me');
+    expect(reviewer).toHaveAccessibleDescription(/They are told, and need not turn anything on/);
+    await expectAccessible();
+    fireEvent.click(within(form).getByLabelText('Bank / investment statement'));
+    fireEvent.click(within(form).getByRole('button', { name: 'Connect' }));
+    await confirmWithCode();
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    const sent = calls(state, 'POST', '/api/v1/connected-apps').at(-1)?.body as Record<
+      string,
+      unknown
+    >;
+    expect(sent).toMatchObject({ acts_as: 'app', reviewer_member_id: 'me' });
+    expect(sent).not.toHaveProperty('member_id');
+    // On at once: nobody else turns it on.
+    expect(within(card).getByText('On')).toBeInTheDocument();
+    expect(within(card).getByText('Acting as itself')).toBeInTheDocument();
+  });
+
+  it('connects with another reviewer, who needs no approval', async () => {
+    const state = at('/settings/connected-apps', { connectedApps: [] });
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect an app' }));
+    const form = await screen.findByRole('region', { name: 'Connect an app' });
+    fireEvent.change(within(form).getByLabelText(/^Name/), { target: { value: 'Acme Money' } });
+    fireEvent.change(within(form).getByLabelText('Reviewed by'), {
+      target: { value: 'm-ahmed' },
+    });
+    fireEvent.click(within(form).getByRole('button', { name: 'Connect' }));
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    expect(calls(state, 'POST', '/api/v1/connected-apps').at(-1)?.body).toMatchObject({
+      acts_as: 'app',
+      reviewer_member_id: 'm-ahmed',
+    });
+    expect(within(card).getByText('On')).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole('button', { name: 'Cancel' }));
+    expect(await within(card).findByText('Ahmed')).toBeInTheDocument();
+  });
+
+  it('shows on the card that it acts as itself, who reviews it, and whose Inbox takes the rest', async () => {
+    at('/settings/connected-apps', { connectedApps: [ITSELF] });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    expect(within(card).getByText('Acting as itself')).toBeInTheDocument();
+    expect(within(card).getByText('Itself')).toBeInTheDocument();
+    expect(within(card).getByText('Reviewed by')).toBeInTheDocument();
+    expect(within(card).getByText('Ahmed')).toBeInTheDocument();
+    expect(
+      within(card).getByText('The person each paper is about, else Ahmed’s'),
+    ).toBeInTheDocument();
+    expect(within(card).queryByRole('note')).toBeNull();
+    await expectAccessible();
+  });
+
+  it('says when nobody can review what it sends, and a card with no person renders', async () => {
+    at('/settings/connected-apps', {
+      connectedApps: [
+        { ...ITSELF, reviewer_member_id: null, reviewer_name: null, reviewer_needed: true },
+      ],
+    });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    expect(within(card).getByRole('note')).toHaveTextContent(
+      'Choose who reviews what Acme Money sends.',
+    );
+    expect(within(card).getByText('Nobody who can, now')).toBeInTheDocument();
+    expect(
+      within(card).getByText(
+        'The person each paper is about, else nobody’s, until an owner chooses who',
+      ),
+    ).toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('changes its reviewer: only that is sent, with acts_as', async () => {
+    const state = at('/settings/connected-apps', { connectedApps: [ITSELF], stepUpNeeded: true });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Change Acme Money' }));
+    expect(within(card).getByLabelText('It acts as')).toHaveValue('app');
+    const reviewer = within(card).getByLabelText('Reviewed by');
+    expect(reviewer).toHaveValue('m-ahmed');
+    fireEvent.change(reviewer, { target: { value: 'me' } });
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
+    await confirmWithCode();
+    expect(calls(state, 'PATCH', '/api/v1/connected-apps/').at(-1)?.body).toEqual({
+      acts_as: 'app',
+      reviewer_member_id: 'me',
+    });
+    expect(await within(card).findByText('Mansoor Seikh (you)')).toBeInTheDocument();
+  });
+
+  it('changes it to act as a person, who then turns it on; and back to itself', async () => {
+    const state = at('/settings/connected-apps', { connectedApps: [ITSELF] });
+    const card = await screen.findByRole('region', { name: 'Acme Money' });
+    fireEvent.click(within(card).getByRole('button', { name: 'Change Acme Money' }));
+    fireEvent.change(within(card).getByLabelText('It acts as'), {
+      target: { value: 'person:m-ahmed' },
+    });
+    expect(within(card).queryByLabelText('Reviewed by')).toBeNull();
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
+    expect(
+      await screen.findByText('Saved. Acme Money waits for Ahmed to turn it on.'),
+    ).toBeInTheDocument();
+    expect(calls(state, 'PATCH', '/api/v1/connected-apps/').at(-1)?.body).toEqual({
+      acts_as: 'person',
+      member_id: 'm-ahmed',
+    });
+    expect(within(card).getByText('Acting as Ahmed')).toBeInTheDocument();
+    // Back to itself: reviewed by the owner changing it, unless they choose.
+    fireEvent.click(within(card).getByRole('button', { name: 'Change Acme Money' }));
+    fireEvent.change(within(card).getByLabelText('It acts as'), { target: { value: 'app' } });
+    expect(within(card).getByLabelText('Reviewed by')).toHaveValue('me');
+    fireEvent.click(within(card).getByRole('button', { name: 'Save' }));
+    expect(
+      await screen.findByText('Saved. Acme Money may do what it now says here.'),
+    ).toBeInTheDocument();
+    expect(calls(state, 'PATCH', '/api/v1/connected-apps/').at(-1)?.body).toEqual({
+      acts_as: 'app',
+      reviewer_member_id: 'me',
+    });
   });
 });

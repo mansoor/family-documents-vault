@@ -82,7 +82,7 @@ import { MailThread } from './jobs/mail-thread.js';
 import { isSettingsCheckJob, runSettingsCheck } from './jobs/settings-check.js';
 import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
-import { noticeAppKeys, sweepApps } from './jobs/apps.js';
+import { noticeAppKeys, noticeReviewers, sweepApps } from './jobs/apps.js';
 import { masterKeyOpensVault, resolveMasterSecret } from './master-key-check.js';
 
 /** LOG_LEVEL, once the configuration is read: until then, everything is written. */
@@ -287,6 +287,16 @@ async function main(): Promise<void> {
       },
     });
     if (keys.expiring + keys.expired > 0) log('info', 'connected app keys told of', keys);
+    // (APP8) Apps acting as themselves whose reviewer can no longer take
+    // what they send: the owners told, once each.
+    const reviewers = await noticeReviewers({
+      admin: dbs.admin,
+      db: dbs.app,
+      tell: async (a, db) => {
+        await boss.send(JOBS.alertSend, { ...a }, { db });
+      },
+    });
+    if (reviewers > 0) log('info', 'connected apps without a reviewer told of', { reviewers });
   });
   await boss.schedule(JOBS.appsSweep, '20 * * * *');
 

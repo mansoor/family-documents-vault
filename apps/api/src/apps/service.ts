@@ -2,8 +2,19 @@ import { createHash, randomUUID } from 'node:crypto';
 import { BlockList, isIP, isIPv4 } from 'node:net';
 import type { Readable } from 'node:stream';
 import { itemAppHintsBinding, sealBytes } from '@fdv/crypto';
-import { actAs, appendAudit, householdZone, withPrincipal, withSystem, type Db } from '@fdv/db';
 import {
+  actAs,
+  actAsVault,
+  appendAudit,
+  householdZone,
+  withPrincipal,
+  withSystem,
+  type Db,
+} from '@fdv/db';
+import {
+  APP_ACTS_AS,
+  APP_ACTS_AS_DEFAULT,
+  APP_ITSELF_READS_AS,
   APP_BACKFILL_MAX_DAYS,
   APP_CONNECTION_PREFIX,
   APP_DEFAULT_DAILY_BYTES,
@@ -45,6 +56,7 @@ import {
   sealedAppHints,
   seesAdults,
   suspensionInEffect,
+  type AppActsAs,
   type AppConnection,
   type AppGrant,
   type AppHints,
@@ -78,6 +90,7 @@ import type { BatchService } from '../uploads/batches.js';
 import { AllowNames, type ResolveFamily } from './allow-names.js';
 import { AppAutoFile } from './auto-file.js';
 import { AppLinks } from './links.js';
+import { appLine } from './lines.js';
 import {
   addressBucket,
   newClientId,
@@ -121,11 +134,19 @@ export interface AppCaller {
   /** The API key the request came with (APP6). */
   keyId: string;
   householdId: string;
-  accountId: string;
-  memberId: string;
+  /**
+   * Whom it acts as (APP8): `app`, itself — no person, its own rows the
+   * vault's to write on its behalf — or `person`, the one below.
+   */
+  actsAs: AppActsAs;
+  /** The person it acts as: null when it acts as itself. */
+  accountId: string | null;
+  memberId: string | null;
+  /** Its person's role; for an app acting as itself, what it reads as (`APP_ITSELF_READS_AS`). */
   role: Role;
   name: string;
-  memberName: string;
+  /** Its person's name; null when it acts as itself. */
+  memberName: string | null;
   timezone: string;
   /** What this request may do: the app's scopes that its key has too (APP6). */
   scopes: AppScope[];
@@ -197,6 +218,17 @@ const inProgress = () =>
     'This external_id is still arriving. Ask its status after a moment.',
     { retriable: true, retryAfter: 5 },
   );
+/** A moment's refusal, sent again later: nothing landed. */
+const busy = () =>
+  new ApiError(503, 'busy', 'The vault was busy just then. Try again.', {
+    retriable: true,
+    retryAfter: 1,
+  });
+
+/** The owners' email when an app acting as itself has nobody to review what it sends (APP8). */
+export function reviewerNeededBody(app: string): string {
+  return `${app} acts as itself, and nobody can review what it sends now: the person chosen has left, is locked or paused, or is no longer an adult. Until an owner chooses somebody in Settings → Connected apps, what it sends that isn’t for a particular person is refused for a moment, and ${app} tries again later.`;
+}
 
 /** An address in an app's allow-list, as the database keeps them (cidr, as text). */
 export function addressAllowed(ip: string | null, allow: readonly string[]): boolean {
@@ -342,8 +374,13 @@ export function connectionString(c: AppConnection): string {
 interface AppRow {
   id: string;
   name: string;
-  account_id: string;
-  member_id: string;
+  /** Itself, or a person (APP8). */
+  acts_as: AppActsAs;
+  account_id: string | null;
+  member_id: string | null;
+  /** Who reviews what nothing routes, when it acts as itself (APP8). */
+  reviewer_member_id: string | null;
+  reviewer_told_at: Date | null;
   approval: 'waiting' | 'approved';
   scopes: string[];
   allowed_kinds: string[];
@@ -379,8 +416,11 @@ interface AppRow {
 const APP_COLUMNS = [
   'a.id',
   'a.name',
+  'a.acts_as',
   'a.account_id',
   'a.member_id',
+  'a.reviewer_member_id',
+  'a.reviewer_told_at',
   'a.approval',
   'a.scopes',
   'a.allowed_kinds',
@@ -422,7 +462,7 @@ interface KeyRow {
   expires_at: Date | null;
   last_used_at: Date | null;
   revoked_at: Date | null;
-  revoked_reason: 'owner' | 'app_removed' | 'restore' | null;
+  revoked_reason: 'owner' | 'app_removed' | 'restore' | 'creator' | null;
 }
 
 /** A key's columns, as Settings lists it: never its secret's hash. */
@@ -458,6 +498,10 @@ interface IntakeRow {
   unlinked_at?: Date | null;
   /** Whose Inbox it went to (APP5); null: the app's person's. Never told to the app. */
   inbox_member_id?: string | null;
+  /** The app's person; null for an app acting as itself (APP8). */
+  member_id?: string | null;
+  /** Sent as the app itself (APP8): a file of it filed names the app. */
+  as_itself?: boolean;
 }
 
 /**
@@ -663,14 +707,14 @@ export class AppService {
    * Whose Inbox a send goes to (APP5), when the app sends each paper to the
    * person it is about: the person its hint names — by id, or a name that
    * matches one person of the family — when they are an owner or an adult
-   * of the household who signs in and may act now. Null for its own
-   * person's: anything else, or the app's person themselves. Asked as its
-   * person: the family as they may file for it, and the kind as the
-   * household has it.
+   * of the household who signs in and may act now. Null for anything else,
+   * and, for an app acting as a person, that person themselves. Asked as
+   * its person (as the vault, for an app acting as itself, APP8): the family
+   * as they may file for it, and the kind as the household has it.
    */
-  private async inboxOf(p: Principal, app: AppRow, hints: AppHints): Promise<Principal | null> {
+  private async inboxOf(c: AppCaller, app: AppRow, hints: AppHints): Promise<Principal | null> {
     if (!app.route_to_person || !hints.person || 'household' in hints.person) return null;
-    return withPrincipal(this.db, p, async (trx) => {
+    return this.ownRows(c, async (trx) => {
       const kind = hints.kind
         ? await trx
             .selectFrom('effective_document_type')
@@ -694,7 +738,7 @@ export class AppService {
           'suspended_until',
           'suspend_reason',
         ])
-        .where('household_id', '=', p.householdId)
+        .where('household_id', '=', c.householdId)
         .execute();
       const by = new Map(signIns.map((r) => [r.member_id, r]));
       const to = appInboxOf({
@@ -711,12 +755,12 @@ export class AppService {
           );
         },
       });
-      const r = to && to !== p.memberId ? by.get(to) : undefined;
+      const r = to && to !== c.memberId ? by.get(to) : undefined;
       if (!r) return null;
       return {
         accountId: r.account_id,
         sessionId: '',
-        householdId: p.householdId,
+        householdId: c.householdId,
         memberId: r.member_id,
         role: r.role,
         seesAdults: seesAdults(r.role, null),
@@ -725,15 +769,94 @@ export class AppService {
   }
 
   /**
+   * The person who reviews what an app acting as itself sends that nothing
+   * routes (APP8), as they are now, to send to: an owner or an adult of the
+   * family with a sign-in here, neither locked nor paused. Null when it has
+   * none, or the one it has cannot take it now.
+   */
+  private async reviewerOf(c: AppCaller, app: AppRow): Promise<Principal | null> {
+    const id = app.reviewer_member_id;
+    if (!id) return null;
+    const r = await this.ownRows(c, (trx) =>
+      trx
+        .selectFrom('account_household as ah')
+        .innerJoin('member as m', (j) =>
+          j.onRef('m.id', '=', 'ah.member_id').onRef('m.household_id', '=', 'ah.household_id'),
+        )
+        .select([
+          'ah.account_id',
+          'ah.member_id',
+          'ah.role',
+          'ah.suspended_at',
+          'ah.suspended_until',
+          'ah.suspend_reason',
+        ])
+        .where('ah.household_id', '=', c.householdId)
+        .where('ah.member_id', '=', id)
+        .where('m.kind', '=', 'family')
+        .executeTakeFirst(),
+    );
+    if (!r || (r.role !== 'owner' && r.role !== 'adult')) return null;
+    if (lockInEffect(r) || suspensionInEffect(r)) return null;
+    return {
+      accountId: r.account_id,
+      sessionId: '',
+      householdId: c.householdId,
+      memberId: r.member_id,
+      role: r.role,
+      seesAdults: seesAdults(r.role, null),
+    };
+  }
+
+  /**
+   * An app acting as itself has nobody who can review what it sends (APP8):
+   * the owners are told, once — a line in the activity log and an email —
+   * to choose somebody. Told again only once a reviewer has been chosen, or
+   * has taken a send, since.
+   */
+  private async reviewerNeeded(c: AppCaller): Promise<void> {
+    const told = await this.ownRows(c, async (trx) => {
+      const a = await trx
+        .updateTable('connected_app')
+        .set({ reviewer_told_at: sql<Date>`now()` })
+        .where('id', '=', c.appId)
+        .where('acts_as', '=', 'app')
+        .where('reviewer_told_at', 'is', null)
+        .where('revoked_at', 'is', null)
+        .returning(['name'])
+        .executeTakeFirst();
+      if (!a) return null;
+      await appendAudit(trx, {
+        householdId: c.householdId,
+        action: 'app.reviewer_needed',
+        objectType: 'member',
+        objectId: null,
+        detail: { app_id: c.appId, app: a.name, as_itself: true },
+      });
+      return { name: a.name, owners: await this.owners(trx) };
+    }).catch(() => null);
+    if (!told) return;
+    await this.opts
+      .alert({
+        householdId: c.householdId,
+        accountIds: told.owners,
+        subject: `Choose who reviews what ${told.name} sends`,
+        body: reviewerNeededBody(told.name),
+        emailOnly: true,
+      })
+      .catch(() => undefined);
+  }
+
+  /**
    * The person a send went to (APP5), as they are now, to act as: their
    * sign-in in this household. Null when they have none any more.
    */
-  private async personOf(p: Principal, memberId: string): Promise<Principal | null> {
-    const r = await withPrincipal(this.db, p, (trx) =>
+  private async personOf(c: AppCaller, memberId: string): Promise<Principal | null> {
+    const r = await this.ownRows(c, (trx) =>
       trx
         .selectFrom('account_household')
         .select(['account_id', 'member_id', 'role'])
-        .where('household_id', '=', p.householdId)
+        .where('household_id', '=', c.householdId)
         .where('member_id', '=', memberId)
         .executeTakeFirst(),
     );
@@ -741,7 +864,7 @@ export class AppService {
     return {
       accountId: r.account_id,
       sessionId: '',
-      householdId: p.householdId,
+      householdId: c.householdId,
       memberId: r.member_id,
       role: r.role,
       seesAdults: seesAdults(r.role, null),
@@ -760,8 +883,14 @@ export class AppService {
       : { url: this.opts.baseUrl.replace(/\/+$/, ''), public: false };
   }
 
-  /** The person an app acts as, as the batches see them: asking as themselves, with no session. */
+  /**
+   * The person an app acts as, as the batches see them: asking as
+   * themselves, with no session. Only for an app acting as a person.
+   */
   private principalOf(c: AppCaller): Principal {
+    if (c.actsAs !== 'person' || !c.accountId || !c.memberId) {
+      throw new Error('an app acting as itself has no person');
+    }
     return {
       accountId: c.accountId,
       sessionId: '',
@@ -770,6 +899,35 @@ export class AppService {
       role: c.role,
       seesAdults: seesAdults(c.role, null),
     };
+  }
+
+  /**
+   * The app's own rows — what became of its sends, its caps, its lines in
+   * the activity log — in a transaction of their own: as its person, for an
+   * app acting as one; as the vault, on its behalf, for an app acting as
+   * itself (APP8), which has no person and no account standing in for one.
+   */
+  private ownRows<T>(c: AppCaller, fn: (trx: Db) => Promise<T>): Promise<T> {
+    return c.actsAs === 'person'
+      ? withPrincipal(this.db, this.principalOf(c), fn)
+      : withSystem(this.db, c.householdId, fn);
+  }
+
+  /**
+   * The app's own rows inside the transaction of the person whose Inbox its
+   * file goes to (APP5, APP8): as its own person, when that is somebody
+   * else; as the vault, for an app acting as itself; or just so, when the
+   * Inbox is its person's own.
+   */
+  private asAppIn(
+    c: AppCaller,
+    inbox: Principal,
+  ): <T>(trx: Db, fn: (trx: Db) => Promise<T>) => Promise<T> {
+    if (c.actsAs === 'app') return (trx, fn) => actAsVault(trx, fn);
+    const p = this.principalOf(c);
+    return inbox.memberId === p.memberId && inbox.accountId === p.accountId
+      ? (trx, fn) => fn(trx)
+      : (trx, fn) => actAs(trx, p, fn);
   }
 
   // ------------------------------------------------------------ API keys
@@ -890,7 +1048,7 @@ export class AppService {
         .execute();
       return trx
         .selectFrom('connected_app as a')
-        .innerJoin('member as m', (j) =>
+        .leftJoin('member as m', (j) =>
           j.onRef('m.id', '=', 'a.member_id').onRef('m.household_id', '=', 'a.household_id'),
         )
         .innerJoin('household as hh', 'hh.id', 'a.household_id')
@@ -902,6 +1060,7 @@ export class AppService {
         .select([
           'a.name',
           'a.scopes',
+          'a.acts_as',
           'a.account_id',
           'a.member_id',
           'a.approval',
@@ -917,17 +1076,25 @@ export class AppService {
         .where('a.id', '=', at.app_id)
         .executeTakeFirst();
     });
-    if (!app || app.revoked_at !== null || !app.role || !['owner', 'adult'].includes(app.role)) {
-      throw err(401, 'app_revoked');
+    if (!app || app.revoked_at !== null) throw err(401, 'app_revoked');
+    // An app acting as itself (APP8) has no person: its being live, and its
+    // key, are what it is asked. One acting as a person asks theirs.
+    const itself = app.acts_as === 'app';
+    let role: Role = APP_ITSELF_READS_AS;
+    if (!itself) {
+      if (!app.role || !['owner', 'adult'].includes(app.role) || !app.account_id) {
+        throw err(401, 'app_revoked');
+      }
+      role = app.role;
+      // 9. Its person may act now.
+      const person = {
+        suspend_reason: app.suspend_reason ?? null,
+        suspended_at: app.suspended_at ?? null,
+        suspended_until: app.suspended_until ?? null,
+      };
+      if (lockInEffect(person)) await refuse(err(403, 'member_locked'));
+      if (suspensionInEffect(person)) await refuse(err(403, 'member_paused'));
     }
-    // 9. Its person may act now.
-    const person = {
-      suspend_reason: app.suspend_reason ?? null,
-      suspended_at: app.suspended_at ?? null,
-      suspended_until: app.suspended_until ?? null,
-    };
-    if (lockInEffect(person)) await refuse(err(403, 'member_locked'));
-    if (suspensionInEffect(person)) await refuse(err(403, 'member_paused'));
     // 10. The route is in what the app may do and in what this key may:
     // both, as they are now.
     const scopes = APP_SCOPES_OFFERED.filter(
@@ -959,11 +1126,12 @@ export class AppService {
         appId: at.app_id,
         keyId: at.key_id,
         householdId: at.household_id,
-        accountId: app.account_id,
-        memberId: app.member_id,
-        role: app.role,
+        actsAs: itself ? 'app' : 'person',
+        accountId: itself ? null : app.account_id,
+        memberId: itself ? null : app.member_id,
+        role,
         name: app.name,
-        memberName: app.display_name,
+        memberName: itself ? null : (app.display_name ?? null),
         timezone: householdZone(app.timezone),
         scopes,
         state: appState(app),
@@ -1057,7 +1225,10 @@ export class AppService {
       app: { id: app.id, name: app.name, created_at: app.created_at.toISOString() },
       state: c.state,
       ...(c.pausedReason ? { paused_reason: c.pausedReason } : {}),
-      acting_as: { name: c.memberName },
+      // Whom it acts as (APP8), and nothing more of whom: an app acting as
+      // itself is named for itself.
+      acts_as: c.actsAs,
+      acting_as: { name: c.memberName ?? app.name },
       vault: {
         instance_id: await this.opts.instanceId().catch(() => null),
         server_version: this.opts.serverVersion,
@@ -1152,6 +1323,14 @@ export class AppService {
     if (!a || a.revoked_at) throw err(401, 'app_revoked');
     if (a.paused_reason) throw err(403, 'app_paused');
     if (a.approval !== 'approved') throw err(403, 'app_not_approved');
+    // Whom it acts as changed since the request was let in (APP8): sent
+    // again, it is answered as the app is then — never written as it was.
+    if (
+      a.acts_as !== c.actsAs ||
+      (c.actsAs === 'person' && (a.member_id !== c.memberId || a.account_id !== c.accountId))
+    ) {
+      throw busy();
+    }
     return a;
   }
 
@@ -1251,9 +1430,9 @@ export class AppService {
   }
 
   /** Whether the app may send this kind, and the household has it. */
-  private async kindAllowed(p: Principal, app: AppRow, kind: string): Promise<boolean> {
+  private async kindAllowed(c: AppCaller, app: AppRow, kind: string): Promise<boolean> {
     if (!app.allowed_kinds.includes(kind)) return false;
-    const t = await withPrincipal(this.db, p, (trx) =>
+    const t = await this.ownRows(c, (trx) =>
       trx
         .selectFrom('effective_document_type')
         .select('key')
@@ -1265,10 +1444,11 @@ export class AppService {
   }
 
   /**
-   * `POST /apps/intake`: one file into its person's Inbox, or, for an
-   * external id sent before, what became of it. Answered only once its
-   * bytes are stored and checked and its row committed: from then the
-   * vault has it, and a restart loses nothing.
+   * `POST /apps/intake`: one file into an Inbox — the person it is about's
+   * (APP5), its person's, or, for an app acting as itself, its reviewer's
+   * (APP8) — or, for an external id sent before, what became of it.
+   * Answered only once its bytes are stored and checked and its row
+   * committed: from then the vault has it, and a restart loses nothing.
    */
   async send(
     c: AppCaller,
@@ -1276,7 +1456,6 @@ export class AppService {
     file: AppFile,
     meta: RequestMeta,
   ): Promise<{ status: 200 | 201; state: AppIntakeState }> {
-    const p = this.principalOf(c);
     const { external_id: externalId, hints } = metadata;
 
     // The external id claimed, or what it was answered before.
@@ -1286,7 +1465,7 @@ export class AppService {
     // This send's own token: every write it makes names it, so once a later
     // send has taken the id over, this one changes nothing.
     const attempt = randomUUID();
-    const claim: Claim = await withPrincipal(this.db, p, async (trx) => {
+    const claim: Claim = await this.ownRows(c, async (trx) => {
       const app = await this.live(trx, c);
       const row = (await trx
         .selectFrom('connected_app_intake')
@@ -1310,6 +1489,11 @@ export class AppService {
         started_at: sql<Date>`now()`,
         attempt,
         inbox_member_id: null,
+        // Whose send it is: its person's, or nobody's for an app acting as
+        // itself (APP8) — the vault's to keep on its behalf; and so whose
+        // file it is, as it was sent: the app's own when it acted as itself.
+        member_id: c.memberId,
+        as_itself: c.actsAs === 'app',
       };
       if (!row) {
         // Two first sends at once: the second finds the first's row, and is
@@ -1319,7 +1503,6 @@ export class AppService {
           .values({
             household_id: c.householdId,
             app_id: c.appId,
-            member_id: c.memberId,
             external_id: externalId,
             ...fresh,
           })
@@ -1360,7 +1543,7 @@ export class AppService {
 
     // What became of a send that did not land: put back as it was.
     const letGo = async () => {
-      await withPrincipal(this.db, p, async (trx) => {
+      await this.ownRows(c, async (trx) => {
         if (claim.prior) {
           const was = claim.prior;
           await trx
@@ -1379,6 +1562,8 @@ export class AppService {
               received_at: was.received_at,
               decided_at: was.decided_at,
               inbox_member_id: was.inbox_member_id ?? null,
+              member_id: was.member_id ?? null,
+              as_itself: was.as_itself ?? false,
             })
             .where('id', '=', claim.id)
             .where('state', '=', 'arriving')
@@ -1395,7 +1580,7 @@ export class AppService {
       }).catch(() => undefined);
     };
     const refused = async (refusal: 'kind_not_allowed' | 'unsupported_type' | 'too_large') => {
-      await withPrincipal(this.db, p, (trx) =>
+      await this.ownRows(c, (trx) =>
         trx
           .updateTable('connected_app_intake')
           .set({ state: 'refused', refusal, decided_at: sql<Date>`now()`, hints_sealed: null })
@@ -1420,7 +1605,7 @@ export class AppService {
 
     // A kind it may not send: refused — a record of the refusal kept, never
     // the file or what the app said of it.
-    if (hints.kind && !(await this.kindAllowed(p, claim.app, hints.kind))) {
+    if (hints.kind && !(await this.kindAllowed(c, claim.app, hints.kind))) {
       try {
         await drain();
       } catch (e) {
@@ -1443,17 +1628,33 @@ export class AppService {
 
     // Whose Inbox it goes to (APP5): the person it is about, as their own
     // upload, the app's rows written as its own person in the same
-    // transaction; else its own person's, as always.
+    // transaction; else its own person's, as always — or, for an app acting
+    // as itself (APP8), its reviewer's, its rows the vault's on its behalf.
     let to: Principal | null;
+    let inbox: Principal;
     try {
-      to = await this.inboxOf(p, claim.app, hints);
+      to = await this.inboxOf(c, claim.app, hints);
+      if (to) inbox = to;
+      else if (c.actsAs === 'person') inbox = this.principalOf(c);
+      else {
+        const reviewer = await this.reviewerOf(c, claim.app);
+        // Nobody who can review it now: refused for a moment, and the
+        // owners told, once, to choose somebody. The app is not removed.
+        if (!reviewer) {
+          await this.reviewerNeeded(c);
+          throw busy();
+        }
+        inbox = reviewer;
+      }
     } catch (e) {
       await letGo();
       throw e;
     }
-    const inbox = to ?? p;
-    const asApp = <T>(trx: Db, fn: (trx: Db) => Promise<T>): Promise<T> =>
-      to ? actAs(trx, p, fn) : fn(trx);
+    /** Sent to its reviewer, as nothing routed it (APP8). */
+    const toReviewer = c.actsAs === 'app' && !to;
+    const asApp = this.asAppIn(c, inbox);
+    // The reviewer let go of, or changed, since it was chosen above.
+    let reviewerGone = false;
 
     let sha: Buffer | null = null;
     let batchId: string | undefined;
@@ -1461,7 +1662,8 @@ export class AppService {
      * The file whole and stored: within the day's caps, counted with the app
      * held, so two files at once never pass them together; said waiting; and
      * the activity log's line — as the app's own person, whoever's Inbox it
-     * went to (the line names that Inbox's person).
+     * went to (the line names that Inbox's person), or as the vault for an
+     * app acting as itself, the line naming the app alone (APP8).
      */
     const arrived = async (trx: Db, bytes: number): Promise<void> => {
       const app = await this.live(trx, c);
@@ -1479,6 +1681,8 @@ export class AppService {
           files_today: sent.files + 1,
           bytes_today: sent.bytes + bytes,
           last_used_at: sql<Date>`now()`,
+          // Its reviewer took a send: told again, should they no longer can.
+          ...(toReviewer && app.reviewer_told_at ? { reviewer_told_at: null } : {}),
         })
         .where('id', '=', c.appId)
         .execute();
@@ -1504,7 +1708,7 @@ export class AppService {
         action: 'app.sent',
         objectType: 'member',
         objectId: inbox.memberId,
-        detail: { app_id: c.appId, app: c.name },
+        detail: appLine(c),
         ip: meta.ip,
       });
     };
@@ -1529,10 +1733,15 @@ export class AppService {
               stillAllowed: async (trx) => {
                 // The app, and its own person as they are now — whoever's
                 // Inbox it goes to (APP5): a lock or a pause since it was sent
-                // lands nothing.
+                // lands nothing. An app acting as itself has no person; sent
+                // to its reviewer, they are still its reviewer (APP8).
                 await asApp(trx, async (t) => {
-                  await this.live(t, c);
-                  await this.personActs(t, c);
+                  const app = await this.live(t, c);
+                  if (c.actsAs === 'person') await this.personActs(t, c);
+                  else if (toReviewer && app.reviewer_member_id !== inbox.memberId) {
+                    reviewerGone = true;
+                    throw busy();
+                  }
                 });
               },
               made: (trx, item) =>
@@ -1579,15 +1788,14 @@ export class AppService {
       }
     } catch (caught) {
       // The person it was going to can no longer have it (locked, paused,
-      // their role changed) since it was routed (APP5): nothing landed, and
-      // sent again it goes where the rule says then.
+      // their role changed) since it was routed (APP5), or its reviewer
+      // since they were found (APP8): nothing landed, and sent again it goes
+      // where the rule says then.
       const e =
-        to && caught instanceof ApiError && caught.code === 'forbidden'
-          ? new ApiError(503, 'busy', 'The vault was busy just then. Try again.', {
-              retriable: true,
-              retryAfter: 1,
-            })
+        (to || toReviewer) && caught instanceof ApiError && caught.code === 'forbidden'
+          ? busy()
           : caught;
+      if (toReviewer && (reviewerGone || e !== caught)) await this.reviewerNeeded(c);
       if (batchId) await this.batches.dropIfEmpty(inbox, batchId).catch(() => undefined);
       if (e instanceof ApiError && e.code === 'too_large') {
         await refused('too_large');
@@ -1604,7 +1812,7 @@ export class AppService {
       }
       throw e;
     }
-    const row = await withPrincipal(this.db, p, (trx) =>
+    const row = await this.ownRows(c, (trx) =>
       trx
         .selectFrom('connected_app_intake')
         .selectAll()
@@ -1618,9 +1826,11 @@ export class AppService {
    * The app's own person, as they are now, inside a send's transaction:
    * still an owner or an adult here, neither locked nor paused. Read after
    * the app's row is held. A send to somebody else's Inbox (APP5) is that
-   * person's upload, so their own checks are not this person's.
+   * person's upload, so their own checks are not this person's. An app
+   * acting as itself (APP8) has none.
    */
   private async personActs(trx: Db, c: AppCaller): Promise<void> {
+    if (!c.accountId || !c.memberId) throw err(401, 'app_revoked');
     const me = await trx
       .selectFrom('account_household')
       .select(['role', 'suspended_at', 'suspended_until', 'suspend_reason'])
@@ -1669,7 +1879,7 @@ export class AppService {
         action: 'app.checked',
         objectType: 'member',
         objectId: c.memberId,
-        detail: { app_id: c.appId, app: c.name },
+        detail: appLine(c),
         ip: meta.ip,
       });
     }
@@ -1678,8 +1888,7 @@ export class AppService {
   /** `GET /apps/intake/{external_id}`: what became of it; one never sent, or still arriving, is 404. */
   async status(c: AppCaller, externalId: string, meta: RequestMeta): Promise<AppIntakeState> {
     if (!EXTERNAL_ID_PATTERN.test(externalId)) throw notFound();
-    const p = this.principalOf(c);
-    const row = await withPrincipal(this.db, p, async (trx) => {
+    const row = await this.ownRows(c, async (trx) => {
       const row = (await trx
         .selectFrom('connected_app_intake')
         .selectAll()
@@ -1701,8 +1910,7 @@ export class AppService {
     const bad = ids.find((id) => !EXTERNAL_ID_PATTERN.test(id));
     if (bad !== undefined) throw invalid('That is not an external_id.', 'external_ids');
     const asked = [...new Set(ids)];
-    const p = this.principalOf(c);
-    const rows = await withPrincipal(this.db, p, async (trx) => {
+    const rows = await this.ownRows(c, async (trx) => {
       const rows = (await trx
         .selectFrom('connected_app_intake')
         .selectAll()
@@ -1729,15 +1937,16 @@ export class AppService {
    * `DELETE /apps/intake/{external_id}`: a waiting item taken out of the
    * Inbox, as its person's Remove would, and said `withdrawn`. A filed one
    * is `409 already_decided`; one removed or refused already is answered
-   * as it is. One sent to the Inbox of the person it is about (APP5) is
-   * taken out of theirs, as them, the send's row and the activity log's
-   * line written as the app's own person in the same transaction.
+   * as it is. One sent to the Inbox of somebody else than its person —
+   * the person it is about (APP5), or the reviewer of an app acting as
+   * itself (APP8) — is taken out of theirs, as them, the send's row and the
+   * activity log's line written as the app's own person (as the vault, for
+   * an app acting as itself) in the same transaction.
    */
   async withdraw(c: AppCaller, externalId: string, meta: RequestMeta): Promise<AppIntakeState> {
     if (!EXTERNAL_ID_PATTERN.test(externalId)) throw notFound();
-    const p = this.principalOf(c);
     const read = () =>
-      withPrincipal(this.db, p, async (trx) => {
+      this.ownRows(c, async (trx) => {
         const row = (await trx
           .selectFrom('connected_app_intake')
           .selectAll()
@@ -1759,12 +1968,12 @@ export class AppService {
     const itemId = row.incoming_file_id;
     if (!itemId) throw notFound();
     // Whose Inbox it is in: its own person's, or the person it went to.
-    const to =
-      row.inbox_member_id && row.inbox_member_id !== c.memberId
-        ? await this.personOf(p, row.inbox_member_id)
-        : null;
-    if (row.inbox_member_id && row.inbox_member_id !== c.memberId && !to) throw notFound();
-    const inbox = to ?? p;
+    const elsewhere = row.inbox_member_id ?? null;
+    const to = elsewhere && elsewhere !== c.memberId ? await this.personOf(c, elsewhere) : null;
+    if (c.actsAs === 'app' ? !to : elsewhere && elsewhere !== c.memberId && !to) {
+      throw notFound();
+    }
+    const inbox = to ?? this.principalOf(c);
     const item = await withPrincipal(this.db, inbox, (trx) =>
       trx
         .selectFrom('incoming_file')
@@ -1773,8 +1982,7 @@ export class AppService {
         .executeTakeFirst(),
     );
     if (!item?.batch_id) throw notFound();
-    const asApp = <T>(trx: Db, fn: (trx: Db) => Promise<T>): Promise<T> =>
-      to ? actAs(trx, p, fn) : fn(trx);
+    const asApp = this.asAppIn(c, inbox);
     await this.batches.removeItem(inbox, item.batch_id, itemId, meta, (trx) =>
       asApp(trx, async (trx) => {
         const out = await trx
@@ -1798,7 +2006,7 @@ export class AppService {
           action: 'app.withdrawn',
           objectType: 'member',
           objectId: inbox.memberId,
-          detail: { app_id: c.appId, app: c.name },
+          detail: appLine(c),
           ip: meta.ip,
         });
       }),
@@ -1843,14 +2051,15 @@ export class AppService {
    * An owner widened what an app acting as somebody else may do, or gave it
    * a key: it waits again until that person turns it on, with their own
    * passkey or code, so an owner never acts as another adult unseen. Inside
-   * the change's transaction; whether it now waits.
+   * the change's transaction; whether it now waits. An app acting as itself
+   * (APP8) acts as nobody: an owner's change is the owners' to make.
    */
   private async reapprove(
     trx: Db,
     p: Principal,
-    app: { id: string; member_id: string },
+    app: { id: string; member_id: string | null; acts_as: AppActsAs },
   ): Promise<boolean> {
-    if (app.member_id === p.memberId) return false;
+    if (app.acts_as !== 'person' || app.member_id === p.memberId) return false;
     const out = await trx
       .updateTable('connected_app')
       .set({ approval: 'waiting', approved_at: null })
@@ -1874,12 +2083,43 @@ export class AppService {
       .catch(() => undefined);
   }
 
+  /** A person told that an app was connected to act as them, and waits for them. */
+  private async askFirst(householdId: string, accountId: string, app: string): Promise<void> {
+    await this.opts
+      .alert({
+        householdId,
+        accountIds: [accountId],
+        subject: `${app} was connected to your sign-in`,
+        body: `An owner connected ${app} to act as you: it can send documents into your Inbox. It does nothing until you turn it on in Settings → Connected apps. If you did not expect this, remove it there.`,
+        emailOnly: true,
+      })
+      .catch(() => undefined);
+  }
+
+  /**
+   * A person told, once, that they review what an app acting as itself
+   * sends (APP8): its papers that are for nobody in particular come to their
+   * Inbox. They are not asked to turn anything on.
+   */
+  private async toldReviewer(householdId: string, accountId: string, app: string): Promise<void> {
+    await this.opts
+      .alert({
+        householdId,
+        accountIds: [accountId],
+        subject: `You’ll review what ${app} sends`,
+        body: `An owner chose you to review what ${app} sends: what it sends that isn’t for a particular person comes to your Inbox, to file or remove. If you did not expect this, ask an owner to choose somebody else in Settings → Connected apps.`,
+        emailOnly: true,
+      })
+      .catch(() => undefined);
+  }
+
   // --------------------------------------------- the family's side (Settings)
 
   /** Whom an app may act as: an owner or an adult with a sign-in here. */
   private async actingMember(
     trx: Db,
     memberId: string,
+    field = 'member_id',
   ): Promise<{ account_id: string; display_name: string }> {
     const m = await trx
       .selectFrom('account_household as ah')
@@ -1889,11 +2129,91 @@ export class AppService {
       .select(['ah.account_id', 'm.display_name'])
       .where('ah.member_id', '=', memberId)
       .where('ah.role', 'in', ['owner', 'adult'])
+      .where('m.kind', '=', 'family')
       .executeTakeFirst();
     if (!m) {
-      throw invalid('An app acts as an owner or an adult who signs in.', 'member_id');
+      throw invalid(
+        field === 'member_id'
+          ? 'An app acts as an owner or an adult who signs in.'
+          : 'An app’s papers are reviewed by an owner or an adult who signs in.',
+        field,
+      );
     }
     return m;
+  }
+
+  /**
+   * Whom an app is to act as, as an owner connects or changes it (APP8):
+   * itself, with a reviewer — the one named, else the one it has, else the
+   * owner asking — or a person, the one named, else the one it has. A
+   * `member_id` without `acts_as` is a person, as it was before APP8.
+   */
+  private async whom(
+    trx: Db,
+    p: Principal,
+    input: { acts_as?: unknown; member_id?: unknown; reviewer_member_id?: unknown },
+    had: Pick<AppRow, 'acts_as' | 'member_id' | 'account_id' | 'reviewer_member_id'> | null,
+  ): Promise<{
+    acts_as: AppActsAs;
+    account_id: string | null;
+    member_id: string | null;
+    reviewer_member_id: string | null;
+    /** The person it acts as, or its reviewer: their sign-in and name. */
+    person: { account_id: string; display_name: string };
+  }> {
+    // Left unsaid: a person named means a person (as before APP8), a
+    // reviewer named means itself; else as it was, or itself for a new one.
+    const asked =
+      input.acts_as ??
+      (input.member_id !== undefined
+        ? 'person'
+        : input.reviewer_member_id !== undefined
+          ? 'app'
+          : (had?.acts_as ?? APP_ACTS_AS_DEFAULT));
+    if (!(APP_ACTS_AS as readonly unknown[]).includes(asked)) {
+      throw invalid('An app acts as itself or as a person.', 'acts_as');
+    }
+    const actsAs = asked as AppActsAs;
+    if (actsAs === 'person') {
+      if (input.reviewer_member_id !== undefined) {
+        throw invalid(
+          'An app acting as a person has no reviewer: its person reviews.',
+          'reviewer_member_id',
+        );
+      }
+      const member =
+        typeof input.member_id === 'string'
+          ? input.member_id
+          : had?.acts_as === 'person'
+            ? had.member_id
+            : null;
+      if (!member) throw invalid('Choose whom it acts as.', 'member_id');
+      const person = await this.actingMember(trx, member);
+      return {
+        acts_as: 'person',
+        account_id: person.account_id,
+        member_id: member,
+        reviewer_member_id: null,
+        person,
+      };
+    }
+    if (input.member_id !== undefined) {
+      throw invalid('An app acting as itself acts as nobody: choose who reviews it.', 'member_id');
+    }
+    const reviewer =
+      typeof input.reviewer_member_id === 'string'
+        ? input.reviewer_member_id
+        : had?.acts_as === 'app' && had.reviewer_member_id
+          ? had.reviewer_member_id
+          : p.memberId;
+    const person = await this.actingMember(trx, reviewer, 'reviewer_member_id');
+    return {
+      acts_as: 'app',
+      account_id: null,
+      member_id: null,
+      reviewer_member_id: reviewer,
+      person,
+    };
   }
 
   /** Kinds, checked: each a kind the household has. */
@@ -2116,15 +2436,43 @@ export class AppService {
   private async views(trx: Db, p: Principal, only: string | null): Promise<ConnectedAppView[]> {
     let q = trx
       .selectFrom('connected_app as a')
-      .innerJoin('member as m', (j) =>
+      .leftJoin('member as m', (j) =>
         j.onRef('m.id', '=', 'a.member_id').onRef('m.household_id', '=', 'a.household_id'),
       )
+      // Its reviewer (APP8), and whether they can review now: an owner or an
+      // adult of the family with a sign-in, neither locked nor paused.
+      .leftJoin('member as r', (j) =>
+        j.onRef('r.id', '=', 'a.reviewer_member_id').onRef('r.household_id', '=', 'a.household_id'),
+      )
+      .leftJoin('account_household as rh', (j) =>
+        j
+          .onRef('rh.member_id', '=', 'a.reviewer_member_id')
+          .onRef('rh.household_id', '=', 'a.household_id'),
+      )
       .select(APP_COLUMNS)
-      .select('m.display_name')
+      .select([
+        'm.display_name',
+        'r.display_name as reviewer_name',
+        'r.kind as reviewer_kind',
+        'rh.role as reviewer_role',
+        'rh.suspended_at as reviewer_suspended_at',
+        'rh.suspended_until as reviewer_suspended_until',
+        'rh.suspend_reason as reviewer_suspend_reason',
+      ])
       .where('a.revoked_at', 'is', null)
       .orderBy('a.created_at', 'desc');
     if (only) q = q.where('a.id', '=', only);
-    const apps = (await q.execute()) as Array<AppRow & { display_name: string }>;
+    const apps = (await q.execute()) as Array<
+      AppRow & {
+        display_name: string | null;
+        reviewer_name: string | null;
+        reviewer_kind: string | null;
+        reviewer_role: Role | null;
+        reviewer_suspended_at: Date | null;
+        reviewer_suspended_until: Date | null;
+        reviewer_suspend_reason: string | null;
+      }
+    >;
     if (apps.length === 0) return [];
     const ids = apps.map((a) => a.id);
     const keys = (await trx
@@ -2187,15 +2535,31 @@ export class AppService {
     return apps.map((a) => {
       const all = keys.filter((k) => k.app_id === a.id);
       const newest = all.filter((k) => keyState(k, now) === 'live').pop();
-      const mine = a.member_id === p.memberId;
+      const mine = a.acts_as === 'person' && a.member_id === p.memberId;
+      const reviewer = {
+        suspended_at: a.reviewer_suspended_at,
+        suspended_until: a.reviewer_suspended_until,
+        suspend_reason: a.reviewer_suspend_reason,
+      };
+      const reviews =
+        a.acts_as === 'app' &&
+        a.reviewer_member_id !== null &&
+        a.reviewer_kind === 'family' &&
+        (a.reviewer_role === 'owner' || a.reviewer_role === 'adult') &&
+        !lockInEffect(reviewer) &&
+        !suspensionInEffect(reviewer);
       const n = (state: string) =>
         Number(counted.find((r) => r.app_id === a.id && r.state === state)?.n ?? 0);
       const sent = today(a, day);
       return {
         id: a.id,
         name: a.name,
-        member_id: a.member_id,
-        member_name: a.display_name,
+        acts_as: a.acts_as,
+        member_id: a.acts_as === 'person' ? a.member_id : null,
+        member_name: a.acts_as === 'person' ? a.display_name : null,
+        reviewer_member_id: a.acts_as === 'app' ? a.reviewer_member_id : null,
+        reviewer_name: a.acts_as === 'app' ? a.reviewer_name : null,
+        reviewer_needed: a.acts_as === 'app' && !reviews,
         mine,
         created_at: a.created_at.toISOString(),
         state: appState(a),
@@ -2271,8 +2635,11 @@ export class AppService {
 
   /**
    * `POST /connected-apps`: an owner connects an app (the route asked for
-   * a passkey or a code). On at once when it acts as them; otherwise it
-   * waits for its person, who is emailed. It has no key until an owner
+   * a passkey or a code). It acts as itself unless the owner says a person
+   * (APP8): then on at once when it acts as them; otherwise it waits for its
+   * person, who is emailed. One acting as itself is on at once, its papers
+   * that are for nobody in particular reviewed by the owner connecting it
+   * or the person they chose, who is told. It has no key until an owner
    * generates one (APP6).
    */
   async create(
@@ -2287,10 +2654,10 @@ export class AppService {
     }
     const caps = { ...this.checkedCaps(input), ...this.checkedLinks(input) };
     const made = await withPrincipal(this.db, p, async (trx) => {
-      const person = await this.actingMember(trx, input.member_id);
+      const who = await this.whom(trx, p, input, null);
       const kinds = await this.checkedKinds(trx, input.allowed_kinds);
       const ip = await this.checkedAddresses(trx, input.ip_allow ?? []);
-      const own = input.member_id === p.memberId;
+      const own = who.acts_as === 'app' || who.member_id === p.memberId;
       const id = randomUUID();
       await trx
         .insertInto('connected_app')
@@ -2298,8 +2665,10 @@ export class AppService {
           id,
           household_id: p.householdId,
           name,
-          account_id: person.account_id,
-          member_id: input.member_id,
+          acts_as: who.acts_as,
+          account_id: who.account_id,
+          member_id: who.member_id,
+          reviewer_member_id: who.reviewer_member_id,
           created_by: p.accountId,
           approval: own ? 'approved' : 'waiting',
           approved_at: own ? new Date() : null,
@@ -2318,27 +2687,29 @@ export class AppService {
         actorAccountId: p.accountId,
         action: 'app.connected',
         objectType: 'member',
-        objectId: input.member_id,
-        detail: { app_id: id, app: name },
+        // Whom it acts as; for an app acting as itself, its reviewer (APP8).
+        objectId: who.member_id ?? who.reviewer_member_id,
+        detail: { app_id: id, app: name, ...(who.acts_as === 'app' ? { acts_as: 'app' } : {}) },
         ip: meta.ip,
       });
-      return { id, own, person };
+      return { id, own, who };
     });
-    if (!made.own) {
-      await this.opts
-        .alert({
-          householdId: p.householdId,
-          accountIds: [made.person.account_id],
-          subject: `${name} was connected to your sign-in`,
-          body: `An owner connected ${name} to act as you: it can send documents into your Inbox. It does nothing until you turn it on in Settings → Connected apps. If you did not expect this, remove it there.`,
-          emailOnly: true,
-        })
-        .catch(() => undefined);
+    if (made.who.acts_as === 'person' && !made.own) {
+      await this.askFirst(p.householdId, made.who.person.account_id, name);
+    }
+    if (made.who.acts_as === 'app' && made.who.reviewer_member_id !== p.memberId) {
+      await this.toldReviewer(p.householdId, made.who.person.account_id, name);
     }
     return this.view(p, made.id);
   }
 
-  /** `PATCH /connected-apps/{id}`: an owner changes what it may do (the route asked for the step-up). */
+  /**
+   * `PATCH /connected-apps/{id}`: an owner changes what it may do (the
+   * route asked for the step-up) — and whom it acts as (APP8): itself, with
+   * a reviewer, or a person. Acting as another adult from now waits for
+   * them to turn it on, and they are emailed; a new reviewer is told, and
+   * asked nothing.
+   */
   async update(
     p: Principal,
     id: string,
@@ -2375,29 +2746,70 @@ export class AppService {
         set.ip_allow = sql`${ip.nets}::cidr[]`;
         set.ip_allow_names = ip.names;
       }
+      // Whom it acts as, and who reviews it (APP8).
+      const whomAsked =
+        input.acts_as !== undefined ||
+        input.member_id !== undefined ||
+        input.reviewer_member_id !== undefined;
+      const who = whomAsked ? await this.whom(trx, p, input, app) : null;
+      /** It acts as somebody else than before: a person, or itself. */
+      const moved =
+        who !== null && (who.acts_as !== app.acts_as || who.member_id !== app.member_id);
+      const newReviewer =
+        who !== null &&
+        who.acts_as === 'app' &&
+        who.reviewer_member_id !== (app.acts_as === 'app' ? app.reviewer_member_id : null);
+      if (who && (moved || newReviewer)) {
+        set.acts_as = who.acts_as;
+        set.account_id = who.account_id;
+        set.member_id = who.member_id;
+        set.reviewer_member_id = who.reviewer_member_id;
+        // A reviewer chosen: told again, should they no longer can.
+        set.reviewer_told_at = null;
+      }
       if (Object.keys(set).length === 0) return null;
+      // Acting as another adult from now: they turn it on themselves, and
+      // are emailed. As the owner changing it, or as itself: on.
+      let first: string | null = null;
+      if (moved && who) {
+        const theirs = who.acts_as === 'person' && who.member_id !== p.memberId;
+        set.approval = theirs ? 'waiting' : 'approved';
+        set.approved_at = theirs ? null : new Date();
+        if (theirs) first = who.person.account_id;
+      }
       const again =
-        widens(app, set, ip, this.now()) && (await this.reapprove(trx, p, app))
+        !moved && widens(app, set, ip, this.now()) && (await this.reapprove(trx, p, app))
           ? app.account_id
           : null;
       await trx.updateTable('connected_app').set(set).where('id', '=', id).execute();
+      const now = { ...app, ...(who ?? {}) };
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
         action: 'app.changed',
         objectType: 'member',
-        objectId: app.member_id,
+        objectId: now.acts_as === 'app' ? now.reviewer_member_id : now.member_id,
         detail: {
           app_id: id,
           app: set.name ?? app.name,
           fields: Object.keys(input).sort(),
-          ...(again ? { approval: 'asked_again' } : {}),
+          ...(now.acts_as === 'app' ? { acts_as: 'app' } : {}),
+          ...(again || first ? { approval: 'asked_again' } : {}),
         },
         ip: meta.ip,
       });
-      return again ? { account: again, name: (set.name as string | undefined) ?? app.name } : null;
+      return {
+        name: (set.name as string | undefined) ?? app.name,
+        again,
+        first,
+        reviewer: newReviewer && who && who.reviewer_member_id !== p.memberId ? who.person : null,
+      };
     });
-    if (asked) await this.askAgain(p.householdId, asked.account, asked.name);
+    if (asked?.again) await this.askAgain(p.householdId, asked.again, asked.name);
+    if (asked?.first) await this.askFirst(p.householdId, asked.first, asked.name);
+    if (asked?.reviewer) {
+      await this.toldReviewer(p.householdId, asked.reviewer.account_id, asked.name);
+    }
     return this.view(p, id);
   }
 
@@ -2714,7 +3126,7 @@ export class AppService {
     const made = await withPrincipal(this.db, p, async (trx) => {
       const app = await trx
         .selectFrom('connected_app')
-        .select(['id', 'member_id', 'name', 'account_id', 'scopes'])
+        .select(['id', 'acts_as', 'member_id', 'name', 'account_id', 'scopes'])
         .where('id', '=', id)
         .where('revoked_at', 'is', null)
         .forUpdate()
@@ -2847,7 +3259,7 @@ export class AppService {
     const told = await withPrincipal(this.db, p, async (trx) => {
       const app = await trx
         .selectFrom('connected_app')
-        .select(['id', 'member_id', 'name', 'account_id'])
+        .select(['id', 'acts_as', 'member_id', 'reviewer_member_id', 'name', 'account_id'])
         .where('id', '=', id)
         .where('revoked_at', 'is', null)
         .forUpdate()
@@ -2871,21 +3283,22 @@ export class AppService {
         actorAccountId: p.accountId,
         action: 'app.key_retired',
         objectType: 'member',
-        objectId: app.member_id,
+        objectId: app.member_id ?? app.reviewer_member_id,
         detail: { app_id: id, app: app.name, client_id: k.client_id },
         ip: meta.ip,
       });
       return {
         owners: await this.owners(trx),
         app,
-        member: await this.memberName(trx, app.member_id),
+        // Whom it acts as, in the email's words (APP8: itself).
+        member: app.member_id ? await this.memberName(trx, app.member_id) : 'itself',
         clientId: k.client_id,
       };
     });
     if (told) {
       await this.keyRevokedAlert(
         p.householdId,
-        [...told.owners, told.app.account_id],
+        [...told.owners, ...(told.app.account_id ? [told.app.account_id] : [])],
         told.app.name,
         told.member,
         told.clientId,
@@ -2945,14 +3358,21 @@ export class AppService {
 /**
  * The activity log's lines for what the database revoked in this very
  * transaction (0109's connected_apps_leave_with_role): a sign-in taken
- * away, or a role that can no longer act. Asked by whoever changed it,
- * after the change, inside its transaction.
+ * away, or a role that can no longer act — and (0116, APP8) the apps acting
+ * as themselves that person reviewed, let go of them as reviewer. Asked by
+ * whoever changed it, after the change, inside its transaction.
  */
 export async function logAppsEnded(
   trx: Db,
   p: Principal,
   person: { account_id: string; member_id: string },
   meta: RequestMeta,
+  /**
+   * For the owners' emails (APP8): the apps acting as themselves now
+   * without a reviewer, by name; and what that person connected or
+   * generated for such apps, stopped with them.
+   */
+  told?: (t: AppsEndedNotice) => void,
 ): Promise<number> {
   const ended = await trx
     .selectFrom('connected_app')
@@ -2973,15 +3393,163 @@ export async function logAppsEnded(
       ip: meta.ip,
     });
   }
+  const stopped = await creatorEnded(trx, p, person, meta, {
+    reasons: ['sign_in_removed', 'cannot_act'],
+  });
+  // The apps acting as themselves they reviewed (APP8), which the database
+  // let go of them as reviewer: the app stays; the owners are told, once,
+  // to choose somebody else — a line here, and an email from `told`.
+  const lost = await trx
+    .updateTable('connected_app')
+    .set({ reviewer_told_at: sql<Date>`now()` })
+    .where('acts_as', '=', 'app')
+    .where('reviewer_member_id', 'is', null)
+    .where('reviewer_told_at', 'is', null)
+    .where('revoked_at', 'is', null)
+    .returning(['id', 'name'])
+    .execute();
+  for (const a of lost) {
+    await appendAudit(trx, {
+      householdId: p.householdId,
+      action: 'app.reviewer_needed',
+      objectType: 'member',
+      objectId: null,
+      detail: { app_id: a.id, app: a.name, as_itself: true },
+      ip: meta.ip,
+    });
+  }
+  if (told && (lost.length > 0 || stopped.length > 0)) {
+    told({
+      reviewers: lost.map((a) => a.name),
+      stopped,
+      owners: await otherOwners(trx, person.account_id),
+    });
+  }
   return ended.length;
+}
+
+/** What the owners are emailed of, as a person's leaving or stopping ended apps (APP8). */
+export interface AppsEndedNotice {
+  /** Apps acting as themselves now without a reviewer, by name. */
+  reviewers: string[];
+  /** What that person connected or generated for apps acting as themselves, stopped: in words. */
+  stopped: string[];
+  /** The owners to tell: every owner but that person. */
+  owners: string[];
+}
+
+/** Every owner of the household but this sign-in. */
+async function otherOwners(trx: Db, accountId: string): Promise<string[]> {
+  const rows = await trx
+    .selectFrom('account_household')
+    .select('account_id')
+    .where('role', '=', 'owner')
+    .where('account_id', '<>', accountId)
+    .execute();
+  return rows.map((r) => r.account_id);
+}
+
+/**
+ * What a person connected to act as itself, and the API keys they generated
+ * for such apps, that the database stopped with them in this very
+ * transaction (0116, APP8): a line each — the app "which they connected,
+ * was removed", the key "that they generated was revoked" — and their words
+ * for the owners' email.
+ */
+async function creatorEnded(
+  trx: Db,
+  p: { householdId: string; accountId: string },
+  person: { account_id: string; member_id: string },
+  meta: RequestMeta,
+  o: { reasons: string[] },
+): Promise<string[]> {
+  const apps = await trx
+    .selectFrom('connected_app')
+    .select(['id', 'name', 'revoked_reason'])
+    .where('acts_as', '=', 'app')
+    .where('created_by', '=', person.account_id)
+    .where('revoked_at', '=', sql<Date>`now()`)
+    .where('revoked_reason', 'in', o.reasons as never)
+    .orderBy('created_at')
+    .execute();
+  for (const a of apps) {
+    await appendAudit(trx, {
+      householdId: p.householdId,
+      actorAccountId: p.accountId,
+      action: 'app.revoked',
+      objectType: 'member',
+      objectId: person.member_id,
+      detail: { app_id: a.id, app: a.name, reason: a.revoked_reason, creator: true },
+      ip: meta.ip,
+    });
+  }
+  const keys = await trx
+    .selectFrom('connected_app_key as k')
+    .innerJoin('connected_app as a', 'a.id', 'k.app_id')
+    .select(['a.id', 'a.name', 'k.client_id'])
+    .where('k.created_by', '=', person.account_id)
+    .where('k.revoked_reason', '=', 'creator')
+    .where('k.revoked_at', '=', sql<Date>`now()`)
+    .orderBy('k.created_at')
+    .execute();
+  for (const k of keys) {
+    await appendAudit(trx, {
+      householdId: p.householdId,
+      actorAccountId: p.accountId,
+      action: 'app.key_retired',
+      objectType: 'member',
+      objectId: person.member_id,
+      detail: { app_id: k.id, app: k.name, client_id: k.client_id, reason: 'creator' },
+      ip: meta.ip,
+    });
+  }
+  return [
+    ...apps.map((a) => `${a.name}, which they connected, was removed`),
+    ...keys.map((k) => `the API key ${k.client_id} they generated for ${k.name} was revoked`),
+  ];
+}
+
+/**
+ * The owners' email (APP8) as somebody's leaving or stopping ended what they
+ * connected to act as itself, or left apps without a reviewer: once, with
+ * every one of them.
+ */
+export function appsEndedAlert(
+  householdId: string,
+  who: string,
+  t: AppsEndedNotice,
+): AlertRequest | null {
+  if (t.owners.length === 0 || (t.stopped.length === 0 && t.reviewers.length === 0)) return null;
+  const parts = [
+    ...(t.stopped.length > 0
+      ? [
+          `As ${who} left, stopped being an owner or was stopped: ${t.stopped.join('; ')}. If they are still wanted, an owner connects them again, or generates new keys, in Settings → Connected apps.`,
+        ]
+      : []),
+    ...t.reviewers.map((app) => reviewerNeededBody(app)),
+  ];
+  return {
+    householdId,
+    accountIds: t.owners,
+    subject:
+      t.stopped.length > 0
+        ? `Connected apps ${who} set up were stopped`
+        : t.reviewers.length === 1
+          ? `Choose who reviews what ${t.reviewers[0] as string} sends`
+          : 'Choose who reviews what your connected apps send',
+    body: parts.join('\n\n'),
+    emailOnly: true,
+  };
 }
 
 /**
  * The emergency controls: every app acting as somebody stopped at once
  * — signed out everywhere (`signed_out`), their password stopped by an
  * owner (`owner_stopped`) — by the database's own connected_apps_revoke_for(),
- * with a line for each. Never on an ordinary password change. Inside the
- * caller's transaction; how many it stopped.
+ * with a line for each; and (APP8) every app acting as itself they
+ * connected, and every API key they generated for such an app. Never on an
+ * ordinary password change. Inside the caller's transaction; how many apps
+ * it stopped. `told` is given what to email the other owners of.
  */
 export async function stopAppsOf(
   trx: Db,
@@ -2989,21 +3557,53 @@ export async function stopAppsOf(
   accountId: string,
   reason: 'signed_out' | 'owner_stopped',
   meta: RequestMeta,
+  told?: (t: AppsEndedNotice) => void,
 ): Promise<number> {
-  const stopped = await sql<{ id: string; member_id: string; name: string }>`
-    select id, member_id, name from connected_apps_revoke_for(${accountId}::uuid, ${reason})`.execute(
-    trx,
-  );
+  const stopped = await sql<{
+    id: string;
+    member_id: string | null;
+    name: string;
+    client_id: string | null;
+  }>`
+    select id, member_id, name, client_id
+      from connected_apps_revoke_for(${accountId}::uuid, ${reason})`.execute(trx);
+  const member = (
+    await trx
+      .selectFrom('account_household')
+      .select('member_id')
+      .where('account_id', '=', accountId)
+      .executeTakeFirst()
+  )?.member_id;
+  const words: string[] = [];
   for (const a of stopped.rows) {
+    if (a.client_id) {
+      await appendAudit(trx, {
+        householdId: by.householdId,
+        actorAccountId: by.actorAccountId,
+        action: 'app.key_retired',
+        objectType: 'member',
+        objectId: member ?? null,
+        detail: { app_id: a.id, app: a.name, client_id: a.client_id, reason: 'creator' },
+        ip: meta.ip,
+      });
+      words.push(`the API key ${a.client_id} they generated for ${a.name} was revoked`);
+      continue;
+    }
+    // An app acting as itself they connected (APP8): its line names them.
+    const itself = a.member_id === null;
     await appendAudit(trx, {
       householdId: by.householdId,
       actorAccountId: by.actorAccountId,
       action: 'app.revoked',
       objectType: 'member',
-      objectId: a.member_id,
-      detail: { app_id: a.id, app: a.name, reason },
+      objectId: itself ? (member ?? null) : a.member_id,
+      detail: { app_id: a.id, app: a.name, reason, ...(itself ? { creator: true } : {}) },
       ip: meta.ip,
     });
+    if (itself) words.push(`${a.name}, which they connected, was removed`);
   }
-  return stopped.rows.length;
+  if (told && words.length > 0) {
+    told({ reviewers: [], stopped: words, owners: await otherOwners(trx, accountId) });
+  }
+  return stopped.rows.filter((a) => !a.client_id).length;
 }

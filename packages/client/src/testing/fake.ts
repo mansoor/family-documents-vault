@@ -1460,6 +1460,8 @@ interface FakeUpload {
   uploaded_at: string;
   /** Its bytes, for a connected app's download (0.9.0, APP2). */
   bytes?: Uint8Array;
+  /** The connected app that added it, by name, when it acted as itself (0.9.0, APP8). */
+  uploaded_by_app?: string;
 }
 
 /** The fake's installation id, as a real vault reports its own. */
@@ -3603,6 +3605,26 @@ export function createFakeVault(): {
         const doc = state.documents.find((x) => x.id === id);
         if (doc) doc.deleted_at = new Date().toISOString();
       },
+      // What an app did, in the activity log (APP8): the app alone when it
+      // acts as itself; the person it is about, by name.
+      log: (l) => {
+        const actor = l.actorMemberId
+          ? state.members.find((m) => m.id === l.actorMemberId)
+          : undefined;
+        const about = l.object ? state.members.find((m) => m.id === l.object) : undefined;
+        (state.activity ??= []).push({
+          id: (state.activity?.length ?? 0) + 1,
+          at: new Date().toISOString(),
+          action: l.action,
+          actor: actor?.display_name ?? null,
+          actor_member_id: actor?.id ?? null,
+          actor_label: null,
+          object_type: 'member',
+          object_id: l.object,
+          object_title: about?.display_name ?? null,
+          detail: l.detail,
+        });
+      },
       ok: (answer, status = 200, headers = {}) => respond(status, answer, headers),
       raw: (status, bytes, headers) => {
         const lower = Object.fromEntries(
@@ -5555,7 +5577,9 @@ export function createFakeVault(): {
                   : drawn,
             // Never opened by the vault, downloaded only (0.9.0, H5).
             ...(isRecordFormat(v.mime) ? { stored_as_is: true } : {}),
-            uploaded_by_name: named ? (me?.display_name ?? null) : null,
+            // Added by a connected app acting as itself (APP8): the app, by name.
+            uploaded_by_name: named ? (v.uploaded_by_app ?? me?.display_name ?? null) : null,
+            ...(v.uploaded_by_app ? { uploaded_by_app: true } : {}),
           };
         });
       return ok({ items });
@@ -8403,6 +8427,11 @@ export function createFakeVault(): {
       const who = whoOf(s);
       if (!can(who.role, 'audit.read')) return fail(403, 'forbidden', refusalFor('audit.read'));
       const events = [...(state.activity ?? [])].reverse().filter((e) => {
+        // A line about a person (a connected app's, APP8): to the owners,
+        // and to the person it is about, as the real vault's audience.
+        if (e.object_type === 'member') {
+          return who.role === 'owner' || (e.object_id !== null && e.object_id === who.memberId);
+        }
         const doc = state.documents.find((d) => d.id === e.object_id);
         return (
           doc !== undefined &&
@@ -10037,6 +10066,8 @@ export function createFakeVault(): {
     const sent = app?.intake.get(externalId);
     if (!app || !sent) throw new Error('no such send of that app');
     const newest = versionsOf(documentId).sort((x, y) => y.version_no - x.version_no)[0];
+    // An app acting as itself is who added the file (APP8): no person.
+    if (newest && sent.as_itself === true) newest.uploaded_by_app = app.name;
     sent.state = 'filed';
     sent.document_id = documentId;
     sent.version_id = newest?.version_id ?? null;
@@ -10060,7 +10091,7 @@ export function createFakeVault(): {
     const member = state.members.find((m) => m.id === inbox);
     const role: Role | null =
       member?.role === 'owner' || member?.role === 'adult' ? member.role : null;
-    if (!role) return 'waiting';
+    if (!role || !inbox) return 'waiting';
     // The same file as a document here already: a duplicate.
     const hex = async (b: Uint8Array) => {
       const own = new Uint8Array(b.length);
@@ -10142,6 +10173,8 @@ export function createFakeVault(): {
       byte_size: sent.file.bytes.length,
       uploaded_at: new Date().toISOString(),
       bytes: sent.file.bytes,
+      // An app acting as itself is who added the file (APP8): no person.
+      ...(sent.as_itself === true ? { uploaded_by_app: app.name } : {}),
     };
     state.captures.set(next('app-file'), version);
     sent.state = 'filed';

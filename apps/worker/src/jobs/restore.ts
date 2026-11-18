@@ -1312,6 +1312,24 @@ const GUARDS = [
     table: 'account_household',
     fn: 'connected_apps_leave_with_role',
   },
+  // Whose its sends are follows whom it acts as, once turned on; its
+  // reviewer an owner or adult of the family who signs in; and who added a
+  // version never changes (0116, APP8).
+  {
+    name: 'connected_app_person_moves',
+    table: 'connected_app',
+    fn: 'connected_app_person_moves',
+  },
+  {
+    name: 'connected_app_reviewer_check',
+    table: 'connected_app',
+    fn: 'connected_app_reviewer_check',
+  },
+  {
+    name: 'document_version_uploader_fixed',
+    table: 'document_version',
+    fn: 'document_version_uploader_fixed',
+  },
   // A Reading check: an owner only cancels one (0074, R0); and an accepted
   // incoming file says which version was filed through review.
   {
@@ -1651,6 +1669,23 @@ const REQUIRED_CHECKS = [
     name: 'connected_app_visibility',
     table: 'connected_app',
     what: 'who sees what a connected app sends, from the list',
+  },
+  // Whom it acts as (0116, APP8): itself, or a person with their sign-in;
+  // a reviewer only for itself; and a file it added names it or a person.
+  {
+    name: 'connected_app_acts_as',
+    table: 'connected_app',
+    what: 'whom a connected app acts as, itself or a person',
+  },
+  {
+    name: 'connected_app_acts_as_person',
+    table: 'connected_app',
+    what: 'a connected app acting as a person names them, and one acting as itself nobody',
+  },
+  {
+    name: 'document_version_uploaded_by_one',
+    table: 'document_version',
+    what: 'a file added by a person or by a connected app, never both',
   },
   // The names in its allow-list, as the vault writes them, and how many
   // (0115, APP7): each is looked up as its requests come.
@@ -2315,6 +2350,14 @@ const REQUIRED_RULES = [
     name: 'connected_app_key_actor_insert',
     cmd: 'a',
     what: 'who generates an API key for a connected app',
+  },
+  // A file a connected app acting as itself added names the app, and only
+  // for a file of that app's in the filer's own Inbox (0116, APP8).
+  {
+    table: 'document_version',
+    name: 'document_version_by_app',
+    cmd: 'a',
+    what: 'which connected app a file names as its uploader',
   },
   {
     table: 'connected_app_key',

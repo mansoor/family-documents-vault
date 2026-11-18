@@ -4,7 +4,13 @@ import { createDb, createPool, withSystem } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { APP_CHANGES_KEEP_DAYS, APP_LINKS_KEEP_DAYS, noticeAppKeys, sweepApps } from './apps.js';
+import {
+  APP_CHANGES_KEEP_DAYS,
+  APP_LINKS_KEEP_DAYS,
+  noticeAppKeys,
+  noticeReviewers,
+  sweepApps,
+} from './apps.js';
 
 /**
  * The connected apps' hourly sweep (0.9.0, APP2): an app's changes feed
@@ -39,8 +45,8 @@ describe.skipIf(!testAdminUrl())("the connected apps' sweep: the changes feed (A
     const app = async (name: string) =>
       (
         await admin.query<{ id: string }>(
-          `insert into connected_app (household_id, name, account_id, member_id, created_by, approval, approved_at)
-           values ($1, $2, $3, $4, $3, 'approved', now()) returning id`,
+          `insert into connected_app (household_id, name, acts_as, account_id, member_id, created_by, approval, approved_at)
+           values ($1, $2, 'person', $3, $4, $3, 'approved', now()) returning id`,
           [hh, name, a.rows[0]?.id, m.rows[0]?.id],
         )
       ).rows[0]?.id as string;
@@ -166,8 +172,8 @@ describe.skipIf(!testAdminUrl())("the connected apps' sweep: links (APP3)", () =
     const app = async (name: string) =>
       (
         await admin.query<{ id: string }>(
-          `insert into connected_app (household_id, name, account_id, member_id, created_by, approval, approved_at)
-           values ($1, $2, $3, $4, $3, 'approved', now()) returning id`,
+          `insert into connected_app (household_id, name, acts_as, account_id, member_id, created_by, approval, approved_at)
+           values ($1, $2, 'person', $3, $4, $3, 'approved', now()) returning id`,
           [hh, name, a.rows[0]?.id, m.rows[0]?.id],
         )
       ).rows[0]?.id as string;
@@ -264,8 +270,8 @@ describe.skipIf(!testAdminUrl())("the connected apps' sweep: API keys that expir
     const app = async (name: string) =>
       (
         await admin.query<{ id: string }>(
-          `insert into connected_app (household_id, name, account_id, member_id, created_by, approval, approved_at)
-           values ($1, $2, $3, $4, $3, 'approved', now()) returning id`,
+          `insert into connected_app (household_id, name, acts_as, account_id, member_id, created_by, approval, approved_at)
+           values ($1, $2, 'person', $3, $4, $3, 'approved', now()) returning id`,
           [hh, name, a.rows[0]?.id, m.rows[0]?.id],
         )
       ).rows[0]?.id as string;
@@ -346,5 +352,88 @@ describe.skipIf(!testAdminUrl())("the connected apps' sweep: API keys that expir
     );
     expect(await noticeAppKeys({ admin, db, tell })).toEqual({ expiring: 0, expired: 1 });
     expect(await noticeAppKeys({ admin, db, tell })).toEqual({ expiring: 0, expired: 0 });
+  });
+});
+
+/**
+ * An app acting as itself whose reviewer can no longer take what it sends
+ * (0.9.0-dev.65, APP8): the hourly sweep tells the owners once — before its
+ * next send is refused — with the API's own told-once mark.
+ */
+describe.skipIf(!testAdminUrl())("the connected apps' sweep: a reviewer who can't (APP8)", () => {
+  let vault: TestDatabase;
+  let admin: pg.Pool;
+  let db: ReturnType<typeof createDb>;
+  const hh = randomUUID();
+  let owner = { account: '', member: '' };
+  let adult = { account: '', member: '' };
+
+  const person = async (name: string, role: string) => {
+    const m = await admin.query<{ id: string }>(
+      'insert into member (household_id, display_name) values ($1, $2) returning id',
+      [hh, name],
+    );
+    const a = await admin.query<{ id: string }>(
+      'insert into account (email) values ($1) returning id',
+      [`${randomUUID()}@example.test`],
+    );
+    await admin.query(
+      'insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, $4)',
+      [a.rows[0]?.id, hh, m.rows[0]?.id, role],
+    );
+    return { account: a.rows[0]?.id as string, member: m.rows[0]?.id as string };
+  };
+
+  beforeAll(async () => {
+    vault = await createTestDatabase();
+    admin = new pg.Pool({ connectionString: vault.adminUrl, max: 1 });
+    db = createDb(createPool(vault.appUrl, 2));
+    await admin.query("insert into household (id, name) values ($1, 'Reviewed')", [hh]);
+    owner = await person('Owner', 'owner');
+    adult = await person('Sara', 'adult');
+    const app = async (name: string, reviewer: string) =>
+      admin.query(
+        `insert into connected_app (household_id, name, acts_as, reviewer_member_id, created_by,
+                                    approval, approved_at)
+         values ($1, $2, 'app', $3, $4, 'approved', now())`,
+        [hh, name, reviewer, owner.account],
+      );
+    await app('Locked reviewer', adult.member);
+    await app('Fine reviewer', owner.member);
+  }, 120_000);
+  afterAll(async () => {
+    await admin?.end();
+    await db?.destroy();
+    await vault?.drop();
+  });
+
+  it('tells the owners once, for the app whose reviewer is locked, and nothing of the rest', async () => {
+    const told: Array<{ subject: string; account_ids: string[] }> = [];
+    const tell = async (
+      a: { subject: string; account_ids: string[] },
+      q: { executeSql(text: string, values?: unknown[]): Promise<unknown> },
+    ) => {
+      await q.executeSql('select 1');
+      told.push(a);
+    };
+    expect(await noticeReviewers({ admin, db, tell })).toBe(0);
+    await admin.query(
+      `update account_household set suspended_at = now(), suspend_reason = 'locked' where member_id = $1`,
+      [adult.member],
+    );
+    expect(await noticeReviewers({ admin, db, tell })).toBe(1);
+    expect(await noticeReviewers({ admin, db, tell })).toBe(0);
+    expect(told).toEqual([
+      expect.objectContaining({
+        subject: 'Choose who reviews what Locked reviewer sends',
+        account_ids: [owner.account],
+      }),
+    ]);
+    const lines = await admin.query<{ app: string }>(
+      `select detail->>'app' as app from audit_event
+        where household_id = $1 and action = 'app.reviewer_needed'`,
+      [hh],
+    );
+    expect(lines.rows).toEqual([{ app: 'Locked reviewer' }]);
   });
 });

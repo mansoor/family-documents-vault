@@ -6,6 +6,21 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.9.0-dev.65] - 2026-11-18 — a connected app acts as itself
+
+### Changed
+
+- **A connected app acts as itself by default.** Connecting an app in **Settings → Connected apps** no longer means choosing a person for it: under _It acts as_, **Itself (Acme Money)** comes first and is the default. Such an app has no sign-in and no hidden account, so it never appears among the family's people, counts or pickers, and it is on at once. The activity log names the app alone — "Acme Money sent a file to Sara's Inbox", "Acme Money opened …", "Acme Money downloaded …", "Filed automatically from Acme Money: …" — never a person as the one who did it. A file it sent names the app as who added it in a document's history. It reads only by what an owner granted it and what it sent itself, never more than an app acting as an adult would, and never anything Only me.
+- **Reviewed by.** What an app acting as itself sends about a person still goes to that person's Inbox. Anything else — a paper about nobody in particular, or of a kind that belongs to the household — goes to the Inbox of the person who **reviews** the app: an owner or an adult who signs in, at first the owner who connected it. An owner can choose somebody else in Connect or Change; they are told by email ("You'll review what Acme Money sends") and need not turn anything on.
+- **When the reviewer can't take it.** If the reviewer is locked, paused, no longer an adult, or has left, such a send is refused for a moment (the app tries again later) and the owners are told once — an email and a line in the activity log — to choose somebody else. The app is not removed and keeps working for everything else. A reviewer whose sign-in is taken away, or whose role drops below adult, is let go of as reviewer at once.
+- **What an owner set up ends with them, as before.** An app acting as itself acts as nobody, so it no longer ends with a person's sign-in; instead, when the owner who connected it leaves the household, stops being an owner, is signed out everywhere or has their password stopped, the apps acting as themselves they connected are removed, and every API key they generated for another owner's such app is revoked — at once, each said in the activity log, and the other owners are emailed once. Apps and keys other owners set up are untouched.
+- **The owners hear early when a reviewer can't review.** The hourly sweep notices a reviewer who has been locked, paused, is no longer an adult or has no sign-in, and tells the owners once, before the app's next send is refused.
+- **Acting as a person is still there.** An owner may choose that an app acts as themselves or as another owner or adult, as before — another adult turns it on themselves. Apps connected before this version keep acting as their person. Changing whom an app acts as is now possible in Change: to another adult, it waits for them again, and they see what it sent only once they turn it on. A file is named as the app's own by how it was sent, not by what the app acts as when it is filed.
+
+### Database
+
+- Migration 0116: whom a connected app acts as (`acts_as`) and who reviews it; what an app acting as itself sent is the vault's to keep on its behalf; a file's uploader may be the app (`document_version.uploaded_by_app`, the person then empty); an app is revoked by a role change only when it acts as that person, and what an owner connected to act as itself (and the keys they generated for one) ends with them; a reviewer must be an owner or adult of the family with a sign-in; who added a version never changes. A restore checks the new rules too.
+
 ## [0.9.0-dev.64] - 2026-11-18 — connected apps: kinds by category, addresses by name
 
 ### Changed

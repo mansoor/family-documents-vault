@@ -7,6 +7,7 @@ import {
   APP_LINK_PAGES_MAX,
   APP_LINK_PATH,
   APP_LINK_SESSION_MINUTES,
+  APP_ITSELF_READS_AS,
   APP_REFUSALS,
   attachmentDisposition,
   canShareToView,
@@ -28,6 +29,7 @@ import type { DocumentService } from '../documents/service.js';
 import { holdForReading } from '../documents/service.js';
 import { ApiError } from '../errors.js';
 import type { AppReads } from './reads.js';
+import { appLine } from './lines.js';
 import type { AppCaller } from './service.js';
 
 /**
@@ -310,7 +312,7 @@ export class AppLinks {
   ): Promise<{ caller: AppCaller; title: string | null } | null> {
     const app = await trx
       .selectFrom('connected_app as a')
-      .innerJoin('account_household as ah', (j) =>
+      .leftJoin('account_household as ah', (j) =>
         j
           .onRef('ah.account_id', '=', 'a.account_id')
           .onRef('ah.household_id', '=', 'a.household_id')
@@ -321,6 +323,7 @@ export class AppLinks {
         'a.id',
         'a.name',
         'a.scopes',
+        'a.acts_as',
         'a.account_id',
         'a.member_id',
         'a.revoked_at',
@@ -335,12 +338,19 @@ export class AppLinks {
       .where('a.id', '=', link.app_id)
       .executeTakeFirst();
     if (!app || app.revoked_at || app.paused_reason || app.approval !== 'approved') return null;
-    const person = {
-      suspend_reason: app.suspend_reason ?? null,
-      suspended_at: app.suspended_at ?? null,
-      suspended_until: app.suspended_until ?? null,
-    };
-    if (lockInEffect(person) || suspensionInEffect(person)) return null;
+    // Its person able to act — an app acting as itself (APP8) has none, and
+    // reads as an app acting as an adult would.
+    const itself = app.acts_as === 'app';
+    const role = itself ? APP_ITSELF_READS_AS : app.role;
+    if (!role) return null;
+    if (!itself) {
+      const person = {
+        suspend_reason: app.suspend_reason ?? null,
+        suspended_at: app.suspended_at ?? null,
+        suspended_until: app.suspended_until ?? null,
+      };
+      if (lockInEffect(person) || suspensionInEffect(person)) return null;
+    }
     // The key it was minted with, live now: revoking a key ends its links.
     const key = await trx
       .selectFrom('connected_app_key')
@@ -358,11 +368,12 @@ export class AppLinks {
       appId: app.id,
       keyId: link.key_id,
       householdId: link.household_id,
-      accountId: app.account_id,
-      memberId: app.member_id,
-      role: app.role,
+      actsAs: itself ? 'app' : 'person',
+      accountId: itself ? null : app.account_id,
+      memberId: itself ? null : app.member_id,
+      role,
       name: app.name,
-      memberName: '',
+      memberName: null,
       timezone: householdZone(app.timezone),
       scopes,
       state: 'active',
@@ -440,7 +451,7 @@ export class AppLinks {
           action: 'document.viewed',
           objectType: 'document',
           objectId: link.document_id,
-          detail: { app_id: good.caller.appId, app: good.caller.name, link: 'view' },
+          detail: appLine(good.caller, { link: 'view' }),
           ip: meta.ip,
         });
       }
@@ -597,13 +608,11 @@ export class AppLinks {
         action: 'document.downloaded',
         objectType: 'document',
         objectId: link.document_id,
-        detail: {
-          app_id: good.caller.appId,
-          app: good.caller.name,
+        detail: appLine(good.caller, {
           link: 'download',
           version_no: v.version_no,
           range: r ? `${r.start}-${r.end}` : null,
-        },
+        }),
         ip: meta.ip,
       });
       return { v, total, r, open };
@@ -674,7 +683,7 @@ export class AppLinks {
           action: 'document.deleted',
           objectType: 'document',
           objectId: docId,
-          detail: { app_id: c.appId, app: c.name },
+          detail: appLine(c),
           ip: meta.ip,
         });
         return { document_id: docId, result: 'trashed' };
@@ -685,7 +694,7 @@ export class AppLinks {
         action: 'app.unlinked',
         objectType: 'document',
         objectId: docId,
-        detail: { app_id: c.appId, app: c.name },
+        detail: appLine(c),
         ip: meta.ip,
       });
       return { document_id: docId, result: 'unlinked' };

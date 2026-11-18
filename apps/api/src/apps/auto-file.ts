@@ -1,10 +1,10 @@
-import { actAs, withSystem, type Db } from '@fdv/db';
+import { actAs, actAsVault, withSystem, type Db } from '@fdv/db';
 import {
   APP_FILE_READY_JOB,
+  APP_ITSELF_READS_AS,
   lockInEffect,
   seesAdults,
   suspensionInEffect,
-  type Role,
 } from '@fdv/shared';
 import type { Principal } from '../auth/service.js';
 import type { BatchService } from '../uploads/batches.js';
@@ -27,7 +27,10 @@ import type { BatchService } from '../uploads/batches.js';
  * An item the app sent to the Inbox of the person it is about (APP5) is
  * filed as that person — whose Inbox it is in — with the same checks, and
  * that person still an owner or an adult who may act; the app's own rows
- * are read as the app's person, in the same transaction.
+ * are read as the app's person, in the same transaction. An app acting as
+ * itself (APP8) has no person: its item is filed as whoever's Inbox it is
+ * in (the person it is about, or its reviewer), with the same checks, and
+ * its own row read by the vault, on its behalf.
  *
  * Safe to run twice, and on several API instances at once: an item filed
  * or removed meanwhile is nothing to do, and the item's own lock decides
@@ -107,6 +110,7 @@ export class AppAutoFile {
           'i.auto_file_held',
           'a.id as app_id',
           'a.name',
+          'a.acts_as',
           'a.account_id',
           'a.member_id',
           'a.approval',
@@ -133,7 +137,20 @@ export class AppAutoFile {
     );
     if (!found || found.state !== 'received') return 'gone';
     if (found.auto_file_held) return 'held';
-    if (!live(found, this.now()) || !found.role || found.ah_member_id !== found.member_id) {
+    // An app acting as itself (APP8) has no person to ask.
+    const itself = found.acts_as === 'app';
+    const person = itself
+      ? {
+          role: APP_ITSELF_READS_AS,
+          suspended_at: null,
+          suspended_until: null,
+          suspend_reason: null,
+        }
+      : found;
+    if (
+      !live({ ...found, ...person }, this.now()) ||
+      (!itself && (!found.role || found.ah_member_id !== found.member_id))
+    ) {
       return 'off';
     }
     // Filed as whoever's Inbox it is in: the app's person, or the person
@@ -151,8 +168,22 @@ export class AppAutoFile {
     ) {
       return 'off';
     }
-    const role: Role = found.role;
-    const acting = { accountId: found.account_id, memberId: found.member_id, role };
+    // Whom its own row is read as: the vault, for an app acting as itself;
+    // its person, for one acting as a person — and nothing else, ever.
+    let asApp: (trx: Db) => Promise<boolean>;
+    if (itself) {
+      asApp = (trx) => actAsVault(trx, (t) => this.appOn(t, found.app_id, hh));
+    } else if (
+      found.acts_as === 'person' &&
+      found.account_id &&
+      found.member_id &&
+      (found.role === 'owner' || found.role === 'adult')
+    ) {
+      const acting = { accountId: found.account_id, memberId: found.member_id, role: found.role };
+      asApp = (trx) => actAs(trx, acting, (t) => this.appOn(t, found.app_id, hh));
+    } else {
+      throw new Error('a connected app acts as itself or as a person, and as nobody else');
+    }
     const p: Principal = {
       accountId: found.inbox_account_id,
       sessionId: '',
@@ -167,8 +198,9 @@ export class AppAutoFile {
       item,
       app,
       // The app's row, and its person, read as its person (APP5): the person
-      // it sent to need not see the app's row.
-      (trx) => actAs(trx, acting, (t) => this.appOn(t, app.id, hh)),
+      // it sent to need not see the app's row. As the vault, for an app
+      // acting as itself (APP8).
+      asApp,
       { ip: null, userAgent: null },
     );
     return out.filed ? 'filed' : out.why;
@@ -192,6 +224,7 @@ export class AppAutoFile {
         'auto_file',
         'backfill_auto_file',
         'backfill_until',
+        'acts_as',
         'account_id',
         'member_id',
       ])
@@ -200,6 +233,20 @@ export class AppAutoFile {
       .forShare()
       .executeTakeFirst();
     if (!a) return false;
+    // An app acting as itself (APP8): its own switches alone.
+    if (a.acts_as === 'app') {
+      return live(
+        {
+          ...a,
+          role: APP_ITSELF_READS_AS,
+          suspended_at: null,
+          suspended_until: null,
+          suspend_reason: null,
+        },
+        this.now(),
+      );
+    }
+    if (!a.account_id || !a.member_id) return false;
     // This household's row alone: an account may belong to others too.
     const person = await trx
       .selectFrom('account_household')

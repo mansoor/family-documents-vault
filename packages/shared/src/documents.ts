@@ -279,6 +279,12 @@ export interface VersionView {
    */
   uploaded_by_name?: string | null;
   /**
+   * A connected app acting as itself added this version (0.9.0, APP8):
+   * `uploaded_by_name` is then the app's name, and no person added it.
+   * Absent otherwise, and from older vaults.
+   */
+  uploaded_by_app?: boolean;
+  /**
    * Its file was removed for good after the backup the vault was restored
    * from was made (5.24): its content, pages and thumbnail answer `410
    * file_removed`. Absent from older vaults.

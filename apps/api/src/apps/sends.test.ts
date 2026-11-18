@@ -756,6 +756,7 @@ describe.skipIf(!testAdminUrl())(
         appId: a.appId,
         keyId: a.keyId,
         householdId: owner.household_id,
+        actsAs: 'person',
         accountId: await accountOf(by),
         memberId: by.member_id,
         role,

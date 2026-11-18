@@ -8516,6 +8516,100 @@ id, keyId)`; `addKey`, `confirmKey` and `retireKey` are gone. **Fake
       `connected_app_ip_allow_names` is among the checks a restore requires.
     - **Fake vault:** unchanged. It does not model the allow-list (addresses
       are the real vault's to test) and answers `ip_allow: []`.
+  - A connected app acts as itself (0.9.0-dev.65, APP8). Migration 0116.
+    **Additive** for an app's own requests; one **type change** for the
+    family side (marked).
+    - **`GET /api/v1/apps/me`** gains `acts_as`: `"app"` (it acts as
+      itself) or `"person"` (as one person of the family). Nothing more is
+      said of whom. `acting_as.name` stays the person's name for `"person"`;
+      for `"app"` it is the app's own name.
+    - **Family side, `POST /api/v1/connected-apps`:** new optional `acts_as`
+      (`"app"` | `"person"`) and `reviewer_member_id`; `member_id` is now
+      optional. Left out, an app acts as itself, reviewed by the owner
+      connecting it, and is `active` at once. A `member_id` without
+      `acts_as` still means a person (as before APP8). `"app"` with a
+      `member_id`, or `"person"` with a `reviewer_member_id`, is `422
+validation_failed` with that `detail`; a reviewer who is not an owner
+      or an adult of the family with a sign-in is `422` with `detail:
+"reviewer_member_id"`.
+    - **`PATCH /api/v1/connected-apps/{id}`** takes `acts_as`, `member_id`
+      and `reviewer_member_id` too (step-up as any change). To a person who
+      is not the owner asking: `waiting_for_approval`, and they are emailed,
+      as connecting an app to them is. To itself, or to the owner asking:
+      on. A new reviewer needs no approval and is emailed once.
+    - **`ConnectedAppView`** gains `acts_as`, `reviewer_member_id`,
+      `reviewer_name` and `reviewer_needed` (it acts as itself and nobody
+      can review what it sends now). **Type change:** `member_id` and
+      `member_name` are `null` for an app acting as itself.
+    - **`POST /api/v1/apps/intake`, acting as itself:** a send the routing
+      (APP5) does not send to the person it is about goes to the reviewer's
+      Inbox, as their own upload (their batch, their member key). While the
+      app has no reviewer, or its reviewer is locked, paused, no longer an
+      owner or adult, or not of the family, such a send is `503 busy`
+      (`retriable`, `Retry-After: 1`) and nothing is kept; the owners are told
+      once (an email and an `app.reviewer_needed` line) until a reviewer is
+      chosen or takes a send. Routed sends are unchanged. An app acting as
+      itself is never refused for a person's lock or pause
+      (`member_locked`, `member_paused`): its own state and its key are what
+      it is asked.
+    - **Reads:** an app acting as itself reads by its grants and its own
+      documents alone, as an app acting as an adult would (Everyone and
+      Adults only, never Only me); `connected_app_documents` and
+      `connected_app_sent_versions` ask a person's role only of an app
+      acting as one.
+    - **Activity:** an app acting as itself's lines carry `detail.as_itself`
+      and name the app alone, with no actor: "Acme Money sent a file to
+      Sara Khan's Inbox", "… opened …", "… downloaded …", "… looked up
+      documents", "Filed automatically from Acme Money: …".
+      `app.connected` says "…, acting as itself"; new `app.reviewer_needed`
+      (owners).
+    - **Versions:** `VersionView.uploaded_by_app: true` for a version a
+      connected app acting as itself added (filed from an Inbox, or
+      automatically); `uploaded_by_name` is then the app's name. In the
+      database `document_version.uploaded_by_app` (the app; `uploaded_by`
+      null then), held by `document_version_uploaded_by_one` and the insert
+      rule `document_version_by_app`; the app's name is read through
+      `connected_app_names(uuid[])`.
+    - **Database:** `connected_app.acts_as` (`'person'` for every app there
+      before; `'app'` the default from now), `account_id` and `member_id`
+      nullable (`connected_app_acts_as_person`), `reviewer_member_id`
+      (`on delete set null`), `reviewer_told_at`;
+      `connected_app_intake.member_id` nullable (an app acting as itself's
+      sends are the vault's to keep) and following whom the app acts as
+      (`connected_app_person_moves`); `connected_apps_leave_with_role`
+      revokes only apps acting as that person and lets a reviewer go;
+      `connected_app_inbox` lets an app acting as itself fill its
+      reviewer's Inbox; `connected_app_items` returns `by_app`.
+    - **What an owner set up ends with them:** when an account leaves the
+      household, drops below owner, is signed out everywhere or is stopped
+      (`owner_stopped`, a reset's `stop_now`), every app acting as itself
+      it connected (`created_by`) is revoked (`app.revoked` with
+      `detail.creator`), and every live API key it generated
+      (`connected_app_key.created_by`) for another app acting as itself is
+      revoked with the new `revoked_reason: "creator"` (`app.key_retired`);
+      the other owners are emailed once. `connected_apps_revoke_for` now
+      answers `(id, member_id, name, client_id)`, a row per key with its
+      `client_id`. Apps acting as a person are revoked as before.
+    - **Send-time attribution:** `connected_app_intake.as_itself` records
+      whether a send was the app's own; `by_app` and the version's uploader
+      follow it, not what the app acts as by filing time. A send let in
+      before whom the app acts as changed, landing after, is `503 busy`.
+      The send's rows move to a new person only once they approve.
+    - **Database guards:** `connected_app_reviewer_check` (a reviewer is an
+      owner or adult of the family with a sign-in, when chosen);
+      `document_version_uploader_fixed` (who added a version never
+      changes); `document_version_by_app` asks for a waiting item of that
+      app's, sent as itself, with the same bytes, in the filer's own Inbox.
+    - **Worker:** the hourly sweep tells the owners once (the same
+      `reviewer_told_at` mark, `app.reviewer_needed` and an email) of an
+      app acting as itself whose reviewer is locked, paused, below adult or
+      without a sign-in.
+    - **Restore:** the new checks, triggers and the insert rule are among
+      what a restore requires.
+    - **Client:** the types above. **Fake vault:** the same rules (itself
+      by default, the reviewer's Inbox, `503 busy` and the owners' line
+      once, the version's uploader, the activity lines); a contract scenario
+      holds both vaults to them.
 
 ## Deprecations in effect
 

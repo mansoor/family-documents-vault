@@ -944,8 +944,21 @@ export interface Schema {
     id: Generated<string>;
     household_id: string;
     name: string;
-    account_id: string;
-    member_id: string;
+    /**
+     * Whom it acts as (0116, APP8): itself (`app`), or one person
+     * (`person`), whose sign-in and member these are; null for itself.
+     */
+    acts_as: ColumnType<'app' | 'person', 'app' | 'person' | undefined, 'app' | 'person'>;
+    account_id: string | null;
+    member_id: string | null;
+    /** Who reviews what nothing routes, for an app acting as itself (0116, APP8). */
+    reviewer_member_id: ColumnType<string | null, string | null | undefined, string | null>;
+    /** When the owners were told it needs another reviewer (0116, APP8). */
+    reviewer_told_at: ColumnType<
+      Date | null,
+      Date | string | null | undefined,
+      Date | string | null
+    >;
     created_by: string | null;
     approval: ColumnType<'waiting' | 'approved', 'waiting' | 'approved' | undefined>;
     approved_at: Timestamp | null;
@@ -1080,7 +1093,7 @@ export interface Schema {
     last_used_at: Timestamp | null;
     revoked_at: Timestamp | null;
     revoked_by: string | null;
-    revoked_reason: 'owner' | 'app_removed' | 'restore' | null;
+    revoked_reason: 'owner' | 'app_removed' | 'restore' | 'creator' | null;
     /** The owners told it expires within 14 days, and that it has expired: once each. */
     warned_at: Timestamp | null;
     expired_told_at: Timestamp | null;
@@ -1091,7 +1104,10 @@ export interface Schema {
     id: Generated<string>;
     household_id: string;
     app_id: string;
-    member_id: string;
+    /** The app's person; null for a send of an app acting as itself (0116, APP8). */
+    member_id: string | null;
+    /** Sent as the app itself (0116, APP8): a file of it filed names the app. */
+    as_itself: Generated<boolean>;
     external_id: string;
     state: 'arriving' | 'waiting' | 'filed' | 'refused' | 'removed';
     removed_reason: 'withdrawn' | 'declined' | 'expired' | null;
@@ -1642,6 +1658,11 @@ export interface Schema {
     processed_at: Timestamp | null;
     process_error: string | null;
     uploaded_by: string | null;
+    /**
+     * The connected app that added it, when it acted as itself (0116,
+     * APP8): `uploaded_by` is null then.
+     */
+    uploaded_by_app: ColumnType<string | null, string | null | undefined, string | null>;
     uploaded_at: GeneratedTimestamp;
     /**
      * Its file was not where it is kept when a restore looked (0045): removed
@@ -2769,6 +2790,60 @@ export async function actAs<T>(
     // Undone, the settings with it: the transaction is its own person's again.
     await sql`rollback to savepoint fdv_act_as`.execute(trx).catch(() => undefined);
     await sql`release savepoint fdv_act_as`.execute(trx).catch(() => undefined);
+    throw err;
+  }
+}
+
+/**
+ * The vault itself, for a part of a transaction of somebody signed in
+ * (0.9.0, APP8): a connected app acting as itself has no person, so its own
+ * rows — its row held and its caps counted, what became of a send, its
+ * line in the activity log — are the vault's to write on its behalf, inside
+ * the transaction of the person whose Inbox its file goes to, so both land
+ * or neither does. That person's own writes stay theirs.
+ *
+ * In a savepoint, as `actAs`: the settings go back to the transaction's own
+ * afterwards; what `fn` wrote is kept when it succeeds, and undone with the
+ * settings when it throws. Only from a transaction of somebody signed in.
+ */
+export async function actAsVault<T>(trx: Db, fn: (trx: Db) => Promise<T>): Promise<T> {
+  const { rows } = await sql<{
+    actor: string | null;
+    account: string;
+    member: string;
+    role: string;
+    session: string;
+  }>`select /* fdv:act-as-vault */ nullif(current_setting('app.actor', true), '') as actor,
+            coalesce(current_setting('app.account_id', true), '') as account,
+            coalesce(current_setting('app.member_id', true), '') as member,
+            coalesce(current_setting('app.role', true), '') as role,
+            coalesce(current_setting('app.session_id', true), '') as session`.execute(trx);
+  const was = rows[0];
+  if (was?.actor !== 'account') {
+    throw new Error('actAsVault is only for a transaction of somebody signed in');
+  }
+  await sql`savepoint fdv_act_as_vault`.execute(trx);
+  try {
+    await sql`select /* fdv:act-as-vault */
+      set_config('app.actor', 'system', true),
+      set_config('app.account_id', '', true),
+      set_config('app.member_id', '', true),
+      set_config('app.role', '', true),
+      set_config('app.session_id', '', true)
+    `.execute(trx);
+    const out = await fn(trx);
+    await sql`select /* fdv:act-as-vault */
+      set_config('app.actor', 'account', true),
+      set_config('app.account_id', ${was.account}, true),
+      set_config('app.member_id', ${was.member}, true),
+      set_config('app.role', ${was.role}, true),
+      set_config('app.session_id', ${was.session}, true)
+    `.execute(trx);
+    await sql`release savepoint fdv_act_as_vault`.execute(trx);
+    return out;
+  } catch (err) {
+    await sql`rollback to savepoint fdv_act_as_vault`.execute(trx).catch(() => undefined);
+    await sql`release savepoint fdv_act_as_vault`.execute(trx).catch(() => undefined);
     throw err;
   }
 }

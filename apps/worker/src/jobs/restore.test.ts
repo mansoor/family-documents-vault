@@ -625,17 +625,47 @@ async function seed(url: string): Promise<string> {
             "select to_regclass('public.connected_app') is not null as has",
           );
           if (apps.rows[0]?.has) {
+            // Since 0116 (APP8) whom it acts as is said: this one, a person.
+            const itself = await c.query<{ has: boolean }>(
+              `select exists (select 1 from information_schema.columns
+                               where table_name = 'connected_app' and column_name = 'acts_as') as has`,
+            );
             const app = await c.query<{ id: string; member_id: string }>(
               `insert into connected_app (household_id, name, account_id, member_id, created_by,
-                                          approval, approved_at, allowed_kinds)
+                                          approval, approved_at, allowed_kinds
+                                          ${itself.rows[0]?.has ? ', acts_as' : ''})
                select $1, 'Acme Money', ah.account_id, ah.member_id, ah.account_id, 'approved', now(),
-                      '{bank_statement}'
+                      '{bank_statement}' ${itself.rows[0]?.has ? ", 'person'" : ''}
                  from account_household ah
                 where ah.household_id = $1 and ah.role in ('owner', 'adult')
                 order by ah.role desc limit 1
                returning id, member_id`,
               [hh],
             );
+            // And one acting as itself (0116, APP8): no person, a reviewer,
+            // a send of nobody's — the restore checks hold with no person.
+            if (itself.rows[0]?.has) {
+              const own = await c.query<{ id: string }>(
+                `insert into connected_app (household_id, name, acts_as, reviewer_member_id,
+                                            created_by, approval, approved_at, allowed_kinds)
+                 select $1, 'Acme Money itself', 'app', ah.member_id, ah.account_id, 'approved',
+                        now(), '{bank_statement}'
+                   from account_household ah
+                  where ah.household_id = $1 and ah.role in ('owner', 'adult')
+                  order by ah.role desc limit 1
+                 returning id`,
+                [hh],
+              );
+              const ownId = own.rows[0]?.id;
+              if (ownId) {
+                await c.query(
+                  `insert into connected_app_intake (household_id, app_id, member_id, external_id,
+                                                     state, refusal, decided_at)
+                   values ($1, $2, null, $3, 'refused', 'kind_not_allowed', now())`,
+                  [hh, ownId, `mt:itself-${randomBytes(6).toString('hex')}`],
+                );
+              }
+            }
             const a = app.rows[0];
             if (a) {
               await c.query(
@@ -2435,7 +2465,8 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
               (select count(*)::int from connected_app_key) as keys,
               (select count(*)::int from connected_app_intake) as sent`,
     );
-    expect(seeded.rows[0]).toEqual({ apps: 1, keys: 1, sent: 1 });
+    // One acting as a person, and one acting as itself (0116, APP8).
+    expect(seeded.rows[0]).toEqual({ apps: 2, keys: 1, sent: 2 });
     // A table's rule for each kind of caller (each is in the list the check
     // asks of every table, which the passing check above holds).
     for (const table of ['connected_app', 'connected_app_key', 'connected_app_intake']) {
@@ -2484,6 +2515,10 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
       ['connected_app_key', 'connected_app_key_writes'],
       ['incoming_file', 'connected_app_intake_follows'],
       ['account_household', 'connected_apps_leave_with_role'],
+      // (0116, APP8)
+      ['connected_app', 'connected_app_person_moves'],
+      ['connected_app', 'connected_app_reviewer_check'],
+      ['document_version', 'document_version_uploader_fixed'],
     ] as const) {
       await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
       try {
@@ -2536,7 +2571,7 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
       // Paused; every API key revoked by the restore (APP6: one revoked since
       // the backup would otherwise work again), so the owners generate new
       // ones; and its feed's cursors from before too old.
-      expect(rows[0]).toEqual({ paused: 1, keys: 1, live: 0, sent: 1, after: 1 });
+      expect(rows[0]).toEqual({ paused: 2, keys: 1, live: 0, sent: 2, after: 2 });
     } finally {
       await client.query('rollback');
       client.release();
@@ -4492,7 +4527,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     // A connected app comes back paused, for an owner to turn back on
     // (0109, APP1), and every API key of it revoked (0114, APP6): one
     // revoked since the backup would otherwise work again.
-    expect(report.appsPaused).toBe(1);
+    expect(report.appsPaused).toBe(2);
     expect(report.appKeysRevoked).toBe(1);
     const apps = await sql(
       t.adminUrl,
@@ -4500,7 +4535,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
               (select count(*)::int from connected_app_key where revoked_reason = 'restore') as keys,
               (select count(*)::int from connected_app_intake) as sent`,
     );
-    expect(apps.rows[0]).toEqual({ paused: 1, keys: 1, sent: 1 });
+    expect(apps.rows[0]).toEqual({ paused: 2, keys: 1, sent: 2 });
     // A Reading check that had not finished is stopped, what it had read let
     // go; one done keeps its numbers and its owner's misses (0074, R0).
     expect(report.readingChecksStopped).toBe(1);

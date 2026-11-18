@@ -1,5 +1,5 @@
 import { logDevicesEnded } from '../devices/service.js';
-import { logAppsEnded } from '../apps/service.js';
+import { appsEndedAlert, logAppsEnded, type AppsEndedNotice } from '../apps/service.js';
 import { appendAudit, householdZone, withPrincipal, type Db } from '@fdv/db';
 import {
   can,
@@ -110,6 +110,7 @@ export class CoOwnerService {
   ): Promise<RoleChangeResult> {
     requireCapability(p, 'role.change');
     const after = { move: false };
+    const lost: AppsEndedNotice[] = [];
     const result = await withPrincipal(this.db, p, async (trx) => {
       await holdHousehold(trx);
       const target = await this.membership(trx, memberId);
@@ -193,8 +194,9 @@ export class CoOwnerService {
       // And their computers, which the database stopped as the role changed
       // (0070): a line each (0.8.0, D1).
       await logDevicesEnded(trx, p, target, meta);
-      // And their connected apps, revoked by the database too (0109, APP1).
-      await logAppsEnded(trx, p, target, meta);
+      // And their connected apps, revoked by the database too (0109, APP1);
+      // and the apps acting as themselves they reviewed, let go of them (APP8).
+      await logAppsEnded(trx, p, target, meta, (t) => lost.push(t));
       // And each collection they managed that their new role is outside
       // (0.9.0), which the database let go as the role changed.
       await logManagersDropped(trx, p, target.member_id, managing, 'role', meta);
@@ -223,6 +225,7 @@ export class CoOwnerService {
       };
     });
     if (after.move) await this.filesMove(p.householdId);
+    await this.reviewersNeeded(p, memberId, lost);
     return result;
   }
 
@@ -234,6 +237,7 @@ export class CoOwnerService {
     if (to === 'owner') {
       throw new ApiError(422, 'validation_failed', 'Choose what you want to become instead.');
     }
+    const lost: AppsEndedNotice[] = [];
     const result = await withPrincipal(this.db, p, async (trx) => {
       await holdHousehold(trx);
       // The collections they manage, before their role moves (0.9.0).
@@ -271,7 +275,9 @@ export class CoOwnerService {
       });
       await logEffects(trx, p, p.memberId, effects, meta);
       await logDevicesEnded(trx, p, { account_id: p.accountId, member_id: p.memberId }, meta);
-      await logAppsEnded(trx, p, { account_id: p.accountId, member_id: p.memberId }, meta);
+      await logAppsEnded(trx, p, { account_id: p.accountId, member_id: p.memberId }, meta, (t) =>
+        lost.push(t),
+      );
       // The collections they managed that their new role is outside (0.9.0).
       await logManagersDropped(trx, p, p.memberId, managing, 'role', meta);
       return {
@@ -285,6 +291,7 @@ export class CoOwnerService {
       };
     });
     if (!can(to, 'upload_request.create')) await this.filesMove(p.householdId);
+    await this.reviewersNeeded(p, p.memberId, lost);
     return result;
   }
 
@@ -292,6 +299,7 @@ export class CoOwnerService {
   async removeSignIn(p: Principal, memberId: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'member.remove');
     let removedPhones: PushTarget[] = [];
+    const lost: AppsEndedNotice[] = [];
     await withPrincipal(this.db, p, async (trx) => {
       const target = await this.membership(trx, memberId);
       if (target.account_id === p.accountId) {
@@ -364,11 +372,18 @@ export class CoOwnerService {
       // Their computers' keys, revoked by the database as the sign-in went
       // (0070): a line each (0.8.0, D1).
       await logDevicesEnded(trx, p, { account_id: target.account_id, member_id: memberId }, meta);
-      await logAppsEnded(trx, p, { account_id: target.account_id, member_id: memberId }, meta);
+      await logAppsEnded(
+        trx,
+        p,
+        { account_id: target.account_id, member_id: memberId },
+        meta,
+        (t) => lost.push(t),
+      );
       // And each collection they managed, let go as the sign-in went (0.9.0).
       await logManagersDropped(trx, p, memberId, managing, 'sign_in', meta);
     });
     await this.filesMove(p.householdId);
+    await this.reviewersNeeded(p, memberId, lost);
     if (removedPhones.length > 0) {
       await this.push({
         householdId: p.householdId,
@@ -955,6 +970,28 @@ export class CoOwnerService {
       .executeTakeFirst();
     if (!row) throw notFound('That sign-in');
     return row;
+  }
+
+  /**
+   * What this change ended of connected apps acting as themselves (0.9.0,
+   * APP8) — those the person connected, the keys they generated for such
+   * apps, and those they reviewed, now without a reviewer: the other owners
+   * are emailed once, after it commits; the activity log's lines were
+   * written with the change.
+   */
+  private async reviewersNeeded(
+    p: Principal,
+    memberId: string,
+    notices: AppsEndedNotice[],
+  ): Promise<void> {
+    if (notices.length === 0) return;
+    const who = await withPrincipal(this.db, p, (trx) =>
+      trx.selectFrom('member').select('display_name').where('id', '=', memberId).executeTakeFirst(),
+    ).catch(() => undefined);
+    for (const t of notices) {
+      const alert = appsEndedAlert(p.householdId, who?.display_name ?? 'somebody', t);
+      if (alert) await this.alert(alert).catch(() => undefined);
+    }
   }
 
   private async adultAccounts(trx: Db, except: string): Promise<string[]> {

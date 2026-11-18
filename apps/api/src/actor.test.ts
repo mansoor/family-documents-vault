@@ -64,6 +64,13 @@ const ALLOWED = [
   'apps/service.ts AppService.authenticate',
   'apps/service.ts AppService.noteRefusal',
   'apps/service.ts AppService.me',
+  // An app acting as itself (0.9.0, APP8) has no person, and no account
+  // standing in for one: its own rows — what became of its sends, its caps
+  // as a send is claimed, its polling line, the owners told it needs a
+  // reviewer, and the family and the kinds its sends are routed by — are
+  // written and read by the vault on its behalf, in this one place. An app
+  // acting as a person does all of that as its person, as before.
+  'apps/service.ts AppService.ownRows',
   // What a connected app reads (0.9.0, APP2): the documents themselves are
   // read narrowed to the app (readAsApp, inside this transaction: the
   // database gives it what its rule allows and nothing of any other table),
@@ -339,15 +346,19 @@ describe('withSystem in the API', { timeout: 30_000 }, () => {
  * decides it belongs on the list.
  */
 const ACT_AS_ALLOWED = [
-  // A send to the Inbox of the person it is about: the app's row held, its
-  // caps counted, its send's row and its activity line written as its own
-  // person, in the recipient's transaction (`asApp`).
-  'apps/service.ts asApp',
-  // A withdraw of such a send, from the recipient's Inbox (`asApp`).
-  'apps/service.ts asApp',
+  // A send to the Inbox of the person it is about, and a withdraw of one:
+  // the app's row held, its caps counted, its send's row and its activity
+  // line written as its own person, in the recipient's transaction — or,
+  // for an app acting as itself (APP8), as the vault on its behalf
+  // (`actAsVault`), in the transaction of whoever's Inbox it goes to (the
+  // person it is about, or its reviewer). One place makes both.
+  'apps/service.ts AppService.asAppIn',
+  'apps/service.ts AppService.asAppIn (actAsVault)',
   // Filing such a send automatically: the app's row held and its person
-  // read as its person, in the recipient's filing transaction.
+  // read as its person — or as the vault, for an app acting as itself — in
+  // the recipient's filing transaction.
   'apps/auto-file.ts AppAutoFile.fileReady',
+  'apps/auto-file.ts AppAutoFile.fileReady (actAsVault)',
 ];
 
 /** Every use of `actAs` in one file: a call, a rename, a namespace import, or the name handed on. */
@@ -363,15 +374,49 @@ function actAsIn(file: string, text: string): string[] {
       }
       if (names && ts.isNamedImports(names)) {
         for (const el of names.elements) {
-          if (el.propertyName?.getText() === 'actAs') {
-            found.push(`${file} actAs as ${el.name.text}`);
+          const was = el.propertyName?.getText();
+          if (was === 'actAs' || was === 'actAsVault') {
+            found.push(`${file} ${was} as ${el.name.text}`);
           }
         }
       }
       return;
     }
-    if (ts.isIdentifier(node) && node.text === 'actAs') {
+    // And acting as the vault inside somebody's transaction (APP8).
+    if (ts.isIdentifier(node) && (node.text === 'actAs' || node.text === 'actAsVault')) {
       const called = ts.isCallExpression(node.parent) && node.parent.expression === node;
+      const which = node.text === 'actAsVault' ? ' (actAsVault)' : '';
+      found.push(`${file} ${enclosing(node)}${which}${called ? '' : ' (not a plain call)'}`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+/**
+ * Where an app's own rows are written inside somebody else's transaction
+ * (0.9.0, APP8): `AppService.asAppIn` hands out `actAs` (as the app's
+ * person) or `actAsVault` (for an app acting as itself). Each place that
+ * asks it for one is named here too.
+ */
+const AS_APP_IN_ALLOWED = [
+  // A send, into the Inbox it goes to.
+  'apps/service.ts AppService.send',
+  // A withdraw of a send, from the Inbox it is in.
+  'apps/service.ts AppService.withdraw',
+];
+
+/** Every use of `asAppIn` in one file: a call, or the name handed on. */
+function asAppInIn(file: string, text: string): string[] {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && node.text === 'asAppIn' && !ts.isMethodDeclaration(node.parent)) {
+      const called =
+        ts.isPropertyAccessExpression(node.parent) &&
+        ts.isCallExpression(node.parent.parent) &&
+        node.parent.parent.expression === node.parent;
       found.push(`${file} ${enclosing(node)}${called ? '' : ' (not a plain call)'}`);
     }
     ts.forEachChild(node, visit);
@@ -381,6 +426,14 @@ function actAsIn(file: string, text: string): string[] {
 }
 
 describe('actAs in the API', { timeout: 30_000 }, () => {
+  it('asAppIn is asked only from the allow-list', async () => {
+    const found: string[] = [];
+    for (const file of await sources()) {
+      found.push(...asAppInIn(file, await readFile(path.join(SRC, file), 'utf8')));
+    }
+    expect(found.sort()).toEqual([...AS_APP_IN_ALLOWED].sort());
+  });
+
   it('actAs is called only from the allow-list', async () => {
     const found: string[] = [];
     for (const file of await sources()) {

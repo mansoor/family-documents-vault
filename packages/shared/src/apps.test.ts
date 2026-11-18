@@ -948,3 +948,73 @@ describe('a name in an app’s allow-list (0.9.0, APP7)', () => {
     }
   });
 });
+
+describe('an app acting as itself in the activity log (0.9.0, APP8)', () => {
+  let id = 2000;
+  const ev = (action: string, min: number, over: Partial<ActivityEvent> = {}): ActivityEvent => ({
+    id: id--,
+    at: new Date(Date.UTC(2026, 10, 18, 12, 0) - min * 60_000).toISOString(),
+    action,
+    actor: null,
+    actor_id: null,
+    actor_member_id: null,
+    actor_label: null,
+    object_type: 'member',
+    object_id: 'm-sara',
+    object_title: 'Sara Khan',
+    detail: { app_id: 'app-1', app: 'Acme Money', as_itself: true },
+    ...over,
+  });
+  const doc = { object_type: 'document', object_id: 'd-1', object_title: 'Northgate, October' };
+
+  it('names the app alone, never a person as the doer', () => {
+    const lines = describeEvents([
+      ev('app.sent', 0),
+      ev('app.withdrawn', 1),
+      ev('document.viewed', 2, doc),
+      ev('document.downloaded', 30, doc),
+      ev('app.read', 40, doc),
+      ev('app.looked_up', 41, { object_id: null, object_title: null }),
+      ev('app.checked', 42, { object_id: null, object_title: null }),
+      ev('app.unlinked', 43, doc),
+      ev('document.deleted', 44, doc),
+    ]);
+    expect(lines.map((l) => l.text)).toEqual([
+      'Acme Money sent a file to Sara Khan’s Inbox',
+      'Acme Money took back a file it sent to Sara Khan’s Inbox',
+      'Acme Money opened “Northgate, October”',
+      'Acme Money downloaded “Northgate, October”',
+      'Acme Money read the details of “Northgate, October”',
+      'Acme Money looked up documents',
+      'Acme Money checked on files it sent',
+      'Acme Money let go of “Northgate, October”; it is still in the vault',
+      'Acme Money moved “Northgate, October” to the Trash',
+    ]);
+    expect(lines.every((l) => l.actor_member_id === null)).toBe(true);
+  });
+
+  it('folds its sends per Inbox, as the app', () => {
+    expect(
+      describeEvents([ev('app.sent', 0), ev('app.sent', 3), ev('app.sent', 5)]).map((l) => l.text),
+    ).toEqual(['Acme Money sent 3 files to Sara Khan’s Inbox']);
+  });
+
+  it('says it was connected as itself, and the owners told once it needs a reviewer', () => {
+    expect(
+      describeEvent(
+        ev('app.connected', 0, {
+          actor: 'Olivia',
+          actor_member_id: 'm-olivia',
+          detail: { app_id: 'app-1', app: 'Acme Money', acts_as: 'app' },
+        }),
+      )?.text,
+    ).toBe('Olivia connected Acme Money, acting as itself');
+    expect(
+      describeEvent(ev('app.reviewer_needed', 0, { object_id: null, object_title: null })),
+    ).toMatchObject({
+      text: 'Acme Money needs somebody to review what it sends: choose who in Settings → Connected apps',
+      notable: true,
+      actor_member_id: null,
+    });
+  });
+});

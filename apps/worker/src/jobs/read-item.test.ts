@@ -409,8 +409,8 @@ describe.skipIf(!testAdminUrl())('an item read, in the worker (I2)', () => {
     await clear();
     const app = (
       await admin.query<{ id: string }>(
-        `insert into connected_app (household_id, name, account_id, member_id, created_by, approval, approved_at)
-         values ($1, 'Acme Money', $2, $3, $2, 'approved', now()) returning id`,
+        `insert into connected_app (household_id, name, acts_as, account_id, member_id, created_by, approval, approved_at)
+         values ($1, 'Acme Money', 'person', $2, $3, $2, 'approved', now()) returning id`,
         [hh, acct.Ahmed, m.Ahmed],
       )
     ).rows[0]?.id as string;

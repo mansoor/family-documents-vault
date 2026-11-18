@@ -386,6 +386,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['app.withdrawn', ownersThePersonAndTheActor],
   ['app.checked', ownersThePersonAndTheActor],
   ['app.refused_today', ownersThePersonAndTheActor],
+  // An app acting as itself with nobody who can review what it sends (APP8):
+  // for the owners, who choose somebody (the line names no person).
+  ['app.reviewer_needed', ownersThePersonAndTheActor],
   // 0.9.0 (APP2): its reading, once an hour — for the owners, its person and
   // whoever did it — and one document's details read: that document's line,
   // for whoever may see it, as a download's is.

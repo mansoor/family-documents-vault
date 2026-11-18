@@ -255,6 +255,15 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     kind: activityKind(e.action),
     named: how.named,
   });
+  /**
+   * What a connected app did: as the person it acts as, "via" it — or, for
+   * an app acting as itself (APP8), the app alone, naming no person as the
+   * doer ("Acme Money sent a file to Sara’s Inbox").
+   */
+  const byApp = (what: string, notable = false) =>
+    detail.as_itself === true
+      ? line(`${appOf(detail)} ${what}`, notable, UNNAMED)
+      : line(`${who} via ${appOf(detail)} ${what}`, notable);
 
   switch (e.action) {
     // ------------------------------------------------------- documents
@@ -316,15 +325,11 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
       return line(`${who} took back the new copy of ${doc}`);
     // A connected app's download (APP2): as the person it acts as, "via" it.
     case 'document.downloaded':
-      return text(detail.app)
-        ? line(`${who} via ${appOf(detail)} downloaded ${doc}`)
-        : line(`${who} downloaded ${doc}`);
+      return text(detail.app) ? byApp(`downloaded ${doc}`) : line(`${who} downloaded ${doc}`);
     // Every page fetched is audited; the log folds a sitting into one line.
     // A connected app's link opened (APP3): as the person it acts as, "via" it.
     case 'document.viewed':
-      return text(detail.app)
-        ? line(`${who} via ${appOf(detail)} opened ${doc}`)
-        : line(`${who} looked at ${doc}`);
+      return text(detail.app) ? byApp(`opened ${doc}`) : line(`${who} looked at ${doc}`);
     // A phone keeping Essentials (0.4.13): filled once per version, and
     // what was opened on it, reported when it next had a connection.
     case 'document.cached_offline':
@@ -338,7 +343,7 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // A connected app's delete, as its owner chose (APP3): "via" it.
     case 'document.deleted':
       return text(detail.app)
-        ? line(`${who} via ${appOf(detail)} moved ${doc} to the Trash`)
+        ? byApp(`moved ${doc} to the Trash`)
         : line(`${who} moved ${doc} to the Trash`);
     case 'document.restored':
       // 5.24: bringing it back is how whoever filed it keeps it.
@@ -762,27 +767,38 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
     // document's name, an amount or anything it sent.
     // Into the Inbox of the person it is about (APP5), when that is not
     // the app's own person: "… sent a file to Sarah’s Inbox".
+    // An app acting as itself (APP8): the app alone, never a person.
     case 'app.sent':
-      return line(`${who} via ${appOf(detail)} sent a file to ${inboxOf(e)}`);
+      return byApp(`sent a file to ${inboxOf(e)}`);
     // What it read (APP2): one document's details, that document's line;
     // and its looking up documents, once an hour.
     case 'app.read':
-      return line(`${who} via ${appOf(detail)} read the details of ${doc}`);
+      return byApp(`read the details of ${doc}`);
     case 'app.looked_up':
-      return line(`${who} via ${appOf(detail)} looked up documents`);
+      return byApp('looked up documents');
     case 'app.withdrawn':
-      return line(`${who} via ${appOf(detail)} took back a file it sent to ${inboxOf(e)}`);
+      return byApp(`took back a file it sent to ${inboxOf(e)}`);
     // A document it sent, let go of (APP3): it stays in the vault.
     case 'app.unlinked':
-      return line(`${who} via ${appOf(detail)} let go of ${doc}; it is still in the vault`);
+      return byApp(`let go of ${doc}; it is still in the vault`);
     case 'app.checked':
-      return line(`${who} via ${appOf(detail)} checked on files it sent`);
+      return byApp('checked on files it sent');
     case 'app.connected':
       return line(
-        isOwn(e)
-          ? `${who} connected ${appOf(detail)}, acting as themselves`
-          : `${who} connected ${appOf(detail)}, acting as ${personOf(e)}`,
+        detail.acts_as === 'app'
+          ? `${who} connected ${appOf(detail)}, acting as itself`
+          : isOwn(e)
+            ? `${who} connected ${appOf(detail)}, acting as themselves`
+            : `${who} connected ${appOf(detail)}, acting as ${personOf(e)}`,
         true,
+      );
+    // An app acting as itself with nobody who can review what it sends
+    // (APP8): the owners are told once to choose somebody.
+    case 'app.reviewer_needed':
+      return line(
+        `${appOf(detail)} needs somebody to review what it sends: choose who in Settings → Connected apps`,
+        true,
+        UNNAMED,
       );
     case 'app.approved':
       return line(`${who} turned on ${appOf(detail)}, which acts as them`, true);
@@ -804,7 +820,15 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
           )
         : line(`${who} generated an API key for ${appOf(detail)}`, true);
     case 'app.key_retired':
-      return line(`${who} revoked an API key of ${appOf(detail)}`, true);
+      // Generated by somebody for an app acting as itself (APP8), revoked as
+      // they left, stopped being an owner or were stopped.
+      return detail.reason === 'creator'
+        ? line(
+            `An API key of ${appOf(detail)} that ${personOf(e)} generated was revoked with them`,
+            true,
+            UNNAMED,
+          )
+        : line(`${who} revoked an API key of ${appOf(detail)}`, true);
     case 'app.key_expiring': {
       const until = text(detail.expires_at);
       return line(
@@ -825,7 +849,23 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
         true,
       );
     case 'app.revoked': {
-      const app = appOf(detail);
+      // An app acting as itself that this person connected (APP8): removed
+      // with them, as it no longer acts as anybody.
+      const app =
+        detail.creator === true ? `${appOf(detail)}, which they connected,` : appOf(detail);
+      if (detail.creator === true) {
+        switch (detail.reason) {
+          case 'sign_in_removed':
+            return line(
+              `${who} took ${possessive(personOf(e))} sign-in away, so ${app} was removed`,
+              true,
+            );
+          case 'cannot_act':
+            return isOwn(e)
+              ? line(`${who} stepped down, so ${app} was removed`, true)
+              : line(`${who} changed ${possessive(personOf(e))} role, so ${app} was removed`, true);
+        }
+      }
       switch (detail.reason) {
         case 'sign_in_removed':
           return line(
@@ -1337,9 +1377,10 @@ export function describeEventSpans(
 /** The files an app sent, folded into one line: "Ahmed via Acme Money sent 12 files to their Inbox". */
 function appSentWords(e: ActivityEvent, n: number): string {
   const who = e.actor ?? (e.actor_label ? capitalise(e.actor_label) : 'Somebody');
-  return n === 1
-    ? `${who} via ${appOf(e.detail ?? {})} sent a file to ${inboxOf(e)}`
-    : `${who} via ${appOf(e.detail ?? {})} sent ${n} files to ${inboxOf(e)}`;
+  // An app acting as itself (APP8): the app alone.
+  const by =
+    e.detail?.as_itself === true ? appOf(e.detail ?? {}) : `${who} via ${appOf(e.detail ?? {})}`;
+  return n === 1 ? `${by} sent a file to ${inboxOf(e)}` : `${by} sent ${n} files to ${inboxOf(e)}`;
 }
 
 /**

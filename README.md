@@ -388,6 +388,25 @@ suggestion: where the vault reads the page differently, the card says both and w
 the person. It can ask what became of what it sent — waiting, filed, refused or removed
 — and take back a file that is still waiting.
 
+**Whom it acts as.** An app acts **as itself** by default (from 0.9.0-dev.65): it is not
+a person of the family and has no sign-in or hidden account, so it never shows up among
+the family's people, counts or pickers, and the activity log names the app alone ("Acme
+Money sent a file to Sara's Inbox", "Acme Money opened …", "Filed automatically from Acme
+Money: …"). What it sends about a person goes to their Inbox (see _Whose Inbox_); anything
+else goes to the Inbox of the person who **reviews** it (_Reviewed by_ in Settings: an owner
+or an adult who signs in, at first the owner who connected it, who is told and asked
+nothing more). If that person can't take it — locked, paused, no longer an adult, or gone —
+such a send is refused for a moment (`503`, and the app tries again later) and the owners
+are told once to choose somebody else; the app keeps working for everything else and is
+not removed. A file it sent names the app, not a person, as who added it. It reads by its
+grants and what it sent alone, never more than an app acting as an adult would. An owner
+may still choose that it acts **as a person** — themselves, or another owner or adult, who
+then turns it on themselves — and then everything below that says "the person it acts as"
+holds as before. Apps connected before 0.9.0-dev.65 keep acting as their person. What an owner sets up ends
+with them: when they leave, stop being an owner, or are signed out everywhere or stopped,
+the apps acting as themselves they connected are removed and the API keys they generated
+for such apps revoked, and the other owners are told.
+
 **What it cannot do.** It cannot sign in, search, or change anything in the vault, and
 it reads only what the next section says. It cannot send a kind it was not allowed (a
 receipt, if you did not allow receipts), choose who sees what it sends beyond the app's
@@ -685,7 +704,7 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.64/fdv-client-0.9.0-dev.64.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.65/fdv-client-0.9.0-dev.65.tgz"
   }
 }
 ```

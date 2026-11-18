@@ -811,10 +811,11 @@ describe.skipIf(!testAdminUrl())('Health’s kinds, details and reminders (0.9.0
     });
 
     it('falls due by the household’s calendar, wherever the server is', async () => {
-      // A zone whose day is not the server's (UTC's) now: a day ahead of it
-      // late in UTC's day, a day behind early in it.
+      // A zone whose day is not the server's (UTC's) now: Kiritimati (UTC+14)
+      // is a day ahead from 10:00 UTC, Pago Pago (UTC−11) a day behind until
+      // 11:00 UTC, so 10:00 is the switch that works every hour.
       const utc = new Date().toISOString().slice(0, 10);
-      zone = new Date().getUTCHours() >= 12 ? 'Pacific/Kiritimati' : 'Pacific/Pago_Pago';
+      zone = new Date().getUTCHours() >= 10 ? 'Pacific/Kiritimati' : 'Pacific/Pago_Pago';
       await admin.query('update household set timezone = $1 where id = $2', [
         zone,
         mum.household_id,

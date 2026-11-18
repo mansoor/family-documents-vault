@@ -5,6 +5,7 @@ import {
   APP_CHANGES_DEFAULT,
   APP_LIST_DEFAULT,
   APP_PAGE_MAX,
+  APP_ITSELF_READS_AS,
   APP_REFUSALS,
   EXTERNAL_ID_PATTERN,
   appMayDownloadSent,
@@ -25,6 +26,7 @@ import type { RequestMeta } from '../auth/service.js';
 import type { DocumentService, EffectiveType } from '../documents/service.js';
 import { holdForReading, rowStatus } from '../documents/service.js';
 import { ApiError } from '../errors.js';
+import { appLine } from './lines.js';
 import type { AppCaller } from './service.js';
 
 /**
@@ -422,20 +424,24 @@ export class AppReads {
    * role, and the household's calendar.
    */
   private async appNow(trx: Db, c: AppCaller): Promise<{ person: { role: string }; zone: string }> {
-    const person = await trx
+    const app = await trx
       .selectFrom('connected_app as a')
-      .innerJoin('account_household as ah', (j) =>
+      .leftJoin('account_household as ah', (j) =>
         j
           .onRef('ah.account_id', '=', 'a.account_id')
           .onRef('ah.household_id', '=', 'a.household_id')
           .onRef('ah.member_id', '=', 'a.member_id'),
       )
-      .select(['ah.role', 'a.revoked_at', 'a.paused_reason', 'a.approval'])
+      .select(['a.acts_as', 'ah.role', 'a.revoked_at', 'a.paused_reason', 'a.approval'])
       .where('a.id', '=', c.appId)
       .executeTakeFirst();
-    if (!person || person.revoked_at || !['owner', 'adult'].includes(person.role)) {
+    // An app acting as itself (APP8) has no person: it reads as an app
+    // acting as an adult would, never more.
+    const role = app?.acts_as === 'app' ? APP_ITSELF_READS_AS : app?.role;
+    if (!app || app.revoked_at || !role || !['owner', 'adult'].includes(role)) {
       throw new ApiError(401, 'app_revoked', APP_REFUSALS.app_revoked);
     }
+    const person = { ...app, role };
     if (person.paused_reason) throw new ApiError(403, 'app_paused', APP_REFUSALS.app_paused);
     if (person.approval !== 'approved') {
       throw new ApiError(403, 'app_not_approved', APP_REFUSALS.app_not_approved);
@@ -571,7 +577,7 @@ export class AppReads {
         action: 'app.looked_up',
         objectType: 'member',
         objectId: c.memberId,
-        detail: { app_id: c.appId, app: c.name },
+        detail: appLine(c),
         ip: meta.ip,
       });
     }
@@ -678,7 +684,7 @@ export class AppReads {
           action: 'app.read',
           objectType: 'document',
           objectId: docId,
-          detail: { app_id: c.appId, app: c.name },
+          detail: appLine(c),
           ip: meta.ip,
         });
       }
@@ -1037,13 +1043,11 @@ export class AppReads {
       action: 'document.downloaded',
       objectType: 'document',
       objectId: docId,
-      detail: {
-        app_id: c.appId,
-        app: c.name,
+      detail: appLine(c, {
         version_no: v.version_no,
         range: range ? `${range.start}-${range.end}` : null,
         ...more,
-      },
+      }),
       ip: meta.ip,
     });
     return { kind: 'bytes' as const, etag, v, total, range, open };
