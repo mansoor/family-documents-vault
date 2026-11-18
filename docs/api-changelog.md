@@ -8315,6 +8315,41 @@ two_step_required` (`state.adultTwoStep = false`; they have one
       `fetch`'s own, unchanged, so log it with care); an app's downloads
       (`download`, `sentFile`) throw
       the same, where before they let `fetch`'s own error through.
+  - The client library: the fake vault keeps uploaded bytes exactly
+    (0.9.0-dev.62, CL3). No change to the API or to the client's requests.
+    **Fix**, in `@fdv/client/testing` alone.
+    - **Fake vault, uploads:** a multipart body is split on its boundary in
+      bytes (the content type's, else the body's first line), each part's
+      header lines alone read as text; a file's bytes are kept as sent, so
+      CRLF and dashes inside a file are only bytes, and its size and hash
+      are the file's. Before, the body was decoded as UTF-8 and a binary
+      file (PNG, JPEG, most PDFs) was stored altered. This holds for
+      `POST /api/v1/apps/intake` (its `sha256` and `byte_size`, and the
+      `Content-Digest` checked over the raw body as before), `POST
+/api/v1/capture`, `POST /api/v1/documents/{id}/versions`, `POST
+/api/v1/batches/{id}/items`, `POST /api/v1/device-uploads` and `PUT
+/api/v1/members/{id}/photo`. A body given to the fake's `fetch` as a
+      stream (a ReadableStream or an async iterable), a Blob, an ArrayBuffer
+      or another typed array is read into bytes first; a platform FormData's
+      Files are read for their bytes too.
+    - **Fake vault, downloads:** a batch item accepted, and a file sent
+      through a request and filed, keep their bytes on the version they
+      make; `GET /api/v1/versions/{id}/content` is answered (it was `404`)
+      with the version's exact bytes as an attachment, under the type the
+      vault delivers (ranges and the step-up of an Essential or an Only me
+      document are not modelled); a new version's answer carries
+      `version_no`, `filename`, `mime` and `byte_size`. An app's download
+      and its re-download of a send already gave the stored bytes as they
+      were.
+    - **Client:** unchanged; `multipartBody` already built its body from
+      bytes, each file's bytes as given.
+    - A contract scenario, run on the fake and the real API, sends a file of
+      every byte value with a boundary lookalike inside: as a capture, a new
+      version and a batch item accepted, each downloaded back by
+      `api.content`; and by a connected app, its `sha256` the file's,
+      downloaded back by the app (`download`), by its re-download of the
+      send (`sentFile`) and by the family's `api.content`, bytes and SHA-256
+      compared each time.
 
 ## Deprecations in effect
 
