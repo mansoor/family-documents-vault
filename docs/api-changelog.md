@@ -8482,6 +8482,40 @@ id, keyId)`; `addKey`, `confirmKey` and `retireKey` are gone. **Fake
       (`vault.expireAppKey(clientId)` for a test), Basic checks in the same
       order, per-key permissions; contract scenarios hold both vaults to the
       same.
+  - A connected app's allow-list takes host names (0.9.0-dev.64, APP7).
+    Migration 0115. **Additive.**
+    - **Family side:** `ip_allow` in `POST /api/v1/connected-apps` and
+      `PATCH /api/v1/connected-apps/{id}` takes host names as well as
+      addresses and networks: ten entries at most, all told, five of them
+      names. A name is letters, digits and hyphens in dot-separated labels
+      (at least two), an international one turned to punycode; no wildcard,
+      port, scheme or path, and nothing that reads as an address (`1.2.3`).
+      Anything else is `422 validation_failed` with `detail: "ip_allow"`, as
+      before. Entries may now be up to 260 characters (were 64).
+    - **`ConnectedAppView.ip_allow`** lists the addresses and networks, as
+      the vault writes them, then the names, lower case, in punycode,
+      without a trailing dot. In the database the names are
+      `connected_app.ip_allow_names text[]`; `ip_allow` stays `cidr[]`. Its
+      check `connected_app_ip_allow_names` holds each element to one name as
+      the vault writes it (labels without a hyphen at either end, a letter
+      in the last label, 253 characters at most), five names, ten entries.
+    - **`/api/v1/apps/*`:** a request is from an allowed address when it is
+      within one of the networks, or is one of the A or AAAA addresses a
+      name resolves to now (an IPv6 address exactly; an IPv4-mapped IPv6
+      address matches its IPv4 one). Names are resolved with a two-second
+      limit and cached for their TTL, five minutes at most; a failure for 30
+      seconds. A name that cannot be resolved, with no answer of the last
+      hour kept, lets nothing in: `403 address_not_allowed`, as for any
+      other address. Loopback and unspecified addresses (127.0.0.0/8,
+      0.0.0.0, ::1, ::) in an answer are ignored. Names already cached are
+      checked first, and the first name that matches answers without waiting
+      for another's lookup. No reverse lookups.
+    - **Re-approval:** a name the list did not have widens it, as a wider
+      network does: an app acting as somebody else waits for them again.
+    - **Restore:** the names come back as data;
+      `connected_app_ip_allow_names` is among the checks a restore requires.
+    - **Fake vault:** unchanged. It does not model the allow-list (addresses
+      are the real vault's to test) and answers `ip_allow: []`.
 
 ## Deprecations in effect
 

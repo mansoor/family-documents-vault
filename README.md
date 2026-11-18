@@ -500,9 +500,15 @@ confirms it is them with a passkey or an authenticator code — never the passwo
 so an owner must have two-step sign-in or a passkey. They name the app, choose whom it
 acts as, and choose the kinds it may send, who sees what it sends (as each kind says,
 adults only, everyone, or only that person), how much it may send a day, and optionally
-the addresses it may come from (up to ten addresses or networks). Then they **generate
-an API key** for it (see _API keys_ below) and give it to the app. When the app acts as
-somebody else, it does nothing until that person turns it on in their own _Settings →
+the addresses it may come from (up to ten addresses, networks or host names).
+The kinds are listed by category: ticking a category ticks all its kinds, and it shows
+as partly ticked when only some are.
+A host name (up to five, such as `feeds.example.com`) is checked against the addresses it
+points to when a request comes, looked up again every few minutes; a name that cannot be
+looked up lets nothing in. An app on a large cloud platform may call from addresses its
+name doesn't list: give its published address ranges instead.
+Then they **generate an API key** for it (see _API keys_ below) and give it to the app.
+When the app acts as somebody else, it does nothing until that person turns it on in their own _Settings →
 Connected apps_, again with a passkey or a code; they are emailed when it is connected.
 When an owner later lets such an app do more — another kind, higher limits, more
 addresses, a backfill, a wider audience, filing automatically, sending to the person a paper
@@ -679,7 +685,7 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.63/fdv-client-0.9.0-dev.63.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.64/fdv-client-0.9.0-dev.64.tgz"
   }
 }
 ```

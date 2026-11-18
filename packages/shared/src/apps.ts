@@ -190,8 +190,51 @@ export const APP_AUTO_FILE_WORDS = 'File when everything is sure and complete';
 
 /** The switch that sends each paper to the Inbox of the person it is about (APP5), in Settings. */
 export const APP_ROUTE_WORDS = 'Send each paper to the Inbox of the person it’s about';
-/** Addresses and networks an app's allow-list holds at most. */
+/**
+ * Entries an app's allow-list holds at most: addresses, networks and names
+ * (APP7) together.
+ */
 export const APP_IP_ALLOW_MAX = 10;
+/** Names (APP7) of those at most: each is looked up in the DNS as requests come. */
+export const APP_IP_ALLOW_NAMES_MAX = 5;
+/** The hint beside the allow-list in Settings (APP7). */
+export const APP_IP_ALLOW_NAME_HINT =
+  'A name is checked against the addresses it points to now. Apps on large cloud platforms may call from addresses their name doesn’t list; use their published address ranges instead.';
+
+/**
+ * The WHATWG URL parser, as Node and the browsers have it (this package
+ * takes no lib of either): its IDNA turns an international name to punycode.
+ */
+declare const URL: new (input: string) => { hostname: string };
+
+/**
+ * A name in an app's allow-list (APP7), as the vault keeps it: lower case,
+ * an international name in punycode (xn--), no trailing dot. Null when it
+ * is not a host name: letters, digits and hyphens in labels of 1 to 63, a
+ * hyphen at neither end, at least one dot, 253 at most, no wildcard, and
+ * nothing an address could be read as (the last label has a letter, so
+ * 203.0.113.7, 0x7f.1 and 1.2.3 are never names), as the database checks.
+ */
+export function appAllowName(text: string): string | null {
+  const raw = text.trim();
+  if (raw.length === 0 || raw.length > 253 + 1) return null;
+  // Only a name: no scheme, port, path, user, brackets or wildcard.
+  if (/[\s/\\:@?#[\]*%]/.test(raw)) return null;
+  let host: string;
+  try {
+    host = new URL(`http://${raw}`).hostname;
+  } catch {
+    return null;
+  }
+  host = host.replace(/\.$/, '');
+  if (host.length === 0 || host.length > 253) return null;
+  const labels = host.split('.');
+  if (labels.length < 2) return null;
+  if (!labels.every((l) => /^(?!-)[a-z0-9-]{1,63}(?<!-)$/.test(l))) return null;
+  if (!/[a-z]/.test(labels[labels.length - 1] as string)) return null;
+  return host;
+}
+
 /** The longest an app's name may be. */
 export const APP_NAME_MAX = 60;
 /** The `metadata` part of an intake, at most. */
@@ -656,6 +699,10 @@ export interface ConnectedAppView {
     bytes_per_day: number;
     auto_file: boolean;
   } | null;
+  /**
+   * Where its requests may come from: addresses and networks, as the vault
+   * writes them, then names (APP7), as `appAllowName` keeps them. Empty: anywhere.
+   */
   ip_allow: string[];
   /** Its API keys (APP6), oldest first: live, expired and revoked. */
   keys: AppKeyView[];
@@ -698,6 +745,12 @@ export interface ConnectedAppInput {
   default_visibility?: Visibility | null;
   daily_files?: number;
   daily_bytes?: number;
+  /**
+   * Where its requests may come from, up to APP_IP_ALLOW_MAX: an address
+   * (203.0.113.7), a network (203.0.113.0/24) or, since APP7, a host name
+   * (feeds.example.com, up to APP_IP_ALLOW_NAMES_MAX), checked against the
+   * addresses it points to as requests come. Empty: anywhere.
+   */
   ip_allow?: string[];
   /**
    * A backfill allowance; `auto_file` (APP4) files what is sure and

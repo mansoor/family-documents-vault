@@ -18,6 +18,7 @@ import {
   APP_LOOKBACK_MAX_MONTHS,
   APP_AUTH_FAILURES_PER_MINUTE,
   APP_IP_ALLOW_MAX,
+  APP_IP_ALLOW_NAMES_MAX,
   APP_KEY_DAYS_MAX,
   APP_KEY_NAME_MAX,
   APP_KEYS_MAX,
@@ -33,6 +34,7 @@ import {
   INCOMING_KEEP_DAYS,
   NOTE_KIND,
   UPLOAD_KINDS,
+  appAllowName,
   appBatchName,
   appInboxOf,
   appSensitiveConfirmWords,
@@ -73,6 +75,7 @@ import { clientAddressOf } from '../client-address.js';
 import { ApiError } from '../errors.js';
 import type { DocumentService } from '../documents/service.js';
 import type { BatchService } from '../uploads/batches.js';
+import { AllowNames, type ResolveFamily } from './allow-names.js';
 import { AppAutoFile } from './auto-file.js';
 import { AppLinks } from './links.js';
 import {
@@ -155,6 +158,8 @@ export interface AppOptions {
   now?: () => number;
   /** The documents' service (APP2): a download's bytes. Without it, nothing is read. */
   documents?: DocumentService;
+  /** The DNS for the names in an allow-list (APP7): Node's resolver, unless a test stands in. */
+  resolveName?: ResolveFamily;
 }
 
 /** A file an app sends: the multipart part, and what the route knows of the rest of the body. */
@@ -227,6 +232,15 @@ export function loopbackSocket(req: FastifyRequest): boolean {
   return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
 }
 
+/**
+ * An allow-list as an owner wrote it (APP7): its addresses and networks, as
+ * the database writes cidr, and its names, as `appAllowName` keeps them.
+ */
+export interface AllowList {
+  nets: string[];
+  names: string[];
+}
+
 /** Whether a network (as the database writes cidr) lies inside one of these. */
 function withinAny(net: string, list: readonly string[]): boolean {
   const [addr = '', bits] = net.split('/');
@@ -257,7 +271,7 @@ const visibilityRank = (v: string | null | undefined) =>
 function widens(
   app: AppRow,
   set: Record<string, unknown>,
-  ip: string[] | undefined,
+  ip: AllowList | undefined,
   now: number,
 ): boolean {
   if (Array.isArray(set.allowed_kinds)) {
@@ -267,8 +281,12 @@ function widens(
   if (typeof set.daily_bytes === 'number' && set.daily_bytes > Number(app.daily_bytes)) {
     return true;
   }
-  if (ip !== undefined && app.ip_allow.length > 0) {
-    if (ip.length === 0 || ip.some((n) => !withinAny(n, app.ip_allow))) return true;
+  // An address, a network wider than one it had, or a name it did not
+  // have (APP7: a name may point anywhere), let in; or anywhere at all.
+  if (ip !== undefined && app.ip_allow.length + app.ip_allow_names.length > 0) {
+    if (ip.nets.length + ip.names.length === 0) return true;
+    if (ip.nets.some((n) => !withinAny(n, app.ip_allow))) return true;
+    if (ip.names.some((n) => !app.ip_allow_names.includes(n))) return true;
   }
   if (
     typeof set.daily_read_bytes === 'number' &&
@@ -338,6 +356,8 @@ interface AppRow {
   backfill_bytes: string | null;
   backfill_auto_file: boolean;
   ip_allow: string[];
+  /** Host names (APP7). */
+  ip_allow_names: string[];
   paused_reason: 'owner' | 'restored' | null;
   revoked_at: Date | null;
   last_used_at: Date | null;
@@ -373,6 +393,7 @@ const APP_COLUMNS = [
   'a.backfill_bytes',
   'a.backfill_auto_file',
   sql<string[]>`a.ip_allow::text[]`.as('ip_allow'),
+  'a.ip_allow_names',
   'a.paused_reason',
   'a.revoked_at',
   'a.last_used_at',
@@ -545,6 +566,8 @@ export class AppService {
   readonly links: AppLinks | null;
   /** What it sends, filed automatically when sure and complete (APP4): the API's one consumer. */
   readonly autoFile: AppAutoFile;
+  /** The names in allow-lists, looked up and cached (APP7). */
+  private readonly names: AllowNames;
 
   constructor(
     private readonly db: Db,
@@ -563,6 +586,52 @@ export class AppService {
           })
         : null;
     this.autoFile = new AppAutoFile(db, batches, { now: () => this.now() });
+    this.names = new AllowNames({
+      ...(opts.resolveName ? { resolve: opts.resolveName } : {}),
+      now: () => this.now(),
+    });
+  }
+
+  /**
+   * Whether a request's address is one an app may come from (APP7): any,
+   * when its list is empty; else within one of its addresses or networks,
+   * or one of the addresses a name of it points to now — an IPv6 address
+   * exactly, as the name lists it. A name that cannot be looked up lets
+   * nothing in. The names already known are asked first; the rest are
+   * looked up at once, and the first that matches answers, never waiting
+   * for a slower one.
+   */
+  private async fromAllowed(
+    ip: string | null,
+    allow: readonly string[],
+    names: readonly string[],
+  ): Promise<boolean> {
+    if (allow.length === 0 && names.length === 0) return true;
+    if (!ip) return false;
+    if (allow.length > 0 && addressAllowed(ip, allow)) return true;
+    const matches = (addresses: string[] | null) =>
+      !!addresses && addresses.length > 0 && addressAllowed(ip, addresses);
+    const unknown: string[] = [];
+    for (const n of names) {
+      const known = this.names.fresh(n);
+      if (known === undefined) unknown.push(n);
+      else if (matches(known)) return true;
+    }
+    if (unknown.length === 0) return false;
+    return new Promise<boolean>((resolve) => {
+      let left = unknown.length;
+      const done = (yes: boolean) => {
+        left -= 1;
+        if (yes) resolve(true);
+        else if (left === 0) resolve(false);
+      };
+      for (const n of unknown) {
+        this.names.addresses(n).then(
+          (a) => done(matches(a)),
+          () => done(false),
+        );
+      }
+    });
   }
 
   /** Which filed documents of these the app may still read: null while nothing is read. */
@@ -766,8 +835,9 @@ export class AppService {
               paused_reason: 'owner' | 'restored' | null;
               approval: 'waiting' | 'approved';
               ip_allow: string[];
+              ip_allow_names: string[];
             }>`select household_id, app_id, key_id, secret_hash, permissions, expires_at,
-                      key_revoked, revoked, paused_reason, approval, ip_allow
+                      key_revoked, revoked, paused_reason, approval, ip_allow, ip_allow_names
                  from connected_app_find(${creds.clientId})`.execute(this.db)
           ).rows[0]
         : undefined;
@@ -793,8 +863,11 @@ export class AppService {
       if (at.paused_reason) await refuse(err(403, 'app_paused'));
       if (at.approval !== 'approved') await refuse(err(403, 'app_not_approved'));
     }
-    // 6. From an address it may come from.
-    if (!addressAllowed(clientAddressOf(req), at.ip_allow ?? [])) {
+    // 6. From an address it may come from: one of its list, or one a name
+    // of it points to now (APP7).
+    if (
+      !(await this.fromAllowed(clientAddressOf(req), at.ip_allow ?? [], at.ip_allow_names ?? []))
+    ) {
       await refuse(err(403, 'address_not_allowed'));
     }
     // 7. Over https, as the trusted proxies say; plain http only for a vault
@@ -1852,32 +1925,46 @@ export class AppService {
     return want;
   }
 
-  /** Addresses and networks, checked and written as the database keeps them. */
-  private async checkedAddresses(trx: Db, list: string[]): Promise<string[]> {
+  /**
+   * Addresses, networks and host names (APP7), checked and written as the
+   * database keeps them: the networks as cidr, the names as `appAllowName`
+   * keeps them. Ten entries at most, all told; five names of them.
+   */
+  private async checkedAddresses(trx: Db, list: string[]): Promise<AllowList> {
     if (list.length > APP_IP_ALLOW_MAX) {
-      throw invalid(`${APP_IP_ALLOW_MAX} addresses or networks at most.`, 'ip_allow');
+      throw invalid(`${APP_IP_ALLOW_MAX} addresses, networks or names at most.`, 'ip_allow');
     }
+    const nets: string[] = [];
+    const names = new Set<string>();
     for (const entry of list) {
       const [net = '', bits, more] = entry.trim().split('/');
       const v = isIP(net);
       const max = v === 4 ? 32 : 128;
+      // Not an address: a host name, or nothing the list takes.
+      const name = v === 0 && bits === undefined ? appAllowName(entry) : null;
+      if (name) {
+        names.add(name);
+        continue;
+      }
       if (
         v === 0 ||
         more !== undefined ||
         (bits !== undefined && (!/^\d{1,3}$/.test(bits) || Number(bits) > max))
       ) {
         throw invalid(
-          `“${entry}” is not an address or a network (203.0.113.7, 203.0.113.0/24, 2001:db8::/64).`,
+          `“${entry}” is not an address, a network or a host name (203.0.113.7, 203.0.113.0/24, 2001:db8::/64, feeds.example.com).`,
           'ip_allow',
         );
       }
+      nets.push(entry.trim());
     }
-    if (list.length === 0) return [];
+    if (names.size > APP_IP_ALLOW_NAMES_MAX) {
+      throw invalid(`${APP_IP_ALLOW_NAMES_MAX} names at most.`, 'ip_allow');
+    }
+    if (nets.length === 0) return { nets: [], names: [...names].sort() };
     const out = await sql<{ net: string }>`
-      select distinct network(x::inet)::text as net from unnest(${list.map((x) => x.trim())}::text[]) x`.execute(
-      trx,
-    );
-    return out.rows.map((r) => r.net).sort();
+      select distinct network(x::inet)::text as net from unnest(${nets}::text[]) x`.execute(trx);
+    return { nets: out.rows.map((r) => r.net).sort(), names: [...names].sort() };
   }
 
   /** Caps and a backfill, checked against the operator's ceilings. */
@@ -2129,7 +2216,7 @@ export class AppService {
                 auto_file: a.backfill_auto_file,
               }
             : null,
-        ip_allow: a.ip_allow ?? [],
+        ip_allow: [...(a.ip_allow ?? []), ...(a.ip_allow_names ?? [])],
         keys: all.map((k) => keyView(k, now)),
         last_used_at: a.last_used_at ? a.last_used_at.toISOString() : null,
         today: sent,
@@ -2222,7 +2309,8 @@ export class AppService {
           daily_files: APP_DEFAULT_DAILY_FILES,
           daily_bytes: APP_DEFAULT_DAILY_BYTES,
           ...caps,
-          ip_allow: sql<string[]>`${ip}::cidr[]` as unknown as string[],
+          ip_allow: sql<string[]>`${ip.nets}::cidr[]` as unknown as string[],
+          ip_allow_names: ip.names,
         })
         .execute();
       await appendAudit(trx, {
@@ -2275,7 +2363,7 @@ export class AppService {
         .forUpdate()
         .executeTakeFirst()) as AppRow | undefined;
       if (!app) throw notHere();
-      let ip: string[] | undefined;
+      let ip: AllowList | undefined;
       if (input.allowed_kinds !== undefined) {
         if (!Array.isArray(input.allowed_kinds)) {
           throw invalid('Choose the kinds it may send.', 'allowed_kinds');
@@ -2284,7 +2372,8 @@ export class AppService {
       }
       if (input.ip_allow !== undefined) {
         ip = await this.checkedAddresses(trx, input.ip_allow);
-        set.ip_allow = sql`${ip}::cidr[]`;
+        set.ip_allow = sql`${ip.nets}::cidr[]`;
+        set.ip_allow_names = ip.names;
       }
       if (Object.keys(set).length === 0) return null;
       const again =

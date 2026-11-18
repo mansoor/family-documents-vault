@@ -1652,6 +1652,13 @@ const REQUIRED_CHECKS = [
     table: 'connected_app',
     what: 'who sees what a connected app sends, from the list',
   },
+  // The names in its allow-list, as the vault writes them, and how many
+  // (0115, APP7): each is looked up as its requests come.
+  {
+    name: 'connected_app_ip_allow_names',
+    table: 'connected_app',
+    what: 'the host names a connected app may send from, as the vault writes them',
+  },
   {
     name: 'connected_app_intake_external_id',
     table: 'connected_app_intake',

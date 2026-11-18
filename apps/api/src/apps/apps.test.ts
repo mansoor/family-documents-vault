@@ -77,6 +77,16 @@ const codeOf = (r: { json: () => unknown }) =>
 /** What the API's request log said, at its most talkative. */
 const logged: string[] = [];
 
+/**
+ * The harness's DNS for the names in an allow-list (APP7): a name's A and
+ * AAAA addresses, or a failure; and every lookup asked of it, by name.
+ */
+const dnsTable = new Map<
+  string,
+  { v4?: string[]; v6?: string[]; ttl?: number } | 'fail' | 'hang'
+>();
+const dnsAsked: string[] = [];
+
 describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
   let h: Harness;
   let admin: ReturnType<typeof createPool>;
@@ -202,6 +212,19 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       rateLimitPerMinute: 20_000,
       publicApps: 'on',
       appsNow: () => clockHeld ?? Date.now() + clockOffset,
+      appsResolve: async (name, family) => {
+        dnsAsked.push(`${name}/${family}`);
+        const r = dnsTable.get(name);
+        // A lookup that never answers: the vault's timeout ends it.
+        if (r === 'hang') return new Promise(() => undefined);
+        if (r === 'fail' || r === undefined) {
+          throw Object.assign(new Error(`no answer for ${name}`), {
+            code: r === 'fail' ? 'ETIMEOUT' : 'ENOTFOUND',
+          });
+        }
+        const list = (family === 4 ? r.v4 : r.v6) ?? [];
+        return list.map((address) => ({ address, ttl: r.ttl ?? 300 }));
+      },
       logger: { level: 'trace', stream: { write: (s: string) => void logged.push(s) } },
     });
     admin = createPool(h.adminUrl, 1);
@@ -596,6 +619,178 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     );
     expect(live.rowCount).toBe(0);
   }, 120_000);
+
+  it('an allow-list takes host names: the addresses a name points to now, cached, failing closed (APP7)', async () => {
+    const a = await connect(owner, { name: 'By name' });
+    const allow = async (list: string[]) => {
+      await h.decider(owner);
+      return send(owner, 'PATCH', `/api/v1/connected-apps/${a.appId}`, { ip_allow: list });
+    };
+    const from = async (address: string) => {
+      const r = await me(a, { remoteAddress: address });
+      return r.statusCode === 200 ? 'in' : codeOf(r);
+    };
+    const asked = (name: string) => dnsAsked.filter((q) => q.startsWith(`${name}/`)).length;
+
+    // Names, checked and kept as the vault writes them, after the networks.
+    dnsTable.set('feeds.example.com', { v4: ['203.0.113.40'], v6: ['2001:db8:5:6::40'] });
+    dnsTable.set('elsewhere.example.net', { v4: ['198.51.100.99'] });
+    const set = await allow(['Feeds.Example.com', '192.0.2.0/24', 'elsewhere.example.net.']);
+    expect(set.statusCode, set.body).toBe(200);
+    expect(set.json<ConnectedAppView>().ip_allow).toEqual([
+      '192.0.2.0/24',
+      'elsewhere.example.net',
+      'feeds.example.com',
+    ]);
+    const kept = await admin.query<{ ip_allow: string[]; ip_allow_names: string[] }>(
+      'select ip_allow::text[] as ip_allow, ip_allow_names from connected_app where id = $1',
+      [a.appId],
+    );
+    expect(kept.rows[0]).toEqual({
+      ip_allow: ['192.0.2.0/24'],
+      ip_allow_names: ['elsewhere.example.net', 'feeds.example.com'],
+    });
+
+    // A name that points to the caller lets it in, IPv4 and IPv6 exactly;
+    // a network still does; anything else is refused.
+    expect(await from('203.0.113.40')).toBe('in');
+    expect(await from('2001:db8:5:6::40')).toBe('in');
+    expect(await from('::ffff:203.0.113.40')).toBe('in');
+    expect(await from('192.0.2.77')).toBe('in');
+    expect(await from('203.0.113.41')).toBe('address_not_allowed');
+    expect(await from('2001:db8:5:6::41')).toBe('address_not_allowed');
+
+    // The answers are kept: many requests, one lookup a name and family.
+    for (let i = 0; i < 5; i++) expect(await from('198.51.100.99')).toBe('in');
+    expect(asked('feeds.example.com')).toBe(2);
+    expect(asked('elsewhere.example.net')).toBe(2);
+
+    // Past their TTL (five minutes at most), asked again: the name now
+    // points elsewhere, and the old address is refused.
+    dnsTable.set('feeds.example.com', { v4: ['203.0.113.50'] });
+    clockOffset += 6 * 60_000;
+    try {
+      expect(await from('203.0.113.40')).toBe('address_not_allowed');
+      expect(await from('203.0.113.50')).toBe('in');
+      expect(asked('feeds.example.com')).toBe(4);
+    } finally {
+      clockOffset -= 6 * 60_000;
+    }
+
+    // A name that cannot be looked up, with no answer kept: nothing in, and
+    // the failure kept a little while (one lookup for many requests).
+    dnsTable.set('down.example.org', 'fail');
+    await allow(['down.example.org']);
+    expect(await from('203.0.113.40')).toBe('address_not_allowed');
+    expect(await from('203.0.113.40')).toBe('address_not_allowed');
+    expect(asked('down.example.org')).toBe(2);
+    // A name with no such host: nothing in.
+    await allow(['nowhere.example.org']);
+    expect(await from('203.0.113.40')).toBe('address_not_allowed');
+
+    // A name that matches never waits for another's slow lookup: the one
+    // known is asked first, and the first match answers.
+    dnsTable.set('slow.example.org', 'hang');
+    await allow(['slow.example.org', 'feeds.example.com']);
+    let started = Date.now();
+    expect(await from('203.0.113.50')).toBe('in');
+    expect(Date.now() - started).toBeLessThan(1_500);
+    dnsTable.set('quick.example.org', { v4: ['203.0.113.60'] });
+    await allow(['slow.example.org', 'quick.example.org']);
+    started = Date.now();
+    expect(await from('203.0.113.60')).toBe('in');
+    expect(Date.now() - started).toBeLessThan(1_500);
+
+    // A loopback or unspecified address in a name's answer lets nothing in.
+    dnsTable.set('local.example.org', {
+      v4: ['127.0.0.1', '0.0.0.0', '127.8.9.10'],
+      v6: ['::1', '::'],
+    });
+    await allow(['local.example.org']);
+    for (const address of ['127.0.0.1', '127.8.9.10', '0.0.0.0', '::1', '::']) {
+      expect(await from(address), address).toBe('address_not_allowed');
+    }
+    await allow([]);
+    expect(await from('203.0.113.40')).toBe('in');
+
+    // What is not an address, a network or a host name is refused, and so
+    // is more than the caps: ten entries, five names.
+    const names = (n: number) => Array.from({ length: n }, (_, i) => `n${i}.example.com`);
+    const nets = (n: number) => Array.from({ length: n }, (_, i) => `198.51.100.${i}`);
+    for (const bad of [
+      ['*.example.com'],
+      ['localhost'],
+      ['https://feeds.example.com'],
+      ['feeds.example.com:443'],
+      ['feeds.example.com/24'],
+      ['1.2.3'],
+      ['-x.example.com'],
+      names(6),
+      [...names(5), ...nets(6)],
+    ]) {
+      const r = await allow(bad);
+      expect(
+        [r.statusCode, r.json<{ error: { detail?: string } }>().error.detail],
+        bad.join(),
+      ).toEqual([422, 'ip_allow']);
+    }
+    const most = await allow([...names(5), ...nets(5)]);
+    expect(most.statusCode, most.body).toBe(200);
+    // The database holds to the caps and the form too: one name an element,
+    // labels without a hyphen at either end, a letter in the last label,
+    // 253 characters at most.
+    for (const bad of [
+      ['Bad_Name.example.com'],
+      ['a.example.com b.example.com'],
+      ['n0.example.com n1.example.com', ...names(4)],
+      ['-x.example.com'],
+      ['x-.example.com'],
+      ['feeds.example.1-2'],
+      ['203.0.113.7'],
+      ['localhost'],
+      ['feeds.example.com '],
+      [''],
+      [`${'a.'.repeat(126)}com`],
+      names(6),
+    ]) {
+      await expect(
+        admin.query(`update connected_app set ip_allow_names = $2 where id = $1`, [a.appId, bad]),
+        bad.join(),
+      ).rejects.toThrow(/connected_app_ip_allow_names/);
+    }
+    for (const good of [
+      [`${'a.'.repeat(124)}com`],
+      ['xn--bcher-kva.example', 'a-1.b2.example.org'],
+      names(5),
+    ]) {
+      await admin.query(
+        `update connected_app set ip_allow = '{}', ip_allow_names = $2 where id = $1`,
+        [a.appId, good],
+      );
+    }
+    await allow([]);
+  });
+
+  it('a new name in the allow-list widens it: an app acting as another adult waits for them again (APP7)', async () => {
+    const a = await connect(owner, {
+      member_id: ahmed.member_id,
+      name: 'Named widening',
+      ip_allow: ['203.0.113.0/24', 'api.example.com'],
+    });
+    await h.decider(ahmed);
+    await send(ahmed, 'POST', `/api/v1/connected-apps/${a.appId}/approve`);
+    const change = async (list: string[]) => {
+      await h.decider(owner);
+      const res = await send(owner, 'PATCH', `/api/v1/connected-apps/${a.appId}`, {
+        ip_allow: list,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      return res.json<ConnectedAppView>().state;
+    };
+    // Dropping a name narrows; a name it did not have widens.
+    expect(await change(['203.0.113.0/24'])).toBe('active');
+    expect(await change(['203.0.113.0/24', 'other.example.com'])).toBe('waiting_for_approval');
+  });
 
   it('an address that keeps sending a key that does not work waits out its minute; others do not', async () => {
     const a = await connect(owner, { name: 'Guessed' });
