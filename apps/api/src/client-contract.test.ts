@@ -72,7 +72,9 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
     };
   };
 
-  const api = createApi(createHttp({ baseUrl: 'http://vault.test', fetch: viaInject }));
+  // This machine's address: a connected app's client sends its key over
+  // plain http to this machine alone (APP6), as the vault takes it.
+  const api = createApi(createHttp({ baseUrl: 'http://localhost', fetch: viaInject }));
   const ctx: ContractContext = {
     fetch: viaInject,
     email: 'contract@example.test',
@@ -265,6 +267,17 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
       });
       return filed.document_id;
     },
+    // An app's file filed into a document that is there, as a new version
+    // (APP6): its item accepted into that document, as a person would.
+    fileAppSendAsVersion: async (token, app, _externalId, file, documentId) => {
+      const batches = await api.batches(token);
+      const batch = batches.items.find((b) => b.name?.startsWith(`From ${app.name}`));
+      if (!batch) throw new Error(`no batch from ${app.name}`);
+      const detail = await api.batch(token, batch.id);
+      const item = detail.items.find((i) => i.sha256 === file.sha256);
+      if (!item) throw new Error('the app’s file is not in its batch');
+      await api.acceptBatchItem(token, batch.id, item.id, { into_document_id: documentId });
+    },
     // What the worker does once it has read an app's file (APP4): the
     // reading written as it writes it, and the apps.file_ready job it would
     // send, run as the API consumes it.
@@ -341,6 +354,28 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
           [memberId],
         );
       } finally {
+        await admin.end();
+      }
+    },
+    // A connected app's API key past its expiry (APP6), as time would make it:
+    // as the owning role, its triggers quiet for this one write, since nothing
+    // ever changes a key's dates.
+    expireAppKey: async (clientId) => {
+      const admin = createPool(h.adminUrl, 1);
+      const raw = await admin.connect();
+      try {
+        await raw.query('begin');
+        await raw.query(`set local session_replication_role = replica`);
+        const { rowCount } = await raw.query(
+          `update connected_app_key
+              set created_at = now() - interval '2 days', expires_at = now() - interval '1 second'
+            where client_id = $1`,
+          [clientId],
+        );
+        if (rowCount !== 1) throw new Error('no such API key');
+        await raw.query('commit');
+      } finally {
+        raw.release();
         await admin.end();
       }
     },

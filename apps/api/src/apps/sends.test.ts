@@ -1,7 +1,6 @@
-import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { multipartBody } from '@fdv/client';
-import { signRequest } from '@fdv/client/apps';
 import {
   EnvKeyProvider,
   itemProposalsBinding,
@@ -25,7 +24,7 @@ import type {
 import type { LightMyRequestResponse } from 'fastify';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
+import { appKeyFor, basicFor, createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
 import { SENT_VERSION_COLUMNS } from './reads.js';
 import type { AppCaller, AppFile } from './service.js';
 
@@ -41,19 +40,11 @@ const PDF = (marker: string) =>
     `%PDF-1.4\n% ${marker}\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n`,
   );
 
-function newKey() {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const raw = Buffer.from(publicKey.export({ format: 'jwk' }).x as string, 'base64url');
-  return {
-    pem: privateKey.export({ format: 'pem', type: 'pkcs8' }) as string,
-    given: `ed25519:${raw.toString('base64url')}`,
-  };
-}
-
 interface TestApp {
   appId: string;
   keyId: string;
-  pem: string;
+  clientId: string;
+  secret: string;
   view: ConnectedAppView;
 }
 
@@ -89,18 +80,17 @@ describe.skipIf(!testAdminUrl())(
       by: () => Tokens = () => owner,
     ): Promise<TestApp> {
       await h.decider(owner);
-      const key = newKey();
       const res = await send(owner, 'POST', '/api/v1/connected-apps', {
         name,
         member_id: by().member_id,
-        public_key: key.given,
         allowed_kinds: ['bank_statement', 'utility_bill', 'pay_statement'],
         scopes: ['documents.send', 'documents.read', 'documents.download'],
         ...input,
       });
       expect(res.statusCode, res.body).toBe(201);
       const view = res.json<ConnectedAppView>();
-      return { appId: view.id, keyId: view.keys[0]?.key_id as string, pem: key.pem, view };
+      const key = await appKeyFor(h, owner, view);
+      return { appId: view.id, ...key, view };
     }
 
     async function call(
@@ -110,13 +100,7 @@ describe.skipIf(!testAdminUrl())(
       body?: { bytes: Uint8Array; contentType: string },
       headers: Record<string, string> = {},
     ): Promise<LightMyRequestResponse> {
-      const signed = await signRequest({
-        method,
-        target,
-        ...(body ? { body: body.bytes } : {}),
-        keyid: `${a.appId}.${a.keyId}`,
-        privateKey: a.pem,
-      });
+      const signed = basicFor(a);
       return h.app.inject({
         method,
         url: target,
@@ -400,8 +384,10 @@ describe.skipIf(!testAdminUrl())(
       const filed = await file(owner, item, { type_key: 'bank_statement', title: 'Superseded' });
       const newer = PDF('the family’s newer file');
       await addVersion(owner, filed.document_id, newer);
+      // Still the app's to read (18 Nov 2026): filed, its document the same.
       expect(await status(a, 'newer-1')).toMatchObject({
-        state: 'unavailable',
+        state: 'filed',
+        document_id: filed.document_id,
         content_available: true,
       });
       const r = await again(a, 'newer-1');
@@ -787,7 +773,6 @@ describe.skipIf(!testAdminUrl())(
         stream: Readable.from([bytes]),
         truncated: () => false,
         finished: meanwhile,
-        digestOk: async () => true,
       };
       return h.apps.send(caller, { external_id: externalId, hints }, file, {
         ip: null,

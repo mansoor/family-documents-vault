@@ -1,37 +1,44 @@
-import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
-import { readdir } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import { PassThrough } from 'node:stream';
 import { multipartBody } from '@fdv/client';
-import { signRequest } from '@fdv/client/apps';
 import { createPool, withPrincipal } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
-  APP_EMPTY_DIGEST,
   type AppIntakeState,
   type AppMe,
   type BatchDetail,
   type BatchView,
+  type ConnectedAppKeyMade,
   type ConnectedAppList,
   type ConnectedAppView,
   type Tokens,
 } from '@fdv/shared';
 import type { LightMyRequestResponse } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { alertsSent, createHarness, type Harness } from '../test-harness.js';
-import { APP_SIGNED_ROUTES } from './routes.js';
 import {
-  fingerprintOf,
-  parseSignature,
-  pathAndQuery,
-  rawPublicKey,
-  signatureBase,
-  verifies,
-} from './signing.js';
+  alertsSent,
+  appKeyFor,
+  basicFor,
+  createHarness,
+  type Harness,
+  type TestAppKey,
+} from '../test-harness.js';
+import {
+  addressBucket,
+  newClientId,
+  newSecret,
+  presentsBasic,
+  readBasic,
+  secretHash,
+  secretMatches,
+} from './keys.js';
+import { APP_ROUTES } from './routes.js';
 
 /**
  * Connected apps (0.9.0, APP1): an owner connects one with a passkey or a
- * code, it signs every request (RFC 9421), and what it sends goes into its
- * person's Inbox, followed by its external id.
+ * code, generates its API keys (APP6), it sends one on every request as
+ * HTTP Basic, and what it sends goes into its person's Inbox, followed by
+ * its external id.
  */
 
 const PDF = (marker: string) =>
@@ -40,42 +47,22 @@ const PDF = (marker: string) =>
   );
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 
-/** A key pair an app made: its private key as PEM, and the public key as an owner pastes it. */
-function newKey() {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const raw = Buffer.from(publicKey.export({ format: 'jwk' }).x as string, 'base64url');
-  return {
-    pem: privateKey.export({ format: 'pem', type: 'pkcs8' }) as string,
-    given: `ed25519:${raw.toString('base64url')}`,
-    spki: publicKey.export({ format: 'pem', type: 'spki' }) as string,
-    raw,
-  };
-}
-type Key = ReturnType<typeof newKey>;
-
-interface TestApp {
+interface TestApp extends TestAppKey {
   appId: string;
-  keyId: string;
-  key: Key;
   view: ConnectedAppView;
 }
 
 interface CallOptions {
   body?: Buffer;
   contentType?: string;
-  /** Headers added or replaced after signing. */
+  /** Headers added or replaced after the key's. */
   headers?: Record<string, string>;
-  created?: number;
-  nonce?: string;
-  /** Signed for this, not what is sent. */
-  signedTarget?: string;
-  signedBody?: Buffer | string;
-  signedMethod?: string;
   /** The caller's address, as a trusted proxy on this machine says it (X-Forwarded-For). */
   remoteAddress?: string;
   /** The connection's own address, said by nothing but the socket. */
   socket?: string;
-  key?: { keyId: string; pem: string };
+  /** Another key, or another secret, than the app's own. */
+  key?: { clientId: string; secret: string };
 }
 
 /** The connected apps' clock, ahead of the real one by this much: a test moves it. */
@@ -87,6 +74,8 @@ let peers = 0;
 const peer = () => `10.72.${(peers >> 8) & 0xff}.${peers++ & 0xff}`;
 const codeOf = (r: { json: () => unknown }) =>
   (r.json() as { error?: { code?: string } }).error?.code;
+/** What the API's request log said, at its most talkative. */
+const logged: string[] = [];
 
 describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
   let h: Harness;
@@ -105,7 +94,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       remoteAddress: peer(),
     });
 
-  /** An owner connects an app, with a code just given. */
+  /** An owner connects an app, with a code just given, and generates its key. */
   async function connect(
     by: Tokens,
     input: Partial<{
@@ -115,48 +104,33 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       ip_allow: string[];
       default_visibility: string | null;
       daily_files: number;
+      scopes: string[];
     }> = {},
   ): Promise<TestApp> {
     await h.decider(by);
-    const key = newKey();
     const res = await send(by, 'POST', '/api/v1/connected-apps', {
       name: 'Acme Money',
       member_id: by.member_id,
-      public_key: key.given,
       allowed_kinds: ['bank_statement', 'utility_bill', 'credit_card_statement'],
       ...input,
     });
     expect(res.statusCode, res.body).toBe(201);
     const view = res.json<ConnectedAppView>();
-    return { appId: view.id, keyId: view.keys[0]?.key_id as string, key, view };
+    return { appId: view.id, ...(await appKeyFor(h, by, view)), view };
   }
 
-  /** A request signed as the app, sent. */
+  /** A request sent as the app, with its key. */
   async function call(
     a: TestApp,
     method: 'GET' | 'POST' | 'DELETE',
     target: string,
     o: CallOptions = {},
   ): Promise<LightMyRequestResponse> {
-    const key = o.key ?? { keyId: a.keyId, pem: a.key.pem };
-    const signed = await signRequest({
-      method: o.signedMethod ?? method,
-      target: o.signedTarget ?? target,
-      ...(o.signedBody !== undefined
-        ? { body: o.signedBody }
-        : o.body
-          ? { body: new Uint8Array(o.body) }
-          : {}),
-      keyid: `${a.appId}.${key.keyId}`,
-      privateKey: key.pem,
-      ...(o.created !== undefined ? { created: o.created } : {}),
-      ...(o.nonce ? { nonce: o.nonce } : {}),
-    });
     return h.app.inject({
       method,
       url: target,
       headers: {
-        ...signed,
+        ...basicFor(o.key ?? a),
         ...(o.contentType ? { 'content-type': o.contentType } : {}),
         // From this machine — a vault on localhost takes plain http only so —
         // through a proxy here that says who is asking.
@@ -206,11 +180,29 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
   const batchesOf = async (t: Tokens) =>
     (await send(t, 'GET', '/api/v1/batches')).json<{ items: BatchView[] }>().items;
 
+  /** A key past its expiry, as the database's clock would have it. */
+  async function expire(clientId: string) {
+    const c = await admin.connect();
+    try {
+      await c.query('begin');
+      await c.query('set local session_replication_role = replica');
+      await c.query(
+        `update connected_app_key set created_at = now() - interval '2 days',
+                expires_at = now() - interval '5 minutes' where client_id = $1`,
+        [clientId],
+      );
+      await c.query('commit');
+    } finally {
+      c.release();
+    }
+  }
+
   beforeAll(async () => {
     h = await createHarness({
       rateLimitPerMinute: 20_000,
       publicApps: 'on',
       appsNow: () => clockHeld ?? Date.now() + clockOffset,
+      logger: { level: 'trace', stream: { write: (s: string) => void logged.push(s) } },
     });
     admin = createPool(h.adminUrl, 1);
     owner = await h.setup();
@@ -223,69 +215,65 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     await h?.close();
   });
 
-  // ------------------------------------------------------------ signing
+  // ------------------------------------------------------------ API keys
 
-  it('the contract’s worked examples verify byte for byte, and the key and fingerprint read as it says', () => {
-    const key = rawPublicKey('ed25519:JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs') as Buffer;
-    expect(fingerprintOf(key)).toBe('b16c 2d1b ead1 2626 3976 4fdb 0ee4 d377');
-    const keyid = '0b9a1f3e-6c2d-4e8a-9f71-2d5c8b4a7e10.5e2c7d91-3a4b-4c6d-8e9f-0a1b2c3d4e5f';
-    const examples = [
-      {
-        method: 'GET',
-        url: '/api/v1/apps/documents?kind=bank_statement&from=2025-11-01&limit=50',
-        digest: APP_EMPTY_DIGEST,
-        nonce: 'q2v5Xb8Kc1nT4yWm9pLd3A',
-        sig: 'svm/e0HinJECVqp1YVETGIVKXu8YHfHxL5MsK5BV7p2+oBP5aDq4Q2IWcWlAPH2EapyPthUzmXUwkbvKQUosBg==',
-        bytes: 402,
-      },
-      {
-        method: 'POST',
-        url: '/api/v1/apps/documents/7c4e2a10-9b3d-4f6e-8a21-5d0c9e8f7b62/links',
-        digest: 'sha-256=:jiFmkkKT2RXl18q8BbzJlDQtG4I0hKhvLwf5yptXusM=:',
-        nonce: 'Hn3kQ7rT2xLp9vB6cW1sZg',
-        sig: 'Z5FdCGmjraCmjPjFBiIB9/3mYq8kTL1Kponj4fxVyRLn40g2ZoqrbpazhLXYOMoKsXwG06ACO7CKz+jQBbM7Bg==',
-        bytes: null,
-      },
-    ];
-    for (const e of examples) {
-      const parsed = parseSignature({
-        'content-digest': e.digest,
-        'signature-input': `fdv=("@method" "@path" "@query" "content-digest");created=1794830400;keyid="${keyid}";nonce="${e.nonce}";alg="ed25519";tag="fdv-app"`,
-        signature: `fdv=:${e.sig}:`,
-      });
-      if ('code' in parsed) throw new Error(JSON.stringify(parsed));
-      expect(parsed).toMatchObject({
-        appId: '0b9a1f3e-6c2d-4e8a-9f71-2d5c8b4a7e10',
-        keyId: '5e2c7d91-3a4b-4c6d-8e9f-0a1b2c3d4e5f',
-        created: 1794830400,
-        nonce: e.nonce,
-      });
-      const base = signatureBase({
-        method: e.method,
-        ...pathAndQuery(e.url),
-        digestHeader: parsed.digestHeader,
-        params: parsed.params,
-      });
-      if (e.bytes) expect(Buffer.byteLength(base)).toBe(e.bytes);
-      expect(verifies(key, base, parsed.signature)).toBe(true);
-      // One byte of the path changed, and it does not.
-      expect(verifies(key, base.replace('/api/v1/', '/api/v2/'), parsed.signature)).toBe(false);
+  it('an API key is a client ID and a secret as the vault makes them, read strictly from Basic', () => {
+    const id = newClientId();
+    const secret = newSecret();
+    expect(id).toMatch(/^fdvc_[A-Za-z0-9_-]{22}$/);
+    expect(secret).toMatch(/^fdvs_[A-Za-z0-9_-]{43}$/);
+    expect(newSecret()).not.toBe(secret);
+    const basic = (s: string) => ({ authorization: `Basic ${Buffer.from(s).toString('base64')}` });
+    expect(readBasic(basic(`${id}:${secret}`))).toEqual({ kind: 'basic', clientId: id, secret });
+    expect(
+      readBasic({ authorization: `basic  ${Buffer.from(`${id}:${secret}`).toString('base64')}` }),
+    ).toMatchObject({ kind: 'basic' });
+    // A client ID's user part, but not as the vault writes keys: malformed.
+    for (const bad of [
+      `${id}${secret}`,
+      `${id}:`,
+      `${id}:${secret}x`,
+      `fdvc_short:${secret}`,
+      `${id}:${secret.slice(5)}`,
+    ]) {
+      expect(readBasic(basic(bad)), bad).toEqual({ kind: 'malformed' });
     }
-    // A PEM SPKI block is the same key.
-    const pem = newKey();
-    expect(rawPublicKey(pem.spki)?.equals(pem.raw)).toBe(true);
-    expect(rawPublicKey('ed25519:short')).toBeNull();
-    expect(rawPublicKey('ssh-ed25519 AAAA')).toBeNull();
+    const twice = { authorization: [basic(`${id}:${secret}`).authorization, 'Basic a'] };
+    expect(readBasic(twice)).toEqual({ kind: 'malformed' });
+    // Basic that is no app's — a proxy's login in front of the vault — is
+    // not taken for a key at all.
+    for (const theirs of [`alice:correct horse`, `:${secret}`, `fdv:${secret}`, 'nobody']) {
+      expect(readBasic(basic(theirs)), theirs).toEqual({ kind: 'none' });
+      expect(presentsBasic(basic(theirs)), theirs).toBe(false);
+    }
+    expect(readBasic({ authorization: 'Basic not base64!' })).toEqual({ kind: 'none' });
+    expect(readBasic({ authorization: ['Basic a', 'Basic b'] })).toEqual({ kind: 'none' });
+    expect(readBasic({ authorization: 'Bearer abc' })).toEqual({ kind: 'none' });
+    expect(readBasic({})).toEqual({ kind: 'none' });
+    expect(presentsBasic(basic(`${id}:${secret}`))).toBe(true);
+    expect(presentsBasic(basic(`${id}:wrong`))).toBe(true);
+    expect(presentsBasic({ authorization: 'Bearer x' })).toBe(false);
+    // Failures are counted by address: an IPv6 one by its /64.
+    expect(addressBucket('198.51.100.7')).toBe('198.51.100.7');
+    expect(addressBucket('::ffff:198.51.100.7')).toBe('198.51.100.7');
+    expect(addressBucket('2001:db8:5:6::1')).toBe('2001:db8:5:6::/64');
+    expect(addressBucket('2001:0DB8:0005:0006:aaaa:bbbb:cccc:dddd')).toBe('2001:db8:5:6::/64');
+    expect(addressBucket('2001:db8::1')).toBe('2001:db8:0:0::/64');
+    expect(addressBucket('::1')).toBe('0:0:0:0::/64');
+    // Kept as its SHA-256, compared in constant time; nothing matches no hash.
+    expect(secretHash(secret)).toHaveLength(32);
+    expect(secretMatches(secret, secretHash(secret))).toBe(true);
+    expect(secretMatches(newSecret(), secretHash(secret))).toBe(false);
+    expect(secretMatches(secret, null)).toBe(false);
+    expect(secretMatches('', undefined)).toBe(false);
   });
 
   // ------------------------------------------------------------ connecting
 
-  it('an owner connects an app with a passkey or a code, never the password alone', async () => {
-    const key = newKey();
+  it('an owner connects an app with a passkey or a code, never the password alone, then generates its key', async () => {
     const body = {
       name: 'Acme Money',
       member_id: owner.member_id,
-      public_key: key.given,
       allowed_kinds: ['bank_statement'],
     };
     // An adult is refused; an owner with only a password is told to turn on two-step.
@@ -296,9 +284,8 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       'totp_required_for_owner',
     ]);
     await h.decider(owner);
-    // What it is given is checked: a key, a person who may be acted as, kinds the household has.
+    // What it is given is checked: a person who may be acted as, kinds the household has.
     for (const [bad, field] of [
-      [{ public_key: 'not a key' }, 'public_key'],
       [{ member_id: teen.member_id }, 'member_id'],
       [{ allowed_kinds: ['no_such_kind'] }, 'allowed_kinds'],
       [{ ip_allow: ['not-an-address'] }, 'ip_allow'],
@@ -310,10 +297,13 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
         field,
       ]);
     }
-    const made = await send(owner, 'POST', '/api/v1/connected-apps', {
+    // A public key is no longer anything an app is given.
+    const signedOnce = await send(owner, 'POST', '/api/v1/connected-apps', {
       ...body,
-      public_key: key.spki,
+      public_key: 'ed25519:JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs',
     });
+    expect(signedOnce.statusCode).toBe(422);
+    const made = await send(owner, 'POST', '/api/v1/connected-apps', body);
     expect(made.statusCode, made.body).toBe(201);
     const view = made.json<ConnectedAppView>();
     expect(view).toMatchObject({
@@ -326,26 +316,73 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       daily_files: 100,
       daily_bytes: 500 * 1024 * 1024,
       address: { url: 'http://localhost:8080', public: false },
+      // No key until an owner generates one, so nothing to paste yet.
+      keys: [],
+      connection_string: '',
     });
-    expect(view.keys).toHaveLength(1);
-    expect(view.keys[0]?.fingerprint).toBe(fingerprintOf(key.raw));
-    // The connection string: no secret, the address, the ids and the fingerprint.
-    expect(view.connection_string.startsWith('fdvapp1.')).toBe(true);
-    const c = JSON.parse(
-      Buffer.from(view.connection_string.slice('fdvapp1.'.length), 'base64url').toString('utf8'),
-    ) as Record<string, unknown>;
-    expect(c).toEqual({
+
+    // Its key: the client ID and the secret, this once.
+    const gen = await send(owner, 'POST', `/api/v1/connected-apps/${view.id}/keys`, {
+      name: 'Acme Money, live',
+      permissions: ['documents.send'],
+      expires_in_days: 90,
+    });
+    expect(gen.statusCode, gen.body).toBe(201);
+    expect(gen.headers['cache-control']).toBe('no-store');
+    const key = gen.json<ConnectedAppKeyMade>();
+    expect(key.client_id).toMatch(/^fdvc_[A-Za-z0-9_-]{22}$/);
+    expect(key.secret).toMatch(/^fdvs_[A-Za-z0-9_-]{43}$/);
+    expect(key.key).toMatchObject({
+      client_id: key.client_id,
+      name: 'Acme Money, live',
+      permissions: ['documents.send'],
+      last_used_at: null,
+      revoked_at: null,
+      state: 'live',
+    });
+    const days =
+      (Date.parse(key.key.expires_at as string) - Date.parse(key.key.created_at)) / 864e5;
+    expect(days).toBeCloseTo(90, 3);
+    // The connection string: the address, the client ID — and the secret
+    // only in the one the owner chooses to copy with it.
+    const decode = (s: string) => {
+      expect(s.startsWith('fdvapp2.')).toBe(true);
+      return JSON.parse(
+        Buffer.from(s.slice('fdvapp2.'.length), 'base64url').toString('utf8'),
+      ) as Record<string, unknown>;
+    };
+    expect(decode(key.connection_string)).toEqual({
       url: 'http://localhost:8080',
-      app_id: view.id,
-      key_id: view.keys[0]?.key_id,
+      client_id: key.client_id,
       instance_id: expect.any(String) as string,
-      fingerprint: fingerprintOf(key.raw),
     });
-    // The same key on another live app of the household: refused.
-    const twice = await send(owner, 'POST', '/api/v1/connected-apps', body);
-    expect([twice.statusCode, codeOf(twice)]).toEqual([409, 'key_exists']);
-    // The connection test.
-    const a: TestApp = { appId: view.id, keyId: view.keys[0]?.key_id as string, key, view };
+    expect(decode(key.connection_string_with_secret)).toEqual({
+      url: 'http://localhost:8080',
+      client_id: key.client_id,
+      instance_id: expect.any(String) as string,
+      secret: key.secret,
+    });
+    // Kept as a hash alone: nothing the vault keeps, or lists, holds the secret.
+    const kept = await admin.query<{ row: string; hash: Buffer }>(
+      `select row_to_json(k)::text as row, secret_hash as hash from connected_app_key k where client_id = $1`,
+      [key.client_id],
+    );
+    expect(kept.rows[0]?.hash.equals(createHash('sha256').update(key.secret).digest())).toBe(true);
+    expect(kept.rows[0]?.row).not.toContain(key.secret);
+    const listed = await appsOf(owner);
+    expect(JSON.stringify(listed)).not.toContain(key.secret);
+    const shown = listed.items.find((x) => x.id === view.id) as ConnectedAppView;
+    expect(shown.keys).toEqual([key.key]);
+    expect(decode(shown.connection_string)).toEqual(decode(key.connection_string));
+
+    // The connection test, with it.
+    const a: TestApp = {
+      appId: view.id,
+      keyId: key.key.id,
+      clientId: key.client_id,
+      secret: key.secret,
+      view,
+    };
     const res = await me(a);
     expect(res.statusCode, res.body).toBe(200);
     const said = res.json<AppMe>();
@@ -364,19 +401,34 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       files_today: 0,
       requests_per_minute: 120,
     });
-    expect(said.keys).toEqual([
-      expect.objectContaining({
-        key_id: a.keyId,
-        fingerprint: fingerprintOf(key.raw),
-        added_by: 'owner',
-      }),
-    ]);
+    // The key that made the call, and nothing of any other; never its secret.
+    expect(said.key).toEqual({
+      client_id: key.client_id,
+      name: 'Acme Money, live',
+      permissions: ['documents.send'],
+      created_at: key.key.created_at,
+      expires_at: key.key.expires_at,
+      last_used_at: expect.any(String) as string,
+    });
+    expect('keys' in said).toBe(false);
+    expect(res.body).not.toContain(key.secret);
     // An answer carries what the contract says every answer carries.
     expect(res.headers['cache-control']).toBe('no-store');
     expect(res.headers['x-request-id']).toBeTruthy();
     expect(res.headers['x-fdv-server-version']).toBeTruthy();
     expect(res.headers['set-cookie']).toBeUndefined();
-    expect(await lines(owner)).toContain('Owner connected Acme Money, acting as themselves');
+    // Its use noted on the key and on the app.
+    expect(
+      (await appsOf(owner)).items.find((x) => x.id === view.id)?.keys[0]?.last_used_at,
+    ).not.toBeNull();
+    const said2 = await lines(owner);
+    expect(said2).toContain('Owner connected Acme Money, acting as themselves');
+    expect(said2).toContain('Owner generated an API key for Acme Money');
+    // And no request log line, at its most talkative, holds the secret or the header.
+    const log = logged.join('\n');
+    expect(log).not.toContain(key.secret);
+    expect(log).not.toContain(basicFor(a).authorization.slice('Basic '.length));
+    expect(log).not.toMatch(/Basic [A-Za-z0-9+/]{20,}/);
   });
 
   it('an app acting as another adult waits until they turn it on, and only they may', async () => {
@@ -419,12 +471,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     const a = await connect(owner, { name: 'Checks' });
     const ok = await me(a);
     expect(ok.statusCode).toBe(200);
-    const valid = await signRequest({
-      method: 'GET',
-      target: '/api/v1/apps/me',
-      keyid: `${a.appId}.${a.keyId}`,
-      privateKey: a.key.pem,
-    });
+    const valid = basicFor(a);
     const raw = (headers: Record<string, string>) =>
       h.app.inject({
         url: '/api/v1/apps/me',
@@ -436,86 +483,42 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       return [res.statusCode, codeOf(res)];
     };
 
-    // 1. The headers, and nothing else that names a caller.
-    expect(await refusal(raw({}))).toEqual([401, 'app_signature_required']);
-    expect(await refusal(raw({ 'content-digest': APP_EMPTY_DIGEST }))).toEqual([
-      401,
-      'app_signature_required',
-    ]);
-    expect(await refusal(raw({ ...valid, ...h.as(owner) }))).toEqual([
-      401,
-      'app_signature_required',
-    ]);
+    // 1. Basic, and nothing else that names a caller.
+    expect(await refusal(raw({}))).toEqual([401, 'app_key_required']);
+    expect(await refusal(raw(h.as(owner)))).toEqual([401, 'app_key_required']);
     expect(await refusal(raw({ ...valid, cookie: 'fdv_share=abc' }))).toEqual([
       401,
-      'app_signature_required',
+      'app_key_required',
     ]);
-    expect(await refusal(raw({ ...valid, authorization: `Device ${randomUUID()}.key` }))).toEqual([
+    expect(await refusal(raw({ authorization: `Device ${randomUUID()}.key` }))).toEqual([
       401,
-      'app_signature_required',
+      'app_key_required',
     ]);
-    // A sign-in alone on an app route: told to sign the request.
-    expect(await refusal(send(owner, 'GET', '/api/v1/apps/me'))).toEqual([
-      401,
-      'app_signature_required',
-    ]);
+    // A sign-in alone on an app route: told to send the app's key.
+    expect(await refusal(send(owner, 'GET', '/api/v1/apps/me'))).toEqual([401, 'app_key_required']);
 
-    // 2. As the profile says, each part.
-    const input = valid['signature-input'];
-    for (const [what, headers] of [
-      ['another label', { ...valid, 'signature-input': input.replace(/^fdv=/, 'sig1=') }],
-      [
-        'the components in another order',
-        { ...valid, 'signature-input': input.replace('"@path" "@query"', '"@query" "@path"') },
-      ],
-      ['a component missing', { ...valid, 'signature-input': input.replace(' "@query"', '') }],
-      ['an expires', { ...valid, 'signature-input': `${input};expires=1794830700` }],
-      ['another parameter', { ...valid, 'signature-input': `${input};foo="bar"` }],
-      [
-        'another alg',
-        { ...valid, 'signature-input': input.replace('"ed25519"', '"rsa-pss-sha512"') },
-      ],
-      ['another tag', { ...valid, 'signature-input': input.replace('"fdv-app"', '"other"') }],
-      ['no nonce', { ...valid, 'signature-input': input.replace(/;nonce="[^"]+"/, '') }],
-      [
-        'a short nonce',
-        { ...valid, 'signature-input': input.replace(/nonce="[^"]+"/, 'nonce="abc"') },
-      ],
-      [
-        'a keyid not of two ids',
-        { ...valid, 'signature-input': input.replace(/keyid="[^"]+"/, 'keyid="acme"') },
-      ],
-      ['a short signature', { ...valid, signature: 'fdv=:AAAA:' }],
-      ['two signatures', { ...valid, signature: `${valid.signature}, sig2=:AAAA:` }],
-      ['another digest', { ...valid, 'content-digest': `sha-512=:${'A'.repeat(86)}==:` }],
-    ] as const) {
-      const res = await raw(headers);
-      expect([what, res.statusCode, codeOf(res)]).toEqual([what, 401, 'signature_malformed']);
-    }
-
-    // 3. A key the vault does not know, and one retired.
+    // 2. A client ID the vault made, and its secret: an unknown ID, a wrong
+    // secret and a key not written as the vault writes them are one answer,
+    // word for word.
     const unknown = await call(a, 'GET', '/api/v1/apps/me', {
-      key: { keyId: randomUUID(), pem: a.key.pem },
+      key: { clientId: newClientId(), secret: a.secret },
     });
-    expect([unknown.statusCode, codeOf(unknown)]).toEqual([401, 'app_key_unknown']);
-    const next = newKey();
-    const added = await send(owner, 'POST', `/api/v1/connected-apps/${a.appId}/keys`, {
-      public_key: next.given,
+    const wrong = await call(a, 'GET', '/api/v1/apps/me', {
+      key: { clientId: a.clientId, secret: newSecret() },
     });
-    expect(added.statusCode, added.body).toBe(201);
-    const nextId = added.json<{ key: { key_id: string } }>().key.key_id;
-    expect(
-      (await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}/keys/${a.keyId}`)).statusCode,
-    ).toBe(204);
-    expect(await refusal(me(a))).toEqual([401, 'app_key_unknown']);
-    a.keyId = nextId;
-    a.key = next;
-    expect((await me(a)).statusCode).toBe(200);
-    // Its last key cannot be retired.
-    const last = await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}/keys/${nextId}`);
-    expect([last.statusCode, codeOf(last)]).toEqual([409, 'key_in_use']);
+    // A client ID's user part, but nothing the vault made: a key not right.
+    const garbled = await raw({
+      authorization: `Basic ${Buffer.from('fdvc_not:a key').toString('base64')}`,
+    });
+    for (const r of [unknown, wrong, garbled]) {
+      expect([r.statusCode, codeOf(r)]).toEqual([401, 'app_key_invalid']);
+    }
+    const message = (r: LightMyRequestResponse) =>
+      r.json<{ error: { message: string } }>().error.message;
+    expect(message(wrong)).toBe(message(unknown));
+    expect(message(garbled)).toBe(message(unknown));
 
-    // 4. Paused: refused, but for the connection test, which says why.
+    // 3. Paused: refused, but for the connection test, which says why.
     await send(owner, 'POST', `/api/v1/connected-apps/${a.appId}/pause`);
     expect(await refusal(call(a, 'GET', '/api/v1/apps/intake/x1'))).toEqual([403, 'app_paused']);
     expect((await me(a)).json<AppMe>()).toMatchObject({ state: 'paused', paused_reason: 'owner' });
@@ -524,7 +527,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       200,
     );
 
-    // 5. From an address it may come from: IPv4 and an IPv6 /64.
+    // 4. From an address it may come from: IPv4 and an IPv6 /64.
     await h.decider(owner);
     const allow = (list: string[]) =>
       send(owner, 'PATCH', `/api/v1/connected-apps/${a.appId}`, { ip_allow: list });
@@ -549,40 +552,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     ).toEqual([403, 'address_not_allowed']);
     await allow([]);
 
-    // 7. Within five minutes of the vault's clock, either way.
-    const now = Math.floor(Date.now() / 1000);
-    const stale = await me(a, { created: now - 301 });
-    expect([stale.statusCode, codeOf(stale)]).toEqual([401, 'signature_stale']);
-    expect(stale.json<{ error: { detail: string } }>().error.detail).toMatch(
-      /created 30\d seconds behind the vault's clock/,
-    );
-    expect(await refusal(me(a, { created: now + 301 }))).toEqual([401, 'signature_stale']);
-    expect((await me(a, { created: now - 290 })).statusCode).toBe(200);
-    expect(stale.headers.date).toBeTruthy();
-
-    // 8. The signature verifies: over this path, with this key.
-    expect(await refusal(me(a, { signedTarget: '/api/v1/apps/me?x=1' }))).toEqual([
-      401,
-      'signature_invalid',
-    ]);
-    expect(await refusal(me(a, { signedMethod: 'POST' }))).toEqual([401, 'signature_invalid']);
-    const stranger = newKey();
-    expect(await refusal(me(a, { key: { keyId: a.keyId, pem: stranger.pem } }))).toEqual([
-      401,
-      'signature_invalid',
-    ]);
-
-    // 9. A replay, exactly as sent: refused.
-    const once = await signRequest({
-      method: 'GET',
-      target: '/api/v1/apps/me',
-      keyid: `${a.appId}.${a.keyId}`,
-      privateKey: a.key.pem,
-    });
-    expect((await raw(once)).statusCode).toBe(200);
-    expect(await refusal(raw(once))).toEqual([401, 'nonce_reused']);
-
-    // 11. The route in its scopes (what the connection test is not).
+    // 5. The route in its scopes (what the connection test is not).
     await admin.query(`update connected_app set scopes = '{documents.read}' where id = $1`, [
       a.appId,
     ]);
@@ -595,23 +565,316 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       a.appId,
     ]);
 
-    // 12. A body's digest: a GET carries the digest of nothing.
+    // 6. A key revoked: refused from its very next request; and one past
+    // its expiry.
+    await h.decider(owner);
+    const b = await appKeyFor(h, owner, a.view, { expires_in_days: 1 });
+    const withB = { ...a, ...b };
+    expect((await me(withB)).statusCode).toBe(200);
     expect(
-      await refusal(call(a, 'GET', '/api/v1/apps/intake/x1', { signedBody: 'something' })),
-    ).toEqual([400, 'content_digest_mismatch']);
+      (await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}/keys/${a.keyId}`)).statusCode,
+    ).toBe(204);
+    expect(await refusal(me(a))).toEqual([401, 'app_key_revoked']);
+    await expire(b.clientId);
+    expect(await refusal(me(withB))).toEqual([401, 'app_key_expired']);
 
     // Refusals are counted, not a line each: one notable line today.
     const view = (await appsOf(owner)).items.find((x) => x.id === a.appId) as ConnectedAppView;
-    expect(view.refused_today).toBeGreaterThanOrEqual(8);
-    expect(view.last_refusal).toBe('content_digest_mismatch');
+    expect(view.refused_today).toBeGreaterThanOrEqual(6);
+    expect(view.last_refusal).toBe('app_key_expired');
     const refused = (await lines(owner)).filter((l) => l.startsWith('Requests from Checks'));
     expect(refused).toEqual([expect.stringMatching(/^Requests from Checks were refused today/)]);
 
-    // Removed: its next request is told so.
+    // Removed: its next request is told so, whichever key; its keys revoked with it.
     expect((await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}`)).statusCode).toBe(204);
-    expect(await refusal(me(a))).toEqual([401, 'app_revoked']);
+    expect(await refusal(me(withB))).toEqual([401, 'app_revoked']);
     expect((await appsOf(owner)).items.some((x) => x.id === a.appId)).toBe(false);
     expect(await lines(owner)).toContain('Owner removed Checks');
+    const live = await admin.query(
+      'select 1 from connected_app_key where app_id = $1 and revoked_at is null',
+      [a.appId],
+    );
+    expect(live.rowCount).toBe(0);
+  }, 120_000);
+
+  it('an address that keeps sending a key that does not work waits out its minute; others do not', async () => {
+    const a = await connect(owner, { name: 'Guessed' });
+    const from = '198.51.100.44';
+    clockHeld = Math.floor(Date.now() / 60_000) * 60_000 + 1_000;
+    try {
+      for (let i = 0; i < 10; i++) {
+        const r = await me(a, {
+          remoteAddress: from,
+          key: { clientId: a.clientId, secret: newSecret() },
+        });
+        expect(codeOf(r)).toBe('app_key_invalid');
+      }
+      // The eleventh, even with the right secret: wait, before anything is looked up.
+      const limited = await me(a, { remoteAddress: from });
+      expect([limited.statusCode, codeOf(limited)]).toEqual([429, 'rate_limited']);
+      expect(limited.json<{ error: { retriable: boolean } }>().error.retriable).toBe(true);
+      expect(Number(limited.headers['retry-after'])).toBe(59);
+      // Another address is not held back.
+      expect((await me(a, { remoteAddress: '198.51.100.45' })).statusCode).toBe(200);
+      // A minute on: tried again.
+      clockHeld += 60_000;
+      expect((await me(a, { remoteAddress: from })).statusCode).toBe(200);
+    } finally {
+      clockHeld = null;
+    }
+    // A stranger's guesses write nothing against the app.
+    expect((await appsOf(owner)).items.find((x) => x.id === a.appId)?.refused_today).toBe(0);
+  });
+
+  it('only guessing counts: a right secret for a revoked or expired key, or a removed app, never locks an address out; IPv6 by its /64', async () => {
+    const a = await connect(owner, { name: 'Not guessing' });
+    await h.decider(owner);
+    const b = { ...a, ...(await appKeyFor(h, owner, a.view)) };
+    expect(
+      (await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}/keys/${a.keyId}`)).statusCode,
+    ).toBe(204);
+    clockHeld = Math.floor(Date.now() / 60_000) * 60_000 + 1_000;
+    try {
+      // Twelve requests with a revoked key's right secret: refused each time
+      // for being revoked, never for guessing.
+      for (let i = 0; i < 12; i++) {
+        expect(codeOf(await me(a, { remoteAddress: '198.51.100.60' }))).toBe('app_key_revoked');
+      }
+      expect((await me(b, { remoteAddress: '198.51.100.60' })).statusCode).toBe(200);
+      // And past its expiry: the same.
+      const c = { ...a, ...(await appKeyFor(h, owner, a.view)) };
+      await expire(c.clientId);
+      for (let i = 0; i < 12; i++) {
+        expect(codeOf(await me(c, { remoteAddress: '198.51.100.61' }))).toBe('app_key_expired');
+      }
+      // Guesses from across one IPv6 /64 are counted together; the next /64 is not held back.
+      for (let i = 0; i < 10; i++) {
+        const r = await me(b, {
+          remoteAddress: `2001:db8:5:6::${(i + 1).toString(16)}`,
+          key: { clientId: b.clientId, secret: newSecret() },
+        });
+        expect(codeOf(r)).toBe('app_key_invalid');
+      }
+      const held = await me(b, { remoteAddress: '2001:db8:5:6:ffff::99' });
+      expect([held.statusCode, codeOf(held)]).toEqual([429, 'rate_limited']);
+      expect((await me(b, { remoteAddress: '2001:db8:5:7::1' })).statusCode).toBe(200);
+    } finally {
+      clockHeld = null;
+    }
+    // A removed app's right secret, many times: never a guess either.
+    await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}`);
+    for (let i = 0; i < 12; i++) {
+      expect(codeOf(await me(b, { remoteAddress: '198.51.100.62' }))).toBe('app_revoked');
+    }
+  });
+
+  it('a proxy’s own Basic login in front of the vault goes through untouched; only an fdvc_ user is an app’s key', async () => {
+    const proxy = {
+      authorization: `Basic ${Buffer.from('alice:correct horse').toString('base64')}`,
+    };
+    const capabilities = await h.app.inject({
+      url: '/api/v1/capabilities',
+      headers: proxy,
+      remoteAddress: peer(),
+    });
+    expect(capabilities.statusCode).toBe(200);
+    // A family route: answered as without it — asked to sign in, never told
+    // it is an app's key.
+    const family = await h.app.inject({
+      url: '/api/v1/documents',
+      headers: proxy,
+      remoteAddress: peer(),
+    });
+    expect([family.statusCode, codeOf(family)]).toEqual([401, 'unauthenticated']);
+    // Signing in with a password goes on as ever, the proxy's header beside it.
+    const signedIn = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/password',
+      headers: proxy,
+      payload: { email: 'sara@example.test', password: 'another correct horse' },
+      remoteAddress: peer(),
+    });
+    expect(signedIn.statusCode, signedIn.body).toBe(200);
+    // On an app route it is no key: the app is asked for one.
+    const app = await h.app.inject({
+      url: '/api/v1/apps/me',
+      headers: proxy,
+      remoteAddress: peer(),
+    });
+    expect([app.statusCode, codeOf(app)]).toEqual([401, 'app_key_required']);
+  });
+
+  it('a new key that may do no more than a live one does not ask its person again; a wider one does', async () => {
+    const a = await connect(owner, {
+      member_id: ahmed.member_id,
+      name: 'Rotated',
+      scopes: ['documents.send', 'documents.read'],
+    });
+    await h.decider(ahmed);
+    await send(ahmed, 'POST', `/api/v1/connected-apps/${a.appId}/approve`);
+    const stateOf = async () => (await appsOf(owner)).items.find((x) => x.id === a.appId)?.state;
+    expect(await stateOf()).toBe('active');
+    await h.decider(owner);
+    // The live key may send and read: a key that may only send is a rotation.
+    const narrower = await appKeyFor(h, owner, a.view, { permissions: ['documents.send'] });
+    expect(await stateOf()).toBe('active');
+    expect((await me({ ...a, ...narrower })).statusCode).toBe(200);
+    await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}/keys/${a.keyId}`);
+    // Now the only live key may only send: one that may read too is wider.
+    await appKeyFor(h, owner, a.view, { permissions: ['documents.send', 'documents.read'] });
+    expect(await stateOf()).toBe('waiting_for_approval');
+  });
+
+  it('only an owner generates or revokes a key, with a passkey or a code; two live at most; each with its own permissions', async () => {
+    const a = await connect(owner, {
+      name: 'Keyring',
+      scopes: ['documents.send', 'documents.read'],
+    });
+    const gen = (by: Tokens, body: Record<string, unknown>) =>
+      send(by, 'POST', `/api/v1/connected-apps/${a.appId}/keys`, {
+        permissions: ['documents.send'],
+        expires_in_days: 30,
+        ...body,
+      });
+    // An adult — even its own person's adult — never; an owner without a
+    // fresh passkey or code is asked for one.
+    expect(codeOf(await gen(ahmed, {}))).toBe('forbidden');
+    expect(
+      codeOf(await send(ahmed, 'DELETE', `/api/v1/connected-apps/${a.appId}/keys/${a.keyId}`)),
+    ).toBe('forbidden');
+    await admin.query(
+      `update session set factor_verified_at = null, verified_at = null
+        where account_id = (select account_id from account_household where member_id = $1)`,
+      [owner.member_id],
+    );
+    expect(codeOf(await gen(owner, {}))).toBe('step_up_required');
+    expect(
+      codeOf(await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}/keys/${a.keyId}`)),
+    ).toBe('step_up_required');
+    await h.decider(owner);
+    // What a key is given is checked.
+    for (const [bad, field] of [
+      [{ permissions: [] }, 'permissions'],
+      [{ permissions: ['documents.delete'] }, 'permissions'],
+      [{ expires_in_days: 0 }, 'expires_in_days'],
+      [{ expires_in_days: 3651 }, 'expires_in_days'],
+      [{ name: 'x'.repeat(61) }, 'name'],
+    ] as const) {
+      const r = await gen(owner, bad);
+      expect([
+        JSON.stringify(bad),
+        r.statusCode,
+        r.json<{ error: { detail: string } }>().error.detail,
+      ]).toEqual([JSON.stringify(bad), 422, field]);
+    }
+    // A key that never expires, with less than the app may do: the
+    // request is held to both.
+    const never = await gen(owner, { expires_in_days: null, name: '  ' });
+    expect(never.statusCode, never.body).toBe(201);
+    const nk = never.json<ConnectedAppKeyMade>();
+    expect(nk.key).toMatchObject({ expires_at: null, name: null, permissions: ['documents.send'] });
+    const sendOnly = { ...a, clientId: nk.client_id, secret: nk.secret, keyId: nk.key.id };
+    const meSaid = (await me(sendOnly)).json<AppMe>();
+    expect(meSaid.scopes).toEqual(['documents.send']);
+    expect(meSaid.key).toMatchObject({ expires_at: null, permissions: ['documents.send'] });
+    expect(codeOf(await call(sendOnly, 'GET', '/api/v1/apps/documents'))).toBe('scope_not_granted');
+    expect((await call(a, 'GET', '/api/v1/apps/documents')).statusCode).toBe(200);
+    // Years from now, it still works.
+    try {
+      clockOffset = 4000 * 864e5;
+      expect((await me(sendOnly)).statusCode).toBe(200);
+    } finally {
+      clockOffset = 0;
+    }
+    // And the app narrowed below it: the app's own scopes hold too.
+    await h.decider(owner);
+    await send(owner, 'PATCH', `/api/v1/connected-apps/${a.appId}`, { scopes: ['documents.read'] });
+    expect((await me(a)).json<AppMe>().scopes).toEqual(['documents.read']);
+    expect((await me(sendOnly)).json<AppMe>().scopes).toEqual([]);
+    expect(codeOf(await call(sendOnly, 'GET', '/api/v1/apps/intake/x1'))).toBe('scope_not_granted');
+    await h.decider(owner);
+    await send(owner, 'PATCH', `/api/v1/connected-apps/${a.appId}`, {
+      scopes: ['documents.send', 'documents.read'],
+    });
+
+    // Two live: a third is refused, from the API and from the database.
+    await h.decider(owner);
+    const third = await gen(owner, {});
+    expect([third.statusCode, codeOf(third)]).toEqual([409, 'key_limit']);
+    await expect(
+      admin.query(
+        `insert into connected_app_key (household_id, app_id, client_id, secret_hash, permissions)
+         select household_id, id, $2, sha256('x'), '{documents.send}' from connected_app where id = $1`,
+        [a.appId, newClientId()],
+      ),
+    ).rejects.toThrow(/two live keys at most/);
+    // A revoked key frees its place; revoking it again changes nothing; a
+    // key not there is 404. Owners and its person are told by email.
+    const before = alertsSent(h).length;
+    expect(
+      (await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}/keys/${nk.key.id}`))
+        .statusCode,
+    ).toBe(204);
+    expect(codeOf(await me(sendOnly))).toBe('app_key_revoked');
+    expect(
+      (await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}/keys/${nk.key.id}`))
+        .statusCode,
+    ).toBe(204);
+    expect(
+      (await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}/keys/${randomUUID()}`))
+        .statusCode,
+    ).toBe(404);
+    const told = alertsSent(h).slice(before);
+    expect(told.filter((m) => m.subject === 'An API key of Keyring was revoked')).toHaveLength(1);
+    expect(JSON.stringify(told)).not.toContain(nk.secret);
+    expect(await lines(owner)).toContain('Owner revoked an API key of Keyring');
+    // An expired key frees its place too.
+    await h.decider(owner);
+    const next = (await gen(owner, {})).json<ConnectedAppKeyMade>();
+    expect(codeOf(await gen(owner, {}))).toBe('key_limit');
+    await expire(next.client_id);
+    expect(codeOf(await me({ ...a, clientId: next.client_id, secret: next.secret }))).toBe(
+      'app_key_expired',
+    );
+    expect((await gen(owner, {})).statusCode).toBe(201);
+    const states = (await appsOf(owner)).items
+      .find((x) => x.id === a.appId)
+      ?.keys.map((k) => k.state);
+    expect(states?.sort()).toEqual(['expired', 'live', 'live', 'revoked']);
+    // The database keeps a key as it was made: never un-revoked, never widened.
+    await expect(
+      admin.query('update connected_app_key set revoked_at = null where id = $1', [nk.key.id]),
+    ).rejects.toThrow(/a revoked key stays revoked/);
+    // Who revoked it, and why, stay as they were.
+    await expect(
+      admin.query('update connected_app_key set revoked_by = null where id = $1', [nk.key.id]),
+    ).rejects.toThrow(/a revoked key stays revoked/);
+    await expect(
+      admin.query(`update connected_app_key set revoked_reason = 'restore' where id = $1`, [
+        nk.key.id,
+      ]),
+    ).rejects.toThrow(/a revoked key stays revoked/);
+    expect(
+      (await appsOf(owner)).items
+        .find((x) => x.id === a.appId)
+        ?.keys.find((k) => k.id === nk.key.id)?.revoked_reason,
+    ).toBe('owner');
+    await expect(
+      admin.query(`update connected_app_key set permissions = '{documents.read}' where id = $1`, [
+        a.keyId,
+      ]),
+    ).rejects.toThrow(/only a key's use, its revoking/);
+    // The routes an app once had for its own keys are not there.
+    for (const [method, url] of [
+      ['POST', '/api/v1/apps/keys'],
+      ['DELETE', `/api/v1/apps/keys/${a.keyId}`],
+    ] as const) {
+      expect(codeOf(await call(a, method, url))).toBe('app_key_not_accepted');
+    }
+    expect(
+      (await send(owner, 'POST', `/api/v1/connected-apps/${a.appId}/keys/${a.keyId}/confirm`))
+        .statusCode,
+    ).toBe(404);
   }, 120_000);
 
   it('its person locked, or paused after a restore: refused; and the rate of its requests', async () => {
@@ -643,10 +906,9 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
         );
       }
     }
-    // 120 signed requests a minute, then 429 with Retry-After. The clock is
-    // held a second into a minute, so a busy machine's slow loop never
-    // crosses into the next one (each request is still signed at its own
-    // real moment, well inside the window).
+    // 120 requests a minute, then 429 with Retry-After. The clock is held a
+    // second into a minute, so a busy machine's slow loop never crosses into
+    // the next one.
     clockHeld = Math.floor(Date.now() / 60_000) * 60_000 + 1_000;
     try {
       const statuses: number[] = [];
@@ -718,13 +980,16 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     expect(await lines(owner)).toContain(
       'Owner changed what Widened too may do, so Ahmed Khan must turn it on again',
     );
-    // A key an owner adds sends it back too.
+    // A key an owner generates that may do no more than its live key: a
+    // rotation, which asks nothing of Ahmed (a wider one does: below).
     await h.decider(owner);
     const k = await send(owner, 'POST', `/api/v1/connected-apps/${a.appId}/keys`, {
-      public_key: newKey().given,
+      permissions: ['documents.send'],
+      expires_in_days: 30,
     });
     expect(k.statusCode, k.body).toBe(201);
-    expect(await stateOf()).toBe('waiting_for_approval');
+    expect(await stateOf()).toBe('active');
+    expect(await lines(owner)).toContain('Owner generated an API key for Widened too');
     // An owner's own app: changed freely.
     const own = await connect(owner, { name: 'Owned' });
     await h.decider(owner);
@@ -734,135 +999,18 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     expect(wider.json<ConnectedAppView>().state).toBe('active');
   }, 120_000);
 
-  it('a key the app adds signs nothing until confirmed, never retires an owner’s key, and a thief is left with none', async () => {
-    const a = await connect(owner, { member_id: ahmed.member_id, name: 'Stolen' });
-    await h.decider(ahmed);
-    await send(ahmed, 'POST', `/api/v1/connected-apps/${a.appId}/approve`);
-    // The thief holds key A, and adds B of its own.
-    const b = newKey();
-    const added = await call(a, 'POST', '/api/v1/apps/keys', {
-      body: Buffer.from(JSON.stringify({ public_key: b.given })),
-      contentType: 'application/json',
-    });
-    expect(added.statusCode, added.body).toBe(201);
-    const bId = added.json<{ key_id: string; pending: boolean }>().key_id;
-    expect(added.json<{ pending: boolean }>().pending).toBe(true);
-    const withB = { ...a, keyId: bId, key: b };
-    // B signs nothing.
-    expect(codeOf(await me(withB))).toBe('app_key_pending');
-    // Settings shows it pending; the connection test lists it so.
-    const view = (await appsOf(owner)).items.find((x) => x.id === a.appId) as ConnectedAppView;
-    expect(view.keys.find((k) => k.key_id === bId)?.pending).toBe(true);
-    expect((await me(a)).json<AppMe>().keys.find((k) => k.key_id === bId)).toMatchObject({
-      pending: true,
-    });
-    // A can never retire itself out, nor can B (once working) retire A: an owner's key.
-    const self = await call(a, 'DELETE', `/api/v1/apps/keys/${a.keyId}`);
-    expect(codeOf(self)).toBe('key_added_by_owner');
-    // The owner retires A in Settings while B waits: the thief has no working key.
-    await h.decider(owner);
-    const before = alertsSent(h).length;
-    expect(
-      (await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}/keys/${a.keyId}`)).statusCode,
-    ).toBe(204);
-    expect(codeOf(await me(a))).toBe('app_key_unknown');
-    expect(codeOf(await me(withB))).toBe('app_key_pending');
-    expect(
-      alertsSent(h)
-        .slice(before)
-        .some((m) => m.subject === 'A key of Stolen was retired'),
-    ).toBe(true);
-
-    // Another app: B confirmed by its person, then B tries to retire A.
-    const c = await connect(owner, { name: 'Rotating' });
-    const d = newKey();
-    const dId = (
-      await call(c, 'POST', '/api/v1/apps/keys', {
-        body: Buffer.from(JSON.stringify({ public_key: d.given })),
-        contentType: 'application/json',
-      })
-    ).json<{ key_id: string }>().key_id;
-    const withD = { ...c, keyId: dId, key: d };
-    expect(codeOf(await me(withD))).toBe('app_key_pending');
-    await h.decider(owner);
-    const confirmed = await send(
-      owner,
-      'POST',
-      `/api/v1/connected-apps/${c.appId}/keys/${dId}/confirm`,
-    );
-    expect(confirmed.statusCode, confirmed.body).toBe(200);
-    // Its own app (the owner acts as themselves): it stays on.
-    expect(confirmed.json<ConnectedAppView>().state).toBe('active');
-    expect((await me(withD)).statusCode).toBe(200);
-    const retireA = await call(withD, 'DELETE', `/api/v1/apps/keys/${c.keyId}`);
-    expect([retireA.statusCode, codeOf(retireA)]).toEqual([409, 'key_added_by_owner']);
-    expect((await me(c)).statusCode).toBe(200);
-    // The 7 days count from the first use of a confirmed newer key: its own
-    // pending key never retires the older one.
-    expect(await lines(owner)).toContain('Owner confirmed a new key of Rotating');
-  }, 120_000);
-
-  it('the window is to the millisecond: a nonce is always kept past the last instant its created is taken', async () => {
-    const a = await connect(owner, { name: 'Edge' });
-    const created = Math.floor(Date.now() / 1000);
-    try {
-      // 300.5 s after `created`: stale, where whole seconds said 300.
-      clockOffset = created * 1000 + 300_500 - Date.now();
-      expect(codeOf(await me(a, { created }))).toBe('signature_stale');
-      // Inside the window: taken once, and its replay refused. Five seconds
-      // in hand, so a busy machine's two requests both land inside it.
-      clockOffset = created * 1000 + 295_000 - Date.now();
-      const once = await signRequest({
-        method: 'GET',
-        target: '/api/v1/apps/me',
-        keyid: `${a.appId}.${a.keyId}`,
-        privateKey: a.key.pem,
-        created,
-      });
-      const again = () =>
-        h.app.inject({
-          url: '/api/v1/apps/me',
-          headers: { ...once, 'x-forwarded-for': peer() },
-          remoteAddress: '127.0.0.1',
-        });
-      expect((await again()).statusCode).toBe(200);
-      const kept = await admin.query<{ until: Date }>(
-        `select expires_at as until from connected_app_nonce where app_id = $1`,
-        [a.appId],
-      );
-      expect(kept.rows[0]?.until.getTime()).toBeGreaterThan(created * 1000 + 300_000);
-      expect(codeOf(await again())).toBe('nonce_reused');
-    } finally {
-      clockOffset = 0;
-    }
-  });
-
-  it('a signature made before a restore is refused, so a restore forgetting the nonces opens no replay', async () => {
-    const a = await connect(owner, { name: 'Restored' });
-    const created = Math.floor(Date.now() / 1000) - 5;
-    await admin.query(`update connected_app set signed_after = now() where id = $1`, [a.appId]);
-    const res = await me(a, { created });
-    expect([res.statusCode, codeOf(res)]).toEqual([401, 'signature_stale']);
-    expect(res.json<{ error: { detail: string } }>().error.detail).toBe(
-      'created before the vault was restored',
-    );
-    // One made after it is taken.
-    expect((await me(a, { created: Math.floor(Date.now() / 1000) + 1 })).statusCode).toBe(200);
-  });
-
-  it('a refusal is written against an app only once its signature verifies: a stranger writes nothing', async () => {
+  it('a refusal is written against an app only once its key is right: a stranger writes nothing', async () => {
     const a = await connect(owner, { name: 'Quiet' });
     await send(owner, 'POST', `/api/v1/connected-apps/${a.appId}/pause`);
     const refused = async () =>
       (await appsOf(owner)).items.find((x) => x.id === a.appId)?.refused_today;
-    // A stranger who knows the app's id and key id, but not its key: told it
-    // is paused, as the contract's order says, and nothing is written.
-    const stranger = await me(a, { key: { keyId: a.keyId, pem: newKey().pem } });
-    expect(codeOf(stranger)).toBe('signature_invalid');
-    const pausedStranger = await call(a, 'GET', '/api/v1/apps/intake/q-1', {
-      key: { keyId: a.keyId, pem: newKey().pem },
+    // A stranger who knows the app's client ID, but not its secret: told
+    // the key is not right — not even that the app is paused — and nothing
+    // is written.
+    const stranger = await call(a, 'GET', '/api/v1/apps/intake/q-1', {
+      key: { clientId: a.clientId, secret: newSecret() },
     });
-    expect(codeOf(pausedStranger)).toBe('app_paused');
+    expect(codeOf(stranger)).toBe('app_key_invalid');
     expect(await refused()).toBe(0);
     expect((await lines(owner)).some((l) => l.startsWith('Requests from Quiet'))).toBe(false);
     // The app itself: counted, and the day's one line.
@@ -909,7 +1057,6 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       const res = await send(owner, 'POST', '/api/v1/connected-apps', {
         name: 'Never',
         member_id: owner.member_id,
-        public_key: newKey().given,
         allowed_kinds: ['bank_statement', t.key],
       });
       expect([
@@ -956,13 +1103,7 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
         ]).bytes,
       );
       const boundary = /^--([^\r]+)/.exec(body.toString('latin1'))?.[1] as string;
-      const signed = await signRequest({
-        method: 'POST',
-        target: '/api/v1/apps/intake',
-        body: new Uint8Array(body),
-        keyid: `${a.appId}.${a.keyId}`,
-        privateKey: a.key.pem,
-      });
+      const signed = basicFor(a);
       const stream = new PassThrough();
       const cut = body.indexOf('%PDF') + 20;
       const answer = h.app.inject({
@@ -1080,14 +1221,9 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
 
   // ------------------------------------------------------------ crossing
 
-  it('an app signature is refused on every route but its own (the all-routes walk)', async () => {
+  it('an app’s key is refused on every route but its own (the all-routes walk)', async () => {
     const a = await connect(owner, { name: 'Walker' });
-    const signed = await signRequest({
-      method: 'GET',
-      target: '/api/v1/apps/me',
-      keyid: `${a.appId}.${a.keyId}`,
-      privateKey: a.key.pem,
-    });
+    const keyed = basicFor(a);
     const routes = routeTable(h);
     expect(routes.length).toBeGreaterThan(170);
     const answered: string[] = [];
@@ -1097,30 +1233,32 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       const res = await h.app.inject({
         method: r.method as 'GET',
         url,
-        headers: signed,
+        headers: keyed,
         ...(r.method === 'GET' || r.method === 'DELETE' ? {} : { payload: {} }),
         remoteAddress: peer(),
       });
-      if (APP_SIGNED_ROUTES.has(key)) {
-        expect(codeOf(res), key).not.toBe('app_signature_not_accepted');
+      if (APP_ROUTES.has(key)) {
+        expect(codeOf(res), key).not.toBe('app_key_not_accepted');
         answered.push(key);
       } else {
-        expect([key, res.statusCode, codeOf(res)]).toEqual([
-          key,
-          401,
-          'app_signature_not_accepted',
-        ]);
+        expect([key, res.statusCode, codeOf(res)]).toEqual([key, 401, 'app_key_not_accepted']);
       }
     }
-    expect(answered.sort()).toEqual([...APP_SIGNED_ROUTES.keys()].sort());
-    // A route that is not there: refused too; and a signature alone, half of one.
-    const nowhere = await h.app.inject({ url: '/api/v1/nowhere', headers: signed });
-    expect([nowhere.statusCode, codeOf(nowhere)]).toEqual([401, 'app_signature_not_accepted']);
-    const half = await h.app.inject({
+    expect(answered.sort()).toEqual([...APP_ROUTES.keys()].sort());
+    // A route that is not there: refused too; and Basic with nothing a key in it.
+    const nowhere = await h.app.inject({ url: '/api/v1/nowhere', headers: keyed });
+    expect([nowhere.statusCode, codeOf(nowhere)]).toEqual([401, 'app_key_not_accepted']);
+    const junk = await h.app.inject({
       url: '/api/v1/documents',
-      headers: { 'signature-input': signed['signature-input'] },
+      headers: { authorization: `Basic ${Buffer.from('fdvc_x').toString('base64')}` },
     });
-    expect([half.statusCode, codeOf(half)]).toEqual([401, 'app_signature_not_accepted']);
+    expect([junk.statusCode, codeOf(junk)]).toEqual([401, 'app_key_not_accepted']);
+    // Basic that is no app's (a proxy's own login): the route answers as ever.
+    const theirs = await h.app.inject({
+      url: '/api/v1/documents',
+      headers: { authorization: 'Basic' },
+    });
+    expect([theirs.statusCode, codeOf(theirs)]).toEqual([401, 'unauthenticated']);
   }, 180_000);
 
   // ------------------------------------------------------------ intake
@@ -1413,43 +1551,8 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     );
   });
 
-  it('a body changed after signing keeps nothing: refused once it has all arrived', async () => {
-    const a = await connect(owner, { name: 'Digest' });
-    const objects = async () =>
-      (await readdir(h.vaultDir, { recursive: true, withFileTypes: true })).filter((f) =>
-        f.isFile(),
-      ).length;
-    const before = await objects();
-    const rows = async () =>
-      Number(
-        (
-          await admin.query<{ n: string }>(
-            `select count(*) as n from incoming_file f join intake_batch b on b.id = f.batch_id
-              where b.app_id = $1`,
-            [a.appId],
-          )
-        ).rows[0]?.n,
-      );
-    // Signed over one body, another sent: the digest of the first.
-    const body = multipartBody([
-      { name: 'metadata', value: JSON.stringify({ external_id: 'g-1' }) },
-      {
-        name: 'file',
-        filename: 'a.pdf',
-        contentType: 'application/pdf',
-        bytes: new Uint8Array(PDF('REAL')),
-      },
-    ]);
-    const res = await call(a, 'POST', '/api/v1/apps/intake', {
-      body: Buffer.from(body.bytes),
-      contentType: body.contentType,
-      signedBody: 'a body that was never sent',
-    });
-    expect([res.statusCode, codeOf(res)]).toEqual([400, 'content_digest_mismatch']);
-    expect((await status(a, 'g-1')).statusCode).toBe(404);
-    expect(await rows()).toBe(0);
-    expect(await objects()).toBe(before);
-    // And the same body signed as it is sent: taken.
+  it('an intake is two parts, metadata first, and its hints are as the contract says', async () => {
+    const a = await connect(owner, { name: 'Parts' });
     expect((await intake(a, 'g-1', { bytes: PDF('REAL') })).statusCode).toBe(201);
     // Only two parts, metadata first; metadata as the contract says.
     const wrong = multipartBody([
@@ -1534,83 +1637,10 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     ).toBe('step_up_required');
   }, 120_000);
 
-  it('the app rotates its own key: two at most, never the one signing, and the owners are told', async () => {
-    const a = await connect(owner, { name: 'Rotor' });
-    const next = newKey();
-    const body = (k: Key) => Buffer.from(JSON.stringify({ public_key: k.given }));
-    const add = (k: Key, o: CallOptions = {}) =>
-      call(a, 'POST', '/api/v1/apps/keys', {
-        body: body(k),
-        contentType: 'application/json',
-        ...o,
-      });
-    // Its body's digest, checked.
-    const forged = await add(next, { signedBody: '{"public_key":"ed25519:other"}' });
-    expect([forged.statusCode, codeOf(forged)]).toEqual([400, 'content_digest_mismatch']);
-    const added = await add(next);
-    expect(added.statusCode, added.body).toBe(201);
-    const k = added.json<{ key_id: string; keyid: string; fingerprint: string }>();
-    expect(k).toMatchObject({
-      keyid: `${a.appId}.${k.key_id}`,
-      fingerprint: fingerprintOf(next.raw),
-    });
-    expect(alertsSent(h).some((m) => m.subject === 'A new key was added to Rotor')).toBe(true);
-    expect(await lines(owner)).toContain('Owner via Rotor added a new key to Rotor');
-    expect(codeOf(await add(next))).toBe('key_exists');
-    expect(codeOf(await add(newKey()))).toBe('key_limit');
-    // The new key signs once an owner confirms it; the owner's own key is
-    // Settings' to retire, never the app's.
-    await h.decider(owner);
-    expect(
-      (await send(owner, 'POST', `/api/v1/connected-apps/${a.appId}/keys/${k.key_id}/confirm`))
-        .statusCode,
-    ).toBe(200);
-    const own = await call(a, 'DELETE', `/api/v1/apps/keys/${a.keyId}`);
-    expect([own.statusCode, codeOf(own)]).toEqual([409, 'key_added_by_owner']);
-    const old = a.keyId;
-    a.keyId = k.key_id;
-    a.key = next;
-    expect((await me(a)).statusCode).toBe(200);
-    // Not the key signing the request, even one the app added.
-    const signing = await call(a, 'DELETE', `/api/v1/apps/keys/${a.keyId}`);
-    expect([signing.statusCode, codeOf(signing)]).toEqual([409, 'key_in_use']);
-    expect(
-      (await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}/keys/${old}`)).statusCode,
-    ).toBe(204);
-    expect(
-      codeOf(await call(a, 'GET', '/api/v1/apps/me', { key: { keyId: old, pem: next.pem } })),
-    ).toBe('app_key_unknown');
-    // An older key retires by itself seven days after a newer, confirmed
-    // key's first use — never a pending one's.
-    const third = newKey();
-    const t = (await add(third)).json<{ key_id: string }>();
-    await admin.query(
-      `update connected_app_key set first_used_at = now() - interval '8 days' where id = $1`,
-      [t.key_id],
-    );
-    expect((await me(a)).statusCode).toBe(200);
-    await admin.query(`update connected_app_key set confirmed_at = now() where id = $1`, [
-      t.key_id,
-    ]);
-    expect(codeOf(await me(a))).toBe('app_key_unknown');
-    a.keyId = t.key_id;
-    a.key = third;
-    expect((await me(a)).statusCode).toBe(200);
-    // The app retires a key it added, and the owners are told.
-    const before = alertsSent(h).length;
-    const fourth = newKey();
-    const f = (await add(fourth)).json<{ key_id: string }>();
-    expect((await call(a, 'DELETE', `/api/v1/apps/keys/${f.key_id}`)).statusCode).toBe(204);
-    expect(
-      alertsSent(h)
-        .slice(before)
-        .some((m) => m.subject === 'A key of Rotor was retired'),
-    ).toBe(true);
-  });
-
   // ------------------------------------------------------------ lifecycle
 
   it('revoked as its person’s role can no longer act, and by sign out everywhere; not by a password change', async () => {
+    await h.decider(owner);
     const vera = await h.join(owner, { name: 'Vera', email: 'vera@example.test', role: 'adult' });
     await h.decider(vera);
     const a = await connect(owner, { member_id: vera.member_id, name: 'Roles' });
@@ -1659,14 +1689,19 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     await expect(
       admin.query(`update connected_app set name = 'Back' where id = $1`, [a.appId]),
     ).rejects.toThrow(/a revoked app never changes/);
-    // Its key retired with it: the same key may be connected again.
-    const again = await send(owner, 'POST', '/api/v1/connected-apps', {
-      name: 'Fixed',
-      member_id: owner.member_id,
-      public_key: a.key.given,
-      allowed_kinds: [],
-    });
-    expect(again.statusCode, again.body).toBe(201);
+    // Its keys revoked with it, and none given to it after.
+    const live = await admin.query(
+      'select 1 from connected_app_key where app_id = $1 and revoked_at is null',
+      [a.appId],
+    );
+    expect(live.rowCount).toBe(0);
+    await expect(
+      admin.query(
+        `insert into connected_app_key (household_id, app_id, client_id, secret_hash, permissions)
+         select household_id, id, $2, sha256('x'), '{documents.send}' from connected_app where id = $1`,
+        [a.appId, newClientId()],
+      ),
+    ).rejects.toThrow(/a removed app is given no key/);
   });
 });
 

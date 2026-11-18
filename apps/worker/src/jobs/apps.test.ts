@@ -4,7 +4,7 @@ import { createDb, createPool, withSystem } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { APP_CHANGES_KEEP_DAYS, APP_LINKS_KEEP_DAYS, sweepApps } from './apps.js';
+import { APP_CHANGES_KEEP_DAYS, APP_LINKS_KEEP_DAYS, noticeAppKeys, sweepApps } from './apps.js';
 
 /**
  * The connected apps' hourly sweep (0.9.0, APP2): an app's changes feed
@@ -173,13 +173,22 @@ describe.skipIf(!testAdminUrl())("the connected apps' sweep: links (APP3)", () =
       ).rows[0]?.id as string;
     live = await app('Live');
     gone = await app('Gone');
-    // Each: a link minted long ago, one a day short of that, and one now.
+    // Each: an API key, and a link minted with it long ago, one a day short
+    // of that, and one now.
+    for (const id of [live, gone]) {
+      await admin.query(
+        `insert into connected_app_key (household_id, app_id, client_id, secret_hash, permissions)
+         values ($1, $2, $3, sha256('x'::bytea), '{documents.links}')`,
+        [hh, id, `fdvc_${id.replace(/-/g, '').slice(0, 22)}`],
+      );
+    }
     for (const id of [live, gone]) {
       for (const days of [APP_LINKS_KEEP_DAYS + 1, APP_LINKS_KEEP_DAYS - 1, 0]) {
         await admin.query(
-          `insert into connected_app_link (household_id, app_id, document_id, version_id, mode,
-                                           token_hash, created_at, open_by)
-           values ($1, $2, $3, $4, 'view', gen_random_bytes(32),
+          `insert into connected_app_link (household_id, app_id, key_id, document_id, version_id,
+                                           mode, token_hash, created_at, open_by)
+           values ($1, $2, (select k.id from connected_app_key k where k.app_id = $2), $3, $4,
+                   'view', gen_random_bytes(32),
                    now() - make_interval(days => $5), now() - make_interval(days => $5))`,
           [hh, id, doc, version, days],
         );
@@ -203,5 +212,139 @@ describe.skipIf(!testAdminUrl())("the connected apps' sweep: links (APP3)", () =
     );
     expect(left.rows).toEqual([{ app_id: live, n: 2 }]);
     expect((await sweepApps(admin)).links).toBe(0);
+  });
+});
+
+/**
+ * An app's API keys (0.9.0-dev.63, APP6): the owners told 14 days before a
+ * key expires — when it was made to last longer than that — and once it
+ * has: an activity line and an email each, in the transaction that marks
+ * the key told, so never twice. A revoked key, one that never expires, and
+ * one of a removed app are told of no more.
+ */
+describe.skipIf(!testAdminUrl())("the connected apps' sweep: API keys that expire (APP6)", () => {
+  let vault: TestDatabase;
+  let admin: pg.Pool;
+  let db: ReturnType<typeof createDb>;
+  let hh: string;
+  const keys: Record<string, string> = {};
+  const told: Array<{ subject: string; account_ids: string[]; body: string }> = [];
+
+  /** Written past the trigger, which keeps a key's dates as they were made. */
+  async function asMade(sqlText: string, values: unknown[]) {
+    const c = await admin.connect();
+    try {
+      await c.query('begin');
+      await c.query('set local session_replication_role = replica');
+      await c.query(sqlText, values);
+      await c.query('commit');
+    } finally {
+      c.release();
+    }
+  }
+
+  beforeAll(async () => {
+    vault = await createTestDatabase();
+    admin = new pg.Pool({ connectionString: vault.adminUrl, max: 1 });
+    db = createDb(createPool(vault.appUrl, 2));
+    hh = randomUUID();
+    await admin.query("insert into household (id, name) values ($1, 'Keyed')", [hh]);
+    const m = await admin.query<{ id: string }>(
+      "insert into member (household_id, display_name) values ($1, 'One') returning id",
+      [hh],
+    );
+    const a = await admin.query<{ id: string }>(
+      'insert into account (email) values ($1) returning id',
+      [`keys-${hh}@example.test`],
+    );
+    await admin.query(
+      "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'owner')",
+      [a.rows[0]?.id, hh, m.rows[0]?.id],
+    );
+    const app = async (name: string) =>
+      (
+        await admin.query<{ id: string }>(
+          `insert into connected_app (household_id, name, account_id, member_id, created_by, approval, approved_at)
+           values ($1, $2, $3, $4, $3, 'approved', now()) returning id`,
+          [hh, name, a.rows[0]?.id, m.rows[0]?.id],
+        )
+      ).rows[0]?.id as string;
+    const live = await app('Acme Money');
+    const gone = await app('Gone');
+    const key = async (
+      name: string,
+      appId: string,
+      created: string,
+      expires: string | null,
+      revoked = false,
+    ) => {
+      const client = `fdvc_${randomUUID().replace(/-/g, '').slice(0, 22)}`;
+      await asMade(
+        `insert into connected_app_key (household_id, app_id, client_id, secret_hash, name, permissions,
+                                        created_at, expires_at, revoked_at, revoked_reason)
+         values ($1, $2, $3, sha256(convert_to($3, 'UTF8')), $4, '{documents.send}',
+                 now() - $5::interval, now() + $6::interval, case when $7 then now() end,
+                 case when $7 then 'owner' end)`,
+        [hh, appId, client, name, created, expires, revoked],
+      );
+      keys[name] = client;
+    };
+    await key('soon', live, '80 days', '10 days');
+    await key('later', live, '10 days', '20 days');
+    await key('short', live, '1 day', '6 days');
+    await key('ended', live, '30 days', '-1 hour');
+    await key('never', live, '400 days', null);
+    await key('revoked', live, '80 days', '5 days', true);
+    await key('removed', gone, '80 days', '5 days');
+    await admin.query(
+      "update connected_app set revoked_at = now(), revoked_reason = 'owner' where id = $1",
+      [gone],
+    );
+  }, 120_000);
+  afterAll(async () => {
+    await admin?.end();
+    await db?.destroy();
+    await vault?.drop();
+  });
+
+  const tell = async (
+    a: { subject: string; account_ids: string[]; body: string },
+    q: { executeSql(text: string, values?: unknown[]): Promise<unknown> },
+  ) => {
+    // Queued in the transaction that marks the key told.
+    await q.executeSql('select 1');
+    told.push(a);
+  };
+
+  it('tells the owners 14 days before, and once it has expired; once each', async () => {
+    expect(await noticeAppKeys({ admin, db, tell })).toEqual({ expiring: 1, expired: 1 });
+    const soon = told.find((t) => t.subject.startsWith('An API key of Acme Money expires on '));
+    const ended = told.find((t) => t.subject === 'An API key of Acme Money has expired');
+    expect(soon?.body).toContain(keys.soon);
+    expect(soon?.body).toContain('generate a new key in Settings → Connected apps');
+    expect(ended?.body).toContain(keys.ended);
+    expect(told).toHaveLength(2);
+    expect(told.every((t) => t.account_ids.length === 1)).toBe(true);
+    // Never a secret: the client ID names which key.
+    expect(JSON.stringify(told)).not.toMatch(/fdvs_/);
+    const lines = await admin.query<{ action: string; client: string }>(
+      `select action, detail->>'client_id' as client from audit_event
+        where household_id = $1 and action like 'app.key_%' order by action`,
+      [hh],
+    );
+    expect(lines.rows).toEqual([
+      { action: 'app.key_expired', client: keys.ended },
+      { action: 'app.key_expiring', client: keys.soon },
+    ]);
+    // Swept again: nothing more, to anybody.
+    expect(await noticeAppKeys({ admin, db, tell })).toEqual({ expiring: 0, expired: 0 });
+    expect(told).toHaveLength(2);
+    // The one that was warned, once it has expired too: told that, once.
+    await asMade(
+      `update connected_app_key set expires_at = now() - interval '1 minute' where client_id = $1`,
+      [keys.soon],
+    );
+    expect(await noticeAppKeys({ admin, db, tell })).toEqual({ expiring: 0, expired: 1 });
+    expect(await noticeAppKeys({ admin, db, tell })).toEqual({ expiring: 0, expired: 0 });
   });
 });

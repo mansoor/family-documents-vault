@@ -23,6 +23,7 @@ function report(over: Partial<RestoreReport> = {}): RestoreReport {
     exportsExpired: 0,
     devicesEnded: 0,
     appsPaused: 0,
+    appKeysRevoked: 0,
     readingChecksStopped: 0,
     signInsPaused: 0,
     locksKept: 0,
@@ -56,10 +57,14 @@ describe('what restore-backup says when it is done', () => {
   it('says the connected apps a restore paused, and where an owner turns them back on (0.9.0, APP1)', () => {
     const words = restoreSummary(
       'fdv-2026-11-16T02-30-00-123Z.sql.enc',
-      report({ appsPaused: 2 }),
+      report({ appsPaused: 2, appKeysRevoked: 3 }),
     ).replace(/\s+/g, ' ');
     expect(words).toContain(
-      '2 connected apps were paused: a key removed since the backup would otherwise work again. An owner turns each back on, in Settings → Connected apps.',
+      '2 connected apps were paused. An owner turns each back on, in Settings → Connected apps.',
+    );
+    // Every API key revoked (APP6): the owners generate new ones.
+    expect(words).toContain(
+      "3 connected apps' API keys were revoked: one revoked since the backup would otherwise work again. An owner generates each app a new key, in Settings → Connected apps, and gives it to the app.",
     );
     expect(restoreSummary('f.sql.enc', report())).not.toContain('connected app');
   });

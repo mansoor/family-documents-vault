@@ -397,9 +397,9 @@ files it — not even an owner. Every other part of the vault refuses its reques
 **What a connected app can read.** Only if an owner allows it (_What it may do_ in
 _Settings → Connected apps_: reading, and downloading, are each ticked separately; a new
 app may only send unless you tick them). It reads the documents that what it sent became
-(a paper of its own, while its newest file is one the app sent — its own later file filed
-into it keeps it so; a newer file from the family makes it the family's, and a family
-paper its file was filed into as a new version is never its own), and those
+(a paper of its own, for as long as it is in the vault, out of the Trash and not Only me
+— whatever newer versions the family or another app added since; a family paper its file
+was filed into as a new version is never its own), and those
 its **read grants** cover: a kind (bank statements, say) or every kind of a
 category (Bills & utilities), each for so many months back — 1 to 36 — counted on the
 paper's date (its issue date, else its due date, else the day it was filed). For each it
@@ -495,20 +495,19 @@ of it: taken out of the Trash, the document is the family's. The activity log sa
 via Acme Money let go of …; it is still in the vault" or "Ahmed via Acme Money moved … to the
 Trash".
 
-**Connecting one.** The app makes its own key pair and shows its public key, starting
-`ed25519:`, and a fingerprint. An owner opens _Settings → Connected apps → Connect an app_
-and confirms it is them with a passkey or an authenticator code — never the password
-alone, so an owner must have two-step sign-in or a passkey. They name the app, choose
-whom it acts as, paste its public key (and check the fingerprint shown matches the
-app's), and choose the kinds it may send, who sees what it sends (as each kind says,
+**Connecting one.** An owner opens _Settings → Connected apps → Connect an app_ and
+confirms it is them with a passkey or an authenticator code — never the password alone,
+so an owner must have two-step sign-in or a passkey. They name the app, choose whom it
+acts as, and choose the kinds it may send, who sees what it sends (as each kind says,
 adults only, everyone, or only that person), how much it may send a day, and optionally
-the addresses it may come from (up to ten addresses or networks). The vault then shows a
-**connection string** to paste into the app; it holds no secret. When the app acts as
+the addresses it may come from (up to ten addresses or networks). Then they **generate
+an API key** for it (see _API keys_ below) and give it to the app. When the app acts as
 somebody else, it does nothing until that person turns it on in their own _Settings →
 Connected apps_, again with a passkey or a code; they are emailed when it is connected.
 When an owner later lets such an app do more — another kind, higher limits, more
 addresses, a backfill, a wider audience, filing automatically, sending to the person a paper
-is about — or gives it a key, it waits for that person to
+is about — or generates it a key that may do more than its live keys (a new key that may
+do the same or less, to replace one, asks nothing of them), it waits for that person to
 turn it on again, and they are emailed. Letting it do less needs nothing from them.
 Identity, legal and medical papers, and kinds kept as Essentials, are never among what
 an app may send.
@@ -520,20 +519,51 @@ at once, an owner can give a **backfill allowance**: higher daily limits until a
 most 30 days ahead. Each app may make 120 requests a minute, besides the vault's limit
 for each address.
 
-**Every request is signed.** The app signs each request with its private key (HTTP
-Message Signatures, RFC 9421, Ed25519) over the method, the path, the query and a digest
-of the body, with the time and a one-time value: a request changed on the way is
-refused, and one sent again is refused. The vault keeps only the public key. Requests
-must come over https; plain http is taken only when `FDV_BASE_URL` is `http://localhost`
-and the request comes from that same machine (a vault used on one machine). A signature
-made before a restore is refused.
+**API keys.** An app proves who it is with an **API key the vault generates**: a
+**client ID** (`fdvc_…`, which names the key and is no secret) and a **secret**
+(`fdvs_…`, 32 random bytes). It sends both on every request, as HTTP Basic
+authentication: `Authorization: Basic base64(client_id:secret)`. Only an owner generates
+or revokes a key, in _Settings → Connected apps_, each time with a passkey or a code. A
+key has:
 
-**Keys.** An app may add a second key of its own, to change keys without a gap. That key
-signs nothing until an owner, or the person the app acts as, confirms it in _Settings →
-Connected apps_ (with a passkey or a code), so a stolen key cannot add one that outlives
-it; the owners and that person are emailed when a key is added or retired. An app may
-retire only a key it added itself; an owner's key is retired in Settings. The older key
-also retires by itself seven days after a newer, confirmed key is first used.
+- a name, if you want one ("Acme Money, live");
+- **its own permissions**: some of what the app may do (send, read, download, show its
+  user, delete). A request is held to the key's permissions and the app's, both, as they
+  are when it arrives — narrowing the app narrows every key;
+- **how long it lasts**: 30, 90 or 365 days, any number of days from 1 to 3650, or never.
+
+The vault shows the client ID and the secret **once**, with Copy buttons, and a
+**connection string** to paste into the app (`fdvapp2.…`: the vault's address and the
+client ID, and the secret too if you tick _Include the secret_). It keeps only a SHA-256
+of the secret, so a lost secret cannot be shown again: generate a new key and revoke the
+old one. An app has **two live keys at most** (not expired, not revoked), so it can move
+to a new key without a gap; it can never add, renew or retire a key of its own. The
+owners are emailed 14 days before a key expires (when it was made to last longer than
+that) and again once it has, and both are in the activity log. Revoking a key takes
+effect at its very next request, and ends what the key opened: a view or download link
+it made, and a page opened from one. Settings lists each key with its client ID, what it may
+do, when it was made, when it expires or "Never", when it was last used, and whether it
+was revoked or has expired. An app can ask the vault which key it is using, and when it
+expires (`GET /api/v1/apps/me`), so it can warn its own users in time.
+
+A request with a wrong secret, or a client ID the vault does not know, is refused alike
+(`401 app_key_invalid`); an expired key is `401 app_key_expired`, a revoked one `401
+app_key_revoked`. An address that sends more than 10 keys that do not work in a minute —
+a client ID the vault does not know, or a wrong secret; an IPv6 address counted with the
+rest of its /64 — waits for the minute to end (`429`); a right secret for a key that is
+revoked or expired is never counted so. Requests must come over https; plain http is taken
+only when `FDV_BASE_URL` is `http://localhost` and the request comes from that same
+machine (a vault used on one machine). Neither the vault's log nor nginx's access log
+keeps the `Authorization` header or the secret.
+
+**A login of your own in front of the vault.** If your proxy asks for a password of its
+own (Caddy's `basicauth`, nginx's `auth_basic`), the vault leaves that `Authorization:
+Basic` header alone: only one whose user is a client ID (`fdvc_…`) is taken for an app's
+key.
+
+Before 0.9.0-dev.63 an app signed each request with an Ed25519 key of its own (RFC 9421).
+That is gone: an app connected that way stops working until an owner generates it an API
+key, and its public keys were removed by the upgrade.
 
 **Reaching it from the internet.** A connected app usually runs on the internet, and can
 only reach the vault at an address on the internet: the public-only site (see [Links for
@@ -542,14 +572,15 @@ pages a link opens until you set `FDV_PUBLIC_APPS=on` in `.env`, for the API and
 `caddy-public` service; then it also serves the app routes (`/api/v1/apps/*`), the
 vault's capability document (without the family's name), and the links an app makes for
 its user's browser (`/api/v1/app-links/*` and the page `/a`), and nothing else. Every app
-route still refuses a request that is not signed by a connected app's key, and the site
+route still refuses a request without a connected app's API key, and the site
 answers 404 to an address that hides a slash or a dot in its encoding. Settings warns while an app is connected and
 `FDV_PUBLIC_APPS` is off. A vault reached only over Tailscale or the home network cannot
 be connected to an app on the internet.
 
 **Removing one.** _Settings → Connected apps_ lists each app with whom it acts as, what
-it may do, when it was last used, and today's files and refused requests. An owner can
-pause one, change what it may do, add or retire a key, and remove it; the person it acts
+it may do, its API keys, when it was last used, and today's files and refused requests.
+An owner can pause one, change what it may do, generate or revoke a key, and remove it
+(which revokes every key it has); the person it acts
 as can turn it on and remove it. A removed app's next request is refused; what it sent
 stays in the Inbox for the person to decide, and what was filed stays in the vault. An app
 is removed by itself when its person's sign-in is taken away or they can no longer act
@@ -557,8 +588,10 @@ for it (made a teen or a viewer), and when they are signed out everywhere or an 
 stops their password — not when they change their password. Everything an app does is in
 the activity log, "Ahmed via Acme Money sent a file to their Inbox" (files sent within an
 hour of each other are one line: "sent 12 files"). A restore pauses every app until an
-owner turns each back on, and an app reads its feed again from the start after one; every
-link it made, and every page opened from one, ends.
+owner turns each back on, and **revokes every API key** — one revoked since the backup
+was made would otherwise work again — so an owner generates each app a new key and gives
+it to the app; the restore's summary says so. An app reads its feed again from the start
+after one; every link it made, and every page opened from one, ends.
 
 **What is kept of what an app sent.** For a file the person removed, or the app took
 back, the vault keeps its hash and size (never the file, its name or what the app said
@@ -566,12 +599,78 @@ of it) for 90 days, so the same file sent again is recognised and answered as al
 decided. A file refused for its kind keeps only that it was refused. Both are then
 forgotten.
 
+### The API, end to end, for an integrator
+
+Every route an app calls is under `/api/v1/`. Each request carries the app's key as
+`Authorization: Basic base64(client_id:secret)` — below as `$KEY`, made with
+`KEY=$(printf '%s' "$CLIENT_ID:$SECRET" | base64 -w0)` — over https to the address the
+connection string gives (`$VAULT`).
+
+1. **Send a file, with your own `external_id`** — your idempotency key forever; sending
+   it again with the same bytes is answered as before (`200`):
+
+   ```sh
+   curl -sS "$VAULT/api/v1/apps/intake" -H "Authorization: Basic $KEY" \
+     -F 'metadata={"external_id":"acme:doc-01","hints":{"kind":"bank_statement"}};type=application/json' \
+     -F 'file=@statement.pdf;type=application/pdf'
+   ```
+
+2. **Check its state, and get the `document_id`** once the person (or automatic filing)
+   has filed it: `waiting`, then `filed` with `document_id` and `version_id`:
+
+   ```sh
+   curl -sS "$VAULT/api/v1/apps/intake/acme:doc-01" -H "Authorization: Basic $KEY"
+   ```
+
+3. **Fetch your exact file again, by your `external_id`** — the bytes you sent, whatever
+   versions the family added since (needs _Download_):
+
+   ```sh
+   curl -sS -o mine.pdf "$VAULT/api/v1/apps/intake/acme:doc-01/content" -H "Authorization: Basic $KEY"
+   ```
+
+4. **Fetch the document as it is now, by its `document_id`** — its details, and its
+   current file (needs _Read_, and _Download_ for the file):
+
+   ```sh
+   curl -sS "$VAULT/api/v1/apps/documents/$DOCUMENT_ID" -H "Authorization: Basic $KEY"
+   curl -sS -o current.pdf "$VAULT/api/v1/apps/documents/$DOCUMENT_ID/content" -H "Authorization: Basic $KEY"
+   ```
+
+5. **Make a view link for your user** (needs _Show its user documents_), and send their
+   browser to its `url` at once:
+
+   ```sh
+   curl -sS -X POST "$VAULT/api/v1/apps/documents/$DOCUMENT_ID/links" \
+     -H "Authorization: Basic $KEY" -H 'Content-Type: application/json' -d '{"mode":"view"}'
+   ```
+
+6. **Follow the changes feed**: without a cursor, everything you may read now; then only
+   what changed since, `changed` (with the document as it is now) or `unavailable`
+   (never why). Keep the `cursor` it answers for next time:
+
+   ```sh
+   curl -sS "$VAULT/api/v1/apps/changes?cursor=$CURSOR" -H "Authorization: Basic $KEY"
+   ```
+
+`GET /api/v1/apps/me` is the connection test: what the app and this key may do, the key's
+expiry, and the vault's version.
+
+**API versioning.** Every route is under `/api/v1/`. `GET /api/v1/apps/me` gives the
+vault's version (`vault.server_version`), and `GET /api/v1/capabilities` its capability
+flags. [`docs/api-changelog.md`](docs/api-changelog.md) lists every change. During the
+0.9.0 development builds a breaking change may still land inside `v1`, and is marked
+**breaking** there (as API keys replacing request signing were, in 0.9.0-dev.63). From the
+0.9.0 release on, a breaking change goes to a new path version (`/api/v2/…`), while `v1`
+keeps working for a stated deprecation period of at least 6 months.
+
 ### The client library, for writing a connected app
 
-An app need not write its own signer. The vault's own API client,
-[`packages/client`](packages/client/README.md) (`@fdv/client`, MIT), signs requests for a
-connected app (`@fdv/client/apps`) and comes with a fake vault to test against
-(`@fdv/client/testing`) that checks signatures and answers as the vault does. It is not on
+The vault's own API client, [`packages/client`](packages/client/README.md) (`@fdv/client`,
+MIT), makes a connected app's requests with its API key (`@fdv/client/apps`:
+`createAppClient({ url, clientId, secret })`, and `parseConnectionString` for what
+Settings gives) and comes with a fake vault to test against (`@fdv/client/testing`) that
+generates, revokes and expires keys and answers as the vault does. It is not on
 npmjs.com: every release attaches the client of that release to its
 [GitHub release](https://github.com/mansoor/family-documents-vault/releases) as
 `fdv-client-<version>.tgz`, and an app installs it by that URL, pinned to the version, with
@@ -580,19 +679,18 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.62/fdv-client-0.9.0-dev.62.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.63/fdv-client-0.9.0-dev.63.tgz"
   }
 }
 ```
 
 It is ESM only, with TypeScript declarations (set `moduleResolution` to `node16`,
-`nodenext` or `bundler`), and runs in Node 22 or later, browsers and React Native; signing
-uses Web Crypto's Ed25519 (Node 22, and the browsers that have it). It needs one package
+`nodenext` or `bundler`), and runs in Node 22 or later, browsers and React Native. It needs one package
 from npm, `libphonenumber-js` (MIT), for the fake vault. The contract scenarios the fake and
 the vault are both held to are their own entry, `@fdv/client/testing/contract`, which needs
 `vitest` (5 or 6) in the app's own devDependencies; nothing else does, and the package
 declares no dependency on it. The package's
-[README](packages/client/README.md) shows signing and a test against the fake vault.
+[README](packages/client/README.md) shows a connected app's client and a test against the fake vault.
 `pnpm client:pack` builds the same tarball from a checkout.
 
 ## Configuration

@@ -142,11 +142,16 @@ export interface RestoreReport {
    */
   devicesEnded: number;
   /**
-   * Connected apps paused (0.9.0, APP1): a key revoked since the backup was
-   * made would otherwise sign again, so every app waits for an owner to
-   * turn it back on in Settings → Connected apps; and every nonce goes.
+   * Connected apps paused (0.9.0, APP1): every app waits for an owner to
+   * turn it back on in Settings → Connected apps.
    */
   appsPaused: number;
+  /**
+   * Connected apps' API keys revoked (0114, APP6): a key revoked since the
+   * backup was made would otherwise work again, so every key is revoked and
+   * an owner generates each app a new one.
+   */
+  appKeysRevoked: number;
   /**
    * Reading checks stopped (0.9.0, R0): one waiting or running when the
    * backup was made has no job here to finish it, and what it had read so
@@ -304,6 +309,7 @@ interface Undone {
   exportsExpired: number;
   devicesEnded: number;
   appsPaused: number;
+  appKeysRevoked: number;
   readingChecksStopped: number;
 }
 
@@ -735,6 +741,7 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
     exportsExpired: counted('exports_expired'),
     devicesEnded: counted('devices_ended'),
     appsPaused: counted('apps_paused'),
+    appKeysRevoked: counted('app_keys_revoked'),
     readingChecksStopped: counted('reading_checks_stopped'),
     identityAudiences: [...stdout.matchAll(/fdv-restore-audience:([0-9a-f-]{36})=([a-z_]+)/g)].map(
       (m) => ({ household_id: m[1] as string, was: m[2] as string }),
@@ -920,17 +927,24 @@ begin
     delete from public.device_pairing;
   end if;
   -- Connected apps (0109, APP1): every one paused for an owner to turn
-  -- back on — a key revoked since the backup would otherwise sign again —
-  -- and every nonce forgotten.
+  -- back on — an API key revoked since the backup would otherwise work
+  -- again (0114, APP6) — and the moment noted: its changes feed starts
+  -- again from here, so a cursor from before is too old.
   if to_regclass('public.connected_app') is not null then
     update public.connected_app set paused_reason = 'restored'
      where revoked_at is null and paused_reason is distinct from 'restored';
     get diagnostics n = row_count;
     insert into pg_temp.fdv_restore_undone values ('apps_paused', n);
-    -- And a signature made before now is refused from here on: the nonces
-    -- go below, so one spent since the backup would otherwise be taken again.
-    update public.connected_app set signed_after = now() where revoked_at is null;
-    delete from public.connected_app_nonce;
+    update public.connected_app set restored_at = now() where revoked_at is null;
+  end if;
+  -- And every API key revoked (0114, APP6): one revoked since the backup
+  -- would otherwise work again. The owners generate new ones.
+  if to_regclass('public.connected_app_key') is not null then
+    update public.connected_app_key
+       set revoked_at = now(), revoked_by = null, revoked_reason = 'restore'
+     where revoked_at is null;
+    get diagnostics n = row_count;
+    insert into pg_temp.fdv_restore_undone values ('app_keys_revoked', n);
   end if;
   -- And their links (0111, APP3): every link and session from before the
   -- restore ends — a token or a cookie used since the backup would
@@ -1273,8 +1287,8 @@ const GUARDS = [
   },
   // A connected app (0109, APP1): whom it acts as never changes, only an
   // owner changes what it may do, and a revoked one never changes again;
-  // two live keys at most, a retired one never back, and its keys retired
-  // with it; what became of what it sent followed from the Inbox; and its
+  // two live API keys at most, a revoked one never back, and its keys
+  // revoked with it (0114, APP6); what became of what it sent followed from the Inbox; and its
   // apps revoked as its person's sign-in goes or their role cannot act.
   { name: 'connected_app_writes', table: 'connected_app', fn: 'connected_app_writes' },
   { name: 'connected_app_revoked', table: 'connected_app', fn: 'connected_app_revoked' },
@@ -1499,9 +1513,9 @@ const UNIQUE_INDEXES = [
     what: 'what a connected app sent, once an external id',
   },
   {
-    name: 'connected_app_key_live_idx',
+    name: 'connected_app_key_client_id_key',
     table: 'connected_app_key',
-    what: 'a live key, one connected app’s',
+    what: 'an API key’s client ID, once',
   },
   // A connected app's read grants (0110, APP2): a kind, or a category, once an app.
   {
@@ -1601,21 +1615,37 @@ const REQUIRED_CHECKS = [
     table: 'incoming_file',
     what: 'a filed file let go of a removed request, and only a filed one',
   },
-  // What a connected app may do is from the list, and a key is 32 bytes (0109, APP1).
+  // What a connected app may do is from the list (0109, APP1); and an API
+  // key's permissions too, its secret kept as a SHA-256 alone (0114, APP6).
   {
     name: 'connected_app_scopes',
     table: 'connected_app',
     what: 'what a connected app may do, from the list',
   },
   {
-    name: 'connected_app_key_length',
+    name: 'connected_app_key_hash_length',
     table: 'connected_app_key',
-    what: 'a connected app’s key, 32 bytes',
+    what: 'an API key’s secret kept as its SHA-256',
   },
   {
-    name: 'connected_app_key_owner_confirmed',
+    name: 'connected_app_key_permissions',
     table: 'connected_app_key',
-    what: 'an owner’s key confirmed as it is added',
+    what: 'what an API key may do, from the list',
+  },
+  {
+    name: 'connected_app_key_client_id',
+    table: 'connected_app_key',
+    what: 'an API key’s client ID, as the vault writes them',
+  },
+  {
+    name: 'connected_app_key_expires_after',
+    table: 'connected_app_key',
+    what: 'an API key expiring after it was made',
+  },
+  {
+    name: 'connected_app_key_revoked_says_why',
+    table: 'connected_app_key',
+    what: 'a revoked API key saying why',
   },
   {
     name: 'connected_app_visibility',
@@ -1866,12 +1896,11 @@ const ACTOR_GUARDED = [
   // Somebody's emergency information (0102, H4): theirs, the owners', its
   // audience's, a live caregiver's, and its one live clinician's link's.
   'member_emergency',
-  // Connected apps, their keys, their nonces and what they sent (0109,
-  // APP1): the owners' and the person's each acts as; the nonces and what
-  // was sent, the vault's and that person's alone.
+  // Connected apps, their API keys (0114, APP6) and what they sent (0109,
+  // APP1): the owners' and the person's each acts as; what was sent, the
+  // vault's and that person's alone.
   'connected_app',
   'connected_app_key',
-  'connected_app_nonce',
   'connected_app_intake',
   // What a connected app may read, and its feed (0110, APP2): the owners'
   // and its person's grants; the feed, the vault's alone.
@@ -2037,10 +2066,9 @@ const NOT_EVEN_OWNERS = [
   { table: 'cabinet_pin', what: "a pin of somebody's" },
   // What somebody made under a key (0100): which document, and when.
   { table: 'create_idempotency', what: "somebody's key for a create" },
-  // What a connected app sent into somebody's Inbox, by its external ids,
-  // and the nonces it signed with (0109, APP1): the person's and the vault's.
+  // What a connected app sent into somebody's Inbox, by its external ids
+  // (0109, APP1): the person's and the vault's.
   { table: 'connected_app_intake', what: 'what a connected app sent' },
-  { table: 'connected_app_nonce', what: "a connected app's nonces" },
   // What a connected app was told, and its feed (0110, APP2): the vault's.
   { table: 'connected_app_seen', what: 'what a connected app was told' },
   { table: 'connected_app_change', what: "a connected app's feed" },
@@ -2279,7 +2307,13 @@ const REQUIRED_RULES = [
     table: 'connected_app_key',
     name: 'connected_app_key_actor_insert',
     cmd: 'a',
-    what: 'who adds a key to a connected app',
+    what: 'who generates an API key for a connected app',
+  },
+  {
+    table: 'connected_app_key',
+    name: 'connected_app_key_actor_update',
+    cmd: 'w',
+    what: 'who revokes an API key of a connected app',
   },
   {
     table: 'intake_batch',

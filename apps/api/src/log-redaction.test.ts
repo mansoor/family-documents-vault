@@ -206,6 +206,30 @@ describe('what the log may say about a request (0.5.0)', () => {
     expect(nginxLogPath('/api/v1/documents/7f1c')).toBe('/api/v1/documents/7f1c');
   });
 
+  it("never keeps a connected app's API key: not in an error's words, not in nginx's access log (APP6)", () => {
+    const secret = `fdvs_${'A'.repeat(43)}`;
+    const basic = Buffer.from(`fdvc_${'b'.repeat(22)}:${secret}`).toString('base64');
+    const keyed = errorForLog(new Error(`refused: Authorization: Basic ${basic}`));
+    expect(keyed.message).toBe('refused: Authorization: Basic [key]');
+    expect(errorForLog(new Error(`a secret ${secret} pasted`)).message).toBe(
+      'a secret fdvs_[secret] pasted',
+    );
+    // A short value decoding to a client ID is cut too; "Basic" in words is not.
+    const shortKey = Buffer.from('fdvc_x').toString('base64');
+    expect(errorForLog(new Error(`Basic ${shortKey}`)).message).toBe('Basic [key]');
+    expect(errorForLog(new Error('Basic information is missing')).message).toBe(
+      'Basic information is missing',
+    );
+    expect(errorForLog(new Error('Basic auth failed')).message).toBe('Basic auth failed');
+    // nginx: its access log names no user (a Basic header's would be the
+    // client ID) and no Authorization header.
+    const conf = readFileSync(new URL('../../../docker/nginx.conf', import.meta.url), 'utf8');
+    const format = /log_format fdv_redacted ([\s\S]*?);/.exec(conf)?.[1] ?? '';
+    expect(format).toContain('$fdv_log_uri');
+    expect(format).not.toContain('$remote_user');
+    expect(format).not.toContain('$http_authorization');
+  });
+
   it('leaves everything else as it was', () => {
     expect(loggableUrl('/api/v1/documents/7f1c')).toBe('/api/v1/documents/7f1c');
     expect(loggableUrl('/api/v1/shares')).toBe('/api/v1/shares');

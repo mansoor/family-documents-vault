@@ -476,10 +476,29 @@ describe('what an app did, in the activity log (0.9.0, APP1)', () => {
     expect(event('app.sent', {})?.text).toBe('Ahmed via Acme Money sent a file to their Inbox');
     expect(event('app.sent', {})?.kind).toBe('added');
     expect(event('app.checked', {})?.text).toBe('Ahmed via Acme Money checked on files it sent');
-    expect(event('app.key_added', { by: 'app' })).toMatchObject({
-      text: 'Ahmed via Acme Money added a new key to Acme Money',
+    expect(event('app.key_added', {}, { actor: 'Olivia' })).toMatchObject({
+      text: 'Olivia generated an API key for Acme Money',
       notable: true,
       kind: 'people',
+    });
+    expect(event('app.key_added', { approval: 'asked_again' }, { actor: 'Olivia' })?.text).toBe(
+      'Olivia generated an API key for Acme Money, so Ahmed must turn it on again',
+    );
+    expect(event('app.key_retired', {}, { actor: 'Olivia' })?.text).toBe(
+      'Olivia revoked an API key of Acme Money',
+    );
+    // The vault's own notices: nobody did them, and they name nobody.
+    expect(
+      event('app.key_expiring', { expires_at: '2026-12-01T09:00:00.000Z' }, { actor: null }),
+    ).toMatchObject({
+      text: 'An API key of Acme Money expires on 1 December 2026 at 09:00',
+      notable: true,
+      actor_member_id: null,
+    });
+    expect(event('app.key_expired', {}, { actor: null })).toMatchObject({
+      text: 'An API key of Acme Money has expired',
+      notable: true,
+      actor_member_id: null,
     });
     expect(event('app.connected', {}, { actor: 'Olivia', actor_member_id: 'm-olivia' })?.text).toBe(
       'Olivia connected Acme Money, acting as Ahmed',
@@ -487,9 +506,9 @@ describe('what an app did, in the activity log (0.9.0, APP1)', () => {
     expect(event('app.revoked', { reason: 'owner' }, { actor: 'Olivia' })?.text).toBe(
       'Olivia removed Acme Money',
     );
-    const refused = event('app.refused_today', { code: 'signature_invalid' }, { actor: null });
+    const refused = event('app.refused_today', { code: 'app_key_expired' }, { actor: null });
     expect(refused).toMatchObject({
-      text: 'Requests from Acme Money were refused today (signature not valid)',
+      text: 'Requests from Acme Money were refused today (API key expired)',
       notable: true,
       actor_member_id: null,
     });

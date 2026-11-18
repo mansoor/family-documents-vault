@@ -11,6 +11,11 @@ import {
   APP_GRANTABLE_CATEGORIES,
   APP_GRANTS_MAX,
   APP_IP_ALLOW_MAX,
+  APP_KEY_DAYS_MAX,
+  APP_KEY_NAME_MAX,
+  APP_KEY_VALIDITY_DAYS,
+  APP_KEY_WARN_DAYS,
+  APP_KEYS_MAX,
   APP_LINKS_PER_HOUR_MAX,
   APP_LOOKBACK_MAX_MONTHS,
   APP_NAME_MAX,
@@ -30,29 +35,40 @@ import {
   type ConnectedAppChange,
   type ConnectedAppGrantsInput,
   type ConnectedAppInput,
+  type ConnectedAppKeyInput,
+  type ConnectedAppKeyMade,
   type ConnectedAppList,
   type ConnectedAppView,
   type DocumentTypeView,
   type Member,
   type Visibility,
 } from '@fdv/shared';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { dayWordsOf, familyZoneNow, shortWhenWords } from '../family-time.js';
 import { storedRole } from '../session.js';
-import { Button, Check, ConfirmDialog, ErrorNote, Field, LoadFailed, Select } from '../ui.js';
+import {
+  Button,
+  Check,
+  ConfirmDialog,
+  ErrorNote,
+  Field,
+  LoadFailed,
+  Select,
+  Sheet,
+} from '../ui.js';
 import { SettingsPage } from './Settings.js';
 
 /**
  * Connected apps (/settings/connected-apps, 0.9.0 APP1): an app an owner
- * connects, which signs what it sends with its own key and sends documents
- * into the Inbox of the person it acts as — an owner or an adult who signs
- * in. It can only send.
+ * connects, which sends documents into the Inbox of the person it acts as —
+ * an owner or an adult who signs in.
  *
  * An owner sees every app, connects one (a passkey or an authenticator's
  * code, never the password: `connect_app`), pauses it, turns it back on,
- * changes what it may do, adds and retires its keys, and removes it. An
+ * changes what it may do, generates and revokes its API keys, and removes
+ * it. An
  * adult sees only the apps acting as them: turns one on (it waits for them
  * when an owner connected it as them), and removes it. What it sent that
  * waits, and was filed, is its person's alone to see.
@@ -67,6 +83,13 @@ import { SettingsPage } from './Settings.js';
  * that opens once, for ten minutes) and how many links an hour; whether it
  * may delete what it sent, and what a delete does — let go of it, keeping
  * it in the vault, or move it to the Trash.
+ *
+ * API keys (APP6): the app proves who it is with a key an owner generates
+ * here — a name, its own permissions (some of the app's) and how long it
+ * lasts. Its client ID and secret are shown once, in a sheet with Copy, and
+ * never again: the vault keeps only a hash. Two work at once at most; an
+ * owner revokes one, asked first, and the app's next request with it is
+ * refused.
  */
 
 const MB = 1024 * 1024;
@@ -132,7 +155,6 @@ const ROUTE_NOTE =
 interface AppForm {
   name: string;
   member: string;
-  key: string;
   kinds: string[];
   /** '' is "as each kind says". */
   seen: '' | Visibility;
@@ -163,7 +185,7 @@ type Ceilings = ConnectedAppList['ceilings'];
 type Read =
   | {
       ok: true;
-      value: Omit<ConnectedAppInput, 'member_id' | 'public_key'> & { ip_allow: string[] };
+      value: Omit<ConnectedAppInput, 'member_id'> & { ip_allow: string[] };
     }
   | { ok: false; error: string };
 
@@ -261,7 +283,6 @@ function blankForm(me: string): AppForm {
   return {
     name: '',
     member: me,
-    key: '',
     kinds: [],
     seen: '',
     files: String(APP_DEFAULT_DAILY_FILES),
@@ -289,7 +310,6 @@ function formOf(app: ConnectedAppView): AppForm {
   return {
     name: app.name,
     member: app.member_id,
-    key: '',
     kinds: [...app.allowed_kinds],
     seen: app.default_visibility ?? '',
     files: String(app.daily_files),
@@ -402,6 +422,110 @@ function readGrants(rows: GrantRow[]): ConnectedAppGrantsInput | string {
   return { grants };
 }
 
+// ------------------------------------------------------------ API keys (APP6)
+
+/** Each permission in a word or two, as a key's row says them. */
+const PERMISSION_WORDS: Readonly<Record<AppScope, string>> = {
+  'documents.send': 'Send',
+  'documents.read': 'Read',
+  'documents.download': 'Download',
+  'documents.links': 'Show its user',
+  'documents.delete': 'Delete',
+};
+
+/** A key's permissions in words: "Send, Read". */
+export const permissionWords = (p: readonly AppScope[]) =>
+  APP_SCOPES_OFFERED.filter((s) => p.includes(s))
+    .map((s) => PERMISSION_WORDS[s])
+    .join(', ');
+
+/** How long a new key lasts, as chosen: a number of days the vault offers, a number typed, or never. */
+type Validity = `${(typeof APP_KEY_VALIDITY_DAYS)[number]}` | 'custom' | 'never';
+
+const VALIDITY_WORDS: Record<Validity, string> = {
+  '30': '30 days',
+  '90': '90 days',
+  '365': '1 year',
+  custom: 'Custom…',
+  never: 'Never expires',
+};
+
+/** The Generate key form, as typed. */
+export interface KeyForm {
+  name: string;
+  permissions: AppScope[];
+  validity: Validity;
+  /** The days typed, for a custom validity. */
+  days: string;
+}
+
+/** A new key's form: named nothing, every permission the app has ticked, for a year. */
+export function blankKeyForm(app: Pick<ConnectedAppView, 'scopes'>): KeyForm {
+  return { name: '', permissions: [...app.scopes], validity: '365', days: '' };
+}
+
+/** The form, checked: what to send, or what is wrong, in words. */
+export function readKeyForm(
+  f: KeyForm,
+  app: Pick<ConnectedAppView, 'scopes'>,
+): { ok: true; value: ConnectedAppKeyInput } | { ok: false; error: string } {
+  const name = f.name.trim();
+  if (name.length > APP_KEY_NAME_MAX) {
+    return { ok: false, error: `A key’s name is ${APP_KEY_NAME_MAX} characters at most.` };
+  }
+  const permissions = APP_SCOPES_OFFERED.filter(
+    (s) => f.permissions.includes(s) && app.scopes.includes(s),
+  );
+  if (permissions.length === 0) return { ok: false, error: 'Choose what the key may do.' };
+  let days: number | null = null;
+  if (f.validity === 'custom') {
+    days = whole(f.days, 1, APP_KEY_DAYS_MAX);
+    if (days === null)
+      return { ok: false, error: `How long it lasts: 1 to ${APP_KEY_DAYS_MAX} days.` };
+  } else if (f.validity !== 'never') {
+    days = Number(f.validity);
+  }
+  return {
+    ok: true,
+    value: { name: name === '' ? null : name, permissions, expires_in_days: days },
+  };
+}
+
+/** Whole days until a moment, rounded up: "in 3 days". */
+const daysUntil = (iso: string, now: number) => Math.ceil((Date.parse(iso) - now) / DAY);
+
+/**
+ * When a key stops working, in words: "Never"; its day; and, for a live key
+ * within APP_KEY_WARN_DAYS of it, how soon.
+ */
+export function keyExpiryWords(
+  k: Pick<AppKeyView, 'expires_at' | 'state'>,
+  now = Date.now(),
+): { words: string; soon: boolean } {
+  if (k.expires_at === null) return { words: 'Never', soon: false };
+  const left = daysUntil(k.expires_at, now);
+  if (k.state === 'live' && left <= APP_KEY_WARN_DAYS) {
+    return {
+      words: `${day(k.expires_at)} (expires in ${left <= 1 ? '1 day' : `${left} days`})`,
+      soon: true,
+    };
+  }
+  return { words: day(k.expires_at), soon: false };
+}
+
+/** A key that no longer works, in words: "Revoked 3 November", "Expired"; null while it works. */
+export function keyStateWords(k: Pick<AppKeyView, 'state' | 'revoked_at'>): string | null {
+  if (k.state === 'revoked') return k.revoked_at ? `Revoked ${day(k.revoked_at)}` : 'Revoked';
+  if (k.state === 'expired') return 'Expired';
+  return null;
+}
+
+/** A key as a sentence names it: its name, or its client ID. */
+const keyName = (k: Pick<AppKeyView, 'name' | 'client_id'>) => k.name ?? k.client_id;
+
+const liveKeys = (app: Pick<ConnectedAppView, 'keys'>) =>
+  app.keys.filter((k) => k.state === 'live');
+
 /** Whom an app may act as: an owner or an adult who signs in. */
 const actsAs = (m: Member) =>
   m.has_account && !m.is_deceased && (m.role === 'owner' || m.role === 'adult');
@@ -416,7 +540,7 @@ function AppFields(props: {
   set: (f: AppForm) => void;
   types: DocumentTypeView[];
   ceilings: Ceilings;
-  /** Connecting: whom it acts as, and its key, are asked too. */
+  /** Connecting: whom it acts as is asked too. */
   connect?: { people: Member[]; me: string };
   /** Whom it acts as, for "Only …": "you", or their name. */
   who: string;
@@ -459,31 +583,6 @@ function AppFields(props: {
             <p id={`${id}-who-note`} className="muted field-note">
               What it sends goes into their Inbox. An owner or an adult who signs in. Somebody else
               turns it on themselves before it can send anything.
-            </p>
-          </div>
-          <div className="field">
-            <label htmlFor={`${id}-key`}>
-              The app’s public key
-              <span className="req-star" aria-hidden="true">
-                {' '}
-                *
-              </span>{' '}
-              <span className="req-word">required</span>
-            </label>
-            <textarea
-              id={`${id}-key`}
-              value={form.key}
-              rows={3}
-              maxLength={4096}
-              spellCheck={false}
-              autoCapitalize="off"
-              aria-required="true"
-              aria-describedby={`${id}-key-note`}
-              onChange={(e) => put({ key: e.target.value })}
-            />
-            <p id={`${id}-key-note`} className="muted field-note">
-              The app shows it: it starts “ed25519:”, or is a block that starts “-----BEGIN PUBLIC
-              KEY-----”. It is not a secret.
             </p>
           </div>
         </>
@@ -672,13 +771,19 @@ function AppFields(props: {
 
 // ------------------------------------------------------------- the screen
 
-/** What was just made: the key the vault kept, and what to paste into the app. */
-interface Made {
+/** A key just generated: its secret, shown this once, and the app it is for. */
+interface Shown {
   app: ConnectedAppView;
-  fingerprint: string;
-  connection: string;
-  /** A key added to an app already connected, rather than a new app. */
-  keyAdded: boolean;
+  made: ConnectedAppKeyMade;
+}
+
+/** The Generate key form, open on one app's card: on the screen, so a passkey asked for never loses it. */
+interface KeyEdit {
+  appId: string;
+  form: KeyForm;
+  error: string | null;
+  /** Opened as the app was connected: the form says so. */
+  connected: boolean;
 }
 
 export function ConnectedAppsScreen() {
@@ -702,12 +807,14 @@ export function ConnectedAppsScreen() {
   // The reader, whom a new app acts as unless another is chosen.
   const me = data?.members.find((m) => m.is_me)?.id ?? session.info?.member_id ?? '';
   const [connecting, setConnecting] = useState<AppForm | null>(null);
-  const [made, setMade] = useState<Made | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [said, setSaid] = useState<string | null>(null);
   const [removing, setRemoving] = useState<ConnectedAppView | null>(null);
-  const [retiring, setRetiring] = useState<{ app: ConnectedAppView; key: AppKeyView } | null>(null);
+  const [revoking, setRevoking] = useState<{ app: ConnectedAppView; key: AppKeyView } | null>(null);
+  /** A key's secret, shown once: gone from here as its sheet closes. */
+  const [shown, setShown] = useState<Shown | null>(null);
+  const [keyEdit, setKeyEdit] = useState<KeyEdit | null>(null);
   /** The vault's question before an app reads papers Sensitive by their kind (APP2). */
   const [asking, setAsking] = useState<{
     app: ConnectedAppView;
@@ -775,30 +882,43 @@ export function ConnectedAppsScreen() {
     if (!connecting || !data || busy) return;
     const read = readForm(connecting, data.list.ceilings);
     if (!read.ok) return setError(read.error);
-    if (!connecting.key.trim()) return setError('Paste the app’s public key.');
-    const body: ConnectedAppInput = {
-      ...read.value,
-      member_id: connecting.member,
-      public_key: connecting.key.trim(),
-    };
+    const body: ConnectedAppInput = { ...read.value, member_id: connecting.member };
     setBusy(true);
     setError(null);
     setSaid(null);
     try {
       const app = await guarded((t) => api.connectedApps.create(t, body));
       if (app) {
-        const key = app.keys[app.keys.length - 1];
-        setMade({
-          app,
-          fingerprint: key?.fingerprint ?? '',
-          connection: app.connection_string,
-          keyAdded: false,
-        });
         setConnecting(null);
         await reload();
+        // Its key next, in the same sitting: the app can do nothing without one.
+        setKeyEdit({ appId: app.id, form: blankKeyForm(app), error: null, connected: true });
       }
     } catch (err) {
       setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** A key generated, with a passkey or a code: its secret shown once, in a sheet. */
+  const generate = async (app: ConnectedAppView, edit: KeyEdit) => {
+    if (busy) return;
+    const read = readKeyForm(edit.form, app);
+    if (!read.ok) return setKeyEdit({ ...edit, error: read.error });
+    setBusy(true);
+    setError(null);
+    setSaid(null);
+    setKeyEdit({ ...edit, error: null });
+    try {
+      const made = await guarded((t) => api.connectedApps.generateKey(t, app.id, read.value));
+      if (made) {
+        setKeyEdit(null);
+        setShown({ app, made });
+        await reload();
+      }
+    } catch (err) {
+      setKeyEdit({ ...edit, error: describeError(err) });
     } finally {
       setBusy(false);
     }
@@ -848,8 +968,8 @@ export function ConnectedAppsScreen() {
     <SettingsPage title="Connected apps">
       <p className="lede">
         {owner
-          ? 'An app you connect sends documents into the Inbox of the person it acts as, signed with its own key. If you allow it, it reads what it sent, and the kinds of papers you choose, for as far back as you choose. Never identity, legal or medical papers, nothing Only me or Essential, and nothing marked Sensitive.'
-          : 'An app an owner connects as you sends documents into your Inbox, signed with its own key. If an owner allows it, it reads what it sent, and the kinds of papers they choose, as you. Never identity, legal or medical papers, nothing Only me or Essential, and nothing marked Sensitive.'}
+          ? 'An app you connect sends documents into the Inbox of the person it acts as, using an API key you generate here. If you allow it, it reads what it sent, and the kinds of papers you choose, for as far back as you choose. Never identity, legal or medical papers, nothing Only me or Essential, and nothing marked Sensitive.'
+          : 'An app an owner connects as you sends documents into your Inbox, using an API key an owner generates. If an owner allows it, it reads what it sent, and the kinds of papers they choose, as you. Never identity, legal or medical papers, nothing Only me or Essential, and nothing marked Sensitive.'}
       </p>
       <p className="status-line" role="status" ref={statusLine} tabIndex={-1}>
         {said}
@@ -860,21 +980,11 @@ export function ConnectedAppsScreen() {
           {appsNotPublicWords(names.length === 1 ? (names[0] ?? 'An app') : 'An app')}
         </p>
       )}
-      {made && (
-        <HandOver
-          made={made}
-          onDone={() => {
-            setMade(null);
-            connectButton.current?.focus();
-          }}
-        />
-      )}
       {owner && data && !connecting && (
         <div className="row">
           <Button
             ref={connectButton}
             onClick={() => {
-              setMade(null);
               setError(null);
               setSaid(null);
               setConnecting(blankForm(me));
@@ -904,7 +1014,8 @@ export function ConnectedAppsScreen() {
               }
             />
             <p className="muted">
-              Connecting asks for your passkey, or a code from your authenticator app.
+              Connecting asks for your passkey, or a code from your authenticator app. Then you
+              generate its API key.
             </p>
             <div className="row">
               <Button type="submit" disabled={busy}>
@@ -981,37 +1092,32 @@ export function ConnectedAppsScreen() {
                 onGrantsSave={(el) => {
                   grantSaves.current.set(app.id, el);
                 }}
-                onAddKey={async (key) => {
-                  const added = await act(
-                    () => guarded((t) => api.connectedApps.addKey(t, app.id, key)),
-                    () => `The new key was added to ${app.name}.`,
-                  );
-                  if (added) {
-                    setMade({
-                      app,
-                      fingerprint: added.key.fingerprint,
-                      connection: added.connection_string,
-                      keyAdded: true,
-                    });
-                  }
-                  return added !== null;
-                }}
-                onRetire={(key) => setRetiring({ app, key })}
-                onConfirmKey={(key) =>
-                  void act(
-                    () => guarded((t) => api.connectedApps.confirmKey(t, app.id, key.key_id)),
-                    (a) =>
-                      a.state === 'waiting_for_approval' && !a.mine
-                        ? `The key is confirmed. ${a.name} waits for ${a.member_name} to turn it on again.`
-                        : `The key is confirmed: ${a.name} may sign with it.`,
-                  )
-                }
+                keyEdit={keyEdit?.appId === app.id ? keyEdit : null}
+                setKeyEdit={(edit) => setKeyEdit(edit)}
+                onGenerate={(edit) => void generate(app, edit)}
+                onRevoke={(key) => setRevoking({ app, key })}
                 onRemove={() => setRemoving(app)}
               />
             ))
           )}
         </section>
       ) : null}
+      {shown && (
+        <KeyShownSheet
+          shown={shown}
+          returnFocus={connectButton}
+          onDone={() => {
+            const { app } = shown;
+            // The secret goes with the sheet: nothing here keeps it.
+            setShown(null);
+            setSaid(
+              app.mine
+                ? `${app.name}’s new key is ready.`
+                : `${app.name} waits for ${app.member_name} to turn it on again before it can use its new key.`,
+            );
+          }}
+        />
+      )}
       {removing && (
         <ConfirmDialog
           title={`Remove ${removing.name}?`}
@@ -1055,27 +1161,27 @@ export function ConnectedAppsScreen() {
           <p>{asking.question}</p>
         </ConfirmDialog>
       )}
-      {retiring && (
+      {revoking && (
         <ConfirmDialog
-          title="Retire this key?"
-          confirmLabel="Retire"
-          busyLabel="Retiring…"
+          title="Revoke this key?"
+          confirmLabel="Revoke"
+          busyLabel="Revoking…"
           danger
           busy={busy}
           returnFocus={connectButton}
           onConfirm={() =>
             void act(
               () =>
-                withToken((t) =>
-                  api.connectedApps.retireKey(t, retiring.app.id, retiring.key.key_id),
+                guarded((t) =>
+                  api.connectedApps.revokeKey(t, revoking.app.id, revoking.key.id),
                 ).then((r) => (r === null ? null : true)),
-              () => `The key ${retiring.key.fingerprint} was retired.`,
-            ).finally(() => setRetiring(null))
+              () => `The key ${keyName(revoking.key)} was revoked.`,
+            ).finally(() => setRevoking(null))
           }
-          onCancel={() => setRetiring(null)}
+          onCancel={() => setRevoking(null)}
         >
           <p>
-            {`${retiring.app.name} can no longer sign with the key ${retiring.key.fingerprint}. Retire it once the app uses its new key.`}
+            {`${revoking.app.name} stops working with the key ${keyName(revoking.key)} at its next request. This can’t be undone: to connect it again, generate a new key. Revoking asks for your passkey, or a code from your authenticator app.`}
           </p>
         </ConfirmDialog>
       )}
@@ -1083,50 +1189,286 @@ export function ConnectedAppsScreen() {
   );
 }
 
-/** The key the vault kept, to check, and what to paste into the app, with Copy. */
-function HandOver(props: { made: Made; onDone: () => void }) {
-  const { app, fingerprint, connection, keyAdded } = props.made;
-  const heading = useRef<HTMLHeadingElement>(null);
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    heading.current?.focus();
-  }, []);
+/** One value to copy, with its own Copy button that says when it has copied. */
+function CopyRow(props: { id: string; label: string; value: string; copyLabel: string }) {
+  // What was copied: a new value has not been, yet.
+  const [copied, setCopied] = useState<string | null>(null);
   return (
-    <section className="card stack" aria-labelledby="app-made-h">
-      <h2 id="app-made-h" ref={heading} tabIndex={-1} className="section-h">
-        {keyAdded ? `${app.name}’s new key` : `${app.name} is connected`}
-      </h2>
-      {!keyAdded && (
-        <p>
-          {app.state === 'waiting_for_approval'
-            ? `It does nothing until ${app.member_name} turns it on, in Settings → Connected apps.`
-            : 'It is on.'}
-        </p>
-      )}
-      <p>
-        Check this matches what {app.name} shows:{' '}
-        <code className="app-fingerprint">{fingerprint}</code>
-      </p>
-      <div className="field">
-        <span className="field-label">Connection string</span>
-        <code style={{ wordBreak: 'break-all' }}>{connection}</code>
-        <span className="muted">Paste this into {app.name}. It holds no secret.</span>
-      </div>
+    <div className="field key-copy">
+      <span className="field-label" id={`${props.id}-l`}>
+        {props.label}
+      </span>
+      <code id={props.id} aria-labelledby={`${props.id}-l`} className="key-value">
+        {props.value}
+      </code>
       <div className="row">
         <Button
           kind="quiet"
+          ariaLabel={props.copyLabel}
           onClick={() => {
-            void navigator.clipboard?.writeText(connection).then(
-              () => setCopied(true),
-              () => setCopied(false),
+            void navigator.clipboard?.writeText(props.value).then(
+              () => setCopied(props.value),
+              () => setCopied(null),
             );
           }}
         >
-          {copied ? 'Copied' : 'Copy'}
+          {copied === props.value ? 'Copied' : 'Copy'}
         </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A key just generated: its client ID and its secret, with Copy, and what
+ * to paste into the app — with the secret in it only if the owner ticks
+ * it. Shown this once: the vault keeps only a hash of the secret.
+ */
+function KeyShownSheet(props: {
+  shown: Shown;
+  returnFocus: RefObject<HTMLElement | null>;
+  onDone: () => void;
+}) {
+  const { app, made } = props.shown;
+  const [withSecret, setWithSecret] = useState(false);
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    heading.current?.focus();
+  }, []);
+  const connection = withSecret ? made.connection_string_with_secret : made.connection_string;
+  return (
+    <Sheet
+      label="Copy this key now"
+      busy={false}
+      returnFocus={props.returnFocus}
+      onClose={props.onDone}
+      className="card stack"
+    >
+      <h2 ref={heading} tabIndex={-1} style={{ fontSize: 20 }}>
+        Copy this key now
+      </h2>
+      <p>{`A new API key for ${app.name}${made.key.name ? `: ${made.key.name}` : ''}.`}</p>
+      <p className="status status-warn" role="note">
+        The secret won’t be shown again. If it’s lost, generate a new key and revoke this one.
+      </p>
+      <CopyRow
+        id="key-made-client"
+        label="Client ID"
+        value={made.client_id}
+        copyLabel="Copy the client ID"
+      />
+      <CopyRow
+        id="key-made-secret"
+        label="Secret"
+        value={made.secret}
+        copyLabel="Copy the secret"
+      />
+      <Check
+        id="key-made-with-secret"
+        checked={withSecret}
+        label="Include the secret in the connection string"
+        note={
+          withSecret
+            ? 'Anyone with this string can use the key. Paste it straight into the app, and nowhere else.'
+            : 'Without it, the app asks for the secret on its own.'
+        }
+        onChange={setWithSecret}
+      />
+      <CopyRow
+        id="key-made-connection"
+        label="Connection string"
+        value={connection}
+        copyLabel="Copy the connection string"
+      />
+      <p className="muted">
+        {app.mine
+          ? `Paste these into ${app.name}.`
+          : `Paste these into ${app.name}. It can use the key once ${app.member_name} turns it on again.`}
+      </p>
+      <div className="row">
         <Button onClick={props.onDone}>Done</Button>
       </div>
-    </section>
+    </Sheet>
+  );
+}
+
+/** The Generate key form, on an app's card: its heading takes the focus as it opens. */
+function KeyFormView(props: {
+  app: ConnectedAppView;
+  edit: KeyEdit;
+  busy: boolean;
+  set: (edit: KeyEdit | null) => void;
+  onGenerate: (edit: KeyEdit) => void;
+  onCancel: () => void;
+}) {
+  const { app, edit, busy } = props;
+  const f = edit.form;
+  const put = (more: Partial<KeyForm>) => props.set({ ...edit, form: { ...f, ...more } });
+  const id = `app-${app.id}-key`;
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    heading.current?.focus();
+  }, []);
+  const scopes = APP_SCOPES_OFFERED.filter((s) => app.scopes.includes(s));
+  return (
+    <form
+      className="stack"
+      noValidate
+      aria-labelledby={`${id}-h`}
+      onSubmit={(e) => {
+        e.preventDefault();
+        props.onGenerate(edit);
+      }}
+    >
+      <h4 id={`${id}-h`} ref={heading} tabIndex={-1} className="field-label">
+        {`Generate an API key for ${app.name}`}
+      </h4>
+      {edit.connected && (
+        <p>
+          {app.state === 'waiting_for_approval'
+            ? `${app.name} is connected. It does nothing until ${app.member_name} turns it on, in Settings → Connected apps. Generate its key now, to paste into the app.`
+            : `${app.name} is connected. Generate its key now, to paste into the app.`}
+        </p>
+      )}
+      <Field
+        id={`${id}-name`}
+        label="Name (optional)"
+        value={f.name}
+        maxLength={APP_KEY_NAME_MAX}
+        required={false}
+        note="So you can tell its keys apart: “Live”, “Test”."
+        onChange={(v) => put({ name: v })}
+      />
+      <fieldset className="limits-set">
+        <legend className="field-label">What the key may do</legend>
+        <div className="limits-list">
+          {scopes.map((s) => (
+            <Check
+              key={s}
+              id={`${id}-perm-${s.replace('.', '-')}`}
+              label={APP_SCOPE_WORDS[s]}
+              checked={f.permissions.includes(s)}
+              onChange={(on) =>
+                put({
+                  permissions: on ? [...f.permissions, s] : f.permissions.filter((x) => x !== s),
+                })
+              }
+            />
+          ))}
+        </div>
+        <p className="muted">Never more than the app itself may do.</p>
+      </fieldset>
+      <Select
+        id={`${id}-validity`}
+        label="How long it lasts"
+        value={f.validity}
+        options={[
+          ...APP_KEY_VALIDITY_DAYS.map((d) => `${d}` as Validity),
+          'custom' as const,
+          'never' as const,
+        ].map((v) => ({
+          value: v,
+          label: VALIDITY_WORDS[v],
+        }))}
+        onChange={(v) => put({ validity: v as Validity })}
+      />
+      {f.validity === 'custom' && (
+        <Field
+          id={`${id}-days`}
+          label="Days"
+          value={f.days}
+          inputMode="numeric"
+          required={false}
+          note={`1 to ${APP_KEY_DAYS_MAX}.`}
+          onChange={(v) => put({ days: v })}
+        />
+      )}
+      <p className="muted">
+        {`Generating asks for your passkey, or a code from your authenticator app. The secret is shown once.${
+          app.mine
+            ? ''
+            : ` ${app.member_name} turns ${app.name} on again before it can use the key.`
+        }`}
+      </p>
+      <ErrorNote message={edit.error} />
+      <div className="row">
+        <Button type="submit" disabled={busy}>
+          {busy ? 'Generating…' : 'Generate key'}
+        </Button>
+        <Button kind="quiet" onClick={props.onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/** One app's API keys: each one's name, client ID, permissions, days and use; Revoke for an owner. */
+function KeyList(props: {
+  app: ConnectedAppView;
+  owner: boolean;
+  busy: boolean;
+  headingId: string;
+  onRevoke: (key: AppKeyView) => void;
+}) {
+  const { app, owner, busy } = props;
+  if (app.keys.length === 0) {
+    return (
+      <p className="muted">
+        {owner
+          ? `No key yet. Generate one, and paste it into ${app.name}.`
+          : `No key yet: an owner generates one.`}
+      </p>
+    );
+  }
+  return (
+    <ul className="list app-keys" aria-labelledby={props.headingId}>
+      {app.keys.map((k) => {
+        const expiry = keyExpiryWords(k);
+        const ended = keyStateWords(k);
+        return (
+          <li key={k.id} className="app-key">
+            <span className="stack app-key-facts">
+              <span>
+                <strong>{k.name ?? 'Unnamed key'}</strong>
+                {ended && <span className="status status-neutral">{` ${ended}`}</span>}
+              </span>
+              <dl className="facts">
+                <dt>Client ID</dt>
+                <dd>
+                  <code>{k.client_id}</code>
+                </dd>
+                <dt>May</dt>
+                <dd>{permissionWords(k.permissions)}</dd>
+                <dt>Created</dt>
+                <dd>{day(k.created_at)}</dd>
+                <dt>Expires</dt>
+                <dd>
+                  {expiry.soon ? (
+                    <strong className="status status-warn">{expiry.words}</strong>
+                  ) : (
+                    expiry.words
+                  )}
+                </dd>
+                <dt>Last used</dt>
+                <dd>{k.last_used_at ? shortWhenWords(k.last_used_at) : 'Never used'}</dd>
+              </dl>
+            </span>
+            {owner && k.state === 'live' && (
+              <Button
+                kind="quiet"
+                danger
+                disabled={busy}
+                ariaLabel={`Revoke the key ${keyName(k)}`}
+                onClick={() => props.onRevoke(k)}
+              >
+                Revoke
+              </Button>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -1149,24 +1491,27 @@ function AppCard(props: {
   /** Its "What it may read" and its editor's Save, told to the screen as they mount. */
   onGrantsButton: (el: HTMLButtonElement | null) => void;
   onGrantsSave: (el: HTMLButtonElement | null) => void;
-  onAddKey: (key: string) => Promise<boolean>;
-  onRetire: (key: AppKeyView) => void;
-  /** A key the app added itself, confirmed: an owner's, or its person's. */
-  onConfirmKey: (key: AppKeyView) => void;
+  /** Its Generate key form, while open; null while not. */
+  keyEdit: KeyEdit | null;
+  setKeyEdit: (edit: KeyEdit | null) => void;
+  onGenerate: (edit: KeyEdit) => void;
+  onRevoke: (key: AppKeyView) => void;
   onRemove: () => void;
 }) {
-  const { app, owner, busy } = props;
+  const { app, owner, busy, keyEdit } = props;
   const [changing, setChanging] = useState<{ start: AppForm; now: AppForm } | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  const [newKey, setNewKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const { grantRows, setGrantRows, onGrantsButton, onGrantsSave } = props;
   const grantsButton = useRef<HTMLButtonElement | null>(null);
+  const generateButton = useRef<HTMLButtonElement | null>(null);
   const h = `app-${app.id}-h`;
   const label = (key: string) => props.types.find((t) => t.key === key)?.label ?? key;
   const kinds = app.allowed_kinds.map(label);
   const reads = app.scopes.includes('documents.read');
   const granted = grantWords(app, props.types);
+  const live = liveKeys(app);
+  const full = live.length >= APP_KEYS_MAX;
 
   const saveGrants = async (e: FormEvent) => {
     e.preventDefault();
@@ -1174,7 +1519,6 @@ function AppCard(props: {
     const input = readGrants(grantRows);
     if (typeof input === 'string') return setFormError(input);
     setFormError(null);
-    // Asked about Sensitive papers, the editor closes: the answer saves it.
     // Saved, the screen closes the editor; asked about Sensitive papers, it
     // stays open until the answer.
     await props.onGrants(input);
@@ -1192,14 +1536,6 @@ function AppCard(props: {
       return;
     }
     if (await props.onChange(change)) setChanging(null);
-  };
-
-  const addKey = async (e: FormEvent) => {
-    e.preventDefault();
-    if (newKey === null || busy) return;
-    if (!newKey.trim()) return setFormError('Paste the app’s new public key.');
-    setFormError(null);
-    if (await props.onAddKey(newKey.trim())) setNewKey(null);
   };
 
   return (
@@ -1326,74 +1662,64 @@ function AppCard(props: {
       )}
       <div className="stack">
         <h4 className="field-label" id={`${h}-keys`}>
-          {app.keys.length === 1 ? 'Its key' : 'Its keys'}
+          API keys
         </h4>
-        <ul className="list" aria-labelledby={`${h}-keys`}>
-          {app.keys.map((k) => (
-            <li key={k.key_id}>
-              <span>
-                <code>{k.fingerprint}</code>
-                <span className="muted">
-                  {k.added_by === 'app' ? ' · added by the app' : ' · added by an owner'}
-                  {k.retires_at ? ` · retires on ${day(k.retires_at)}` : ''}
-                </span>
-                {k.pending && (
-                  <strong>
-                    {' '}
-                    · Not confirmed: it signs nothing until it is. Confirm it only if {
-                      app.name
-                    }{' '}
-                    shows this same key.
-                  </strong>
-                )}
-              </span>
-              {k.pending && (owner || app.mine) && (
-                <Button
-                  kind="quiet"
-                  disabled={busy}
-                  ariaLabel={`Confirm the key ${k.fingerprint}`}
-                  onClick={() => props.onConfirmKey(k)}
-                >
-                  Confirm
-                </Button>
-              )}
-              {owner && app.keys.length > 1 && (
-                <Button
-                  kind="quiet"
-                  danger
-                  disabled={busy}
-                  ariaLabel={`Retire the key ${k.fingerprint}`}
-                  onClick={() => props.onRetire(k)}
-                >
-                  Retire
-                </Button>
-              )}
-            </li>
-          ))}
-        </ul>
+        <KeyList
+          app={app}
+          owner={owner}
+          busy={busy}
+          headingId={`${h}-keys`}
+          onRevoke={props.onRevoke}
+        />
+        {owner && full && (
+          <p className="muted" id={`${h}-keys-full`}>
+            {`${APP_KEYS_MAX} keys at most work at once. Revoke one to generate another.`}
+          </p>
+        )}
       </div>
-      {owner && app.connection_string && !changing && (
-        <details>
-          <summary>{`What to paste into ${app.name}`}</summary>
-          <div className="stack">
-            <code style={{ wordBreak: 'break-all' }}>{app.connection_string}</code>
-            <span className="muted">It holds no secret.</span>
-            <div className="row">
-              <Button
-                kind="quiet"
-                ariaLabel={`Copy what to paste into ${app.name}`}
-                onClick={() => {
-                  void navigator.clipboard?.writeText(app.connection_string).then(
-                    () => setCopied(true),
-                    () => setCopied(false),
-                  );
-                }}
-              >
-                {copied ? 'Copied' : 'Copy'}
-              </Button>
+      {live.length === 0 ? (
+        <p className="muted">{`${app.name} needs an API key before it can reach the vault.`}</p>
+      ) : (
+        owner &&
+        app.connection_string &&
+        !changing && (
+          <details>
+            <summary>{`What to paste into ${app.name}`}</summary>
+            <div className="stack">
+              <code style={{ wordBreak: 'break-all' }}>{app.connection_string}</code>
+              <span className="muted">
+                The address and its newest key’s client ID. The secret is not in it.
+              </span>
+              <div className="row">
+                <Button
+                  kind="quiet"
+                  ariaLabel={`Copy what to paste into ${app.name}`}
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(app.connection_string).then(
+                      () => setCopied(true),
+                      () => setCopied(false),
+                    );
+                  }}
+                >
+                  {copied ? 'Copied' : 'Copy'}
+                </Button>
+              </div>
             </div>
-          </div>
-        </details>
+          </details>
+        )
+      )}
+      {keyEdit && owner && (
+        <KeyFormView
+          app={app}
+          edit={keyEdit}
+          busy={busy}
+          set={props.setKeyEdit}
+          onGenerate={props.onGenerate}
+          onCancel={() => {
+            props.setKeyEdit(null);
+            requestAnimationFrame(() => generateButton.current?.focus());
+          }}
+        />
       )}
       {grantRows !== null && (
         <form className="stack" noValidate onSubmit={(e) => void saveGrants(e)}>
@@ -1470,42 +1796,7 @@ function AppCard(props: {
           </div>
         </form>
       )}
-      {newKey !== null && (
-        <form className="stack" noValidate onSubmit={(e) => void addKey(e)}>
-          <div className="field">
-            <label htmlFor={`app-${app.id}-newkey`}>{`${app.name}’s new public key`}</label>
-            <textarea
-              id={`app-${app.id}-newkey`}
-              value={newKey}
-              rows={3}
-              maxLength={4096}
-              spellCheck={false}
-              autoCapitalize="off"
-              onChange={(e) => setNewKey(e.target.value)}
-            />
-            <p className="muted field-note">
-              Two keys at most. Once the app signs with the new one, the older retires by itself
-              after a week; or retire it here.
-            </p>
-          </div>
-          <ErrorNote message={formError} />
-          <div className="row">
-            <Button type="submit" disabled={busy}>
-              {busy ? 'Adding…' : 'Add the key'}
-            </Button>
-            <Button
-              kind="quiet"
-              onClick={() => {
-                setNewKey(null);
-                setFormError(null);
-              }}
-            >
-              Cancel
-            </Button>
-          </div>
-        </form>
-      )}
-      {!changing && newKey === null && grantRows === null && (
+      {!changing && keyEdit === null && grantRows === null && (
         <div className="row">
           {app.mine && app.state === 'waiting_for_approval' && (
             <Button disabled={busy} ariaLabel={`Turn on ${app.name}`} onClick={props.onApprove}>
@@ -1570,15 +1861,21 @@ function AppCard(props: {
           )}
           {owner && (
             <Button
+              ref={generateButton}
               kind="quiet"
-              disabled={busy || app.keys.length >= 2}
-              ariaLabel={`Add a key to ${app.name}`}
-              onClick={() => {
-                setFormError(null);
-                setNewKey('');
-              }}
+              disabled={busy || full}
+              {...(full ? { describedBy: `${h}-keys-full` } : {})}
+              ariaLabel={`Generate an API key for ${app.name}`}
+              onClick={() =>
+                props.setKeyEdit({
+                  appId: app.id,
+                  form: blankKeyForm(app),
+                  error: null,
+                  connected: false,
+                })
+              }
             >
-              Add a key
+              Generate key
             </Button>
           )}
           {(owner || app.mine) && (

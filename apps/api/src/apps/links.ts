@@ -115,6 +115,8 @@ interface LinkRow {
   id: string;
   household_id: string;
   app_id: string;
+  /** The API key it was minted with (APP6): revoked or expired, the link ends. */
+  key_id: string;
   document_id: string;
   version_id: string;
   mode: AppLinkMode;
@@ -248,6 +250,7 @@ export class AppLinks {
         .values({
           household_id: c.householdId,
           app_id: c.appId,
+          key_id: c.keyId,
           document_id: docId,
           version_id: v.id,
           mode,
@@ -295,9 +298,11 @@ export class AppLinks {
 
   /**
    * Whether a link may still give what it gives: its app live, on and
-   * turned on, its person able to act, its scopes still holding, and the
-   * document still one the app may read — asked as the app, by its rule.
-   * The app, as it acts, and the document's title; or null, never why.
+   * turned on, the API key it was minted with neither revoked nor expired
+   * (APP6), its person able to act, its scopes — the app's and the key's —
+   * still holding, and the document still one the app may read — asked as
+   * the app, by its rule. The app, as it acts, and the document's title; or
+   * null, never why.
    */
   private async stillGood(
     trx: Db,
@@ -336,12 +341,22 @@ export class AppLinks {
       suspended_until: app.suspended_until ?? null,
     };
     if (lockInEffect(person) || suspensionInEffect(person)) return null;
-    const scopes = app.scopes as AppScope[];
+    // The key it was minted with, live now: revoking a key ends its links.
+    const key = await trx
+      .selectFrom('connected_app_key')
+      .select('permissions')
+      .where('id', '=', link.key_id)
+      .where('app_id', '=', link.app_id)
+      .where('revoked_at', 'is', null)
+      .where((eb) => eb.or([eb('expires_at', 'is', null), eb('expires_at', '>', sql<Date>`now()`)]))
+      .executeTakeFirst();
+    if (!key) return null;
+    const scopes = (app.scopes as AppScope[]).filter((s) => key.permissions.includes(s));
     if (!scopes.includes('documents.links') || !scopes.includes('documents.read')) return null;
     if (link.mode === 'download' && !scopes.includes('documents.download')) return null;
     const caller: AppCaller = {
       appId: app.id,
-      keyId: '',
+      keyId: link.key_id,
       householdId: link.household_id,
       accountId: app.account_id,
       memberId: app.member_id,
@@ -389,6 +404,7 @@ export class AppLinks {
           'id',
           'household_id',
           'app_id',
+          'key_id',
           'document_id',
           'version_id',
           'mode',
@@ -468,6 +484,7 @@ export class AppLinks {
           'id',
           'household_id',
           'app_id',
+          'key_id',
           'document_id',
           'version_id',
           'mode',
@@ -637,8 +654,10 @@ export class AppLinks {
         .forUpdate()
         .executeTakeFirst();
       if (!held) throw notFound();
+      // Its own, and its current file one it sent: a newer file from the
+      // family (or another app) is never the app's to trash or let go of.
       const r = (await this.opts.reads.readable(trx, c, [docId])).get(docId);
-      if (!r || !r.doc.own) throw notFound();
+      if (!r || !r.doc.own || !r.currentSent) throw notFound();
       await trx
         .updateTable('connected_app_intake')
         .set({ unlinked_at: sql<Date>`now()` })

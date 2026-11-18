@@ -1,9 +1,7 @@
-import { generateKeyPairSync, randomUUID } from 'node:crypto';
-import { signRequest } from '@fdv/client/apps';
+import { randomUUID } from 'node:crypto';
 import { createPool } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
-  APP_EMPTY_DIGEST,
   type ActivityLine,
   type AppChanges,
   type AppDeleted,
@@ -19,7 +17,7 @@ import type { LightMyRequestResponse } from 'fastify';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PUBLIC_API_HEADERS } from '../app.js';
-import { createHarness, type Harness } from '../test-harness.js';
+import { appKeyFor, basicFor, createHarness, type Harness } from '../test-harness.js';
 import { sameNetwork } from './links.js';
 
 /**
@@ -34,19 +32,11 @@ const PDF = (marker: string) =>
     `%PDF-1.4\n% ${marker}\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n`,
   );
 
-function newKey() {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const raw = Buffer.from(publicKey.export({ format: 'jwk' }).x as string, 'base64url');
-  return {
-    pem: privateKey.export({ format: 'pem', type: 'pkcs8' }) as string,
-    given: `ed25519:${raw.toString('base64url')}`,
-  };
-}
-
 interface TestApp {
   appId: string;
   keyId: string;
-  pem: string;
+  clientId: string;
+  secret: string;
 }
 
 let peers = 0;
@@ -88,18 +78,17 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
 
   async function connect(input: Record<string, unknown> = {}, name = 'Linker') {
     await h.decider(owner);
-    const key = newKey();
     const res = await send(owner, 'POST', '/api/v1/connected-apps', {
       name,
       member_id: owner.member_id,
-      public_key: key.given,
       allowed_kinds: ['utility_bill'],
       scopes: ALL,
       ...input,
     });
     expect(res.statusCode, res.body).toBe(201);
     const view = res.json<ConnectedAppView>();
-    return { appId: view.id, keyId: view.keys[0]?.key_id as string, pem: key.pem, view };
+    const key = await appKeyFor(h, owner, view);
+    return { appId: view.id, ...key, view };
   }
 
   async function call(
@@ -109,13 +98,7 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
     body?: unknown,
   ): Promise<LightMyRequestResponse> {
     const bytes = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
-    const signed = await signRequest({
-      method,
-      target,
-      ...(bytes ? { body: new Uint8Array(bytes) } : {}),
-      keyid: `${a.appId}.${a.keyId}`,
-      privateKey: a.pem,
-    });
+    const signed = basicFor(a);
     return h.app.inject({
       method,
       url: target,
@@ -351,6 +334,48 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
     expect((await browse('/api/v1/app-links/session', from, cookie)).statusCode).toBe(410);
   });
 
+  it('a key revoked, or past its expiry, ends what it opened: its unopened links and its sessions; another key’s go on (APP6)', async () => {
+    const a = await connect({}, 'Keyed links');
+    const doc = await make({ title: 'Linked bill keyed' });
+    await fileAsOwn(a.appId, 'link-key', doc);
+    await h.decider(owner);
+    const other = { ...a, ...(await appKeyFor(h, owner, { id: a.appId, scopes: ALL })) };
+    const from = browser();
+    const { cookie } = await open(await minted(a, doc), from);
+    const unopened = await minted(a, doc);
+    const theirs = await open(await minted(other, doc), from);
+    expect((await browse('/api/v1/app-links/session', from, cookie)).statusCode).toBe(200);
+    // Revoked: the session it opened ends at its next request, and a link it
+    // minted opens as ended; the other key's session is untouched.
+    await h.decider(owner);
+    const gone = await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}/keys/${a.keyId}`);
+    expect(gone.statusCode).toBe(204);
+    expect((await browse('/api/v1/app-links/session', from, cookie)).statusCode).toBe(410);
+    const late = await browse(pathOf(unopened.url), from);
+    expect([late.statusCode, late.headers.location]).toEqual([303, '/a#ended']);
+    expect((await browse('/api/v1/app-links/session', from, theirs.cookie)).statusCode).toBe(200);
+    // Past its expiry, as the database's clock has it: the same.
+    const c = await admin.connect();
+    try {
+      await c.query('begin');
+      await c.query('set local session_replication_role = replica');
+      await c.query(
+        `update connected_app_key set created_at = now() - interval '2 days',
+                expires_at = now() - interval '1 second' where id = $1`,
+        [other.keyId],
+      );
+      await c.query('commit');
+    } finally {
+      c.release();
+    }
+    expect((await browse('/api/v1/app-links/session', from, theirs.cookie)).statusCode).toBe(410);
+    const kept = await admin.query<{ key_id: string }>(
+      'select key_id from connected_app_link where app_id = $1 order by created_at',
+      [a.appId],
+    );
+    expect(kept.rows.map((r) => r.key_id)).toEqual([a.keyId, a.keyId, other.keyId]);
+  });
+
   it('a link for a file the vault cannot draw is view_unavailable; a download link needs its scope, and gives an attachment', async () => {
     const a = await connect({ scopes: [...ALL, 'documents.download'] }, 'Downloader');
     const doc = await make({ title: 'Linked bill four' });
@@ -421,7 +446,7 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
     expect([scope.statusCode, codeOf(scope)]).toEqual([403, 'scope_not_granted']);
   });
 
-  it('a link’s cookie and token are nothing anywhere else; an app’s signature is nothing here', async () => {
+  it('a link’s cookie and token are nothing anywhere else; an app’s API key is nothing here', async () => {
     const a = await connect({}, 'Elsewhere');
     const doc = await make({ title: 'Linked bill six' });
     await fileAsOwn(a.appId, 'link-6', doc);
@@ -431,27 +456,14 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
       const r = await browse(url, from, cookie);
       expect(r.statusCode, url).toBe(401);
     }
-    const signed = await signRequest({
-      method: 'GET',
-      target: '/api/v1/app-links/session',
-      keyid: `${a.appId}.${a.keyId}`,
-      privateKey: a.pem,
-    });
+    const signed = basicFor(a);
     const r = await h.app.inject({
       method: 'GET',
       url: '/api/v1/app-links/session',
       headers: { ...signed },
       remoteAddress: '127.0.0.1',
     });
-    expect([r.statusCode, codeOf(r)]).toEqual([401, 'app_signature_not_accepted']);
-    // A body on a delete is refused as any bodiless signed route's is.
-    const del = await signRequest({
-      method: 'DELETE',
-      target: `/api/v1/apps/documents/${doc}`,
-      keyid: `${a.appId}.${a.keyId}`,
-      privateKey: a.pem,
-    });
-    expect(del['content-digest']).toBe(APP_EMPTY_DIGEST);
+    expect([r.statusCode, codeOf(r)]).toEqual([401, 'app_key_not_accepted']);
   });
 
   it('every byte a download link gives counts against the app’s day; past it, the page says so', async () => {

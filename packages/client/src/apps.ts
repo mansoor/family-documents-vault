@@ -1,8 +1,8 @@
 import {
+  APP_CLIENT_ID_PATTERN,
   APP_CONNECTION_PREFIX,
-  APP_SIGNATURE_LABEL,
-  APP_SIGNATURE_TAG,
-  APP_SIGNED_COMPONENTS,
+  APP_CONNECTION_PREFIX_SIGNED,
+  APP_SECRET_PATTERN,
   EXTERNAL_ID_PATTERN,
   type AppChanges,
   type AppConnection,
@@ -12,7 +12,6 @@ import {
   type AppHints,
   type AppIntakeState,
   type AppIntakeStates,
-  type AppKeyAdded,
   type AppLinkMinted,
   type AppLinkMode,
   type AppMe,
@@ -22,43 +21,19 @@ import { createHttp, toError, type FetchLike, type Http } from './http.js';
 import { multipartBody } from './multipart.js';
 
 /**
- * A connected app's side of the vault (0.9.0, APP1): the signer and a
- * client for `/api/v1/apps/*`.
+ * A connected app's side of the vault (0.9.0): a client for
+ * `/api/v1/apps/*`.
  *
- * Every request is signed as the vault's contract says (RFC 9421, the
- * `fdv` profile): `("@method" "@path" "@query" "content-digest")`, with
- * `created`, `keyid`, a fresh `nonce`, `alg="ed25519"` and `tag="fdv-app"`,
- * and a `Content-Digest` (sha-256) of the exact body bytes — of zero bytes
- * for a GET or a DELETE. Every retry is signed again.
+ * Since 0.9.0-dev.63 (APP6) an app proves who it is with an API key an
+ * owner generated for it in Settings → Connected apps: a client ID and a
+ * secret, sent on every request as `Authorization: Basic
+ * base64(client_id:secret)`. The vault shows the secret once and keeps only
+ * a hash of it; an app never makes, renews or retires its own keys. A key
+ * lasts as long as the owner chose (or never expires): `me().key.expires_at`
+ * says when, so an app can warn its own users in time.
  *
- * With Web Crypto's Ed25519 (Node 22, and the browsers that have it): no
- * Node module, so the package stays as platform-neutral as the rest. Its
- * own entry (`@fdv/client/apps`), so an app that never signs never loads
- * it. Optional: the contract alone is enough to write a signer.
+ * Its own entry (`@fdv/client/apps`), platform-neutral as the rest.
  */
-
-/** The three headers a signed request carries. */
-export type SignedHeaders = {
-  'content-digest': string;
-  'signature-input': string;
-  signature: string;
-};
-
-export interface SignInput {
-  method: string;
-  /** The path and query exactly as they are sent on the request line: `/api/v1/apps/intake?x=1`. */
-  target: string;
-  /** The exact body bytes; none for a GET or a DELETE. */
-  body?: Uint8Array | string;
-  /** `<app_id>.<key_id>`. */
-  keyid: string;
-  /** The private key: a PEM `PRIVATE KEY` (PKCS#8) block, or its DER bytes. */
-  privateKey: string | Uint8Array;
-  /** Unix seconds; now unless a test says. */
-  created?: number;
-  /** 16 to 48 random bytes, base64url; fresh unless a test says. */
-  nonce?: string;
-}
 
 // ------------------------------------------------------------- base64
 
@@ -105,100 +80,29 @@ export function fromBase64(text: string): Uint8Array {
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
 
-/** A copy on a buffer of its own: what Web Crypto takes on every platform. */
-function own(bytes: Uint8Array): Uint8Array {
-  const out = new Uint8Array(bytes.length);
-  out.set(bytes);
-  return out;
-}
-
-// ------------------------------------------------------------- signing
-
-/** A body's `Content-Digest` (RFC 9530, sha-256). */
-export async function contentDigestOf(body: Uint8Array | string = ''): Promise<string> {
-  const bytes = typeof body === 'string' ? utf8(body) : own(body);
-  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  return `sha-256=:${toBase64(hash)}:`;
-}
-
-/** A fresh nonce: 24 random bytes, base64url. */
-export function newNonce(): string {
-  return toBase64(crypto.getRandomValues(new Uint8Array(24)), true);
-}
-
-/** The `Signature-Input` member's value after `fdv=`: the base's last line. */
-export function signatureParams(p: { created: number; keyid: string; nonce: string }): string {
-  return `(${APP_SIGNED_COMPONENTS.map((c) => `"${c}"`).join(' ')});created=${p.created};keyid="${p.keyid}";nonce="${p.nonce}";alg="ed25519";tag="${APP_SIGNATURE_TAG}"`;
-}
-
-/** The signature base (RFC 9421 §2.5): five lines joined by LF, no newline at the end. */
-export function signatureBaseOf(p: {
-  method: string;
-  target: string;
-  contentDigest: string;
-  params: string;
-}): string {
-  const q = p.target.indexOf('?');
-  const path = q === -1 ? p.target : p.target.slice(0, q);
-  const query = q === -1 ? '?' : p.target.slice(q);
-  return [
-    `"@method": ${p.method.toUpperCase()}`,
-    `"@path": ${path}`,
-    `"@query": ${query}`,
-    `"content-digest": ${p.contentDigest}`,
-    `"@signature-params": ${p.params}`,
-  ].join('\n');
-}
-
-/** A private key's PKCS#8 bytes, from PEM or as given. */
-function pkcs8(key: string | Uint8Array): Uint8Array {
-  if (typeof key !== 'string') return own(key);
-  const m = /-----BEGIN PRIVATE KEY-----([\s\S]+?)-----END PRIVATE KEY-----/.exec(key);
-  if (!m) throw new Error('privateKey is a PEM PRIVATE KEY (PKCS#8) block, or its DER bytes');
-  return fromBase64(m[1] as string);
-}
+// ------------------------------------------------------------- the key
 
 /**
- * A request signed: the three headers to send with it. Ed25519 is
- * deterministic, so the same base and key give the same signature — the
- * contract's worked examples are this function's test vectors.
+ * The `Authorization` header an API key is sent as: `Basic` and
+ * base64(`client_id:secret`). Both are checked first, so nothing but a
+ * client ID and a secret as the vault writes them reaches a header.
  */
-export async function signRequest(input: SignInput): Promise<SignedHeaders> {
-  const contentDigest = await contentDigestOf(input.body ?? '');
-  const params = signatureParams({
-    created: input.created ?? Math.floor(Date.now() / 1000),
-    keyid: input.keyid,
-    nonce: input.nonce ?? newNonce(),
-  });
-  const base = signatureBaseOf({
-    method: input.method,
-    target: input.target,
-    contentDigest,
-    params,
-  });
-  const key = await crypto.subtle.importKey(
-    'pkcs8',
-    pkcs8(input.privateKey),
-    { name: 'Ed25519' },
-    false,
-    ['sign'],
-  );
-  const sig = new Uint8Array(await crypto.subtle.sign({ name: 'Ed25519' }, key, utf8(base)));
-  return {
-    'content-digest': contentDigest,
-    'signature-input': `${APP_SIGNATURE_LABEL}=${params}`,
-    signature: `${APP_SIGNATURE_LABEL}=:${toBase64(sig)}:`,
-  };
+export function basicAuthorization(clientId: string, secret: string): string {
+  if (!APP_CLIENT_ID_PATTERN.test(clientId)) {
+    throw new Error('clientId is the fdvc_… client ID the vault showed with the key');
+  }
+  if (!APP_SECRET_PATTERN.test(secret)) {
+    throw new Error('secret is the fdvs_… secret the vault showed once with the key');
+  }
+  return `Basic ${toBase64(utf8(`${clientId}:${secret}`))}`;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const FINGERPRINT = /^[0-9a-f]{4}( [0-9a-f]{4}){7}$/;
 /** An origin alone: a scheme, a host and perhaps a port — no user, path, query or fragment. */
 const ORIGIN = /^(https?):\/\/([a-z0-9.-]+|\[[0-9a-f:]+\])(?::(\d{1,5}))?$/;
 const LOOPBACK = ['localhost', '127.0.0.1', '[::1]'];
 
 /**
- * Whether a vault's address is one to sign requests to: https, or plain
+ * Whether a vault's address is one to send an API key to: https, or plain
  * http to this machine alone; an origin and nothing more.
  */
 export function vaultOriginProblem(url: string): string | null {
@@ -212,15 +116,23 @@ export function vaultOriginProblem(url: string): string | null {
 }
 
 /**
- * A connection string, read: `fdvapp1.` and base64url of its JSON, strictly
- * — base64url alone, exactly its five fields, ids as the vault writes them,
- * and an address to sign requests to. Anything else is refused, so nothing
- * in a pasted string can reach a header.
+ * A connection string, read: `fdvapp2.` and base64url of its JSON,
+ * strictly — base64url alone; `url`, `client_id` and `instance_id`, and
+ * `secret` only when the owner chose to include it; the client ID and
+ * secret as the vault writes them, and an address to send them to.
+ * Anything else is refused, so nothing in a pasted string can reach a
+ * header or another host. One made before API keys (`fdvapp1.`) is refused
+ * with what to do instead.
  */
 export function parseConnectionString(text: string): AppConnection {
   const bad = (why: string) => new Error(`not a connection string: ${why}`);
   const t = text.trim();
-  if (!t.startsWith(APP_CONNECTION_PREFIX)) throw bad('it starts with fdvapp1.');
+  if (t.startsWith(APP_CONNECTION_PREFIX_SIGNED)) {
+    throw new Error(
+      'this connection string was made before API keys: an owner generates an API key in Settings → Connected apps, and you paste its new connection string',
+    );
+  }
+  if (!t.startsWith(APP_CONNECTION_PREFIX)) throw bad(`it starts with ${APP_CONNECTION_PREFIX}`);
   const body = t.slice(APP_CONNECTION_PREFIX.length);
   if (!/^[A-Za-z0-9_-]+$/.test(body) || body.length % 4 === 1) throw bad('base64url');
   let c: Record<string, unknown>;
@@ -230,16 +142,20 @@ export function parseConnectionString(text: string): AppConnection {
     throw bad('JSON');
   }
   if (!c || typeof c !== 'object' || Array.isArray(c)) throw bad('JSON');
-  const fields = ['url', 'app_id', 'key_id', 'instance_id', 'fingerprint'];
+  const fields = ['url', 'client_id', 'instance_id', 'secret'];
   const unknown = Object.keys(c).find((k) => !fields.includes(k));
   if (unknown !== undefined) throw bad(`unknown field ${unknown}`);
   if (typeof c.url !== 'string') throw bad('url');
   const problem = vaultOriginProblem(c.url);
   if (problem) throw bad(problem);
-  if (typeof c.app_id !== 'string' || !UUID.test(c.app_id)) throw bad('app_id');
-  if (typeof c.key_id !== 'string' || !UUID.test(c.key_id)) throw bad('key_id');
-  if (typeof c.fingerprint !== 'string' || !FINGERPRINT.test(c.fingerprint)) {
-    throw bad('fingerprint');
+  if (typeof c.client_id !== 'string' || !APP_CLIENT_ID_PATTERN.test(c.client_id)) {
+    throw bad('client_id');
+  }
+  if (
+    c.secret !== undefined &&
+    (typeof c.secret !== 'string' || !APP_SECRET_PATTERN.test(c.secret))
+  ) {
+    throw bad('secret');
   }
   if (
     c.instance_id !== undefined &&
@@ -250,10 +166,9 @@ export function parseConnectionString(text: string): AppConnection {
   }
   return {
     url: c.url,
-    app_id: c.app_id,
-    key_id: c.key_id,
+    client_id: c.client_id,
     instance_id: typeof c.instance_id === 'string' ? c.instance_id : null,
-    fingerprint: c.fingerprint,
+    ...(typeof c.secret === 'string' ? { secret: c.secret } : {}),
   };
 }
 
@@ -261,12 +176,14 @@ export function parseConnectionString(text: string): AppConnection {
 
 export interface AppClientOptions {
   /** The vault's origin, from the connection string. */
-  baseUrl: string;
-  appId: string;
-  keyId: string;
-  privateKey: string | Uint8Array;
-  fetch: FetchLike;
-  /** Unix milliseconds, for a signature's `created`; now unless a test says. */
+  url: string;
+  /** The key's client ID (`fdvc_…`). */
+  clientId: string;
+  /** The key's secret (`fdvs_…`), shown once when an owner generated it. */
+  secret: string;
+  /** The platform's fetch; `globalThis.fetch` when left out. */
+  fetch?: FetchLike;
+  /** Unix milliseconds, for an error's Retry-After; now unless a test says. */
   now?: () => number;
 }
 
@@ -327,7 +244,8 @@ export interface AppClient {
   /**
    * A link for its user's browser (APP3, `documents.links`; a download link
    * needs `documents.download` too): send the browser to `url` at once. It
-   * opens once, within 2 minutes, for a session of 10 minutes there.
+   * opens once, within 2 minutes, for a session of 10 minutes there. It
+   * ends when the key that made it is revoked or expires.
    */
   link(id: string, mode: AppLinkMode): Promise<AppLinkMinted>;
   /**
@@ -340,22 +258,8 @@ export interface AppClient {
   status(externalId: string): Promise<AppIntakeState>;
   statuses(externalIds: string[]): Promise<AppIntakeStates>;
   withdraw(externalId: string): Promise<AppIntakeState>;
-  /**
-   * A new key for rotation, signed with this one: pending (it signs
-   * nothing, `401 app_key_pending`) until an owner, or the person the app
-   * acts as, confirms it in Settings. Two live at most, pending ones counted
-   * (`409 key_limit`); never one in use (`409 key_exists`).
-   */
-  addKey(publicKey: string): Promise<AppKeyAdded>;
-  /**
-   * A key it added itself, retired: never one an owner added (`409
-   * key_added_by_owner`), the key signing this request, nor its last (`409
-   * key_in_use`). Once a newer, confirmed key first signs, the older one
-   * retires by itself seven days later (`retires_at` in `me()`).
-   */
-  retireKey(keyId: string): Promise<void>;
-  /** A signed request of the app's own, for anything else. */
-  signed<T>(
+  /** A request of the app's own, with its key, for anything else. */
+  request<T>(
     method: 'GET' | 'POST' | 'DELETE',
     target: string,
     body?: { bytes: Uint8Array; contentType: string },
@@ -368,38 +272,32 @@ function wireHints(h: AppSend['hints']): Record<string, unknown> | undefined {
 }
 
 export function createAppClient(opts: AppClientOptions): AppClient {
-  // Ids as the vault writes them: nothing else ever reaches `keyid="…"`.
-  if (!UUID.test(opts.appId) || !UUID.test(opts.keyId)) {
-    throw new Error('appId and keyId are the lower-case UUIDs the connection string gives');
-  }
+  // The vault's address, an origin over https (plain http only to this
+  // machine): the secret is never sent anywhere else.
+  const baseUrl = opts.url.replace(/\/+$/, '');
+  const problem = vaultOriginProblem(baseUrl);
+  if (problem) throw new Error(`not a vault's address: ${problem}`);
+  // The key as the vault writes it: nothing else ever reaches the header.
+  const authorization = basicAuthorization(opts.clientId, opts.secret);
+  const fetch: FetchLike =
+    opts.fetch ?? ((url, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(url, init));
   /** An external id, as the contract allows it: safe in a path as it is. */
   const pathId = (id: string) => {
     if (!EXTERNAL_ID_PATTERN.test(id)) throw new Error('not an external_id');
     return id;
   };
-  const http: Http = createHttp({ baseUrl: opts.baseUrl, fetch: opts.fetch });
-  const keyid = `${opts.appId}.${opts.keyId}`;
-  const created = () => Math.floor((opts.now?.() ?? Date.now()) / 1000);
+  const http: Http = createHttp({ baseUrl, fetch });
 
   const request = async (
     method: 'GET' | 'POST' | 'DELETE',
     target: string,
     body?: { bytes: Uint8Array; contentType: string },
-  ) => {
-    const headers = await signRequest({
+  ) =>
+    http.raw(target, {
       method,
-      target,
-      ...(body ? { body: body.bytes } : {}),
-      keyid,
-      privateKey: opts.privateKey,
-      created: created(),
-    });
-    return http.raw(target, {
-      method,
-      headers: { ...headers },
+      headers: { authorization },
       ...(body ? { upload: { kind: 'bytes' as const, ...body } } : {}),
     });
-  };
   const json = async <T>(
     method: 'GET' | 'POST' | 'DELETE',
     target: string,
@@ -418,26 +316,17 @@ export function createAppClient(opts: AppClientOptions): AppClient {
       : `?${kept.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}`;
   };
 
-  /** A file's bytes, signed: a range, or 304 for a version it has (APP2, APP5). */
+  /** A file's bytes: a range, or 304 for a version it has (APP2, APP5). */
   const bytesOf = async (
     target: string,
     o: { range?: { start: number; end?: number }; ifNoneMatch?: string },
   ): Promise<AppDownload> => {
-    const headers: Record<string, string> = {
-      ...(await signRequest({
-        method: 'GET',
-        target,
-        keyid,
-        privateKey: opts.privateKey,
-        created: created(),
-      })),
-      accept: '*/*',
-    };
+    const headers: Record<string, string> = { authorization, accept: '*/*' };
     if (o.range) headers.range = `bytes=${o.range.start}-${o.range.end ?? ''}`;
     if (o.ifNoneMatch) headers['if-none-match'] = o.ifNoneMatch;
     let res: Awaited<ReturnType<FetchLike>>;
     try {
-      res = await opts.fetch(`${opts.baseUrl.replace(/\/+$/, '')}${target}`, {
+      res = await fetch(`${baseUrl}${target}`, {
         method: 'GET',
         headers,
       });
@@ -517,14 +406,6 @@ export function createAppClient(opts: AppClientOptions): AppClient {
         `/api/v1/apps/intake?external_ids=${ids.map((i) => encodeURIComponent(i)).join(',')}`,
       ),
     withdraw: (id) => json<AppIntakeState>('DELETE', `/api/v1/apps/intake/${pathId(id)}`),
-    addKey: (publicKey) =>
-      json<AppKeyAdded>('POST', '/api/v1/apps/keys', {
-        bytes: utf8(JSON.stringify({ public_key: publicKey })),
-        contentType: 'application/json',
-      }),
-    async retireKey(id) {
-      await request('DELETE', `/api/v1/apps/keys/${encodeURIComponent(id)}`);
-    },
-    signed: json,
+    request: json,
   };
 }

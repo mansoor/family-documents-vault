@@ -793,16 +793,28 @@ export function eventWords(e: ActivityEvent): (ActivityLine & { named: boolean }
             true,
           )
         : line(`${who} changed what ${appOf(detail)} may do`);
-    case 'app.key_confirmed':
-      return line(`${who} confirmed a new key of ${appOf(detail)}`, true);
+    // Its API keys (APP6): generated and revoked by an owner; and the
+    // vault's own notices, 14 days before one expires and once it has —
+    // nobody did those. Never a secret; the client ID names which key.
     case 'app.key_added':
-      return detail.by === 'app'
-        ? line(`${who} via ${appOf(detail)} added a new key to ${appOf(detail)}`, true)
-        : line(`${who} added a new key to ${appOf(detail)}`, true);
+      return detail.approval === 'asked_again'
+        ? line(
+            `${who} generated an API key for ${appOf(detail)}, so ${personOf(e)} must turn it on again`,
+            true,
+          )
+        : line(`${who} generated an API key for ${appOf(detail)}`, true);
     case 'app.key_retired':
-      return detail.by === 'app'
-        ? line(`${who} via ${appOf(detail)} retired an old key of ${appOf(detail)}`)
-        : line(`${who} retired a key of ${appOf(detail)}`);
+      return line(`${who} revoked an API key of ${appOf(detail)}`, true);
+    case 'app.key_expiring': {
+      const until = text(detail.expires_at);
+      return line(
+        `An API key of ${appOf(detail)} expires${until ? ` on ${dayWords(until, e.timezone, true)}` : ' soon'}`,
+        true,
+        UNNAMED,
+      );
+    }
+    case 'app.key_expired':
+      return line(`An API key of ${appOf(detail)} has expired`, true, UNNAMED);
     case 'app.paused':
       return line(`${who} paused ${appOf(detail)}`, true);
     case 'app.resumed':

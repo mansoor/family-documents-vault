@@ -340,14 +340,16 @@ begin
     revoke update, delete on public.upload_request_tombstone from fdv_app;
     revoke update, delete on public.share_link_tombstone from fdv_app;
   end if;
-  -- Connected apps (0109, APP1): which household a keyid names, before it
-  -- is known — asked by every signed request; and a person's apps stopped
-  -- by the emergency controls.
-  if to_regprocedure('public.connected_app_find(uuid, uuid)') is not null then
-    revoke execute on function public.connected_app_find(uuid, uuid) from public;
-    grant execute on function public.connected_app_find(uuid, uuid) to fdv_app;
+  -- Connected apps (0109, APP1): a person's apps stopped by the emergency
+  -- controls; and (0114, APP6) which household and app an API key's client
+  -- ID names, before it is known — asked by every app request.
+  if to_regprocedure('public.connected_apps_revoke_for(uuid, text)') is not null then
     revoke execute on function public.connected_apps_revoke_for(uuid, text) from public;
     grant execute on function public.connected_apps_revoke_for(uuid, text) to fdv_app;
+  end if;
+  if to_regprocedure('public.connected_app_find(text)') is not null then
+    revoke execute on function public.connected_app_find(text) from public;
+    grant execute on function public.connected_app_find(text) to fdv_app;
   end if;
   -- What a connected app reads (0110, APP2): the rule, written once, that
   -- its transactions are narrowed to.

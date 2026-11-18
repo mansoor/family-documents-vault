@@ -373,9 +373,12 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['app.connected', ownersThePersonAndTheActor],
   ['app.approved', ownersThePersonAndTheActor],
   ['app.changed', ownersThePersonAndTheActor],
+  // Its API keys (APP6): generated and revoked by an owner, and the
+  // vault's notices that one expires soon and that it has.
   ['app.key_added', ownersThePersonAndTheActor],
   ['app.key_retired', ownersThePersonAndTheActor],
-  ['app.key_confirmed', ownersThePersonAndTheActor],
+  ['app.key_expiring', ownersThePersonAndTheActor],
+  ['app.key_expired', ownersThePersonAndTheActor],
   ['app.paused', ownersThePersonAndTheActor],
   ['app.resumed', ownersThePersonAndTheActor],
   ['app.revoked', ownersThePersonAndTheActor],

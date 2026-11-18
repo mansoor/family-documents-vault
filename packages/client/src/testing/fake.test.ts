@@ -85,6 +85,24 @@ describe('the fake vault keeps the contract', () => {
       vault.fileAppIntake(app.id, externalId, made.document_id);
       return made.document_id;
     },
+    // An app's file filed into a document that is there, as its newest
+    // version (APP6): the fake adds it as one, and files the send so.
+    fileAppSendAsVersion: async (token, app, externalId, file, documentId) => {
+      const body = multipartBody([
+        { name: 'file', filename: 'sent.pdf', contentType: 'application/pdf', bytes: file.bytes },
+      ]);
+      await api.upload(
+        token,
+        documentId,
+        { kind: 'bytes', bytes: body.bytes, contentType: body.contentType },
+        `d7e8f9a0-1b2c-4d3e-8f4a-${String(++appFilings).padStart(12, '0')}`,
+      );
+      vault.fileAppIntake(app.id, externalId, documentId, true);
+    },
+    // A connected app's API key past its expiry (APP6): the fake moves its dates.
+    expireAppKey: async (clientId) => {
+      vault.expireAppKey(clientId);
+    },
     // What the pages of an app's file read (APP4): the fake files it, or
     // leaves it waiting, by the vault's own rule.
     readAppSend: async (app, externalId, _file, proposal) => {

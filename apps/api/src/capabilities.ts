@@ -259,8 +259,7 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       ended_sharing: true,
       // 0.9.0 (DA): one document's activity, links that gave it included.
       document_activity: true,
-      // 0.9.0 (APP1): connected apps, signing every request, sending into
-      // their person's Inbox.
+      // 0.9.0 (APP1): connected apps, sending into their person's Inbox.
       connected_apps: true,
       // 0.9.0 (APP2): an app reads its own and what its read grants cover:
       // a list, one document, a changes feed and a download.
@@ -268,6 +267,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.9.0 (APP3): a link its user's browser opens once, for a session
       // of ten minutes; and deleting what it sent, as an owner chose.
       connected_app_links: true,
+      // 0.9.0-dev.63 (APP6): an app authenticates with an API key an owner
+      // generated, as HTTP Basic; request signing is gone.
+      connected_app_keys: true,
       // 0.9.0 (AIR1): the AI reader set in Settings → Reading, unless the
       // operator keeps it out (FDV_AI_READER_SETTINGS=off); and the kinds
       // of reader this vault reads with — Ollama, Anthropic and an

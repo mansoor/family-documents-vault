@@ -62,9 +62,9 @@ import { DROP_COOKIE_PATH, type UploadRequestService } from './uploads/requests.
 import type { IncomingService } from './uploads/incoming.js';
 import type { BatchService } from './uploads/batches.js';
 import { DEVICE_KEY_ROUTES, presentsDeviceKey, registerDevices } from './devices/routes.js';
-import { APP_SIGNED_ROUTES, registerApps } from './apps/routes.js';
+import { APP_ROUTES, registerApps } from './apps/routes.js';
 import type { AppService } from './apps/service.js';
-import { presentsSignature } from './apps/signing.js';
+import { presentsBasic } from './apps/keys.js';
 import type { DeviceService } from './devices/service.js';
 import { registerVaults } from './vaults/routes.js';
 import { registerWatchFolder } from './watch-folder/routes.js';
@@ -267,28 +267,24 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     }
   });
 
-  // A connected app's signature (0.9.0, APP1) is taken by the app routes
-  // alone: every other — a public route and one that is not there too —
-  // answers it 401 before anything else is looked at, and nothing an app
-  // does becomes a browser session.
+  // A connected app's API key (0.9.0, APP6: HTTP Basic) is taken by the
+  // app routes alone: every other — a public route and one that is not
+  // there too — answers it 401 before anything else is looked at, and
+  // nothing an app does becomes a browser session.
   app.addHook('onRequest', async (req) => {
-    if (!presentsSignature(req.headers)) return;
-    if (APP_SIGNED_ROUTES.has(`${req.method} ${req.routeOptions.url ?? ''}`)) return;
-    throw new ApiError(
-      401,
-      'app_signature_not_accepted',
-      'A connected app can only use the app routes.',
-    );
+    if (!presentsBasic(req.headers)) return;
+    if (APP_ROUTES.has(`${req.method} ${req.routeOptions.url ?? ''}`)) return;
+    throw new ApiError(401, 'app_key_not_accepted', 'A connected app can only use the app routes.');
   });
 
   // A computer's key (0.8.0, D1) is taken by its two routes alone: every
   // other — a read, a list, a download, a public route, one that is not
   // there — answers it 401 before anything else is looked at. (An app
-  // route refuses it itself, as it refuses any credential but a signature.)
+  // route refuses it itself, as it refuses any credential but an app's key.)
   app.addHook('onRequest', async (req) => {
     if (!presentsDeviceKey(req)) return;
     const key = `${req.method} ${req.routeOptions.url ?? ''}`;
-    if (DEVICE_KEY_ROUTES.has(key) || APP_SIGNED_ROUTES.has(key)) return;
+    if (DEVICE_KEY_ROUTES.has(key) || APP_ROUTES.has(key)) return;
     throw new ApiError(
       401,
       'device_key_not_accepted',

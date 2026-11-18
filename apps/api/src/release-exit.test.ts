@@ -184,9 +184,10 @@ type Who =
    */
   | 'device'
   /**
-   * A connected app, by its signature (0.9.0, APP1), and nobody else: no
-   * attacker holds its key, so every one is told to sign the request (401
-   * app_signature_required), a sign-in, a computer's key and a cookie alike.
+   * A connected app, by its API key (0.9.0, APP1; Basic since APP6), and
+   * nobody else: no attacker holds its key, so every one is told to send
+   * one (401 app_key_required), a sign-in, a computer's key and a cookie
+   * alike.
    */
   | 'app';
 
@@ -245,7 +246,7 @@ type Kind =
   | 'appKey'
   /** A connected app's view link (0.9.0, APP3): a secret, good once. */
   | 'appLinkToken'
-  /** Not an object of anybody's: an app's own id for what it sent, on its signed routes. */
+  /** Not an object of anybody's: an app's own id for what it sent, on its own routes. */
   | 'externalId'
   /** Not a parameter: another person's code to confirm their address for email in (S4), sent in a body. */
   | 'mailInCode'
@@ -307,12 +308,11 @@ const PARAM_KINDS: Record<string, Kind> = {
   'items/:itemId': 'batchItem',
   'notices/:id': 'watchNotice',
   'paired-devices/:id': 'pairedDevice',
-  // A connected app, and one of its keys, in Settings (0.9.0, APP1).
+  // A connected app, and one of its API keys, in Settings (0.9.0, APP1, APP6).
   'connected-apps/:id': 'connectedApp',
   'keys/:keyId': 'appKey',
-  // And on its own signed routes: what it sent, and its own keys.
+  // And on its own routes: what it sent.
   'intake/:external_id': 'externalId',
-  'keys/:key_id': 'appKey',
   // A view link an app made for its person (0.9.0, APP3).
   'app-links/:token': 'appLinkToken',
   'reading-checks/:id': 'readingCheck',
@@ -1402,30 +1402,28 @@ const RULES: Record<string, Rule> = {
   },
   'GET /api/v1/devices/me': { who: 'device' },
   'POST /api/v1/device-uploads': { who: 'device', file: 'pdf' },
-  // Connected apps (0.9.0, APP1): the app's own routes, which take its
-  // signature and nothing else; and Settings → Connected apps — each owner
+  // Connected apps (0.9.0, APP1): the app's own routes, which take its API
+  // key (APP6) and nothing else; and Settings → Connected apps — each owner
   // sees every app, its person theirs, anybody else none; connecting,
-  // widening, resuming and keys are an owner's with a passkey or a code;
-  // its person alone turns it on; an owner pauses or removes any, its
-  // person theirs.
+  // widening, resuming, and generating and revoking keys are an owner's
+  // with a passkey or a code; its person alone turns it on; an owner
+  // pauses or removes any, its person theirs.
   'GET /api/v1/apps/me': { who: 'app' },
   'POST /api/v1/apps/intake': { who: 'app', file: 'pdf' },
   'GET /api/v1/apps/intake': { who: 'app', query: () => 'external_ids=a,b' },
   'GET /api/v1/apps/intake/:external_id': { who: 'app' },
   'DELETE /api/v1/apps/intake/:external_id': { who: 'app' },
-  'POST /api/v1/apps/keys': { who: 'app', body: () => ({ public_key: 'ed25519:x' }) },
-  'DELETE /api/v1/apps/keys/:key_id': { who: 'app' },
-  // Reading (0.9.0, APP2): its signature alone; what it reads is held to
+  // Reading (0.9.0, APP2): its key alone; what it reads is held to
   // its own and its grants (reads.test.ts), never anybody's planted secret.
   'GET /api/v1/apps/documents': { who: 'app', query: () => 'limit=5' },
   'GET /api/v1/apps/documents/:id': { who: 'app' },
   'GET /api/v1/apps/documents/:id/content': { who: 'app' },
   'GET /api/v1/apps/changes': { who: 'app' },
-  // The exact file it sent, again (0.9.0, APP5): its signature alone; held
+  // The exact file it sent, again (0.9.0, APP5): its key alone; held
   // to its own sends whose documents are out of the Trash and not Only me
   // (sends.test.ts).
   'GET /api/v1/apps/intake/:external_id/content': { who: 'app' },
-  // Links and deletes (0.9.0, APP3): its signature alone; what it may link
+  // Links and deletes (0.9.0, APP3): its key alone; what it may link
   // or delete is held to its read rule and its own (links.test.ts).
   'POST /api/v1/apps/documents/:id/links': { who: 'app', body: () => ({ mode: 'view' }) },
   'DELETE /api/v1/apps/documents/:id': { who: 'app' },
@@ -1450,7 +1448,6 @@ const RULES: Record<string, Rule> = {
     body: (f) => ({
       name: 'Attacker app',
       member_id: f.member,
-      public_key: 'ed25519:JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs',
       allowed_kinds: ['passport'],
     }),
   },
@@ -1464,17 +1461,13 @@ const RULES: Record<string, Rule> = {
     theirs: { passwordOnlyOwner: 'an owner may pause any app in the household (APP1)' },
   },
   'POST /api/v1/connected-apps/:id/resume': { who: 'ownerPower' },
+  // An API key generated (its secret in that answer alone), and revoked:
+  // an owner's, with a passkey or a code (APP6).
   'POST /api/v1/connected-apps/:id/keys': {
     who: 'ownerPower',
-    body: () => ({ public_key: 'ed25519:JrQLj5P_89iXES9-vFgrIy29clF9CC_oPPsw3c5D0bs' }),
+    body: () => ({ permissions: ['documents.send'], expires_in_days: 30 }),
   },
-  // A key the app added itself, confirmed by an owner or its person, with
-  // a passkey or a code: nobody else's to confirm.
-  'POST /api/v1/connected-apps/:id/keys/:keyId/confirm': { who: 'adults' },
-  'DELETE /api/v1/connected-apps/:id/keys/:keyId': {
-    who: 'owners',
-    theirs: { passwordOnlyOwner: 'an owner may retire a key of any app (its last is kept: 409)' },
-  },
+  'DELETE /api/v1/connected-apps/:id/keys/:keyId': { who: 'ownerPower' },
   'DELETE /api/v1/connected-apps/:id': {
     who: 'adults',
     last: true,
@@ -1985,21 +1978,29 @@ describe.skipIf(!testAdminUrl())('the release exit (Phase 5, and Phase 6 for 0.7
       ])
     ).rows[0]?.id as string;
     // An app acting as Ahmed (0.9.0, APP1), connected by Olivia with a code,
-    // waiting for him to turn it on: his and the owners', nobody else's.
+    // waiting for him to turn it on: his and the owners', nobody else's; and
+    // its API key (APP6), which Olivia generated.
     await h.decider(olivia);
-    const app = json<{ id: string; keys: Array<{ key_id: string }> }>(
+    const app = json<{ id: string }>(
       await ok(
         send(olivia, 'POST', '/api/v1/connected-apps', {
           name: AHMED_APP,
           member_id: ahmed.member_id,
-          public_key: `ed25519:${Buffer.alloc(32, 7).toString('base64url')}`,
           allowed_kinds: ['bank_statement'],
         }),
         201,
       ),
     );
     ids.connectedApp = app.id;
-    ids.appKey = app.keys[0]?.key_id as string;
+    ids.appKey = json<{ key: { id: string } }>(
+      await ok(
+        send(olivia, 'POST', `/api/v1/connected-apps/${app.id}/keys`, {
+          permissions: ['documents.send'],
+          expires_in_days: 30,
+        }),
+        201,
+      ),
+    ).key.id;
     const batchForm = new FormData();
     // The folder it came from (0.8.0, S2): his alone, sealed.
     batchForm.append('relative_path', 'AHMED-FOLDER-541/Passports/ahmed-batch-file-541.pdf');

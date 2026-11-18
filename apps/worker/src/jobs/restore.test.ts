@@ -619,9 +619,8 @@ async function seed(url: string): Promise<string> {
             );
           }
           // And, where the schema has them (0109, APP1), a connected app
-          // acting as that person, its key, a nonce it signed with and what
-          // it sent: a backup is the past, so the app comes back paused and
-          // the nonce does not come back.
+          // acting as that person, its API key (0114, APP6) and what it
+          // sent: a backup is the past, so the app comes back paused.
           const apps = await c.query<{ has: boolean }>(
             "select to_regclass('public.connected_app') is not null as has",
           );
@@ -640,14 +639,12 @@ async function seed(url: string): Promise<string> {
             const a = app.rows[0];
             if (a) {
               await c.query(
-                `insert into connected_app_key (household_id, app_id, public_key, added_by, confirmed_at)
-                 values ($1, $2, $3, 'owner', now())`,
-                [hh, a.id, randomBytes(32)],
-              );
-              await c.query(
-                `insert into connected_app_nonce (household_id, app_id, nonce, expires_at)
-                 values ($1, $2, 'seedNonceSeedNonceSeedN', now() + interval '5 minutes')`,
-                [hh, a.id],
+                `insert into connected_app_key (household_id, app_id, client_id, secret_hash, permissions,
+                                                expires_at)
+                 values ($1, $2, $3, $4, '{documents.send}',
+                         now() + interval '30 days')`,
+                // A client id of its own: seed() runs once a household, and ids are unique.
+                [hh, a.id, `fdvc_${randomBytes(16).toString('base64url')}`, randomBytes(32)],
               );
               await c.query(
                 `insert into connected_app_intake (household_id, app_id, member_id, external_id,
@@ -2436,13 +2433,12 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
       vault.adminUrl,
       `select (select count(*)::int from connected_app) as apps,
               (select count(*)::int from connected_app_key) as keys,
-              (select count(*)::int from connected_app_nonce) as nonces,
               (select count(*)::int from connected_app_intake) as sent`,
     );
-    expect(seeded.rows[0]).toEqual({ apps: 1, keys: 1, nonces: 1, sent: 1 });
+    expect(seeded.rows[0]).toEqual({ apps: 1, keys: 1, sent: 1 });
     // A table's rule for each kind of caller (each is in the list the check
     // asks of every table, which the passing check above holds).
-    for (const table of ['connected_app', 'connected_app_intake']) {
+    for (const table of ['connected_app', 'connected_app_key', 'connected_app_intake']) {
       const policy = `${table}_actor`;
       const { rows } = await sql(
         vault.adminUrl,
@@ -2485,6 +2481,7 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
     // Its guards.
     for (const [table, trigger] of [
       ['connected_app', 'connected_app_writes'],
+      ['connected_app_key', 'connected_app_key_writes'],
       ['incoming_file', 'connected_app_intake_follows'],
       ['account_household', 'connected_apps_leave_with_role'],
     ] as const) {
@@ -2497,21 +2494,49 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
         await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
       }
     }
+    // An API key's own rules: who generates one, who revokes one, and its
+    // permissions kept to the list (0114, APP6).
+    for (const [policy, words] of [
+      ['connected_app_key_actor_insert', /who generates an API key for a connected app/],
+      ['connected_app_key_actor_update', /who revokes an API key of a connected app/],
+    ] as const) {
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polwithcheck, polrelid) as w, pg_get_expr(polqual, polrelid) as q,
+                polcmd as cmd from pg_policy where polname = '${policy}'`,
+      );
+      const r = rows[0] as { w: string | null; q: string | null; cmd: string };
+      await sql(vault.adminUrl, `drop policy ${policy} on public.connected_app_key`);
+      try {
+        await expect(checkRestored(target()), policy).rejects.toThrow(words);
+      } finally {
+        await sql(
+          vault.adminUrl,
+          r.cmd === 'a'
+            ? `create policy ${policy} on public.connected_app_key as restrictive for insert with check (${r.w as string})`
+            : `create policy ${policy} on public.connected_app_key as restrictive for update using (${r.q as string})`,
+        );
+      }
+    }
     // And what a restore does to it, in the load's own transaction: paused,
-    // its nonces forgotten — tried, then rolled back.
+    // its feed's epoch moved on — tried, then rolled back.
     const pool = new pg.Pool({ connectionString: vault.adminUrl, max: 1 });
     const client = await pool.connect();
     try {
       await client.query('begin');
       await client.query(RESTORE_UNDO);
-      const { rows } = await client.query<{ paused: number; nonces: number; sent: number }>(
+      const { rows } = await client.query<{ paused: number; keys: number; sent: number }>(
         `select (select count(*)::int from connected_app where paused_reason = 'restored') as paused,
-                (select count(*)::int from connected_app_nonce) as nonces,
+                (select count(*)::int from connected_app_key
+                  where revoked_reason = 'restore' and revoked_by is null) as keys,
+                (select count(*)::int from connected_app_key where revoked_at is null) as live,
                 (select count(*)::int from connected_app_intake) as sent,
-                (select count(*)::int from connected_app where signed_after is not null) as after`,
+                (select count(*)::int from connected_app where restored_at is not null) as after`,
       );
-      // Paused, its nonces gone, and nothing signed before now taken again.
-      expect(rows[0]).toEqual({ paused: 1, nonces: 0, sent: 1, after: 1 });
+      // Paused; every API key revoked by the restore (APP6: one revoked since
+      // the backup would otherwise work again), so the owners generate new
+      // ones; and its feed's cursors from before too old.
+      expect(rows[0]).toEqual({ paused: 1, keys: 1, live: 0, sent: 1, after: 1 });
     } finally {
       await client.query('rollback');
       client.release();
@@ -2544,10 +2569,12 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', { timeout: 60_000 
       );
       expect(made.rows).toHaveLength(1);
       await client.query(
-        `insert into connected_app_link (household_id, app_id, document_id, version_id, mode,
-                                         token_hash, open_by, opened_at, session_hash,
+        `insert into connected_app_link (household_id, app_id, key_id, document_id, version_id,
+                                         mode, token_hash, open_by, opened_at, session_hash,
                                          session_until, first_address)
-         select a.household_id, a.id, $1, $2, 'view', gen_random_bytes(32),
+         select a.household_id, a.id,
+                (select k.id from connected_app_key k where k.app_id = a.id limit 1), $1, $2,
+                'view', gen_random_bytes(32),
                 now() + interval '2 minutes', o.opened, o.session, o.until, '203.0.113.7'
            from (select id, household_id from connected_app limit 1) a
            cross join (values (null::timestamptz, null::bytea, null::timestamptz),
@@ -4462,17 +4489,18 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
               (select count(*)::int from device_pairing) as codes`,
     );
     expect(computers.rows[0]).toEqual({ live: 0, restored: 1, codes: 0 });
-    // A connected app comes back paused, for an owner to turn back on, and
-    // no nonce it signed with (0109, APP1): a key revoked since the backup
-    // would otherwise sign again.
+    // A connected app comes back paused, for an owner to turn back on
+    // (0109, APP1), and every API key of it revoked (0114, APP6): one
+    // revoked since the backup would otherwise work again.
     expect(report.appsPaused).toBe(1);
+    expect(report.appKeysRevoked).toBe(1);
     const apps = await sql(
       t.adminUrl,
       `select (select count(*)::int from connected_app where paused_reason = 'restored') as paused,
-              (select count(*)::int from connected_app_nonce) as nonces,
+              (select count(*)::int from connected_app_key where revoked_reason = 'restore') as keys,
               (select count(*)::int from connected_app_intake) as sent`,
     );
-    expect(apps.rows[0]).toEqual({ paused: 1, nonces: 0, sent: 1 });
+    expect(apps.rows[0]).toEqual({ paused: 1, keys: 1, sent: 1 });
     // A Reading check that had not finished is stopped, what it had read let
     // go; one done keeps its numbers and its owner's misses (0074, R0).
     expect(report.readingChecksStopped).toBe(1);
