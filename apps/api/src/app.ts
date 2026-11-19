@@ -62,7 +62,7 @@ import { DROP_COOKIE_PATH, type UploadRequestService } from './uploads/requests.
 import type { IncomingService } from './uploads/incoming.js';
 import type { BatchService } from './uploads/batches.js';
 import { DEVICE_KEY_ROUTES, presentsDeviceKey, registerDevices } from './devices/routes.js';
-import { APP_ROUTES, registerApps } from './apps/routes.js';
+import { APP_LINK_TOKEN_ROUTE, APP_ROUTES, registerApps } from './apps/routes.js';
 import type { AppService } from './apps/service.js';
 import { presentsBasic } from './apps/keys.js';
 import type { DeviceService } from './devices/service.js';
@@ -263,7 +263,22 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       req.url.startsWith(`${DROP_COOKIE_PATH}/`) ||
       req.url.startsWith(`${APP_LINK_PATH}/`)
     ) {
-      for (const [name, value] of Object.entries(PUBLIC_API_HEADERS)) reply.header(name, value);
+      for (const [name, value] of Object.entries(PUBLIC_API_HEADERS)) {
+        // The page a link's address gives (0.9.0-dev.68) styles itself by
+        // a nonce of its own, and its form's POST must carry its Origin:
+        // its own policy, as strict, and `same-origin` referrers are kept.
+        // Nothing else here sets either.
+        if (
+          (name === 'content-security-policy' || name === 'referrer-policy') &&
+          req.routeOptions.url === APP_LINK_TOKEN_ROUTE &&
+          (req.method === 'GET' || req.method === 'HEAD') &&
+          reply.statusCode === 200 &&
+          reply.hasHeader(name)
+        ) {
+          continue;
+        }
+        reply.header(name, value);
+      }
     }
   });
 

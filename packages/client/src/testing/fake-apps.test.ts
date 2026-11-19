@@ -244,16 +244,41 @@ describe('the fake vault: a connected app’s links and deletes (APP3)', () => {
         method: 'GET',
         headers: cookie ? { cookie } : {},
       });
-    const opened = await get(path);
+    // Its address is a page that opens nothing (0.9.0-dev.68): asked twice,
+    // still there; the POST that page sends opens it.
+    const open = (p: string, headers: Record<string, string> = {}) =>
+      vault.fetch(`https://fake.example${p}`, { method: 'POST', headers });
+    for (let i = 0; i < 2; i++) {
+      const page = await get(path);
+      expect(page.status).toBe(200);
+      expect(page.headers.get('content-type')).toMatch(/^text\/html/);
+      expect(page.headers.get('set-cookie')).toBeNull();
+    }
+    // Nothing on the page submits by itself: one click on Open is the open.
+    const body = await (await get(path)).text();
+    expect(body).not.toMatch(/<script/i);
+    expect(body).toContain('This link works once');
+    expect(body).toMatch(/<button type="submit">Open<\/button>/);
+    for (const headers of [
+      { origin: 'https://evil.example' },
+      { 'sec-fetch-site': 'cross-site' },
+      { 'sec-fetch-site': 'same-site' },
+    ]) {
+      expect((await open(path, headers)).status, JSON.stringify(headers)).toBe(403);
+    }
+    const opened = await open(path, { 'sec-fetch-site': 'same-origin' });
     expect([opened.status, opened.headers.get('location')]).toEqual([303, '/a']);
     const cookie = (opened.headers.get('set-cookie') ?? '').split(';')[0] as string;
     expect(opened.headers.get('set-cookie')).toMatch(
       /^__Secure-fdv_app_link=[A-Za-z0-9_-]{43}; .*Path=\/api\/v1\/app-links\/session; HttpOnly; Secure; SameSite=Lax$/,
     );
-    const again = await get(path);
+    const again = await open(path);
     expect([again.status, again.headers.get('location')]).toEqual([303, '/a#used']);
     const session = await get('/api/v1/app-links/session', cookie);
-    expect(await session.json()).toMatchObject({ app: 'Linker', mode: 'view', title: 'Own bill' });
+    const said = (await session.json()) as { opened_on?: unknown };
+    expect(said).toMatchObject({ app: 'Linker', mode: 'view', title: 'Own bill' });
+    // The day it was opened, for the page's watermark (0.9.0-dev.68).
+    expect(String(said.opened_on)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect((await get('/api/v1/app-links/session/pages/1', cookie)).status).toBe(200);
     expect((await get('/api/v1/app-links/session')).status).toBe(410);
     // A link remembers the key that minted it (APP6): that key revoked, its
@@ -270,13 +295,13 @@ describe('the fake vault: a connected app’s links and deletes (APP3)', () => {
     });
     const viaOther = await otherApp.link(own, 'view');
     const unopened = await otherApp.link(own, 'view');
-    const otherOpened = await get(viaOther.url.replace(/^[a-z]+:\/\/[^/]+/i, ''));
+    const otherOpened = await open(viaOther.url.replace(/^[a-z]+:\/\/[^/]+/i, ''));
     const otherCookie = (otherOpened.headers.get('set-cookie') ?? '').split(';')[0] as string;
     expect((await get('/api/v1/app-links/session', otherCookie)).status).toBe(200);
     await api.connectedApps.revokeKey(token, made.id, other.key.id);
     expect((await get('/api/v1/app-links/session', otherCookie)).status).toBe(410);
     expect(
-      (await get(unopened.url.replace(/^[a-z]+:\/\/[^/]+/i, ''))).headers.get('location'),
+      (await open(unopened.url.replace(/^[a-z]+:\/\/[^/]+/i, ''))).headers.get('location'),
     ).toBe('/a#ended');
     // The other key's links end; this key's go on.
     expect((await get('/api/v1/app-links/session', cookie)).status).toBe(200);
@@ -290,7 +315,7 @@ describe('the fake vault: a connected app’s links and deletes (APP3)', () => {
       ?.links?.find((l) => late.url.endsWith(l.token));
     if (!link) throw new Error('no link');
     link.open_by = Date.now() - 1;
-    expect((await get(late.url.replace(/^[a-z]+:\/\/[^/]+/i, ''))).headers.get('location')).toBe(
+    expect((await open(late.url.replace(/^[a-z]+:\/\/[^/]+/i, ''))).headers.get('location')).toBe(
       '/a#ended',
     );
 

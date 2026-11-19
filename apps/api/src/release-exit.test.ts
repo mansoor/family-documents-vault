@@ -1430,7 +1430,11 @@ const RULES: Record<string, Rule> = {
   // What its user's browser opens: a token nobody else holds, then a
   // session's cookie no attacker has — "ended" to everybody else, a
   // sign-in, a share's cookie and a sender's alike (links.test.ts).
+  // Its address asked with GET is a page that opens nothing (0.9.0-dev.68):
+  // the POST that page sends is the open, of the same token alone, and one
+  // from another site's page is refused before the token is looked at.
   'GET /api/v1/app-links/:token': { who: 'public' },
+  'POST /api/v1/app-links/:token': { who: 'public', body: () => ({}) },
   'GET /api/v1/app-links/session': { who: 'public' },
   'GET /api/v1/app-links/session/pages/:n': { who: 'public' },
   'GET /api/v1/app-links/session/file': { who: 'public' },

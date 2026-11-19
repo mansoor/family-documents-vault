@@ -1912,7 +1912,10 @@ export function createApi(http: Http) {
     /**
      * What a connected app's link opened in this browser shows (the `/a`
      * page): `410 link_ended` when there is no session, `403
-     * link_other_address` from another network.
+     * link_other_address` from another network. The link's own address
+     * opened it: since 0.9.0-dev.68 a page (GET) with an Open button,
+     * whose one click (a POST) is the open.
+     * `opened_on` is the day it was opened, for the page's watermark.
      */
     appLinkSession: () => request<AppLinkSession>('/api/v1/app-links/session'),
     /** One page of it, as the vault drew it: a JPEG, inside the session. */

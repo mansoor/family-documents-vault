@@ -2150,6 +2150,36 @@ a.btn {
   background: var(--paper);
 }
 
+/* 0.9.0-dev.68: a connected app's view link's pages carry a light
+   watermark ("Opened through Acme Money · 19 November 2026"), repeated
+   across each page over the drawing, never in it. Low in contrast on the
+   paper, which is white in either theme; it lets every click, selection and
+   zoom through, and is hidden from a screen reader. */
+.app-link-page {
+  position: relative;
+}
+
+.app-link-watermark {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  align-items: center;
+  color: var(--paper-ink);
+  opacity: 0.12;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.app-link-watermark span {
+  transform: rotate(-24deg);
+}
+
 /* 5.24: a Trash row's ways out — back, or for good — beside it, or under
    it on a phone; and an owner's request to remove it, said in the row. */
 .list li.trash-row {

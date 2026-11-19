@@ -7,7 +7,10 @@
 # refused by the vault), and the capability document the app reads first;
 # and (APP3) the links an app mints for its user's browser
 # (/api/v1/app-links/*, a single-use token, then a session's cookie) and the
-# page a view link opens (/a). Nothing else is added. Files an app sends are the vault's to limit, as a
+# page a view link opens (/a). A link's address is asked twice (0.9.0-dev.68):
+# GET, a page that opens nothing, and the POST that page sends, which is the
+# open; the matcher below takes the path whatever the method, so both pass.
+# Nothing else is added. Files an app sends are the vault's to limit, as a
 # sender's are. The vault is told the request came this way (X-FDV-Site),
 # whatever the caller wrote, and leaves the family's name out of the
 # capability document it answers here.
@@ -33,7 +36,8 @@ handle @apps_api {
 }
 
 # The page a connected app's view link opens (APP3): its user's browser is
-# sent to /api/v1/app-links/<token>, and on to /a with its session. The page
+# sent to /api/v1/app-links/<token>, opens it there (a POST, from the page
+# that address gives), and is sent on to /a with its session. The page
 # loads the app's own files (/assets/*, which the site serves already).
 @apps_page path /a /a/
 

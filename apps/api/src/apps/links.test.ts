@@ -17,8 +17,8 @@ import type { LightMyRequestResponse } from 'fastify';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PUBLIC_API_HEADERS } from '../app.js';
-import { appKeyFor, basicFor, createHarness, type Harness } from '../test-harness.js';
-import { sameNetwork } from './links.js';
+import { alertsSent, appKeyFor, basicFor, createHarness, type Harness } from '../test-harness.js';
+import { crossSite, sameNetwork, trashBody } from './links.js';
 
 /**
  * A connected app's links and deletes (0.9.0, APP3): a link opens once,
@@ -59,6 +59,53 @@ describe('the address a link session is bound to', () => {
     expect(sameNetwork('203.0.113.7', '2001:db8::1')).toBe(false);
     expect(sameNetwork(null, '203.0.113.7')).toBe(false);
     expect(sameNetwork(null, null)).toBe(false);
+  });
+});
+
+describe('the open’s other-site check, and what a move to the Trash says (0.9.0-dev.68)', () => {
+  it('another host in Origin, else Referer, is another site; none, or null, proves nothing', () => {
+    const own = ['vault.example:8080', 'https://share.example'];
+    expect(crossSite({}, own)).toBe(false);
+    expect(crossSite({ origin: 'null' }, own)).toBe(false);
+    expect(crossSite({ origin: 'https://vault.example' }, own)).toBe(false);
+    expect(crossSite({ origin: 'https://share.example' }, own)).toBe(false);
+    expect(crossSite({ referer: 'https://VAULT.example/api/v1/app-links/x' }, own)).toBe(false);
+    expect(crossSite({ origin: 'https://evil.example' }, own)).toBe(true);
+    expect(crossSite({ origin: 'null', referer: 'https://evil.example/' }, own)).toBe(true);
+    expect(crossSite({ origin: 'https://vault.example.evil.example' }, own)).toBe(true);
+    expect(crossSite({ origin: 'garbage' }, own)).toBe(true);
+  });
+
+  it('Sec-Fetch-Site cross-site or same-site is another page; same-origin, none or absent pass on', () => {
+    const own = ['vault.example'];
+    expect(crossSite({ secFetchSite: 'cross-site' }, own)).toBe(true);
+    expect(crossSite({ secFetchSite: 'same-site' }, own)).toBe(true);
+    expect(crossSite({ secFetchSite: 'Cross-Site', origin: 'https://vault.example' }, own)).toBe(
+      true,
+    );
+    expect(crossSite({ secFetchSite: 'same-origin', origin: 'https://vault.example' }, own)).toBe(
+      false,
+    );
+    expect(crossSite({ secFetchSite: 'none' }, own)).toBe(false);
+    // Same-origin by its own word, but naming another host: still refused.
+    expect(crossSite({ secFetchSite: 'same-origin', origin: 'https://evil.example' }, own)).toBe(
+      true,
+    );
+  });
+
+  it('names the app always, and the document only when it may be named', () => {
+    expect(trashBody('Acme Money', { named: 'Water bill', theirs: true })).toMatch(
+      /^Acme Money moved your document “Water bill” to the Trash\. /,
+    );
+    expect(trashBody('Acme Money', { named: 'Water bill', theirs: false })).toMatch(
+      /^Acme Money moved “Water bill” to the Trash\. /,
+    );
+    expect(trashBody('Acme Money', { named: null, theirs: true })).toMatch(
+      /^Acme Money moved one of your documents to the Trash\. /,
+    );
+    expect(trashBody('Acme Money', { named: null, theirs: false })).toMatch(
+      /^Acme Money moved a document to the Trash\. /,
+    );
   });
 });
 
@@ -131,13 +178,35 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
       headers: { ...(cookie ? { cookie } : {}), ...headers },
       remoteAddress: from,
     });
-  /** A link opened by a browser: its session's cookie, as the browser sends it back. */
+  /**
+   * A link's open, as its page sends it (0.9.0-dev.68): a POST to the
+   * link's own address, from its own page — no Origin worth the name, as a
+   * page with no referrer sends, unless a test says otherwise.
+   */
+  const press = (url: string, from: string, headers: Record<string, string> = {}) =>
+    h.app.inject({
+      method: 'POST',
+      url,
+      headers: { 'content-type': 'application/x-www-form-urlencoded', origin: 'null', ...headers },
+      payload: '',
+      remoteAddress: from,
+    });
+  /** A link opened by a browser: its page first, then the open; the session's cookie. */
   const open = async (link: AppLinkMinted, from: string) => {
-    const r = await browse(pathOf(link.url), from);
+    const page = await browse(pathOf(link.url), from);
+    expect(page.statusCode, page.body).toBe(200);
+    const r = await press(pathOf(link.url), from);
     expect(r.statusCode, r.body).toBe(303);
     const set = String(r.headers['set-cookie'] ?? '');
     return { r, cookie: set.split(';')[0] as string, set };
   };
+  const accountOf = async (t: Tokens) =>
+    (
+      await admin.query<{ account_id: string }>(
+        'select account_id from account_household where member_id = $1',
+        [t.member_id],
+      )
+    ).rows[0]?.account_id;
   const lines = async () =>
     (await send(owner, 'GET', '/api/v1/audit?limit=100'))
       .json<{ items: ActivityLine[] }>()
@@ -230,7 +299,7 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
     // The public routes' headers, on the redirect as on everything here.
     for (const [k, v] of Object.entries(PUBLIC_API_HEADERS)) expect(r.headers[k]).toBe(v);
     // Once: again is "used", from the same browser or any other.
-    const again = await browse(pathOf(link.url), from);
+    const again = await press(pathOf(link.url), from);
     expect([again.statusCode, again.headers.location]).toEqual([303, '/a#used']);
     expect(again.headers['set-cookie']).toBeUndefined();
     // The session: what the page shows.
@@ -280,6 +349,118 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
     expect([over.statusCode, codeOf(over)]).toEqual([410, 'link_ended']);
   });
 
+  it('a link’s address is a page that consumes nothing: a preview’s GETs leave it; its POST opens it, once, within two minutes (0.9.0-dev.68)', async () => {
+    const a = await connect({}, 'Previewed');
+    const doc = await make({ title: 'Previewed bill' });
+    await fileAsOwn(a.appId, 'link-preview', doc);
+    const link = await minted(a, doc);
+    const url = pathOf(link.url);
+    const token = url.split('/').pop() as string;
+    const from = browser();
+    // A chat's or a mail scanner's preview: GET, twice, and HEAD — nothing used.
+    for (const method of ['GET', 'GET', 'HEAD'] as const) {
+      const r = await h.app.inject({ method, url, remoteAddress: browser() });
+      expect(r.statusCode, method).toBe(200);
+      expect(r.headers['set-cookie'], method).toBeUndefined();
+    }
+    const still = await admin.query<{ opened_at: Date | null }>(
+      'select opened_at from connected_app_link where app_id = $1',
+      [a.appId],
+    );
+    expect(still.rows[0]?.opened_at).toBeNull();
+    expect(await lines()).not.toContain('Owner via Previewed opened “Previewed bill”');
+
+    // The page: no-store, never indexed, framed or sniffed; a referrer only
+    // to the vault itself, so its own POST carries its Origin; and a strict
+    // policy with no script at all, its one style by its nonce.
+    const page = await browse(url, from);
+    expect(page.headers['content-type']).toMatch(/^text\/html; charset=utf-8/);
+    expect(page.headers['cache-control']).toBe('no-store');
+    expect(page.headers['referrer-policy']).toBe('same-origin');
+    expect(page.headers['x-robots-tag']).toBe('noindex, nofollow');
+    expect(page.headers['x-content-type-options']).toBe('nosniff');
+    expect(page.headers['x-frame-options']).toBe('DENY');
+    const csp = String(page.headers['content-security-policy']);
+    const nonce = /style-src 'nonce-([A-Za-z0-9+/=]+)'/.exec(csp)?.[1] ?? '';
+    expect(nonce.length).toBeGreaterThanOrEqual(22);
+    expect(csp).toBe(
+      `default-src 'none'; style-src 'nonce-${nonce}'; ` +
+        "form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    );
+    // Nothing on it submits by itself: no script, no handler, no refresh.
+    expect(page.body).not.toMatch(/<script|\bon[a-z]+=|\.submit\(|http-equiv/i);
+    expect(page.body).toContain(`<style nonce="${nonce}">`);
+    expect(page.body).toContain('<meta name="robots" content="noindex, nofollow, noarchive">');
+    // A clear Open button, a plain form POST to the same address, and the
+    // words: open the document; the link works once.
+    expect(page.body).toContain('<h1>Open the document</h1>');
+    expect(page.body).toContain('This link works once');
+    expect(page.body).toContain(`<form method="post" action="/api/v1/app-links/${token}">`);
+    expect(page.body).toMatch(/<button type="submit">Open<\/button>/);
+    // A fresh nonce each time.
+    const second = await browse(url, from);
+    expect(String(second.headers['content-security-policy'])).not.toContain(nonce);
+
+    // From anywhere but its own page: refused, and nothing used.
+    for (const headers of [
+      { 'sec-fetch-site': 'cross-site' },
+      { 'sec-fetch-site': 'same-site', origin: 'http://localhost' },
+      { origin: 'https://evil.example' },
+      { origin: 'null', referer: 'https://evil.example/x' },
+      { origin: 'not a url' },
+    ]) {
+      const r = await press(url, from, headers);
+      expect([r.statusCode, codeOf(r)], JSON.stringify(headers)).toEqual([403, 'forbidden']);
+      expect(r.headers['set-cookie']).toBeUndefined();
+    }
+    const unused = await admin.query<{ opened_at: Date | null }>(
+      'select opened_at from connected_app_link where app_id = $1',
+      [a.appId],
+    );
+    expect(unused.rows[0]?.opened_at).toBeNull();
+    // The POST its own page sends opens it: same-origin, its Origin the vault's.
+    const opened = await press(url, from, {
+      'sec-fetch-site': 'same-origin',
+      origin: 'http://localhost:8080',
+      referer: `http://localhost:8080${url}`,
+    });
+    expect([opened.statusCode, opened.headers.location]).toEqual([303, '/a']);
+    expect(String(opened.headers['set-cookie'])).toMatch(/^__Secure-fdv_app_link=/);
+    for (const [k, v] of Object.entries(PUBLIC_API_HEADERS)) expect(opened.headers[k]).toBe(v);
+    expect(await lines()).toContain('Owner via Previewed opened “Previewed bill”');
+    // A second POST is "used"; the page, asked again, is still only a page.
+    const again = await press(url, from);
+    expect([again.statusCode, again.headers.location]).toEqual([303, '/a#used']);
+    expect(again.headers['set-cookie']).toBeUndefined();
+    expect((await browse(url, from)).statusCode).toBe(200);
+    // The session says the day it was opened, for the page's watermark.
+    const cookie = String(opened.headers['set-cookie']).split(';')[0] as string;
+    const s = await browse('/api/v1/app-links/session', from, cookie);
+    expect(s.json<AppLinkSession>().opened_on).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+    // Two minutes: a link's page still shows after them, but its POST is "ended".
+    const late = await minted(a, doc);
+    await admin.query(
+      `update connected_app_link set open_by = now() - interval '1 second'
+        where app_id = $1 and opened_at is null`,
+      [a.appId],
+    );
+    expect((await browse(pathOf(late.url), from)).statusCode).toBe(200);
+    const over = await press(pathOf(late.url), from);
+    expect([over.statusCode, over.headers.location]).toEqual([303, '/a#ended']);
+  });
+
+  it('only the open takes a form: another route sent one is refused as before', async () => {
+    const r = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/password',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: 'email=a%40b.c&password=x',
+      remoteAddress: browser(),
+    });
+    expect(r.statusCode).toBe(415);
+  });
+
   it('opened too late, made up, or for a document no longer readable: the page says it ended, never why', async () => {
     const a = await connect({}, 'Late');
     const doc = await make({ title: 'Linked bill two' });
@@ -289,13 +470,18 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
       `update connected_app_link set open_by = now() - interval '1 second' where app_id = $1`,
       [a.appId],
     );
-    const r = await browse(pathOf(late.url), browser());
+    const r = await press(pathOf(late.url), browser());
     expect([r.statusCode, r.headers.location]).toEqual([303, '/a#ended']);
     expect(r.headers['set-cookie']).toBeUndefined();
-    const fake = await browse(`/api/v1/app-links/${'B'.repeat(43)}`, browser());
+    const fake = await press(`/api/v1/app-links/${'B'.repeat(43)}`, browser());
     expect([fake.statusCode, fake.headers.location]).toEqual([303, '/a#ended']);
-    const odd = await browse('/api/v1/app-links/not-a-token', browser());
+    const odd = await press('/api/v1/app-links/not-a-token', browser());
     expect([odd.statusCode, odd.headers.location]).toEqual([303, '/a#ended']);
+    // Its page is the same for a made-up token as for a good one; one the
+    // vault could not have made is "ended" at once.
+    expect((await browse(`/api/v1/app-links/${'B'.repeat(43)}`, browser())).statusCode).toBe(200);
+    const oddPage = await browse('/api/v1/app-links/not-a-token', browser());
+    expect([oddPage.statusCode, oddPage.headers.location]).toEqual([303, '/a#ended']);
 
     // Opened, then the document made Only me: the session ends at its next request.
     const link = await minted(a, doc);
@@ -351,7 +537,7 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
     const gone = await send(owner, 'DELETE', `/api/v1/connected-apps/${a.appId}/keys/${a.keyId}`);
     expect(gone.statusCode).toBe(204);
     expect((await browse('/api/v1/app-links/session', from, cookie)).statusCode).toBe(410);
-    const late = await browse(pathOf(unopened.url), from);
+    const late = await press(pathOf(unopened.url), from);
     expect([late.statusCode, late.headers.location]).toEqual([303, '/a#ended']);
     expect((await browse('/api/v1/app-links/session', from, theirs.cookie)).statusCode).toBe(200);
     // Past its expiry, as the database's clock has it: the same.
@@ -654,6 +840,15 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
     );
     expect(row.rows[0]?.updated_by).toBe(person.rows[0]?.account_id);
     expect(await lines()).toContain('Owner via Trasher moved “Trashed bill one” to the Trash');
+    // Its person and the owners are told (0.9.0-dev.68): here one person, an
+    // owner and the document's, told it was theirs, named as the household's
+    // wording (Sensitive documents only) lets it be.
+    const told = alertsSent(h).filter((m) => m.subject === 'Trasher moved a document to the Trash');
+    expect(told).toHaveLength(1);
+    expect(told[0]).toMatchObject({ account_ids: [await accountOf(owner)], email_only: true });
+    expect(String(told[0]?.body)).toMatch(
+      /^Trasher moved your document “Trashed bill one” to the Trash\. /,
+    );
     // In the Trash: the app reads it no more.
     const gone = await call(a, `/api/v1/apps/documents/${own}`);
     expect(gone.statusCode).toBe(404);
@@ -672,6 +867,128 @@ describe.skipIf(!testAdminUrl())('connected apps: links and deletes (0.9.0, APP3
     });
     const scope = await call(a, `/api/v1/apps/documents/${own}`, 'DELETE');
     expect([scope.statusCode, codeOf(scope)]).toEqual([403, 'scope_not_granted']);
+  });
+
+  it('a move to the Trash is told without the title where the family’s wording hides it, to its person and every owner; a let-go is not told (0.9.0-dev.68)', async () => {
+    const a = await connect({ delete_mode: 'trash' }, 'Quiet trasher');
+    // Another owner, who is not the document's person.
+    const second = await h.join(owner, {
+      name: 'Second Owner',
+      email: `second-${randomUUID().slice(0, 8)}@example.test`,
+      role: 'owner',
+    });
+    const own = await make({ title: 'Hidden bill title' });
+    await fileAsOwn(a.appId, 'del-quiet', own);
+    await admin.query(`update household set neutral_wording = 'all' where id = $1`, [
+      owner.household_id,
+    ]);
+    try {
+      const before = alertsSent(h).length;
+      const r = await call(a, `/api/v1/apps/documents/${own}`, 'DELETE');
+      expect(r.json<AppDeleted>()).toEqual({ document_id: own, result: 'trashed' });
+      const told = alertsSent(h)
+        .slice(before)
+        .filter((m) => m.subject === 'Quiet trasher moved a document to the Trash');
+      expect(JSON.stringify(told)).not.toContain('Hidden bill title');
+      const to = (re: RegExp) =>
+        told.filter((m) => re.test(String(m.body))).flatMap((m) => m.account_ids as string[]);
+      expect(to(/moved one of your documents to the Trash/)).toEqual([await accountOf(owner)]);
+      expect(to(/moved a document to the Trash/)).toEqual([await accountOf(second)]);
+    } finally {
+      await admin.query(`update household set neutral_wording = 'sensitive' where id = $1`, [
+        owner.household_id,
+      ]);
+    }
+    // Let go of instead: nothing is told — the document stays where it was.
+    const b = await connect({ delete_mode: 'unlink' }, 'Letting go');
+    const kept = await make({ title: 'Kept bill' });
+    await fileAsOwn(b.appId, 'del-kept', kept);
+    const before = alertsSent(h).length;
+    const r = await call(b, `/api/v1/apps/documents/${kept}`, 'DELETE');
+    expect(r.json<AppDeleted>()).toEqual({ document_id: kept, result: 'unlinked' });
+    expect(
+      alertsSent(h)
+        .slice(before)
+        .some((m) => String(m.subject).includes('Letting go')),
+    ).toBe(false);
+  });
+
+  it('the document’s person is told only if they may see it: a teen of an Adults only paper is not, of an Everyone paper is (0.9.0-dev.68)', async () => {
+    const a = await connect({ delete_mode: 'trash' }, 'Teen trasher');
+    const teen = await h.join(owner, {
+      name: 'Tariq',
+      email: `tariq-${randomUUID().slice(0, 8)}@example.test`,
+      role: 'teen',
+    });
+    const teenAccount = (await accountOf(teen)) as string;
+    const ownerAccount = await accountOf(owner);
+    const hidden = await make({
+      title: 'Adults only bill',
+      visibility: 'adults',
+      owner_member_id: teen.member_id,
+    });
+    await fileAsOwn(a.appId, 'del-teen-hidden', hidden);
+    const seen = await make({ title: 'Everyone bill', owner_member_id: teen.member_id });
+    await fileAsOwn(a.appId, 'del-teen-seen', seen);
+    const trash = async (id: string) => {
+      const before = alertsSent(h).length;
+      const r = await call(a, `/api/v1/apps/documents/${id}`, 'DELETE');
+      expect(r.json<AppDeleted>()).toEqual({ document_id: id, result: 'trashed' });
+      return alertsSent(h)
+        .slice(before)
+        .filter((m) => m.subject === 'Teen trasher moved a document to the Trash');
+    };
+    // Adults only: the teen may not see it, so is told nothing, its title
+    // least of all; the owners are told, by name.
+    const toldHidden = await trash(hidden);
+    const hiddenTo = toldHidden.flatMap((m) => m.account_ids as string[]);
+    expect(hiddenTo).not.toContain(teenAccount);
+    expect(hiddenTo).toContain(ownerAccount);
+    expect(String(toldHidden[0]?.body)).toMatch(/^Teen trasher moved “Adults only bill” to the/);
+    // Everyone: the teen is told it was theirs.
+    const toldSeen = await trash(seen);
+    const theirs = toldSeen.filter((m) => (m.account_ids as string[]).includes(teenAccount));
+    expect(theirs).toHaveLength(1);
+    expect(theirs[0]?.account_ids).toEqual([teenAccount]);
+    expect(String(theirs[0]?.body)).toMatch(
+      /^Teen trasher moved your document “Everyone bill” to the Trash\. /,
+    );
+  });
+
+  it('an app’s Trash emails stop at five a day; the sixth says there are more, to the owners alone (0.9.0-dev.68)', async () => {
+    const a = await connect({ delete_mode: 'trash' }, 'Busy trasher');
+    const ids: string[] = [];
+    for (let i = 1; i <= 7; i++) {
+      const id = await make({ title: `Busy bill ${i}` });
+      await fileAsOwn(a.appId, `del-busy-${i}`, id);
+      ids.push(id);
+    }
+    const before = alertsSent(h).length;
+    for (const id of ids) {
+      const r = await call(a, `/api/v1/apps/documents/${id}`, 'DELETE');
+      expect(r.json<AppDeleted>()).toEqual({ document_id: id, result: 'trashed' });
+    }
+    const sent = alertsSent(h)
+      .slice(before)
+      .filter((m) => String(m.subject).startsWith('Busy trasher'));
+    const named = (n: number) => sent.filter((m) => String(m.body).includes(`“Busy bill ${n}”`));
+    for (const n of [1, 2, 3, 4, 5]) expect(named(n).length, `bill ${n}`).toBeGreaterThan(0);
+    for (const n of [6, 7]) expect(named(n), `bill ${n}`).toEqual([]);
+    const more = sent.filter((m) => m.subject === 'Busy trasher moved more documents to the Trash');
+    expect(more).toHaveLength(1);
+    expect(String(more[0]?.body)).toMatch(/more than 5 documents to the Trash in the last day/);
+    const owners = (
+      await admin.query<{ account_id: string }>(
+        `select account_id from account_household where household_id = $1 and role = 'owner'`,
+        [owner.household_id],
+      )
+    ).rows.map((r) => r.account_id);
+    expect([...(more[0]?.account_ids as string[])].sort()).toEqual([...owners].sort());
+    // Every one is in the activity log all the same.
+    const said = await lines();
+    for (const n of [1, 6, 7]) {
+      expect(said).toContain(`Owner via Busy trasher moved “Busy bill ${n}” to the Trash`);
+    }
   });
 
   it('an Only me paper of its own, or one marked Sensitive, is untouchable', async () => {

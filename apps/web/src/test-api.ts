@@ -1024,7 +1024,8 @@ export interface FakeState {
    * Connected apps (0.9.0, APP1), each as an owner sees it (`member_id`
    * 'me' is the signed-in person's own): given, the vault has them
    * (`features.connected_apps`). An adult is listed only theirs, with
-   * `counts`; anybody else's `counts` is null. Connecting, a change that is
+   * `counts`; an owner every one, each with its `counts` — the app's totals
+   * (0.9.0-dev.68). Connecting, a change that is
    * more than a new name, turning one on or back on, and adding a key ask
    * for a passkey or a code (`connect_app`) while `stepUpNeeded`.
    */
@@ -1774,7 +1775,7 @@ export function installFakeApi(state: FakeState) {
       const seen = (a: ConnectedAppView): ConnectedAppView => ({
         ...a,
         mine: a.member_id === 'me',
-        counts: a.member_id === 'me' ? (a.counts ?? { waiting: 0, filed: 0 }) : null,
+        counts: owner || a.member_id === 'me' ? (a.counts ?? { waiting: 0, filed: 0 }) : null,
       });
       const visible = () =>
         owner

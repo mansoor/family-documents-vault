@@ -123,7 +123,17 @@ export interface AppLinkSession {
   pages: { state: 'ready' | 'drawing' | 'none'; count: number };
   /** When the session ends. */
   ends_at: string;
+  /**
+   * The day the link was opened, on the family's calendar (YYYY-MM-DD):
+   * the page's watermark says it, "Opened through Acme Money · 19 November
+   * 2026" (0.9.0-dev.68).
+   */
+  opened_on: string;
 }
+
+/** The watermark across a view link's pages: the app's name and the day it was opened. */
+export const appLinkWatermark = (app: string, day: string): string =>
+  `Opened through ${app} · ${day}`;
 
 /** What the page says when the link is used, or over: never why. */
 export const APP_LINK_OVER_WORDS =
@@ -756,7 +766,12 @@ export interface ConnectedAppView {
   today: { files: number; bytes: number };
   refused_today: number;
   last_refusal: string | null;
-  /** How many of what it sent wait, and were filed: its person's alone to know; null to anybody else. */
+  /**
+   * How many of what it sent wait, and were filed — counts alone, never
+   * which. Every owner sees the app's own totals, whoever's Inbox they went
+   * to (0.9.0-dev.68); its person, not an owner, what came to their own
+   * Inbox; null to anybody else.
+   */
   counts: { waiting: number; filed: number } | null;
   /** What it may read beyond its own (APP2): each grant, as Settings shows it. */
   grants?: ConnectedAppGrantView[];

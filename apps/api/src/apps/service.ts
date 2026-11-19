@@ -639,6 +639,7 @@ export class AppService {
             reads: this.reads,
             documents: opts.documents,
             address: () => this.address().url,
+            alert: (a) => this.opts.alert(a),
           })
         : null;
     this.autoFile = new AppAutoFile(db, batches, { now: () => this.now() });
@@ -2442,7 +2443,7 @@ export class AppService {
         ? await withPrincipal(this.db, p, (trx) => this.views(trx, p, null))
         : [];
     return {
-      items,
+      items: await this.withTotals(p, items),
       apps_public: this.opts.appsPublic,
       ceilings: { daily_files: this.opts.ceilings.files, daily_bytes: this.opts.ceilings.bytes },
     };
@@ -2517,6 +2518,7 @@ export class AppService {
             .where('key', '<>', NOTE_KIND)
             .execute();
     // What it sent, waiting and filed: its person's alone (0109's rule).
+    // An owner is given the app's own totals instead (withTotals).
     const counted = await trx
       .selectFrom('connected_app_intake')
       .select(['app_id', 'state'])
@@ -2644,9 +2646,40 @@ export class AppService {
   }
 
   private async view(p: Principal, id: string): Promise<ConnectedAppView> {
-    const [v] = await withPrincipal(this.db, p, (trx) => this.views(trx, p, id));
+    const [v] = await this.withTotals(
+      p,
+      await withPrincipal(this.db, p, (trx) => this.views(trx, p, id)),
+    );
     if (!v) throw notHere();
     return v;
+  }
+
+  /**
+   * An owner's view of each app, with its counts: how many of what it sent
+   * wait, and were filed, whoever's Inbox they went to (0.9.0-dev.68) — not
+   * only what came to their own. The rows are each person's alone (0109's
+   * rule), so the vault counts them, once the owner's own transaction is
+   * over: two numbers an app, never which, nor anything of a document.
+   */
+  private async withTotals(p: Principal, views: ConnectedAppView[]): Promise<ConnectedAppView[]> {
+    if (p.role !== 'owner' || views.length === 0) return views;
+    const ids = views.map((v) => v.id);
+    const rows = await withSystem(this.db, p.householdId, (trx) =>
+      trx
+        .selectFrom('connected_app_intake')
+        .select(['app_id', 'state'])
+        .select((eb) => eb.fn.countAll<string>().as('n'))
+        .where('app_id', 'in', ids)
+        .where('state', 'in', ['waiting', 'filed'])
+        .groupBy(['app_id', 'state'])
+        .execute(),
+    );
+    const n = (app: string, state: string) =>
+      Number(rows.find((r) => r.app_id === app && r.state === state)?.n ?? 0);
+    return views.map((v) => ({
+      ...v,
+      counts: { waiting: n(v.id, 'waiting'), filed: n(v.id, 'filed') },
+    }));
   }
 
   /**

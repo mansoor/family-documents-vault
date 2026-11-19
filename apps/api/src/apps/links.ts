@@ -12,18 +12,28 @@ import {
   attachmentDisposition,
   canShareToView,
   deliveredType,
+  HEALTH_CATEGORY,
   isRecordFormat,
   localToday,
   lockInEffect,
+  myWordingOf,
+  neutralUnder,
+  canSee,
+  neutralWordingOf,
   recordFileName,
+  rulesFor,
+  seesAdults,
+  sensitiveOf,
   suspensionInEffect,
   type AppDeleted,
   type AppLinkMinted,
   type AppLinkMode,
   type AppLinkSession,
   type AppScope,
+  type Role,
 } from '@fdv/shared';
 import { sql } from 'kysely';
+import type { AlertRequest } from '../alert-job.js';
 import type { RequestMeta } from '../auth/service.js';
 import type { DocumentService } from '../documents/service.js';
 import { holdForReading } from '../documents/service.js';
@@ -40,7 +50,12 @@ import type { AppCaller } from './service.js';
  * random bytes, kept only as their SHA-256, for one document, the version
  * current when it was minted, and one mode: `view` (the pages the vault
  * drew, on the `/a` page, never the file) or `download` (the file). It is
- * opened within two minutes, and once: the first open turns it into a
+ * opened within two minutes, and once. Opening takes a deliberate step
+ * (0.9.0-dev.68): the link's address asked with GET is a small page that
+ * consumes nothing — a chat's or a mail scanner's preview of the link
+ * fetches it, and the link is still there — and its **Open** button, a
+ * plain form with no script, sends a POST to the same address. That POST,
+ * one click by the person, is the open: it turns the link into a
  * session of ten minutes — a cookie for `/api/v1/app-links/session` alone,
  * kept only as its hash — bound to the address it was opened from (IPv4
  * exactly, IPv6 by its /64). The token's second open, or one too late, is
@@ -54,7 +69,10 @@ import type { AppCaller } from './service.js';
  * may not read at all, is 404. As the owner chose for the app: it lets go
  * (its intake unlinked; the document stays, and leaves its own) or moves it
  * to the Trash as its person would. Either way it lets go of it, so the
- * family taking it out of the Trash keeps it as theirs.
+ * family taking it out of the Trash keeps it as theirs. A move to the Trash
+ * is told (0.9.0-dev.68) to the document's person and the owners, by email,
+ * naming the app — and the document only where the family's neutral
+ * wording (H2) lets it be named to each of them, never when it is sensitive.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -67,6 +85,103 @@ const badRange = () =>
   new ApiError(416, 'range_not_satisfiable', 'That part of the file does not exist.');
 
 const hashOf = (secret: string) => createHash('sha256').update(secret, 'utf8').digest();
+
+/** Whether a link's token is one the vault could have made: anything else is "ended" unasked. */
+export const looksLikeToken = (token: string): boolean => SECRET.test(token);
+
+/**
+ * The page a link's address gives a GET (0.9.0-dev.68): it consumes
+ * nothing, and opens nothing by itself — it has no script. Its **Open**
+ * button sends a POST to the same address, and only that opens the link:
+ * a scanner that fetches the link, or renders it in a browser of its own,
+ * leaves it for the person. Its one style carries a nonce of its own.
+ * `token` is a well-formed token (`looksLikeToken`), so it is safe in the
+ * page as it is.
+ */
+export function openPage(token: string): { html: string; csp: string } {
+  if (!SECRET.test(token)) throw new Error('not a link token');
+  const nonce = randomBytes(16).toString('base64');
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>Open the document</title>
+<style nonce="${nonce}">
+body{margin:0;min-height:100vh;display:grid;place-items:center;font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:#f6f5f2;color:#1f1f1d}
+main{max-width:28rem;padding:24px;text-align:center}
+h1{font-size:22px;margin:0 0 8px}
+p{margin:0 0 20px}
+button{font:inherit;font-weight:600;padding:12px 32px;border-radius:8px;border:0;background:#1d4ed8;color:#fff;cursor:pointer}
+button:focus-visible{outline:3px solid #93b4ff;outline-offset:2px}
+@media (prefers-color-scheme:dark){body{background:#1b1b1a;color:#ecebe8}}
+</style>
+</head>
+<body>
+<main>
+<h1>Open the document</h1>
+<p>This link works once: open it here, in this browser.</p>
+<form method="post" action="${APP_LINK_PATH}/${token}">
+<button type="submit">Open</button>
+</form>
+</main>
+</body>
+</html>
+`;
+  const csp = [
+    "default-src 'none'",
+    `style-src 'nonce-${nonce}'`,
+    "form-action 'self'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+  ].join('; ');
+  return { html, csp };
+}
+
+/** What a browser says of where a request came from: Fetch Metadata, Origin, Referer. */
+export interface OpenFrom {
+  secFetchSite?: string | undefined;
+  origin?: string | undefined;
+  referer?: string | undefined;
+}
+
+/**
+ * Whether the POST that opens a link came from somewhere other than the
+ * link's own page (0.9.0-dev.68), and is refused before the token is used:
+ *
+ * - `Sec-Fetch-Site` `cross-site` or `same-site` — another site's page, or
+ *   another host of the same site. `same-origin`, `none` (typed or
+ *   bookmarked) and its absence (an older browser) pass on to the next.
+ * - Its Origin, else its Referer, naming a host that is not the vault's —
+ *   the one it was asked at, or the one its links are made on. The page is
+ *   sent with `Referrer-Policy: same-origin`, so its own POST carries a
+ *   real Origin. Neither said, or `Origin: null`, proves nothing either
+ *   way: the token itself is the secret. Hosts are compared without their
+ *   port: the web container passes the host on without one.
+ */
+export function crossSite(from: OpenFrom, own: ReadonlyArray<string | null | undefined>): boolean {
+  const site = from.secFetchSite?.trim().toLowerCase();
+  if (site === 'cross-site' || site === 'same-site') return true;
+  const hostOf = (v: string): string | null => {
+    try {
+      return new URL(v).hostname.toLowerCase();
+    } catch {
+      return null;
+    }
+  };
+  const ours = new Set(
+    own.flatMap((h) => {
+      if (!h) return [];
+      const host = hostOf(/^[a-z][a-z0-9+.-]*:\/\//i.test(h) ? h : `http://${h}`);
+      return host ? [host] : [];
+    }),
+  );
+  const said = [from.origin, from.referer].find((v) => v && v !== 'null');
+  if (!said) return false;
+  const host = hostOf(said);
+  return host === null || !ours.has(host);
+}
 
 /**
  * Whether two addresses are the same network for a link's session: an IPv4
@@ -151,6 +266,27 @@ export interface AppLinkOptions {
   documents: DocumentService;
   /** The address the app reaches the vault at: a link is on it too. */
   address: () => string;
+  /** Told by email: a document an app moved to the Trash (0.9.0-dev.68). */
+  alert?: (a: AlertRequest) => Promise<void>;
+}
+
+/** Whom an app's move to the Trash is told to, and how the document may be named to each. */
+interface TrashTold {
+  app: string;
+  title: string | null;
+  sensitive: boolean;
+  health: boolean;
+  household: string | null;
+  /** Documents the app moved to the Trash in the last day, this one counted. */
+  moved: number;
+  people: Array<{
+    account_id: string;
+    role: Role;
+    theirs: boolean;
+    /** Whether they may see the document: anybody who may not is not told. */
+    sees: boolean;
+    my_wording: string | null;
+  }>;
 }
 
 /** What a token's open became: a session, or the page's "used" or "ended". */
@@ -164,6 +300,11 @@ export class AppLinks {
     private readonly db: Db,
     private readonly opts: AppLinkOptions,
   ) {}
+
+  /** The address links are made on: an open from its own page is from there. */
+  linkAddress(): string {
+    return this.opts.address();
+  }
 
   // ------------------------------------------------------------ minting
 
@@ -391,8 +532,10 @@ export class AppLinks {
   // ------------------------------------------------------------ opening
 
   /**
-   * `GET /api/v1/app-links/{token}`: the browser's first open. Within two
-   * minutes of minting, and once: a session of ten minutes, bound to this
+   * `POST /api/v1/app-links/{token}`: the browser's open, from the page the
+   * same address gives a GET (0.9.0-dev.68; until then the GET itself
+   * opened it, and a link preview could use it up). Within two minutes of
+   * minting, and once: a session of ten minutes, bound to this
    * address. Its second open is `used`; one too late, or for a document no
    * longer readable, `ended`. A view's open is the line in the Activity
    * ("Ahmed via Acme Money opened …"); a download's is each file it gives.
@@ -536,6 +679,11 @@ export class AppLinks {
         title: good.title,
         pages,
         ends_at: (link.session_until as Date).toISOString(),
+        // The day it was opened, on the family's calendar: the watermark's.
+        opened_on: localToday(
+          good.caller.timezone,
+          new Date(link.opened_at ?? (link.session_until as Date)),
+        ),
       };
     });
   }
@@ -647,7 +795,8 @@ export class AppLinks {
   async remove(c: AppCaller, id: string, meta: RequestMeta): Promise<AppDeleted> {
     if (!UUID.test(id)) throw notFound();
     const docId = id.toLowerCase();
-    return withSystem(this.db, c.householdId, async (trx) => {
+    const told: { what: TrashTold | null } = { what: null };
+    const out = await withSystem(this.db, c.householdId, async (trx): Promise<AppDeleted> => {
       const app = await trx
         .selectFrom('connected_app')
         .select('delete_mode')
@@ -686,6 +835,7 @@ export class AppLinks {
           detail: appLine(c),
           ip: meta.ip,
         });
+        told.what = await this.trashTold(trx, c, docId);
         return { document_id: docId, result: 'trashed' };
       }
       await appendAudit(trx, {
@@ -699,5 +849,170 @@ export class AppLinks {
       });
       return { document_id: docId, result: 'unlinked' };
     });
+    // Told once the move is kept: never for one that was not.
+    if (told.what) await this.tellTrashed(c.householdId, told.what);
+    return out;
   }
+
+  /**
+   * Whom a move to the Trash is told to (0.9.0-dev.68): the document's
+   * person, when they sign in here, and every owner — each only if they may
+   * see the document (its visibility as their role, or a viewer's
+   * restriction, allows) — read in the move's own transaction, with what
+   * decides how it may be named to each, and how many documents the app
+   * has moved to the Trash in the last day, this one counted.
+   */
+  private async trashTold(trx: Db, c: AppCaller, docId: string): Promise<TrashTold | null> {
+    const doc = await trx
+      .selectFrom('document as d')
+      .leftJoin('effective_document_type as t', 't.key', 'd.type_key')
+      .select([
+        'd.title',
+        'd.visibility',
+        'd.owner_member_id',
+        'd.sensitive',
+        't.sensitive_default',
+        sql<string | null>`coalesce(d.category, t.category)`.as('category'),
+      ])
+      .where('d.id', '=', docId)
+      .executeTakeFirst();
+    if (!doc) return null;
+    const moved = await trx
+      .selectFrom('audit_event')
+      .select((eb) => eb.fn.countAll<string>().as('n'))
+      .where('action', '=', 'document.deleted')
+      .where(sql<boolean>`detail->>'app_id' = ${c.appId}`)
+      .where('at', '>', sql<Date>`now() - interval '1 day'`)
+      .executeTakeFirstOrThrow();
+    const hh = await trx
+      .selectFrom('household')
+      .select('neutral_wording')
+      .where('id', '=', c.householdId)
+      .executeTakeFirst();
+    const people = await trx
+      .selectFrom('account_household as ah')
+      .leftJoin('access_restriction as r', 'r.member_id', 'ah.member_id')
+      .select([
+        'ah.account_id',
+        'ah.role',
+        'ah.member_id',
+        'r.include_adults_only',
+        'r.expires_at',
+        sql<string | null>`(select np.neutral_wording from notification_preference np
+                             where np.account_id = ah.account_id
+                               and np.household_id = ah.household_id)`.as('my_wording'),
+      ])
+      .where('ah.household_id', '=', c.householdId)
+      .where((eb) =>
+        doc.owner_member_id
+          ? eb.or([eb('ah.role', '=', 'owner'), eb('ah.member_id', '=', doc.owner_member_id)])
+          : eb('ah.role', '=', 'owner'),
+      )
+      .execute();
+    return {
+      app: c.name,
+      title: doc.title,
+      sensitive: sensitiveOf(
+        { sensitive: doc.sensitive },
+        { sensitive_default: doc.sensitive_default },
+      ),
+      health: doc.category === HEALTH_CATEGORY,
+      household: hh?.neutral_wording ?? null,
+      moved: Number(moved.n),
+      people: people.map((p) => {
+        const role = p.role;
+        const restriction =
+          p.include_adults_only === null || p.include_adults_only === undefined
+            ? null
+            : { include_adults_only: p.include_adults_only, expires_at: p.expires_at ?? null };
+        return {
+          account_id: p.account_id,
+          role,
+          theirs: doc.owner_member_id !== null && p.member_id === doc.owner_member_id,
+          sees: canSee(
+            { role, memberId: p.member_id, seesAdults: seesAdults(role, restriction) },
+            { visibility: doc.visibility, owner_member_id: doc.owner_member_id },
+          ),
+          my_wording: p.my_wording,
+        };
+      }),
+    };
+  }
+
+  /**
+   * The email itself (0.9.0-dev.68), to each who may see the document: the
+   * app named; the document by its title only where the household's wording
+   * and the person's own (H2) both let it be — never a sensitive one, and
+   * never to a viewer. Its person is told it was theirs; the owners, that
+   * it was the family's.
+   *
+   * At most TRASH_TOLD_PER_DAY a day an app: past them, one email more says
+   * the app has moved more, to the owners alone, and then nothing until its
+   * day has fewer — an app clearing out its documents never floods the
+   * family's inboxes; the activity log still has every one.
+   */
+  private async tellTrashed(householdId: string, t: TrashTold): Promise<void> {
+    const alert = this.opts.alert;
+    if (!alert) return;
+    const send = (a: Omit<AlertRequest, 'householdId' | 'emailOnly'>) =>
+      alert({ householdId, emailOnly: true, ...a }).catch(() => undefined);
+    if (t.moved > TRASH_TOLD_PER_DAY) {
+      if (t.moved !== TRASH_TOLD_PER_DAY + 1) return;
+      const owners = t.people.filter((p) => p.role === 'owner').map((p) => p.account_id);
+      if (owners.length === 0) return;
+      await send({
+        accountIds: owners,
+        subject: `${t.app} moved more documents to the Trash`,
+        body: trashMoreBody(t.app),
+      });
+      return;
+    }
+    const household = neutralWordingOf(t.household);
+    const groups = new Map<string, string[]>();
+    for (const p of t.people) {
+      if (!p.sees) continue;
+      const neutral =
+        t.sensitive ||
+        p.role === 'viewer' ||
+        neutralUnder(rulesFor(household, myWordingOf(p.my_wording)), {
+          sensitive: t.sensitive,
+          health: t.health,
+        });
+      const body = trashBody(t.app, { named: neutral ? null : t.title, theirs: p.theirs });
+      groups.set(body, [...(groups.get(body) ?? []), p.account_id]);
+    }
+    for (const [body, accountIds] of groups) {
+      await send({ accountIds, subject: `${t.app} moved a document to the Trash`, body });
+    }
+  }
+}
+
+/** Emails a day about one app's moves to the Trash, before the one that says there are more. */
+export const TRASH_TOLD_PER_DAY = 5;
+
+/**
+ * What an app's move to the Trash says (0.9.0-dev.68): "Acme Money moved
+ * your document “Water bill” to the Trash", or, where it may not be named,
+ * "one of your documents" / "a document".
+ */
+export function trashBody(app: string, d: { named: string | null; theirs: boolean }): string {
+  const what = d.named
+    ? `${d.theirs ? 'your document ' : ''}“${d.named}”`
+    : d.theirs
+      ? 'one of your documents'
+      : 'a document';
+  return (
+    `${app} moved ${what} to the Trash. It is set to move what it deletes to the Trash ` +
+    '(Settings → Connected apps). To keep it, bring it back from the Trash. ' +
+    'The activity log says when.'
+  );
+}
+
+/** What the owners are told once an app has moved more than TRASH_TOLD_PER_DAY in a day. */
+export function trashMoreBody(app: string): string {
+  return (
+    `${app} has moved more than ${TRASH_TOLD_PER_DAY} documents to the Trash in the last day. ` +
+    'No more emails are sent about it until tomorrow: the activity log lists every one, and ' +
+    'each can be brought back from the Trash.'
+  );
 }

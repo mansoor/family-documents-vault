@@ -1585,12 +1585,16 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
     expect(said).toContain('Ahmed Khan via Acme Money checked on files it sent');
     expect(said.join('\n')).not.toContain('Northgate');
     expect((await lines(sara)).some((l) => l.includes('via Acme Money'))).toBe(false);
-    // Only Ahmed is told how many wait, and were filed.
+    // Ahmed is told how many wait, and were filed; and every owner, the
+    // app's own totals (0.9.0-dev.68) — counts alone.
     expect((await appsOf(ahmed)).items.find((x) => x.id === a.appId)?.counts).toEqual({
       waiting: 0,
       filed: 1,
     });
-    expect((await appsOf(owner)).items.find((x) => x.id === a.appId)?.counts).toBeNull();
+    expect((await appsOf(owner)).items.find((x) => x.id === a.appId)?.counts).toEqual({
+      waiting: 0,
+      filed: 1,
+    });
     expect((await appsOf(owner)).items.find((x) => x.id === a.appId)?.today.files).toBe(1);
   }, 120_000);
 
@@ -1651,6 +1655,20 @@ describe.skipIf(!testAdminUrl())('connected apps (0.9.0, APP1)', () => {
       items: 0,
       sent: 0,
     });
+    // The owners see the app's counts all the same (0.9.0-dev.68): two
+    // numbers, from the vault — the rows stay Sara's, and nothing of what
+    // was sent is in the owner's view. Another adult sees no app of Sara's.
+    const view = (await appsOf(owner)).items.find((x) => x.id === a.appId);
+    expect(view?.counts).toEqual({ waiting: 1, filed: 0 });
+    expect(JSON.stringify(view)).not.toMatch(/walled-1|incoming|external_id/);
+    expect((await appsOf(ahmed)).items.find((x) => x.id === a.appId)).toBeUndefined();
+    // And one app's view, as an owner's change answers it, carries them too.
+    await h.decider(owner);
+    const renamed = await send(owner, 'PATCH', `/api/v1/connected-apps/${a.appId}`, {
+      name: 'Walled in',
+    });
+    expect(renamed.statusCode, renamed.body).toBe(200);
+    expect(renamed.json<ConnectedAppView>().counts).toEqual({ waiting: 1, filed: 0 });
   });
 
   it('a kind it may not send is refused and kept as refused; a refused or expired id is free again', async () => {
