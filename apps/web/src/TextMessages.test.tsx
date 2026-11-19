@@ -182,6 +182,161 @@ describe('Settings → Text messages (SMS1)', () => {
   });
 });
 
+describe('Settings → Text messages through Twilio (0.9.0-dev.71)', () => {
+  const SID = `AC${'0123456789abcdef'.repeat(2)}`;
+  const MG = `MG${'fedcba9876543210'.repeat(2)}`;
+  const TWILIO_WORKING: SmsSettingsView = {
+    ...WORKING,
+    settings: {
+      ...(WORKING.settings as NonNullable<SmsSettingsView['settings']>),
+      provider: 'twilio',
+      mode: null,
+      base_url: null,
+      username: null,
+      password: 'not_set',
+      twilio: {
+        account_sid: SID,
+        auth_token: 'set',
+        from: '+447700900999',
+        messaging_service_sid: null,
+      },
+    },
+  };
+
+  it('chooses Twilio, asks for its Auth Token, says who pays, then a test turns texts on', async () => {
+    const state = at('/settings/texts', { sms: { view: { ...NOT_SET_UP } } });
+    expect(await screen.findByRole('radio', { name: 'SMS Gate for Android' })).toBeChecked();
+    fireEvent.click(screen.getByRole('radio', { name: 'Twilio' }));
+    // SMS Gate's own fields go; Twilio's come, with who pays for the texts.
+    expect(screen.queryByLabelText('Address')).toBeNull();
+    expect(screen.queryByLabelText('Username')).toBeNull();
+    expect(screen.getByTestId('sms-twilio-costs')).toHaveTextContent(
+      /Twilio charges your own Twilio account for every text/,
+    );
+    fireEvent.change(screen.getByLabelText('Account SID'), { target: { value: 'AC123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Type the Account SID/);
+    fireEvent.change(screen.getByLabelText('Account SID'), { target: { value: SID } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Type the Auth Token the Twilio Console shows.',
+    );
+    fireEvent.change(screen.getByLabelText('Auth Token'), { target: { value: 'tw-token' } });
+    fireEvent.change(screen.getByLabelText('From number'), {
+      target: { value: '+44 7700 900999' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(
+      await screen.findByText('Saved. Now send a test: no text is sent until one goes.'),
+    ).toBeVisible();
+    expect(state.sms?.saves).toEqual([
+      {
+        provider: 'twilio',
+        account_sid: SID,
+        auth_token: 'tw-token',
+        from: '+447700900999',
+        messaging_service_sid: null,
+        country: 'GB',
+        monthly_cap: 200,
+      },
+    ]);
+    // The token is never shown again.
+    expect(screen.getByLabelText('Auth Token')).toHaveValue('');
+    expect(screen.getByText(/One is saved, and never shown/)).toBeVisible();
+    fireEvent.change(screen.getByLabelText('Mobile number'), {
+      target: { value: '07700 900123' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send a test' }));
+    expect(await screen.findByText('The test text went.')).toBeVisible();
+    await waitFor(() => expect(screen.getByTestId('sms-status')).toHaveTextContent(/^Working\./));
+    await expectAccessible();
+  });
+
+  it('sends through a Messaging Service instead, keeping the token saved for the same account', async () => {
+    const state = at('/settings/texts', { sms: { view: structuredClone(TWILIO_WORKING) } });
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Twilio' })).toBeChecked());
+    expect(screen.getByLabelText('Account SID')).toHaveValue(SID);
+    expect(screen.getByLabelText('From number')).toHaveValue('+447700900999');
+    fireEvent.click(screen.getByRole('radio', { name: 'A Messaging Service' }));
+    expect(screen.queryByLabelText('From number')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Messaging Service SID'), { target: { value: MG } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText(/^Saved\./);
+    expect(state.sms?.saves?.[0]).toEqual({
+      provider: 'twilio',
+      account_sid: SID,
+      from: null,
+      messaging_service_sid: MG,
+      country: 'GB',
+      monthly_cap: 200,
+    });
+    // Another account needs its own token.
+    fireEvent.change(screen.getByLabelText('Account SID'), {
+      target: { value: `AC${'1'.repeat(32)}` },
+    });
+    expect(screen.getByText(/You changed the Account SID: type its Auth Token/)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Type the Auth Token again for the new Account SID.',
+    );
+  });
+
+  it('switching provider says it waits for a test, and the password or token is typed again', async () => {
+    const state = at('/settings/texts', { sms: { view: structuredClone(WORKING) } });
+    expect(await screen.findByTestId('sms-status')).toHaveTextContent(/^Working\./);
+    // The form has started from what the vault has.
+    await waitFor(() =>
+      expect(screen.getByLabelText('Address')).toHaveValue('http://192.168.1.20:8080'),
+    );
+    expect(screen.queryByTestId('sms-switching')).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: 'Twilio' }));
+    expect(screen.getByTestId('sms-switching')).toHaveTextContent(
+      'Saving switches the vault to Twilio: SMS Gate’s settings and password are forgotten, and no text is sent until a test goes.',
+    );
+    fireEvent.change(screen.getByLabelText('Account SID'), { target: { value: SID } });
+    fireEvent.change(screen.getByLabelText('From number'), {
+      target: { value: '+447700900999' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Type the Auth Token the Twilio Console shows.',
+    );
+    fireEvent.change(screen.getByLabelText('Auth Token'), { target: { value: 'tw-token' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(
+      await screen.findByText('Saved. Now send a test: no text is sent until one goes.'),
+    ).toBeVisible();
+    expect(screen.getByTestId('sms-status')).toHaveTextContent('Saved, not yet tested.');
+    expect(state.sms?.saves?.[0]).toMatchObject({ provider: 'twilio' });
+    // And back: SMS Gate's password is asked for again. (Clicked until the
+    // form has taken in the settings just saved, which it does once loaded.)
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('radio', { name: 'SMS Gate for Android' }));
+      expect(screen.getByTestId('sms-switching')).toHaveTextContent(
+        /^Saving switches the vault to SMS Gate/,
+      );
+    });
+    fireEvent.change(screen.getByLabelText('Address'), {
+      target: { value: 'http://192.168.1.20:8080' },
+    });
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'sms' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Type the password the SMS Gate app shows.',
+    );
+    // Turning texts off says what is forgotten.
+    cleanup();
+    at('/settings/texts', { sms: { view: structuredClone(TWILIO_WORKING) } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Turn off text messages' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Turn off text messages?' });
+    expect(dialog).toHaveTextContent(/The vault forgets Twilio and its Auth Token, and sends/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Turn off' }));
+    expect(
+      await screen.findByText('Removed, with its Auth Token. The vault sends no texts now.'),
+    ).toBeVisible();
+  });
+});
+
 describe('a mobile number on a profile (SMS1)', () => {
   it('somebody adds their own, and the code texted to it confirms it', async () => {
     at('/people/me', { sms: { view: structuredClone(WORKING) } }, 'adult');

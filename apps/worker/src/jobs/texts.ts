@@ -1,8 +1,8 @@
-import { openSmsPassword } from '@fdv/crypto';
+import { openSmsSecret } from '@fdv/crypto';
 import {
   householdZone,
   sendSms,
-  smsGate,
+  smsProviders,
   withSystem,
   type Db,
   type SmsProviderFactory,
@@ -93,13 +93,13 @@ export function isTextJob(data: unknown): data is TextJob {
 
 export interface TextDeps {
   app: Db;
-  /** deriveKey(master, SMS_PASSWORD_PURPOSE): SMS Gate's password opens under it. */
+  /** deriveKey(master, SMS_PASSWORD_PURPOSE): SMS Gate's password and Twilio's token open under it. */
   smsKey: Buffer;
   /** deriveKey(master, 'smtp-credentials'): for the email sent instead. */
   smtpKey: Buffer;
   /** Where the app lives, for the email sent instead. */
   baseUrl: string;
-  /** Whatever sends a text: SMS Gate, unless a test stands in. */
+  /** Whatever sends a text: SMS Gate or Twilio, unless a test stands in. */
   provider?: SmsProviderFactory;
   /** Puts a text back on the queue until `at`: pg-boss's startAfter. */
   later: (job: TextJob, at: Date) => Promise<void>;
@@ -197,8 +197,8 @@ async function readerOf(db: Db, householdId: string, accountId: string): Promise
 export function createTexter(deps: TextDeps): Texter {
   const now = () => deps.now?.() ?? new Date();
   const way: SmsWay = {
-    open: (sealed, householdId, to) => openSmsPassword(deps.smsKey, sealed, householdId, to),
-    provider: deps.provider ?? smsGate,
+    open: (sealed, householdId, to) => openSmsSecret(deps.smsKey, sealed, householdId, to),
+    provider: deps.provider ?? smsProviders,
   };
 
   /**

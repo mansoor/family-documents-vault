@@ -129,6 +129,7 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       ['smtp_settings', 'password_encrypted'],
       ['mail_in_mailbox', 'password_encrypted'],
       ['sms_settings', 'password_encrypted'],
+      ['sms_settings', 'twilio_token_encrypted'],
       ['share_link', 'link_copy_sealed'],
     ]) {
       const { rows } = await admin.query<{ v: string }>(

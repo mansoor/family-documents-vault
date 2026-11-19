@@ -307,7 +307,7 @@ export function settingsGroups(
         'texts',
         '/settings/texts',
         'Text messages',
-        'Texts through your own SMS Gate: codes for mobile numbers',
+        'Texts through SMS Gate or Twilio: codes for mobile numbers',
       ),
     );
   }

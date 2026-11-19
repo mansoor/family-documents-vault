@@ -719,7 +719,7 @@ npm or pnpm and no token (from CI too):
 ```json
 {
   "dependencies": {
-    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.70/fdv-client-0.9.0-dev.70.tgz"
+    "@fdv/client": "https://github.com/mansoor/family-documents-vault/releases/download/v0.9.0-dev.71/fdv-client-0.9.0-dev.71.tgz"
   }
 }
 ```
@@ -1987,6 +1987,19 @@ A database restored by hand — loaded with `psql` from `decrypt-backup <file> o
 Each person chooses what they want: the day's reminders on their devices, the same by email, and a summary every Sunday evening.
 
 **Neutral wording.** Emails and notifications can be read by more people than the family — whoever runs the mail server, or anyone who picks up a phone — so they need not name your documents. In **Settings → Privacy → Neutral wording in notifications and email**, an owner chooses which documents are not named: **Off** (every document is named by its title), **Health documents only** (documents in the Medical category), **Sensitive documents only** (the default: documents marked Sensitive), or **All documents**. A document not named is said as "A reminder about a document — Due in 7 days", with no title, kind, person or note. A change that would name a document the old choice left unnamed asks the owner to confirm it's them. Each person can also choose Health, Sensitive or All documents for what is sent to them in **Settings → Notifications**: a document is left unnamed when the household's choice or theirs says so, so the household's choice always applies as well. It covers the email digest and the Sunday summary, and notifications in the browser. Texts and the phone app's notifications never name a document anyway.
+
+### Text messages
+
+The vault can send texts: the codes that confirm a mobile number, sign-in, step-up and reset codes, the alerts and reminders people ask for by text, and links you send. An owner sets it up in **Settings → Server and reading → Text messages**, choosing who sends them:
+
+- **SMS Gate for Android** — an app on a phone your family owns ([sms-gate.app](https://sms-gate.app)), reached on your home network (recommended), through SMS Gate's cloud relay, or through a server of your own. Texts go out on that phone's own plan.
+- **Twilio** — a paid service on the internet. Sign up at [twilio.com](https://www.twilio.com), buy a number that can send texts (or set up a Messaging Service), and copy the **Account SID** and **Auth Token** from the Twilio Console's front page. In Settings, choose Twilio, paste them, and give either the **From number** (with its country code, such as `+447700900123`) or the **Messaging Service SID** (`MG…`). If your family's numbers are in another country than the Twilio number's, allow that country under the Console's Geo permissions; a trial account texts only the numbers verified in it.
+
+**Twilio's costs are yours.** Twilio charges your own Twilio account for every text, at its prices; the vault adds nothing, pays for nothing and never sees your bill. The **most texts in a month** setting (200 unless you change it) caps what the vault sends, whatever asks — links take half of it at most, so sign-in codes always have room — and the screen shows how many have gone this month.
+
+Whichever you choose, nothing is sent until **Send a test** goes through it, and changing provider, number, account or secret waits for a test of its own. One provider at a time: switching forgets the other's settings and its password or Auth Token. The password and the Auth Token are kept encrypted under the master key (rotating it moves them, and so does a restore of an older backup), are never shown again, and are never in an export or a log. The vault asks Twilio how each text is doing, as it asks SMS Gate; Twilio never calls the vault, so nothing has to reach your server from the internet. A text is never sent twice: if Twilio can't say whether it took one (a server error, a dropped connection), the vault counts it as sent and leaves it, so check the Twilio Console's logs if somebody says a code never came. A text never names a document.
+
+Only SMS Gate and Twilio for now. The vault sends texts through one small interface, so another provider (Vonage, MessageBird or Plivo, say) can follow without changing anything that sends a text.
 
 ### Notifications on the phone app
 

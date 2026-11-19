@@ -145,11 +145,11 @@ export interface Harness {
   texts: SentText[];
 }
 
-/** A text the harness's SMS Gate took: to whom, and what it said. */
+/** A text the harness's provider took: to whom, and what it said. */
 export interface SentText {
   to: string;
   text: string;
-  /** Where it was asked to go, as the household set it up. */
+  /** Where it was asked to go, as the household set it up: SMS Gate's address, or `twilio`. */
   baseUrl: string;
 }
 
@@ -403,7 +403,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
   const texts: SentText[] = [];
   const delivering: SmsProviderFactory = (c): SmsProvider => ({
     send: async (to, text) => {
-      texts.push({ to, text, baseUrl: c.baseUrl });
+      texts.push({ to, text, baseUrl: c.provider === 'twilio' ? 'twilio' : c.baseUrl });
       return { id: `text-${texts.length}`, state: 'delivered' };
     },
     state: async () => ({ state: 'delivered' }),

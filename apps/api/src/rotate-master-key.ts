@@ -56,6 +56,7 @@ const SEALED_LABEL: Record<SealedName, [one: string, many: string]> = {
   smtpPasswords: ['mail (SMTP) password', 'mail (SMTP) passwords'],
   mailInPasswords: ['household mailbox (IMAP) password', 'household mailbox (IMAP) passwords'],
   smsPasswords: ['text messages (SMS Gate) password', 'text messages (SMS Gate) passwords'],
+  twilioTokens: ['text messages (Twilio) Auth Token', 'text messages (Twilio) Auth Tokens'],
   shareLinkCopies: ['share link copy', 'share link copies'],
   uploadRequestCopies: ['request link copy', 'request link copies'],
   aiReaderKeys: ['AI reader API key', 'AI reader API keys'],

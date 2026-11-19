@@ -9,4 +9,5 @@ export * from './type-etag.js';
 export * from './zone.js';
 export * from './sms-gate.js';
 export * from './sms-send.js';
+export * from './sms-twilio.js';
 export * from './ai-reader-month.js';

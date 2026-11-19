@@ -122,6 +122,22 @@ describe('what the log may say about a request (0.5.0)', () => {
       }),
     );
     expect(JSON.stringify(row)).not.toContain('7700900123');
+    // Twilio (0.9.0-dev.71): its Auth Token travels in a PUT body (never
+    // logged) and in a Basic header beside the Account SID; were either, or
+    // the number Twilio's own words name, to reach an error, they are cut.
+    const sid = `AC${'0123456789abcdef'.repeat(2)}`;
+    const twilioBasic = Buffer.from(`${sid}:twilio-auth-token-9f8e`).toString('base64');
+    const twilio = errorForLog(
+      new Error(
+        `Twilio refused: Authorization: Basic ${twilioBasic}; The 'To' number +447700900123 is not a valid phone number.`,
+      ),
+    );
+    expect(twilio.message).toBe(
+      "Twilio refused: Authorization: Basic [key]; The 'To' number [number] is not a valid phone number.",
+    );
+    expect(JSON.stringify(twilio)).not.toContain(twilioBasic);
+    expect(JSON.stringify(twilio)).not.toContain('7700900123');
+    expect(loggableUrl('/api/v1/sms/settings')).toBe('/api/v1/sms/settings');
     // An AI reader's key as it is sent (AIR1): never in an error's words.
     const keyed = errorForLog(new Error('refused: Authorization: Bearer sk-test-abcd-1234'));
     expect(keyed.message).toBe('refused: Authorization: Bearer [key]');

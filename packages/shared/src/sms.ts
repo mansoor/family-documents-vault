@@ -21,16 +21,50 @@ import {
  * text — each off until they turn it on, only ever to their own confirmed
  * number, and never in their quiet hours unless it is about their own
  * account's safety. A text never names a document: a count, or a headline.
+ *
+ * Since 0.9.0-dev.71 an owner may choose Twilio instead of SMS Gate: one
+ * provider at a time, tested before it sends, as SMS Gate is.
  */
+
+/**
+ * Who sends the household's texts (0.9.0-dev.71): SMS Gate for Android, a
+ * phone the family owns, or Twilio, a paid service on the internet. One at
+ * a time; another provider (Vonage, MessageBird, Plivo) would be a new
+ * value here and a new `SmsProvider` behind it.
+ */
+export type SmsProviderKind = 'sms_gate' | 'twilio';
+export const SMS_PROVIDERS: readonly SmsProviderKind[] = ['sms_gate', 'twilio'];
+
+/** Each provider, as Settings offers it. */
+export const SMS_PROVIDER_WORDS: Record<SmsProviderKind, { name: string; hint: string }> = {
+  sms_gate: {
+    name: 'SMS Gate for Android',
+    hint: 'An app on a phone your family owns sends the texts, on that phone’s own plan.',
+  },
+  twilio: {
+    name: 'Twilio',
+    hint: 'A paid service on the internet sends the texts. Twilio charges your own account for each one.',
+  },
+};
 
 /** How the vault reaches SMS Gate. */
 export type SmsMode = 'local' | 'cloud' | 'private';
 export const SMS_MODES: readonly SmsMode[] = ['local', 'cloud', 'private'];
 
+/** How a text goes: SMS Gate's way of being reached, or Twilio. For the words said of a problem. */
+export type SmsVia = SmsMode | 'twilio';
+
+/** A Twilio Account SID: AC and 32 hex digits. */
+export const TWILIO_ACCOUNT_SID = /^AC[0-9a-fA-F]{32}$/;
+/** A Twilio Messaging Service SID: MG and 32 hex digits. */
+export const TWILIO_MESSAGING_SERVICE_SID = /^MG[0-9a-fA-F]{32}$/;
+/** Where Twilio's API is. Only a test points the vault anywhere else. */
+export const TWILIO_API_URL = 'https://api.twilio.com';
+
 /** Whether a test text has gone since the settings were last saved: only `ok` sends. */
 export type SmsStatus = 'untested' | 'ok' | 'failed';
 
-/** What became of a text, as SMS Gate last said; `not_sent`: SMS Gate never took it. */
+/** What became of a text, as its provider last said; `not_sent`: the provider never took it. */
 export type SmsState = 'pending' | 'processed' | 'sent' | 'delivered' | 'failed' | 'not_sent';
 
 /**
@@ -162,12 +196,23 @@ export function maskPhone(e164: string): string {
   return `•••• •••${phoneTail(e164)}`;
 }
 
-/** The household's SMS Gate, as an owner sees it: never its password, only whether one is set. */
+/**
+ * The household's texts, as an owner sees them: never a password or a
+ * token, only whether one is set. Since 0.9.0-dev.71 `provider` says who
+ * sends them; for Twilio `mode`, `base_url` and `username` are null and
+ * `password` is `not_set`, and `twilio` says the rest.
+ */
 export interface SmsSettings {
-  mode: SmsMode;
-  base_url: string;
-  username: string;
+  /** Absent from vaults before 0.9.0-dev.71, which have SMS Gate alone: read absent as `sms_gate`. */
+  provider?: SmsProviderKind;
+  /** SMS Gate's: null for Twilio. */
+  mode: SmsMode | null;
+  base_url: string | null;
+  username: string | null;
+  /** SMS Gate's password. */
   password: 'set' | 'not_set';
+  /** Twilio's settings, while Twilio sends the texts; null for SMS Gate, absent from older vaults. */
+  twilio?: TwilioSettings | null;
   country: string;
   monthly_cap: number;
   status: SmsStatus;
@@ -190,8 +235,22 @@ export interface SmsSettingsView {
   cloud_url: string;
 }
 
-/** PUT /sms/settings: the password left out keeps the one set (unless the address or sign-in changed). */
-export interface SmsSettingsInput {
+/** Twilio, as an owner set it up: never the Auth Token, only whether one is set. */
+export interface TwilioSettings {
+  account_sid: string;
+  auth_token: 'set' | 'not_set';
+  /** The number texts come from (E.164), or null when a Messaging Service sends them. */
+  from: string | null;
+  /** The Messaging Service that sends them (MG…), or null when `from` does. */
+  messaging_service_sid: string | null;
+}
+
+/**
+ * PUT /sms/settings for SMS Gate: the password left out keeps the one set
+ * (unless the address or sign-in changed). `provider` may be left out.
+ */
+export interface SmsGateSettingsInput {
+  provider?: 'sms_gate' | undefined;
   mode: SmsMode;
   /** Ignored for `cloud`. */
   base_url?: string | null | undefined;
@@ -200,6 +259,24 @@ export interface SmsSettingsInput {
   country: string;
   monthly_cap: number;
 }
+
+/**
+ * PUT /sms/settings for Twilio (0.9.0-dev.71): the Auth Token left out
+ * keeps the one set, unless the Account SID changed. Exactly one of `from`
+ * and `messaging_service_sid`.
+ */
+export interface TwilioSettingsInput {
+  provider: 'twilio';
+  account_sid: string;
+  auth_token?: string | undefined;
+  from?: string | null | undefined;
+  messaging_service_sid?: string | null | undefined;
+  country: string;
+  monthly_cap: number;
+}
+
+/** PUT /sms/settings. */
+export type SmsSettingsInput = SmsGateSettingsInput | TwilioSettingsInput;
 
 /** POST /sms/settings/test. */
 export interface SmsTestInput {

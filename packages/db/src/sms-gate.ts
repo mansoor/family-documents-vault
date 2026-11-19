@@ -6,7 +6,8 @@ import { isLoopbackName, isPrivateAddress, type SmsMode, type SmsState } from '@
 
 /**
  * Sending a text (0.9.0, SMS1): what the vault asks of whatever sends it,
- * and SMS Gate for Android (sms-gate.app), the one that does today.
+ * and SMS Gate for Android (sms-gate.app), the first that does. Twilio, the
+ * second (0.9.0-dev.71), is in sms-twilio.ts.
  *
  * SMS Gate is an app on a phone the family owns. It answers one HTTP API,
  * reached three ways: on the home network (`local`, http or https to the
@@ -38,19 +39,48 @@ export interface SmsStateNow {
   error?: string;
 }
 
-/** Whatever sends the household's texts: SMS Gate today; a test's fake; another, one day. */
+/**
+ * Whatever sends the household's texts: SMS Gate or Twilio (0.9.0-dev.71);
+ * a test's fake; another (Vonage, MessageBird, Plivo), one day — a class
+ * that sends one text to one number and says how a text it took stands,
+ * in the vault's states, and an `SmsConnection` of its own.
+ */
 export interface SmsProvider {
   send(to: string, text: string): Promise<SmsSent>;
-  state(id: string): Promise<SmsStateNow>;
+  /** How a text stands; `within`, when given, bounds the asking (Send a test's deadline). */
+  state(id: string, within?: SmsAskWithin): Promise<SmsStateNow>;
 }
 
-/** Where and as whom a provider signs in: what an owner set up. */
-export interface SmsConnection {
+/**
+ * How long one ask may take, at most, and whether a provider may try again
+ * within it: Send a test passes what is left of its wait, and no retries,
+ * so it answers within its deadline.
+ */
+export interface SmsAskWithin {
+  timeoutMs?: number | undefined;
+  retry?: boolean | undefined;
+}
+
+/** Where and as whom SMS Gate signs in: what an owner set up. `provider` may be left out. */
+export interface SmsGateConnection {
+  provider?: 'sms_gate' | undefined;
   mode: SmsMode;
   baseUrl: string;
   username: string;
   password: string;
 }
+
+/** Twilio's account, its Auth Token, and who the texts come from: a number or a Messaging Service. */
+export interface TwilioConnection {
+  provider: 'twilio';
+  accountSid: string;
+  authToken: string;
+  from: string | null;
+  messagingServiceSid: string | null;
+}
+
+/** What an owner set up, for whichever provider they chose. */
+export type SmsConnection = SmsGateConnection | TwilioConnection;
 
 /** Makes the provider for a household's settings. */
 export type SmsProviderFactory = (c: SmsConnection) => SmsProvider;
@@ -66,15 +96,29 @@ export type SmsProviderFactory = (c: SmsConnection) => SmsProvider;
  *    only the local server may be.
  *  - `refused`: any other answer than the one asked for (`status` says which).
  *  - `not_found`: it does not know that text (404 to a state).
+ *  - `unconfirmed`: a send may have reached the provider, and it did not
+ *    say whether it took it (Twilio's 5xx, a broken connection, no answer
+ *    in time). Counted as sent, its delivery unknown, and never sent again
+ *    by the vault: sending again could send it twice.
+ *
+ * `code` is the provider's own number for why, when it gives one (Twilio's
+ * error codes, such as 21211): never its words, which can hold the number.
  */
 export type SmsProblem =
-  'unauthorised' | 'timeout' | 'unreachable' | 'address_refused' | 'refused' | 'not_found';
+  | 'unauthorised'
+  | 'timeout'
+  | 'unreachable'
+  | 'address_refused'
+  | 'refused'
+  | 'not_found'
+  | 'unconfirmed';
 
 export class SmsProviderError extends Error {
   constructor(
     readonly problem: SmsProblem,
     message: string,
     readonly status?: number,
+    readonly code?: number,
   ) {
     super(message);
     this.name = 'SmsProviderError';
@@ -156,7 +200,7 @@ export class SmsGateProvider implements SmsProvider {
   private readonly lookup: LookupFunction;
 
   constructor(
-    private readonly c: SmsConnection,
+    private readonly c: SmsGateConnection,
     opts: SmsGateOptions = {},
   ) {
     this.base = new URL(c.baseUrl.replace(/\/+$/, ''));
@@ -177,8 +221,13 @@ export class SmsGateProvider implements SmsProvider {
     return { id: body.id.slice(0, 200), state: stateOf(body.state) };
   }
 
-  async state(id: string): Promise<SmsStateNow> {
-    const answer = (await this.request('GET', `/messages/${encodeURIComponent(id)}`)) as {
+  async state(id: string, within?: SmsAskWithin): Promise<SmsStateNow> {
+    const answer = (await this.request(
+      'GET',
+      `/messages/${encodeURIComponent(id)}`,
+      undefined,
+      within?.timeoutMs,
+    )) as {
       state?: unknown;
       recipients?: Array<{ state?: unknown; error?: unknown }>;
     } | null;
@@ -190,7 +239,14 @@ export class SmsGateProvider implements SmsProvider {
   }
 
   /** One request, signed in, ten seconds at most, never following a redirect. */
-  private request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> {
+  private request(
+    method: 'GET' | 'POST',
+    path: string,
+    body?: unknown,
+    /** At most this, never more than the provider's own wait. */
+    withinMs?: number,
+  ): Promise<unknown> {
+    const timeoutMs = Math.max(1, Math.min(withinMs ?? this.timeoutMs, this.timeoutMs));
     const url = new URL(this.base.href.replace(/\/+$/, '') + path);
     const host = url.hostname.replace(/^\[|\]$/g, '');
     // The cloud and a private server: an address typed as a number, or a
@@ -294,11 +350,11 @@ export class SmsGateProvider implements SmsProvider {
           reject(
             new SmsProviderError(
               'timeout',
-              `SMS Gate did not answer within ${Math.round(this.timeoutMs / 1000)} seconds`,
+              `SMS Gate did not answer within ${Math.round(timeoutMs / 1000)} seconds`,
             ),
           ),
         );
-      }, this.timeoutMs);
+      }, timeoutMs);
       req.on('error', (err) =>
         finish(() =>
           reject(
@@ -315,4 +371,4 @@ export class SmsGateProvider implements SmsProvider {
 }
 
 /** SMS Gate, as the vault reaches it in production. */
-export const smsGate: SmsProviderFactory = (c) => new SmsGateProvider(c);
+export const smsGate = (c: SmsGateConnection): SmsProvider => new SmsGateProvider(c);

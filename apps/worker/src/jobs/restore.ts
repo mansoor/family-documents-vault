@@ -1451,7 +1451,10 @@ const OWNERS_SETTINGS = [
   { table: 'mail_in_mailbox', what: 'the household mailbox' },
   { table: 'settings_check', what: 'a check of the scanner folder or the mailbox' },
   // The household's SMS Gate, its password sealed; and the texts sent
-  // through it (0084, SMS1).
+  // through it (0084, SMS1). Since 0118 (0.9.0-dev.71) a Twilio account
+  // instead, its Auth Token sealed the same way: moved onto the current
+  // master key with the rest (MASTER_SEALED, twilioTokens) before anything
+  // reads it, and skipped for a backup older than its column.
   { table: 'sms_settings', what: 'how the vault sends text messages' },
   { table: 'sms_message', what: 'the texts the vault sent' },
   // The household's AI reader, its key sealed (0089, AIR1).

@@ -98,6 +98,17 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
        values ($1, 'local', 'http://192.168.1.20:8080', 'home@example.test')`,
       [h],
     );
+    // And a household of its own whose texts go through Twilio (0.9.0-dev.71):
+    // one provider a household, so its token is on another row. Its SID is
+    // random, as seed() runs once a household; it needs no scope keys.
+    const t = randomUUID();
+    await admin.query("insert into household (id, name) values ($1, 'T')", [t]);
+    const twilioSid = `AC${randomUUID().replace(/-/g, '')}`;
+    await admin.query(
+      `insert into sms_settings (household_id, provider, twilio_account_sid, twilio_from)
+       values ($1, 'twilio', $2, '+447700900999')`,
+      [t, twilioSid],
+    );
     // The household's AI reader set up in Settings (0.9.0, AIR1).
     await admin.query(
       `insert into ai_reader (household_id, kind, base_url, model, runs_at)
@@ -132,17 +143,17 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
       ai_reader: h,
     };
     for (const s of MASTER_SEALED) {
-      const id = ids[s.table] as string;
+      const id = (s.name === 'twilioTokens' ? t : ids[s.table]) as string;
       const value = Buffer.from(`${s.name} of ${id}`);
       await admin.query(`update ${s.table} set ${s.column} = $1 where ${s.key} = $2`, [
         sealBound(
           deriveKey(secret, s.purpose),
           value,
-          sealedAad(s, id, { ...BOX, household_id: h }),
+          sealedAad(s, id, { ...BOX, household_id: h, twilio_account_sid: twilioSid }),
         ),
         id,
       ]);
-      plain.set(`${s.table}:${id}`, value);
+      plain.set(`${s.table}.${s.column}:${id}`, value);
     }
   }
 
@@ -172,7 +183,7 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
       );
       for (const r of rows) {
         out.set(
-          `${s.table}:${r.id}`,
+          `${s.table}.${s.column}:${r.id}`,
           openBound(deriveKey(secret, s.purpose), r.v, sealedAad(s, r.id, r)),
         );
       }
@@ -224,6 +235,7 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
         smtpPasswords: 2,
         mailInPasswords: 2,
         smsPasswords: 2,
+        twilioTokens: 2,
         shareLinkCopies: 2,
         uploadRequestCopies: 2,
         aiReaderKeys: 2,
@@ -275,6 +287,7 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
         smtpPasswords: 1,
         mailInPasswords: 1,
         smsPasswords: 1,
+        twilioTokens: 1,
         shareLinkCopies: 1,
         uploadRequestCopies: 1,
         aiReaderKeys: 1,
@@ -282,7 +295,7 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
       unchanged: 3,
     });
     expect(await openAll(NEW)).toEqual(plain);
-    expect(await checkMasterKey(admin, NEW)).toEqual({ checked: 11 });
+    expect(await checkMasterKey(admin, NEW)).toEqual({ checked: 12 });
   });
 
   it('refuses whole, naming it, a value that opens with neither key, and moves nothing', async () => {
@@ -302,7 +315,7 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
       `smtp_settings.password_encrypted of ${h}`,
     ]);
     // Everything else opened, with one key or the other.
-    expect((refused as MasterKeyMismatch).opened).toBe(10);
+    expect((refused as MasterKeyMismatch).opened).toBe(11);
     expect(await bytes()).toBe(before);
   });
 
@@ -334,12 +347,12 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
 
   it('the check reads only, and names what does not open and whether the rest does', async () => {
     await seed(OLD);
-    expect(await checkMasterKey(admin, OLD)).toEqual({ checked: 11 });
+    expect(await checkMasterKey(admin, OLD)).toEqual({ checked: 12 });
     const wrong = await checkMasterKey(admin, NEW).catch((e: unknown) => e);
     expect(wrong).toBeInstanceOf(MasterKeyMismatch);
-    expect((wrong as MasterKeyMismatch).unopened).toHaveLength(11);
+    expect((wrong as MasterKeyMismatch).unopened).toHaveLength(12);
     expect((wrong as MasterKeyMismatch).opened).toBe(0);
-    expect((wrong as MasterKeyMismatch).message).toMatch(/scope key .* and 8 more do not open/);
+    expect((wrong as MasterKeyMismatch).message).toMatch(/scope key .* and 9 more do not open/);
   });
 
   it('refuses a connection row-level security applies to, which would see one household at most', async () => {

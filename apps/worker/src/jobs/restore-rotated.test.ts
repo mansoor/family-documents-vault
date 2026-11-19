@@ -13,10 +13,12 @@ import {
   openBound,
   openMailboxPassword,
   openSmsPassword,
+  openTwilioToken,
   ScopeKeys,
   sealBound,
   sealMailboxPassword,
   sealSmsPassword,
+  sealTwilioToken,
   SMS_PASSWORD_PURPOSE,
   openShareLinkCopy,
   sealShareLinkCopy,
@@ -61,6 +63,13 @@ const MAILBOX = 'the household mailbox app password';
 const SMS = 'the household SMS Gate password';
 /** The SMS Gate's mode, address and sign-in: bound into its password. */
 const GATE = { mode: 'local', baseUrl: 'http://192.168.1.20:8080', username: 'sms' };
+/**
+ * A Twilio account's Auth Token (0.9.0-dev.71), and the Account SID bound
+ * into it: one provider a household, so a second household has it, and one
+ * vault moves both.
+ */
+const TWILIO_TOKEN = 'the household Twilio auth token';
+const TWILIO = { accountSid: `AC${randomUUID().replace(/-/g, '')}` };
 /** The household's AI reader's API key, and the reader it was typed for (0.9.0, AIR1). */
 const AI_KEY = 'the household AI reader key';
 const READER = { kind: 'ollama', baseUrl: 'http://192.168.1.30:11434' };
@@ -115,6 +124,8 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
       account: string;
       vault: string;
       share: string;
+      /** The household whose texts go through Twilio. */
+      twilioHousehold: string;
     };
     /** A vault whose keys and secrets are all under OLD. */
     let old: Vault;
@@ -215,6 +226,28 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
          values ($1, 'local', 'http://192.168.1.20:8080', 'sms', $2)`,
         [household, sealSmsPassword(deriveKey(secret, SMS_PASSWORD_PURPOSE), SMS, household, GATE)],
       );
+      // And a second household whose texts go through Twilio (0.9.0-dev.71):
+      // its Auth Token under the same key, moved with the rest.
+      const twilioHousehold = randomUUID();
+      await query(t.adminUrl, "insert into household (id, name) values ($1, 'Twilio')", [
+        twilioHousehold,
+      ]);
+      await query(
+        t.adminUrl,
+        `insert into sms_settings (household_id, provider, twilio_account_sid, twilio_from,
+                                   twilio_token_encrypted)
+         values ($1, 'twilio', $2, '+447700900999', $3)`,
+        [
+          twilioHousehold,
+          TWILIO.accountSid,
+          sealTwilioToken(
+            deriveKey(secret, SMS_PASSWORD_PURPOSE),
+            TWILIO_TOKEN,
+            twilioHousehold,
+            TWILIO,
+          ),
+        ],
+      );
       // The household's AI reader set in Settings (0.9.0, AIR1): its key the same.
       await query(
         t.adminUrl,
@@ -247,7 +280,14 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
           sealShareLinkCopy(deriveKey(secret, SHARE_LINK_COPY_PURPOSE), LINK, household, shareId),
         ],
       );
-      return { db: t, household, account: accountId, vault: vaultId, share: shareId };
+      return {
+        db: t,
+        household,
+        account: accountId,
+        vault: vaultId,
+        share: shareId,
+        twilioHousehold,
+      };
     }
 
     const backup = async (from: TestDatabase, key: Buffer) =>
@@ -324,6 +364,18 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
           v.household,
           GATE,
         ),
+        twilio: openTwilioToken(
+          deriveKey(secret, SMS_PASSWORD_PURPOSE),
+          (
+            await query<{ p: Buffer }>(
+              t.adminUrl,
+              'select twilio_token_encrypted as p from sms_settings where household_id = $1',
+              [v.twilioHousehold],
+            )
+          )[0]?.p as Buffer,
+          v.twilioHousehold,
+          TWILIO,
+        ),
         link: openShareLinkCopy(
           deriveKey(secret, SHARE_LINK_COPY_PURPOSE),
           (
@@ -357,6 +409,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
       mail: MAIL,
       mailbox: MAILBOX,
       sms: SMS,
+      twilio: TWILIO_TOKEN,
       link: LINK,
       ai: AI_KEY,
     };
@@ -391,7 +444,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
       const t = await db(false);
       const report = await restore(file, t, { current: NEW, previous: OLD });
       expect(report).toMatchObject({
-        households: 1,
+        households: 2,
         rekeyed: {
           rewrapped: 3,
           resealed: {
@@ -400,6 +453,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
             smtpPasswords: 1,
             mailInPasswords: 1,
             smsPasswords: 1,
+            twilioTokens: 1,
             shareLinkCopies: 1,
             uploadRequestCopies: 0,
             aiReaderKeys: 1,
@@ -447,6 +501,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
           smtpPasswords: 1,
           mailInPasswords: 1,
           smsPasswords: 1,
+          twilioTokens: 1,
           shareLinkCopies: 1,
           uploadRequestCopies: 0,
           aiReaderKeys: 1,

@@ -42,27 +42,43 @@ export function registerSms(
     ready: await sms.ready(principal(req)),
   }));
 
-  // The household's SMS Gate. Its password is sealed, never returned (`set`
-  // or `not_set`), never logged, never in an export.
+  // The household's SMS Gate or Twilio. Its password or Auth Token is
+  // sealed, never returned (`set` or `not_set`), never logged, never in an
+  // export.
   app.get('/api/v1/sms/settings', owners, async (req, reply) => {
     void reply.headers(noStore);
     return sms.get(principal(req));
   });
 
+  // SMS Gate (`provider` may be left out, as before 0.9.0-dev.71), or Twilio.
+  const common = {
+    country: z.string().min(2).max(2),
+    monthly_cap: z.number().int().min(SMS_CAP_MIN).max(SMS_CAP_MAX),
+  };
+  const smsGateBody = z
+    .object({
+      provider: z.literal('sms_gate').optional(),
+      mode: z.enum(['local', 'cloud', 'private']),
+      base_url: z.string().max(2048).nullable().optional(),
+      username: z.string().min(1).max(200),
+      password: z.string().min(1).max(1024).optional(),
+      ...common,
+    })
+    .strict();
+  const twilioBody = z
+    .object({
+      provider: z.literal('twilio'),
+      account_sid: z.string().min(1).max(64),
+      auth_token: z.string().min(1).max(200).optional(),
+      from: z.string().max(40).nullable().optional(),
+      messaging_service_sid: z.string().max(64).nullable().optional(),
+      ...common,
+    })
+    .strict();
+
   app.put('/api/v1/sms/settings', owners, async (req, reply) => {
-    const body = parse(
-      z
-        .object({
-          mode: z.enum(['local', 'cloud', 'private']),
-          base_url: z.string().max(2048).nullable().optional(),
-          username: z.string().min(1).max(200),
-          password: z.string().min(1).max(1024).optional(),
-          country: z.string().min(2).max(2),
-          monthly_cap: z.number().int().min(SMS_CAP_MIN).max(SMS_CAP_MAX),
-        })
-        .strict(),
-      req.body,
-    );
+    const twilio = (req.body as { provider?: unknown } | null)?.provider === 'twilio';
+    const body = twilio ? parse(twilioBody, req.body) : parse(smsGateBody, req.body);
     // Where the vault signs in, with which password, and so where the codes
     // that confirm the family's numbers go: confirmed it is them.
     await stepUp?.require(principal(req), 'change_sms');
